@@ -2,10 +2,9 @@
 
 Модель не отдаёт бинарный .xlsx — поэтому:
   1) если в ответе/скачанных файлах есть .xlsx — копируем поверх project.xlsx;
-  2) иначе парсим блоки `# Лист: <имя>` + TSV (тот же формат, что `xlsx_to_text`)
-     и пишем в копию исходного workbook;
-  3) если TSV нет, но ответ — длинная проза, а в книге есть «Общий план» —
-     дописываем план туда (fallback для шага plan).
+  2) иначе TSV `# Лист:` накладываем на шаблон БЕЗ wipe строк/merge;
+  3) если TSV нет, но ответ длинный — пишем в B2 листа «Общий план»
+     (подписи A и структура строк сохраняются).
 """
 
 from __future__ import annotations
@@ -77,12 +76,27 @@ def extract_sheet_blocks(text: str) -> dict[str, list[list[str]]]:
     return {k: v for k, v in out.items() if v}
 
 
+def _set_cell_value(ws, row: int, col: int, value: str) -> None:
+    """Записать значение с учётом merge (как в чате GPT: структура листа не ломается)."""
+    from app.services.xlsx_v8_import import _resolve_plan_cell
+
+    cell = _resolve_plan_cell(ws, row, col)
+    # MergedCell без top-left — пропускаем
+    if type(cell).__name__ == "MergedCell":
+        return
+    cell.value = value
+
+
 def apply_sheet_blocks_to_xlsx(
     src_xlsx: Path,
     blocks: dict[str, list[list[str]]],
     dest_xlsx: Path,
 ) -> Path:
-    """Записать TSV-блоки в workbook (по имени листа) → dest_xlsx."""
+    """Наложить TSV на существующий workbook БЕЗ wipe строк/merge.
+
+    Как скачанный .xlsx из чата: шаблон (merge, подписи, другие листы) сохраняем,
+    пишем только пришедшие значения ячеек.
+    """
     from openpyxl import Workbook, load_workbook
 
     if not blocks:
@@ -92,32 +106,40 @@ def apply_sheet_blocks_to_xlsx(
         wb = load_workbook(filename=str(src_xlsx))
     else:
         wb = Workbook()
-        # Удалим дефолтный лист, если будем создавать свои.
         if wb.sheetnames == ["Sheet"] and "Данные" in blocks:
             std = wb.active
             if std is not None:
                 wb.remove(std)
 
     name_map = {n.lower(): n for n in wb.sheetnames}
+    # Полный project.xlsx (v8) — нельзя плодить лишние листы (ломают validate).
+    strict_layout = (
+        _GENERAL_PLAN_SHEET in wb.sheetnames or "план" in name_map
+    )
+
     for sheet_name, rows in blocks.items():
         key = sheet_name.lower()
         if key in name_map:
             ws = wb[name_map[key]]
+        elif strict_layout:
+            logger.warning(
+                "xlsx_writeback: skip unknown sheet {!r} (сохраняем layout)",
+                sheet_name,
+            )
+            continue
         else:
             ws = wb.create_sheet(title=sheet_name[:31] or "Данные")
             name_map[key] = ws.title
-        # Очистить используемую область и записать новые значения.
-        if ws.max_row and ws.max_column:
-            for r in ws.iter_rows(
-                min_row=1,
-                max_row=ws.max_row,
-                max_col=ws.max_column,
-            ):
-                for cell in r:
-                    cell.value = None
+
         for r_idx, row in enumerate(rows, start=1):
             for c_idx, val in enumerate(row, start=1):
-                ws.cell(row=r_idx, column=c_idx, value=val)
+                if val is None:
+                    continue
+                s = str(val)
+                # Пустая ячейка в TSV — не затираем подпись/merge шаблона
+                if not s.strip():
+                    continue
+                _set_cell_value(ws, r_idx, c_idx, s)
 
     dest_xlsx.parent.mkdir(parents=True, exist_ok=True)
     wb.save(str(dest_xlsx))
@@ -139,8 +161,13 @@ def write_prose_into_general_plan(
     dest_xlsx: Path,
     prose: str,
 ) -> Path:
-    """Дописать длинный текстовый план на лист «Общий план» (без wipe других листов)."""
+    """Записать длинный текст плана в value-ячейку шаблона «Общий план».
+
+    Не добавляем новые строки в конец — пишем в B2 (типичный content merge),
+    подписи колонки A и merge ranges не трогаем.
+    """
     from openpyxl import load_workbook
+    from app.services.xlsx_v8_import import _resolve_plan_cell
 
     cleaned = _strip_reply_noise(prose)
     if len(cleaned) < _MIN_PROSE_PLAN_CHARS:
@@ -155,13 +182,18 @@ def write_prose_into_general_plan(
         if _GENERAL_PLAN_SHEET not in wb.sheetnames:
             raise ValueError(f"нет листа «{_GENERAL_PLAN_SHEET}»")
         ws = wb[_GENERAL_PLAN_SHEET]
-        # Не чистим шаблон целиком — добавляем пару label/value в конец.
-        row = (ws.max_row or 0) + 2
-        if row < 1:
-            row = 1
-        ws.cell(row=row, column=1, value="План (GPT)")
-        # Excel cell limit ~32767
-        ws.cell(row=row, column=2, value=cleaned[:32000])
+        # Пишем пару A2/B2: импортёр _read_general_plan берёт только a+b.
+        # Подписи A1 и merge не ломаем; новые строки в конец не добавляем.
+        label_cell = _resolve_plan_cell(ws, 2, 1)
+        value_cell = _resolve_plan_cell(ws, 2, 2)
+        if type(value_cell).__name__ == "MergedCell":
+            value_cell = _resolve_plan_cell(ws, 3, 2)
+        if type(value_cell).__name__ == "MergedCell":
+            raise ValueError("не удалось записать в ячейки «Общий план» (merge)")
+        if type(label_cell).__name__ != "MergedCell":
+            if not (label_cell.value and str(label_cell.value).strip()):
+                label_cell.value = "План (GPT)"
+        value_cell.value = cleaned[:32000]
         dest_xlsx.parent.mkdir(parents=True, exist_ok=True)
         wb.save(str(dest_xlsx))
     finally:

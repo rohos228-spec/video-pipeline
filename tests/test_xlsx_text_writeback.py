@@ -42,6 +42,7 @@ def test_apply_and_writeback(tmp_path: Path) -> None:
     assert ws is not None
     ws.title = "план"
     ws["A1"] = "old"
+    ws["A5"] = "keep-me"
     wb.create_sheet("Кадры")
     wb.save(src)
     wb.close()
@@ -56,7 +57,34 @@ def test_apply_and_writeback(tmp_path: Path) -> None:
     wb2 = load_workbook(src)
     assert wb2["план"]["A1"].value == "name"
     assert wb2["план"]["B2"].value == "bar"
+    # Overlay: строки вне TSV не стираем
+    assert wb2["план"]["A5"].value == "keep-me"
     assert wb2["Кадры"]["A2"].value == "1"
+    wb2.close()
+
+
+def test_apply_does_not_add_foreign_sheets_on_v8_workbook(tmp_path: Path) -> None:
+    src = tmp_path / "project.xlsx"
+    dest = tmp_path / "out.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "Общий план"
+    ws["A1"] = "label"
+    wb.create_sheet("план")
+    wb.save(src)
+    wb.close()
+
+    apply_sheet_blocks_to_xlsx(
+        src,
+        {"Общий план": [["Хук", "длинный текст"]], "ЧужойЛист": [["x"]]},
+        dest,
+    )
+    wb2 = load_workbook(dest)
+    assert "ЧужойЛист" not in wb2.sheetnames
+    assert wb2["Общий план"]["A1"].value == "Хук"
+    assert wb2["Общий план"]["B1"].value == "длинный текст"
+    assert "план" in wb2.sheetnames
     wb2.close()
 
 
@@ -83,8 +111,8 @@ def test_writeback_prefers_downloaded_xlsx(tmp_path: Path) -> None:
 
 
 def test_writeback_prose_fallback_into_general_plan(tmp_path: Path) -> None:
-    from app.services.xlsx_v8_import import _read_general_plan
     from app.services.plan_validation import is_meaningful_general_plan
+    from app.services.xlsx_v8_import import _read_general_plan
 
     src = tmp_path / "project.xlsx"
     wb = Workbook()
@@ -92,6 +120,8 @@ def test_writeback_prose_fallback_into_general_plan(tmp_path: Path) -> None:
     assert ws is not None
     ws.title = "Общий план"
     ws["A1"] = "Хук"
+    ws["A2"] = "Основная тема"
+    ws.merge_cells("B2:D2")
     wb.create_sheet("план")
     wb.save(src)
     wb.close()
@@ -104,6 +134,10 @@ def test_writeback_prose_fallback_into_general_plan(tmp_path: Path) -> None:
     )
     assert out == src
     wb2 = load_workbook(src, data_only=True)
+    # Структура строк не сломана: подпись A2 на месте, текст в B2
+    assert wb2["Общий план"]["A1"].value == "Хук"
+    assert wb2["Общий план"]["A2"].value == "Основная тема"
+    assert "Рим был велик" in str(wb2["Общий план"]["B2"].value or "")
     text = _read_general_plan(wb2) or ""
     wb2.close()
     assert is_meaningful_general_plan(text)
