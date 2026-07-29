@@ -134,6 +134,18 @@ def _get_master_or_fallback(project: Project, step_code: str, fallback: str) -> 
         return fallback
 
 
+# Даже legacy default.md без xlsx-контракта: импортёр читает только «Общий план».
+PLAN_XLSX_OUTPUT_FOOTER = (
+    "\n\n---\n"
+    "ОБЯЗАТЕЛЬНЫЙ ФОРМАТ ВЫВОДА (xlsx):\n"
+    "1. Заполни лист «Общий план» развёрнутым планом ролика "
+    "(не короче ~200 символов после заполнения ячеек).\n"
+    "2. Лист «план» на этом шаге НЕ трогай — он для следующих этапов.\n"
+    "3. Не переименовывай листы и не меняй структуру книги.\n"
+    "4. Верни полный обновлённый project.xlsx (.xlsx), не только текст в чат.\n"
+)
+
+
 def write_plan_prompt_file(
     project: Project,
     tmp_dir: Path,
@@ -164,7 +176,7 @@ def write_plan_prompt_file(
 
     master = inject_topic_placeholders(master, actual_topic)
     prompt_file.write_text(
-        f"Тема ролика: ({actual_topic})\n\n{master}{extra}",
+        f"Тема ролика: ({actual_topic})\n\n{master}{extra}{PLAN_XLSX_OUTPUT_FOOTER}",
         encoding="utf-8",
     )
     return prompt_file

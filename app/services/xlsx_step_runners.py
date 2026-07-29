@@ -36,6 +36,45 @@ from app.storage import for_project as _sheet_for_project
 XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v74-normalize"
 
 
+def _plan_empty_error(xlsx_path: Path, *, plan_len: int) -> RuntimeError:
+    """Понятная ошибка: импортёр читает «Общий план», GPT часто пишет в «план»."""
+    sheets: list[str] = []
+    try:
+        from openpyxl import load_workbook
+
+        wb = load_workbook(filename=str(xlsx_path), read_only=True, data_only=True)
+        sheets = list(wb.sheetnames)
+        wb.close()
+    except Exception:  # noqa: BLE001
+        pass
+    sheets_s = ", ".join(sheets) if sheets else "?"
+    return RuntimeError(
+        "лист «Общий план» пуст/шаблон после GPT "
+        f"(прочитано {plan_len} симв., нужно ≥200); "
+        "GPT заполнил не тот лист (часто «план» вместо «Общий план»). "
+        f"Листы файла: [{sheets_s}]"
+    )
+
+
+def _assert_downloaded_plan_meaningful(xlsx_path: Path) -> None:
+    """До replace project.xlsx — отказать, если «Общий план» не заполнен."""
+    from openpyxl import load_workbook
+
+    from app.services.plan_validation import is_meaningful_general_plan
+    from app.services.xlsx_v8_import import _read_general_plan
+
+    try:
+        wb = load_workbook(filename=str(xlsx_path), data_only=True)
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"скачанный xlsx не читается: {e}") from e
+    try:
+        plan_text = (_read_general_plan(wb) or "").strip()
+    finally:
+        wb.close()
+    if not is_meaningful_general_plan(plan_text):
+        raise _plan_empty_error(xlsx_path, plan_len=len(plan_text))
+
+
 def _apply_split_fallback(
     xlsx_path: Path,
     voiceover_path: Path,
@@ -217,6 +256,8 @@ async def run_plan_xlsx(
             validation_err = validate_xlsx(downloaded)
     if validation_err is not None:
         raise RuntimeError(f"скачанный xlsx невалиден: {validation_err}")
+
+    _assert_downloaded_plan_meaningful(downloaded)
 
     backup = backup_to_old(proj_xlsx)
     replace_with(proj_xlsx, downloaded)
@@ -457,9 +498,13 @@ async def sync_after_plan(
 
     plan_text = (project.general_plan or "").strip()
     if not is_meaningful_general_plan(plan_text):
-        raise RuntimeError(
-            "ChatGPT вернул пустой/слишком короткий план после xlsx-sync"
+        logger.warning(
+            "[#{}] sync_after_plan: general_plan len={} path={}",
+            project.id,
+            len(plan_text),
+            xlsx_path,
         )
+        raise _plan_empty_error(xlsx_path, plan_len=len(plan_text))
 
 
 async def sync_after_split(

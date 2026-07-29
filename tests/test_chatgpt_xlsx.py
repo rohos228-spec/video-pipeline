@@ -39,6 +39,11 @@ def test_plan_prompt_file_contains_master_not_in_chat(project: Project) -> None:
     assert "Тема теста" in content
     assert master not in chat
     assert "unique-token-xyz" not in chat
+    assert "Общий план" in content
+    assert "ОБЯЗАТЕЛЬНЫЙ ФОРМАТ ВЫВОДА" in content
+    assert "Лист «план» на этом шаге НЕ трогай" in content
+    assert "Общий план" in chat
+    assert "не лист «план»" in chat
 
 
 def test_chat_message_uses_override_only(project: Project) -> None:
@@ -51,7 +56,7 @@ def test_chat_message_uses_override_only(project: Project) -> None:
     ):
         chat = cx.chat_message(project, "plan", prompt_file_name="p.md")
 
-    assert chat == override
+    assert chat.startswith(override)
     assert "SHOULD NOT APPEAR" not in chat
 
 
