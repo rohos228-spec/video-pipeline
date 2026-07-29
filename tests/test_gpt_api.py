@@ -246,6 +246,37 @@ def test_xlsx_to_text(tmp_path: Path) -> None:
     text = xlsx_to_text(p)
     assert "Лист: План" in text
     assert "хук" in text
+    assert "xlsx text-export" in text
+
+
+def test_xlsx_to_text_prioritizes_general_plan(tmp_path: Path) -> None:
+    """Огромный лист «план» не должен вытеснять «Общий план» из контекста."""
+    from openpyxl import Workbook
+
+    from app.services.gpt_api import file_to_context
+
+    wb = Workbook()
+    plan = wb.active
+    plan.title = "план"
+    for i in range(300):
+        plan.append([f"row{i}", "x" * 400])
+    general = wb.create_sheet("Общий план")
+    general.append(["Главная тема", "тема про Рим"])
+    general.append(["Длительность", "12:00"])
+    for i in range(1, 120):
+        general.append([f"эпизод {i:03d}", f"таймкод 0:{i:02d}", "текст " * 20])
+    p = tmp_path / "project.xlsx"
+    wb.save(p)
+
+    text = xlsx_to_text(p, max_chars=80_000)
+    assert text.index("# Лист: Общий план") < text.index("# Лист: план")
+    assert "эпизод 097" in text
+    assert "эпизод 119" in text
+    assert "тема про Рим" in text
+
+    ctx = file_to_context(p)
+    assert "эпизод 097" in ctx
+    assert len(ctx) > 60_000
 
 
 def test_build_messages_with_history() -> None:

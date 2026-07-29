@@ -112,7 +112,103 @@ def test_txt_footer_appended() -> None:
     out = append_txt_report_footer("проверь по промту")
     assert "проверь по промту" in out
     assert "# ОТЧЁТ ПРОВЕРКИ" in out
+    assert "бинарный" in out.lower() or "текстовый экспорт" in out.lower()
+    assert "XLSX_WRITEBACK" in out
     assert append_txt_report_footer(out) == out
+
+
+def test_split_check_reply_and_writeback() -> None:
+    from app.services.check_analysis import split_check_reply_and_writeback
+
+    report = SAMPLE_TXT
+    wb = "# Лист: Общий план\nA\tB\n1\t2"
+    full = f"{report}\n\n--- XLSX_WRITEBACK ---\n{wb}"
+    r, w = split_check_reply_and_writeback(full)
+    assert "verdict: fail" in r
+    assert "# Лист: Общий план" in w
+    assert "XLSX_WRITEBACK" not in w
+
+    full2 = f"{report}\n\n# Лист: Общий план\nx\ty"
+    r2, w2 = split_check_reply_and_writeback(full2)
+    assert "## forward" in r2
+    assert w2.startswith("# Лист:")
+
+
+@pytest.mark.asyncio
+async def test_check_fix_writeback_applies_tsv(tmp_path: Path, monkeypatch) -> None:
+    from openpyxl import Workbook, load_workbook
+
+    from app.services import gpt_api
+    from app.services.gpt_api import GptChatResult
+
+    src = tmp_path / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Общий план"
+    ws["A1"] = "Главная тема"
+    ws["B1"] = "старая"
+    wb.create_sheet("прочее")["A1"] = "keep"
+    wb.save(src)
+
+    reply = """
+# ОТЧЁТ ПРОВЕРКИ
+verdict: fail
+mode: fix
+source_prompts: n_plan
+
+## summary
+Исправил тему.
+
+## analysis
+Тема была пустой/битой.
+
+## findings
+- [error] Главная тема
+
+## related
+- error_1 → промт:n_plan | лист:Общий план | поле:Главная тема
+
+## logic
+Остальное ок.
+
+## actions
+Обновил лист Общий план.
+
+## forward
+file: fixed
+path: excel_gpt_uploads/n_check/project_fixed.xlsx
+
+--- XLSX_WRITEBACK ---
+# Лист: Общий план
+Главная тема\tновая тема ролика
+""".strip()
+
+    async def fake_chat(**kwargs):  # noqa: ANN003
+        return GptChatResult(text=reply, model="test")
+
+    monkeypatch.setattr(gpt_api, "gpt_api_enabled", lambda: True)
+    monkeypatch.setattr(gpt_api, "chat", fake_chat)
+
+    out = await run_operator_api(
+        project_dir=tmp_path,
+        node_key="n_check",
+        role="assist",
+        output_mode="text",
+        prompt="проверь",
+        accompanying="",
+        input_paths=[src],
+        check_mode=True,
+        check_fix=True,
+        source_prompt_keys=["n_plan"],
+    )
+    assert out.gate_status == "fail"
+    assert out.analysis is not None
+    assert out.analysis.fix.rewrite_file == "excel_gpt_uploads/n_check/project_fixed.xlsx"
+    fixed = tmp_path / "excel_gpt_uploads" / "n_check" / "project_fixed.xlsx"
+    assert fixed.is_file()
+    got = load_workbook(fixed)
+    assert got["Общий план"]["B1"].value == "новая тема ролика"
+    assert got["прочее"]["A1"].value == "keep"
 
 
 @pytest.mark.asyncio

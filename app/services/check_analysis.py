@@ -51,10 +51,20 @@ RESPONSE_FOOTER = """
 """.strip()
 
 # Основной формат для тумблера «Проверка» — читаемый TXT.
+CHECK_WRITEBACK_MARKER = "--- XLSX_WRITEBACK ---"
+
 TXT_REPORT_FOOTER = """
 ---
-ФОРМАТ ОТВЕТА (строго): один текстовый файл-отчёт на русском.
-НЕ JSON. Не пиши содержимое xlsx/TSV внутрь отчёта.
+ФОРМАТ ОТВЕТА (строго): один текстовый отчёт на русском.
+НЕ JSON. Не пиши содержимое xlsx/TSV внутрь секций отчёта.
+
+ВАЖНО ПРО ФАЙЛЫ:
+- Во вложении — текстовый экспорт книги (TSV по листам `# Лист:`). Это и есть
+  исходный project.xlsx для проверки. Бинарный .xlsx в рабочей директории
+  модели недоступен — это нормально, НЕ ставь fail из‑за «нет бинарного xlsx».
+- Проверяй полный лист «Общий план» / «Общий план ролика» по TSV во вложении.
+- Если во вложении явно написано «обрезано» по нужному листу — тогда [error]
+  про неполноту входа; иначе считай TSV полным снимком.
 
 Шаблон (все секции обязательны, в этом порядке):
 
@@ -89,10 +99,16 @@ file: original|fixed
 path: <относительный путь от корня проекта или —>
 
 Правила:
-- mode=report_only → file: original, path: —, файл на диске НЕ меняй.
-- mode=fix и есть правка → сохрани файл и укажи file: fixed + path.
-- Без правок → file: original.
-""".strip()
+- mode=report_only → file: original, path: —, файл НЕ меняй.
+- mode=fix без правок → file: original, path: —.
+- mode=fix и нужна правка → после всего отчёта (после ## forward) добавь блок:
+
+{marker}
+# Лист: Общий план
+<строки TSV через табуляцию — только изменённые листы>
+и в ## forward укажи file: fixed, path: excel_gpt_uploads/<эта_нода>/project_fixed.xlsx
+Система сама наложит TSV на копию книги. Остальные листы не трогай.
+""".strip().format(marker=CHECK_WRITEBACK_MARKER)
 
 _SECTION_RE = re.compile(r"(?m)^##\s+(summary|analysis|findings|related|logic|actions|forward)\s*$")
 _HEADER_VERDICT_RE = re.compile(r"(?im)^\s*verdict\s*:\s*(\S+)\s*$")
@@ -293,6 +309,27 @@ def looks_like_check_report_txt(text: str) -> bool:
     return False
 
 
+def split_check_reply_and_writeback(text: str) -> tuple[str, str]:
+    """Отделить TXT-отчёт от TSV writeback-хвоста.
+
+    Returns (report_text, writeback_text). writeback может быть пустым.
+    """
+    raw = text or ""
+    marker = CHECK_WRITEBACK_MARKER
+    idx = raw.find(marker)
+    if idx >= 0:
+        return raw[:idx].rstrip(), raw[idx + len(marker) :].lstrip()
+    # Без маркера: TSV `# Лист:` после секции forward
+    m = re.search(r"(?im)^##\s+forward\s*$", raw)
+    if m:
+        rest = raw[m.end() :]
+        sheet = re.search(r"(?im)^\s*#\s*Лист\s*:", rest)
+        if sheet:
+            cut = m.end() + sheet.start()
+            return raw[:cut].rstrip(), raw[cut:].lstrip()
+    return raw.strip(), ""
+
+
 def _section_bodies(text: str) -> dict[str, str]:
     matches = list(_SECTION_RE.finditer(text or ""))
     bodies: dict[str, str] = {}
@@ -434,7 +471,9 @@ def write_check_report_txt(
 
 def parse_check_analysis(text: str, *, require_schema: bool = False) -> CheckAnalysis:
     """Разобрать ответ GPT: JSON vp.check.v1 или TXT-отчёт. Битый → fail."""
-    obj = extract_json_object(text)
+    report_text, _wb = split_check_reply_and_writeback(text or "")
+    probe = report_text or (text or "")
+    obj = extract_json_object(probe)
     if obj is not None:
         if require_schema:
             sid = str(obj.get("schema") or "").strip()
@@ -448,12 +487,12 @@ def parse_check_analysis(text: str, *, require_schema: bool = False) -> CheckAna
                 obj = {**obj, "verdict": "fail"}
             else:
                 # возможно это не check-JSON — пробуем TXT
-                txt = parse_check_report_txt(text)
+                txt = parse_check_report_txt(probe)
                 if txt is not None:
                     return txt
                 return fail_analysis("в JSON нет поля verdict")
         return analysis_from_dict(obj)
-    txt = parse_check_report_txt(text)
+    txt = parse_check_report_txt(probe)
     if txt is not None:
         return txt
     return fail_analysis("нет TXT-отчёта и нет JSON vp.check.v1 в ответе")

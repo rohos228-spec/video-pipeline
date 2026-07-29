@@ -51,6 +51,15 @@ _MAX_VISION_IMAGES = 8
 _MAX_VISION_BYTES = 4_000_000
 # Мелкий бинарь (pdf/docx/zip/…) можно отдать как base64 — как «файл в чате».
 _MAX_BINARY_INLINE_BYTES = 400_000
+# XLSX → TSV: длинный «Общий план» (12:00 / 100+ эпизодов) легко >60k.
+_XLSX_CONTEXT_MAX_CHARS = 280_000
+_XLSX_DEFAULT_MAX_ROWS = 2_000
+_XLSX_PRIORITY_MAX_ROWS = 5_000
+# Листы плана — первыми и почти без обрезки; «план» (кадры) огромный — в хвост.
+_XLSX_PRIORITY_SHEET_RE = re.compile(
+    r"общий\s*план",
+    re.IGNORECASE,
+)
 
 
 class GptApiError(Exception):
@@ -104,8 +113,33 @@ def _chat_url(model: str) -> str:
 # ─────────────────────────── файлы → контекст ───────────────────────────
 
 
-def xlsx_to_text(path: Path, *, max_rows: int = 400, max_cols: int = 40) -> str:
-    """Свернуть xlsx в читаемый TSV-контекст (непустые строки листов)."""
+def _xlsx_sheet_priority(title: str) -> int:
+    """Меньше = раньше в контексте. «Общий план» важнее огромного «план»."""
+    t = (title or "").strip()
+    if _XLSX_PRIORITY_SHEET_RE.search(t):
+        return 0
+    low = t.casefold()
+    if low in {"сценарий", "script", "персонажи", "герой"}:
+        return 1
+    if low == "план" or low.startswith("план "):
+        return 9
+    return 5
+
+
+def xlsx_to_text(
+    path: Path,
+    *,
+    max_rows: int = _XLSX_DEFAULT_MAX_ROWS,
+    max_cols: int = 40,
+    max_chars: int | None = None,
+) -> str:
+    """Свернуть xlsx в читаемый TSV-контекст (непустые строки листов).
+
+    Приоритетные листы («Общий план» / «Общий план ролика») идут первыми
+    и получают больший лимит строк — иначе огромный лист «план» съедает
+    бюджет и проверка n_plan видит обрезанный эпизодный план.
+    """
+    budget = _XLSX_CONTEXT_MAX_CHARS if max_chars is None else max(4_000, int(max_chars))
     try:
         from openpyxl import load_workbook
     except Exception as e:  # noqa: BLE001
@@ -114,23 +148,61 @@ def xlsx_to_text(path: Path, *, max_rows: int = 400, max_cols: int = 40) -> str:
         wb = load_workbook(path, read_only=True, data_only=True)
     except Exception as e:  # noqa: BLE001
         return f"[xlsx: не удалось открыть {path.name}: {e}]"
-    out: list[str] = []
-    for ws in wb.worksheets:
-        out.append(f"# Лист: {ws.title}")
+    sheets = sorted(list(wb.worksheets), key=lambda ws: (_xlsx_sheet_priority(ws.title), ws.title))
+    out: list[str] = [
+        "[xlsx text-export: это полный текстовый снимок книги для API; "
+        "бинарный .xlsx в песочнице модели недоступен — это норма. "
+        "Проверяй и правь по TSV ниже; для записи верни `# Лист:` блоки.]",
+    ]
+    used = len(out[0])
+    truncated_sheets: list[str] = []
+    for ws in sheets:
+        header = f"# Лист: {ws.title}"
+        if used + len(header) + 32 > budget:
+            truncated_sheets.append(ws.title)
+            out.append(f"# Лист: {ws.title}\n… (лист пропущен: лимит контекста)")
+            continue
+        sheet_lines = [header]
+        sheet_used = len(header)
         rows_written = 0
+        row_cap = (
+            _XLSX_PRIORITY_MAX_ROWS
+            if _XLSX_PRIORITY_SHEET_RE.search(ws.title or "")
+            else max_rows
+        )
+        sheet_truncated = False
         for row in ws.iter_rows(values_only=True):
             cells = ["" if c is None else str(c) for c in row[:max_cols]]
             if not any(c.strip() for c in cells):
                 continue
-            out.append("\t".join(cells))
-            rows_written += 1
-            if rows_written >= max_rows:
-                out.append("… (обрезано)")
+            line = "\t".join(cells)
+            # +1 за \n при join
+            if used + sheet_used + len(line) + 1 > budget:
+                sheet_lines.append("… (обрезано: лимит контекста)")
+                sheet_truncated = True
                 break
+            sheet_lines.append(line)
+            sheet_used += len(line) + 1
+            rows_written += 1
+            if rows_written >= row_cap:
+                sheet_lines.append("… (обрезано: лимит строк листа)")
+                sheet_truncated = True
+                break
+        block = "\n".join(sheet_lines)
+        out.append(block)
+        used += len(block) + 1
+        if sheet_truncated:
+            truncated_sheets.append(ws.title)
     import contextlib
 
     with contextlib.suppress(Exception):
         wb.close()
+    if truncated_sheets:
+        out.append(
+            "[xlsx text-export: частично обрезаны листы: "
+            + ", ".join(truncated_sheets)
+            + "]"
+        )
     return "\n".join(out).strip() or "[xlsx: пустой]"
 
 
@@ -140,7 +212,9 @@ def file_to_context(path: Path, *, max_chars: int = 60_000) -> str:
 
     suffix = path.suffix.lower()
     if suffix in (".xlsx", ".xlsm", ".xls"):
-        body = xlsx_to_text(path)
+        # Для книг — отдельный большой бюджет; max_chars не режем до 60k.
+        xlsx_budget = max(max_chars, _XLSX_CONTEXT_MAX_CHARS)
+        body = xlsx_to_text(path, max_chars=xlsx_budget)
     elif suffix in _TEXT_SUFFIXES:
         try:
             body = path.read_text(encoding="utf-8", errors="replace")
@@ -212,8 +286,14 @@ def file_to_context(path: Path, *, max_chars: int = 60_000) -> str:
                 f"слишком большой для inline (>{_MAX_BINARY_INLINE_BYTES}), "
                 f"только имя; скачай исходник кнопкой ↓ в Studio]"
             )
-    if len(body) > max_chars and "base64," not in body:
-        body = body[:max_chars] + "\n… (обрезано)"
+    # XLSX уже укладывается в свой бюджет внутри xlsx_to_text — не резать до 60k.
+    soft_cap = (
+        max(max_chars, _XLSX_CONTEXT_MAX_CHARS)
+        if suffix in (".xlsx", ".xlsm", ".xls")
+        else max_chars
+    )
+    if len(body) > soft_cap and "base64," not in body:
+        body = body[:soft_cap] + "\n… (обрезано)"
     return f"===== {path.name} =====\n{body}"
 
 
