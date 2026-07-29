@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { GitBranch, Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -34,24 +35,54 @@ export function AutoAdvanceToggle({
   className?: string;
 }) {
   const qc = useQueryClient();
-  const autoOn = project.auto_mode;
+  /** Мгновенный отклик: пока PATCH ждёт SQLite/воркер, UI уже переключён. */
+  const [optimistic, setOptimistic] = useState<boolean | null>(null);
+  const autoOn = optimistic ?? Boolean(project.auto_mode);
+
+  useEffect(() => {
+    if (optimistic !== null && Boolean(project.auto_mode) === optimistic) {
+      setOptimistic(null);
+    }
+  }, [project.auto_mode, optimistic]);
+
   const patch = useMutation({
-    mutationFn: (body: Partial<ProjectDetail>) => api.patchProject(project.id, body),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["project", project.id] });
-      toast.success(autoOn ? "Автопродвижение выкл" : "Автопродвижение вкл");
+    mutationFn: (next: boolean) => api.patchProject(project.id, { auto_mode: next }),
+    onMutate: async (next) => {
+      setOptimistic(next);
+      await qc.cancelQueries({ queryKey: ["project", project.id] });
+      const prev = qc.getQueryData<ProjectDetail>(["project", project.id]);
+      if (prev) {
+        qc.setQueryData<ProjectDetail>(["project", project.id], {
+          ...prev,
+          auto_mode: next,
+        });
+      }
+      return { prev };
     },
-    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+    onSuccess: (_data, next) => {
+      toast.success(next ? "Автопродвижение вкл" : "Автопродвижение выкл");
+    },
+    onError: (e, _next, ctx) => {
+      setOptimistic(null);
+      if (ctx?.prev) {
+        qc.setQueryData(["project", project.id], ctx.prev);
+      }
+      toast.error(errorMessageFromUnknown(e));
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["project", project.id] });
+    },
   });
 
   return (
     <button
       type="button"
-      disabled={patch.isPending}
-      onClick={() => patch.mutate({ auto_mode: !autoOn })}
+      aria-pressed={autoOn}
+      aria-busy={patch.isPending}
+      onClick={() => patch.mutate(!autoOn)}
       className={
         className ??
-        "pointer-events-auto flex items-start justify-between gap-2 rounded-lg border px-2.5 py-1.5 text-left transition-colors " +
+        "pointer-events-auto flex w-full items-start justify-between gap-2 rounded-lg border px-2.5 py-1.5 text-left transition-colors " +
           (autoOn
             ? "border-primary/40 bg-primary/10"
             : "border-border/60 bg-card/70 hover:bg-accent/40")

@@ -1511,12 +1511,16 @@ function RunOverlay({
 
   return (
     <>
-    <div className="pointer-events-none absolute right-4 top-4 z-10 flex flex-wrap items-center justify-end gap-2 max-w-[min(100%,640px)]">
-      {project ? (
-        <div className="pointer-events-auto min-w-[200px] max-w-[260px]">
+    {/* Отдельно от Run-кнопок: при running ноде бар раздувается и раньше
+        перехватывал/давил тумблер; z-40 выше канваса и панелей. */}
+    {project ? (
+      <div className="pointer-events-none absolute right-4 top-4 z-40">
+        <div className="pointer-events-auto min-w-[200px] max-w-[260px] shadow-sm">
           <AutoAdvanceToggle project={project} />
         </div>
-      ) : null}
+      </div>
+    ) : null}
+    <div className="pointer-events-none absolute right-4 top-[4.75rem] z-30 flex max-w-[min(100%,640px)] flex-wrap items-center justify-end gap-2">
       <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs shadow-sm backdrop-blur-sm">
         <span className="text-muted-foreground">Run:</span>
         <span className="font-medium">
