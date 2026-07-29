@@ -19,12 +19,22 @@ from app.services.xlsx_v8_import import read_v8_active_frame_count
 from app.telegram.menu import status_order
 
 # Шаги, которые не требуют уже готовых кадров с voiceover в Excel/БД.
+# enriching_*: excel_gpt на канвасе может идти сразу после script (до split) —
+# кадры ещё не созданы, вход = project.xlsx + voiceover.txt.
 _NO_FRAMES_REQUIRED: frozenset[ProjectStatus] = frozenset(
     {
         ProjectStatus.planning,
         ProjectStatus.scripting,
         ProjectStatus.splitting,
         ProjectStatus.generating_music,
+        ProjectStatus.enriching_1,
+        ProjectStatus.enriching_2,
+        ProjectStatus.enriching_3,
+        ProjectStatus.enriching_4,
+        ProjectStatus.enriching_5,
+        # Герои/предметы на графе тоже часто до разбивки.
+        ProjectStatus.generating_hero,
+        ProjectStatus.generating_items,
     }
 )
 

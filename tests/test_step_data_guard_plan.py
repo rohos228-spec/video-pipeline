@@ -45,3 +45,39 @@ async def test_plan_ready_not_confirmed_without_plan() -> None:
 
     session.execute = mock_execute
     assert not await ready_status_confirmed_by_data(session, p, ProjectStatus.plan_ready)
+
+
+@pytest.mark.asyncio
+async def test_enriching_ok_without_frames_after_script(tmp_path, monkeypatch) -> None:
+    """Баг: script → excel_gpt (enriching_N) до split — не блокировать «нет кадров»."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    from app import settings as app_settings
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path / "data")
+
+    p = Project(
+        id=27,
+        topic="t",
+        slug="script-to-gpt",
+        status=ProjectStatus.script_ready,
+        general_plan="А" * 250,
+        script_text="Б" * 300,
+    )
+    p.data_dir.mkdir(parents=True, exist_ok=True)
+    (p.data_dir / "voiceover.txt").write_text("Б" * 300, encoding="utf-8")
+
+    session = AsyncMock()
+
+    async def mock_execute(stmt):
+        m = MagicMock()
+        m.scalar_one.return_value = 0
+        return m
+
+    session.execute = mock_execute
+
+    ok, reason, _ = await can_enter_running(session, p, ProjectStatus.enriching_2)
+    assert ok, reason
+    assert reason == ""
+

@@ -781,7 +781,19 @@ def files_from_source_node(
             return [voice]
         return _collect_under(root / "audio", suffixes=frozenset({".mp3", ".wav", ".m4a", ".txt"}), limit=limit)
 
-    if is_excel_gpt_node_type(typ) or typ in ("plan", "script", "split", "items", "excel_feed"):
+    # Закадровый текст: главный артефакт — voiceover.txt (+ xlsx если есть).
+    if typ == "script":
+        out: list[Path] = []
+        voice = root / "voiceover.txt"
+        if voice.is_file() and voice.stat().st_size > 0:
+            out.append(voice)
+        xlsx = root / "project.xlsx"
+        if xlsx.is_file():
+            out.append(xlsx)
+        if out:
+            return out[:limit]
+
+    if is_excel_gpt_node_type(typ) or typ in ("plan", "split", "items", "excel_feed"):
         if use_snapshot:
             snap = _snapshot_xlsx_for_node(project, source_key)
             if snap is not None:

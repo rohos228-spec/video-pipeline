@@ -266,3 +266,40 @@ def test_sync_downstream_storage_after_gpt(tmp_path: Path, monkeypatch) -> None:
     assert synced[0]["storageNode"] == store
     assert synced[0]["okFileCount"] >= 1
     assert resolve_storage(p, store, auto_sync=False)["okFileCount"] >= 1
+
+
+def test_script_source_exports_voiceover_and_syncs_storage(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """После script → storage должен получить voiceover.txt (не только xlsx)."""
+    from app.services.storage_node import sync_downstream_storage_from_node
+
+    p = _project(tmp_path, monkeypatch)
+    voice = p.data_dir / "voiceover.txt"
+    voice.write_text("Закадровый текст " * 40, encoding="utf-8")
+    (p.data_dir / "project.xlsx").write_bytes(b"PK" + b"x" * 40)
+    script, store = "n_script", "n_storage_1"
+    p.meta = {
+        "canvas_graph": {
+            "nodes": [
+                {"id": script, "type": "script", "position": {"x": 0, "y": 0}},
+                {"id": store, "type": "storage", "position": {"x": 200, "y": 0}},
+            ],
+            "edges": [
+                {
+                    "id": "e1",
+                    "source": script,
+                    "target": store,
+                    "data": {"kind": "after"},
+                },
+            ],
+        },
+        "storage_nodes": {store: {"formats": ["any"], "autoSync": True}},
+    }
+    paths = files_from_source_node(p, script)
+    assert any(x.name == "voiceover.txt" for x in paths)
+    synced = sync_downstream_storage_from_node(p, script)
+    assert len(synced) == 1
+    assert synced[0]["okFileCount"] >= 1
+    names = [f["originalName"] for f in list_stored_files(p, store)]
+    assert "voiceover.txt" in names

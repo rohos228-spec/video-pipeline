@@ -36,6 +36,31 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] project_sheet status write failed: {}", project.id, e)
 
+    try:
+        from app.services.node_xlsx_snapshot import find_node_key_for_type
+        from app.services.storage_node import sync_downstream_storage_from_node
+
+        script_key = await find_node_key_for_type(session, project, "script")
+        if script_key:
+            synced = sync_downstream_storage_from_node(project, script_key)
+            for info in synced:
+                logger.info(
+                    "[#{}] make_script: storage {} ← {} copied={} skipped={}",
+                    project.id,
+                    info.get("storageNode"),
+                    script_key,
+                    info.get("copied"),
+                    info.get("skipped"),
+                )
+            if synced:
+                await session.flush()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] make_script: sync downstream storage failed: {}",
+            project.id,
+            e,
+        )
+
     await send_hitl_text(
         bot,
         session,
