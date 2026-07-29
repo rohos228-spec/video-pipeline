@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.settings import settings
 
@@ -13,14 +14,18 @@ from app.settings import settings
 _db_path = settings.sqlite_path
 if not _db_path.is_absolute():
     from pathlib import Path
+
     _db_path = Path.cwd() / _db_path
 _db_path.parent.mkdir(parents=True, exist_ok=True)
 
+# NullPool: один writer на файл SQLite — QueuePool давал database is locked
+# при concurrent PATCH canvas + worker.
 engine = create_async_engine(
     settings.db_url,
     echo=False,
     future=True,
-    # Montage apply держит короткие сессии; 60с — запас против auto_advance.
+    poolclass=NullPool,
+    # Montage / canvas save: запас против busy writer (worker Outsee).
     connect_args={"timeout": 60},
 )
 
@@ -30,6 +35,7 @@ def _configure_sqlite_connection(dbapi_connection, _connection_record) -> None:
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA busy_timeout=60000")
+    cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.close()
 
 

@@ -86,6 +86,16 @@ def test_append_preserves_override_body() -> None:
     assert "700" in text
 
 
+def test_send_to_main_pc_default_off() -> None:
+    from app.services.node_step_params import send_to_main_pc_for_project
+
+    p = Project(topic="t")
+    p.meta = {}
+    assert send_to_main_pc_for_project(p) is False
+    p.meta = {"node_step_params": {"assemble": {"send_to_main_pc": True}}}
+    assert send_to_main_pc_for_project(p) is True
+
+
 def test_subtitles_enabled_default_off() -> None:
     p = Project(topic="t")
     p.meta = {}

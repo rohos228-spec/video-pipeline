@@ -1,4 +1,4 @@
-/** Режим контроля пайплайна: ручной (HITL в UI) или ИИ (auto_mode + GPT-проверки). */
+/** Режим контроля пайплайна: только ИИ (ручной HITL-режим убран). */
 
 export type ControlMode = "manual" | "ai";
 
@@ -13,13 +13,12 @@ export const AUTO_REVIEW_KINDS = [
 
 export type AutoReviewKind = (typeof AUTO_REVIEW_KINDS)[number]["kind"];
 
-export function readControlMode(meta: Record<string, unknown> | undefined): ControlMode {
-  if (meta?.ai_control === true) return "ai";
-  return "manual";
+export function readControlMode(_meta: Record<string, unknown> | undefined): ControlMode {
+  return "ai";
 }
 
-export function isAiControlMode(meta: Record<string, unknown> | undefined): boolean {
-  return readControlMode(meta) === "ai";
+export function isAiControlMode(_meta: Record<string, unknown> | undefined): boolean {
+  return true;
 }
 
 export function readAutoReviewKinds(meta: Record<string, unknown> | undefined): string[] {

@@ -84,7 +84,7 @@ import { SoftThreadEdge } from "./soft-thread-edge";
 import { edgeKindLabel } from "@/lib/gpt-operator";
 import { useRunEvents } from "@/hooks/use-bus";
 import { Button } from "@/components/ui/button";
-import { HitlBanner } from "@/components/hitl/hitl-banner";
+import { AutoAdvanceToggle } from "@/components/inspector/project-settings";
 import { RightButtonMarquee } from "@/components/canvas/right-button-marquee";
 import {
   DropdownMenu,
@@ -223,6 +223,8 @@ export function FlowCanvas({
   /** Подавить onSelectionChange после программного setNodes(selected). */
   const ignoreSelectionChangeRef = useRef(0);
   const saveTimerRef = useRef<number | null>(null);
+  const persistInFlightRef = useRef(false);
+  const persistQueuedRef = useRef(false);
   const reactFlowRef = useRef<ReactFlowInstance<Node<PipelineNodeData>, Edge> | null>(null);
   const paneRef = useRef<HTMLDivElement | null>(null);
 
@@ -401,10 +403,11 @@ export function FlowCanvas({
     if (saveTimerRef.current != null) {
       window.clearTimeout(saveTimerRef.current);
     }
+    // 1.2с: не спамить PATCH при серии drag (SQLite lock на Windows)
     saveTimerRef.current = window.setTimeout(() => {
       saveTimerRef.current = null;
       window.dispatchEvent(new CustomEvent("canvas-save-workflow"));
-    }, 400);
+    }, 1200);
   }, []);
 
   const onNodesChange = useCallback(
@@ -463,6 +466,11 @@ export function FlowCanvas({
 
   const persistWorkflow = useCallback(async () => {
     if (!workflow.data) return;
+    if (persistInFlightRef.current) {
+      persistQueuedRef.current = true;
+      return;
+    }
+    persistInFlightRef.current = true;
     setSaving(true);
     try {
       const currentNodes = nodesRef.current;
@@ -501,7 +509,6 @@ export function FlowCanvas({
         );
         return;
       }
-      // Авто: только точечные патчи Связь→Не ок. Не перетираем «Ок» у других нод.
       const patches = Array.isArray(check.edge_patches) ? check.edge_patches : [];
       if (patches.length) {
         const kindById = new Map(
@@ -537,6 +544,7 @@ export function FlowCanvas({
         const projectData = project.data ?? (await api.getProject(projectId));
         const meta = { ...((projectData.meta || {}) as Record<string, unknown>) };
         meta.canvas_graph = buildCanvasGraph(workflow.data.id, wfNodes, wfEdges);
+        meta.ai_control = true;
         const topics = Array.isArray(meta.mass_excel_topics)
           ? (meta.mass_excel_topics as string[])
           : [];
@@ -546,7 +554,6 @@ export function FlowCanvas({
         }
         await api.patchProject(projectId, { meta });
         await qc.invalidateQueries({ queryKey: ["project", projectId] });
-        await api.ensureProjectRun(projectId).catch(() => undefined);
       } else {
         await api.saveWorkflow(workflow.data.id, {
           nodes: wfNodes,
@@ -558,8 +565,15 @@ export function FlowCanvas({
       toast.error(`Не сохранилось: ${errorMessageFromUnknown(e)}`);
     } finally {
       setSaving(false);
+      persistInFlightRef.current = false;
+      if (persistQueuedRef.current) {
+        persistQueuedRef.current = false;
+        window.setTimeout(() => {
+          window.dispatchEvent(new CustomEvent("canvas-save-workflow"));
+        }, 200);
+      }
     }
-  }, [workflow, projectId, project.data, qc]);
+  }, [workflow, projectId, project.data, qc, setEdges]);
 
   useEffect(() => {
     const onPatch = (ev: Event) => {
@@ -1182,12 +1196,12 @@ export function FlowCanvas({
       />
       <RunOverlay
         projectId={projectId}
+        project={project.data ?? null}
         workflow={workflow.data ?? null}
         run={run.data ?? null}
         runStepNodeKey={runStepNodeKey ?? selectedNodeKey}
         onRunCreated={() => run.refetch()}
       />
-      <HitlBanner projectId={projectId} />
     </>
   );
 }
@@ -1340,12 +1354,14 @@ function EmptyState() {
 
 function RunOverlay({
   projectId,
+  project,
   workflow,
   run,
   runStepNodeKey,
   onRunCreated,
 }: {
   projectId: number;
+  project: import("@/lib/types").ProjectDetail | null;
   workflow: WorkflowDetail | null;
   run: WorkflowRunDetail | null;
   runStepNodeKey: string | null;
@@ -1521,7 +1537,12 @@ function RunOverlay({
 
   return (
     <>
-    <div className="pointer-events-none absolute right-4 top-4 z-10 flex flex-wrap items-center justify-end gap-2 max-w-[min(100%,520px)]">
+    <div className="pointer-events-none absolute right-4 top-4 z-10 flex flex-wrap items-center justify-end gap-2 max-w-[min(100%,640px)]">
+      {project ? (
+        <div className="pointer-events-auto min-w-[200px] max-w-[260px]">
+          <AutoAdvanceToggle project={project} />
+        </div>
+      ) : null}
       <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs shadow-sm backdrop-blur-sm">
         <span className="text-muted-foreground">Run:</span>
         <span className="font-medium">

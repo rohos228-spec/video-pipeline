@@ -306,6 +306,12 @@ async def patch_project(
             setattr(p, k, v)
             if k in ("prompt_overrides", "gpt_text_overrides"):
                 flag_modified(p, k)
+    # Контроль только ИИ — ручной режим убран.
+    meta_now = dict(p.meta or {}) if isinstance(p.meta, dict) else {}
+    if meta_now.get("ai_control") is not True:
+        meta_now["ai_control"] = True
+        p.meta = meta_now
+        flag_modified(p, "meta")
     if "auto_mode" in payload:
         on_auto_mode_changed(p, was_auto=was_auto, now_auto=bool(p.auto_mode))
         flag_modified(p, "meta")

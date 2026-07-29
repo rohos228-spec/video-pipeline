@@ -28,3 +28,21 @@ def test_db_busy_timeout_at_least_60s() -> None:
     assert '"timeout": 60' in inspect.getsource(db_mod) or "timeout\": 60" in inspect.getsource(
         db_mod
     )
+    engine_src = inspect.getsource(db_mod)
+    assert "NullPool" in engine_src
+    assert "synchronous=NORMAL" in src
+
+
+def test_canvas_topology_key_ignores_position() -> None:
+    from app.services.canvas_graph import canvas_topology_key
+
+    a = [
+        {"id": "n1", "type": "plan", "position": {"x": 0, "y": 0}},
+        {"id": "n2", "type": "script", "position": {"x": 100, "y": 0}},
+    ]
+    b = [
+        {"id": "n1", "type": "plan", "position": {"x": 50, "y": 80}},
+        {"id": "n2", "type": "script", "position": {"x": 200, "y": 10}},
+    ]
+    edges = [{"source": "n1", "target": "n2", "data": {"kind": "after"}}]
+    assert canvas_topology_key(a, edges) == canvas_topology_key(b, edges)

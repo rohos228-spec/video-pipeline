@@ -42,25 +42,70 @@ def build_canvas_graph_payload(
     }
 
 
+def canvas_topology_key(
+    nodes: list[dict[str, Any]] | None,
+    edges: list[dict[str, Any]] | None,
+) -> str:
+    """Сигнатура графа без позиций — для пропуска sync при drag нод."""
+    import json
+
+    nkeys = sorted(
+        (str(n.get("id") or ""), str(n.get("type") or ""))
+        for n in (nodes or [])
+        if isinstance(n, dict) and n.get("id")
+    )
+    ekeys = sorted(
+        (
+            str(e.get("source") or ""),
+            str(e.get("target") or ""),
+            str(
+                (e.get("data") or {}).get("kind")
+                if isinstance(e.get("data"), dict)
+                else "after"
+            )
+            or "after",
+        )
+        for e in (edges or [])
+        if isinstance(e, dict) and e.get("source") and e.get("target")
+    )
+    return json.dumps({"n": nkeys, "e": ekeys}, ensure_ascii=False, separators=(",", ":"))
+
+
 async def sync_run_snapshot_from_canvas_graph(
     session: AsyncSession,
     project: Project,
+    *,
+    force: bool = False,
 ) -> bool:
-    """Копирует canvas_graph проекта в WorkflowRun.nodes_snapshot (для graph planner)."""
+    """Копирует canvas_graph проекта в WorkflowRun.nodes_snapshot (для graph planner).
+
+    При неизменной топологии (только позиции нод) — no-op: не трогаем snapshot
+    и не держим SQLite write дольше необходимого.
+    """
     cg = canvas_graph_from_meta(project.meta if isinstance(project.meta, dict) else {})
     if not cg:
         return False
-    run = (
-        await session.execute(
-            select(WorkflowRun)
-            .where(WorkflowRun.project_id == project.id)
-            .options(selectinload(WorkflowRun.node_runs))
-        )
-    ).scalar_one_or_none()
-    if run is None:
-        return False
     nodes = list(cg["nodes"])
     edges = list(cg["edges"])
+    with session.no_autoflush:
+        run = (
+            await session.execute(
+                select(WorkflowRun)
+                .where(WorkflowRun.project_id == project.id)
+                .options(selectinload(WorkflowRun.node_runs))
+            )
+        ).scalar_one_or_none()
+    if run is None:
+        return False
+    if not force:
+        old_n = list(run.nodes_snapshot or []) if isinstance(run.nodes_snapshot, list) else []
+        old_e = list(run.edges_snapshot or []) if isinstance(run.edges_snapshot, list) else []
+        if canvas_topology_key(old_n, old_e) == canvas_topology_key(nodes, edges):
+            logger.debug(
+                "canvas_graph: skip snapshot sync run #{} (topology unchanged)",
+                run.id,
+            )
+            return False
     run.nodes_snapshot = nodes
     run.edges_snapshot = edges
     node_ids = {str(n.get("id")) for n in nodes if n.get("id")}

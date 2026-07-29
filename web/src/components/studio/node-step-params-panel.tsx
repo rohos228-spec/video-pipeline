@@ -266,7 +266,7 @@ function AssembleFields({
   const bgmFromMeta =
     typeof metaRecord.bgm_level === "number" ? Math.round(metaRecord.bgm_level) : 35;
   const bgmSaved = params.assemble?.bgm_level ?? bgmFromMeta;
-  const sendToMain = params.assemble?.send_to_main_pc !== false;
+  const sendToMain = params.assemble?.send_to_main_pc === true;
   const skipIntroOn = params.assemble?.skip_intro_enabled === true;
   const skipIntroSec = Math.min(
     2,

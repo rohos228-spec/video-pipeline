@@ -253,7 +253,11 @@ export const api = {
   }) =>
     http<ProjectDetail>(`/api/projects`, { method: "POST", body: JSON.stringify(body) }),
   patchProject: (id: number, body: Partial<ProjectDetail>) =>
-    http<ProjectDetail>(`/api/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+    http<ProjectDetail>(
+      `/api/projects/${id}`,
+      { method: "PATCH", body: JSON.stringify(body) },
+      90_000,
+    ),
   deleteProject: (id: number) =>
     http<void>(`/api/projects/${id}`, { method: "DELETE" }),
   createChildProject: (parentId: number) =>

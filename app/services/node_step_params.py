@@ -90,12 +90,12 @@ def build_step_params_block(project: Project, step_code: str) -> str:
 def send_to_main_pc_for_project(project: Project) -> bool:
     """Отправка на главный ПК для монтажа (meta.node_step_params.assemble.send_to_main_pc).
 
-    По умолчанию включено.
+    По умолчанию выключено.
     """
     val = _step_bucket(project, "assemble").get("send_to_main_pc")
-    if val is False:
-        return False
-    return True
+    if val is True:
+        return True
+    return False
 
 
 def subtitles_enabled_for_project(project: Project) -> bool:

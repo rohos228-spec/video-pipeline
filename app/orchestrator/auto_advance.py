@@ -1050,6 +1050,10 @@ async def maybe_auto_advance(
     if hitl is not None and hitl.decision is HITLDecision.rejected:
         return False
 
+    # Контроль только ИИ (ручной режим / «Контроль пайплайна» убраны).
+    meta = dict(project.meta or {})
+    meta["ai_control"] = True
+
     # Если HITL уже approved юзером руками — просто двигаемся вперёд.
     if hitl is not None and hitl.decision is HITLDecision.approved:
         # Юзер нажал в боте — bot.py уже погасил кнопки и добавил
@@ -1057,17 +1061,8 @@ async def maybe_auto_advance(
         await _apply_approve(session, project, hitl, transition, bot=None)
         return True
 
-    # auto_mode без ИИ-контроля: шаг завершён → следующий без ручного одобрения.
-    if getattr(project, "auto_mode", False) and not meta.get("ai_control"):
-        logger.info(
-            "auto_advance: #{} {} → step advance (auto_mode, no approval)",
-            project.id,
-            status.value,
-        )
-        await _apply_approve(session, project, hitl, transition, bot=bot)
-        return True
-
-    if not meta.get("ai_control"):
+    if not getattr(project, "auto_mode", False):
+        # Без автопродвижения ждём HITL / ручной ▶
         if hitl is None or hitl.decision is HITLDecision.pending:
             return False
 
@@ -1084,7 +1079,7 @@ async def maybe_auto_advance(
 
     # ИИ-контроль: тот же промт «Вердикт», что выбран в Studio (meta.gpt_verdict_templates).
     verdict_step = READY_VERDICT_STEP.get(status)
-    if meta.get("ai_control") and verdict_step:
+    if verdict_step:
         from app.services.gpt_verdict_review import VERDICT_STUDIO_STEPS
 
         if verdict_step in VERDICT_STUDIO_STEPS:

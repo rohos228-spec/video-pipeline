@@ -24,7 +24,7 @@ export type AssembleStepParams = {
   post_voiceover_tail_seconds?: number | null;
   /** Громкость BGM 0..100 (как в resolve_bgm) */
   bgm_level?: number | null;
-  /** По умолчанию true — после music_ready отправить bundle на hub для монтажа */
+  /** По умолчанию false — монтаж локально */
   send_to_main_pc?: boolean | null;
   /** Тумблер: отрезать начало финального ролика */
   skip_intro_enabled?: boolean | null;
