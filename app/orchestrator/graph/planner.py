@@ -244,12 +244,12 @@ class WorkflowGraph:
             return False
         return typ in done
 
-    def next_running_after_ready(
+    def next_work_node_after_ready(
         self,
         project: Project,
         ready_status: ProjectStatus,
-    ) -> ProjectStatus | None:
-        """Следующий running-статус по графу после *_ready."""
+    ) -> tuple[str, ProjectStatus] | None:
+        """Следующая рабочая нода и её running-статус по графу после *_ready."""
         if ready_status not in READY_TO_NODE_TYPE:
             return None
         finished_type = READY_TO_NODE_TYPE[ready_status]
@@ -344,10 +344,27 @@ class WorkflowGraph:
                     else spec_for_type(typ)
                 )
                 if spec:
-                    return spec.running_status
+                    return key, spec.running_status
             queue.extend(self._out.get(key, []))
 
         return None
+
+    def next_work_node_key_after_ready(
+        self,
+        project: Project,
+        ready_status: ProjectStatus,
+    ) -> str | None:
+        found = self.next_work_node_after_ready(project, ready_status)
+        return found[0] if found else None
+
+    def next_running_after_ready(
+        self,
+        project: Project,
+        ready_status: ProjectStatus,
+    ) -> ProjectStatus | None:
+        """Следующий running-статус по графу после *_ready."""
+        found = self.next_work_node_after_ready(project, ready_status)
+        return found[1] if found else None
 
     def skip_disabled_running(
         self,

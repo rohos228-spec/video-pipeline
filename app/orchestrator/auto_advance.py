@@ -193,6 +193,32 @@ async def _graph_next_running(
     return graph.next_running_after_ready(project, ready_status)
 
 
+async def _next_canvas_node_is_check(
+    session: AsyncSession,
+    project: Project,
+    ready_status: ProjectStatus,
+) -> str | None:
+    """Если следующая рабочая нода на канвасе — checkMode/review/gate, вернуть её key.
+
+    Иначе встроенный gpt_verdict после plan/script блокирует переход на 30+ сек
+    и может переписать xlsx чужим «default»-промптом, хотя проверка уже есть
+    отдельной excel_gpt-нодой на стрелке.
+    """
+    from app.orchestrator.graph.planner import load_graph_for_project
+    from app.services.excel_gpt_node import EXCEL_GPT_NODE_TYPE
+    from app.services.gpt_operator import is_check_operator, operator_config
+
+    graph = await load_graph_for_project(session, project)
+    key = graph.next_work_node_key_after_ready(project, ready_status)
+    if not key:
+        return None
+    if graph.node_type(key) != EXCEL_GPT_NODE_TYPE:
+        return None
+    if not is_check_operator(operator_config(project, key)):
+        return None
+    return key
+
+
 def expected_status_progression(project: Project | None) -> list[ProjectStatus]:
     """(single-mass parity #8) Ожидаемая последовательность
     `*_running` статусов, которые проект ПРОШСДЕТ по пипалайну.
@@ -1088,6 +1114,21 @@ async def maybe_auto_advance(
                 and _should_vision_check(project, transition.kind)
             )
             if needs_verdict:
+                check_key = await _next_canvas_node_is_check(
+                    session, project, status
+                )
+                if check_key:
+                    logger.info(
+                        "auto_advance: #{} {} skip builtin verdict — "
+                        "next canvas node {} is checkMode",
+                        project.id,
+                        status.value,
+                        check_key,
+                    )
+                    await _apply_approve(
+                        session, project, hitl, transition, bot=bot
+                    )
+                    return True
                 result = await _run_verdict_review_for_step(
                     session, project, verdict_step
                 )
