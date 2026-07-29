@@ -1,11 +1,16 @@
-"""forwardPaths / inherit: какие файлы отдаёт проверочная нода дальше."""
+"""forwardPaths / inherit / emitKinds: какие файлы отдаёт нода дальше."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from app.models import Project, ProjectStatus
-from app.services.gpt_operator import apply_check_reply, files_from_source_node
+from app.services.gpt_operator import (
+    apply_check_reply,
+    files_from_source_node,
+    patch_operator_config,
+    save_operator_result,
+)
 
 
 def _project(tmp_path: Path, monkeypatch) -> Project:
@@ -93,3 +98,71 @@ def test_fix_rewrite_file_forwarded(tmp_path: Path, monkeypatch) -> None:
     )
     got = files_from_source_node(p, "n_check")
     assert got == [fixed_file]  # исправленный файл имеет приоритет над inherit
+
+
+def test_emit_kinds_reply_and_analysis(tmp_path: Path, monkeypatch) -> None:
+    """Выбор «что отдаёт»: текст .txt + analysis.json."""
+    p = _project(tmp_path, monkeypatch)
+    xlsx = p.data_dir / "project.xlsx"
+    xlsx.write_bytes(b"PK" + b"0" * 80)
+    up = p.data_dir / "excel_gpt_uploads" / "n_check"
+    up.mkdir(parents=True)
+    reply = up / "gpt_reply.txt"
+    reply.write_text("ok reply\n", encoding="utf-8")
+    analysis = up / "analysis.json"
+    analysis.write_text('{"schema":"vp.check.v1","verdict":"pass"}', encoding="utf-8")
+
+    save_operator_result(
+        p,
+        "n_check",
+        input_paths=[xlsx],
+        output_paths=[analysis, reply],
+        reply_text="ok reply",
+        gate_status="pass",
+        analysis={
+            "schema": "vp.check.v1",
+            "verdict": "pass",
+            "summary": "ok",
+            "checks": [],
+            "forward": {"mode": "inherit", "paths": []},
+            "fix": {"target": "none"},
+        },
+    )
+    patch_operator_config(
+        p, "n_check", {"emitKinds": ["reply_txt", "analysis"], "role": "review"}
+    )
+    got = files_from_source_node(p, "n_check")
+    names = {p.name for p in got}
+    assert names == {"gpt_reply.txt", "analysis.json"}
+    assert xlsx not in got
+
+
+def test_emit_kinds_result_and_inputs(tmp_path: Path, monkeypatch) -> None:
+    p = _project(tmp_path, monkeypatch)
+    p.meta["excel_gpt_nodes"]["n_check"]["role"] = "assist"
+    xlsx = p.data_dir / "project.xlsx"
+    xlsx.write_bytes(b"PK" + b"0" * 80)
+    img = p.data_dir / "scenes"
+    img.mkdir()
+    frame = img / "a.png"
+    frame.write_bytes(b"\x89PNG" + b"0" * 40)
+    up = p.data_dir / "excel_gpt_uploads" / "n_check"
+    up.mkdir(parents=True)
+    reply = up / "gpt_reply.txt"
+    reply.write_text("done\n", encoding="utf-8")
+
+    save_operator_result(
+        p,
+        "n_check",
+        input_paths=[frame],
+        output_paths=[xlsx, reply],
+        reply_text="done",
+    )
+    patch_operator_config(
+        p, "n_check", {"emitKinds": ["result", "inputs"], "role": "assist"}
+    )
+    got = files_from_source_node(p, "n_check")
+    names = {p.name for p in got}
+    assert "project.xlsx" in names
+    assert "a.png" in names
+    assert "gpt_reply.txt" not in names

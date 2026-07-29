@@ -1175,6 +1175,7 @@ async def patch_excel_gpt_config(
         "workMode",
         "role",
         "outputMode",
+        "emitKinds",
         "useSnapshot",
         "takeFromEdges",
         "transport",
@@ -1184,6 +1185,7 @@ async def patch_excel_gpt_config(
         for k in (
             "role",
             "outputMode",
+            "emitKinds",
             "useSnapshot",
             "takeFromEdges",
             "transport",

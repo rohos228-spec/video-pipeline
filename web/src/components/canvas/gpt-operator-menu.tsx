@@ -7,10 +7,12 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import {
+  EMIT_OPTIONS,
   OUTPUT_OPTIONS,
   ROLE_OPTIONS,
   defaultLabelForRole,
   isBranchingRole,
+  type OperatorEmitKind,
   type OperatorOutputMode,
   type OperatorRole,
 } from "@/lib/gpt-operator";
@@ -87,10 +89,24 @@ export function GptOperatorMenuPanel({
   const data = resolve.data;
   const role = (data?.role || "assist") as OperatorRole;
   const outputMode = (data?.outputMode || "text") as OperatorOutputMode;
+  const emitKinds = (data?.emitKinds?.length
+    ? data.emitKinds
+    : role === "review" || role === "gate" || role === "compare"
+      ? (["inputs"] as OperatorEmitKind[])
+      : (["result", "reply_txt"] as OperatorEmitKind[]));
   const branching = data?.branching;
   const showBranches = isBranchingRole(role);
   const takeFromEdges = data?.takeFromEdges !== false;
   const incomingCount = data?.incomingEdges?.length ?? 0;
+
+  const toggleEmit = (kind: OperatorEmitKind) => {
+    const next = emitKinds.includes(kind)
+      ? emitKinds.filter((k) => k !== kind)
+      : [...emitKinds, kind];
+    // хотя бы один вид выхода
+    const safe = next.length ? next : (["result"] as OperatorEmitKind[]);
+    patch.mutate({ emitKinds: safe, transport: "api" });
+  };
 
   return (
     <div className="mt-2 space-y-2 border-t border-white/10 pt-2">
@@ -251,7 +267,7 @@ export function GptOperatorMenuPanel({
       ) : null}
 
       <p className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
-        Выход
+        Формат ответа GPT
       </p>
       <div className="flex flex-wrap gap-1">
         {OUTPUT_OPTIONS.map((opt) => (
@@ -273,7 +289,38 @@ export function GptOperatorMenuPanel({
       </div>
 
       <p className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
-        Вход
+        Что отдаёт дальше
+      </p>
+      <div className="rounded-lg border border-white/10 bg-black/25 px-2 py-1.5">
+        <p className="text-[9px] leading-snug text-muted-foreground">
+          Какие файлы получит следующая нода по стрелке (можно несколько).
+        </p>
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {EMIT_OPTIONS.map((opt) => {
+            const on = emitKinds.includes(opt.value);
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                disabled={patch.isPending}
+                title={opt.hint}
+                onClick={() => toggleEmit(opt.value)}
+                className={cn(
+                  "rounded-md border px-1.5 py-1 text-[9px] transition",
+                  on
+                    ? "border-sky-400/45 bg-sky-500/15 text-sky-50"
+                    : "border-white/10 text-muted-foreground hover:border-white/20",
+                )}
+              >
+                {opt.title}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <p className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+        Что принимает
       </p>
       <div className="rounded-lg border border-white/10 bg-black/25 px-2 py-1.5">
         <p className="text-[9px] leading-snug text-muted-foreground">

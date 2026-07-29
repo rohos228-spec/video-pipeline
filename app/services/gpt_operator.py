@@ -24,6 +24,7 @@ from app.services.excel_gpt_node import (
 EdgeKind = Literal["after", "gate", "pass", "fail"]
 OperatorRole = Literal["assist", "review", "transform", "extract", "compare", "gate"]
 OutputMode = Literal["text", "project_file", "sidecar"]
+EmitKind = Literal["result", "reply_txt", "analysis", "inputs"]
 InputOrigin = Literal["upload", "edge", "project", "snapshot"]
 
 # Связь = порядок + кандидат на вход. Файлы берёт приёмник (takeFromEdges),
@@ -33,6 +34,12 @@ VALID_ROLES: frozenset[str] = frozenset(
     {"assist", "review", "transform", "extract", "compare", "gate"}
 )
 VALID_OUTPUTS: frozenset[str] = frozenset({"text", "project_file", "sidecar"})
+# Что нода отдаёт дальше по стрелке (мультивыбор).
+VALID_EMIT_KINDS: frozenset[str] = frozenset(
+    {"result", "reply_txt", "analysis", "inputs"}
+)
+_REPLY_TXT_NAMES: frozenset[str] = frozenset({"gpt_reply.txt", "operator_transform.txt"})
+_ANALYSIS_NAMES: frozenset[str] = frozenset({"analysis.json"})
 
 # Роли с вердиктом ок/не ок → две исходящие ветки.
 BRANCHING_ROLES: frozenset[str] = frozenset({"review", "gate", "compare"})
@@ -113,12 +120,33 @@ def normalize_output_mode(raw: Any, *, role: OperatorRole) -> OutputMode:
     return "project_file"
 
 
+def normalize_emit_kinds(raw: Any, *, role: OperatorRole) -> list[EmitKind]:
+    """Что нода отдаёт следующей по стрелке.
+
+    Дефолты (как раньше без выбора):
+      review/gate/compare → только вход (не analysis/reply);
+      остальные → результат + текст ответа.
+    """
+    out: list[EmitKind] = []
+    if isinstance(raw, list):
+        for item in raw:
+            s = str(item or "").strip().lower()
+            if s in VALID_EMIT_KINDS and s not in out:
+                out.append(s)  # type: ignore[arg-type]
+    if out:
+        return out
+    if role in BRANCHING_ROLES:
+        return ["inputs"]
+    return ["result", "reply_txt"]
+
+
 def operator_config(project: Project, node_key: str) -> dict[str, Any]:
     cfg = dict(node_config(project, node_key))
     role = normalize_role(cfg.get("role") or cfg.get("workMode") or "assist")
     cfg["role"] = role
     cfg["workMode"] = role if role in ("assist", "review", "transform") else "assist"
     cfg["outputMode"] = normalize_output_mode(cfg.get("outputMode"), role=role)
+    cfg["emitKinds"] = normalize_emit_kinds(cfg.get("emitKinds"), role=role)
     cfg["useSnapshot"] = bool(cfg.get("useSnapshot"))
     # Вход со стрелок: по умолчанию да (подвели → претендует на файлы прошлой ноды).
     if "takeFromEdges" in cfg:
@@ -236,7 +264,8 @@ def _snapshot_xlsx_for_node(project: Project, source_key: str) -> Path | None:
     if not isinstance(entry, dict):
         return None
     name = str(entry.get("name") or "").strip()
-    rel = str(entry.get("path") or "").strip()
+    # bind пишет «rel»; старые записи могли держать «path».
+    rel = str(entry.get("rel") or entry.get("path") or "").strip().replace("\\", "/")
     candidates: list[Path] = []
     if rel:
         candidates.append(Path(rel))
@@ -248,6 +277,76 @@ def _snapshot_xlsx_for_node(project: Project, source_key: str) -> Path | None:
         if p.is_file() and p.stat().st_size > 0:
             return p
     return None
+
+
+def _resolve_result_path(root: Path, item: Any) -> Path | None:
+    raw = str(item or "").strip().replace("\\", "/")
+    if not raw:
+        return None
+    p = Path(raw)
+    if not p.is_file():
+        p = root / raw
+    if p.is_file() and p.stat().st_size > 0:
+        return p
+    return None
+
+
+def _paths_for_emit_kinds(
+    project: Project,
+    source_key: str,
+    entry: dict[str, Any],
+    kinds: list[EmitKind],
+    *,
+    limit: int,
+) -> list[Path]:
+    """Собрать файлы по выбору «что отдаёт» у ноды-источника."""
+    root = project.data_dir
+    found: list[Path] = []
+    seen: set[str] = set()
+
+    def add(p: Path | None) -> None:
+        if p is None or not p.is_file() or p.stat().st_size < 1:
+            return
+        key = str(p.resolve())
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(p)
+
+    outputs = [
+        x
+        for x in (_resolve_result_path(root, i) for i in (entry.get("outputPaths") or []))
+        if x is not None
+    ]
+    inputs = [
+        x
+        for x in (_resolve_result_path(root, i) for i in (entry.get("inputPaths") or []))
+        if x is not None
+    ]
+
+    if "result" in kinds:
+        for p in outputs:
+            if p.name not in _REPLY_TXT_NAMES and p.name not in _ANALYSIS_NAMES:
+                add(p)
+    if "reply_txt" in kinds:
+        for p in outputs:
+            if p.name in _REPLY_TXT_NAMES:
+                add(p)
+        # fallback: файл ответа в папке ноды
+        up = upload_dir(project, source_key)
+        for name in _REPLY_TXT_NAMES:
+            add(up / name)
+    if "analysis" in kinds:
+        for p in outputs:
+            if p.name in _ANALYSIS_NAMES:
+                add(p)
+        add(upload_dir(project, source_key) / "analysis.json")
+    if "inputs" in kinds:
+        for p in inputs:
+            if p.name not in _ANALYSIS_NAMES:
+                add(p)
+
+    return found[:limit]
 
 
 def files_from_source_node(
@@ -287,43 +386,26 @@ def files_from_source_node(
             fwd_paths = entry.get("forwardPaths")
             if isinstance(fwd_paths, list) and fwd_paths:
                 for item in fwd_paths:
-                    rel = str(item).strip().replace("\\", "/")
-                    if not rel:
-                        continue
-                    p = Path(rel)
-                    if not p.is_file():
-                        p = root / rel
-                    if p.is_file():
+                    p = _resolve_result_path(root, item)
+                    if p is not None:
                         found.append(p)
                 if found:
                     return found[:limit]
-            analysis = (
-                entry.get("analysis")
-                if isinstance(entry.get("analysis"), dict)
-                else {}
+            # Выбор «что отдаёт» на ноде-источнике (emitKinds).
+            src_cfg = operator_config(project, source_key)
+            emit_kinds: list[EmitKind] = list(src_cfg.get("emitKinds") or [])
+            emitted = _paths_for_emit_kinds(
+                project, source_key, entry, emit_kinds, limit=limit
             )
-            fwd = analysis.get("forward") if isinstance(analysis.get("forward"), dict) else {}
-            inherit_check = (
-                str(entry.get("gateStatus") or "") in ("pass", "fail")
-                or str(fwd.get("mode") or "") == "inherit"
-            )
-            # Проверка: дальше отдаём то, что проверяли — не analysis.json
-            if inherit_check and isinstance(entry.get("inputPaths"), list):
-                for item in entry["inputPaths"]:
-                    p = Path(str(item))
-                    if (
-                        p.is_file()
-                        and p.name not in ("analysis.json", "gpt_reply.txt")
-                    ):
-                        found.append(p)
-                if found:
-                    return found[:limit]
+            if emitted:
+                return emitted
+            # Fallback, если emitKinds ничего не нашёл (ещё нет результата).
             for key in ("outputPaths", "inputPaths"):
                 raw = entry.get(key) or []
                 if isinstance(raw, list):
                     for item in raw:
-                        p = Path(str(item))
-                        if p.is_file() and p.name != "analysis.json":
+                        p = _resolve_result_path(root, item)
+                        if p is not None and p.name not in _ANALYSIS_NAMES:
                             found.append(p)
             if found:
                 return found[:limit]
@@ -391,6 +473,7 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
     cfg = operator_config(project, node_key)
     role: OperatorRole = cfg["role"]
     output_mode: OutputMode = cfg["outputMode"]
+    emit_kinds: list[EmitKind] = list(cfg.get("emitKinds") or [])
     use_snapshot = bool(cfg.get("useSnapshot"))
     take_from_edges = bool(cfg.get("takeFromEdges", True))
     errors: list[str] = []
@@ -537,6 +620,7 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
         "nodeType": EXCEL_GPT_NODE_TYPE,
         "role": role,
         "outputMode": output_mode,
+        "emitKinds": emit_kinds,
         "useSnapshot": use_snapshot,
         "takeFromEdges": take_from_edges,
         "transport": cfg.get("transport") or "api",
@@ -562,6 +646,7 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
         "config": {
             "role": role,
             "outputMode": output_mode,
+            "emitKinds": emit_kinds,
             "useSnapshot": use_snapshot,
             "takeFromEdges": take_from_edges,
             "transport": cfg.get("transport") or "api",
@@ -601,6 +686,11 @@ def patch_operator_config(project: Project, node_key: str, patch: dict[str, Any]
     if "outputMode" in patch:
         cur["outputMode"] = normalize_output_mode(
             patch.get("outputMode"),
+            role=normalize_role(cur.get("role") or "assist"),
+        )
+    if "emitKinds" in patch:
+        cur["emitKinds"] = normalize_emit_kinds(
+            patch.get("emitKinds"),
             role=normalize_role(cur.get("role") or "assist"),
         )
     if "useSnapshot" in patch:

@@ -294,6 +294,25 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         ready_status = _SLOT_MAP[slot_idx][1]
         project.status = ready_status
         await session.flush()
+        if output_mode == "project_file" and any(
+            p.name == "project.xlsx" and p.exists() for p in api_res.output_paths
+        ):
+            try:
+                from app.services.node_xlsx_snapshot import snapshot_and_bind_node_xlsx
+
+                await snapshot_and_bind_node_xlsx(
+                    session,
+                    project,
+                    node_key=node_key,
+                    node_type="excel_gpt",
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[#{}] enrich_xlsx API slot={} xlsx snapshot bind failed: {}",
+                    project.id,
+                    slot_idx,
+                    e,
+                )
         try:
             from app.services.run_sync import complete_excel_gpt_node_by_key
 

@@ -10,8 +10,10 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { ExcelGptNodeConfig } from "@/lib/excel-gpt-config";
 import {
+  EMIT_OPTIONS,
   OUTPUT_OPTIONS,
   ROLE_OPTIONS,
+  type OperatorEmitKind,
   type OperatorOutputMode,
   type OperatorRole,
 } from "@/lib/gpt-operator";
@@ -57,6 +59,19 @@ export function ExcelGptSettingsPanel({
   const data = resolve.data;
   const role = (data?.role || "assist") as OperatorRole;
   const outputMode = (data?.outputMode || "text") as OperatorOutputMode;
+  const emitKinds = (data?.emitKinds?.length
+    ? data.emitKinds
+    : role === "review" || role === "gate" || role === "compare"
+      ? (["inputs"] as OperatorEmitKind[])
+      : (["result", "reply_txt"] as OperatorEmitKind[]));
+
+  const toggleEmit = (kind: OperatorEmitKind) => {
+    const next = emitKinds.includes(kind)
+      ? emitKinds.filter((k) => k !== kind)
+      : [...emitKinds, kind];
+    const safe = next.length ? next : (["result"] as OperatorEmitKind[]);
+    patch.mutate({ emitKinds: safe, transport: "api" });
+  };
 
   return (
     <div className="flex flex-col gap-4">
@@ -100,7 +115,7 @@ export function ExcelGptSettingsPanel({
       </section>
 
       <section className="rounded-xl border border-emerald-400/20 bg-emerald-500/[0.05] p-4">
-        <h3 className="text-sm font-semibold text-foreground">Выход</h3>
+        <h3 className="text-sm font-semibold text-foreground">Формат ответа GPT</h3>
         <div className="mt-2 flex flex-wrap gap-2">
           {OUTPUT_OPTIONS.map((opt) => (
             <Button
@@ -113,6 +128,30 @@ export function ExcelGptSettingsPanel({
               {opt.title}
             </Button>
           ))}
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-sky-400/20 bg-sky-500/[0.05] p-4">
+        <h3 className="text-sm font-semibold text-foreground">Что отдаёт дальше</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Файлы для следующей ноды по стрелке. Можно выбрать несколько.
+        </p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {EMIT_OPTIONS.map((opt) => {
+            const on = emitKinds.includes(opt.value);
+            return (
+              <Button
+                key={opt.value}
+                type="button"
+                size="sm"
+                variant={on ? "secondary" : "outline"}
+                title={opt.hint}
+                onClick={() => toggleEmit(opt.value)}
+              >
+                {opt.title}
+              </Button>
+            );
+          })}
         </div>
       </section>
 

@@ -13,6 +13,9 @@ export type OperatorRole =
 
 export type OperatorOutputMode = "text" | "project_file" | "sidecar";
 
+/** Что нода отдаёт дальше по стрелке (мультивыбор). */
+export type OperatorEmitKind = "result" | "reply_txt" | "analysis" | "inputs";
+
 export interface OperatorFileProbe {
   name: string;
   path: string;
@@ -66,6 +69,7 @@ export interface OperatorResolve {
   nodeKey: string;
   role: OperatorRole;
   outputMode: OperatorOutputMode;
+  emitKinds: OperatorEmitKind[];
   useSnapshot: boolean;
   takeFromEdges: boolean;
   transport: string;
@@ -138,6 +142,34 @@ export const OUTPUT_OPTIONS: { value: OperatorOutputMode; title: string }[] = [
   { value: "sidecar", title: "Рядом, не ломая" },
 ];
 
+/** Что отдаёт дальше следующей ноде (мультивыбор). */
+export const EMIT_OPTIONS: {
+  value: OperatorEmitKind;
+  title: string;
+  hint: string;
+}[] = [
+  {
+    value: "result",
+    title: "Результат",
+    hint: "xlsx / скачанные файлы (без reply и analysis)",
+  },
+  {
+    value: "reply_txt",
+    title: "Текст .txt",
+    hint: "gpt_reply.txt или operator_transform.txt",
+  },
+  {
+    value: "analysis",
+    title: "Проверка",
+    hint: "analysis.json (карточка вердикта)",
+  },
+  {
+    value: "inputs",
+    title: "Вход как есть",
+    hint: "те же файлы, что пришли на ноду",
+  },
+];
+
 export const BRANCHING_ROLES: OperatorRole[] = ["review", "gate", "compare"];
 
 export const ROLE_DEFAULT_LABELS: Record<OperatorRole, string> = {
@@ -163,6 +195,10 @@ export const OPERATOR_MENU_ACTIONS = [
   { id: "out_text", group: "out", title: "Выход: текст" },
   { id: "out_project", group: "out", title: "Выход: файл проекта" },
   { id: "out_sidecar", group: "out", title: "Выход: сохранить рядом" },
+  { id: "emit_result", group: "emit", title: "Отдаёт: результат" },
+  { id: "emit_reply", group: "emit", title: "Отдаёт: текст .txt" },
+  { id: "emit_analysis", group: "emit", title: "Отдаёт: проверка" },
+  { id: "emit_inputs", group: "emit", title: "Отдаёт: вход как есть" },
   { id: "prompts", group: "always", title: "Промт + короткий текст" },
   { id: "resolve", group: "always", title: "Показать файлы / пересверить" },
 ] as const;
