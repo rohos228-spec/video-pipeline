@@ -31,10 +31,16 @@ _GENERAL_PLAN_SHEET = "Общий план"
 _MIN_PROSE_PLAN_CHARS = 200
 
 
-def extract_sheet_blocks(text: str) -> dict[str, list[list[str]]]:
+def extract_sheet_blocks(
+    text: str,
+    *,
+    orphan_sheet: str = "Данные",
+) -> dict[str, list[list[str]]]:
     """Разобрать `# Лист: Name` + TSV-строки → {sheet_name: rows}.
 
     Строки могут начинаться с `@row=N` (абсолютный номер Excel).
+    Строки с табами без `# Лист:` попадают на ``orphan_sheet`` (по умолчанию
+    «Данные»; при CONTINUE лучше передавать имя целевого листа).
     """
     if not (text or "").strip():
         return {}
@@ -60,7 +66,7 @@ def extract_sheet_blocks(text: str) -> dict[str, list[list[str]]]:
                 # Без `# Лист:` — только явный TSV (табы). Запятые в русской
                 # прозе (. «армия, право, дороги») нельзя считать CSV.
                 if "\t" in line:
-                    current = "Данные"
+                    current = orphan_sheet or "Данные"
                     out.setdefault(current, [])
                 else:
                     continue
@@ -119,6 +125,36 @@ def _set_cell_value(ws, row: int, col: int, value: str) -> None:
     cell.value = value
 
 
+def _preferred_content_sheet(wb) -> str | None:
+    """Целевой лист для orphan «Данные» на v8-книге."""
+    names = list(wb.sheetnames)
+    lower = {n.lower(): n for n in names}
+    for key in ("план", "общий план", "общий план ролика"):
+        if key in lower:
+            return lower[key]
+    return None
+
+
+def _resolve_block_sheet_name(
+    sheet_name: str,
+    *,
+    name_map: dict[str, str],
+    preferred: str | None,
+) -> str | None:
+    """Имя листа в книге или None (пропустить). «Данные» → preferred на strict layout."""
+    key = sheet_name.lower()
+    if key in name_map:
+        return name_map[key]
+    if key == "данные" and preferred is not None:
+        logger.info(
+            "xlsx_writeback: remap sheet {!r} → {!r}",
+            sheet_name,
+            preferred,
+        )
+        return preferred
+    return None
+
+
 def apply_sheet_blocks_to_xlsx(
     src_xlsx: Path,
     blocks: dict[str, list[list[str]]],
@@ -152,11 +188,16 @@ def apply_sheet_blocks_to_xlsx(
     strict_layout = (
         _GENERAL_PLAN_SHEET in wb.sheetnames or "план" in name_map
     )
+    preferred = _preferred_content_sheet(wb) if strict_layout else None
 
     for sheet_name, rows in blocks.items():
         key = sheet_name.lower()
-        if key in name_map:
-            ws = wb[name_map[key]]
+        resolved = _resolve_block_sheet_name(
+            sheet_name, name_map=name_map, preferred=preferred
+        )
+        if resolved is not None:
+            ws = wb[resolved]
+            key = resolved.lower()
         elif strict_layout:
             logger.warning(
                 "xlsx_writeback: skip unknown sheet {!r} (сохраняем layout)",
@@ -171,6 +212,10 @@ def apply_sheet_blocks_to_xlsx(
         label_map: dict[str, int] = {}
         use_label_fallback = (
             not has_row_marks
+            and key in {"план", "общий план", "общий план ролика"}
+        )
+        protect_label_col = (
+            has_row_marks
             and key in {"план", "общий план", "общий план ролика"}
         )
         if use_label_fallback:
@@ -195,6 +240,15 @@ def apply_sheet_blocks_to_xlsx(
                 # Пустая ячейка в TSV — не затираем подпись/merge шаблона
                 if not s.strip():
                     continue
+                # Не ломаем колонку A (подписи строк) на плане.
+                if protect_label_col and c_idx == 1:
+                    from app.services.xlsx_v8_import import _resolve_plan_cell
+
+                    existing = _resolve_plan_cell(ws, abs_row, 1)
+                    if type(existing).__name__ != "MergedCell":
+                        old = str(existing.value or "").strip()
+                        if old and old.casefold() != s.strip().casefold():
+                            continue
                 _set_cell_value(ws, abs_row, c_idx, s)
 
     dest_xlsx.parent.mkdir(parents=True, exist_ok=True)
@@ -548,8 +602,32 @@ def writeback_looks_incomplete(
         reply,
         re.IGNORECASE,
     )
+    template_names: list[str] = []
+    if template_xlsx is not None and template_xlsx.is_file():
+        try:
+            from openpyxl import load_workbook
+
+            twb = load_workbook(template_xlsx, read_only=True)
+            try:
+                template_names = list(twb.sheetnames)
+            finally:
+                twb.close()
+        except Exception:  # noqa: BLE001
+            template_names = []
+    preferred = None
+    if template_names:
+        lower = {n.lower(): n for n in template_names}
+        for key in ("план", "общий план", "общий план ролика"):
+            if key in lower:
+                preferred = lower[key]
+                break
+
     if m:
-        return True, "model marked CONTINUE_XLSX", m.group(1).strip(), int(m.group(2))
+        sheet_raw = m.group(1).strip()
+        sheet = sheet_raw
+        if sheet_raw.lower() == "данные" and preferred:
+            sheet = preferred
+        return True, "model marked CONTINUE_XLSX", sheet, int(m.group(2))
     got = count_sheet_rows_in_tsv(reply)
     if not got:
         return False, "no tsv blocks", None, None
@@ -560,8 +638,12 @@ def writeback_looks_incomplete(
         return False, "empty template", None, None
     # Сравниваем только листы, которые модель уже трогала.
     for name, n_got in got.items():
-        n_want = want.get(name)
         resolved = name
+        n_want = want.get(name)
+        if n_want is None and name.lower() == "данные" and preferred:
+            resolved = preferred
+            n_want = want.get(preferred)
+            n_got = got.get(preferred, 0) + n_got
         if n_want is None:
             for tn, tv in want.items():
                 if tn.lower() == name.lower():
@@ -607,21 +689,36 @@ def build_writeback_continue_prompt(
     )
 
 
-def merge_writeback_texts(*parts: str) -> str:
-    """Склеить несколько TSV-ответов: блоки по листам, строки без дублей @row."""
+def merge_writeback_texts(
+    *parts: str,
+    default_sheet: str | None = None,
+) -> str:
+    """Склеить несколько TSV-ответов: блоки по листам.
+
+    При дубле `@row=N` побеждает ПОСЛЕДНИЙ кусок (CONTINUE часто чинит
+    кривые ранние строки). Строки без `# Лист:` наследуют лист предыдущего
+    куска / ``default_sheet``, а не выдуманный «Данные».
+    """
     merged: dict[str, list[list[str]]] = {}
-    seen_rows: dict[str, set[int]] = {}
+    row_index: dict[str, dict[int, int]] = {}
+    orphan = default_sheet or "Данные"
     for part in parts:
-        for name, rows in extract_sheet_blocks(part or "").items():
+        blocks = extract_sheet_blocks(part or "", orphan_sheet=orphan)
+        if blocks:
+            # Следующий кусок без заголовка — на последний лист этого куска.
+            orphan = next(reversed(blocks))
+        for name, rows in blocks.items():
             bucket = merged.setdefault(name, [])
-            seen = seen_rows.setdefault(name, set())
+            idx_map = row_index.setdefault(name, {})
             for cells in rows:
                 n, rest = _parse_row_mark(cells)
                 if n is not None:
-                    if n in seen:
-                        continue
-                    seen.add(n)
-                    bucket.append([f"@row={n}", *rest])
+                    payload = [f"@row={n}", *rest]
+                    if n in idx_map:
+                        bucket[idx_map[n]] = payload
+                    else:
+                        idx_map[n] = len(bucket)
+                        bucket.append(payload)
                 else:
                     bucket.append(list(cells))
     chunks: list[str] = []
@@ -640,18 +737,28 @@ async def maybe_continue_partial_xlsx_reply(
     input_paths: list[Path],
     accompanying: str = "",
     log_label: str = "xlsx",
+    raise_if_still_incomplete: bool = False,
 ) -> str:
-    """Если TSV-ответ явно кусок книги — дозапросить продолжение и склеить."""
+    """Если TSV-ответ явно кусок книги — дозапросить продолжение и склеить.
+
+    Если после MAX_WRITEBACK_CONTINUES всё ещё CONTINUE/неполно и
+    ``raise_if_still_incomplete`` — RuntimeError (книгу не писать).
+    """
     from app.services.gpt_api import chat
 
     parts = [reply_text or ""]
+    last_sheet: str | None = None
     for cont_i in range(MAX_WRITEBACK_CONTINUES):
+        merged_so_far = merge_writeback_texts(
+            *parts, default_sheet=last_sheet
+        )
         incomplete, reason, sheet, nxt = writeback_looks_incomplete(
-            reply_text=merge_writeback_texts(*parts),
+            reply_text=merged_so_far,
             template_xlsx=template_xlsx,
         )
         if not incomplete or not sheet or nxt is None:
             break
+        last_sheet = sheet
         logger.warning(
             "{}: partial xlsx writeback ({}) — continue {}/{}",
             log_label,
@@ -669,6 +776,20 @@ async def maybe_continue_partial_xlsx_reply(
             input_paths=list(input_paths),
         )
         parts.append(cont.text or "")
-    if len(parts) == 1:
-        return parts[0]
-    return merge_writeback_texts(*parts)
+    merged = (
+        parts[0]
+        if len(parts) == 1
+        else merge_writeback_texts(*parts, default_sheet=last_sheet)
+    )
+    if raise_if_still_incomplete:
+        still, reason, sheet, nxt = writeback_looks_incomplete(
+            reply_text=merged,
+            template_xlsx=template_xlsx,
+        )
+        if still:
+            raise RuntimeError(
+                f"xlsx writeback всё ещё неполный после "
+                f"{MAX_WRITEBACK_CONTINUES} continue ({reason}; "
+                f"sheet={sheet!r} @row={nxt}) — project.xlsx не изменён"
+            )
+    return merged

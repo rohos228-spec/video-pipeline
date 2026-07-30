@@ -282,6 +282,7 @@ async def _run_operator_api_real(
             input_paths=list(input_paths),
             accompanying=accomp,
             log_label=f"gpt_operator/api node={node_key}",
+            raise_if_still_incomplete=True,
         )
         if reply_text != result.text:
             from dataclasses import replace

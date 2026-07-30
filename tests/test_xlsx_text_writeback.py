@@ -71,6 +71,57 @@ def test_writeback_incomplete_and_merge(tmp_path: Path) -> None:
     assert merged.count("@row=") == 40
 
 
+def test_merge_writeback_last_wins_same_row() -> None:
+    from app.services.xlsx_text_writeback import merge_writeback_texts
+
+    a = "# Лист: план\n@row=5\tlabel\tOLD\n"
+    b = "# Лист: план\n@row=5\tlabel\tNEW\n@row=6\tlabel2\tx\n"
+    merged = merge_writeback_texts(a, b)
+    assert "OLD" not in merged
+    assert "@row=5\tlabel\tNEW" in merged
+    assert "@row=6\tlabel2\tx" in merged
+
+
+def test_merge_orphan_tabs_inherit_sheet() -> None:
+    from app.services.xlsx_text_writeback import extract_sheet_blocks, merge_writeback_texts
+
+    first = "# Лист: план\n@row=1\ta\tb\n"
+    # CONTINUE без `# Лист:` — раньше уезжало в «Данные» и skip на v8.
+    cont = "@row=2\tc\td\n"
+    merged = merge_writeback_texts(first, cont, default_sheet="план")
+    blocks = extract_sheet_blocks(merged)
+    assert "Данные" not in blocks
+    assert len(blocks["план"]) == 2
+
+
+def test_writeback_remaps_dannye_and_keeps_plan_labels(tmp_path: Path) -> None:
+    src = tmp_path / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "план"
+    ws["A5"] = "закадровый текст"
+    ws["B5"] = "старое"
+    wb.create_sheet("Общий план")
+    wb.save(src)
+    wb.close()
+
+    reply = (
+        "# Лист: Данные\n"
+        "@row=5\tЛОМАЙ ПОДПИСЬ\tновое значение\n"
+    )
+    out = writeback_project_xlsx(
+        project_xlsx=src,
+        reply_text=reply,
+        downloaded_paths=[],
+    )
+    assert out == src
+    wb2 = load_workbook(src, data_only=True)
+    assert wb2["план"]["A5"].value == "закадровый текст"
+    assert wb2["план"]["B5"].value == "новое значение"
+    wb2.close()
+
+
 def test_extract_from_fenced_block() -> None:
     text = "вот результат:\n```tsv\n# Лист: Данные\nx\ty\n10\t20\n```\nконец"
     blocks = extract_sheet_blocks(text)
