@@ -462,8 +462,12 @@ def build_input(
     input_paths: list[Path] | None = None,
     system: str | None = None,
     history: list[dict[str, Any]] | None = None,
-) -> str | list[dict[str, Any]]:
-    """Ввод для Responses API: строка или multimodal/multi-turn input[]."""
+) -> list[dict[str, Any]]:
+    """Ввод для Responses API: всегда input[] (kie.ai codex падает на голой строке).
+
+    Голый ``input: \"text\"`` → HTTP 200 + ``{code:500, msg: Server exception}``.
+    Нужен ``[{role, content}]`` или multimodal content[].
+    """
     prior = normalize_history(history)
     others, images = split_input_paths(input_paths)
     text = _compose_user_text(
@@ -475,10 +479,9 @@ def build_input(
     if system:
         text = f"[Инструкция]\n{system}\n\n{text}"
 
-    if not images and not prior:
-        return text
-
-    items: list[dict[str, Any]] = [{"role": m["role"], "content": m["content"]} for m in prior]
+    items: list[dict[str, Any]] = [
+        {"role": m["role"], "content": m["content"]} for m in prior
+    ]
     if not images:
         items.append({"role": "user", "content": text})
         return items

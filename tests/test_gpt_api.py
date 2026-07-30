@@ -333,6 +333,17 @@ def test_build_input_with_history() -> None:
     assert "второе" in inp[2]["content"]
 
 
+def test_build_input_plain_prompt_is_message_list() -> None:
+    """kie.ai codex: голая строка input → code=500; нужен [{role,content}]."""
+    from app.services.gpt_api import build_input
+
+    inp = build_input(prompt="просто текст")
+    assert isinstance(inp, list)
+    assert len(inp) == 1
+    assert inp[0]["role"] == "user"
+    assert inp[0]["content"] == "просто текст"
+
+
 def test_normalize_history_truncates_old() -> None:
     from app.services.gpt_api import normalize_history
 

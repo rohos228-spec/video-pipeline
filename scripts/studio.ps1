@@ -314,7 +314,7 @@ function Invoke-StudioGitStash {
     $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $msg = "studio: автосохранение перед обновлением $stamp"
     Write-StudioMsg "==> Сохраняю локальные изменения в git stash..." "Cyan"
-    Write-StudioMsg "    (data/, logs/, .env в .gitignore — не затрагиваются reset)" "DarkGray"
+    Write-StudioMsg "    (data/, logs/, .env, prompts/ в .gitignore — не затрагиваются reset)" "DarkGray"
     git -C $Root stash push -u -m $msg 2>&1 | ForEach-Object { Write-StudioMsg $_ }
     if ($LASTEXITCODE -ne 0) {
         Write-StudioMsg "ОШИБКА: git stash не удался." "Red"

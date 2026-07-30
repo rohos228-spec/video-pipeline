@@ -47,7 +47,7 @@ app/
   bots/                   # outsee_http, chatgpt (CDP attach), grsai, elevenlabs
   web/routers/            # FastAPI REST
   storage/                # plan_sheet_v8 и т.п.
-prompts/                  # blocks/steps/legacy master prompts
+prompts/                  # локальные промты (не в git; не тянутся при update)
 web/src/                  # Studio Next UI → baked web/out/
 data/                     # state.db, gpt_workspace/, logs (gitignored)
 templates/                # project_template_v8.xlsx, series templates

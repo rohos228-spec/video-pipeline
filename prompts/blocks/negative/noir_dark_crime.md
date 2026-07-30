@@ -1,1 +1,0 @@
-text, words, letters, numbers, title card, captions, readable documents, logos, watermark, collage, separate comic panels, bright colors, clean vector art, cute style, photorealism, gore, low detail, blurry

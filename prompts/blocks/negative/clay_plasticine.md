@@ -1,1 +1,0 @@
-text, letters, numbers, logos, readable signs, sharp digital vector art, photorealism, glossy 3D render, realistic human anatomy, bright neon colors, modern city background, clutter, low detail, blurry, watermark, frame

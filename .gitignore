@@ -46,3 +46,7 @@ Thumbs.db
 
 # Локальная история версий промтов (не коммитим)
 prompts/**/.history/
+
+# Все промты — только локально (не тянуть с GitHub при install/update)
+prompts/
+!prompts/.gitkeep
