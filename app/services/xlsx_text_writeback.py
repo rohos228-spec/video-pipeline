@@ -252,7 +252,8 @@ def merge_xlsx_nonempty_overlay(
                 ws_p = wb_proj[name_map[key]]
             ws_g = wb_gpt[gpt_name]
             max_r = int(ws_g.max_row or 0)
-            max_c = min(int(ws_g.max_column or 0), 80)
+            # Раньше 80: обрезка широких строк «план» (100–150 кадров).
+            max_c = min(int(ws_g.max_column or 0), 256)
             for r in range(1, max_r + 1):
                 for c in range(1, max_c + 1):
                     val = ws_g.cell(row=r, column=c).value

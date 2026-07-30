@@ -268,6 +268,23 @@ def test_xlsx_to_text_sparse_rows_keep_excel_numbers(tmp_path: Path) -> None:
     assert "voice cell" in text
 
 
+def test_xlsx_to_text_keeps_wide_plan_columns(tmp_path: Path) -> None:
+    """Кадры на «план» — столбцы; 150-й столбец должен попасть в TSV для API."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "план"
+    ws.cell(row=48, column=1, value="animation_prompt")
+    ws.cell(row=48, column=2, value="c01")
+    ws.cell(row=48, column=150, value="frame-150-prompt")
+    p = tmp_path / "wide.xlsx"
+    wb.save(p)
+    text = xlsx_to_text(p)
+    assert "frame-150-prompt" in text
+    assert "@row=48" in text
+
+
 def test_xlsx_to_text_prioritizes_general_plan(tmp_path: Path) -> None:
     """Огромный лист «план» не должен вытеснять «Общий план» из контекста."""
     from openpyxl import Workbook

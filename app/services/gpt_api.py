@@ -67,6 +67,10 @@ _PDF_PAGE_HEADER_RE = re.compile(
 _XLSX_CONTEXT_MAX_CHARS = 900_000
 _XLSX_DEFAULT_MAX_ROWS = 5_000
 _XLSX_PRIORITY_MAX_ROWS = 8_000
+# Лист «план»: кадры = столбцы (B..). Раньше max_cols=40 — модель не видела
+# кадры 41+ и «не могла» заполнить строку на 100–150 столбцов, хотя writeback
+# TSV столбцы не режет. 256 хватает на short/series без раздувания бюджета.
+_XLSX_DEFAULT_MAX_COLS = 256
 # Листы плана — первыми и почти без обрезки; «план» (кадры) огромный — в хвост.
 _XLSX_PRIORITY_SHEET_RE = re.compile(
     r"общий\s*план",
@@ -142,7 +146,7 @@ def xlsx_to_text(
     path: Path,
     *,
     max_rows: int = _XLSX_DEFAULT_MAX_ROWS,
-    max_cols: int = 40,
+    max_cols: int = _XLSX_DEFAULT_MAX_COLS,
     max_chars: int | None = None,
 ) -> str:
     """Свернуть xlsx в читаемый TSV-контекст (непустые строки листов).
