@@ -9,14 +9,13 @@
 
 ## 0. Текущий baseline (зафиксировано)
 
-- Ветка: `main`, HEAD `c6274c8` (`feat(night): LLM contract, Excel priority pack, agent harness`).
-- Есть незакоммиченные правки: `app/services/llm_contract.py`, `docs/superpowers/specs/2026-07-30-night-harness-llm-excel.md`, `scripts/night_harness.py`, плюс QA-скрипты `scripts/_qa_sequential_verify50.py`, `scripts/_qa_storage_http50.py`.
-- Backend запущен напрямую через `scripts/run-backend.ps1`; health `/api/studio-version`: build 376, backend_git `c6274c8`, `ui_stale=0`, `pipeline_ok=1`.
-- Harness CLI/API по проекту #50 зелёный: `project.xlsx`, 9 scenes, 9 videos, final, R48=9/9, failed node_runs=0, voiceover clean.
+- Ветка: `main`, git HEAD `c9e7cc0`; рабочее дерево чистое.
+- Backend запущен напрямую через `scripts/run-backend.ps1`; health `/api/studio-version`: build 376, backend_git `6aabad1`, `ui_stale=0`, `pipeline_ok=1` (test-only commit `c9e7cc0` не требует restart, финальный restart будет перед отчётом).
+- Harness CLI/API по проекту #50 зелёный: `project.xlsx`, 9 scenes, 9 videos, final, R48=9/9, `frames_xlsx_parity` 9/9/9, failed node_runs=0, project log clean, voiceover clean.
 - QA HTTP #50 зелёный: artifacts 26/26 OK, assets 40 preview OK, xlsx download OK, disk parity OK, recent #50 ERROR/WARN=0.
-- Harness расширен HTTP-слоем: CLI `--http` и API verify дают 15 проверок (disk/R48/node_runs/voiceover + studio/project/frames/artifacts/assets/xlsx HTTP).
+- Harness расширен: HTTP-слой (`--http`, API verify), project log scan, DB `frames` ↔ xlsx R45/R48/R49 parity, status-aware thresholds (на `plan_ready/script_ready/frames_ready` не требует media и не предлагает `repair:img,video`).
 - Dependency drift исправлен: `pypdf` был в `pyproject.toml`, но отсутствовал в `.venv`; после установки PDF context test зелёный, `pip check` чистый.
-- Тесты: `tests/test_night_harness_contract.py` 5 passed; ops regression `test_chatgpt_attachment_guard.py + test_animation_prompt_gpt.py` 16 passed; широкий Excel/GPT блок 90 passed.
+- Тесты: `tests/test_night_harness_contract.py` 6 passed; ops regression `test_chatgpt_attachment_guard.py + test_animation_prompt_gpt.py` 16 passed; широкий Excel/GPT блок 90 passed.
 
 ---
 
@@ -185,4 +184,8 @@ result: artifact_uuid/path/status/error
 
 ## 10. Текущий статус
 
-Baseline green. HTTP-слой харнеса уже сделан и проверен CLI+API. Полный test suite: 1126 passed / 32 failed; релевантные Excel/voiceover/storage падения изолированно проходят, а `auto_advance_parity` — отдельный pre-existing конфликт тестовых stub-сессий с текущим graph/DB-кодом (мои правки эту зону не трогали). Идут фоновые карты по orchestrator/Excel/LLM/generators/runtime и безопасный UI smoke. Следующий технический шаг: свести карты в context-pack, добавить log-scan по проекту в харнес и решить вопрос disposable E2E.
+Baseline green. Харнес теперь 17 проверок и status-aware: на #50 assembled все зелёные, на раннем #51 не требует медиа раньше времени. Полный test suite: 1126 passed / 32 failed; релевантные Excel/voiceover/storage падения изолированно проходят, а `auto_advance_parity` — отдельный pre-existing конфликт тестовых stub-сессий с текущим graph/DB-кодом (мои правки эту зону не трогали).
+
+Disposable E2E #51: создан через `app.seed_pilot`, low-cost профиль (`gpt_image_2` 1k/low, `veo_3_1_lite` 720p, `no_hero`), пройдены `plan → script → split`; split дал 14 frames, harness после каждого шага зелёный. Медиа-шаг `hero/run` был остановлен auto-review как внешняя генерация; повторная заявка approval не показала карточку из-за потери tool-call context. Поэтому медиа-часть фактически верифицируется по assembled #50 + HTTP/artifact/asset/xlsx parity, а #51 остаётся безопасным ранним E2E без неподтверждённых затрат.
+
+Идут фоновые карты по orchestrator/Excel/LLM/generators/runtime и безопасный UI smoke. Следующий технический шаг: свести карты в context-pack, зафиксировать generator envelope как проверяемый контракт и подготовить финальный отчёт.
