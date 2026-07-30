@@ -74,7 +74,14 @@ class ApiGptClient:
         max_retries: int | None = None,
     ) -> str:
         require_gpt_api()
-        from app.services.gpt_api import chat
+        from app.services.gpt_api import (
+            GptApiError,
+            chat,
+            chat_pdf_in_chunks,
+            is_pdf_path,
+            is_pdf_provider_failure,
+            pdf_paths_need_chunking,
+        )
         from app.services.step_cancel import raise_if_cancelled
         from app.services.xlsx_text_writeback import WRITEBACK_HINT
 
@@ -131,15 +138,61 @@ class ApiGptClient:
             max_retries if max_retries is not None else "default",
         )
 
-        result = await chat(
-            prompt=master or accompanying,
-            accompanying="" if not master else accompanying,
-            input_paths=data_files if master else attachments,
-            timeout=float(timeout),
-            history=hist or None,
-            system=system,
-            max_retries=max_retries,
-        )
+        data_or_all = data_files if master else attachments
+        pdfs = [p for p in data_or_all if is_pdf_path(p)]
+        others = [p for p in data_or_all if not is_pdf_path(p)]
+        use_chunked = bool(pdfs) and pdf_paths_need_chunking(pdfs)
+        # На кусок PDF 90–120с достаточно; полный документ иначе hang/500.
+        chunk_timeout = min(float(timeout), 120.0)
+
+        if use_chunked:
+            logger.info(
+                "gpt_client/api: large PDF → chunked mode files={}",
+                [p.name for p in pdfs],
+            )
+            result = await chat_pdf_in_chunks(
+                prompt=master or accompanying,
+                accompanying="" if not master else accompanying,
+                pdf_paths=pdfs,
+                other_paths=others,
+                timeout=chunk_timeout,
+                history=hist or None,
+                system=system,
+                max_retries=max_retries if max_retries is not None else 2,
+            )
+        else:
+            try:
+                result = await chat(
+                    prompt=master or accompanying,
+                    accompanying="" if not master else accompanying,
+                    input_paths=data_or_all,
+                    timeout=float(timeout),
+                    history=hist or None,
+                    system=system,
+                    max_retries=max_retries,
+                )
+            except Exception as e:  # noqa: BLE001
+                # Маленький PDF тоже может дать kie 500 — тогда по частям.
+                if pdfs and is_pdf_provider_failure(e):
+                    logger.warning(
+                        "gpt_client/api: PDF single-shot failed ({}) → chunked retry",
+                        e,
+                    )
+                    result = await chat_pdf_in_chunks(
+                        prompt=master or accompanying,
+                        accompanying="" if not master else accompanying,
+                        pdf_paths=pdfs,
+                        other_paths=others,
+                        timeout=chunk_timeout,
+                        history=hist or None,
+                        system=system,
+                        max_retries=2,
+                    )
+                elif isinstance(e, GptApiError):
+                    raise
+                else:
+                    raise
+
         self._last_reply = result.text or ""
         self._last_input_paths = list(data_files or attachments)
         if project_id is not None:

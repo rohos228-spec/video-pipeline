@@ -1301,7 +1301,17 @@ async def ask(
 
         try:
             # Studio chat: 1 повтор максимум — иначе 5×180с = «зависание» на 15 мин.
+            # PDF >~6k символов идёт по частям (kie 500/timeout на полном тексте).
+            has_pdf = any(p.suffix.lower() == ".pdf" for p in files)
             ask_timeout = 240.0 if files else 120.0
+            if has_pdf:
+                meta = _read_json(d / "meta.json", {})
+                meta["phase_detail"] = (
+                    "PDF: извлекаю текст и перевожу/обрабатываю по частям "
+                    "(провайдер падает на большом файле целиком)…"
+                )
+                meta["updated_at"] = _now()
+                _write_json(d / "meta.json", meta)
             reply = await gpt.ask_with_files(
                 ask_text,
                 files,

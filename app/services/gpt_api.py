@@ -56,6 +56,12 @@ _MAX_BINARY_INLINE_BYTES = 400_000
 _MAX_PDF_INLINE_BYTES = 12_000_000
 _MAX_PDF_FILES = 4
 _PDF_CONTEXT_MAX_CHARS = 80_000
+# kie.ai: полный PDF-текст (~20–40k) на «переведи» → code=500 или hang/timeout.
+# Короткие куски (~4–6k) стабильны — режем по страницам.
+_PDF_PROVIDER_SAFE_CHARS = 5_500
+_PDF_PAGE_HEADER_RE = re.compile(
+    r"(?m)^---\s*стр\.\s*\d+/\d+\s*---\s*$"
+)
 # XLSX → TSV: длинный «Общий план» / «план» легко >280k — раньше резали книгу
 # и модель «заполняла» только видимый кусок (~часть строк). Бюджет под GPT-5.x.
 _XLSX_CONTEXT_MAX_CHARS = 900_000
@@ -269,6 +275,72 @@ def pdf_to_text(path: Path, *, max_chars: int = _PDF_CONTEXT_MAX_CHARS) -> str:
             f"(скан/картинки) — смотри multimodal input_file если приложен]"
         )
     return "\n\n".join(pages_out)
+
+
+def split_pdf_text_chunks(
+    text: str,
+    *,
+    max_chars: int = _PDF_PROVIDER_SAFE_CHARS,
+) -> list[str]:
+    """Разрезать вывод pdf_to_text на куски ≤ max_chars (по границам страниц)."""
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    budget = max(1_500, int(max_chars))
+    if len(raw) <= budget:
+        return [raw]
+
+    pages: list[str] = []
+    matches = list(_PDF_PAGE_HEADER_RE.finditer(raw))
+    if matches:
+        for i, m in enumerate(matches):
+            start = m.start()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(raw)
+            page = raw[start:end].strip()
+            if page:
+                pages.append(page)
+    else:
+        pages = [raw]
+
+    chunks: list[str] = []
+    buf = ""
+    for page in pages:
+        if len(page) > budget:
+            if buf:
+                chunks.append(buf)
+                buf = ""
+            for i in range(0, len(page), budget):
+                piece = page[i : i + budget].strip()
+                if piece:
+                    chunks.append(piece)
+            continue
+        candidate = f"{buf}\n\n{page}".strip() if buf else page
+        if len(candidate) <= budget:
+            buf = candidate
+            continue
+        if buf:
+            chunks.append(buf)
+        buf = page
+    if buf:
+        chunks.append(buf)
+    return chunks or [raw[:budget]]
+
+
+def pdf_paths_need_chunking(
+    paths: list[Path] | None,
+    *,
+    threshold: int = _PDF_PROVIDER_SAFE_CHARS,
+) -> bool:
+    """True если суммарный текст PDF больше безопасного лимита провайдера."""
+    pdfs = [p for p in (paths or []) if is_pdf_path(p) and p.is_file()]
+    if not pdfs:
+        return False
+    total = 0
+    for pdf in pdfs:
+        total += len(pdf_to_text(pdf))
+        if total > threshold:
+            return True
+    return False
 
 
 def pdf_to_input_file_part(path: Path) -> dict[str, Any] | None:
@@ -905,6 +977,124 @@ async def chat(
             await asyncio.sleep(backoff)
 
     raise last_exc or GptApiError("GPT: неизвестная ошибка", context={"model": use_model})
+
+
+def is_pdf_provider_failure(exc: BaseException) -> bool:
+    """kie 500 Server exception / timeout на большом PDF — имеет смысл chunked retry."""
+    if isinstance(exc, GptApiError):
+        kind = str(exc.context.get("error_kind") or "")
+        code = int(exc.context.get("provider_code") or exc.context.get("status_code") or 0)
+        if kind == "timeout" or code >= 500:
+            return True
+    msg = str(exc).lower()
+    return (
+        "server exception" in msg
+        or "code=500" in msg
+        or "timeout" in msg
+        or "http 500" in msg
+        or "http 502" in msg
+        or "http 503" in msg
+    )
+
+
+async def chat_pdf_in_chunks(
+    *,
+    prompt: str,
+    accompanying: str = "",
+    pdf_paths: list[Path],
+    other_paths: list[Path] | None = None,
+    system: str | None = None,
+    history: list[dict[str, Any]] | None = None,
+    model: str | None = None,
+    temperature: float | None = None,
+    timeout: float | None = None,
+    max_retries: int | None = None,
+    chunk_chars: int = _PDF_PROVIDER_SAFE_CHARS,
+    on_chunk: Any | None = None,
+) -> GptChatResult:
+    """Перевод/обработка PDF по частям — обход kie code=500 / hang на полном тексте.
+
+    Текст извлекается локально (pypdf); в API уходит только текущий кусок без
+    повторной отправки всего PDF. История чата — только на первом куске.
+    """
+    jobs: list[tuple[str, str]] = []
+    for pdf in pdf_paths:
+        extracted = pdf_to_text(pdf)
+        parts = split_pdf_text_chunks(extracted, max_chars=chunk_chars)
+        n = max(1, len(parts))
+        for i, part in enumerate(parts, start=1):
+            jobs.append((f"{pdf.name} · фрагмент {i}/{n}", part))
+
+    if not jobs:
+        raise GptApiError(
+            "PDF: не удалось извлечь текст для обработки",
+            context={"retryable": False, "error_kind": "empty_pdf"},
+        )
+
+    if len(jobs) == 1 and len(jobs[0][1]) <= chunk_chars:
+        return await chat(
+            prompt=prompt,
+            accompanying=accompanying,
+            input_paths=[*pdf_paths, *(other_paths or [])],
+            system=system,
+            history=history,
+            model=model,
+            temperature=temperature,
+            timeout=timeout,
+            max_retries=max_retries,
+        )
+
+    logger.info(
+        "gpt_api: PDF chunked mode jobs={} chunk_chars={} files={}",
+        len(jobs),
+        chunk_chars,
+        [p.name for p in pdf_paths],
+    )
+    user_ask = (prompt or "").strip()
+    if accompanying.strip():
+        user_ask = f"{user_ask}\n\n{accompanying.strip()}".strip()
+    outs: list[str] = []
+    last: GptChatResult | None = None
+    chunk_timeout = float(timeout if timeout is not None else 120.0)
+    chunk_retries = int(max_retries if max_retries is not None else 2)
+    for idx, (label, part) in enumerate(jobs):
+        if callable(on_chunk):
+            try:
+                on_chunk(idx + 1, len(jobs), label)
+            except Exception:  # noqa: BLE001
+                logger.debug("gpt_api: on_chunk callback failed", exc_info=True)
+        piece_prompt = (
+            f"{user_ask}\n\n"
+            f"[Это фрагмент {idx + 1} из {len(jobs)} документа «{label}». "
+            f"Выполни задание полностью для ЭТОГО фрагмента: не сокращай, "
+            f"не пиши «продолжение следует», без мета-вступлений про части.]\n\n"
+            f"{part}"
+        )
+        last = await chat(
+            prompt=piece_prompt,
+            accompanying="",
+            input_paths=list(other_paths or []),
+            system=system if idx == 0 else None,
+            history=history if idx == 0 else None,
+            model=model,
+            temperature=temperature,
+            timeout=chunk_timeout,
+            max_retries=chunk_retries,
+        )
+        body = (last.text or "").strip()
+        if body:
+            outs.append(f"### {label}\n\n{body}")
+        else:
+            outs.append(f"### {label}\n\n[пустой ответ модели]")
+
+    joined = "\n\n---\n\n".join(outs)
+    return GptChatResult(
+        text=joined,
+        model=(last.model if last else (model or settings.gpt_model or "")),
+        finish_reason="chunked",
+        usage=(last.usage if last else {}),
+        raw={"chunked": True, "parts": len(jobs)},
+    )
 
 
 def _drop_input_file_parts(body: dict[str, Any]) -> bool:

@@ -506,3 +506,73 @@ def test_build_input_attaches_pdf_as_input_file(tmp_path: Path, monkeypatch) -> 
     assert str(file_part.get("file_data") or "").startswith("data:application/pdf;base64,")
     text_part = next(c for c in content if c.get("type") == "input_text")
     assert "data:application/pdf;base64," not in str(text_part.get("text") or "")
+
+
+def test_split_pdf_text_chunks_by_pages() -> None:
+    from app.services.gpt_api import split_pdf_text_chunks
+
+    pages = []
+    for i in range(1, 6):
+        pages.append(f"--- стр. {i}/5 ---\n" + ("word " * 400))
+    text = "\n\n".join(pages)
+    chunks = split_pdf_text_chunks(text, max_chars=2_500)
+    assert len(chunks) >= 2
+    assert all(len(c) <= 2_500 + 50 for c in chunks)  # page boundary soft
+    assert "стр. 1/5" in chunks[0]
+    assert sum("word" in c for c in chunks) == len(chunks)
+
+
+def test_pdf_paths_need_chunking(tmp_path: Path) -> None:
+    from app.services.gpt_api import pdf_paths_need_chunking
+
+    p = tmp_path / "small.pdf"
+    p.write_bytes(_MINIMAL_PDF)
+    assert pdf_paths_need_chunking([p], threshold=10_000) is False
+    assert pdf_paths_need_chunking([p], threshold=10) is True
+
+
+def test_chat_pdf_in_chunks_calls_chat_per_piece(tmp_path: Path, monkeypatch) -> None:
+    import asyncio
+
+    from app.services import gpt_api
+
+    calls: list[str] = []
+
+    async def fake_chat(**kwargs):
+        calls.append(kwargs.get("prompt") or "")
+        return gpt_api.GptChatResult(text=f"OK{len(calls)}", model="test", finish_reason="stop")
+
+    monkeypatch.setattr(gpt_api, "chat", fake_chat)
+
+    big = "\n\n".join(
+        f"--- стр. {i}/8 ---\n" + ("alpha " * 300) for i in range(1, 9)
+    )
+    pdf = tmp_path / "guide.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+
+    monkeypatch.setattr(gpt_api, "pdf_to_text", lambda path, max_chars=80_000: big)
+
+    result = asyncio.run(
+        gpt_api.chat_pdf_in_chunks(
+            prompt="переведи",
+            pdf_paths=[pdf],
+            chunk_chars=2_000,
+            max_retries=0,
+        )
+    )
+    assert len(calls) >= 2
+    assert result.finish_reason == "chunked"
+    assert "OK1" in result.text
+    assert "###" in result.text
+
+
+def test_is_pdf_provider_failure() -> None:
+    from app.services.gpt_api import GptApiError, is_pdf_provider_failure
+
+    assert is_pdf_provider_failure(
+        GptApiError("GPT провайдер code=500: Server exception", context={"provider_code": 500})
+    )
+    assert is_pdf_provider_failure(
+        GptApiError("GPT timeout 90s", context={"error_kind": "timeout", "retryable": True})
+    )
+    assert not is_pdf_provider_failure(GptApiError("bad key", context={"status_code": 401}))
