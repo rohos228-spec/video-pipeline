@@ -404,3 +404,26 @@ def test_check_mode_gate_edges(tmp_path: Path, monkeypatch) -> None:
     assert gate_allows_successors(p, key) is False
     assert verdict_edge_blocks(p, key, "pass") is True
     assert verdict_edge_blocks(p, key, "fail") is False
+
+
+def test_needs_check_writeback_retry_detects_missing_tsv() -> None:
+    from app.services.gpt_operator_client import _needs_check_writeback_retry
+
+    refuse = (
+        "verdict: fail\n"
+        "отсутствует сам файл `project.xlsx`\n"
+        "file: original\n"
+    )
+    assert _needs_check_writeback_retry(refuse) is True
+
+    good = (
+        "# ОТЧЁТ\nverdict: fail\n\n"
+        "--- XLSX_WRITEBACK ---\n"
+        "# Лист: план\n"
+        "A\tB\n"
+        "1\t2\n"
+    )
+    assert _needs_check_writeback_retry(good) is False
+
+    marker_only = "ok\n\n--- XLSX_WRITEBACK ---\n(no sheets)\n"
+    assert _needs_check_writeback_retry(marker_only) is True

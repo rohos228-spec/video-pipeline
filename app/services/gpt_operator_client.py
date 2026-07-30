@@ -34,6 +34,18 @@ class OperatorApiResult:
     analysis: CheckAnalysis | None = None
 
 
+def _needs_check_writeback_retry(reply_text: str) -> bool:
+    """True если check+fix ответ без пригодного TSV writeback."""
+    from app.services.check_analysis import CHECK_WRITEBACK_MARKER
+    from app.services.xlsx_text_writeback import extract_sheet_blocks
+
+    text = reply_text or ""
+    if CHECK_WRITEBACK_MARKER not in text:
+        return True
+    _report, wb = split_check_reply_and_writeback(text)
+    return not extract_sheet_blocks(wb or text)
+
+
 def _stub_analysis(*, role: str, prompt: str, accompanying: str) -> CheckAnalysis:
     """Детерминированный stub-вердикт в формате vp.check.v1."""
     probe = f"{prompt}\n{accompanying}\n".lower()
@@ -231,6 +243,29 @@ async def _run_operator_api_real(
         temperature=0.0 if is_check else None,
     )
     reply_text = result.text
+
+    # check+fix: если модель отказалась из‑за «нет project.xlsx» / нет
+    # XLSX_WRITEBACK — один retry с жёстким API-контрактом (см. D5).
+    if check_mode and check_fix and _needs_check_writeback_retry(result.text):
+        logger.warning(
+            "gpt_operator/api: check+fix без XLSX_WRITEBACK node={} — retry",
+            node_key,
+        )
+        retry_prompt = (
+            f"{prompt_for_model}\n\n"
+            "# КОНТРАКТ API (повтор, обязателен)\n"
+            "Предыдущий ответ без --- XLSX_WRITEBACK --- отклонён. "
+            "Бинарный project.xlsx недоступен — во вложении TSV-экспорт. "
+            "Отказ «нет файла» запрещён. Сейчас: отчёт + блок "
+            "--- XLSX_WRITEBACK --- с `# Лист:` TSV; forward file: fixed."
+        )
+        result = await chat(
+            prompt=retry_prompt,
+            accompanying=accomp,
+            input_paths=list(input_paths),
+            temperature=0.0,
+        )
+        reply_text = result.text
 
     analysis: CheckAnalysis | None = None
     gate_status: str | None = None

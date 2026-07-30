@@ -39,6 +39,13 @@
 
 | Время | Делаю | Сделал | Результат | Баг/фикс |
 |-------|-------|--------|-----------|----------|
+| 07:32 | VERIFY matrix | HEAD a110309+ D5retry; UI hero/images/videos/assemble; R48 9/9 | audio/music SKIP | ok |
+| 07:32 | D5 harden | retry check+fix if no TSV writeback | unit test pass; no audio/music touch | FIX |
+| 07:29 | STATUS 07:30 | continue FULL-VERIF no voice/music | Create suno->music in source confirmed | ok |
+| 07:29 | UI recheck | hero3 images9 videos+assemble video montage storage | v372 #50 done | PASS |
+| 07:29 | FIX VERIFY post-update | code+tests+UI on #50 | D3/6/9/10/11/14/15/16/17/18/5contract PASS; skip audio/music Run | ok |
+| 07:28 | CONSTRAINT | skip audio+music nodes | no Run/reset on voice/music | user |
+| 07:28 | RESUME after update | Studio up backend a110309 UI v372 | fixes in tree + 29 regression tests PASS | ok |
 | 04:26 | Montage UI | click Монтаж on assemble | panel: Apply/Outsee/ASR/frames | PASS |
 | 04:26 | D5 FIX | check master prompt API contract after sources | XLSX_WRITEBACK override; test pass | code ready |
 | 04:23 | STATUS 04:40 | FULL-VERIF UI deep | montage next; Create music; G regressions | ok |
