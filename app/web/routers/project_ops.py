@@ -1859,16 +1859,22 @@ async def harness_status(
 async def harness_verify(
     project_id: int,
     allow_repair: bool = Query(False),
+    include_http: bool = Query(True),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Проверить артефакты/R48/node_runs; опционально soft-start одного шага (не audio/music)."""
+    """Проверить disk/R48/node_runs + HTTP artifacts/assets/xlsx; опц. soft-start одного шага."""
     from app.services.agent_harness import HARNESS_FORBIDDEN_STEPS, run_harness_verify
 
     p = _project_or_404(await session.get(Project, project_id))
     if allow_repair:
         # Extra guard: never repair forbidden via query tricks inside service
         pass
-    report = await run_harness_verify(session, p, allow_repair=allow_repair)
+    report = await run_harness_verify(
+        session,
+        p,
+        allow_repair=allow_repair,
+        include_http=include_http,
+    )
     await session.commit()
     await session.refresh(p)
     await publish_project_event(

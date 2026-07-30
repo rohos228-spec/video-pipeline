@@ -19,7 +19,7 @@ ROW_MARK_PREFIX = "@row="
 CHECK_REPORT_HEADER = "# ОТЧЁТ ПРОВЕРКИ"
 CHECK_SCHEMA_ID = "vp.check.v1"
 
-# Re-export canonical markers
+# Реэкспорт канонических маркеров
 XLSX_WRITEBACK_MARKER = CHECK_WRITEBACK_MARKER
 VOICEOVER_START_MARK = VOICEOVER_START
 VOICEOVER_END_MARK = VOICEOVER_END
@@ -69,7 +69,11 @@ def validate_model_reply(text: str, *, kind: ReplyKind) -> ReplyValidation:
     has_json = looks_like_check_json(raw)
 
     if kind == "text":
-        return ReplyValidation(ok=bool(raw.strip()), kind=kind, reason="" if raw.strip() else "empty")
+        return ReplyValidation(
+            ok=bool(raw.strip()),
+            kind=kind,
+            reason="" if raw.strip() else "пустой ответ",
+        )
 
     if kind == "voiceover":
         if has_vo:
@@ -77,7 +81,7 @@ def validate_model_reply(text: str, *, kind: ReplyKind) -> ReplyValidation:
         return ReplyValidation(
             ok=False,
             kind=kind,
-            reason="missing <<<VOICEOVER>>>…<<<END>>>",
+            reason="нет блока <<<VOICEOVER>>>…<<<END>>>",
             has_voiceover_block=False,
         )
 
@@ -88,11 +92,10 @@ def validate_model_reply(text: str, *, kind: ReplyKind) -> ReplyValidation:
                 kind=kind,
                 has_writeback=has_wb or looks_like_xlsx_tsv(raw),
             )
-        return ReplyValidation(ok=False, kind=kind, reason="no # Лист: / @row= TSV")
+        return ReplyValidation(ok=False, kind=kind, reason="нет TSV (# Лист: / @row=)")
 
     if kind == "check_txt":
         if has_txt or has_json:
-            ok_wb = True  # writeback optional unless caller requires
             return ReplyValidation(
                 ok=True,
                 kind=kind,
@@ -100,14 +103,14 @@ def validate_model_reply(text: str, *, kind: ReplyKind) -> ReplyValidation:
                 has_check_json=has_json,
                 has_writeback=has_wb,
             )
-        return ReplyValidation(ok=False, kind=kind, reason="no check TXT/JSON")
+        return ReplyValidation(ok=False, kind=kind, reason="нет отчёта проверки TXT/JSON")
 
     if kind == "check_json":
         if has_json:
             return ReplyValidation(ok=True, kind=kind, has_check_json=True)
-        return ReplyValidation(ok=False, kind=kind, reason="no vp.check.v1")
+        return ReplyValidation(ok=False, kind=kind, reason="нет vp.check.v1")
 
-    return ReplyValidation(ok=False, kind=kind, reason=f"unknown kind {kind}")
+    return ReplyValidation(ok=False, kind=kind, reason=f"неизвестный kind {kind}")
 
 
 def build_api_accompany(

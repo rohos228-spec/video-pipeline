@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import urllib.error
+import urllib.request
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
 from app.services.xlsx_v8_import import ROW_VIDEO_PROMPT_V8
+
+HARNESS_HTTP_BASE = "http://127.0.0.1:8765"
 
 # Шаги, которые харнес НИКОГДА не запускает.
 HARNESS_FORBIDDEN_STEPS = frozenset({"audio", "music"})
@@ -70,7 +74,7 @@ class HarnessReport:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _repo_root() -> Path:
@@ -153,6 +157,26 @@ def _count_r48_filled(xlsx: Path) -> int:
         return 0
 
 
+def _count_project_log_errors(project_id: int, slug: str) -> tuple[int, str]:
+    data = _repo_root() / "data"
+    logs = sorted(data.glob("backend-*.log"), key=lambda p: p.stat().st_mtime)
+    log = logs[-1] if logs else data / "backend.log"
+    if not log.is_file():
+        return 0, "no-log"
+    needles = (f"#{project_id}", slug)
+    hits: list[str] = []
+    try:
+        lines = log.read_text(encoding="utf-8", errors="replace").splitlines()[-400:]
+    except Exception as e:  # noqa: BLE001
+        return 0, f"read-fail:{e}"
+    for ln in lines:
+        if any(n and n in ln for n in needles) and (
+            "ERROR" in ln or "WARNING" in ln or "Traceback" in ln
+        ):
+            hits.append(ln)
+    return len(hits), log.name
+
+
 def verify_project_disk(project_id: int, data_dir: Path, status: str) -> HarnessReport:
     """Синхронная проверка диска/БД без HTTP (для CLI и сервиса)."""
     run_id = uuid.uuid4().hex[:12]
@@ -232,6 +256,15 @@ def verify_project_disk(project_id: int, data_dir: Path, status: str) -> Harness
     else:
         checks.append(HarnessCheck("node_runs_failed", failed_n == 0, f"failed={failed_n}"))
 
+    log_hits, log_name = _count_project_log_errors(project_id, data_dir.name)
+    checks.append(
+        HarnessCheck(
+            "project_log_clean",
+            log_hits == 0,
+            f"hits={log_hits} log={log_name}",
+        )
+    )
+
     # voiceover hygiene (optional)
     vo = data_dir / "voiceover.txt"
     if vo.is_file():
@@ -257,16 +290,160 @@ def verify_project_disk(project_id: int, data_dir: Path, status: str) -> Harness
     )
 
 
+def _http_get(url: str, *, timeout: float = 20.0, max_bytes: int = 65_536) -> tuple[int, int, bytes]:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            data = r.read(max_bytes)
+            cl = r.headers.get("Content-Length")
+            n = int(cl) if cl and cl.isdigit() else len(data)
+            return r.status, n, data
+    except urllib.error.HTTPError as e:
+        return e.code, 0, b""
+    except Exception:
+        return 0, 0, b""
+
+
+def _http_json(url: str, *, timeout: float = 20.0) -> tuple[int, Any]:
+    status, _, data = _http_get(url, timeout=timeout)
+    if status != 200:
+        return status, None
+    try:
+        return status, json.loads(data.decode("utf-8"))
+    except Exception:
+        return status, None
+
+
+def verify_project_http(
+    project_id: int,
+    data_dir: Path,
+    *,
+    base_url: str = HARNESS_HTTP_BASE,
+) -> list[HarnessCheck]:
+    """HTTP-слой проверки: Studio API, artifacts/assets/xlsx доступны по факту."""
+    base = base_url.rstrip("/")
+    checks: list[HarnessCheck] = []
+
+    st, ver = _http_json(f"{base}/api/studio-version")
+    ver_ok = bool(isinstance(ver, dict) and ver.get("backend_ok") and ver.get("pipeline_ok"))
+    checks.append(
+        HarnessCheck(
+            "studio_http",
+            st == 200 and ver_ok,
+            f"status={st} build={ver.get('build') if isinstance(ver, dict) else '?'} "
+            f"backend_git={ver.get('backend_git') if isinstance(ver, dict) else '?'}",
+        )
+    )
+
+    st, proj = _http_json(f"{base}/api/projects/{project_id}")
+    checks.append(
+        HarnessCheck(
+            "project_http",
+            st == 200 and isinstance(proj, dict),
+            f"status={st} project_status={proj.get('status') if isinstance(proj, dict) else '?'} "
+            f"slug={proj.get('slug') if isinstance(proj, dict) else '?'}",
+        )
+    )
+
+    st, frames = _http_json(f"{base}/api/projects/{project_id}/frames")
+    if st == 200 and isinstance(frames, list):
+        img_pr = sum(1 for f in frames if (f.get("image_prompt") or "").strip())
+        anim_pr = sum(1 for f in frames if (f.get("animation_prompt") or "").strip())
+        vo = sum(1 for f in frames if (f.get("voiceover_text") or "").strip())
+        checks.append(
+            HarnessCheck(
+                "frames_http",
+                True,
+                f"frames={len(frames)} img_pr={img_pr} anim_pr={anim_pr} voiceover={vo}",
+            )
+        )
+    else:
+        checks.append(HarnessCheck("frames_http", False, f"status={st}"))
+
+    artifacts: list[sqlite3.Row] = []
+    try:
+        db = sqlite3.connect(str(_db_path()))
+        db.row_factory = sqlite3.Row
+        artifacts = db.execute(
+            "SELECT kind, uuid, path FROM artifacts WHERE project_id=? ORDER BY kind, id",
+            (project_id,),
+        ).fetchall()
+        db.close()
+    except Exception as e:  # noqa: BLE001
+        checks.append(HarnessCheck("artifacts_http", False, f"db: {e}"))
+    else:
+        fail = 0
+        checked = 0
+        for a in artifacts:
+            checked += 1
+            status, nbytes, _ = _http_get(
+                f"{base}/api/artifacts/{a['uuid']}/file", timeout=30.0, max_bytes=1
+            )
+            if status != 200 or nbytes <= 0:
+                fail += 1
+        checks.append(
+            HarnessCheck(
+                "artifacts_http",
+                fail == 0,
+                f"checked={checked} fail={fail}",
+            )
+        )
+
+    st, assets = _http_json(f"{base}/api/projects/{project_id}/assets")
+    if st == 200 and isinstance(assets, list):
+        fail = 0
+        checked = 0
+        for a in assets:
+            prev = a.get("preview_url") or ""
+            if not prev:
+                continue
+            url = prev if prev.startswith("http") else base + prev
+            status, nbytes, _ = _http_get(url, timeout=30.0, max_bytes=1)
+            checked += 1
+            if status != 200 or nbytes <= 0:
+                fail += 1
+            if checked >= 40:
+                break
+        checks.append(
+            HarnessCheck("assets_http", fail == 0, f"checked={checked} fail={fail}")
+        )
+    else:
+        checks.append(HarnessCheck("assets_http", False, f"status={st}"))
+
+    st, nbytes, _ = _http_get(f"{base}/api/projects/{project_id}/xlsx", timeout=30.0)
+    checks.append(HarnessCheck("xlsx_http", st == 200 and nbytes > 0, f"status={st} bytes={nbytes}"))
+
+    scenes = list((data_dir / "scenes").glob("*.png")) if (data_dir / "scenes").is_dir() else []
+    checks.append(HarnessCheck("http_scene_parity", True, f"scenes_disk={len(scenes)}"))
+    return checks
+
+
 async def run_harness_verify(
     session: Any,
     project: Any,
     *,
     allow_repair: bool = False,
+    include_http: bool = False,
+    http_base_url: str = HARNESS_HTTP_BASE,
 ) -> HarnessReport:
     """Verify + optional soft repair (POST step run via project_steps)."""
     data_dir = Path(project.data_dir)
     status = str(getattr(project.status, "value", project.status) or "")
     report = verify_project_disk(int(project.id), data_dir, status)
+    if include_http:
+        try:
+            import anyio
+
+            http_checks = await anyio.to_thread.run_sync(
+                lambda: verify_project_http(
+                    int(project.id), data_dir, base_url=http_base_url
+                )
+            )
+        except Exception as e:  # noqa: BLE001
+            http_checks = [HarnessCheck("http_checks", False, str(e))]
+        report.checks.extend(http_checks)
+        report.ok = all(c.ok for c in report.checks)
+        if not report.ok and report.next_action == "none":
+            report.next_action = "investigate:http"
 
     meta = dict(project.meta) if isinstance(project.meta, dict) else {}
     project.meta = write_ops_telemetry(meta, report)
