@@ -304,7 +304,7 @@ def test_writeback_prose_fallback_into_general_plan(tmp_path: Path) -> None:
     ws["A1"] = "Хук"
     ws["A2"] = "Основная тема"
     ws.merge_cells("B2:D2")
-    wb.create_sheet("план")
+    # Без листа «план» — prose fallback разрешён (простая книга плана).
     wb.save(src)
     wb.close()
 
@@ -324,6 +324,34 @@ def test_writeback_prose_fallback_into_general_plan(tmp_path: Path) -> None:
     wb2.close()
     assert is_meaningful_general_plan(text)
     assert "Рим был велик" in text
+
+
+def test_writeback_refuses_prose_on_frame_plan_workbook(tmp_path: Path) -> None:
+    """Полный project.xlsx с листом «план»: проза не должна заливать B2."""
+    src = tmp_path / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "Общий план"
+    ws["A2"] = "Основная тема"
+    ws["B2"] = "оригинал плана не трогать"
+    plan = wb.create_sheet("план")
+    plan["A1"] = "кадр"
+    plan["B1"] = "текст"
+    wb.save(src)
+    wb.close()
+
+    prose = "А" * 250 + "\n\nМодель ответила болтовнёй без TSV."
+    out = writeback_project_xlsx(
+        project_xlsx=src,
+        reply_text=prose,
+        downloaded_paths=[],
+    )
+    assert out is None
+    wb2 = load_workbook(src, data_only=True)
+    assert wb2["Общий план"]["B2"].value == "оригинал плана не трогать"
+    assert wb2["план"]["B1"].value == "текст"
+    wb2.close()
 
 
 def test_writeback_skips_check_report_json(tmp_path: Path) -> None:

@@ -4,8 +4,8 @@
   1) если в ответе/скачанных файлах есть .xlsx — накладываем НЕПУСТЫЕ ячейки
      на существующий шаблон (full replace только если шаблона ещё нет);
   2) иначе TSV `# Лист:` + `@row=N` накладываем на шаблон БЕЗ wipe строк/merge;
-  3) если TSV нет, но ответ длинный — пишем в B2 листа «Общий план»
-     (подписи A и структура строк сохраняются).
+  3) если TSV нет, но ответ длинный — пишем в B2 «Общий план» только
+     для простых книг без листа кадров «план» (иначе книга не трогается).
 """
 
 from __future__ import annotations
@@ -219,6 +219,22 @@ def _is_v8_project_workbook(path: Path) -> bool:
         return False
 
 
+def _workbook_has_frame_plan_sheet(path: Path) -> bool:
+    """True если в книге есть лист кадров «план» (полный project.xlsx)."""
+    if not path.exists() or path.stat().st_size < 64:
+        return False
+    try:
+        from openpyxl import load_workbook
+
+        wb = load_workbook(filename=str(path), read_only=True)
+        try:
+            return any(n.lower() == "план" for n in wb.sheetnames)
+        finally:
+            wb.close()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def merge_xlsx_nonempty_overlay(
     project_xlsx: Path,
     gpt_xlsx: Path,
@@ -413,9 +429,17 @@ def writeback_project_xlsx(
                 tmp.unlink(missing_ok=True)
             # fall through to prose fallback
 
-    # Fallback: GPT отдал прозу без `# Лист:` / TSV
+    # Fallback: GPT отдал прозу без `# Лист:` / TSV.
+    # На полном project.xlsx (есть лист кадров «план») это ЛОМАЕТ книгу —
+    # заливает B2 «Общий план» болтовнёй вместо `@row=` TSV. Разрешено
+    # только для простых книг без листа «план».
     prose = _strip_reply_noise(reply)
-    if len(prose) >= _MIN_PROSE_PLAN_CHARS and project_xlsx.exists():
+    has_frame_sheet = _workbook_has_frame_plan_sheet(project_xlsx)
+    if (
+        len(prose) >= _MIN_PROSE_PLAN_CHARS
+        and project_xlsx.exists()
+        and not has_frame_sheet
+    ):
         tmp = project_xlsx.with_suffix(".writeback.prose.tmp.xlsx")
         try:
             write_prose_into_general_plan(project_xlsx, tmp, prose)
@@ -431,6 +455,12 @@ def writeback_project_xlsx(
             logger.warning("xlsx_writeback prose fallback failed: {}", e)
             if tmp.exists():
                 tmp.unlink(missing_ok=True)
+    elif len(prose) >= _MIN_PROSE_PLAN_CHARS and has_frame_sheet:
+        logger.warning(
+            "xlsx_writeback: отказ prose→«Общий план» на книге с листом «план» "
+            "({} симв без `# Лист:`/`@row=`) — книга не тронута",
+            len(prose),
+        )
 
     logger.debug(
         "xlsx_writeback: в ответе нет TSV/листов и prose-fallback не сработал"

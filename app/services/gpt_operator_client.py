@@ -350,6 +350,11 @@ async def _run_operator_api_real(
                 "gpt_operator/api: project_file без writeback (нет xlsx/TSV) node={}",
                 node_key,
             )
+            raise RuntimeError(
+                "project_file: модель не вернула TSV `# Лист:`/`@row=` "
+                "(и prose→«Общий план» на полной книге запрещён) — "
+                "project.xlsx не изменён"
+            )
 
     if effective_output == "sidecar":
         sidecar = out_dir / "operator_transform.txt"
