@@ -132,8 +132,12 @@ export function gateNodeResultVisibility(
   if (nodeType === "topic") {
     return snapshot;
   }
+  // Реальные артефакты (final mp4 и т.п.) не прячем из‑за unknown/stale NodeRun:
+  // иначе assemble при assembled показывает «ещё не готов» при готовом файле.
+  if (snapshot.hasResult && snapshot.itemCount > 0) {
+    return snapshot;
+  }
   if (
-    !nodeStatus ||
     nodeStatus === "pending" ||
     nodeStatus === "skipped" ||
     nodeStatus === "running" ||
@@ -141,6 +145,7 @@ export function gateNodeResultVisibility(
   ) {
     return { ...snapshot, hasResult: false, itemCount: 0 };
   }
+  // nodeStatus undefined — доверяем computeNodeResult (не гасим hasResult).
   return snapshot;
 }
 
