@@ -45,6 +45,34 @@ HARNESS_REPAIRABLE_STEPS = frozenset(
     }
 )
 
+# Артефакты поздних шагов нельзя требовать на ранних статусах (plan/script/frames).
+_SCENES_REQUIRED_STATUSES = {
+    "images_ready",
+    "generating_animation_prompts",
+    "animation_prompts_ready",
+    "generating_videos",
+    "videos_ready",
+    "generating_music",
+    "music_ready",
+    "generating_audio",
+    "audio_ready",
+    "assembling",
+    "assembled",
+    "publishing",
+    "published",
+}
+_VIDEOS_REQUIRED_STATUSES = {
+    "videos_ready",
+    "generating_music",
+    "music_ready",
+    "generating_audio",
+    "audio_ready",
+    "assembling",
+    "assembled",
+    "publishing",
+    "published",
+}
+
 
 @dataclass
 class HarnessCheck:
@@ -208,8 +236,22 @@ def verify_project_disk(project_id: int, data_dir: Path, status: str) -> Harness
     )
     final = list((data_dir / "final").glob("*.mp4")) if (data_dir / "final").is_dir() else []
 
-    checks.append(HarnessCheck("scenes_png", len(scenes) >= 1, f"n={len(scenes)}"))
-    checks.append(HarnessCheck("videos_mp4", len(videos) >= 1, f"n={len(videos)}"))
+    scenes_required = status in _SCENES_REQUIRED_STATUSES
+    videos_required = status in _VIDEOS_REQUIRED_STATUSES
+    checks.append(
+        HarnessCheck(
+            "scenes_png",
+            (not scenes_required) or len(scenes) >= 1,
+            f"n={len(scenes)} required={scenes_required} status={status}",
+        )
+    )
+    checks.append(
+        HarnessCheck(
+            "videos_mp4",
+            (not videos_required) or len(videos) >= 1,
+            f"n={len(videos)} required={videos_required} status={status}",
+        )
+    )
     checks.append(HarnessCheck("heroes_png", True, f"n={len(heroes)}"))  # optional
     checks.append(
         HarnessCheck(
@@ -220,9 +262,9 @@ def verify_project_disk(project_id: int, data_dir: Path, status: str) -> Harness
     )
     if status == "assembled" and not final:
         repair.append("assemble")
-    if not scenes:
+    if scenes_required and not scenes:
         repair.append("img")
-    if not videos:
+    if videos_required and not videos:
         repair.append("video")
 
     r48 = _count_r48_filled(xlsx) if xlsx.is_file() else 0
