@@ -655,14 +655,28 @@ async def _apply_approve(
     if transition.ready_status is ProjectStatus.hero_ready:
         nxt = await _next_status_after_hero_approve(session, project, hitl)
         if nxt is not ProjectStatus.generating_hero:
-            graph_nxt = await _graph_next_running(session, project, ProjectStatus.hero_ready)
-            if graph_nxt is None:
-                logger.warning(
-                    "graph: #{} no next step after hero_ready — check canvas edges",
+            # Цикл check(hero)→regen→check: не идём «дальше», а обратно в check.
+            try:
+                from app.services.hero_check_regen import maybe_return_to_check_after_hero
+
+                check_nxt = await maybe_return_to_check_after_hero(session, project)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "auto_advance: #{} hero_check_regen return failed",
                     project.id,
                 )
-                return
-            nxt = graph_nxt
+                check_nxt = None
+            if check_nxt is not None:
+                nxt = check_nxt
+            else:
+                graph_nxt = await _graph_next_running(session, project, ProjectStatus.hero_ready)
+                if graph_nxt is None:
+                    logger.warning(
+                        "graph: #{} no next step after hero_ready — check canvas edges",
+                        project.id,
+                    )
+                    return
+                nxt = graph_nxt
         skipped = await skip_disabled_running_async(session, project, nxt)
         if skipped is None:
             logger.warning(

@@ -903,9 +903,17 @@ async def _run_excel(
         approved = await _approved_excel_ids(session, project)
         generated = await _excel_ids_with_artifact(session, project)
 
+        from app.services.hero_check_regen import get_hero_check_regen_ids
+
+        regen_ids = set(get_hero_check_regen_ids(project))
+
         # «Все одобрены» только если у всех ещё есть файл (после wipe HITL
         # может остаться, а PNG уже в old/ — иначе ложный hero_ready).
-        if all(ch.id in approved and ch.id in generated for ch in chars):
+        # Цикл check-regen: не пропускать — нужно перегенерить помеченных.
+        if (
+            not regen_ids
+            and all(ch.id in approved and ch.id in generated for ch in chars)
+        ):
             logger.info(
                 "[#{}] excel_hero: все {} персонажей одобрены — hero_ready",
                 project.id, len(chars),
@@ -916,8 +924,13 @@ async def _run_excel(
         target: ExcelCharacter | None = None
         skipped: list[ExcelCharacter] = []
         for ch in chars:
+            if regen_ids and ch.id not in regen_ids:
+                continue
             has_file = ch.id in generated
             is_regen = await _is_regen_for_excel_id(session, project, ch.id)
+            # Цикл check→regen: всегда перегенерить помеченные, даже если PNG есть.
+            if regen_ids and ch.id in regen_ids:
+                is_regen = True
             # Approved/generated без файла после wipe — перегенерируем.
             if ch.id in approved and has_file and not is_regen:
                 continue
@@ -932,6 +945,16 @@ async def _run_excel(
             break
 
         if target is None:
+            if regen_ids and not skipped:
+                # Все помеченные уже обработаны (список пуст / файлы есть).
+                logger.info(
+                    "[#{}] excel_hero: check-regen ids {} готовы — hero_ready",
+                    project.id,
+                    sorted(regen_ids),
+                )
+                project.status = ProjectStatus.hero_ready
+                await session.flush()
+                return
             if batch_auto and len(generated) >= len(chars):
                 logger.info(
                     "[#{}] excel_hero: batch — все {} артефактов на диске, hero_ready",
@@ -968,6 +991,31 @@ async def _run_excel(
             approved=approved,
             batch_auto=batch_auto,
         )
+
+        # После успешного перегена — убрать id из списка.
+        if regen_ids and target.id in regen_ids:
+            from app.services.check_analysis import normalize_hero_excel_id
+            from app.services.hero_check_regen import META_IDS
+            from sqlalchemy.orm.attributes import flag_modified
+
+            meta_r = dict(project.meta or {})
+            left = [
+                x
+                for x in (meta_r.get(META_IDS) or [])
+                if normalize_hero_excel_id(str(x)) != target.id
+            ]
+            meta_r[META_IDS] = left
+            project.meta = meta_r
+            flag_modified(project, "meta")
+            await session.flush()
+            if not left:
+                logger.info(
+                    "[#{}] excel_hero: check-regen все ids готовы — hero_ready",
+                    project.id,
+                )
+                project.status = ProjectStatus.hero_ready
+                await session.flush()
+                return
 
         await session.refresh(project)
         # Missing refs / cancel / HITL-pause — не крутить while True.

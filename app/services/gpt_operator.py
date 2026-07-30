@@ -354,6 +354,29 @@ def assemble_check_master_prompt(
     )
 
 
+def assemble_check_master_prompt_with_hero_hint(
+    project: Project,
+    node_key: str,
+    sources: list[dict[str, Any]],
+    *,
+    check_fix: bool = True,
+    reviewer_notes: str = "",
+    report_format: str | None = None,
+) -> str:
+    """assemble_check_master_prompt + regen hint если upstream=hero."""
+    from app.services.check_analysis import append_hero_regen_hint
+
+    text = assemble_check_master_prompt(
+        sources,
+        check_fix=check_fix,
+        reviewer_notes=reviewer_notes,
+        report_format=report_format,
+    )
+    if upstream_node_type_for_check(project, node_key) == "hero":
+        return append_hero_regen_hint(text)
+    return text
+
+
 def check_agent_upload_path(project: Project, node_key: str) -> Path:
     """Фиксированное имя загруженного агента в папке ноды."""
     return upload_dir(project, node_key) / "check_agent.txt"

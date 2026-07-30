@@ -99,6 +99,26 @@ async def _after_excel_gpt_done(
                 node_key,
             )
 
+    # checkMode после hero: fail → точечный переген PNG → снова check.
+    # Работает и без auto_mode (воркер подхватит generating_hero).
+    if node_key:
+        try:
+            from app.services.hero_check_regen import (
+                maybe_start_hero_check_regen_after_check,
+            )
+
+            started = await maybe_start_hero_check_regen_after_check(
+                session, project, node_key
+            )
+            if started:
+                return
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "[#{}] enrich_xlsx: hero_check_regen after {} failed",
+                project.id,
+                node_key,
+            )
+
     # Без автопродвижения — остаёмся на enrich_N_ready, следующую ноду
     # пользователь запускает вручную ▶. Воркер сам вызовет maybe_auto_advance
     # только если auto_mode=True.
@@ -375,6 +395,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     reviewer_notes=reviewer_notes,
                     report_format=report_fmt,
                 )
+                from app.services.gpt_operator import upstream_node_type_for_check
+                from app.services.check_analysis import append_hero_regen_hint
+
+                if upstream_node_type_for_check(project, node_key) == "hero":
+                    master = append_hero_regen_hint(master)
                 source_prompt_keys = [f"agent:{agent_step}"] if agent_step else ["agent"]
                 accompanying = ""
                 hint = project_format_hint_for_check(project, node_key)
@@ -400,6 +425,19 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     reviewer_notes=reviewer_notes,
                     report_format=report_fmt,
                 )
+                from app.services.gpt_operator import upstream_node_type_for_check
+                from app.services.check_analysis import append_hero_regen_hint
+
+                if upstream_node_type_for_check(project, node_key) == "hero":
+                    master = append_hero_regen_hint(master)
+                    for s in ok_sources:
+                        logger.info(
+                            "[#{}] enrich_xlsx check←hero {}: master={} accomp={}",
+                            project.id,
+                            s.get("nodeKey"),
+                            s.get("chars") or 0,
+                            len(str(s.get("accompanying") or "")),
+                        )
                 accompanying = ""
                 hint = project_format_hint_for_check(project, node_key)
                 if hint:

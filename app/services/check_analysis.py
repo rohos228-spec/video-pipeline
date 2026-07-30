@@ -117,6 +117,98 @@ _HEADER_SOURCES_RE = re.compile(r"(?im)^\s*source_prompts\s*:\s*(.+?)\s*$")
 _FORWARD_FILE_RE = re.compile(r"(?im)^\s*file\s*:\s*(\S+)\s*$")
 _FORWARD_PATH_RE = re.compile(r"(?im)^\s*path\s*:\s*(.+?)\s*$")
 _FINDING_RE = re.compile(r"(?m)^\s*[-*]\s*\[(error|warn|ok|pass|fail)\]\s*(.+?)\s*$")
+_REGEN_LINE_RE = re.compile(r"(?im)^\s*regen\s*:\s*(.+?)\s*$")
+_HERO_EXCEL_ID_RE = re.compile(r"\bc(\d{1,3})\b", re.IGNORECASE)
+_HERO_FILE_ID_RE = re.compile(
+    r"\b(c\d{1,3})\.(?:png|jpe?g|webp|gif)\b", re.IGNORECASE
+)
+
+# Подсказка в хвост отчёта для check после hero (vision → точечный переген).
+HERO_REGEN_REPORT_HINT = """
+## regen (обязательно при verdict: fail после ноды «Персонажи»)
+Если какие-то reference-картинки плохие — перечисли их excel_id одной строкой:
+regen: c01, c03
+Только id персонажей из листа «Персонажи» / имён файлов characters/cXX.png.
+Если все ок — строку regen не пиши.
+""".strip()
+
+
+def normalize_hero_excel_id(raw: str) -> str | None:
+    """c1 / C01 / c01.png → c01."""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    s = Path(s).stem if "." in s else s
+    m = re.match(r"^c(\d{1,3})$", s, re.IGNORECASE)
+    if not m:
+        return None
+    return f"c{int(m.group(1)):02d}"
+
+
+def extract_hero_regen_ids(text: str) -> list[str]:
+    """Список excel_id персонажей для перегена из check_report / reply.
+
+    Сначала явная строка ``regen: c01, c03``, затем эвристика по findings/actions.
+    """
+    raw = text or ""
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _add(token: str) -> None:
+        nid = normalize_hero_excel_id(token)
+        if nid and nid not in seen:
+            seen.add(nid)
+            found.append(nid)
+
+    for m in _REGEN_LINE_RE.finditer(raw):
+        for part in re.split(r"[,;/\s]+", m.group(1) or ""):
+            part = part.strip().strip(".,;:)")
+            if part:
+                _add(part)
+    if found:
+        return found
+
+    bodies = _section_bodies(raw) if looks_like_check_report_txt(raw) else {}
+    if not bodies:
+        # Сырой reply без секций: только явные cXX.png рядом с fail/regen.
+        low = raw.lower()
+        if any(w in low for w in ("regen", "переген", "fail", "error", "брак", "плохо")):
+            for m in _HERO_FILE_ID_RE.finditer(raw):
+                _add(m.group(1))
+            for hm in _HERO_EXCEL_ID_RE.finditer(raw):
+                _add(hm.group(0))
+        return found
+
+    for section_name in ("findings", "related", "actions", "summary"):
+        section = bodies.get(section_name) or ""
+        if section_name == "findings":
+            for fm in _FINDING_RE.finditer(section):
+                if fm.group(1).lower() in ("error", "fail", "warn"):
+                    for m in _HERO_FILE_ID_RE.finditer(fm.group(2)):
+                        _add(m.group(1))
+                    for hm in _HERO_EXCEL_ID_RE.finditer(fm.group(2)):
+                        _add(hm.group(0))
+        else:
+            low = section.lower()
+            if any(
+                w in low
+                for w in ("regen", "переген", "плохо", "брак", "error", "fail", "не ок")
+            ):
+                for m in _HERO_FILE_ID_RE.finditer(section):
+                    _add(m.group(1))
+                for hm in _HERO_EXCEL_ID_RE.finditer(section):
+                    _add(hm.group(0))
+    return found
+
+
+def append_hero_regen_hint(prompt: str) -> str:
+    """Дописать правило regen: cXX в хвост check-промта (hero upstream)."""
+    base = (prompt or "").rstrip()
+    if "regen:" in base.lower() and "c01" in base.lower():
+        return base
+    if not base:
+        return HERO_REGEN_REPORT_HINT
+    return f"{base}\n\n{HERO_REGEN_REPORT_HINT}"
 
 _JSON_FENCE = re.compile(
     r"```(?:json)?\s*(\{.*?\})\s*```",
