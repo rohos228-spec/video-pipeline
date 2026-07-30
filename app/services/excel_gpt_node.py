@@ -89,6 +89,9 @@ def legacy_enrich_slot_from_type(node_type: str) -> int | None:
 
 def slot_index_from_node(node: dict[str, Any]) -> int:
     data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    if data.get("slotOverflow"):
+        # >5 excel_gpt: не участвует в resolve(slot), только запуск по node_key.
+        return 0
     raw = data.get("slotIndex")
     if isinstance(raw, int) and 1 <= raw <= MAX_EXCEL_GPT_SLOTS:
         return raw
@@ -100,7 +103,7 @@ def slot_index_from_node(node: dict[str, Any]) -> int:
 
 
 def assign_slot_indices(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Нумерует excel_gpt ноды слева направо (1..5)."""
+    """Нумерует excel_gpt ноды слева направо (1..5). Лишние — без slotIndex."""
     excel_nodes = sorted(
         [n for n in nodes if is_excel_gpt_node_type(str(n.get("type") or ""))],
         key=lambda n: float((n.get("position") or {}).get("x", 0)),
@@ -109,9 +112,18 @@ def assign_slot_indices(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for i, n in enumerate(excel_nodes[:MAX_EXCEL_GPT_SLOTS], start=1):
         data = dict(n.get("data") or {})
         data["slotIndex"] = i
+        data.pop("slotOverflow", None)
         label = str(data.get("label") or "").strip()
         if not label or is_legacy_enrich_label(label):
             data["label"] = default_excel_gpt_label(i)
+        out.append({**n, "data": data, "type": EXCEL_GPT_NODE_TYPE})
+    for n in excel_nodes[MAX_EXCEL_GPT_SLOTS:]:
+        data = dict(n.get("data") or {})
+        data.pop("slotIndex", None)
+        data["slotOverflow"] = True
+        label = str(data.get("label") or "").strip()
+        if not label or is_legacy_enrich_label(label):
+            data["label"] = default_excel_gpt_label(MAX_EXCEL_GPT_SLOTS)
         out.append({**n, "data": data, "type": EXCEL_GPT_NODE_TYPE})
     keyed = {n["id"]: n for n in out}
     result: list[dict[str, Any]] = []
@@ -119,11 +131,8 @@ def assign_slot_indices(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         nid = n.get("id")
         if nid in keyed:
             result.append(keyed[nid])
-            continue
-        typ = str(n.get("type") or "")
-        if is_excel_gpt_node_type(typ):
-            continue
-        result.append(n)
+        else:
+            result.append(n)
     return result
 
 
@@ -240,13 +249,22 @@ def first_work_successor_along_edges(
 
 
 def first_work_successor_from_excel_slot(
-    project: Project, from_slot: int
+    project: Project,
+    from_slot: int,
+    *,
+    from_key: str | None = None,
 ) -> tuple[str, str, int | None] | None:
-    """(node_key, type, slot_if_excel_gpt) — следующий work после excel_gpt слота."""
-    from_key = resolve_excel_gpt_node_key_for_slot(project, from_slot)
-    if not from_key:
+    """(node_key, type, slot_if_excel_gpt) — следующий work после excel_gpt слота.
+
+    from_key — явный id завершённой ноды (стрелки). Иначе resolve(slot) при
+    коллизии slotIndex может стартовать не с той ноды.
+    """
+    key0 = (from_key or "").strip() or resolve_excel_gpt_node_key_for_slot(
+        project, from_slot
+    )
+    if not key0:
         return None
-    succ = first_work_successor_along_edges(project, from_key)
+    succ = first_work_successor_along_edges(project, key0)
     if succ is None:
         return None
     key, typ = succ
@@ -278,29 +296,55 @@ def next_excel_gpt_running_after_ready(
 
 
 def prepare_enrich_chain_for_auto_advance(
-    project: Project, ready_status: ProjectStatus
+    project: Project,
+    ready_status: ProjectStatus,
+    *,
+    finished_key: str | None = None,
 ) -> ProjectStatus | None:
     """Перед auto_advance с enrich_N_ready: цепочка ТОЛЬКО по стрелкам.
 
     Если следующий work по рёбрам — excel_gpt M — вернуть enriching_M.
     Если стрелка ведёт в script/hero/другое — None (caller идёт по graph BFS).
+
+    Активную ноду ставим по id со стрелки, НЕ через resolve(slot) — иначе при
+    двух excel_gpt с одним slotIndex (лимит 5 слотов / 6+ нод) прыжок мимо
+    проверки на «персонажи».
     """
     finished = slot_from_ready_status(ready_status)
     if finished is None:
         return None
-    succ = first_work_successor_from_excel_slot(project, finished)
+    from_key = (finished_key or "").strip() or None
+    if not from_key:
+        # Последний completed key на этом слоте, иначе resolve.
+        meta0 = project.meta if isinstance(project.meta, dict) else {}
+        for raw in reversed(list(meta0.get("excel_gpt_completed_keys") or [])):
+            k = str(raw or "").strip()
+            if not k:
+                continue
+            if slot_for_excel_gpt_node_key(project, k) == finished:
+                from_key = k
+                break
+        if not from_key:
+            from_key = resolve_excel_gpt_node_key_for_slot(project, finished)
+    succ = first_work_successor_from_excel_slot(
+        project, finished, from_key=from_key
+    )
     if succ is None:
         return None
-    _key, typ, nxt_slot = succ
-    if not is_excel_gpt_node_type(typ) or nxt_slot is None or nxt_slot <= finished:
+    next_key, typ, nxt_slot = succ
+    if not is_excel_gpt_node_type(typ):
         return None
-    ensure_enrich_auto_chain_to(project, finished)
+    if not next_key or next_key == (from_key or ""):
+        return None
+    if nxt_slot is None:
+        nxt_slot = slot_for_excel_gpt_node_key(project, next_key)
+    if nxt_slot is None or nxt_slot < 1:
+        return None
+    ensure_enrich_auto_chain_to(project, finished, from_key=from_key)
     clear_excel_gpt_tail_completion(project, nxt_slot)
     meta = dict(project.meta or {})
-    node_key = resolve_excel_gpt_node_key_for_slot(project, nxt_slot)
-    if node_key:
-        meta["active_excel_gpt_node_key"] = node_key
-        project.meta = meta
+    meta["active_excel_gpt_node_key"] = next_key
+    project.meta = meta
     return running_status_for_slot(nxt_slot)
 
 
@@ -327,20 +371,42 @@ def resolve_excel_gpt_node_key_for_slot(
     nodes: list[dict[str, Any]] | None = None,
 ) -> str | None:
     """Найти node_key excel_gpt для слота 1..5 (слева направо / slotIndex)."""
+    from loguru import logger
+
     if not (1 <= int(slot) <= MAX_EXCEL_GPT_SLOTS):
         return None
     pool = nodes if nodes is not None else excel_gpt_nodes_from_project(project)
     if not pool:
         return None
-    # Prefer explicit slotIndex match.
-    for n in pool:
-        if slot_index_from_node(n) == slot:
-            nid = str(n.get("id") or "").strip()
-            if nid:
-                return nid
-    # Fallback: order by x position.
+    matches = [
+        n
+        for n in pool
+        if slot_index_from_node(n) == slot
+        and not (
+            isinstance(n.get("data"), dict) and n["data"].get("slotOverflow")
+        )
+    ]
+    if matches:
+        matches.sort(
+            key=lambda n: float((n.get("position") or {}).get("x", 0)),
+        )
+        if len(matches) > 1:
+            logger.warning(
+                "excel_gpt: slotIndex={} collides on {} nodes — using leftmost {}",
+                slot,
+                len(matches),
+                matches[0].get("id"),
+            )
+        nid = str(matches[0].get("id") or "").strip()
+        return nid or None
     ordered = sorted(
-        pool,
+        [
+            n
+            for n in pool
+            if not (
+                isinstance(n.get("data"), dict) and n["data"].get("slotOverflow")
+            )
+        ],
         key=lambda n: float((n.get("position") or {}).get("x", 0)),
     )
     if slot - 1 < len(ordered):
@@ -482,7 +548,12 @@ def next_incomplete_excel_gpt_slot(project: Project, after_slot: int) -> int | N
     return None
 
 
-def ensure_enrich_auto_chain_to(project: Project, from_slot: int) -> int | None:
+def ensure_enrich_auto_chain_to(
+    project: Project,
+    from_slot: int,
+    *,
+    from_key: str | None = None,
+) -> int | None:
     """Выставить enrich_auto_chain_to по цепочке excel_gpt ТОЛЬКО вдоль стрелок.
 
     GPT1→script→GPT2: после слота 1 цепочка НЕ ставится (следующий work = script).
@@ -490,17 +561,27 @@ def ensure_enrich_auto_chain_to(project: Project, from_slot: int) -> int | None:
     """
     end = from_slot
     cur = from_slot
+    cur_key = (from_key or "").strip() or None
+    seen: set[str] = set()
+    if cur_key:
+        seen.add(cur_key)
     guard = 0
     while guard < MAX_EXCEL_GPT_SLOTS + 2:
         guard += 1
-        succ = first_work_successor_from_excel_slot(project, cur)
+        succ = first_work_successor_from_excel_slot(
+            project, cur, from_key=cur_key
+        )
         if succ is None:
             break
-        _key, typ, slot = succ
-        if not is_excel_gpt_node_type(typ) or slot is None or slot <= cur:
+        key, typ, slot = succ
+        if not is_excel_gpt_node_type(typ) or slot is None:
             break
-        end = slot
+        if key in seen:
+            break
+        seen.add(key)
+        end = max(end, slot)
         cur = slot
+        cur_key = key
     if end <= from_slot:
         return None
     meta = dict(project.meta or {})

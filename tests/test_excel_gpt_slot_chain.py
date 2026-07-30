@@ -263,3 +263,69 @@ def test_prepare_chain_follows_edges_not_orphan_slots() -> None:
     p.meta["canvas_graph"] = {"nodes": nodes, "edges": edges}
     p.status = ProjectStatus.enrich_2_ready
     assert prepare_enrich_chain_for_auto_advance(p, ProjectStatus.enrich_2_ready) is None
+
+
+def test_auto_chain_uses_edge_key_not_slot_resolve_collision() -> None:
+    """Баг #27: work→check при двух нодах со slot=5 — не прыгать на «персонажи».
+
+    resolve(5) раньше брал первую ноду в списке (n_excel_gpt_2), хотя стрелка
+    ведёт на check (checkMode). UI: проверка не «в работе»/не «готово»,
+    стартуют персонажи через несколько нод.
+    """
+    from app.services.excel_gpt_node import (
+        first_work_successor_along_edges,
+        prepare_enrich_chain_for_auto_advance,
+        resolve_excel_gpt_node_key_for_slot,
+    )
+
+    nodes = [
+        {
+            "id": "n_excel_gpt_2",
+            "type": "excel_gpt",
+            "position": {"x": 500, "y": 200},
+            "data": {"slotIndex": 5, "label": "персонажи"},
+        },
+        {
+            "id": "n_work",
+            "type": "excel_gpt",
+            "position": {"x": 1180, "y": 80},
+            "data": {"slotIndex": 4, "label": "работа gpt"},
+        },
+        {
+            "id": "n_check",
+            "type": "excel_gpt",
+            "position": {"x": 1300, "y": 400},
+            "data": {"slotIndex": 5, "label": "проверка", "checkMode": True},
+        },
+        {"id": "n_hero", "type": "hero", "position": {"x": 1500, "y": 200}, "data": {}},
+        {"id": "n_items", "type": "items", "position": {"x": 1700, "y": 200}, "data": {}},
+    ]
+    edges = [
+        {"id": "e1", "source": "n_work", "target": "n_check"},
+        {"id": "e2", "source": "n_check", "target": "n_hero"},
+        {"id": "e3", "source": "n_hero", "target": "n_items"},
+        {"id": "e4", "source": "n_items", "target": "n_excel_gpt_2"},
+    ]
+    p = SimpleNamespace(
+        id=27,
+        status=ProjectStatus.enrich_4_ready,
+        meta={
+            "canvas_graph": {"nodes": nodes, "edges": edges},
+            "excel_gpt_completed_keys": ["n_work"],
+            "enrich_completed_slots": [4],
+            "node_step_params": {
+                "n_check": {"checkMode": True},
+            },
+        },
+        auto_mode=True,
+    )
+    # Коллизия: resolve(5) ≠ check
+    assert resolve_excel_gpt_node_key_for_slot(p, 5) == "n_excel_gpt_2"
+    assert first_work_successor_along_edges(p, "n_work") == ("n_check", "excel_gpt")
+
+    nxt = prepare_enrich_chain_for_auto_advance(
+        p, ProjectStatus.enrich_4_ready, finished_key="n_work"
+    )
+    assert nxt is ProjectStatus.enriching_5
+    assert p.meta["active_excel_gpt_node_key"] == "n_check"
+    assert p.meta["active_excel_gpt_node_key"] != "n_excel_gpt_2"
