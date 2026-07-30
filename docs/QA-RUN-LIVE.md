@@ -39,6 +39,7 @@
 
 | Время | Делаю | Сделал | Результат | Баг/фикс |
 |-------|-------|--------|-----------|----------|
+| 04:07 | UI v369 badge | reload Studio #50 | v369 a48100b + Run done + Autopromotion present | UI OK |
 | 04:06 | pulse +17min | assembled hold | spam=0 montage-v3-r15 voice=75.7s words=126 | continue |
 | 04:01 | montage stamp + ASR | read MONTAGE_STAMP + words.json | final stamped; whisper words present | artifacts OK |
 | 04:01 | pulse +12min | v369 + assembled | build=369 ui_stale=0 status=assembled | continue |
