@@ -49,8 +49,11 @@ _IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"})
 # Лимит картинок и размера (base64 раздувает ~4/3) — чтобы не упереться в payload.
 _MAX_VISION_IMAGES = 8
 _MAX_VISION_BYTES = 4_000_000
-# Мелкий бинарь (pdf/docx/zip/…) можно отдать как base64 — как «файл в чате».
+# Мелкий бинарь (docx/zip/…) можно отдать как base64 в тексте — НЕ для PDF.
 _MAX_BINARY_INLINE_BYTES = 400_000
+# PDF в Responses API: multimodal input_file (file_data), не base64 в input_text.
+_MAX_PDF_INLINE_BYTES = 12_000_000
+_MAX_PDF_FILES = 4
 # XLSX → TSV: длинный «Общий план» (12:00 / 100+ эпизодов) легко >60k.
 _XLSX_CONTEXT_MAX_CHARS = 280_000
 _XLSX_DEFAULT_MAX_ROWS = 2_000
@@ -60,6 +63,7 @@ _XLSX_PRIORITY_SHEET_RE = re.compile(
     r"общий\s*план",
     re.IGNORECASE,
 )
+_PDF_CONTEXT_MAX_CHARS = 80_000
 
 
 class GptApiError(Exception):
@@ -210,6 +214,83 @@ def xlsx_to_text(
     return "\n".join(out).strip() or "[xlsx: пустой]"
 
 
+def is_pdf_path(path: Path) -> bool:
+    return path.suffix.lower() == ".pdf"
+
+
+def pdf_to_text(path: Path, *, max_chars: int = _PDF_CONTEXT_MAX_CHARS) -> str:
+    """Извлечь текст из PDF (pypdf). Без сырого бинаря / base64 в тексте."""
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return (
+            f"[pdf {path.name}: нужен пакет pypdf — "
+            f"pip install pypdf; текст не извлечён]"
+        )
+    try:
+        reader = PdfReader(str(path))
+    except Exception as e:  # noqa: BLE001
+        return f"[pdf {path.name}: не открыт ({e})]"
+
+    pages_out: list[str] = []
+    total = 0
+    n_pages = len(reader.pages)
+    for i, page in enumerate(reader.pages, start=1):
+        try:
+            chunk = (page.extract_text() or "").strip()
+        except Exception as e:  # noqa: BLE001
+            chunk = f"[стр.{i}: ошибка извлечения: {e}]"
+        if not chunk:
+            continue
+        header = f"--- стр. {i}/{n_pages} ---"
+        block = f"{header}\n{chunk}"
+        if total + len(block) + 2 > max_chars:
+            remain = max_chars - total - len(header) - 20
+            if remain > 80:
+                pages_out.append(f"{header}\n{chunk[:remain]}\n… (обрезано)")
+            else:
+                pages_out.append(f"… (ещё страницы обрезаны, всего {n_pages})")
+            break
+        pages_out.append(block)
+        total += len(block) + 2
+
+    if not pages_out:
+        return (
+            f"[pdf {path.name}: {n_pages} стр., текста почти нет "
+            f"(скан/картинки) — смотри multimodal input_file если приложен]"
+        )
+    return "\n\n".join(pages_out)
+
+
+def pdf_to_input_file_part(path: Path) -> dict[str, Any] | None:
+    """Responses API part: input_file + file_data (data-URL). None если слишком большой."""
+    import base64
+
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    if size < 32 or size > _MAX_PDF_INLINE_BYTES:
+        logger.warning(
+            "gpt_api: pdf {} size={} — skip input_file (limit={})",
+            path.name,
+            size,
+            _MAX_PDF_INLINE_BYTES,
+        )
+        return None
+    try:
+        raw = path.read_bytes()
+    except OSError as e:
+        logger.warning("gpt_api: pdf {} read failed: {}", path.name, e)
+        return None
+    b64 = base64.b64encode(raw).decode("ascii")
+    return {
+        "type": "input_file",
+        "filename": path.name,
+        "file_data": f"data:application/pdf;base64,{b64}",
+    }
+
+
 def file_to_context(path: Path, *, max_chars: int = 60_000) -> str:
     """Текстовое представление файла для вложения в prompt (как attach в ChatGPT)."""
     import base64
@@ -231,25 +312,17 @@ def file_to_context(path: Path, *, max_chars: int = 60_000) -> str:
             size = -1
         return f"[изображение {path.name}: {suffix}, {size} байт — см. vision-вложение]"
     elif suffix == ".pdf":
-        # Без pypdf: вытаскиваем printable-куски + при малом размере — base64.
+        # Раньше: printable из бинаря + data:application/pdf;base64 в тексте →
+        # kie Responses отдавал code=500 Server exception. Текст — через pypdf;
+        # сам файл в Responses — input_file (см. build_input).
         try:
-            raw = path.read_bytes()
-        except OSError as e:
-            return f"[pdf {path.name}: не прочитан ({e})]"
-        printable = "".join(
-            chr(b) if 32 <= b < 127 or b in (9, 10, 13) else " "
-            for b in raw[:200_000]
+            size = path.stat().st_size
+        except OSError:
+            size = -1
+        extracted = pdf_to_text(
+            path, max_chars=max(max_chars, _PDF_CONTEXT_MAX_CHARS)
         )
-        printable = re.sub(r"[ \t]{2,}", " ", printable)
-        printable = re.sub(r"\n{3,}", "\n\n", printable).strip()
-        parts = [f"[pdf {path.name}: {len(raw)} байт]"]
-        if printable and len(printable) > 40:
-            parts.append(printable[:max_chars])
-        if len(raw) <= _MAX_BINARY_INLINE_BYTES:
-            parts.append(
-                f"data:application/pdf;base64,{base64.b64encode(raw).decode('ascii')}"
-            )
-        body = "\n\n".join(parts)
+        body = f"[pdf {path.name}: {size} байт]\n{extracted}"
     elif suffix in {".docx"}:
         # docx = zip+xml; вытащим word/document.xml текст грубо.
         try:
@@ -294,6 +367,8 @@ def file_to_context(path: Path, *, max_chars: int = 60_000) -> str:
     soft_cap = (
         max(max_chars, _XLSX_CONTEXT_MAX_CHARS)
         if suffix in (".xlsx", ".xlsm", ".xls")
+        else max(max_chars, _PDF_CONTEXT_MAX_CHARS)
+        if suffix == ".pdf"
         else max_chars
     )
     if len(body) > soft_cap and "base64," not in body:
@@ -467,13 +542,17 @@ def build_input(
 
     Голый ``input: \"text\"`` → HTTP 200 + ``{code:500, msg: Server exception}``.
     Нужен ``[{role, content}]`` или multimodal content[].
+    PDF: текст через pypdf в input_text + файл как input_file (file_data),
+    не data:application/pdf;base64 внутри текста (тоже даёт code=500).
     """
     prior = normalize_history(history)
     others, images = split_input_paths(input_paths)
+    pdfs = [p for p in others if is_pdf_path(p)][:_MAX_PDF_FILES]
+    text_paths = [p for p in others if not is_pdf_path(p)] + pdfs
     text = _compose_user_text(
         prompt=prompt,
         accompanying=accompanying,
-        text_paths=others,
+        text_paths=text_paths,
         image_names=[p.name for p in images],
     )
     if system:
@@ -482,11 +561,24 @@ def build_input(
     items: list[dict[str, Any]] = [
         {"role": m["role"], "content": m["content"]} for m in prior
     ]
-    if not images:
+
+    file_parts: list[dict[str, Any]] = []
+    for pdf in pdfs:
+        part = pdf_to_input_file_part(pdf)
+        if part is not None:
+            file_parts.append(part)
+            logger.info(
+                "gpt_api: attach pdf as input_file name={} bytes~{}",
+                pdf.name,
+                pdf.stat().st_size if pdf.is_file() else "?",
+            )
+
+    if not images and not file_parts:
         items.append({"role": "user", "content": text})
         return items
 
     content: list[dict[str, Any]] = [{"type": "input_text", "text": text}]
+    content.extend(file_parts)
     for img in images:
         try:
             content.append(
@@ -755,6 +847,21 @@ async def chat(
         except GptApiError as e:
             if not e.retryable:
                 raise
+            # kie иногда падает на PDF input_file → code=500; оставляем только текст.
+            if (
+                responses_mode
+                and (
+                    int(e.context.get("provider_code") or 0) == 500
+                    or int(e.context.get("status_code") or 0) == 500
+                    or "server exception" in str(e).lower()
+                )
+                and _drop_input_file_parts(body)
+            ):
+                logger.warning(
+                    "gpt_api.chat: PDF input_file → 500, повтор только с текстом PDF"
+                )
+                last_exc = e
+                continue
             last_exc = e
             logger.warning("gpt_api.chat retryable: {}", e)
 
@@ -763,6 +870,45 @@ async def chat(
             await asyncio.sleep(backoff)
 
     raise last_exc or GptApiError("GPT: неизвестная ошибка", context={"model": use_model})
+
+
+def _drop_input_file_parts(body: dict[str, Any]) -> bool:
+    """Убрать input_file из Responses body. True если что-то сняли."""
+    inp = body.get("input")
+    if not isinstance(inp, list):
+        return False
+    changed = False
+    new_inp: list[Any] = []
+    for item in inp:
+        if not isinstance(item, dict):
+            new_inp.append(item)
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            new_inp.append(item)
+            continue
+        filtered = [
+            p
+            for p in content
+            if not (isinstance(p, dict) and str(p.get("type") or "") == "input_file")
+        ]
+        if len(filtered) == len(content):
+            new_inp.append(item)
+            continue
+        changed = True
+        if (
+            len(filtered) == 1
+            and isinstance(filtered[0], dict)
+            and filtered[0].get("type") == "input_text"
+        ):
+            new_inp.append({**item, "content": str(filtered[0].get("text") or "")})
+        elif filtered:
+            new_inp.append({**item, "content": filtered})
+        else:
+            new_inp.append({**item, "content": "(файл снят после ошибки провайдера)"})
+    if changed:
+        body["input"] = new_inp
+    return changed
 
 
 # ─────────────────────────── контент (download/copy) ───────────────────────────

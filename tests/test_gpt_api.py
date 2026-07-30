@@ -434,3 +434,61 @@ async def test_run_operator_api_real_check(monkeypatch, tmp_path: Path) -> None:
     assert res.gate_status == "pass"
     assert res.analysis is not None and res.analysis.verdict == "pass"
     assert (proj / "excel_gpt_uploads" / "n_check" / "analysis.json").is_file()
+
+
+_MINIMAL_PDF = b"""%PDF-1.4
+1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj
+2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj
+3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R /Resources<< /Font<< /F1 5 0 R >> >> >>endobj
+4 0 obj<< /Length 55 >>stream
+BT /F1 18 Tf 40 100 Td (Hello Filmmaking PDF) Tj ET
+endstream
+endobj
+5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000266 00000 n 
+0000000371 00000 n 
+trailer<< /Size 6 /Root 1 0 R >>
+startxref
+444
+%%EOF
+"""
+
+
+def test_pdf_to_text_and_no_base64_in_context(tmp_path: Path) -> None:
+    from app.services.gpt_api import file_to_context, pdf_to_text
+
+    p = tmp_path / "guide.pdf"
+    p.write_bytes(_MINIMAL_PDF)
+    text = pdf_to_text(p)
+    assert "Filmmaking" in text
+    ctx = file_to_context(p)
+    assert "Filmmaking" in ctx
+    assert "data:application/pdf;base64," not in ctx
+    # старый баг: сырой бинарь PDF в тексте
+    assert "%PDF" not in ctx
+
+
+def test_build_input_attaches_pdf_as_input_file(tmp_path: Path) -> None:
+    from app.services.gpt_api import build_input
+
+    p = tmp_path / "deck.pdf"
+    p.write_bytes(_MINIMAL_PDF)
+    inp = build_input(prompt="кратко о чём pdf", input_paths=[p])
+    assert isinstance(inp, list)
+    last = inp[-1]
+    assert last["role"] == "user"
+    content = last["content"]
+    assert isinstance(content, list)
+    types = [c.get("type") for c in content if isinstance(c, dict)]
+    assert "input_text" in types
+    assert "input_file" in types
+    file_part = next(c for c in content if c.get("type") == "input_file")
+    assert str(file_part.get("file_data") or "").startswith("data:application/pdf;base64,")
+    text_part = next(c for c in content if c.get("type") == "input_text")
+    assert "data:application/pdf;base64," not in str(text_part.get("text") or "")
