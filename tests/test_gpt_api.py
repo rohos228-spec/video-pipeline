@@ -559,7 +559,11 @@ def test_chat_pdf_in_chunks_calls_chat_per_piece(tmp_path: Path, monkeypatch) ->
         calls.append(kwargs.get("prompt") or "")
         return gpt_api.GptChatResult(text=f"OK{len(calls)}", model="test", finish_reason="stop")
 
+    async def no_sleep(*_a, **_k):
+        return None
+
     monkeypatch.setattr(gpt_api, "chat", fake_chat)
+    monkeypatch.setattr(gpt_api.asyncio, "sleep", no_sleep)
 
     big = "\n\n".join(
         f"--- стр. {i}/8 ---\n" + ("alpha " * 300) for i in range(1, 9)
@@ -581,6 +585,51 @@ def test_chat_pdf_in_chunks_calls_chat_per_piece(tmp_path: Path, monkeypatch) ->
     assert result.finish_reason == "chunked"
     assert "OK1" in result.text
     assert "###" in result.text
+
+
+def test_chat_pdf_in_chunks_continues_after_mid_500(tmp_path: Path, monkeypatch) -> None:
+    """kie 500 на 2-м куске не должен убивать весь перевод — остальные куски идут."""
+    import asyncio
+
+    from app.services import gpt_api
+
+    n = {"i": 0}
+
+    async def fake_chat(**kwargs):
+        n["i"] += 1
+        if n["i"] == 2:
+            raise gpt_api.GptApiError(
+                "GPT провайдер code=500: Server exception, please try again later",
+                context={"provider_code": 500, "retryable": True},
+            )
+        return gpt_api.GptChatResult(
+            text=f"OK{n['i']}", model="test", finish_reason="stop"
+        )
+
+    async def no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(gpt_api, "chat", fake_chat)
+    monkeypatch.setattr(gpt_api.asyncio, "sleep", no_sleep)
+
+    big = "\n\n".join(
+        f"--- стр. {i}/6 ---\n" + ("beta " * 200) for i in range(1, 7)
+    )
+    pdf = tmp_path / "deck.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+    monkeypatch.setattr(gpt_api, "pdf_to_text", lambda path, max_chars=80_000: big)
+
+    result = asyncio.run(
+        gpt_api.chat_pdf_in_chunks(
+            prompt="переведи",
+            pdf_paths=[pdf],
+            chunk_chars=1_500,
+            max_retries=0,
+        )
+    )
+    assert "OK1" in result.text
+    assert "фрагмент не обработан" in result.text or "·a" in result.text
+    assert result.finish_reason in {"chunked", "chunked_partial"}
 
 
 def test_is_pdf_provider_failure() -> None:

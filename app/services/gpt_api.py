@@ -1020,6 +1020,10 @@ async def chat_pdf_in_chunks(
 
     Текст извлекается локально (pypdf); в API уходит только текущий кусок без
     повторной отправки всего PDF. История чата — только на первом куске.
+
+    Live: kie часто даёт code=500 на *втором* куске после успешного первого —
+    раньше весь чат падал. Теперь: пауза между кусками, ≥3 ретрая, раскол
+    куска пополам при стойком 500, иначе пометка и продолжение остальных.
     """
     jobs: list[tuple[str, str]] = []
     for pdf in pdf_paths:
@@ -1035,19 +1039,6 @@ async def chat_pdf_in_chunks(
             context={"retryable": False, "error_kind": "empty_pdf"},
         )
 
-    if len(jobs) == 1 and len(jobs[0][1]) <= chunk_chars:
-        return await chat(
-            prompt=prompt,
-            accompanying=accompanying,
-            input_paths=[*pdf_paths, *(other_paths or [])],
-            system=system,
-            history=history,
-            model=model,
-            temperature=temperature,
-            timeout=timeout,
-            max_retries=max_retries,
-        )
-
     logger.info(
         "gpt_api: PDF chunked mode jobs={} chunk_chars={} files={}",
         len(jobs),
@@ -1059,46 +1050,140 @@ async def chat_pdf_in_chunks(
         user_ask = f"{user_ask}\n\n{accompanying.strip()}".strip()
     outs: list[str] = []
     last: GptChatResult | None = None
+    ok_n = 0
+    fail_n = 0
     chunk_timeout = float(timeout if timeout is not None else 120.0)
-    chunk_retries = int(max_retries if max_retries is not None else 2)
+    # Workspace передаёт max_retries=1 — для PDF этого мало (kie flaky).
+    chunk_retries = max(3, int(max_retries if max_retries is not None else 2))
+    other = list(other_paths or [])
+
+    async def _one_piece(
+        *,
+        label: str,
+        part: str,
+        idx: int,
+        depth: int,
+        use_system: bool,
+        use_history: bool,
+    ) -> str:
+        nonlocal last, ok_n, fail_n
+        piece_prompt = (
+            f"{user_ask}\n\n"
+            f"[Это фрагмент {idx} из {len(jobs)} документа «{label}». "
+            f"Выполни задание полностью для ЭТОГО фрагмента: не сокращай, "
+            f"не пиши «продолжение следует», без мета-вступлений про части.]\n\n"
+            f"{part}"
+        )
+        try:
+            last = await chat(
+                prompt=piece_prompt,
+                accompanying="",
+                # Не тащить pdf_paths снова — иначе полный текст PDF дублируется.
+                input_paths=other,
+                system=system if use_system else None,
+                history=history if use_history else None,
+                model=model,
+                temperature=temperature,
+                timeout=chunk_timeout,
+                max_retries=chunk_retries,
+            )
+            body = (last.text or "").strip() or "[пустой ответ модели]"
+            ok_n += 1
+            return f"### {label}\n\n{body}"
+        except Exception as e:  # noqa: BLE001
+            if is_pdf_provider_failure(e) and depth < 2 and len(part) > 1_200:
+                cut = len(part) // 2
+                for sep in ("\n\n", "\n", " "):
+                    pos = part.rfind(sep, max(0, cut - 400), cut + 400)
+                    if pos > 200:
+                        cut = pos + len(sep)
+                        break
+                logger.warning(
+                    "gpt_api: PDF piece {} failed ({}) — split depth={} lens={}+{}",
+                    label,
+                    e,
+                    depth + 1,
+                    cut,
+                    len(part) - cut,
+                )
+                await asyncio.sleep(1.5)
+                left = await _one_piece(
+                    label=f"{label}·a",
+                    part=part[:cut],
+                    idx=idx,
+                    depth=depth + 1,
+                    use_system=use_system,
+                    use_history=use_history,
+                )
+                await asyncio.sleep(1.5)
+                right = await _one_piece(
+                    label=f"{label}·b",
+                    part=part[cut:],
+                    idx=idx,
+                    depth=depth + 1,
+                    use_system=False,
+                    use_history=False,
+                )
+                return f"{left}\n\n---\n\n{right}"
+            fail_n += 1
+            logger.warning(
+                "gpt_api: PDF piece {} skipped after error: {}",
+                label,
+                e,
+            )
+            return (
+                f"### {label}\n\n"
+                f"[фрагмент не обработан провайдером: {e} — "
+                f"остальные части ниже, если есть]"
+            )
+
     for idx, (label, part) in enumerate(jobs):
         if callable(on_chunk):
             try:
                 on_chunk(idx + 1, len(jobs), label)
             except Exception:  # noqa: BLE001
                 logger.debug("gpt_api: on_chunk callback failed", exc_info=True)
-        piece_prompt = (
-            f"{user_ask}\n\n"
-            f"[Это фрагмент {idx + 1} из {len(jobs)} документа «{label}». "
-            f"Выполни задание полностью для ЭТОГО фрагмента: не сокращай, "
-            f"не пиши «продолжение следует», без мета-вступлений про части.]\n\n"
-            f"{part}"
+        if idx > 0:
+            # Пауза: подряд идущие вызовы после OK часто ловят code=500.
+            await asyncio.sleep(1.75)
+        outs.append(
+            await _one_piece(
+                label=label,
+                part=part,
+                idx=idx + 1,
+                depth=0,
+                use_system=(idx == 0),
+                use_history=(idx == 0),
+            )
         )
-        last = await chat(
-            prompt=piece_prompt,
-            accompanying="",
-            input_paths=list(other_paths or []),
-            system=system if idx == 0 else None,
-            history=history if idx == 0 else None,
-            model=model,
-            temperature=temperature,
-            timeout=chunk_timeout,
-            max_retries=chunk_retries,
+
+    if ok_n == 0:
+        raise GptApiError(
+            "GPT провайдер code=500: Server exception на всех фрагментах PDF "
+            "(kie). Попробуй ещё раз или разбей PDF на меньший файл.",
+            context={"retryable": True, "error_kind": "pdf_all_chunks_failed"},
         )
-        body = (last.text or "").strip()
-        if body:
-            outs.append(f"### {label}\n\n{body}")
-        else:
-            outs.append(f"### {label}\n\n[пустой ответ модели]")
 
     joined = "\n\n---\n\n".join(outs)
+    if fail_n:
+        joined = (
+            f"[PDF: часть фрагментов пропущена из‑за сбоя провайдера "
+            f"(ok={ok_n}, fail≈{fail_n}). Повтори запрос для пропущенных.]\n\n"
+            f"{joined}"
+        )
     return GptChatResult(
         text=joined,
         model=(last.model if last else (model or settings.gpt_model or "")),
-        finish_reason="chunked",
+        finish_reason="chunked_partial" if fail_n else "chunked",
         usage=(last.usage if last else {}),
-        raw={"chunked": True, "parts": len(jobs)},
+        raw={
+            "chunked": True,
+            "parts": len(jobs),
+            "ok_chunks": ok_n,
+            "fail_chunks": fail_n,
+        },
     )
+
 
 
 def _drop_input_file_parts(body: dict[str, Any]) -> bool:

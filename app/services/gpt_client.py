@@ -141,14 +141,16 @@ class ApiGptClient:
         data_or_all = data_files if master else attachments
         pdfs = [p for p in data_or_all if is_pdf_path(p)]
         others = [p for p in data_or_all if not is_pdf_path(p)]
-        use_chunked = bool(pdfs) and pdf_paths_need_chunking(pdfs)
-        # На кусок PDF 90–120с достаточно; полный документ иначе hang/500.
+        # Любой PDF — сразу по частям. Single-shot ~30k у kie → 500;
+        # mid-run 500 на 2-м куске переживает chat_pdf_in_chunks.
+        use_chunked = bool(pdfs)
         chunk_timeout = min(float(timeout), 120.0)
 
         if use_chunked:
             logger.info(
-                "gpt_client/api: large PDF → chunked mode files={}",
+                "gpt_client/api: PDF → chunked mode files={} need_split={}",
                 [p.name for p in pdfs],
+                pdf_paths_need_chunking(pdfs),
             )
             result = await chat_pdf_in_chunks(
                 prompt=master or accompanying,
@@ -158,7 +160,8 @@ class ApiGptClient:
                 timeout=chunk_timeout,
                 history=hist or None,
                 system=system,
-                max_retries=max_retries if max_retries is not None else 2,
+                # Не пробрасываем max_retries=1 из workspace — внутри ≥3.
+                max_retries=None,
             )
         else:
             try:
@@ -172,7 +175,6 @@ class ApiGptClient:
                     max_retries=max_retries,
                 )
             except Exception as e:  # noqa: BLE001
-                # Маленький PDF тоже может дать kie 500 — тогда по частям.
                 if pdfs and is_pdf_provider_failure(e):
                     logger.warning(
                         "gpt_client/api: PDF single-shot failed ({}) → chunked retry",
@@ -186,7 +188,7 @@ class ApiGptClient:
                         timeout=chunk_timeout,
                         history=hist or None,
                         system=system,
-                        max_retries=2,
+                        max_retries=None,
                     )
                 elif isinstance(e, GptApiError):
                     raise
