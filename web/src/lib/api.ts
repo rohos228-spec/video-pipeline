@@ -115,11 +115,17 @@ async function http<T>(
   } catch (e) {
     if (e instanceof DOMException && e.name === "AbortError") {
       const sec = Math.max(1, Math.round(timeoutMs / 1000));
+      const isGptLong = timeoutMs >= 120_000;
+      const looksOperator =
+        typeof path === "string" &&
+        (path.includes("/gpt-operator/") || path.includes("/excel-gpt/"));
       throw new ApiError(
         0,
-        timeoutMs >= 120_000
+        isGptLong
           ? `GPT не ответил за ${sec} с (vision/длинный ответ). Смотри окно BACKEND / лог; можно повторить.`
-          : `Сервер не ответил за ${sec} с — проверьте окно BACKEND (Uvicorn на :8765)`,
+          : looksOperator
+            ? `Пульт не сохранился за ${sec} с: БД занята воркером (hero/img/GPT). Подождите конец шага или повторите — бэкенд на :8765 обычно жив.`
+            : `Сервер не ответил за ${sec} с — проверьте окно BACKEND (Uvicorn на :8765)`,
       );
     }
     throw e;
@@ -376,6 +382,8 @@ export const api = {
   resolveGptOperator: (projectId: number, nodeKey: string) =>
     http<import("@/lib/gpt-operator").OperatorResolve>(
       `/api/projects/${projectId}/gpt-operator/${encodeURIComponent(nodeKey)}/resolve`,
+      {},
+      90_000,
     ),
   patchGptOperator: (
     projectId: number,
@@ -385,6 +393,7 @@ export const api = {
     http<{ ok: boolean; resolve: import("@/lib/gpt-operator").OperatorResolve }>(
       `/api/projects/${projectId}/gpt-operator/${encodeURIComponent(nodeKey)}`,
       { method: "PATCH", body: JSON.stringify(patch) },
+      90_000,
     ),
   uploadCheckAgentFile: (projectId: number, nodeKey: string, file: File) => {
     const fd = new FormData();

@@ -1259,6 +1259,9 @@ async def gpt_operator_patch(
     payload: dict,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    import asyncio
+
+    from sqlalchemy.exc import OperationalError
     from sqlalchemy.orm.attributes import flag_modified
 
     from app.services.gpt_operator import patch_operator_config
@@ -1268,7 +1271,33 @@ async def gpt_operator_patch(
     body.setdefault("transport", "api")
     resolved = patch_operator_config(p, node_key, body)
     flag_modified(p, "meta")
-    await session.commit()
+    # Пока воркер держит SQLite (hero/GPT/Outsee), commit может ждать/падать
+    # database is locked — UI «Пульт» тогда висит с disabled кнопками.
+    last_err: Exception | None = None
+    for attempt in range(1, 6):
+        try:
+            await session.commit()
+            last_err = None
+            break
+        except OperationalError as e:
+            last_err = e
+            msg = str(e).lower()
+            if "locked" not in msg and "busy" not in msg:
+                raise
+            await session.rollback()
+            # Перечитать и заново применить patch после rollback.
+            p = _project_or_404(await session.get(Project, project_id))
+            resolved = patch_operator_config(p, node_key, body)
+            flag_modified(p, "meta")
+            await asyncio.sleep(0.35 * attempt)
+    if last_err is not None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "БД занята воркером пайплайна (hero/картинки/GPT). "
+                "Подождите 10–30 с и нажмите роль ещё раз — бэкенд жив."
+            ),
+        ) from last_err
     return {"ok": True, "resolve": resolved}
 
 
