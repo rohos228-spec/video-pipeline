@@ -474,13 +474,27 @@ def test_pdf_to_text_and_no_base64_in_context(tmp_path: Path) -> None:
     assert "%PDF" not in ctx
 
 
-def test_build_input_attaches_pdf_as_input_file(tmp_path: Path) -> None:
+def test_build_input_attaches_pdf_as_input_file(tmp_path: Path, monkeypatch) -> None:
+    """По умолчанию PDF = только текст; input_file — при GPT_PDF_INPUT_FILE=1."""
+    import os
+
     from app.services.gpt_api import build_input
 
     p = tmp_path / "deck.pdf"
     p.write_bytes(_MINIMAL_PDF)
-    inp = build_input(prompt="кратко о чём pdf", input_paths=[p])
-    assert isinstance(inp, list)
+
+    inp_default = build_input(prompt="кратко о чём pdf", input_paths=[p])
+    last = inp_default[-1]
+    # text-only: content — строка, не multimodal list с input_file
+    assert isinstance(last["content"], str)
+    assert "Filmmaking" in last["content"] or "pdf" in last["content"].lower()
+    assert "data:application/pdf;base64," not in last["content"]
+
+    monkeypatch.setenv("GPT_PDF_INPUT_FILE", "1")
+    try:
+        inp = build_input(prompt="кратко о чём pdf", input_paths=[p])
+    finally:
+        monkeypatch.delenv("GPT_PDF_INPUT_FILE", raising=False)
     last = inp[-1]
     assert last["role"] == "user"
     content = last["content"]

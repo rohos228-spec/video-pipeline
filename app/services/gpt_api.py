@@ -51,9 +51,11 @@ _MAX_VISION_IMAGES = 8
 _MAX_VISION_BYTES = 4_000_000
 # Мелкий бинарь (docx/zip/…) можно отдать как base64 в тексте — НЕ для PDF.
 _MAX_BINARY_INLINE_BYTES = 400_000
-# PDF в Responses API: multimodal input_file (file_data), не base64 в input_text.
+# PDF в Responses API: multimodal input_file на kie.ai часто → code=500.
+# По умолчанию шлём только извлечённый текст (pypdf); file_data — опционально.
 _MAX_PDF_INLINE_BYTES = 12_000_000
 _MAX_PDF_FILES = 4
+_PDF_CONTEXT_MAX_CHARS = 80_000
 # XLSX → TSV: длинный «Общий план» / «план» легко >280k — раньше резали книгу
 # и модель «заполняла» только видимый кусок (~часть строк). Бюджет под GPT-5.x.
 _XLSX_CONTEXT_MAX_CHARS = 900_000
@@ -64,7 +66,6 @@ _XLSX_PRIORITY_SHEET_RE = re.compile(
     r"общий\s*план",
     re.IGNORECASE,
 )
-_PDF_CONTEXT_MAX_CHARS = 80_000
 
 
 class GptApiError(Exception):
@@ -571,15 +572,39 @@ def build_input(
     ]
 
     file_parts: list[dict[str, Any]] = []
-    for pdf in pdfs:
-        part = pdf_to_input_file_part(pdf)
-        if part is not None:
-            file_parts.append(part)
-            logger.info(
-                "gpt_api: attach pdf as input_file name={} bytes~{}",
-                pdf.name,
-                pdf.stat().st_size if pdf.is_file() else "?",
-            )
+    # kie.ai: input_file(PDF) → code=500 Server exception. Текст уже в input_text.
+    # Включать file_data только явно: GPT_PDF_INPUT_FILE=1
+    attach_pdf_file = str(
+        getattr(settings, "gpt_pdf_input_file", None)
+        or ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if not attach_pdf_file:
+        try:
+            from os import environ
+
+            attach_pdf_file = environ.get("GPT_PDF_INPUT_FILE", "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+        except Exception:  # noqa: BLE001
+            attach_pdf_file = False
+    if attach_pdf_file:
+        for pdf in pdfs:
+            part = pdf_to_input_file_part(pdf)
+            if part is not None:
+                file_parts.append(part)
+                logger.info(
+                    "gpt_api: attach pdf as input_file name={} bytes~{}",
+                    pdf.name,
+                    pdf.stat().st_size if pdf.is_file() else "?",
+                )
+    elif pdfs:
+        logger.info(
+            "gpt_api: pdf as text-only (no input_file) files={}",
+            [p.name for p in pdfs],
+        )
 
     if not images and not file_parts:
         items.append({"role": "user", "content": text})
@@ -856,6 +881,7 @@ async def chat(
             if not e.retryable:
                 raise
             # kie иногда падает на PDF input_file → code=500; оставляем только текст.
+            # Не сжигаем попытку: attempt -= 1, чтобы text-only точно ушёл.
             if (
                 responses_mode
                 and (
@@ -869,6 +895,7 @@ async def chat(
                     "gpt_api.chat: PDF input_file → 500, повтор только с текстом PDF"
                 )
                 last_exc = e
+                attempt = max(0, attempt - 1)
                 continue
             last_exc = e
             logger.warning("gpt_api.chat retryable: {}", e)

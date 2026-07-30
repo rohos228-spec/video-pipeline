@@ -26,6 +26,9 @@ _WORKSPACE_SYSTEM = (
     "Ты в чате Studio GPT (HTTP API). Вложения пользователя уже приложены.\n"
     "Изображения во вложениях — vision: ты их видишь и анализируешь.\n"
     "ЗАПРЕЩЕНО писать, что не можешь прикрепить файл / нет инструмента вложений.\n"
+    "Если в ЭТОМ сообщении есть новые файлы (PDF/Excel/Word/txt) — приоритет "
+    "у них: переводи/суммируй/разбирай ИМЕННО вложения, а не старые длинные "
+    "сообщения чата (там может быть чужой промт кадра/сцены).\n"
     "Документ / договор / .docx / «отправь файл» — выдай ПОЛНЫЙ текст файла "
     "без мета-оговорок. Клиент сохранит ответ как скачиваемый файл.\n"
     "Пустой .txt — ответь пустой строкой или одним переводом строки, без пояснений.\n"
@@ -36,6 +39,16 @@ _WORKSPACE_SYSTEM = (
     "Если просят и Excel, и Word — сначала блок(и) # Лист:, затем текст для .docx.\n"
     "Неизвестные поля — прочерки «—»."
 )
+
+# Короткий запрос + документ → не тащить в API километровые прошлые промты сцен.
+_ATTACHMENT_FOCUS_RE = re.compile(
+    r"(?i)("
+    r"перевед|перевод|translate|суммар|разбер|прочитай|что\s+в\s+(этом\s+)?(файл|pdf|приложен)|"
+    r"из\s+приложен|по\s+файл|этот\s+pdf|эту\s+презентац|содержим"
+    r")"
+)
+_DOC_SUFFIXES_FOCUS = frozenset({".pdf", ".docx", ".doc", ".xlsx", ".xlsm", ".txt", ".md"})
+_HISTORY_LONG_MSG_CHARS = 1200
 
 # Пользователь хочет файл в «Результаты» (не обязательно исходник).
 _ASKS_FILE_RE = re.compile(
@@ -1120,6 +1133,36 @@ def _studio_return_reply(returned: list[str]) -> str:
     return _ready_files_notice(returned)
 
 
+def _history_for_attachment_ask(
+    history: list[dict[str, str]],
+    *,
+    files: list[Path],
+    text: str,
+) -> list[dict[str, str]]:
+    """Не отравлять запрос к PDF/Excel старыми километровыми промтами сцен.
+
+    В том же чате часто лежит «переведи» + огромный image-prompt из проекта —
+    модель переводит ЕГО вместо PDF. При фокусе на вложении выкидываем
+    длинные прошлые реплики (в UI история остаётся).
+    """
+    if not history or not files:
+        return history
+    has_doc = any(p.suffix.lower() in _DOC_SUFFIXES_FOCUS for p in files)
+    if not has_doc:
+        return history
+    focus = bool(_ATTACHMENT_FOCUS_RE.search(text or "")) or len((text or "").strip()) < 80
+    if not focus:
+        return history
+    kept = [m for m in history if len(m.get("content") or "") <= _HISTORY_LONG_MSG_CHARS]
+    if len(kept) != len(history):
+        logger.info(
+            "gpt_workspace: attachment-focus — history {} → {} (dropped long turns)",
+            len(history),
+            len(kept),
+        )
+    return kept
+
+
 async def ask(
     session_id: str,
     message: str,
@@ -1153,6 +1196,7 @@ async def ask(
     # История ДО текущего сообщения (UI хранит всё; в API — только user/assistant)
     prior_raw = _read_json(d / "messages.json", [])
     history = normalize_history(prior_raw if isinstance(prior_raw, list) else [])
+    history = _history_for_attachment_ask(history, files=files, text=text)
 
     meta = _read_json(d / "meta.json", {})
     meta["status"] = "running"

@@ -28,6 +28,23 @@ def test_create_list_get_delete() -> None:
         gw.get_session(s["id"])
 
 
+def test_history_drops_long_turns_for_pdf_translate(tmp_path: Path) -> None:
+    """«переведи» + PDF не должен тащить в API старый километровый промт сцены."""
+    hist = [
+        {"role": "user", "content": "Create one unified scene " + ("x" * 3000)},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "переведи"},
+    ]
+    pdf = tmp_path / "deck.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    out = gw._history_for_attachment_ask(
+        hist, files=[pdf], text="переведи текст из приложенного файла"
+    )
+    assert len(out) == 2
+    assert out[0]["role"] == "assistant"
+    assert all(len(m["content"]) <= gw._HISTORY_LONG_MSG_CHARS for m in out)
+
+
 def test_attachment_and_voiceover_save(tmp_path: Path) -> None:
     s = gw.create_session()
     att = gw.save_attachment(s["id"], "note.txt", b"hello")
