@@ -328,6 +328,26 @@ def assemble_check_master_prompt(
     if notes:
         blocks.append("# Доп. указания ревьюера (эта нода)")
         blocks.append(notes)
+    # После исходных промтов — жёсткий override: plan/script часто требуют
+    # «верни project.xlsx», а API отдаёт только TSV → модель отказывается
+    # писать XLSX_WRITEBACK. Этот блок важнее всего выше.
+    blocks.append("")
+    blocks.append("# КОНТРАКТ API (важнее исходных промтов)")
+    if check_fix:
+        blocks.append(
+            "Бинарный project.xlsx в API недоступен — во вложении TSV-экспорт, "
+            "это и есть книга. Отказ «нет файла / нет project.xlsx» ЗАПРЕЩЁН. "
+            "При mode=fix ОБЯЗАТЕЛЕН блок --- XLSX_WRITEBACK --- с секциями "
+            "`# Лист: …` (TSV). Требования исходных промтов «прикрепи/верни .xlsx» "
+            "заменяются этим контрактом: правки только через XLSX_WRITEBACK. "
+            "В forward укажи file: fixed."
+        )
+    else:
+        blocks.append(
+            "Бинарный project.xlsx недоступен; TSV во вложении = книга. "
+            "Не отказывай из‑за «нет файла». mode=report_only — только отчёт, "
+            "без XLSX_WRITEBACK; file: original."
+        )
     return append_txt_report_footer(
         "\n".join(blocks).strip(),
         report_format=report_format,

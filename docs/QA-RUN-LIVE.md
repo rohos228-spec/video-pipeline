@@ -39,6 +39,11 @@
 
 | Время | Делаю | Сделал | Результат | Баг/фикс |
 |-------|-------|--------|-----------|----------|
+| 04:23 | STATUS 04:40 | FULL-VERIF UI deep | montage next; Create music; G regressions | ok |
+| 04:23 | storage UI | 23 files filters download refresh | present on canvas | PASS |
+| 04:23 | D5 note | excel_gpt check verdict fail + text reply | writeback still weak; not rewinding assembled | OPEN |
+| 04:23 | D17/D18 VERIFY | hero3 audio2 music1+player assemble video | v372 UI OK | PASS |
+| 04:23 | V-menu plan | open V on n_plan | Run/Files/Excel/Detach/Disable/Delete/prompts OK | PASS |
 | 04:22 | STATUS 04:35 | UI result panels | music/hero/audio/assemble fixed v372 | verify |
 | 04:22 | D18 hero/audio count | dup assets+artifacts | dedupe + music/audio kinds | FIX v372 |
 | 04:22 | D17 music result | no music case in resolver | default showed final mp4 as music | FIX v372 |

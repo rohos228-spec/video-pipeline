@@ -302,6 +302,10 @@ def test_assemble_prompt_includes_sources() -> None:
     assert "без общего плана" in text
     assert "смотри R48" in text
     assert "# ОТЧЁТ ПРОВЕРКИ" in text
+    assert "# КОНТРАКТ API" in text
+    assert "XLSX_WRITEBACK" in text
+    # Override must appear after source prompts so it wins over «верни .xlsx».
+    assert text.index("### source: n1") < text.index("# КОНТРАКТ API")
 
 
 def test_hydrate_result_from_disk_when_meta_stale(tmp_path: Path, monkeypatch) -> None:
