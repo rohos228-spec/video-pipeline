@@ -1,7 +1,7 @@
 # Context-pack video-pipeline (machine-usable)
 
 Дата: 2026-07-31
-Git HEAD на момент сборки: `731874d` (`main`)
+Git HEAD: фиксируется в финальном отчёте (`main`; рабочее дерево чистое)
 Назначение: компактный пакет знаний для автономного агента — владельцы данных, шаги, артефакты, проверки, риски. Не заменяет `docs/AGENT_MAP.md`, а фиксирует рабочий срез для харнеса/аудита.
 
 ---
@@ -131,6 +131,9 @@ Boundary: медиа-шаг `hero/run` для #51 остановлен auto-revi
 | Audio/music автономный repair | high | держать forbidden/manual до отдельного сценария |
 | Context budget xlsx_to_text 900k | medium | держать priority pack; для слабых моделей ввести профиль меньше |
 | UI mutate checks | medium | только disposable project; read-only smoke для продуктовых проектов |
+| Music step | high | `OutseeBot.generate_music` сейчас stub-raise; не включать в автономию до восстановления провайдера |
+| Grsai i2v start_frame | medium | в pipeline `start_frame` может не прокидываться как `reference_url`; проверить перед критичным i2v |
+| Studio UI minor | low | retry логов, clamp V-меню, unify label plan, баннер Outsee $0.00 |
 
 ---
 

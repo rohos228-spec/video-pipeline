@@ -178,7 +178,8 @@ def _count_plan_rows_filled(xlsx: Path, rows: tuple[int, ...]) -> dict[int, int]
             wb.close()
             return {r: 0 for r in rows}
         out = {r: 0 for r in rows}
-        for col in range(3, 20):
+        max_col = max(int(ws.max_column or 2), 2)
+        for col in range(3, max_col + 1):
             for r in rows:
                 v = ws.cell(r, col).value
                 if v and str(v).strip():
@@ -273,7 +274,7 @@ def verify_project_disk(project_id: int, data_dir: Path, status: str) -> Harness
     # If we have N scenes, expect N anim prompts when assembled/videos_ready+
     if scenes and status in {
         "animation_prompts_ready",
-        "generating_video",
+        "generating_videos",
         "videos_ready",
         "generating_audio",
         "audio_ready",

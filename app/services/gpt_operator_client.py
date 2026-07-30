@@ -237,9 +237,7 @@ async def _run_operator_api_real(
 
     accomp = accompanying or ""
     effective_output = "text" if check_mode else output_mode
-    if check_mode and check_fix:
-        accomp = build_api_accompany(accomp, expect_xlsx_writeback=True)
-    elif effective_output == "project_file":
+    if check_mode and check_fix or effective_output == "project_file":
         accomp = build_api_accompany(accomp, expect_xlsx_writeback=True)
 
     result = await chat(
@@ -355,7 +353,10 @@ async def _run_operator_api_real(
         if updated is None and not is_check:
             from dataclasses import replace
 
-            from app.services.xlsx_text_writeback import extract_sheet_blocks
+            from app.services.xlsx_text_writeback import (
+                WRITEBACK_HINT,
+                extract_sheet_blocks,
+            )
 
             if not extract_sheet_blocks(result.text or ""):
                 logger.warning(

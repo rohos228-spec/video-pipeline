@@ -119,3 +119,22 @@ def test_harness_plan_ready_does_not_require_media(tmp_path: Path) -> None:
     assert by_name["videos_mp4"].ok is True
     assert "img" not in report.repair_steps
     assert "video" not in report.repair_steps
+
+
+def test_harness_r48_counts_beyond_17_columns(tmp_path: Path) -> None:
+    (tmp_path / "scenes").mkdir()
+    for i in range(18):
+        (tmp_path / "scenes" / f"frame_{i:03d}.png").write_bytes(b"x")
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "план"
+    for col in range(3, 21):
+        ws.cell(48, col, value=f"anim-{col}")
+    wb.save(tmp_path / "project.xlsx")
+    wb.close()
+
+    report = verify_project_disk(999003, tmp_path, "assembled")
+    by_name = {c.name: c for c in report.checks}
+    assert by_name["r48_anim"].ok is True
+    assert "filled=18" in by_name["r48_anim"].detail
