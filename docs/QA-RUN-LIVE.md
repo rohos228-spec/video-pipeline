@@ -39,6 +39,9 @@
 
 | Время | Делаю | Сделал | Результат | Баг/фикс |
 |-------|-------|--------|-----------|----------|
+| 03:51 | storage node | 24 files in n_storage_* | snapshots of plan/excel_gpt replies | storage OK |
+| 03:51 | pulse +5min | services+#50 | status=assembled Run done spam=0 | continue |
+| 03:47 | canvas toolbar | select +Noda Save Copy Paste WF | present; no mutate C3-C10 yet | C-toolbar OK |
 | 03:47 | excel_gpt resolve | GET gpt-operator resolve x3 | consistent=true; check node verdict=fail + missing Ok/Fail edges | D5/D7 note |
 | 03:47 | pulse +2min | Studio+CDP+#50 | assembled quiet spam=0 backend HEAD | - |
 | 03:45 | git HEAD pulse | commits on cursor/qa-live-trukraym | HEAD 621f1df; assembled quiet; UI mid | - |
