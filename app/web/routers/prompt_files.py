@@ -116,6 +116,13 @@ def _ensure_name(name: str) -> None:
         raise HTTPException(status_code=400, detail=f"invalid prompt name: {name!r}")
 
 
+def _disk_prompt_path(step_code: str, name: str) -> Path:
+    """Путь к .md на диске (для excel_gpt — unified + legacy enrich_*)."""
+    if is_excel_gpt_prompt_step(step_code):
+        return resolve_excel_gpt_prompt_path(name)
+    return prompt_path(step_code, name)
+
+
 def _library_prompt_path(step_code: str, name: str) -> str:
     return (Path("prompts") / STEP_FOLDERS[step_code] / f"{name}.md").as_posix()
 
@@ -187,14 +194,18 @@ async def list_prompt_files(step_code: str) -> list[PromptFileInfo]:
 async def get_prompt_file(step_code: str, name: str) -> PromptFileContent:
     _ensure_step(step_code)
     _ensure_name(name)
-    p = prompt_path(step_code, name)
-    if not p.exists():
+    p = _disk_prompt_path(step_code, name)
+    if not p.is_file():
         raise HTTPException(status_code=404, detail="prompt file not found")
+    try:
+        body = read_prompt(step_code, name)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail="prompt file not found") from e
     stat = p.stat()
     return PromptFileContent(
         name=name,
         filename=f"{name}.md",
-        content=read_prompt(step_code, name),
+        content=body,
         size=stat.st_size,
         modified=_prompt_modified(step_code, name, p),
     )
@@ -204,8 +215,8 @@ async def get_prompt_file(step_code: str, name: str) -> PromptFileContent:
 async def download_prompt_file(step_code: str, name: str) -> FileResponse:
     _ensure_step(step_code)
     _ensure_name(name)
-    p = prompt_path(step_code, name)
-    if not p.exists():
+    p = _disk_prompt_path(step_code, name)
+    if not p.is_file():
         raise HTTPException(status_code=404, detail="prompt file not found")
     return FileResponse(
         path=str(p),

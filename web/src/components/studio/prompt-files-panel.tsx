@@ -623,7 +623,10 @@ export function PromptFilesPanel({
             ) : null}
             {content.isError ? (
               <p className="mt-1 text-[10px] text-destructive">
-                Не удалось загрузить тело промта.
+                Не удалось загрузить тело промта
+                {content.error instanceof Error && content.error.message
+                  ? `: ${content.error.message}`
+                  : "."}
               </p>
             ) : null}
           </div>
