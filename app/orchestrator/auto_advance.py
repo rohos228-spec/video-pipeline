@@ -630,11 +630,24 @@ async def _apply_approve(
 ) -> None:
     """Эмулируем клик `approve` пользователем в TG."""
     from app.services.gen_queue_run import is_user_stopped, should_hold_queue_auto_advance
+    from app.services.project_control import auto_awaits_manual_start
+
+    # Свежий meta: ⏹ мог только что выставить user_stop / await_manual.
+    try:
+        await session.refresh(project)
+    except Exception:  # noqa: BLE001
+        pass
 
     meta = getattr(project, "meta", None) or {}
     if meta.get("user_stop") or meta.get("mass_lane_user_stop"):
         logger.info(
             "auto_advance: #{} blocked _apply_approve (user_stop)",
+            project.id,
+        )
+        return
+    if auto_awaits_manual_start(project):
+        logger.info(
+            "auto_advance: #{} blocked _apply_approve (await manual ▶)",
             project.id,
         )
         return

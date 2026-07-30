@@ -72,6 +72,72 @@ async def test_maybe_auto_advance_blocked_after_stop_on_ready(
 
 
 @pytest.mark.asyncio
+async def test_stop_generating_hero_does_not_auto_restart(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⏹ во время hero → frames_ready; auto_mode не должен снова стартовать hero.
+
+    Live-баг 2026-07-30: после стопа stale HITL approved / auto-approve
+    снова жёг generating_hero («повторный запуск ноды после стопа»).
+    """
+    from app.models import HITLDecision, HITLKind, HITLRequest
+    from app.services.project_control import auto_awaits_manual_start
+
+    p = Project(
+        slug="hero-stop",
+        topic="t",
+        status=ProjectStatus.generating_hero,
+        auto_mode=True,
+        script_text="x" * 500,
+        general_plan="y" * 500,
+        meta={},
+    )
+    session.add(p)
+    await session.flush()
+    session.add(
+        HITLRequest(
+            project_id=p.id,
+            kind=HITLKind.approve_hero,
+            decision=HITLDecision.approved,
+            payload={},
+        )
+    )
+    await session.flush()
+
+    async def _ok_ready(*_a, **_k):
+        return True
+
+    monkeypatch.setattr(
+        "app.orchestrator.auto_advance.ready_status_confirmed_by_data",
+        _ok_ready,
+    )
+    monkeypatch.setattr(
+        "app.orchestrator.auto_advance.clamp_status_to_data",
+        _ok_ready,
+    )
+    monkeypatch.setattr(
+        "app.services.gen_queue.project_gated_by_gen_queue",
+        lambda *_a, **_k: False,
+    )
+    monkeypatch.setattr(
+        "app.services.gen_queue.gen_queue_blocks_project",
+        lambda *_a, **_k: None,
+    )
+
+    info = await stop_project_running(session, p)
+    assert info["ok"] is True
+    assert p.status is ProjectStatus.frames_ready
+    assert is_user_stopped(p)
+    assert auto_awaits_manual_start(p)
+
+    advanced = await maybe_auto_advance(session, p, bot=None)
+    assert advanced is False
+    assert p.status is ProjectStatus.frames_ready
+    assert is_user_stopped(p)
+
+
+@pytest.mark.asyncio
 async def test_clamp_status_skips_user_stopped(session: AsyncSession) -> None:
     p = Project(
         slug="t",

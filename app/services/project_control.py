@@ -34,6 +34,7 @@ def _set_user_stop_gate(project: Project) -> None:
             project.id,
         )
     project.meta = meta
+    flag_modified(project, "meta")
 
 
 def clear_user_stop_gate(project: Project) -> list[str]:
@@ -46,6 +47,7 @@ def clear_user_stop_gate(project: Project) -> list[str]:
         cleared.append("mass_lane_user_stop")
     if cleared:
         project.meta = meta
+        flag_modified(project, "meta")
         logger.info("[#{}] cleared {}", project.id, ", ".join(cleared))
     return cleared
 
@@ -154,6 +156,7 @@ def arm_auto_await_manual_start(project: Project) -> bool:
         return False
     meta[_AUTO_AWAIT_MANUAL_KEY] = True
     project.meta = meta
+    flag_modified(project, "meta")
     logger.info(
         "[#{}] auto_mode: ждём ручной ▶ (status={}) — без автостарта",
         project.id,
@@ -167,6 +170,7 @@ def clear_auto_await_manual_start(project: Project) -> bool:
     if meta.pop(_AUTO_AWAIT_MANUAL_KEY, None) is None:
         return False
     project.meta = meta
+    flag_modified(project, "meta")
     logger.info("[#{}] auto_await_manual_start снят (ручной ▶)", project.id)
     return True
 
@@ -280,6 +284,16 @@ async def stop_project_running(
         clear_stop(project.id)
 
     _set_user_stop_gate(project)
+    # После отката running→*_ready auto_mode иначе снова жмёт ту же ноду
+    # (stale HITL approved / visual auto-approve), даже если user_stop
+    # на мгновение не виден другой сессии. Снимается только ручным ▶.
+    if not is_running_status(project.status):
+        armed = arm_auto_await_manual_start(project)
+        if armed:
+            logger.info(
+                "[#{}] STOP: auto_await_manual_start — без автозапуска до ▶",
+                project.id,
+            )
     # Снять sleep soft-retry — иначе после ⏹ может «проснуться» и снова крутить
     from app.services.step_failure_policy import clear_failure_sleep
 
