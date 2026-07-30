@@ -102,6 +102,15 @@ def test_sleep_minutes_shorter_for_xlsx_sheet_mismatch() -> None:
         )
         == XLSX_SHEET_FORMAT_SLEEP_MINUTES
     )
+    assert (
+        sleep_minutes_for_error(
+            RuntimeError(
+                "project_file: модель не вернула TSV `# Лист:`/`@row=` — "
+                "project.xlsx не изменён"
+            )
+        )
+        == XLSX_SHEET_FORMAT_SLEEP_MINUTES
+    )
 
 
 @pytest.fixture

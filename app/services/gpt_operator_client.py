@@ -344,6 +344,44 @@ async def _run_operator_api_real(
             reply_text=result.text,
             downloaded_paths=downloaded,
         )
+        # Один жёсткий retry: промт часто отдаёт прозу («план»), а mode=project_file
+        # требует TSV. Не заливаем болтовню в книгу — просим формат ещё раз.
+        if updated is None and not is_check:
+            from dataclasses import replace
+
+            from app.services.xlsx_text_writeback import extract_sheet_blocks
+
+            if not extract_sheet_blocks(result.text or ""):
+                logger.warning(
+                    "gpt_operator/api: project_file получил prose без TSV "
+                    "node={} — format retry",
+                    node_key,
+                )
+                retry_prompt = (
+                    f"{prompt_for_model}\n\n"
+                    "# КОНТРАКТ ЗАПИСИ В EXCEL (повтор, обязателен)\n"
+                    "Предыдущий ответ — обычный текст БЕЗ `# Лист:` / `@row=`. "
+                    "Он ОТКЛОНЁН: project.xlsx не изменён.\n"
+                    "Сейчас верни ТОЛЬКО TSV:\n"
+                    "`# Лист: <имя листа как во входе>`\n"
+                    "строки вида `@row=<N>\\t...` (табуляция).\n"
+                    "Без прозы, без markdown, без объяснений. "
+                    "Если задача — только «Общий план»: "
+                    "`# Лист: Общий план` и строки с `@row=`."
+                )
+                retry = await chat(
+                    prompt=retry_prompt,
+                    accompanying=WRITEBACK_HINT,
+                    input_paths=list(input_paths),
+                    temperature=0.0,
+                )
+                result = replace(result, text=retry.text or "")
+                reply_text = result.text
+                updated = writeback_project_xlsx(
+                    project_xlsx=project_xlsx,
+                    reply_text=result.text,
+                    downloaded_paths=downloaded,
+                )
         if updated is not None:
             output_paths.insert(0, updated)
         else:
@@ -352,9 +390,10 @@ async def _run_operator_api_real(
                 node_key,
             )
             raise RuntimeError(
-                "project_file: модель не вернула TSV `# Лист:`/`@row=` "
-                "(и prose→«Общий план» на полной книге запрещён) — "
-                "project.xlsx не изменён"
+                "project_file: модель не вернула TSV `# Лист:`/`@row=` — "
+                "project.xlsx не изменён. "
+                "Промт дал обычный текст: смени промт на табличный "
+                "или outputMode≠project_file (текст/sidecar)."
             )
 
     if effective_output == "sidecar":
