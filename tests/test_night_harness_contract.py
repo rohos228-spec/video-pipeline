@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 
 from app.services.agent_harness import HARNESS_FORBIDDEN_STEPS, verify_project_disk
 from app.services.gpt_api import xlsx_to_text
@@ -57,7 +57,6 @@ def test_xlsx_priority_pack_keeps_r48_under_budget(tmp_path: Path) -> None:
     assert "@row=48" in text
     assert "@row=49" in text
     assert "нет project.xlsx" not in text.lower() or "НЕ «нет" in text
-    assert "обрезано" in text or "лимит" in text or "FILLER" not in text or True
 
 
 def test_writeback_rejects_dense_plan_without_row_or_label(tmp_path: Path) -> None:
@@ -104,3 +103,19 @@ def test_harness_verify_disk_assembled(tmp_path: Path) -> None:
     assert report.ok is True or any(c.name == "r48_anim" for c in report.checks)
     assert "audio" not in report.repair_steps
     assert "music" not in report.repair_steps
+
+
+def test_harness_plan_ready_does_not_require_media(tmp_path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "план"
+    wb.save(tmp_path / "project.xlsx")
+    wb.close()
+
+    report = verify_project_disk(999002, tmp_path, "plan_ready")
+    by_name = {c.name: c for c in report.checks}
+    assert by_name["scenes_png"].ok is True
+    assert by_name["videos_mp4"].ok is True
+    assert "img" not in report.repair_steps
+    assert "video" not in report.repair_steps
