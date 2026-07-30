@@ -39,6 +39,13 @@
 
 | Время | Делаю | Сделал | Результат | Баг/фикс |
 |-------|-------|--------|-----------|----------|
+| 04:22 | STATUS 04:35 | UI result panels | music/hero/audio/assemble fixed v372 | verify |
+| 04:22 | D18 hero/audio count | dup assets+artifacts | dedupe + music/audio kinds | FIX v372 |
+| 04:22 | D17 music result | no music case in resolver | default showed final mp4 as music | FIX v372 |
+| 04:19 | montage stamp + ASR | read MONTAGE_STAMP + words.json | final stamped; whisper words present | artifacts OK |
+| 04:18 | STATUS 04:20 | pipeline assembled UI video | continue FULL-VERIF safe buttons | ok |
+| 04:18 | D16b VERIFY | hard reload v371 assemble | video tag + download OK artifact f8eb8880 | PASS |
+| 04:18 | D16b video preview | DefaultResultView render video | assemble final shows <video> + download v371 | D16 FIX2 |
 | 04:17 | D16 assemble preview | gate hid final when nodeStatus unknown | fix gate + bump v370 | D16 FIX |
 | 04:13 | pulse +22min | hold assembled | spam=0 v369 HEAD d294820 | continue |
 | 04:08 | D13 rootcause | git history OutseeBot.generate_music | added as stub in 69e2967; CDP Suno never in repo | D13 P0 open |

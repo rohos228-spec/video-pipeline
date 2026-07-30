@@ -9,7 +9,14 @@ import {
   SHEET_PLAN_V8,
 } from "@/lib/xlsx-sheets";
 
-export type NodeResultItemKind = "text" | "image" | "video" | "file" | "xlsx" | "frames";
+export type NodeResultItemKind =
+  | "text"
+  | "image"
+  | "video"
+  | "audio"
+  | "file"
+  | "xlsx"
+  | "frames";
 
 export interface NodeResultItem {
   id: string;
@@ -66,13 +73,19 @@ function filterArtifacts(list: ArtifactDTO[], nodeType: string): ArtifactDTO[] {
     return list.filter((a) => a.kind.includes("image") || a.kind.includes("scene"));
   }
   if (nodeType.includes("video") || nodeType === "videos" || nodeType === "hitl_videos") {
-    return list.filter((a) => a.kind.includes("video"));
+    return list.filter((a) => a.kind.includes("video") && !a.kind.includes("final"));
   }
-  if (nodeType === "hero" || nodeType === "items" || nodeType === "hitl_hero") {
-    return list.filter((a) => a.kind.includes("hero") || a.kind.includes("item"));
+  if (nodeType === "hero" || nodeType === "hitl_hero") {
+    return list.filter((a) => a.kind.includes("hero"));
+  }
+  if (nodeType === "items") {
+    return list.filter((a) => a.kind.includes("item"));
   }
   if (nodeType === "audio") {
-    return list.filter((a) => a.kind.includes("audio") || a.kind.includes("subtitle"));
+    return list.filter((a) => a.kind === "audio" || a.kind.includes("subtitle"));
+  }
+  if (nodeType === "music") {
+    return list.filter((a) => a.kind === "music" || a.kind.includes("music"));
   }
   if (nodeType === "assemble" || nodeType === "hitl_final") {
     return list.filter((a) => a.kind.includes("final"));
@@ -80,16 +93,56 @@ function filterArtifacts(list: ArtifactDTO[], nodeType: string): ArtifactDTO[] {
   return list;
 }
 
+function mediaKind(path: string, kindHint: string): NodeResultItemKind {
+  const hint = (kindHint || "").toLowerCase();
+  if (/\.(mp4|webm)$/i.test(path) || hint.includes("video") || hint.includes("final")) {
+    return "video";
+  }
+  if (
+    /\.(mp3|wav|m4a|ogg|aac|flac)$/i.test(path) ||
+    hint === "audio" ||
+    hint === "music" ||
+    hint.includes("music")
+  ) {
+    return "audio";
+  }
+  if (
+    /\.(png|jpe?g|webp|gif)$/i.test(path) ||
+    hint.includes("image") ||
+    hint.includes("hero") ||
+    hint.includes("scene")
+  ) {
+    return "image";
+  }
+  return "file";
+}
+
+/** Уникальные файлы по basename (assets+artifacts часто дублируют один path). */
+function dedupeResultItems(items: NodeResultItem[]): NodeResultItem[] {
+  const seen = new Set<string>();
+  const out: NodeResultItem[] = [];
+  for (const item of items) {
+    const raw = (item.filePath || item.downloadUrl || item.previewUrl || item.id || "")
+      .toLowerCase()
+      .replace(/\\/g, "/");
+    const base = raw.split("/").pop() || raw;
+    if (!base || seen.has(base)) continue;
+    seen.add(base);
+    out.push(item);
+  }
+  return out;
+}
+
 function artifactItems(arts: ArtifactDTO[]): NodeResultItem[] {
   return arts.map((a) => {
     const path = a.path || "";
-    const isVideo = /\.(mp4|webm)$/i.test(path) || a.kind.includes("video");
     return {
       id: a.uuid,
       label: a.kind,
-      kind: isVideo ? "video" : path.match(/\.(png|jpe?g|webp|gif)$/i) ? "image" : "file",
+      kind: mediaKind(path, a.kind || ""),
       previewUrl: api.artifactFileUrl(a.uuid),
       downloadUrl: api.artifactFileUrl(a.uuid),
+      filePath: path || null,
     };
   });
 }
@@ -97,12 +150,13 @@ function artifactItems(arts: ArtifactDTO[]): NodeResultItem[] {
 function assetItems(assets: ProjectAsset[]): NodeResultItem[] {
   return assets.map((a) => {
     const path = a.path || "";
-    const isVideo = a.kind === "videos" || /\.(mp4|webm)$/i.test(path);
     const voiceover = (a as { voiceover?: string }).voiceover;
+    const kind: NodeResultItemKind =
+      a.kind === "xlsx" ? "xlsx" : mediaKind(path, a.kind || "");
     return {
       id: String(a.id),
       label: a.label || a.kind || a.id,
-      kind: a.kind === "xlsx" ? "xlsx" : isVideo ? "video" : a.preview_url ? "image" : "file",
+      kind,
       previewUrl: a.preview_url,
       downloadUrl: a.preview_url || undefined,
       content: voiceover ?? undefined,
@@ -290,11 +344,13 @@ function computeNodeResult(
 
     case "hero":
     case "hitl_hero": {
-      const heroAssets = ctx.assets.filter((a) => a.kind.includes("hero") || a.path?.includes("hero"));
-      const items = [
-        ...assetItems(heroAssets),
+      const heroAssets = ctx.assets.filter(
+        (a) => a.kind === "hero_reference" || a.kind === "hero",
+      );
+      const items = dedupeResultItems([
         ...artifactItems(arts.filter((a) => a.kind.includes("hero"))),
-      ];
+        ...assetItems(heroAssets),
+      ]);
       if (items.length) {
         const descriptions = project?.hero_descriptions ?? [];
         const enriched = items.map((item, i) => ({
@@ -444,17 +500,36 @@ function computeNodeResult(
     }
 
     case "audio": {
-      const audioAssets = ctx.assets.filter((a) => a.kind.includes("audio") || a.path?.includes("audio"));
-      const items = [...assetItems(audioAssets), ...artifactItems(arts)];
+      const audioAssets = ctx.assets.filter(
+        (a) => a.kind === "audio" || a.kind.includes("subtitle"),
+      );
+      const items = dedupeResultItems([
+        ...artifactItems(arts),
+        ...assetItems(audioAssets),
+      ]);
       if (items.length) return ready(items, `${items.length} аудио-файлов`, "assets");
       return empty("Аудио ещё не сгенерировано", "assets");
+    }
+
+    case "music": {
+      const musicAssets = ctx.assets.filter(
+        (a) => a.kind === "music" || /[/\\]music[/\\]/i.test(a.path || ""),
+      );
+      const items = dedupeResultItems([
+        ...artifactItems(arts),
+        ...assetItems(musicAssets),
+      ]);
+      if (items.length) {
+        return ready(items, `Музыка: ${items.length} файл(ов)`, "assets");
+      }
+      return empty("Музыка ещё не сгенерирована", "assets");
     }
 
     case "assemble":
     case "hitl_final": {
       const finalArts = artifactItems(arts);
       const finalAssets = ctx.assets.filter((a) => a.kind.includes("final"));
-      const items = [...assetItems(finalAssets), ...finalArts];
+      const items = dedupeResultItems([...finalArts, ...assetItems(finalAssets)]);
       if (items.length) return ready(items, "Финальный ролик готов", "assets");
       if (project?.status === "assembled") {
         return {
