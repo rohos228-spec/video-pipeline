@@ -39,6 +39,9 @@
 
 | Время | Делаю | Сделал | Результат | Баг/фикс |
 |-------|-------|--------|-----------|----------|
+| 03:47 | excel_gpt resolve | GET gpt-operator resolve x3 | consistent=true; check node verdict=fail + missing Ok/Fail edges | D5/D7 note |
+| 03:47 | pulse +2min | Studio+CDP+#50 | assembled quiet spam=0 backend HEAD | - |
+| 03:45 | git HEAD pulse | commits on cursor/qa-live-trukraym | HEAD 621f1df; assembled quiet; UI mid | - |
 | 03:44 | status pulse | assembled quiet logs | D15 spam gone; UI matrix mid; D12/D13 WA remain | - |
 | 03:44 | B-I6 Node Studio | open studio on plan | tabs Settings/Prompts/Excel/Results + FINAL VIDEO | B-I6 OK |
 | 03:44 | D15b assembled spam | startup skip + quiet graph end | 9 tests; no next publish idle | D15 FIX2 |
@@ -121,7 +124,10 @@
 - [x] Баг-диалог (лог-превью)
 - [x] Create Outsee UI (проект #50)
 - [x] items — пусто (item_descriptions=[]), нода «ожидание» OK
-- [ ] Inspector B-I3/I4 / sidebar B-S3,S6–S10 / canvas C1,C3–C10 / publish
+- [x] Canvas toolbar present (+ Нода select, Save, Copy, Paste, WF, Excel)
+- [x] Run bar all buttons present; `#50 · done`
+- [ ] Inspector B-I3/I4 (PATCH auto_mode — blocked by safety; GET auto_mode=1)
+- [ ] sidebar B-S3,S6–S10 / canvas C3–C10 mutate / publish node absent
 
 ### D/E — Ноды (реальный Run)
 - [x] plan (уже plan_ready + xlsx/general_plan; HITL approved)
