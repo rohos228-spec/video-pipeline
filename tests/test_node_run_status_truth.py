@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.models import (
@@ -358,3 +359,48 @@ async def test_direct_status_write_blocked_in_strict_mode(mem_db, monkeypatch) -
                 nr.status = NodeRunStatus.done
         finally:
             _status_machine_write.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_assembled_heals_failed_run_status(mem_db) -> None:
+    """D14: assembled + stale failed NodeRun → WorkflowRun done, NodeRun healed."""
+    project_id, nr_id, _wf_id = await _seed_project_with_run(
+        mem_db,
+        project_status=ProjectStatus.assembled,
+        node_status=NodeRunStatus.failed,
+        node_type="music",
+        node_key="n_music",
+    )
+    async with mem_db() as session:
+        run = (
+            await session.execute(
+                select(WorkflowRun).where(WorkflowRun.project_id == project_id)
+            )
+        ).scalar_one()
+        run.status = WorkflowRunStatus.failed
+        nr = await session.get(NodeRun, nr_id)
+        assert nr is not None
+        nr.error = "прервано: рабочий процесс не активен"
+        # unused side node stays pending — must not keep run failed/waiting
+        session.add(
+            NodeRun(
+                workflow_run_id=run.id,
+                node_key="n_excel_gpt_side",
+                node_type="excel_gpt",
+                status=NodeRunStatus.pending,
+            )
+        )
+
+    await sync_run_for_project(project_id)
+
+    async with mem_db() as session:
+        run = (
+            await session.execute(
+                select(WorkflowRun).where(WorkflowRun.project_id == project_id)
+            )
+        ).scalar_one()
+        assert run.status == WorkflowRunStatus.done
+        nr = await session.get(NodeRun, nr_id)
+        assert nr is not None
+        assert nr.status == NodeRunStatus.done
+        assert not (nr.error or "")

@@ -9,7 +9,8 @@
   любой → pending — явный сброс/стоп (ui_reset, api_reset, api_stop, ui_restart, auto_unstick)
 
 Запрещено:
-  done минуя running (только complete_node с initiator=worker)
+  done минуя running (только complete_node с initiator=worker;
+    исключение: heal_success — failed→done когда Project уже доказывает успех)
   автоматические откаты назад (кроме явных reset-initiators)
 """
 
@@ -135,6 +136,7 @@ def _apply_side_effects(
 
     if new == NodeRunStatus.done:
         nr.progress_text = None
+        nr.error = None
 
     if new == NodeRunStatus.failed:
         nr.error = (error or nr.error or "ошибка шага")[:2000]
@@ -159,6 +161,24 @@ def transition_node_status(
         return False
 
     if new_status == NodeRunStatus.pending and initiator in _RESET_INITIATORS:
+        _apply_side_effects(nr, old, new_status, initiator=initiator, error=error)
+        _log_line(
+            node_key=nr.node_key,
+            node_type=nr.node_type,
+            old=old,
+            new=new_status,
+            initiator=initiator,
+            project_id=project_id,
+        )
+        return True
+
+    # Heal: Project уже на следующем ready/assembled, а NodeRun залип в failed
+    # (гонка reconcile / WA после успеха). Не открываем failed→done для worker.
+    if (
+        initiator == "heal_success"
+        and new_status == NodeRunStatus.done
+        and old == NodeRunStatus.failed
+    ):
         _apply_side_effects(nr, old, new_status, initiator=initiator, error=error)
         _log_line(
             node_key=nr.node_key,
@@ -255,6 +275,20 @@ def complete_node(nr: NodeRun, *, project_id: int | None, initiator: str = "work
         return False
     return transition_node_status(
         nr, NodeRunStatus.done, initiator=initiator, project_id=project_id
+    )
+
+
+def heal_failed_node_done(
+    nr: NodeRun, *, project_id: int | None
+) -> bool:
+    """failed → done когда Project.status уже доказывает успех шага."""
+    if nr.status != NodeRunStatus.failed:
+        return False
+    return transition_node_status(
+        nr,
+        NodeRunStatus.done,
+        initiator="heal_success",
+        project_id=project_id,
     )
 
 

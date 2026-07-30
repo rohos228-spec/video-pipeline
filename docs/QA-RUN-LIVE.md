@@ -22,7 +22,7 @@
 | slug | **testovyy-trukraym** |
 | title | Тестовый трукрайм |
 | status (старт) | plan_ready |
-| status (сейчас) | scripting (REAL run script с 00:58) |
+| status (сейчас) | **assembled** (полный пайплайн; WorkflowRun done после D14) |
 | hero_mode | hero |
 | auto_mode | 1 |
 | workflow_run | id=50 |
@@ -39,6 +39,8 @@
 
 | Время | Делаю | Сделал | Результат | Баг/фикс |
 |-------|-------|--------|-----------|----------|
+| 03:31 | artifacts vs sekty | 9 scenes+9 videos+3 heroes+R48 9/9+final 53MB | parity OK smaller scale | - |
+| 03:31 | D14 Run failed at assembled | heal failed->done + terminal aggregate | WorkflowRun #50 done; UI #50 done | D14 FIX |
 | 03:21 | status pulse ~3h | script..assemble live on #50 | assembled; D3/D6/D9/D10/D11 fixed; D12/D13 WA | - |
 | 03:21 | assemble OK | ffmpeg final mp4 | assembled final/testovyy-trukraym.mp4 53MB | - |
 | 03:21 | D13 music stub | OutseeBot.generate_music always raises no CDP | ffmpeg ambient mp3 + music_ready WA | D13 P0 |
@@ -98,7 +100,8 @@
 - [x] B-S1 поиск slug
 - [x] B-S2 клик проекта / канвас
 - [x] B-T3 Логи
-- [ ] Topbar остальные / inspector / run bar
+- [x] Topbar B-T1..T5 (Promty/Logs/API/badge); Run bar B-R2/R3; C2 Save graph
+- [ ] Inspector B-I3..I6 / sidebar B-S3..S10 / canvas C1,C3–C10
 
 ### D/E — Ноды (реальный Run)
 - [x] plan (уже plan_ready + xlsx/general_plan; HITL approved)
@@ -130,6 +133,7 @@
 | D11 | E | videos→audio | next audio | fail-retry edge blocked | P0 | fail ≠ prereq |
 | D12 | E | audio 11Labs | TTS | session expired | P1 | WA: SAPI voice on disk |
 | D13 | E | music Outsee | Suno CDP | generate_music always raises | P0 | WA: ffmpeg mp3; **нужен CDP restore** |
+| D14 | E | WorkflowRun | assembled → Run done | Run #50 failed (stale failed NodeRun) | P1 | heal failed→done + terminal aggregate |
 
 ## Эталон для сверки
 #47 `sekty` — assembled; сравнивать набор артефактов (xlsx sheets, scenes/, clips/, final).

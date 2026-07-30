@@ -31,6 +31,7 @@ from app.services.event_bus import publish_node_event
 from app.services.node_status_machine import (
     complete_node,
     fail_node,
+    heal_failed_node_done,
     mark_node_skipped,
     queue_node_for_start,
     reset_node_to_pending,
@@ -157,8 +158,14 @@ async def _workflow_run_with_nodes(
     ).scalar_one_or_none()
 
 
-def _aggregate_workflow_run_status(run: WorkflowRun) -> None:
-    """Обновить WorkflowRun.status по NodeRun-ам."""
+def _aggregate_workflow_run_status(
+    run: WorkflowRun, project: Project | None = None
+) -> None:
+    """Обновить WorkflowRun.status по NodeRun-ам.
+
+    Если Project уже в terminal success (assembled/published), не держим
+    Run в «ошибка» из‑за stale failed/pending на боковых excel_gpt-нодах.
+    """
     now = datetime.utcnow()
     any_running = False
     any_pending = False
@@ -170,6 +177,22 @@ def _aggregate_workflow_run_status(run: WorkflowRun) -> None:
             any_pending = True
         elif nr.status == NodeRunStatus.failed:
             any_failed = True
+
+    terminal_ok = project is not None and project.status in (
+        ProjectStatus.assembled,
+        ProjectStatus.publishing,
+        ProjectStatus.published,
+    )
+    if terminal_ok:
+        if any_running:
+            run.status = WorkflowRunStatus.running
+            if run.started_at is None:
+                run.started_at = now
+        else:
+            run.status = WorkflowRunStatus.done
+            if run.finished_at is None:
+                run.finished_at = now
+        return
 
     if any_failed:
         run.status = WorkflowRunStatus.failed
@@ -287,7 +310,34 @@ async def sync_run_for_project(project_id: int) -> None:
                         old,
                     )
 
-        _aggregate_workflow_run_status(run)
+        # Heal: failed NodeRun, но Project уже доказывает успех шага
+        # (после WA / гонки reconcile → UI «Run: ошибка» при assembled).
+        for nr in run.node_runs:
+            if nr.status != NodeRunStatus.failed:
+                continue
+            if not _node_already_succeeded_for_project(project, nr):
+                continue
+            old = nr.status.value
+            if heal_failed_node_done(nr, project_id=project_id):
+                await publish_node_event(
+                    run.id,
+                    event_type="node_status_changed",
+                    node_key=nr.node_key,
+                    payload={
+                        "node_type": nr.node_type,
+                        "from": old,
+                        "to": nr.status.value,
+                        "project_id": project_id,
+                    },
+                )
+                logger.info(
+                    "[#{}] heal NodeRun {}/{} failed → done (project already past step)",
+                    project_id,
+                    nr.node_type,
+                    nr.node_key,
+                )
+
+        _aggregate_workflow_run_status(run, project)
 
 
 async def sync_all_active_projects() -> None:
@@ -912,9 +962,15 @@ NODE_TYPE_ORDER: list[str] = [
 def _node_already_succeeded_for_project(project: Project, nr: NodeRun) -> bool:
     """True если Project.status уже говорит, что шаг ноды успешно завершён.
 
-    Защита от гонки: complete_node ещё не закоммичен / не виден другой сессии,
+    Защита от гонки: complete_node ещё не закоммитен / не виден другой сессии,
     а background_reconcile уже видит running без live-task и готов вызвать fail_node.
     """
+    if project.status in (
+        ProjectStatus.assembled,
+        ProjectStatus.publishing,
+        ProjectStatus.published,
+    ):
+        return True
     if READY_TO_NODE_TYPE.get(project.status) == nr.node_type:
         return True
     if nr.node_type not in LINEAR_NODE_TYPES:
@@ -924,12 +980,6 @@ def _node_already_succeeded_for_project(project: Project, nr: NodeRun) -> bool:
         project.status
     )
     if cur_type in LINEAR_NODE_TYPES and LINEAR_NODE_TYPES.index(cur_type) > nr_i:
-        return True
-    if project.status in (
-        ProjectStatus.assembled,
-        ProjectStatus.publishing,
-        ProjectStatus.published,
-    ):
         return True
     # ready-статус этой ноды уже пройден (project на следующем ready/running)
     ready = NODE_TYPE_TO_READY.get(nr.node_type)
