@@ -210,27 +210,40 @@ def apply_sheet_blocks_to_xlsx(
 
         has_row_marks = any(_parse_row_mark(r)[0] is not None for r in rows)
         label_map: dict[str, int] = {}
-        use_label_fallback = (
-            not has_row_marks
-            and key in {"план", "общий план", "общий план ролика"}
-        )
-        protect_label_col = (
-            has_row_marks
-            and key in {"план", "общий план", "общий план ролика"}
-        )
+        # Fail-closed только для листа кадров «план» (R45/R48/R49).
+        # «Общий план» часто пишут без @row= (эпизоды / prose) — sequential OK.
+        frame_plan = key == "план"
+        plan_like = key in {"план", "общий план", "общий план ролика"}
+        use_label_fallback = not has_row_marks and frame_plan
+        protect_label_col = has_row_marks and plan_like
         if use_label_fallback:
             label_map = _label_row_map(ws)
+            if not label_map:
+                raise ValueError(
+                    f"xlsx_writeback: лист «{ws.title}» без @row= и без подписей "
+                    "в колонке A — отказ (риск сдвига R45/R48/R49)"
+                )
 
         sequential_idx = 0
         for row in rows:
             abs_row, cells = _parse_row_mark(row)
             if abs_row is None:
-                sequential_idx += 1
-                abs_row = sequential_idx
                 if use_label_fallback and cells:
                     lab = str(cells[0] or "").strip().casefold()
                     if lab and lab in label_map:
                         abs_row = label_map[lab]
+                    else:
+                        raise ValueError(
+                            f"xlsx_writeback: лист «{ws.title}» строка без @row= "
+                            f"и без известной подписи {lab!r} — отказ"
+                        )
+                elif frame_plan and not has_row_marks:
+                    raise ValueError(
+                        f"xlsx_writeback: лист «{ws.title}» без @row= — отказ"
+                    )
+                else:
+                    sequential_idx += 1
+                    abs_row = sequential_idx
             if abs_row < 1:
                 continue
             for c_idx, val in enumerate(cells, start=1):

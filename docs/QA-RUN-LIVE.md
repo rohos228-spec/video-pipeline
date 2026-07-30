@@ -39,6 +39,11 @@
 
 | Время | Делаю | Сделал | Результат | Баг/фикс |
 |-------|-------|--------|-----------|----------|
+| 21:15 | NIGHT P4 | tests 50 pass; commit+push main; morning checklist | harness #50 GREEN; 0 wipe | SHIP |
+| 21:14 | HARNESS CLI | night_harness.py --project-id 50 | ok=True next=none checks=8 | PASS |
+| 21:14 | NIGHT P0-P3 | llm_contract+priority pack+writeback fail-closed+harness | #50 verify GREEN R48=9 | ok |
+| 07:40 | SEQ NOTE | graph has excel_gpt side branches | core plan..assemble all done; audio/music not re-run | ok |
+| 07:40 | SEQ VERIFY #50 | artifacts HTTP + assets + xlsx + disk + logs | 26/26 arts OK; 40 assets OK; Run done; 0 ERR #50 | PASS |
 | 07:32 | VERIFY matrix | HEAD a110309+ D5retry; UI hero/images/videos/assemble; R48 9/9 | audio/music SKIP | ok |
 | 07:32 | D5 harden | retry check+fix if no TSV writeback | unit test pass; no audio/music touch | FIX |
 | 07:29 | STATUS 07:30 | continue FULL-VERIF no voice/music | Create suno->music in source confirmed | ok |
@@ -199,3 +204,13 @@
 
 ## Эталон для сверки
 #47 `sekty` — assembled; сравнивать набор артефактов (xlsx sheets, scenes/, clips/, final).
+
+## Утро 09:00 — чеклист (night harness)
+
+- [x] Spec: `docs/superpowers/specs/2026-07-30-night-harness-llm-excel.md`
+- [x] `llm_contract` + priority pack TSV + writeback fail-closed на лист «план»
+- [x] Harness: CLI `scripts/night_harness.py`, API `GET/POST …/harness/*`, ops JSONL
+- [x] #50 verify GREEN (R48=9, scenes/videos/final, failed node_runs=0)
+- [x] Харнес **не** трогал audio/music; **не** вызывал `reset_step` wipe
+- [ ] После `git pull`: Studio version = HEAD; перезапуск бэкенда для новых harness routes
+- [ ] Опционально: `python scripts/night_harness.py --project-id 50 --interval 300`

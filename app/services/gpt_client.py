@@ -115,14 +115,19 @@ class ApiGptClient:
 
         accompanying = (text or "").strip()
         if expect_file_download and any(
-            p.suffix.lower() in {".xlsx", ".xlsm"} for p in data_files
+            p.suffix.lower() in {".xlsx", ".xlsm", ".xls"} for p in data_files
         ):
-            if WRITEBACK_HINT not in accompanying:
-                accompanying = (
-                    f"{accompanying}\n\n{WRITEBACK_HINT}".strip()
-                    if accompanying
-                    else WRITEBACK_HINT
-                )
+            from app.services.llm_contract import build_api_accompany
+
+            accompanying = build_api_accompany(
+                accompanying, expect_xlsx_writeback=True
+            )
+        elif expect_file_download and WRITEBACK_HINT not in accompanying:
+            accompanying = (
+                f"{accompanying}\n\n{WRITEBACK_HINT}".strip()
+                if accompanying
+                else WRITEBACK_HINT
+            )
 
         hist = list(history or [])
         logger.info(

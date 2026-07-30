@@ -166,7 +166,14 @@ def test_apply_and_writeback(tmp_path: Path) -> None:
     wb.save(src)
     wb.close()
 
-    reply = "# Лист: план\nname\tval\nfoo\tbar\n# Лист: Кадры\nid\n1\n"
+    reply = (
+        "# Лист: план\n"
+        "@row=1\tname\tval\n"
+        "@row=2\tfoo\tbar\n"
+        "# Лист: Кадры\n"
+        "id\n"
+        "1\n"
+    )
     out = writeback_project_xlsx(
         project_xlsx=src,
         reply_text=reply,
@@ -174,7 +181,10 @@ def test_apply_and_writeback(tmp_path: Path) -> None:
     )
     assert out == src
     wb2 = load_workbook(src)
-    assert wb2["план"]["A1"].value == "name"
+    # protect_label_col: существующая подпись A не перетирается чужим текстом
+    assert wb2["план"]["A1"].value == "old"
+    assert wb2["план"]["B1"].value == "val"
+    assert wb2["план"]["A2"].value == "foo"
     assert wb2["план"]["B2"].value == "bar"
     # Overlay: строки вне TSV не стираем
     assert wb2["план"]["A5"].value == "keep-me"

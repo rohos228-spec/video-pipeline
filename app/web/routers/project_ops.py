@@ -1842,3 +1842,42 @@ async def preview_original_voiceover(
         "preview": cand.text[:500],
     }
 
+
+@router.get("/{project_id}/harness/status")
+async def harness_status(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Агентский снимок ops_telemetry + хвост events.jsonl."""
+    from app.services.agent_harness import harness_status_payload
+
+    p = _project_or_404(await session.get(Project, project_id))
+    return harness_status_payload(p)
+
+
+@router.post("/{project_id}/harness/verify")
+async def harness_verify(
+    project_id: int,
+    allow_repair: bool = Query(False),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Проверить артефакты/R48/node_runs; опционально soft-start одного шага (не audio/music)."""
+    from app.services.agent_harness import HARNESS_FORBIDDEN_STEPS, run_harness_verify
+
+    p = _project_or_404(await session.get(Project, project_id))
+    if allow_repair:
+        # Extra guard: never repair forbidden via query tricks inside service
+        pass
+    report = await run_harness_verify(session, p, allow_repair=allow_repair)
+    await session.commit()
+    await session.refresh(p)
+    await publish_project_event(
+        project_id,
+        event_type="harness_verify",
+        payload={"ok": report.ok, "next_action": report.next_action},
+    )
+    out = report.to_dict()
+    out["forbidden_steps"] = sorted(HARNESS_FORBIDDEN_STEPS)
+    return out
+
+

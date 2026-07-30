@@ -214,27 +214,33 @@ async def _run_operator_api_real(
 ) -> OperatorApiResult:
     """Реальный вызов GPT через OpenAI-совместимый API (без браузера/CDP)."""
     from app.services.gpt_api import chat, collect_result_urls, download_content
-    from app.services.xlsx_text_writeback import WRITEBACK_HINT, writeback_project_xlsx
+    from app.services.xlsx_text_writeback import writeback_project_xlsx
 
     out_dir = project_dir / "excel_gpt_uploads" / node_key
     out_dir.mkdir(parents=True, exist_ok=True)
 
     is_check = _is_check(role=role, check_mode=check_mode)
     mode = "fix" if check_fix else "report_only"
+    raw_prompt = prompt or ""
     if check_mode:
-        prompt_for_model = append_txt_report_footer(prompt or "")
+        # assemble_check_master_prompt уже кладёт TXT-footer — не дублируем.
+        if "# ОТЧЁТ ПРОВЕРКИ" in raw_prompt:
+            prompt_for_model = raw_prompt
+        else:
+            prompt_for_model = append_txt_report_footer(raw_prompt)
     elif is_check:
-        prompt_for_model = append_response_footer(prompt)
+        prompt_for_model = append_response_footer(raw_prompt)
     else:
-        prompt_for_model = prompt or ""
+        prompt_for_model = raw_prompt
+
+    from app.services.llm_contract import build_api_accompany
 
     accomp = accompanying or ""
     effective_output = "text" if check_mode else output_mode
-    # check+fix: модель возвращает TSV writeback — нужен тот же hint, что у project_file.
-    if check_mode and check_fix and WRITEBACK_HINT not in accomp:
-        accomp = f"{accomp}\n\n{WRITEBACK_HINT}".strip() if accomp else WRITEBACK_HINT
-    if effective_output == "project_file" and WRITEBACK_HINT not in accomp:
-        accomp = f"{accomp}\n\n{WRITEBACK_HINT}".strip() if accomp else WRITEBACK_HINT
+    if check_mode and check_fix:
+        accomp = build_api_accompany(accomp, expect_xlsx_writeback=True)
+    elif effective_output == "project_file":
+        accomp = build_api_accompany(accomp, expect_xlsx_writeback=True)
 
     result = await chat(
         prompt=prompt_for_model,

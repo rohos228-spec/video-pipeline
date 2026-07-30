@@ -76,6 +76,8 @@ _XLSX_PRIORITY_SHEET_RE = re.compile(
     r"общий\s*план",
     re.IGNORECASE,
 )
+# Критичные строки листа «план» — всегда в context pack до остального бюджета.
+_XLSX_PINNED_PLAN_ROWS: tuple[int, ...] = (15, 45, 46, 48, 49, 50, 64)
 
 
 class GptApiError(Exception):
@@ -142,6 +144,15 @@ def _xlsx_sheet_priority(title: str) -> int:
     return 5
 
 
+def _is_plan_sheet_title(title: str) -> bool:
+    low = (title or "").strip().casefold()
+    return low == "план" or low.startswith("план ")
+
+
+def _row_to_tsv_line(excel_row: int, cells: list[str]) -> str:
+    return "\t".join([f"@row={excel_row}", *cells])
+
+
 def xlsx_to_text(
     path: Path,
     *,
@@ -151,9 +162,9 @@ def xlsx_to_text(
 ) -> str:
     """Свернуть xlsx в читаемый TSV-контекст (непустые строки листов).
 
-    Приоритетные листы («Общий план» / «Общий план ролика») идут первыми
-    и получают больший лимит строк — иначе огромный лист «план» съедает
-    бюджет и проверка n_plan видит обрезанный эпизодный план.
+    Приоритетные листы («Общий план») идут первыми.
+    На листе «план» сначала пинятся R15/R45–50/R48/R64, затем остаток бюджета.
+    Обрезка ≠ «нет файла» — баннер ниже обязан это сказать модели.
     """
     budget = _XLSX_CONTEXT_MAX_CHARS if max_chars is None else max(4_000, int(max_chars))
     try:
@@ -166,8 +177,9 @@ def xlsx_to_text(
         return f"[xlsx: не удалось открыть {path.name}: {e}]"
     sheets = sorted(list(wb.worksheets), key=lambda ws: (_xlsx_sheet_priority(ws.title), ws.title))
     out: list[str] = [
-        "[xlsx text-export: это полный текстовый снимок книги для API; "
+        "[xlsx text-export: это текстовый снимок книги для API; "
         "бинарный .xlsx в песочнице модели недоступен — это норма. "
+        "Обрезка по лимиту контекста ≠ отсутствие файла. "
         "Проверяй и правь по TSV ниже; для записи верни `# Лист:` блоки. "
         "Каждая строка начинается с `@row=<номер Excel>` — сохрани префикс, "
         "чтобы запись попала в ту же строку шаблона (не уплотняй пустые ряды).]",
@@ -189,37 +201,69 @@ def xlsx_to_text(
             else max_rows
         )
         sheet_truncated = False
-        # Абсолютный номер строки Excel (@row=N): иначе writeback уплотняет
-        # пропуски пустых рядов и сдвигает R15/R45/R48/R49.
+        pin_plan = _is_plan_sheet_title(ws.title or "")
+        pinned_set = set(_XLSX_PINNED_PLAN_ROWS) if pin_plan else set()
+        emitted_rows: set[int] = set()
+
+        # Materialize rows once (read_only iterator is single-pass).
+        all_rows: list[tuple[int, list[str]]] = []
         for excel_row, row in enumerate(ws.iter_rows(values_only=True), start=1):
             cells = ["" if c is None else str(c) for c in row[:max_cols]]
             if not any(c.strip() for c in cells):
                 continue
-            line = "\t".join([f"@row={excel_row}", *cells])
-            # +1 за \n при join
+            all_rows.append((excel_row, cells))
+
+        def _append_line(excel_row: int, cells: list[str]) -> bool:
+            """Return False if budget exhausted (caller marks truncated)."""
+            nonlocal sheet_used, rows_written, sheet_truncated
+            if excel_row in emitted_rows:
+                return True
+            line = _row_to_tsv_line(excel_row, cells)
             if used + sheet_used + len(line) + 1 > budget:
-                sheet_lines.append("… (обрезано: лимит контекста)")
+                sheet_lines.append("… (обрезано: лимит контекста — файл на диске есть)")
                 sheet_truncated = True
-                break
+                return False
+            if rows_written >= row_cap:
+                sheet_lines.append("… (обрезано: лимит строк листа — файл на диске есть)")
+                sheet_truncated = True
+                return False
             sheet_lines.append(line)
             sheet_used += len(line) + 1
             rows_written += 1
-            if rows_written >= row_cap:
-                sheet_lines.append("… (обрезано: лимит строк листа)")
-                sheet_truncated = True
-                break
+            emitted_rows.add(excel_row)
+            return True
+
+        # 1) Priority pack: pinned plan rows first
+        if pin_plan:
+            by_num = {r: c for r, c in all_rows}
+            for pr in _XLSX_PINNED_PLAN_ROWS:
+                if pr in by_num:
+                    if not _append_line(pr, by_num[pr]):
+                        break
+
+        # 2) Remaining nonempty rows
+        if not sheet_truncated:
+            for excel_row, cells in all_rows:
+                if excel_row in emitted_rows:
+                    continue
+                # Skip non-pinned until pins done (already); just fill rest
+                if not _append_line(excel_row, cells):
+                    break
+
         block = "\n".join(sheet_lines)
         out.append(block)
         used += len(block) + 1
         if sheet_truncated:
             truncated_sheets.append(ws.title)
+        # silence unused
+        del pinned_set
     import contextlib
 
     with contextlib.suppress(Exception):
         wb.close()
     if truncated_sheets:
         out.append(
-            "[xlsx text-export: частично обрезаны листы: "
+            "[xlsx text-export: частично обрезаны листы (это НЕ «нет project.xlsx»): "
             + ", ".join(truncated_sheets)
             + " — ЗАПРЕЩЕНО считать книгу полной; запроси продолжение экспорта "
             "или заполни только видимые @row, пометив remaining: truncated]"
