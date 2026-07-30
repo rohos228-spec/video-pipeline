@@ -39,6 +39,7 @@
 
 | Время | Делаю | Сделал | Результат | Баг/фикс |
 |-------|-------|--------|-----------|----------|
+| 04:17 | D16 assemble preview | gate hid final when nodeStatus unknown | fix gate + bump v370 | D16 FIX |
 | 04:13 | pulse +22min | hold assembled | spam=0 v369 HEAD d294820 | continue |
 | 04:08 | D13 rootcause | git history OutseeBot.generate_music | added as stub in 69e2967; CDP Suno never in repo | D13 P0 open |
 | 04:07 | UI v369 badge | reload Studio #50 | v369 a48100b + Run done + Autopromotion present | UI OK |
@@ -173,6 +174,7 @@
 | D13 | E | music Outsee | Suno CDP | generate_music always raises; Create AUDIO звал audio | P0 | WA ffmpeg; Create→music v369; **нужен CDP Suno** |
 | D14 | E | WorkflowRun | assembled → Run done | Run #50 failed (stale failed NodeRun) | P1 | heal failed→done + terminal aggregate |
 | D15 | E | auto_advance | quiet on assembled | INFO/WARNING spam every 5s | P2 | clear await + startup skip + no-publish idle |
+| D16 | B | assemble result | preview final mp4 | «ещё не готов» при assembled | P1 | gate: keep hasResult if items / unknown status |
 
 ## Эталон для сверки
 #47 `sekty` — assembled; сравнивать набор артефактов (xlsx sheets, scenes/, clips/, final).

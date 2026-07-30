@@ -805,6 +805,23 @@ function DefaultResultView({
       {item.previewUrl && item.kind === "image" && (
         <img src={item.previewUrl} alt="" className="max-h-64 rounded-lg object-contain" />
       )}
+      {item.previewUrl && item.kind === "video" && (
+        <div className="space-y-2">
+          <video
+            src={item.previewUrl}
+            controls
+            className="max-h-[60vh] w-full rounded-lg bg-black object-contain"
+          />
+          {item.downloadUrl ? (
+            <Button size="sm" variant="outline" asChild>
+              <a href={item.downloadUrl} download>
+                <Download className="h-3.5 w-3.5" />
+                Скачать
+              </a>
+            </Button>
+          ) : null}
+        </div>
+      )}
       {item.content && (
         <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-black/30 p-3 text-xs">
           {item.content}
