@@ -82,6 +82,31 @@ def test_merge_writeback_last_wins_same_row() -> None:
     assert "@row=6\tlabel2\tx" in merged
 
 
+def test_continue_marker_ignored_when_coverage_ok(tmp_path: Path) -> None:
+    from app.services.xlsx_text_writeback import writeback_looks_incomplete
+
+    src = tmp_path / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "план"
+    for i in range(1, 41):
+        ws.cell(row=i, column=1, value=f"row{i}")
+    wb.save(src)
+    wb.close()
+
+    body = "\n".join(
+        ["# Лист: план"]
+        + [f"@row={i}\trow{i}\tok" for i in range(1, 41)]
+        + ["CONTINUE_XLSX: план @row=56"]
+    )
+    incomplete, reason, _, _ = writeback_looks_incomplete(
+        reply_text=body, template_xlsx=src
+    )
+    assert incomplete is False
+    assert reason == "ok"
+
+
 def test_merge_orphan_tabs_inherit_sheet() -> None:
     from app.services.xlsx_text_writeback import extract_sheet_blocks, merge_writeback_texts
 

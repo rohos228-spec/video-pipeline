@@ -627,7 +627,44 @@ def writeback_looks_incomplete(
         sheet = sheet_raw
         if sheet_raw.lower() == "данные" and preferred:
             sheet = preferred
-        return True, "model marked CONTINUE_XLSX", sheet, int(m.group(2))
+        nxt = int(m.group(2))
+        # Модель часто пишет CONTINUE_XLSX «по привычке», даже когда строк уже
+        # достаточно / следующий @row за пределами шаблона — не считаем incomplete.
+        got = count_sheet_rows_in_tsv(reply)
+        want = (
+            template_nonempty_row_counts(template_xlsx)
+            if template_xlsx is not None and template_xlsx.is_file()
+            else {}
+        )
+        n_got = got.get(sheet) or 0
+        if n_got == 0:
+            for gn, gv in got.items():
+                if gn.lower() == sheet.lower() or (
+                    gn.lower() == "данные" and preferred and sheet == preferred
+                ):
+                    n_got += gv
+        n_want = want.get(sheet)
+        if n_want is None:
+            for tn, tv in want.items():
+                if tn.lower() == sheet.lower():
+                    n_want = tv
+                    break
+        max_template_row = n_want  # approx: nonempty count ≈ useful span
+        if n_want and n_got >= max(8, int(n_want * min_ratio)):
+            logger.info(
+                "xlsx_writeback: ignore CONTINUE_XLSX (coverage {}/{} rows on {!r})",
+                n_got,
+                n_want,
+                sheet,
+            )
+        elif max_template_row and nxt > max_template_row + 5:
+            logger.info(
+                "xlsx_writeback: ignore CONTINUE_XLSX (@row={} past template ~{})",
+                nxt,
+                max_template_row,
+            )
+        else:
+            return True, "model marked CONTINUE_XLSX", sheet, nxt
     got = count_sheet_rows_in_tsv(reply)
     if not got:
         return False, "no tsv blocks", None, None

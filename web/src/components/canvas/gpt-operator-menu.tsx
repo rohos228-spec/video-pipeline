@@ -61,10 +61,27 @@ export function GptOperatorMenuPanel({
       }
       const resolved = res.resolve;
       const role = (resolved?.role || (vars.role as string) || "assist") as OperatorRole;
-      const label =
-        String(resolved?.label || resolved?.config?.label || "").trim() ||
-        defaultLabelForRole(role);
-      syncNodeLabelOnCanvas(nodeKey, label, role);
+      // Подпись ноды на канвасе меняем только если патч явно задал label
+      // (смена роли / ручной rename). Иначе любой PATCH затирал кастомное имя
+      // дефолтом из resolve («Работа с GPT» / роль).
+      if (Object.prototype.hasOwnProperty.call(vars, "label")) {
+        const label =
+          String(vars.label || resolved?.label || resolved?.config?.label || "").trim() ||
+          defaultLabelForRole(role);
+        syncNodeLabelOnCanvas(nodeKey, label, role);
+      } else if (Object.prototype.hasOwnProperty.call(vars, "role")) {
+        const workMode =
+          role === "gate" || role === "compare" || role === "extract"
+            ? "review"
+            : role === "assist" || role === "review" || role === "transform"
+              ? role
+              : "assist";
+        window.dispatchEvent(
+          new CustomEvent("canvas-patch-node-data", {
+            detail: { nodeKey, patch: { role, workMode } },
+          }),
+        );
+      }
       void qc.invalidateQueries({ queryKey: ["gpt-operator-resolve", projectId, nodeKey] });
       void qc.invalidateQueries({ queryKey: ["project", projectId] });
       window.setTimeout(() => {

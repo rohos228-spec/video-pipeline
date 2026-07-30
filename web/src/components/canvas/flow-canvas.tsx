@@ -279,7 +279,8 @@ export function FlowCanvas({
         const patch: Partial<PipelineNodeData> = {
           slotIndex: excelGptSlotIndex(n.id, (cfg.slotIndex as number | undefined) ?? d.slotIndex),
         };
-        if (cfg.label && cfg.label !== d.label) patch.label = cfg.label as string;
+        // label: canvas — source of truth. Не перетирать кастомное имя из meta
+        // (resolve/default «Работа с GPT» / роль), иначе нода «переименовывается».
         if (cfg.inputSource && cfg.inputSource !== d.inputSource) {
           patch.inputSource = cfg.inputSource as PipelineNodeData["inputSource"];
         }

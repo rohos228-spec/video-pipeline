@@ -93,6 +93,15 @@ def test_sleep_minutes_shorter_for_xlsx_sheet_mismatch() -> None:
     )
     assert sleep_minutes_for_error(err) == XLSX_SHEET_FORMAT_SLEEP_MINUTES
     assert sleep_minutes_for_error(RuntimeError("other")) == SLEEP_MINUTES
+    assert (
+        sleep_minutes_for_error(
+            RuntimeError(
+                "xlsx writeback всё ещё неполный после 3 continue "
+                "(model marked CONTINUE_XLSX; sheet='план' @row=56)"
+            )
+        )
+        == XLSX_SHEET_FORMAT_SLEEP_MINUTES
+    )
 
 
 @pytest.fixture

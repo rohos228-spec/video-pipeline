@@ -37,6 +37,9 @@ def sleep_minutes_for_error(error: Exception) -> int:
     msg = str(error)
     if "скачанный xlsx невалиден" in msg and "листы" in msg:
         return XLSX_SHEET_FORMAT_SLEEP_MINUTES
+    # Неполный TSV после CONTINUE — книга не тронута; не морозить 30 мин.
+    if "всё ещё неполный" in msg or "CONTINUE_XLSX" in msg:
+        return XLSX_SHEET_FORMAT_SLEEP_MINUTES
     conn_markers = (
         "Cannot connect to host",
         "ClientConnectorError",
