@@ -101,9 +101,11 @@ export function PromptFilesPanel({
   });
 
   // Слот/папка сменились — можно снова следовать preferred.
+  // Не зависим от preferredFile: иначе poll/ререндер сбрасывает userPicked
+  // и выбор «прыгает» обратно на active/preferred.
   useEffect(() => {
     userPickedRef.current = false;
-  }, [stepCode, slotId, preferredFile]);
+  }, [stepCode, slotId]);
 
   // Список файлов: не сбрасывать ручной выбор на preferred/первый при каждом poll.
   useEffect(() => {
@@ -141,6 +143,28 @@ export function PromptFilesPanel({
     refetchInterval: () => (dirty ? false : POLL_INTERVAL_MS),
   });
 
+  // Смена файла: сразу подставить кэш или очистить draft.
+  // Иначе снизу остаётся тело предыдущего промта, а disabled:opacity-50
+  // даёт «белый миг» на тёмной теме.
+  useEffect(() => {
+    setDirty(false);
+    setPreviewVersion(null);
+    if (!selectedName) {
+      setDraft("");
+      return;
+    }
+    const cached = qc.getQueryData<{ content: string }>([
+      "prompt-file",
+      cacheKey,
+      selectedName,
+    ]);
+    if (cached && typeof cached.content === "string") {
+      setDraft(cached.content);
+    } else {
+      setDraft("");
+    }
+  }, [selectedName, slotId, stepCode, cacheKey, qc]);
+
   const contentText = content.data?.content;
   useEffect(() => {
     if (contentText == null) return;
@@ -148,15 +172,14 @@ export function PromptFilesPanel({
     setDraft((prev) => (prev === contentText ? prev : contentText));
   }, [contentText, dirty]);
 
-  useEffect(() => {
-    setDirty(false);
-    setPreviewVersion(null);
-  }, [selectedName, slotId, stepCode]);
-
   const selectFile = (name: string) => {
+    if (name === selectedName) return;
     userPickedRef.current = true;
     setSelectedName(name);
   };
+
+  const bodyLoading =
+    Boolean(selectedName) && content.isPending && content.data == null;
 
   const selectedMeta = useMemo(
     () => (files.data ?? []).find((f) => f.name === selectedName) ?? null,
@@ -571,22 +594,39 @@ export function PromptFilesPanel({
             </div>
           ) : null}
 
-          <Textarea
-            value={draft}
-            onChange={(e) => {
-              setDraft(e.target.value);
-              setDirty(true);
-              setPreviewVersion(null);
-            }}
-            rows={12}
-            className="font-mono text-[10px] leading-relaxed"
-            placeholder={
-              selectedName
-                ? "Содержимое файла…"
-                : "Выберите файл слева или загрузите новый."
-            }
-            disabled={!selectedName || (content.isPending && !content.data)}
-          />
+          <div className="relative">
+            <Textarea
+              value={draft}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                setDirty(true);
+                setPreviewVersion(null);
+              }}
+              rows={12}
+              className="font-mono text-[10px] leading-relaxed"
+              placeholder={
+                !selectedName
+                  ? "Выберите файл слева или загрузите новый."
+                  : bodyLoading
+                    ? "Загрузка содержимого…"
+                    : "Содержимое файла…"
+              }
+              // Не disabled при загрузке: disabled:opacity-50 на тёмной теме =
+              // белый миг текста. readOnly достаточно, пока нет данных.
+              disabled={!selectedName}
+              readOnly={bodyLoading}
+            />
+            {bodyLoading ? (
+              <div className="pointer-events-none absolute inset-0 flex items-start justify-end p-2">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+              </div>
+            ) : null}
+            {content.isError ? (
+              <p className="mt-1 text-[10px] text-destructive">
+                Не удалось загрузить тело промта.
+              </p>
+            ) : null}
+          </div>
         </div>
       </div>
     </section>
