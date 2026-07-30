@@ -71,6 +71,7 @@ class ApiGptClient:
         history: list[dict[str, Any]] | None = None,
         treat_txt_as_prompt: bool = True,
         system: str | None = None,
+        max_retries: int | None = None,
     ) -> str:
         require_gpt_api()
         from app.services.gpt_api import chat
@@ -119,7 +120,7 @@ class ApiGptClient:
         hist = list(history or [])
         logger.info(
             "gpt_client/api: ask files=[{}] master={} chat_len={} expect_dl={} "
-            "pid={} history={} txt_as_prompt={}",
+            "pid={} history={} txt_as_prompt={} retries={}",
             ", ".join(p.name for p in attachments) or "—",
             prompt_file.name if prompt_file else "—",
             len(accompanying),
@@ -127,6 +128,7 @@ class ApiGptClient:
             project_id,
             len(hist),
             treat_txt_as_prompt,
+            max_retries if max_retries is not None else "default",
         )
 
         result = await chat(
@@ -136,6 +138,7 @@ class ApiGptClient:
             timeout=float(timeout),
             history=hist or None,
             system=system,
+            max_retries=max_retries,
         )
         self._last_reply = result.text or ""
         self._last_input_paths = list(data_files or attachments)

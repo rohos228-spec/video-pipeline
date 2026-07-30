@@ -755,6 +755,45 @@ def reset_running_sessions_on_startup() -> dict[str, Any]:
     return {"reset": reset}
 
 
+# Если Studio крутит «думает» дольше этого — считаем зависанием провайдера/ретраев.
+_STALE_RUNNING_SEC = 8 * 60
+
+
+def _maybe_reset_stale_running(session_id: str, meta: dict[str, Any]) -> dict[str, Any]:
+    if (meta.get("status") or "").lower() != "running":
+        return meta
+    updated = str(meta.get("updated_at") or "").strip()
+    if not updated:
+        return meta
+    try:
+        ts = datetime.fromisoformat(updated.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - ts).total_seconds()
+    except Exception:  # noqa: BLE001
+        return meta
+    if age < _STALE_RUNNING_SEC:
+        return meta
+    meta = dict(meta)
+    detail = (
+        f"GPT не ответил за {int(age // 60)} мин (таймаут/зависание провайдера). "
+        "Отправь сообщение ещё раз."
+    )
+    meta["status"] = "error"
+    meta["phase"] = "error"
+    meta["phase_detail"] = detail
+    meta["last_error"] = detail
+    meta["updated_at"] = _now()
+    _write_json(_session_dir(session_id) / "meta.json", meta)
+    _append_message(session_id, "system", f"Ошибка: {detail}")
+    logger.warning(
+        "gpt_workspace: stale running session={} age={:.0f}s → error",
+        session_id,
+        age,
+    )
+    return meta
+
+
 def get_session(session_id: str) -> dict[str, Any]:
     d = _session_dir(session_id)
     if not d.is_dir():
@@ -762,6 +801,9 @@ def get_session(session_id: str) -> dict[str, Any]:
     # Лениво: .bin на диске → png/jpg по magic (в т.ч. старые сессии)
     renames = _normalize_session_files(d)
     meta = _read_json(d / "meta.json", {})
+    if not isinstance(meta, dict):
+        meta = {}
+    meta = _maybe_reset_stale_running(session_id, meta)
     messages = _read_json(d / "messages.json", [])
     if renames and isinstance(messages, list):
         messages = _rewrite_message_filenames(messages, renames)
@@ -1202,15 +1244,17 @@ async def ask(
         _write_json(d / "meta.json", meta)
 
         try:
+            # Studio chat: 1 повтор максимум — иначе 5×180с = «зависание» на 15 мин.
+            ask_timeout = 240.0 if files else 120.0
             reply = await gpt.ask_with_files(
                 ask_text,
                 files,
-                # Workspace: не держим UI 10 мин на зависшем ретрае провайдера
-                timeout=min(float(settings.gpt_timeout_s or 600), 180.0),
+                timeout=min(float(settings.gpt_timeout_s or 600), ask_timeout),
                 expect_file_download=has_xlsx,
                 history=history,
                 treat_txt_as_prompt=False,
                 system=_WORKSPACE_SYSTEM,
+                max_retries=1,
             )
         except Exception as e:  # noqa: BLE001
             # Модель иногда отдаёт пустой output на «пустой txt» — это валидный контент файла.

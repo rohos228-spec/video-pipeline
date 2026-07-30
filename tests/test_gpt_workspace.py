@@ -397,6 +397,21 @@ def test_reset_running_sessions_on_startup(tmp_path, monkeypatch) -> None:
     assert got["status"] == "error"
 
 
+def test_stale_running_session_lazy_reset(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(gw, "_root", lambda: tmp_path)
+    s = gw.create_session(title="stale")
+    sid = s["id"]
+    meta_path = tmp_path / sid / "meta.json"
+    meta = __import__("json").loads(meta_path.read_text(encoding="utf-8"))
+    meta["status"] = "running"
+    meta["phase"] = "thinking"
+    meta["updated_at"] = "2020-01-01T00:00:00+00:00"
+    meta_path.write_text(__import__("json").dumps(meta), encoding="utf-8")
+    got = gw.get_session(sid)
+    assert got["status"] == "error"
+    assert "не ответил" in (got.get("phase_detail") or "")
+
+
 def test_resolve_file_intent_simple() -> None:
     doc = "ДОГОВОР\n\n" + ("пункт\n" * 20)
     assert (
