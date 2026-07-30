@@ -59,3 +59,28 @@ async def test_startup_guard_keeps_auto_mode_and_awaits_manual(
     assert auto_awaits_manual_start(auto_ready_project) is True
     assert batch.status is BatchStatus.paused
     assert mass_pause_active() is True
+
+
+@pytest.mark.asyncio
+async def test_startup_guard_skips_assembled_auto_await(
+    session: AsyncSession,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    assembled = Project(
+        slug="assembled-ok",
+        topic="Done",
+        status=ProjectStatus.assembled,
+        auto_mode=True,
+        meta={},
+    )
+    session.add(assembled)
+    await session.flush()
+
+    stats = await block_pipeline_autorun_on_startup(session)
+
+    assert stats["auto_await_manual_armed"] == 0
+    assert auto_awaits_manual_start(assembled) is False
+    assert assembled.auto_mode is True
+    assert assembled.status is ProjectStatus.assembled

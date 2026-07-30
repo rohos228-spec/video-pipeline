@@ -74,6 +74,14 @@ async def block_pipeline_autorun_on_startup(session: AsyncSession) -> dict[str, 
             )
 
         elif project.auto_mode and project.status in ready_statuses:
+            # assembled/published — пайплайн уже у финала; не ставим «ждём ▶»
+            # (иначе на каждом рестарте снова auto_await + шум в worker).
+            if project.status in (
+                ProjectStatus.assembled,
+                ProjectStatus.publishing,
+                ProjectStatus.published,
+            ):
+                continue
             # auto_mode оставляем; без ▶ ничего не стартует.
             meta["startup_autorun_blocked"] = True
             meta["startup_blocked_at"] = now

@@ -720,11 +720,22 @@ async def _apply_approve(
                 )
                 graph_nxt = alt
         if graph_nxt is None:
-            logger.warning(
-                "graph: #{} no next step after {} — check canvas edges",
-                project.id,
-                transition.ready_status.value,
-            )
+            # assembled без publish на графе — нормальный idle, не WARNING каждые 5с
+            if transition.ready_status in (
+                ProjectStatus.assembled,
+                ProjectStatus.published,
+            ):
+                logger.debug(
+                    "graph: #{} no next after {} (idle)",
+                    project.id,
+                    transition.ready_status.value,
+                )
+            else:
+                logger.warning(
+                    "graph: #{} no next step after {} — check canvas edges",
+                    project.id,
+                    transition.ready_status.value,
+                )
             return
         skipped = await skip_disabled_running_async(session, project, graph_nxt)
         if skipped is None:
@@ -1115,6 +1126,12 @@ async def maybe_auto_advance(
         return False
 
     transition = TRANSITIONS[status]
+    # assembled без publish на канвасе — финал пайплайна, не долбим HITL/edges
+    if status is ProjectStatus.assembled:
+        _nxt = await _graph_next_running(session, project, status)
+        if _nxt is None:
+            return False
+
     hitl = await get_latest_hitl(session, project.id, transition.kind)
 
     if meta.get("user_stop") or meta.get("mass_lane_user_stop"):
