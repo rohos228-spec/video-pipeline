@@ -39,6 +39,7 @@
 
 | Время | Делаю | Сделал | Результат | Баг/фикс |
 |-------|-------|--------|-----------|----------|
+| 03:57 | D13 Create AUDIO route | Suno -> music step + bump v369 | UI fixed; OutseeBot.generate_music still stub | D13 partial |
 | 03:56 | B-S9 wizard | skip open New Project | stay on #50 only; wizard button present collapsed | B-S9 deferred |
 | 03:55 | pulse +9min | assembled idle | spam=0 status=assembled HEAD fa6f032 | continue UI |
 | 03:51 | storage node | 24 files in n_storage_* | snapshots of plan/excel_gpt replies | storage OK |
