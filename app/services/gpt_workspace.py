@@ -208,6 +208,9 @@ def _explicit_text_doc_ask(message: str) -> bool:
             r"пуст(?:ой|ая|ое|ую).*(?:файл|txt|текст)|"
             r"текст(?:ом|овый)?\s+файл|"
             r"как\s+файл|в\s+виде\s+файл|файл[оа]м|"
+            # «пришли/отправь … файл» (не «пришли картинку»)
+            r"(?:пришл[иу]|отправ[ьи]|верн[иу]|скача[йть]|дай)\s+"
+            r"(?:мне\s+)?(?:готовое\s+|этот\s+|свой\s+)?файл|"
             r"договор|контракт|соглашени"
             r")",
             t,
@@ -231,9 +234,10 @@ def _should_pack_text_document(
         return False
     if _explicit_text_doc_ask(user_text):
         return True
-    # «отправь/верни/скачай файл» без картинки
+    # «отправь/верни/пришли/скачай/дай … файл» без картинки
     if re.search(
-        r"(?i)(отправ[ьи]|верн[иу]|скача[йть]|дай)\s+(?:мне\s+)?файл",
+        r"(?i)(отправ[ьи]|верн[иу]|пришл[иу]|скача[йть]|дай)\s+"
+        r"(?:мне\s+)?(?:готовое\s+|этот\s+|свой\s+)?файл",
         user_text or "",
     ):
         return True
@@ -583,8 +587,16 @@ def _deliver_reply_as_file(
         return None
     stem = "empty" if allow_empty and len(body) < 20 else "document"
     for p in attachments:
-        if p.suffix.lower() in {".txt", ".md", ".csv", ".tsv", ".docx"}:
-            stem = p.stem[:48] or stem
+        if p.suffix.lower() in {".txt", ".md", ".csv", ".tsv", ".docx"} or p.name.lower().endswith(
+            (".txt.md", ".md.txt")
+        ):
+            name = p.name
+            low = name.lower()
+            for suf in (".txt.md", ".md.txt", ".docx", ".txt", ".md", ".csv", ".tsv"):
+                if low.endswith(suf):
+                    name = name[: -len(suf)]
+                    break
+            stem = (name.strip() or stem)[:48]
             break
     if re.search(r"(?i)договор", user_text):
         stem = "dogovor"
@@ -1394,6 +1406,17 @@ async def ask(
             and _looks_like_document(reply)
             and not _is_meta_chat_question(text)
         )
+        # intent уже pack_reply/pack_last, а гейт не узнал формулировку
+        # («Сделай … и пришли мне файл») — всё равно кладём текст в .txt
+        if (
+            not pack_doc
+            and want_pack
+            and media_count == 0
+            and not _wants_image_file(text)
+            and len(reply) >= 40
+            and _asks_file(text)
+        ):
+            pack_doc = True
         if (
             pack_doc
             and not any(p.suffix.lower() in {".xlsx", ".xlsm"} for p in files)

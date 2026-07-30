@@ -373,6 +373,21 @@ def test_wants_deliverable_includes_send_file() -> None:
     assert gw._wants_deliverable_file("Составь договор аренды и пришли .docx")
 
 
+def test_should_pack_prishli_mne_fail() -> None:
+    """«Сделай агента и пришли мне файл» → .txt, не только пузырь."""
+    msg = (
+        "Нужно из этого агента сделать агента проверки. "
+        "Сделай агента и пришли мне файл"
+    )
+    assert gw.resolve_file_intent(msg, has_attachments=True, last_doc="") == "pack_reply"
+    assert gw._explicit_text_doc_ask(msg)
+    assert gw._should_pack_text_document(msg, "x" * 500, media_count=0)
+    # голый «пришли картинку» — не текстовый документ
+    assert not gw._should_pack_text_document(
+        "пришли картинку phantom", "png data", media_count=0
+    )
+
+
 def test_reset_running_sessions_on_startup(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(gw, "_root", lambda: tmp_path)
     sid = "stucksession01"
@@ -528,6 +543,34 @@ def test_last_assistant_skips_ready_files_notice() -> None:
     got = gw._last_assistant_document(prior)
     assert "ДОГОВОР" in got
     assert "Готовые файлы" not in got
+
+
+@pytest.mark.asyncio
+async def test_ask_packs_agent_prishli_mne_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """«Сделай агента и пришли мне файл» → document_*.txt в Результаты."""
+    import app.services.gpt_client as gc
+
+    body = ("Агент проверки таблицы\n\n" + ("правило логики\n" * 80))
+
+    class FakeGpt:
+        async def ask_with_files(self, *a, **k):
+            return body
+
+        async def download_attachment_from_last_reply(self, *a, **k):
+            return None
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: FakeGpt())
+    s = gw.create_session()
+    gw.save_attachment(s["id"], "agent.txt.md", b"source agent prompt")
+    out = await gw.ask(
+        s["id"],
+        "Сделай агента проверки и пришли мне файл",
+    )
+    names = [o["name"] for o in out["outputs"] if not o["name"].startswith("reply_")]
+    assert any(n.endswith(".txt") for n in names), names
+    assert "Готовые файлы" in out["messages"][-1]["content"]
 
 
 @pytest.mark.asyncio
