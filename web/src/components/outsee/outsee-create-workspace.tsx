@@ -528,7 +528,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
         }
         await api.putOutseeCreateSettings(settingsPayload());
         await applyToProject.mutateAsync();
-        return api.runProjectStep(projectId, "audio");
+        // Suno (Create «АУДИО») → music; иначе TTS/voice → audio.
+        const step =
+          String(audioSlug || "").toLowerCase().includes("suno") ? "music" : "audio";
+        return api.runProjectStep(projectId, step);
       }
       const provider = autoProvider;
       if (!provider) {
