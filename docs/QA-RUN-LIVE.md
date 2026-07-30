@@ -39,6 +39,8 @@
 
 | Время | Делаю | Сделал | Результат | Баг/фикс |
 |-------|-------|--------|-----------|----------|
+| 04:26 | Montage UI | click Монтаж on assemble | panel: Apply/Outsee/ASR/frames | PASS |
+| 04:26 | D5 FIX | check master prompt API contract after sources | XLSX_WRITEBACK override; test pass | code ready |
 | 04:23 | STATUS 04:40 | FULL-VERIF UI deep | montage next; Create music; G regressions | ok |
 | 04:23 | storage UI | 23 files filters download refresh | present on canvas | PASS |
 | 04:23 | D5 note | excel_gpt check verdict fail + text reply | writeback still weak; not rewinding assembled | OPEN |
