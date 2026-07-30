@@ -39,6 +39,8 @@
 
 | Время | Делаю | Сделал | Результат | Баг/фикс |
 |-------|-------|--------|-----------|----------|
+| 03:44 | status pulse | assembled quiet logs | D15 spam gone; UI matrix mid; D12/D13 WA remain | - |
+| 03:44 | B-I6 Node Studio | open studio on plan | tabs Settings/Prompts/Excel/Results + FINAL VIDEO | B-I6 OK |
 | 03:44 | D15b assembled spam | startup skip + quiet graph end | 9 tests; no next publish idle | D15 FIX2 |
 | 03:41 | D15 log spam assembled | clear auto_await on terminal status | tests 7 pass; backend restarted | D15 FIX |
 | 03:39 | UI Set network | click Set topbar | panel opens without crash | B-T Set OK |
@@ -115,9 +117,11 @@
 - [x] V-menu plan + videos (Run/Assets/Excel/Detach/Disable/Delete)
 - [x] B-S5 collapse sidebar (Показать проекты)
 - [x] B-I5 FramesGrid (9 кадров VIDEO_GENERATED)
+- [x] B-I6 Node Studio (Настройки/Промты GPT/Excel/Результаты)
 - [x] Баг-диалог (лог-превью)
+- [x] Create Outsee UI (проект #50)
 - [x] items — пусто (item_descriptions=[]), нода «ожидание» OK
-- [ ] Inspector B-I3/I4/I6 / sidebar B-S3,S6–S10 / canvas C1,C3–C10 / publish
+- [ ] Inspector B-I3/I4 / sidebar B-S3,S6–S10 / canvas C1,C3–C10 / publish
 
 ### D/E — Ноды (реальный Run)
 - [x] plan (уже plan_ready + xlsx/general_plan; HITL approved)
