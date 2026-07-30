@@ -14,7 +14,11 @@ from typing import Any
 
 from loguru import logger
 
-from app.services.xlsx_v8_import import ROW_VIDEO_PROMPT_V8
+from app.services.xlsx_v8_import import (
+    ROW_IMAGE_PROMPT_V8,
+    ROW_VIDEO_PROMPT_V8,
+    ROW_VOICEOVER_V8,
+)
 
 HARNESS_HTTP_BASE = "http://127.0.0.1:8765"
 
@@ -130,9 +134,9 @@ def write_ops_telemetry(meta: dict[str, Any], report: HarnessReport) -> dict[str
     return out
 
 
-def _count_r48_filled(xlsx: Path) -> int:
+def _count_plan_rows_filled(xlsx: Path, rows: tuple[int, ...]) -> dict[int, int]:
     if not xlsx.is_file():
-        return 0
+        return {r: 0 for r in rows}
     try:
         from openpyxl import load_workbook
 
@@ -144,17 +148,22 @@ def _count_r48_filled(xlsx: Path) -> int:
                 break
         if ws is None:
             wb.close()
-            return 0
-        n = 0
+            return {r: 0 for r in rows}
+        out = {r: 0 for r in rows}
         for col in range(3, 20):
-            v = ws.cell(ROW_VIDEO_PROMPT_V8, col).value
-            if v and str(v).strip():
-                n += 1
+            for r in rows:
+                v = ws.cell(r, col).value
+                if v and str(v).strip():
+                    out[r] += 1
         wb.close()
-        return n
+        return out
     except Exception as e:  # noqa: BLE001
-        logger.warning("harness R48 read failed: {}", e)
-        return 0
+        logger.warning("harness plan rows read failed: {}", e)
+        return {r: 0 for r in rows}
+
+
+def _count_r48_filled(xlsx: Path) -> int:
+    return _count_plan_rows_filled(xlsx, (ROW_VIDEO_PROMPT_V8,))[ROW_VIDEO_PROMPT_V8]
 
 
 def _count_project_log_errors(project_id: int, slug: str) -> tuple[int, str]:
@@ -236,6 +245,62 @@ def verify_project_disk(project_id: int, data_dir: Path, status: str) -> Harness
         if not r48_ok:
             repair.append("anim_pr")
     checks.append(HarnessCheck("r48_anim", r48_ok, f"filled={r48} scenes={len(scenes)}"))
+
+    # DB frames ↔ xlsx plan parity (строго для assembled, иначе диагностика).
+    plan_rows = _count_plan_rows_filled(
+        xlsx,
+        (ROW_IMAGE_PROMPT_V8, ROW_VIDEO_PROMPT_V8, ROW_VOICEOVER_V8),
+    )
+    r45 = plan_rows[ROW_IMAGE_PROMPT_V8]
+    vo_xlsx = plan_rows[ROW_VOICEOVER_V8]
+    frames_total = img_pr_db = anim_pr_db = vo_db = 0
+    parity_err = ""
+    try:
+        db = sqlite3.connect(str(_db_path()))
+        row = db.execute(
+            "SELECT COUNT(*), "
+            "SUM(CASE WHEN image_prompt IS NOT NULL AND trim(image_prompt)<>'' THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN animation_prompt IS NOT NULL AND trim(animation_prompt)<>'' THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN voiceover_text IS NOT NULL AND trim(voiceover_text)<>'' THEN 1 ELSE 0 END) "
+            "FROM frames WHERE project_id=?",
+            (project_id,),
+        ).fetchone()
+        db.close()
+        if row:
+            frames_total = int(row[0] or 0)
+            img_pr_db = int(row[1] or 0)
+            anim_pr_db = int(row[2] or 0)
+            vo_db = int(row[3] or 0)
+    except Exception as e:  # noqa: BLE001
+        parity_err = str(e)
+    if parity_err:
+        checks.append(HarnessCheck("frames_xlsx_parity", False, parity_err))
+    else:
+        parity_ok = True
+        if status == "assembled" and scenes:
+            n = len(scenes)
+            parity_ok = (
+                frames_total >= n
+                and img_pr_db >= n
+                and anim_pr_db >= n
+                and vo_db >= n
+                and r45 >= n
+                and r48 >= n
+                and vo_xlsx >= n
+            )
+            if not parity_ok:
+                if img_pr_db < n or r45 < n:
+                    repair.append("img_pr")
+                if anim_pr_db < n or r48 < n:
+                    repair.append("anim_pr")
+        checks.append(
+            HarnessCheck(
+                "frames_xlsx_parity",
+                parity_ok,
+                f"frames={frames_total} img_db={img_pr_db} anim_db={anim_pr_db} vo_db={vo_db} "
+                f"r45={r45} r48={r48} r49={vo_xlsx} scenes={len(scenes)}",
+            )
+        )
 
     # node_runs failed
     failed_n = 0
