@@ -39,6 +39,7 @@
 
 | Время | Делаю | Сделал | Результат | Баг/фикс |
 |-------|-------|--------|-----------|----------|
+| 04:01 | pulse +12min | v369 + assembled | build=369 ui_stale=0 status=assembled | continue |
 | 03:57 | D13 Create AUDIO route | Suno -> music step + bump v369 | UI fixed; OutseeBot.generate_music still stub | D13 partial |
 | 03:56 | B-S9 wizard | skip open New Project | stay on #50 only; wizard button present collapsed | B-S9 deferred |
 | 03:55 | pulse +9min | assembled idle | spam=0 status=assembled HEAD fa6f032 | continue UI |
@@ -164,7 +165,7 @@
 | D10 | E | anim_pr vision | strip to GPT | 10MB skip → 1/5 prompts | P0 | compress strip + image_to_data_url |
 | D11 | E | videos→audio | next audio | fail-retry edge blocked | P0 | fail ≠ prereq |
 | D12 | E | audio 11Labs | TTS | session expired | P1 | WA: SAPI voice on disk |
-| D13 | E | music Outsee | Suno CDP | generate_music always raises | P0 | WA: ffmpeg mp3; **нужен CDP restore** |
+| D13 | E | music Outsee | Suno CDP | generate_music always raises; Create AUDIO звал audio | P0 | WA ffmpeg; Create→music v369; **нужен CDP Suno** |
 | D14 | E | WorkflowRun | assembled → Run done | Run #50 failed (stale failed NodeRun) | P1 | heal failed→done + terminal aggregate |
 | D15 | E | auto_advance | quiet on assembled | INFO/WARNING spam every 5s | P2 | clear await + startup skip + no-publish idle |
 
