@@ -39,6 +39,8 @@
 
 | Время | Делаю | Сделал | Результат | Баг/фикс |
 |-------|-------|--------|-----------|----------|
+| 04:06 | pulse +17min | assembled hold | spam=0 montage-v3-r15 voice=75.7s words=126 | continue |
+| 04:01 | montage stamp + ASR | read MONTAGE_STAMP + words.json | final stamped; whisper words present | artifacts OK |
 | 04:01 | pulse +12min | v369 + assembled | build=369 ui_stale=0 status=assembled | continue |
 | 03:57 | D13 Create AUDIO route | Suno -> music step + bump v369 | UI fixed; OutseeBot.generate_music still stub | D13 partial |
 | 03:56 | B-S9 wizard | skip open New Project | stay on #50 only; wizard button present collapsed | B-S9 deferred |
