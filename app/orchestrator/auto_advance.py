@@ -700,6 +700,25 @@ async def _apply_approve(
             graph_nxt = await _graph_next_running(
                 session, project, transition.ready_status
             )
+        # frames_ready → hero: если данных персонажей нет / уже skipped empty —
+        # не запускать generating_hero снова (иначе цикл skip↔frames_ready).
+        if (
+            transition.ready_status is ProjectStatus.frames_ready
+            and graph_nxt is ProjectStatus.generating_hero
+        ):
+            from app.services.project_state import _hero_step_required
+
+            meta = project.meta if isinstance(project.meta, dict) else {}
+            if meta.get("hero_skipped_empty") or not _hero_step_required(project):
+                alt = await _graph_next_running(
+                    session, project, ProjectStatus.hero_ready
+                )
+                logger.info(
+                    "auto_advance: #{} frames_ready skip hero (empty/not required) → {}",
+                    project.id,
+                    alt.value if alt is not None else "none",
+                )
+                graph_nxt = alt
         if graph_nxt is None:
             logger.warning(
                 "graph: #{} no next step after {} — check canvas edges",
@@ -718,6 +737,30 @@ async def _apply_approve(
         nxt = await _apply_running_if_data_ok(session, project, skipped or graph_nxt)
         if nxt is None:
             return
+        # Несколько excel_gpt с одним slotIndex: active_key должен быть
+        # конкретной нодой графа (после images), иначе resolve_by_slot
+        # берёт первую (часто раннюю) и откатывает пайплайн назад.
+        from app.services.excel_gpt_node import (
+            EXCEL_GPT_NODE_TYPE,
+            slot_from_running_status,
+        )
+        from app.services.project_meta import set_meta_fields
+        from app.orchestrator.graph.planner import load_graph_for_project
+
+        if slot_from_running_status(nxt) is not None:
+            graph = await load_graph_for_project(session, project)
+            next_key = graph.next_work_node_key_after_ready(
+                project, transition.ready_status
+            )
+            if next_key and graph.node_type(next_key) == EXCEL_GPT_NODE_TYPE:
+                set_meta_fields(project, active_excel_gpt_node_key=next_key)
+                await session.flush()
+                logger.info(
+                    "auto_advance: #{} {} → pin excel_gpt node_key={}",
+                    project.id,
+                    transition.ready_status.value,
+                    next_key,
+                )
         await _prepare_node_run_for_status(
             session, project, nxt, allow_restart=True
         )

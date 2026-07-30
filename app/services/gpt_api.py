@@ -305,6 +305,39 @@ def is_image_path(path: Path) -> bool:
     return path.suffix.lower() in _IMAGE_SUFFIXES
 
 
+def _compress_image_for_vision(path: Path, *, max_bytes: int = _MAX_VISION_BYTES) -> tuple[bytes, str]:
+    """Ужать картинку до max_bytes (JPEG). Возвращает (bytes, mime)."""
+    import io
+
+    from PIL import Image
+
+    with Image.open(path) as src:
+        img = src.convert("RGB")
+        for max_side in (2048, 1536, 1280, 1024, 768, 640, 512):
+            w, h = img.size
+            scale = min(1.0, float(max_side) / float(max(w, h)))
+            work = img
+            if scale < 1.0:
+                work = img.resize(
+                    (max(1, int(w * scale)), max(1, int(h * scale))),
+                    Image.Resampling.LANCZOS,
+                )
+            for quality in (85, 75, 65, 55, 45, 35):
+                buf = io.BytesIO()
+                work.save(buf, format="JPEG", quality=quality, optimize=True)
+                data = buf.getvalue()
+                if len(data) <= max_bytes:
+                    if work is not img:
+                        work.close()
+                    return data, "image/jpeg"
+            if work is not img:
+                work.close()
+    raise GptApiError(
+        f"картинка слишком большая для vision даже после сжатия: {path.name}",
+        context={"error_kind": "media_too_large", "retryable": False},
+    )
+
+
 def image_to_data_url(path: Path) -> str:
     """data:image/...;base64,... для multimodal / vision."""
     import base64
@@ -319,9 +352,14 @@ def image_to_data_url(path: Path) -> str:
     }.get(suffix, "application/octet-stream")
     data = path.read_bytes()
     if len(data) > _MAX_VISION_BYTES:
-        raise GptApiError(
-            f"картинка слишком большая для vision: {path.name} ({len(data)} байт)",
-            context={"error_kind": "media_too_large", "retryable": False},
+        orig = len(data)
+        data, mime = _compress_image_for_vision(path)
+        logger.info(
+            "gpt_api vision compress {}: {} → {} bytes ({})",
+            path.name,
+            orig,
+            len(data),
+            mime,
         )
     b64 = base64.b64encode(data).decode("ascii")
     return f"data:{mime};base64,{b64}"

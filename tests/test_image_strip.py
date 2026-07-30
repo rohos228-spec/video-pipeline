@@ -67,5 +67,34 @@ def test_build_batch_strip_path(tmp_path: Path) -> None:
         for i in (1, 2)
     ]
     out = build_batch_strip_path(items, tmp_path / "out")
-    assert out.name == "anim_pr_strip_001_002.png"
+    assert out.name.startswith("anim_pr_strip_001_002")
+    assert out.suffix in {".png", ".jpg"}
     assert out.is_file()
+
+
+def test_compose_strip_respects_max_bytes(tmp_path: Path) -> None:
+    """Широкая лента 16:9 должна ужаться под лимит vision."""
+    paths = []
+    for i in range(5):
+        p = tmp_path / f"f{i}.png"
+        # Несжимаемый шум → PNG лента легко >1MB без max_bytes.
+        import random
+
+        img = Image.new("RGB", (1280, 720))
+        pix = img.load()
+        rng = random.Random(i)
+        for y in range(0, 720, 4):
+            for x in range(0, 1280, 4):
+                pix[x, y] = (rng.randint(0, 255), rng.randint(0, 255), rng.randint(0, 255))
+        img.save(p, format="PNG")
+        paths.append(p)
+
+    out = compose_horizontal_strip(
+        paths,
+        tmp_path / "strip.png",
+        gutter_px=6,
+        max_height=768,
+        max_bytes=3_500_000,
+    )
+    assert out.is_file()
+    assert out.stat().st_size <= 3_500_000

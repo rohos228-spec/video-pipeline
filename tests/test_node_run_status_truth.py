@@ -149,6 +149,40 @@ async def test_stale_running_reconciled_to_failed(mem_db, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_stale_running_healed_when_project_already_ready(mem_db, monkeypatch) -> None:
+    """Гонка: Project уже script_ready, NodeRun ещё running → heal done, не failed."""
+    from app.services import step_cancel as sc
+
+    project_id, nr_id, _wf_id = await _seed_project_with_run(
+        mem_db,
+        project_status=ProjectStatus.script_ready,
+        node_status=NodeRunStatus.running,
+        node_type="script",
+        node_key="n_script",
+    )
+    async with mem_db() as session:
+        nr = await session.get(NodeRun, nr_id)
+        assert nr is not None
+        nr.started_at = datetime.utcnow() - timedelta(seconds=60)
+        await session.flush()
+
+    monkeypatch.setattr(sc, "is_generation_active", lambda _pid: False)
+
+    fixed = await _reconcile_stale_node_runs(
+        initiator="background_reconcile",
+        require_no_live_task=True,
+        grace_sec=0,
+    )
+    assert fixed >= 1
+
+    async with mem_db() as session:
+        row = await session.get(NodeRun, nr_id)
+        assert row is not None
+        assert row.status == NodeRunStatus.done
+        assert not (row.error or "")
+
+
+@pytest.mark.asyncio
 async def test_prepare_auto_unstick_stale_running(mem_db, monkeypatch) -> None:
     """D2: auto_unstick — запуск зависшей running из UI."""
     from app.services import step_cancel as sc

@@ -79,6 +79,10 @@ def _hero_step_required(project: Project) -> bool:
     """Нужен ли шаг персонажей (не путать с hero_count=0 в xlsx-flow)."""
     if project.hero_mode == "no_hero":
         return False
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    # Явный skip пустого hero (см. generate_hero) — не требовать шаг снова.
+    if meta.get("hero_skipped_empty"):
+        return False
     if (project.hero_count or 0) > 0:
         return True
     if _nonempty_hero_descriptions(project):
@@ -229,13 +233,22 @@ def _enrich_meta_allowed_for_status(project: Project) -> bool:
 
 
 def _excel_hero_expected_count(project: Project) -> int:
-    """Сколько персонажей в meta.excel_hero (лист «Персонажи»)."""
+    """Сколько персонажей в meta.excel_hero с данными для генерации.
+
+    ID-заглушки шаблона (c01 без имени/внешности) не считаем — иначе
+    expected>0 при пустом листе и пайплайн крутит hero вхолостую.
+    """
     meta = project.meta if isinstance(project.meta, dict) else {}
     cfg = meta.get("excel_hero") or {}
     chars = cfg.get("characters") or []
     n = 0
     for c in chars:
-        if isinstance(c, dict) and str((c.get("id") or "")).strip():
+        if not isinstance(c, dict) or not str((c.get("id") or "")).strip():
+            continue
+        if any(
+            str((c.get(k) or "")).strip()
+            for k in ("name", "look", "clothes", "char", "rules")
+        ):
             n += 1
     return n
 
@@ -403,7 +416,22 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
             return ProjectStatus.script_ready
     # frames ✓
     hero_required = _hero_step_required(project)
-    if hero_required:
+    meta_now = project.meta if isinstance(project.meta, dict) else {}
+    if meta_now.get("hero_skipped_empty") and hero_arts == 0 and not has_hero_descr:
+        # Пустой skip зафиксирован — не откатывать в frames_ready (цикл auto).
+        if fr_with_img_prompt < fr_total:
+            if _enrich_meta_allowed_for_status(project):
+                enrich_st = _enrich_ready_from_meta(project)
+                if enrich_st is not None:
+                    return enrich_st
+            if _items_step_required(project):
+                item_descs = _nonempty_item_descriptions(project)
+                if item_arts < len(item_descs):
+                    return ProjectStatus.hero_ready
+                return ProjectStatus.items_ready
+            return ProjectStatus.hero_ready
+        # дальше — обычная проверка img/video
+    elif hero_required:
         n_excel = _excel_hero_expected_count(project)
         if hero_arts == 0 and not has_hero_descr:
             if n_excel > 0:

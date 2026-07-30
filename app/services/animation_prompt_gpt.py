@@ -36,7 +36,8 @@ MIN_ANIM_PROMPT_LEN = 10
 
 BATCH_SIZE = 5
 STRIP_GUTTER_PX = 6
-STRIP_MAX_HEIGHT_PX = 768
+STRIP_MAX_HEIGHT_PX = 512
+STRIP_MAX_BYTES = 3_500_000
 
 _ID_IN_PROMPT_RE = re.compile(
     r"\[ID:\s*P\d+-F(\d+)-[a-f0-9]+\]",
@@ -161,6 +162,7 @@ def build_batch_strip_path(items: list[FrameImageBatchItem], out_dir: Path) -> P
         out_path,
         gutter_px=STRIP_GUTTER_PX,
         max_height=STRIP_MAX_HEIGHT_PX,
+        max_bytes=STRIP_MAX_BYTES,
     )
     return out_path
 

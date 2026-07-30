@@ -113,6 +113,8 @@ async def ensure_run_for_project(project_id: int, workflow_id: int) -> int:
 
 
 from app.orchestrator.node_registry import (
+    LINEAR_NODE_TYPES,
+    NODE_TYPE_TO_READY,
     READY_TO_NODE_TYPE,
     RUNNING_TO_NODE_TYPE,
     STEP_CODE_TO_NODE_TYPE,
@@ -907,16 +909,46 @@ NODE_TYPE_ORDER: list[str] = [
 ]
 
 
+def _node_already_succeeded_for_project(project: Project, nr: NodeRun) -> bool:
+    """True если Project.status уже говорит, что шаг ноды успешно завершён.
+
+    Защита от гонки: complete_node ещё не закоммичен / не виден другой сессии,
+    а background_reconcile уже видит running без live-task и готов вызвать fail_node.
+    """
+    if READY_TO_NODE_TYPE.get(project.status) == nr.node_type:
+        return True
+    if nr.node_type not in LINEAR_NODE_TYPES:
+        return False
+    nr_i = LINEAR_NODE_TYPES.index(nr.node_type)
+    cur_type = READY_TO_NODE_TYPE.get(project.status) or RUNNING_TO_NODE_TYPE.get(
+        project.status
+    )
+    if cur_type in LINEAR_NODE_TYPES and LINEAR_NODE_TYPES.index(cur_type) > nr_i:
+        return True
+    if project.status in (
+        ProjectStatus.assembled,
+        ProjectStatus.publishing,
+        ProjectStatus.published,
+    ):
+        return True
+    # ready-статус этой ноды уже пройден (project на следующем ready/running)
+    ready = NODE_TYPE_TO_READY.get(nr.node_type)
+    if ready is not None and project.status == ready:
+        return True
+    return False
+
+
 async def _reconcile_stale_node_runs(
     *,
     initiator: str,
     require_no_live_task: bool = False,
     grace_sec: float = _STALE_GRACE_SEC,
 ) -> int:
-    """NodeRun running/queued без живого воркера → failed."""
+    """NodeRun running/queued без живого воркера → failed (или heal → done)."""
     from app.services.step_cancel import is_generation_active
 
     fixed = 0
+    healed = 0
     now = datetime.utcnow()
     grace = timedelta(seconds=grace_sec)
     async with session_scope() as session:
@@ -928,6 +960,9 @@ async def _reconcile_stale_node_runs(
         for run in runs:
             if run.project_id is None:
                 continue
+            project = await session.get(Project, run.project_id)
+            if project is None:
+                continue
             live = is_generation_active(run.project_id)
             for nr in run.node_runs:
                 if nr.status not in (NodeRunStatus.running, NodeRunStatus.queued):
@@ -938,6 +973,20 @@ async def _reconcile_stale_node_runs(
                     if nr.started_at is not None and now - nr.started_at < grace:
                         continue
                 old = nr.status
+                # Гонка с complete_active_node_for_step: шаг уже ready в Project.
+                if _node_already_succeeded_for_project(project, nr):
+                    # complete_node принимает только initiator=worker
+                    if complete_node(nr, project_id=run.project_id, initiator="worker"):
+                        healed += 1
+                        logger.info(
+                            "[#{}] NodeRun {}/{}: {} → done (heal after success, {})",
+                            run.project_id,
+                            nr.node_type,
+                            nr.node_key,
+                            old.value,
+                            initiator,
+                        )
+                    continue
                 if fail_node(
                     nr,
                     _STALE_NODE_RUN_ERROR,
@@ -953,11 +1002,13 @@ async def _reconcile_stale_node_runs(
                         old.value,
                         initiator,
                     )
-        if fixed:
+        if fixed or healed:
             await session.commit()
     if fixed:
         logger.info("reconcile stale NodeRun: {} → failed ({})", fixed, initiator)
-    return fixed
+    if healed:
+        logger.info("reconcile stale NodeRun: {} → done heal ({})", healed, initiator)
+    return fixed + healed
 
 
 async def reconcile_stale_node_runs_on_startup() -> int:

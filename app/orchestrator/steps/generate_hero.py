@@ -429,11 +429,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 if loaded:
                     await _run_excel(session, project, bot, loaded)
                     return
+                # Пустой skip: помечаем meta, иначе clamp откатит hero_ready →
+                # frames_ready и auto_advance снова запустит generating_hero
+                # (бесконечный цикл каждые ~5 с).
+                meta = dict(project.meta or {})
+                meta["hero_skipped_empty"] = True
+                project.meta = meta
                 logger.warning(
                     "[#{}] hero: hero_count/description пусты и лист "
-                    "«Персонажи» без данных — пропускаю шаг (hero_ready). "
-                    "Заполни «Описание героя» на листе «Общий план» или "
-                    "столбцы на «Персонажи», затем ▶ Hero",
+                    "«Персонажи» без данных — пропускаю шаг (hero_ready, "
+                    "hero_skipped_empty). Заполни «Описание героя» на листе "
+                    "«Общий план» или столбцы на «Персонажи», затем ▶ Hero",
                     project.id,
                 )
                 project.status = ProjectStatus.hero_ready

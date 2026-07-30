@@ -131,10 +131,23 @@ class WorkflowGraph:
                 out.add(nid)
         return out
 
+    def _incoming_prereq_sources(self, node_key: str) -> list[str]:
+        """Входящие источники, которые являются prerequisite (не fail-retry)."""
+        from app.services.gpt_operator import is_fail_edge_kind
+
+        out: list[str] = []
+        for src in self._in.get(node_key, []):
+            kind = self.edge_kind(src, node_key)
+            # fail = «не ок → назад»; это не условие первого запуска target.
+            if is_fail_edge_kind(kind):
+                continue
+            out.append(src)
+        return out
+
     def _effective_predecessors(self, node_key: str, skipped: set[str]) -> set[str]:
         """Предшественники с учётом пропуска hitl/disabled (они прозрачны)."""
         result: set[str] = set()
-        stack = list(self._in.get(node_key, []))
+        stack = list(self._incoming_prereq_sources(node_key))
         seen: set[str] = set()
         while stack:
             cur = stack.pop()
@@ -142,11 +155,11 @@ class WorkflowGraph:
                 continue
             seen.add(cur)
             if cur in skipped:
-                stack.extend(self._in.get(cur, []))
+                stack.extend(self._incoming_prereq_sources(cur))
                 continue
             typ = self.node_type(cur)
             if is_passthrough_node_type(typ):
-                stack.extend(self._in.get(cur, []))
+                stack.extend(self._incoming_prereq_sources(cur))
                 continue
             result.add(cur)
         return result
@@ -262,6 +275,18 @@ class WorkflowGraph:
                 slot = 0
             if 1 <= slot <= 5:
                 start_keys = self.excel_gpt_keys_for_slot(slot)
+                # Несколько excel_gpt с одним slotIndex: BFS от всех ключей
+                # слота даёт ложный «следующий» шаг (например split после
+                # ранней slot=5). Сужаем до active / completed ключа слота.
+                meta = project.meta if isinstance(project.meta, dict) else {}
+                active = str(meta.get("active_excel_gpt_node_key") or "").strip()
+                if active and active in start_keys:
+                    start_keys = [active]
+                else:
+                    done_keys = completed_node_keys(project)
+                    narrowed = [k for k in start_keys if k in done_keys]
+                    if narrowed:
+                        start_keys = narrowed
         if not start_keys:
             return None
 
@@ -319,19 +344,23 @@ class WorkflowGraph:
             preds = self._effective_predecessors(key, skipped)
             if all(self._is_ready(p, project, skipped) for p in preds):
                 # Шлагбаум: если любой предшественник режет gate-стрелкой — не запускаем.
+                from app.services.gpt_operator import is_fail_edge_kind
+
                 blocked = False
                 for pred in preds:
-                    # Проверяем прямые и «прозрачные» пути: достаточно прямых рёбер.
-                    if pred in self._in.get(key, []) and self.gate_blocks_edge(
-                        project, pred, key
-                    ):
-                        blocked = True
-                        break
-                    # Также block если pred связан через любое ребро в snapshot
+                    # fail-retry не шлагбаумит первый запуск (см. _incoming_prereq_sources).
+                    if pred in self._in.get(key, []):
+                        if is_fail_edge_kind(self.edge_kind(pred, key)):
+                            continue
+                        if self.gate_blocks_edge(project, pred, key):
+                            blocked = True
+                            break
                     for e_src, e_tgt in list(self._edge_kind.keys()):
-                        if e_tgt == key and e_src == pred and self.gate_blocks_edge(
-                            project, e_src, e_tgt
-                        ):
+                        if e_tgt != key or e_src != pred:
+                            continue
+                        if is_fail_edge_kind(self.edge_kind(e_src, e_tgt)):
+                            continue
+                        if self.gate_blocks_edge(project, e_src, e_tgt):
                             blocked = True
                             break
                     if blocked:
