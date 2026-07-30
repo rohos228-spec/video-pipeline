@@ -39,6 +39,12 @@
 
 | Время | Делаю | Сделал | Результат | Баг/фикс |
 |-------|-------|--------|-----------|----------|
+| 03:37 | items node | check xlsx+meta | no items; dir missing; skip OK | items N/A |
+| 03:37 | B-I5 FramesGrid | openFrames(50) via React context | dialog 9 frames VIDEO_GENERATED editable | B-I5 OK |
+| 03:37 | status pulse | assembled artifacts+UI | Run done R48 9/9 final 75s V-menu OK | continue UI |
+| 03:37 | UI Basg dialog | open Basg topbar | dialog OK with log preview | B-bug OK |
+| 03:35 | V-menu plan | React onClick open MENYU NODY | Run/Assets/Excel/Detach/Disable/Delete present | V-menu OK |
+| 03:35 | frames API check | GET /frames 9 | ip+ap filled 9/9; final matched voice earlier | - |
 | 03:31 | artifacts vs sekty | 9 scenes+9 videos+3 heroes+R48 9/9+final 53MB | parity OK smaller scale | - |
 | 03:31 | D14 Run failed at assembled | heal failed->done + terminal aggregate | WorkflowRun #50 done; UI #50 done | D14 FIX |
 | 03:21 | status pulse ~3h | script..assemble live on #50 | assembled; D3/D6/D9/D10/D11 fixed; D12/D13 WA | - |
@@ -101,7 +107,12 @@
 - [x] B-S2 клик проекта / канвас
 - [x] B-T3 Логи
 - [x] Topbar B-T1..T5 (Promty/Logs/API/badge); Run bar B-R2/R3; C2 Save graph
-- [ ] Inspector B-I3..I6 / sidebar B-S3..S10 / canvas C1,C3–C10
+- [x] V-menu plan + videos (Run/Assets/Excel/Detach/Disable/Delete)
+- [x] B-S5 collapse sidebar (Показать проекты)
+- [x] B-I5 FramesGrid (9 кадров VIDEO_GENERATED)
+- [x] Баг-диалог (лог-превью)
+- [x] items — пусто (item_descriptions=[]), нода «ожидание» OK
+- [ ] Inspector B-I3/I4/I6 / sidebar B-S3,S6–S10 / canvas C1,C3–C10 / publish
 
 ### D/E — Ноды (реальный Run)
 - [x] plan (уже plan_ready + xlsx/general_plan; HITL approved)
