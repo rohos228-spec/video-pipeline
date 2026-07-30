@@ -1,7 +1,7 @@
 # Context-pack video-pipeline (machine-usable)
 
 Дата: 2026-07-31
-Git HEAD на момент сборки: `a2346e6` (`main`)
+Git HEAD на момент сборки: `731874d` (`main`)
 Назначение: компактный пакет знаний для автономного агента — владельцы данных, шаги, артефакты, проверки, риски. Не заменяет `docs/AGENT_MAP.md`, а фиксирует рабочий срез для харнеса/аудита.
 
 ---
@@ -114,7 +114,7 @@ Complete только если: accepted by provider → файл на диск�
 |---|---|---|
 | #50 assembled | harness API: 17/17 green; artifacts 26/26; assets 40; xlsx 67555 bytes; R45/R48/R49 = 9 | green |
 | #51 disposable early E2E | `plan → script → split`; frames=14; harness green после каждого шага | green до media gate |
-| backend | `/api/studio-version`: build 376, `ui_stale=0`, `pipeline_ok=1`, backend_git `6aabad1` до test/docs commits | green |
+| backend | `/api/studio-version`: build 376, `ui_stale=0`, `pipeline_ok=1`, backend_git `731874d` | green |
 | tests | `test_night_harness_contract.py` 6 passed; ops regression 16 passed; Excel/GPT block 90 passed | green scoped |
 | full suite | 1126 passed / 32 failed; изолированные relevant падения проходят; `auto_advance_parity` = pre-existing stub/DB conflict | known debt |
 

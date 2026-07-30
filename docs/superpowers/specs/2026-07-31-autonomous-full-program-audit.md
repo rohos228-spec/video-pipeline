@@ -9,8 +9,8 @@
 
 ## 0. Текущий baseline (зафиксировано)
 
-- Ветка: `main`, git HEAD `c9e7cc0`; рабочее дерево чистое.
-- Backend запущен напрямую через `scripts/run-backend.ps1`; health `/api/studio-version`: build 376, backend_git `6aabad1`, `ui_stale=0`, `pipeline_ok=1` (test-only commit `c9e7cc0` не требует restart, финальный restart будет перед отчётом).
+- Ветка: `main`, git HEAD `731874d`; рабочее дерево чистое.
+- Backend запущен напрямую через `scripts/run-backend.ps1`; health `/api/studio-version`: build 376, backend_git `731874d`, `ui_stale=0`, `pipeline_ok=1`.
 - Harness CLI/API по проекту #50 зелёный: `project.xlsx`, 9 scenes, 9 videos, final, R48=9/9, `frames_xlsx_parity` 9/9/9, failed node_runs=0, project log clean, voiceover clean.
 - QA HTTP #50 зелёный: artifacts 26/26 OK, assets 40 preview OK, xlsx download OK, disk parity OK, recent #50 ERROR/WARN=0.
 - Harness расширен: HTTP-слой (`--http`, API verify), project log scan, DB `frames` ↔ xlsx R45/R48/R49 parity, status-aware thresholds (на `plan_ready/script_ready/frames_ready` не требует media и не предлагает `repair:img,video`).
