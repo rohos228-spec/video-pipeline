@@ -998,6 +998,18 @@ async def maybe_auto_advance(
         return False
 
     if auto_awaits_manual_start(project):
+        # Терминальный успех: флаг ожидания ▶ больше не нужен (иначе INFO-спам
+        # каждые ~5с на assembled и «ложное» ожидание в логах).
+        if project.status in (
+            ProjectStatus.assembled,
+            ProjectStatus.publishing,
+            ProjectStatus.published,
+        ):
+            from app.services.project_control import clear_auto_await_manual_start
+
+            if clear_auto_await_manual_start(project):
+                await session.flush()
+            return False
         logger.info(
             "auto_advance: #{} {} — auto_mode ждёт ручной ▶ (без автостарта)",
             project.id,

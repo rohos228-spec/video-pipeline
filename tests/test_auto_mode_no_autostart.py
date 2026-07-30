@@ -119,3 +119,24 @@ def test_arm_idempotent() -> None:
     assert arm_auto_await_manual_start(p) is False
     assert clear_auto_await_manual_start(p) is True
     assert clear_auto_await_manual_start(p) is False
+
+
+@pytest.mark.asyncio
+async def test_assembled_clears_stale_manual_await_gate(
+    session: AsyncSession,
+) -> None:
+    """D15: assembled + auto_await_manual_start не должен спамить INFO каждые 5с."""
+    p = Project(
+        slug="aa-assembled",
+        topic="t",
+        status=ProjectStatus.assembled,
+        auto_mode=True,
+        meta={"auto_await_manual_start": True},
+    )
+    session.add(p)
+    await session.flush()
+
+    advanced = await maybe_auto_advance(session, p, bot=None, force=True)
+    assert advanced is False
+    assert auto_awaits_manual_start(p) is False
+    assert p.status is ProjectStatus.assembled

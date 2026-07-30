@@ -39,6 +39,9 @@
 
 | Время | Делаю | Сделал | Результат | Баг/фикс |
 |-------|-------|--------|-----------|----------|
+| 03:39 | UI Set network | click Set topbar | panel opens without crash | B-T Set OK |
+| 03:39 | D1 rootcause | HITL_AUTO_APPROVE=false + auto_await_manual_start | plan HITL needs manual/verdict; expected with env | D1 explained |
+| 03:38 | Create Outsee UI | openOutsee project 50 + AUDIO tab | Create OK; AUDIO tab routes to audio step not Suno | D13 confirmed |
 | 03:37 | items node | check xlsx+meta | no items; dir missing; skip OK | items N/A |
 | 03:37 | B-I5 FramesGrid | openFrames(50) via React context | dialog 9 frames VIDEO_GENERATED editable | B-I5 OK |
 | 03:37 | status pulse | assembled artifacts+UI | Run done R48 9/9 final 75s V-menu OK | continue UI |
@@ -132,7 +135,7 @@
 
 | ID | Фаза | Шаг | Ожидание | Факт | Severity | Фикс |
 |----|------|-----|----------|------|----------|------|
-| D1 | E | plan HITL | auto или явный approve | pending с 29.07, пайплайн стоял | P1 | approved вручную через API; проверить почему не auto при auto_mode=1 |
+| D1 | E | plan HITL | auto или явный approve | pending с 29.07; HITL_AUTO_APPROVE=false + auto_await_manual_start | P2 | manual API OK; env не auto-approve — ожидаемо |
 | D2 | tool | QA driver | стабильный poll | UnicodeEncodeError на → | P2 | заменено на -> |
 | D3 | E | NodeRun | script done | reconcile → failed 20ms | P1 | heal in run_sync |
 | D5 | E | excel_gpt | xlsx writeback | text-only, no project_file | P2 | open |
