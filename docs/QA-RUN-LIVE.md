@@ -39,6 +39,7 @@
 
 | Время | Делаю | Сделал | Результат | Баг/фикс |
 |-------|-------|--------|-----------|----------|
+| 03:44 | D15b assembled spam | startup skip + quiet graph end | 9 tests; no next publish idle | D15 FIX2 |
 | 03:41 | D15 log spam assembled | clear auto_await on terminal status | tests 7 pass; backend restarted | D15 FIX |
 | 03:39 | UI Set network | click Set topbar | panel opens without crash | B-T Set OK |
 | 03:39 | D1 rootcause | HITL_AUTO_APPROVE=false + auto_await_manual_start | plan HITL needs manual/verdict; expected with env | D1 explained |
@@ -149,7 +150,7 @@
 | D12 | E | audio 11Labs | TTS | session expired | P1 | WA: SAPI voice on disk |
 | D13 | E | music Outsee | Suno CDP | generate_music always raises | P0 | WA: ffmpeg mp3; **нужен CDP restore** |
 | D14 | E | WorkflowRun | assembled → Run done | Run #50 failed (stale failed NodeRun) | P1 | heal failed→done + terminal aggregate |
-| D15 | E | auto_advance | quiet on assembled | INFO spam every 5s (auto_await) | P2 | clear gate on assembled/published |
+| D15 | E | auto_advance | quiet on assembled | INFO/WARNING spam every 5s | P2 | clear await + startup skip + no-publish idle |
 
 ## Эталон для сверки
 #47 `sekty` — assembled; сравнивать набор артефактов (xlsx sheets, scenes/, clips/, final).
