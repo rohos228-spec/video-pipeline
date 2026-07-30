@@ -1281,6 +1281,31 @@ async def ask(
                 raise
         reply = (reply or "").strip()
 
+        # Excel во вложении: если TSV-ответ — кусок книги, дозапросить продолжение.
+        if has_xlsx and reply:
+            try:
+                from app.services.xlsx_text_writeback import (
+                    WRITEBACK_HINT,
+                    maybe_continue_partial_xlsx_reply,
+                )
+
+                template = next(
+                    (p for p in files if p.suffix.lower() in {".xlsx", ".xlsm"}),
+                    None,
+                )
+                reply = await maybe_continue_partial_xlsx_reply(
+                    reply_text=reply,
+                    template_xlsx=template,
+                    input_paths=list(files),
+                    accompanying=f"{ask_text}\n\n{WRITEBACK_HINT}".strip(),
+                    log_label=f"gpt_workspace session={session_id}",
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "gpt_workspace: session={} continue partial xlsx failed",
+                    session_id,
+                )
+
         meta = _read_json(d / "meta.json", {})
         meta["phase"] = "saving"
         meta["phase_detail"] = "Сохраняю ответ и файлы…"

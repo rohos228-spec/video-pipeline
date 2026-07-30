@@ -267,6 +267,27 @@ async def _run_operator_api_real(
         )
         reply_text = result.text
 
+    # project_file: если TSV — кусок книги (типичные «заполнили на 20%») — дозапрос.
+    if effective_output == "project_file" and not is_check:
+        from app.services.xlsx_text_writeback import maybe_continue_partial_xlsx_reply
+
+        template = project_dir / "project.xlsx"
+        for x in input_paths:
+            if x.suffix.lower() in {".xlsx", ".xlsm", ".xls"} and x.is_file():
+                template = x
+                break
+        reply_text = await maybe_continue_partial_xlsx_reply(
+            reply_text=reply_text,
+            template_xlsx=template,
+            input_paths=list(input_paths),
+            accompanying=accomp,
+            log_label=f"gpt_operator/api node={node_key}",
+        )
+        if reply_text != result.text:
+            from dataclasses import replace
+
+            result = replace(result, text=reply_text)
+
     analysis: CheckAnalysis | None = None
     gate_status: str | None = None
     output_paths: list[Path] = []

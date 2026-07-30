@@ -444,5 +444,200 @@ WRITEBACK_HINT = (
     "(пример: `@row=49\\tзакадровый текст\\t...`) — не уплотняй пустые ряды "
     "и не сдвигай номера строк. "
     "Для шага план обязателен лист «Общий план» (`# Лист: Общий план`). "
-    "Сохрани имена листов как во входе. Либо приложи прямую ссылку на .xlsx."
+    "Сохрани имена листов как во входе. Либо приложи прямую ссылку на .xlsx.\n"
+    "ПОЛНОЕ ЗАПОЛНЕНИЕ (критично): верни ВСЕ целевые строки листа из входа "
+    "(`@row=…`), не сокращай до «примера» / первых 10–20%. Пустые обязательные "
+    "ячейки — заполни. Если ответ не вмещается в один раз — в конце напиши "
+    "`CONTINUE_XLSX: <имя_листа> @row=<следующий>` и жди продолжения; "
+    "не обрывай молча на середине."
 )
+
+# Сколько дозапросов «продолжи TSV», если модель отдала кусок книги.
+MAX_WRITEBACK_CONTINUES = 3
+
+
+def count_sheet_rows_in_tsv(text: str) -> dict[str, int]:
+    """Сколько TSV-строк на лист в ответе (по extract_sheet_blocks)."""
+    blocks = extract_sheet_blocks(text or "")
+    return {name: len(rows) for name, rows in blocks.items() if rows}
+
+
+def last_row_mark_in_tsv(text: str, sheet: str) -> int | None:
+    """Максимальный @row=N на листе в TSV-ответе."""
+    blocks = extract_sheet_blocks(text or "")
+    rows = blocks.get(sheet) or []
+    last: int | None = None
+    for cells in rows:
+        if not cells:
+            continue
+        n, _rest = _parse_row_mark(cells)
+        if n is None:
+            continue
+        last = n if last is None else max(last, n)
+    return last
+
+
+def template_nonempty_row_counts(xlsx_path: Path) -> dict[str, int]:
+    """Непустые строки по листам шаблона (для оценки полноты writeback)."""
+    try:
+        from openpyxl import load_workbook
+    except Exception:  # noqa: BLE001
+        return {}
+    try:
+        wb = load_workbook(xlsx_path, read_only=True, data_only=True)
+    except Exception:  # noqa: BLE001
+        return {}
+    out: dict[str, int] = {}
+    try:
+        for ws in wb.worksheets:
+            n = 0
+            for row in ws.iter_rows(values_only=True):
+                if any(c is not None and str(c).strip() for c in row):
+                    n += 1
+            out[ws.title] = n
+    finally:
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            wb.close()
+    return out
+
+
+def writeback_looks_incomplete(
+    *,
+    reply_text: str,
+    template_xlsx: Path | None,
+    min_ratio: float = 0.45,
+    min_template_rows: int = 20,
+) -> tuple[bool, str, str | None, int | None]:
+    """(incomplete, reason, sheet, next_row)."""
+    reply = reply_text or ""
+    m = re.search(
+        r"CONTINUE_XLSX\s*:\s*(.+?)\s*@row\s*=\s*(\d+)",
+        reply,
+        re.IGNORECASE,
+    )
+    if m:
+        return True, "model marked CONTINUE_XLSX", m.group(1).strip(), int(m.group(2))
+    got = count_sheet_rows_in_tsv(reply)
+    if not got:
+        return False, "no tsv blocks", None, None
+    if template_xlsx is None or not template_xlsx.is_file():
+        return False, "no template", None, None
+    want = template_nonempty_row_counts(template_xlsx)
+    if not want:
+        return False, "empty template", None, None
+    # Сравниваем только листы, которые модель уже трогала.
+    for name, n_got in got.items():
+        n_want = want.get(name)
+        resolved = name
+        if n_want is None:
+            for tn, tv in want.items():
+                if tn.lower() == name.lower():
+                    n_want = tv
+                    resolved = tn
+                    break
+        if n_want is None:
+            continue
+        if n_want < min_template_rows:
+            continue
+        if n_got < max(8, int(n_want * min_ratio)):
+            last = last_row_mark_in_tsv(reply, name)
+            if last is None:
+                last = last_row_mark_in_tsv(reply, resolved)
+            nxt = (last + 1) if last else 2
+            return (
+                True,
+                f"sheet {resolved!r}: writeback {n_got}/{n_want} rows "
+                f"(<{min_ratio:.0%})",
+                resolved,
+                nxt,
+            )
+    return False, "ok", None, None
+
+
+def build_writeback_continue_prompt(
+    *,
+    sheet_hint: str,
+    next_row: int,
+    previous_reply: str,
+) -> str:
+    """Промт дозапроса: продолжить TSV с указанного @row."""
+    prev_tail = (previous_reply or "")[-2500:]
+    return (
+        "Предыдущий ответ обрезал Excel — заполнение НЕПОЛНОЕ.\n"
+        f"Продолжи лист «{sheet_hint}» начиная с `@row={next_row}` "
+        "(и дальше по шаблону). Верни ТОЛЬКО:\n"
+        f"`# Лист: {sheet_hint}`\n"
+        "и строки TSV с `@row=…` — без болтовни, без повтора уже отданных строк.\n"
+        "Если снова не влезет — в конце `CONTINUE_XLSX: "
+        f"{sheet_hint} @row=<следующий>`.\n\n"
+        f"Хвост прошлого ответа:\n{prev_tail}"
+    )
+
+
+def merge_writeback_texts(*parts: str) -> str:
+    """Склеить несколько TSV-ответов: блоки по листам, строки без дублей @row."""
+    merged: dict[str, list[list[str]]] = {}
+    seen_rows: dict[str, set[int]] = {}
+    for part in parts:
+        for name, rows in extract_sheet_blocks(part or "").items():
+            bucket = merged.setdefault(name, [])
+            seen = seen_rows.setdefault(name, set())
+            for cells in rows:
+                n, rest = _parse_row_mark(cells)
+                if n is not None:
+                    if n in seen:
+                        continue
+                    seen.add(n)
+                    bucket.append([f"@row={n}", *rest])
+                else:
+                    bucket.append(list(cells))
+    chunks: list[str] = []
+    for name, rows in merged.items():
+        chunks.append(f"# Лист: {name}")
+        for cells in rows:
+            chunks.append("\t".join(cells))
+        chunks.append("")
+    return "\n".join(chunks).strip()
+
+
+async def maybe_continue_partial_xlsx_reply(
+    *,
+    reply_text: str,
+    template_xlsx: Path | None,
+    input_paths: list[Path],
+    accompanying: str = "",
+    log_label: str = "xlsx",
+) -> str:
+    """Если TSV-ответ явно кусок книги — дозапросить продолжение и склеить."""
+    from app.services.gpt_api import chat
+
+    parts = [reply_text or ""]
+    for cont_i in range(MAX_WRITEBACK_CONTINUES):
+        incomplete, reason, sheet, nxt = writeback_looks_incomplete(
+            reply_text=merge_writeback_texts(*parts),
+            template_xlsx=template_xlsx,
+        )
+        if not incomplete or not sheet or nxt is None:
+            break
+        logger.warning(
+            "{}: partial xlsx writeback ({}) — continue {}/{}",
+            log_label,
+            reason,
+            cont_i + 1,
+            MAX_WRITEBACK_CONTINUES,
+        )
+        cont = await chat(
+            prompt=build_writeback_continue_prompt(
+                sheet_hint=sheet,
+                next_row=nxt,
+                previous_reply=parts[-1],
+            ),
+            accompanying=accompanying,
+            input_paths=list(input_paths),
+        )
+        parts.append(cont.text or "")
+    if len(parts) == 1:
+        return parts[0]
+    return merge_writeback_texts(*parts)

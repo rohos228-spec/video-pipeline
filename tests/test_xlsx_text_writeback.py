@@ -29,6 +29,48 @@ def test_extract_sheet_blocks_tsv() -> None:
     assert blocks["Кадры"][1] == ["1", "hello"]
 
 
+def test_writeback_incomplete_and_merge(tmp_path: Path) -> None:
+    from app.services.xlsx_text_writeback import (
+        WRITEBACK_HINT,
+        merge_writeback_texts,
+        writeback_looks_incomplete,
+    )
+
+    assert "ПОЛНОЕ ЗАПОЛНЕНИЕ" in WRITEBACK_HINT
+    src = tmp_path / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "Общий план"
+    for i in range(1, 41):
+        ws.cell(row=i, column=1, value=f"row{i}")
+        ws.cell(row=i, column=2, value="")
+    wb.save(src)
+    wb.close()
+
+    partial = "\n".join(
+        ["# Лист: Общий план"]
+        + [f"@row={i}\trow{i}\tonly-part" for i in range(1, 9)]
+    )
+    incomplete, reason, sheet, nxt = writeback_looks_incomplete(
+        reply_text=partial, template_xlsx=src
+    )
+    assert incomplete is True
+    assert sheet == "Общий план"
+    assert nxt == 9
+
+    more = "\n".join(
+        ["# Лист: Общий план"]
+        + [f"@row={i}\trow{i}\trest" for i in range(9, 41)]
+    )
+    merged = merge_writeback_texts(partial, more)
+    incomplete2, _, _, _ = writeback_looks_incomplete(
+        reply_text=merged, template_xlsx=src
+    )
+    assert incomplete2 is False
+    assert merged.count("@row=") == 40
+
+
 def test_extract_from_fenced_block() -> None:
     text = "вот результат:\n```tsv\n# Лист: Данные\nx\ty\n10\t20\n```\nконец"
     blocks = extract_sheet_blocks(text)

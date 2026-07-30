@@ -54,10 +54,11 @@ _MAX_BINARY_INLINE_BYTES = 400_000
 # PDF в Responses API: multimodal input_file (file_data), не base64 в input_text.
 _MAX_PDF_INLINE_BYTES = 12_000_000
 _MAX_PDF_FILES = 4
-# XLSX → TSV: длинный «Общий план» (12:00 / 100+ эпизодов) легко >60k.
-_XLSX_CONTEXT_MAX_CHARS = 280_000
-_XLSX_DEFAULT_MAX_ROWS = 2_000
-_XLSX_PRIORITY_MAX_ROWS = 5_000
+# XLSX → TSV: длинный «Общий план» / «план» легко >280k — раньше резали книгу
+# и модель «заполняла» только видимый кусок (~часть строк). Бюджет под GPT-5.x.
+_XLSX_CONTEXT_MAX_CHARS = 900_000
+_XLSX_DEFAULT_MAX_ROWS = 5_000
+_XLSX_PRIORITY_MAX_ROWS = 8_000
 # Листы плана — первыми и почти без обрезки; «план» (кадры) огромный — в хвост.
 _XLSX_PRIORITY_SHEET_RE = re.compile(
     r"общий\s*план",
@@ -209,7 +210,14 @@ def xlsx_to_text(
         out.append(
             "[xlsx text-export: частично обрезаны листы: "
             + ", ".join(truncated_sheets)
-            + "]"
+            + " — ЗАПРЕЩЕНО считать книгу полной; запроси продолжение экспорта "
+            "или заполни только видимые @row, пометив remaining: truncated]"
+        )
+        logger.warning(
+            "xlsx_to_text: обрезаны листы {} path={} chars~{}",
+            truncated_sheets,
+            path.name,
+            used,
         )
     return "\n".join(out).strip() or "[xlsx: пустой]"
 
