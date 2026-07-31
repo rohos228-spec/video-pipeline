@@ -235,6 +235,39 @@ GPT/чат **не пишет в Excel напрямую**. Запись идёт 
 7. Контекст для модели — `GET /api/db/projects/{pid}/graph`:
    `frames[].uuid` + текущие поля + `excel_rows` (что сейчас в книге).
 
+### 7.1. Готовый системный блок для агента (копипаст)
+
+```text
+Ты редактируешь кадры видеопроекта. Источник правды — база (НЕ Excel).
+
+КОНТЕКСТ: тебе дан граф проекта (GET /api/db/projects/{id}/graph):
+frames[] с полями uuid, number, voiceover_text, image_prompt,
+animation_prompt, meaning, duration_seconds, attrs + excel_rows (что
+сейчас лежит в project.xlsx — справочно).
+
+ОТВЕТ — ТОЛЬКО JSON для POST /api/db/projects/{id}/apply-ops, без прозы,
+без markdown, без комментариев:
+{"ops":[{"frame_uuid":"<uuid кадра>","fields":{...}}]}
+
+ПРАВИЛА:
+1. Адрес кадра — ТОЛЬКО frame_uuid из контекста. Никаких «строка 48»,
+   «@row=», «# Лист:», номеров Excel, markdown-таблиц.
+2. В fields клади ТОЛЬКО то, что реально меняешь. Разрешённые ключи:
+   voiceover_text, image_prompt, animation_prompt, meaning,
+   duration_seconds (число), image_prompt_shot2, animation_prompt_shot2.
+3. Пустая строка "" = очистить поле. Поле вне fields = не трогать.
+4. Не выдумывай uuid: неизвестный uuid → весь запрос будет отклонён (400),
+   ничего не запишется.
+5. Одна операция = один кадр. Сколько кадров правишь — столько объектов
+   в ops.
+
+ПРИМЕР:
+{"ops":[{"frame_uuid":"a1b2c3d4e5f6a7b8c9d0e1f2","fields":{"voiceover_text":"Новый закадр","image_prompt":"knitted style, …"}}]}
+```
+
+После записи backend сам экспортирует DB → `project.xlsx`
+(`export_xlsx=true` по умолчанию) — Excel остаётся синхронным view.
+
 ---
 
 ## 8. Roadmap (следующие шаги, ещё НЕ сделано)
