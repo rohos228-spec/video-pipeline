@@ -236,7 +236,34 @@ export function NodeVMenu({
           </div>
         ) : null}
 
-        {/* Пульт оператора — ПЕРВЫМ, сразу под шапкой V */}
+        {/* Сопроводительный (= прилагаемый) текст — СВЕРХУ, до пульта.
+            Раньше кнопка была внизу и пропадала за длинным пультом оператора. */}
+        {showGptText ? (
+          <div className="mb-3">
+            <button
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                onOpenGptText();
+              }}
+              className="flex w-full items-start gap-2 rounded-xl border border-violet-400/40 bg-violet-500/15 px-3 py-2.5 text-left transition hover:border-violet-400/70 hover:bg-violet-500/25"
+            >
+              <MessageSquareText className="mt-0.5 h-4 w-4 shrink-0 text-violet-300" />
+              <span className="min-w-0">
+                <span className="block text-[11px] font-semibold text-violet-50">
+                  Сопроводительный текст
+                </span>
+                <span className="mt-0.5 block text-[9px] leading-snug text-muted-foreground">
+                  Прилагаемое сообщение в диалог GPT — отдельно от файла мастер-промта
+                </span>
+              </span>
+            </button>
+          </div>
+        ) : null}
+
+        {/* Пульт оператора — сразу под сопроводительным текстом */}
         {isGptOp && projectId != null ? (
           <div className="mb-3 rounded-xl border border-sky-400/30 bg-sky-500/[0.08] p-2">
             <p className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-widest text-sky-300">
@@ -367,33 +394,6 @@ export function NodeVMenu({
                 </li>
               ))}
             </ul>
-          </div>
-        )}
-
-        {showGptText && (
-          <div className="mb-3 border-t border-white/8 pt-3">
-            <span className="mb-1.5 block text-[9px] font-semibold uppercase tracking-widest text-violet-300/90">
-              Текст для GPT
-            </span>
-            <button
-              type="button"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                onOpenGptText();
-              }}
-              className="flex w-full items-start gap-2 rounded-xl border border-violet-400/25 bg-violet-500/10 px-3 py-2.5 text-left transition hover:border-violet-400/50 hover:bg-violet-500/15"
-            >
-              <MessageSquareText className="mt-0.5 h-4 w-4 shrink-0 text-violet-300" />
-              <span className="min-w-0">
-                <span className="block text-[11px] font-medium">Текстовый вариант</span>
-                <span className="mt-0.5 block text-[9px] leading-snug text-muted-foreground">
-                  Сопроводительное сообщение в диалог ChatGPT — редактируется отдельно от файлов
-                  промтов
-                </span>
-              </span>
-            </button>
           </div>
         )}
 

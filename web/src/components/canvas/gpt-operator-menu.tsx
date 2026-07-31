@@ -207,6 +207,20 @@ export function GptOperatorMenuPanel({
         </button>
       </div>
 
+      {onOpenPrompts ? (
+        <button
+          type="button"
+          onClick={() => onOpenPrompts()}
+          className="flex w-full items-center gap-2 rounded-lg border border-violet-400/35 bg-violet-500/15 px-2 py-1.5 text-left transition hover:border-violet-400/60 hover:bg-violet-500/25"
+          title="Сопроводительный (прилагаемый) текст в диалог GPT"
+        >
+          <span className="text-[10px] font-semibold text-violet-100">
+            Сопроводительный текст
+          </span>
+          <span className="text-[9px] text-muted-foreground">открыть →</span>
+        </button>
+      ) : null}
+
       {data && !data.consistent ? (
         <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-[10px] text-destructive">
           {(data.errors || []).join("; ") || "Рассинхрон входов"}

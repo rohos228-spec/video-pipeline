@@ -9,6 +9,7 @@ import {
   FileSpreadsheet,
   FileText,
   Loader2,
+  MessageSquareText,
   Play,
   RefreshCw,
   Settings2,
@@ -24,12 +25,14 @@ import { nodeTypeFromKey } from "@/lib/node-key";
 import { stepCodeForNodeType, stepHasPromptVariants } from "@/lib/node-step-map";
 import {
   defaultPromptSlots,
+  gptTextSlotForNode,
   nodeTypeRequiresExcel,
   pipelinePromptSlots,
   resolvePromptSlots,
   resolvePromptSlotsForNode,
   type NodePromptSlot,
 } from "@/lib/node-prompts";
+import { nodeSupportsGptText } from "@/lib/gpt-text-steps";
 import {
   excelGptAttachmentChipTitle,
   excelGptSlotIndex,
@@ -269,6 +272,7 @@ export function NodeStudio({
   }, [open, nodeKey]);
 
   const activeSlot =
+    (activeSlotId === "gpt_text" ? gptTextSlotForNode(nodeType) : null) ??
     allSlots.find((s) => s.id === activeSlotId) ??
     (promptFocus?.kind === "text" ? promptFocus : null) ??
     pipelineSlots[0] ??
@@ -602,6 +606,22 @@ export function NodeStudio({
                   {label}
                 </Button>
               ))}
+              {nodeSupportsGptText(nodeType) && gptTextSlotForNode(nodeType) ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={showGptTextPanel ? "default" : "outline"}
+                  className="gap-1.5 text-xs border-violet-400/40 text-violet-100"
+                  onClick={() => {
+                    setTab("prompts");
+                    setActiveSlotId("gpt_text");
+                  }}
+                  title="Сопроводительный (прилагаемый) текст в диалог GPT"
+                >
+                  <MessageSquareText className="h-3.5 w-3.5" />
+                  Сопровод. текст
+                </Button>
+              ) : null}
             </div>
             {tab === "prompts" && pipelineSlots.length > 0 && !showGptTextPanel && (
               <div className="mt-3 flex flex-wrap gap-1 border-t border-white/5 pt-3">
@@ -761,11 +781,34 @@ export function NodeStudio({
                   {showStepParams ? (
                     <NodeStepParamsPanel projectId={projectId!} nodeType={nodeType} />
                   ) : null}
-                  <p>
-                    Мастер-промты выбираются через «Файлы промтов» на вкладке «Промты GPT».
-                    Сопроводительный текст для ChatGPT редактируется отдельно — кнопка «Текстовый
-                    вариант» в меню V.
-                  </p>
+                  {nodeSupportsGptText(nodeType) && gptTextSlotForNode(nodeType) && projectId ? (
+                    <div className="rounded-xl border border-violet-400/30 bg-violet-500/[0.08] p-4">
+                      <h3 className="text-sm font-semibold text-foreground">
+                        Сопроводительный текст
+                      </h3>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Прилагаемое сообщение в диалог GPT (не мастер-промт-файл). Мастер-промт —
+                        на вкладке «Промты GPT».
+                      </p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="mt-3 gap-1.5"
+                        onClick={() => {
+                          setTab("prompts");
+                          setActiveSlotId("gpt_text");
+                        }}
+                      >
+                        <MessageSquareText className="h-3.5 w-3.5" />
+                        Открыть сопроводительный текст
+                      </Button>
+                    </div>
+                  ) : (
+                    <p>
+                      Мастер-промты выбираются через «Файлы промтов» на вкладке «Промты GPT».
+                      Сопроводительный текст для ChatGPT — кнопка «Сопровод. текст» сверху.
+                    </p>
+                  )}
                   {nodeDisabled && (
                     <p className="text-amber-400">Нода отключена в графе — шаг не запустится.</p>
                   )}
