@@ -65,6 +65,9 @@ from app.web.routers import (
     grsai as grsai_router,
 )
 from app.web.routers import (
+    text_llm as text_llm_router,
+)
+from app.web.routers import (
     project_ops as project_ops_router,
 )
 from app.web.routers import (
@@ -216,6 +219,7 @@ def create_app() -> FastAPI:
     app.include_router(outsee_http_router.router, prefix=API_PREFIX)
     app.include_router(create_queue_router.router, prefix=API_PREFIX)
     app.include_router(gpt_workspace_router.router, prefix=API_PREFIX)
+    app.include_router(text_llm_router.router, prefix=API_PREFIX)
     app.include_router(grsai_router.router, prefix=API_PREFIX)
     app.include_router(sidebar_layout_router.router, prefix=API_PREFIX)
     app.include_router(runs_router.router, prefix=API_PREFIX)

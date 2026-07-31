@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { LogPanel } from "@/components/logs/log-panel";
 import { FramesGrid } from "@/components/frames/frames-grid";
 import { StudioVersionBadge } from "@/components/shell/studio-version-badge";
+import { TextLlmPicker } from "@/components/shell/text-llm-picker";
 import { BugReportButton } from "@/components/shell/bug-report-button";
 
 interface UiState {
@@ -59,6 +60,7 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
           </div>
         </div>
         <div className="flex items-center gap-1.5">
+          <TextLlmPicker />
           <Button
             variant="default"
             size="sm"
@@ -74,10 +76,10 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
             size="sm"
             onClick={() => window.dispatchEvent(new CustomEvent("studio-open-gpt"))}
             className="gap-2 text-xs font-semibold"
-            title="Свободный GPT: история, вложения, результаты (без нод)"
+            title="Свободный чат с активной текстовой моделью (GPT или Kimi)"
           >
             <Bot className="h-3.5 w-3.5" />
-            GPT
+            Чат
           </Button>
           <Button
             variant="outline"

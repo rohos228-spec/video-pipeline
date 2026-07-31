@@ -77,13 +77,10 @@ class Settings(BaseSettings):
     grsai_default_image_model: str = Field("gpt-image-2", alias="GRSAI_DEFAULT_IMAGE_MODEL")
     grsai_default_video_model: str = Field("sora-2", alias="GRSAI_DEFAULT_VIDEO_MODEL")
 
-    # Текстовый LLM через API (OpenAI-совместимый). Не путать с IMAGE/VIDEO.
-    # TEXT_LLM_PROVIDER:
-    #   auto         — если задан TOKENROUTER_API_KEY → Kimi/TokenRouter, иначе kie/GPT_*
-    #   tokenrouter  — Kimi K3 через https://api.tokenrouter.com (НЕ OpenAI/kie)
-    #   kimi         — алиас tokenrouter
-    #   kie          — GPT_* / kie.ai (как раньше)
-    text_llm_provider: str = Field("auto", alias="TEXT_LLM_PROVIDER")
+    # Текстовый LLM: GPT (kie) по умолчанию. Kimi K3 (TokenRouter) — доп. модель.
+    # Переключение: Studio UI / data/text_llm_choice.json / TEXT_LLM_PROVIDER.
+    # TEXT_LLM_PROVIDER=kie|tokenrouter|kimi — default kie (GPT не убирается).
+    text_llm_provider: str = Field("kie", alias="TEXT_LLM_PROVIDER")
     tokenrouter_api_key: str = Field("", alias="TOKENROUTER_API_KEY")
     tokenrouter_base_url: str = Field(
         "https://api.tokenrouter.com/v1", alias="TOKENROUTER_BASE_URL"
@@ -92,7 +89,7 @@ class Settings(BaseSettings):
         "moonshotai/kimi-k3-free", alias="TOKENROUTER_MODEL"
     )
 
-    # GPT / kie.ai (используется при TEXT_LLM_PROVIDER=kie|auto без TokenRouter-ключа)
+    # GPT / kie.ai — основной текстовый стек (не удалять при добавлении Kimi)
     gpt_api_key: str = Field("", alias="GPT_API_KEY")
     gpt_base_url: str = Field("", alias="GPT_BASE_URL")
     gpt_model: str = Field("gpt-5-6-sol", alias="GPT_MODEL")
@@ -108,16 +105,13 @@ class Settings(BaseSettings):
     gpt_max_retries: int = Field(4, alias="GPT_MAX_RETRIES")
 
     def resolved_text_llm_provider(self) -> str:
-        """Активный текстовый провайдер: tokenrouter | kie."""
-        raw = (self.text_llm_provider or "auto").strip().lower()
-        if raw in {"tokenrouter", "kimi", "kimi-k3", "kimi_k3", "moonshot"}:
-            return "tokenrouter"
-        if raw in {"kie", "openai", "grsai", "gpt"}:
-            return "kie"
-        # auto
-        if (self.tokenrouter_api_key or "").strip():
-            return "tokenrouter"
-        return "kie"
+        """Активный текстовый провайдер: kie (GPT) | tokenrouter (Kimi).
+
+        Default — kie. Kimi только по явному выбору (UI / choice.json / env).
+        """
+        from app.services.text_llm_catalog import resolve_active_provider
+
+        return resolve_active_provider(self)
 
     @property
     def text_llm_is_tokenrouter(self) -> bool:
