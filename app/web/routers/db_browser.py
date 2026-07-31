@@ -22,7 +22,7 @@ from app.models import (
     PromptVersion,
     Scene,
 )
-from app.services import db_v2
+from app.services import db_apply, db_v2
 from app.services.xlsx_v8_import import (
     ROW_DURATION_V8,
     ROW_IMAGE_PROMPT_2_V8,
@@ -31,9 +31,7 @@ from app.services.xlsx_v8_import import (
     ROW_VIDEO_PROMPT_2_V8,
     ROW_VIDEO_PROMPT_V8,
     ROW_VOICEOVER_V8,
-    SHEET_GENERAL_V8,
     _cell_text,
-    _normalize_sheet_name,
     _resolve_plan_sheet,
 )
 from app.web.deps import get_session
@@ -117,84 +115,6 @@ def _excel_rows_for_project(project: Project) -> dict[int, dict[str, str | int |
         wb.close()
 
 
-def _fmt_timecode(start: float | None, end: float | None) -> str | None:
-    if start is None or end is None:
-        return None
-
-    def _ts(v: float) -> str:
-        m = int(v // 60)
-        s = v - m * 60
-        return f"{m}:{s:05.2f}"
-
-    return f"{_ts(float(start))}-{_ts(float(end))}"
-
-
-def _export_project_xlsx(project: Project, frames: list[Frame]) -> dict:
-    """DB → project.xlsx (лист «план»). Excel — производный view от DB.
-
-    Пишет только строки, за которые DB отвечает: R45/R46/R48/R64/R49,
-    плюс R50 (длительность) и R15 (таймкод), если они есть в DB.
-    Персонажи/предметы/прочие строки не трогаем. Перед записью — backup.
-    """
-    from app.services.plan_shot2 import SHOT2_PROMPT_ATTR, SHOT2_VIDEO_PROMPT_ATTR
-    from app.services.xlsx_versioning import backup_to_old
-
-    path = project.data_dir / "project.xlsx"
-    if not path.is_file():
-        raise HTTPException(400, "project.xlsx не найден — сначала сгенерируй лист «план»")
-    from openpyxl import load_workbook
-
-    wb = load_workbook(path)
-    try:
-        ws = _resolve_plan_sheet(wb)
-        if ws is None:
-            raise HTTPException(400, "в project.xlsx нет листа «план» (v8)")
-        snap = None
-        try:
-            snap = backup_to_old(path)
-        except Exception:  # noqa: BLE001
-            snap = None
-        cells = 0
-        for fr in frames:
-            col = fr.number + 2
-            attrs = fr.attrs or {}
-            writes = {
-                ROW_IMAGE_PROMPT_V8: fr.image_prompt or "",
-                ROW_IMAGE_PROMPT_2_V8: str(attrs.get(SHOT2_PROMPT_ATTR) or ""),
-                ROW_VIDEO_PROMPT_V8: fr.animation_prompt or "",
-                ROW_VIDEO_PROMPT_2_V8: str(attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or ""),
-                ROW_VOICEOVER_V8: fr.voiceover_text or "",
-            }
-            for row, value in writes.items():
-                ws.cell(row=row, column=col, value=value)
-                cells += 1
-            if fr.duration_seconds is not None:
-                ws.cell(row=ROW_DURATION_V8, column=col, value=float(fr.duration_seconds))
-                cells += 1
-            tc = _fmt_timecode(fr.start_ts, fr.end_ts)
-            if tc:
-                ws.cell(row=ROW_TIMECODE_V8, column=col, value=tc)
-                cells += 1
-        general_plan = (project.meta or {}).get("general_plan")
-        if general_plan:
-            for name in wb.sheetnames:
-                if _normalize_sheet_name(name).casefold() == _normalize_sheet_name(
-                    SHEET_GENERAL_V8
-                ).casefold():
-                    wb[name]["B2"] = str(general_plan)
-                    cells += 1
-                    break
-        wb.save(path)
-    finally:
-        wb.close()
-    return {
-        "frames": len(frames),
-        "cells": cells,
-        "backup": getattr(snap, "name", None),
-        "path": str(path),
-    }
-
-
 @router.get("/overview")
 async def db_overview(session: AsyncSession = Depends(get_session)) -> dict:
     projects = list((await session.execute(select(Project).order_by(Project.id))).scalars())
@@ -261,76 +181,10 @@ async def export_xlsx(
             )
         ).scalars()
     )
-    return _export_project_xlsx(project, frames)
-
-
-# Человеческие имена полей → канонические ключи DB. Агент пишет по-человечески
-# («закадр», «промт_картинки»), прога переводит сама. Ключ нормализуется:
-# lower + пробелы→подчёркивания.
-_FIELD_ALIASES: dict[str, str] = {
-    "voiceover_text": "voiceover_text",
-    "voiceover": "voiceover_text",
-    "закадр": "voiceover_text",
-    "закадровый_текст": "voiceover_text",
-    "реплика": "voiceover_text",
-    "image_prompt": "image_prompt",
-    "img_prompt": "image_prompt",
-    "промт_картинки": "image_prompt",
-    "промпт_картинки": "image_prompt",
-    "промт_картинка": "image_prompt",
-    "картинка": "image_prompt",
-    "animation_prompt": "animation_prompt",
-    "video_prompt": "animation_prompt",
-    "промт_видео": "animation_prompt",
-    "промпт_видео": "animation_prompt",
-    "видео_промт": "animation_prompt",
-    "meaning": "meaning",
-    "смысл": "meaning",
-    "duration_seconds": "duration_seconds",
-    "длительность": "duration_seconds",
-    "время": "duration_seconds",
-    "секунды": "duration_seconds",
-    "image_prompt_shot2": "image_prompt_shot2",
-    "img_prompt_2": "image_prompt_shot2",
-    "промт_картинки_2": "image_prompt_shot2",
-    "промпт_картинки_2": "image_prompt_shot2",
-    "animation_prompt_shot2": "animation_prompt_shot2",
-    "video_prompt_2": "animation_prompt_shot2",
-    "промт_видео_2": "animation_prompt_shot2",
-    "промпт_видео_2": "animation_prompt_shot2",
-}
-
-_PROJECT_FIELD_ALIASES: dict[str, str] = {
-    "general_plan": "general_plan",
-    "общий_план": "general_plan",
-    "план": "general_plan",
-}
-
-_TARGETS = ("frame", "project")
-
-
-def _canon_key(raw: str, aliases: dict[str, str]) -> str | None:
-    key = str(raw).strip().lower().replace(" ", "_")
-    return aliases.get(key)
-
-
-def _normalize_fields(raw: dict, aliases: dict[str, str], *, scope: str) -> dict:
-    out: dict = {}
-    unknown: list[str] = []
-    for k, v in (raw or {}).items():
-        canon = _canon_key(k, aliases)
-        if canon is None:
-            unknown.append(str(k))
-            continue
-        out[canon] = v
-    if unknown:
-        allowed = sorted(set(aliases))
-        raise HTTPException(
-            400,
-            f"{scope}: неизвестные поля {unknown}. "
-            f"Разрешённые (можно по-человечески): {allowed}",
-        )
-    return out
+    try:
+        return db_apply.export_project_xlsx(project, frames)
+    except db_apply.ApplyOpsError as e:
+        raise HTTPException(400, str(e)) from None
 
 
 class ApplyOp(BaseModel):
@@ -350,130 +204,27 @@ async def apply_ops(
     body: ApplyOpsBody,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Fail-closed запись от GPT: JSON-операции.
+    """Fail-closed запись от GPT: JSON-операции (логика в `services/db_apply`).
 
     ``target="frame"`` (по умолчанию) — правка кадра по ``frame_uuid``;
     ``target="project"`` — поля уровня проекта (общий план). Поля можно
     писать по-человечески («закадр», «промт_картинки») — сервер сам
-    переводит в канонические ключи (_FIELD_ALIASES). Неизвестный uuid,
-    неизвестное поле, пустые fields/ops — 400, транзакция откатывается.
-    После записи по умолчанию экспортируем в project.xlsx.
+    переводит в канонические ключи. Любая ошибка — 400, откат транзакции.
     """
-    from app.services.plan_shot2 import SHOT2_PROMPT_ATTR, SHOT2_VIDEO_PROMPT_ATTR
-
     project = await _project(session, project_id)
-    if not body.ops:
-        raise HTTPException(400, "пустой ops — нечего применять")
-    for op in body.ops:
-        if op.target not in _TARGETS:
-            raise HTTPException(
-                400, f"неизвестный target {op.target!r}; разрешены: {list(_TARGETS)}"
-            )
-
-    frame_ops = [op for op in body.ops if op.target == "frame"]
-    project_ops = [op for op in body.ops if op.target == "project"]
-
-    by_uuid: dict[str, Frame] = {}
-    if frame_ops:
-        uuids = [op.frame_uuid or "" for op in frame_ops]
-        if any(not u for u in uuids):
-            raise HTTPException(400, "для target=frame нужен frame_uuid")
-        frames = list(
-            (
-                await session.execute(
-                    select(Frame).where(
-                        Frame.project_id == project.id, Frame.uuid.in_(uuids)
-                    )
-                )
-            ).scalars()
+    ops = [
+        {"target": op.target, "frame_uuid": op.frame_uuid, "fields": op.fields}
+        for op in body.ops
+    ]
+    try:
+        result = await db_apply.apply_ops(
+            session, project, ops, export_xlsx=body.export_xlsx
         )
-        by_uuid = {f.uuid: f for f in frames}
-        missing = [u for u in uuids if u not in by_uuid]
-        if missing:
-            raise HTTPException(400, f"неизвестные frame_uuid: {missing}")
-
-    updated = 0
-    for op in frame_ops:
-        fields = _normalize_fields(
-            op.fields, _FIELD_ALIASES, scope=f"кадр {op.frame_uuid}"
-        )
-        if not fields:
-            raise HTTPException(400, f"кадр {op.frame_uuid}: пустые fields")
-        fr = by_uuid[op.frame_uuid or ""]
-        if "voiceover_text" in fields:
-            fr.voiceover_text = str(fields["voiceover_text"] or "")
-        if "meaning" in fields:
-            fr.meaning = None if fields["meaning"] is None else str(fields["meaning"])
-        if "duration_seconds" in fields:
-            try:
-                fr.duration_seconds = (
-                    None
-                    if fields["duration_seconds"] is None
-                    else float(fields["duration_seconds"])
-                )
-            except (TypeError, ValueError):
-                raise HTTPException(
-                    400, f"кадр {op.frame_uuid}: длительность должна быть числом"
-                ) from None
-        if "image_prompt" in fields:
-            fr.image_prompt = (
-                None if fields["image_prompt"] is None else str(fields["image_prompt"])
-            )
-            await db_v2.add_prompt_version(
-                session,
-                project.id,
-                fr.id,
-                kind="img",
-                text=fr.image_prompt or "",
-                set_active=True,
-            )
-        if "animation_prompt" in fields:
-            fr.animation_prompt = (
-                None
-                if fields["animation_prompt"] is None
-                else str(fields["animation_prompt"])
-            )
-            await db_v2.add_prompt_version(
-                session,
-                project.id,
-                fr.id,
-                kind="video",
-                text=fr.animation_prompt or "",
-                set_active=True,
-            )
-        attrs = dict(fr.attrs or {})
-        if "image_prompt_shot2" in fields:
-            attrs[SHOT2_PROMPT_ATTR] = str(fields["image_prompt_shot2"] or "")
-        if "animation_prompt_shot2" in fields:
-            attrs[SHOT2_VIDEO_PROMPT_ATTR] = str(fields["animation_prompt_shot2"] or "")
-        fr.attrs = attrs
-        updated += 1
-
-    for op in project_ops:
-        fields = _normalize_fields(op.fields, _PROJECT_FIELD_ALIASES, scope="проект")
-        if not fields:
-            raise HTTPException(400, "проект: пустые fields")
-        meta = dict(project.meta or {})
-        if "general_plan" in fields:
-            meta["general_plan"] = str(fields["general_plan"] or "")
-        project.meta = meta
-        updated += 1
-
-    await session.flush()
-    exported = None
-    if body.export_xlsx:
-        all_frames = list(
-            (
-                await session.execute(
-                    select(Frame)
-                    .where(Frame.project_id == project.id)
-                    .order_by(Frame.number)
-                )
-            ).scalars()
-        )
-        exported = _export_project_xlsx(project, all_frames)
+    except db_apply.ApplyOpsError as e:
+        await session.rollback()
+        raise HTTPException(400, str(e)) from None
     await session.commit()
-    return {"ok": True, "updated": updated, "exported": exported}
+    return result
 
 
 class FramePatch(BaseModel):

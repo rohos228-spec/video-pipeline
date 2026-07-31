@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models import Base, Frame, Project, ProjectStatus, PromptVersion
-from app.services import db_v2
+from app.services import db_apply, db_v2
 from app.services.xlsx_v8_import import (
     ROW_IMAGE_PROMPT_V8,
     ROW_VIDEO_PROMPT_V8,
@@ -252,6 +252,18 @@ async def test_apply_ops_project_target_general_plan_exports(api_client, tmp_pat
         json={"ops": [{"target": "галактика", "fields": {"план": "x"}}]},
     )
     assert r_target.status_code == 400
+
+
+def test_extract_apply_ops_json_variants() -> None:
+    raw = '{"ops":[{"frame_uuid":"u1","fields":{"закадр":"x"}}]}'
+    assert db_apply.extract_apply_ops_json(raw)["ops"][0]["frame_uuid"] == "u1"
+    fenced = 'Вот результат:\n```json\n{"ops":[{"target":"project","fields":{"план":"y"}}]}\n```\nГотово.'
+    assert db_apply.extract_apply_ops_json(fenced)["ops"][0]["target"] == "project"
+    assert db_apply.extract_apply_ops_json("просто проза без джейсона") is None
+    assert db_apply.extract_apply_ops_json('{"not_ops": true}') is None
+    # сревис и endpoint используют одни алиасы
+    assert db_apply.FIELD_ALIASES["промт_картинки"] == "image_prompt"
+    assert db_apply.FIELD_ALIASES["закадр"] == "voiceover_text"
 
 
 @pytest.mark.asyncio
