@@ -25,16 +25,30 @@ class ErrorSpec:
 # картинки/видео), file_*, check_* (vp.check.v1), pipeline_*, infra_*.
 ERROR_CATALOG: dict[str, ErrorSpec] = {
     # ── GPT текстовый API (app/services/gpt_api.py) ──
-    "gpt_no_key": ErrorSpec("gpt_no_key", "GPT: нет ключа", "Задай GPT_API_KEY или GRSAI_API_KEY."),
-    "gpt_no_base": ErrorSpec("gpt_no_base", "GPT: нет базы", "Задай GPT_BASE_URL шлюза."),
-    "gpt_auth": ErrorSpec("gpt_auth", "GPT: неверный ключ (401/403)", "Проверь ключ и права."),
+    "gpt_no_key": ErrorSpec(
+        "gpt_no_key",
+        "Текст LLM: нет ключа",
+        "Kimi: TOKENROUTER_API_KEY. GPT: GPT_API_KEY / GRSAI_API_KEY.",
+    ),
+    "gpt_no_base": ErrorSpec(
+        "gpt_no_base",
+        "Текст LLM: нет базы",
+        "Kimi: TOKENROUTER_BASE_URL. GPT: GPT_BASE_URL.",
+    ),
+    "gpt_auth": ErrorSpec(
+        "gpt_auth",
+        "Текст LLM: неверный ключ (401/403)",
+        "Проверь TOKENROUTER_API_KEY или GPT_API_KEY.",
+    ),
     "gpt_model_unauthorized": ErrorSpec(
-        "gpt_model_unauthorized", "GPT: модель не авторизована",
-        "Ключ без доступа к модели — добавь её в whitelist/тариф.",
+        "gpt_model_unauthorized",
+        "Текст LLM: модель не авторизована",
+        "Ключ без доступа к модели (Kimi/GPT).",
     ),
     "gpt_model_unsupported": ErrorSpec(
-        "gpt_model_unsupported", "GPT: модель не поддерживается",
-        "Неверный слаг модели в GPT_MODEL.",
+        "gpt_model_unsupported",
+        "Текст LLM: модель не поддерживается",
+        "Проверь TOKENROUTER_MODEL или GPT_MODEL.",
     ),
     "gpt_rate_limit": ErrorSpec("gpt_rate_limit", "GPT: лимит запросов (429)", "Снизь параллельность/подожди."),
     "gpt_server": ErrorSpec("gpt_server", "GPT: сбой шлюза (5xx)", "Временная ошибка провайдера, повтор."),

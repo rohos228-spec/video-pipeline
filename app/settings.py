@@ -77,14 +77,29 @@ class Settings(BaseSettings):
     grsai_default_image_model: str = Field("gpt-image-2", alias="GRSAI_DEFAULT_IMAGE_MODEL")
     grsai_default_video_model: str = Field("sora-2", alias="GRSAI_DEFAULT_VIDEO_MODEL")
 
-    # GPT text via API (OpenAI-compatible /v1/chat/completions) — замена
-    # текста/xlsx/check. Браузерный ChatGPT отключён. Пусто → нужен ключ+база. Ключ можно переиспользовать из GRSAI.
+    # Текстовый LLM через API (OpenAI-совместимый). Не путать с IMAGE/VIDEO.
+    # TEXT_LLM_PROVIDER:
+    #   auto         — если задан TOKENROUTER_API_KEY → Kimi/TokenRouter, иначе kie/GPT_*
+    #   tokenrouter  — Kimi K3 через https://api.tokenrouter.com (НЕ OpenAI/kie)
+    #   kimi         — алиас tokenrouter
+    #   kie          — GPT_* / kie.ai (как раньше)
+    text_llm_provider: str = Field("auto", alias="TEXT_LLM_PROVIDER")
+    tokenrouter_api_key: str = Field("", alias="TOKENROUTER_API_KEY")
+    tokenrouter_base_url: str = Field(
+        "https://api.tokenrouter.com/v1", alias="TOKENROUTER_BASE_URL"
+    )
+    tokenrouter_model: str = Field(
+        "moonshotai/kimi-k3-free", alias="TOKENROUTER_MODEL"
+    )
+
+    # GPT / kie.ai (используется при TEXT_LLM_PROVIDER=kie|auto без TokenRouter-ключа)
     gpt_api_key: str = Field("", alias="GPT_API_KEY")
     gpt_base_url: str = Field("", alias="GPT_BASE_URL")
     gpt_model: str = Field("gpt-5-6-sol", alias="GPT_MODEL")
     # Шаблон пути chat-эндпоинта. grsai/OpenAI: /v1/chat/completions;
     # kie.ai: путь зависит от модели → /{model}/v1/chat/completions.
     # Плейсхолдер {model} подставляется слагом модели.
+    # TokenRouter: /chat/completions (база уже с /v1).
     gpt_chat_path: str = Field("/codex/v1/responses", alias="GPT_CHAT_PATH")
     # Формат API: chat (messages/choices) | responses (input/output) | auto.
     # auto → responses, если в пути есть "responses" (kie.ai gpt-5.6/5.5/5.4 codex).
@@ -92,20 +107,76 @@ class Settings(BaseSettings):
     gpt_timeout_s: float = Field(600.0, alias="GPT_TIMEOUT_S")
     gpt_max_retries: int = Field(4, alias="GPT_MAX_RETRIES")
 
+    def resolved_text_llm_provider(self) -> str:
+        """Активный текстовый провайдер: tokenrouter | kie."""
+        raw = (self.text_llm_provider or "auto").strip().lower()
+        if raw in {"tokenrouter", "kimi", "kimi-k3", "kimi_k3", "moonshot"}:
+            return "tokenrouter"
+        if raw in {"kie", "openai", "grsai", "gpt"}:
+            return "kie"
+        # auto
+        if (self.tokenrouter_api_key or "").strip():
+            return "tokenrouter"
+        return "kie"
+
+    @property
+    def text_llm_is_tokenrouter(self) -> bool:
+        return self.resolved_text_llm_provider() == "tokenrouter"
+
+    @property
+    def text_llm_label(self) -> str:
+        """Человекочитаемая метка для UI/логов (не «GPT», если это Kimi)."""
+        if self.text_llm_is_tokenrouter:
+            model = (self.tokenrouter_model or "moonshotai/kimi-k3-free").strip()
+            short = model.split("/")[-1] if "/" in model else model
+            return f"Kimi K3 · TokenRouter ({short})"
+        model = (self.gpt_model or "gpt").strip()
+        base = (self.gpt_base_url or "").strip().lower()
+        host = "kie.ai" if "kie.ai" in base else ("grsai" if "grsai" in base else "API")
+        return f"GPT · {host} ({model})"
+
     @property
     def gpt_api_effective_key(self) -> str:
-        """Ключ GPT: свой GPT_API_KEY или переиспользуем GRSAI_API_KEY."""
+        """Ключ активного текстового LLM."""
+        if self.text_llm_is_tokenrouter:
+            return (
+                (self.tokenrouter_api_key or "").strip()
+                or (self.gpt_api_key or "").strip()
+            )
         return (self.gpt_api_key or "").strip() or (self.grsai_api_key or "").strip()
 
     @property
     def gpt_api_effective_base_url(self) -> str:
-        """База GPT: свой GPT_BASE_URL или GRSAI_BASE_URL (OpenAI-совместимый шлюз)."""
+        """База активного текстового LLM."""
+        if self.text_llm_is_tokenrouter:
+            base = (self.tokenrouter_base_url or "https://api.tokenrouter.com/v1").strip()
+            return base.rstrip("/")
         base = (self.gpt_base_url or "").strip() or (self.grsai_base_url or "").strip()
         return base.rstrip("/")
 
     @property
+    def gpt_model_effective(self) -> str:
+        if self.text_llm_is_tokenrouter:
+            return (self.tokenrouter_model or "moonshotai/kimi-k3-free").strip()
+        return (self.gpt_model or "gpt-5-6-sol").strip()
+
+    @property
+    def gpt_chat_path_effective(self) -> str:
+        """Путь chat-эндпоинта для активного провайдера."""
+        if self.text_llm_is_tokenrouter:
+            # base уже …/v1 → финальный URL …/v1/chat/completions
+            return "/chat/completions"
+        return (self.gpt_chat_path or "/v1/chat/completions").strip()
+
+    @property
+    def gpt_api_mode_effective(self) -> str:
+        if self.text_llm_is_tokenrouter:
+            return "chat"
+        return (self.gpt_api_mode or "auto").strip().lower() or "auto"
+
+    @property
     def gpt_api_enabled(self) -> bool:
-        """API-транспорт GPT доступен только при наличии ключа и базы."""
+        """API-транспорт текста доступен только при наличии ключа и базы."""
         return bool(self.gpt_api_effective_key and self.gpt_api_effective_base_url)
 
     elevenlabs_web_url: str = Field(

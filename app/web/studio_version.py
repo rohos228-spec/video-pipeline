@@ -98,6 +98,9 @@ def read_studio_version() -> dict[str, str | int | bool]:
     )
 
     backend_git = _running_backend_git_short()
+    text_llm_provider = settings.resolved_text_llm_provider()
+    text_llm_label = settings.text_llm_label
+    text_llm_model = settings.gpt_model_effective
     return {
         "build": build,
         "sha": sha,
@@ -115,6 +118,10 @@ def read_studio_version() -> dict[str, str | int | bool]:
         "orchestrator_ok": orchestrator_ok,
         "pipeline_ok": attach_ok and orchestrator_ok,
         "pipeline_hotfix": PIPELINE_HOTFIX_ID,
+        "text_llm_provider": text_llm_provider,
+        "text_llm_label": text_llm_label,
+        "text_llm_model": text_llm_model,
+        "text_llm_enabled": bool(settings.gpt_api_enabled),
     }
 
 

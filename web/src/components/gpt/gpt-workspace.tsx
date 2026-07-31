@@ -1,9 +1,9 @@
 "use client";
 
 /**
- * GPT Workspace — свободный чат через API.
+ * Текстовый LLM Workspace — свободный чат через API
+ * (GPT/kie или Kimi K3 / TokenRouter — см. TEXT_LLM_PROVIDER).
  * Сам по себе: история · вложения · результаты · скачивание.
- * Без связи с нодами/проектом пайплайна.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -258,8 +258,37 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
   const [stripAttachOpen, setStripAttachOpen] = useState(false);
   const [stripResultsOpen, setStripResultsOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [llmTitle, setLlmTitle] = useState("Текст LLM");
+  const [llmSub, setLlmSub] = useState("api");
   const fileRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    fetch("/api/studio-version", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then(
+        (data: {
+          text_llm_provider?: string;
+          text_llm_label?: string;
+          text_llm_model?: string;
+        } | null) => {
+          if (cancelled || !data) return;
+          const isKimi = data.text_llm_provider === "tokenrouter";
+          setLlmTitle(isKimi ? "Kimi K3" : "GPT");
+          setLlmSub(
+            isKimi
+              ? "TokenRouter · не OpenAI"
+              : (data.text_llm_label || "api").slice(0, 40),
+          );
+        },
+      )
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   const sessionsQ = useQuery({
     queryKey: ["gpt-workspace", "sessions"],
@@ -419,9 +448,9 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
           </button>
           <div className="flex items-center gap-2">
             <Bot className="h-4 w-4" style={{ color: ACCENT }} />
-            <span className="text-sm font-semibold tracking-tight">GPT</span>
+            <span className="text-sm font-semibold tracking-tight">{llmTitle}</span>
             <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-white/40">
-              api · сам по себе
+              {llmSub}
             </span>
           </div>
         </div>

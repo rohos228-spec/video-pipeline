@@ -108,9 +108,14 @@ def gpt_api_enabled() -> bool:
 def _headers() -> dict[str, str]:
     key = settings.gpt_api_effective_key
     if not key:
+        if settings.text_llm_is_tokenrouter:
+            raise GptApiError(
+                "TOKENROUTER_API_KEY пуст — задай ключ TokenRouter (Kimi K3) в .env",
+                context={"error_kind": "no_key", "provider": "tokenrouter"},
+            )
         raise GptApiError(
             "GPT_API_KEY пуст (и GRSAI_API_KEY тоже) — задай ключ в .env",
-            context={"error_kind": "no_key"},
+            context={"error_kind": "no_key", "provider": "kie"},
         )
     return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
@@ -118,8 +123,11 @@ def _headers() -> dict[str, str]:
 def _chat_url(model: str) -> str:
     base = settings.gpt_api_effective_base_url
     if not base:
-        raise GptApiError("GPT_BASE_URL пуст — задай базу шлюза", context={"error_kind": "no_base"})
-    path = (settings.gpt_chat_path or "/v1/chat/completions").strip()
+        raise GptApiError(
+            "База текстового LLM пуста — задай TOKENROUTER_BASE_URL или GPT_BASE_URL",
+            context={"error_kind": "no_base"},
+        )
+    path = (settings.gpt_chat_path_effective or "/v1/chat/completions").strip()
     if not path.startswith("/"):
         path = "/" + path
     # kie.ai: путь зависит от модели (/{model}/v1/chat/completions).
@@ -581,12 +589,12 @@ def split_input_paths(
 
 def is_responses_mode() -> bool:
     """API формата Responses (input/output) вместо chat/completions?"""
-    mode = (settings.gpt_api_mode or "auto").strip().lower()
+    mode = (settings.gpt_api_mode_effective or "auto").strip().lower()
     if mode == "responses":
         return True
     if mode == "chat":
         return False
-    return "responses" in (settings.gpt_chat_path or "").lower()
+    return "responses" in (settings.gpt_chat_path_effective or "").lower()
 
 
 def _compose_user_text(
@@ -898,12 +906,19 @@ async def chat(
     timeout: float | None = None,
     max_retries: int | None = None,
 ) -> GptChatResult:
-    """Вызвать GPT chat/completions с ретраями и полной обработкой ошибок."""
+    """Вызвать текстовый LLM (kie GPT / TokenRouter Kimi) с ретраями."""
     headers = _headers()
-    use_model = (model or settings.gpt_model or "gpt-5.5").strip()
+    use_model = (model or settings.gpt_model_effective or "gpt-5.5").strip()
     url = _chat_url(use_model)
     use_timeout = float(timeout if timeout is not None else settings.gpt_timeout_s)
     retries = int(max_retries if max_retries is not None else settings.gpt_max_retries)
+    provider_label = settings.text_llm_label
+    logger.info(
+        "text_llm.chat → {} model={} url={}",
+        provider_label,
+        use_model,
+        url,
+    )
 
     responses_mode = is_responses_mode()
     if responses_mode:
@@ -976,7 +991,8 @@ async def chat(
             )
             usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
             logger.info(
-                "gpt_api.chat OK model={} attempt={} finish={} chars={}",
+                "gpt_api.chat OK provider={} model={} attempt={} finish={} chars={}",
+                provider_label,
                 use_model,
                 attempt,
                 finish,

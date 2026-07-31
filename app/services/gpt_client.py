@@ -29,8 +29,9 @@ def gpt_text_via_api() -> bool:
 def require_gpt_api() -> None:
     if not gpt_text_via_api():
         raise GptApiUnavailable(
-            "GPT API не настроен: задай GPT_API_KEY (или GRSAI_API_KEY) "
-            "и GPT_BASE_URL. Браузерный ChatGPT для текста отключён."
+            "Текстовый LLM не настроен: для Kimi задай TOKENROUTER_API_KEY "
+            "(TEXT_LLM_PROVIDER=tokenrouter), для GPT — GPT_API_KEY + GPT_BASE_URL. "
+            "Браузерный ChatGPT для текста отключён."
         )
 
 
