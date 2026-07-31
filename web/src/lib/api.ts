@@ -1641,14 +1641,14 @@ export const api = {
       { method: "POST" },
     ),
   gptAsk: (sessionId: string, message: string, withAttachments = true) =>
-    // Vision / длинные ответы kie.ai часто >30с; бэкенд GPT_TIMEOUT_S≈600.
+    // Совпадает с бэкендом gpt_workspace ask_timeout=1800с (30 мин).
     http<GptWorkspaceSession>(
       `/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}/ask`,
       {
         method: "POST",
         body: JSON.stringify({ message, with_attachments: withAttachments }),
       },
-      620_000,
+      1_800_000,
     ),
   gptSaveToProject: (
     sessionId: string,

@@ -1300,16 +1300,12 @@ async def ask(
         _write_json(d / "meta.json", meta)
 
         try:
-            # Studio chat: 1 повтор максимум — иначе 5×180с = «зависание» на 15 мин.
+            # Studio chat: до 30 мин на ответ (Kimi free / длинные запросы).
+            # Без лишнего ретрая: 2×30 мин = час «зависания».
             # PDF >~6k символов идёт по частям (kie 500/timeout на полном тексте).
-            # Kimi free (TokenRouter) часто 40–90с на короткий ping и >120с под нагрузкой —
-            # жёсткий 120с даёт ложный «GPT timeout 120s (2/2)».
             has_pdf = any(p.suffix.lower() == ".pdf" for p in files)
             is_kimi = bool(getattr(settings, "text_llm_is_tokenrouter", False))
-            if is_kimi:
-                ask_timeout = 420.0 if files else 300.0
-            else:
-                ask_timeout = 240.0 if files else 120.0
+            ask_timeout = 1800.0  # 30 минут
             if has_pdf:
                 meta = _read_json(d / "meta.json", {})
                 meta["phase_detail"] = (
@@ -1321,19 +1317,26 @@ async def ask(
             elif is_kimi:
                 meta = _read_json(d / "meta.json", {})
                 meta["phase_detail"] = (
-                    "Kimi free (TokenRouter): ответ может идти 1–5 мин — не закрывай чат…"
+                    "Kimi (TokenRouter): жду ответ до 30 мин — не закрывай чат…"
+                )
+                meta["updated_at"] = _now()
+                _write_json(d / "meta.json", meta)
+            else:
+                meta = _read_json(d / "meta.json", {})
+                meta["phase_detail"] = (
+                    "GPT думает / генерирует ответ (ожидание до 30 мин)…"
                 )
                 meta["updated_at"] = _now()
                 _write_json(d / "meta.json", meta)
             reply = await gpt.ask_with_files(
                 ask_text,
                 files,
-                timeout=min(float(settings.gpt_timeout_s or 600), ask_timeout),
+                timeout=ask_timeout,
                 expect_file_download=has_xlsx,
                 history=history,
                 treat_txt_as_prompt=False,
                 system=_WORKSPACE_SYSTEM,
-                max_retries=1,
+                max_retries=0,
             )
         except Exception as e:  # noqa: BLE001
             # Модель иногда отдаёт пустой output на «пустой txt» — это валидный контент файла.
