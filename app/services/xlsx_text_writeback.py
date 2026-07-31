@@ -31,6 +31,13 @@ _GENERAL_PLAN_SHEET = "Общий план"
 _MIN_PROSE_PLAN_CHARS = 200
 
 
+_CONTINUE_LINE_RE = re.compile(r"^\s*CONTINUE_XLSX\b", re.IGNORECASE)
+_CONTROL_JUNK_RE = re.compile(
+    r"^\s*(CONTINUE_XLSX\b|#\s*КОНТРАКТ|===VP_|===BODY===|===END===)",
+    re.IGNORECASE,
+)
+
+
 def extract_sheet_blocks(
     text: str,
     *,
@@ -62,6 +69,9 @@ def extract_sheet_blocks(
                 current = hm.group(1).strip()
                 out.setdefault(current, [])
                 continue
+            # CONTINUE_XLSX / служебные строки — НЕ ячейки (иначе A1=CONTINUE…).
+            if _CONTINUE_LINE_RE.search(line) or _CONTROL_JUNK_RE.search(line):
+                continue
             if current is None:
                 # Без `# Лист:` — только явный TSV (табы). Запятые в русской
                 # прозе (. «армия, право, дороги») нельзя считать CSV.
@@ -81,7 +91,14 @@ def extract_sheet_blocks(
                     continue
                 cells = raw
             else:
+                # Одиночная строка без таба внутри блока листа — почти всегда
+                # болтовня/CONTINUE-хвост; в ячейки не кладём.
+                if _CONTINUE_LINE_RE.search(line) or len(line.strip()) > 200:
+                    continue
                 cells = [line]
+            # Ещё раз: если первая «ячейка» — CONTINUE, пропуск.
+            if cells and _CONTINUE_LINE_RE.search(str(cells[0] or "")):
+                continue
             out[current].append(cells)
     # Убрать пустые листы
     return {k: v for k, v in out.items() if v}
@@ -252,6 +269,8 @@ def apply_sheet_blocks_to_xlsx(
                 s = str(val)
                 # Пустая ячейка в TSV — не затираем подпись/merge шаблона
                 if not s.strip():
+                    continue
+                if _CONTINUE_LINE_RE.search(s) or "CONTINUE_XLSX" in s:
                     continue
                 # Не ломаем колонку A (подписи строк) на плане.
                 if protect_label_col and c_idx == 1:

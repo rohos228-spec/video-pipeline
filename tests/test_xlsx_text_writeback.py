@@ -82,6 +82,46 @@ def test_merge_writeback_last_wins_same_row() -> None:
     assert "@row=6\tlabel2\tx" in merged
 
 
+def test_continue_marker_not_written_into_cells(tmp_path: Path) -> None:
+    """CONTINUE_XLSX — сигнал дозапроса, не значение ячейки A1."""
+    from app.services.xlsx_text_writeback import extract_sheet_blocks
+
+    text = (
+        "# Лист: план\n"
+        "@row=4\tномер кадра\tx\n"
+        "CONTINUE_XLSX: план @row=55\n"
+        "@row=5\tпредыдущий кадр\ty\n"
+    )
+    blocks = extract_sheet_blocks(text)
+    assert "план" in blocks
+    flat = ["\t".join(r) for r in blocks["план"]]
+    assert all("CONTINUE_XLSX" not in x for x in flat)
+    assert any("@row=4" in x or x.startswith("номер") for x in flat)
+
+    src = tmp_path / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "план"
+    ws["A1"] = "номер кадра"
+    ws["A2"] = "предыдущий кадр"
+    ws["A3"] = "следующий кадр"
+    wb.create_sheet("Общий план")
+    wb.save(src)
+    wb.close()
+
+    out = writeback_project_xlsx(
+        project_xlsx=src,
+        reply_text=text,
+        downloaded_paths=[],
+    )
+    assert out == src
+    wb2 = load_workbook(src, data_only=True)
+    assert "CONTINUE_XLSX" not in str(wb2["план"]["A1"].value or "")
+    assert wb2["план"]["A1"].value == "номер кадра"
+    wb2.close()
+
+
 def test_continue_marker_ignored_when_coverage_ok(tmp_path: Path) -> None:
     from app.services.xlsx_text_writeback import writeback_looks_incomplete
 
