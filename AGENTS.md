@@ -1,6 +1,7 @@
 # AGENTS.md
 
 > **Карта системы (промпты, оркестратор, GPT-чат, Create, mass, xlsx):** [`docs/AGENT_MAP.md`](docs/AGENT_MAP.md). Операторская шпаргалка: [`docs/OPERATOR_BIBLE.md`](docs/OPERATOR_BIBLE.md).
+> **БД v2 (карточки кадров, дробный порядок, связи, кнопка «База»):** [`docs/DB_V2.md`](docs/DB_V2.md).
 
 ## Cursor Cloud specific instructions
 

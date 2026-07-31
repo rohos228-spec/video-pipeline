@@ -104,6 +104,11 @@ Canvas HITL/config nodes (`hitl_*`, `topic`, `storage`) — см. тот же re
 
 Ops: при сбоях anim_pr смотреть **R48 в xlsx**, soft-retry без wipe.
 
+> **DB v2 (2026-07-31):** параллельная гибкая модель (uuid карточек,
+> дробный `sort_key`, `frame_edges`, `prompt_versions`, `entities`) +
+> кнопка «База» в Studio. Excel-адресация пока работает, но для вставки
+> кадров/версий промтов/связей — читать [`docs/DB_V2.md`](DB_V2.md).
+
 Series workbook — отдельный трек: `docs/SERIES_XLSX_WORKBOOK.md`.
 
 ---
@@ -215,6 +220,7 @@ SoT по тексту GPT: `AGENTS.md` + этот map §8.
 
 | Ищу | Открыть |
 |-----|---------|
+| **DB v2 / кнопка «База»** | [`DB_V2.md`](DB_V2.md), `app/services/db_v2.py` |
 | step_code / status | `node_registry.py` |
 | R48 anim | `plan_sheet_v8.py`, ops rule |
 | Prompt blocks | `PROMPTS_BLOCKS.md` |

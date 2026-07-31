@@ -26,6 +26,7 @@ alwaysApply: true
 
 | Тема | Старт |
 |------|--------|
+| **БД v2 / кнопка «База»** | `docs/DB_V2.md` + `app/services/db_v2.py` |
 | Шаги пайплайна | `app/orchestrator/node_registry.py` |
 | Промпты | `docs/PROMPTS_BLOCKS.md` + `app/services/prompt_composer.py` |
 | GPT чат Studio | `app/services/gpt_workspace.py` |
