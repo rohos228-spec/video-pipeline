@@ -331,11 +331,96 @@ class Frame(Base):
         Enum(FrameStatus, name="frame_status"), default=FrameStatus.planned, index=True
     )
     attrs: Mapped[dict] = mapped_column(JSON, default=dict)  # персонажи, палитра, стиль, планы
+    # DB v2: стабильный uuid карточки и дробный порядок (вставка без перенумерации).
+    uuid: Mapped[str | None] = mapped_column(String(64), default=None, index=True)
+    sort_key: Mapped[float | None] = mapped_column(default=None, index=True)
+    scene_id: Mapped[int | None] = mapped_column(
+        ForeignKey("scenes.id", ondelete="SET NULL"), default=None, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(default=_now)
     updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
 
     project: Mapped[Project] = relationship(back_populates="frames")
     artifacts: Mapped[list[Artifact]] = relationship(back_populates="frame", cascade="all,delete-orphan")
+    scene: Mapped[Scene | None] = relationship(back_populates="frames")
+
+
+class Scene(Base):
+    """DB v2: сцена — «папка» для кадров с дробным порядком."""
+
+    __tablename__ = "scenes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    sort_key: Mapped[float] = mapped_column(default=1.0, index=True)
+    title: Mapped[str | None] = mapped_column(String(240), default=None)
+    place: Mapped[str | None] = mapped_column(Text, default=None)
+    meaning: Mapped[str | None] = mapped_column(Text, default=None)
+    scene_type: Mapped[str | None] = mapped_column(String(60), default=None)
+    attrs: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
+    updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
+
+    frames: Mapped[list[Frame]] = relationship(back_populates="scene")
+
+
+class FrameText(Base):
+    """DB v2: тексты кадра любых типов (закадр, доп. текст, заметки)."""
+
+    __tablename__ = "frame_texts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    frame_id: Mapped[int] = mapped_column(ForeignKey("frames.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(32), default="voiceover", index=True)
+    text: Mapped[str] = mapped_column(Text)
+    sort_key: Mapped[float] = mapped_column(default=1.0)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
+    updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
+
+
+class PromptVersion(Base):
+    """DB v2: версии промтов — история не затирается, активна одна."""
+
+    __tablename__ = "prompt_versions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    frame_id: Mapped[int] = mapped_column(ForeignKey("frames.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(24), default="img", index=True)  # img/video/hero
+    version: Mapped[int] = mapped_column(default=1)
+    text: Mapped[str] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
+
+
+class Entity(Base):
+    """DB v2: персонажи / фоны / предметы — строки, а не колонки c01..c05."""
+
+    __tablename__ = "entities"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    type: Mapped[str] = mapped_column(String(24), index=True)  # character/background/prop
+    code: Mapped[str | None] = mapped_column(String(24), default=None, index=True)  # c01/f01/p01
+    name: Mapped[str | None] = mapped_column(String(240), default=None)
+    sort_key: Mapped[float] = mapped_column(default=1.0)
+    attrs: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
+    updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
+
+
+class FrameEdge(Base):
+    """DB v2: связи-«ниточки» между кадрами (next/continues/references)."""
+
+    __tablename__ = "frame_edges"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    from_frame_id: Mapped[int] = mapped_column(ForeignKey("frames.id", ondelete="CASCADE"), index=True)
+    to_frame_id: Mapped[int] = mapped_column(ForeignKey("frames.id", ondelete="CASCADE"), index=True)
+    type: Mapped[str] = mapped_column(String(24), default="next", index=True)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
 
 
 class Artifact(Base):

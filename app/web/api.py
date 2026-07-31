@@ -59,6 +59,9 @@ from app.web.routers import (
     create_queue as create_queue_router,
 )
 from app.web.routers import (
+    db_browser as db_browser_router,
+)
+from app.web.routers import (
     gpt_workspace as gpt_workspace_router,
 )
 from app.web.routers import (
@@ -111,6 +114,9 @@ async def _lifespan(app: FastAPI):
 
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            from app.services.db_v2 import migrate_db_v2_schema
+
+            await migrate_db_v2_schema(conn)
     except Exception:  # noqa: BLE001
         logger.exception("create_all failed (non-fatal — possibly already exists)")
     try:
@@ -235,6 +241,7 @@ def create_app() -> FastAPI:
     app.include_router(bug_reports_router.router, prefix=API_PREFIX)
     app.include_router(fleet_router.router, prefix=API_PREFIX)
     app.include_router(auth_router.router, prefix=API_PREFIX)
+    app.include_router(db_browser_router.router, prefix=API_PREFIX)
 
     @app.api_route(f"{API_PREFIX}/{{rest:path}}", methods=["POST", "PUT", "PATCH", "DELETE"])
     async def api_write_not_found(rest: str) -> None:

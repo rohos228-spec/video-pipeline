@@ -225,7 +225,121 @@ export function formatApiError(
   return "Ошибка операции";
 }
 
+// ── База (DB v2) типы ─────────────────────────────────────────────
+export interface DbProjectOverview {
+  id: number;
+  slug: string;
+  title: string | null;
+  topic: string | null;
+  status: string | null;
+  frames: number;
+  scenes: number;
+  entities: number;
+  edges: number;
+}
+
+export interface DbOverview {
+  projects: DbProjectOverview[];
+}
+
+export interface DbFrameText {
+  id: number;
+  kind: string;
+  text: string;
+  sort_key: number;
+}
+
+export interface DbPromptVersion {
+  id: number;
+  kind: string;
+  version: number;
+  is_active: boolean;
+  text: string;
+}
+
+export interface DbEdge {
+  id: number;
+  to_frame_id: number;
+  type: string;
+}
+
+export interface DbFrame {
+  id: number;
+  uuid: string | null;
+  number: number;
+  sort_key: number | null;
+  scene_id: number | null;
+  status: string | null;
+  duration_seconds: number | null;
+  voiceover_text: string;
+  meaning: string | null;
+  attrs: Record<string, unknown>;
+  texts: DbFrameText[];
+  prompts: DbPromptVersion[];
+  edges: DbEdge[];
+}
+
+export interface DbScene {
+  id: number;
+  sort_key: number;
+  title: string | null;
+  place: string | null;
+  meaning: string | null;
+  scene_type: string | null;
+  frame_ids: number[];
+}
+
+export interface DbEntity {
+  id: number;
+  type: string;
+  code: string | null;
+  name: string | null;
+  sort_key: number;
+  attrs: Record<string, unknown>;
+}
+
+export interface DbGraph {
+  project: { id: number; slug: string; title: string | null; topic: string | null; status: string | null };
+  scenes: DbScene[];
+  frames: DbFrame[];
+  entities: DbEntity[];
+}
+
 export const api = {
+  // ── База (DB v2 browser) ─────────────────────────────────────────
+  dbOverview: () => http<DbOverview>(`/api/db/overview`),
+  dbGraph: (projectId: number) => http<DbGraph>(`/api/db/projects/${projectId}/graph`),
+  dbPatchFrame: (frameId: number, body: Record<string, unknown>) =>
+    http<{ ok: boolean }>(`/api/db/frames/${frameId}`, { method: "PATCH", body: JSON.stringify(body) }),
+  dbInsertFrame: (projectId: number, afterFrameId: number | null, sceneId?: number | null) =>
+    http<{ id: number; uuid: string; sort_key: number }>(`/api/db/projects/${projectId}/frames/insert`, {
+      method: "POST",
+      body: JSON.stringify({ after_frame_id: afterFrameId, scene_id: sceneId ?? null }),
+    }),
+  dbAddText: (frameId: number, kind: string, text: string) =>
+    http<{ id: number }>(`/api/db/frames/${frameId}/texts`, { method: "POST", body: JSON.stringify({ kind, text }) }),
+  dbDeleteText: (textId: number) =>
+    http<{ ok: boolean }>(`/api/db/texts/${textId}`, { method: "DELETE" }),
+  dbAddPrompt: (frameId: number, kind: string, text: string, setActive = true) =>
+    http<{ id: number; version: number }>(`/api/db/frames/${frameId}/prompts`, {
+      method: "POST",
+      body: JSON.stringify({ kind, text, set_active: setActive }),
+    }),
+  dbActivatePrompt: (promptId: number) =>
+    http<{ ok: boolean }>(`/api/db/prompts/${promptId}/activate`, { method: "POST" }),
+  dbAddEntity: (projectId: number, body: { type: string; code?: string | null; name?: string | null; attrs?: Record<string, unknown> }) =>
+    http<{ id: number }>(`/api/db/projects/${projectId}/entities`, { method: "POST", body: JSON.stringify(body) }),
+  dbPatchEntity: (entityId: number, body: { type: string; code?: string | null; name?: string | null; attrs?: Record<string, unknown> }) =>
+    http<{ ok: boolean }>(`/api/db/entities/${entityId}`, { method: "PATCH", body: JSON.stringify(body) }),
+  dbDeleteEntity: (entityId: number) =>
+    http<{ ok: boolean }>(`/api/db/entities/${entityId}`, { method: "DELETE" }),
+  dbAddEdge: (frameId: number, toFrameId: number, type = "next") =>
+    http<{ id: number }>(`/api/db/frames/${frameId}/edges`, { method: "POST", body: JSON.stringify({ to_frame_id: toFrameId, type }) }),
+  dbDeleteEdge: (edgeId: number) =>
+    http<{ ok: boolean }>(`/api/db/edges/${edgeId}`, { method: "DELETE" }),
+  dbAddScene: (projectId: number, body: { title?: string; after_scene_id?: number | null }) =>
+    http<{ id: number; sort_key: number }>(`/api/db/projects/${projectId}/scenes`, { method: "POST", body: JSON.stringify(body) }),
+
   // ── Workflows ────────────────────────────────────────────────────
   listWorkflows: () => http<WorkflowSummary[]>(`/api/workflows`),
   getWorkflow: (id: number) => http<WorkflowDetail>(`/api/workflows/${id}`),

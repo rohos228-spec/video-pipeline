@@ -10,6 +10,7 @@ import { FleetPanelSheet } from "@/components/fleet/fleet-panel-sheet";
 import { FleetTransferBanner } from "@/components/fleet/fleet-transfer-banner";
 import { OutseeCreateWorkspace } from "@/components/outsee/outsee-create-workspace";
 import { GptWorkspace } from "@/components/gpt/gpt-workspace";
+import { BazaWorkspace } from "@/components/baza/baza-workspace";
 import { useGlobalEvents } from "@/hooks/use-bus";
 import { useFleetTransfer, FLEET_TRANSFER_PUSH_START, optimisticPushTransfer } from "@/hooks/use-fleet-transfer";
 import { usePersistedState } from "@/hooks/use-persisted-state";
@@ -30,6 +31,7 @@ export default function HomePage() {
   const [fleetOpen, setFleetOpen] = useState(false);
   const [outseeOpen, setOutseeOpen] = useState(false);
   const [gptOpen, setGptOpen] = useState(false);
+  const [bazaOpen, setBazaOpen] = useState(false);
   const { transfer, dismiss } = useFleetTransfer(selectedProjectId);
 
   useGlobalEvents();
@@ -60,6 +62,12 @@ export default function HomePage() {
     const openGpt = () => setGptOpen(true);
     window.addEventListener("studio-open-gpt", openGpt);
     return () => window.removeEventListener("studio-open-gpt", openGpt);
+  }, []);
+
+  useEffect(() => {
+    const openBaza = () => setBazaOpen(true);
+    window.addEventListener("studio-open-baza", openBaza);
+    return () => window.removeEventListener("studio-open-baza", openBaza);
   }, []);
 
   const onSelectNode = (key: string | null) => {
@@ -154,6 +162,10 @@ export default function HomePage() {
       <GptWorkspace
         open={gptOpen}
         onOpenChange={setGptOpen}
+      />
+      <BazaWorkspace
+        open={bazaOpen}
+        onOpenChange={setBazaOpen}
       />
     </AppShell>
   );

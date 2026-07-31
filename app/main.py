@@ -37,6 +37,10 @@ async def _init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+        from app.services.db_v2 import migrate_db_v2_schema
+
+        await migrate_db_v2_schema(conn)
+
         # Лёгкая миграция: добавляем новые колонки в projects, если их ещё
         # нет (create_all не умеет ALTER). SQLite поддерживает IF NOT EXISTS
         # через PRAGMA table_info, но проще — try/except на ADD COLUMN.
