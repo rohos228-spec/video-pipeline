@@ -114,6 +114,38 @@ def test_unmarked_junk_not_sequential_overwrite(tmp_path: Path) -> None:
     wb2.close()
 
 
+def test_writeback_creates_pre_write_backup(tmp_path: Path) -> None:
+    """Перед мутацией live — копия в old/<ts>_project.xlsx (не только result)."""
+    src = tmp_path / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "план"
+    ws["A1"] = "номер кадра"
+    ws["B10"] = "BEFORE"
+    wb.save(src)
+    wb.close()
+
+    out = writeback_project_xlsx(
+        project_xlsx=src,
+        reply_text="# Лист: план\n@row=10\tфон\tAFTER\n",
+        downloaded_paths=[],
+    )
+    assert out == src
+    old_dir = tmp_path / "old"
+    assert old_dir.is_dir()
+    backups = sorted(old_dir.glob("*_project.xlsx"))
+    assert backups, "expected pre-write backup in old/"
+    # result-снимки ноды имеют суффикс _result_project — их тут быть не должно
+    assert not list(old_dir.glob("*_result_project.xlsx"))
+    wb_b = load_workbook(backups[-1], data_only=True)
+    assert wb_b["план"]["B10"].value == "BEFORE"
+    wb_b.close()
+    wb_live = load_workbook(src, data_only=True)
+    assert wb_live["план"]["B10"].value == "AFTER"
+    wb_live.close()
+
+
 def test_continue_marker_not_written_into_cells(tmp_path: Path) -> None:
     """CONTINUE_XLSX — сигнал дозапроса, не значение ячейки A1."""
     from app.services.xlsx_text_writeback import extract_sheet_blocks

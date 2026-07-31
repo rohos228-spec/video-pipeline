@@ -469,10 +469,32 @@ def writeback_project_xlsx(
 ) -> Path | None:
     """Обновить project.xlsx из скачанного .xlsx или TSV-ответа.
 
+    Перед любой мутацией живого файла — backup в ``old/<ts>_project.xlsx``
+    (result-снимок ноды снимается уже *после* записи; без этого откат
+    на «до GPT» невозможен).
+
     Возвращает путь к project.xlsx при успехе, иначе None.
     """
     downloaded_paths = list(downloaded_paths or [])
     reply = reply_text or ""
+    backed_up = False
+
+    def _ensure_pre_write_backup() -> None:
+        nonlocal backed_up
+        if backed_up or not project_xlsx.exists() or project_xlsx.stat().st_size < 64:
+            return
+        try:
+            from app.services.xlsx_versioning import backup_to_old
+
+            snap = backup_to_old(project_xlsx)
+            if snap is not None:
+                logger.info(
+                    "xlsx_writeback: pre-write backup → {}",
+                    snap.name,
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("xlsx_writeback: pre-write backup failed: {}", e)
+        backed_up = True
 
     # Отчёт проверки (JSON/TXT) нельзя заливать в «Общий план» через prose/TSV.
     try:
@@ -501,6 +523,7 @@ def writeback_project_xlsx(
             project_xlsx.parent.mkdir(parents=True, exist_ok=True)
             if p.resolve() == project_xlsx.resolve():
                 return project_xlsx
+            _ensure_pre_write_backup()
             if _is_v8_project_workbook(project_xlsx):
                 # Не подменяем весь файл — GPT часто отдаёт «урезанную» книгу
                 # и затирает enrich / чужие строки (как старый баг img_pr).
@@ -526,6 +549,7 @@ def writeback_project_xlsx(
     if blocks:
         tmp = project_xlsx.with_suffix(".writeback.tmp.xlsx")
         try:
+            _ensure_pre_write_backup()
             apply_sheet_blocks_to_xlsx(project_xlsx, blocks, tmp)
             shutil.move(str(tmp), str(project_xlsx))
             logger.info(
@@ -554,6 +578,7 @@ def writeback_project_xlsx(
     ):
         tmp = project_xlsx.with_suffix(".writeback.prose.tmp.xlsx")
         try:
+            _ensure_pre_write_backup()
             write_prose_into_general_plan(project_xlsx, tmp, prose)
             shutil.move(str(tmp), str(project_xlsx))
             logger.info(
