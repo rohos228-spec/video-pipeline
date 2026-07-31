@@ -109,6 +109,22 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
     if (projectId != null) await loadGraph(projectId);
   }, [loadGraph, projectId]);
 
+  const exportXlsx = useCallback(async () => {
+    if (projectId == null) return null;
+    try {
+      return await api.dbExportXlsx(projectId);
+    } catch (e) {
+      toast.error(`Экспорт в Excel: ${e instanceof Error ? e.message : e}`);
+      return null;
+    }
+  }, [projectId]);
+
+  const handleChanged = useCallback(async () => {
+    if (projectId == null) return;
+    await exportXlsx();
+    await loadGraph(projectId);
+  }, [projectId, exportXlsx, loadGraph]);
+
   const frame: DbFrame | null = useMemo(
     () => graph?.frames.find((f) => f.id === frameId) ?? null,
     [graph, frameId],
@@ -159,6 +175,20 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={projectId == null}
+            className="gap-2 text-xs"
+            title="Записать текущую базу в project.xlsx (лист «план»)"
+            onClick={async () => {
+              const r = await exportXlsx();
+              if (r) toast.success(`Экспортировано в Excel: ${r.frames} кадров, ${r.cells} ячеек`);
+            }}
+          >
+            <FileSpreadsheet className="h-3.5 w-3.5" />
+            Экспорт в Excel
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -215,7 +245,7 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
                     if (projectId == null) return;
                     await api.dbAddScene(projectId, { title: `Сцена ${(graph?.scenes.length ?? 0) + 1}` });
                     toast.success("Сцена добавлена");
-                    void reload();
+                    void handleChanged();
                   }}
                 >
                   <Layers className="h-3.5 w-3.5" /> Добавить сцену
@@ -242,7 +272,7 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
                             const created = await api.dbInsertFrame(projectId, f.id);
                             toast.success(`Кадр вставлен (ключ ${created.sort_key})`);
                             setFrameId(created.id);
-                            void reload();
+                            void handleChanged();
                           }}
                         />
                       ))}
@@ -250,7 +280,7 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
                   </div>
                 ))
               ) : (
-                <EntitiesPanel graph={graph} projectId={projectId} onChanged={reload} />
+                <EntitiesPanel graph={graph} projectId={projectId} onChanged={handleChanged} />
               )}
             </>
           )}
@@ -263,7 +293,7 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
               frame={frame}
               excelRow={graph.excel_rows?.[String(frame.number)] ?? null}
               allFrames={graph.frames}
-              onChanged={reload}
+              onChanged={handleChanged}
             />
           ) : (
             <div className="flex h-full items-center justify-center text-center text-xs text-white/30">

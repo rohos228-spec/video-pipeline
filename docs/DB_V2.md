@@ -1,8 +1,10 @@
 # DB v2 — гибкая модель данных (карточки · дробный порядок · связи)
 
-> **Статус:** v1 задеплоена в `main` (commit `fba5059`, 2026-07-31). Работает
-> **параллельно** со старой Excel/frames-моделью — пайплайн не сломан,
-> v2-таблицы заполняются автоматически при старте бэкенда.
+> **Статус:** DB v2 — **источник правды** для правок через чат/GPT и кнопку
+> «База». Excel (`project.xlsx`) — **производный view**: обновляется кнопкой
+> «Экспорт в Excel» и автоматически после любых правок в «Базе»/через
+> `apply-ops` (write-through). Расхождение «в Excel одно, в DB другое»
+> недопустимо: писатель всегда один — DB.
 >
 > **Читать первым** любому агенту, который трогает хранение кадров, вставку
 > кадров между сценами, версии промтов или кнопку «База» в Studio.
@@ -28,8 +30,10 @@ DB v2 решает это тремя идеями:
 3. **Связи и сущности — таблицами** (`frame_edges`, `entities`),
    а не текстом/колонками.
 
-Excel остаётся **внешним видом** (view): в будущем — экспорт из v2-таблиц,
-импорт по uuid. Пока Excel-пайплайн работает как раньше.
+Excel остаётся **внешним видом** (view): экспорт из v2-таблиц по кнопке
+«Экспорт в Excel» (`POST /api/db/projects/{pid}/export-xlsx`) и write-through
+после правок. Прямой правки Excel в обход DB больше быть не должно — иначе
+две правды и баги.
 
 ---
 
@@ -119,6 +123,8 @@ legacy-данных проекта:
 | POST/PATCH/DELETE | `/api/db/projects/{pid}/entities`, `/api/db/entities/{id}` | Сущности (character/background/prop) |
 | POST/DELETE | `/api/db/frames/{fid}/edges`, `/api/db/edges/{id}` | Связи между кадрами (между проектами запрещено — 400) |
 | POST | `/api/db/projects/{pid}/scenes` | Новая сцена (дробный sort_key, `after_scene_id`) |
+| POST | `/api/db/projects/{pid}/export-xlsx` | **Экспорт DB → project.xlsx** (R45/R46/R48/R64/R49 + R50/R15, backup в `old/`) |
+| POST | `/api/db/projects/{pid}/apply-ops` | **Fail-closed запись от GPT**: JSON `{ops:[{frame_uuid, fields:{...}}]}`; неизвестный uuid/пустые fields → 400, откат; после записи — авто-экспорт в xlsx (`export_xlsx=false` отключает) |
 
 Бизнес-логика вставки/версий/графа — в `app/services/db_v2.py`
 (`insert_frame_after`, `add_prompt_version`, `project_graph`).
@@ -131,6 +137,11 @@ legacy-данных проекта:
 
 - Кнопка «База» в topbar: `web/src/components/shell/topbar.tsx`
   (иконка `Database`, event `studio-open-baza`).
+- В header «Базы» — кнопка **«Экспорт в Excel»** (`api.dbExportXlsx`):
+  пишет DB в `project.xlsx` и показывает, сколько кадров/ячеек записано.
+  Любая правка в «Базе» (статус, закадр, промты, тексты, сцены, вставка
+  кадра) после сохранения автоматически делает тот же экспорт
+  (write-through), поэтому `project.xlsx` не отстаёт от DB.
 - Listener + state: `web/src/app/page.tsx` (паттерн как у `GptWorkspace`);
   в `BazaWorkspace` передаётся **текущий выбранный проект пайплайна**
   (`selectedProjectId`) — отдельного выбора проекта слева нет.
@@ -181,38 +192,59 @@ DB v2): `test_assembly_sync`, `test_outsee_retry`, `test_storage_node` и др.
 
 ---
 
-## 7. Переписывание промтов: Excel → DB v2
+## 7. Контракт GPT ↔ DB (источник правды)
 
-Меняется **только адресация, не содержание**. Блоки стиля, rule-no-text,
-9:16, описания сцен — без изменений.
+GPT/чат **не пишет в Excel напрямую**. Запись идёт только через
+`POST /api/db/projects/{pid}/apply-ops` — fail-closed JSON по uuid:
 
-| Было (Excel) | Стало (DB v2) |
-|--------------|---------------|
-| «строка 48», R48, `@row=48` | «кадр `<uuid>`» — адрес не плывёт |
-| «лист `план`, блок из 30 строк» | карточка кадра с полями |
-| колонки c01..c05 | записи `entities` (не ограничено пятью) |
-| «связь с кадром 12» текстом в ячейке | `frame_edges`: from → to, type |
-| промт в ячейке, затирается | `prompt_versions`: v1, v2… активна одна |
-| ответ GPT: `# Лист:` + `@row=` | JSON-операции по uuid |
+```json
+{
+  "ops": [
+    {
+      "frame_uuid": "a1b2c3d4e5f6a7b8c9d0e1f2",
+      "fields": {
+        "voiceover_text": "…",
+        "image_prompt": "…",
+        "animation_prompt": "…",
+        "meaning": "…",
+        "duration_seconds": 3.2,
+        "image_prompt_shot2": "…",
+        "animation_prompt_shot2": "…"
+      }
+    }
+  ],
+  "export_xlsx": true
+}
+```
 
-Правила переписывания промтов:
+Правила контракта:
 
-1. Убрать адреса ячеек: «запиши в строку 48» → «верни для кадра `<uuid>`».
-2. TSV-ответ → JSON: `{"frame_uuid": "…", "fields": {"voiceover": "…", "img_prompt": "…"}}`.
-3. Коды персонажей `c01` — без изменений (теперь это `entities.code`,
-   а не колонка листа «Персонажи»).
-4. Содержательные блоки (стиль, палитра, таймлайны) не трогать.
+1. **Адрес = `frame_uuid`**, не «строка 48». uuid не плывёт при вставках.
+2. **Fail-closed**: неизвестный `frame_uuid`, пустой `ops`, пустые `fields`
+   у операции → `400`, вся транзакция откатывается, DB не тронута.
+3. **`export_xlsx: true` (по умолчанию)** — после записи DB сразу
+   экспортируется в `project.xlsx`, поэтому Excel-зависимые шаги (монтаж,
+   озвучка) видят те же данные. Расхождения DB/Excel нет по построению.
+4. Поля `image_prompt`/`animation_prompt` дополнительно создают активную
+   `prompt_versions` (история не затирается); `Frame.image_prompt` /
+   `Frame.animation_prompt` всегда равны активной версии (синк в
+   `add_prompt`/`activate_prompt`).
+5. Коды персонажей `c01` — без изменений (`entities.code`).
+6. Содержательные блоки промтов (стиль, палитра, таймлайны) не трогать —
+   меняется только транспорт записи.
+7. Контекст для модели — `GET /api/db/projects/{pid}/graph`:
+   `frames[].uuid` + текущие поля + `excel_rows` (что сейчас в книге).
 
 ---
 
 ## 8. Roadmap (следующие шаги, ещё НЕ сделано)
 
-1. **Экспорт v2 → project.xlsx** (Excel как view): генерация книги из
-   `scenes/frames/frame_texts/prompt_versions`, `validate_xlsx_sheets`
-   перестанет быть источником правды.
-2. **Импорт xlsx → v2 по uuid** (вместо адресов строк).
-3. **Перевод GPT-нод на чтение из v2** (`gpt_client`/`excel_gpt_node`) —
-   постепенно, нода за нодой; промты переписывать по §7.
+1. ~~Экспорт v2 → project.xlsx~~ — **сделано**: `export-xlsx` + кнопка
+   «Экспорт в Excel» + write-through после правок (2026-07-31).
+2. **Перевод GPT-чата/нод на `apply-ops`**: контекст из
+   `GET /api/db/projects/{pid}/graph`, запись только JSON по uuid (§7) —
+   вместо TSV `# Лист:`/`@row=`. Нода за нодой.
+3. **Импорт xlsx → v2 по uuid** (вместо адресов строк) — для старых книг.
 4. Backfill `entities` из `Project.hero_descriptions`/`item_descriptions`
    (сейчас entities заполняются только через UI/API).
 5. Move/reorder кадра и сцены drag&drop в «Базе» (API sort_key уже готов).

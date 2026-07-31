@@ -115,6 +115,75 @@ def _excel_rows_for_project(project: Project) -> dict[int, dict[str, str | int |
         wb.close()
 
 
+def _fmt_timecode(start: float | None, end: float | None) -> str | None:
+    if start is None or end is None:
+        return None
+
+    def _ts(v: float) -> str:
+        m = int(v // 60)
+        s = v - m * 60
+        return f"{m}:{s:05.2f}"
+
+    return f"{_ts(float(start))}-{_ts(float(end))}"
+
+
+def _export_project_xlsx(project: Project, frames: list[Frame]) -> dict:
+    """DB → project.xlsx (лист «план»). Excel — производный view от DB.
+
+    Пишет только строки, за которые DB отвечает: R45/R46/R48/R64/R49,
+    плюс R50 (длительность) и R15 (таймкод), если они есть в DB.
+    Персонажи/предметы/прочие строки не трогаем. Перед записью — backup.
+    """
+    from app.services.plan_shot2 import SHOT2_PROMPT_ATTR, SHOT2_VIDEO_PROMPT_ATTR
+    from app.services.xlsx_versioning import backup_to_old
+
+    path = project.data_dir / "project.xlsx"
+    if not path.is_file():
+        raise HTTPException(400, "project.xlsx не найден — сначала сгенерируй лист «план»")
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path)
+    try:
+        ws = _resolve_plan_sheet(wb)
+        if ws is None:
+            raise HTTPException(400, "в project.xlsx нет листа «план» (v8)")
+        snap = None
+        try:
+            snap = backup_to_old(path)
+        except Exception:  # noqa: BLE001
+            snap = None
+        cells = 0
+        for fr in frames:
+            col = fr.number + 2
+            attrs = fr.attrs or {}
+            writes = {
+                ROW_IMAGE_PROMPT_V8: fr.image_prompt or "",
+                ROW_IMAGE_PROMPT_2_V8: str(attrs.get(SHOT2_PROMPT_ATTR) or ""),
+                ROW_VIDEO_PROMPT_V8: fr.animation_prompt or "",
+                ROW_VIDEO_PROMPT_2_V8: str(attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or ""),
+                ROW_VOICEOVER_V8: fr.voiceover_text or "",
+            }
+            for row, value in writes.items():
+                ws.cell(row=row, column=col, value=value)
+                cells += 1
+            if fr.duration_seconds is not None:
+                ws.cell(row=ROW_DURATION_V8, column=col, value=float(fr.duration_seconds))
+                cells += 1
+            tc = _fmt_timecode(fr.start_ts, fr.end_ts)
+            if tc:
+                ws.cell(row=ROW_TIMECODE_V8, column=col, value=tc)
+                cells += 1
+        wb.save(path)
+    finally:
+        wb.close()
+    return {
+        "frames": len(frames),
+        "cells": cells,
+        "backup": getattr(snap, "name", None),
+        "path": str(path),
+    }
+
+
 @router.get("/overview")
 async def db_overview(session: AsyncSession = Depends(get_session)) -> dict:
     projects = list((await session.execute(select(Project).order_by(Project.id))).scalars())
@@ -166,6 +235,132 @@ async def db_graph(
     graph = await db_v2.project_graph(session, project)
     graph["excel_rows"] = _excel_rows_for_project(project)
     return graph
+
+
+@router.post("/projects/{project_id}/export-xlsx")
+async def export_xlsx(
+    project_id: int, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Кнопка «Экспорт в Excel»: переписать строки листа «план» из DB."""
+    project = await _project(session, project_id)
+    frames = list(
+        (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
+            )
+        ).scalars()
+    )
+    return _export_project_xlsx(project, frames)
+
+
+class ApplyOpFields(BaseModel):
+    voiceover_text: str | None = None
+    image_prompt: str | None = None
+    animation_prompt: str | None = None
+    meaning: str | None = None
+    duration_seconds: float | None = None
+    image_prompt_shot2: str | None = None
+    animation_prompt_shot2: str | None = None
+
+
+class ApplyOp(BaseModel):
+    frame_uuid: str = Field(min_length=1, max_length=64)
+    fields: ApplyOpFields
+
+
+class ApplyOpsBody(BaseModel):
+    ops: list[ApplyOp]
+    export_xlsx: bool = True
+
+
+@router.post("/projects/{project_id}/apply-ops")
+async def apply_ops(
+    project_id: int,
+    body: ApplyOpsBody,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Fail-closed запись от GPT: JSON-операции по uuid кадров.
+
+    Никаких адресов «строка 48»: неизвестный uuid, пустые fields или
+    пустой ops — 400, транзакция откатывается, DB не тронута. После
+    записи по умолчанию сразу экспортируем в project.xlsx, чтобы
+    Excel-зависимые шаги видели те же данные.
+    """
+    from app.services.plan_shot2 import SHOT2_PROMPT_ATTR, SHOT2_VIDEO_PROMPT_ATTR
+
+    project = await _project(session, project_id)
+    if not body.ops:
+        raise HTTPException(400, "пустой ops — нечего применять")
+    uuids = [op.frame_uuid for op in body.ops]
+    frames = list(
+        (
+            await session.execute(
+                select(Frame).where(
+                    Frame.project_id == project.id, Frame.uuid.in_(uuids)
+                )
+            )
+        ).scalars()
+    )
+    by_uuid = {f.uuid: f for f in frames}
+    missing = [u for u in uuids if u not in by_uuid]
+    if missing:
+        raise HTTPException(400, f"неизвестные frame_uuid: {missing}")
+
+    updated = 0
+    for op in body.ops:
+        provided = op.fields.model_fields_set
+        if not provided:
+            raise HTTPException(400, f"кадр {op.frame_uuid}: пустые fields")
+        fr = by_uuid[op.frame_uuid]
+        if "voiceover_text" in provided:
+            fr.voiceover_text = op.fields.voiceover_text or ""
+        if "meaning" in provided:
+            fr.meaning = op.fields.meaning
+        if "duration_seconds" in provided:
+            fr.duration_seconds = op.fields.duration_seconds
+        if "image_prompt" in provided:
+            fr.image_prompt = op.fields.image_prompt
+            await db_v2.add_prompt_version(
+                session,
+                project.id,
+                fr.id,
+                kind="img",
+                text=op.fields.image_prompt or "",
+                set_active=True,
+            )
+        if "animation_prompt" in provided:
+            fr.animation_prompt = op.fields.animation_prompt
+            await db_v2.add_prompt_version(
+                session,
+                project.id,
+                fr.id,
+                kind="video",
+                text=op.fields.animation_prompt or "",
+                set_active=True,
+            )
+        attrs = dict(fr.attrs or {})
+        if "image_prompt_shot2" in provided:
+            attrs[SHOT2_PROMPT_ATTR] = op.fields.image_prompt_shot2 or ""
+        if "animation_prompt_shot2" in provided:
+            attrs[SHOT2_VIDEO_PROMPT_ATTR] = op.fields.animation_prompt_shot2 or ""
+        fr.attrs = attrs
+        updated += 1
+
+    await session.flush()
+    exported = None
+    if body.export_xlsx:
+        all_frames = list(
+            (
+                await session.execute(
+                    select(Frame)
+                    .where(Frame.project_id == project.id)
+                    .order_by(Frame.number)
+                )
+            ).scalars()
+        )
+        exported = _export_project_xlsx(project, all_frames)
+    await session.commit()
+    return {"ok": True, "updated": updated, "exported": exported}
 
 
 class FramePatch(BaseModel):
@@ -278,6 +473,10 @@ async def add_prompt(
         text=body.text,
         set_active=body.set_active,
     )
+    if body.set_active and body.kind == "img":
+        fr.image_prompt = body.text
+    elif body.set_active and body.kind == "video":
+        fr.animation_prompt = body.text
     await session.commit()
     return {"id": pv.id, "version": pv.version, "is_active": pv.is_active}
 
@@ -301,6 +500,11 @@ async def activate_prompt(
     for s in siblings:
         s.is_active = False
     pv.is_active = True
+    fr = await session.get(Frame, pv.frame_id)
+    if fr is not None and pv.kind == "img":
+        fr.image_prompt = pv.text
+    elif fr is not None and pv.kind == "video":
+        fr.animation_prompt = pv.text
     await session.commit()
     return {"ok": True, "id": pv.id}
 

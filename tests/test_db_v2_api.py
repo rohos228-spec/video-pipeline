@@ -1,0 +1,197 @@
+"""DB v2 API: fail-closed apply-ops (GPT) и экспорт DB → project.xlsx."""
+
+from __future__ import annotations
+
+import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+from openpyxl import Workbook, load_workbook
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from app.models import Base, Frame, Project, ProjectStatus, PromptVersion
+from app.services import db_v2
+from app.services.xlsx_v8_import import (
+    ROW_IMAGE_PROMPT_V8,
+    ROW_VIDEO_PROMPT_V8,
+    ROW_VOICEOVER_V8,
+)
+from app.settings import settings
+from app.web.api import create_app
+from app.web.deps import get_session
+
+app = create_app()
+
+
+@pytest_asyncio.fixture
+async def api_client(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path))
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'dbv2api.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        await db_v2.migrate_db_v2_schema(conn)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def _gen():
+        async with factory() as s:
+            yield s
+
+    app.dependency_overrides[get_session] = _gen
+
+    async with factory() as session:
+        p = Project(topic="dbv2", slug="dbv2-api", status=ProjectStatus.new)
+        session.add(p)
+        await session.flush()
+        for i in (1, 2):
+            session.add(
+                Frame(
+                    project_id=p.id,
+                    number=i,
+                    voiceover_text=f"реплика {i}",
+                    image_prompt=f"img {i}",
+                    animation_prompt=f"vid {i}",
+                    attrs={},
+                )
+            )
+        await session.commit()
+        await session.refresh(p)
+        await db_v2.backfill_project_v2(session, p)
+        await session.commit()
+        project_id = p.id
+
+        # Минимальный v8-файл: лист «план» должен существовать для экспорта.
+        data_dir = p.data_dir
+        data_dir.mkdir(parents=True, exist_ok=True)
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "план"
+        wb.save(data_dir / "project.xlsx")
+        wb.close()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client, project_id, factory
+
+    app.dependency_overrides.clear()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_apply_ops_unknown_uuid_fail_closed(api_client) -> None:
+    client, project_id, factory = api_client
+    r = await client.post(
+        f"/api/db/projects/{project_id}/apply-ops",
+        json={"ops": [{"frame_uuid": "deadbeef", "fields": {"voiceover_text": "x"}}]},
+    )
+    assert r.status_code == 400
+    assert "неизвестные frame_uuid" in r.json()["detail"]
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        assert fr.voiceover_text == "реплика 1"  # не тронут
+
+
+@pytest.mark.asyncio
+async def test_apply_ops_empty_and_empty_fields_rejected(api_client) -> None:
+    client, project_id, factory = api_client
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        uuid = fr.uuid
+    r_empty = await client.post(f"/api/db/projects/{project_id}/apply-ops", json={"ops": []})
+    assert r_empty.status_code == 400
+    r_fields = await client.post(
+        f"/api/db/projects/{project_id}/apply-ops",
+        json={"ops": [{"frame_uuid": uuid, "fields": {}}]},
+    )
+    assert r_fields.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_apply_ops_updates_db_versions_and_exports_xlsx(api_client, tmp_path) -> None:
+    client, project_id, factory = api_client
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        uuid = fr.uuid
+
+    r = await client.post(
+        f"/api/db/projects/{project_id}/apply-ops",
+        json={
+            "ops": [
+                {
+                    "frame_uuid": uuid,
+                    "fields": {
+                        "voiceover_text": "новый закадр",
+                        "image_prompt": "новый img промт",
+                        "animation_prompt": "новый vid промт",
+                        "duration_seconds": 3.5,
+                    },
+                }
+            ]
+        },
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["updated"] == 1
+    assert data["exported"] and data["exported"]["cells"] > 0
+
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        assert fr.voiceover_text == "новый закадр"
+        assert fr.image_prompt == "новый img промт"
+        assert fr.animation_prompt == "новый vid промт"
+        assert fr.duration_seconds == 3.5
+        active_img = (
+            await session.execute(
+                select(PromptVersion).where(
+                    PromptVersion.frame_id == fr.id,
+                    PromptVersion.kind == "img",
+                    PromptVersion.is_active.is_(True),
+                )
+            )
+        ).scalar_one()
+        # активная версия совпадает с legacy-полем — нет двух правд
+        assert active_img.text == fr.image_prompt
+
+    # Excel — производный view: те же значения лежат в R45/R48/R49 колонки кадра.
+    wb = load_workbook(tmp_path / "videos" / "dbv2-api" / "project.xlsx")
+    try:
+        ws = wb["план"]
+        col = 1 + 2
+        assert ws.cell(row=ROW_IMAGE_PROMPT_V8, column=col).value == "новый img промт"
+        assert ws.cell(row=ROW_VIDEO_PROMPT_V8, column=col).value == "новый vid промт"
+        assert ws.cell(row=ROW_VOICEOVER_V8, column=col).value == "новый закадр"
+    finally:
+        wb.close()
+
+
+@pytest.mark.asyncio
+async def test_export_xlsx_button_writes_plan_rows(api_client, tmp_path) -> None:
+    client, project_id, factory = api_client
+    r = await client.post(f"/api/db/projects/{project_id}/export-xlsx")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["frames"] == 2
+    assert data["cells"] > 0
+
+    wb = load_workbook(tmp_path / "videos" / "dbv2-api" / "project.xlsx")
+    try:
+        ws = wb["план"]
+        assert ws.cell(row=ROW_IMAGE_PROMPT_V8, column=3).value == "img 1"
+        assert ws.cell(row=ROW_VOICEOVER_V8, column=4).value == "реплика 2"
+    finally:
+        wb.close()

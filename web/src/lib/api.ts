@@ -355,6 +355,20 @@ export const api = {
     http<{ ok: boolean }>(`/api/db/edges/${edgeId}`, { method: "DELETE" }),
   dbAddScene: (projectId: number, body: { title?: string; after_scene_id?: number | null }) =>
     http<{ id: number; sort_key: number }>(`/api/db/projects/${projectId}/scenes`, { method: "POST", body: JSON.stringify(body) }),
+  dbExportXlsx: (projectId: number) =>
+    http<{ frames: number; cells: number; backup: string | null; path: string }>(
+      `/api/db/projects/${projectId}/export-xlsx`,
+      { method: "POST" },
+    ),
+  dbApplyOps: (
+    projectId: number,
+    ops: { frame_uuid: string; fields: Record<string, string | number | null> }[],
+    exportXlsx = true,
+  ) =>
+    http<{ ok: boolean; updated: number; exported: { frames: number; cells: number } | null }>(
+      `/api/db/projects/${projectId}/apply-ops`,
+      { method: "POST", body: JSON.stringify({ ops, export_xlsx: exportXlsx }) },
+    ),
 
   // ── Workflows ────────────────────────────────────────────────────
   listWorkflows: () => http<WorkflowSummary[]>(`/api/workflows`),
