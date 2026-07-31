@@ -31,7 +31,9 @@ from app.services.xlsx_v8_import import (
     ROW_VIDEO_PROMPT_2_V8,
     ROW_VIDEO_PROMPT_V8,
     ROW_VOICEOVER_V8,
+    SHEET_GENERAL_V8,
     _cell_text,
+    _normalize_sheet_name,
     _resolve_plan_sheet,
 )
 from app.web.deps import get_session
@@ -173,6 +175,15 @@ def _export_project_xlsx(project: Project, frames: list[Frame]) -> dict:
             if tc:
                 ws.cell(row=ROW_TIMECODE_V8, column=col, value=tc)
                 cells += 1
+        general_plan = (project.meta or {}).get("general_plan")
+        if general_plan:
+            for name in wb.sheetnames:
+                if _normalize_sheet_name(name).casefold() == _normalize_sheet_name(
+                    SHEET_GENERAL_V8
+                ).casefold():
+                    wb[name]["B2"] = str(general_plan)
+                    cells += 1
+                    break
         wb.save(path)
     finally:
         wb.close()
@@ -253,19 +264,79 @@ async def export_xlsx(
     return _export_project_xlsx(project, frames)
 
 
-class ApplyOpFields(BaseModel):
-    voiceover_text: str | None = None
-    image_prompt: str | None = None
-    animation_prompt: str | None = None
-    meaning: str | None = None
-    duration_seconds: float | None = None
-    image_prompt_shot2: str | None = None
-    animation_prompt_shot2: str | None = None
+# Человеческие имена полей → канонические ключи DB. Агент пишет по-человечески
+# («закадр», «промт_картинки»), прога переводит сама. Ключ нормализуется:
+# lower + пробелы→подчёркивания.
+_FIELD_ALIASES: dict[str, str] = {
+    "voiceover_text": "voiceover_text",
+    "voiceover": "voiceover_text",
+    "закадр": "voiceover_text",
+    "закадровый_текст": "voiceover_text",
+    "реплика": "voiceover_text",
+    "image_prompt": "image_prompt",
+    "img_prompt": "image_prompt",
+    "промт_картинки": "image_prompt",
+    "промпт_картинки": "image_prompt",
+    "промт_картинка": "image_prompt",
+    "картинка": "image_prompt",
+    "animation_prompt": "animation_prompt",
+    "video_prompt": "animation_prompt",
+    "промт_видео": "animation_prompt",
+    "промпт_видео": "animation_prompt",
+    "видео_промт": "animation_prompt",
+    "meaning": "meaning",
+    "смысл": "meaning",
+    "duration_seconds": "duration_seconds",
+    "длительность": "duration_seconds",
+    "время": "duration_seconds",
+    "секунды": "duration_seconds",
+    "image_prompt_shot2": "image_prompt_shot2",
+    "img_prompt_2": "image_prompt_shot2",
+    "промт_картинки_2": "image_prompt_shot2",
+    "промпт_картинки_2": "image_prompt_shot2",
+    "animation_prompt_shot2": "animation_prompt_shot2",
+    "video_prompt_2": "animation_prompt_shot2",
+    "промт_видео_2": "animation_prompt_shot2",
+    "промпт_видео_2": "animation_prompt_shot2",
+}
+
+_PROJECT_FIELD_ALIASES: dict[str, str] = {
+    "general_plan": "general_plan",
+    "общий_план": "general_plan",
+    "план": "general_plan",
+}
+
+_TARGETS = ("frame", "project")
+
+
+def _canon_key(raw: str, aliases: dict[str, str]) -> str | None:
+    key = str(raw).strip().lower().replace(" ", "_")
+    return aliases.get(key)
+
+
+def _normalize_fields(raw: dict, aliases: dict[str, str], *, scope: str) -> dict:
+    out: dict = {}
+    unknown: list[str] = []
+    for k, v in (raw or {}).items():
+        canon = _canon_key(k, aliases)
+        if canon is None:
+            unknown.append(str(k))
+            continue
+        out[canon] = v
+    if unknown:
+        allowed = sorted(set(aliases))
+        raise HTTPException(
+            400,
+            f"{scope}: неизвестные поля {unknown}. "
+            f"Разрешённые (можно по-человечески): {allowed}",
+        )
+    return out
 
 
 class ApplyOp(BaseModel):
-    frame_uuid: str = Field(min_length=1, max_length=64)
-    fields: ApplyOpFields
+    target: str = Field(default="frame", max_length=16)
+    frame_uuid: str | None = Field(default=None, max_length=64)
+    fields: dict = Field(default_factory=dict)
 
 
 class ApplyOpsBody(BaseModel):
@@ -279,71 +350,113 @@ async def apply_ops(
     body: ApplyOpsBody,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Fail-closed запись от GPT: JSON-операции по uuid кадров.
+    """Fail-closed запись от GPT: JSON-операции.
 
-    Никаких адресов «строка 48»: неизвестный uuid, пустые fields или
-    пустой ops — 400, транзакция откатывается, DB не тронута. После
-    записи по умолчанию сразу экспортируем в project.xlsx, чтобы
-    Excel-зависимые шаги видели те же данные.
+    ``target="frame"`` (по умолчанию) — правка кадра по ``frame_uuid``;
+    ``target="project"`` — поля уровня проекта (общий план). Поля можно
+    писать по-человечески («закадр», «промт_картинки») — сервер сам
+    переводит в канонические ключи (_FIELD_ALIASES). Неизвестный uuid,
+    неизвестное поле, пустые fields/ops — 400, транзакция откатывается.
+    После записи по умолчанию экспортируем в project.xlsx.
     """
     from app.services.plan_shot2 import SHOT2_PROMPT_ATTR, SHOT2_VIDEO_PROMPT_ATTR
 
     project = await _project(session, project_id)
     if not body.ops:
         raise HTTPException(400, "пустой ops — нечего применять")
-    uuids = [op.frame_uuid for op in body.ops]
-    frames = list(
-        (
-            await session.execute(
-                select(Frame).where(
-                    Frame.project_id == project.id, Frame.uuid.in_(uuids)
-                )
+    for op in body.ops:
+        if op.target not in _TARGETS:
+            raise HTTPException(
+                400, f"неизвестный target {op.target!r}; разрешены: {list(_TARGETS)}"
             )
-        ).scalars()
-    )
-    by_uuid = {f.uuid: f for f in frames}
-    missing = [u for u in uuids if u not in by_uuid]
-    if missing:
-        raise HTTPException(400, f"неизвестные frame_uuid: {missing}")
+
+    frame_ops = [op for op in body.ops if op.target == "frame"]
+    project_ops = [op for op in body.ops if op.target == "project"]
+
+    by_uuid: dict[str, Frame] = {}
+    if frame_ops:
+        uuids = [op.frame_uuid or "" for op in frame_ops]
+        if any(not u for u in uuids):
+            raise HTTPException(400, "для target=frame нужен frame_uuid")
+        frames = list(
+            (
+                await session.execute(
+                    select(Frame).where(
+                        Frame.project_id == project.id, Frame.uuid.in_(uuids)
+                    )
+                )
+            ).scalars()
+        )
+        by_uuid = {f.uuid: f for f in frames}
+        missing = [u for u in uuids if u not in by_uuid]
+        if missing:
+            raise HTTPException(400, f"неизвестные frame_uuid: {missing}")
 
     updated = 0
-    for op in body.ops:
-        provided = op.fields.model_fields_set
-        if not provided:
+    for op in frame_ops:
+        fields = _normalize_fields(
+            op.fields, _FIELD_ALIASES, scope=f"кадр {op.frame_uuid}"
+        )
+        if not fields:
             raise HTTPException(400, f"кадр {op.frame_uuid}: пустые fields")
-        fr = by_uuid[op.frame_uuid]
-        if "voiceover_text" in provided:
-            fr.voiceover_text = op.fields.voiceover_text or ""
-        if "meaning" in provided:
-            fr.meaning = op.fields.meaning
-        if "duration_seconds" in provided:
-            fr.duration_seconds = op.fields.duration_seconds
-        if "image_prompt" in provided:
-            fr.image_prompt = op.fields.image_prompt
+        fr = by_uuid[op.frame_uuid or ""]
+        if "voiceover_text" in fields:
+            fr.voiceover_text = str(fields["voiceover_text"] or "")
+        if "meaning" in fields:
+            fr.meaning = None if fields["meaning"] is None else str(fields["meaning"])
+        if "duration_seconds" in fields:
+            try:
+                fr.duration_seconds = (
+                    None
+                    if fields["duration_seconds"] is None
+                    else float(fields["duration_seconds"])
+                )
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    400, f"кадр {op.frame_uuid}: длительность должна быть числом"
+                ) from None
+        if "image_prompt" in fields:
+            fr.image_prompt = (
+                None if fields["image_prompt"] is None else str(fields["image_prompt"])
+            )
             await db_v2.add_prompt_version(
                 session,
                 project.id,
                 fr.id,
                 kind="img",
-                text=op.fields.image_prompt or "",
+                text=fr.image_prompt or "",
                 set_active=True,
             )
-        if "animation_prompt" in provided:
-            fr.animation_prompt = op.fields.animation_prompt
+        if "animation_prompt" in fields:
+            fr.animation_prompt = (
+                None
+                if fields["animation_prompt"] is None
+                else str(fields["animation_prompt"])
+            )
             await db_v2.add_prompt_version(
                 session,
                 project.id,
                 fr.id,
                 kind="video",
-                text=op.fields.animation_prompt or "",
+                text=fr.animation_prompt or "",
                 set_active=True,
             )
         attrs = dict(fr.attrs or {})
-        if "image_prompt_shot2" in provided:
-            attrs[SHOT2_PROMPT_ATTR] = op.fields.image_prompt_shot2 or ""
-        if "animation_prompt_shot2" in provided:
-            attrs[SHOT2_VIDEO_PROMPT_ATTR] = op.fields.animation_prompt_shot2 or ""
+        if "image_prompt_shot2" in fields:
+            attrs[SHOT2_PROMPT_ATTR] = str(fields["image_prompt_shot2"] or "")
+        if "animation_prompt_shot2" in fields:
+            attrs[SHOT2_VIDEO_PROMPT_ATTR] = str(fields["animation_prompt_shot2"] or "")
         fr.attrs = attrs
+        updated += 1
+
+    for op in project_ops:
+        fields = _normalize_fields(op.fields, _PROJECT_FIELD_ALIASES, scope="проект")
+        if not fields:
+            raise HTTPException(400, "проект: пустые fields")
+        meta = dict(project.meta or {})
+        if "general_plan" in fields:
+            meta["general_plan"] = str(fields["general_plan"] or "")
+        project.meta = meta
         updated += 1
 
     await session.flush()

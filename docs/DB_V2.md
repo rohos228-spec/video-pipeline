@@ -201,21 +201,29 @@ GPT/чат **не пишет в Excel напрямую**. Запись идёт 
 {
   "ops": [
     {
+      "target": "frame",
       "frame_uuid": "a1b2c3d4e5f6a7b8c9d0e1f2",
       "fields": {
-        "voiceover_text": "…",
-        "image_prompt": "…",
-        "animation_prompt": "…",
-        "meaning": "…",
-        "duration_seconds": 3.2,
-        "image_prompt_shot2": "…",
-        "animation_prompt_shot2": "…"
+        "закадр": "…",
+        "промт_картинки": "…",
+        "промт_видео": "…",
+        "длительность": 3.2
       }
+    },
+    {
+      "target": "project",
+      "fields": { "общий_план": "Эпизод 1 …" }
     }
   ],
   "export_xlsx": true
 }
 ```
+
+**Поля можно писать по-человечески** — сервер сам переводит в канонические
+ключи (`_FIELD_ALIASES`): «закадр»→`voiceover_text`, «промт_картинки»→
+`image_prompt`, «промт_видео»→`animation_prompt`, «длительность»→
+`duration_seconds` и т.д. Канонические ключи тоже принимаются. Неизвестное
+поле → `400` со списком разрешённых. Полная таблица — §7.2.
 
 Правила контракта:
 
@@ -234,6 +242,9 @@ GPT/чат **не пишет в Excel напрямую**. Запись идёт 
    меняется только транспорт записи.
 7. Контекст для модели — `GET /api/db/projects/{pid}/graph`:
    `frames[].uuid` + текущие поля + `excel_rows` (что сейчас в книге).
+8. **`target`** — какая нода пишет: `frame` (по умолчанию; кадр, нужен
+   `frame_uuid`) или `project` (поля уровня проекта: «общий_план»).
+   Неизвестный target → `400`.
 
 ### 7.1. Готовый системный блок для агента (копипаст)
 
@@ -252,21 +263,51 @@ animation_prompt, meaning, duration_seconds, attrs + excel_rows (что
 ПРАВИЛА:
 1. Адрес кадра — ТОЛЬКО frame_uuid из контекста. Никаких «строка 48»,
    «@row=», «# Лист:», номеров Excel, markdown-таблиц.
-2. В fields клади ТОЛЬКО то, что реально меняешь. Разрешённые ключи:
-   voiceover_text, image_prompt, animation_prompt, meaning,
-   duration_seconds (число), image_prompt_shot2, animation_prompt_shot2.
+2. В fields клади ТОЛЬКО то, что реально меняешь. Пиши по-человечески:
+   закадр, промт_картинки, промт_видео, смысл, длительность,
+   промт_картинки_2, промт_видео_2. (Канонические voiceover_text,
+   image_prompt, animation_prompt, meaning, duration_seconds,
+   image_prompt_shot2, animation_prompt_shot2 тоже принимаются.)
 3. Пустая строка "" = очистить поле. Поле вне fields = не трогать.
-4. Не выдумывай uuid: неизвестный uuid → весь запрос будет отклонён (400),
-   ничего не запишется.
+4. Не выдумывай uuid и названия полей: неизвестный uuid или поле →
+   весь запрос будет отклонён (400), ничего не запишется.
 5. Одна операция = один кадр. Сколько кадров правишь — столько объектов
-   в ops.
+   в ops. Для полей уровня проекта (общий план) — объект
+   {"target":"project","fields":{"общий_план":"…"}}.
 
 ПРИМЕР:
-{"ops":[{"frame_uuid":"a1b2c3d4e5f6a7b8c9d0e1f2","fields":{"voiceover_text":"Новый закадр","image_prompt":"knitted style, …"}}]}
+{"ops":[{"frame_uuid":"a1b2c3d4e5f6a7b8c9d0e1f2","fields":{"закадр":"Новый закадр","промт_картинки":"knitted style, …"}}]}
 ```
 
 После записи backend сам экспортирует DB → `project.xlsx`
 (`export_xlsx=true` по умолчанию) — Excel остаётся синхронным view.
+
+### 7.2. Глоссарий: что где означает и кто какой нодой пишется
+
+**Поля кадра (target=frame):**
+
+| Человеческое имя | Канонический ключ | Где в DB | Где в Excel (экспорт) | Кто пишет / читает |
+|---|---|---|---|---|
+| закадр | `voiceover_text` | `Frame.voiceover_text` | лист «план» R49 | нода split/разбивка; читают озвучка и монтаж |
+| промт_картинки | `image_prompt` | `Frame.image_prompt` + активная `prompt_versions(img)` | R45 | нода img_pr; читает генерация картинок |
+| промт_картинки_2 | `image_prompt_shot2` | `Frame.attrs["image_prompt_shot2"]` | R46 | нода enrich (shot_02); читает генерация картинок |
+| промт_видео | `animation_prompt` | `Frame.animation_prompt` + активная `prompt_versions(video)` | R48 | нода anim_pr; читает генерация видео |
+| промт_видео_2 | `animation_prompt_shot2` | `Frame.attrs["animation_prompt_shot2"]` | R64 | нода anim_pr (shot_02); читает генерация видео |
+| смысл | `meaning` | `Frame.meaning` | — (только DB) | enrich/оператор; контекст для промтов |
+| длительность | `duration_seconds` | `Frame.duration_seconds` | R50 | split/монтаж |
+
+**Поля проекта (target=project):**
+
+| Человеческое имя | Канонический ключ | Где в DB | Где в Excel (экспорт) | Кто пишет / читает |
+|---|---|---|---|---|
+| общий_план | `general_plan` | `Project.meta["general_plan"]` | лист «Общий план»!B2 | нода plan; контекст script/split |
+
+**Адреса и порядок:** `frame_uuid` — стабильный адрес кадра (не плывёт при
+вставках); `sort_key` — дробный порядок (вставка между = среднее соседей);
+`number` — legacy-номер = колонка Excel `number+2`. История промтов —
+`prompt_versions` (активная всегда равна `Frame.image_prompt`/
+`Frame.animation_prompt`). Связи кадров — `frame_edges`; сущности
+(персонаж/фон/предмет, коды c01/f01/p01) — `entities`.
 
 ---
 

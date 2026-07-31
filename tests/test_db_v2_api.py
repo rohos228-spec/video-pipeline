@@ -65,6 +65,7 @@ async def api_client(tmp_path, monkeypatch):
         wb = Workbook()
         ws = wb.active
         ws.title = "план"
+        wb.create_sheet("Общий план")
         wb.save(data_dir / "project.xlsx")
         wb.close()
 
@@ -177,6 +178,80 @@ async def test_apply_ops_updates_db_versions_and_exports_xlsx(api_client, tmp_pa
         assert ws.cell(row=ROW_VOICEOVER_V8, column=col).value == "новый закадр"
     finally:
         wb.close()
+
+
+@pytest.mark.asyncio
+async def test_apply_ops_human_aliases_and_unknown_field(api_client) -> None:
+    """Агент пишет по-человечески — сервер переводит в канонические ключи."""
+    client, project_id, factory = api_client
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        uuid = fr.uuid
+
+    r = await client.post(
+        f"/api/db/projects/{project_id}/apply-ops",
+        json={
+            "ops": [
+                {
+                    "frame_uuid": uuid,
+                    "fields": {
+                        "закадр": "закадр по-человечески",
+                        "промт_картинки": "img по-человечески",
+                        "Промт Видео": "vid по-человечески",
+                        "длительность": 4,
+                    },
+                }
+            ]
+        },
+    )
+    assert r.status_code == 200, r.text
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        assert fr.voiceover_text == "закадр по-человечески"
+        assert fr.image_prompt == "img по-человечески"
+        assert fr.animation_prompt == "vid по-человечески"
+        assert fr.duration_seconds == 4.0
+
+    r_bad = await client.post(
+        f"/api/db/projects/{project_id}/apply-ops",
+        json={"ops": [{"frame_uuid": uuid, "fields": {"неизвестное_поле": "x"}}]},
+    )
+    assert r_bad.status_code == 400
+    assert "неизвестные поля" in r_bad.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_apply_ops_project_target_general_plan_exports(api_client, tmp_path) -> None:
+    """target=project — поля уровня проекта (нода плана), экспорт в «Общий план»."""
+    client, project_id, factory = api_client
+    r = await client.post(
+        f"/api/db/projects/{project_id}/apply-ops",
+        json={"ops": [{"target": "project", "fields": {"общий_план": "Эпизод 1 …"}}]},
+    )
+    assert r.status_code == 200, r.text
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        assert (p.meta or {}).get("general_plan") == "Эпизод 1 …"
+
+    wb = load_workbook(tmp_path / "videos" / "dbv2-api" / "project.xlsx")
+    try:
+        assert wb["Общий план"]["B2"].value == "Эпизод 1 …"
+    finally:
+        wb.close()
+
+    r_target = await client.post(
+        f"/api/db/projects/{project_id}/apply-ops",
+        json={"ops": [{"target": "галактика", "fields": {"план": "x"}}]},
+    )
+    assert r_target.status_code == 400
 
 
 @pytest.mark.asyncio
