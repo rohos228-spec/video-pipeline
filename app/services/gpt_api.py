@@ -1002,9 +1002,21 @@ async def chat(
                 text=text, model=use_model, finish_reason=finish, usage=usage, raw=payload
             )
         except httpx.TimeoutException:
+            hint = ""
+            if settings.text_llm_is_tokenrouter:
+                hint = (
+                    " — Kimi free на TokenRouter часто тормозит/висит; "
+                    "подожди или переключи бейдж модели на GPT (kie)"
+                )
             last_exc = GptApiError(
-                f"GPT timeout {use_timeout:.0f}s (попытка {attempt}/{retries + 1})",
-                context={"error_kind": "timeout", "retryable": True, "model": use_model},
+                f"{provider_label} timeout {use_timeout:.0f}s "
+                f"(попытка {attempt}/{retries + 1}){hint}",
+                context={
+                    "error_kind": "timeout",
+                    "retryable": True,
+                    "model": use_model,
+                    "provider": provider_label,
+                },
             )
             logger.warning(str(last_exc))
         except httpx.HTTPError as e:
