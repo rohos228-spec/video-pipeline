@@ -114,6 +114,73 @@ def test_unmarked_junk_not_sequential_overwrite(tmp_path: Path) -> None:
     wb2.close()
 
 
+def test_row_marked_continue_cannot_shift_plan_labels(tmp_path: Path) -> None:
+    """Даже `@row=1\\tCONTINUE…` не двигает подписи A и не пишет CONTINUE."""
+    src = tmp_path / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "план"
+    ws["A1"] = "номер кадра"
+    ws["A2"] = "предыдущий кадр"
+    ws["A3"] = "следующий кадр"
+    ws["A4"] = "фон"
+    ws["C1"] = "1"
+    ws["D1"] = "2"
+    wb.create_sheet("Общий план")
+    wb.save(src)
+    wb.close()
+
+    reply = (
+        "# Лист: план\n"
+        "@row=1\tCONTINUE_XLSX: план @row=55\t9\t9\n"
+        "@row=2\tCONTINUE_XLSX: план @row=56\n"
+        "@row=3\tCONTINUE_XLSX: план @row=56\n"
+        "@row=4\tномер кадра\t1\t2\n"
+        "@row=10\tфон\tOK\n"
+    )
+    out = writeback_project_xlsx(
+        project_xlsx=src, reply_text=reply, downloaded_paths=[]
+    )
+    assert out == src
+    wb2 = load_workbook(src, data_only=True)
+    assert wb2["план"]["A1"].value == "номер кадра"
+    assert wb2["план"]["A2"].value == "предыдущий кадр"
+    assert wb2["план"]["A3"].value == "следующий кадр"
+    assert wb2["план"]["A4"].value == "фон"
+    assert "CONTINUE" not in str(wb2["план"]["A1"].value or "")
+    assert wb2["план"]["B10"].value == "OK"
+    wb2.close()
+
+
+def test_writeback_rejects_if_plan_labels_would_shift(tmp_path: Path) -> None:
+    """Fail-closed: если подписи A съехали — live не трогаем."""
+    from app.services.xlsx_text_writeback import assert_frame_plan_labels_intact
+
+    ref = tmp_path / "ref.xlsx"
+    bad = tmp_path / "bad.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "план"
+    ws["A1"] = "номер кадра"
+    wb.save(ref)
+    wb.close()
+    wb2 = Workbook()
+    ws2 = wb2.active
+    assert ws2 is not None
+    ws2.title = "план"
+    ws2["A1"] = "CONTINUE_XLSX: план @row=55"
+    ws2["A4"] = "номер кадра"
+    wb2.save(bad)
+    wb2.close()
+    try:
+        assert_frame_plan_labels_intact(bad, reference_xlsx=ref)
+        raise AssertionError("expected ValueError")
+    except ValueError as e:
+        assert "отказ" in str(e).lower() or "CONTINUE" in str(e)
+
+
 def test_writeback_creates_pre_write_backup(tmp_path: Path) -> None:
     """Перед мутацией live — копия в old/<ts>_project.xlsx (не только result)."""
     src = tmp_path / "project.xlsx"
@@ -285,10 +352,10 @@ def test_apply_and_writeback(tmp_path: Path) -> None:
     )
     assert out == src
     wb2 = load_workbook(src)
-    # protect_label_col: существующая подпись A не перетирается чужим текстом
+    # Лист «план»: колонка A заморожена (подписи шаблона).
     assert wb2["план"]["A1"].value == "old"
     assert wb2["план"]["B1"].value == "val"
-    assert wb2["план"]["A2"].value == "foo"
+    assert wb2["план"]["A2"].value is None  # foo — подпись, не пишем
     assert wb2["план"]["B2"].value == "bar"
     # Overlay: строки вне TSV не стираем
     assert wb2["план"]["A5"].value == "keep-me"

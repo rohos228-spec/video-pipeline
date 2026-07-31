@@ -36,6 +36,27 @@ _CONTROL_JUNK_RE = re.compile(
     r"^\s*(CONTINUE_XLSX\b|#\s*КОНТРАКТ|===VP_|===BODY===|===END===)",
     re.IGNORECASE,
 )
+# CONTINUE / контракт в любой ячейке (в т.ч. `@row=1\tCONTINUE…\t1\t2`).
+_CONTINUE_ANYWHERE_RE = re.compile(r"CONTINUE\s*[_ ]?\s*XLSX", re.IGNORECASE)
+_PLAN_LABEL_ROWS_CHECK = 60
+
+
+def _cell_is_control_junk(value: object) -> bool:
+    """True если значение — служебный маркер, а не данные таблицы."""
+    s = str(value or "").strip()
+    if not s:
+        return False
+    if _CONTINUE_LINE_RE.search(s) or _CONTINUE_ANYWHERE_RE.search(s):
+        return True
+    if _CONTROL_JUNK_RE.search(s):
+        return True
+    if "CONTINUE_XLSX" in s.upper().replace(" ", ""):
+        return True
+    return False
+
+
+def _row_has_control_junk(cells: list[str]) -> bool:
+    return any(_cell_is_control_junk(c) for c in cells)
 
 
 def extract_sheet_blocks(
@@ -72,6 +93,8 @@ def extract_sheet_blocks(
             # CONTINUE_XLSX / служебные строки — НЕ ячейки (иначе A1=CONTINUE…).
             if _CONTINUE_LINE_RE.search(line) or _CONTROL_JUNK_RE.search(line):
                 continue
+            if _CONTINUE_ANYWHERE_RE.search(line):
+                continue
             if current is None:
                 # Без `# Лист:` — только явный TSV (табы). Запятые в русской
                 # прозе (. «армия, право, дороги») нельзя считать CSV.
@@ -94,8 +117,8 @@ def extract_sheet_blocks(
                 # Без таба внутри `# Лист:` — не данные (CONTINUE / проза / мусор).
                 # Раньше уезжало в A1..A3 как sequential.
                 continue
-            # Ещё раз: если первая «ячейка» — CONTINUE, пропуск.
-            if cells and _CONTINUE_LINE_RE.search(str(cells[0] or "")):
+            # Любая ячейка со служебным CONTINUE/контрактом — вся строка мусор.
+            if cells and _row_has_control_junk(cells):
                 continue
             out[current].append(cells)
     # Убрать пустые листы
@@ -138,6 +161,60 @@ def _set_cell_value(ws, row: int, col: int, value: str) -> None:
     if type(cell).__name__ == "MergedCell":
         return
     cell.value = value
+
+
+def assert_frame_plan_labels_intact(
+    written_xlsx: Path,
+    *,
+    reference_xlsx: Path,
+) -> None:
+    """Fail-closed: подписи колонки A листа «план» не должны меняться / содержать CONTINUE.
+
+    Если GPT-TSV всё же пролез — откатываем запись (вызывающий не делает move).
+    """
+    from openpyxl import load_workbook
+
+    if not written_xlsx.exists() or not reference_xlsx.exists():
+        return
+    wb_w = load_workbook(filename=str(written_xlsx))
+    wb_r = load_workbook(filename=str(reference_xlsx), read_only=True, data_only=True)
+    try:
+        names_w = {n.lower(): n for n in wb_w.sheetnames}
+        names_r = {n.lower(): n for n in wb_r.sheetnames}
+        if "план" not in names_w or "план" not in names_r:
+            return
+        ws_w = wb_w[names_w["план"]]
+        ws_r = wb_r[names_r["план"]]
+        # CONTINUE / служебное в любой ячейке «план» — брак.
+        max_r = min(int(ws_w.max_row or 0), 120)
+        max_c = min(int(ws_w.max_column or 0), 40)
+        for r in range(1, max_r + 1):
+            for c in range(1, max_c + 1):
+                val = ws_w.cell(r, c).value
+                if _cell_is_control_junk(val):
+                    raise ValueError(
+                        f"xlsx_writeback: отказ — в «план»!{ws_w.cell(r, c).coordinate} "
+                        f"служебный маркер {str(val)[:60]!r}"
+                    )
+        # Колонка A (подписи строк) должна совпасть с шаблоном до записи.
+        for r in range(1, _PLAN_LABEL_ROWS_CHECK + 1):
+            ref = str(ws_r.cell(r, 1).value or "").strip()
+            got = str(ws_w.cell(r, 1).value or "").strip()
+            if not ref:
+                # Пустая A в шаблоне не должна получить мусор/сдвиг подписей.
+                if got and _cell_is_control_junk(got):
+                    raise ValueError(
+                        f"xlsx_writeback: отказ — «план»!A{r}={got[:60]!r}"
+                    )
+                continue
+            if got.casefold() != ref.casefold():
+                raise ValueError(
+                    f"xlsx_writeback: отказ — сдвиг подписей «план»!A{r}: "
+                    f"было {ref!r}, стало {got!r}"
+                )
+    finally:
+        wb_w.close()
+        wb_r.close()
 
 
 def _preferred_content_sheet(wb) -> str | None:
@@ -232,7 +309,10 @@ def apply_sheet_blocks_to_xlsx(
         frame_plan = key == "план"
         plan_like = key in {"план", "общий план", "общий план ролика"}
         use_label_fallback = not has_row_marks and frame_plan
-        protect_label_col = plan_like  # всегда бережём колонку A на плане
+        # «план»: колонку A (подписи R*) никогда не трогаем — только B+.
+        # «Общий план»: бережём A если уже заполнена.
+        protect_label_col = plan_like
+        freeze_label_col = frame_plan
         if use_label_fallback:
             label_map = _label_row_map(ws)
             if not label_map:
@@ -294,9 +374,12 @@ def apply_sheet_blocks_to_xlsx(
                 # Пустая ячейка в TSV — не затираем подпись/merge шаблона
                 if not s.strip():
                     continue
-                if _CONTINUE_LINE_RE.search(s) or "CONTINUE_XLSX" in s:
+                if _cell_is_control_junk(s):
                     continue
-                # Не ломаем колонку A (подписи строк) на плане.
+                # Лист кадров: A1..An — священные подписи шаблона.
+                if freeze_label_col and c_idx == 1:
+                    continue
+                # «Общий план»: не затираем уже существующую подпись в A.
                 if protect_label_col and c_idx == 1:
                     from app.services.xlsx_v8_import import _resolve_plan_cell
 
@@ -388,7 +471,10 @@ def merge_xlsx_nonempty_overlay(
                     s = str(val)
                     if not s.strip():
                         continue
-                    if "CONTINUE_XLSX" in s:
+                    if _cell_is_control_junk(s):
+                        continue
+                    # Не трогаем подписи строк на листе кадров.
+                    if key == "план" and c == 1:
                         continue
                     _set_cell_value(ws_p, r, c, s)
                     written += 1
@@ -547,10 +633,20 @@ def writeback_project_xlsx(
 
     blocks = extract_sheet_blocks(reply)
     if blocks:
+        # Диагностика: первые строки TSV (видно CONTINUE/@row= в логе tutor).
+        for sname, rows in list(blocks.items())[:3]:
+            preview = [" | ".join(r[:6]) for r in rows[:6]]
+            logger.info(
+                "xlsx_writeback: TSV preview «{}» rows={} :: {}",
+                sname,
+                len(rows),
+                " || ".join(preview)[:500],
+            )
         tmp = project_xlsx.with_suffix(".writeback.tmp.xlsx")
         try:
             _ensure_pre_write_backup()
             apply_sheet_blocks_to_xlsx(project_xlsx, blocks, tmp)
+            assert_frame_plan_labels_intact(tmp, reference_xlsx=project_xlsx)
             shutil.move(str(tmp), str(project_xlsx))
             logger.info(
                 "xlsx_writeback: TSV→{} листов={}, size={}",
@@ -563,6 +659,9 @@ def writeback_project_xlsx(
             logger.warning("xlsx_writeback failed: {}", e)
             if tmp.exists():
                 tmp.unlink(missing_ok=True)
+            # Порча подписей «план» — не fallback в prose, а жёсткий отказ.
+            if "отказ" in str(e).lower() or "сдвиг подписей" in str(e).lower():
+                raise
             # fall through to prose fallback
 
     # Fallback: GPT отдал прозу без `# Лист:` / TSV.
