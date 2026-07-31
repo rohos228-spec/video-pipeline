@@ -16,6 +16,8 @@
 | [`AGENTS.md`](../AGENTS.md) | Cloud/dev: git→main, providers, GPT API, UI version |
 | [`.cursor/rules/video-pipeline-ops.mdc`](../.cursor/rules/video-pipeline-ops.mdc) | Studio, anim_pr/R48, soft-retry, diagnose |
 | [`.cursor/rules/video-pipeline-map.mdc`](../.cursor/rules/video-pipeline-map.mdc) | Это правило: сначала карта |
+| [`NODE_SYSTEM.md`](NODE_SYSTEM.md) | Система нод оркестратора: доноры, контракты, harness-гейты, каталог нод/действий |
+| [`DB_V2.md`](DB_V2.md) | DB v2 = SoT: apply-ops контракт, алиасы, экспорт в Excel, руководство оператора |
 
 ---
 
