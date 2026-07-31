@@ -165,7 +165,7 @@ async def backfill_project_v2(session: AsyncSession, project: Project) -> dict[s
     ).scalar_one()
     if not edge_count:
         ordered = sorted(frames, key=lambda f: (f.sort_key or 0.0, f.number))
-        for a, b in zip(ordered, ordered[1:]):
+        for a, b in zip(ordered, ordered[1:], strict=False):
             session.add(
                 FrameEdge(
                     project_id=project.id,
@@ -399,6 +399,8 @@ async def project_graph(session: AsyncSession, project: Project) -> dict[str, An
             "duration_seconds": fr.duration_seconds,
             "voiceover_text": fr.voiceover_text,
             "meaning": fr.meaning,
+            "image_prompt": fr.image_prompt,
+            "animation_prompt": fr.animation_prompt,
             "attrs": fr.attrs or {},
             "texts": [
                 {

@@ -273,6 +273,8 @@ export interface DbFrame {
   duration_seconds: number | null;
   voiceover_text: string;
   meaning: string | null;
+  image_prompt?: string | null;
+  animation_prompt?: string | null;
   attrs: Record<string, unknown>;
   texts: DbFrameText[];
   prompts: DbPromptVersion[];
@@ -298,11 +300,25 @@ export interface DbEntity {
   attrs: Record<string, unknown>;
 }
 
+export interface DbExcelRow {
+  column: number;
+  r15_timecode: string | null;
+  r45_image_prompt: string | null;
+  r46_image_prompt_2: string | null;
+  r48_video_prompt: string | null;
+  r64_video_prompt_2: string | null;
+  r49_voiceover: string | null;
+  r50_duration: string | null;
+  persons: string | null;
+  items: string | null;
+}
+
 export interface DbGraph {
   project: { id: number; slug: string; title: string | null; topic: string | null; status: string | null };
   scenes: DbScene[];
   frames: DbFrame[];
   entities: DbEntity[];
+  excel_rows?: Record<string, DbExcelRow>;
 }
 
 export const api = {

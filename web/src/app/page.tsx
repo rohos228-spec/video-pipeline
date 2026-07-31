@@ -166,6 +166,7 @@ export default function HomePage() {
       <BazaWorkspace
         open={bazaOpen}
         onOpenChange={setBazaOpen}
+        projectId={selectedProjectId}
       />
     </AppShell>
   );

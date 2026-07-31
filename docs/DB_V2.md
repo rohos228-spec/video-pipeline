@@ -131,14 +131,26 @@ legacy-данных проекта:
 
 - Кнопка «База» в topbar: `web/src/components/shell/topbar.tsx`
   (иконка `Database`, event `studio-open-baza`).
-- Listener + state: `web/src/app/page.tsx` (паттерн как у `GptWorkspace`).
-- Полноэкранный overlay `fixed inset-0 z-[80]`, три колонки:
-  - **проекты** (из `/api/db/overview`) со счётчиками;
-  - **сцены → карточки кадров** (uuid, sort_key, статус, превью закадра;
+- Listener + state: `web/src/app/page.tsx` (паттерн как у `GptWorkspace`);
+  в `BazaWorkspace` передаётся **текущий выбранный проект пайплайна**
+  (`selectedProjectId`) — отдельного выбора проекта слева нет.
+- Полноэкранный overlay `fixed inset-0 z-[80]`, две колонки:
+  - **сцены → карточки кадров** открытого проекта (номер кадра = колонка
+    Excel `номер+2`, русский статус, маркеры заполненности R45/R48;
     hover-кнопка «+» = вставить кадр после этого);
-  - **детали карточки**: статус/длительность/закадр/смысл, тексты (add/del),
-    версии промтов (add/activate), связи (add/del), вкладка «Сущности».
-- API-методы фронта: `api.db*` в `web/src/lib/api.ts` (типы `DbGraph` и др.).
+  - **детали карточки**: статус/длительность, блок **«Excel-строки кадра»**
+    (read-only: R45/R46/R48/R64/R49/R50/R15, персонажи R8/23/38, предметы
+    R9/24/39 — читается из `project.xlsx` листа «план»), закадр/смысл,
+    тексты (add/del), версии промтов (add/activate), связи (add/del),
+    вкладка «Сущности». Все подписи и кнопки — на русском; английские
+    enum-значения (status/kind/type) переведены в UI-маппингах.
+- `GET /api/db/projects/{pid}/graph` дополнительно возвращает
+  `excel_rows: {frame_number: {column, r45_image_prompt, r46_image_prompt_2,
+  r48_video_prompt, r64_video_prompt_2, r49_voiceover, r50_duration,
+  r15_timecode, persons, items}}` — мостик на период, пока Excel остаётся
+  источником правды для промтов (см. §7).
+- API-методы фронта: `api.db*` в `web/src/lib/api.ts` (типы `DbGraph`,
+  `DbExcelRow` и др.).
 
 После любых правок `web/src/**`: `python scripts/bump_studio_version.py`
 (бамп + rebuild `web/out/`, коммитить оба).

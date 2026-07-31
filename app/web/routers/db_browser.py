@@ -23,9 +23,25 @@ from app.models import (
     Scene,
 )
 from app.services import db_v2
+from app.services.xlsx_v8_import import (
+    ROW_DURATION_V8,
+    ROW_IMAGE_PROMPT_2_V8,
+    ROW_IMAGE_PROMPT_V8,
+    ROW_TIMECODE_V8,
+    ROW_VIDEO_PROMPT_2_V8,
+    ROW_VIDEO_PROMPT_V8,
+    ROW_VOICEOVER_V8,
+    _cell_text,
+    _resolve_plan_sheet,
+)
 from app.web.deps import get_session
 
 router = APIRouter(prefix="/db", tags=["db"])
+
+# Лист «план» v8: строки, которые оператор правит в Excel и на которые
+# ссылаются промты. Показываем их в «Базе» рядом с карточкой кадра.
+_ROWS_PERSONS = (8, 23, 38)
+_ROWS_ITEMS = (9, 24, 39)
 
 
 async def _project(session: AsyncSession, project_id: int) -> Project:
@@ -40,6 +56,63 @@ async def _frame(session: AsyncSession, frame_id: int) -> Frame:
     if fr is None:
         raise HTTPException(404, f"кадр {frame_id} не найден")
     return fr
+
+
+def _merged_plan_ids(ws, col: int, rows: tuple[int, ...]) -> str | None:
+    seen: list[str] = []
+    for row in rows:
+        text = _cell_text(ws, row, col)
+        if not text:
+            continue
+        for part in text.replace(";", ",").split(","):
+            item = part.strip()
+            if item and item not in seen:
+                seen.append(item)
+    return ", ".join(seen) if seen else None
+
+
+def _excel_rows_for_project(project: Project) -> dict[int, dict[str, str | int | None]]:
+    """Строки листа «план» project.xlsx по номеру кадра (для UI «Базы»).
+
+    Excel пока остаётся источником правды для промтов — карточка кадра
+    обязана показывать те же R45/R48/R49, что видел оператор в книге.
+    """
+    path = project.data_dir / "project.xlsx"
+    if not path.is_file():
+        return {}
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return {}
+    try:
+        wb = load_workbook(path, data_only=True)
+    except Exception:  # noqa: BLE001
+        return {}
+    try:
+        ws = _resolve_plan_sheet(wb)
+        if ws is None:
+            return {}
+        out: dict[int, dict[str, str | int | None]] = {}
+        max_col = ws.max_column or 0
+        for col in range(3, max_col + 1):
+            frame_no = col - 2
+            values = {
+                "column": col,
+                "r15_timecode": _cell_text(ws, ROW_TIMECODE_V8, col),
+                "r45_image_prompt": _cell_text(ws, ROW_IMAGE_PROMPT_V8, col),
+                "r46_image_prompt_2": _cell_text(ws, ROW_IMAGE_PROMPT_2_V8, col),
+                "r48_video_prompt": _cell_text(ws, ROW_VIDEO_PROMPT_V8, col),
+                "r64_video_prompt_2": _cell_text(ws, ROW_VIDEO_PROMPT_2_V8, col),
+                "r49_voiceover": _cell_text(ws, ROW_VOICEOVER_V8, col),
+                "r50_duration": _cell_text(ws, ROW_DURATION_V8, col),
+                "persons": _merged_plan_ids(ws, col, _ROWS_PERSONS),
+                "items": _merged_plan_ids(ws, col, _ROWS_ITEMS),
+            }
+            if any(v not in (None, "") for k, v in values.items() if k != "column"):
+                out[frame_no] = values
+        return out
+    finally:
+        wb.close()
 
 
 @router.get("/overview")
@@ -90,7 +163,9 @@ async def db_graph(
     project = await _project(session, project_id)
     await db_v2.backfill_project_v2(session, project)
     await session.commit()
-    return await db_v2.project_graph(session, project)
+    graph = await db_v2.project_graph(session, project)
+    graph["excel_rows"] = _excel_rows_for_project(project)
+    return graph
 
 
 class FramePatch(BaseModel):
