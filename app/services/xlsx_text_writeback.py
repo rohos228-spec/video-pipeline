@@ -91,11 +91,9 @@ def extract_sheet_blocks(
                     continue
                 cells = raw
             else:
-                # Одиночная строка без таба внутри блока листа — почти всегда
-                # болтовня/CONTINUE-хвост; в ячейки не кладём.
-                if _CONTINUE_LINE_RE.search(line) or len(line.strip()) > 200:
-                    continue
-                cells = [line]
+                # Без таба внутри `# Лист:` — не данные (CONTINUE / проза / мусор).
+                # Раньше уезжало в A1..A3 как sequential.
+                continue
             # Ещё раз: если первая «ячейка» — CONTINUE, пропуск.
             if cells and _CONTINUE_LINE_RE.search(str(cells[0] or "")):
                 continue
@@ -228,11 +226,13 @@ def apply_sheet_blocks_to_xlsx(
         has_row_marks = any(_parse_row_mark(r)[0] is not None for r in rows)
         label_map: dict[str, int] = {}
         # Fail-closed только для листа кадров «план» (R45/R48/R49).
-        # «Общий план» часто пишут без @row= (эпизоды / prose) — sequential OK.
+        # «Общий план» часто пишут без @row= (эпизоды / prose) — sequential OK
+        # ТОЛЬКО если во всём блоке нет ни одного @row= (иначе мусор/CONTINUE
+        # уезжал в A1..A3 sequential и ломал шаблон).
         frame_plan = key == "план"
         plan_like = key in {"план", "общий план", "общий план ролика"}
         use_label_fallback = not has_row_marks and frame_plan
-        protect_label_col = has_row_marks and plan_like
+        protect_label_col = plan_like  # всегда бережём колонку A на плане
         if use_label_fallback:
             label_map = _label_row_map(ws)
             if not label_map:
@@ -240,15 +240,33 @@ def apply_sheet_blocks_to_xlsx(
                     f"xlsx_writeback: лист «{ws.title}» без @row= и без подписей "
                     "в колонке A — отказ (риск сдвига R45/R48/R49)"
                 )
+        elif plan_like and not has_row_marks and strict_layout:
+            # v8 + «Общий план» без @row=: только по подписи A, не sequential 1..N
+            label_map = _label_row_map(ws)
 
         sequential_idx = 0
         for row in rows:
             abs_row, cells = _parse_row_mark(row)
             if abs_row is None:
-                if use_label_fallback and cells:
+                # В блоке уже есть @row= — строки без маркера = мусор/CONTINUE-хвост.
+                if has_row_marks and plan_like:
+                    logger.warning(
+                        "xlsx_writeback: skip unmarked row on «{}» ({!r})",
+                        ws.title,
+                        (cells[0] if cells else "")[:80],
+                    )
+                    continue
+                if label_map and cells:
                     lab = str(cells[0] or "").strip().casefold()
                     if lab and lab in label_map:
                         abs_row = label_map[lab]
+                    elif plan_like and strict_layout:
+                        logger.warning(
+                            "xlsx_writeback: skip unknown label on «{}» ({!r})",
+                            ws.title,
+                            lab,
+                        )
+                        continue
                     else:
                         raise ValueError(
                             f"xlsx_writeback: лист «{ws.title}» строка без @row= "
@@ -258,6 +276,12 @@ def apply_sheet_blocks_to_xlsx(
                     raise ValueError(
                         f"xlsx_writeback: лист «{ws.title}» без @row= — отказ"
                     )
+                elif plan_like and strict_layout:
+                    logger.warning(
+                        "xlsx_writeback: skip sequential junk on v8 «{}»",
+                        ws.title,
+                    )
+                    continue
                 else:
                     sequential_idx += 1
                     abs_row = sequential_idx
@@ -363,6 +387,8 @@ def merge_xlsx_nonempty_overlay(
                         continue
                     s = str(val)
                     if not s.strip():
+                        continue
+                    if "CONTINUE_XLSX" in s:
                         continue
                     _set_cell_value(ws_p, r, c, s)
                     written += 1

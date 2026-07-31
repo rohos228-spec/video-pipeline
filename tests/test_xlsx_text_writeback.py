@@ -82,6 +82,38 @@ def test_merge_writeback_last_wins_same_row() -> None:
     assert "@row=6\tlabel2\tx" in merged
 
 
+def test_unmarked_junk_not_sequential_overwrite(tmp_path: Path) -> None:
+    """Мусор без @row= рядом с @row= не должен затирать A1."""
+    src = tmp_path / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "план"
+    ws["A1"] = "номер кадра"
+    ws["A2"] = "предыдущий кадр"
+    ws["B10"] = "keep"
+    wb.create_sheet("Общий план")
+    wb.save(src)
+    wb.close()
+
+    reply = (
+        "# Лист: план\n"
+        "CONTINUE_XLSX: план @row=55\n"
+        "мусор без таба\n"
+        "@row=10\tфон\tNEW\n"
+    )
+    out = writeback_project_xlsx(
+        project_xlsx=src, reply_text=reply, downloaded_paths=[]
+    )
+    assert out == src
+    wb2 = load_workbook(src, data_only=True)
+    assert wb2["план"]["A1"].value == "номер кадра"
+    assert wb2["план"]["A2"].value == "предыдущий кадр"
+    assert "CONTINUE" not in str(wb2["план"]["A1"].value or "")
+    assert wb2["план"]["B10"].value == "NEW"
+    wb2.close()
+
+
 def test_continue_marker_not_written_into_cells(tmp_path: Path) -> None:
     """CONTINUE_XLSX — сигнал дозапроса, не значение ячейки A1."""
     from app.services.xlsx_text_writeback import extract_sheet_blocks
@@ -211,8 +243,8 @@ def test_apply_and_writeback(tmp_path: Path) -> None:
         "@row=1\tname\tval\n"
         "@row=2\tfoo\tbar\n"
         "# Лист: Кадры\n"
-        "id\n"
-        "1\n"
+        "@row=1\tid\n"
+        "@row=2\t1\n"
     )
     out = writeback_project_xlsx(
         project_xlsx=src,
@@ -384,12 +416,15 @@ def test_apply_does_not_add_foreign_sheets_on_v8_workbook(tmp_path: Path) -> Non
 
     apply_sheet_blocks_to_xlsx(
         src,
-        {"Общий план": [["Хук", "длинный текст"]], "ЧужойЛист": [["x"]]},
+        {
+            "Общий план": [["@row=1", "label", "длинный текст"]],
+            "ЧужойЛист": [["x"]],
+        },
         dest,
     )
     wb2 = load_workbook(dest)
     assert "ЧужойЛист" not in wb2.sheetnames
-    assert wb2["Общий план"]["A1"].value == "Хук"
+    assert wb2["Общий план"]["A1"].value == "label"
     assert wb2["Общий план"]["B1"].value == "длинный текст"
     assert "план" in wb2.sheetnames
     wb2.close()
