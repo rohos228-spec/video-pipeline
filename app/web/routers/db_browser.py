@@ -295,6 +295,13 @@ _ORCHESTRATOR_SYSTEM = (
     "10) СОЗДАТЬ проект → {\"actions\":[{\"create_project\":{\"title\":\"…\"}}]} — "
     "сам создаёт проект (НЕ открывай окна генерации/Create — работа только "
     "в пайплайне).\n"
+    "10b) ДОЧЕРНИЙ проект из родителя → "
+    "{\"actions\":[{\"create_child\":{\"parent_id\":<id>}}]} или "
+    "{\"create_child\":{\"parent_title\":\"История ведьм\"}} или "
+    "{\"create_child\":true} (родитель = текущий проект). "
+    "Копирует настройки генерации и промты (prompt_overrides / gpt_text); "
+    "НЕ копирует кадры, Excel-данные, PNG/MP4. id/title бери из раздела "
+    "ПРОЕКТЫ В СТУДИИ. После создания открой ребёнка (ui open_project).\n"
     "11) ДОБАВИТЬ ноду в граф → "
     "{\"actions\":[{\"add_node\":{\"node_type\":\"hitl_gate\",\"after\":\"each\"}}]} — "
     "after=\"each\" (после каждой рабочей ноды, без дублей) или "
@@ -838,6 +845,104 @@ async def _apply_create_project(session: AsyncSession, spec: dict) -> dict:
     return {"id": detail.id, "title": detail.title or title, "slug": detail.slug}
 
 
+async def _projects_catalog_context(session: AsyncSession) -> list[str]:
+    """Краткий каталог проектов Studio — чтобы оркестратор находил чужие id."""
+    rows = (
+        await session.execute(
+            select(Project.id, Project.slug, Project.title, Project.status, Project.topic)
+            .order_by(Project.id.desc())
+            .limit(80)
+        )
+    ).all()
+    if not rows:
+        return ["ПРОЕКТЫ В СТУДИИ: (пусто)"]
+    lines = [
+        "ПРОЕКТЫ В СТУДИИ (id | slug | title | status) — ищи по названию отсюда:",
+    ]
+    for pid, slug, title, status, topic in rows:
+        st = getattr(status, "value", status)
+        label = (title or "").strip() or (topic or "")[:48].strip() or "—"
+        lines.append(f"- #{pid} | {slug} | {label} | {st}")
+    return lines
+
+
+async def _resolve_parent_for_child(
+    session: AsyncSession, current: Project, spec: dict | bool | None
+) -> Project:
+    """parent_id / parent_title / true(=текущий) → Project."""
+    if spec is True or spec is None or spec == {}:
+        return current
+    if not isinstance(spec, dict):
+        raise db_apply.ApplyOpsError(
+            "create_child: ожидай true | {parent_id} | {parent_title}"
+        )
+    parent_id = spec.get("parent_id")
+    parent_title = str(spec.get("parent_title") or spec.get("title") or "").strip()
+    if parent_id is not None:
+        try:
+            pid = int(parent_id)
+        except (TypeError, ValueError) as e:
+            raise db_apply.ApplyOpsError("create_child: parent_id должен быть числом") from e
+        parent = await session.get(Project, pid)
+        if parent is None:
+            raise db_apply.ApplyOpsError(f"create_child: проект #{pid} не найден")
+        return parent
+    if parent_title:
+        needle = parent_title.casefold()
+        rows = (
+            await session.execute(select(Project).order_by(Project.id.desc()).limit(200))
+        ).scalars().all()
+        hits = [
+            p
+            for p in rows
+            if needle in (p.title or "").casefold()
+            or needle in (p.slug or "").casefold()
+            or needle in (p.topic or "").casefold()
+        ]
+        if not hits:
+            raise db_apply.ApplyOpsError(
+                f"create_child: проект «{parent_title}» не найден — "
+                "смотри раздел ПРОЕКТЫ В СТУДИИ"
+            )
+        if len(hits) > 1:
+            # точное совпадение title предпочтительнее
+            exact = [p for p in hits if (p.title or "").casefold() == needle]
+            hits = exact or hits
+        if len(hits) > 1:
+            ids = ", ".join(f"#{p.id}" for p in hits[:8])
+            raise db_apply.ApplyOpsError(
+                f"create_child: несколько проектов «{parent_title}» ({ids}) — укажи parent_id"
+            )
+        return hits[0]
+    return current
+
+
+async def _apply_create_child(
+    session: AsyncSession, current: Project, spec: dict | bool | None
+) -> dict:
+    """Дочерний проект — тот же код, что POST /api/projects/{id}/child."""
+    from app.services.project_child import (
+        create_child_from_parent,
+        finalize_child_data_dir,
+    )
+    from app.web.routers.projects import _slugify
+
+    parent = await _resolve_parent_for_child(session, current, spec)
+    child = await create_child_from_parent(session, parent, slugify=_slugify)
+    await session.commit()
+    await session.refresh(child)
+    try:
+        await finalize_child_data_dir(parent, child)
+    except Exception as exc:  # noqa: BLE001
+        raise db_apply.ApplyOpsError(f"create_child: data_dir: {exc}") from exc
+    return {
+        "id": child.id,
+        "title": child.title or child.slug,
+        "slug": child.slug,
+        "parent_id": parent.id,
+    }
+
+
 def _linear_order(nodes: list[dict], edges: list[dict]) -> list[str]:
     """Порядок нод линейной цепочки по edges. Нелинейный граф → ApplyOpsError."""
     by_id = {str(n.get("id")): n for n in nodes}
@@ -1360,9 +1465,15 @@ async def orchestrator_chat(
     )
     diag_lines = await _diagnostics_context(session, project)
     canvas_lines, canvas_keymap = await _canvas_nodes_context(session, project)
+    catalog_lines = await _projects_catalog_context(session)
     prompt = (
         _ORCHESTRATOR_SYSTEM
-        + "\n\nШАГИ ПАЙПЛАЙНА (реальный порядок и состояние):\n"
+        + "\n\n"
+        + "\n".join(catalog_lines)
+        + "\n\nТЕКУЩИЙ ПРОЕКТ В ЧАТЕ: "
+        f"#{project.id} | {project.slug} | {(project.title or '') or '—'} | "
+        f"{getattr(project.status, 'value', project.status)}\n"
+        + "\nШАГИ ПАЙПЛАЙНА (реальный порядок и состояние):\n"
         + "\n".join(_pipeline_state_lines(project))
         + "\n\n"
         + "\n".join(await _checks_context(session, project))
@@ -1474,6 +1585,19 @@ async def orchestrator_chat(
                     created = await _apply_create_project(session, spec)
                     actions_run.append(
                         {"create_project": f"#{created['id']} {created['title']}"}
+                    )
+                    ui_actions.append({"kind": "open_project", "project_id": created["id"]})
+                elif "create_child" in act:
+                    created = await _apply_create_child(
+                        session, project, act.get("create_child")
+                    )
+                    actions_run.append(
+                        {
+                            "create_child": (
+                                f"#{created['id']} {created['title']} "
+                                f"← parent #{created['parent_id']}"
+                            )
+                        }
                     )
                     ui_actions.append({"kind": "open_project", "project_id": created["id"]})
                 elif "add_node" in act:

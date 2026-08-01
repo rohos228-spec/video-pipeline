@@ -6,7 +6,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from openpyxl import Workbook, load_workbook
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models import Base, Frame, Project, ProjectStatus, PromptVersion
@@ -674,6 +674,61 @@ async def test_orchestrator_chat_create_project(api_client, monkeypatch) -> None
         p = await session.get(Project, new_id)
         assert p is not None and p.title == "Тест оркестра"
         assert (p.data_dir / "project.xlsx").is_file()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_chat_create_child_and_catalog(api_client, monkeypatch) -> None:
+    """create_child + каталог проектов в промпте оркестратора."""
+    client, project_id, factory = api_client
+    async with factory() as session:
+        parent = await session.get(Project, project_id)
+        assert parent is not None
+        parent.title = "История ведьм"
+        parent.slug = "istoriya-vedm-test"
+        parent.hero_mode = "hero"
+        parent.image_generator = "gpt_image_2"
+        parent.prompt_overrides = {"img_pr": "default", "anim_pr": "default"}
+        parent.gpt_text_overrides = {"plan": "мастер-промт родителя"}
+        await session.commit()
+
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt(
+            '{"actions":[{"create_child":{"parent_title":"История ведьм"}}]}'
+        ),
+    )
+    # чат с другого проекта — parent_title должен найти #project_id
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "найди история ведьм и сделай дочерний", "history": []},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["error"] is None, data
+    assert "create_child" in data["actions_run"][0]
+    assert f"parent #{project_id}" in data["actions_run"][0]["create_child"]
+    assert data["ui_actions"][0]["kind"] == "open_project"
+    child_id = data["ui_actions"][0]["project_id"]
+    assert child_id != project_id
+    # каталог проектов в системном промпте
+    assert "ПРОЕКТЫ В СТУДИИ" in (_FakeGpt.last_prompt or "")
+    assert "История ведьм" in (_FakeGpt.last_prompt or "")
+
+    async with factory() as session:
+        child = await session.get(Project, child_id)
+        parent = await session.get(Project, project_id)
+        assert child is not None and parent is not None
+        assert (child.meta or {}).get("mass_parent_id") == project_id
+        assert child.prompt_overrides == parent.prompt_overrides
+        assert child.hero_mode == parent.hero_mode
+        assert child.image_generator == parent.image_generator
+        # контент кадров не копируем
+        n_frames = (
+            await session.execute(
+                select(func.count()).select_from(Frame).where(Frame.project_id == child_id)
+            )
+        ).scalar_one()
+        assert int(n_frames or 0) == 0
 
 
 @pytest.mark.asyncio
