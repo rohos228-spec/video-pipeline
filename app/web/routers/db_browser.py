@@ -914,22 +914,28 @@ async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -
     existing_ids = set(by_id)
     new_nodes: list[dict] = []
     k = 0
-    for nid in targets:
+    # Новые ноды — отдельным рядом ПОД пайплайном, разнесены по x:
+    # никогда не накладываются на существующие и друг на друга.
+    max_y = max(
+        (float((n.get("position") or {}).get("y", 0.0)) for n in nodes), default=0.0
+    )
+    min_x = min(
+        (float((n.get("position") or {}).get("x", 0.0)) for n in nodes), default=0.0
+    )
+    for _nid in targets:
         k += 1
         new_id = f"n_{node_type}_{k}"
         while new_id in existing_ids:
             k += 1
             new_id = f"n_{node_type}_{k}"
         existing_ids.add(new_id)
-        pos = (by_id[nid].get("position") or {})
         new_nodes.append(
             {
                 "id": new_id,
                 "type": node_type,
                 "position": {
-                    "x": float(pos.get("x", 0.0)) + 145.0,
-                    # Лесенка по y, чтобы повторные вставки не ложились стопкой.
-                    "y": float(pos.get("y", 0.0)) + 140.0 + 60.0 * (k - 1),
+                    "x": min_x + (k - 1) * 200.0,
+                    "y": max_y + 160.0,
                 },
                 "data": {"label": label, "description": "добавлено оркестратором"},
             }
