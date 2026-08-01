@@ -649,6 +649,94 @@ async def test_orchestrator_chat_canvas_nodes_and_node_key(api_client, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_chat_create_project(api_client, monkeypatch) -> None:
+    """create_project: оркестратор сам создаёт проект (без окна генерации)."""
+    client, project_id, factory = api_client
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"create_project":{"title":"Тест оркестра"}}]}'),
+    )
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "создай новый проект тест оркестра", "history": []},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["error"] is None
+    assert data["actions_run"][0]["create_project"].startswith("#")
+    assert data["ui_actions"][0]["kind"] == "open_project"
+    new_id = data["ui_actions"][0]["project_id"]
+    assert new_id != project_id
+    async with factory() as session:
+        p = await session.get(Project, new_id)
+        assert p is not None and p.title == "Тест оркестра"
+        assert (p.data_dir / "project.xlsx").is_file()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_chat_add_node_each_and_single(api_client, monkeypatch) -> None:
+    """add_node: hitl_gate после каждой рабочей ноды; цепочка остаётся линейной."""
+    from app.models import Workflow
+    from app.web.routers.db_browser import _linear_order
+
+    client, project_id, factory = api_client
+    async with factory() as session:
+        session.add(
+            Workflow(
+                name="default",
+                is_default=True,
+                nodes=[
+                    {"id": "n_plan", "type": "plan", "position": {"x": 0.0, "y": 0.0}, "data": {"label": "Сценарий"}},
+                    {"id": "n_script", "type": "script", "position": {"x": 290.0, "y": 0.0}, "data": {"label": "Закадровый"}},
+                    {"id": "n_img", "type": "images", "position": {"x": 580.0, "y": 0.0}, "data": {"label": "Картинки"}},
+                ],
+                edges=[
+                    {"id": "e_0", "source": "n_plan", "target": "n_script"},
+                    {"id": "e_1", "source": "n_script", "target": "n_img"},
+                ],
+            )
+        )
+        await session.commit()
+
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"add_node":{"node_type":"hitl_gate","after":"each"}}]}'),
+    )
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "к каждой ноде добавь ноду проверки", "history": []},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["error"] is None
+    assert "×3" in data["actions_run"][0]["add_node"]
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        g = (p.meta or {}).get("canvas_graph") or {}
+        types = [n["type"] for n in g["nodes"]]
+        assert types.count("hitl_gate") == 3
+        assert len(g["nodes"]) == 6
+        assert len(_linear_order(g["nodes"], g["edges"])) == 6  # цепочка линейна
+
+    # Одиночная вставка после конкретной ноды.
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"add_node":{"node_type":"hitl_gate","after":"n_plan"}}]}'),
+    )
+    r2 = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "добавь проверку после плана", "history": []},
+    )
+    assert r2.status_code == 200
+    assert r2.json()["error"] is None
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        g = (p.meta or {}).get("canvas_graph") or {}
+        assert len(g["nodes"]) == 7
+        assert len(_linear_order(g["nodes"], g["edges"])) == 7
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_chat_run_harness_action(api_client, monkeypatch) -> None:
     """run_harness → свежий прогон проверок, итог в actions_run."""
     client, project_id, factory = api_client

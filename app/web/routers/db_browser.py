@@ -280,8 +280,15 @@ _ORCHESTRATOR_SYSTEM = (
     "ВАЖНО: ноды topic и storage — конфиг, у них НЕТ промтов и студии. "
     "Для темы используй set_topic или open_ui topic; не открывай для них "
     "step_prompts/node_studio/prompt_builder.\n"
-    "10) ПРОГНАТЬ проверки (harness) → {\"actions\":[{\"run_harness\":true}]}.\n"
-    "11) Вопрос/обсуждение без изменений — обычный текст.\n"
+    "10) СОЗДАТЬ проект → {\"actions\":[{\"create_project\":{\"title\":\"…\"}}]} — "
+    "сам создаёт проект (НЕ открывай окна генерации/Create — работа только "
+    "в пайплайне).\n"
+    "11) ДОБАВИТЬ ноду в граф → "
+    "{\"actions\":[{\"add_node\":{\"node_type\":\"hitl_gate\",\"after\":\"each\"}}]} — "
+    "after=\"each\" (после каждой рабочей ноды) или after=\"<node_key>\"; "
+    "hitl_gate = нода проверки-аппрува.\n"
+    "12) ПРОГНАТЬ проверки (harness) → {\"actions\":[{\"run_harness\":true}]}.\n"
+    "13) Вопрос/обсуждение без изменений — обычный текст.\n"
     "Не выдумывай uuid, поля, коды шагов, ключи и значения настроек — "
     "неизвестное = отклонено с ошибкой. Одна операция = один кадр."
 )
@@ -630,7 +637,8 @@ def _apply_set_prompt(project: Project, step: object, variant: object) -> str:
 
 
 _UI_NODE_KINDS = ("node_studio", "prompt_builder", "hitl")
-_UI_SIMPLE_KINDS = ("topic", "baza", "gpt_chat", "create", "fleet", "settings")
+# Окна-генерации (create) оркестратору запрещены: работа только в пайплайне.
+_UI_SIMPLE_KINDS = ("topic", "baza", "gpt_chat", "fleet", "settings")
 
 
 def _all_node_types() -> set[str]:
@@ -763,6 +771,167 @@ async def _apply_hitl_decision(
         payload={"decision": new_decision.value, "kind": req.kind.value},
     )
     return {"hitl_decision": f"{new_decision.value} → {req.kind.value}"}
+
+
+async def _apply_create_project(session: AsyncSession, spec: dict) -> dict:
+    """Создать проект — тот же код, что кнопка «Новый проект» (projects router)."""
+    from app.web.routers.projects import create_project as _create_endpoint
+    from app.web.schemas import CreateProjectRequest
+
+    title = str((spec or {}).get("title") or "").strip()
+    if not title:
+        raise db_apply.ApplyOpsError("create_project: нужен title")
+    hero_mode = str((spec or {}).get("hero_mode") or "auto").strip()
+    if hero_mode not in ("hero", "no_hero", "auto"):
+        raise db_apply.ApplyOpsError("create_project: hero_mode ∈ hero|no_hero|auto")
+    detail = await _create_endpoint(
+        CreateProjectRequest(title=title, hero_mode=hero_mode), session
+    )
+    return {"id": detail.id, "title": detail.title or title, "slug": detail.slug}
+
+
+def _linear_order(nodes: list[dict], edges: list[dict]) -> list[str]:
+    """Порядок нод линейной цепочки по edges. Нелинейный граф → ApplyOpsError."""
+    by_id = {str(n.get("id")): n for n in nodes}
+    out_map: dict[str, list[str]] = {}
+    in_deg: dict[str, int] = {nid: 0 for nid in by_id}
+    for e in edges:
+        src, tgt = str(e.get("source")), str(e.get("target"))
+        if src in by_id and tgt in by_id:
+            out_map.setdefault(src, []).append(tgt)
+            in_deg[tgt] = in_deg.get(tgt, 0) + 1
+    heads = [nid for nid, d in in_deg.items() if d == 0]
+    if len(heads) != 1:
+        raise db_apply.ApplyOpsError("граф нелинейный — добавляй по одной ноде (after=<node_key>)")
+    order: list[str] = []
+    cur = heads[0]
+    seen: set[str] = set()
+    while cur:
+        if cur in seen:
+            raise db_apply.ApplyOpsError("цикл в графе — отказ")
+        seen.add(cur)
+        order.append(cur)
+        nxt = out_map.get(cur) or []
+        if len(nxt) > 1:
+            raise db_apply.ApplyOpsError(
+                "граф нелинейный — добавляй по одной ноде (after=<node_key>)"
+            )
+        cur = nxt[0] if nxt else ""
+    if len(order) != len(by_id):
+        raise db_apply.ApplyOpsError("в графе есть несвязанные ноды — отказ")
+    return order
+
+
+async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -> dict:
+    """Вставить ноду в граф проекта (project.meta.canvas_graph), цепочка перешивается.
+
+    ``after="each"`` — после каждой рабочей ноды (не hitl/config); иначе
+    ``after=<node_key>`` — после конкретной. Тип — любой из реестра нод
+    (hitl_gate = нода проверки-аппрува).
+    """
+    from app.models import Workflow, WorkflowRun
+    from app.orchestrator.node_registry import CONFIG_NODE_TYPES, HITL_NODE_TYPES
+
+    node_type = str((spec or {}).get("node_type") or "").strip()
+    if node_type not in _all_node_types():
+        raise db_apply.ApplyOpsError(
+            f"add_node: неизвестный тип {node_type!r}; есть: {sorted(_all_node_types())}"
+        )
+    after = str((spec or {}).get("after") or "each").strip()
+    label = str((spec or {}).get("label") or "").strip() or (
+        "Проверка" if node_type.startswith("hitl") else node_type
+    )
+
+    meta = dict(project.meta or {})
+    graph = meta.get("canvas_graph")
+    if not isinstance(graph, dict) or not graph.get("nodes"):
+        wf = (
+            await session.execute(
+                select(Workflow).where(Workflow.is_default.is_(True))
+            )
+        ).scalars().first()
+        if wf is None:
+            raise db_apply.ApplyOpsError("add_node: нет workflow для проекта")
+        graph = {"nodes": list(wf.nodes or []), "edges": list(wf.edges or [])}
+    nodes = [dict(n) for n in graph["nodes"]]
+    edges = [dict(e) for e in (graph.get("edges") or [])]
+    order = _linear_order(nodes, edges)
+    by_id = {str(n.get("id")): n for n in nodes}
+
+    if after == "each":
+        skip = set(CONFIG_NODE_TYPES) | set(HITL_NODE_TYPES)
+        targets = [nid for nid in order if str(by_id[nid].get("type")) not in skip]
+    else:
+        if after not in by_id:
+            raise db_apply.ApplyOpsError(
+                f"add_node: неизвестный after {after!r}; ключи — в разделе НОДЫ КАНВАСА"
+            )
+        targets = [after]
+    if not targets:
+        raise db_apply.ApplyOpsError("add_node: некуда вставлять (targets пусты)")
+
+    existing_ids = set(by_id)
+    new_nodes: list[dict] = []
+    k = 0
+    for nid in targets:
+        k += 1
+        new_id = f"n_{node_type}_{k}"
+        while new_id in existing_ids:
+            k += 1
+            new_id = f"n_{node_type}_{k}"
+        existing_ids.add(new_id)
+        pos = (by_id[nid].get("position") or {})
+        new_nodes.append(
+            {
+                "id": new_id,
+                "type": node_type,
+                "position": {
+                    "x": float(pos.get("x", 0.0)) + 145.0,
+                    "y": float(pos.get("y", 0.0)) + 140.0,
+                },
+                "data": {"label": label, "description": "добавлено оркестратором"},
+            }
+        )
+
+    # Перешивка цепочки: для каждого target: target→next становится target→new→next.
+    next_of = {}
+    for e in edges:
+        next_of[str(e.get("source"))] = str(e.get("target"))
+    new_node_for = dict(zip(targets, new_nodes, strict=True))
+    out_edges: list[dict] = []
+    for e in edges:
+        src, tgt = str(e.get("source")), str(e.get("target"))
+        if src in new_node_for:
+            nn = new_node_for[src]
+            out_edges.append(
+                {"id": f"e_{src}_{nn['id']}", "source": src, "target": nn["id"]}
+            )
+            out_edges.append(
+                {"id": f"e_{nn['id']}_{tgt}", "source": nn["id"], "target": tgt}
+            )
+        else:
+            out_edges.append(e)
+    # target без исходящего ребра (хвост цепочки) — просто хвост target→new.
+    for nid, nn in new_node_for.items():
+        if nid not in next_of:
+            out_edges.append({"id": f"e_{nid}_{nn['id']}", "source": nid, "target": nn["id"]})
+
+    all_nodes = nodes + new_nodes
+    meta["canvas_graph"] = {"nodes": all_nodes, "edges": out_edges}
+    project.meta = meta
+
+    run = (
+        await session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == project.id)
+            .order_by(WorkflowRun.id.desc())
+        )
+    ).scalars().first()
+    if run is not None:
+        run.nodes_snapshot = list(all_nodes)
+        run.edges_snapshot = list(out_edges)
+    await session.commit()
+    return {"add_node": f"{node_type} ×{len(new_nodes)} ({'каждой' if after == 'each' else after})"}
 
 
 def _cut(text: object, limit: int = 160) -> str:
@@ -927,6 +1096,17 @@ async def orchestrator_chat(
                     project.topic = text
                     await session.commit()
                     actions_run.append({"set_topic": text[:60]})
+                elif "create_project" in act:
+                    spec = act.get("create_project") or {}
+                    created = await _apply_create_project(session, spec)
+                    actions_run.append(
+                        {"create_project": f"#{created['id']} {created['title']}"}
+                    )
+                    ui_actions.append({"kind": "open_project", "project_id": created["id"]})
+                elif "add_node" in act:
+                    actions_run.append(
+                        await _apply_add_node(session, project, act.get("add_node") or {})
+                    )
                 elif act.get("run_harness"):
                     from app.services.agent_harness import run_harness_verify
 

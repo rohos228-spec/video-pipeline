@@ -71,6 +71,20 @@ export default function HomePage() {
     return () => window.removeEventListener("studio-open-baza", openBaza);
   }, []);
 
+  // Оркестратор создал проект → выделяем его в пайплайне.
+  useEffect(() => {
+    const onSelectProject = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ projectId?: number | null }>).detail;
+      if (detail?.projectId != null) {
+        setSelectedProjectId(detail.projectId);
+        setSelectedNodeKey(null);
+        setStudioOpen(false);
+      }
+    };
+    window.addEventListener("studio-select-project", onSelectProject);
+    return () => window.removeEventListener("studio-select-project", onSelectProject);
+  }, [setSelectedProjectId]);
+
   const onSelectNode = (key: string | null) => {
     setSelectedNodeKey(key);
   };

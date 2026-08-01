@@ -85,11 +85,13 @@ export function OrchestratorPanel({ projectId }: Props) {
         } else if (u.kind === "gpt_chat") {
           window.dispatchEvent(new CustomEvent("studio-open-gpt"));
           notes.push("открыл общий чат");
-        } else if (u.kind === "create") {
+        } else if (u.kind === "open_project" && u.project_id != null) {
           window.dispatchEvent(
-            new CustomEvent("studio-open-outsee", { detail: { projectId } }),
+            new CustomEvent("studio-select-project", {
+              detail: { projectId: u.project_id },
+            }),
           );
-          notes.push("открыл Create");
+          notes.push(`создал и открыл проект #${u.project_id}`);
         } else if (u.kind === "fleet") {
           window.dispatchEvent(new CustomEvent("studio-open-fleet"));
           notes.push("открыл «Сеть»");
