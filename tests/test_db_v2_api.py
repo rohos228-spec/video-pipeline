@@ -542,6 +542,17 @@ async def test_orchestrator_chat_open_ui_all_kinds(api_client, monkeypatch) -> N
     )
     assert "нет ожидающих HITL" in (r_bad.json()["error"] or "")
 
+    # Конфиг-ноды (topic/storage) не имеют студии промтов — вежливый отказ.
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"open_ui":{"kind":"node_studio","node_type":"topic"}}]}'),
+    )
+    r_cfg = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "открой студию темы", "history": []},
+    )
+    assert "нет промтов/студии" in (r_cfg.json()["error"] or "")
+
 
 @pytest.mark.asyncio
 async def test_orchestrator_chat_hitl_decision_and_topic(api_client, monkeypatch) -> None:

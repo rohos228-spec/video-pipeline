@@ -271,6 +271,9 @@ _ORCHESTRATOR_SYSTEM = (
     "8) HITL-РЕШЕНИЕ (когда нода ждёт аппрува) → "
     "{\"actions\":[{\"hitl_decision\":\"approve|regenerate|reject\"}]}.\n"
     "9) ТЕМА проекта → {\"actions\":[{\"set_topic\":\"…\"}]}.\n"
+    "ВАЖНО: ноды topic и storage — конфиг, у них НЕТ промтов и студии. "
+    "Для темы используй set_topic или open_ui topic; не открывай для них "
+    "step_prompts/node_studio/prompt_builder.\n"
     "10) ПРОГНАТЬ проверки (harness) → {\"actions\":[{\"run_harness\":true}]}.\n"
     "11) Вопрос/обсуждение без изменений — обычный текст.\n"
     "Не выдумывай uuid, поля, коды шагов, ключи и значения настроек — "
@@ -599,6 +602,14 @@ async def _resolve_open_ui(
         return {"kind": kind, "step": step, "node_type": STEP_CODE_TO_NODE_TYPE[step]}
     if kind in _UI_NODE_KINDS:
         node_type = str(spec.get("node_type") or "").strip()
+        from app.orchestrator.node_registry import CONFIG_NODE_TYPES
+
+        if node_type in CONFIG_NODE_TYPES:
+            raise db_apply.ApplyOpsError(
+                f"open_ui {kind}: у ноды {node_type!r} нет промтов/студии — "
+                "это настройка. Тема меняется через set_topic "
+                "(или open_ui topic — редактор в инспекторе)."
+            )
         if node_type not in _all_node_types():
             raise db_apply.ApplyOpsError(
                 f"open_ui {kind}: неизвестный тип ноды {node_type!r}"
