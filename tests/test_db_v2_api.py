@@ -1117,6 +1117,29 @@ async def test_orchestrator_chat_diagnostics_in_context(api_client, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_chat_writes_feedback_journal(api_client, monkeypatch) -> None:
+    """Каждый диалог пишется в ops-журнал (контур самообучения) и читается API."""
+    client, project_id, factory = api_client
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt("просто ответ"),
+    )
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "привет оркестратор", "history": []},
+    )
+    assert r.status_code == 200
+    fb = await client.get(f"/api/db/projects/{project_id}/orchestrator/feedback")
+    assert fb.status_code == 200
+    data = fb.json()
+    assert data["count"] >= 1
+    last = data["events"][-1]
+    assert last["type"] == "orchestrator_chat"
+    assert last["message"] == "привет оркестратор"
+    assert last["reply"] == "просто ответ"
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_chat_without_gpt_key_503(api_client, monkeypatch) -> None:
     """Без GPT-ключа — вежливая 503 с причиной, не 500/404."""
     client, project_id, factory = api_client

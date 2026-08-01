@@ -1458,6 +1458,26 @@ async def orchestrator_chat(
             except Exception as e:  # noqa: BLE001
                 await session.rollback()
                 error = f"действие {act}: {e}"
+    # Контур самообучения: каждый диалог — в ops-журнал проекта.
+    try:
+        from app.services.agent_harness import append_ops_event
+
+        append_ops_event(
+            project.data_dir,
+            {
+                "type": "orchestrator_chat",
+                "message": body.message[:500],
+                "reply": (reply or "")[:500],
+                "applied": bool(applied),
+                "actions": [sorted(a.keys()) for a in actions_run],
+                "ui_actions": [u.get("kind") for u in ui_actions],
+                "pending_confirm": bool(pending_confirm),
+                "error": error,
+            },
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
     return {
         "reply": reply,
         "applied": applied,
@@ -1466,6 +1486,29 @@ async def orchestrator_chat(
         "pending_confirm": pending_confirm,
         "error": error,
     }
+
+
+@router.get("/projects/{project_id}/orchestrator/feedback")
+async def orchestrator_feedback(
+    project_id: int,
+    limit: int = 50,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Хвост журнала диалогов оркестратора (для разбора/самообучения)."""
+    import json as _json
+
+    project = await _project(session, project_id)
+    path = project.data_dir / "ops" / "events.jsonl"
+    out: list[dict] = []
+    if path.is_file():
+        for ln in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                evt = _json.loads(ln)
+            except _json.JSONDecodeError:
+                continue
+            if evt.get("type") == "orchestrator_chat":
+                out.append(evt)
+    return {"project_id": project_id, "count": len(out), "events": out[-limit:]}
 
 
 class ConfirmRemoveBody(BaseModel):
