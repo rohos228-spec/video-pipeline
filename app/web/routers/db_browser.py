@@ -230,8 +230,12 @@ async def apply_ops(
 
 _ORCHESTRATOR_SYSTEM = (
     "Ты — оркестратор видеопроекта. Источник правды — база (НЕ Excel).\n"
-    "Тебе дан граф проекта (frames[] с uuid и полями) и состояние шагов "
-    "пайплайна.\n"
+    "Тебе дан граф проекта (frames[] с uuid и полями), состояние шагов "
+    "пайплайна, РЕЗУЛЬТАТЫ ПРОВЕРОК (harness: «ок»/«НЕ ОК» по каждой "
+    "проверке + итог) и СТАТУСЫ НОД последнего прогона (включая hitl-ноды; "
+    "«ждёт аппрува человека» = HITL-гейт ждёт решения пользователя).\n"
+    "На вопросы про проверки/проверку/статусы нод отвечай СТРОГО по этим "
+    "разделам контекста — если прогона проверок не было, скажи это прямо.\n"
     "ПОРЯДОК ШАГОВ — ТОЛЬКО ТАКОЙ (другого не существует, не выдумывай):\n"
     "plan → script → split → hero → items → enrich_1..5 → img_pr → img → "
     "anim_pr → video → audio → music → assemble → publish.\n"
@@ -261,7 +265,9 @@ _ORCHESTRATOR_SYSTEM = (
     "ОБЯЗАТЕЛЬНО добавляй, когда пользователь выбирает, сравнивает или "
     "просит показать варианты промтов: выбор делает человек в открывшемся "
     "окне, а не в чате.\n"
-    "8) Вопрос/обсуждение без изменений — обычный текст.\n"
+    "8) ПРОГНАТЬ проверки (harness) → {\"actions\":[{\"run_harness\":true}]} — "
+    "результат придёт в заметке, контекст следующих ответов обновится.\n"
+    "9) Вопрос/обсуждение без изменений — обычный текст.\n"
     "Не выдумывай uuid, поля, коды шагов, ключи и значения настроек — "
     "неизвестное = отклонено с ошибкой. Одна операция = один кадр."
 )
@@ -315,6 +321,70 @@ def _pipeline_state_lines(project: Project) -> list[str]:
             state = "ждёт"
         step_code = NODE_TYPE_TO_STEP_CODE.get(node_type, node_type)
         lines.append(f"- {step_code} ({_STEP_RU.get(step_code, step_code)}): {state}")
+    return lines
+
+
+async def _checks_context(session: AsyncSession, project: Project) -> list[str]:
+    """Результаты проверок (harness-telemetry) + статусы нод последнего прогона."""
+    from app.models import NodeRun, WorkflowRun
+    from app.services.agent_harness import read_ops_telemetry
+
+    lines: list[str] = []
+    tel = read_ops_telemetry(project.meta if isinstance(project.meta, dict) else {})
+    checks = tel.get("checks") or []
+    if checks:
+        outcome = "ОК" if tel.get("last_outcome") == "verify_pass" else "НЕ ОК"
+        lines.append(
+            f"ПРОВЕРКИ HARNESS (последняя {tel.get('updated_at', '?')}, итог: {outcome}):"
+        )
+        for c in checks:
+            mark = "ок" if c.get("ok") else "НЕ ОК"
+            detail = str(c.get("detail") or "")[:100]
+            suffix = f" — {detail}" if detail and not c.get("ok") else ""
+            lines.append(f"- {c.get('name')}: {mark}{suffix}")
+        if tel.get("next_action") and tel["next_action"] != "none":
+            lines.append(f"  next_action: {tel['next_action']}")
+    else:
+        lines.append(
+            "ПРОВЕРКИ HARNESS: прогонов не было (свежие данные — через harness/verify)."
+        )
+
+    run = (
+        await session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == project.id)
+            .order_by(WorkflowRun.id.desc())
+        )
+    ).scalars().first()
+    if run is None:
+        lines.append("СТАТУСЫ НОД: прогонов workflow ещё не было.")
+        return lines
+    nodes = list(
+        (
+            await session.execute(
+                select(NodeRun).where(NodeRun.workflow_run_id == run.id).order_by(NodeRun.id)
+            )
+        ).scalars()
+    )
+    if nodes:
+        ru = {
+            "pending": "ждёт",
+            "queued": "в очереди",
+            "running": "выполняется",
+            "waiting_hitl": "ждёт аппрува человека",
+            "done": "готово",
+            "failed": "ОШИБКА",
+            "skipped": "пропущена",
+        }
+        lines.append(f"СТАТУСЫ НОД (прогон #{run.id}, статус прогона {run.status.value}):")
+        for n in nodes:
+            st = ru.get(n.status.value, n.status.value)
+            extra = ""
+            if n.status.value == "failed" and n.error:
+                extra = f" — {str(n.error)[:120]}"
+            elif n.progress_text:
+                extra = f" ({n.progress_text})"
+            lines.append(f"- {n.node_type}: {st}{extra}")
     return lines
 
 
@@ -471,6 +541,8 @@ async def orchestrator_chat(
         + "\n\nШАГИ ПАЙПЛАЙНА (реальный порядок и состояние):\n"
         + "\n".join(_pipeline_state_lines(project))
         + "\n\n"
+        + "\n".join(await _checks_context(session, project))
+        + "\n\n"
         + "\n".join(_settings_context(project))
         + "\n\nГРАФ ПРОЕКТА:\n"
         + _orchestrator_context(graph)
@@ -573,6 +645,17 @@ async def orchestrator_chat(
                             "step": step,
                             "node_type": STEP_CODE_TO_NODE_TYPE[step],
                         }
+                    )
+                elif act.get("run_harness"):
+                    from app.services.agent_harness import run_harness_verify
+
+                    rep = await run_harness_verify(
+                        session, project, allow_repair=False, include_http=False
+                    )
+                    await session.commit()
+                    bad = [c.name for c in rep.checks if not c.ok]
+                    actions_run.append(
+                        {"run_harness": "ок" if rep.ok else f"НЕ ОК: {bad}"}
                     )
             except db_apply.ApplyOpsError as e:
                 error = str(e)

@@ -423,6 +423,60 @@ async def test_orchestrator_chat_invalid_setting_rejected(api_client, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_checks_context_includes_node_runs_and_harness(api_client) -> None:
+    """Контекст оркестратора: итоги harness-проверок + статусы нод (hitl тоже)."""
+    from app.models import NodeRun, NodeRunStatus, WorkflowRun, WorkflowRunStatus
+    from app.web.routers.db_browser import _checks_context
+
+    client, project_id, factory = api_client
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        wr = WorkflowRun(
+            workflow_id=1, project_id=project_id, status=WorkflowRunStatus.running
+        )
+        session.add(wr)
+        await session.flush()
+        session.add(
+            NodeRun(workflow_run_id=wr.id, node_key="n1", node_type="plan", status=NodeRunStatus.done)
+        )
+        session.add(
+            NodeRun(
+                workflow_run_id=wr.id,
+                node_key="n2",
+                node_type="img",
+                status=NodeRunStatus.failed,
+                error="boom",
+            )
+        )
+        session.add(
+            NodeRun(
+                workflow_run_id=wr.id,
+                node_key="n3",
+                node_type="hitl_videos",
+                status=NodeRunStatus.waiting_hitl,
+            )
+        )
+        meta = dict(p.meta or {})
+        meta["ops_telemetry"] = {
+            "updated_at": "t",
+            "last_outcome": "verify_fail",
+            "checks": [{"name": "scenes_png", "ok": False, "detail": "n=0"}],
+            "next_action": "repair:img",
+        }
+        p.meta = meta
+        await session.commit()
+        lines = await _checks_context(session, p)
+    text = "\n".join(lines)
+    assert "ПРОВЕРКИ HARNESS" in text
+    assert "scenes_png: НЕ ОК" in text
+    assert "next_action: repair:img" in text
+    assert "СТАТУСЫ НОД" in text
+    assert "plan: готово" in text
+    assert "img: ОШИБКА — boom" in text
+    assert "hitl_videos: ждёт аппрува человека" in text
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_chat_open_ui_action(api_client, monkeypatch) -> None:
     """open_ui step_prompts → ui_actions с node_type для фронта; мусор отклонён."""
     client, project_id, factory = api_client
@@ -450,6 +504,28 @@ async def test_orchestrator_chat_open_ui_action(api_client, monkeypatch) -> None
         json={"message": "x", "history": []},
     )
     assert "неизвестный kind" in (r_bad.json()["error"] or "")
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_chat_run_harness_action(api_client, monkeypatch) -> None:
+    """run_harness → свежий прогон проверок, итог в actions_run."""
+    client, project_id, factory = api_client
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"run_harness":true}]}'),
+    )
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "прогони проверки", "history": []},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["error"] is None
+    assert data["actions_run"] and "run_harness" in data["actions_run"][0]
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        tel = (p.meta or {}).get("ops_telemetry") or {}
+        assert tel.get("checks")  # телеметрия обновлена — контекст увидит итоги
 
 
 @pytest.mark.asyncio

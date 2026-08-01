@@ -39,6 +39,7 @@ export function OrchestratorPanel({ projectId }: Props) {
         else if (a.set_option) notes.push(`настройка: ${a.set_option}`);
         else if (a.set_prompt) notes.push(`промт: ${a.set_prompt}`);
         else if (a.set_text_llm) notes.push(`LLM: ${a.set_text_llm}`);
+        else if (a.run_harness) notes.push(`проверки: ${a.run_harness}`);
       }
       for (const u of r.ui_actions ?? []) {
         if (u.kind === "step_prompts" && u.node_type) {

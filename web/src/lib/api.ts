@@ -380,6 +380,7 @@ export const api = {
         set_option?: string;
         set_prompt?: string;
         set_text_llm?: string;
+        run_harness?: string;
       }[];
       ui_actions: { kind: string; step?: string; node_type?: string }[];
       error: string | null;
