@@ -510,6 +510,78 @@ async def test_orchestrator_chat_open_ui_action(api_client, monkeypatch) -> None
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_chat_open_ui_all_kinds(api_client, monkeypatch) -> None:
+    """open_ui: node_studio/topic/baza — валидны; hitl без pending — ошибка."""
+    client, project_id, factory = api_client
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt(
+            '{"actions":['
+            '{"open_ui":{"kind":"node_studio","node_type":"animation_prompts"}},'
+            '{"open_ui":{"kind":"topic"}},'
+            '{"open_ui":{"kind":"baza"}}'
+            "]}"
+        ),
+    )
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "открой окна", "history": []},
+    )
+    assert r.status_code == 200, r.text
+    kinds = [u["kind"] for u in r.json()["ui_actions"]]
+    assert kinds == ["node_studio", "topic", "baza"]
+    assert r.json()["ui_actions"][0]["node_type"] == "animation_prompts"
+
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"open_ui":{"kind":"hitl","node_type":"hitl_videos"}}]}'),
+    )
+    r_bad = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "открой hitl", "history": []},
+    )
+    assert "нет ожидающих HITL" in (r_bad.json()["error"] or "")
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_chat_hitl_decision_and_topic(api_client, monkeypatch) -> None:
+    """hitl_decision approve решает pending-запрос; set_topic меняет тему."""
+    from app.models import HITLDecision, HITLKind, HITLRequest
+
+    client, project_id, factory = api_client
+    async with factory() as session:
+        session.add(
+            HITLRequest(project_id=project_id, kind=HITLKind.approve_images, payload={})
+        )
+        await session.commit()
+
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt(
+            '{"actions":[{"hitl_decision":"approve"},{"set_topic":"Новая тема"}]}'
+        ),
+    )
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "аппрувь и поменяй тему", "history": []},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["error"] is None
+    kinds = [next(iter(a)) for a in data["actions_run"]]
+    assert kinds == ["hitl_decision", "set_topic"]
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        assert p.topic == "Новая тема"
+        req = (
+            await session.execute(
+                select(HITLRequest).where(HITLRequest.project_id == project_id)
+            )
+        ).scalar_one()
+        assert req.decision is HITLDecision.approved
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_chat_run_harness_action(api_client, monkeypatch) -> None:
     """run_harness → свежий прогон проверок, итог в actions_run."""
     client, project_id, factory = api_client

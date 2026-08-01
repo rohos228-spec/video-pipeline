@@ -180,6 +180,16 @@ export function StudioWorkspace({
     return () => window.removeEventListener("canvas-open-hitl-modal", onOpen);
   }, []);
 
+  // Программный выбор ноды (например, из панели оркестратора: тема/настройки).
+  useEffect(() => {
+    const onSel = (ev: Event) => {
+      const d = (ev as CustomEvent<{ nodeKey?: string | null }>).detail ?? {};
+      onSelectNode(d.nodeKey ?? null);
+    };
+    window.addEventListener("canvas-select-node", onSel);
+    return () => window.removeEventListener("canvas-select-node", onSel);
+  }, [onSelectNode]);
+
   useEffect(() => {
     const onOpen = (ev: Event) => {
       const d = (ev as CustomEvent<{ nodeKey: string; nodeType: string; stepCode?: string }>).detail;

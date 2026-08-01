@@ -382,7 +382,7 @@ export const api = {
         set_text_llm?: string;
         run_harness?: string;
       }[];
-      ui_actions: { kind: string; step?: string; node_type?: string }[];
+      ui_actions: { kind: string; step?: string; node_type?: string; hitl_id?: number }[];
       error: string | null;
     }>(
       `/api/db/projects/${projectId}/orchestrator/chat`,

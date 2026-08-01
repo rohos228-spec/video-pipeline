@@ -49,6 +49,49 @@ export function OrchestratorPanel({ projectId }: Props) {
             }),
           );
           notes.push(`открыл окно промтов шага «${u.step}» — выбирай вариант там`);
+        } else if (u.kind === "node_studio" && u.node_type) {
+          window.dispatchEvent(
+            new CustomEvent("studio-open-node-prompts", {
+              detail: { nodeKey: `n_${u.node_type}` },
+            }),
+          );
+          notes.push(`открыл студию ноды «${u.node_type}»`);
+        } else if (u.kind === "prompt_builder" && u.node_type) {
+          window.dispatchEvent(
+            new CustomEvent("studio-open-prompt-builder", {
+              detail: { nodeKey: `n_${u.node_type}`, nodeType: u.node_type },
+            }),
+          );
+          notes.push(`открыл конструктор промтов «${u.node_type}»`);
+        } else if (u.kind === "hitl" && u.hitl_id != null) {
+          window.dispatchEvent(
+            new CustomEvent("canvas-open-hitl-modal", { detail: { hitlId: u.hitl_id } }),
+          );
+          notes.push("открыл окно аппрува");
+        } else if (u.kind === "topic") {
+          window.dispatchEvent(
+            new CustomEvent("canvas-select-node", { detail: { nodeKey: "n_topic" } }),
+          );
+          notes.push("тема проекта — в инспекторе справа");
+        } else if (u.kind === "settings") {
+          window.dispatchEvent(
+            new CustomEvent("canvas-select-node", { detail: { nodeKey: null } }),
+          );
+          notes.push("настройки проекта — в инспекторе справа");
+        } else if (u.kind === "baza") {
+          window.dispatchEvent(new CustomEvent("studio-open-baza"));
+          notes.push("открыл «Базу»");
+        } else if (u.kind === "gpt_chat") {
+          window.dispatchEvent(new CustomEvent("studio-open-gpt"));
+          notes.push("открыл общий чат");
+        } else if (u.kind === "create") {
+          window.dispatchEvent(
+            new CustomEvent("studio-open-outsee", { detail: { projectId } }),
+          );
+          notes.push("открыл Create");
+        } else if (u.kind === "fleet") {
+          window.dispatchEvent(new CustomEvent("studio-open-fleet"));
+          notes.push("открыл «Сеть»");
         }
       }
       if (r.error) notes.push(`ошибка: ${r.error}`);

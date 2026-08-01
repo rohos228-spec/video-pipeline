@@ -264,14 +264,15 @@ _ORCHESTRATOR_SYSTEM = (
     "варианты в разделе ПРОМТЫ контекста.\n"
     "6) ТЕКСТОВАЯ LLM → "
     "{\"actions\":[{\"set_text_llm\":{\"provider\":\"kie|tokenrouter\"}}]}.\n"
-    "7) ОТКРЫТЬ окно выбора промтов шага → "
-    "{\"actions\":[{\"open_ui\":{\"kind\":\"step_prompts\",\"step\":\"<код>\"}}]} — "
-    "ОБЯЗАТЕЛЬНО добавляй, когда пользователь выбирает, сравнивает или "
-    "просит показать варианты промтов: выбор делает человек в открывшемся "
-    "окне, а не в чате.\n"
-    "8) ПРОГНАТЬ проверки (harness) → {\"actions\":[{\"run_harness\":true}]} — "
-    "результат придёт в заметке, контекст следующих ответов обновится.\n"
-    "9) Вопрос/обсуждение без изменений — обычный текст.\n"
+    "7) ОТКРЫТЬ окна программы → {\"actions\":[{\"open_ui\":{...}}]} — kinds: "
+    "step_prompts (плюс step; ОБЯЗАТЕЛЬНО при выборе/сравнении вариантов "
+    "промтов — человек выбирает в окне), node_studio/prompt_builder/hitl "
+    "(плюс node_type), topic (тема), baza, gpt_chat, create, fleet, settings.\n"
+    "8) HITL-РЕШЕНИЕ (когда нода ждёт аппрува) → "
+    "{\"actions\":[{\"hitl_decision\":\"approve|regenerate|reject\"}]}.\n"
+    "9) ТЕМА проекта → {\"actions\":[{\"set_topic\":\"…\"}]}.\n"
+    "10) ПРОГНАТЬ проверки (harness) → {\"actions\":[{\"run_harness\":true}]}.\n"
+    "11) Вопрос/обсуждение без изменений — обычный текст.\n"
     "Не выдумывай uuid, поля, коды шагов, ключи и значения настроек — "
     "неизвестное = отклонено с ошибкой. Одна операция = один кадр."
 )
@@ -556,6 +557,113 @@ def _apply_set_prompt(project: Project, step: object, variant: object) -> str:
     return f"{s}→{v}"
 
 
+_UI_NODE_KINDS = ("node_studio", "prompt_builder", "hitl")
+_UI_SIMPLE_KINDS = ("topic", "baza", "gpt_chat", "create", "fleet", "settings")
+
+
+def _all_node_types() -> set[str]:
+    from app.orchestrator.node_registry import (
+        CONFIG_NODE_TYPES,
+        HITL_NODE_TYPES,
+        WORK_NODES,
+    )
+
+    return set(WORK_NODES) | set(HITL_NODE_TYPES) | set(CONFIG_NODE_TYPES) | {"excel_gpt"}
+
+
+async def _pending_hitl_id(session: AsyncSession, project: Project) -> int | None:
+    from app.models import HITLDecision, HITLRequest
+
+    row = (
+        await session.execute(
+            select(HITLRequest)
+            .where(
+                HITLRequest.project_id == project.id,
+                HITLRequest.decision == HITLDecision.pending,
+            )
+            .order_by(HITLRequest.id.desc())
+        )
+    ).scalars().first()
+    return row.id if row else None
+
+
+async def _resolve_open_ui(
+    session: AsyncSession, project: Project, spec: dict
+) -> dict:
+    """open_ui → ui_action для фронта (валидация fail-closed)."""
+    kind = str((spec or {}).get("kind") or "").strip()
+    if kind == "step_prompts":
+        step = str(spec.get("step") or "").strip()
+        if step not in STEP_CODE_TO_NODE_TYPE:
+            raise db_apply.ApplyOpsError(f"open_ui step_prompts: неизвестный шаг {step!r}")
+        return {"kind": kind, "step": step, "node_type": STEP_CODE_TO_NODE_TYPE[step]}
+    if kind in _UI_NODE_KINDS:
+        node_type = str(spec.get("node_type") or "").strip()
+        if node_type not in _all_node_types():
+            raise db_apply.ApplyOpsError(
+                f"open_ui {kind}: неизвестный тип ноды {node_type!r}"
+            )
+        item: dict = {"kind": kind, "node_type": node_type}
+        if kind == "hitl":
+            hitl_id = await _pending_hitl_id(session, project)
+            if hitl_id is None:
+                raise db_apply.ApplyOpsError("open_ui hitl: нет ожидающих HITL-запросов")
+            item["hitl_id"] = hitl_id
+        return item
+    if kind in _UI_SIMPLE_KINDS:
+        return {"kind": kind}
+    raise db_apply.ApplyOpsError(
+        f"open_ui: неизвестный kind {kind!r}; есть: step_prompts, "
+        f"node_studio, prompt_builder, hitl, {', '.join(_UI_SIMPLE_KINDS)}"
+    )
+
+
+async def _apply_hitl_decision(
+    session: AsyncSession, project: Project, decision: object
+) -> dict:
+    """HITL-решение из чата — та же логика, что кнопки Studio/TG."""
+    from datetime import datetime
+
+    from app.models import HITLDecision, HITLRequest
+    from app.services.event_bus import publish_hitl_event
+    from app.services.hitl_apply import apply_hitl_side_effects
+
+    mapping = {
+        "approve": HITLDecision.approved,
+        "regenerate": HITLDecision.regenerate,
+        "reject": HITLDecision.rejected,
+        "edit_prompt": HITLDecision.edit_prompt,
+    }
+    new_decision = mapping.get(str(decision or "").strip())
+    if new_decision is None:
+        raise db_apply.ApplyOpsError(
+            f"hitl_decision: неизвестно {decision!r}; есть: {sorted(mapping)}"
+        )
+    req = (
+        await session.execute(
+            select(HITLRequest)
+            .where(
+                HITLRequest.project_id == project.id,
+                HITLRequest.decision == HITLDecision.pending,
+            )
+            .order_by(HITLRequest.id.desc())
+        )
+    ).scalars().first()
+    if req is None:
+        raise db_apply.ApplyOpsError("hitl_decision: нет ожидающих HITL-запросов")
+    req.decision = new_decision
+    req.decided_at = datetime.utcnow()
+    await apply_hitl_side_effects(session, req, new_decision)
+    await session.commit()
+    await publish_hitl_event(
+        project.id,
+        req.id,
+        event_type="hitl_decided",
+        payload={"decision": new_decision.value, "kind": req.kind.value},
+    )
+    return {"hitl_decision": f"{new_decision.value} → {req.kind.value}"}
+
+
 def _cut(text: object, limit: int = 160) -> str:
     s = " ".join(str(text or "").split())
     return s if len(s) <= limit else s[: limit - 1] + "…"
@@ -702,24 +810,16 @@ async def orchestrator_chat(
                         {"set_text_llm": f"{payload['provider']} ({payload['model_id']})"}
                     )
                 elif "open_ui" in act:
-                    spec = act.get("open_ui") or {}
-                    kind = str(spec.get("kind") or "").strip()
-                    if kind != "step_prompts":
-                        raise db_apply.ApplyOpsError(
-                            f"open_ui: неизвестный kind {kind!r} (есть: step_prompts)"
-                        )
-                    step = str(spec.get("step") or "").strip()
-                    if step not in STEP_CODE_TO_NODE_TYPE:
-                        raise db_apply.ApplyOpsError(
-                            f"open_ui step_prompts: неизвестный шаг {step!r}"
-                        )
-                    ui_actions.append(
-                        {
-                            "kind": "step_prompts",
-                            "step": step,
-                            "node_type": STEP_CODE_TO_NODE_TYPE[step],
-                        }
-                    )
+                    ui_actions.append(await _resolve_open_ui(session, project, act.get("open_ui") or {}))
+                elif "hitl_decision" in act:
+                    actions_run.append(await _apply_hitl_decision(session, project, act.get("hitl_decision")))
+                elif "set_topic" in act:
+                    text = str(act.get("set_topic") or "").strip()
+                    if not text:
+                        raise db_apply.ApplyOpsError("set_topic: пустая тема")
+                    project.topic = text
+                    await session.commit()
+                    actions_run.append({"set_topic": text[:60]})
                 elif act.get("run_harness"):
                     from app.services.agent_harness import run_harness_verify
 
