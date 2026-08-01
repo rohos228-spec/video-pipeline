@@ -735,6 +735,23 @@ async def test_orchestrator_chat_add_node_each_and_single(api_client, monkeypatc
         assert len(g["nodes"]) == 7
         assert len(_linear_order(g["nodes"], g["edges"])) == 7
 
+    # Идемпотентность: повторное «each» не плодит дубли.
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"add_node":{"node_type":"hitl_gate","after":"each"}}]}'),
+    )
+    r3 = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "к каждой ноде добавь проверку ещё раз", "history": []},
+    )
+    assert r3.status_code == 200
+    assert r3.json()["error"] is None
+    assert "дублей нет" in r3.json()["actions_run"][0]["add_node"]
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        g = (p.meta or {}).get("canvas_graph") or {}
+        assert len(g["nodes"]) == 7  # не выросло
+
 
 @pytest.mark.asyncio
 async def test_orchestrator_chat_run_harness_action(api_client, monkeypatch) -> None:

@@ -285,8 +285,10 @@ _ORCHESTRATOR_SYSTEM = (
     "в пайплайне).\n"
     "11) ДОБАВИТЬ ноду в граф → "
     "{\"actions\":[{\"add_node\":{\"node_type\":\"hitl_gate\",\"after\":\"each\"}}]} — "
-    "after=\"each\" (после каждой рабочей ноды) или after=\"<node_key>\"; "
-    "hitl_gate = нода проверки-аппрува.\n"
+    "after=\"each\" (после каждой рабочей ноды, без дублей) или "
+    "after=\"<node_key>\". «Нода проверки»: hitl_gate = аппрув человеком, "
+    "excel_gpt = автопроверка GPT — уточни у пользователя, если неясно. "
+    "В ответе называй, что именно добавил и после каких нод (см. СВЯЗИ).\n"
     "12) ПРОГНАТЬ проверки (harness) → {\"actions\":[{\"run_harness\":true}]}.\n"
     "13) Вопрос/обсуждение без изменений — обычный текст.\n"
     "Не выдумывай uuid, поля, коды шагов, ключи и значения настроек — "
@@ -506,9 +508,11 @@ async def _canvas_nodes_context(
         )
     ).scalars().first()
     nodes: list[dict] = []
+    edges_src: list[dict] = []
     status_by_key: dict[str, str] = {}
     if run is not None:
         nodes = list(run.nodes_snapshot or [])
+        edges_src = list(run.edges_snapshot or [])
         for nr in (
             await session.execute(
                 select(NodeRun).where(NodeRun.workflow_run_id == run.id)
@@ -522,6 +526,7 @@ async def _canvas_nodes_context(
             )
         ).scalars().first()
         nodes = list((wf.nodes if wf else []) or [])
+        edges_src = list((wf.edges if wf else []) or [])
 
     lines: list[str] = []
     keymap: dict[str, dict] = {}
@@ -537,6 +542,16 @@ async def _canvas_nodes_context(
         lines.append(f"- {key} → «{label}» (тип {typ}){suffix}")
     if not lines:
         return [], keymap
+    # Связи графа — чтобы оркестратор видел, что откуда следует.
+    chain = ""
+    try:
+        order = _linear_order(nodes, edges_src)
+        chain = " → ".join(order)
+    except Exception:  # noqa: BLE001
+        pairs = [f"{e.get('source')}→{e.get('target')}" for e in edges_src]
+        chain = ", ".join(pairs)
+    if chain:
+        lines.append(f"СВЯЗИ: {chain}")
     return ["НОДЫ КАНВАСА (ключ → «название» (тип) — статус):", *lines], keymap
 
 
@@ -860,7 +875,17 @@ async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -
 
     if after == "each":
         skip = set(CONFIG_NODE_TYPES) | set(HITL_NODE_TYPES)
-        targets = [nid for nid in order if str(by_id[nid].get("type")) not in skip]
+        next_of_pre = {str(e.get("source")): str(e.get("target")) for e in edges}
+
+        def _already_has(nid: str) -> bool:
+            nxt = next_of_pre.get(nid)
+            return bool(nxt and str(by_id[nxt].get("type")) == node_type)
+
+        targets = [
+            nid
+            for nid in order
+            if str(by_id[nid].get("type")) not in skip and not _already_has(nid)
+        ]
     else:
         if after not in by_id:
             raise db_apply.ApplyOpsError(
@@ -868,6 +893,8 @@ async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -
             )
         targets = [after]
     if not targets:
+        if after == "each":
+            return {"add_node": f"{node_type}: уже есть после каждой ноды — дублей нет"}
         raise db_apply.ApplyOpsError("add_node: некуда вставлять (targets пусты)")
 
     existing_ids = set(by_id)
