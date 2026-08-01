@@ -374,10 +374,15 @@ export const api = {
       reply: string;
       applied: { updated: number; exported: { frames: number; cells: number } | null } | null;
       error: string | null;
-    }>(`/api/db/projects/${projectId}/orchestrator/chat`, {
-      method: "POST",
-      body: JSON.stringify({ message, history }),
-    }),
+    }>(
+      `/api/db/projects/${projectId}/orchestrator/chat`,
+      {
+        method: "POST",
+        body: JSON.stringify({ message, history }),
+      },
+      // GPT-вызов длинный (контекст графа + ответ): 10 минут, как ask_fresh.
+      600_000,
+    ),
 
   // ── Workflows ────────────────────────────────────────────────────
   listWorkflows: () => http<WorkflowSummary[]>(`/api/workflows`),
