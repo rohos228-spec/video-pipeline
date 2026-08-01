@@ -32,6 +32,9 @@ class OperatorApiResult:
     output_paths: list[Path]
     gate_status: str | None = None
     analysis: CheckAnalysis | None = None
+    # Ответ — JSON apply-ops (DB SoT): TSV-writeback в xlsx пропущен,
+    # применяет вызывающий (enrich_xlsx) через db_apply.
+    apply_ops: dict | None = None
 
 
 def _needs_check_writeback_retry(reply_text: str) -> bool:
@@ -248,6 +251,20 @@ async def _run_operator_api_real(
     )
     reply_text = result.text
 
+    # DB SoT: project_file с ответом apply-ops JSON — дальше TSV-логика не нужна.
+    apply_ops: dict | None = None
+    if effective_output == "project_file" and not is_check:
+        from app.services.db_apply import extract_apply_ops_json
+
+        apply_ops = extract_apply_ops_json(reply_text or "")
+        if apply_ops is not None:
+            logger.info(
+                "gpt_operator/api: project_file node={} — apply-ops JSON ({} оп), "
+                "запись через DB",
+                node_key,
+                len(apply_ops.get("ops") or []),
+            )
+
     # check+fix: если модель отказалась из‑за «нет project.xlsx» / нет
     # XLSX_WRITEBACK — один retry с жёстким API-контрактом (см. D5).
     if check_mode and check_fix and _needs_check_writeback_retry(result.text):
@@ -272,7 +289,7 @@ async def _run_operator_api_real(
         reply_text = result.text
 
     # project_file: если TSV — кусок книги (типичные «заполнили на 20%») — дозапрос.
-    if effective_output == "project_file" and not is_check:
+    if effective_output == "project_file" and not is_check and apply_ops is None:
         from app.services.xlsx_text_writeback import maybe_continue_partial_xlsx_reply
 
         template = project_dir / "project.xlsx"
@@ -341,7 +358,7 @@ async def _run_operator_api_real(
             analysis, mode=mode, source_prompts=source_keys
         )
 
-    if effective_output == "project_file":
+    if effective_output == "project_file" and apply_ops is None:
         project_xlsx = project_dir / "project.xlsx"
         updated = writeback_project_xlsx(
             project_xlsx=project_xlsx,
@@ -417,6 +434,7 @@ async def _run_operator_api_real(
         output_paths=output_paths,
         gate_status=gate_status,
         analysis=analysis,
+        apply_ops=apply_ops,
     )
 
 

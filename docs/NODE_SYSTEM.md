@@ -290,7 +290,10 @@
    через apply-ops (target=project), split — закадр/длительность по uuid,
    img_pr — промт_картинки + версии; у всех harness-гейт после шага через
    общий `agent_harness.harness_gate_or_raise` (anim_pr переведён на него же).
-3. excel_gpt — оператор-режим: `extract_apply_ops_json` → `apply_ops`,
-   форматный retry по ошибке валидации.
+3. ~~excel_gpt — оператор-режим~~ — **сделано** (2026-08-01): ответ модели
+   с `{"ops":[...]}` детектируется в `gpt_operator_client` (TSV-writeback
+   пропускается), применяется в `enrich_xlsx` через `db_apply.apply_ops`
+   (export сам); в контекст ноды подмешивается uuid-мап кадров + контракт.
+   Legacy TSV — fallback, работает как раньше.
 4. retry_policy/error_handler — декларативно в `node_registry` (как у донора).
 5. HITL-ноды как interrupt в графе (явные паузы/resume).

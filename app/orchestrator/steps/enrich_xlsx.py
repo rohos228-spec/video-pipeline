@@ -25,7 +25,7 @@ from aiogram import Bot
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Project, ProjectStatus
+from app.models import Frame, Project, ProjectStatus
 from app.services import chatgpt_xlsx as cx
 from app.services import gpt_text_builder as gtb
 from app.services import xlsx_gpt_flow as xgf
@@ -41,6 +41,17 @@ from app.services.excel_gpt_node import (
 from app.services.prompt_library import read_resolved_project_prompt
 from app.services.xlsx_versioning import validate_xlsx
 from app.storage import for_project as _sheet_for_project
+
+_APPLY_OPS_HINT = (
+    "# ЗАПИСЬ В ПРОЕКТ (предпочтительный формат)\n"
+    "Верни ТОЛЬКО JSON apply-ops (без TSV, без `# Лист:`, без `@row=`):\n"
+    '{"ops":[{"frame_uuid":"<uuid кадра>","fields":{...}}]}\n'
+    "Поля по-человечески: закадр, промт_картинки, промт_видео, смысл, "
+    "длительность, промт_картинки_2, промт_видео_2; общий план: "
+    '{"target":"project","fields":{"общий_план":"…"}}.\n'
+    "Неизвестный uuid/поле — весь запрос отклонён. "
+    "Адресация кадров (номер = uuid):\n"
+)
 
 # Маппинг slot_idx (1..5) → (running_status, ready_status, step_code).
 _SLOT_MAP: dict[int, tuple[ProjectStatus, ProjectStatus, str]] = {
@@ -511,6 +522,26 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             [p.name for p in data_paths],
         )
         raise_if_cancelled(project.id)
+        # DB SoT: для project_file просим apply-ops JSON вместо TSV (+ uuid-мап).
+        if output_mode == "project_file" and not check_mode:
+            from sqlalchemy import select as _select
+
+            from app.services import db_v2
+
+            await db_v2.backfill_project_v2(session, project)
+            frames_for_map = (
+                await session.execute(
+                    _select(Frame)
+                    .where(Frame.project_id == project.id)
+                    .order_by(Frame.number)
+                )
+            ).scalars().all()
+            uuid_frames = [f for f in frames_for_map if f.uuid]
+            if uuid_frames:
+                mapping = "\n".join(f"кадр {f.number} = {f.uuid}" for f in uuid_frames)
+                accompanying = (
+                    f"{accompanying}\n\n{_APPLY_OPS_HINT}{mapping}"
+                ).strip()
         # Отпустить SQLite write-txn на время GPT (иначе UI: database is locked / 30с).
         await session.commit()
         api_res = await run_operator_api(
@@ -526,24 +557,47 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             source_prompt_keys=source_prompt_keys,
         )
         await session.refresh(project)
-        # После project_file writeback — подтянуть xlsx → DB.
+        # После project_file: apply-ops JSON → DB (SoT); иначе legacy xlsx→DB sync.
         if output_mode == "project_file":
-            wrote = any(
-                p.name == "project.xlsx" and p.exists() for p in api_res.output_paths
-            )
-            if wrote:
-                try:
-                    from app.services.chatgpt_xlsx import sync_project_xlsx
+            ops_data = getattr(api_res, "apply_ops", None)
+            if ops_data and ops_data.get("ops"):
+                from app.services import db_apply
 
-                    await sync_project_xlsx(
-                        session, project, project.data_dir / "project.xlsx",
-                        keep_fields=False,
+                try:
+                    applied = await db_apply.apply_ops(
+                        session,
+                        project,
+                        ops_data["ops"],
+                        export_xlsx=bool(ops_data.get("export_xlsx", True)),
                     )
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "[#{}] enrich_xlsx API: sync_project_xlsx after writeback failed",
+                    await session.commit()
+                    logger.info(
+                        "[#{}] enrich_xlsx node={}: apply-ops записано {} оп (DB→xlsx)",
                         project.id,
+                        node_key,
+                        applied.get("updated"),
                     )
+                except db_apply.ApplyOpsError as e:
+                    raise RuntimeError(
+                        f"enrich_xlsx node={node_key}: apply-ops отклонён: {e}"
+                    ) from None
+            else:
+                wrote = any(
+                    p.name == "project.xlsx" and p.exists() for p in api_res.output_paths
+                )
+                if wrote:
+                    try:
+                        from app.services.chatgpt_xlsx import sync_project_xlsx
+
+                        await sync_project_xlsx(
+                            session, project, project.data_dir / "project.xlsx",
+                            keep_fields=False,
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "[#{}] enrich_xlsx API: sync_project_xlsx after writeback failed",
+                            project.id,
+                        )
         save_operator_result(
             project,
             node_key,
