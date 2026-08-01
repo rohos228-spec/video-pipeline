@@ -299,7 +299,8 @@ _ORCHESTRATOR_SYSTEM = (
     "Новые проверки подписываются по родителю автоматически («Проверка — Сценарий»).\n"
     "13) ПОЧИНИТЬ граф (после удалений/разрывов) → "
     "{\"actions\":[{\"repair_graph\":true}]} — цепочка пересобирается слева "
-    "направо по канвасу.\n"
+    "направо (проверки встают за своими родителями). ПОРЯДОК ВАЖЕН: если "
+    "граф сломан — repair_graph идёт в actions ПЕРВЫМ, до add_node.\n"
     "14) ПРОГНАТЬ проверки (harness) → {\"actions\":[{\"run_harness\":true}]}.\n"
     "15) Вопрос/обсуждение без изменений — обычный текст.\n"
     "ТИПЫ НОД по-человечески (объясняй так, если спрашивают «что это»): "
@@ -837,7 +838,10 @@ def _linear_order(nodes: list[dict], edges: list[dict]) -> list[str]:
             in_deg[tgt] = in_deg.get(tgt, 0) + 1
     heads = [nid for nid, d in in_deg.items() if d == 0]
     if len(heads) != 1:
-        raise db_apply.ApplyOpsError("граф нелинейный — добавляй по одной ноде (after=<node_key>)")
+        raise db_apply.ApplyOpsError(
+            "граф нелинейный — сначала {\"repair_graph\":true} (пересоберёт цепочку), "
+            "потом повтори add_node"
+        )
     order: list[str] = []
     cur = heads[0]
     seen: set[str] = set()
@@ -1165,13 +1169,41 @@ async def _apply_repair_graph(session: AsyncSession, project: Project) -> dict:
     nodes = [dict(n) for n in graph["nodes"]]
     if len(nodes) < 2:
         raise db_apply.ApplyOpsError("repair_graph: нод меньше двух — нечего чинить")
-    ordered = sorted(
-        nodes,
-        key=lambda n: (
-            float((n.get("position") or {}).get("x", 0.0)),
-            float((n.get("position") or {}).get("y", 0.0)),
-        ),
-    )
+
+    def _pos(n: dict) -> tuple[float, float]:
+        pos = n.get("position") or {}
+        return float(pos.get("x", 0.0)), float(pos.get("y", 0.0))
+
+    # Основной ряд = y с наибольшим числом нод; проверки (ряды ниже)
+    # вставляются сразу после своей родительской ноды — по подписи
+    # «… — <родитель>» (так их пишет add_node) или по ближайшему x.
+    from collections import Counter
+
+    y_counts = Counter(_pos(n)[1] for n in nodes)
+    main_y = y_counts.most_common(1)[0][0]
+    main_row = sorted((n for n in nodes if _pos(n)[1] == main_y), key=_pos)
+    check_rows = [n for n in nodes if _pos(n)[1] != main_y]
+
+    def _label(n: dict) -> str:
+        return str((n.get("data") or {}).get("label") or "")
+
+    checks_by_parent: dict[str, list[dict]] = {}
+    unmatched: list[dict] = []
+    main_labels = {_label(n).strip().casefold() for n in main_row}
+    for c in check_rows:
+        lab = _label(c)
+        parent = lab.split("—")[-1].strip().casefold() if "—" in lab else ""
+        if parent and parent in main_labels:
+            checks_by_parent.setdefault(parent, []).append(c)
+        else:
+            unmatched.append(c)
+
+    ordered: list[dict] = []
+    for n in main_row:
+        ordered.append(n)
+        ordered.extend(checks_by_parent.get(_label(n).strip().casefold(), []))
+    ordered.extend(sorted(unmatched, key=_pos))
+
     new_edges = [
         {"id": f"e_{a['id']}_{b['id']}", "source": a["id"], "target": b["id"]}
         for a, b in zip(ordered, ordered[1:], strict=False)

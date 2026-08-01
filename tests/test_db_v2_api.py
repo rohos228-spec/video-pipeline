@@ -1058,6 +1058,83 @@ async def test_remove_node_only_duplicates(api_client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_repair_graph_places_checks_after_parents(api_client) -> None:
+    """Ряд проверок под пайплайном: после repair каждая за своим родителем."""
+    from app.web.routers.db_browser import _apply_repair_graph, _linear_order
+
+    client, project_id, factory = api_client
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        meta = dict(p.meta or {})
+        meta["canvas_graph"] = {
+            "nodes": [
+                {"id": "n_plan", "type": "plan", "position": {"x": 0.0, "y": 0.0}, "data": {"label": "Сценарий"}},
+                {"id": "n_script", "type": "script", "position": {"x": 290.0, "y": 0.0}, "data": {"label": "Закадровый текст"}},
+                {"id": "n_img", "type": "images", "position": {"x": 580.0, "y": 0.0}, "data": {"label": "Картинки"}},
+                {"id": "n_excel_gpt_1", "type": "excel_gpt", "position": {"x": 0.0, "y": 160.0}, "data": {"label": "Работа с GPT — Сценарий"}},
+                {"id": "n_excel_gpt_2", "type": "excel_gpt", "position": {"x": 200.0, "y": 160.0}, "data": {"label": "Работа с GPT — Картинки"}},
+            ],
+            "edges": [],
+        }
+        p.meta = meta
+        await session.commit()
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        await _apply_repair_graph(session, p)
+        await session.commit()
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        g = (p.meta or {})["canvas_graph"]
+        assert _linear_order(g["nodes"], g["edges"]) == [
+            "n_plan",
+            "n_excel_gpt_1",
+            "n_script",
+            "n_img",
+            "n_excel_gpt_2",
+        ]
+
+
+@pytest.mark.asyncio
+async def test_repair_then_add_each_works(api_client, monkeypatch) -> None:
+    """Сломанный граф: repair_graph ПЕРВЫМ действием, затем add_node each — ок."""
+    from app.web.routers.db_browser import _linear_order
+
+    client, project_id, factory = api_client
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        meta = dict(p.meta or {})
+        meta["canvas_graph"] = {
+            "nodes": [
+                {"id": "n_plan", "type": "plan", "position": {"x": 0.0, "y": 0.0}, "data": {"label": "Сценарий"}},
+                {"id": "n_script", "type": "script", "position": {"x": 290.0, "y": 0.0}, "data": {"label": "Закадровый текст"}},
+            ],
+            "edges": [],  # разрыв
+        }
+        p.meta = meta
+        await session.commit()
+
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt(
+            '{"actions":[{"repair_graph":true},{"add_node":{"node_type":"excel_gpt","after":"each"}}]}'
+        ),
+    )
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "почини и добавь проверки", "history": []},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["error"] is None
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        g = (p.meta or {})["canvas_graph"]
+        order = _linear_order(g["nodes"], g["edges"])
+        assert len(order) == 4
+        types = [n["type"] for n in g["nodes"]]
+        assert types.count("excel_gpt") == 2
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_chat_run_harness_action(api_client, monkeypatch) -> None:
     """run_harness → свежий прогон проверок, итог в actions_run."""
     client, project_id, factory = api_client
