@@ -227,6 +227,103 @@ async def apply_ops(
     return result
 
 
+_ORCHESTRATOR_SYSTEM = (
+    "Ты — оркестратор видеопроекта. Источник правды — база (НЕ Excel).\n"
+    "Тебе дан граф проекта: frames[] с uuid, number, voiceover_text, "
+    "image_prompt, animation_prompt, meaning, duration_seconds.\n"
+    "Если пользователь просит ИЗМЕНИТЬ данные — ответь ТОЛЬКО JSON:\n"
+    '{"ops":[{"frame_uuid":"<uuid из графа>","fields":{...}}]}\n'
+    "Поля по-человечески: закадр, промт_картинки, промт_видео, смысл, "
+    "длительность, промт_картинки_2, промт_видео_2. Для общего плана: "
+    '{"target":"project","fields":{"общий_план":"…"}}.\n'
+    "Не выдумывай uuid и поля — неизвестное = весь запрос отклонён. "
+    "Одна операция = один кадр; сколько кадров — столько операций.\n"
+    "Если это вопрос/обсуждение без изменений — ответь обычным текстом."
+)
+
+
+def _cut(text: object, limit: int = 160) -> str:
+    s = " ".join(str(text or "").split())
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def _orchestrator_context(graph: dict) -> str:
+    proj = graph.get("project") or {}
+    lines = [
+        f"Проект #{proj.get('id')} «{proj.get('title') or proj.get('slug')}», "
+        f"статус {proj.get('status')}",
+        "Кадры:",
+    ]
+    for f in graph.get("frames") or []:
+        lines.append(
+            f"- uuid={f.get('uuid')} кадр {f.get('number')}: "
+            f"закадр={_cut(f.get('voiceover_text'))} | "
+            f"промт_картинки={_cut(f.get('image_prompt'))} | "
+            f"промт_видео={_cut(f.get('animation_prompt'))} | "
+            f"смысл={_cut(f.get('meaning'))} | "
+            f"длительность={f.get('duration_seconds')}"
+        )
+    return "\n".join(lines)
+
+
+class OrchestratorChatBody(BaseModel):
+    message: str = Field(min_length=1)
+    history: list[dict] = Field(default_factory=list)
+
+
+@router.post("/projects/{project_id}/orchestrator/chat")
+async def orchestrator_chat(
+    project_id: int,
+    body: OrchestratorChatBody,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Диалог с оркестратором по текущему проекту.
+
+    Контекст = граф DB (uuid кадров). Ответ модели с ``{"ops": [...]}``
+    применяется через ``db_apply.apply_ops`` (fail-closed) + авто-экспорт
+    в project.xlsx. Текстовый ответ (вопрос/обсуждение) — без записи.
+    """
+    from app.services.gpt_client import get_gpt_client
+
+    project = await _project(session, project_id)
+    await db_v2.backfill_project_v2(session, project)
+    await session.commit()
+    graph = await db_v2.project_graph(session, project)
+
+    history_txt = "\n".join(
+        f"{m.get('role', '?')}: {m.get('content', '')}"
+        for m in (body.history or [])[-8:]
+    )
+    prompt = (
+        _ORCHESTRATOR_SYSTEM
+        + "\n\nГРАФ ПРОЕКТА:\n"
+        + _orchestrator_context(graph)
+        + ("\n\nИСТОРИЯ ДИАЛОГА:\n" + history_txt if history_txt else "")
+        + "\n\nПОЛЬЗОВАТЕЛЬ: "
+        + body.message
+    )
+    reply = await get_gpt_client().ask_fresh(
+        prompt, timeout=600, project_id=project.id
+    )
+
+    applied = None
+    error = None
+    ops_data = db_apply.extract_apply_ops_json(reply or "")
+    if ops_data:
+        try:
+            applied = await db_apply.apply_ops(
+                session,
+                project,
+                ops_data["ops"],
+                export_xlsx=bool(ops_data.get("export_xlsx", True)),
+            )
+            await session.commit()
+        except db_apply.ApplyOpsError as e:
+            await session.rollback()
+            error = str(e)
+    return {"reply": reply, "applied": applied, "error": error}
+
+
 class FramePatch(BaseModel):
     status: str | None = None
     duration_seconds: float | None = None

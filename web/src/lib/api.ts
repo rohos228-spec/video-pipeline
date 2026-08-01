@@ -369,6 +369,15 @@ export const api = {
       `/api/db/projects/${projectId}/apply-ops`,
       { method: "POST", body: JSON.stringify({ ops, export_xlsx: exportXlsx }) },
     ),
+  dbOrchestratorChat: (projectId: number, message: string, history: { role: string; content: string }[]) =>
+    http<{
+      reply: string;
+      applied: { updated: number; exported: { frames: number; cells: number } | null } | null;
+      error: string | null;
+    }>(`/api/db/projects/${projectId}/orchestrator/chat`, {
+      method: "POST",
+      body: JSON.stringify({ message, history }),
+    }),
 
   // ── Workflows ────────────────────────────────────────────────────
   listWorkflows: () => http<WorkflowSummary[]>(`/api/workflows`),

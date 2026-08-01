@@ -254,6 +254,71 @@ async def test_apply_ops_project_target_general_plan_exports(api_client, tmp_pat
     assert r_target.status_code == 400
 
 
+class _FakeGpt:
+    def __init__(self, reply: str) -> None:
+        self._reply = reply
+
+    async def ask_fresh(self, text: str, **kw) -> str:
+        return self._reply
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_chat_applies_ops(api_client, monkeypatch) -> None:
+    """Диалог с оркестратором: ответ с {ops} применяется через db_apply."""
+    client, project_id, factory = api_client
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        uuid = fr.uuid
+
+    reply = f'{{"ops":[{{"frame_uuid":"{uuid}","fields":{{"закадр":"закадр из чата"}}}}]}}'
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client", lambda: _FakeGpt(reply)
+    )
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "перепиши закадр в 1 кадре", "history": []},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["error"] is None
+    assert data["applied"] and data["applied"]["updated"] == 1
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        assert fr.voiceover_text == "закадр из чата"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_chat_plain_text_no_write(api_client, monkeypatch) -> None:
+    """Обычный текстовый ответ (вопрос/обсуждение) — без записи в DB."""
+    client, project_id, factory = api_client
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt("В проекте 2 кадра, всё заполнено."),
+    )
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "сколько кадров?", "history": []},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["applied"] is None and data["error"] is None
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        assert fr.voiceover_text == "реплика 1"  # не тронут
+
+
 def test_extract_apply_ops_json_variants() -> None:
     raw = '{"ops":[{"frame_uuid":"u1","fields":{"закадр":"x"}}]}'
     assert db_apply.extract_apply_ops_json(raw)["ops"][0]["frame_uuid"] == "u1"
