@@ -34,7 +34,11 @@ export function OrchestratorPanel({ projectId }: Props) {
         );
       }
       for (const a of r.actions_run ?? []) {
-        notes.push(`запущен шаг «${a.run_step}» → ${a.status}`);
+        if (a.run_step) notes.push(`запущен шаг «${a.run_step}» → ${a.status}`);
+        else if (a.stop_step) notes.push("генерация остановлена");
+        else if (a.set_option) notes.push(`настройка: ${a.set_option}`);
+        else if (a.set_prompt) notes.push(`промт: ${a.set_prompt}`);
+        else if (a.set_text_llm) notes.push(`LLM: ${a.set_text_llm}`);
       }
       if (r.error) notes.push(`ошибка: ${r.error}`);
       setChatLog([

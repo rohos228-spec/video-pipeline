@@ -237,19 +237,28 @@ _ORCHESTRATOR_SYSTEM = (
     "anim_pr → video → audio → music → assemble → publish.\n"
     "Отвечая про «следующий шаг», называй шаги из этого списка и опирайся "
     "на состояние шагов из контекста.\n"
-    "ДЕЙСТВИЯ:\n"
-    "1) ИЗМЕНИТЬ данные → ТОЛЬКО JSON: "
+    "ДЕЙСТВИЯ (можно совместить в одном JSON: {\"ops\":[...], \"actions\":[...]}):\n"
+    "1) ИЗМЕНИТЬ данные кадра/проекта → "
     '{"ops":[{"frame_uuid":"<uuid из графа>","fields":{...}}]}. '
     "Поля по-человечески: закадр, промт_картинки, промт_видео, смысл, "
     "длительность, промт_картинки_2, промт_видео_2; общий план: "
     '{"target":"project","fields":{"общий_план":"…"}}.\n'
-    "2) ЗАПУСТИТЬ шаг → ТОЛЬКО JSON: "
-    '{"actions":[{"run_step":"<код шага>"}]} — код из списка выше '
-    "(например img_pr, img, anim_pr, video, audio, assemble).\n"
-    "3) Можно совместить: {\"ops\":[...], \"actions\":[...]}.\n"
-    "4) Вопрос/обсуждение без изменений и запусков — обычный текст.\n"
-    "Не выдумывай uuid, поля и коды шагов — неизвестное = отклонено. "
-    "Одна операция = один кадр."
+    "2) ЗАПУСТИТЬ шаг → {\"actions\":[{\"run_step\":\"<код>\"}]} "
+    "(img_pr, img, anim_pr, video, audio, music, assemble, publish…).\n"
+    "3) ОСТАНОВИТЬ генерацию → {\"actions\":[{\"stop_step\":true}]}.\n"
+    "4) НАСТРОЙКА генерации → "
+    "{\"actions\":[{\"set_option\":{\"key\":\"<ключ>\",\"value\":\"<id>\"}}]} — "
+    "ключи и допустимые id в разделе НАСТРОЙКИ контекста "
+    "(image_generator, aspect_ratio, image_resolution, image_quality, "
+    "video_generator, video_resolution, hero_mode, auto_mode).\n"
+    "5) ВАРИАНТ промта шага → "
+    "{\"actions\":[{\"set_prompt\":{\"step\":\"<шаг>\",\"variant\":\"<имя>\"}}]} — "
+    "варианты в разделе ПРОМТЫ контекста.\n"
+    "6) ТЕКСТОВАЯ LLM → "
+    "{\"actions\":[{\"set_text_llm\":{\"provider\":\"kie|tokenrouter\"}}]}.\n"
+    "7) Вопрос/обсуждение без изменений — обычный текст.\n"
+    "Не выдумывай uuid, поля, коды шагов, ключи и значения настроек — "
+    "неизвестное = отклонено с ошибкой. Одна операция = один кадр."
 )
 
 _STEP_RU: dict[str, str] = {
@@ -302,6 +311,102 @@ def _pipeline_state_lines(project: Project) -> list[str]:
         step_code = NODE_TYPE_TO_STEP_CODE.get(node_type, node_type)
         lines.append(f"- {step_code} ({_STEP_RU.get(step_code, step_code)}): {state}")
     return lines
+
+
+def _settings_context(project: Project) -> list[str]:
+    """Настройки генерации, варианты промтов, текстовая LLM (для контекста)."""
+    from app import generation_options as go
+    from app.services import prompt_library as pl
+    from app.services.text_llm_catalog import catalog_status
+
+    def ids(cat) -> str:
+        return ", ".join(c.id for c in cat)
+
+    overrides = project.prompt_overrides or {}
+    lines = [
+        "НАСТРОЙКИ ГЕНЕРАЦИИ (текущее → допустимые id):",
+        f"- image_generator: {project.image_generator or 'default'} → {ids(go.IMAGE_GENERATORS)}",
+        f"- aspect_ratio: {project.aspect_ratio or 'default'} → {ids(go.ASPECT_RATIOS)}",
+        f"- image_resolution: {project.image_resolution or 'default'} → {ids(go.IMAGE_RESOLUTIONS)} (зависит от генератора)",
+        f"- image_quality: {project.image_quality or 'default'} → {ids(go.IMAGE_QUALITIES)}",
+        f"- video_generator: {project.video_generator or 'default'} → {ids(go.VIDEO_GENERATORS)}",
+        f"- video_resolution: {project.video_resolution or 'default'} → {ids(go.VIDEO_RESOLUTIONS)}",
+        f"- hero_mode: {project.hero_mode} → hero, no_hero, auto",
+        f"- auto_mode: {'вкл' if project.auto_mode else 'выкл'} → true/false",
+        "ПРОМТЫ (шаг → выбранный вариант → доступные):",
+    ]
+    for step_code in ("plan", "script", "split", "img_pr", "anim_pr", "hero_style"):
+        try:
+            variants = pl.list_prompts(step_code)
+        except Exception:  # noqa: BLE001
+            variants = []
+        if variants:
+            lines.append(
+                f"- {step_code}: {overrides.get(step_code, 'default')} → {', '.join(variants)}"
+            )
+    st = catalog_status()
+    lines.append(
+        f"ТЕКСТОВАЯ LLM: активна {st['active_label']} → провайдеры: kie, tokenrouter"
+    )
+    return lines
+
+
+def _apply_set_option(project: Project, key: object, value: object) -> str:
+    from app import generation_options as go
+
+    k = str(key or "").strip()
+    v = str(value or "").strip()
+    catalogs = {
+        "image_generator": go.IMAGE_GENERATORS_BY_ID,
+        "aspect_ratio": go.ASPECT_RATIOS_BY_ID,
+        "image_resolution": go.IMAGE_RESOLUTIONS_BY_ID,
+        "image_quality": go.IMAGE_QUALITIES_BY_ID,
+        "video_generator": go.VIDEO_GENERATORS_BY_ID,
+        "video_resolution": go.VIDEO_RESOLUTIONS_BY_ID,
+    }
+    if k in catalogs:
+        if v not in catalogs[k]:
+            raise db_apply.ApplyOpsError(
+                f"set_option {k}: неизвестное значение {v!r}; "
+                f"допустимые: {sorted(catalogs[k])}"
+            )
+        if k == "image_resolution":
+            v = go.clamp_image_resolution_id(project.image_generator, v)
+        setattr(project, k, v)
+        return f"{k}={v}"
+    if k == "hero_mode":
+        if v not in ("hero", "no_hero", "auto"):
+            raise db_apply.ApplyOpsError("hero_mode: допустимые hero, no_hero, auto")
+        project.hero_mode = v
+        return f"hero_mode={v}"
+    if k == "auto_mode":
+        project.auto_mode = v.lower() in ("1", "true", "да", "вкл", "on")
+        return f"auto_mode={'вкл' if project.auto_mode else 'выкл'}"
+    raise db_apply.ApplyOpsError(
+        f"set_option: неизвестный ключ {k!r}; "
+        f"допустимые: {sorted([*catalogs, 'hero_mode', 'auto_mode'])}"
+    )
+
+
+def _apply_set_prompt(project: Project, step: object, variant: object) -> str:
+    from app.services import prompt_library as pl
+
+    s = str(step or "").strip()
+    v = str(variant or "").strip()
+    try:
+        variants = pl.list_prompts(s)
+    except Exception:  # noqa: BLE001
+        variants = []
+    if not variants:
+        raise db_apply.ApplyOpsError(f"set_prompt: для шага {s!r} нет вариантов промтов")
+    if v not in variants:
+        raise db_apply.ApplyOpsError(
+            f"set_prompt {s}: неизвестный вариант {v!r}; доступные: {variants}"
+        )
+    overrides = dict(project.prompt_overrides or {})
+    overrides[s] = v
+    project.prompt_overrides = overrides
+    return f"{s}→{v}"
 
 
 def _cut(text: object, limit: int = 160) -> str:
@@ -360,6 +465,8 @@ async def orchestrator_chat(
         _ORCHESTRATOR_SYSTEM
         + "\n\nШАГИ ПАЙПЛАЙНА (реальный порядок и состояние):\n"
         + "\n".join(_pipeline_state_lines(project))
+        + "\n\n"
+        + "\n".join(_settings_context(project))
         + "\n\nГРАФ ПРОЕКТА:\n"
         + _orchestrator_context(graph)
         + ("\n\nИСТОРИЯ ДИАЛОГА:\n" + history_txt if history_txt else "")
@@ -392,23 +499,61 @@ async def orchestrator_chat(
                 await session.rollback()
                 error = str(e)
         for act in ops_data.get("actions") or []:
-            step = str((act or {}).get("run_step") or "").strip()
-            if not step:
-                continue
-            if step not in STEP_CODE_TO_NODE_TYPE:
-                error = f"неизвестный шаг {step!r}; разрешены: {sorted(STEP_CODE_TO_NODE_TYPE)}"
-                continue
+            act = act or {}
             try:
-                from app.services.project_steps import start_step
+                if "run_step" in act:
+                    step = str(act.get("run_step") or "").strip()
+                    if not step:
+                        continue
+                    if step not in STEP_CODE_TO_NODE_TYPE:
+                        raise db_apply.ApplyOpsError(
+                            f"неизвестный шаг {step!r}; "
+                            f"разрешены: {sorted(STEP_CODE_TO_NODE_TYPE)}"
+                        )
+                    from app.services.project_steps import start_step
 
-                new_status = await start_step(
-                    session, project, step, explicit_ui_start=True
-                )
-                await session.commit()
-                actions_run.append({"run_step": step, "status": new_status.value})
+                    new_status = await start_step(
+                        session, project, step, explicit_ui_start=True
+                    )
+                    await session.commit()
+                    actions_run.append({"run_step": step, "status": new_status.value})
+                elif act.get("stop_step"):
+                    from app.services.project_control import stop_project_running
+
+                    await stop_project_running(session, project)
+                    await session.commit()
+                    actions_run.append({"stop_step": True})
+                elif "set_option" in act:
+                    spec = act.get("set_option") or {}
+                    label = _apply_set_option(project, spec.get("key"), spec.get("value"))
+                    await session.commit()
+                    actions_run.append({"set_option": label})
+                elif "set_prompt" in act:
+                    spec = act.get("set_prompt") or {}
+                    label = _apply_set_prompt(
+                        project, spec.get("step"), spec.get("variant")
+                    )
+                    await session.commit()
+                    actions_run.append({"set_prompt": label})
+                elif "set_text_llm" in act:
+                    spec = act.get("set_text_llm") or {}
+                    from app.services.text_llm_catalog import write_choice
+
+                    try:
+                        payload = write_choice(
+                            provider=str(spec.get("provider") or ""),
+                            model_id=spec.get("model_id"),
+                        )
+                    except ValueError as e:
+                        raise db_apply.ApplyOpsError(str(e)) from None
+                    actions_run.append(
+                        {"set_text_llm": f"{payload['provider']} ({payload['model_id']})"}
+                    )
+            except db_apply.ApplyOpsError as e:
+                error = str(e)
             except Exception as e:  # noqa: BLE001
                 await session.rollback()
-                error = f"запуск шага {step}: {e}"
+                error = f"действие {act}: {e}"
     return {
         "reply": reply,
         "applied": applied,

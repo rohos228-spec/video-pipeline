@@ -354,6 +354,75 @@ async def test_orchestrator_chat_runs_step_action(api_client, monkeypatch) -> No
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_chat_settings_actions(api_client, monkeypatch, tmp_path) -> None:
+    """Оркестратор управляет настройками: опции генерации, вариант промта, LLM, стоп."""
+    import app.services.prompt_library as pl
+
+    (tmp_path / "prompts" / "01_plan").mkdir(parents=True)
+    (tmp_path / "prompts" / "01_plan" / "horror.md").write_text("ужас", encoding="utf-8")
+    monkeypatch.setattr(pl, "PROMPTS_ROOT", tmp_path / "prompts")
+
+    client, project_id, factory = api_client
+    reply = (
+        '{"actions":['
+        '{"set_option":{"key":"image_generator","value":"gpt_image_2_vip"}},'
+        '{"set_option":{"key":"image_resolution","value":"4k"}},'
+        '{"set_option":{"key":"hero_mode","value":"no_hero"}},'
+        '{"set_option":{"key":"auto_mode","value":"вкл"}},'
+        '{"set_prompt":{"step":"plan","variant":"horror"}},'
+        '{"set_text_llm":{"provider":"tokenrouter"}},'
+        '{"stop_step":true}'
+        "]}"
+    )
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client", lambda: _FakeGpt(reply)
+    )
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "настрой всё и останови", "history": []},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["error"] is None
+    kinds = [next(iter(a)) for a in data["actions_run"]]
+    assert kinds == [
+        "set_option",
+        "set_option",
+        "set_option",
+        "set_option",
+        "set_prompt",
+        "set_text_llm",
+        "stop_step",
+    ]
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        assert p.image_generator == "gpt_image_2_vip"
+        assert p.image_resolution == "4k"
+        assert p.hero_mode == "no_hero"
+        assert p.auto_mode is True
+        assert (p.prompt_overrides or {}).get("plan") == "horror"
+        assert (p.meta or {}).get("user_stop") is True
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_chat_invalid_setting_rejected(api_client, monkeypatch) -> None:
+    client, project_id, factory = api_client
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"set_option":{"key":"image_resolution","value":"16k"}}]}'),
+    )
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "поставь 16k", "history": []},
+    )
+    assert r.status_code == 200
+    assert "неизвестное значение" in (r.json()["error"] or "")
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        assert p.image_resolution is None  # не тронут
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_chat_without_gpt_key_503(api_client, monkeypatch) -> None:
     """Без GPT-ключа — вежливая 503 с причиной, не 500/404."""
     client, project_id, factory = api_client
