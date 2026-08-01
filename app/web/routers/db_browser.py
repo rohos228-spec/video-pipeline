@@ -294,8 +294,11 @@ _ORCHESTRATOR_SYSTEM = (
     "{\"remove_node\":{\"node_key\":\"n_...\"}} (конкретную). Удаление НЕ "
     "выполняется сразу: человек подтверждает кнопкой в чате. В ответе "
     "называй, сколько и какие ноды будут удалены.\n"
-    "13) ПРОГНАТЬ проверки (harness) → {\"actions\":[{\"run_harness\":true}]}.\n"
-    "14) Вопрос/обсуждение без изменений — обычный текст.\n"
+    "13) ПОЧИНИТЬ граф (после удалений/разрывов) → "
+    "{\"actions\":[{\"repair_graph\":true}]} — цепочка пересобирается слева "
+    "направо по канвасу.\n"
+    "14) ПРОГНАТЬ проверки (harness) → {\"actions\":[{\"run_harness\":true}]}.\n"
+    "15) Вопрос/обсуждение без изменений — обычный текст.\n"
     "ТИПЫ НОД по-человечески (объясняй так, если спрашивают «что это»): "
     "hitl_gate — нода проверки: пайплайн встаёт и ждёт аппрува человека; "
     "excel_gpt — работа/автопроверка через GPT; plan — «Сценарий»; "
@@ -922,6 +925,16 @@ async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -
     min_x = min(
         (float((n.get("position") or {}).get("x", 0.0)) for n in nodes), default=0.0
     )
+    # excel_gpt-ноды обязаны иметь slotIndex (иначе шаги enrich не различит).
+    next_slot = 1
+    if node_type == "excel_gpt":
+        existing_slots = [
+            int((n.get("data") or {}).get("slotIndex") or 0)
+            for n in nodes
+            if str(n.get("type")) == "excel_gpt"
+        ]
+        next_slot = max(existing_slots, default=0) + 1
+
     for _nid in targets:
         k += 1
         new_id = f"n_{node_type}_{k}"
@@ -937,7 +950,15 @@ async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -
                     "x": min_x + (k - 1) * 200.0,
                     "y": max_y + 160.0,
                 },
-                "data": {"label": label, "description": "добавлено оркестратором"},
+                "data": {
+                    "label": label,
+                    "description": "добавлено оркестратором",
+                    **(
+                        {"slotIndex": next_slot + len(new_nodes)}
+                        if node_type == "excel_gpt"
+                        else {}
+                    ),
+                },
             }
         )
 
@@ -1040,17 +1061,33 @@ async def _apply_remove_node(session: AsyncSession, project: Project, spec: dict
 
     nodes, edges, targets = await _remove_node_targets(session, project, spec)
 
-    # Перешивка: prev → next для каждой удаляемой ноды.
-    out_edges = [e for e in edges if str(e.get("source")) not in targets and str(e.get("target")) not in targets]
-    for tid in targets:
-        preds = [str(e.get("source")) for e in edges if str(e.get("target")) == tid]
-        succs = [str(e.get("target")) for e in edges if str(e.get("source")) == tid]
-        for pr in preds:
-            for sc in succs:
-                if pr not in targets and sc not in targets:
-                    out_edges.append(
-                        {"id": f"e_{pr}_{sc}", "source": pr, "target": sc}
-                    )
+    # Перешивка: выжившие ноды связываются в порядке исходной цепочки —
+    # корректно и при удалении подряд идущих нод (стопки проверок).
+    try:
+        order = _linear_order(nodes, edges)
+    except db_apply.ApplyOpsError:
+        order = None
+    if order is not None:
+        survivors = [nid for nid in order if nid not in targets]
+        out_edges = [
+            {"id": f"e_{a}_{b}", "source": a, "target": b}
+            for a, b in zip(survivors, survivors[1:], strict=False)
+        ]
+    else:
+        out_edges = [
+            e
+            for e in edges
+            if str(e.get("source")) not in targets and str(e.get("target")) not in targets
+        ]
+        for tid in targets:
+            preds = [str(e.get("source")) for e in edges if str(e.get("target")) == tid]
+            succs = [str(e.get("target")) for e in edges if str(e.get("source")) == tid]
+            for pr in preds:
+                for sc in succs:
+                    if pr not in targets and sc not in targets:
+                        out_edges.append(
+                            {"id": f"e_{pr}_{sc}", "source": pr, "target": sc}
+                        )
     left_nodes = [n for n in nodes if str(n.get("id")) not in targets]
 
     meta = dict(project.meta or {})
@@ -1068,6 +1105,55 @@ async def _apply_remove_node(session: AsyncSession, project: Project, spec: dict
         run.edges_snapshot = list(out_edges)
     await session.commit()
     return {"remove_node": f"удалено {len(targets)}"}
+
+
+async def _apply_repair_graph(session: AsyncSession, project: Project) -> dict:
+    """Пересобрать цепочку графа слева направо (после разрывов/удалений).
+
+    Порядок — по координате x на канвасе (так его видит человек). Ноды и
+    позиции не трогаем, только рёбра.
+    """
+    from app.models import Workflow, WorkflowRun
+
+    meta = dict(project.meta or {})
+    graph = meta.get("canvas_graph")
+    if not isinstance(graph, dict) or not graph.get("nodes"):
+        wf = (
+            await session.execute(
+                select(Workflow).where(Workflow.is_default.is_(True))
+            )
+        ).scalars().first()
+        if wf is None:
+            raise db_apply.ApplyOpsError("repair_graph: нет workflow для проекта")
+        graph = {"nodes": list(wf.nodes or []), "edges": list(wf.edges or [])}
+    nodes = [dict(n) for n in graph["nodes"]]
+    if len(nodes) < 2:
+        raise db_apply.ApplyOpsError("repair_graph: нод меньше двух — нечего чинить")
+    ordered = sorted(
+        nodes,
+        key=lambda n: (
+            float((n.get("position") or {}).get("x", 0.0)),
+            float((n.get("position") or {}).get("y", 0.0)),
+        ),
+    )
+    new_edges = [
+        {"id": f"e_{a['id']}_{b['id']}", "source": a["id"], "target": b["id"]}
+        for a, b in zip(ordered, ordered[1:], strict=False)
+    ]
+    meta["canvas_graph"] = {"nodes": nodes, "edges": new_edges}
+    project.meta = meta
+    run = (
+        await session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == project.id)
+            .order_by(WorkflowRun.id.desc())
+        )
+    ).scalars().first()
+    if run is not None:
+        run.nodes_snapshot = list(nodes)
+        run.edges_snapshot = list(new_edges)
+    await session.commit()
+    return {"repair_graph": f"цепочка пересобрана: {len(nodes)} нод слева направо"}
 
 
 def _cut(text: object, limit: int = 160) -> str:
@@ -1244,6 +1330,8 @@ async def orchestrator_chat(
                     actions_run.append(
                         await _apply_add_node(session, project, act.get("add_node") or {})
                     )
+                elif act.get("repair_graph"):
+                    actions_run.append(await _apply_repair_graph(session, project))
                 elif "remove_node" in act:
                     # Удаление — только с подтверждением человеком (кнопка в чате).
                     spec = act.get("remove_node") or {}

@@ -854,6 +854,114 @@ async def test_orchestrator_chat_remove_node(api_client, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_remove_node_consecutive_keeps_chain_linear(api_client) -> None:
+    """Удаление подряд идущих нод не рвёт цепочку (регрессия «стопок» проверок)."""
+    from app.web.routers.db_browser import _linear_order
+
+    client, project_id, factory = api_client
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        meta = dict(p.meta or {})
+        meta["canvas_graph"] = {
+            "nodes": [
+                {"id": "n_plan", "type": "plan", "position": {"x": 0.0, "y": 0.0}, "data": {}},
+                {"id": "n_hitl_gate_1", "type": "hitl_gate", "position": {"x": 100.0, "y": 160.0}, "data": {"description": "добавлено оркестратором"}},
+                {"id": "n_hitl_gate_2", "type": "hitl_gate", "position": {"x": 200.0, "y": 160.0}, "data": {"description": "добавлено оркестратором"}},
+                {"id": "n_script", "type": "script", "position": {"x": 290.0, "y": 0.0}, "data": {}},
+            ],
+            "edges": [
+                {"id": "e0", "source": "n_plan", "target": "n_hitl_gate_1"},
+                {"id": "e1", "source": "n_hitl_gate_1", "target": "n_hitl_gate_2"},
+                {"id": "e2", "source": "n_hitl_gate_2", "target": "n_script"},
+            ],
+        }
+        p.meta = meta
+        await session.commit()
+
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/confirm-remove",
+        json={"node_type": "hitl_gate"},
+    )
+    assert r.status_code == 200, r.text
+    assert "удалено 2" in r.json()["remove_node"]
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        g = (p.meta or {})["canvas_graph"]
+        assert _linear_order(g["nodes"], g["edges"]) == ["n_plan", "n_script"]
+
+
+@pytest.mark.asyncio
+async def test_repair_graph_rebuilds_broken_chain(api_client) -> None:
+    """repair_graph: разорванная цепочка пересобирается слева направо."""
+    from app.web.routers.db_browser import _linear_order
+
+    client, project_id, factory = api_client
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        meta = dict(p.meta or {})
+        meta["canvas_graph"] = {
+            "nodes": [
+                {"id": "n_plan", "type": "plan", "position": {"x": 0.0, "y": 0.0}, "data": {}},
+                {"id": "n_script", "type": "script", "position": {"x": 290.0, "y": 0.0}, "data": {}},
+                {"id": "n_img", "type": "images", "position": {"x": 580.0, "y": 0.0}, "data": {}},
+            ],
+            # разрыв: plan ни с кем не связан
+            "edges": [{"id": "e1", "source": "n_script", "target": "n_img"}],
+        }
+        p.meta = meta
+        await session.commit()
+
+    from app.web.routers.db_browser import _apply_repair_graph
+
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        res = await _apply_repair_graph(session, p)
+        await session.commit()
+    assert "пересобрана" in res["repair_graph"]
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        g = (p.meta or {})["canvas_graph"]
+        assert _linear_order(g["nodes"], g["edges"]) == ["n_plan", "n_script", "n_img"]
+
+
+@pytest.mark.asyncio
+async def test_add_node_excel_gpt_gets_slot_index(api_client, monkeypatch) -> None:
+    """excel_gpt-ноды от оркестратора получают slotIndex (для шагов enrich)."""
+    from app.models import Workflow
+
+    client, project_id, factory = api_client
+    async with factory() as session:
+        session.add(
+            Workflow(
+                name="default",
+                is_default=True,
+                nodes=[
+                    {"id": "n_plan", "type": "plan", "position": {"x": 0.0, "y": 0.0}, "data": {}},
+                    {"id": "n_script", "type": "script", "position": {"x": 290.0, "y": 0.0}, "data": {}},
+                ],
+                edges=[{"id": "e0", "source": "n_plan", "target": "n_script"}],
+            )
+        )
+        await session.commit()
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"add_node":{"node_type":"excel_gpt","after":"n_plan"}}]}'),
+    )
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "добавь работу с гпт после плана", "history": []},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["error"] is None
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        g = (p.meta or {})["canvas_graph"]
+        new_gpt = [n for n in g["nodes"] if n["type"] == "excel_gpt"]
+        assert len(new_gpt) == 1
+        assert (new_gpt[0]["data"] or {}).get("slotIndex") == 1
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_chat_run_harness_action(api_client, monkeypatch) -> None:
     """run_harness → свежий прогон проверок, итог в actions_run."""
     client, project_id, factory = api_client
