@@ -754,6 +754,84 @@ async def test_orchestrator_chat_add_node_each_and_single(api_client, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_chat_remove_node(api_client, monkeypatch) -> None:
+    """remove_node: удаляет добавленные оркестратором ноды типа, цепочка перешита."""
+    from app.models import Workflow
+    from app.web.routers.db_browser import _linear_order
+
+    client, project_id, factory = api_client
+    async with factory() as session:
+        session.add(
+            Workflow(
+                name="default",
+                is_default=True,
+                nodes=[
+                    {"id": "n_plan", "type": "plan", "position": {"x": 0.0, "y": 0.0}, "data": {"label": "Сценарий"}},
+                    {"id": "n_hitl_gate_old", "type": "hitl_gate", "position": {"x": 145.0, "y": 140.0}, "data": {"label": "Проверка"}},
+                    {"id": "n_script", "type": "script", "position": {"x": 290.0, "y": 0.0}, "data": {"label": "Закадровый"}},
+                ],
+                edges=[
+                    {"id": "e_0", "source": "n_plan", "target": "n_hitl_gate_old"},
+                    {"id": "e_1", "source": "n_hitl_gate_old", "target": "n_script"},
+                ],
+            )
+        )
+        await session.commit()
+
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"add_node":{"node_type":"hitl_gate","after":"each"}}]}'),
+    )
+    r1 = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "к каждой ноде добавь проверку", "history": []},
+    )
+    assert r1.json()["error"] is None
+    # за n_plan уже стоит hitl-нода → дубль не добавился, только после n_script
+    assert "×1" in r1.json()["actions_run"][0]["add_node"]
+
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"remove_node":{"node_type":"hitl_gate"}}]}'),
+    )
+    r2 = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "удали все ноды проверки", "history": []},
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["error"] is None
+    assert "удалено 1" in r2.json()["actions_run"][0]["remove_node"]
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        g = (p.meta or {}).get("canvas_graph") or {}
+        ids = [n["id"] for n in g["nodes"]]
+        # родная (не оркестраторская) hitl-нода выжила, добавленные удалены
+        assert "n_hitl_gate_old" in ids
+        assert not any(i.startswith("n_hitl_gate_") and i != "n_hitl_gate_old" for i in ids)
+        assert len(_linear_order(g["nodes"], g["edges"])) == 3
+
+    # По конкретному ключу + неизвестный ключ → ошибка.
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"remove_node":{"node_key":"n_hitl_gate_old"}}]}'),
+    )
+    r3 = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "удали старую проверку", "history": []},
+    )
+    assert r3.json()["error"] is None
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"remove_node":{"node_key":"n_hack"}}]}'),
+    )
+    r4 = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "удали n_hack", "history": []},
+    )
+    assert "неизвестный node_key" in (r4.json()["error"] or "")
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_chat_run_harness_action(api_client, monkeypatch) -> None:
     """run_harness → свежий прогон проверок, итог в actions_run."""
     client, project_id, factory = api_client

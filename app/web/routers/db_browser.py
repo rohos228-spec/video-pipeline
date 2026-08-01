@@ -289,8 +289,20 @@ _ORCHESTRATOR_SYSTEM = (
     "after=\"<node_key>\". «Нода проверки»: hitl_gate = аппрув человеком, "
     "excel_gpt = автопроверка GPT — уточни у пользователя, если неясно. "
     "В ответе называй, что именно добавил и после каких нод (см. СВЯЗИ).\n"
-    "12) ПРОГНАТЬ проверки (harness) → {\"actions\":[{\"run_harness\":true}]}.\n"
-    "13) Вопрос/обсуждение без изменений — обычный текст.\n"
+    "12) УДАЛИТЬ ноды → {\"actions\":[{\"remove_node\":{\"node_type\":\"hitl_gate\"}}]} "
+    "(все добавленные оркестратором этого типа) или "
+    "{\"remove_node\":{\"node_key\":\"n_...\"}} (конкретную); цепочка перешивается.\n"
+    "13) ПРОГНАТЬ проверки (harness) → {\"actions\":[{\"run_harness\":true}]}.\n"
+    "14) Вопрос/обсуждение без изменений — обычный текст.\n"
+    "ТИПЫ НОД по-человечески (объясняй так, если спрашивают «что это»): "
+    "hitl_gate — нода проверки: пайплайн встаёт и ждёт аппрува человека; "
+    "excel_gpt — работа/автопроверка через GPT; plan — «Сценарий»; "
+    "script — «Закадровый текст»; split — «Разбивка»; hero — «Персонажи»; "
+    "items — «Предметы»; image_prompts — «Промты картинок»; "
+    "images — «Картинки»; animation_prompts — «Промты анимации»; "
+    "videos — «Видео»; audio — «Озвучка»; music — «Музыка»; "
+    "assemble — «Сборка»; publish — «Публикация»; topic — «Тема»; "
+    "storage — хранилище.\n"
     "Не выдумывай uuid, поля, коды шагов, ключи и значения настроек — "
     "неизвестное = отклонено с ошибкой. Одна операция = один кадр."
 )
@@ -961,6 +973,83 @@ async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -
     return {"add_node": f"{node_type} ×{len(new_nodes)} ({'каждой' if after == 'each' else after})"}
 
 
+async def _apply_remove_node(session: AsyncSession, project: Project, spec: dict) -> dict:
+    """Удалить ноды из графа проекта (meta.canvas_graph + снапшот прогона).
+
+    ``node_key`` — конкретная нода. ``node_type`` — все ноды этого типа,
+    ДОБАВЛЕННЫЕ оркестратором (маркер data.description); чужие/родные ноды
+    этого типа не трогаем. Рёбра перешиваются: prev → next.
+    """
+    from app.models import Workflow, WorkflowRun
+
+    node_key = str((spec or {}).get("node_key") or "").strip()
+    node_type = str((spec or {}).get("node_type") or "").strip()
+    if not node_key and not node_type:
+        raise db_apply.ApplyOpsError("remove_node: нужен node_key или node_type")
+
+    meta = dict(project.meta or {})
+    graph = meta.get("canvas_graph")
+    if not isinstance(graph, dict) or not graph.get("nodes"):
+        wf = (
+            await session.execute(
+                select(Workflow).where(Workflow.is_default.is_(True))
+            )
+        ).scalars().first()
+        if wf is None:
+            raise db_apply.ApplyOpsError("remove_node: нет workflow для проекта")
+        graph = {"nodes": list(wf.nodes or []), "edges": list(wf.edges or [])}
+    nodes = [dict(n) for n in graph["nodes"]]
+    edges = [dict(e) for e in (graph.get("edges") or [])]
+    by_id = {str(n.get("id")): n for n in nodes}
+
+    if node_key:
+        if node_key not in by_id:
+            raise db_apply.ApplyOpsError(
+                f"remove_node: неизвестный node_key {node_key!r} (см. НОДЫ КАНВАСА)"
+            )
+        targets = {node_key}
+    else:
+        targets = {
+            str(n.get("id"))
+            for n in nodes
+            if str(n.get("type")) == node_type
+            and str((n.get("data") or {}).get("description") or "")
+            == "добавлено оркестратором"
+        }
+        if not targets:
+            raise db_apply.ApplyOpsError(
+                f"remove_node: нод типа {node_type!r}, добавленных оркестратором, нет"
+            )
+
+    # Перешивка: prev → next для каждой удаляемой ноды.
+    out_edges = [e for e in edges if str(e.get("source")) not in targets and str(e.get("target")) not in targets]
+    for tid in targets:
+        preds = [str(e.get("source")) for e in edges if str(e.get("target")) == tid]
+        succs = [str(e.get("target")) for e in edges if str(e.get("source")) == tid]
+        for pr in preds:
+            for sc in succs:
+                if pr not in targets and sc not in targets:
+                    out_edges.append(
+                        {"id": f"e_{pr}_{sc}", "source": pr, "target": sc}
+                    )
+    left_nodes = [n for n in nodes if str(n.get("id")) not in targets]
+
+    meta["canvas_graph"] = {"nodes": left_nodes, "edges": out_edges}
+    project.meta = meta
+    run = (
+        await session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == project.id)
+            .order_by(WorkflowRun.id.desc())
+        )
+    ).scalars().first()
+    if run is not None:
+        run.nodes_snapshot = list(left_nodes)
+        run.edges_snapshot = list(out_edges)
+    await session.commit()
+    return {"remove_node": f"удалено {len(targets)}"}
+
+
 def _cut(text: object, limit: int = 160) -> str:
     s = " ".join(str(text or "").split())
     return s if len(s) <= limit else s[: limit - 1] + "…"
@@ -1133,6 +1222,12 @@ async def orchestrator_chat(
                 elif "add_node" in act:
                     actions_run.append(
                         await _apply_add_node(session, project, act.get("add_node") or {})
+                    )
+                elif "remove_node" in act:
+                    actions_run.append(
+                        await _apply_remove_node(
+                            session, project, act.get("remove_node") or {}
+                        )
                     )
                 elif act.get("run_harness"):
                     from app.services.agent_harness import run_harness_verify
