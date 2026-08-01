@@ -17,11 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, FrameStatus, Project, ProjectStatus
 from app.services import animation_prompt_gpt as apg
+from app.services import db_apply, db_v2
 from app.services.chatgpt_xlsx import tmp_gpt_dir, write_anim_pr_prompt_file
 from app.services.gpt_client import get_gpt_client
 from app.services.step_cancel import StepCancelledError, consume_stop, raise_if_cancelled
 from app.storage import for_project as _sheet_for_project
-from app.storage.plan_sheet_v8 import write_plan_animation_prompt
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
@@ -30,6 +30,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     logger.info("[#{}] make_animation_prompts starting (batch GPT flow)", project.id)
 
     synced = await apg.sync_animation_prompts_from_xlsx(session, project)
+    # DB SoT: uuid кадров обязаны существовать до записи через apply_ops.
+    await db_v2.backfill_project_v2(session, project)
     frames = (
         await session.execute(
             select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
@@ -214,6 +216,26 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] xlsx write_general(status) failed: {}", project.id, e)
 
+    # Harness-гейт (обязателен по NODE_SYSTEM): шаг не done, пока проверки не ok.
+    # project_log_clean/node_runs_failed — наблюдаемость, не данные: в гейт не
+    # входят (иначе ошибка шага в логе блокировала бы повтор навсегда).
+    await session.commit()
+    from app.services.agent_harness import run_harness_verify
+
+    report = await run_harness_verify(
+        session, project, allow_repair=False, include_http=False
+    )
+    await session.commit()  # ops-телеметрия в project.meta
+    gate_checks = [
+        c for c in report.checks if c.name not in ("project_log_clean", "node_runs_failed")
+    ]
+    bad = [f"{c.name}({c.detail})" for c in gate_checks if not c.ok]
+    if bad:
+        raise RuntimeError(f"anim_pr harness gate failed: {bad}")
+    logger.info(
+        "[#{}] anim_pr: harness gate ok ({} checks)", project.id, len(report.checks)
+    )
+
 
 async def _save_anim_pr_batch(
     session: AsyncSession,
@@ -232,59 +254,46 @@ async def _save_anim_pr_batch(
             f"для кадров {[it.frame.number for it in batch]} (shot_0{shot})"
         )
 
-    saved = 0
     plan_row = 48 if shot == 1 else 64
+    ops = apg.build_apply_ops_from_pairs(pairs, frames, shot=shot)
+    if not ops:
+        raise RuntimeError(
+            f"anim_pr: нет валидных операций для кадров "
+            f"{[it.frame.number for it in batch]} (shot_0{shot}) — uuid/длина?"
+        )
+    try:
+        result = await db_apply.apply_ops(session, project, ops, export_xlsx=True)
+    except db_apply.ApplyOpsError as e:
+        raise RuntimeError(f"anim_pr apply_ops отклонён: {e}") from None
+    saved = int(result.get("updated") or 0)
+
     for pair in pairs:
         if pair.frame_number is None:
             continue
         fr = next((f for f in frames if f.number == pair.frame_number), None)
         if fr is None:
             continue
-        text = pair.animation_text.strip()
-        if len(text) < 10:
-            continue
         if shot == 1:
-            fr.animation_prompt = text
             fr.status = FrameStatus.animation_prompt_ready
-            xlsx_ok = write_plan_animation_prompt(project, fr.number, text)
-            try:
-                sheet.write_frame(
-                    fr.number,
-                    animation_prompt=text,
-                    frame_status=fr.status.value,
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "[#{}] xlsx write_frame(animation_prompt) failed: {}",
-                    project.id,
-                    e,
-                )
-        else:
-            xlsx_ok = apg.save_animation_prompt_shot2(fr, project, text)
-        if xlsx_ok:
-            saved += 1
-        else:
+        try:
+            sheet.write_frame(fr.number, frame_status=fr.status.value)
+        except Exception as e:  # noqa: BLE001
             logger.warning(
-                "[#{}] anim_pr: не записан plan R{} для кадра {} shot_0{}",
-                project.id,
-                plan_row,
-                fr.number,
-                shot,
+                "[#{}] xlsx write_frame(status) failed: {}", project.id, e
             )
         logger.info(
-            "[#{}] anim_pr: frame {} shot_0{} prompt len={} (plan R{}={})",
+            "[#{}] anim_pr: frame {} shot_0{} prompt len={} (apply-ops, plan R{})",
             project.id,
             fr.number,
             shot,
-            len(text),
+            len(pair.animation_text.strip()),
             plan_row,
-            xlsx_ok,
         )
 
     await session.flush()
     await session.commit()
     logger.info(
-        "[#{}] anim_pr: пачка shot_0{} — {} промтов в project.xlsx (plan R{})",
+        "[#{}] anim_pr: пачка shot_0{} — {} промтов через apply-ops (plan R{})",
         project.id,
         shot,
         saved,

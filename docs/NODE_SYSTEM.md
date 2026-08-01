@@ -217,8 +217,12 @@
 
 ## 8. Roadmap подключения
 
-1. **anim_pr эталоном**: контекст из graph, запись через `db_apply`,
-   harness-гейт — первая нода полностью на новой системе.
+1. ~~**anim_pr эталоном**~~ — **сделано** (2026-08-01): пары GPT →
+   `build_apply_ops_from_pairs` → `db_apply.apply_ops` (uuid, версии промтов,
+   авто-экспорт R48/R64), после шага — обязательный harness-гейт
+   (`run_harness_verify`; в гейт не входят наблюдаемость-чеки
+   `project_log_clean`/`node_runs_failed`, иначе ошибка в логе блокировала
+   бы повтор навсегда). Backfill uuid перед записью.
 2. img_pr, split, plan — по тому же шаблону (промт-ноды).
 3. excel_gpt — оператор-режим: `extract_apply_ops_json` → `apply_ops`,
    форматный retry по ошибке валидации.

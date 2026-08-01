@@ -10,7 +10,6 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models import Base, Frame, FrameStatus, Project, ProjectStatus
-from sqlalchemy import select
 from app.services.animation_prompt_gpt import (
     FrameImageBatchItem,
     _clean_animation_text,
@@ -75,13 +74,14 @@ async def test_sync_clears_stale_db_when_xlsx_r48_empty(
     anim_pr_session, tmp_path: Path, monkeypatch
 ) -> None:
     """Пустой plan R48 → убираем мусорные animation_prompt из БД."""
-    from app.settings import settings
+    from openpyxl import Workbook
+
     from app.services.animation_prompt_gpt import (
         has_animation_prompt_for_frame,
         scan_missing_animation_prompts,
         sync_animation_prompts_from_xlsx,
     )
-    from openpyxl import Workbook
+    from app.settings import settings
 
     session, project = anim_pr_session
     monkeypatch.setattr(settings, "data_dir", tmp_path)
@@ -132,8 +132,8 @@ async def test_start_step_anim_pr_runs_when_only_shot2_missing(
     anim_pr_session, tmp_path: Path, monkeypatch
 ) -> None:
     """shot_01 готов, shot_02 нужен — ▶ anim_pr не должен пропускать."""
-    from app.settings import settings
     import app.services.animation_prompt_gpt as apg
+    from app.settings import settings
 
     session, project = anim_pr_session
     monkeypatch.setattr(settings, "data_dir", tmp_path)
@@ -152,3 +152,32 @@ async def test_start_step_anim_pr_runs_when_only_shot2_missing(
     status = await start_step(session, project, "anim_pr")
     assert status is ProjectStatus.generating_animation_prompts
     assert project.status is ProjectStatus.generating_animation_prompts
+
+
+def test_build_apply_ops_from_pairs_maps_uuid_and_field() -> None:
+    from app.services.animation_prompt_gpt import (
+        ParsedAnimationPair,
+        build_apply_ops_from_pairs,
+    )
+
+    frames = [
+        SimpleNamespace(number=1, uuid="u1"),
+        SimpleNamespace(number=2, uuid="u2"),
+    ]
+    pairs = [
+        ParsedAnimationPair(
+            image_id="a", animation_text="dolly in slowly", frame_number=1
+        ),
+        ParsedAnimationPair(
+            image_id="b", animation_text="pan right across", frame_number=2
+        ),
+        ParsedAnimationPair(image_id="c", animation_text="x", frame_number=1),
+        ParsedAnimationPair(image_id="d", animation_text="no frame", frame_number=None),
+    ]
+    ops = build_apply_ops_from_pairs(pairs, frames, shot=1)
+    assert ops == [
+        {"frame_uuid": "u1", "fields": {"промт_видео": "dolly in slowly"}},
+        {"frame_uuid": "u2", "fields": {"промт_видео": "pan right across"}},
+    ]
+    ops2 = build_apply_ops_from_pairs(pairs, frames, shot=2)
+    assert ops2[0]["fields"] == {"промт_видео_2": "dolly in slowly"}

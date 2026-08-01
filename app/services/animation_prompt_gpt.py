@@ -19,17 +19,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.generation_options import build_gen_id_prefix
 from app.models import Frame, FrameStatus, Project
 from app.services import gpt_text_builder as gtb
-from app.storage.plan_sheet_v8 import (
-    read_plan_animation_prompt_cells,
-    read_plan_animation_prompt_shot2_cells,
-    read_plan_voiceover,
-    write_plan_animation_prompt_shot2,
-)
 from app.services.plan_shot2 import (
     MIN_SHOT2_VIDEO_PROMPT_LEN,
     SHOT2_VIDEO_PROMPT_ATTR,
     find_shot2_image,
     read_shot2_columns,
+)
+from app.storage.plan_sheet_v8 import (
+    read_plan_animation_prompt_cells,
+    read_plan_animation_prompt_shot2_cells,
+    read_plan_voiceover,
+    write_plan_animation_prompt_shot2,
 )
 
 MIN_ANIM_PROMPT_LEN = 10
@@ -478,6 +478,33 @@ class ParsedAnimationPair:
     image_id: str
     animation_text: str
     frame_number: int | None
+
+
+def build_apply_ops_from_pairs(
+    pairs: list[ParsedAnimationPair],
+    frames: list[Frame],
+    *,
+    shot: int,
+) -> list[dict]:
+    """Пары GPT → apply-ops (DB SoT). shot=1 → промт_видео, shot=2 → промт_видео_2.
+
+    Чистая функция (тестируемо); кадры без uuid пропускаются (backfill
+    обязан их заполнить до шага).
+    """
+    field = "промт_видео" if shot == 1 else "промт_видео_2"
+    by_number = {f.number: f for f in frames}
+    ops: list[dict] = []
+    for pair in pairs:
+        if pair.frame_number is None:
+            continue
+        fr = by_number.get(pair.frame_number)
+        if fr is None or not fr.uuid:
+            continue
+        text = pair.animation_text.strip()
+        if len(text) < MIN_ANIM_PROMPT_LEN:
+            continue
+        ops.append({"frame_uuid": fr.uuid, "fields": {field: text}})
+    return ops
 
 
 def parse_animation_reply(
