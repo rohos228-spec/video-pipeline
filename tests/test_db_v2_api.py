@@ -1161,6 +1161,48 @@ async def test_central_harness_gate_blocks_and_pauses(api_client, monkeypatch, t
 
 
 @pytest.mark.asyncio
+async def test_add_node_each_gives_check_after_work_excel_gpt(api_client) -> None:
+    """Рабочая нода excel_gpt («Тест») получает проверку; двух подряд — нет."""
+    from app.web.routers.db_browser import _apply_add_node, _linear_order
+
+    client, project_id, factory = api_client
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        meta = dict(p.meta or {})
+        meta["canvas_graph"] = {
+            "nodes": [
+                {"id": "n_plan", "type": "plan", "position": {"x": 0.0, "y": 0.0}, "data": {"label": "Сценарий"}},
+                {"id": "n_script", "type": "script", "position": {"x": 290.0, "y": 0.0}, "data": {"label": "Закадровый"}},
+                {"id": "n_excel_gpt_1", "type": "excel_gpt", "position": {"x": 580.0, "y": 0.0}, "data": {"label": "Тест", "slotIndex": 1}},
+                {"id": "n_images", "type": "images", "position": {"x": 870.0, "y": 0.0}, "data": {"label": "Картинки"}},
+            ],
+            "edges": [
+                {"id": "e0", "source": "n_plan", "target": "n_script"},
+                {"id": "e1", "source": "n_script", "target": "n_excel_gpt_1"},
+                {"id": "e2", "source": "n_excel_gpt_1", "target": "n_images"},
+            ],
+        }
+        p.meta = meta
+        await session.commit()
+
+        res = await _apply_add_node(
+            session, p, {"node_type": "excel_gpt", "after": "each"}
+        )
+        await session.commit()
+        assert "×3" in res["add_node"]  # plan, script, «Тест» (images — хвост тоже)
+
+        g = (p.meta or {})["canvas_graph"]
+        order = _linear_order(g["nodes"], g["edges"])
+        type_by_id = {n["id"]: n["type"] for n in g["nodes"]}
+        # после «Теста» (рабочая excel_gpt) стоит проверка
+        idx = order.index("n_excel_gpt_1")
+        assert type_by_id[order[idx + 1]] == "excel_gpt"
+        # двух проверок подряд нет
+        for a, b in zip(order, order[1:], strict=False):
+            assert not (type_by_id[a] == "excel_gpt" and type_by_id[b] == "excel_gpt")
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_chat_run_harness_action(api_client, monkeypatch) -> None:
     """run_harness → свежий прогон проверок, итог в actions_run."""
     client, project_id, factory = api_client
