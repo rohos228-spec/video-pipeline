@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useState } from "react";
-import { ChevronDown, ChevronUp, MessageSquare, Send } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { ChevronDown, ChevronUp, MessageSquare, Send, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { usePersistedState } from "@/hooks/use-persisted-state";
@@ -10,11 +10,36 @@ interface Props {
   projectId: number | null;
 }
 
+interface PendingRemove {
+  kind: string;
+  node_key?: string | null;
+  node_type?: string | null;
+  count: number;
+  nodes: string[];
+}
+
 export function OrchestratorPanel({ projectId }: Props) {
   const [open, setOpen] = usePersistedState("vp-orchestrator-open", true);
-  const [chatLog, setChatLog] = useState<{ role: string; content: string }[]>([]);
+  const storageKey = `vp-orchestrator-log-${projectId ?? "none"}`;
+  const [chatLog, setChatLog] = usePersistedState<{ role: string; content: string }[]>(
+    storageKey,
+    [],
+  );
   const [chatInput, setChatInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pendingRemove, setPendingRemove] = useState<PendingRemove | null>(null);
+
+  // Смена проекта — перечитать его историю (панель переживает F5).
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      setChatLog(raw ? JSON.parse(raw) : []);
+    } catch {
+      setChatLog([]);
+    }
+    setPendingRemove(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storageKey]);
 
   const sendChat = useCallback(async () => {
     if (projectId == null || !chatInput.trim() || busy) return;
@@ -98,6 +123,13 @@ export function OrchestratorPanel({ projectId }: Props) {
         }
       }
       if (r.error) notes.push(`ошибка: ${r.error}`);
+      const pend = (r.pending_confirm ?? []).find((p) => p.kind === "remove_node");
+      setPendingRemove(pend ?? null);
+      if (pend) {
+        notes.push(
+          `к удалению: ${pend.count} нод (${pend.nodes.slice(0, 5).join(", ")}${pend.count > 5 ? "…" : ""}) — подтверди кнопкой ниже`,
+        );
+      }
       setChatLog([
         ...next,
         {
@@ -151,6 +183,63 @@ export function OrchestratorPanel({ projectId }: Props) {
               ))
             )}
           </div>
+          {pendingRemove ? (
+            <div className="mx-3 mb-1.5 flex items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5">
+              <Trash2 className="h-3.5 w-3.5 text-red-400" />
+              <span className="flex-1 text-[11px] text-white/80">
+                Удалить {pendingRemove.count} нод
+                {pendingRemove.node_type ? ` типа «${pendingRemove.node_type}»` : ""}?
+              </span>
+              <Button
+                size="sm"
+                variant="destructive"
+                className="h-7 text-[11px]"
+                disabled={busy}
+                onClick={async () => {
+                  if (projectId == null) return;
+                  setBusy(true);
+                  try {
+                    const r = await api.dbOrchestratorConfirmRemove(projectId, {
+                      node_key: pendingRemove.node_key,
+                      node_type: pendingRemove.node_type,
+                    });
+                    setChatLog((prev) => [
+                      ...prev,
+                      { role: "assistant", content: `Подтверждено: ${r.remove_node}.` },
+                    ]);
+                  } catch (e) {
+                    setChatLog((prev) => [
+                      ...prev,
+                      {
+                        role: "assistant",
+                        content: `Ошибка удаления: ${e instanceof Error ? e.message : e}`,
+                      },
+                    ]);
+                  } finally {
+                    setPendingRemove(null);
+                    setBusy(false);
+                  }
+                }}
+              >
+                Подтвердить удаление
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-[11px]"
+                disabled={busy}
+                onClick={() => {
+                  setPendingRemove(null);
+                  setChatLog((prev) => [
+                    ...prev,
+                    { role: "assistant", content: "Удаление отменено — ноды на месте." },
+                  ]);
+                }}
+              >
+                Отмена
+              </Button>
+            </div>
+          ) : null}
           <div className="flex items-center gap-2 px-3 pb-2">
             <input
               value={chatInput}

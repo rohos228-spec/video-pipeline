@@ -790,6 +790,7 @@ async def test_orchestrator_chat_remove_node(api_client, monkeypatch) -> None:
     # за n_plan уже стоит hitl-нода → дубль не добавился, только после n_script
     assert "×1" in r1.json()["actions_run"][0]["add_node"]
 
+    # Удаление — только с подтверждением: чат делает preview, НЕ удаляет.
     monkeypatch.setattr(
         "app.services.gpt_client.get_gpt_client",
         lambda: _FakeGpt('{"actions":[{"remove_node":{"node_type":"hitl_gate"}}]}'),
@@ -800,35 +801,56 @@ async def test_orchestrator_chat_remove_node(api_client, monkeypatch) -> None:
     )
     assert r2.status_code == 200, r2.text
     assert r2.json()["error"] is None
-    assert "удалено 1" in r2.json()["actions_run"][0]["remove_node"]
+    pend = r2.json()["pending_confirm"]
+    assert pend and pend[0]["count"] == 1 and pend[0]["node_type"] == "hitl_gate"
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        g = (p.meta or {}).get("canvas_graph") or {}
+        assert any(
+            n["id"].startswith("n_hitl_gate_") and n["id"] != "n_hitl_gate_old"
+            for n in g["nodes"]
+        )  # ещё НЕ удалено
+
+    # Подтверждение — удаляет.
+    r3 = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/confirm-remove",
+        json={"node_type": "hitl_gate"},
+    )
+    assert r3.status_code == 200, r3.text
+    assert "удалено 1" in r3.json()["remove_node"]
     async with factory() as session:
         p = await session.get(Project, project_id)
         g = (p.meta or {}).get("canvas_graph") or {}
         ids = [n["id"] for n in g["nodes"]]
-        # родная (не оркестраторская) hitl-нода выжила, добавленные удалены
+        # родная (не оркестраторская) hitl-нода выжила, добавленная удалена
         assert "n_hitl_gate_old" in ids
         assert not any(i.startswith("n_hitl_gate_") and i != "n_hitl_gate_old" for i in ids)
         assert len(_linear_order(g["nodes"], g["edges"])) == 3
 
-    # По конкретному ключу + неизвестный ключ → ошибка.
+    # По конкретному ключу: preview → confirm; неизвестный ключ → ошибка сразу.
     monkeypatch.setattr(
         "app.services.gpt_client.get_gpt_client",
         lambda: _FakeGpt('{"actions":[{"remove_node":{"node_key":"n_hitl_gate_old"}}]}'),
     )
-    r3 = await client.post(
+    r4 = await client.post(
         f"/api/db/projects/{project_id}/orchestrator/chat",
         json={"message": "удали старую проверку", "history": []},
     )
-    assert r3.json()["error"] is None
+    assert r4.json()["pending_confirm"][0]["node_key"] == "n_hitl_gate_old"
+    r5 = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/confirm-remove",
+        json={"node_key": "n_hitl_gate_old"},
+    )
+    assert r5.status_code == 200
     monkeypatch.setattr(
         "app.services.gpt_client.get_gpt_client",
         lambda: _FakeGpt('{"actions":[{"remove_node":{"node_key":"n_hack"}}]}'),
     )
-    r4 = await client.post(
+    r6 = await client.post(
         f"/api/db/projects/{project_id}/orchestrator/chat",
         json={"message": "удали n_hack", "history": []},
     )
-    assert "неизвестный node_key" in (r4.json()["error"] or "")
+    assert "неизвестный node_key" in (r6.json()["error"] or "")
 
 
 @pytest.mark.asyncio

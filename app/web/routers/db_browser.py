@@ -291,7 +291,9 @@ _ORCHESTRATOR_SYSTEM = (
     "В ответе называй, что именно добавил и после каких нод (см. СВЯЗИ).\n"
     "12) УДАЛИТЬ ноды → {\"actions\":[{\"remove_node\":{\"node_type\":\"hitl_gate\"}}]} "
     "(все добавленные оркестратором этого типа) или "
-    "{\"remove_node\":{\"node_key\":\"n_...\"}} (конкретную); цепочка перешивается.\n"
+    "{\"remove_node\":{\"node_key\":\"n_...\"}} (конкретную). Удаление НЕ "
+    "выполняется сразу: человек подтверждает кнопкой в чате. В ответе "
+    "называй, сколько и какие ноды будут удалены.\n"
     "13) ПРОГНАТЬ проверки (harness) → {\"actions\":[{\"run_harness\":true}]}.\n"
     "14) Вопрос/обсуждение без изменений — обычный текст.\n"
     "ТИПЫ НОД по-человечески (объясняй так, если спрашивают «что это»): "
@@ -973,14 +975,11 @@ async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -
     return {"add_node": f"{node_type} ×{len(new_nodes)} ({'каждой' if after == 'each' else after})"}
 
 
-async def _apply_remove_node(session: AsyncSession, project: Project, spec: dict) -> dict:
-    """Удалить ноды из графа проекта (meta.canvas_graph + снапшот прогона).
-
-    ``node_key`` — конкретная нода. ``node_type`` — все ноды этого типа,
-    ДОБАВЛЕННЫЕ оркестратором (маркер data.description); чужие/родные ноды
-    этого типа не трогаем. Рёбра перешиваются: prev → next.
-    """
-    from app.models import Workflow, WorkflowRun
+async def _remove_node_targets(
+    session: AsyncSession, project: Project, spec: dict
+) -> tuple[list[dict], list[dict], set[str]]:
+    """Граф + целевые node ids для удаления (БЕЗ записи — для preview/confirm)."""
+    from app.models import Workflow
 
     node_key = str((spec or {}).get("node_key") or "").strip()
     node_type = str((spec or {}).get("node_type") or "").strip()
@@ -1020,6 +1019,19 @@ async def _apply_remove_node(session: AsyncSession, project: Project, spec: dict
             raise db_apply.ApplyOpsError(
                 f"remove_node: нод типа {node_type!r}, добавленных оркестратором, нет"
             )
+    return nodes, edges, targets
+
+
+async def _apply_remove_node(session: AsyncSession, project: Project, spec: dict) -> dict:
+    """Удалить ноды из графа проекта (meta.canvas_graph + снапшот прогона).
+
+    ``node_key`` — конкретная нода. ``node_type`` — все ноды этого типа,
+    ДОБАВЛЕННЫЕ оркестратором (маркер data.description); чужие/родные ноды
+    этого типа не трогаем. Рёбра перешиваются: prev → next.
+    """
+    from app.models import WorkflowRun
+
+    nodes, edges, targets = await _remove_node_targets(session, project, spec)
 
     # Перешивка: prev → next для каждой удаляемой ноды.
     out_edges = [e for e in edges if str(e.get("source")) not in targets and str(e.get("target")) not in targets]
@@ -1034,6 +1046,7 @@ async def _apply_remove_node(session: AsyncSession, project: Project, spec: dict
                     )
     left_nodes = [n for n in nodes if str(n.get("id")) not in targets]
 
+    meta = dict(project.meta or {})
     meta["canvas_graph"] = {"nodes": left_nodes, "edges": out_edges}
     project.meta = meta
     run = (
@@ -1130,6 +1143,7 @@ async def orchestrator_chat(
     applied = None
     actions_run: list[dict] = []
     ui_actions: list[dict] = []
+    pending_confirm: list[dict] = []
     error = None
     ops_data = db_apply.extract_apply_ops_json(reply or "")
     if ops_data:
@@ -1224,10 +1238,19 @@ async def orchestrator_chat(
                         await _apply_add_node(session, project, act.get("add_node") or {})
                     )
                 elif "remove_node" in act:
-                    actions_run.append(
-                        await _apply_remove_node(
-                            session, project, act.get("remove_node") or {}
-                        )
+                    # Удаление — только с подтверждением человеком (кнопка в чате).
+                    spec = act.get("remove_node") or {}
+                    _nodes, _edges, targets = await _remove_node_targets(
+                        session, project, spec
+                    )
+                    pending_confirm.append(
+                        {
+                            "kind": "remove_node",
+                            "node_key": spec.get("node_key"),
+                            "node_type": spec.get("node_type"),
+                            "count": len(targets),
+                            "nodes": sorted(targets)[:20],
+                        }
                     )
                 elif act.get("run_harness"):
                     from app.services.agent_harness import run_harness_verify
@@ -1250,8 +1273,32 @@ async def orchestrator_chat(
         "applied": applied,
         "actions_run": actions_run,
         "ui_actions": ui_actions,
+        "pending_confirm": pending_confirm,
         "error": error,
     }
+
+
+class ConfirmRemoveBody(BaseModel):
+    node_key: str | None = None
+    node_type: str | None = None
+
+
+@router.post("/projects/{project_id}/orchestrator/confirm-remove")
+async def orchestrator_confirm_remove(
+    project_id: int,
+    body: ConfirmRemoveBody,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Подтверждённое удаление нод (кнопка «Подтвердить» в чате оркестратора)."""
+    project = await _project(session, project_id)
+    try:
+        return await _apply_remove_node(
+            session,
+            project,
+            {"node_key": body.node_key, "node_type": body.node_type},
+        )
+    except db_apply.ApplyOpsError as e:
+        raise HTTPException(400, str(e)) from None
 
 
 class FramePatch(BaseModel):
