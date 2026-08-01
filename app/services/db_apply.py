@@ -115,7 +115,8 @@ def extract_apply_ops_json(text: str) -> dict[str, Any] | None:
     if not text:
         return None
     candidates: list[str] = [m.group(1) for m in _JSON_FENCE_RE.finditer(text)]
-    idx = text.find('"ops"')
+    idxs = [i for i in (text.find('"ops"'), text.find('"actions"')) if i != -1]
+    idx = min(idxs) if idxs else -1
     if idx != -1:
         start = text.rfind("{", 0, idx)
         if start != -1:
@@ -134,7 +135,9 @@ def extract_apply_ops_json(text: str) -> dict[str, Any] | None:
             data = json.loads(cand)
         except Exception:  # noqa: BLE001
             continue
-        if isinstance(data, dict) and isinstance(data.get("ops"), list):
+        if isinstance(data, dict) and (
+            isinstance(data.get("ops"), list) or isinstance(data.get("actions"), list)
+        ):
             return data
     return None
 

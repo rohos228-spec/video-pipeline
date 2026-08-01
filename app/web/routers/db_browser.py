@@ -22,6 +22,7 @@ from app.models import (
     PromptVersion,
     Scene,
 )
+from app.orchestrator.node_registry import STEP_CODE_TO_NODE_TYPE
 from app.services import db_apply, db_v2
 from app.services.xlsx_v8_import import (
     ROW_DURATION_V8,
@@ -229,17 +230,78 @@ async def apply_ops(
 
 _ORCHESTRATOR_SYSTEM = (
     "Ты — оркестратор видеопроекта. Источник правды — база (НЕ Excel).\n"
-    "Тебе дан граф проекта: frames[] с uuid, number, voiceover_text, "
-    "image_prompt, animation_prompt, meaning, duration_seconds.\n"
-    "Если пользователь просит ИЗМЕНИТЬ данные — ответь ТОЛЬКО JSON:\n"
-    '{"ops":[{"frame_uuid":"<uuid из графа>","fields":{...}}]}\n'
+    "Тебе дан граф проекта (frames[] с uuid и полями) и состояние шагов "
+    "пайплайна.\n"
+    "ПОРЯДОК ШАГОВ — ТОЛЬКО ТАКОЙ (другого не существует, не выдумывай):\n"
+    "plan → script → split → hero → items → enrich_1..5 → img_pr → img → "
+    "anim_pr → video → audio → music → assemble → publish.\n"
+    "Отвечая про «следующий шаг», называй шаги из этого списка и опирайся "
+    "на состояние шагов из контекста.\n"
+    "ДЕЙСТВИЯ:\n"
+    "1) ИЗМЕНИТЬ данные → ТОЛЬКО JSON: "
+    '{"ops":[{"frame_uuid":"<uuid из графа>","fields":{...}}]}. '
     "Поля по-человечески: закадр, промт_картинки, промт_видео, смысл, "
-    "длительность, промт_картинки_2, промт_видео_2. Для общего плана: "
+    "длительность, промт_картинки_2, промт_видео_2; общий план: "
     '{"target":"project","fields":{"общий_план":"…"}}.\n'
-    "Не выдумывай uuid и поля — неизвестное = весь запрос отклонён. "
-    "Одна операция = один кадр; сколько кадров — столько операций.\n"
-    "Если это вопрос/обсуждение без изменений — ответь обычным текстом."
+    "2) ЗАПУСТИТЬ шаг → ТОЛЬКО JSON: "
+    '{"actions":[{"run_step":"<код шага>"}]} — код из списка выше '
+    "(например img_pr, img, anim_pr, video, audio, assemble).\n"
+    "3) Можно совместить: {\"ops\":[...], \"actions\":[...]}.\n"
+    "4) Вопрос/обсуждение без изменений и запусков — обычный текст.\n"
+    "Не выдумывай uuid, поля и коды шагов — неизвестное = отклонено. "
+    "Одна операция = один кадр."
 )
+
+_STEP_RU: dict[str, str] = {
+    "plan": "план",
+    "script": "сценарий",
+    "split": "разбивка на кадры",
+    "hero": "персонажи (референсы)",
+    "items": "предметы",
+    "enrich_1": "обогащение 1",
+    "enrich_2": "обогащение 2",
+    "enrich_3": "обогащение 3",
+    "enrich_4": "обогащение 4",
+    "enrich_5": "обогащение 5",
+    "img_pr": "промты картинок",
+    "img": "генерация картинок",
+    "anim_pr": "промты видео",
+    "video": "генерация видео",
+    "audio": "озвучка",
+    "music": "музыка",
+    "assemble": "монтаж",
+    "publish": "публикация",
+}
+
+
+def _pipeline_state_lines(project: Project) -> list[str]:
+    """Состояние шагов по реальному порядку пайплайна (для контекста модели)."""
+    from app.orchestrator.node_registry import (
+        LINEAR_RUNNING_PIPELINE,
+        NODE_TYPE_TO_READY,
+        NODE_TYPE_TO_RUNNING,
+        NODE_TYPE_TO_STEP_CODE,
+    )
+
+    ordered: list[str] = []
+    for _run, node_type in LINEAR_RUNNING_PIPELINE:
+        ordered.append(NODE_TYPE_TO_RUNNING[node_type].value)
+        ordered.append(NODE_TYPE_TO_READY[node_type].value)
+    current = project.status.value if project.status else ""
+    pos = ordered.index(current) if current in ordered else 0
+
+    lines = []
+    for i, (_run, node_type) in enumerate(LINEAR_RUNNING_PIPELINE):
+        ready_idx = 2 * i + 1
+        if ready_idx < pos:
+            state = "готово"
+        elif 2 * i <= pos:
+            state = "текущий"
+        else:
+            state = "ждёт"
+        step_code = NODE_TYPE_TO_STEP_CODE.get(node_type, node_type)
+        lines.append(f"- {step_code} ({_STEP_RU.get(step_code, step_code)}): {state}")
+    return lines
 
 
 def _cut(text: object, limit: int = 160) -> str:
@@ -296,6 +358,8 @@ async def orchestrator_chat(
     )
     prompt = (
         _ORCHESTRATOR_SYSTEM
+        + "\n\nШАГИ ПАЙПЛАЙНА (реальный порядок и состояние):\n"
+        + "\n".join(_pipeline_state_lines(project))
         + "\n\nГРАФ ПРОЕКТА:\n"
         + _orchestrator_context(graph)
         + ("\n\nИСТОРИЯ ДИАЛОГА:\n" + history_txt if history_txt else "")
@@ -310,21 +374,47 @@ async def orchestrator_chat(
         raise HTTPException(503, str(e)) from None
 
     applied = None
+    actions_run: list[dict] = []
     error = None
     ops_data = db_apply.extract_apply_ops_json(reply or "")
     if ops_data:
-        try:
-            applied = await db_apply.apply_ops(
-                session,
-                project,
-                ops_data["ops"],
-                export_xlsx=bool(ops_data.get("export_xlsx", True)),
-            )
-            await session.commit()
-        except db_apply.ApplyOpsError as e:
-            await session.rollback()
-            error = str(e)
-    return {"reply": reply, "applied": applied, "error": error}
+        ops = ops_data.get("ops") or []
+        if ops:
+            try:
+                applied = await db_apply.apply_ops(
+                    session,
+                    project,
+                    ops,
+                    export_xlsx=bool(ops_data.get("export_xlsx", True)),
+                )
+                await session.commit()
+            except db_apply.ApplyOpsError as e:
+                await session.rollback()
+                error = str(e)
+        for act in ops_data.get("actions") or []:
+            step = str((act or {}).get("run_step") or "").strip()
+            if not step:
+                continue
+            if step not in STEP_CODE_TO_NODE_TYPE:
+                error = f"неизвестный шаг {step!r}; разрешены: {sorted(STEP_CODE_TO_NODE_TYPE)}"
+                continue
+            try:
+                from app.services.project_steps import start_step
+
+                new_status = await start_step(
+                    session, project, step, explicit_ui_start=True
+                )
+                await session.commit()
+                actions_run.append({"run_step": step, "status": new_status.value})
+            except Exception as e:  # noqa: BLE001
+                await session.rollback()
+                error = f"запуск шага {step}: {e}"
+    return {
+        "reply": reply,
+        "applied": applied,
+        "actions_run": actions_run,
+        "error": error,
+    }
 
 
 class FramePatch(BaseModel):

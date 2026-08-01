@@ -373,6 +373,7 @@ export const api = {
     http<{
       reply: string;
       applied: { updated: number; exported: { frames: number; cells: number } | null } | null;
+      actions_run: { run_step: string; status: string }[];
       error: string | null;
     }>(
       `/api/db/projects/${projectId}/orchestrator/chat`,

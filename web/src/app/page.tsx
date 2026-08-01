@@ -11,6 +11,7 @@ import { FleetTransferBanner } from "@/components/fleet/fleet-transfer-banner";
 import { OutseeCreateWorkspace } from "@/components/outsee/outsee-create-workspace";
 import { GptWorkspace } from "@/components/gpt/gpt-workspace";
 import { BazaWorkspace } from "@/components/baza/baza-workspace";
+import { OrchestratorPanel } from "@/components/orchestrator/orchestrator-panel";
 import { useGlobalEvents } from "@/hooks/use-bus";
 import { useFleetTransfer, FLEET_TRANSFER_PUSH_START, optimisticPushTransfer } from "@/hooks/use-fleet-transfer";
 import { usePersistedState } from "@/hooks/use-persisted-state";
@@ -128,6 +129,7 @@ export default function HomePage() {
             }
             onDismiss={dismiss}
           />
+          <OrchestratorPanel projectId={selectedProjectId} />
         </main>
         <FleetPanelSheet
           open={fleetOpen}

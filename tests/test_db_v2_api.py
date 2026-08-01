@@ -25,7 +25,7 @@ app = create_app()
 
 @pytest_asyncio.fixture
 async def api_client(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'dbv2api.db'}")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -317,6 +317,40 @@ async def test_orchestrator_chat_plain_text_no_write(api_client, monkeypatch) ->
             )
         ).scalar_one()
         assert fr.voiceover_text == "реплика 1"  # не тронут
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_chat_runs_step_action(api_client, monkeypatch) -> None:
+    """Оркестратор может запустить шаг пайплайна: {"actions":[{"run_step":...}]}."""
+    client, project_id, factory = api_client
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"run_step":"anim_pr"}]}'),
+    )
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "запусти промты видео", "history": []},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["error"] is None
+    # Шаг запущен по пути UI-кнопки (start_step); гард anim_pr честно ответил
+    # «нечего генерировать» (нет PNG на диске) — статус не сменился, и это ок.
+    assert data["actions_run"] and data["actions_run"][0]["run_step"] == "anim_pr"
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        assert p.status is ProjectStatus.new
+
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"run_step":"hack"}]}'),
+    )
+    r_bad = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "запусти hack", "history": []},
+    )
+    assert r_bad.status_code == 200
+    assert "неизвестный шаг" in (r_bad.json()["error"] or "")
 
 
 @pytest.mark.asyncio

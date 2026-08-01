@@ -13,8 +13,6 @@ import {
   Users,
   Layers,
   FileSpreadsheet,
-  Send,
-  MessageSquare,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -85,9 +83,6 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
   const [frameId, setFrameId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState<"frames" | "entities">("frames");
-  const [chatLog, setChatLog] = useState<{ role: string; content: string }[]>([]);
-  const [chatInput, setChatInput] = useState("");
-  const [chatBusy, setChatBusy] = useState(false);
 
   const loadGraph = useCallback(async (pid: number) => {
     setLoading(true);
@@ -130,33 +125,6 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
     await loadGraph(projectId);
   }, [projectId, exportXlsx, loadGraph]);
 
-  const sendChat = useCallback(async () => {
-    if (projectId == null || !chatInput.trim() || chatBusy) return;
-    const msg = chatInput.trim();
-    setChatInput("");
-    setChatBusy(true);
-    const next = [...chatLog, { role: "user", content: msg }];
-    setChatLog(next);
-    try {
-      const r = await api.dbOrchestratorChat(projectId, msg, next.slice(-9, -1));
-      const note = r.error
-        ? `\n\n— Ошибка применения: ${r.error}`
-        : r.applied
-          ? `\n\n— Применено операций: ${r.applied.updated}${
-              r.applied.exported ? `, в Excel записано ячеек: ${r.applied.exported.cells}` : ""
-            }`
-          : "";
-      setChatLog([...next, { role: "assistant", content: (r.reply || "(пустой ответ)") + note }]);
-      if (r.applied) void loadGraph(projectId);
-    } catch (e) {
-      setChatLog([
-        ...next,
-        { role: "assistant", content: `Ошибка: ${e instanceof Error ? e.message : e}` },
-      ]);
-    } finally {
-      setChatBusy(false);
-    }
-  }, [projectId, chatInput, chatBusy, chatLog, loadGraph]);
 
   const frame: DbFrame | null = useMemo(
     () => graph?.frames.find((f) => f.id === frameId) ?? null,
@@ -336,53 +304,6 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
             </div>
           )}
         </aside>
-      </div>
-
-      {/* Диалог с оркестратором по этому проекту */}
-      <div className="flex h-44 shrink-0 flex-col border-t border-white/[0.06]">
-        <div className="flex items-center gap-2 px-3 pt-2 text-[10px] uppercase tracking-[0.18em] text-white/40">
-          <MessageSquare className="h-3 w-3" />
-          Оркестратор — пиши по-русски, он сам правит базу
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-1.5">
-          {chatLog.length === 0 ? (
-            <div className="text-[11px] text-white/25">
-              Например: «перепиши закадр во 2 кадре на …» или «сделай промты видео
-              динамичнее». Ответ-изменение применяется к базе и сразу виден выше.
-            </div>
-          ) : (
-            chatLog.map((m, i) => (
-              <div key={i} className="mb-1.5 text-[11px]">
-                <span className={m.role === "user" ? "text-primary" : "text-white/50"}>
-                  {m.role === "user" ? "ты" : "оркестратор"}:{" "}
-                </span>
-                <span className="whitespace-pre-wrap text-white/80">{m.content}</span>
-              </div>
-            ))
-          )}
-        </div>
-        <div className="flex items-center gap-2 px-3 pb-2">
-          <input
-            value={chatInput}
-            onChange={(e) => setChatInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && void sendChat()}
-            disabled={projectId == null || chatBusy}
-            placeholder={
-              projectId == null ? "сначала открой проект" : "сообщение оркестратору…"
-            }
-            className="h-8 flex-1 rounded-md border border-white/10 bg-black/40 px-2 text-xs disabled:opacity-40"
-          />
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={projectId == null || chatBusy || !chatInput.trim()}
-            onClick={() => void sendChat()}
-            className="gap-1.5 text-xs"
-          >
-            <Send className="h-3.5 w-3.5" />
-            {chatBusy ? "…" : "Отправить"}
-          </Button>
-        </div>
       </div>
     </div>
   );
