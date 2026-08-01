@@ -14,6 +14,7 @@ interface PendingRemove {
   kind: string;
   node_key?: string | null;
   node_type?: string | null;
+  only?: string | null;
   count: number;
   nodes: string[];
   resolved?: boolean;
@@ -158,6 +159,7 @@ export function OrchestratorPanel({ projectId }: Props) {
           const r = await api.dbOrchestratorConfirmRemove(projectId, {
             node_key: confirm.node_key,
             node_type: confirm.node_type,
+            only: confirm.only,
           });
           setChatLog((prev) => [
             ...prev.map((m, i) =>
@@ -225,7 +227,8 @@ export function OrchestratorPanel({ projectId }: Props) {
                       <Trash2 className="h-3.5 w-3.5 text-red-400" />
                       <span className="flex-1 text-[11px] text-white/80">
                         Удалить {m.confirm.count} нод
-                        {m.confirm.node_type ? ` типа «${m.confirm.node_type}»` : ""}?
+                        {m.confirm.node_type ? ` типа «${m.confirm.node_type}»` : ""}
+                        {m.confirm.only === "duplicates" ? " (только дубли)" : ""}?
                       </span>
                       <Button
                         size="sm"

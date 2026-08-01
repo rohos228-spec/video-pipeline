@@ -962,6 +962,102 @@ async def test_add_node_excel_gpt_gets_slot_index(api_client, monkeypatch) -> No
 
 
 @pytest.mark.asyncio
+async def test_add_node_labels_by_parent_and_rename(api_client, monkeypatch) -> None:
+    """Новые проверки подписаны по родителю; rename_node меняет подпись."""
+    from app.models import Workflow
+
+    client, project_id, factory = api_client
+    async with factory() as session:
+        session.add(
+            Workflow(
+                name="default",
+                is_default=True,
+                nodes=[
+                    {"id": "n_plan", "type": "plan", "position": {"x": 0.0, "y": 0.0}, "data": {"label": "Сценарий"}},
+                    {"id": "n_script", "type": "script", "position": {"x": 290.0, "y": 0.0}, "data": {"label": "Закадровый текст"}},
+                ],
+                edges=[{"id": "e0", "source": "n_plan", "target": "n_script"}],
+            )
+        )
+        await session.commit()
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"add_node":{"node_type":"excel_gpt","after":"each"}}]}'),
+    )
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "добавь работу с гпт после каждой", "history": []},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["error"] is None
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        g = (p.meta or {})["canvas_graph"]
+        labels = [
+            str((n.get("data") or {}).get("label") or "")
+            for n in g["nodes"]
+            if str(n.get("type")) == "excel_gpt"
+        ]
+        assert any("Сценарий" in lab for lab in labels)
+        assert any("Закадровый текст" in lab for lab in labels)
+
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"rename_node":{"node_key":"n_plan","label":"План ролика"}}]}'),
+    )
+    r2 = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "переименуй n_plan", "history": []},
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["error"] is None
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        g = (p.meta or {})["canvas_graph"]
+        plan = next(n for n in g["nodes"] if n["id"] == "n_plan")
+        assert (plan.get("data") or {}).get("label") == "План ролика"
+
+
+@pytest.mark.asyncio
+async def test_remove_node_only_duplicates(api_client) -> None:
+    """only=duplicates: удаляется только вторая подряд проверка, остальные целы."""
+    from app.web.routers.db_browser import _linear_order
+
+    client, project_id, factory = api_client
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        meta = dict(p.meta or {})
+        meta["canvas_graph"] = {
+            "nodes": [
+                {"id": "n_plan", "type": "plan", "position": {"x": 0.0, "y": 0.0}, "data": {}},
+                {"id": "n_hitl_gate_1", "type": "hitl_gate", "position": {"x": 100.0, "y": 160.0}, "data": {"description": "добавлено оркестратором"}},
+                {"id": "n_hitl_gate_2", "type": "hitl_gate", "position": {"x": 200.0, "y": 160.0}, "data": {"description": "добавлено оркестратором"}},
+                {"id": "n_script", "type": "script", "position": {"x": 290.0, "y": 0.0}, "data": {}},
+            ],
+            "edges": [
+                {"id": "e0", "source": "n_plan", "target": "n_hitl_gate_1"},
+                {"id": "e1", "source": "n_hitl_gate_1", "target": "n_hitl_gate_2"},
+                {"id": "e2", "source": "n_hitl_gate_2", "target": "n_script"},
+            ],
+        }
+        p.meta = meta
+        await session.commit()
+
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/confirm-remove",
+        json={"node_type": "hitl_gate", "only": "duplicates"},
+    )
+    assert r.status_code == 200, r.text
+    assert "удалено 1" in r.json()["remove_node"]
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        g = (p.meta or {})["canvas_graph"]
+        ids = [n["id"] for n in g["nodes"]]
+        assert "n_hitl_gate_1" in ids and "n_hitl_gate_2" not in ids
+        assert _linear_order(g["nodes"], g["edges"]) == ["n_plan", "n_hitl_gate_1", "n_script"]
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_chat_run_harness_action(api_client, monkeypatch) -> None:
     """run_harness → свежий прогон проверок, итог в actions_run."""
     client, project_id, factory = api_client

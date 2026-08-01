@@ -383,7 +383,7 @@ export const api = {
         run_harness?: string;
       }[];
       ui_actions: { kind: string; step?: string; node_type?: string; node_key?: string; hitl_id?: number; project_id?: number }[];
-      pending_confirm: { kind: string; node_key?: string | null; node_type?: string | null; count: number; nodes: string[] }[];
+      pending_confirm: { kind: string; node_key?: string | null; node_type?: string | null; only?: string | null; count: number; nodes: string[] }[];
       error: string | null;
     }>(
       `/api/db/projects/${projectId}/orchestrator/chat`,
@@ -394,7 +394,7 @@ export const api = {
       // GPT-вызов длинный (контекст графа + ответ): 10 минут, как ask_fresh.
       600_000,
     ),
-  dbOrchestratorConfirmRemove: (projectId: number, body: { node_key?: string | null; node_type?: string | null }) =>
+  dbOrchestratorConfirmRemove: (projectId: number, body: { node_key?: string | null; node_type?: string | null; only?: string | null }) =>
     http<{ remove_node: string }>(`/api/db/projects/${projectId}/orchestrator/confirm-remove`, {
       method: "POST",
       body: JSON.stringify(body),

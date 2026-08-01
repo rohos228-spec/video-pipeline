@@ -289,11 +289,14 @@ _ORCHESTRATOR_SYSTEM = (
     "after=\"<node_key>\". «Нода проверки»: hitl_gate = аппрув человеком, "
     "excel_gpt = автопроверка GPT — уточни у пользователя, если неясно. "
     "В ответе называй, что именно добавил и после каких нод (см. СВЯЗИ).\n"
-    "12) УДАЛИТЬ ноды → {\"actions\":[{\"remove_node\":{\"node_type\":\"hitl_gate\"}}]} "
-    "(все добавленные оркестратором этого типа) или "
-    "{\"remove_node\":{\"node_key\":\"n_...\"}} (конкретную). Удаление НЕ "
-    "выполняется сразу: человек подтверждает кнопкой в чате. В ответе "
-    "называй, сколько и какие ноды будут удалены.\n"
+    "12) УДАЛИТЬ ноды → {\"actions\":[{\"remove_node\":{\"node_type\":\"X\"}}]} "
+    "(все добавленные оркестратором типа X — ТОЛЬКО если прямо просят «удали "
+    "ВСЕ»), {\"remove_node\":{\"node_type\":\"X\",\"only\":\"duplicates\"}} — "
+    "ТОЛЬКО дубли (две проверки подряд): «лишние удали» = всегда duplicates, "
+    "или {\"remove_node\":{\"node_key\":\"n_...\"}} (конкретную). Удаление НЕ "
+    "выполняется сразу: человек подтверждает кнопкой в чате.\n"
+    "ПЕРЕИМЕНОВАТЬ ноду → {\"actions\":[{\"rename_node\":{\"node_key\":\"n_...\",\"label\":\"…\"}}]}. "
+    "Новые проверки подписываются по родителю автоматически («Проверка — Сценарий»).\n"
     "13) ПОЧИНИТЬ граф (после удалений/разрывов) → "
     "{\"actions\":[{\"repair_graph\":true}]} — цепочка пересобирается слева "
     "направо по канвасу.\n"
@@ -870,8 +873,10 @@ async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -
             f"add_node: неизвестный тип {node_type!r}; есть: {sorted(_all_node_types())}"
         )
     after = str((spec or {}).get("after") or "each").strip()
-    label = str((spec or {}).get("label") or "").strip() or (
-        "Проверка" if node_type.startswith("hitl") else node_type
+    base_label = str((spec or {}).get("label") or "").strip() or (
+        "Проверка"
+        if node_type.startswith("hitl")
+        else ("Работа с GPT" if node_type == "excel_gpt" else node_type)
     )
 
     meta = dict(project.meta or {})
@@ -935,13 +940,18 @@ async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -
         ]
         next_slot = max(existing_slots, default=0) + 1
 
-    for _nid in targets:
+    for nid in targets:
         k += 1
         new_id = f"n_{node_type}_{k}"
         while new_id in existing_ids:
             k += 1
             new_id = f"n_{node_type}_{k}"
         existing_ids.add(new_id)
+        # Подпись по родителю: «Проверка — Сценарий», «Работа с GPT — Картинки».
+        parent_label = str(
+            (by_id[nid].get("data") or {}).get("label") or by_id[nid].get("type") or nid
+        )
+        node_label = f"{base_label} — {parent_label}"
         new_nodes.append(
             {
                 "id": new_id,
@@ -951,7 +961,7 @@ async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -
                     "y": max_y + 160.0,
                 },
                 "data": {
-                    "label": label,
+                    "label": node_label,
                     "description": "добавлено оркестратором",
                     **(
                         {"slotIndex": next_slot + len(new_nodes)}
@@ -1036,17 +1046,43 @@ async def _remove_node_targets(
             )
         targets = {node_key}
     else:
-        targets = {
-            str(n.get("id"))
-            for n in nodes
-            if str(n.get("type")) == node_type
-            and str((n.get("data") or {}).get("description") or "")
-            == "добавлено оркестратором"
-        }
-        if not targets:
+        only = str((spec or {}).get("only") or "").strip()
+        if only == "duplicates":
+            # Только «две проверки подряд»: вторую (оркестраторскую) — в удаление.
+            order = _linear_order(nodes, edges)
+            type_by_id = {nid: str(by_id[nid].get("type")) for nid in order}
+            targets = set()
+            prev = ""
+            for nid in order:
+                if (
+                    type_by_id[nid] == node_type
+                    and prev
+                    and type_by_id.get(prev) == node_type
+                ):
+                    desc = str((by_id[nid].get("data") or {}).get("description") or "")
+                    if desc == "добавлено оркестратором":
+                        targets.add(nid)
+                prev = nid
+            if not targets:
+                raise db_apply.ApplyOpsError(
+                    f"remove_node: дублей типа {node_type!r} подряд нет"
+                )
+        elif only:
             raise db_apply.ApplyOpsError(
-                f"remove_node: нод типа {node_type!r}, добавленных оркестратором, нет"
+                f"remove_node: неизвестный only {only!r} (есть: duplicates)"
             )
+        else:
+            targets = {
+                str(n.get("id"))
+                for n in nodes
+                if str(n.get("type")) == node_type
+                and str((n.get("data") or {}).get("description") or "")
+                == "добавлено оркестратором"
+            }
+            if not targets:
+                raise db_apply.ApplyOpsError(
+                    f"remove_node: нод типа {node_type!r}, добавленных оркестратором, нет"
+                )
     return nodes, edges, targets
 
 
@@ -1154,6 +1190,58 @@ async def _apply_repair_graph(session: AsyncSession, project: Project) -> dict:
         run.edges_snapshot = list(new_edges)
     await session.commit()
     return {"repair_graph": f"цепочка пересобрана: {len(nodes)} нод слева направо"}
+
+
+async def _apply_rename_node(session: AsyncSession, project: Project, spec: dict) -> dict:
+    """Переименовать ноду графа (data.label) — подпись проверок и т.п."""
+    from app.models import Workflow, WorkflowRun
+
+    node_key = str((spec or {}).get("node_key") or "").strip()
+    label = str((spec or {}).get("label") or "").strip()
+    if not node_key or not label:
+        raise db_apply.ApplyOpsError("rename_node: нужны node_key и label")
+
+    meta = dict(project.meta or {})
+    graph = meta.get("canvas_graph")
+    if not isinstance(graph, dict) or not graph.get("nodes"):
+        wf = (
+            await session.execute(
+                select(Workflow).where(Workflow.is_default.is_(True))
+            )
+        ).scalars().first()
+        if wf is None:
+            raise db_apply.ApplyOpsError("rename_node: нет workflow для проекта")
+        graph = {"nodes": list(wf.nodes or []), "edges": list(wf.edges or [])}
+    nodes = [dict(n) for n in graph["nodes"]]
+    edges = list(graph.get("edges") or [])
+    hit = None
+    for n in nodes:
+        if str(n.get("id")) == node_key:
+            hit = n
+            break
+    if hit is None:
+        raise db_apply.ApplyOpsError(
+            f"rename_node: неизвестный node_key {node_key!r} (см. НОДЫ КАНВАСА)"
+        )
+    data = dict(hit.get("data") or {})
+    old_label = str(data.get("label") or "")
+    data["label"] = label
+    hit["data"] = data
+
+    meta["canvas_graph"] = {"nodes": nodes, "edges": edges}
+    project.meta = meta
+    run = (
+        await session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == project.id)
+            .order_by(WorkflowRun.id.desc())
+        )
+    ).scalars().first()
+    if run is not None:
+        run.nodes_snapshot = list(nodes)
+        run.edges_snapshot = list(edges)
+    await session.commit()
+    return {"rename_node": f"{node_key}: «{old_label}» → «{label}»"}
 
 
 def _cut(text: object, limit: int = 160) -> str:
@@ -1332,6 +1420,12 @@ async def orchestrator_chat(
                     )
                 elif act.get("repair_graph"):
                     actions_run.append(await _apply_repair_graph(session, project))
+                elif "rename_node" in act:
+                    actions_run.append(
+                        await _apply_rename_node(
+                            session, project, act.get("rename_node") or {}
+                        )
+                    )
                 elif "remove_node" in act:
                     # Удаление — только с подтверждением человеком (кнопка в чате).
                     spec = act.get("remove_node") or {}
@@ -1343,6 +1437,7 @@ async def orchestrator_chat(
                             "kind": "remove_node",
                             "node_key": spec.get("node_key"),
                             "node_type": spec.get("node_type"),
+                            "only": spec.get("only"),
                             "count": len(targets),
                             "nodes": sorted(targets)[:20],
                         }
@@ -1376,6 +1471,7 @@ async def orchestrator_chat(
 class ConfirmRemoveBody(BaseModel):
     node_key: str | None = None
     node_type: str | None = None
+    only: str | None = None
 
 
 @router.post("/projects/{project_id}/orchestrator/confirm-remove")
@@ -1390,7 +1486,7 @@ async def orchestrator_confirm_remove(
         return await _apply_remove_node(
             session,
             project,
-            {"node_key": body.node_key, "node_type": body.node_type},
+            {"node_key": body.node_key, "node_type": body.node_type, "only": body.only},
         )
     except db_apply.ApplyOpsError as e:
         raise HTTPException(400, str(e)) from None
