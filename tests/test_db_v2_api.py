@@ -1243,6 +1243,32 @@ def test_extract_apply_ops_json_variants() -> None:
 
 
 @pytest.mark.asyncio
+async def test_graph_includes_harness_summary(api_client) -> None:
+    """Граф отдаёт сводку последних проверок (чип «Проверки» в «Базе»)."""
+    client, project_id, factory = api_client
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        meta = dict(p.meta or {})
+        meta["ops_telemetry"] = {
+            "updated_at": "t",
+            "last_outcome": "verify_fail",
+            "checks": [
+                {"name": "scenes_png", "ok": False, "detail": "n=0"},
+                {"name": "project_xlsx", "ok": True, "detail": "ok"},
+            ],
+            "next_action": "repair:img",
+        }
+        p.meta = meta
+        await session.commit()
+    r = await client.get(f"/api/db/projects/{project_id}/graph")
+    assert r.status_code == 200
+    h = r.json()["harness"]
+    assert h["outcome"] == "verify_fail"
+    assert h["failed"] == ["scenes_png"]
+    assert h["total"] == 2
+
+
+@pytest.mark.asyncio
 async def test_export_xlsx_button_writes_plan_rows(api_client, tmp_path) -> None:
     client, project_id, factory = api_client
     r = await client.post(f"/api/db/projects/{project_id}/export-xlsx")

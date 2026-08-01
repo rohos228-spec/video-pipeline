@@ -166,6 +166,18 @@ async def db_graph(
     await session.commit()
     graph = await db_v2.project_graph(session, project)
     graph["excel_rows"] = _excel_rows_for_project(project)
+    # Сводка последних проверок — чип «Проверки» в «Базе».
+    from app.services.agent_harness import read_ops_telemetry
+
+    tel = read_ops_telemetry(project.meta if isinstance(project.meta, dict) else {})
+    checks = tel.get("checks") or []
+    graph["harness"] = {
+        "outcome": tel.get("last_outcome"),
+        "updated_at": tel.get("updated_at"),
+        "total": len(checks),
+        "failed": [c.get("name") for c in checks if not c.get("ok")],
+        "next_action": tel.get("next_action"),
+    }
     return graph
 
 

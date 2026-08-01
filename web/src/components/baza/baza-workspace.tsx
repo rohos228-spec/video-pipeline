@@ -13,6 +13,8 @@ import {
   Users,
   Layers,
   FileSpreadsheet,
+  ShieldCheck,
+  ShieldAlert,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -176,6 +178,27 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <HarnessChip
+            graph={graph}
+            disabled={projectId == null}
+            onRun={async () => {
+              if (projectId == null) return;
+              try {
+                const r = await api.runHarnessVerify(projectId);
+                const bad = (r.checks ?? []).filter((c) => !c.ok);
+                if (bad.length) {
+                  toast.error(
+                    `Проверки НЕ ОК (${bad.length}): ${bad.map((c) => c.name).join(", ")}`,
+                  );
+                } else {
+                  toast.success("Проверки ОК");
+                }
+              } catch (e) {
+                toast.error(`Проверки: ${e instanceof Error ? e.message : e}`);
+              }
+              await reload();
+            }}
+          />
           <Button
             variant="outline"
             size="sm"
@@ -306,6 +329,61 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
         </aside>
       </div>
     </div>
+  );
+}
+
+function HarnessChip({
+  graph,
+  disabled,
+  onRun,
+}: {
+  graph: DbGraph | null;
+  disabled: boolean;
+  onRun: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const h = graph?.harness;
+  const failed = h?.failed ?? [];
+  const ok = h?.outcome === "verify_pass";
+  const bad = h?.outcome === "verify_fail";
+  return (
+    <button
+      type="button"
+      disabled={disabled || busy}
+      title={
+        h?.updated_at
+          ? `Последний прогон: ${h.updated_at}${h?.next_action && h.next_action !== "none" ? ` · ${h.next_action}` : ""}. Нажми — прогнать снова.`
+          : "Прогонов проверок ещё не было. Нажми — прогнать."
+      }
+      onClick={async () => {
+        setBusy(true);
+        try {
+          await onRun();
+        } finally {
+          setBusy(false);
+        }
+      }}
+      className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] ${
+        ok
+          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+          : bad
+            ? "border-red-500/30 bg-red-500/10 text-red-300"
+            : "border-white/10 bg-white/[0.03] text-white/50"
+      }`}
+    >
+      {ok ? (
+        <ShieldCheck className="h-3.5 w-3.5" />
+      ) : (
+        <ShieldAlert className="h-3.5 w-3.5" />
+      )}
+      {busy
+        ? "проверяю…"
+        : ok
+          ? `Проверки ОК (${h?.total ?? 0})`
+          : bad
+            ? `НЕ ОК: ${failed.length}`
+            : "Проверки"}
+    </button>
   );
 }
 

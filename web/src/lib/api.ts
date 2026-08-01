@@ -313,12 +313,21 @@ export interface DbExcelRow {
   items: string | null;
 }
 
+export interface DbHarnessSummary {
+  outcome: string | null;
+  updated_at: string | null;
+  total: number;
+  failed: string[];
+  next_action: string | null;
+}
+
 export interface DbGraph {
   project: { id: number; slug: string; title: string | null; topic: string | null; status: string | null };
   scenes: DbScene[];
   frames: DbFrame[];
   entities: DbEntity[];
   excel_rows?: Record<string, DbExcelRow>;
+  harness?: DbHarnessSummary;
 }
 
 export const api = {
@@ -399,6 +408,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  runHarnessVerify: (projectId: number) =>
+    http<{ ok: boolean; checks: { name: string; ok: boolean; detail: string }[] }>(
+      `/api/projects/${projectId}/harness/verify?include_http=false`,
+      { method: "POST" },
+      120_000,
+    ),
 
   // ── Workflows ────────────────────────────────────────────────────
   listWorkflows: () => http<WorkflowSummary[]>(`/api/workflows`),
