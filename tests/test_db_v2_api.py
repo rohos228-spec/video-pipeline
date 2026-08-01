@@ -1197,9 +1197,16 @@ async def test_add_node_each_gives_check_after_work_excel_gpt(api_client) -> Non
         # после «Теста» (рабочая excel_gpt) стоит проверка
         idx = order.index("n_excel_gpt_1")
         assert type_by_id[order[idx + 1]] == "excel_gpt"
-        # двух проверок подряд нет
+        # двух ПРОВЕРОК подряд нет (проверка = маркер «добавлено оркестратором»;
+        # рабочая «Тест» + её проверка — одинаковый тип, это законно)
+        marked = {
+            n["id"]
+            for n in g["nodes"]
+            if str((n.get("data") or {}).get("description") or "")
+            == "добавлено оркестратором"
+        }
         for a, b in zip(order, order[1:], strict=False):
-            assert not (type_by_id[a] == "excel_gpt" and type_by_id[b] == "excel_gpt")
+            assert not (a in marked and b in marked)
 
 
 @pytest.mark.asyncio
