@@ -992,6 +992,67 @@ async def continue_project_pipeline(
 # ============================================================
 
 
+_HARNESS_GATE_OBSERVABILITY = frozenset({"project_log_clean", "node_runs_failed"})
+
+
+async def _harness_gate(
+    session: AsyncSession, project: Project, status: ProjectStatus
+) -> bool:
+    """Центральный harness-гейт: не продвигать *_ready статус при плохих данных.
+
+    Блок — только проверки данных (status-aware); наблюдаемость (лог,
+    старые failed-записи) — телеметрия, не блок. 3 фейла подряд на одном
+    статусе → paused (снятие — ручной ▶ после фикса). Выключение:
+    HARNESS_GATE_DISABLED=true.
+    """
+    from app.services.agent_harness import run_harness_verify
+
+    if settings.harness_gate_disabled:
+        return True
+    report = await run_harness_verify(
+        session, project, allow_repair=False, include_http=False
+    )
+    gate_checks = [
+        c for c in report.checks if c.name not in _HARNESS_GATE_OBSERVABILITY
+    ]
+    bad = [c for c in gate_checks if not c.ok]
+    if not bad:
+        meta0 = dict(project.meta or {})
+        if meta0.pop("harness_gate_fails", None) is not None:
+            project.meta = meta0
+        return True
+    names = [f"{c.name}({c.detail})" for c in bad]
+    meta = dict(project.meta or {})
+    fails = dict(meta.get("harness_gate_fails") or {})
+    key = status.value
+    fails[key] = int(fails.get(key, 0)) + 1
+    meta["harness_gate_fails"] = fails
+    project.meta = meta
+    await session.flush()
+    if fails[key] >= 3:
+        project.status = ProjectStatus.paused
+        meta2 = dict(project.meta or {})
+        meta2["auto_paused_reason"] = f"harness gate: {status.value} — {names}"
+        meta2.pop("harness_gate_fails", None)
+        project.meta = meta2
+        await session.flush()
+        logger.warning(
+            "auto_advance: #{} harness gate PAUSED: {} — {}",
+            project.id,
+            status.value,
+            names,
+        )
+    else:
+        logger.warning(
+            "auto_advance: #{} harness gate hold {} (fail {}/3): {}",
+            project.id,
+            status.value,
+            fails[key],
+            names,
+        )
+    return False
+
+
 async def maybe_auto_advance(
     session: AsyncSession, project: Project, bot: Bot, *, force: bool = False
 ) -> bool:
@@ -1086,6 +1147,10 @@ async def maybe_auto_advance(
             project.id,
             status.value,
         )
+        return False
+
+    # Центральный harness-гейт: проверка данных перед продвижением из ready.
+    if not await _harness_gate(session, project, status):
         return False
 
     from app.services.gen_queue import (

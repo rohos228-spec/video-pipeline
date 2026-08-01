@@ -1135,6 +1135,32 @@ async def test_repair_then_add_each_works(api_client, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_central_harness_gate_blocks_and_pauses(api_client, monkeypatch, tmp_path) -> None:
+    """Центральный гейт: плохие данные → hold ×3 → paused; хорошие → пропуск."""
+    from app.orchestrator.auto_advance import _harness_gate
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "harness_gate_disabled", False)
+    client, project_id, factory = api_client
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        p.status = ProjectStatus.plan_ready
+        await session.commit()
+        assert await _harness_gate(session, p, p.status) is True  # данные ок
+
+    (tmp_path / "videos" / "dbv2-api" / "project.xlsx").unlink()
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        await session.refresh(p)
+        assert await _harness_gate(session, p, p.status) is False
+        assert p.status is ProjectStatus.plan_ready  # hold, ещё не paused
+        assert await _harness_gate(session, p, p.status) is False
+        assert await _harness_gate(session, p, p.status) is False
+        assert p.status is ProjectStatus.paused  # 3 фейла подряд → paused
+        assert "harness gate" in (p.meta or {}).get("auto_paused_reason", "")
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_chat_run_harness_action(api_client, monkeypatch) -> None:
     """run_harness → свежий прогон проверок, итог в actions_run."""
     client, project_id, factory = api_client

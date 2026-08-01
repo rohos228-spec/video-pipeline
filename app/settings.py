@@ -183,6 +183,9 @@ class Settings(BaseSettings):
 
     # Paths
     data_dir: Path = Field(Path("./data"), alias="DATA_DIR")
+    # Центральный harness-гейт перед продвижением *_ready статусов (auto_advance).
+    # True — выключить гейт (только диагностика, без блокировки продвижения).
+    harness_gate_disabled: bool = Field(False, alias="HARNESS_GATE_DISABLED")
     # Явный путь к .xlsx-шаблону для новых project.xlsx (иначе — newest v8 в templates/)
     project_xlsx_template: Path | None = Field(None, alias="PROJECT_XLSX_TEMPLATE")
 
