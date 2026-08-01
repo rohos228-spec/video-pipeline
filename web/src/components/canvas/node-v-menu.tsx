@@ -402,7 +402,7 @@ export function NodeVMenu({
           {hasAssets && onOpenAssets && (
             <MenuAction icon={Eye} label="Файлы и превью" onClick={onOpenAssets} />
           )}
-          {excelSlot && !isExcelGptNode(nodeType) && (
+          {excelSlot != null && projectId != null && (
             <MenuAction
               icon={FileSpreadsheet}
               label="Просмотр Excel"

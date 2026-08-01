@@ -247,10 +247,11 @@ async def ensure_project_run(
     p = await session.get(Project, project_id)
     if p is None:
         raise HTTPException(status_code=404, detail="project not found")
-    wf_id = await _get_default_workflow_id()
+    wf_id = await _get_default_workflow_id(session)
     if wf_id is None:
         raise HTTPException(status_code=404, detail="default workflow not found")
-    run_id = await ensure_run_for_project(project_id, wf_id)
+    run_id = await ensure_run_for_project(project_id, wf_id, session=session)
+    await session.commit()
     return {"run_id": run_id}
 
 

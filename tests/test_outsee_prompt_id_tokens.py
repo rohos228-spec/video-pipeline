@@ -19,4 +19,5 @@ def test_prompt_id_search_tokens_uniquified_retry() -> None:
 
 
 def test_gallery_id_scan_limit_is_ten() -> None:
-    assert _GALLERY_ID_SCAN_LIMIT == 10
+    # Лимит расширен: больше ID в галерее Outsee при длинных очередях.
+    assert _GALLERY_ID_SCAN_LIMIT == 80

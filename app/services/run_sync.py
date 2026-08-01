@@ -68,9 +68,18 @@ async def _get_default_workflow_id(
         return await _lookup(s)
 
 
-async def ensure_run_for_project(project_id: int, workflow_id: int) -> int:
-    """Гарантирует, что у проекта есть WorkflowRun. Возвращает его id."""
-    async with session_scope() as s:
+async def ensure_run_for_project(
+    project_id: int,
+    workflow_id: int,
+    session: AsyncSession | None = None,
+) -> int:
+    """Гарантирует, что у проекта есть WorkflowRun. Возвращает его id.
+
+    ``session`` — опционально: использовать уже открытую сессию (тесты / API
+    с dependency override), иначе ``session_scope`` глобальной БД.
+    """
+
+    async def _ensure(s: AsyncSession) -> int:
         existing = (
             await s.execute(
                 select(WorkflowRun).where(WorkflowRun.project_id == project_id)
@@ -111,6 +120,11 @@ async def ensure_run_for_project(project_id: int, workflow_id: int) -> int:
             s.add(nr)
         await s.flush()
         return run.id
+
+    if session is not None:
+        return await _ensure(session)
+    async with session_scope() as s:
+        return await _ensure(s)
 
 
 from app.orchestrator.node_registry import (
@@ -208,10 +222,15 @@ def _aggregate_workflow_run_status(
             run.finished_at = now
 
 
-async def sync_run_for_project(project_id: int) -> None:
-    """Синхронизировать skipped/disabled и агрегировать WorkflowRun (без повышения статусов)."""
+async def sync_run_for_project(
+    project_id: int, session: AsyncSession | None = None
+) -> None:
+    """Синхронизировать skipped/disabled и агрегировать WorkflowRun (без повышения статусов).
 
-    async with session_scope() as s:
+    ``session`` — опционально (тесты / API override); иначе глобальный session_scope.
+    """
+
+    async def _sync(s: AsyncSession) -> None:
         project = await s.get(Project, project_id)
         if project is None:
             return
@@ -338,6 +357,12 @@ async def sync_run_for_project(project_id: int) -> None:
                 )
 
         _aggregate_workflow_run_status(run, project)
+
+    if session is not None:
+        await _sync(session)
+        return
+    async with session_scope() as s:
+        await _sync(s)
 
 
 async def sync_all_active_projects() -> None:

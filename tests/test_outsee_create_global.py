@@ -12,7 +12,7 @@ def test_default_settings_keys(tmp_path: Path, monkeypatch):
     s = oc._load_settings()
     assert s["media_type"] == "image"
     assert s["image_slug"] == "gpt-image-2"
-    assert s["video_slug"] == "kling-3-0"
+    assert s["video_slug"] == "sora-2"
     assert s["audio_slug"] == "suno-5-5"
     assert "prompt" in s
 

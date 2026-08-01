@@ -121,8 +121,8 @@ async def finish_missing_images(
 
     p = _project_or_404(await session.get(Project, project_id))
     info = await trigger_finish_missing_images(session, p)
+    await sync_run_for_project(project_id, session=session)
     await session.commit()
-    await sync_run_for_project(project_id)
     await session.refresh(p)
     await publish_project_event(
         project_id,
@@ -141,8 +141,8 @@ async def resume_animation_prompts(
 
     p = _project_or_404(await session.get(Project, project_id))
     info = await trigger_resume_animation_prompts(session, p)
+    await sync_run_for_project(project_id, session=session)
     await session.commit()
-    await sync_run_for_project(project_id)
     await session.refresh(p)
     await publish_project_event(
         project_id,
@@ -161,8 +161,8 @@ async def finish_missing_videos(
 
     p = _project_or_404(await session.get(Project, project_id))
     info = await trigger_finish_missing_videos(session, p)
+    await sync_run_for_project(project_id, session=session)
     await session.commit()
-    await sync_run_for_project(project_id)
     await session.refresh(p)
     await publish_project_event(
         project_id,

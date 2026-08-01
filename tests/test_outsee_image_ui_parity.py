@@ -37,7 +37,8 @@ def test_outsee_image_model_slugs_match_live_ui() -> None:
 
 
 def test_gpt_image_2_resolutions() -> None:
-    assert allowed_image_resolution_ids("gpt_image_2") == ("1k", "2k", "4k")
+    assert allowed_image_resolution_ids("gpt_image_2") == ("1k",)
+    assert allowed_image_resolution_ids("gpt_image_2_vip") == ("1k", "2k", "4k")
     assert clamp_image_resolution_id("gpt_image_1_5", "4k") == "2k"
     assert clamp_image_resolution_id("seedream_5_0_lite", "4k") == "3k"
     assert "3k" in IMAGE_RESOLUTIONS_BY_GENERATOR["seedream_5_0_lite"]

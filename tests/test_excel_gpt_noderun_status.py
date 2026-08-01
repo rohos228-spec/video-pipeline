@@ -150,7 +150,7 @@ async def test_start_step_excel_gpt_uses_active_key(mem_db, tmp_path, monkeypatc
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     from app import settings as app_settings
 
-    app_settings.settings.data_dir = tmp_path / "data"
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path / "data")
 
     project_id, wf_id, nr_ids = await _seed_excel_gpt_run(mem_db)
     _patch_default_workflow(monkeypatch, wf_id)
