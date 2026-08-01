@@ -16,18 +16,21 @@ interface PendingRemove {
   node_type?: string | null;
   count: number;
   nodes: string[];
+  resolved?: boolean;
+}
+
+interface ChatMsg {
+  role: string;
+  content: string;
+  confirm?: PendingRemove;
 }
 
 export function OrchestratorPanel({ projectId }: Props) {
   const [open, setOpen] = usePersistedState("vp-orchestrator-open", true);
   const storageKey = `vp-orchestrator-log-${projectId ?? "none"}`;
-  const [chatLog, setChatLog] = usePersistedState<{ role: string; content: string }[]>(
-    storageKey,
-    [],
-  );
+  const [chatLog, setChatLog] = usePersistedState<ChatMsg[]>(storageKey, []);
   const [chatInput, setChatInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [pendingRemove, setPendingRemove] = useState<PendingRemove | null>(null);
 
   // Смена проекта — перечитать его историю (панель переживает F5).
   useEffect(() => {
@@ -37,7 +40,6 @@ export function OrchestratorPanel({ projectId }: Props) {
     } catch {
       setChatLog([]);
     }
-    setPendingRemove(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storageKey]);
 
@@ -46,10 +48,14 @@ export function OrchestratorPanel({ projectId }: Props) {
     const msg = chatInput.trim();
     setChatInput("");
     setBusy(true);
-    const next = [...chatLog, { role: "user", content: msg }];
+    const next: ChatMsg[] = [...chatLog, { role: "user", content: msg }];
     setChatLog(next);
     try {
-      const r = await api.dbOrchestratorChat(projectId, msg, next.slice(-9, -1));
+      const r = await api.dbOrchestratorChat(
+        projectId,
+        msg,
+        next.slice(-9, -1).map((m) => ({ role: m.role, content: m.content })),
+      );
       const notes: string[] = [];
       if (r.applied) {
         notes.push(
@@ -70,16 +76,12 @@ export function OrchestratorPanel({ projectId }: Props) {
         const nodeKey = u.node_key ?? (u.node_type ? `n_${u.node_type}` : null);
         if (u.kind === "step_prompts" && nodeKey) {
           window.dispatchEvent(
-            new CustomEvent("studio-open-node-prompts", {
-              detail: { nodeKey },
-            }),
+            new CustomEvent("studio-open-node-prompts", { detail: { nodeKey } }),
           );
           notes.push(`открыл окно промтов шага «${u.step}» — выбирай вариант там`);
         } else if (u.kind === "node_studio" && nodeKey) {
           window.dispatchEvent(
-            new CustomEvent("studio-open-node-prompts", {
-              detail: { nodeKey },
-            }),
+            new CustomEvent("studio-open-node-prompts", { detail: { nodeKey } }),
           );
           notes.push(`открыл студию ноды «${u.node_type}»`);
         } else if (u.kind === "prompt_builder" && nodeKey) {
@@ -124,10 +126,9 @@ export function OrchestratorPanel({ projectId }: Props) {
       }
       if (r.error) notes.push(`ошибка: ${r.error}`);
       const pend = (r.pending_confirm ?? []).find((p) => p.kind === "remove_node");
-      setPendingRemove(pend ?? null);
       if (pend) {
         notes.push(
-          `к удалению: ${pend.count} нод (${pend.nodes.slice(0, 5).join(", ")}${pend.count > 5 ? "…" : ""}) — подтверди кнопкой ниже`,
+          `к удалению: ${pend.count} нод (${pend.nodes.slice(0, 5).join(", ")}${pend.count > 5 ? "…" : ""}) — кнопки в сообщении ниже`,
         );
       }
       setChatLog([
@@ -135,6 +136,7 @@ export function OrchestratorPanel({ projectId }: Props) {
         {
           role: "assistant",
           content: (r.reply || "(пустой ответ)") + (notes.length ? `\n\n— ${notes.join("; ")}` : ""),
+          confirm: pend ? { ...pend, resolved: false } : undefined,
         },
       ]);
     } catch (e) {
@@ -146,6 +148,45 @@ export function OrchestratorPanel({ projectId }: Props) {
       setBusy(false);
     }
   }, [projectId, chatInput, busy, chatLog]);
+
+  const resolveRemove = useCallback(
+    async (msgIndex: number, confirm: PendingRemove, approve: boolean) => {
+      if (projectId == null || busy) return;
+      setBusy(true);
+      try {
+        if (approve) {
+          const r = await api.dbOrchestratorConfirmRemove(projectId, {
+            node_key: confirm.node_key,
+            node_type: confirm.node_type,
+          });
+          setChatLog((prev) => [
+            ...prev.map((m, i) =>
+              i === msgIndex && m.confirm ? { ...m, confirm: { ...m.confirm, resolved: true } } : m,
+            ),
+            { role: "assistant", content: `Подтверждено: ${r.remove_node}.` },
+          ]);
+        } else {
+          setChatLog((prev) => [
+            ...prev.map((m, i) =>
+              i === msgIndex && m.confirm ? { ...m, confirm: { ...m.confirm, resolved: true } } : m,
+            ),
+            { role: "assistant", content: "Удаление отменено — ноды на месте." },
+          ]);
+        }
+      } catch (e) {
+        setChatLog((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: `Ошибка удаления: ${e instanceof Error ? e.message : e}`,
+          },
+        ]);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [projectId, busy, setChatLog],
+  );
 
   return (
     <div className="absolute inset-x-0 bottom-0 z-30 border-t border-white/[0.08] bg-[#0c0c0c]/95 backdrop-blur">
@@ -179,67 +220,37 @@ export function OrchestratorPanel({ projectId }: Props) {
                     {m.role === "user" ? "ты" : "оркестратор"}:{" "}
                   </span>
                   <span className="whitespace-pre-wrap text-white/80">{m.content}</span>
+                  {m.confirm && !m.confirm.resolved ? (
+                    <span className="mt-1 flex items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5">
+                      <Trash2 className="h-3.5 w-3.5 text-red-400" />
+                      <span className="flex-1 text-[11px] text-white/80">
+                        Удалить {m.confirm.count} нод
+                        {m.confirm.node_type ? ` типа «${m.confirm.node_type}»` : ""}?
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        className="h-7 text-[11px]"
+                        disabled={busy}
+                        onClick={() => void resolveRemove(i, m.confirm!, true)}
+                      >
+                        Подтвердить удаление
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-[11px]"
+                        disabled={busy}
+                        onClick={() => void resolveRemove(i, m.confirm!, false)}
+                      >
+                        Отмена
+                      </Button>
+                    </span>
+                  ) : null}
                 </div>
               ))
             )}
           </div>
-          {pendingRemove ? (
-            <div className="mx-3 mb-1.5 flex items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5">
-              <Trash2 className="h-3.5 w-3.5 text-red-400" />
-              <span className="flex-1 text-[11px] text-white/80">
-                Удалить {pendingRemove.count} нод
-                {pendingRemove.node_type ? ` типа «${pendingRemove.node_type}»` : ""}?
-              </span>
-              <Button
-                size="sm"
-                variant="destructive"
-                className="h-7 text-[11px]"
-                disabled={busy}
-                onClick={async () => {
-                  if (projectId == null) return;
-                  setBusy(true);
-                  try {
-                    const r = await api.dbOrchestratorConfirmRemove(projectId, {
-                      node_key: pendingRemove.node_key,
-                      node_type: pendingRemove.node_type,
-                    });
-                    setChatLog((prev) => [
-                      ...prev,
-                      { role: "assistant", content: `Подтверждено: ${r.remove_node}.` },
-                    ]);
-                  } catch (e) {
-                    setChatLog((prev) => [
-                      ...prev,
-                      {
-                        role: "assistant",
-                        content: `Ошибка удаления: ${e instanceof Error ? e.message : e}`,
-                      },
-                    ]);
-                  } finally {
-                    setPendingRemove(null);
-                    setBusy(false);
-                  }
-                }}
-              >
-                Подтвердить удаление
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 text-[11px]"
-                disabled={busy}
-                onClick={() => {
-                  setPendingRemove(null);
-                  setChatLog((prev) => [
-                    ...prev,
-                    { role: "assistant", content: "Удаление отменено — ноды на месте." },
-                  ]);
-                }}
-              >
-                Отмена
-              </Button>
-            </div>
-          ) : null}
           <div className="flex items-center gap-2 px-3 pb-2">
             <input
               value={chatInput}
