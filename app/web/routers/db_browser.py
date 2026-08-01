@@ -915,14 +915,32 @@ async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -
         skip = set(CONFIG_NODE_TYPES) | set(HITL_NODE_TYPES)
         next_of_pre = {str(e.get("source")): str(e.get("target")) for e in edges}
 
+        def _is_check_of_type(nid: str) -> bool:
+            """Нода — ПРОВЕРКА этого типа, не рабочая.
+
+            hitl-нода — всегда проверка (тип=роль). excel_gpt — по маркеру
+            «добавлено оркестратором» (рабочие «Работа с GPT» — не проверки).
+            """
+            n = by_id.get(nid)
+            if n is None or str(n.get("type")) != node_type:
+                return False
+            if node_type in HITL_NODE_TYPES:
+                return True
+            return (
+                str((n.get("data") or {}).get("description") or "")
+                == "добавлено оркестратором"
+            )
+
         def _already_has(nid: str) -> bool:
             nxt = next_of_pre.get(nid)
-            return bool(nxt and str(by_id[nxt].get("type")) == node_type)
+            return bool(nxt and _is_check_of_type(nxt))
 
         targets = [
             nid
             for nid in order
-            if str(by_id[nid].get("type")) not in skip and not _already_has(nid)
+            if str(by_id[nid].get("type")) not in skip
+            and not _is_check_of_type(nid)  # проверки не получают проверок
+            and not _already_has(nid)
         ]
     else:
         if after not in by_id:

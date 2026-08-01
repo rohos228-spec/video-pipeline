@@ -1189,22 +1189,27 @@ async def test_add_node_each_gives_check_after_work_excel_gpt(api_client) -> Non
             session, p, {"node_type": "excel_gpt", "after": "each"}
         )
         await session.commit()
-        assert "×3" in res["add_node"]  # plan, script, «Тест» (images — хвост тоже)
+        # ВСЕ ноды получают проверку: plan, script, «Тест», images (хвост).
+        assert "×4" in res["add_node"]
 
         g = (p.meta or {})["canvas_graph"]
         order = _linear_order(g["nodes"], g["edges"])
         type_by_id = {n["id"]: n["type"] for n in g["nodes"]}
-        # после «Теста» (рабочая excel_gpt) стоит проверка
-        idx = order.index("n_excel_gpt_1")
-        assert type_by_id[order[idx + 1]] == "excel_gpt"
-        # двух ПРОВЕРОК подряд нет (проверка = маркер «добавлено оркестратором»;
-        # рабочая «Тест» + её проверка — одинаковый тип, это законно)
         marked = {
             n["id"]
             for n in g["nodes"]
             if str((n.get("data") or {}).get("description") or "")
             == "добавлено оркестратором"
         }
+        # после n_script стоит проверка (даже если дальше рабочая excel_gpt)
+        idx_s = order.index("n_script")
+        assert order[idx_s + 1] in marked
+        # после «Теста» (рабочая excel_gpt) стоит проверка
+        idx = order.index("n_excel_gpt_1")
+        assert type_by_id[order[idx + 1]] == "excel_gpt"
+        assert order[idx + 1] in marked
+        # двух ПРОВЕРОК подряд нет (проверка = маркер «добавлено оркестратором»;
+        # рабочая «Тест» + её проверка — одинаковый тип, это законно)
         for a, b in zip(order, order[1:], strict=False):
             assert not (a in marked and b in marked)
 
