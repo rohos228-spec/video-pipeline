@@ -381,6 +381,7 @@ export const api = {
         set_prompt?: string;
         set_text_llm?: string;
       }[];
+      ui_actions: { kind: string; step?: string; node_type?: string }[];
       error: string | null;
     }>(
       `/api/db/projects/${projectId}/orchestrator/chat`,

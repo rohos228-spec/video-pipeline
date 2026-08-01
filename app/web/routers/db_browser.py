@@ -256,7 +256,12 @@ _ORCHESTRATOR_SYSTEM = (
     "варианты в разделе ПРОМТЫ контекста.\n"
     "6) ТЕКСТОВАЯ LLM → "
     "{\"actions\":[{\"set_text_llm\":{\"provider\":\"kie|tokenrouter\"}}]}.\n"
-    "7) Вопрос/обсуждение без изменений — обычный текст.\n"
+    "7) ОТКРЫТЬ окно выбора промтов шага → "
+    "{\"actions\":[{\"open_ui\":{\"kind\":\"step_prompts\",\"step\":\"<код>\"}}]} — "
+    "ОБЯЗАТЕЛЬНО добавляй, когда пользователь выбирает, сравнивает или "
+    "просит показать варианты промтов: выбор делает человек в открывшемся "
+    "окне, а не в чате.\n"
+    "8) Вопрос/обсуждение без изменений — обычный текст.\n"
     "Не выдумывай uuid, поля, коды шагов, ключи и значения настроек — "
     "неизвестное = отклонено с ошибкой. Одна операция = один кадр."
 )
@@ -482,6 +487,7 @@ async def orchestrator_chat(
 
     applied = None
     actions_run: list[dict] = []
+    ui_actions: list[dict] = []
     error = None
     ops_data = db_apply.extract_apply_ops_json(reply or "")
     if ops_data:
@@ -549,6 +555,25 @@ async def orchestrator_chat(
                     actions_run.append(
                         {"set_text_llm": f"{payload['provider']} ({payload['model_id']})"}
                     )
+                elif "open_ui" in act:
+                    spec = act.get("open_ui") or {}
+                    kind = str(spec.get("kind") or "").strip()
+                    if kind != "step_prompts":
+                        raise db_apply.ApplyOpsError(
+                            f"open_ui: неизвестный kind {kind!r} (есть: step_prompts)"
+                        )
+                    step = str(spec.get("step") or "").strip()
+                    if step not in STEP_CODE_TO_NODE_TYPE:
+                        raise db_apply.ApplyOpsError(
+                            f"open_ui step_prompts: неизвестный шаг {step!r}"
+                        )
+                    ui_actions.append(
+                        {
+                            "kind": "step_prompts",
+                            "step": step,
+                            "node_type": STEP_CODE_TO_NODE_TYPE[step],
+                        }
+                    )
             except db_apply.ApplyOpsError as e:
                 error = str(e)
             except Exception as e:  # noqa: BLE001
@@ -558,6 +583,7 @@ async def orchestrator_chat(
         "reply": reply,
         "applied": applied,
         "actions_run": actions_run,
+        "ui_actions": ui_actions,
         "error": error,
     }
 

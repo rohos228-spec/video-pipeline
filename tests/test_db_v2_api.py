@@ -423,6 +423,36 @@ async def test_orchestrator_chat_invalid_setting_rejected(api_client, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_chat_open_ui_action(api_client, monkeypatch) -> None:
+    """open_ui step_prompts → ui_actions с node_type для фронта; мусор отклонён."""
+    client, project_id, factory = api_client
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"open_ui":{"kind":"step_prompts","step":"anim_pr"}}]}'),
+    )
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "покажи варианты промтов видео", "history": []},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["error"] is None
+    assert data["ui_actions"] == [
+        {"kind": "step_prompts", "step": "anim_pr", "node_type": "animation_prompts"}
+    ]
+
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"open_ui":{"kind":"hack","step":"anim_pr"}}]}'),
+    )
+    r_bad = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "x", "history": []},
+    )
+    assert "неизвестный kind" in (r_bad.json()["error"] or "")
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_chat_without_gpt_key_503(api_client, monkeypatch) -> None:
     """Без GPT-ключа — вежливая 503 с причиной, не 500/404."""
     client, project_id, factory = api_client

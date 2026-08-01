@@ -40,6 +40,16 @@ export function OrchestratorPanel({ projectId }: Props) {
         else if (a.set_prompt) notes.push(`промт: ${a.set_prompt}`);
         else if (a.set_text_llm) notes.push(`LLM: ${a.set_text_llm}`);
       }
+      for (const u of r.ui_actions ?? []) {
+        if (u.kind === "step_prompts" && u.node_type) {
+          window.dispatchEvent(
+            new CustomEvent("studio-open-node-prompts", {
+              detail: { nodeKey: `n_${u.node_type}` },
+            }),
+          );
+          notes.push(`открыл окно промтов шага «${u.step}» — выбирай вариант там`);
+        }
+      }
       if (r.error) notes.push(`ошибка: ${r.error}`);
       setChatLog([
         ...next,
