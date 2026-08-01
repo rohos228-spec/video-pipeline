@@ -42,24 +42,25 @@ export function OrchestratorPanel({ projectId }: Props) {
         else if (a.run_harness) notes.push(`проверки: ${a.run_harness}`);
       }
       for (const u of r.ui_actions ?? []) {
-        if (u.kind === "step_prompts" && u.node_type) {
+        const nodeKey = u.node_key ?? (u.node_type ? `n_${u.node_type}` : null);
+        if (u.kind === "step_prompts" && nodeKey) {
           window.dispatchEvent(
             new CustomEvent("studio-open-node-prompts", {
-              detail: { nodeKey: `n_${u.node_type}` },
+              detail: { nodeKey },
             }),
           );
           notes.push(`открыл окно промтов шага «${u.step}» — выбирай вариант там`);
-        } else if (u.kind === "node_studio" && u.node_type) {
+        } else if (u.kind === "node_studio" && nodeKey) {
           window.dispatchEvent(
             new CustomEvent("studio-open-node-prompts", {
-              detail: { nodeKey: `n_${u.node_type}` },
+              detail: { nodeKey },
             }),
           );
           notes.push(`открыл студию ноды «${u.node_type}»`);
-        } else if (u.kind === "prompt_builder" && u.node_type) {
+        } else if (u.kind === "prompt_builder" && nodeKey) {
           window.dispatchEvent(
             new CustomEvent("studio-open-prompt-builder", {
-              detail: { nodeKey: `n_${u.node_type}`, nodeType: u.node_type },
+              detail: { nodeKey, nodeType: u.node_type },
             }),
           );
           notes.push(`открыл конструктор промтов «${u.node_type}»`);

@@ -267,7 +267,13 @@ _ORCHESTRATOR_SYSTEM = (
     "7) ОТКРЫТЬ окна программы → {\"actions\":[{\"open_ui\":{...}}]} — kinds: "
     "step_prompts (плюс step; ОБЯЗАТЕЛЬНО при выборе/сравнении вариантов "
     "промтов — человек выбирает в окне), node_studio/prompt_builder/hitl "
-    "(плюс node_type), topic (тема), baza, gpt_chat, create, fleet, settings.\n"
+    "(плюс node_type), topic (тема), baza, gpt_chat, create, fleet, settings. "
+    "ТОЧНЕЕ — с node_key из раздела НОДЫ КАНВАСА: "
+    "{\"open_ui\":{\"kind\":\"node_studio\",\"node_key\":\"n_plan\"}}.\n"
+    "НАЗВАНИЯ НОД: маппи русские названия пользователя на node_key по "
+    "разделу НОДЫ КАНВАСА (название в «»). ВНИМАНИЕ: «Сценарий» — это нода "
+    "plan (n_plan); «Закадровый текст» — script (n_script); «Работа с GPT» — "
+    "ноды excel_gpt (n_excel_gpt_1, n_excel_gpt_2…).\n"
     "8) HITL-РЕШЕНИЕ (когда нода ждёт аппрува) → "
     "{\"actions\":[{\"hitl_decision\":\"approve|regenerate|reject\"}]}.\n"
     "9) ТЕМА проекта → {\"actions\":[{\"set_topic\":\"…\"}]}.\n"
@@ -464,6 +470,69 @@ async def _diagnostics_context(session: AsyncSession, project: Project) -> list[
     return []
 
 
+_NODE_STATUS_RU = {
+    "pending": "ждёт",
+    "queued": "в очереди",
+    "running": "выполняется",
+    "waiting_hitl": "ждёт аппрува человека",
+    "done": "готово",
+    "failed": "ОШИБКА",
+    "skipped": "пропущена",
+}
+
+
+async def _canvas_nodes_context(
+    session: AsyncSession, project: Project
+) -> tuple[list[str], dict[str, dict]]:
+    """Ноды канваса проекта: ключ → название (data.label) + тип + статус.
+
+    Возвращает (строки для контекста, keymap node_key → {type, label}).
+    Названия — те, что пользователь видит на канвасе («Сценарий» = plan!).
+    """
+    from app.models import NodeRun, Workflow, WorkflowRun
+
+    run = (
+        await session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == project.id)
+            .order_by(WorkflowRun.id.desc())
+        )
+    ).scalars().first()
+    nodes: list[dict] = []
+    status_by_key: dict[str, str] = {}
+    if run is not None:
+        nodes = list(run.nodes_snapshot or [])
+        for nr in (
+            await session.execute(
+                select(NodeRun).where(NodeRun.workflow_run_id == run.id)
+            )
+        ).scalars():
+            status_by_key[nr.node_key] = nr.status.value
+    if not nodes:
+        wf = (
+            await session.execute(
+                select(Workflow).where(Workflow.is_default.is_(True))
+            )
+        ).scalars().first()
+        nodes = list((wf.nodes if wf else []) or [])
+
+    lines: list[str] = []
+    keymap: dict[str, dict] = {}
+    for n in nodes:
+        key = str(n.get("id") or "")
+        if not key:
+            continue
+        typ = str(n.get("type") or "")
+        label = str((n.get("data") or {}).get("label") or typ)
+        keymap[key] = {"type": typ, "label": label}
+        st = status_by_key.get(key)
+        suffix = f" — {_NODE_STATUS_RU.get(st, st)}" if st else ""
+        lines.append(f"- {key} → «{label}» (тип {typ}){suffix}")
+    if not lines:
+        return [], keymap
+    return ["НОДЫ КАНВАСА (ключ → «название» (тип) — статус):", *lines], keymap
+
+
 def _settings_context(project: Project) -> list[str]:
     """Настройки генерации, варианты промтов, текстовая LLM (для контекста)."""
     from app import generation_options as go
@@ -591,19 +660,38 @@ async def _pending_hitl_id(session: AsyncSession, project: Project) -> int | Non
 
 
 async def _resolve_open_ui(
-    session: AsyncSession, project: Project, spec: dict
+    session: AsyncSession, project: Project, spec: dict, keymap: dict[str, dict]
 ) -> dict:
-    """open_ui → ui_action для фронта (валидация fail-closed)."""
+    """open_ui → ui_action для фронта (валидация fail-closed).
+
+    Приоритет — ``node_key`` из раздела НОДЫ КАНВАСА (точное окно ноды);
+    иначе — step/node_type как раньше.
+    """
+    from app.orchestrator.node_registry import (
+        CONFIG_NODE_TYPES,
+        NODE_TYPE_TO_STEP_CODE,
+    )
+
     kind = str((spec or {}).get("kind") or "").strip()
+    node_key = str((spec or {}).get("node_key") or "").strip() or None
+    key_type = (keymap.get(node_key) or {}).get("type") if node_key else None
+    if node_key and not key_type:
+        raise db_apply.ApplyOpsError(
+            f"open_ui: неизвестный node_key {node_key!r}; ключи — в разделе НОДЫ КАНВАСА"
+        )
+
     if kind == "step_prompts":
         step = str(spec.get("step") or "").strip()
+        if not step and key_type:
+            step = NODE_TYPE_TO_STEP_CODE.get(key_type, "")
         if step not in STEP_CODE_TO_NODE_TYPE:
             raise db_apply.ApplyOpsError(f"open_ui step_prompts: неизвестный шаг {step!r}")
-        return {"kind": kind, "step": step, "node_type": STEP_CODE_TO_NODE_TYPE[step]}
+        out = {"kind": kind, "step": step, "node_type": STEP_CODE_TO_NODE_TYPE[step]}
+        if node_key:
+            out["node_key"] = node_key
+        return out
     if kind in _UI_NODE_KINDS:
-        node_type = str(spec.get("node_type") or "").strip()
-        from app.orchestrator.node_registry import CONFIG_NODE_TYPES
-
+        node_type = str(spec.get("node_type") or "").strip() or (key_type or "")
         if node_type in CONFIG_NODE_TYPES:
             raise db_apply.ApplyOpsError(
                 f"open_ui {kind}: у ноды {node_type!r} нет промтов/студии — "
@@ -615,6 +703,8 @@ async def _resolve_open_ui(
                 f"open_ui {kind}: неизвестный тип ноды {node_type!r}"
             )
         item: dict = {"kind": kind, "node_type": node_type}
+        if node_key:
+            item["node_key"] = node_key
         if kind == "hitl":
             hitl_id = await _pending_hitl_id(session, project)
             if hitl_id is None:
@@ -728,6 +818,7 @@ async def orchestrator_chat(
         for m in (body.history or [])[-8:]
     )
     diag_lines = await _diagnostics_context(session, project)
+    canvas_lines, canvas_keymap = await _canvas_nodes_context(session, project)
     prompt = (
         _ORCHESTRATOR_SYSTEM
         + "\n\nШАГИ ПАЙПЛАЙНА (реальный порядок и состояние):\n"
@@ -737,6 +828,7 @@ async def orchestrator_chat(
         + ("\n\n" + "\n".join(diag_lines) if diag_lines else "")
         + "\n\n"
         + "\n".join(_settings_context(project))
+        + ("\n\n" + "\n".join(canvas_lines) if canvas_lines else "")
         + "\n\nГРАФ ПРОЕКТА:\n"
         + _orchestrator_context(graph)
         + ("\n\nИСТОРИЯ ДИАЛОГА:\n" + history_txt if history_txt else "")
@@ -821,7 +913,11 @@ async def orchestrator_chat(
                         {"set_text_llm": f"{payload['provider']} ({payload['model_id']})"}
                     )
                 elif "open_ui" in act:
-                    ui_actions.append(await _resolve_open_ui(session, project, act.get("open_ui") or {}))
+                    ui_actions.append(
+                        await _resolve_open_ui(
+                            session, project, act.get("open_ui") or {}, canvas_keymap
+                        )
+                    )
                 elif "hitl_decision" in act:
                     actions_run.append(await _apply_hitl_decision(session, project, act.get("hitl_decision")))
                 elif "set_topic" in act:

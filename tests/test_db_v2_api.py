@@ -593,6 +593,62 @@ async def test_orchestrator_chat_hitl_decision_and_topic(api_client, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_chat_canvas_nodes_and_node_key(api_client, monkeypatch) -> None:
+    """Контекст содержит ноды канваса с названиями; open_ui принимает node_key."""
+    from app.models import Workflow, WorkflowRun
+
+    client, project_id, factory = api_client
+    async with factory() as session:
+        wf = Workflow(
+            name="default",
+            is_default=True,
+            nodes=[
+                {"id": "n_plan", "type": "plan", "position": {}, "data": {"label": "Сценарий"}},
+                {"id": "n_script", "type": "script", "position": {}, "data": {"label": "Закадровый текст"}},
+            ],
+            edges=[],
+        )
+        session.add(wf)
+        await session.flush()
+        session.add(
+            WorkflowRun(
+                workflow_id=wf.id,
+                project_id=project_id,
+                nodes_snapshot=wf.nodes,
+                edges_snapshot=[],
+            )
+        )
+        await session.commit()
+
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"open_ui":{"kind":"node_studio","node_key":"n_plan"}}]}'),
+    )
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "открой сценарий", "history": []},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["error"] is None
+    assert data["ui_actions"][0]["node_key"] == "n_plan"
+    assert data["ui_actions"][0]["node_type"] == "plan"
+    # контекст видит названия нод канваса
+    assert "«Сценарий»" in _FakeGpt.last_prompt
+    assert "n_plan" in _FakeGpt.last_prompt
+
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt('{"actions":[{"open_ui":{"kind":"node_studio","node_key":"n_hack"}}]}'),
+    )
+    r_bad = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "x", "history": []},
+    )
+    assert "неизвестный node_key" in (r_bad.json()["error"] or "")
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_chat_run_harness_action(api_client, monkeypatch) -> None:
     """run_harness → свежий прогон проверок, итог в actions_run."""
     client, project_id, factory = api_client
