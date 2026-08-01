@@ -217,24 +217,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         logger.warning("[#{}] xlsx write_general(status) failed: {}", project.id, e)
 
     # Harness-гейт (обязателен по NODE_SYSTEM): шаг не done, пока проверки не ok.
-    # project_log_clean/node_runs_failed — наблюдаемость, не данные: в гейт не
-    # входят (иначе ошибка шага в логе блокировала бы повтор навсегда).
     await session.commit()
-    from app.services.agent_harness import run_harness_verify
+    from app.services.agent_harness import harness_gate_or_raise
 
-    report = await run_harness_verify(
-        session, project, allow_repair=False, include_http=False
-    )
+    await harness_gate_or_raise(session, project, step="anim_pr")
     await session.commit()  # ops-телеметрия в project.meta
-    gate_checks = [
-        c for c in report.checks if c.name not in ("project_log_clean", "node_runs_failed")
-    ]
-    bad = [f"{c.name}({c.detail})" for c in gate_checks if not c.ok]
-    if bad:
-        raise RuntimeError(f"anim_pr harness gate failed: {bad}")
-    logger.info(
-        "[#{}] anim_pr: harness gate ok ({} checks)", project.id, len(report.checks)
-    )
 
 
 async def _save_anim_pr_batch(

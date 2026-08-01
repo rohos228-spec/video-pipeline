@@ -80,6 +80,21 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
             "Проверь: строка 49 листа «план», колонки C..N."
         )
 
+    # DB SoT: uuid кадрам + закадр/длительность через apply-ops (экспорт R49/R50).
+    from app.services import db_apply, db_v2
+
+    await db_v2.backfill_project_v2(session, project)
+    ops = []
+    for fr in frames:
+        if not fr.uuid:
+            continue
+        fields: dict = {"закадр": fr.voiceover_text or ""}
+        if fr.duration_seconds is not None:
+            fields["длительность"] = fr.duration_seconds
+        ops.append({"frame_uuid": fr.uuid, "fields": fields})
+    if ops:
+        await db_apply.apply_ops(session, project, ops, export_xlsx=True)
+
     meta = dict(project.meta or {})
     # Новый успешный split сбрасывает stale excel_gpt completion с прошлого круга.
     for key in (
@@ -98,3 +113,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         _sheet_for_project(project).write_general(status=project.status.value)
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] project_sheet split write failed: {}", project.id, e)
+
+    # Harness-гейт: кадры/закадр должны быть консистентны (DB↔xlsx).
+    await session.commit()
+    from app.services.agent_harness import harness_gate_or_raise
+
+    await harness_gate_or_raise(session, project, step="split")
+    await session.commit()

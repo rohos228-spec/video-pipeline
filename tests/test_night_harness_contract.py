@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from openpyxl import Workbook, load_workbook
 
 from app.services.agent_harness import HARNESS_FORBIDDEN_STEPS, verify_project_disk
@@ -91,6 +93,34 @@ def test_writeback_skips_dense_plan_unknown_labels_without_write(tmp_path: Path)
 def test_harness_forbidden_steps() -> None:
     assert "audio" in HARNESS_FORBIDDEN_STEPS
     assert "music" in HARNESS_FORBIDDEN_STEPS
+
+
+@pytest.mark.asyncio
+async def test_harness_gate_or_raise_ok_and_fail(tmp_path: Path) -> None:
+    """Общий гейт шага: ок-данные → проходит; нет project.xlsx → RuntimeError."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.models import Base
+    from app.services.agent_harness import harness_gate_or_raise
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    wb = Workbook()
+    wb.active.title = "план"
+    wb.save(tmp_path / "project.xlsx")
+    wb.close()
+    async with factory() as session:
+        p = SimpleNamespace(id=999, data_dir=tmp_path, status="plan_ready", meta={})
+        rep = await harness_gate_or_raise(session, p, step="plan")  # type: ignore[arg-type]
+        assert rep.ok
+
+        (tmp_path / "project.xlsx").unlink()
+        with pytest.raises(RuntimeError, match="harness gate failed"):
+            await harness_gate_or_raise(session, p, step="plan")  # type: ignore[arg-type]
+    await engine.dispose()
 
 
 def test_harness_verify_disk_assembled(tmp_path: Path) -> None:

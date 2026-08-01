@@ -13,7 +13,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, FrameStatus, Project, ProjectStatus
-from app.services import chatgpt_xlsx as cx
 from app.services.step_cancel import StepCancelledError, raise_if_cancelled
 from app.services.xlsx_v8_import import (
     read_v8_active_frame_count,
@@ -222,6 +221,26 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     project.status = ProjectStatus.image_prompts_ready
     await session.flush()
+
+    # DB SoT: версии промтов + экспорт R45 через apply-ops (по uuid кадров).
+    from app.services import db_apply, db_v2
+
+    await db_v2.backfill_project_v2(session, project)
+    ops = [
+        {"frame_uuid": fr.uuid, "fields": {"промт_картинки": (fr.image_prompt or "").strip()}}
+        for fr in need
+        if fr.uuid and (fr.image_prompt or "").strip()
+    ]
+    if ops:
+        await db_apply.apply_ops(session, project, ops, export_xlsx=True)
+
+    # Harness-гейт: промты должны быть заполнены и консистентны.
+    await session.commit()
+    from app.services.agent_harness import harness_gate_or_raise
+
+    await harness_gate_or_raise(session, project, step="img_pr")
+    await session.commit()
+
     logger.info(
         "[#{}] generate_image_prompts complete: {} промтов (xlsx-flow)",
         project.id,

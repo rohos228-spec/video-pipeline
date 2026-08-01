@@ -525,6 +525,34 @@ def verify_project_http(
     return checks
 
 
+_GATE_OBSERVABILITY = frozenset({"project_log_clean", "node_runs_failed"})
+
+
+async def harness_gate_or_raise(
+    session: Any, project: Any, *, step: str
+) -> HarnessReport:
+    """Harness-гейт после шага: плохие данные → RuntimeError (soft retry шага).
+
+    Наблюдаемость (лог/старые failed-записи) в гейт не входит — иначе ошибка
+    шага в логе блокировала бы повтор навсегда. Используется нодами после
+    записи (anim_pr/img_pr/split/plan…); центральный гейт — в auto_advance.
+    """
+    report = await run_harness_verify(
+        session, project, allow_repair=False, include_http=False
+    )
+    bad = [
+        f"{c.name}({c.detail})"
+        for c in report.checks
+        if not c.ok and c.name not in _GATE_OBSERVABILITY
+    ]
+    if bad:
+        raise RuntimeError(f"{step} harness gate failed: {bad}")
+    logger.info(
+        "[#{}] {}: harness gate ok ({} checks)", project.id, step, len(report.checks)
+    )
+    return report
+
+
 async def run_harness_verify(
     session: Any,
     project: Any,

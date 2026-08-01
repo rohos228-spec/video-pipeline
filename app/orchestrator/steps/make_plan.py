@@ -50,6 +50,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     project.status = ProjectStatus.plan_ready
     await session.flush()
 
+    # DB SoT: общий план — через apply-ops (meta + экспорт «Общий план»!B2).
+    if plan_text:
+        from app.services import db_apply
+
+        await db_apply.apply_ops(
+            session,
+            project,
+            [{"target": "project", "fields": {"общий_план": plan_text}}],
+            export_xlsx=True,
+        )
+
     try:
         _sheet_for_project(project).write_general(
             topic=project.topic,
@@ -60,6 +71,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] project_sheet plan write failed: {}", project.id, e)
+
+    # Harness-гейт перед HITL: с плохими данными аппрув не просим.
+    await session.commit()
+    from app.services.agent_harness import harness_gate_or_raise
+
+    await harness_gate_or_raise(session, project, step="plan")
+    await session.commit()
 
     req = await send_hitl_text(
         bot,

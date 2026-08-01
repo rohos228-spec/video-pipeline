@@ -286,7 +286,10 @@
    (`run_harness_verify`; в гейт не входят наблюдаемость-чеки
    `project_log_clean`/`node_runs_failed`, иначе ошибка в логе блокировала
    бы повтор навсегда). Backfill uuid перед записью.
-2. img_pr, split, plan — по тому же шаблону (промт-ноды).
+2. ~~img_pr, split, plan~~ — **сделано** (2026-08-01): plan пишет `общий_план`
+   через apply-ops (target=project), split — закадр/длительность по uuid,
+   img_pr — промт_картинки + версии; у всех harness-гейт после шага через
+   общий `agent_harness.harness_gate_or_raise` (anim_pr переведён на него же).
 3. excel_gpt — оператор-режим: `extract_apply_ops_json` → `apply_ops`,
    форматный retry по ошибке валидации.
 4. retry_policy/error_handler — декларативно в `node_registry` (как у донора).
