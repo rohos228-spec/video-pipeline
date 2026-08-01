@@ -928,7 +928,8 @@ async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -
                 "type": node_type,
                 "position": {
                     "x": float(pos.get("x", 0.0)) + 145.0,
-                    "y": float(pos.get("y", 0.0)) + 140.0,
+                    # Лесенка по y, чтобы повторные вставки не ложились стопкой.
+                    "y": float(pos.get("y", 0.0)) + 140.0 + 60.0 * (k - 1),
                 },
                 "data": {"label": label, "description": "добавлено оркестратором"},
             }
