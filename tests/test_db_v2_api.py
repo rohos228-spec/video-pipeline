@@ -255,10 +255,13 @@ async def test_apply_ops_project_target_general_plan_exports(api_client, tmp_pat
 
 
 class _FakeGpt:
+    last_prompt: str = ""
+
     def __init__(self, reply: str) -> None:
         self._reply = reply
 
     async def ask_fresh(self, text: str, **kw) -> str:
+        type(self).last_prompt = text
         return self._reply
 
 
@@ -526,6 +529,43 @@ async def test_orchestrator_chat_run_harness_action(api_client, monkeypatch) -> 
         p = await session.get(Project, project_id)
         tel = (p.meta or {}).get("ops_telemetry") or {}
         assert tel.get("checks")  # телеметрия обновлена — контекст увидит итоги
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_chat_diagnostics_in_context(api_client, monkeypatch) -> None:
+    """Ошибки нод попадают в контекст (режим кодинг-агента для фикса багов)."""
+    from app.models import NodeRun, NodeRunStatus, WorkflowRun, WorkflowRunStatus
+
+    client, project_id, factory = api_client
+    async with factory() as session:
+        wr = WorkflowRun(
+            workflow_id=1, project_id=project_id, status=WorkflowRunStatus.failed
+        )
+        session.add(wr)
+        await session.flush()
+        session.add(
+            NodeRun(
+                workflow_run_id=wr.id,
+                node_key="n9",
+                node_type="img",
+                status=NodeRunStatus.failed,
+                error="Outsee timeout",
+            )
+        )
+        await session.commit()
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt("Смотрю ошибку…"),
+    )
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "почему img упал?", "history": []},
+    )
+    assert r.status_code == 200
+    assert "ДИАГНОСТИКА" in _FakeGpt.last_prompt
+    assert "ОШИБКИ НОД" in _FakeGpt.last_prompt
+    assert "Outsee timeout" in _FakeGpt.last_prompt
+    assert "кодинг-агент" in _FakeGpt.last_prompt
 
 
 @pytest.mark.asyncio

@@ -236,6 +236,10 @@ _ORCHESTRATOR_SYSTEM = (
     "«ждёт аппрува человека» = HITL-гейт ждёт решения пользователя).\n"
     "На вопросы про проверки/проверку/статусы нод отвечай СТРОГО по этим "
     "разделам контекста — если прогона проверок не было, скажи это прямо.\n"
+    "Если есть раздел ДИАГНОСТИКА (ошибки нод/проверок/лог) или пользователь "
+    "просит починить/исправить/объяснить ошибку — отвечай как кодинг-агент: "
+    "причина → файл/место → точечный фикс (патч), без воды. Сам код "
+    "программы не правь — предложи патч человеку.\n"
     "ПОРЯДОК ШАГОВ — ТОЛЬКО ТАКОЙ (другого не существует, не выдумывай):\n"
     "plan → script → split → hero → items → enrich_1..5 → img_pr → img → "
     "anim_pr → video → audio → music → assemble → publish.\n"
@@ -388,6 +392,74 @@ async def _checks_context(session: AsyncSession, project: Project) -> list[str]:
     return lines
 
 
+def _log_tail_context(project: Project, max_lines: int = 25) -> list[str]:
+    """Хвост ошибок/варнингов проекта из свежего backend-лога."""
+    from app.settings import settings
+
+    try:
+        logs = sorted(
+            settings.data_dir.glob("backend*.log"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except Exception:  # noqa: BLE001
+        return []
+    if not logs:
+        return []
+    marker = f"[#{project.id}]"
+    out: list[str] = []
+    try:
+        for ln in logs[0].read_text(encoding="utf-8", errors="replace").splitlines():
+            if marker in ln and ("ERROR" in ln or "Traceback" in ln or "WARNING" in ln):
+                out.append(ln.strip()[:200])
+    except Exception:  # noqa: BLE001
+        return []
+    return out[-max_lines:]
+
+
+async def _diagnostics_context(session: AsyncSession, project: Project) -> list[str]:
+    """Ошибки нод + проваленные проверки + хвост лога (для режима кодинг-агента)."""
+    from app.models import NodeRun, NodeRunStatus, WorkflowRun
+    from app.services.agent_harness import read_ops_telemetry
+
+    lines: list[str] = []
+    run = (
+        await session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == project.id)
+            .order_by(WorkflowRun.id.desc())
+        )
+    ).scalars().first()
+    if run is not None:
+        failed = list(
+            (
+                await session.execute(
+                    select(NodeRun).where(
+                        NodeRun.workflow_run_id == run.id,
+                        NodeRun.status == NodeRunStatus.failed,
+                    )
+                )
+            ).scalars()
+        )
+        if failed:
+            lines.append("ОШИБКИ НОД (последний прогон):")
+            for n in failed:
+                lines.append(f"- {n.node_type}: {str(n.error or '')[:200]}")
+    tel = read_ops_telemetry(project.meta if isinstance(project.meta, dict) else {})
+    bad_checks = [c for c in (tel.get("checks") or []) if not c.get("ok")]
+    if bad_checks:
+        lines.append("ПРОВАЛЕННЫЕ ПРОВЕРКИ:")
+        for c in bad_checks:
+            lines.append(f"- {c.get('name')}: {str(c.get('detail') or '')[:120]}")
+    tail = _log_tail_context(project)
+    if tail:
+        lines.append("ЛОГ BACKEND (хвост ошибок проекта):")
+        lines.extend(f"  {ln}" for ln in tail)
+    if lines:
+        return ["ДИАГНОСТИКА:", *lines]
+    return []
+
+
 def _settings_context(project: Project) -> list[str]:
     """Настройки генерации, варианты промтов, текстовая LLM (для контекста)."""
     from app import generation_options as go
@@ -536,12 +608,14 @@ async def orchestrator_chat(
         f"{m.get('role', '?')}: {m.get('content', '')}"
         for m in (body.history or [])[-8:]
     )
+    diag_lines = await _diagnostics_context(session, project)
     prompt = (
         _ORCHESTRATOR_SYSTEM
         + "\n\nШАГИ ПАЙПЛАЙНА (реальный порядок и состояние):\n"
         + "\n".join(_pipeline_state_lines(project))
         + "\n\n"
         + "\n".join(await _checks_context(session, project))
+        + ("\n\n" + "\n".join(diag_lines) if diag_lines else "")
         + "\n\n"
         + "\n".join(_settings_context(project))
         + "\n\nГРАФ ПРОЕКТА:\n"
