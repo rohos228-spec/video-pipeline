@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from app.services.agent_harness import HARNESS_FORBIDDEN_STEPS, verify_project_disk
 from app.services.gpt_api import xlsx_to_text
@@ -59,7 +58,9 @@ def test_xlsx_priority_pack_keeps_r48_under_budget(tmp_path: Path) -> None:
     assert "нет project.xlsx" not in text.lower() or "НЕ «нет" in text
 
 
-def test_writeback_rejects_dense_plan_without_row_or_label(tmp_path: Path) -> None:
+def test_writeback_skips_dense_plan_unknown_labels_without_write(tmp_path: Path) -> None:
+    """Fail-closed: строки «план» без @row= и без известной подписи — пропуск,
+    книга не мутирует (раньше ждали ValueError; контракт изменён на skip)."""
     src = tmp_path / "project.xlsx"
     dest = tmp_path / "out.xlsx"
     wb = Workbook()
@@ -72,12 +73,19 @@ def test_writeback_rejects_dense_plan_without_row_or_label(tmp_path: Path) -> No
     wb.save(src)
     wb.close()
 
-    with pytest.raises(ValueError, match="@row"):
-        apply_sheet_blocks_to_xlsx(
-            src,
-            {"план": [["random", "", "bad"], ["other", "", "bad2"]]},
-            dest,
-        )
+    apply_sheet_blocks_to_xlsx(
+        src,
+        {"план": [["random", "", "bad"], ["other", "", "bad2"]]},
+        dest,
+    )
+
+    wb2 = load_workbook(dest)
+    try:
+        ws2 = wb2["план"]
+        assert ws2["C45"].value == "old"  # существующие данные не тронуты
+        assert ws2["A1"].value in (None, "")  # мусор не уехал в A1
+    finally:
+        wb2.close()
 
 
 def test_harness_forbidden_steps() -> None:

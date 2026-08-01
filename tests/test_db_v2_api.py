@@ -319,6 +319,20 @@ async def test_orchestrator_chat_plain_text_no_write(api_client, monkeypatch) ->
         assert fr.voiceover_text == "реплика 1"  # не тронут
 
 
+@pytest.mark.asyncio
+async def test_orchestrator_chat_without_gpt_key_503(api_client, monkeypatch) -> None:
+    """Без GPT-ключа — вежливая 503 с причиной, не 500/404."""
+    client, project_id, factory = api_client
+    for var in ("GPT_API_KEY", "TOKENROUTER_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "привет", "history": []},
+    )
+    assert r.status_code == 503
+    assert "не настроен" in r.json()["detail"]
+
+
 def test_extract_apply_ops_json_variants() -> None:
     raw = '{"ops":[{"frame_uuid":"u1","fields":{"закадр":"x"}}]}'
     assert db_apply.extract_apply_ops_json(raw)["ops"][0]["frame_uuid"] == "u1"
