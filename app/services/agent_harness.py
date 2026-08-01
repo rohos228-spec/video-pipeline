@@ -114,11 +114,21 @@ def _repo_root() -> Path:
 
 
 def _db_path() -> Path:
+    """Путь к SQLite для raw-проверок harness.
+
+    Источник правды — ``settings.sqlite_path`` (тот же файл, что у приложения).
+    Опциональный ``settings.db_path`` оставлен для monkeypatch в тестах.
+    """
     from app.settings import settings
 
-    p = Path(getattr(settings, "db_path", "") or "")
-    if p.is_file():
-        return p
+    legacy = getattr(settings, "db_path", None)
+    if legacy:
+        p = Path(legacy)
+        if str(p):
+            return p
+    sp = getattr(settings, "sqlite_path", None)
+    if sp:
+        return Path(sp)
     return _repo_root() / "data" / "state.db"
 
 
@@ -299,21 +309,26 @@ def verify_project_disk(project_id: int, data_dir: Path, status: str) -> Harness
     frames_total = img_pr_db = anim_pr_db = vo_db = 0
     parity_err = ""
     try:
-        db = sqlite3.connect(str(_db_path()))
-        row = db.execute(
-            "SELECT COUNT(*), "
-            "SUM(CASE WHEN image_prompt IS NOT NULL AND trim(image_prompt)<>'' THEN 1 ELSE 0 END), "
-            "SUM(CASE WHEN animation_prompt IS NOT NULL AND trim(animation_prompt)<>'' THEN 1 ELSE 0 END), "
-            "SUM(CASE WHEN voiceover_text IS NOT NULL AND trim(voiceover_text)<>'' THEN 1 ELSE 0 END) "
-            "FROM frames WHERE project_id=?",
-            (project_id,),
-        ).fetchone()
-        db.close()
-        if row:
-            frames_total = int(row[0] or 0)
-            img_pr_db = int(row[1] or 0)
-            anim_pr_db = int(row[2] or 0)
-            vo_db = int(row[3] or 0)
+        db_file = _db_path()
+        if not db_file.is_file():
+            # БД ещё нет — для ранних статусов это не блок (0 кадров).
+            frames_total = img_pr_db = anim_pr_db = vo_db = 0
+        else:
+            db = sqlite3.connect(str(db_file))
+            row = db.execute(
+                "SELECT COUNT(*), "
+                "SUM(CASE WHEN image_prompt IS NOT NULL AND trim(image_prompt)<>'' THEN 1 ELSE 0 END), "
+                "SUM(CASE WHEN animation_prompt IS NOT NULL AND trim(animation_prompt)<>'' THEN 1 ELSE 0 END), "
+                "SUM(CASE WHEN voiceover_text IS NOT NULL AND trim(voiceover_text)<>'' THEN 1 ELSE 0 END) "
+                "FROM frames WHERE project_id=?",
+                (project_id,),
+            ).fetchone()
+            db.close()
+            if row:
+                frames_total = int(row[0] or 0)
+                img_pr_db = int(row[1] or 0)
+                anim_pr_db = int(row[2] or 0)
+                vo_db = int(row[3] or 0)
     except Exception as e:  # noqa: BLE001
         parity_err = str(e)
     if parity_err:
@@ -348,21 +363,26 @@ def verify_project_disk(project_id: int, data_dir: Path, status: str) -> Harness
     # node_runs failed
     failed_n = 0
     try:
-        db = sqlite3.connect(str(_db_path()))
-        row = db.execute(
-            "SELECT id FROM workflow_runs WHERE project_id=? ORDER BY id DESC LIMIT 1",
-            (project_id,),
-        ).fetchone()
-        if row:
-            failed_n = db.execute(
-                "SELECT COUNT(*) FROM node_runs WHERE workflow_run_id=? AND status='failed'",
-                (row[0],),
-            ).fetchone()[0]
-        db.close()
+        db_file = _db_path()
+        if not db_file.is_file():
+            checks.append(HarnessCheck("node_runs_failed", True, "failed=0 db_missing"))
+        else:
+            db = sqlite3.connect(str(db_file))
+            row = db.execute(
+                "SELECT id FROM workflow_runs WHERE project_id=? ORDER BY id DESC LIMIT 1",
+                (project_id,),
+            ).fetchone()
+            if row:
+                failed_n = db.execute(
+                    "SELECT COUNT(*) FROM node_runs WHERE workflow_run_id=? AND status='failed'",
+                    (row[0],),
+                ).fetchone()[0]
+            db.close()
+            checks.append(
+                HarnessCheck("node_runs_failed", failed_n == 0, f"failed={failed_n}")
+            )
     except Exception as e:  # noqa: BLE001
         checks.append(HarnessCheck("node_runs", False, str(e)))
-    else:
-        checks.append(HarnessCheck("node_runs_failed", failed_n == 0, f"failed={failed_n}"))
 
     log_hits, log_name = _count_project_log_errors(project_id, data_dir.name)
     checks.append(

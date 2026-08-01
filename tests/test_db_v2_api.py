@@ -25,8 +25,11 @@ app = create_app()
 
 @pytest_asyncio.fixture
 async def api_client(tmp_path, monkeypatch):
+    db_file = tmp_path / "dbv2api.db"
     monkeypatch.setattr(settings, "data_dir", tmp_path)
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'dbv2api.db'}")
+    # harness читает raw sqlite через settings.sqlite_path — тот же файл, что и API
+    monkeypatch.setattr(settings, "sqlite_path", db_file)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await db_v2.migrate_db_v2_schema(conn)

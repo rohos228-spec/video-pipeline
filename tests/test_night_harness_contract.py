@@ -96,14 +96,19 @@ def test_harness_forbidden_steps() -> None:
 
 
 @pytest.mark.asyncio
-async def test_harness_gate_or_raise_ok_and_fail(tmp_path: Path) -> None:
+async def test_harness_gate_or_raise_ok_and_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Общий гейт шага: ок-данные → проходит; нет project.xlsx → RuntimeError."""
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from app.models import Base
     from app.services.agent_harness import harness_gate_or_raise
+    from app.settings import settings
 
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    db_file = tmp_path / "harness_gate.db"
+    monkeypatch.setattr(settings, "sqlite_path", db_file)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False)
