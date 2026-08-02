@@ -905,13 +905,22 @@ function Invoke-StudioDoctor {
     return $true
 }
 
+function Get-StudioLauncherStamp {
+    try {
+        return (git -C $Root rev-parse --short HEAD 2>$null).Trim()
+    } catch {
+        return "?"
+    }
+}
+
 function Show-StudioMenu {
     $brLabel = if ($script:StudioBranch) { $script:StudioBranch } else { "не выбрана" }
+    $stamp = Get-StudioLauncherStamp
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host "  Video Pipeline Studio" -ForegroundColor Cyan
     Write-Host "  $Root" -ForegroundColor DarkGray
-    Write-Host "  Ветка ПК: $brLabel" -ForegroundColor DarkGray
+    Write-Host "  launcher $stamp | ветка ПК: $brLabel" -ForegroundColor Yellow
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  [1] Запустить студию (бэкенд + Chrome CDP + http://127.0.0.1:8765)"
@@ -922,6 +931,10 @@ function Show-StudioMenu {
     Write-Host "  [6] Диагностика (версия, git, порты, logs/doctor.log)"
     Write-Host "  [0] Выход"
     Write-Host ""
+    if (-not $script:StudioBranch) {
+        Write-Host "  Нет ветки ПК — при старте спросит housepc/tompc/strangepc/workpc" -ForegroundColor DarkYellow
+        Write-Host ""
+    }
 }
 
 # --- main ---
