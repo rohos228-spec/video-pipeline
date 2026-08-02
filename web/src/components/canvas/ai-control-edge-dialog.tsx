@@ -61,7 +61,7 @@ export function AiControlEdgeDialog({
   });
 
   const persist = (patchMeta: Record<string, unknown>) => {
-    patch.mutate({ ...projectMeta, ...patchMeta });
+    patch.mutate(patchMeta);
   };
 
   const toggleKind = (kind: string) => {

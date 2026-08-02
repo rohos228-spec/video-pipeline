@@ -12,6 +12,23 @@ PROMPT_META_KEYS: frozenset[str] = frozenset(
     {"custom_prompts", "prompt_slot_variants", "prompt_history"}
 )
 
+# UI часто шлёт весь meta из React Query кэша. Пока воркер писал
+# gpt_operator_results / storage_nodes — stale PATCH затирал их null/{} и
+# ВСЕ ноды «теряли» результат. Эти ключи deep-merge + отказ от null wipe.
+PROTECTED_META_BUCKETS: frozenset[str] = frozenset(
+    {
+        "gpt_operator_results",
+        "excel_gpt_nodes",
+        "storage_nodes",
+        "xlsx_snapshots_by_node",
+        "prompt_slot_variants",
+        "custom_prompts",
+        "prompt_history",
+        "node_step_params",
+        "excel_lane_bindings",
+    }
+)
+
 PROMPTS_AUDIT_LOG = Path("logs/prompts_audit.log")
 
 
@@ -57,6 +74,36 @@ def audit_prompt_meta_change(
             logger.warning("prompts_audit: {}", line)
 
 
+def _merge_protected_bucket(base_val: Any, patch_val: Any) -> Any:
+    """Deep-merge dict-бакета: null и пустой {} не затирают живые данные."""
+    if patch_val is None:
+        return base_val
+    if not isinstance(patch_val, dict):
+        return patch_val
+    if not isinstance(base_val, dict):
+        return dict(patch_val)
+    if not patch_val and base_val:
+        # stale UI прислал пустой bucket — оставляем серверное
+        return dict(base_val)
+    out = dict(base_val)
+    for key, val in patch_val.items():
+        if val is None:
+            # null entry (часто после canvas PATCH) — не трогаем
+            continue
+        if isinstance(val, dict) and isinstance(out.get(key), dict):
+            # пустой {} не вычищает заполненный результат ноды
+            if not val and out[key]:
+                continue
+            nested = dict(out[key])
+            for nk, nv in val.items():
+                if nv is not None:
+                    nested[nk] = nv
+            out[key] = nested
+        else:
+            out[key] = val
+    return out
+
+
 def merge_project_meta(
     existing: dict | None,
     patch: dict | None,
@@ -64,11 +111,15 @@ def merge_project_meta(
     source: str,
     project_id: int | None = None,
 ) -> dict:
-    """Shallow-merge patch в existing meta; аудит prompt-ключей."""
+    """Shallow-merge patch в existing meta; protected buckets — deep + anti-wipe."""
     base = dict(existing or {})
     if not isinstance(patch, dict):
         return base
     merged = {**base, **patch}
+    for key in PROTECTED_META_BUCKETS:
+        if key not in patch:
+            continue
+        merged[key] = _merge_protected_bucket(base.get(key), patch.get(key))
     audit_prompt_meta_change(
         source=source,
         project_id=project_id,

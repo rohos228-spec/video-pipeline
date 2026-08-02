@@ -540,14 +540,18 @@ export function FlowCanvas({
         else toast.message(check.warnings[0]);
       }
       if (projectId) {
+        // Только дельта: НЕ слать весь meta из кэша — иначе stale
+        // gpt_operator_results/storage_nodes затирают результаты всех нод.
         const projectData = project.data ?? (await api.getProject(projectId));
-        const meta = { ...((projectData.meta || {}) as Record<string, unknown>) };
-        meta.canvas_graph = buildCanvasGraph(workflow.data.id, wfNodes, wfEdges);
-        meta.ai_control = true;
-        const topics = Array.isArray(meta.mass_excel_topics)
-          ? (meta.mass_excel_topics as string[])
+        const prevMeta = (projectData.meta || {}) as Record<string, unknown>;
+        const topics = Array.isArray(prevMeta.mass_excel_topics)
+          ? (prevMeta.mass_excel_topics as string[])
           : [];
         const bindings = buildExcelLaneBindings(currentNodes, currentEdges, topics);
+        const meta: Record<string, unknown> = {
+          canvas_graph: buildCanvasGraph(workflow.data.id, wfNodes, wfEdges),
+          ai_control: true,
+        };
         if (bindings.length) {
           meta.excel_lane_bindings = bindings;
         }

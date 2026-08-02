@@ -62,7 +62,8 @@ export function NodeAiReviewDialog({
   });
 
   const persist = (patchMeta: Record<string, unknown>) => {
-    patch.mutate({ ...projectMeta, ...patchMeta });
+    // Только дельта — полный spread meta затирал gpt_operator_results.
+    patch.mutate(patchMeta);
   };
 
   const toggleKind = (kind: string) => {

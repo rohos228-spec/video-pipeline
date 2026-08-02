@@ -1521,7 +1521,9 @@ def save_operator_result(
             if resolved_gate not in ("pass", "fail"):
                 resolved_gate = parsed.verdict
 
-    meta = dict(project.meta or {})
+    from app.services.project_meta import set_meta_fields
+
+    meta = project.meta if isinstance(project.meta, dict) else {}
     results = dict(meta.get("gpt_operator_results") or {})
     entry: dict[str, Any] = {
         "at": datetime.now(timezone.utc).isoformat(),
@@ -1543,7 +1545,6 @@ def save_operator_result(
             if rewrite:
                 entry["fixRewriteFile"] = rewrite
     results[node_key] = entry
-    meta["gpt_operator_results"] = results
     # mirror last reply into excel_gpt node config for UI
     configs = dict(meta.get("excel_gpt_nodes") or {})
     cur = dict(configs.get(node_key) or {})
@@ -1560,8 +1561,12 @@ def save_operator_result(
     if analysis_dict and isinstance(analysis_dict, dict):
         cur["lastSummary"] = str(analysis_dict.get("summary") or "")[:500]
     configs[node_key] = cur
-    meta["excel_gpt_nodes"] = configs
-    project.meta = meta
+    # Точечно — не project.meta = dict(...), иначе гонка с canvas PATCH.
+    set_meta_fields(
+        project,
+        gpt_operator_results=results,
+        excel_gpt_nodes=configs,
+    )
     try:
         from sqlalchemy.orm.attributes import flag_modified
 

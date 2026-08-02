@@ -77,8 +77,8 @@ export function withNodeStepParams(
   patch: PlanScriptStepParams | SplitStepParams | AudioStepParams | AssembleStepParams,
 ): Record<string, unknown> {
   const current = readNodeStepParams(meta);
+  // Только bucket — сервер merge'ит; полный meta из кэша затирал результаты нод.
   return {
-    ...meta,
     node_step_params: {
       ...current,
       [step]: { ...(current[step] || {}), ...patch },

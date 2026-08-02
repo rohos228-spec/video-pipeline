@@ -45,9 +45,7 @@ export function ExcelFeedPanel({
     mutationFn: (file: File) => api.parseMassTopicsXlsx(projectId, file),
     onSuccess: async (r, file) => {
       setOptimistic({ fileName: file.name, topics: r.topics });
-      const project = await api.getProject(projectId);
       const nextMeta: Record<string, unknown> = {
-        ...((project.meta || {}) as Record<string, unknown>),
         mass_excel_topics: r.topics,
         mass_queue_topics: r.topics,
         mass_excel_file: file.name,

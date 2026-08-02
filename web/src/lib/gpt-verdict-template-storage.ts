@@ -23,8 +23,8 @@ export function writeGptVerdictTemplate(
   stepCode: string,
   templateName: string,
 ): Record<string, unknown> {
+  // Только bucket — не весь meta (stale PATCH иначе трёт результаты нод).
   return {
-    ...meta,
     gpt_verdict_templates: {
       ...readGptVerdictTemplates(meta),
       [stepCode]: templateName,

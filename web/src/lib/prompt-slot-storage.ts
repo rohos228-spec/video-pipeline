@@ -148,5 +148,6 @@ export function withSlotVariant(
   const node = { ...(all[nodeKey] || {}) };
   node[slotId] = variant;
   all[nodeKey] = node;
-  return { ...meta, prompt_slot_variants: all };
+  // Только изменённый bucket — не весь meta (stale PATCH иначе трёт результаты).
+  return { prompt_slot_variants: all };
 }

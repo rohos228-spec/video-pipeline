@@ -45,6 +45,40 @@ from app.orchestrator.steps import (
 )
 
 
+async def _sync_storage_after_advance(
+    session: AsyncSession, project: Project, running_status: ProjectStatus
+) -> None:
+    """После любого шага — забрать артефакты во все storage по стрелкам.
+
+    plan/script/split/enrich уже синкают сами; повтор идемпотентен (fingerprint).
+    Без этого hero/img/video/anim_pr/audio «успешно» бежали, а хранилище пустое.
+    """
+    from app.orchestrator.node_registry import RUNNING_TO_NODE_TYPE
+    from app.services.excel_gpt_node import slot_from_running_status
+    from app.services.storage_step_sync import sync_storage_after_step
+
+    # excel_gpt: sync внутри enrich_xlsx по конкретному node_key
+    if slot_from_running_status(running_status) is not None:
+        return
+    node_type = RUNNING_TO_NODE_TYPE.get(running_status)
+    if not node_type:
+        return
+    try:
+        await sync_storage_after_step(
+            session,
+            project,
+            node_type,
+            log_prefix=f"advance/{node_type}",
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "advance #{}: storage sync after {} failed",
+            project.id,
+            node_type,
+            exc_info=True,
+        )
+
+
 async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> None:
     """Один такт стейт-машины. Запускает шаг, если статус — «running»; иначе
     ничего не делает (ждём, пока пользователь нажмёт кнопку в боте)."""
@@ -59,9 +93,11 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
     task = asyncio.current_task()
     if task is not None:
         register_advance_task(project.id, task)
+    ran_status: ProjectStatus | None = None
     try:
         abort_if_cancelled(project.id)
         status = project.status
+        ran_status = status
         logger.debug("advance #{} status={}", project.id, status.value)
 
         # UI SSoT: NodeRun → running, иначе на ноде нет «в работе».
@@ -81,25 +117,15 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
 
         if status is ProjectStatus.planning:
             await make_plan.run(session, project, bot)
-            return
-
-        if status is ProjectStatus.scripting:
+        elif status is ProjectStatus.scripting:
             await make_script.run(session, project, bot)
-            return
-
-        if status is ProjectStatus.splitting:
+        elif status is ProjectStatus.splitting:
             await split_frames.run(session, project)
-            return
-
-        if status is ProjectStatus.generating_hero:
+        elif status is ProjectStatus.generating_hero:
             await generate_hero.run(session, project, bot)
-            return
-
-        if status is ProjectStatus.generating_items:
+        elif status is ProjectStatus.generating_items:
             await generate_items.run(session, project, bot)
-            return
-
-        if status in (
+        elif status in (
             ProjectStatus.enriching_1,
             ProjectStatus.enriching_2,
             ProjectStatus.enriching_3,
@@ -107,40 +133,28 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
             ProjectStatus.enriching_5,
         ):
             await enrich_xlsx.run(session, project, bot)
-            return
-
-        if status is ProjectStatus.generating_image_prompts:
+        elif status is ProjectStatus.generating_image_prompts:
             await generate_image_prompts.run(session, project, bot)
-            return
-
-        if status is ProjectStatus.generating_images:
+        elif status is ProjectStatus.generating_images:
             await generate_images.run(session, project, bot)
-            return
-
-        if status is ProjectStatus.generating_animation_prompts:
+        elif status is ProjectStatus.generating_animation_prompts:
             await make_animation_prompts.run(session, project, bot)
-            return
-
-        if status is ProjectStatus.generating_videos:
+        elif status is ProjectStatus.generating_videos:
             await generate_videos.run(session, project, bot)
-            return
-
-        if status is ProjectStatus.generating_music:
+        elif status is ProjectStatus.generating_music:
             from app.orchestrator.steps import generate_music
 
             await generate_music.run(session, project, bot)
-            return
-
-        if status is ProjectStatus.generating_audio:
+        elif status is ProjectStatus.generating_audio:
             await generate_audio.run(session, project, bot)
-            return
-
-        if status is ProjectStatus.assembling:
+        elif status is ProjectStatus.assembling:
             await assemble.run(session, project, bot)
-            return
-
-        if status is ProjectStatus.publishing:
+        elif status is ProjectStatus.publishing:
             await publish.run(session, project, bot)
-            return
+        else:
+            ran_status = None
+
+        if ran_status is not None:
+            await _sync_storage_after_advance(session, project, ran_status)
     finally:
         unregister_advance_task(project.id)

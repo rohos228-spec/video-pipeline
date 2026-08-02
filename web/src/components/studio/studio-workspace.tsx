@@ -355,11 +355,12 @@ export function StudioWorkspace({
   const persistMeta = useCallback(
     async (patch: Record<string, unknown>) => {
       if (!projectId) return;
-      const meta = { ...((project.data?.meta || {}) as Record<string, unknown>), ...patch };
-      await api.patchProject(projectId, { meta });
+      // Только patch-ключи: сервер deep-merge'ит. Полный spread meta из
+      // React Query затирал результаты нод при гонке с воркером.
+      await api.patchProject(projectId, { meta: patch });
       await qc.invalidateQueries({ queryKey: ["project", projectId] });
     },
-    [projectId, project.data?.meta, qc],
+    [projectId, qc],
   );
 
   const canvasActions = useMemo(
