@@ -336,9 +336,14 @@ function Start-StudioBackendWindow {
         return $false
     }
     Set-StudioNvidiaEnv
-    & $py -c "import app.bootstrap_env; from app.web.api import create_app; create_app()" 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) {
+    # Не глотать stderr и не pipe в Out-Null: в PS 5.1 $LASTEXITCODE после pipe
+    # часто null, а ($null -ne 0) = $true → ложный FAIL create_app.
+    $preflightOut = @(& $py -c "import app.bootstrap_env; from app.web.api import create_app; create_app(); print('create_app OK')" 2>&1)
+    $preflightCode = if ($null -eq $LASTEXITCODE) { 1 } else { [int]$LASTEXITCODE }
+    $preflightOk = ($preflightCode -eq 0) -and ($preflightOut -match "create_app OK")
+    if (-not $preflightOk) {
         Write-StudioMsg "ОШИБКА: Python create_app() не прошёл. Попробуйте [4] Починить установку." "Red"
+        $preflightOut | ForEach-Object { Write-StudioMsg "  $_" "Red" }
         return $false
     }
     Write-StudioMsg "==> Запуск бэкенда (отдельное окно)..." "Cyan"
