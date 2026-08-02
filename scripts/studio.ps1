@@ -16,8 +16,9 @@ if ($env:VP_REPO_ROOT) {
 }
 Set-Location -LiteralPath $Root
 
-# Ветки ПК (выбор при первом запуске → data/studio-pc-branch + .env)
-$script:PcBranches = @("housepc", "tompc", "strangepc", "workpc")
+# Ветки (выбор при первом запуске / [5] → data/studio-pc-branch + .env)
+# [4] всегда тянет origin/<сохранённая>, не хардкод main.
+$script:PcBranches = @("housepc", "tompc", "strangepc", "workpc", "main")
 $script:PcBranchFile = Join-Path $Root "data\studio-pc-branch"
 $EnvFile = Join-Path $Root ".env"
 $StudioBranch = ""
@@ -119,15 +120,15 @@ function Show-StudioBranchPicker {
     while ($true) {
         $choice = Read-Host "Номер ветки"
         if ($AllowCancel -and $choice -eq "0") { return "" }
-        if ($choice -match '^[1-4]$') {
+        if ($choice -match '^[1-5]$') {
             $idx = [int]$choice - 1
             $br = $script:PcBranches[$idx]
             if (Save-StudioPcBranch -Branch $br) {
-                Write-StudioMsg "OK: ветка ПК сохранена — $br" "Green"
+                Write-StudioMsg "OK: ветка сохранена — $br ([4] будет тянуть origin/$br)" "Green"
                 return $br
             }
         }
-        Write-StudioMsg "Выберите 1–4 (housepc / tompc / strangepc / workpc)." "Yellow"
+        Write-StudioMsg "Выберите 1–5 (housepc / tompc / strangepc / workpc / main)." "Yellow"
     }
 }
 
@@ -506,11 +507,15 @@ function Invoke-StudioReturnPromptEditsFromStash {
 }
 
 function Invoke-StudioGitUpdate {
+    # Всегда перечитать сохранённую ветку (data/studio-pc-branch / .env) — не main по умолчанию
+    $saved = Get-StudioPcBranch
+    if ($saved) { $script:StudioBranch = $saved }
     $StudioBranch = $script:StudioBranch
     if (-not (Test-StudioPcBranchName $StudioBranch)) {
-        Write-StudioMsg "ОШИБКА: ветка ПК не задана. Закройте Studio и выберите ветку при старте." "Red"
+        Write-StudioMsg "ОШИБКА: ветка не задана. Пункт [5] — выберите housepc/tompc/strangepc/workpc/main." "Red"
         return $false
     }
+    Write-StudioMsg "==> обновление с сохранённой ветки: origin/$StudioBranch" "Cyan"
     Write-StudioMsg "==> git fetch origin $StudioBranch" "Cyan"
     git -C $Root fetch origin $StudioBranch 2>&1 | ForEach-Object { Write-StudioMsg $_ }
     if ($LASTEXITCODE -ne 0) {
@@ -672,7 +677,9 @@ function Invoke-StudioUpdateAndStart {
     if (-not (Ensure-StudioPcBranchSelected -InteractiveRequired)) {
         return $false
     }
-    $StudioBranch = $script:StudioBranch
+    $StudioBranch = Get-StudioPcBranch
+    if (-not $StudioBranch) { $StudioBranch = $script:StudioBranch }
+    $script:StudioBranch = $StudioBranch
     Write-StudioMsg "=== [4] Обновить и запустить (origin/$StudioBranch) ===" "Cyan"
     # 1) Снимок prompts/ ВНЕ репо — главный предохранитель (stash может сдохнуть).
     Invoke-StudioBackupPromptsAside | Out-Null
