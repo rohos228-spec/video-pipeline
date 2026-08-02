@@ -390,9 +390,21 @@ export const api = {
         set_prompt?: string;
         set_text_llm?: string;
         run_harness?: string;
+        edit_files?: string;
+        run_tests?: string;
+        git_commit_push?: string;
       }[];
       ui_actions: { kind: string; step?: string; node_type?: string; node_key?: string; hitl_id?: number; project_id?: number }[];
-      pending_confirm: { kind: string; node_key?: string | null; node_type?: string | null; only?: string | null; count: number; nodes: string[] }[];
+      pending_confirm: {
+        kind: string;
+        node_key?: string | null;
+        node_type?: string | null;
+        only?: string | null;
+        count: number;
+        nodes: string[];
+        message?: string;
+        files?: string[];
+      }[];
       error: string | null;
     }>(
       `/api/db/projects/${projectId}/orchestrator/chat`,
@@ -408,6 +420,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  dbOrchestratorConfirmGitPush: (
+    projectId: number,
+    body: { message: string; files?: string[] },
+  ) =>
+    http<{ git_commit_push: string; sha: string; files: string[] }>(
+      `/api/db/projects/${projectId}/orchestrator/confirm-git-push`,
+      { method: "POST", body: JSON.stringify(body) },
+      180_000,
+    ),
   runHarnessVerify: (projectId: number) =>
     http<{ ok: boolean; checks: { name: string; ok: boolean; detail: string }[] }>(
       `/api/projects/${projectId}/harness/verify?include_http=false`,

@@ -249,9 +249,10 @@ _ORCHESTRATOR_SYSTEM = (
     "На вопросы про проверки/проверку/статусы нод отвечай СТРОГО по этим "
     "разделам контекста — если прогона проверок не было, скажи это прямо.\n"
     "Если есть раздел ДИАГНОСТИКА (ошибки нод/проверок/лог) или пользователь "
-    "просит починить/исправить/объяснить ошибку — отвечай как кодинг-агент: "
-    "причина → файл/место → точечный фикс (патч), без воды. Сам код "
-    "программы не правь — предложи патч человеку.\n"
+    "просит починить/исправить баг в КОДЕ программы — отвечай как кодинг-агент: "
+    "причина → файл → точечный фикс через edit_files + run_tests + "
+    "git_commit_push (см. действия 16–18). Без воды. "
+    "Правь только app/, tests/, prompts/. Не трогай .env и data/.\n"
     "ПОРЯДОК ШАГОВ — ТОЛЬКО ТАКОЙ (другого не существует, не выдумывай):\n"
     "plan → script → split → hero → items → enrich_1..5 → img_pr → img → "
     "anim_pr → video → audio → music → assemble → publish.\n"
@@ -322,6 +323,21 @@ _ORCHESTRATOR_SYSTEM = (
     "граф сломан — repair_graph идёт в actions ПЕРВЫМ, до add_node.\n"
     "14) ПРОГНАТЬ проверки (harness) → {\"actions\":[{\"run_harness\":true}]}.\n"
     "15) Вопрос/обсуждение без изменений — обычный текст.\n"
+    "16) ПРАВКА КОДА (allowlist app/ tests/ prompts/) → "
+    "{\"actions\":[{\"edit_files\":[{\"path\":\"app/...py\","
+    "\"old_string\":\"…\",\"new_string\":\"…\"}]}]} — "
+    "old_string должен встречаться ровно 1 раз. "
+    "Новый мелкий файл: {\"path\":\"tests/....py\",\"content\":\"...\"}.\n"
+    "17) ПРОГНАТЬ pytest → "
+    "{\"actions\":[{\"run_tests\":[\"tests/test_....py\"]}]}. "
+    "После edit_files — обязательно, перед push.\n"
+    "18) COMMIT+PUSH в origin/main → "
+    "{\"actions\":[{\"git_commit_push\":{\"message\":\"fix: …\","
+    "\"files\":[\"app/....py\"],\"auto\":false}}]} — "
+    "по умолчанию auto=false: человек жмёт «Подтвердить push» в чате. "
+    "auto=true — сразу push (только если пользователь явно просит "
+    "«сразу запушь» / «без подтверждения»). "
+    "Только ветка main, без force-push.\n"
     "ТИПЫ НОД по-человечески (объясняй так, если спрашивают «что это»): "
     "hitl_gate — нода проверки: пайплайн встаёт и ждёт аппрува человека; "
     "excel_gpt — работа/автопроверка через GPT; plan — «Сценарий»; "
@@ -1637,8 +1653,88 @@ async def orchestrator_chat(
                     await session.commit()
                     bad = [c.name for c in rep.checks if not c.ok]
                     actions_run.append(
-                        {"run_harness": "ок" if rep.ok else f"НЕ ОК: {bad}"}
+                        {"run_harness": "ок" if rep.ok else f"НЕОК: {bad}"}
                     )
+                elif "edit_files" in act:
+                    from app.services.code_autofix import (
+                        CodeAutofixError,
+                        apply_edits,
+                    )
+
+                    try:
+                        result = apply_edits(act.get("edit_files") or [])
+                    except CodeAutofixError as e:
+                        raise db_apply.ApplyOpsError(str(e)) from None
+                    actions_run.append(
+                        {
+                            "edit_files": (
+                                f"{result['count']} файл(ов): "
+                                + ", ".join(result["changed"][:8])
+                            )
+                        }
+                    )
+                elif "run_tests" in act:
+                    from app.services.code_autofix import (
+                        CodeAutofixError,
+                        run_tests,
+                    )
+
+                    spec = act.get("run_tests")
+                    paths = spec if isinstance(spec, list) else None
+                    try:
+                        tres = run_tests(paths)
+                    except CodeAutofixError as e:
+                        raise db_apply.ApplyOpsError(str(e)) from None
+                    if not tres["ok"]:
+                        raise db_apply.ApplyOpsError(
+                            "run_tests FAIL: " + (tres.get("output") or "")[:500]
+                        )
+                    actions_run.append(
+                        {"run_tests": f"ok {', '.join(tres['tests'][:6])}"}
+                    )
+                elif "git_commit_push" in act:
+                    from app.services.code_autofix import CodeAutofixError
+                    from app.services.git_ops import GitOpsError, commit_and_push
+
+                    spec = act.get("git_commit_push") or {}
+                    if not isinstance(spec, dict):
+                        raise db_apply.ApplyOpsError(
+                            "git_commit_push: ожидается объект {message, files?, auto?}"
+                        )
+                    message = str(spec.get("message") or "").strip()
+                    files = spec.get("files") or []
+                    if files is not None and not isinstance(files, list):
+                        raise db_apply.ApplyOpsError(
+                            "git_commit_push.files: список путей"
+                        )
+                    auto = bool(spec.get("auto"))
+                    if not message:
+                        raise db_apply.ApplyOpsError("git_commit_push: пустой message")
+                    if auto:
+                        try:
+                            pushed = commit_and_push(
+                                [str(x) for x in files], message
+                            )
+                        except (GitOpsError, CodeAutofixError) as e:
+                            raise db_apply.ApplyOpsError(str(e)) from None
+                        actions_run.append(
+                            {
+                                "git_commit_push": (
+                                    f"pushed {pushed['sha']} "
+                                    f"({len(pushed['files'])} files)"
+                                )
+                            }
+                        )
+                    else:
+                        pending_confirm.append(
+                            {
+                                "kind": "git_commit_push",
+                                "message": message[:500],
+                                "files": [str(x) for x in files][:40],
+                                "count": len(files) if files else 0,
+                                "nodes": [str(x) for x in files][:20],
+                            }
+                        )
             except db_apply.ApplyOpsError as e:
                 error = str(e)
             except Exception as e:  # noqa: BLE001
@@ -1719,6 +1815,36 @@ async def orchestrator_confirm_remove(
         )
     except db_apply.ApplyOpsError as e:
         raise HTTPException(400, str(e)) from None
+
+
+class ConfirmGitPushBody(BaseModel):
+    message: str
+    files: list[str] | None = None
+
+
+@router.post("/projects/{project_id}/orchestrator/confirm-git-push")
+async def orchestrator_confirm_git_push(
+    project_id: int,
+    body: ConfirmGitPushBody,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Подтверждённый commit+push в origin/main (кнопка в чате оркестратора)."""
+    await _project(session, project_id)  # auth / existence
+    from app.services.code_autofix import CodeAutofixError
+    from app.services.git_ops import GitOpsError, commit_and_push
+
+    try:
+        pushed = commit_and_push(list(body.files or []), body.message.strip())
+    except (GitOpsError, CodeAutofixError) as e:
+        raise HTTPException(400, str(e)) from None
+    return {
+        "git_commit_push": (
+            f"git HEAD: {pushed['sha']} уже в main "
+            f"({len(pushed['files'])} files)"
+        ),
+        "sha": pushed["sha"],
+        "files": pushed["files"],
+    }
 
 
 class FramePatch(BaseModel):

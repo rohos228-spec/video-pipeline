@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { ChevronDown, ChevronUp, MessageSquare, Send, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronUp, GitBranch, MessageSquare, Send, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { usePersistedState } from "@/hooks/use-persisted-state";
@@ -10,20 +10,22 @@ interface Props {
   projectId: number | null;
 }
 
-interface PendingRemove {
+interface PendingConfirm {
   kind: string;
   node_key?: string | null;
   node_type?: string | null;
   only?: string | null;
   count: number;
   nodes: string[];
+  message?: string;
+  files?: string[];
   resolved?: boolean;
 }
 
 interface ChatMsg {
   role: string;
   content: string;
-  confirm?: PendingRemove;
+  confirm?: PendingConfirm;
 }
 
 export function OrchestratorPanel({ projectId }: Props) {
@@ -72,6 +74,9 @@ export function OrchestratorPanel({ projectId }: Props) {
         else if (a.set_prompt) notes.push(`промт: ${a.set_prompt}`);
         else if (a.set_text_llm) notes.push(`LLM: ${a.set_text_llm}`);
         else if (a.run_harness) notes.push(`проверки: ${a.run_harness}`);
+        else if (a.edit_files) notes.push(`код: ${a.edit_files}`);
+        else if (a.run_tests) notes.push(`pytest: ${a.run_tests}`);
+        else if (a.git_commit_push) notes.push(`git: ${a.git_commit_push}`);
       }
       for (const u of r.ui_actions ?? []) {
         const nodeKey = u.node_key ?? (u.node_type ? `n_${u.node_type}` : null);
@@ -126,10 +131,17 @@ export function OrchestratorPanel({ projectId }: Props) {
         }
       }
       if (r.error) notes.push(`ошибка: ${r.error}`);
-      const pend = (r.pending_confirm ?? []).find((p) => p.kind === "remove_node");
-      if (pend) {
+      const pendRemove = (r.pending_confirm ?? []).find((p) => p.kind === "remove_node");
+      const pendGit = (r.pending_confirm ?? []).find((p) => p.kind === "git_commit_push");
+      const pend = pendGit ?? pendRemove;
+      if (pendRemove) {
         notes.push(
-          `к удалению: ${pend.count} нод (${pend.nodes.slice(0, 5).join(", ")}${pend.count > 5 ? "…" : ""}) — кнопки в сообщении ниже`,
+          `к удалению: ${pendRemove.count} нод (${pendRemove.nodes.slice(0, 5).join(", ")}${pendRemove.count > 5 ? "…" : ""}) — кнопки в сообщении ниже`,
+        );
+      }
+      if (pendGit) {
+        notes.push(
+          `к push: ${(pendGit.files ?? pendGit.nodes).slice(0, 5).join(", ") || "dirty allowlist"} — подтверди кнопку ниже`,
         );
       }
       setChatLog([
@@ -151,7 +163,7 @@ export function OrchestratorPanel({ projectId }: Props) {
   }, [projectId, chatInput, busy, chatLog]);
 
   const resolveRemove = useCallback(
-    async (msgIndex: number, confirm: PendingRemove, approve: boolean) => {
+    async (msgIndex: number, confirm: PendingConfirm, approve: boolean) => {
       if (projectId == null || busy) return;
       setBusy(true);
       try {
@@ -190,6 +202,45 @@ export function OrchestratorPanel({ projectId }: Props) {
     [projectId, busy, setChatLog],
   );
 
+  const resolveGitPush = useCallback(
+    async (msgIndex: number, confirm: PendingConfirm, approve: boolean) => {
+      if (projectId == null || busy) return;
+      setBusy(true);
+      try {
+        if (approve) {
+          const r = await api.dbOrchestratorConfirmGitPush(projectId, {
+            message: confirm.message || "fix: orchestrator",
+            files: confirm.files ?? confirm.nodes,
+          });
+          setChatLog((prev) => [
+            ...prev.map((m, i) =>
+              i === msgIndex && m.confirm ? { ...m, confirm: { ...m.confirm, resolved: true } } : m,
+            ),
+            { role: "assistant", content: `${r.git_commit_push}` },
+          ]);
+        } else {
+          setChatLog((prev) => [
+            ...prev.map((m, i) =>
+              i === msgIndex && m.confirm ? { ...m, confirm: { ...m.confirm, resolved: true } } : m,
+            ),
+            { role: "assistant", content: "Push отменён — правки на диске остались, в git не ушли." },
+          ]);
+        }
+      } catch (e) {
+        setChatLog((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: `Ошибка push: ${e instanceof Error ? e.message : e}`,
+          },
+        ]);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [projectId, busy, setChatLog],
+  );
+
   return (
     <div className="absolute inset-x-0 bottom-0 z-30 border-t border-white/[0.08] bg-[#0c0c0c]/95 backdrop-blur">
       <button
@@ -202,7 +253,7 @@ export function OrchestratorPanel({ projectId }: Props) {
         <span className="text-white/35">
           {projectId == null
             ? "открой проект, чтобы писать"
-            : "пиши по-русски — правит базу и запускает шаги"}
+            : "база, шаги, фиксы кода → push в main"}
         </span>
         <span className="flex-1" />
         {open ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
@@ -212,8 +263,8 @@ export function OrchestratorPanel({ projectId }: Props) {
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-1.5">
             {chatLog.length === 0 ? (
               <div className="text-[11px] text-white/25">
-                Например: «какой следующий шаг?», «запусти anim_pr», «перепиши закадр
-                во 2 кадре на …». Изменения видны в «Базе», шаги — на пайплайне.
+                Например: «запусти anim_pr», «почини баг в enrich и запушь». Изменения
+                в коде — через подтверждение push.
               </div>
             ) : (
               chatLog.map((m, i) => (
@@ -222,7 +273,7 @@ export function OrchestratorPanel({ projectId }: Props) {
                     {m.role === "user" ? "ты" : "оркестратор"}:{" "}
                   </span>
                   <span className="whitespace-pre-wrap text-white/80">{m.content}</span>
-                  {m.confirm && !m.confirm.resolved ? (
+                  {m.confirm && !m.confirm.resolved && m.confirm.kind === "remove_node" ? (
                     <span className="mt-1 flex items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5">
                       <Trash2 className="h-3.5 w-3.5 text-red-400" />
                       <span className="flex-1 text-[11px] text-white/80">
@@ -245,6 +296,34 @@ export function OrchestratorPanel({ projectId }: Props) {
                         className="h-7 text-[11px]"
                         disabled={busy}
                         onClick={() => void resolveRemove(i, m.confirm!, false)}
+                      >
+                        Отмена
+                      </Button>
+                    </span>
+                  ) : null}
+                  {m.confirm && !m.confirm.resolved && m.confirm.kind === "git_commit_push" ? (
+                    <span className="mt-1 flex items-center gap-2 rounded-md border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1.5">
+                      <GitBranch className="h-3.5 w-3.5 text-emerald-400" />
+                      <span className="flex-1 text-[11px] text-white/80">
+                        Push в main: {m.confirm.message || "commit"}
+                        {(m.confirm.files ?? m.confirm.nodes).length
+                          ? ` (${(m.confirm.files ?? m.confirm.nodes).slice(0, 3).join(", ")})`
+                          : ""}
+                      </span>
+                      <Button
+                        size="sm"
+                        className="h-7 text-[11px]"
+                        disabled={busy}
+                        onClick={() => void resolveGitPush(i, m.confirm!, true)}
+                      >
+                        Подтвердить push
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-[11px]"
+                        disabled={busy}
+                        onClick={() => void resolveGitPush(i, m.confirm!, false)}
                       >
                         Отмена
                       </Button>
