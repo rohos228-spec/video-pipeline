@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import {
   Bug,
   ChevronDown,
@@ -12,6 +18,7 @@ import {
   Send,
   Square,
   Trash2,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
@@ -49,7 +56,7 @@ const FIX_BUGS_PREFIX =
 
 export function OrchestratorPanel({ projectId }: Props) {
   const [open, setOpen] = usePersistedState("vp-orchestrator-open", true);
-  const [expanded, setExpanded] = usePersistedState("vp-orchestrator-expanded", false);
+  const [expanded, setExpanded] = usePersistedState("vp-orchestrator-expanded", true);
   const storageKey = `vp-orchestrator-log-${projectId ?? "none"}`;
   const [chatLog, setChatLog] = usePersistedState<ChatMsg[]>(storageKey, []);
   const [chatInput, setChatInput] = useState("");
@@ -221,17 +228,49 @@ export function OrchestratorPanel({ projectId }: Props) {
     await sendMessage(msg, { fixBugs: fixBugsMode });
   }, [chatInput, sendMessage, fixBugsMode]);
 
-  const armFixBugsMode = useCallback(() => {
-    // НЕ слать GPT сразу — только режим + фокус на ввод
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setBusy(false);
-    setFixBugsMode(true);
-    setOpen(true);
-    setExpanded(false);
-    setChatInput("");
-    window.setTimeout(() => inputRef.current?.focus(), 50);
-  }, [setOpen, setExpanded]);
+  /** Фикс багов: только режим. НЕ сворачивает окно. Повторный клик — выход. */
+  const onFixBugsClick = useCallback(
+    (e: ReactMouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (fixBugsMode) {
+        setFixBugsMode(false);
+        return;
+      }
+      abortRef.current?.abort();
+      abortRef.current = null;
+      setBusy(false);
+      setFixBugsMode(true);
+      setOpen(true);
+      setExpanded(true);
+      setChatInput("");
+      window.setTimeout(() => inputRef.current?.focus(), 50);
+    },
+    [fixBugsMode, setOpen, setExpanded],
+  );
+
+  const onToggleOpen = useCallback(
+    (e: ReactMouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(!open);
+    },
+    [open, setOpen],
+  );
+
+  const onToggleExpanded = useCallback(
+    (e: ReactMouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!open) {
+        setOpen(true);
+        setExpanded(true);
+        return;
+      }
+      setExpanded(!expanded);
+    },
+    [open, expanded, setOpen, setExpanded],
+  );
 
   const resolveRemove = useCallback(
     async (msgIndex: number, confirm: PendingConfirm, approve: boolean) => {
@@ -318,165 +357,178 @@ export function OrchestratorPanel({ projectId }: Props) {
   return (
     <div
       className={cn(
-        "absolute z-40 border border-white/[0.1] bg-[#0c0c0c]/97 shadow-2xl backdrop-blur transition-all",
+        "absolute z-40 flex flex-col border border-white/[0.1] bg-[#0c0c0c]/97 shadow-2xl backdrop-blur",
         open && expanded
-          ? "inset-x-3 bottom-3 top-[18%] max-h-[78vh] rounded-xl"
+          ? "inset-x-3 bottom-3 top-[14%] rounded-xl"
           : "inset-x-0 bottom-0 rounded-none border-x-0 border-b-0",
       )}
     >
-      <div className="flex h-10 items-center gap-2 border-b border-white/[0.08] px-3">
-        <button
-          type="button"
-          onClick={() => setOpen(!open)}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left text-[11px] text-white/60 hover:text-white/80"
-        >
+      <div className="flex h-10 shrink-0 items-center gap-1.5 border-b border-white/[0.08] px-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2 px-1 text-[11px] text-white/60">
           <MessageSquare className="h-3.5 w-3.5 shrink-0 text-primary" />
-          <span className="font-semibold text-white/85">Оркестратор</span>
+          <span className="shrink-0 font-semibold text-white/85">Оркестратор</span>
           <span className="truncate text-white/35">
             {projectId == null
               ? "открой проект"
               : busy
                 ? "думает… жми Отмена"
                 : fixBugsMode
-                  ? "режим фикса — опиши баг ниже и Enter"
-                  : "шаги · база · фикс багов → push"}
+                  ? "режим фикса — опиши баг и Enter"
+                  : "шаги · база · фикс багов"}
           </span>
-          {open ? (
-            <ChevronDown className="ml-auto h-4 w-4 shrink-0" />
-          ) : (
-            <ChevronUp className="ml-auto h-4 w-4 shrink-0" />
-          )}
-        </button>
+        </div>
+
         {busy ? (
           <Button
+            type="button"
             size="sm"
             variant="destructive"
-            className="h-7 gap-1.5 text-[11px]"
-            onClick={cancelBusy}
-            title="Прервать запрос — разморозить Studio"
+            className="h-7 shrink-0 gap-1.5 text-[11px]"
+            onClick={(e) => {
+              e.stopPropagation();
+              cancelBusy();
+            }}
+            title="Прервать запрос"
           >
             <Square className="h-3 w-3 fill-current" />
             Отмена
           </Button>
         ) : (
           <Button
+            type="button"
             size="sm"
             variant="outline"
             className={cn(
-              "h-7 gap-1.5 text-[11px]",
+              "h-7 shrink-0 gap-1.5 text-[11px]",
               fixBugsMode
                 ? "border-amber-300 bg-amber-500/30 text-amber-50"
                 : "border-amber-400/40 bg-amber-500/10 text-amber-100 hover:bg-amber-500/20",
             )}
             disabled={projectId == null}
-            onClick={armFixBugsMode}
-            title="Включить режим фикса: потом напиши какой баг чинить"
+            onClick={onFixBugsClick}
+            title={
+              fixBugsMode
+                ? "Выйти из режима фикса"
+                : "Режим фикса: окно останется открытым, потом опиши баг"
+            }
           >
-            <Bug className="h-3.5 w-3.5" />
-            {fixBugsMode ? "Жду описание бага" : "Фикс багов"}
+            {fixBugsMode ? <X className="h-3.5 w-3.5" /> : <Bug className="h-3.5 w-3.5" />}
+            {fixBugsMode ? "Выйти из фикса" : "Фикс багов"}
           </Button>
         )}
+
         <Button
+          type="button"
           size="sm"
           variant="ghost"
-          className="h-7 w-7 p-0 text-white/50"
-          onClick={() => {
-            setOpen(true);
-            setExpanded(!expanded);
-          }}
-          title={expanded ? "Свернуть окно" : "Большое окно"}
+          className="h-7 w-7 shrink-0 p-0 text-white/50"
+          onClick={onToggleExpanded}
+          title={expanded && open ? "Меньше окно" : "Большое окно"}
         >
-          {expanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+          {expanded && open ? (
+            <Minimize2 className="h-3.5 w-3.5" />
+          ) : (
+            <Maximize2 className="h-3.5 w-3.5" />
+          )}
+        </Button>
+
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="h-7 w-7 shrink-0 p-0 text-white/50"
+          onClick={onToggleOpen}
+          title={open ? "Свернуть панель" : "Открыть панель"}
+        >
+          {open ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
         </Button>
       </div>
 
       {open ? (
         <div
           className={cn(
-            "flex flex-col",
-            expanded ? "h-[calc(100%-2.5rem)]" : "h-52",
+            "flex min-h-0 flex-1 flex-col",
+            expanded ? "min-h-0" : "h-52",
           )}
         >
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
             {fixBugsMode ? (
               <div className="mb-2 rounded-md border border-amber-400/30 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-100/90">
-                Режим фикса включён. Напиши <b>какой баг</b> чинить и нажми Enter / Отправить.
-                Запрос к GPT уйдёт только после этого — кнопка сама ничего не шлёт.
+                Режим фикса. Напиши баг → Enter. Повторный клик «Выйти из фикса» или ✕ — выход без
+                запроса. Окно не сворачивается.
               </div>
             ) : null}
             {chatLog.length === 0 && !fixBugsMode ? (
               <div className="text-[11px] text-white/25">
-                Пиши по-русски. «Фикс багов» → опиши баг → Отправить. Если зависло — Отмена.
+                «Фикс багов» → опиши баг → Отправить. Стрелка вниз — свернуть панель, □ — размер.
               </div>
             ) : null}
-            {chatLog.length > 0 ? (
-              chatLog.map((m, i) => (
-                <div key={i} className="mb-2 text-[12px] leading-relaxed">
-                  <span className={m.role === "user" ? "text-primary" : "text-white/45"}>
-                    {m.role === "user" ? "ты" : "оркестратор"}:{" "}
+            {chatLog.map((m, i) => (
+              <div key={i} className="mb-2 text-[12px] leading-relaxed">
+                <span className={m.role === "user" ? "text-primary" : "text-white/45"}>
+                  {m.role === "user" ? "ты" : "оркестратор"}:{" "}
+                </span>
+                <span className="whitespace-pre-wrap text-white/85">{m.content}</span>
+                {m.confirm && !m.confirm.resolved && m.confirm.kind === "remove_node" ? (
+                  <span className="mt-1.5 flex items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5">
+                    <Trash2 className="h-3.5 w-3.5 text-red-400" />
+                    <span className="flex-1 text-[11px] text-white/80">
+                      Удалить {m.confirm.count} нод
+                      {m.confirm.node_type ? ` типа «${m.confirm.node_type}»` : ""}
+                      {m.confirm.only === "duplicates" ? " (только дубли)" : ""}?
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      className="h-7 text-[11px]"
+                      disabled={busy}
+                      onClick={() => void resolveRemove(i, m.confirm!, true)}
+                    >
+                      Подтвердить удаление
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-[11px]"
+                      disabled={busy}
+                      onClick={() => void resolveRemove(i, m.confirm!, false)}
+                    >
+                      Отмена
+                    </Button>
                   </span>
-                  <span className="whitespace-pre-wrap text-white/85">{m.content}</span>
-                  {m.confirm && !m.confirm.resolved && m.confirm.kind === "remove_node" ? (
-                    <span className="mt-1.5 flex items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5">
-                      <Trash2 className="h-3.5 w-3.5 text-red-400" />
-                      <span className="flex-1 text-[11px] text-white/80">
-                        Удалить {m.confirm.count} нод
-                        {m.confirm.node_type ? ` типа «${m.confirm.node_type}»` : ""}
-                        {m.confirm.only === "duplicates" ? " (только дубли)" : ""}?
-                      </span>
-                      <Button
-                        size="sm"
-                        variant="destructive"
-                        className="h-7 text-[11px]"
-                        disabled={busy}
-                        onClick={() => void resolveRemove(i, m.confirm!, true)}
-                      >
-                        Подтвердить удаление
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-[11px]"
-                        disabled={busy}
-                        onClick={() => void resolveRemove(i, m.confirm!, false)}
-                      >
-                        Отмена
-                      </Button>
+                ) : null}
+                {m.confirm && !m.confirm.resolved && m.confirm.kind === "git_commit_push" ? (
+                  <span className="mt-1.5 flex items-center gap-2 rounded-md border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1.5">
+                    <GitBranch className="h-3.5 w-3.5 text-emerald-400" />
+                    <span className="flex-1 text-[11px] text-white/80">
+                      Push: {m.confirm.message || "commit"}
+                      {(m.confirm.files ?? m.confirm.nodes).length
+                        ? ` (${(m.confirm.files ?? m.confirm.nodes).slice(0, 3).join(", ")})`
+                        : ""}
                     </span>
-                  ) : null}
-                  {m.confirm && !m.confirm.resolved && m.confirm.kind === "git_commit_push" ? (
-                    <span className="mt-1.5 flex items-center gap-2 rounded-md border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1.5">
-                      <GitBranch className="h-3.5 w-3.5 text-emerald-400" />
-                      <span className="flex-1 text-[11px] text-white/80">
-                        Push: {m.confirm.message || "commit"}
-                        {(m.confirm.files ?? m.confirm.nodes).length
-                          ? ` (${(m.confirm.files ?? m.confirm.nodes).slice(0, 3).join(", ")})`
-                          : ""}
-                      </span>
-                      <Button
-                        size="sm"
-                        className="h-7 text-[11px]"
-                        disabled={busy}
-                        onClick={() => void resolveGitPush(i, m.confirm!, true)}
-                      >
-                        Подтвердить push
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-[11px]"
-                        disabled={busy}
-                        onClick={() => void resolveGitPush(i, m.confirm!, false)}
-                      >
-                        Отмена
-                      </Button>
-                    </span>
-                  ) : null}
-                </div>
-              ))
-            ) : null}
+                    <Button
+                      size="sm"
+                      className="h-7 text-[11px]"
+                      disabled={busy}
+                      onClick={() => void resolveGitPush(i, m.confirm!, true)}
+                    >
+                      Подтвердить push
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-[11px]"
+                      disabled={busy}
+                      onClick={() => void resolveGitPush(i, m.confirm!, false)}
+                    >
+                      Отмена
+                    </Button>
+                  </span>
+                ) : null}
+              </div>
+            ))}
           </div>
-          <div className="flex items-center gap-2 border-t border-white/[0.06] px-3 py-2">
+          <div className="flex shrink-0 items-center gap-2 border-t border-white/[0.06] px-3 py-2">
             <input
               ref={inputRef}
               value={chatInput}
@@ -487,7 +539,7 @@ export function OrchestratorPanel({ projectId }: Props) {
                 projectId == null
                   ? "сначала открой проект"
                   : busy
-                    ? "оркестратор думает… жми Отмена в шапке"
+                    ? "оркестратор думает… жми Отмена"
                     : fixBugsMode
                       ? "опиши баг для фикса…"
                       : "сообщение оркестратору…"
@@ -498,6 +550,7 @@ export function OrchestratorPanel({ projectId }: Props) {
               )}
             />
             <Button
+              type="button"
               size="sm"
               variant="outline"
               disabled={projectId == null || busy || !chatInput.trim()}
