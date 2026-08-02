@@ -24,6 +24,51 @@ def _edge(src: str, tgt: str, kind: str = "after") -> dict:
     }
 
 
+def test_hero_ready_does_not_skip_post_hero_slot5_to_image_prompts() -> None:
+    """#50: hero → excel_gpt(slot5) → excel_gpt(slot5) → image_prompts.
+
+    Stale enrich_completed_slots=[5] НЕ должен пропустить оба check и
+    прыгнуть сразу в image_prompts.
+    """
+    nodes = [
+        _node("n_hero", "hero", x=100),
+        _node("n_excel_gpt_7", EXCEL_GPT_NODE_TYPE, x=200, slot=5),
+        _node("n_excel_gpt_2", EXCEL_GPT_NODE_TYPE, x=300, slot=5),
+        _node("n_image_prompts", "image_prompts", x=400),
+        # «ранние» slot=5 до hero — уже пройдены
+        _node("n_excel_gpt_1", EXCEL_GPT_NODE_TYPE, x=50, slot=5),
+        _node("n_excel_gpt_6", EXCEL_GPT_NODE_TYPE, x=60, slot=5),
+    ]
+    edges = [
+        _edge("n_excel_gpt_1", "n_excel_gpt_6"),
+        _edge("n_excel_gpt_6", "n_hero"),
+        _edge("n_hero", "n_excel_gpt_7"),
+        _edge("n_excel_gpt_7", "n_excel_gpt_2"),
+        _edge("n_excel_gpt_2", "n_image_prompts"),
+    ]
+    g = WorkflowGraph(nodes, edges)
+    p = Project(
+        id=50,
+        slug="t",
+        title="t",
+        topic="t",
+        status=ProjectStatus.hero_ready,
+        meta={
+            "canvas_graph": {"nodes": nodes, "edges": edges},
+            "split_completed": True,
+            "enrich_completed_slots": [3, 4, 5],
+            "excel_gpt_completed_keys": [
+                "n_excel_gpt_1",
+                "n_excel_gpt_6",
+            ],
+        },
+    )
+    key = g.next_work_node_key_after_ready(p, ProjectStatus.hero_ready)
+    assert key == "n_excel_gpt_7"
+    running = g.next_running_after_ready(p, ProjectStatus.hero_ready)
+    assert running is ProjectStatus.enriching_5
+
+
 def test_images_ready_next_is_late_slot5_not_early() -> None:
     """После images следующая excel_gpt — check у кадров, не ранняя slot=5."""
     nodes = [

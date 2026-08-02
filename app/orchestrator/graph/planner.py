@@ -344,12 +344,11 @@ class WorkflowGraph:
                 continue
             n = self._by_id.get(key) or {}
             if typ == EXCEL_GPT_NODE_TYPE:
-                # excel_gpt в done лежит как enrich_N — typ «excel_gpt» сам
-                # в done не попадает; иначе первые слоты перезапускаются, а
-                # при кривом slotIndex можно сразу уйти в enriching_3.
-                # После enrich_N_ready следующий слот M>N на канвасе — всегда
-                # следующий шаг: stale «готово» не должно прыгать на hero.
-                # Активная цепочка enrich_auto_chain_to: даже done → переген.
+                # Готово: (1) ключ ноды в excel_gpt_completed_keys; (2) слот
+                # в enrich_completed_slots — только если slotIndex уникален.
+                # Несколько excel_gpt с одним slot=5 (check до/после hero):
+                # slot-done раньше сносило ВСЕ → hero_ready → image_prompts.
+                # После enrich_N_ready слот M>N — force_rerun. chain_to: тоже.
                 slot = slot_index_from_node(n)
                 finished_slot = slot_from_ready_status(ready_status)
                 later_after_ready = (
@@ -359,12 +358,11 @@ class WorkflowGraph:
                     slot in excel_gpt_force_rerun_slots(project)
                     and (finished_slot is None or slot > finished_slot)
                 )
+                slot_unique = len(self.excel_gpt_keys_for_slot(slot)) <= 1
+                slot_done = f"enrich_{slot}" in done and slot_unique
                 if (
                     not force_rerun
-                    and (
-                        f"enrich_{slot}" in done
-                        or key in completed_node_keys(project)
-                    )
+                    and (key in completed_node_keys(project) or slot_done)
                 ):
                     queue.extend(self._pipeline_successors(key))
                     continue
@@ -473,12 +471,11 @@ class WorkflowGraph:
             if ntyp == EXCEL_GPT_NODE_TYPE:
                 slot = slot_index_from_node(n)
                 force_rerun = slot in excel_gpt_force_rerun_slots(project)
+                slot_unique = len(self.excel_gpt_keys_for_slot(slot)) <= 1
+                slot_done = f"enrich_{slot}" in done and slot_unique
                 if (
                     not force_rerun
-                    and (
-                        f"enrich_{slot}" in done
-                        or key in completed_node_keys(project)
-                    )
+                    and (key in completed_node_keys(project) or slot_done)
                 ):
                     queue.extend(self._pipeline_successors(key))
                     continue
