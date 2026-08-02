@@ -716,7 +716,11 @@ async def _diagnostics_context(session: AsyncSession, project: Project) -> list[
     try:
         from app.services.hero_quality import hero_quality_diag_lines
 
-        lines.extend(hero_quality_diag_lines(project.id, Path(project.data_dir)))
+        lines.extend(
+            hero_quality_diag_lines(
+                project.id, Path(project.data_dir), project=project
+            )
+        )
     except Exception as e:  # noqa: BLE001
         lines.append(f"ПЕРСОНАЖИ — проверка упала: {e}")
     tail = _log_tail_context(project)

@@ -1113,9 +1113,13 @@ async def _generate_one_excel_character(
                 f"(name={ch.name!r}). Исправь лист «Персонажи» и перезапусти hero."
             )
 
+        # Слот hero обязан быть turnaround sheet (не агент реестра).
+        # rules=c01 у вариации — штатная механика «на основе c01».
+        gtb.assert_hero_master_is_sheet(project)
+
         if used_refs:
-            # Реф-вариация: без GPT, но ОБЯЗАТЕЛЬНО sheet-layout.
-            # Иначе Outsee по короткому changes_text рисует cinematic scene.
+            # Реф-вариация: без GPT, но ОБЯЗАТЕЛЬНО sheet-layout + style.
+            # Реф = тот же лист/стиль, изменения внешности/одежды из карточки.
             prompt_text = build_ref_variation_sheet_prompt(
                 ch, style=hero_style_content
             )

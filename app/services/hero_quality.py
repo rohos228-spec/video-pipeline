@@ -10,7 +10,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from app.services.agent_harness import HarnessCheck
+from app.services.agent_harness import HarnessCheck  # noqa: TC001
 from app.services.excel_characters import (
     is_polluted_character_field,
     parse_persons_sheet,
@@ -192,12 +192,51 @@ def collect_hero_quality_checks(
     return checks
 
 
-def hero_quality_diag_lines(project_id: int, data_dir: Path) -> list[str]:
+def hero_slot_prompt_check(project: Any) -> HarnessCheck | None:
+    """Выбранный master в слоте hero — sheet или ошибочно агент реестра."""
+    try:
+        from app.services.hero_prompt_contract import validate_hero_master_or_error
+        from app.services.prompt_library import (
+            get_project_prompt,
+            resolve_project_prompt_name,
+        )
+
+        overrides = getattr(project, "prompt_overrides", None) or {}
+        meta = getattr(project, "meta", None)
+        meta = meta if isinstance(meta, dict) else {}
+        name = resolve_project_prompt_name(overrides, "hero", meta=meta) or ""
+        master = get_project_prompt(project, "hero")
+        err = validate_hero_master_or_error(master, source_name=str(name))
+        if err:
+            return HarnessCheck("hero_slot_prompt", False, err[:400])
+        return HarnessCheck(
+            "hero_slot_prompt",
+            True,
+            f"ok sheet master={name or 'default'}",
+        )
+    except Exception as e:  # noqa: BLE001
+        return HarnessCheck("hero_slot_prompt", False, str(e)[:200])
+
+
+def hero_quality_diag_lines(
+    project_id: int, data_dir: Path, *, project: Any | None = None
+) -> list[str]:
     """Строки для оркестратор-диагностики (живой прогон, не stale telemetry)."""
+    lines: list[str] = []
+    if project is not None:
+        slot = hero_slot_prompt_check(project)
+        if slot is not None and not slot.ok:
+            lines.append("ПЕРСОНАЖИ — ОШИБКА СЛОТА ПРОМТА:")
+            lines.append(f"- {slot.detail}")
+            lines.append(
+                "- действие: в hero поставь turnaround/model sheet; "
+                "агент реестра персонажей — только в excel_gpt"
+            )
+            return lines
+
     checks = collect_hero_quality_checks(project_id, data_dir)
     bad = [c for c in checks if not c.ok]
     if not bad:
-        # всё равно явно сказать, что проверяли
         n_ok = len(checks)
         return [
             "ПЕРСОНАЖИ (живая проверка sheet-контракта):",
@@ -207,7 +246,7 @@ def hero_quality_diag_lines(project_id: int, data_dir: Path) -> list[str]:
     for c in bad:
         lines.append(f"- {c.name}: {c.detail}")
     lines.append(
-        "- действие: исправь лист «Персонажи» при необходимости и "
-        "перегенерируй проблемные cNN (hero regen)"
+        "- действие: проверь слот hero (sheet, не реестр) и "
+        "перегенерируй проблемные cNN"
     )
     return lines

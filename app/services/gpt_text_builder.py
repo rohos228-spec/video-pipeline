@@ -271,6 +271,20 @@ def _build_split_default(
     )
 
 
+def assert_hero_master_is_sheet(project: Project) -> None:
+    """Fail-closed: в слоте hero должен быть turnaround sheet, не реестр."""
+    from app.services.hero_prompt_contract import validate_hero_master_or_error
+    from app.services.prompt_library import resolve_project_prompt_name
+
+    overrides = getattr(project, "prompt_overrides", None) or {}
+    meta = getattr(project, "meta", None) if isinstance(getattr(project, "meta", None), dict) else {}
+    name = resolve_project_prompt_name(overrides, "hero", meta=meta) or ""
+    master = get_project_prompt(project, "hero").strip()
+    err = validate_hero_master_or_error(master, source_name=str(name))
+    if err:
+        raise RuntimeError(err)
+
+
 def _build_hero_default(project: Project) -> str:
     """Шаг 4 — Hero. Один и тот же шаблон используется для всех героев
     проекта и всех их вариаций. Конкретные `BRIEF` (описание героя) и
@@ -281,6 +295,7 @@ def _build_hero_default(project: Project) -> str:
     Override (если задан) тоже должен содержать эти плейсхолдеры — иначе
     конкретное описание героя/стиля просто не попадёт в GPT.
     """
+    assert_hero_master_is_sheet(project)
     hero_master = get_project_prompt(project, "hero").strip()
     return (
         "Сделай промт для генерации персонажа, который описан ниже. "
