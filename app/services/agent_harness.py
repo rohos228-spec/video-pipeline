@@ -284,6 +284,7 @@ def verify_project_disk(project_id: int, data_dir: Path, status: str) -> Harness
 
     _HEROES_REQUIRED_STATUSES = {
         "hero_ready",
+        "generating_hero",
         "items_ready",
         "generating_items",
         "enrich_1_ready",
@@ -293,6 +294,8 @@ def verify_project_disk(project_id: int, data_dir: Path, status: str) -> Harness
         "enrich_5_ready",
         "generating_image_prompts",
         "image_prompts_ready",
+        "generating_images",
+        "images_ready",
         *_SCENES_REQUIRED_STATUSES,
     }
     heroes_required = bool(excel_persons) and status in _HEROES_REQUIRED_STATUSES
@@ -308,20 +311,29 @@ def verify_project_disk(project_id: int, data_dir: Path, status: str) -> Harness
     if heroes_required and not heroes_ok:
         repair.append("hero")
 
-    names_ok = not polluted
-    checks.append(
-        HarnessCheck(
-            "excel_hero_fields_sane",
-            names_ok,
-            (
-                "ok"
-                if names_ok
-                else f"polluted character fields: {', '.join(polluted)} "
-                "(служебный текст агента в имени/внешности — не данные персонажа)"
-            ),
-        )
-    )
     if polluted:
+        checks.append(
+            HarnessCheck(
+                "excel_hero_fields_sane",
+                False,
+                f"polluted character fields: {', '.join(polluted)}",
+            )
+        )
+        repair.append("hero")
+
+    # Sheet vs cinematic scene (c02-баг: png есть, но это не turnaround).
+    try:
+        from app.services.hero_quality import collect_hero_quality_checks
+
+        for hc in collect_hero_quality_checks(project_id, data_dir):
+            # не дублировать excel_hero_fields_sane если уже добавили polluted
+            if hc.name == "excel_hero_fields_sane" and polluted:
+                continue
+            checks.append(hc)
+            if not hc.ok:
+                repair.append("hero")
+    except Exception as e:  # noqa: BLE001
+        checks.append(HarnessCheck("hero_quality", False, str(e)[:200]))
         repair.append("hero")
 
     checks.append(
@@ -463,8 +475,8 @@ def verify_project_disk(project_id: int, data_dir: Path, status: str) -> Harness
             repair.append("script")
 
     ok = all(c.ok for c in checks)
-    # Filter forbidden
-    repair = [s for s in repair if s not in HARNESS_FORBIDDEN_STEPS]
+    # Sheet/quality checks may append "hero" несколько раз — схлопнуть.
+    repair = list(dict.fromkeys(s for s in repair if s not in HARNESS_FORBIDDEN_STEPS))
     next_action = "none" if ok else ("repair:" + ",".join(repair) if repair else "investigate")
     return HarnessReport(
         project_id=project_id,

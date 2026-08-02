@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -589,8 +590,19 @@ def _human_reply_from_diagnostics(diag_lines: list[str]) -> str:
     node = ""
     sleep = ""
     step = ""
+    hero_bits: list[str] = []
+    in_hero = False
     for ln in diag_lines or []:
         s = str(ln)
+        if s.startswith("ПЕРСОНАЖИ"):
+            in_hero = True
+            hero_bits.append(s.rstrip(":"))
+            continue
+        if in_hero:
+            if s.startswith("- "):
+                hero_bits.append(s[2:].strip())
+                continue
+            in_hero = False
         if s.startswith("- ошибка:"):
             err = s.split(":", 1)[-1].strip()
         elif s.startswith("- шаг:"):
@@ -607,7 +619,16 @@ def _human_reply_from_diagnostics(diag_lines: list[str]) -> str:
                 if len(parts) == 2:
                     node = node or parts[0].strip()
                     err = parts[1].strip()
+    if hero_bits and any("ОШИБКИ" in h or "c0" in h for h in hero_bits):
+        return (
+            "Проблема в персонажах (не в статусе ноды): "
+            + " ".join(hero_bits[1:4] if len(hero_bits) > 1 else hero_bits)
+            + " Перегенерируй проблемные cNN. "
+            "Если нужна правка кода — напиши «почини код»."
+        )
     if not err and not node:
+        if hero_bits:
+            return " ".join(hero_bits[:3])
         return (
             "В диагностике нет явной ошибки ноды. "
             "Открой ноду на канвасе или перезапусти шаг и пришли текст ошибки."
@@ -621,6 +642,8 @@ def _human_reply_from_diagnostics(diag_lines: list[str]) -> str:
         bits.append(err)
     if sleep:
         bits.append(f"Проект на паузе до {sleep} (после нескольких фейлов).")
+    if hero_bits:
+        bits.append("Также по персонажам: " + "; ".join(hero_bits[1:3]))
     bits.append(
         "Если нужна правка кода программы — напиши явно «почини код»."
     )
@@ -685,9 +708,17 @@ async def _diagnostics_context(session: AsyncSession, project: Project) -> list[
     tel = read_ops_telemetry(meta)
     bad_checks = [c for c in (tel.get("checks") or []) if not c.get("ok")]
     if bad_checks:
-        lines.append("ПРОВАЛЕННЫЕ ПРОВЕРКИ:")
+        lines.append("ПРОВАЛЕННЫЕ ПРОВЕРКИ (последний harness, может быть stale):")
         for c in bad_checks:
             lines.append(f"- {c.get('name')}: {str(c.get('detail') or '')[:120]}")
+    # Живая проверка персонажей — иначе оркестратор врёт «hero готово»,
+    # когда c02 = cinematic scene при NodeRun=done.
+    try:
+        from app.services.hero_quality import hero_quality_diag_lines
+
+        lines.extend(hero_quality_diag_lines(project.id, Path(project.data_dir)))
+    except Exception as e:  # noqa: BLE001
+        lines.append(f"ПЕРСОНАЖИ — проверка упала: {e}")
     tail = _log_tail_context(project)
     if tail:
         lines.append("ЛОГ BACKEND (хвост ошибок проекта):")
