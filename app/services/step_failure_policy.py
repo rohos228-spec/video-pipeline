@@ -326,10 +326,10 @@ async def record_step_failure(
             initiator="worker",
             error_code=err_code,
         )
-        if step is not None and step.requires is not None:
-            project.status = step.requires
-        else:
-            project.status = ProjectStatus.new
+        # Не откатывать в step.requires (часто enrich_N_ready): при auto_mode
+        # auto_advance сразу уводит проект «назад» (например img_pr → enrich_3_ready → scripting).
+        # Во время 30-мин сна держим paused; ручной run_step снимает sleep.
+        project.status = ProjectStatus.paused
         await session.flush()
         logger.warning(
             "[#{}] sleep {} min after fail {}/{} on {} (cycle {}/{}) → status={}",
