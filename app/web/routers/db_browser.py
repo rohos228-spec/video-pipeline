@@ -322,7 +322,8 @@ _ORCHESTRATOR_SYSTEM = (
     "after=\"each\" (после каждой рабочей ноды, без дублей) или "
     "after=\"<node_key>\". «Нода проверки»: hitl_gate = аппрув человеком, "
     "excel_gpt = автопроверка GPT — уточни у пользователя, если неясно. "
-    "В ответе называй, что именно добавил и после каких нод (см. СВЯЗИ).\n"
+    "В ответе называй, что именно добавил и после каких нод "
+    "(см. СВЯЗИ цепочка + СВЯЗИ К ХРАНИЛИЩУ).\n"
     "11b) СВЯЗИ К ХРАНИЛИЩУ / любые рёбра → "
     "{\"actions\":[{\"connect_edges\":{\"from\":\"each\",\"to_type\":\"storage\"}}]} — "
     "ОБЯЗАТЕЛЬНО когда просят «подведи к хранилищу», «от каждой ноды к storage». "
@@ -330,6 +331,10 @@ _ORCHESTRATOR_SYSTEM = (
     "from=\"each\"|<node_key>; to=\"n_storage_1\" или to_type=\"storage\". "
     "НИКОГДА не говори «нет действия для связей» — connect_edges есть. "
     "Можно в одном JSON: add_node excel_gpt after=each + connect_edges to_type=storage.\n"
+    "КРИТИЧНО ПРО ХРАНИЛИЩЕ: «СВЯЗИ (цепочка)» — только пайплайн, БЕЗ storage. "
+    "Рёбра к storage смотри ТОЛЬКО в строке «СВЯЗИ К ХРАНИЛИЩУ». "
+    "Если там есть source→n_storage_* — связь ЕСТЬ, не ври что её нет. "
+    "add_node сам дотягивает новые ноды к существующему storage.\n"
     "12) УДАЛИТЬ ноды → {\"actions\":[{\"remove_node\":{\"node_type\":\"X\"}}]} "
     "(все добавленные оркестратором типа X — ТОЛЬКО если прямо просят «удали "
     "ВСЕ»), {\"remove_node\":{\"node_type\":\"X\",\"only\":\"duplicates\"}} — "
@@ -612,6 +617,9 @@ async def _canvas_nodes_context(
 
     Возвращает (строки для контекста, keymap node_key → {type, label}).
     Названия — те, что пользователь видит на канвасе («Сценарий» = plan!).
+
+    SoT графа — ``meta.canvas_graph`` (туда пишет connect_edges/add_node).
+    Снапшот WorkflowRun — статусы NodeRun + fallback, если meta пуста.
     """
     from app.models import NodeRun, Workflow, WorkflowRun
 
@@ -626,14 +634,21 @@ async def _canvas_nodes_context(
     edges_src: list[dict] = []
     status_by_key: dict[str, str] = {}
     if run is not None:
-        nodes = list(run.nodes_snapshot or [])
-        edges_src = list(run.edges_snapshot or [])
         for nr in (
             await session.execute(
                 select(NodeRun).where(NodeRun.workflow_run_id == run.id)
             )
         ).scalars():
             status_by_key[nr.node_key] = nr.status.value
+
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    cg = meta.get("canvas_graph")
+    if isinstance(cg, dict) and cg.get("nodes"):
+        nodes = [dict(n) for n in (cg.get("nodes") or []) if isinstance(n, dict)]
+        edges_src = [dict(e) for e in (cg.get("edges") or []) if isinstance(e, dict)]
+    elif run is not None:
+        nodes = list(run.nodes_snapshot or [])
+        edges_src = list(run.edges_snapshot or [])
     if not nodes:
         wf = (
             await session.execute(
@@ -657,16 +672,29 @@ async def _canvas_nodes_context(
         lines.append(f"- {key} → «{label}» (тип {typ}){suffix}")
     if not lines:
         return [], keymap
-    # Связи графа — чтобы оркестратор видел, что откуда следует.
-    chain = ""
+    # Цепочка пайплайна (без storage) + отдельно рёбра к хранилищу.
+    # Иначе оркестратор врёт «нет связи к storage», хотя connect_edges уже есть.
     try:
         order = _linear_order(nodes, edges_src)
         chain = " → ".join(order)
     except Exception:  # noqa: BLE001
-        pairs = [f"{e.get('source')}→{e.get('target')}" for e in edges_src]
-        chain = ", ".join(pairs)
+        pipe = _pipeline_edges(nodes, edges_src)
+        chain = ", ".join(
+            f"{e.get('source')}→{e.get('target')}" for e in pipe
+        )
     if chain:
-        lines.append(f"СВЯЗИ: {chain}")
+        lines.append(f"СВЯЗИ (цепочка): {chain}")
+    side = _side_edges(nodes, edges_src)
+    if side:
+        pairs = [f"{e.get('source')}→{e.get('target')}" for e in side]
+        lines.append(
+            f"СВЯЗИ К ХРАНИЛИЩУ / сбоку ({len(pairs)}): " + ", ".join(pairs)
+        )
+    else:
+        lines.append(
+            "СВЯЗИ К ХРАНИЛИЩУ: нет — нужен "
+            '{"connect_edges":{"from":"each","to_type":"storage"}}'
+        )
     return ["НОДЫ КАНВАСА (ключ → «название» (тип) — статус):", *lines], keymap
 
 
@@ -1135,6 +1163,44 @@ def _side_edges(nodes: list[dict], edges: list[dict]) -> list[dict]:
     return [e for e in edges if str(e.get("target")) in sinks]
 
 
+def _wire_all_to_storage(nodes: list[dict], edges: list[dict]) -> int:
+    """Дотянуть рёбра от всех нод к первому storage (если storage уже есть).
+
+    Нужно после add_node: иначе новые excel_gpt/hitl остаются без нити к
+    хранилищу, и оркестратор/sync снова «не видят» связь.
+    """
+    stor_ids = [
+        str(n.get("id"))
+        for n in nodes
+        if n.get("id") and str(n.get("type") or "") == "storage"
+    ]
+    if not stor_ids:
+        return 0
+    sid = stor_ids[0]
+    have = {(str(e.get("source")), str(e.get("target"))) for e in edges}
+    added = 0
+    for n in nodes:
+        nid = str(n.get("id") or "")
+        if not nid or nid == sid:
+            continue
+        if str(n.get("type") or "") == "storage":
+            continue
+        key = (nid, sid)
+        if key in have:
+            continue
+        edges.append(
+            {
+                "id": f"e_{nid}_{sid}",
+                "source": nid,
+                "target": sid,
+                "data": {"kind": "after"},
+            }
+        )
+        have.add(key)
+        added += 1
+    return added
+
+
 def _linear_order(nodes: list[dict], edges: list[dict]) -> list[str]:
     """Порядок нод линейной цепочки по pipeline-edges.
 
@@ -1345,6 +1411,8 @@ async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -
             )
 
     all_nodes = nodes + new_nodes
+    # Если storage уже на канвасе — новые (и любые дырявые) ноды сразу к нему.
+    wired = _wire_all_to_storage(all_nodes, out_edges)
     meta["canvas_graph"] = {"nodes": all_nodes, "edges": out_edges}
     project.meta = meta
 
@@ -1359,7 +1427,13 @@ async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -
         run.nodes_snapshot = list(all_nodes)
         run.edges_snapshot = list(out_edges)
     await session.commit()
-    return {"add_node": f"{node_type} ×{len(new_nodes)} ({'каждой' if after == 'each' else after})"}
+    msg = (
+        f"{node_type} ×{len(new_nodes)} "
+        f"({'каждой' if after == 'each' else after})"
+    )
+    if wired:
+        msg += f"; +{wired} рёбер → storage"
+    return {"add_node": msg}
 
 
 async def _remove_node_targets(

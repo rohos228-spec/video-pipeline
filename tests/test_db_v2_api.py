@@ -1485,19 +1485,67 @@ async def test_connect_edges_each_to_storage(api_client) -> None:
             "n_img",
         ]
 
-        # add_node each не ломает рёбра к storage.
-        await _apply_add_node(session, p, {"node_type": "excel_gpt", "after": "each"})
+        # add_node each: старые рёбра к storage живы + новые ноды сами дотянуты.
+        res_add = await _apply_add_node(
+            session, p, {"node_type": "excel_gpt", "after": "each"}
+        )
+        assert "storage" in res_add["add_node"]
         g2 = (p.meta or {})["canvas_graph"]
         sid2 = next(n["id"] for n in g2["nodes"] if n["type"] == "storage")
-        still = {e["source"] for e in g2["edges"] if e["target"] == sid2}
-        assert {"n_plan", "n_script", "n_img"}.issubset(still)
-        # Новые excel_gpt ещё не к storage — повторный connect_edges дотягивает.
-        await _apply_connect_edges(session, p, {"from": "each", "to_type": "storage"})
-        g3 = (p.meta or {})["canvas_graph"]
-        sid3 = next(n["id"] for n in g3["nodes"] if n["type"] == "storage")
-        all_ids = {n["id"] for n in g3["nodes"] if n["id"] != sid3}
-        wired = {e["source"] for e in g3["edges"] if e["target"] == sid3}
+        all_ids = {n["id"] for n in g2["nodes"] if n["id"] != sid2}
+        wired = {e["source"] for e in g2["edges"] if e["target"] == sid2}
         assert wired == all_ids
+
+
+@pytest.mark.asyncio
+async def test_canvas_nodes_context_shows_storage_side_edges(api_client) -> None:
+    """Контекст оркестратора видит рёбра к storage, не только линейную цепочку."""
+    from app.web.routers.db_browser import _canvas_nodes_context
+
+    client, project_id, factory = api_client
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        meta = dict(p.meta or {})
+        meta["canvas_graph"] = {
+            "nodes": [
+                {
+                    "id": "n_plan",
+                    "type": "plan",
+                    "position": {"x": 0.0, "y": 0.0},
+                    "data": {"label": "Сценарий"},
+                },
+                {
+                    "id": "n_excel_gpt_1",
+                    "type": "excel_gpt",
+                    "position": {"x": 200.0, "y": 0.0},
+                    "data": {"label": "Проверка", "slotIndex": 1},
+                },
+                {
+                    "id": "n_storage_1",
+                    "type": "storage",
+                    "position": {"x": 0.0, "y": 200.0},
+                    "data": {"label": "Хранилище"},
+                },
+            ],
+            "edges": [
+                {"id": "e0", "source": "n_plan", "target": "n_excel_gpt_1"},
+                {"id": "e1", "source": "n_plan", "target": "n_storage_1"},
+                {"id": "e2", "source": "n_excel_gpt_1", "target": "n_storage_1"},
+            ],
+        }
+        p.meta = meta
+        await session.commit()
+
+        lines, _km = await _canvas_nodes_context(session, p)
+        blob = "\n".join(lines)
+        assert "СВЯЗИ (цепочка):" in blob
+        assert "n_plan → n_excel_gpt_1" in blob or "n_plan→n_excel_gpt_1" in blob
+        assert "СВЯЗИ К ХРАНИЛИЩУ" in blob
+        assert "n_plan→n_storage_1" in blob
+        assert "n_excel_gpt_1→n_storage_1" in blob
+        # Цепочка не должна притворяться что storage — часть пайплайна.
+        chain_line = next(L for L in lines if L.startswith("СВЯЗИ (цепочка):"))
+        assert "n_storage_1" not in chain_line
 
 
 @pytest.mark.asyncio
