@@ -364,13 +364,54 @@ def excel_gpt_nodes_from_project(project: Project) -> list[dict[str, Any]]:
     return [n for n in nodes if is_excel_gpt_node_type(str(n.get("type") or ""))]
 
 
+def _resolve_colliding_slot_via_graph(
+    project: Project,
+    match_ids: set[str],
+) -> str | None:
+    """При коллизии slotIndex — следующая excel_gpt по стрелкам канваса."""
+    from app.orchestrator.node_registry import READY_TO_NODE_TYPE, RUNNING_TO_NODE_TYPE
+    from app.orchestrator.graph.planner import WorkflowGraph
+    from app.services.canvas_graph import canvas_graph_from_meta
+
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    cg = canvas_graph_from_meta(meta) or {}
+    g_nodes = list(cg.get("nodes") or [])
+    g_edges = list(cg.get("edges") or [])
+    if not g_nodes or not g_edges:
+        return None
+    graph = WorkflowGraph(g_nodes, g_edges)
+
+    status = project.status
+    ready: ProjectStatus | None = None
+    if status in READY_TO_NODE_TYPE:
+        ready = status
+    elif status in RUNNING_TO_NODE_TYPE:
+        # enriching_5 → ищем от hero_ready / предыдущего ready по статусу
+        # через ready-пары слота и общие *_ready.
+        slot = slot_from_running_status(status)
+        if slot is not None:
+            # Уже в running этого слота — следующий по графу от предыдущего
+            # ready не восстановить однозначно; вернём active, если он в match.
+            active = str(meta.get("active_excel_gpt_node_key") or "").strip()
+            if active in match_ids:
+                return active
+        # Частый кейс: после hero ещё не pin'нули — status hero_ready уже выше.
+        return None
+    if ready is None:
+        return None
+    key = graph.next_work_node_key_after_ready(project, ready)
+    if key and key in match_ids:
+        return key
+    return None
+
+
 def resolve_excel_gpt_node_key_for_slot(
     project: Project,
     slot: int,
     *,
     nodes: list[dict[str, Any]] | None = None,
 ) -> str | None:
-    """Найти node_key excel_gpt для слота 1..5 (слева направо / slotIndex)."""
+    """Найти node_key excel_gpt для слота 1..5 (по графу при коллизии)."""
     from loguru import logger
 
     if not (1 <= int(slot) <= MAX_EXCEL_GPT_SLOTS):
@@ -390,25 +431,41 @@ def resolve_excel_gpt_node_key_for_slot(
         matches.sort(
             key=lambda n: float((n.get("position") or {}).get("x", 0)),
         )
-        # Несколько нод с одним slotIndex: берём первую НЕ завершённую
-        # по ключу. Иначе leftmost (часто до hero) откатывает пайплайн назад.
-        done_keys = completed_node_keys(project)
-        incomplete = [
-            n
+        match_ids = {
+            str(n.get("id") or "").strip()
             for n in matches
-            if str(n.get("id") or "").strip() not in done_keys
-        ]
-        pick = incomplete[0] if incomplete else matches[0]
+            if str(n.get("id") or "").strip()
+        }
+        # Коллизия slotIndex: только граф / стрелки. Incomplete-leftmost
+        # врёт, если ранние ноды уже пройдены, но ключ не записан.
         if len(matches) > 1:
+            graph_key = _resolve_colliding_slot_via_graph(project, match_ids)
+            if graph_key:
+                logger.info(
+                    "excel_gpt: slotIndex={} collides on {} — graph→{}",
+                    slot,
+                    len(matches),
+                    graph_key,
+                )
+                return graph_key
+            done_keys = completed_node_keys(project)
+            incomplete = [
+                n
+                for n in matches
+                if str(n.get("id") or "").strip() not in done_keys
+            ]
+            pick = incomplete[0] if incomplete else matches[0]
             logger.warning(
-                "excel_gpt: slotIndex={} collides on {} nodes — using {} "
+                "excel_gpt: slotIndex={} collides on {} nodes — fallback {} "
                 "(incomplete={})",
                 slot,
                 len(matches),
                 pick.get("id"),
                 len(incomplete),
             )
-        nid = str(pick.get("id") or "").strip()
+            nid = str(pick.get("id") or "").strip()
+            return nid or None
+        nid = str(matches[0].get("id") or "").strip()
         return nid or None
     ordered = sorted(
         [
