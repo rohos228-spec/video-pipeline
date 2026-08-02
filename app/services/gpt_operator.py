@@ -748,58 +748,79 @@ def files_from_source_node(
     # Явный результат оператора / excel_gpt
     meta = project.meta if isinstance(project.meta, dict) else {}
     results = meta.get("gpt_operator_results")
-    if isinstance(results, dict):
-        entry = results.get(source_key)
-        if isinstance(entry, dict):
-            # vp.check.v1 fix.rewrite_file → исправленный файл + отчёт из emitKinds.
-            rewrite = str(entry.get("fixRewriteFile") or "").strip().replace("\\", "/")
-            if rewrite:
-                rp = Path(rewrite)
-                if not rp.is_file():
-                    rp = root / rewrite
-                if rp.is_file() and rp.stat().st_size > 0:
-                    found = [rp]
-                    src_cfg = operator_config(project, source_key)
-                    emit_kinds: list[EmitKind] = list(src_cfg.get("emitKinds") or [])
-                    report_kinds = [k for k in emit_kinds if k in ("reply_txt", "analysis")]
-                    if report_kinds:
-                        found.extend(
-                            _paths_for_emit_kinds(
-                                project,
-                                source_key,
-                                entry,
-                                report_kinds,
-                                limit=limit,
-                            )
+    entry: dict[str, Any] | None = None
+    if isinstance(results, dict) and isinstance(results.get(source_key), dict):
+        entry = dict(results[source_key])
+    # canvas PATCH часто затирает gpt_operator_results — отчёт на диске остаётся.
+    if is_excel_gpt_node_type(typ) or (
+        entry is not None and is_check_operator(operator_config(project, source_key))
+    ):
+        entry = hydrate_check_result_from_disk(project, source_key, entry)
+
+    if isinstance(entry, dict) and entry:
+        # vp.check.v1 fix.rewrite_file → исправленный файл + отчёт из emitKinds.
+        rewrite = str(entry.get("fixRewriteFile") or "").strip().replace("\\", "/")
+        if rewrite:
+            rp = Path(rewrite)
+            if not rp.is_file():
+                rp = root / rewrite
+            if rp.is_file() and rp.stat().st_size > 0:
+                found = [rp]
+                src_cfg = operator_config(project, source_key)
+                emit_kinds: list[EmitKind] = list(src_cfg.get("emitKinds") or [])
+                report_kinds = [k for k in emit_kinds if k in ("reply_txt", "analysis")]
+                if report_kinds:
+                    found.extend(
+                        _paths_for_emit_kinds(
+                            project,
+                            source_key,
+                            entry,
+                            report_kinds,
+                            limit=limit,
                         )
-                    return found[:limit]
-            # vp.check.v1 forward.explicit → только указанные пути
-            fwd_paths = entry.get("forwardPaths")
-            if isinstance(fwd_paths, list) and fwd_paths:
-                for item in fwd_paths:
-                    p = _resolve_result_path(root, item)
-                    if p is not None:
-                        found.append(p)
-                if found:
-                    return found[:limit]
-            # Выбор «что отдаёт» на ноде-источнике (emitKinds).
-            src_cfg = operator_config(project, source_key)
-            emit_kinds: list[EmitKind] = list(src_cfg.get("emitKinds") or [])
-            emitted = _paths_for_emit_kinds(
-                project, source_key, entry, emit_kinds, limit=limit
-            )
-            if emitted:
-                return emitted
-            # Fallback, если emitKinds ничего не нашёл (ещё нет результата).
-            for key in ("outputPaths", "inputPaths"):
-                raw = entry.get(key) or []
-                if isinstance(raw, list):
-                    for item in raw:
-                        p = _resolve_result_path(root, item)
-                        if p is not None and p.name not in _ANALYSIS_NAMES:
-                            found.append(p)
-            if found:
+                    )
                 return found[:limit]
+        # vp.check.v1 forward.explicit → только указанные пути
+        fwd_paths = entry.get("forwardPaths")
+        if isinstance(fwd_paths, list) and fwd_paths:
+            for item in fwd_paths:
+                p = _resolve_result_path(root, item)
+                if p is not None:
+                    found.append(p)
+            if found:
+                # Даже при forward — докинуть check_report, если emit это просит.
+                src_cfg = operator_config(project, source_key)
+                emit_kinds = list(src_cfg.get("emitKinds") or [])
+                report_kinds = [k for k in emit_kinds if k in ("reply_txt", "analysis")]
+                if report_kinds:
+                    found.extend(
+                        _paths_for_emit_kinds(
+                            project,
+                            source_key,
+                            entry,
+                            report_kinds,
+                            limit=limit,
+                        )
+                    )
+                return found[:limit]
+        # Выбор «что отдаёт» на ноде-источнике (emitKinds).
+        src_cfg = operator_config(project, source_key)
+        emit_kinds: list[EmitKind] = list(src_cfg.get("emitKinds") or [])
+        emitted = _paths_for_emit_kinds(
+            project, source_key, entry, emit_kinds, limit=limit
+        )
+        if emitted:
+            return emitted
+        # Fallback, если emitKinds ничего не нашёл (ещё нет результата).
+        for key in ("outputPaths", "inputPaths"):
+            raw = entry.get(key) or []
+            if isinstance(raw, list):
+                for item in raw:
+                    p = _resolve_result_path(root, item)
+                    if p is not None and p.name not in _ANALYSIS_NAMES:
+                        found.append(p)
+        if found:
+            return found[:limit]
 
     if typ in ("images", "hitl_images") or typ == "image_prompts":
         found = _collect_under(root / "scenes", suffixes=_IMAGE_SUFFIXES, limit=limit)
@@ -836,7 +857,32 @@ def files_from_source_node(
         if out:
             return out[:limit]
 
-    if is_excel_gpt_node_type(typ) or typ in ("plan", "split", "items", "excel_feed"):
+    if is_excel_gpt_node_type(typ):
+        # emitKinds с диска uploads — даже если meta.gpt_operator_results стёрта.
+        src_cfg = operator_config(project, source_key)
+        emit_kinds: list[EmitKind] = list(src_cfg.get("emitKinds") or [])
+        synthetic: dict[str, Any] = {"outputPaths": [], "inputPaths": []}
+        udir = upload_dir(project, source_key)
+        if udir.is_dir():
+            for p in sorted(udir.iterdir()):
+                if p.is_file() and p.stat().st_size > 0:
+                    synthetic["outputPaths"].append(str(p))
+        emitted = _paths_for_emit_kinds(
+            project, source_key, synthetic, emit_kinds, limit=limit
+        )
+        if emitted:
+            return emitted
+        if use_snapshot:
+            snap = _snapshot_xlsx_for_node(project, source_key)
+            if snap is not None:
+                return [snap]
+        # checkMode: не подменять отчёт голым project.xlsx
+        if not is_check_operator(src_cfg):
+            xlsx = root / "project.xlsx"
+            if xlsx.is_file():
+                return [xlsx]
+
+    if typ in ("plan", "split", "items", "excel_feed"):
         if use_snapshot:
             snap = _snapshot_xlsx_for_node(project, source_key)
             if snap is not None:
@@ -845,14 +891,17 @@ def files_from_source_node(
         if xlsx.is_file():
             return [xlsx]
 
-    # fallback: uploads этой ноды
+    # fallback: uploads этой ноды (включая check_report / gpt_reply)
     udir = upload_dir(project, source_key)
     if udir.is_dir():
         for p in sorted(udir.iterdir()):
-            if p.is_file() and p.suffix.lower() in _ANY_SUFFIXES and p.name != "gpt_reply.txt":
-                found.append(p)
-                if len(found) >= limit:
-                    break
+            if not p.is_file() or p.stat().st_size < 1:
+                continue
+            if p.suffix.lower() not in _ANY_SUFFIXES and p.name not in _REPLY_TXT_NAMES:
+                continue
+            found.append(p)
+            if len(found) >= limit:
+                break
     return found
 
 
@@ -884,14 +933,32 @@ def hydrate_check_result_from_disk(
     from app.services.check_analysis import CHECK_REPORT_NAME, parse_check_analysis
 
     entry = dict(last or {})
-    gate = str(entry.get("gateStatus") or "").strip().lower()
-    if gate in ("pass", "fail") and isinstance(entry.get("analysis"), dict):
-        return entry
-
     up = upload_dir(project, node_key)
     analysis_path = up / "analysis.json"
     report_path = up / CHECK_REPORT_NAME
     reply_path = up / "gpt_reply.txt"
+
+    def _merge_upload_paths(dst: dict[str, Any]) -> dict[str, Any]:
+        """Всегда тянуть артефакты с диска — meta часто без outputPaths."""
+        outs = [str(p) for p in (dst.get("outputPaths") or []) if str(p).strip()]
+        for p in (analysis_path, report_path, reply_path):
+            if p.is_file() and str(p) not in outs:
+                outs.append(str(p))
+        if up.is_dir():
+            for p in sorted(up.iterdir()):
+                if (
+                    p.is_file()
+                    and p.stat().st_size > 0
+                    and p.suffix.lower() in _ANY_SUFFIXES
+                    and str(p) not in outs
+                ):
+                    outs.append(str(p))
+        dst["outputPaths"] = outs
+        return dst
+
+    gate = str(entry.get("gateStatus") or "").strip().lower()
+    if gate in ("pass", "fail") and isinstance(entry.get("analysis"), dict):
+        return _merge_upload_paths(entry)
 
     parsed_dict: dict[str, Any] | None = None
     preview = ""
@@ -914,11 +981,14 @@ def hydrate_check_result_from_disk(
             parsed_dict = parsed.to_dict()
 
     if not parsed_dict:
+        # Даже без verdict — отдать файлы uploads (отчёт может быть plain text).
+        if report_path.is_file() or reply_path.is_file():
+            return _merge_upload_paths(entry)
         return entry
 
     verdict = str(parsed_dict.get("verdict") or "").strip().lower()
     if verdict not in ("pass", "fail"):
-        return entry
+        return _merge_upload_paths(entry)
 
     entry["gateStatus"] = verdict
     entry["analysis"] = parsed_dict
@@ -926,12 +996,7 @@ def hydrate_check_result_from_disk(
         preview = report_path.read_text(encoding="utf-8")
     if preview:
         entry["replyPreview"] = preview[:2000]
-    outs = [str(p) for p in (entry.get("outputPaths") or []) if str(p).strip()]
-    for p in (analysis_path, report_path, reply_path):
-        if p.is_file() and str(p) not in outs:
-            outs.append(str(p))
-    entry["outputPaths"] = outs
-    return entry
+    return _merge_upload_paths(entry)
 
 
 def sanitize_check_reviewer_notes(text: str) -> str:
