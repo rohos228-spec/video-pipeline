@@ -5,17 +5,18 @@
 
 ## Cursor Cloud specific instructions
 
-### Git: merge to `main` immediately (mandatory)
+### Git: push to this PC's branch (mandatory)
 
-The user's production copy tracks **`origin/main` only** (`STUDIO.cmd` → update pulls `main`). Every code fix is **incomplete** until it is pushed to `main`.
+PC branches: **`housepc`**, **`tompc`**, **`strangepc`**, **`workpc`**.
+Local target = `ORCHESTRATOR_GIT_BRANCH` in `.env` (this machine: **`housepc`**).
 
 Agent workflow after any code change:
 
-1. Commit on `main` (or merge feature branch into `main` in the same session).
-2. `git push origin main`.
-3. Tell the user the new **`git HEAD` sha** — they must see it after `git pull`, not an old sha like `eb95b9e`.
+1. `git checkout <ORCHESTRATOR_GIT_BRANCH>` (here: `housepc`) and pull.
+2. Commit + **`git push origin <branch>`**.
+3. Tell the user **`git HEAD: <sha>` уже в `<branch>`**.
 
-Do **not** stop at an open PR on a side branch. Optional PR is fine **after** `main` is updated.
+Do **not** push to `main` from a PC branch unless the user explicitly asks to merge into `main`.
 
 ### Overview
 

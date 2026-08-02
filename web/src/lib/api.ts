@@ -424,7 +424,7 @@ export const api = {
     projectId: number,
     body: { message: string; files?: string[] },
   ) =>
-    http<{ git_commit_push: string; sha: string; files: string[] }>(
+    http<{ git_commit_push: string; sha: string; branch?: string; files: string[] }>(
       `/api/db/projects/${projectId}/orchestrator/confirm-git-push`,
       { method: "POST", body: JSON.stringify(body) },
       180_000,

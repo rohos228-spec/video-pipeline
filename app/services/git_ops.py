@@ -1,4 +1,4 @@
-"""Safe git helpers for orchestrator code-fix → commit → push origin/main."""
+"""Safe git helpers for orchestrator code-fix → commit → push origin/<pc-branch>."""
 
 from __future__ import annotations
 
@@ -10,9 +10,25 @@ from loguru import logger
 
 from app.services.code_autofix import assert_paths_allowed, repo_root
 
+ALLOWED_PUSH_BRANCHES = frozenset(
+    {"main", "housepc", "tompc", "strangepc", "workpc"}
+)
+
 
 class GitOpsError(RuntimeError):
     """Ошибка git-операции оркестратора."""
+
+
+def push_branch() -> str:
+    """Целевая ветка push с этого ПК (из settings / .env)."""
+    from app.settings import settings
+
+    br = (settings.orchestrator_git_branch or "main").strip() or "main"
+    if br not in ALLOWED_PUSH_BRANCHES:
+        raise GitOpsError(
+            f"ветка {br!r} не из allowlist {sorted(ALLOWED_PUSH_BRANCHES)}"
+        )
+    return br
 
 
 def _run(args: list[str], *, cwd: Path | None = None, timeout: float = 120.0) -> str:
@@ -40,10 +56,16 @@ def current_branch() -> str:
     return _run(["rev-parse", "--abbrev-ref", "HEAD"])
 
 
-def ensure_main_branch() -> None:
+def ensure_push_branch() -> str:
+    """Require HEAD == configured push branch (no cross-PC push mixups)."""
+    want = push_branch()
     br = current_branch()
-    if br != "main":
-        raise GitOpsError(f"разрешён push только из main, сейчас ветка {br!r}")
+    if br != want:
+        raise GitOpsError(
+            f"нужна ветка {want!r} (ORCHESTRATOR_GIT_BRANCH), сейчас {br!r}. "
+            f"Сделай: git checkout {want}"
+        )
+    return want
 
 
 def head_sha(*, short: bool = True) -> str:
@@ -57,7 +79,6 @@ def changed_paths() -> list[str]:
     for line in out.splitlines():
         if not line.strip():
             continue
-        # XY PATH or XY ORIG -> PATH
         rest = line[3:] if len(line) > 3 else line
         if " -> " in rest:
             rest = rest.split(" -> ", 1)[1]
@@ -73,8 +94,8 @@ def commit_and_push(
     *,
     allow_empty: bool = False,
 ) -> dict[str, Any]:
-    """Add allowlisted paths, commit, push origin main. Returns sha info."""
-    ensure_main_branch()
+    """Add allowlisted paths, commit, push origin/<ORCHESTRATOR_GIT_BRANCH>."""
+    branch = ensure_push_branch()
     msg = (message or "").strip()
     if not msg:
         raise GitOpsError("пустой commit message")
@@ -83,7 +104,6 @@ def commit_and_push(
 
     rels = assert_paths_allowed(paths)
     if not rels and not allow_empty:
-        # fallback: only allowlisted dirty files
         dirty = [p for p in changed_paths() if _is_allowlisted_rel(p)]
         if not dirty:
             raise GitOpsError("нет файлов для коммита (allowlist пуст)")
@@ -99,16 +119,15 @@ def commit_and_push(
         raise GitOpsError("после git add staging пуст")
     assert_paths_allowed(staged_list)
 
-    # HEREDOC-safe: pass -m once
     _run(["commit", "-m", msg], cwd=root)
     sha = head_sha(short=True)
-    logger.info("git_ops: committed {} files → {}", len(staged_list), sha)
+    logger.info("git_ops: committed {} files → {} @{}", len(staged_list), sha, branch)
 
-    _run(["push", "origin", "main"], cwd=root, timeout=180.0)
-    logger.info("git_ops: pushed origin/main HEAD={}", sha)
+    _run(["push", "-u", "origin", branch], cwd=root, timeout=180.0)
+    logger.info("git_ops: pushed origin/{} HEAD={}", branch, sha)
     return {
         "sha": sha,
-        "branch": "main",
+        "branch": branch,
         "files": staged_list,
         "message": msg,
     }

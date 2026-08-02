@@ -23,8 +23,8 @@
 
 ## 2. Git & delivery
 
-- Единственная рабочая ветка пользователя: **`main`**.
-- После фикса: commit + **`git push origin main`** + сообщить `git HEAD: <sha>`.
+- Ветки ПК: **`housepc` / `tompc` / `strangepc` / `workpc`** (`ORCHESTRATOR_GIT_BRANCH` в `.env`).
+- После фикса: commit + **`git push origin <ветка>`** + сообщить `git HEAD: <sha> уже в <ветка>`.
 - Details: `AGENTS.md` + ops rule (не повторять здесь).
 
 ---

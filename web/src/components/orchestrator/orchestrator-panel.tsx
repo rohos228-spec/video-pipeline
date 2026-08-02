@@ -1,10 +1,21 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { ChevronDown, ChevronUp, GitBranch, MessageSquare, Send, Trash2 } from "lucide-react";
+import {
+  Bug,
+  ChevronDown,
+  ChevronUp,
+  GitBranch,
+  Maximize2,
+  MessageSquare,
+  Minimize2,
+  Send,
+  Trash2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { usePersistedState } from "@/hooks/use-persisted-state";
+import { cn } from "@/lib/utils";
 
 interface Props {
   projectId: number | null;
@@ -28,14 +39,20 @@ interface ChatMsg {
   confirm?: PendingConfirm;
 }
 
+const FIX_BUGS_PROMPT =
+  "Режим «Фикс багов»: посмотри диагностику/ошибки этого проекта и код программы. " +
+  "Найди баги в app/, предложи точечный фикс через edit_files + run_tests + " +
+  "git_commit_push (auto=false — я подтвержу push кнопкой). " +
+  "Пуш только в ветку этого ПК (ORCHESTRATOR_GIT_BRANCH). Кратко по-русски.";
+
 export function OrchestratorPanel({ projectId }: Props) {
   const [open, setOpen] = usePersistedState("vp-orchestrator-open", true);
+  const [expanded, setExpanded] = usePersistedState("vp-orchestrator-expanded", true);
   const storageKey = `vp-orchestrator-log-${projectId ?? "none"}`;
   const [chatLog, setChatLog] = usePersistedState<ChatMsg[]>(storageKey, []);
   const [chatInput, setChatInput] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // Смена проекта — перечитать его историю (панель переживает F5).
   useEffect(() => {
     try {
       const raw = localStorage.getItem(storageKey);
@@ -46,121 +63,129 @@ export function OrchestratorPanel({ projectId }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storageKey]);
 
+  const sendMessage = useCallback(
+    async (msg: string) => {
+      if (projectId == null || !msg.trim() || busy) return;
+      setBusy(true);
+      setOpen(true);
+      const next: ChatMsg[] = [...chatLog, { role: "user", content: msg.trim() }];
+      setChatLog(next);
+      try {
+        const r = await api.dbOrchestratorChat(
+          projectId,
+          msg.trim(),
+          next.slice(-9, -1).map((m) => ({ role: m.role, content: m.content })),
+        );
+        const notes: string[] = [];
+        if (r.applied) {
+          notes.push(
+            `записано операций: ${r.applied.updated}${
+              r.applied.exported ? `, в Excel ячеек: ${r.applied.exported.cells}` : ""
+            }`,
+          );
+        }
+        for (const a of r.actions_run ?? []) {
+          if (a.run_step) notes.push(`запущен шаг «${a.run_step}» → ${a.status}`);
+          else if (a.stop_step) notes.push("генерация остановлена");
+          else if (a.set_option) notes.push(`настройка: ${a.set_option}`);
+          else if (a.set_prompt) notes.push(`промт: ${a.set_prompt}`);
+          else if (a.set_text_llm) notes.push(`LLM: ${a.set_text_llm}`);
+          else if (a.run_harness) notes.push(`проверки: ${a.run_harness}`);
+          else if (a.edit_files) notes.push(`код: ${a.edit_files}`);
+          else if (a.run_tests) notes.push(`pytest: ${a.run_tests}`);
+          else if (a.git_commit_push) notes.push(`git: ${a.git_commit_push}`);
+        }
+        for (const u of r.ui_actions ?? []) {
+          const nodeKey = u.node_key ?? (u.node_type ? `n_${u.node_type}` : null);
+          if (u.kind === "step_prompts" && nodeKey) {
+            window.dispatchEvent(
+              new CustomEvent("studio-open-node-prompts", { detail: { nodeKey } }),
+            );
+            notes.push(`открыл окно промтов шага «${u.step}»`);
+          } else if (u.kind === "node_studio" && nodeKey) {
+            window.dispatchEvent(
+              new CustomEvent("studio-open-node-prompts", { detail: { nodeKey } }),
+            );
+            notes.push(`открыл студию ноды «${u.node_type}»`);
+          } else if (u.kind === "prompt_builder" && nodeKey) {
+            window.dispatchEvent(
+              new CustomEvent("studio-open-prompt-builder", {
+                detail: { nodeKey, nodeType: u.node_type },
+              }),
+            );
+            notes.push(`открыл конструктор промтов «${u.node_type}»`);
+          } else if (u.kind === "hitl" && u.hitl_id != null) {
+            window.dispatchEvent(
+              new CustomEvent("canvas-open-hitl-modal", { detail: { hitlId: u.hitl_id } }),
+            );
+            notes.push("открыл окно аппрува");
+          } else if (u.kind === "topic") {
+            window.dispatchEvent(
+              new CustomEvent("canvas-select-node", { detail: { nodeKey: "n_topic" } }),
+            );
+            notes.push("тема проекта — в инспекторе справа");
+          } else if (u.kind === "settings") {
+            window.dispatchEvent(
+              new CustomEvent("canvas-select-node", { detail: { nodeKey: null } }),
+            );
+            notes.push("настройки проекта — в инспекторе справа");
+          } else if (u.kind === "baza") {
+            window.dispatchEvent(new CustomEvent("studio-open-baza"));
+            notes.push("открыл «Базу»");
+          } else if (u.kind === "gpt_chat") {
+            window.dispatchEvent(new CustomEvent("studio-open-gpt"));
+            notes.push("открыл общий чат");
+          } else if (u.kind === "open_project" && u.project_id != null) {
+            window.dispatchEvent(
+              new CustomEvent("studio-select-project", {
+                detail: { projectId: u.project_id },
+              }),
+            );
+            notes.push(`создал и открыл проект #${u.project_id}`);
+          } else if (u.kind === "fleet") {
+            window.dispatchEvent(new CustomEvent("studio-open-fleet"));
+            notes.push("открыл «Сеть»");
+          }
+        }
+        if (r.error) notes.push(`ошибка: ${r.error}`);
+        const pendRemove = (r.pending_confirm ?? []).find((p) => p.kind === "remove_node");
+        const pendGit = (r.pending_confirm ?? []).find((p) => p.kind === "git_commit_push");
+        const pend = pendGit ?? pendRemove;
+        if (pendRemove) {
+          notes.push(
+            `к удалению: ${pendRemove.count} нод — кнопки ниже`,
+          );
+        }
+        if (pendGit) {
+          notes.push(`к push: подтверди кнопку ниже`);
+        }
+        setChatLog([
+          ...next,
+          {
+            role: "assistant",
+            content:
+              (r.reply || "(пустой ответ)") + (notes.length ? `\n\n— ${notes.join("; ")}` : ""),
+            confirm: pend ? { ...pend, resolved: false } : undefined,
+          },
+        ]);
+      } catch (e) {
+        setChatLog([
+          ...next,
+          { role: "assistant", content: `Ошибка: ${e instanceof Error ? e.message : e}` },
+        ]);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [projectId, busy, chatLog, setChatLog, setOpen],
+  );
+
   const sendChat = useCallback(async () => {
-    if (projectId == null || !chatInput.trim() || busy) return;
+    if (!chatInput.trim()) return;
     const msg = chatInput.trim();
     setChatInput("");
-    setBusy(true);
-    const next: ChatMsg[] = [...chatLog, { role: "user", content: msg }];
-    setChatLog(next);
-    try {
-      const r = await api.dbOrchestratorChat(
-        projectId,
-        msg,
-        next.slice(-9, -1).map((m) => ({ role: m.role, content: m.content })),
-      );
-      const notes: string[] = [];
-      if (r.applied) {
-        notes.push(
-          `записано операций: ${r.applied.updated}${
-            r.applied.exported ? `, в Excel ячеек: ${r.applied.exported.cells}` : ""
-          }`,
-        );
-      }
-      for (const a of r.actions_run ?? []) {
-        if (a.run_step) notes.push(`запущен шаг «${a.run_step}» → ${a.status}`);
-        else if (a.stop_step) notes.push("генерация остановлена");
-        else if (a.set_option) notes.push(`настройка: ${a.set_option}`);
-        else if (a.set_prompt) notes.push(`промт: ${a.set_prompt}`);
-        else if (a.set_text_llm) notes.push(`LLM: ${a.set_text_llm}`);
-        else if (a.run_harness) notes.push(`проверки: ${a.run_harness}`);
-        else if (a.edit_files) notes.push(`код: ${a.edit_files}`);
-        else if (a.run_tests) notes.push(`pytest: ${a.run_tests}`);
-        else if (a.git_commit_push) notes.push(`git: ${a.git_commit_push}`);
-      }
-      for (const u of r.ui_actions ?? []) {
-        const nodeKey = u.node_key ?? (u.node_type ? `n_${u.node_type}` : null);
-        if (u.kind === "step_prompts" && nodeKey) {
-          window.dispatchEvent(
-            new CustomEvent("studio-open-node-prompts", { detail: { nodeKey } }),
-          );
-          notes.push(`открыл окно промтов шага «${u.step}» — выбирай вариант там`);
-        } else if (u.kind === "node_studio" && nodeKey) {
-          window.dispatchEvent(
-            new CustomEvent("studio-open-node-prompts", { detail: { nodeKey } }),
-          );
-          notes.push(`открыл студию ноды «${u.node_type}»`);
-        } else if (u.kind === "prompt_builder" && nodeKey) {
-          window.dispatchEvent(
-            new CustomEvent("studio-open-prompt-builder", {
-              detail: { nodeKey, nodeType: u.node_type },
-            }),
-          );
-          notes.push(`открыл конструктор промтов «${u.node_type}»`);
-        } else if (u.kind === "hitl" && u.hitl_id != null) {
-          window.dispatchEvent(
-            new CustomEvent("canvas-open-hitl-modal", { detail: { hitlId: u.hitl_id } }),
-          );
-          notes.push("открыл окно аппрува");
-        } else if (u.kind === "topic") {
-          window.dispatchEvent(
-            new CustomEvent("canvas-select-node", { detail: { nodeKey: "n_topic" } }),
-          );
-          notes.push("тема проекта — в инспекторе справа");
-        } else if (u.kind === "settings") {
-          window.dispatchEvent(
-            new CustomEvent("canvas-select-node", { detail: { nodeKey: null } }),
-          );
-          notes.push("настройки проекта — в инспекторе справа");
-        } else if (u.kind === "baza") {
-          window.dispatchEvent(new CustomEvent("studio-open-baza"));
-          notes.push("открыл «Базу»");
-        } else if (u.kind === "gpt_chat") {
-          window.dispatchEvent(new CustomEvent("studio-open-gpt"));
-          notes.push("открыл общий чат");
-        } else if (u.kind === "open_project" && u.project_id != null) {
-          window.dispatchEvent(
-            new CustomEvent("studio-select-project", {
-              detail: { projectId: u.project_id },
-            }),
-          );
-          notes.push(`создал и открыл проект #${u.project_id}`);
-        } else if (u.kind === "fleet") {
-          window.dispatchEvent(new CustomEvent("studio-open-fleet"));
-          notes.push("открыл «Сеть»");
-        }
-      }
-      if (r.error) notes.push(`ошибка: ${r.error}`);
-      const pendRemove = (r.pending_confirm ?? []).find((p) => p.kind === "remove_node");
-      const pendGit = (r.pending_confirm ?? []).find((p) => p.kind === "git_commit_push");
-      const pend = pendGit ?? pendRemove;
-      if (pendRemove) {
-        notes.push(
-          `к удалению: ${pendRemove.count} нод (${pendRemove.nodes.slice(0, 5).join(", ")}${pendRemove.count > 5 ? "…" : ""}) — кнопки в сообщении ниже`,
-        );
-      }
-      if (pendGit) {
-        notes.push(
-          `к push: ${(pendGit.files ?? pendGit.nodes).slice(0, 5).join(", ") || "dirty allowlist"} — подтверди кнопку ниже`,
-        );
-      }
-      setChatLog([
-        ...next,
-        {
-          role: "assistant",
-          content: (r.reply || "(пустой ответ)") + (notes.length ? `\n\n— ${notes.join("; ")}` : ""),
-          confirm: pend ? { ...pend, resolved: false } : undefined,
-        },
-      ]);
-    } catch (e) {
-      setChatLog([
-        ...next,
-        { role: "assistant", content: `Ошибка: ${e instanceof Error ? e.message : e}` },
-      ]);
-    } finally {
-      setBusy(false);
-    }
-  }, [projectId, chatInput, busy, chatLog]);
+    await sendMessage(msg);
+  }, [chatInput, sendMessage]);
 
   const resolveRemove = useCallback(
     async (msgIndex: number, confirm: PendingConfirm, approve: boolean) => {
@@ -223,7 +248,10 @@ export function OrchestratorPanel({ projectId }: Props) {
             ...prev.map((m, i) =>
               i === msgIndex && m.confirm ? { ...m, confirm: { ...m.confirm, resolved: true } } : m,
             ),
-            { role: "assistant", content: "Push отменён — правки на диске остались, в git не ушли." },
+            {
+              role: "assistant",
+              content: "Push отменён — правки на диске остались, в git не ушли.",
+            },
           ]);
         }
       } catch (e) {
@@ -242,39 +270,84 @@ export function OrchestratorPanel({ projectId }: Props) {
   );
 
   return (
-    <div className="absolute inset-x-0 bottom-0 z-30 border-t border-white/[0.08] bg-[#0c0c0c]/95 backdrop-blur">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="flex h-8 w-full items-center gap-2 px-3 text-left text-[11px] text-white/60 hover:bg-white/5"
-      >
-        <MessageSquare className="h-3.5 w-3.5 text-primary" />
-        <span className="font-semibold text-white/80">Оркестратор</span>
-        <span className="text-white/35">
-          {projectId == null
-            ? "открой проект, чтобы писать"
-            : "база, шаги, фиксы кода → push в main"}
-        </span>
-        <span className="flex-1" />
-        {open ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
-      </button>
+    <div
+      className={cn(
+        "absolute z-40 border border-white/[0.1] bg-[#0c0c0c]/97 shadow-2xl backdrop-blur transition-all",
+        open && expanded
+          ? "inset-x-3 bottom-3 top-[12%] rounded-xl"
+          : "inset-x-0 bottom-0 rounded-none border-x-0 border-b-0",
+      )}
+    >
+      <div className="flex h-10 items-center gap-2 border-b border-white/[0.08] px-3">
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left text-[11px] text-white/60 hover:text-white/80"
+        >
+          <MessageSquare className="h-3.5 w-3.5 shrink-0 text-primary" />
+          <span className="font-semibold text-white/85">Оркестратор</span>
+          <span className="truncate text-white/35">
+            {projectId == null
+              ? "открой проект"
+              : "шаги · база · фикс багов → push на ветку ПК"}
+          </span>
+          {open ? (
+            <ChevronDown className="ml-auto h-4 w-4 shrink-0" />
+          ) : (
+            <ChevronUp className="ml-auto h-4 w-4 shrink-0" />
+          )}
+        </button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 gap-1.5 border-amber-400/40 bg-amber-500/10 text-[11px] text-amber-100 hover:bg-amber-500/20"
+          disabled={projectId == null || busy}
+          onClick={() => {
+            setExpanded(true);
+            setOpen(true);
+            void sendMessage(FIX_BUGS_PROMPT);
+          }}
+          title="Найти и починить баги в коде, подготовить push"
+        >
+          <Bug className="h-3.5 w-3.5" />
+          Фикс багов
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 w-7 p-0 text-white/50"
+          onClick={() => {
+            setOpen(true);
+            setExpanded(!expanded);
+          }}
+          title={expanded ? "Свернуть окно" : "Большое окно"}
+        >
+          {expanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+        </Button>
+      </div>
+
       {open ? (
-        <div className="flex h-52 flex-col">
-          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-1.5">
+        <div
+          className={cn(
+            "flex flex-col",
+            expanded ? "h-[calc(100%-2.5rem)]" : "h-52",
+          )}
+        >
+          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
             {chatLog.length === 0 ? (
               <div className="text-[11px] text-white/25">
-                Например: «запусти anim_pr», «почини баг в enrich и запушь». Изменения
-                в коде — через подтверждение push.
+                Пиши по-русски: шаги пайплайна, правки базы, или жми «Фикс багов» в шапке —
+                оркестратор найдёт баг в коде, прогонит тесты и подготовит push.
               </div>
             ) : (
               chatLog.map((m, i) => (
-                <div key={i} className="mb-1.5 text-[11px]">
-                  <span className={m.role === "user" ? "text-primary" : "text-white/50"}>
+                <div key={i} className="mb-2 text-[12px] leading-relaxed">
+                  <span className={m.role === "user" ? "text-primary" : "text-white/45"}>
                     {m.role === "user" ? "ты" : "оркестратор"}:{" "}
                   </span>
-                  <span className="whitespace-pre-wrap text-white/80">{m.content}</span>
+                  <span className="whitespace-pre-wrap text-white/85">{m.content}</span>
                   {m.confirm && !m.confirm.resolved && m.confirm.kind === "remove_node" ? (
-                    <span className="mt-1 flex items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5">
+                    <span className="mt-1.5 flex items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5">
                       <Trash2 className="h-3.5 w-3.5 text-red-400" />
                       <span className="flex-1 text-[11px] text-white/80">
                         Удалить {m.confirm.count} нод
@@ -302,10 +375,10 @@ export function OrchestratorPanel({ projectId }: Props) {
                     </span>
                   ) : null}
                   {m.confirm && !m.confirm.resolved && m.confirm.kind === "git_commit_push" ? (
-                    <span className="mt-1 flex items-center gap-2 rounded-md border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1.5">
+                    <span className="mt-1.5 flex items-center gap-2 rounded-md border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1.5">
                       <GitBranch className="h-3.5 w-3.5 text-emerald-400" />
                       <span className="flex-1 text-[11px] text-white/80">
-                        Push в main: {m.confirm.message || "commit"}
+                        Push: {m.confirm.message || "commit"}
                         {(m.confirm.files ?? m.confirm.nodes).length
                           ? ` (${(m.confirm.files ?? m.confirm.nodes).slice(0, 3).join(", ")})`
                           : ""}
@@ -333,7 +406,7 @@ export function OrchestratorPanel({ projectId }: Props) {
               ))
             )}
           </div>
-          <div className="flex items-center gap-2 px-3 pb-2">
+          <div className="flex items-center gap-2 border-t border-white/[0.06] px-3 py-2">
             <input
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
@@ -342,14 +415,14 @@ export function OrchestratorPanel({ projectId }: Props) {
               placeholder={
                 projectId == null ? "сначала открой проект" : "сообщение оркестратору…"
               }
-              className="h-8 flex-1 rounded-md border border-white/10 bg-black/40 px-2 text-xs disabled:opacity-40"
+              className="h-9 flex-1 rounded-md border border-white/10 bg-black/40 px-3 text-xs disabled:opacity-40"
             />
             <Button
               size="sm"
               variant="outline"
               disabled={projectId == null || busy || !chatInput.trim()}
               onClick={() => void sendChat()}
-              className="gap-1.5 text-xs"
+              className="h-9 gap-1.5 text-xs"
             >
               <Send className="h-3.5 w-3.5" />
               {busy ? "…" : "Отправить"}

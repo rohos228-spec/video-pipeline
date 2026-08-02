@@ -206,6 +206,10 @@ class Settings(BaseSettings):
         False, alias="AUDIO_USE_ELEVENLABS_FALLBACK"
     )
 
+    # Ветка для commit/push оркестратора с этого ПК (housepc|tompc|strangepc|workpc).
+    # Пусто = main. На каждом ПК своё значение в локальном .env.
+    orchestrator_git_branch: str = Field("main", alias="ORCHESTRATOR_GIT_BRANCH")
+
     # Fleet — сеть рабочих станций (hub = этот ПК, agent = удалённый)
     fleet_enabled: bool = Field(True, alias="FLEET_ENABLED")
     fleet_role: str = Field("hub", alias="FLEET_ROLE")

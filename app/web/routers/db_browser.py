@@ -331,13 +331,13 @@ _ORCHESTRATOR_SYSTEM = (
     "17) ПРОГНАТЬ pytest → "
     "{\"actions\":[{\"run_tests\":[\"tests/test_....py\"]}]}. "
     "После edit_files — обязательно, перед push.\n"
-    "18) COMMIT+PUSH в origin/main → "
+    "18) COMMIT+PUSH в origin/<ветка этого ПК> → "
     "{\"actions\":[{\"git_commit_push\":{\"message\":\"fix: …\","
     "\"files\":[\"app/....py\"],\"auto\":false}}]} — "
+    "ветка = ORCHESTRATOR_GIT_BRANCH (housepc|tompc|strangepc|workpc|main). "
     "по умолчанию auto=false: человек жмёт «Подтвердить push» в чате. "
     "auto=true — сразу push (только если пользователь явно просит "
-    "«сразу запушь» / «без подтверждения»). "
-    "Только ветка main, без force-push.\n"
+    "«сразу запушь» / «без подтверждения»). Без force-push.\n"
     "ТИПЫ НОД по-человечески (объясняй так, если спрашивают «что это»): "
     "hitl_gate — нода проверки: пайплайн встаёт и ждёт аппрува человека; "
     "excel_gpt — работа/автопроверка через GPT; plan — «Сценарий»; "
@@ -1839,10 +1839,11 @@ async def orchestrator_confirm_git_push(
         raise HTTPException(400, str(e)) from None
     return {
         "git_commit_push": (
-            f"git HEAD: {pushed['sha']} уже в main "
+            f"git HEAD: {pushed['sha']} уже в {pushed['branch']} "
             f"({len(pushed['files'])} files)"
         ),
         "sha": pushed["sha"],
+        "branch": pushed["branch"],
         "files": pushed["files"],
     }
 

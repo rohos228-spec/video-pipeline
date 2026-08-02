@@ -7,7 +7,6 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
-$StudioBranch = "main"
 if ($env:VP_REPO_ROOT) {
     $Root = $env:VP_REPO_ROOT.TrimEnd('\', '/')
 } elseif ($PSScriptRoot) {
@@ -16,6 +15,24 @@ if ($env:VP_REPO_ROOT) {
     $Root = (Get-Location).Path
 }
 Set-Location -LiteralPath $Root
+
+# Ветка обновления = ORCHESTRATOR_GIT_BRANCH из .env (housepc/tompc/…), иначе main
+$StudioBranch = "main"
+$EnvFile = Join-Path $Root ".env"
+if (Test-Path -LiteralPath $EnvFile) {
+    foreach ($line in Get-Content -LiteralPath $EnvFile -Encoding UTF8 -ErrorAction SilentlyContinue) {
+        if ($line -match '^\s*ORCHESTRATOR_GIT_BRANCH\s*=\s*(.+)\s*$') {
+            $cand = $Matches[1].Trim().Trim('"').Trim("'")
+            if ($cand -match '^(main|housepc|tompc|strangepc|workpc)$') {
+                $StudioBranch = $cand
+            }
+            break
+        }
+    }
+}
+if ($env:ORCHESTRATOR_GIT_BRANCH -and $env:ORCHESTRATOR_GIT_BRANCH -match '^(main|housepc|tompc|strangepc|workpc)$') {
+    $StudioBranch = $env:ORCHESTRATOR_GIT_BRANCH
+}
 
 $VpProfileScript = Join-Path $Root "scripts\VpBrowserProfile.ps1"
 if (Test-Path $VpProfileScript) {
@@ -738,7 +755,7 @@ function Show-StudioMenu {
     Write-Host "  [1] Запустить студию (бэкенд + Chrome CDP + http://127.0.0.1:8765)"
     Write-Host "  [2] Остановить всё (бэкенд :8765; Chrome с ИИ не закрывать)"
     Write-Host "  [3] Браузер с ИИ (Chrome CDP :29229, outsee.io + chatgpt.com)"
-    Write-Host "  [4] Обновить и запустить (git origin/main + зависимости + запуск)"
+    Write-Host "  [4] Обновить и запустить (git origin/$StudioBranch + зависимости + запуск)"
     Write-Host "  [5] Починить установку (pip, web, Playwright, FFmpeg)"
     Write-Host "  [6] Диагностика (версия, git, порты, logs/doctor.log)"
     Write-Host "  [0] Выход"
