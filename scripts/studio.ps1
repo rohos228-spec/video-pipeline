@@ -2,7 +2,7 @@
 # Вызывается из STUDIO.cmd в корне репозитория.
 
 param(
-    [ValidateSet("1", "2", "3", "4", "5", "6", "")]
+    [ValidateSet("1", "2", "3", "4", "5", "6", "7", "")]
     [string]$Action = ""
 )
 
@@ -105,7 +105,7 @@ function Show-StudioBranchPicker {
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host "  Выберите ветку этого ПК" -ForegroundColor Cyan
-    Write-Host "  (сохранится; обновление/смена — только пункт [5])" -ForegroundColor DarkGray
+    Write-Host "  (сохранится; смена ветки — [5], обновление кода — [4])" -ForegroundColor DarkGray
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
     for ($i = 0; $i -lt $script:PcBranches.Count; $i++) {
@@ -151,20 +151,23 @@ function Invoke-StudioBranchHub {
     if (-not (Ensure-StudioPcBranchSelected -InteractiveRequired)) {
         return $false
     }
-    while ($true) {
-        $br = $script:StudioBranch
-        Write-Host ""
-        Write-Host "  Текущая ветка: $br" -ForegroundColor Green
-        Write-Host "  [1] Обновить и запустить (git origin/$br)"
-        Write-Host "  [2] Сменить ветку ПК"
-        Write-Host "  [0] Назад"
-        Write-Host ""
-        $sub = Read-Host "Выберите"
-        switch ($sub) {
-            "1" { return (Invoke-StudioUpdateAndStart) }
-            "2" { $null = Show-StudioBranchPicker -AllowCancel }
-            "0" { return $true }
-            default { Write-StudioMsg "Неизвестный пункт: $sub" "Yellow" }
+    $br = $script:StudioBranch
+    Write-Host ""
+    Write-Host "  Текущая ветка: $br" -ForegroundColor Green
+    Write-Host "  Обновление кода — пункт [4] (origin/$br)" -ForegroundColor DarkGray
+    Write-Host "  [1] Сменить ветку ПК"
+    Write-Host "  [0] Назад"
+    Write-Host ""
+    $sub = Read-Host "Выберите"
+    switch ($sub) {
+        "1" {
+            $null = Show-StudioBranchPicker -AllowCancel
+            return $true
+        }
+        "0" { return $true }
+        default {
+            Write-StudioMsg "Неизвестный пункт: $sub" "Yellow"
+            return $true
         }
     }
 }
@@ -326,7 +329,7 @@ function Start-StudioBackendWindow {
     }
     $py = Join-Path $Root ".venv\Scripts\python.exe"
     if (-not (Test-Path $py)) {
-        Write-StudioMsg "ОШИБКА: .venv не найден. Запустите install.ps1 или пункт [4]." "Red"
+        Write-StudioMsg "ОШИБКА: .venv не найден. Запустите install.ps1 или пункт [6]." "Red"
         return $false
     }
     Set-StudioNvidiaEnv
@@ -336,7 +339,7 @@ function Start-StudioBackendWindow {
     $preflightCode = if ($null -eq $LASTEXITCODE) { 1 } else { [int]$LASTEXITCODE }
     $preflightOk = ($preflightCode -eq 0) -and ($preflightOut -match "create_app OK")
     if (-not $preflightOk) {
-        Write-StudioMsg "ОШИБКА: Python create_app() не прошёл. Попробуйте [4] Починить установку." "Red"
+        Write-StudioMsg "ОШИБКА: Python create_app() не прошёл. Попробуйте [6] Починить установку." "Red"
         $preflightOut | ForEach-Object { Write-StudioMsg "  $_" "Red" }
         return $false
     }
@@ -437,7 +440,7 @@ function Invoke-StudioRecoverPromptsFromAllStashes {
 function Invoke-StudioStart {
     Write-StudioMsg "=== [1] Запуск студии ===" "Cyan"
     if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
-        Write-StudioMsg "ВНИМАНИЕ: web/out отсутствует. Сначала [4] Починить установку." "Yellow"
+        Write-StudioMsg "ВНИМАНИЕ: web/out отсутствует. Сначала [6] Починить установку." "Yellow"
     }
     # Если прошлый [4] оставил кастомные промты в stash — вернуть до старта бэкенда.
     Invoke-StudioRecoverPromptsFromAllStashes
@@ -666,12 +669,11 @@ function Invoke-StudioPipInstall {
 }
 
 function Invoke-StudioUpdateAndStart {
-    $StudioBranch = $script:StudioBranch
-    if (-not (Test-StudioPcBranchName $StudioBranch)) {
-        Write-StudioMsg "ОШИБКА: сначала выберите ветку ПК (пункт [5])." "Red"
+    if (-not (Ensure-StudioPcBranchSelected -InteractiveRequired)) {
         return $false
     }
-    Write-StudioMsg "=== [5] Обновить и запустить (origin/$StudioBranch) ===" "Cyan"
+    $StudioBranch = $script:StudioBranch
+    Write-StudioMsg "=== [4] Обновить и запустить (origin/$StudioBranch) ===" "Cyan"
     # 1) Снимок prompts/ ВНЕ репо — главный предохранитель (stash может сдохнуть).
     Invoke-StudioBackupPromptsAside | Out-Null
     $promptsDirty = Test-StudioPromptsDirty
@@ -755,7 +757,7 @@ function Invoke-StudioRepairWeb {
 }
 
 function Invoke-StudioRepair {
-    Write-StudioMsg "=== [4] Починить установку ===" "Cyan"
+    Write-StudioMsg "=== [6] Починить установку ===" "Cyan"
     $py = Join-Path $Root ".venv\Scripts\python.exe"
     if (-not (Test-Path $py)) {
         Write-StudioMsg "ОШИБКА: .venv не найден. Запустите install.ps1 для первичной установки." "Red"
@@ -920,9 +922,10 @@ function Show-StudioMenu {
     Write-Host "  [1] Запустить студию (бэкенд + Chrome CDP + http://127.0.0.1:8765)"
     Write-Host "  [2] Остановить всё (бэкенд :8765; Chrome с ИИ не закрывать)"
     Write-Host "  [3] Браузер с ИИ (Chrome CDP :29229, outsee.io + chatgpt.com)"
-    Write-Host "  [4] Починить установку (pip, web, Playwright, FFmpeg)"
-    Write-Host "  [5] Ветка ПК ($brLabel): обновить / сменить"
-    Write-Host "  [6] Диагностика (версия, git, порты, logs/doctor.log)"
+    Write-Host "  [4] Обновить и запустить (git origin/$brLabel + зависимости + запуск)"
+    Write-Host "  [5] Ветка ПК ($brLabel): сменить"
+    Write-Host "  [6] Починить установку (pip, web, Playwright, FFmpeg)"
+    Write-Host "  [7] Диагностика (версия, git, порты, logs/doctor.log)"
     Write-Host "  [0] Выход"
     Write-Host ""
 }
@@ -941,14 +944,12 @@ if ($Action -eq "1") {
 } elseif ($Action -eq "3") {
     $ok = Invoke-StudioBrowserAi
 } elseif ($Action -eq "4") {
-    $ok = Invoke-StudioRepair
+    $ok = Invoke-StudioUpdateAndStart
 } elseif ($Action -eq "5") {
-    if (-not (Ensure-StudioPcBranchSelected)) {
-        $ok = $false
-    } else {
-        $ok = Invoke-StudioUpdateAndStart
-    }
+    $ok = Invoke-StudioBranchHub
 } elseif ($Action -eq "6") {
+    $ok = Invoke-StudioRepair
+} elseif ($Action -eq "7") {
     $ok = Invoke-StudioDoctor
 } elseif ($Action -eq "") {
     if (-not (Ensure-StudioPcBranchSelected -InteractiveRequired)) {
@@ -962,9 +963,10 @@ if ($Action -eq "1") {
             "1" { $ok = Invoke-StudioStart; if (-not $ok) { Invoke-StudioPause } }
             "2" { $ok = Invoke-StudioStop; if (-not $ok) { Invoke-StudioPause } }
             "3" { $ok = Invoke-StudioBrowserAi; if (-not $ok) { Invoke-StudioPause } }
-            "4" { $ok = Invoke-StudioRepair; if (-not $ok) { Invoke-StudioPause } }
+            "4" { $ok = Invoke-StudioUpdateAndStart; if (-not $ok) { Invoke-StudioPause } }
             "5" { $ok = Invoke-StudioBranchHub; if (-not $ok) { Invoke-StudioPause } }
-            "6" { $ok = Invoke-StudioDoctor; Invoke-StudioPause }
+            "6" { $ok = Invoke-StudioRepair; if (-not $ok) { Invoke-StudioPause } }
+            "7" { $ok = Invoke-StudioDoctor; Invoke-StudioPause }
             "0" { break }
             default {
                 Write-StudioMsg "Неизвестный пункт: $choice" "Yellow"
