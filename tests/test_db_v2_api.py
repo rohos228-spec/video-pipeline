@@ -1422,3 +1422,130 @@ async def test_export_xlsx_button_writes_plan_rows(api_client, tmp_path) -> None
         assert ws.cell(row=ROW_VOICEOVER_V8, column=4).value == "реплика 2"
     finally:
         wb.close()
+
+
+@pytest.mark.asyncio
+async def test_connect_edges_each_to_storage(api_client) -> None:
+    """connect_edges from=each to_type=storage: создаёт storage и рёбра от всех нод."""
+    from app.web.routers.db_browser import (
+        _apply_add_node,
+        _apply_connect_edges,
+        _linear_order,
+    )
+
+    client, project_id, factory = api_client
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        meta = dict(p.meta or {})
+        meta["canvas_graph"] = {
+            "nodes": [
+                {
+                    "id": "n_plan",
+                    "type": "plan",
+                    "position": {"x": 0.0, "y": 0.0},
+                    "data": {"label": "Сценарий"},
+                },
+                {
+                    "id": "n_script",
+                    "type": "script",
+                    "position": {"x": 290.0, "y": 0.0},
+                    "data": {"label": "Закадровый"},
+                },
+                {
+                    "id": "n_img",
+                    "type": "images",
+                    "position": {"x": 580.0, "y": 0.0},
+                    "data": {"label": "Картинки"},
+                },
+            ],
+            "edges": [
+                {"id": "e0", "source": "n_plan", "target": "n_script"},
+                {"id": "e1", "source": "n_script", "target": "n_img"},
+            ],
+        }
+        p.meta = meta
+        await session.commit()
+
+        res = await _apply_connect_edges(
+            session, p, {"from": "each", "to_type": "storage"}
+        )
+        assert "+3" in res["connect_edges"]
+        g = (p.meta or {})["canvas_graph"]
+        storage = [n for n in g["nodes"] if n["type"] == "storage"]
+        assert len(storage) == 1
+        sid = storage[0]["id"]
+        to_storage = {
+            e["source"] for e in g["edges"] if e["target"] == sid
+        }
+        assert to_storage == {"n_plan", "n_script", "n_img"}
+        # Цепочка пайплайна всё ещё линейна (storage сбоку).
+        assert _linear_order(g["nodes"], g["edges"]) == [
+            "n_plan",
+            "n_script",
+            "n_img",
+        ]
+
+        # add_node each не ломает рёбра к storage.
+        await _apply_add_node(session, p, {"node_type": "excel_gpt", "after": "each"})
+        g2 = (p.meta or {})["canvas_graph"]
+        sid2 = next(n["id"] for n in g2["nodes"] if n["type"] == "storage")
+        still = {e["source"] for e in g2["edges"] if e["target"] == sid2}
+        assert {"n_plan", "n_script", "n_img"}.issubset(still)
+        # Новые excel_gpt ещё не к storage — повторный connect_edges дотягивает.
+        await _apply_connect_edges(session, p, {"from": "each", "to_type": "storage"})
+        g3 = (p.meta or {})["canvas_graph"]
+        sid3 = next(n["id"] for n in g3["nodes"] if n["type"] == "storage")
+        all_ids = {n["id"] for n in g3["nodes"] if n["id"] != sid3}
+        wired = {e["source"] for e in g3["edges"] if e["target"] == sid3}
+        assert wired == all_ids
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_chat_connect_edges_action(api_client, monkeypatch) -> None:
+    """Оркестратор умеет connect_edges — не отмазывается «нет действия»."""
+    from app.models import Workflow
+
+    client, project_id, factory = api_client
+    async with factory() as session:
+        session.add(
+            Workflow(
+                name="default",
+                is_default=True,
+                nodes=[
+                    {
+                        "id": "n_plan",
+                        "type": "plan",
+                        "position": {"x": 0.0, "y": 0.0},
+                        "data": {"label": "Сценарий"},
+                    },
+                    {
+                        "id": "n_script",
+                        "type": "script",
+                        "position": {"x": 290.0, "y": 0.0},
+                        "data": {"label": "Закадровый"},
+                    },
+                ],
+                edges=[{"id": "e0", "source": "n_plan", "target": "n_script"}],
+            )
+        )
+        await session.commit()
+
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _FakeGpt(
+            '{"actions":[{"connect_edges":{"from":"each","to_type":"storage"}}]}'
+        ),
+    )
+    r = await client.post(
+        f"/api/db/projects/{project_id}/orchestrator/chat",
+        json={"message": "подведи все ноды к хранилищу", "history": []},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["error"] is None
+    assert data["actions_run"]
+    assert "connect_edges" in data["actions_run"][0]
+    async with factory() as session:
+        p = await session.get(Project, project_id)
+        g = (p.meta or {}).get("canvas_graph") or {}
+        assert any(n.get("type") == "storage" for n in g.get("nodes") or [])

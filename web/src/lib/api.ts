@@ -414,6 +414,7 @@ export const api = {
         create_project?: string;
         create_child?: string;
         add_node?: string;
+        connect_edges?: string;
         rename_node?: string;
         repair_graph?: string;
         hitl_decision?: string;

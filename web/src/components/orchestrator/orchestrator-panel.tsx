@@ -142,6 +142,7 @@ export function OrchestratorPanel({ projectId }: Props) {
           else if (a.create_project) notes.push(`создан проект: ${a.create_project}`);
           else if (a.create_child) notes.push(`дочерний: ${a.create_child}`);
           else if (a.add_node) notes.push(`нода: ${typeof a.add_node === "string" ? a.add_node : JSON.stringify(a.add_node)}`);
+          else if (a.connect_edges) notes.push(`связи: ${a.connect_edges}`);
           else if (a.rename_node) notes.push(`переименовано: ${a.rename_node}`);
           else if (a.repair_graph) notes.push(`граф: ${a.repair_graph}`);
           else if (a.hitl_decision) notes.push(`HITL: ${a.hitl_decision}`);

@@ -323,6 +323,13 @@ _ORCHESTRATOR_SYSTEM = (
     "after=\"<node_key>\". «Нода проверки»: hitl_gate = аппрув человеком, "
     "excel_gpt = автопроверка GPT — уточни у пользователя, если неясно. "
     "В ответе называй, что именно добавил и после каких нод (см. СВЯЗИ).\n"
+    "11b) СВЯЗИ К ХРАНИЛИЩУ / любые рёбра → "
+    "{\"actions\":[{\"connect_edges\":{\"from\":\"each\",\"to_type\":\"storage\"}}]} — "
+    "ОБЯЗАТЕЛЬНО когда просят «подведи к хранилищу», «от каждой ноды к storage». "
+    "Создаёт ноду storage сбоку если её нет; проводит ребро от КАЖДОЙ ноды к ней. "
+    "from=\"each\"|<node_key>; to=\"n_storage_1\" или to_type=\"storage\". "
+    "НИКОГДА не говори «нет действия для связей» — connect_edges есть. "
+    "Можно в одном JSON: add_node excel_gpt after=each + connect_edges to_type=storage.\n"
     "12) УДАЛИТЬ ноды → {\"actions\":[{\"remove_node\":{\"node_type\":\"X\"}}]} "
     "(все добавленные оркестратором типа X — ТОЛЬКО если прямо просят «удали "
     "ВСЕ»), {\"remove_node\":{\"node_type\":\"X\",\"only\":\"duplicates\"}} — "
@@ -1095,14 +1102,55 @@ async def _apply_create_child(
     }
 
 
-def _linear_order(nodes: list[dict], edges: list[dict]) -> list[str]:
-    """Порядок нод линейной цепочки по edges. Нелинейный граф → ApplyOpsError."""
-    by_id = {str(n.get("id")): n for n in nodes}
-    out_map: dict[str, list[str]] = {}
-    in_deg: dict[str, int] = {nid: 0 for nid in by_id}
+def _side_sink_ids(nodes: list[dict]) -> set[str]:
+    """Ноды-приёмники «сбоку» (storage/topic/excel_feed): рёбра к ним ≠ цепочка.
+
+    К ним можно вести много параллельных связей (каждая рабочая нода →
+    хранилище), не ломая линейный пайплайн.
+    """
+    from app.orchestrator.node_registry import CONFIG_NODE_TYPES
+
+    side = set(CONFIG_NODE_TYPES) | {"excel_feed"}
+    return {
+        str(n.get("id"))
+        for n in nodes
+        if n.get("id") and str(n.get("type") or "") in side
+    }
+
+
+def _pipeline_edges(nodes: list[dict], edges: list[dict]) -> list[dict]:
+    """Рёбра основной цепочки (без веток на storage/topic/excel_feed)."""
+    sinks = _side_sink_ids(nodes)
+    out: list[dict] = []
     for e in edges:
         src, tgt = str(e.get("source")), str(e.get("target"))
-        if src in by_id and tgt in by_id:
+        if tgt in sinks:
+            continue
+        out.append(e)
+    return out
+
+
+def _side_edges(nodes: list[dict], edges: list[dict]) -> list[dict]:
+    sinks = _side_sink_ids(nodes)
+    return [e for e in edges if str(e.get("target")) in sinks]
+
+
+def _linear_order(nodes: list[dict], edges: list[dict]) -> list[str]:
+    """Порядок нод линейной цепочки по pipeline-edges.
+
+    Рёбра к storage/topic не участвуют: граф может быть «звезда → хранилище»
+    и при этом оставаться линейным для add_node/repair.
+    """
+    by_id = {str(n.get("id")): n for n in nodes}
+    sinks = _side_sink_ids(nodes)
+    chain_ids = {nid for nid in by_id if nid not in sinks}
+    if not chain_ids:
+        return []
+    out_map: dict[str, list[str]] = {}
+    in_deg: dict[str, int] = {nid: 0 for nid in chain_ids}
+    for e in _pipeline_edges(nodes, edges):
+        src, tgt = str(e.get("source")), str(e.get("target"))
+        if src in chain_ids and tgt in chain_ids:
             out_map.setdefault(src, []).append(tgt)
             in_deg[tgt] = in_deg.get(tgt, 0) + 1
     heads = [nid for nid, d in in_deg.items() if d == 0]
@@ -1125,7 +1173,7 @@ def _linear_order(nodes: list[dict], edges: list[dict]) -> list[str]:
                 "граф нелинейный — добавляй по одной ноде (after=<node_key>)"
             )
         cur = nxt[0] if nxt else ""
-    if len(order) != len(by_id):
+    if len(order) != len(chain_ids):
         raise db_apply.ApplyOpsError("в графе есть несвязанные ноды — отказ")
     return order
 
@@ -1170,7 +1218,10 @@ async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -
 
     if after == "each":
         skip = set(CONFIG_NODE_TYPES) | set(HITL_NODE_TYPES)
-        next_of_pre = {str(e.get("source")): str(e.get("target")) for e in edges}
+        next_of_pre = {
+            str(e.get("source")): str(e.get("target"))
+            for e in _pipeline_edges(nodes, edges)
+        }
 
         def _is_check_of_type(nid: str) -> bool:
             """Нода — ПРОВЕРКА этого типа, не рабочая.
@@ -1263,14 +1314,19 @@ async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -
             }
         )
 
-    # Перешивка цепочки: для каждого target: target→next становится target→new→next.
-    next_of = {}
-    for e in edges:
+    # Перешивка только pipeline-цепочки. Рёбра к storage/topic сохраняем как есть
+    # (иначе add_node вставил бы проверку между рабочей нодой и хранилищем).
+    sinks = _side_sink_ids(nodes)  # новые ноды ещё не в nodes — ок
+    next_of: dict[str, str] = {}
+    for e in _pipeline_edges(nodes, edges):
         next_of[str(e.get("source"))] = str(e.get("target"))
     new_node_for = dict(zip(targets, new_nodes, strict=True))
     out_edges: list[dict] = []
     for e in edges:
         src, tgt = str(e.get("source")), str(e.get("target"))
+        if tgt in sinks:
+            out_edges.append(e)
+            continue
         if src in new_node_for:
             nn = new_node_for[src]
             out_edges.append(
@@ -1281,10 +1337,12 @@ async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -
             )
         else:
             out_edges.append(e)
-    # target без исходящего ребра (хвост цепочки) — просто хвост target→new.
+    # target без исходящего pipeline-ребра (хвост) — просто хвост target→new.
     for nid, nn in new_node_for.items():
         if nid not in next_of:
-            out_edges.append({"id": f"e_{nid}_{nn['id']}", "source": nid, "target": nn["id"]})
+            out_edges.append(
+                {"id": f"e_{nid}_{nn['id']}", "source": nid, "target": nn["id"]}
+            )
 
     all_nodes = nodes + new_nodes
     meta["canvas_graph"] = {"nodes": all_nodes, "edges": out_edges}
@@ -1388,18 +1446,38 @@ async def _apply_remove_node(session: AsyncSession, project: Project, spec: dict
 
     nodes, edges, targets = await _remove_node_targets(session, project, spec)
 
-    # Перешивка: выжившие ноды связываются в порядке исходной цепочки —
-    # корректно и при удалении подряд идущих нод (стопки проверок).
+    # Перешивка: выжившие ноды цепочки + сохранение side-рёбер к storage/topic.
     try:
         order = _linear_order(nodes, edges)
     except db_apply.ApplyOpsError:
         order = None
+    left_nodes = [n for n in nodes if str(n.get("id")) not in targets]
     if order is not None:
         survivors = [nid for nid in order if nid not in targets]
         out_edges = [
             {"id": f"e_{a}_{b}", "source": a, "target": b}
             for a, b in zip(survivors, survivors[1:], strict=False)
         ]
+        seen = {(a, b) for a, b in zip(survivors, survivors[1:], strict=False)}
+        for e in _side_edges(left_nodes, edges):
+            src, tgt = str(e.get("source")), str(e.get("target"))
+            if src in targets or tgt in targets:
+                continue
+            if (src, tgt) in seen:
+                continue
+            out_edges.append(
+                {
+                    "id": str(e.get("id") or f"e_{src}_{tgt}"),
+                    "source": src,
+                    "target": tgt,
+                    **(
+                        {"data": e["data"]}
+                        if isinstance(e.get("data"), dict)
+                        else {}
+                    ),
+                }
+            )
+            seen.add((src, tgt))
     else:
         out_edges = [
             e
@@ -1415,7 +1493,6 @@ async def _apply_remove_node(session: AsyncSession, project: Project, spec: dict
                         out_edges.append(
                             {"id": f"e_{pr}_{sc}", "source": pr, "target": sc}
                         )
-    left_nodes = [n for n in nodes if str(n.get("id")) not in targets]
 
     meta = dict(project.meta or {})
     meta["canvas_graph"] = {"nodes": left_nodes, "edges": out_edges}
@@ -1454,6 +1531,7 @@ async def _apply_repair_graph(session: AsyncSession, project: Project) -> dict:
             raise db_apply.ApplyOpsError("repair_graph: нет workflow для проекта")
         graph = {"nodes": list(wf.nodes or []), "edges": list(wf.edges or [])}
     nodes = [dict(n) for n in graph["nodes"]]
+    old_edges = [dict(e) for e in (graph.get("edges") or [])]
     if len(nodes) < 2:
         raise db_apply.ApplyOpsError("repair_graph: нод меньше двух — нечего чинить")
 
@@ -1461,15 +1539,21 @@ async def _apply_repair_graph(session: AsyncSession, project: Project) -> dict:
         pos = n.get("position") or {}
         return float(pos.get("x", 0.0)), float(pos.get("y", 0.0))
 
+    # storage/topic — сбоку: не вшиваем в линейную цепочку, рёбра к ним сохраняем.
+    sinks = _side_sink_ids(nodes)
+    chain_nodes = [n for n in nodes if str(n.get("id")) not in sinks]
+    if len(chain_nodes) < 2:
+        raise db_apply.ApplyOpsError("repair_graph: нод цепочки меньше двух — нечего чинить")
+
     # Основной ряд = y с наибольшим числом нод; проверки (ряды ниже)
     # вставляются сразу после своей родительской ноды — по подписи
     # «… — <родитель>» (так их пишет add_node) или по ближайшему x.
     from collections import Counter
 
-    y_counts = Counter(_pos(n)[1] for n in nodes)
+    y_counts = Counter(_pos(n)[1] for n in chain_nodes)
     main_y = y_counts.most_common(1)[0][0]
-    main_row = sorted((n for n in nodes if _pos(n)[1] == main_y), key=_pos)
-    check_rows = [n for n in nodes if _pos(n)[1] != main_y]
+    main_row = sorted((n for n in chain_nodes if _pos(n)[1] == main_y), key=_pos)
+    check_rows = [n for n in chain_nodes if _pos(n)[1] != main_y]
 
     def _label(n: dict) -> str:
         return str((n.get("data") or {}).get("label") or "")
@@ -1495,6 +1579,28 @@ async def _apply_repair_graph(session: AsyncSession, project: Project) -> dict:
         {"id": f"e_{a['id']}_{b['id']}", "source": a["id"], "target": b["id"]}
         for a, b in zip(ordered, ordered[1:], strict=False)
     ]
+    # Сохранить fan-in к storage/topic (и любые другие side-рёбра).
+    seen = {(str(e["source"]), str(e["target"])) for e in new_edges}
+    for e in _side_edges(nodes, old_edges):
+        key = (str(e.get("source")), str(e.get("target")))
+        if key[0] in sinks or key[1] not in sinks:
+            continue
+        if key in seen:
+            continue
+        new_edges.append(
+            {
+                "id": str(e.get("id") or f"e_{key[0]}_{key[1]}"),
+                "source": key[0],
+                "target": key[1],
+                **(
+                    {"data": e["data"]}
+                    if isinstance(e.get("data"), dict)
+                    else {}
+                ),
+            }
+        )
+        seen.add(key)
+
     meta["canvas_graph"] = {"nodes": nodes, "edges": new_edges}
     project.meta = meta
     run = (
@@ -1508,7 +1614,162 @@ async def _apply_repair_graph(session: AsyncSession, project: Project) -> dict:
         run.nodes_snapshot = list(nodes)
         run.edges_snapshot = list(new_edges)
     await session.commit()
-    return {"repair_graph": f"цепочка пересобрана: {len(nodes)} нод слева направо"}
+    return {"repair_graph": f"цепочка пересобрана: {len(ordered)} нод + {len(sinks)} сбоку"}
+
+
+async def _load_canvas_graph(
+    session: AsyncSession, project: Project
+) -> tuple[list[dict], list[dict]]:
+    """nodes/edges из meta.canvas_graph или default Workflow."""
+    from app.models import Workflow
+
+    meta = dict(project.meta or {})
+    graph = meta.get("canvas_graph")
+    if not isinstance(graph, dict) or not graph.get("nodes"):
+        wf = (
+            await session.execute(
+                select(Workflow).where(Workflow.is_default.is_(True))
+            )
+        ).scalars().first()
+        if wf is None:
+            raise db_apply.ApplyOpsError("нет workflow / canvas_graph для проекта")
+        return [dict(n) for n in (wf.nodes or [])], [dict(e) for e in (wf.edges or [])]
+    return (
+        [dict(n) for n in graph["nodes"]],
+        [dict(e) for e in (graph.get("edges") or [])],
+    )
+
+
+async def _save_canvas_graph(
+    session: AsyncSession,
+    project: Project,
+    nodes: list[dict],
+    edges: list[dict],
+) -> None:
+    from app.models import WorkflowRun
+
+    meta = dict(project.meta or {})
+    meta["canvas_graph"] = {"nodes": nodes, "edges": edges}
+    project.meta = meta
+    run = (
+        await session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == project.id)
+            .order_by(WorkflowRun.id.desc())
+        )
+    ).scalars().first()
+    if run is not None:
+        run.nodes_snapshot = list(nodes)
+        run.edges_snapshot = list(edges)
+    await session.commit()
+
+
+async def _apply_connect_edges(session: AsyncSession, project: Project, spec: dict) -> dict:
+    """Провести рёбра from → to (в т.ч. от каждой ноды к storage).
+
+    Спека:
+      {"from":"each"|"<node_key>", "to":"<node_key>"} или
+      {"from":"each", "to_type":"storage"} — создаёт storage сбоку, если нет.
+    """
+    spec = spec or {}
+    from_spec = str(spec.get("from") or "each").strip()
+    to_key = str(spec.get("to") or "").strip()
+    to_type = str(spec.get("to_type") or "").strip()
+    if not to_key and not to_type:
+        raise db_apply.ApplyOpsError(
+            "connect_edges: нужен to=<node_key> или to_type=storage"
+        )
+
+    nodes, edges = await _load_canvas_graph(session, project)
+    by_id = {str(n.get("id")): n for n in nodes}
+    existing_ids = set(by_id)
+
+    if not to_key and to_type:
+        if to_type not in _all_node_types():
+            raise db_apply.ApplyOpsError(
+                f"connect_edges: неизвестный to_type {to_type!r}"
+            )
+        found = [nid for nid, n in by_id.items() if str(n.get("type")) == to_type]
+        if found:
+            to_key = found[0]
+        elif to_type == "storage":
+            # Создаём одно хранилище СБОКУ — не врезаем в цепочку.
+            k = 1
+            to_key = f"n_storage_{k}"
+            while to_key in existing_ids:
+                k += 1
+                to_key = f"n_storage_{k}"
+            max_y = max(
+                (float((n.get("position") or {}).get("y", 0.0)) for n in nodes),
+                default=0.0,
+            )
+            min_x = min(
+                (float((n.get("position") or {}).get("x", 0.0)) for n in nodes),
+                default=0.0,
+            )
+            nodes.append(
+                {
+                    "id": to_key,
+                    "type": "storage",
+                    "position": {"x": min_x, "y": max_y + 220.0},
+                    "data": {
+                        "label": "Хранилище",
+                        "description": "добавлено оркестратором",
+                    },
+                }
+            )
+            by_id[to_key] = nodes[-1]
+            existing_ids.add(to_key)
+        else:
+            raise db_apply.ApplyOpsError(
+                f"connect_edges: ноды типа {to_type!r} нет — сначала add_node"
+            )
+
+    if to_key not in by_id:
+        raise db_apply.ApplyOpsError(
+            f"connect_edges: неизвестный to {to_key!r}; ключи — в НОДЫ КАНВАСА"
+        )
+
+    if from_spec == "each":
+        # От КАЖДОЙ ноды (включая excel_gpt/hitl), кроме самой цели.
+        sources = [nid for nid in by_id if nid != to_key]
+    else:
+        if from_spec not in by_id:
+            raise db_apply.ApplyOpsError(
+                f"connect_edges: неизвестный from {from_spec!r}"
+            )
+        sources = [from_spec]
+
+    have = {
+        (str(e.get("source")), str(e.get("target")))
+        for e in edges
+    }
+    added = 0
+    for src in sources:
+        if src == to_key:
+            continue
+        key = (src, to_key)
+        if key in have:
+            continue
+        edges.append(
+            {
+                "id": f"e_{src}_{to_key}",
+                "source": src,
+                "target": to_key,
+                "data": {"kind": "after"},
+            }
+        )
+        have.add(key)
+        added += 1
+
+    await _save_canvas_graph(session, project, nodes, edges)
+    tgt_label = str((by_id[to_key].get("data") or {}).get("label") or to_key)
+    return {
+        "connect_edges": (
+            f"→ «{tgt_label}» ({to_key}): +{added} связей "
+            f"(источников {len(sources)}, уже было {len(sources) - added})"
+        )
+    }
 
 
 async def _apply_rename_node(session: AsyncSession, project: Project, spec: dict) -> dict:
@@ -1800,6 +2061,12 @@ async def orchestrator_chat(
                     actions_run.append(
                         await _apply_add_node(session, project, act.get("add_node") or {})
                     )
+                elif "connect_edges" in act:
+                    actions_run.append(
+                        await _apply_connect_edges(
+                            session, project, act.get("connect_edges") or {}
+                        )
+                    )
                 elif act.get("repair_graph"):
                     actions_run.append(await _apply_repair_graph(session, project))
                 elif "rename_node" in act:
@@ -1960,8 +2227,8 @@ async def orchestrator_chat(
                         f"неизвестное действие {keys}; есть: run_step, stop_step, "
                         "set_option, set_prompt, set_text_llm, open_ui, hitl_decision, "
                         "set_topic, create_project, create_child, delete_projects, "
-                        "add_node, remove_node, rename_node, repair_graph, run_harness, "
-                        "read_file, edit_files, run_tests, git_commit_push"
+                        "add_node, connect_edges, remove_node, rename_node, repair_graph, "
+                        "run_harness, read_file, edit_files, run_tests, git_commit_push"
                     )
             except db_apply.ApplyOpsError as e:
                 error = str(e)
