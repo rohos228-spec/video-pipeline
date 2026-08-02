@@ -217,7 +217,6 @@ async def _run_operator_api_real(
 ) -> OperatorApiResult:
     """Реальный вызов GPT через OpenAI-совместимый API (без браузера/CDP)."""
     from app.services.gpt_api import chat, collect_result_urls, download_content
-    from app.services.xlsx_text_writeback import writeback_project_xlsx
 
     out_dir = project_dir / "excel_gpt_uploads" / node_key
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -240,7 +239,9 @@ async def _run_operator_api_real(
 
     accomp = accompanying or ""
     effective_output = "text" if check_mode else output_mode
-    if check_mode and check_fix or effective_output == "project_file":
+    # TSV writeback — только check+fix. project_file = DB SoT (apply-ops),
+    # не подсовываем модели Excel-диалект.
+    if check_mode and check_fix:
         accomp = build_api_accompany(accomp, expect_xlsx_writeback=True)
 
     result = await chat(
@@ -251,7 +252,7 @@ async def _run_operator_api_real(
     )
     reply_text = result.text
 
-    # DB SoT: project_file с ответом apply-ops JSON — дальше TSV-логика не нужна.
+    # DB SoT: project_file → только apply-ops JSON (ops / characters).
     apply_ops: dict | None = None
     if effective_output == "project_file" and not is_check:
         from app.services.db_apply import extract_apply_ops_json
@@ -259,10 +260,11 @@ async def _run_operator_api_real(
         apply_ops = extract_apply_ops_json(reply_text or "")
         if apply_ops is not None:
             logger.info(
-                "gpt_operator/api: project_file node={} — apply-ops JSON ({} оп), "
-                "запись через DB",
+                "gpt_operator/api: project_file node={} — apply-ops JSON "
+                "(ops={}, characters={}), запись через DB",
                 node_key,
                 len(apply_ops.get("ops") or []),
+                len(apply_ops.get("characters") or []),
             )
 
     # check+fix: если модель отказалась из‑за «нет project.xlsx» / нет
@@ -287,28 +289,6 @@ async def _run_operator_api_real(
             temperature=0.0,
         )
         reply_text = result.text
-
-    # project_file: если TSV — кусок книги (типичные «заполнили на 20%») — дозапрос.
-    if effective_output == "project_file" and not is_check and apply_ops is None:
-        from app.services.xlsx_text_writeback import maybe_continue_partial_xlsx_reply
-
-        template = project_dir / "project.xlsx"
-        for x in input_paths:
-            if x.suffix.lower() in {".xlsx", ".xlsm", ".xls"} and x.is_file():
-                template = x
-                break
-        reply_text = await maybe_continue_partial_xlsx_reply(
-            reply_text=reply_text,
-            template_xlsx=template,
-            input_paths=list(input_paths),
-            accompanying=accomp,
-            log_label=f"gpt_operator/api node={node_key}",
-            raise_if_still_incomplete=True,
-        )
-        if reply_text != result.text:
-            from dataclasses import replace
-
-            result = replace(result, text=reply_text)
 
     analysis: CheckAnalysis | None = None
     gate_status: str | None = None
@@ -358,66 +338,53 @@ async def _run_operator_api_real(
             analysis, mode=mode, source_prompts=source_keys
         )
 
-    if effective_output == "project_file" and apply_ops is None:
-        project_xlsx = project_dir / "project.xlsx"
-        updated = writeback_project_xlsx(
-            project_xlsx=project_xlsx,
-            reply_text=result.text,
-            downloaded_paths=downloaded,
+    # project_file (не check): только apply-ops. Без TSV-fallback — иначе
+    # модель пишет Excel-диалект, а enrich_xlsx его отвергает.
+    if effective_output == "project_file" and not is_check and apply_ops is None:
+        from dataclasses import replace
+
+        from app.services.db_apply import extract_apply_ops_json
+
+        logger.warning(
+            "gpt_operator/api: project_file без apply-ops node={} — JSON retry",
+            node_key,
         )
-        # Один жёсткий retry: промт часто отдаёт прозу («план»), а mode=project_file
-        # требует TSV. Не заливаем болтовню в книгу — просим формат ещё раз.
-        if updated is None and not is_check:
-            from dataclasses import replace
+        retry_prompt = (
+            f"{prompt_for_model}\n\n"
+            "# КОНТРАКТ ЗАПИСИ В БАЗУ (повтор, обязателен)\n"
+            "Предыдущий ответ ОТКЛОНЁН: нужен JSON apply-ops, не TSV и не проза.\n"
+            "Верни ТОЛЬКО один JSON-объект:\n"
+            '{"ops":[{"frame_uuid":"<uuid>","fields":{"закадр":"…"}}]}\n'
+            "или с реестром персонажей:\n"
+            '{"characters":[{"id":"c01","имя":"…","внешность":"…","одежда":"…",'
+            '"характер":"…","правила":""}],'
+            '"ops":[{"frame_uuid":"…","fields":{"персонажи":"c01"}}]}\n'
+            "Без markdown, без объяснений."
+        )
+        retry = await chat(
+            prompt=retry_prompt,
+            accompanying=accomp,
+            input_paths=list(input_paths),
+            temperature=0.0,
+        )
+        reply_text = retry.text or ""
+        try:
+            result = replace(result, text=reply_text)
+        except TypeError:
+            # тесты / моки могут отдавать SimpleNamespace, не dataclass
+            from types import SimpleNamespace
 
-            from app.services.xlsx_text_writeback import (
-                WRITEBACK_HINT,
-                extract_sheet_blocks,
-            )
-
-            if not extract_sheet_blocks(result.text or ""):
-                logger.warning(
-                    "gpt_operator/api: project_file получил prose без TSV "
-                    "node={} — format retry",
-                    node_key,
-                )
-                retry_prompt = (
-                    f"{prompt_for_model}\n\n"
-                    "# КОНТРАКТ ЗАПИСИ В EXCEL (повтор, обязателен)\n"
-                    "Предыдущий ответ — обычный текст БЕЗ `# Лист:` / `@row=`. "
-                    "Он ОТКЛОНЁН: project.xlsx не изменён.\n"
-                    "Сейчас верни ТОЛЬКО TSV:\n"
-                    "`# Лист: <имя листа как во входе>`\n"
-                    "строки вида `@row=<N>\\t...` (табуляция).\n"
-                    "Без прозы, без markdown, без объяснений. "
-                    "Если задача — только «Общий план»: "
-                    "`# Лист: Общий план` и строки с `@row=`."
-                )
-                retry = await chat(
-                    prompt=retry_prompt,
-                    accompanying=WRITEBACK_HINT,
-                    input_paths=list(input_paths),
-                    temperature=0.0,
-                )
-                result = replace(result, text=retry.text or "")
-                reply_text = result.text
-                updated = writeback_project_xlsx(
-                    project_xlsx=project_xlsx,
-                    reply_text=result.text,
-                    downloaded_paths=downloaded,
-                )
-        if updated is not None:
-            output_paths.insert(0, updated)
-        else:
+            result = SimpleNamespace(text=reply_text)
+        apply_ops = extract_apply_ops_json(reply_text or "")
+        if apply_ops is None:
             logger.warning(
-                "gpt_operator/api: project_file без writeback (нет xlsx/TSV) node={}",
+                "gpt_operator/api: project_file всё ещё без apply-ops node={}",
                 node_key,
             )
             raise RuntimeError(
-                "project_file: модель не вернула TSV `# Лист:`/`@row=` — "
-                "project.xlsx не изменён. "
-                "Промт дал обычный текст: смени промт на табличный "
-                "или outputMode≠project_file (текст/sidecar)."
+                "project_file: модель не вернула apply-ops JSON "
+                '{"ops":[…]} и/или {"characters":[…]}. '
+                "TSV `# Лист:` больше не принимается — пиши в базу через JSON."
             )
 
     if effective_output == "sidecar":

@@ -207,6 +207,8 @@ class ApplyOp(BaseModel):
     target: str = Field(default="frame", max_length=16)
     frame_uuid: str | None = Field(default=None, max_length=64)
     fields: dict = Field(default_factory=dict)
+    frames: list[dict] | None = None
+    кадры: list[dict] | None = None
 
 
 class ApplyOpsBody(BaseModel):
@@ -224,16 +226,24 @@ async def apply_ops(
     """Fail-closed запись от GPT: JSON-операции (логика в `services/db_apply`).
 
     ``target="frame"`` (по умолчанию) — правка кадра по ``frame_uuid``;
-    ``target="project"`` — поля уровня проекта (общий план). Поля можно
-    писать по-человечески («закадр», «промт_картинки», «персонажи») — сервер сам
-    переводит в канонические ключи. ``characters`` — реестр персонажей.
-    Любая ошибка — 400, откат транзакции.
+    ``target="project"`` — поля уровня проекта (общий план);
+    ``target="replace_frames"`` — полная замена кадров (``frames``/``кадры``).
+    Поля можно писать по-человечески («закадр», «промт_картинки», «персонажи»).
+    ``characters`` — реестр персонажей. Любая ошибка — 400, откат транзакции.
     """
     project = await _project(session, project_id)
-    ops = [
-        {"target": op.target, "frame_uuid": op.frame_uuid, "fields": op.fields}
-        for op in body.ops
-    ]
+    ops: list[dict] = []
+    for op in body.ops:
+        item: dict = {
+            "target": op.target,
+            "frame_uuid": op.frame_uuid,
+            "fields": op.fields,
+        }
+        if op.frames is not None:
+            item["frames"] = op.frames
+        if op.кадры is not None:
+            item["кадры"] = op.кадры
+        ops.append(item)
     try:
         result = await db_apply.apply_ops(
             session,
@@ -287,8 +297,12 @@ _ORCHESTRATOR_SYSTEM = (
     "1) ИЗМЕНИТЬ данные кадра/проекта → "
     '{"ops":[{"frame_uuid":"<uuid из графа>","fields":{...}}]}. '
     "Поля по-человечески: закадр, промт_картинки, промт_видео, смысл, "
-    "длительность, промт_картинки_2, промт_видео_2; общий план: "
-    '{"target":"project","fields":{"общий_план":"…"}}.\n'
+    "длительность, промт_картинки_2, промт_видео_2, персонажи; общий план: "
+    '{"target":"project","fields":{"общий_план":"…"}}. '
+    "Реестр персонажей: "
+    '{"characters":[{"id":"c01","имя":"…","внешность":"…","одежда":"…",'
+    '"характер":"…","правила":""}],'
+    '"ops":[{"frame_uuid":"…","fields":{"персонажи":"c01"}}]}.\n'
     "2) ЗАПУСТИТЬ шаг → {\"actions\":[{\"run_step\":\"<код>\"}]} "
     "(img_pr, img, anim_pr, video, audio, music, assemble, publish…).\n"
     "3) ОСТАНОВИТЬ генерацию → {\"actions\":[{\"stop_step\":true}]}.\n"

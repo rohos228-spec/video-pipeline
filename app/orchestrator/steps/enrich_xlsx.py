@@ -567,11 +567,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 )
             ).scalars().all()
             uuid_frames = [f for f in frames_for_map if f.uuid]
+            mapping = ""
             if uuid_frames:
-                mapping = "\n".join(f"кадр {f.number} = {f.uuid}" for f in uuid_frames)
-                accompanying = (
-                    f"{accompanying}\n\n{_APPLY_OPS_HINT}{mapping}"
-                ).strip()
+                mapping = "\n".join(
+                    f"кадр {f.number} = {f.uuid}" for f in uuid_frames
+                )
+            # Контракт apply-ops всегда — даже без uuid-мапы (иначе модель
+            # уходит в TSV/прозу и шаг падает).
+            accompanying = (
+                f"{accompanying}\n\n{_APPLY_OPS_HINT}{mapping}"
+            ).strip()
         # Отпустить SQLite write-txn на время GPT (иначе UI: database is locked / 30с).
         await session.commit()
         api_res = await run_operator_api(
@@ -624,6 +629,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     raise RuntimeError(
                         f"enrich_xlsx node={node_key}: apply-ops отклонён: {e}"
                     ) from None
+            elif ops_data:
+                detail = (
+                    str(ops_data.get("error") or ops_data.get("report") or "")
+                    .strip()
+                    or "ops и characters пустые"
+                )
+                raise RuntimeError(
+                    f"enrich_xlsx node={node_key}: apply-ops JSON пустой — {detail}. "
+                    "Нужны непустые ops и/или characters (создай реестр, "
+                    "не возвращай пустые списки)."
+                )
             else:
                 # DB SoT: без apply-ops шаг не принимаем (TSV/xlsx writeback отключён).
                 raise RuntimeError(
