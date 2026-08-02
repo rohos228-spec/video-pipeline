@@ -18,7 +18,6 @@ import {
   Send,
   Square,
   Trash2,
-  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
@@ -62,8 +61,13 @@ export function OrchestratorPanel({ projectId }: Props) {
   const [chatInput, setChatInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [fixBugsMode, setFixBugsMode] = useState(false);
+  const fixBugsModeRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    fixBugsModeRef.current = fixBugsMode;
+  }, [fixBugsMode]);
 
   useEffect(() => {
     try {
@@ -91,10 +95,13 @@ export function OrchestratorPanel({ projectId }: Props) {
     async (msg: string, opts?: { fixBugs?: boolean }) => {
       if (projectId == null || !msg.trim() || busy) return;
       const userText = msg.trim();
-      const asFix = Boolean(opts?.fixBugs || fixBugsMode);
+      const asFix = Boolean(opts?.fixBugs || fixBugsModeRef.current || fixBugsMode);
       const apiText = asFix ? `${FIX_BUGS_PREFIX}${userText}` : userText;
       const displayText = asFix ? `[фикс багов] ${userText}` : userText;
-      if (asFix) setFixBugsMode(false);
+      if (asFix) {
+        fixBugsModeRef.current = false;
+        setFixBugsMode(false);
+      }
 
       abortRef.current?.abort();
       const ac = new AbortController();
@@ -228,14 +235,20 @@ export function OrchestratorPanel({ projectId }: Props) {
     await sendMessage(msg, { fixBugs: fixBugsMode });
   }, [chatInput, sendMessage, fixBugsMode]);
 
-  /** Вход в режим фикса — отдельная кнопка (не toggle). */
-  const enterFixBugsMode = useCallback(
+  /** Одна кнопка: 1-й клик — режим фикса, 2-й клик — выход. */
+  const onFixBugsToggle = useCallback(
     (e: ReactMouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
+      if (fixBugsModeRef.current) {
+        fixBugsModeRef.current = false;
+        setFixBugsMode(false);
+        return;
+      }
       abortRef.current?.abort();
       abortRef.current = null;
       setBusy(false);
+      fixBugsModeRef.current = true;
       setFixBugsMode(true);
       setOpen(true);
       setExpanded(true);
@@ -244,13 +257,6 @@ export function OrchestratorPanel({ projectId }: Props) {
     },
     [setOpen, setExpanded],
   );
-
-  /** Выход из режима фикса — отдельная кнопка, всегда только false. */
-  const exitFixBugsMode = useCallback((e: ReactMouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setFixBugsMode(false);
-  }, []);
 
   const onToggleOpen = useCallback(
     (e: ReactMouseEvent) => {
@@ -396,27 +402,25 @@ export function OrchestratorPanel({ projectId }: Props) {
             <Square className="h-3 w-3 fill-current" />
             Отмена
           </Button>
-        ) : fixBugsMode ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="destructive"
-            className="h-7 shrink-0 gap-1.5 border-amber-400/50 bg-amber-600/80 text-[11px] text-white hover:bg-amber-500"
-            onClick={exitFixBugsMode}
-            title="Выйти из режима фикса без запроса к GPT"
-          >
-            <X className="h-3.5 w-3.5" />
-            Выйти из фикса
-          </Button>
         ) : (
           <Button
             type="button"
             size="sm"
             variant="outline"
-            className="h-7 shrink-0 gap-1.5 border-amber-400/40 bg-amber-500/10 text-[11px] text-amber-100 hover:bg-amber-500/20"
+            className={cn(
+              "h-7 shrink-0 gap-1.5 text-[11px]",
+              fixBugsMode
+                ? "border-amber-300 bg-amber-500/35 text-amber-50 ring-1 ring-amber-300/40"
+                : "border-amber-400/40 bg-amber-500/10 text-amber-100 hover:bg-amber-500/20",
+            )}
             disabled={projectId == null}
-            onClick={enterFixBugsMode}
-            title="Включить режим фикса — потом опиши баг в поле ввода"
+            onClick={onFixBugsToggle}
+            aria-pressed={fixBugsMode}
+            title={
+              fixBugsMode
+                ? "Повторное нажатие — выйти из режима фикса"
+                : "Нажать — режим фикса; потом опиши баг. Ещё раз — выйти"
+            }
           >
             <Bug className="h-3.5 w-3.5" />
             Фикс багов
@@ -459,20 +463,8 @@ export function OrchestratorPanel({ projectId }: Props) {
         >
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
             {fixBugsMode ? (
-              <div className="mb-2 flex items-center gap-2 rounded-md border border-amber-400/30 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-100/90">
-                <span className="flex-1">
-                  Режим фикса. Напиши баг → Enter. Окно не сворачивается.
-                </span>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-7 shrink-0 border-amber-300/40 text-[11px] text-amber-50"
-                  onClick={exitFixBugsMode}
-                >
-                  <X className="h-3.5 w-3.5" />
-                  Выйти
-                </Button>
+              <div className="mb-2 rounded-md border border-amber-400/30 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-100/90">
+                Режим фикса включён. Напиши баг → Enter. Повторное нажатие «Фикс багов» — выход.
               </div>
             ) : null}
             {chatLog.length === 0 && !fixBugsMode ? (
