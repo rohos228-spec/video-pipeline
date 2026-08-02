@@ -1497,6 +1497,31 @@ async def test_connect_edges_each_to_storage(api_client) -> None:
         assert wired == all_ids
 
 
+def test_diagnose_only_question_blocks_code_dump() -> None:
+    from app.web.routers.db_browser import (
+        _human_reply_from_diagnostics,
+        _is_diagnose_only_question,
+    )
+
+    assert _is_diagnose_only_question(
+        "У МЕНЯ ОПЯТЬ ОШИБКА В РАБОТЕ НОДЫ РАБОТА ГПТ, НАЙДИ ПРИЧИНУ"
+    )
+    assert _is_diagnose_only_question("что не так с нодой?")
+    assert not _is_diagnose_only_question("почини код в enrich_xlsx.py")
+    reply = _human_reply_from_diagnostics(
+        [
+            "ДИАГНОСТИКА:",
+            "СБОЙ ШАГА (step_failure):",
+            "- шаг: enriching_5",
+            "- ошибка: модель не вернула apply-ops JSON",
+            "- active excel_gpt: n_excel_gpt_1",
+        ]
+    )
+    assert "apply-ops" in reply
+    assert "n_excel_gpt_1" in reply
+    assert "read_file" not in reply.lower()
+
+
 @pytest.mark.asyncio
 async def test_canvas_nodes_context_shows_storage_side_edges(api_client) -> None:
     """Контекст оркестратора видит рёбра к storage, не только линейную цепочку."""

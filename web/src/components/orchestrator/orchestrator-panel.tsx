@@ -134,7 +134,12 @@ export function OrchestratorPanel({ projectId }: Props) {
           else if (a.set_prompt) notes.push(`промт: ${a.set_prompt}`);
           else if (a.set_text_llm) notes.push(`LLM: ${a.set_text_llm}`);
           else if (a.run_harness) notes.push(`проверки: ${a.run_harness}`);
-          else if (a.read_file) notes.push(`файл:\n${a.read_file}`);
+          else if (a.read_file) {
+            const rf = String(a.read_file);
+            // Не думпим исходники в чат — только краткая метка пути.
+            const first = rf.split("\n")[0] ?? rf;
+            notes.push(`файл: ${first.slice(0, 160)}`);
+          }
           else if (a.edit_files) notes.push(`код: ${a.edit_files}`);
           else if (a.run_tests) notes.push(`pytest: ${a.run_tests}`);
           else if (a.git_commit_push) notes.push(`git: ${a.git_commit_push}`);

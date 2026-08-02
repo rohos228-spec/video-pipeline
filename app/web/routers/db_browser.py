@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -250,9 +251,16 @@ _ORCHESTRATOR_SYSTEM = (
     "«ждёт аппрува человека» = HITL-гейт ждёт решения пользователя).\n"
     "На вопросы про проверки/проверку/статусы нод отвечай СТРОГО по этим "
     "разделам контекста — если прогона проверок не было, скажи это прямо.\n"
+    "ВОПРОС ПРО ОШИБКУ / «что не так» / «найди причину» / «почему упало» / "
+    "«нода не работает» (без явной просьбы править КОД программы): "
+    "ответь 2–6 предложений по-русски из раздела ДИАГНОСТИКА. "
+    "ЗАПРЕЩЕНО: JSON actions, read_file, edit_files, run_tests, git, "
+    "простыни кода, цитаты исходников, листинги файлов. "
+    "Скажи: какая нода/шаг, текст ошибки человеческим языком, что делать дальше.\n"
     "ЗАПРЕТ ОТКАЗОВ: не пиши «не поддерживается / нет такого действия / "
-    "не умею», если действие есть в списке ниже. Сначала выдай JSON action, "
-    "потом коротко по-русски. Если не хватает файла — read_file, не отказ.\n"
+    "не умею», если действие есть в списке ниже. "
+    "Если нужны действия (не вопрос про ошибку) — сначала JSON action, "
+    "потом коротко по-русски.\n"
     "ФОРМАТ ОТВЕТА ПРИ ФИКСЕ КОДА: один JSON "
     "{\"actions\":[{\"read_file\":…},{\"edit_files\":[…]},{\"run_tests\":[…]},"
     "{\"git_commit_push\":{…}}]} — плоский список, БЕЗ вложенного "
@@ -260,10 +268,9 @@ _ORCHESTRATOR_SYSTEM = (
     "В чат НЕ вставляй исходники файлов и не дублируй JSON много раз — "
     "только краткий итог по-русски после actions. "
     "Нельзя закончить на одних read_file: после чтения сразу edit_files.\n"
-    "Если есть раздел ДИАГНОСТИКА / КОД РАБОЧЕЙ ОБЛАСТИ или пользователь "
-    "просит починить/исправить баг в КОДЕ программы — отвечай как кодинг-агент: "
-    "read_file → причина → edit_files → run_tests → git_commit_push "
-    "(действия 16–20). Без воды. "
+    "read_file/edit_files/run_tests/git — ТОЛЬКО если пользователь ЯВНО "
+    "просит починить/исправить баг В КОДЕ программы / закоммитить. "
+    "Наличие раздела ДИАГНОСТИКА само по себе НЕ включает режим кодинга. "
     "Правь только app/, tests/, prompts/. Не трогай .env и data/.\n"
     "ПОРЯДОК ШАГОВ — ТОЛЬКО ТАКОЙ (другого не существует, не выдумывай):\n"
     "plan → script → split → hero → items → enrich_1..5 → img_pr → img → "
@@ -529,12 +536,108 @@ def _log_tail_context(project: Project, max_lines: int = 25) -> list[str]:
     return out[-max_lines:]
 
 
+def _is_diagnose_only_question(message: str) -> bool:
+    """Вопрос «что сломалось» — ответ текстом, без read_file/правок кода."""
+    t = (message or "").strip().lower()
+    if not t:
+        return False
+    if re.search(
+        r"(почини|исправь|починить|исправить).{0,50}"
+        r"(код|программ|файл|репозитор|git)|"
+        r"закоммить|commit_and_push|edit_files|"
+        r"почини\s+баг\s+в\s+код|исправь\s+в\s+коде",
+        t,
+    ):
+        return False
+    return bool(
+        re.search(
+            r"найди\s+причин|в\s+ч[её]м\s+причин|что\s+не\s+так|"
+            r"почему\s+(упал|ошиб|не\s+работ|косяч|сломал)|"
+            r"что\s+за\s+(ошиб|баг|хуйн)|ошибка\s+в\s+работ|"
+            r"у\s+меня\s+опять\s+ошиб|опять\s+ошиб|"
+            r"нод[аы].{0,40}(ошиб|не\s+работ|косяч|упал)|"
+            r"работа\s+гпт.{0,30}(ошиб|не\s+работ)|"
+            r"поиск\s+баг|диагност|что\s+сломал",
+            t,
+        )
+    )
+
+
+def _human_reply_from_diagnostics(diag_lines: list[str]) -> str:
+    """Короткий ответ человеку из блока ДИАГНОСТИКА (fallback)."""
+    err = ""
+    node = ""
+    sleep = ""
+    step = ""
+    for ln in diag_lines or []:
+        s = str(ln)
+        if s.startswith("- ошибка:"):
+            err = s.split(":", 1)[-1].strip()
+        elif s.startswith("- шаг:"):
+            step = s.split(":", 1)[-1].strip()
+        elif s.startswith("- пауза до:"):
+            sleep = s.split(":", 1)[-1].strip()
+        elif s.startswith("- active excel_gpt:"):
+            node = s.split(":", 1)[-1].strip()
+        elif s.startswith("- n_") or (
+            s.startswith("- ") and ":" in s and "excel_gpt" in s
+        ):
+            if not err:
+                parts = s[2:].split(":", 1)
+                if len(parts) == 2:
+                    node = node or parts[0].strip()
+                    err = parts[1].strip()
+    if not err and not node:
+        return (
+            "В диагностике нет явной ошибки ноды. "
+            "Открой ноду на канвасе или перезапусти шаг и пришли текст ошибки."
+        )
+    bits = ["Причина по логу/ноде:"]
+    if node:
+        bits.append(f"нода {node}.")
+    if step:
+        bits.append(f"шаг {step}.")
+    if err:
+        bits.append(err)
+    if sleep:
+        bits.append(f"Проект на паузе до {sleep} (после нескольких фейлов).")
+    bits.append(
+        "Если нужна правка кода программы — напиши явно «почини код»."
+    )
+    return " ".join(bits)
+
+
 async def _diagnostics_context(session: AsyncSession, project: Project) -> list[str]:
-    """Ошибки нод + проваленные проверки + хвост лога (для режима кодинг-агента)."""
+    """Ошибки нод + step_failure + проверки + хвост лога.
+
+    Этого достаточно, чтобы на вопрос «что не так» ответить по-русски
+    без read_file и простыней кода.
+    """
     from app.models import NodeRun, NodeRunStatus, WorkflowRun
     from app.services.agent_harness import read_ops_telemetry
 
     lines: list[str] = []
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    fs = meta.get("step_failure")
+    if not isinstance(fs, dict):
+        fs = meta.get("failure_state")
+    if isinstance(fs, dict) and (
+        fs.get("last_error") or fs.get("sleep_until") or fs.get("total_fails")
+    ):
+        lines.append("СБОЙ ШАГА (step_failure):")
+        if fs.get("last_running"):
+            lines.append(f"- шаг: {fs.get('last_running')}")
+        if fs.get("last_error"):
+            lines.append(f"- ошибка: {str(fs.get('last_error'))[:400]}")
+        if fs.get("last_error_code"):
+            lines.append(f"- код: {fs.get('last_error_code')}")
+        if fs.get("sleep_until"):
+            lines.append(f"- пауза до: {fs.get('sleep_until')}")
+        if fs.get("total_fails"):
+            lines.append(f"- счётчик fails: {fs.get('total_fails')}")
+        active = meta.get("active_excel_gpt_node_key")
+        if active:
+            lines.append(f"- active excel_gpt: {active}")
     run = (
         await session.execute(
             select(WorkflowRun)
@@ -556,8 +659,10 @@ async def _diagnostics_context(session: AsyncSession, project: Project) -> list[
         if failed:
             lines.append("ОШИБКИ НОД (последний прогон):")
             for n in failed:
-                lines.append(f"- {n.node_type}: {str(n.error or '')[:200]}")
-    tel = read_ops_telemetry(project.meta if isinstance(project.meta, dict) else {})
+                lines.append(
+                    f"- {n.node_key or n.node_type}: {str(n.error or '')[:300]}"
+                )
+    tel = read_ops_telemetry(meta)
     bad_checks = [c for c in (tel.get("checks") or []) if not c.get("ok")]
     if bad_checks:
         lines.append("ПРОВАЛЕННЫЕ ПРОВЕРКИ:")
@@ -1953,7 +2058,12 @@ async def orchestrator_chat(
     diag_lines = await _diagnostics_context(session, project)
     canvas_lines, canvas_keymap = await _canvas_nodes_context(session, project)
     catalog_lines = await _projects_catalog_context(session)
-    code_lines = await asyncio.to_thread(_code_workspace_context)
+    diagnose_only = _is_diagnose_only_question(body.message)
+    code_lines = (
+        []
+        if diagnose_only
+        else await asyncio.to_thread(_code_workspace_context)
+    )
     topic_snip = (project.topic or "").strip().replace("\n", " ")[:160]
     prompt = (
         _ORCHESTRATOR_SYSTEM
@@ -1969,14 +2079,19 @@ async def orchestrator_chat(
         + "\n\n"
         + "\n".join(await _checks_context(session, project))
         + ("\n\n" + "\n".join(diag_lines) if diag_lines else "")
-        + "\n\n"
-        + "\n".join(code_lines)
+        + (("\n\n" + "\n".join(code_lines)) if code_lines else "")
         + "\n\n"
         + "\n".join(_settings_context(project))
         + ("\n\n" + "\n".join(canvas_lines) if canvas_lines else "")
         + "\n\nГРАФ ПРОЕКТА:\n"
         + _orchestrator_context(graph)
         + ("\n\nИСТОРИЯ ДИАЛОГА:\n" + history_txt if history_txt else "")
+        + (
+            "\n\nРЕЖИМ: вопрос про ошибку — ответь ТОЛЬКО текстом по-русски "
+            "из ДИАГНОСТИКА, без JSON и без read_file."
+            if diagnose_only
+            else ""
+        )
         + "\n\nПОЛЬЗОВАТЕЛЬ: "
         + body.message
     )
@@ -2031,8 +2146,17 @@ async def orchestrator_chat(
                 flat.append(item)
             return flat
 
+        _CODE_ACT_KEYS = (
+            "read_file",
+            "edit_files",
+            "run_tests",
+            "git_commit_push",
+        )
         for act in _flatten_orchestrator_actions(raw_actions):
             act = act or {}
+            if diagnose_only and any(k in act for k in _CODE_ACT_KEYS):
+                # Вопрос про ошибку — код в чат не тащим и не читаем.
+                continue
             try:
                 if "run_step" in act:
                     step = str(act.get("run_step") or "").strip()
@@ -2192,14 +2316,15 @@ async def orchestrator_chat(
                         )
                     except CodeAutofixError as e:
                         raise db_apply.ApplyOpsError(str(e)) from None
+                    # В чат человеку — только путь/строки, НЕ простыня кода.
+                    # Полный content модели в one-shot и так не нужен (edit в том же JSON).
                     actions_run.append(
                         {
                             "read_file": (
-                                f"{rfile['path']} L{rfile['start_line']}-"
-                                f"{rfile['end_line']}/{rfile['total_lines']}"
-                                + (" …" if rfile["truncated"] else "")
-                                + "\n"
-                                + rfile["content"]
+                                f"прочитан {rfile['path']} "
+                                f"L{rfile['start_line']}-{rfile['end_line']}/"
+                                f"{rfile['total_lines']}"
+                                + (" (обрезан)" if rfile["truncated"] else "")
                             )
                         }
                     )
@@ -2328,6 +2453,38 @@ async def orchestrator_chat(
         )
     except Exception:  # noqa: BLE001
         pass
+
+    if diagnose_only:
+        # Убрать JSON/actions из пузыря; если модель снова кинула код — fallback.
+        human = re.sub(
+            r"```.*?```",
+            "",
+            reply or "",
+            flags=re.DOTALL,
+        )
+        human = re.sub(
+            r"\{[^{}]*\"(?:actions|ops|read_file)\"[^{}]*\}",
+            "",
+            human,
+            flags=re.DOTALL,
+        )
+        human = human.strip()
+        looks_like_code_dump = bool(
+            re.search(
+                r"(?m)^(from |import |def |async def |class )|"
+                r"L\d+-\d+/\d+|файл:\s*app/",
+                reply or "",
+            )
+        )
+        if (
+            not human
+            or looks_like_code_dump
+            or len(human) < 40
+            or human.lstrip().startswith("{")
+        ):
+            reply = _human_reply_from_diagnostics(diag_lines)
+        else:
+            reply = human
 
     return {
         "reply": reply,
