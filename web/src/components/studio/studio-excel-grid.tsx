@@ -8,11 +8,16 @@ export function StudioExcelGrid({
   startRow = 1,
   colLetters,
   className,
+  /** Как в Excel: ячейки в одну строку, без переноса текста. */
+  nowrap = false,
+  onCellClick,
 }: {
   rows: string[][];
   startRow?: number;
   colLetters?: string[];
   className?: string;
+  nowrap?: boolean;
+  onCellClick?: (rowIndex: number, colIndex: number) => void;
 }) {
   const width = Math.max(0, ...rows.map((r) => r.length), colLetters?.length ?? 0);
   const letters =
@@ -77,9 +82,16 @@ export function StudioExcelGrid({
                 return (
                   <td
                     key={ci}
+                    title={cell || undefined}
+                    onClick={onCellClick ? () => onCellClick(ri, ci) : undefined}
                     className={cn(
-                      "whitespace-pre-wrap border-r border-white/5 px-2 py-1.5 align-top text-foreground/90",
-                      isFirst ? "min-w-[160px] max-w-[640px]" : "min-w-[72px] max-w-[320px]",
+                      "border-r border-white/5 px-2 py-1.5 align-top text-foreground/90",
+                      nowrap
+                        ? "whitespace-nowrap max-w-none"
+                        : "whitespace-pre-wrap",
+                      !nowrap && (isFirst ? "min-w-[160px] max-w-[640px]" : "min-w-[72px] max-w-[320px]"),
+                      nowrap && (isFirst ? "min-w-[160px]" : "min-w-[120px]"),
+                      onCellClick && "cursor-pointer",
                     )}
                   >
                     {cell || "\u00a0"}

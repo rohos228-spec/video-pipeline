@@ -15,12 +15,52 @@ import {
   FileSpreadsheet,
   ShieldCheck,
   ShieldAlert,
-  ChevronLeft,
-  ChevronRight,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { api, type DbExcelRow, type DbFrame, type DbGraph } from "@/lib/api";
+import { StudioExcelGrid } from "@/components/studio/studio-excel-grid";
+import {
+  api,
+  type DbExcelRow,
+  type DbFrame,
+  type DbGraph,
+  type XlsxPreview,
+} from "@/lib/api";
+import {
+  SHEET_GENERAL_V8,
+  SHEET_PLAN_V8,
+  XLSX_STUDIO_MAX_COLS,
+  XLSX_STUDIO_MAX_ROWS,
+} from "@/lib/xlsx-sheets";
+
+/** Бывшие листы Excel → вкладки «Сущности». */
+const ENTITY_SHEETS_DEFAULT = ["Персонажи", "Фоны", "Предметы"] as const;
+const ENTITY_SHEET_TO_TYPE: Record<string, string> = {
+  персонажи: "character",
+  фоны: "background",
+  предметы: "prop",
+};
+/** Листы кадров (остальное из книги), fallback если xlsx ещё нет. */
+const FRAME_SHEETS_DEFAULT = [SHEET_GENERAL_V8, SHEET_PLAN_V8] as const;
+
+function isEntitySheetName(name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(
+    ENTITY_SHEET_TO_TYPE,
+    name.trim().toLowerCase(),
+  );
+}
+
+function splitWorkbookSheets(sheets: string[]): {
+  frameSheets: string[];
+  entitySheets: string[];
+} {
+  const entitySheets = sheets.filter(isEntitySheetName);
+  const frameSheets = sheets.filter((s) => !isEntitySheetName(s));
+  return {
+    frameSheets: frameSheets.length ? frameSheets : [...FRAME_SHEETS_DEFAULT],
+    entitySheets: entitySheets.length ? entitySheets : [...ENTITY_SHEETS_DEFAULT],
+  };
+}
 
 const STATUS_RU: Record<string, string> = {
   planned: "запланирован",
@@ -48,22 +88,12 @@ const PROMPT_KIND_RU: Record<string, string> = {
 };
 const PROMPT_KINDS = Object.keys(PROMPT_KIND_RU);
 
-const ENTITY_TYPE_RU: Record<string, string> = {
-  character: "персонаж",
-  background: "фон",
-  prop: "предмет",
-};
-const ENTITY_TYPES = Object.keys(ENTITY_TYPE_RU);
-
 const EDGE_TYPE_RU: Record<string, string> = {
   next: "следующий",
   continues: "продолжение",
   references: "ссылка",
 };
 const EDGE_TYPES = Object.keys(EDGE_TYPE_RU);
-
-/** Сколько колонок-кадров на одной «странице» (как листы Excel по ширине). */
-const FRAMES_PER_PAGE = 10;
 
 const ru = (map: Record<string, string>, key: string | null | undefined) =>
   (key && map[key]) || key || "—";
@@ -90,10 +120,13 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
   const [frameId, setFrameId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState<"frames" | "entities">("frames");
-  /** Страница сцены (как тип у сущностей): id сцены | "none" | "all". */
-  const [scenePage, setScenePage] = useState<number | "none" | "all">("all");
-  /** Страница колонок внутри выбранной сцены. */
-  const [framePage, setFramePage] = useState(0);
+  /** Вкладки = бывшие листы Excel (кадры: «Общий план», «план»; сущности: «Персонажи»…). */
+  const [frameSheets, setFrameSheets] = useState<string[]>([...FRAME_SHEETS_DEFAULT]);
+  const [entitySheets, setEntitySheets] = useState<string[]>([...ENTITY_SHEETS_DEFAULT]);
+  const [frameSheet, setFrameSheet] = useState<string>(SHEET_PLAN_V8);
+  const [sheetPreview, setSheetPreview] = useState<XlsxPreview | null>(null);
+  const [sheetLoading, setSheetLoading] = useState(false);
+  const [sheetTick, setSheetTick] = useState(0);
 
   const loadGraph = useCallback(async (pid: number) => {
     setLoading(true);
@@ -106,25 +139,76 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
     }
   }, []);
 
+  const loadSheetMeta = useCallback(async (pid: number) => {
+    try {
+      const meta = await api.previewProjectXlsx(pid, {
+        maxRows: 1,
+        maxCols: 1,
+        raw: true,
+      });
+      const split = splitWorkbookSheets(meta.sheets ?? []);
+      setFrameSheets(split.frameSheets);
+      setEntitySheets(split.entitySheets);
+      setFrameSheet((prev) =>
+        split.frameSheets.includes(prev)
+          ? prev
+          : split.frameSheets.includes(SHEET_PLAN_V8)
+            ? SHEET_PLAN_V8
+            : split.frameSheets[0] ?? SHEET_PLAN_V8,
+      );
+    } catch {
+      setFrameSheets([...FRAME_SHEETS_DEFAULT]);
+      setEntitySheets([...ENTITY_SHEETS_DEFAULT]);
+    }
+  }, []);
+
   useEffect(() => {
     if (!open) return;
     setFrameId(null);
-    setScenePage("all");
-    setFramePage(0);
+    setSheetPreview(null);
     if (projectId != null) {
       void loadGraph(projectId);
+      void loadSheetMeta(projectId);
     } else {
       setGraph(null);
     }
-  }, [open, projectId, loadGraph]);
+  }, [open, projectId, loadGraph, loadSheetMeta]);
 
   useEffect(() => {
-    setFramePage(0);
-  }, [scenePage]);
+    if (!open || projectId == null || tab !== "frames") return;
+    let cancelled = false;
+    setSheetLoading(true);
+    void api
+      .previewProjectXlsx(projectId, {
+        sheet: frameSheet,
+        maxRows: XLSX_STUDIO_MAX_ROWS,
+        maxCols: XLSX_STUDIO_MAX_COLS,
+        startRow: 1,
+        raw: true,
+      })
+      .then((p) => {
+        if (!cancelled) setSheetPreview(p);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setSheetPreview(null);
+          toast.error(`Лист Excel: ${e instanceof Error ? e.message : e}`);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setSheetLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, projectId, tab, frameSheet, sheetTick]);
 
   const reload = useCallback(async () => {
-    if (projectId != null) await loadGraph(projectId);
-  }, [loadGraph, projectId]);
+    if (projectId == null) return;
+    await loadGraph(projectId);
+    await loadSheetMeta(projectId);
+    setSheetTick((t) => t + 1);
+  }, [loadGraph, loadSheetMeta, projectId]);
 
   const exportXlsx = useCallback(async () => {
     if (projectId == null) return null;
@@ -140,50 +224,29 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
     if (projectId == null) return;
     await exportXlsx();
     await loadGraph(projectId);
+    setSheetTick((t) => t + 1);
   }, [projectId, exportXlsx, loadGraph]);
-
 
   const frame: DbFrame | null = useMemo(
     () => graph?.frames.find((f) => f.id === frameId) ?? null,
     [graph, frameId],
   );
 
-  const framesByScene = useMemo(() => {
-    if (!graph) return [];
-    const groups: { sceneId: number | null; title: string; frames: DbFrame[] }[] = [];
-    for (const s of graph.scenes) {
-      groups.push({
-        sceneId: s.id,
-        title: s.title || `Сцена ${s.sort_key}`,
-        frames: s.frame_ids
-          .map((id) => graph.frames.find((f) => f.id === id))
-          .filter((f): f is DbFrame => f != null),
-      });
-    }
-    const orphans = graph.frames.filter(
-      (f) => !graph.scenes.some((s) => s.frame_ids.includes(f.id)),
-    );
-    if (orphans.length) groups.push({ sceneId: null, title: "Без сцены", frames: orphans });
-    return groups;
-  }, [graph]);
-
-  const activeSceneFrames = useMemo(() => {
-    if (!graph) return [] as DbFrame[];
-    if (scenePage === "all") {
-      return [...graph.frames].sort((a, b) => a.number - b.number);
-    }
-    const group = framesByScene.find((g) =>
-      scenePage === "none" ? g.sceneId == null : g.sceneId === scenePage,
-    );
-    return group?.frames ?? [];
-  }, [graph, scenePage, framesByScene]);
-
-  const framePageCount = Math.max(1, Math.ceil(activeSceneFrames.length / FRAMES_PER_PAGE));
-  const pagedFrames = useMemo(() => {
-    const page = Math.min(framePage, framePageCount - 1);
-    const start = page * FRAMES_PER_PAGE;
-    return activeSceneFrames.slice(start, start + FRAMES_PER_PAGE);
-  }, [activeSceneFrames, framePage, framePageCount]);
+  const selectFrameByExcelCol = useCallback(
+    (colIndex: number) => {
+      if (!graph) return;
+      // Лист «план»: кадр N → колонка N+2 (A=подписи, C=кадр1).
+      const isPlan =
+        frameSheet.trim().toLowerCase() === SHEET_PLAN_V8.toLowerCase() ||
+        frameSheet.trim().toLowerCase() === "кадры";
+      if (!isPlan) return;
+      const frameNumber = colIndex - 1; // 0-based: C=2 → кадр 1
+      if (frameNumber < 1) return;
+      const f = graph.frames.find((x) => x.number === frameNumber);
+      if (f) setFrameId(f.id);
+    },
+    [graph, frameSheet],
+  );
 
   if (!open) return null;
 
@@ -311,110 +374,56 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
 
               {tab === "frames" ? (
                 <div className="flex min-h-0 flex-1 flex-col gap-2">
-                  {/* Выбор страницы сцены — как тип у сущностей */}
-                  <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-                    <span className="mr-1 text-[10px] uppercase tracking-[0.18em] text-white/35">
-                      Страница
+                  {/* Вкладки = листы Excel, которые остались у кадров */}
+                  <div className="flex shrink-0 flex-nowrap items-center gap-1.5 overflow-x-auto">
+                    <span className="mr-1 shrink-0 text-[10px] uppercase tracking-[0.18em] text-white/35">
+                      Лист
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => setScenePage("all")}
-                      className={`rounded-md px-2.5 py-1 text-xs whitespace-nowrap ${
-                        scenePage === "all"
-                          ? "bg-primary/20 text-primary"
-                          : "bg-white/[0.04] text-white/55 hover:bg-white/[0.08]"
-                      }`}
-                    >
-                      Все кадры ({graph?.frames.length ?? 0})
-                    </button>
-                    {framesByScene.map((g) => {
-                      const key: number | "none" = g.sceneId ?? "none";
-                      const active = scenePage === key;
-                      return (
-                        <button
-                          key={String(key)}
-                          type="button"
-                          onClick={() => setScenePage(key)}
-                          className={`rounded-md px-2.5 py-1 text-xs whitespace-nowrap ${
-                            active
-                              ? "bg-primary/20 text-primary"
-                              : "bg-white/[0.04] text-white/55 hover:bg-white/[0.08]"
-                          }`}
-                        >
-                          {g.title} ({g.frames.length})
-                        </button>
-                      );
-                    })}
+                    {frameSheets.map((name) => (
+                      <button
+                        key={name}
+                        type="button"
+                        onClick={() => setFrameSheet(name)}
+                        className={`shrink-0 rounded-md px-2.5 py-1 text-xs whitespace-nowrap ${
+                          frameSheet === name
+                            ? "bg-primary/20 text-primary"
+                            : "bg-white/[0.04] text-white/55 hover:bg-white/[0.08]"
+                        }`}
+                      >
+                        {name}
+                      </button>
+                    ))}
                   </div>
 
-                  {/* Страницы колонок (по 10 кадров) */}
-                  {framePageCount > 1 ? (
-                    <div className="flex shrink-0 items-center gap-1.5">
-                      <span className="mr-1 text-[10px] uppercase tracking-[0.18em] text-white/35">
-                        Колонки
-                      </span>
-                      <button
-                        type="button"
-                        disabled={framePage <= 0}
-                        onClick={() => setFramePage((p) => Math.max(0, p - 1))}
-                        className="rounded-md p-1 text-white/50 hover:bg-white/10 disabled:opacity-30"
-                        title="Предыдущая страница колонок"
-                      >
-                        <ChevronLeft className="h-3.5 w-3.5" />
-                      </button>
-                      {Array.from({ length: framePageCount }, (_, i) => (
-                        <button
-                          key={i}
-                          type="button"
-                          onClick={() => setFramePage(i)}
-                          className={`rounded-md px-2 py-0.5 text-[11px] whitespace-nowrap ${
-                            Math.min(framePage, framePageCount - 1) === i
-                              ? "bg-white/15 text-white"
-                              : "text-white/45 hover:bg-white/8"
-                          }`}
-                        >
-                          {i + 1}
-                        </button>
-                      ))}
-                      <button
-                        type="button"
-                        disabled={framePage >= framePageCount - 1}
-                        onClick={() => setFramePage((p) => Math.min(framePageCount - 1, p + 1))}
-                        className="rounded-md p-1 text-white/50 hover:bg-white/10 disabled:opacity-30"
-                        title="Следующая страница колонок"
-                      >
-                        <ChevronRight className="h-3.5 w-3.5" />
-                      </button>
-                      <span className="ml-1 text-[10px] text-white/30 whitespace-nowrap">
-                        кадры{" "}
-                        {activeSceneFrames.length
-                          ? `${Math.min(framePage, framePageCount - 1) * FRAMES_PER_PAGE + 1}–${Math.min(
-                              activeSceneFrames.length,
-                              (Math.min(framePage, framePageCount - 1) + 1) * FRAMES_PER_PAGE,
-                            )}`
-                          : "0"}{" "}
-                        / {activeSceneFrames.length}
-                      </span>
+                  {sheetLoading && !sheetPreview ? (
+                    <div className="flex flex-1 items-center justify-center text-sm text-white/30">
+                      Загрузка листа…
                     </div>
-                  ) : null}
-
-                  <FramesExcelSheet
-                    frames={pagedFrames}
-                    excelRows={graph?.excel_rows ?? {}}
-                    selectedId={frameId}
-                    onSelect={setFrameId}
-                    onInsertAfter={async (afterId) => {
-                      if (projectId == null) return;
-                      const created = await api.dbInsertFrame(projectId, afterId);
-                      toast.success(`Кадр вставлен (ключ ${created.sort_key})`);
-                      setFrameId(created.id);
-                      void handleChanged();
-                    }}
-                  />
+                  ) : (sheetPreview?.rows?.length ?? 0) > 0 ? (
+                    <StudioExcelGrid
+                      className="min-h-0 max-h-none flex-1"
+                      rows={sheetPreview?.rows ?? []}
+                      startRow={sheetPreview?.start_row ?? 1}
+                      colLetters={sheetPreview?.col_letters}
+                      nowrap
+                      onCellClick={(_ri, ci) => selectFrameByExcelCol(ci)}
+                    />
+                  ) : (
+                    <div className="flex flex-1 items-center justify-center text-center text-sm text-white/30">
+                      Лист «{frameSheet}» пуст или project.xlsx ещё не создан.
+                      <br />
+                      Экспортируй базу в Excel или запусти шаг пайплайна.
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="min-h-0 flex-1 overflow-hidden">
-                  <EntitiesPanel graph={graph} projectId={projectId} onChanged={handleChanged} />
+                  <EntitiesPanel
+                    graph={graph}
+                    projectId={projectId}
+                    sheetNames={entitySheets}
+                    onChanged={handleChanged}
+                  />
                 </div>
               )}
             </>
@@ -432,9 +441,9 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
             />
           ) : (
             <div className="flex h-full items-center justify-center text-center text-xs text-white/30">
-              Выбери карточку кадра,
+              На листе «план» кликни колонку кадра,
               <br />
-              чтобы настроить её
+              чтобы настроить его справа
             </div>
           )}
         </aside>
@@ -495,174 +504,6 @@ function HarnessChip({
             ? `НЕ ОК: ${failed.length}`
             : "Проверки"}
     </button>
-  );
-}
-
-/** Горизонтальный лист как Excel: строки = поля, колонки = кадры. Без переноса. */
-function FramesExcelSheet({
-  frames,
-  excelRows,
-  selectedId,
-  onSelect,
-  onInsertAfter,
-}: {
-  frames: DbFrame[];
-  excelRows: Record<string, DbExcelRow>;
-  selectedId: number | null;
-  onSelect: (id: number) => void;
-  onInsertAfter: (afterId: number) => void | Promise<void>;
-}) {
-  type RowDef = {
-    key: string;
-    label: string;
-    cell: (f: DbFrame, ex: DbExcelRow | null) => string;
-  };
-  const rows: RowDef[] = [
-    {
-      key: "status",
-      label: "Статус",
-      cell: (f) => ru(STATUS_RU, f.status),
-    },
-    {
-      key: "r49",
-      label: "R49 · закадр",
-      cell: (f, ex) => ex?.r49_voiceover || f.voiceover_text || "",
-    },
-    {
-      key: "r45",
-      label: "R45 · картинка",
-      cell: (f, ex) => ex?.r45_image_prompt || f.image_prompt || "",
-    },
-    {
-      key: "r48",
-      label: "R48 · видео",
-      cell: (f, ex) => ex?.r48_video_prompt || f.animation_prompt || "",
-    },
-    {
-      key: "r50",
-      label: "R50 · время",
-      cell: (f, ex) =>
-        ex?.r50_duration ||
-        (f.duration_seconds != null ? `${f.duration_seconds.toFixed(1)}с` : ""),
-    },
-    {
-      key: "r15",
-      label: "R15 · таймкод",
-      cell: (_f, ex) => ex?.r15_timecode || "",
-    },
-    {
-      key: "persons",
-      label: "Персонажи",
-      cell: (_f, ex) => ex?.persons || "",
-    },
-    {
-      key: "items",
-      label: "Предметы",
-      cell: (_f, ex) => ex?.items || "",
-    },
-  ];
-
-  if (frames.length === 0) {
-    return (
-      <div className="flex flex-1 items-center justify-center text-sm text-white/30">
-        На этой странице кадров нет
-      </div>
-    );
-  }
-
-  const colW = 200;
-  const labelW = 132;
-
-  return (
-    <div className="min-h-0 flex-1 overflow-auto rounded-md border border-white/[0.08] bg-black/20">
-      <table className="border-collapse text-[11px]" style={{ tableLayout: "fixed" }}>
-        <thead>
-          <tr>
-            <th
-              className="sticky left-0 z-20 border-b border-r border-white/[0.08] bg-[#121212] px-2 py-1.5 text-left text-[9px] uppercase tracking-wide text-white/35"
-              style={{ width: labelW, minWidth: labelW, maxWidth: labelW }}
-            >
-              строка ↓ / кадр →
-            </th>
-            {frames.map((f) => {
-              const selected = f.id === selectedId;
-              return (
-                <th
-                  key={f.id}
-                  className={`border-b border-r border-white/[0.06] px-1.5 py-1.5 text-left font-normal ${
-                    selected ? "bg-primary/15" : "bg-[#121212]"
-                  }`}
-                  style={{ width: colW, minWidth: colW, maxWidth: colW }}
-                >
-                  <button
-                    type="button"
-                    onClick={() => onSelect(f.id)}
-                    className="flex w-full items-center justify-between gap-1 whitespace-nowrap text-left"
-                  >
-                    <span className="font-mono text-[10px] text-white/70">
-                      кадр {f.number} · {colLetter(f.number + 2)}
-                    </span>
-                    <span
-                      role="button"
-                      tabIndex={0}
-                      title="Вставить кадр после"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void onInsertAfter(f.id);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.stopPropagation();
-                          void onInsertAfter(f.id);
-                        }
-                      }}
-                      className="rounded p-0.5 text-white/35 hover:bg-primary/20 hover:text-primary"
-                    >
-                      <Plus className="h-3 w-3" />
-                    </span>
-                  </button>
-                </th>
-              );
-            })}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.key}>
-              <td
-                className="sticky left-0 z-10 border-b border-r border-white/[0.08] bg-[#101010] px-2 py-1 text-[9px] uppercase tracking-wide text-white/40 whitespace-nowrap"
-                style={{ width: labelW, minWidth: labelW, maxWidth: labelW }}
-              >
-                {row.label}
-              </td>
-              {frames.map((f) => {
-                const ex = excelRows[String(f.number)] ?? null;
-                const text = row.cell(f, ex);
-                const selected = f.id === selectedId;
-                return (
-                  <td
-                    key={`${row.key}-${f.id}`}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => onSelect(f.id)}
-                    onKeyDown={(e) => e.key === "Enter" && onSelect(f.id)}
-                    title={text || undefined}
-                    className={`cursor-pointer border-b border-r border-white/[0.05] px-1.5 py-1 align-top ${
-                      selected ? "bg-primary/10" : "hover:bg-white/[0.04]"
-                    }`}
-                    style={{ width: colW, minWidth: colW, maxWidth: colW }}
-                  >
-                    <div className="overflow-hidden whitespace-nowrap text-white/80">
-                      {text || <span className="text-white/20">—</span>}
-                    </div>
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
   );
 }
 
@@ -1037,42 +878,76 @@ function LabeledArea({
 function EntitiesPanel({
   graph,
   projectId,
+  sheetNames,
   onChanged,
 }: {
   graph: DbGraph | null;
   projectId: number | null;
+  sheetNames: string[];
   onChanged: () => Promise<void>;
 }) {
-  const [type, setType] = useState("character");
+  const sheets = sheetNames.length ? sheetNames : [...ENTITY_SHEETS_DEFAULT];
+  const [sheet, setSheet] = useState(sheets[0] ?? "Персонажи");
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
+  const [preview, setPreview] = useState<XlsxPreview | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [tick, setTick] = useState(0);
 
+  useEffect(() => {
+    if (!sheets.includes(sheet)) setSheet(sheets[0] ?? "Персонажи");
+  }, [sheets, sheet]);
+
+  useEffect(() => {
+    if (projectId == null) return;
+    let cancelled = false;
+    setLoading(true);
+    void api
+      .previewProjectXlsx(projectId, {
+        sheet,
+        maxRows: XLSX_STUDIO_MAX_ROWS,
+        maxCols: XLSX_STUDIO_MAX_COLS,
+        startRow: 1,
+        raw: true,
+      })
+      .then((p) => {
+        if (!cancelled) setPreview(p);
+      })
+      .catch(() => {
+        if (!cancelled) setPreview(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, sheet, tick]);
+
+  const type = ENTITY_SHEET_TO_TYPE[sheet.trim().toLowerCase()] ?? "character";
   const filtered = (graph?.entities ?? []).filter((en) => en.type === type);
 
   return (
     <div className="flex h-full min-h-0 flex-col text-xs">
-      {/* Выбор страницы типа — горизонтальные вкладки */}
-      <div className="mb-2 flex shrink-0 flex-wrap items-center gap-1.5">
-        <span className="mr-1 text-[10px] uppercase tracking-[0.18em] text-white/35">
-          Страница
+      {/* Вкладки = листы Excel сущностей */}
+      <div className="mb-2 flex shrink-0 flex-nowrap items-center gap-1.5 overflow-x-auto">
+        <span className="mr-1 shrink-0 text-[10px] uppercase tracking-[0.18em] text-white/35">
+          Лист
         </span>
-        {ENTITY_TYPES.map((t) => {
-          const count = (graph?.entities ?? []).filter((en) => en.type === t).length;
-          return (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setType(t)}
-              className={`rounded-md px-2.5 py-1 text-xs whitespace-nowrap ${
-                type === t
-                  ? "bg-primary/20 text-primary"
-                  : "bg-white/[0.04] text-white/55 hover:bg-white/[0.08]"
-              }`}
-            >
-              {ru(ENTITY_TYPE_RU, t)} ({count})
-            </button>
-          );
-        })}
+        {sheets.map((s) => (
+          <button
+            key={s}
+            type="button"
+            onClick={() => setSheet(s)}
+            className={`shrink-0 rounded-md px-2.5 py-1 text-xs whitespace-nowrap ${
+              sheet === s
+                ? "bg-primary/20 text-primary"
+                : "bg-white/[0.04] text-white/55 hover:bg-white/[0.08]"
+            }`}
+          >
+            {s}
+          </button>
+        ))}
       </div>
 
       <div className="mb-2 flex shrink-0 gap-1.5">
@@ -1092,7 +967,7 @@ function EntitiesPanel({
           size="sm"
           variant="outline"
           disabled={projectId == null}
-          title="Добавить сущность"
+          title="Добавить сущность в базу"
           onClick={async () => {
             if (projectId == null) return;
             await api.dbAddEntity(projectId, {
@@ -1104,52 +979,64 @@ function EntitiesPanel({
             setCode("");
             setName("");
             toast.success("Сущность добавлена");
-            void onChanged();
+            await onChanged();
+            setTick((t) => t + 1);
           }}
         >
           <Plus className="h-3.5 w-3.5" />
         </Button>
       </div>
 
-      {/* Горизонтальная лента без переноса */}
-      <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden">
-        <div className="flex h-full flex-nowrap items-stretch gap-2 pb-1">
-          {filtered.map((en) => (
-            <div
-              key={en.id}
-              className="w-[220px] shrink-0 rounded-md border border-white/[0.08] bg-white/[0.02] p-2"
-            >
-              <div className="flex items-center gap-1.5 whitespace-nowrap">
-                <span className="rounded bg-white/10 px-1 text-[9px] text-white/50">
-                  {ru(ENTITY_TYPE_RU, en.type)}
-                </span>
-                {en.code ? (
-                  <span className="font-mono text-[10px] text-white/40">{en.code}</span>
-                ) : null}
-                <span className="min-w-0 flex-1 truncate font-semibold text-white/80">
-                  {en.name ?? "—"}
-                </span>
-                <button
-                  type="button"
-                  title="Удалить сущность"
-                  onClick={async () => {
-                    await api.dbDeleteEntity(en.id);
-                    void onChanged();
-                  }}
-                  className="shrink-0 rounded p-0.5 text-white/30 hover:text-red-400"
-                >
-                  <Trash2 className="h-3 w-3" />
-                </button>
+      {loading && !preview ? (
+        <div className="flex flex-1 items-center justify-center text-white/30">Загрузка листа…</div>
+      ) : (preview?.rows?.length ?? 0) > 0 ? (
+        <StudioExcelGrid
+          className="min-h-0 max-h-none flex-1"
+          rows={preview?.rows ?? []}
+          startRow={preview?.start_row ?? 1}
+          colLetters={preview?.col_letters}
+          nowrap
+        />
+      ) : (
+        <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden">
+          <div className="flex h-full flex-nowrap items-stretch gap-2 pb-1">
+            {filtered.map((en) => (
+              <div
+                key={en.id}
+                className="w-[220px] shrink-0 rounded-md border border-white/[0.08] bg-white/[0.02] p-2"
+              >
+                <div className="flex items-center gap-1.5 whitespace-nowrap">
+                  <span className="rounded bg-white/10 px-1 text-[9px] text-white/50">
+                    {sheet}
+                  </span>
+                  {en.code ? (
+                    <span className="font-mono text-[10px] text-white/40">{en.code}</span>
+                  ) : null}
+                  <span className="min-w-0 flex-1 truncate font-semibold text-white/80">
+                    {en.name ?? "—"}
+                  </span>
+                  <button
+                    type="button"
+                    title="Удалить сущность"
+                    onClick={async () => {
+                      await api.dbDeleteEntity(en.id);
+                      void onChanged();
+                    }}
+                    className="shrink-0 rounded p-0.5 text-white/30 hover:text-red-400"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
-          {filtered.length === 0 ? (
-            <div className="flex items-center text-white/30 whitespace-nowrap">
-              На этой странице сущностей нет — добавь выше.
-            </div>
-          ) : null}
+            ))}
+            {filtered.length === 0 ? (
+              <div className="flex items-center text-white/30 whitespace-nowrap">
+                Лист «{sheet}» пуст — добавь сущность выше или заполни Excel.
+              </div>
+            ) : null}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
