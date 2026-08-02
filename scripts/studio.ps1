@@ -16,23 +16,168 @@ if ($env:VP_REPO_ROOT) {
 }
 Set-Location -LiteralPath $Root
 
-# Ветка обновления = ORCHESTRATOR_GIT_BRANCH из .env (housepc/tompc/…), иначе main
-$StudioBranch = "main"
+# Ветки ПК (выбор при первом запуске → data/studio-pc-branch + .env)
+$script:PcBranches = @("housepc", "tompc", "strangepc", "workpc")
+$script:PcBranchFile = Join-Path $Root "data\studio-pc-branch"
 $EnvFile = Join-Path $Root ".env"
-if (Test-Path -LiteralPath $EnvFile) {
-    foreach ($line in Get-Content -LiteralPath $EnvFile -Encoding UTF8 -ErrorAction SilentlyContinue) {
-        if ($line -match '^\s*ORCHESTRATOR_GIT_BRANCH\s*=\s*(.+)\s*$') {
-            $cand = $Matches[1].Trim().Trim('"').Trim("'")
-            if ($cand -match '^(main|housepc|tompc|strangepc|workpc)$') {
-                $StudioBranch = $cand
+$StudioBranch = ""
+
+function Test-StudioPcBranchName {
+    param([string]$Name)
+    return ($script:PcBranches -contains $Name)
+}
+
+function Read-StudioPcBranchFromEnv {
+    if ($env:ORCHESTRATOR_GIT_BRANCH -and (Test-StudioPcBranchName $env:ORCHESTRATOR_GIT_BRANCH)) {
+        return $env:ORCHESTRATOR_GIT_BRANCH
+    }
+    if (Test-Path -LiteralPath $EnvFile) {
+        foreach ($line in Get-Content -LiteralPath $EnvFile -Encoding UTF8 -ErrorAction SilentlyContinue) {
+            if ($line -match '^\s*ORCHESTRATOR_GIT_BRANCH\s*=\s*(.+)\s*$') {
+                $cand = $Matches[1].Trim().Trim('"').Trim("'")
+                if (Test-StudioPcBranchName $cand) { return $cand }
+                break
             }
-            break
+        }
+    }
+    return ""
+}
+
+function Sync-StudioPcBranchToEnv {
+    param([Parameter(Mandatory = $true)][string]$Branch)
+    if (-not (Test-StudioPcBranchName $Branch)) { return $false }
+    $env:ORCHESTRATOR_GIT_BRANCH = $Branch
+    $lines = @()
+    $found = $false
+    if (Test-Path -LiteralPath $EnvFile) {
+        $lines = @(Get-Content -LiteralPath $EnvFile -Encoding UTF8 -ErrorAction SilentlyContinue)
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '^\s*ORCHESTRATOR_GIT_BRANCH\s*=') {
+                $lines[$i] = "ORCHESTRATOR_GIT_BRANCH=$Branch"
+                $found = $true
+                break
+            }
+        }
+    }
+    if (-not $found) {
+        $lines += "ORCHESTRATOR_GIT_BRANCH=$Branch"
+    }
+    $dir = Split-Path -Parent $EnvFile
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    Set-Content -LiteralPath $EnvFile -Value $lines -Encoding UTF8
+    return $true
+}
+
+function Save-StudioPcBranch {
+    param([Parameter(Mandatory = $true)][string]$Branch)
+    if (-not (Test-StudioPcBranchName $Branch)) { return $false }
+    $dataDir = Join-Path $Root "data"
+    if (-not (Test-Path -LiteralPath $dataDir)) {
+        New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
+    }
+    Set-Content -LiteralPath $script:PcBranchFile -Value $Branch -Encoding UTF8 -NoNewline
+    Sync-StudioPcBranchToEnv -Branch $Branch | Out-Null
+    $script:StudioBranch = $Branch
+    return $true
+}
+
+function Get-StudioPcBranch {
+    if (Test-Path -LiteralPath $script:PcBranchFile) {
+        $raw = (Get-Content -LiteralPath $script:PcBranchFile -Encoding UTF8 -TotalCount 1 -ErrorAction SilentlyContinue)
+        if ($null -ne $raw) {
+            $cand = "$raw".Trim()
+            if (Test-StudioPcBranchName $cand) { return $cand }
+        }
+    }
+    $fromEnv = Read-StudioPcBranchFromEnv
+    if ($fromEnv) {
+        # Миграция: .env уже задан — зафиксировать в data/studio-pc-branch
+        Save-StudioPcBranch -Branch $fromEnv | Out-Null
+        return $fromEnv
+    }
+    return ""
+}
+
+function Show-StudioBranchPicker {
+    param([switch]$AllowCancel)
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "  Выберите ветку этого ПК" -ForegroundColor Cyan
+    Write-Host "  (сохранится; обновление — только пункт [5])" -ForegroundColor DarkGray
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host ""
+    for ($i = 0; $i -lt $script:PcBranches.Count; $i++) {
+        $n = $i + 1
+        Write-Host ("  [{0}] {1}" -f $n, $script:PcBranches[$i])
+    }
+    if ($AllowCancel) {
+        Write-Host "  [0] Отмена"
+    }
+    Write-Host ""
+    while ($true) {
+        $choice = Read-Host "Номер ветки"
+        if ($AllowCancel -and $choice -eq "0") { return "" }
+        if ($choice -match '^[1-4]$') {
+            $idx = [int]$choice - 1
+            $br = $script:PcBranches[$idx]
+            if (Save-StudioPcBranch -Branch $br) {
+                Write-StudioMsg "OK: ветка ПК сохранена — $br" "Green"
+                return $br
+            }
+        }
+        Write-StudioMsg "Выберите 1–4 (housepc / tompc / strangepc / workpc)." "Yellow"
+    }
+}
+
+function Ensure-StudioPcBranchSelected {
+    param([switch]$InteractiveRequired)
+    $br = Get-StudioPcBranch
+    if ($br) {
+        $script:StudioBranch = $br
+        return $true
+    }
+    if (-not $InteractiveRequired) {
+        Write-StudioMsg "ОШИБКА: ветка ПК не выбрана. Запустите STUDIO.cmd без аргументов и выберите ветку (1–4)." "Red"
+        return $false
+    }
+    $picked = Show-StudioBranchPicker
+    return [bool]$picked
+}
+
+function Invoke-StudioBranchHub {
+    Write-StudioMsg "=== [5] Ветка ПК ===" "Cyan"
+    if (-not (Ensure-StudioPcBranchSelected -InteractiveRequired)) {
+        return $false
+    }
+    while ($true) {
+        $br = $script:StudioBranch
+        Write-Host ""
+        Write-Host "  Текущая ветка: $br" -ForegroundColor Green
+        Write-Host "  [1] Обновить и запустить (git origin/$br)"
+        Write-Host "  [2] Сменить ветку ПК"
+        Write-Host "  [0] Назад"
+        Write-Host ""
+        $sub = Read-Host "Выберите"
+        switch ($sub) {
+            "1" {
+                return (Invoke-StudioUpdateAndStart)
+            }
+            "2" {
+                $null = Show-StudioBranchPicker -AllowCancel
+            }
+            "0" { return $true }
+            default {
+                Write-StudioMsg "Неизвестный пункт: $sub" "Yellow"
+            }
         }
     }
 }
-if ($env:ORCHESTRATOR_GIT_BRANCH -and $env:ORCHESTRATOR_GIT_BRANCH -match '^(main|housepc|tompc|strangepc|workpc)$') {
-    $StudioBranch = $env:ORCHESTRATOR_GIT_BRANCH
-}
+
+$script:StudioBranch = Get-StudioPcBranch
+# Совместимость со старым кодом, читающим $StudioBranch
+$StudioBranch = $script:StudioBranch
 
 $VpProfileScript = Join-Path $Root "scripts\VpBrowserProfile.ps1"
 if (Test-Path $VpProfileScript) {
@@ -187,13 +332,13 @@ function Start-StudioBackendWindow {
     }
     $py = Join-Path $Root ".venv\Scripts\python.exe"
     if (-not (Test-Path $py)) {
-        Write-StudioMsg "ОШИБКА: .venv не найден. Запустите install.ps1 или пункт [5]." "Red"
+        Write-StudioMsg "ОШИБКА: .venv не найден. Запустите install.ps1 или пункт [4]." "Red"
         return $false
     }
     Set-StudioNvidiaEnv
     & $py -c "import app.bootstrap_env; from app.web.api import create_app; create_app()" 2>$null | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        Write-StudioMsg "ОШИБКА: Python create_app() не прошёл. Попробуйте [5] Починить установку." "Red"
+        Write-StudioMsg "ОШИБКА: Python create_app() не прошёл. Попробуйте [4] Починить установку." "Red"
         return $false
     }
     Write-StudioMsg "==> Запуск бэкенда (отдельное окно)..." "Cyan"
@@ -293,7 +438,7 @@ function Invoke-StudioRecoverPromptsFromAllStashes {
 function Invoke-StudioStart {
     Write-StudioMsg "=== [1] Запуск студии ===" "Cyan"
     if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
-        Write-StudioMsg "ВНИМАНИЕ: web/out отсутствует. Сначала [5] Починить установку." "Yellow"
+        Write-StudioMsg "ВНИМАНИЕ: web/out отсутствует. Сначала [4] Починить установку." "Yellow"
     }
     # Если прошлый [4] оставил кастомные промты в stash — вернуть до старта бэкенда.
     Invoke-StudioRecoverPromptsFromAllStashes
@@ -359,6 +504,11 @@ function Invoke-StudioReturnPromptEditsFromStash {
 }
 
 function Invoke-StudioGitUpdate {
+    $StudioBranch = $script:StudioBranch
+    if (-not (Test-StudioPcBranchName $StudioBranch)) {
+        Write-StudioMsg "ОШИБКА: ветка ПК не задана. Выберите через пункт [5]." "Red"
+        return $false
+    }
     Write-StudioMsg "==> git fetch origin $StudioBranch" "Cyan"
     git -C $Root fetch origin $StudioBranch 2>&1 | ForEach-Object { Write-StudioMsg $_ }
     if ($LASTEXITCODE -ne 0) {
@@ -517,7 +667,12 @@ function Invoke-StudioPipInstall {
 }
 
 function Invoke-StudioUpdateAndStart {
-    Write-StudioMsg "=== [4] Обновить и запустить (origin/$StudioBranch) ===" "Cyan"
+    $StudioBranch = $script:StudioBranch
+    if (-not (Test-StudioPcBranchName $StudioBranch)) {
+        Write-StudioMsg "ОШИБКА: сначала выберите ветку ПК (пункт [5])." "Red"
+        return $false
+    }
+    Write-StudioMsg "=== [5] Обновить и запустить (origin/$StudioBranch) ===" "Cyan"
     # 1) Снимок prompts/ ВНЕ репо — главный предохранитель (stash может сдохнуть).
     Invoke-StudioBackupPromptsAside | Out-Null
     $promptsDirty = Test-StudioPromptsDirty
@@ -554,7 +709,7 @@ function Invoke-StudioUpdateAndStart {
     if (-not (Invoke-StudioNvidiaDeps)) { return $false }
     Invoke-StudioPredownloadNemo | Out-Null
     if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
-        Write-StudioMsg "ВНИМАНИЕ: web/out отсутствует после обновления — запускаю [5] сборку UI..." "Yellow"
+        Write-StudioMsg "ВНИМАНИЕ: web/out отсутствует после обновления — запускаю сборку UI..." "Yellow"
         if (-not (Invoke-StudioRepairWeb)) { return $false }
     }
     Stop-StudioBackend
@@ -601,7 +756,7 @@ function Invoke-StudioRepairWeb {
 }
 
 function Invoke-StudioRepair {
-    Write-StudioMsg "=== [5] Починить установку ===" "Cyan"
+    Write-StudioMsg "=== [4] Починить установку ===" "Cyan"
     $py = Join-Path $Root ".venv\Scripts\python.exe"
     if (-not (Test-Path $py)) {
         Write-StudioMsg "ОШИБКА: .venv не найден. Запустите install.ps1 для первичной установки." "Red"
@@ -746,17 +901,19 @@ function Invoke-StudioDoctor {
 }
 
 function Show-StudioMenu {
+    $brLabel = if ($script:StudioBranch) { $script:StudioBranch } else { "не выбрана" }
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host "  Video Pipeline Studio" -ForegroundColor Cyan
     Write-Host "  $Root" -ForegroundColor DarkGray
+    Write-Host "  Ветка ПК: $brLabel" -ForegroundColor DarkGray
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  [1] Запустить студию (бэкенд + Chrome CDP + http://127.0.0.1:8765)"
     Write-Host "  [2] Остановить всё (бэкенд :8765; Chrome с ИИ не закрывать)"
     Write-Host "  [3] Браузер с ИИ (Chrome CDP :29229, outsee.io + chatgpt.com)"
-    Write-Host "  [4] Обновить и запустить (git origin/$StudioBranch + зависимости + запуск)"
-    Write-Host "  [5] Починить установку (pip, web, Playwright, FFmpeg)"
+    Write-Host "  [4] Починить установку (pip, web, Playwright, FFmpeg)"
+    Write-Host "  [5] Ветка ПК ($brLabel): обновить / сменить"
     Write-Host "  [6] Диагностика (версия, git, порты, logs/doctor.log)"
     Write-Host "  [0] Выход"
     Write-Host ""
@@ -776,12 +933,20 @@ if ($Action -eq "1") {
 } elseif ($Action -eq "3") {
     $ok = Invoke-StudioBrowserAi
 } elseif ($Action -eq "4") {
-    $ok = Invoke-StudioUpdateAndStart
-} elseif ($Action -eq "5") {
     $ok = Invoke-StudioRepair
+} elseif ($Action -eq "5") {
+    if (-not (Ensure-StudioPcBranchSelected)) {
+        $ok = $false
+    } else {
+        $ok = Invoke-StudioUpdateAndStart
+    }
 } elseif ($Action -eq "6") {
     $ok = Invoke-StudioDoctor
 } elseif ($Action -eq "") {
+    if (-not (Ensure-StudioPcBranchSelected -InteractiveRequired)) {
+        Invoke-StudioPause
+        exit 1
+    }
     while ($true) {
         Show-StudioMenu
         $choice = Read-Host "Выберите пункт"
@@ -789,8 +954,8 @@ if ($Action -eq "1") {
             "1" { $ok = Invoke-StudioStart; if (-not $ok) { Invoke-StudioPause } }
             "2" { $ok = Invoke-StudioStop; if (-not $ok) { Invoke-StudioPause } }
             "3" { $ok = Invoke-StudioBrowserAi; if (-not $ok) { Invoke-StudioPause } }
-            "4" { $ok = Invoke-StudioUpdateAndStart; if (-not $ok) { Invoke-StudioPause } }
-            "5" { $ok = Invoke-StudioRepair; if (-not $ok) { Invoke-StudioPause } }
+            "4" { $ok = Invoke-StudioRepair; if (-not $ok) { Invoke-StudioPause } }
+            "5" { $ok = Invoke-StudioBranchHub; if (-not $ok) { Invoke-StudioPause } }
             "6" { $ok = Invoke-StudioDoctor; Invoke-StudioPause }
             "0" { break }
             default {
