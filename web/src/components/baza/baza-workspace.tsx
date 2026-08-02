@@ -15,6 +15,8 @@ import {
   FileSpreadsheet,
   ShieldCheck,
   ShieldAlert,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -60,6 +62,9 @@ const EDGE_TYPE_RU: Record<string, string> = {
 };
 const EDGE_TYPES = Object.keys(EDGE_TYPE_RU);
 
+/** Сколько колонок-кадров на одной «странице» (как листы Excel по ширине). */
+const FRAMES_PER_PAGE = 10;
+
 const ru = (map: Record<string, string>, key: string | null | undefined) =>
   (key && map[key]) || key || "—";
 
@@ -85,6 +90,10 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
   const [frameId, setFrameId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState<"frames" | "entities">("frames");
+  /** Страница сцены (как тип у сущностей): id сцены | "none" | "all". */
+  const [scenePage, setScenePage] = useState<number | "none" | "all">("all");
+  /** Страница колонок внутри выбранной сцены. */
+  const [framePage, setFramePage] = useState(0);
 
   const loadGraph = useCallback(async (pid: number) => {
     setLoading(true);
@@ -100,12 +109,18 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
   useEffect(() => {
     if (!open) return;
     setFrameId(null);
+    setScenePage("all");
+    setFramePage(0);
     if (projectId != null) {
       void loadGraph(projectId);
     } else {
       setGraph(null);
     }
   }, [open, projectId, loadGraph]);
+
+  useEffect(() => {
+    setFramePage(0);
+  }, [scenePage]);
 
   const reload = useCallback(async () => {
     if (projectId != null) await loadGraph(projectId);
@@ -151,6 +166,24 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
     if (orphans.length) groups.push({ sceneId: null, title: "Без сцены", frames: orphans });
     return groups;
   }, [graph]);
+
+  const activeSceneFrames = useMemo(() => {
+    if (!graph) return [] as DbFrame[];
+    if (scenePage === "all") {
+      return [...graph.frames].sort((a, b) => a.number - b.number);
+    }
+    const group = framesByScene.find((g) =>
+      scenePage === "none" ? g.sceneId == null : g.sceneId === scenePage,
+    );
+    return group?.frames ?? [];
+  }, [graph, scenePage, framesByScene]);
+
+  const framePageCount = Math.max(1, Math.ceil(activeSceneFrames.length / FRAMES_PER_PAGE));
+  const pagedFrames = useMemo(() => {
+    const page = Math.min(framePage, framePageCount - 1);
+    const start = page * FRAMES_PER_PAGE;
+    return activeSceneFrames.slice(start, start + FRAMES_PER_PAGE);
+  }, [activeSceneFrames, framePage, framePageCount]);
 
   if (!open) return null;
 
@@ -228,7 +261,7 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
 
       <div className="flex min-h-0 flex-1">
         {/* Сцены и кадры текущего проекта */}
-        <section className="min-w-0 flex-1 overflow-y-auto p-3">
+        <section className="flex min-w-0 flex-1 flex-col overflow-hidden p-3">
           {projectId == null ? (
             <div className="flex h-full items-center justify-center text-center text-sm text-white/30">
               Открой проект в пайплайне —
@@ -241,7 +274,7 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
             </div>
           ) : (
             <>
-              <div className="mb-2 flex items-center gap-2">
+              <div className="mb-2 flex shrink-0 items-center gap-2">
                 <button
                   type="button"
                   onClick={() => setTab("frames")}
@@ -277,34 +310,112 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
               </div>
 
               {tab === "frames" ? (
-                framesByScene.map((g) => (
-                  <div key={g.sceneId ?? "none"} className="mb-4">
-                    <div className="mb-1.5 flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-white/40">
-                      <Layers className="h-3 w-3" /> {g.title}
-                      <span className="text-white/25">({g.frames.length})</span>
-                    </div>
-                    <div className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-2">
-                      {g.frames.map((f) => (
-                        <FrameCard
-                          key={f.id}
-                          frame={f}
-                          excelRow={graph?.excel_rows?.[String(f.number)] ?? null}
-                          selected={f.id === frameId}
-                          onSelect={() => setFrameId(f.id)}
-                          onInsertAfter={async () => {
-                            if (projectId == null) return;
-                            const created = await api.dbInsertFrame(projectId, f.id);
-                            toast.success(`Кадр вставлен (ключ ${created.sort_key})`);
-                            setFrameId(created.id);
-                            void handleChanged();
-                          }}
-                        />
-                      ))}
-                    </div>
+                <div className="flex min-h-0 flex-1 flex-col gap-2">
+                  {/* Выбор страницы сцены — как тип у сущностей */}
+                  <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                    <span className="mr-1 text-[10px] uppercase tracking-[0.18em] text-white/35">
+                      Страница
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setScenePage("all")}
+                      className={`rounded-md px-2.5 py-1 text-xs whitespace-nowrap ${
+                        scenePage === "all"
+                          ? "bg-primary/20 text-primary"
+                          : "bg-white/[0.04] text-white/55 hover:bg-white/[0.08]"
+                      }`}
+                    >
+                      Все кадры ({graph?.frames.length ?? 0})
+                    </button>
+                    {framesByScene.map((g) => {
+                      const key: number | "none" = g.sceneId ?? "none";
+                      const active = scenePage === key;
+                      return (
+                        <button
+                          key={String(key)}
+                          type="button"
+                          onClick={() => setScenePage(key)}
+                          className={`rounded-md px-2.5 py-1 text-xs whitespace-nowrap ${
+                            active
+                              ? "bg-primary/20 text-primary"
+                              : "bg-white/[0.04] text-white/55 hover:bg-white/[0.08]"
+                          }`}
+                        >
+                          {g.title} ({g.frames.length})
+                        </button>
+                      );
+                    })}
                   </div>
-                ))
+
+                  {/* Страницы колонок (по 10 кадров) */}
+                  {framePageCount > 1 ? (
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <span className="mr-1 text-[10px] uppercase tracking-[0.18em] text-white/35">
+                        Колонки
+                      </span>
+                      <button
+                        type="button"
+                        disabled={framePage <= 0}
+                        onClick={() => setFramePage((p) => Math.max(0, p - 1))}
+                        className="rounded-md p-1 text-white/50 hover:bg-white/10 disabled:opacity-30"
+                        title="Предыдущая страница колонок"
+                      >
+                        <ChevronLeft className="h-3.5 w-3.5" />
+                      </button>
+                      {Array.from({ length: framePageCount }, (_, i) => (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => setFramePage(i)}
+                          className={`rounded-md px-2 py-0.5 text-[11px] whitespace-nowrap ${
+                            Math.min(framePage, framePageCount - 1) === i
+                              ? "bg-white/15 text-white"
+                              : "text-white/45 hover:bg-white/8"
+                          }`}
+                        >
+                          {i + 1}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        disabled={framePage >= framePageCount - 1}
+                        onClick={() => setFramePage((p) => Math.min(framePageCount - 1, p + 1))}
+                        className="rounded-md p-1 text-white/50 hover:bg-white/10 disabled:opacity-30"
+                        title="Следующая страница колонок"
+                      >
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      </button>
+                      <span className="ml-1 text-[10px] text-white/30 whitespace-nowrap">
+                        кадры{" "}
+                        {activeSceneFrames.length
+                          ? `${Math.min(framePage, framePageCount - 1) * FRAMES_PER_PAGE + 1}–${Math.min(
+                              activeSceneFrames.length,
+                              (Math.min(framePage, framePageCount - 1) + 1) * FRAMES_PER_PAGE,
+                            )}`
+                          : "0"}{" "}
+                        / {activeSceneFrames.length}
+                      </span>
+                    </div>
+                  ) : null}
+
+                  <FramesExcelSheet
+                    frames={pagedFrames}
+                    excelRows={graph?.excel_rows ?? {}}
+                    selectedId={frameId}
+                    onSelect={setFrameId}
+                    onInsertAfter={async (afterId) => {
+                      if (projectId == null) return;
+                      const created = await api.dbInsertFrame(projectId, afterId);
+                      toast.success(`Кадр вставлен (ключ ${created.sort_key})`);
+                      setFrameId(created.id);
+                      void handleChanged();
+                    }}
+                  />
+                </div>
               ) : (
-                <EntitiesPanel graph={graph} projectId={projectId} onChanged={handleChanged} />
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  <EntitiesPanel graph={graph} projectId={projectId} onChanged={handleChanged} />
+                </div>
               )}
             </>
           )}
@@ -387,61 +498,170 @@ function HarnessChip({
   );
 }
 
-function FrameCard({
-  frame,
-  excelRow,
-  selected,
+/** Горизонтальный лист как Excel: строки = поля, колонки = кадры. Без переноса. */
+function FramesExcelSheet({
+  frames,
+  excelRows,
+  selectedId,
   onSelect,
   onInsertAfter,
 }: {
-  frame: DbFrame;
-  excelRow: DbExcelRow | null;
-  selected: boolean;
-  onSelect: () => void;
-  onInsertAfter: () => void;
+  frames: DbFrame[];
+  excelRows: Record<string, DbExcelRow>;
+  selectedId: number | null;
+  onSelect: (id: number) => void;
+  onInsertAfter: (afterId: number) => void | Promise<void>;
 }) {
-  const hasImg = Boolean(excelRow?.r45_image_prompt || frame.image_prompt);
-  const hasVid = Boolean(excelRow?.r48_video_prompt || frame.animation_prompt);
+  type RowDef = {
+    key: string;
+    label: string;
+    cell: (f: DbFrame, ex: DbExcelRow | null) => string;
+  };
+  const rows: RowDef[] = [
+    {
+      key: "status",
+      label: "Статус",
+      cell: (f) => ru(STATUS_RU, f.status),
+    },
+    {
+      key: "r49",
+      label: "R49 · закадр",
+      cell: (f, ex) => ex?.r49_voiceover || f.voiceover_text || "",
+    },
+    {
+      key: "r45",
+      label: "R45 · картинка",
+      cell: (f, ex) => ex?.r45_image_prompt || f.image_prompt || "",
+    },
+    {
+      key: "r48",
+      label: "R48 · видео",
+      cell: (f, ex) => ex?.r48_video_prompt || f.animation_prompt || "",
+    },
+    {
+      key: "r50",
+      label: "R50 · время",
+      cell: (f, ex) =>
+        ex?.r50_duration ||
+        (f.duration_seconds != null ? `${f.duration_seconds.toFixed(1)}с` : ""),
+    },
+    {
+      key: "r15",
+      label: "R15 · таймкод",
+      cell: (_f, ex) => ex?.r15_timecode || "",
+    },
+    {
+      key: "persons",
+      label: "Персонажи",
+      cell: (_f, ex) => ex?.persons || "",
+    },
+    {
+      key: "items",
+      label: "Предметы",
+      cell: (_f, ex) => ex?.items || "",
+    },
+  ];
+
+  if (frames.length === 0) {
+    return (
+      <div className="flex flex-1 items-center justify-center text-sm text-white/30">
+        На этой странице кадров нет
+      </div>
+    );
+  }
+
+  const colW = 200;
+  const labelW = 132;
+
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={(e) => e.key === "Enter" && onSelect()}
-      className={`group cursor-pointer rounded-md border p-2 text-left transition-colors ${
-        selected
-          ? "border-primary/50 bg-primary/10"
-          : "border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05]"
-      }`}
-    >
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[10px] font-mono text-white/40">
-          кадр {frame.number} · кол. {colLetter(frame.number + 2)}
-        </span>
-        <span className="rounded bg-white/10 px-1.5 py-0.5 text-[9px] tracking-wide text-white/60">
-          {ru(STATUS_RU, frame.status)}
-        </span>
-      </div>
-      <div className="mt-1 line-clamp-2 min-h-[2em] text-xs text-white/80">
-        {frame.voiceover_text || frame.meaning || <span className="text-white/25">(пусто)</span>}
-      </div>
-      <div className="mt-1.5 flex items-center justify-between text-[10px] text-white/40">
-        <span>
-          R45 {hasImg ? "✓" : "—"} · R48 {hasVid ? "✓" : "—"}
-          {frame.duration_seconds != null ? ` · ${frame.duration_seconds.toFixed(1)}с` : ""}
-        </span>
-        <button
-          type="button"
-          title="Вставить кадр после этого"
-          onClick={(e) => {
-            e.stopPropagation();
-            onInsertAfter();
-          }}
-          className="rounded p-1 text-white/40 opacity-0 transition-opacity hover:bg-primary/20 hover:text-primary group-hover:opacity-100"
-        >
-          <Plus className="h-3.5 w-3.5" />
-        </button>
-      </div>
+    <div className="min-h-0 flex-1 overflow-auto rounded-md border border-white/[0.08] bg-black/20">
+      <table className="border-collapse text-[11px]" style={{ tableLayout: "fixed" }}>
+        <thead>
+          <tr>
+            <th
+              className="sticky left-0 z-20 border-b border-r border-white/[0.08] bg-[#121212] px-2 py-1.5 text-left text-[9px] uppercase tracking-wide text-white/35"
+              style={{ width: labelW, minWidth: labelW, maxWidth: labelW }}
+            >
+              строка ↓ / кадр →
+            </th>
+            {frames.map((f) => {
+              const selected = f.id === selectedId;
+              return (
+                <th
+                  key={f.id}
+                  className={`border-b border-r border-white/[0.06] px-1.5 py-1.5 text-left font-normal ${
+                    selected ? "bg-primary/15" : "bg-[#121212]"
+                  }`}
+                  style={{ width: colW, minWidth: colW, maxWidth: colW }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => onSelect(f.id)}
+                    className="flex w-full items-center justify-between gap-1 whitespace-nowrap text-left"
+                  >
+                    <span className="font-mono text-[10px] text-white/70">
+                      кадр {f.number} · {colLetter(f.number + 2)}
+                    </span>
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      title="Вставить кадр после"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void onInsertAfter(f.id);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.stopPropagation();
+                          void onInsertAfter(f.id);
+                        }
+                      }}
+                      className="rounded p-0.5 text-white/35 hover:bg-primary/20 hover:text-primary"
+                    >
+                      <Plus className="h-3 w-3" />
+                    </span>
+                  </button>
+                </th>
+              );
+            })}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.key}>
+              <td
+                className="sticky left-0 z-10 border-b border-r border-white/[0.08] bg-[#101010] px-2 py-1 text-[9px] uppercase tracking-wide text-white/40 whitespace-nowrap"
+                style={{ width: labelW, minWidth: labelW, maxWidth: labelW }}
+              >
+                {row.label}
+              </td>
+              {frames.map((f) => {
+                const ex = excelRows[String(f.number)] ?? null;
+                const text = row.cell(f, ex);
+                const selected = f.id === selectedId;
+                return (
+                  <td
+                    key={`${row.key}-${f.id}`}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onSelect(f.id)}
+                    onKeyDown={(e) => e.key === "Enter" && onSelect(f.id)}
+                    title={text || undefined}
+                    className={`cursor-pointer border-b border-r border-white/[0.05] px-1.5 py-1 align-top ${
+                      selected ? "bg-primary/10" : "hover:bg-white/[0.04]"
+                    }`}
+                    style={{ width: colW, minWidth: colW, maxWidth: colW }}
+                  >
+                    <div className="overflow-hidden whitespace-nowrap text-white/80">
+                      {text || <span className="text-white/20">—</span>}
+                    </div>
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -827,20 +1047,35 @@ function EntitiesPanel({
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
 
+  const filtered = (graph?.entities ?? []).filter((en) => en.type === type);
+
   return (
-    <div className="text-xs">
-      <div className="mb-2 flex gap-1.5">
-        <select
-          value={type}
-          onChange={(e) => setType(e.target.value)}
-          className="h-8 w-32 rounded-md border border-white/10 bg-black/40 px-1 text-xs"
-        >
-          {ENTITY_TYPES.map((t) => (
-            <option key={t} value={t}>
-              {ru(ENTITY_TYPE_RU, t)}
-            </option>
-          ))}
-        </select>
+    <div className="flex h-full min-h-0 flex-col text-xs">
+      {/* Выбор страницы типа — горизонтальные вкладки */}
+      <div className="mb-2 flex shrink-0 flex-wrap items-center gap-1.5">
+        <span className="mr-1 text-[10px] uppercase tracking-[0.18em] text-white/35">
+          Страница
+        </span>
+        {ENTITY_TYPES.map((t) => {
+          const count = (graph?.entities ?? []).filter((en) => en.type === t).length;
+          return (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setType(t)}
+              className={`rounded-md px-2.5 py-1 text-xs whitespace-nowrap ${
+                type === t
+                  ? "bg-primary/20 text-primary"
+                  : "bg-white/[0.04] text-white/55 hover:bg-white/[0.08]"
+              }`}
+            >
+              {ru(ENTITY_TYPE_RU, t)} ({count})
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="mb-2 flex shrink-0 gap-1.5">
         <input
           value={code}
           onChange={(e) => setCode(e.target.value)}
@@ -851,7 +1086,7 @@ function EntitiesPanel({
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="имя сущности"
-          className="h-8 flex-1 rounded-md border border-white/10 bg-black/40 px-2 text-xs"
+          className="h-8 min-w-0 flex-1 rounded-md border border-white/10 bg-black/40 px-2 text-xs"
         />
         <Button
           size="sm"
@@ -875,34 +1110,45 @@ function EntitiesPanel({
           <Plus className="h-3.5 w-3.5" />
         </Button>
       </div>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-2">
-        {(graph?.entities ?? []).map((en) => (
-          <div key={en.id} className="rounded-md border border-white/[0.08] bg-white/[0.02] p-2">
-            <div className="flex items-center gap-1.5">
-              <span className="rounded bg-white/10 px-1 text-[9px] text-white/50">
-                {ru(ENTITY_TYPE_RU, en.type)}
-              </span>
-              {en.code ? (
-                <span className="font-mono text-[10px] text-white/40">{en.code}</span>
-              ) : null}
-              <span className="flex-1 font-semibold text-white/80">{en.name ?? "—"}</span>
-              <button
-                type="button"
-                title="Удалить сущность"
-                onClick={async () => {
-                  await api.dbDeleteEntity(en.id);
-                  void onChanged();
-                }}
-                className="rounded p-0.5 text-white/30 hover:text-red-400"
-              >
-                <Trash2 className="h-3 w-3" />
-              </button>
+
+      {/* Горизонтальная лента без переноса */}
+      <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden">
+        <div className="flex h-full flex-nowrap items-stretch gap-2 pb-1">
+          {filtered.map((en) => (
+            <div
+              key={en.id}
+              className="w-[220px] shrink-0 rounded-md border border-white/[0.08] bg-white/[0.02] p-2"
+            >
+              <div className="flex items-center gap-1.5 whitespace-nowrap">
+                <span className="rounded bg-white/10 px-1 text-[9px] text-white/50">
+                  {ru(ENTITY_TYPE_RU, en.type)}
+                </span>
+                {en.code ? (
+                  <span className="font-mono text-[10px] text-white/40">{en.code}</span>
+                ) : null}
+                <span className="min-w-0 flex-1 truncate font-semibold text-white/80">
+                  {en.name ?? "—"}
+                </span>
+                <button
+                  type="button"
+                  title="Удалить сущность"
+                  onClick={async () => {
+                    await api.dbDeleteEntity(en.id);
+                    void onChanged();
+                  }}
+                  className="shrink-0 rounded p-0.5 text-white/30 hover:text-red-400"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </div>
             </div>
-          </div>
-        ))}
-        {graph && graph.entities.length === 0 ? (
-          <div className="text-white/30">Сущностей пока нет — добавь первую выше.</div>
-        ) : null}
+          ))}
+          {filtered.length === 0 ? (
+            <div className="flex items-center text-white/30 whitespace-nowrap">
+              На этой странице сущностей нет — добавь выше.
+            </div>
+          ) : null}
+        </div>
       </div>
     </div>
   );
