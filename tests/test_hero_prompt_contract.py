@@ -78,6 +78,19 @@ def test_accept_visual_style_in_hero_style() -> None:
     assert validate_hero_style_or_error(_STYLE) is None
 
 
+def test_naznachenie_shablona_is_not_excel_sheet_template() -> None:
+    """Заголовок «Назначение шаблона» в style-промте — не Excel sheet."""
+    text = """
+# Промт треш полька акварель
+## Archival Noir Watercolor Grunge Dossier Poster Illustration
+## 1.1. Назначение шаблона
+Шаблон фиксирует визуальный стиль и правила генерации image prompt.
+Trash Polka watercolor character style lock. STYLE ONLY.
+"""
+    assert not hero_style_looks_like_sheet_template(text)
+    assert validate_hero_style_or_error(text) is None
+
+
 def test_reject_plain_sheet_as_hero_style() -> None:
     err = validate_hero_style_or_error(_SHEET, source_name="sheet.md")
     assert err is not None

@@ -117,16 +117,23 @@ def validate_hero_master_or_error(text: str, *, source_name: str = "") -> str | 
 
 
 def hero_style_looks_like_sheet_template(text: str) -> bool:
-    """Excel/реестр-шаблон сборки sheet — нельзя класть в hero_style."""
+    """Excel/реестр-шаблон сборки sheet — нельзя класть в hero_style.
+
+    Не путать с нормальными style-промтами, где есть заголовок
+    «Назначение шаблона» (визуальный стиль) и слово «реестр» в другом смысле.
+    """
     t = (text or "").lower()
     if not t.strip():
         return False
     hits = sum(1 for m in _SHEET_TEMPLATE_MARKERS if m.lower() in t)
     if hits >= 2:
         return True
-    # Короткий smoking gun: «НАЗНАЧЕНИЕ» + model sheet / реестр.
+    # Smoking gun только для Excel→sheet агента, не для любого «назначение».
     if "назначение" in t and (
-        "model sheet" in t or "turnaround" in t or "реестр" in t
+        "model sheet" in t
+        or "turnaround" in t
+        or "реестр сущностей" in t
+        or "поля персонажа" in t
     ):
         return True
     return False
