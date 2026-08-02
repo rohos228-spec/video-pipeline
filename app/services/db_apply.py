@@ -69,6 +69,10 @@ FIELD_ALIASES: dict[str, str] = {
     "video_prompt_2": "animation_prompt_shot2",
     "промт_видео_2": "animation_prompt_shot2",
     "промпт_видео_2": "animation_prompt_shot2",
+    # ID персонажей кадра (c01, c03) → Frame.attrs["characters"] + Excel R8
+    "characters": "characters",
+    "персонажи": "characters",
+    "persons": "characters",
 }
 
 PROJECT_FIELD_ALIASES: dict[str, str] = {
@@ -115,11 +119,19 @@ _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
 def extract_apply_ops_json(text: str) -> dict[str, Any] | None:
-    """Достать JSON с ключом ``ops`` из ответа модели (fence или голый объект)."""
+    """Достать JSON с ``ops`` / ``characters`` из ответа модели."""
     if not text:
         return None
     candidates: list[str] = [m.group(1) for m in _JSON_FENCE_RE.finditer(text)]
-    idxs = [i for i in (text.find('"ops"'), text.find('"actions"')) if i != -1]
+    idxs = [
+        i
+        for i in (
+            text.find('"ops"'),
+            text.find('"actions"'),
+            text.find('"characters"'),
+        )
+        if i != -1
+    ]
     idx = min(idxs) if idxs else -1
     if idx != -1:
         start = text.rfind("{", 0, idx)
@@ -140,10 +152,144 @@ def extract_apply_ops_json(text: str) -> dict[str, Any] | None:
         except Exception:  # noqa: BLE001
             continue
         if isinstance(data, dict) and (
-            isinstance(data.get("ops"), list) or isinstance(data.get("actions"), list)
+            isinstance(data.get("ops"), list)
+            or isinstance(data.get("actions"), list)
+            or isinstance(data.get("characters"), list)
         ):
             return data
     return None
+
+
+def _normalize_character_card(raw: dict[str, Any]) -> dict[str, Any]:
+    """Карточка персонажа из ответа агента → code/name/attrs."""
+    if not isinstance(raw, dict):
+        raise ApplyOpsError("characters: каждый элемент — объект")
+    code = str(
+        raw.get("id") or raw.get("code") or raw.get("ID") or ""
+    ).strip()
+    if not code:
+        raise ApplyOpsError("characters: нужен id (c01…)")
+    name = str(raw.get("имя") or raw.get("name") or "").strip()
+    look = str(raw.get("внешность") or raw.get("look") or "").strip()
+    clothes = str(raw.get("одежда") or raw.get("clothes") or "").strip()
+    char = str(raw.get("характер") or raw.get("char") or "").strip()
+    rules = str(raw.get("правила") or raw.get("rules") or "").strip()
+    return {
+        "code": code,
+        "name": name,
+        "attrs": {
+            "look": look,
+            "clothes": clothes,
+            "char": char,
+            "rules": rules,
+            "внешность": look,
+            "одежда": clothes,
+            "характер": char,
+            "правила": rules,
+        },
+    }
+
+
+async def upsert_characters(
+    session: AsyncSession,
+    project: Project,
+    characters: list[Any],
+) -> int:
+    """Записать/обновить сущности type=character по code (c01…)."""
+    from app.models import Entity
+
+    if not isinstance(characters, list):
+        raise ApplyOpsError("characters: нужен список")
+    if not characters:
+        return 0
+    existing = list(
+        (
+            await session.execute(
+                select(Entity).where(
+                    Entity.project_id == project.id,
+                    Entity.type == "character",
+                )
+            )
+        ).scalars()
+    )
+    by_code = {
+        str(e.code or "").strip(): e for e in existing if e.code
+    }
+    max_key = max((float(e.sort_key or 0) for e in existing), default=0.0)
+    n = 0
+    for raw in characters:
+        card = _normalize_character_card(raw)
+        code = card["code"]
+        en = by_code.get(code)
+        if en is None:
+            max_key += 10.0
+            en = Entity(
+                project_id=project.id,
+                type="character",
+                code=code,
+                name=card["name"],
+                attrs=card["attrs"],
+                sort_key=max_key,
+            )
+            session.add(en)
+            by_code[code] = en
+        else:
+            en.name = card["name"]
+            en.attrs = card["attrs"]
+            en.type = "character"
+        n += 1
+    await session.flush()
+    return n
+
+
+def _write_persons_sheet(wb: Any, entities: list[Any]) -> int:
+    """Синк листа «Персонажи» из Entity (колонки B.. как в excel_characters)."""
+    from app.services.excel_characters import (
+        ROW_CHAR,
+        ROW_CLOTHES,
+        ROW_ID,
+        ROW_LOOK,
+        ROW_NAME,
+        ROW_RULES,
+        SHEET_PERSONS,
+    )
+
+    chars = [
+        e
+        for e in entities
+        if getattr(e, "type", None) == "character" and getattr(e, "code", None)
+    ]
+    chars.sort(key=lambda e: (float(getattr(e, "sort_key", 0) or 0), str(e.code)))
+    if SHEET_PERSONS in wb.sheetnames:
+        ws = wb[SHEET_PERSONS]
+    else:
+        ws = wb.create_sheet(SHEET_PERSONS)
+        ws["A1"] = "ID персонажа"
+        ws["A3"] = "имя"
+        ws["A4"] = "внешность"
+        ws["A5"] = "одежда"
+        ws["A6"] = "характер"
+        ws["A7"] = "правила"
+    # Чистим старые колонки B.. (до разумного лимита)
+    for col in range(2, max(ws.max_column or 2, 2) + 1):
+        for row in (ROW_ID, ROW_NAME, ROW_LOOK, ROW_CLOTHES, ROW_CHAR, ROW_RULES):
+            ws.cell(row=row, column=col, value=None)
+    cells = 0
+    for i, en in enumerate(chars):
+        col = 2 + i
+        attrs = en.attrs if isinstance(en.attrs, dict) else {}
+        look = str(attrs.get("look") or attrs.get("внешность") or "")
+        clothes = str(attrs.get("clothes") or attrs.get("одежда") or "")
+        char = str(attrs.get("char") or attrs.get("характер") or "")
+        rules = str(attrs.get("rules") or attrs.get("правила") or "")
+        ws.cell(row=ROW_ID, column=col, value=str(en.code))
+        ws.cell(row=ROW_NAME, column=col, value=str(en.name or ""))
+        ws.cell(row=ROW_LOOK, column=col, value=look)
+        ws.cell(row=ROW_CLOTHES, column=col, value=clothes)
+        ws.cell(row=ROW_CHAR, column=col, value=char)
+        ws.cell(row=ROW_RULES, column=col, value=rules)
+        cells += 6
+    return cells
 
 
 def _fmt_timecode(start: float | None, end: float | None) -> str | None:
@@ -158,15 +304,21 @@ def _fmt_timecode(start: float | None, end: float | None) -> str | None:
     return f"{_ts(float(start))}-{_ts(float(end))}"
 
 
-def export_project_xlsx(project: Project, frames: list[Frame]) -> dict:
-    """DB → project.xlsx (лист «план» + «Общий план»!B2 из Project.meta).
+def export_project_xlsx(
+    project: Project,
+    frames: list[Frame],
+    *,
+    entities: list[Any] | None = None,
+) -> dict:
+    """DB → project.xlsx (план + Общий план + Персонажи + R8).
 
-    Пишет только строки, за которые DB отвечает: R45/R46/R48/R64/R49,
-    плюс R50 (длительность) и R15 (таймкод), если они есть в DB.
-    Персонажи/предметы/прочие строки не трогаем. Перед записью — backup.
+    Пишет строки DB: R45/R46/R48/R64/R49, R50, R15, плюс R8 (персонажи кадра)
+    и лист «Персонажи» из Entity. Перед записью — backup.
     """
     from app.services.plan_shot2 import SHOT2_PROMPT_ATTR, SHOT2_VIDEO_PROMPT_ATTR
     from app.services.xlsx_versioning import backup_to_old
+
+    ROW_PERSONS_PRIMARY = 8  # как в generate_images / baza
 
     path = project.data_dir / "project.xlsx"
     if not path.is_file():
@@ -204,6 +356,14 @@ def export_project_xlsx(project: Project, frames: list[Frame]) -> dict:
             if tc:
                 ws.cell(row=ROW_TIMECODE_V8, column=col, value=tc)
                 cells += 1
+            persons = str(
+                attrs.get("characters")
+                or attrs.get("persons")
+                or attrs.get("персонажи")
+                or ""
+            ).strip()
+            ws.cell(row=ROW_PERSONS_PRIMARY, column=col, value=persons)
+            cells += 1
         general_plan = (project.meta or {}).get("general_plan")
         if general_plan:
             for name in wb.sheetnames:
@@ -213,6 +373,8 @@ def export_project_xlsx(project: Project, frames: list[Frame]) -> dict:
                     wb[name]["B2"] = str(general_plan)
                     cells += 1
                     break
+        if entities is not None:
+            cells += _write_persons_sheet(wb, entities)
         wb.save(path)
     finally:
         wb.close()
@@ -227,19 +389,26 @@ def export_project_xlsx(project: Project, frames: list[Frame]) -> dict:
 async def apply_ops(
     session: AsyncSession,
     project: Project,
-    ops: list[dict[str, Any]],
+    ops: list[dict[str, Any]] | None = None,
     *,
+    characters: list[Any] | None = None,
     export_xlsx: bool = True,
 ) -> dict:
     """Применить JSON-операции к проекту (fail-closed, одна транзакция).
 
     ``ops`` — список ``{"target": "frame"|"project"|"replace_frames", ...}``.
+    ``characters`` — реестр персонажей ``[{id, имя, внешность, …}]`` → Entity.
     ``replace_frames``: ``{"target":"replace_frames","frames":[{"закадр":"…"},…]}``.
     После записи по умолчанию экспортируем в project.xlsx.
     """
+    from app.models import Entity
     from app.services.plan_shot2 import SHOT2_PROMPT_ATTR, SHOT2_VIDEO_PROMPT_ATTR
 
-    if not ops:
+    ops = list(ops or [])
+    chars_n = 0
+    if characters:
+        chars_n = await upsert_characters(session, project, characters)
+    if not ops and not chars_n:
         raise ApplyOpsError("пустой ops — нечего применять")
     for op in ops:
         if op.get("target", "frame") not in TARGETS:
@@ -348,6 +517,11 @@ async def apply_ops(
             attrs[SHOT2_PROMPT_ATTR] = str(fields["image_prompt_shot2"] or "")
         if "animation_prompt_shot2" in fields:
             attrs[SHOT2_VIDEO_PROMPT_ATTR] = str(fields["animation_prompt_shot2"] or "")
+        if "characters" in fields:
+            persons = str(fields["characters"] or "").strip()
+            attrs["characters"] = persons
+            attrs["persons"] = persons
+            attrs["персонажи"] = persons
         fr.attrs = attrs
         updated += 1
 
@@ -387,5 +561,17 @@ async def apply_ops(
                 )
             ).scalars()
         )
-        exported = export_project_xlsx(project, all_frames)
-    return {"ok": True, "updated": updated, "exported": exported}
+        ents = list(
+            (
+                await session.execute(
+                    select(Entity).where(Entity.project_id == project.id)
+                )
+            ).scalars()
+        )
+        exported = export_project_xlsx(project, all_frames, entities=ents)
+    return {
+        "ok": True,
+        "updated": updated,
+        "characters": chars_n,
+        "exported": exported,
+    }

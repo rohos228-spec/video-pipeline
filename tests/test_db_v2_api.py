@@ -232,6 +232,78 @@ async def test_apply_ops_human_aliases_and_unknown_field(api_client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_ops_characters_and_frame_persons(api_client, tmp_path) -> None:
+    """Агент персонажей: characters[] + поле персонажи на кадре → Entity + attrs."""
+    from app.models import Entity
+
+    client, project_id, factory = api_client
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        uuid = fr.uuid
+
+    r = await client.post(
+        f"/api/db/projects/{project_id}/apply-ops",
+        json={
+            "characters": [
+                {
+                    "id": "c01",
+                    "имя": "Тест Герой",
+                    "внешность": "худой мужчина",
+                    "одежда": "тёмный костюм",
+                    "характер": "замкнутый",
+                    "правила": "",
+                }
+            ],
+            "ops": [
+                {
+                    "frame_uuid": uuid,
+                    "fields": {"персонажи": "c01"},
+                }
+            ],
+        },
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data.get("characters") == 1
+    assert data.get("updated") == 1
+
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        attrs = fr.attrs or {}
+        assert attrs.get("characters") == "c01"
+        ents = list(
+            (
+                await session.execute(
+                    select(Entity).where(
+                        Entity.project_id == project_id,
+                        Entity.type == "character",
+                    )
+                )
+            ).scalars()
+        )
+        assert len(ents) == 1
+        assert ents[0].code == "c01"
+        assert ents[0].name == "Тест Герой"
+        assert (ents[0].attrs or {}).get("look") == "худой мужчина"
+
+    raw = (
+        '{"characters":[{"id":"c02","имя":"X","внешность":"","одежда":"",'
+        '"характер":"","правила":""}],"ops":[]}'
+    )
+    parsed = db_apply.extract_apply_ops_json(raw)
+    assert parsed is not None
+    assert parsed["characters"][0]["id"] == "c02"
+
+
+@pytest.mark.asyncio
 async def test_apply_ops_project_target_general_plan_exports(api_client, tmp_path) -> None:
     """target=project — поля уровня проекта (нода плана), экспорт в «Общий план»."""
     client, project_id, factory = api_client

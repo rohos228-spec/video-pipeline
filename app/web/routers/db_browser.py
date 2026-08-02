@@ -210,7 +210,8 @@ class ApplyOp(BaseModel):
 
 
 class ApplyOpsBody(BaseModel):
-    ops: list[ApplyOp]
+    ops: list[ApplyOp] = Field(default_factory=list)
+    characters: list[dict] = Field(default_factory=list)
     export_xlsx: bool = True
 
 
@@ -224,8 +225,9 @@ async def apply_ops(
 
     ``target="frame"`` (по умолчанию) — правка кадра по ``frame_uuid``;
     ``target="project"`` — поля уровня проекта (общий план). Поля можно
-    писать по-человечески («закадр», «промт_картинки») — сервер сам
-    переводит в канонические ключи. Любая ошибка — 400, откат транзакции.
+    писать по-человечески («закадр», «промт_картинки», «персонажи») — сервер сам
+    переводит в канонические ключи. ``characters`` — реестр персонажей.
+    Любая ошибка — 400, откат транзакции.
     """
     project = await _project(session, project_id)
     ops = [
@@ -234,7 +236,11 @@ async def apply_ops(
     ]
     try:
         result = await db_apply.apply_ops(
-            session, project, ops, export_xlsx=body.export_xlsx
+            session,
+            project,
+            ops,
+            characters=body.characters or None,
+            export_xlsx=body.export_xlsx,
         )
     except db_apply.ApplyOpsError as e:
         await session.rollback()
@@ -2110,12 +2116,14 @@ async def orchestrator_chat(
     ops_data = db_apply.extract_apply_ops_json(reply or "")
     if ops_data:
         ops = ops_data.get("ops") or []
-        if ops:
+        chars = ops_data.get("characters") or []
+        if ops or chars:
             try:
                 applied = await db_apply.apply_ops(
                     session,
                     project,
                     ops,
+                    characters=chars or None,
                     export_xlsx=bool(ops_data.get("export_xlsx", True)),
                 )
                 await session.commit()

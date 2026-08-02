@@ -47,8 +47,12 @@ _APPLY_OPS_HINT = (
     "Верни ТОЛЬКО JSON apply-ops (без TSV, без `# Лист:`, без `@row=`):\n"
     '{"ops":[{"frame_uuid":"<uuid кадра>","fields":{...}}]}\n'
     "Поля по-человечески: закадр, промт_картинки, промт_видео, смысл, "
-    "длительность, промт_картинки_2, промт_видео_2; общий план: "
+    "длительность, промт_картинки_2, промт_видео_2, персонажи; общий план: "
     '{"target":"project","fields":{"общий_план":"…"}}.\n'
+    "Реестр персонажей (опционально в том же JSON): "
+    '{"characters":[{"id":"c01","имя":"…","внешность":"…","одежда":"…",'
+    '"характер":"…","правила":""}],'
+    '"ops":[{"frame_uuid":"…","fields":{"персонажи":"c01"}}]}.\n'
     "Неизвестный uuid/поле — весь запрос отклонён. "
     "Адресация кадров (номер = uuid):\n"
 )
@@ -586,22 +590,35 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         # После project_file: apply-ops JSON → DB (SoT); иначе legacy xlsx→DB sync.
         if output_mode == "project_file":
             ops_data = getattr(api_res, "apply_ops", None)
-            if ops_data and ops_data.get("ops"):
+            ops_list = (
+                list(ops_data.get("ops") or [])
+                if isinstance(ops_data, dict)
+                else []
+            )
+            chars_list = (
+                list(ops_data.get("characters") or [])
+                if isinstance(ops_data, dict)
+                else []
+            )
+            if ops_data and (ops_list or chars_list):
                 from app.services import db_apply
 
                 try:
                     applied = await db_apply.apply_ops(
                         session,
                         project,
-                        ops_data["ops"],
+                        ops_list,
+                        characters=chars_list or None,
                         export_xlsx=bool(ops_data.get("export_xlsx", True)),
                     )
                     await session.commit()
                     logger.info(
-                        "[#{}] enrich_xlsx node={}: apply-ops записано {} оп (DB→xlsx)",
+                        "[#{}] enrich_xlsx node={}: apply-ops записано "
+                        "ops={} characters={} (DB→xlsx)",
                         project.id,
                         node_key,
                         applied.get("updated"),
+                        applied.get("characters"),
                     )
                 except db_apply.ApplyOpsError as e:
                     raise RuntimeError(
@@ -611,7 +628,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 # DB SoT: без apply-ops шаг не принимаем (TSV/xlsx writeback отключён).
                 raise RuntimeError(
                     f"enrich_xlsx node={node_key}: модель не вернула apply-ops JSON. "
-                    "Нужен {\"ops\":[{\"frame_uuid\":\"…\",\"fields\":{…}}]} — "
+                    "Нужен {\"ops\":[…]} и/или {\"characters\":[…]} — "
                     "запись через Excel/TSV больше не поддерживается."
                 )
         save_operator_result(
