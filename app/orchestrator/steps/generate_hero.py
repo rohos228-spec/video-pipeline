@@ -1100,15 +1100,25 @@ async def _generate_one_excel_character(
         outsee = OutseeBot(bs)
 
         # Сборка промта.
+        from app.services.excel_characters import (
+            build_ref_variation_sheet_prompt,
+            is_polluted_character_field,
+        )
+
+        if is_polluted_character_field(ch.name) or is_polluted_character_field(
+            ch.look
+        ):
+            raise RuntimeError(
+                f"excel_hero {ch.id}: в имени/внешности служебный текст агента "
+                f"(name={ch.name!r}). Исправь лист «Персонажи» и перезапусти hero."
+            )
+
         if used_refs:
-            # Реф-вариация: НЕ дёргаем GPT. Шлём короткий текст изменений
-            # (имя/внешность/одежда/характер, БЕЗ правил) + reference image(s).
-            prompt_text = ch.changes_text()
-            if not prompt_text.strip():
-                prompt_text = (
-                    "Different pose, camera angle, or outfit for the "
-                    "character shown in the reference image."
-                )
+            # Реф-вариация: без GPT, но ОБЯЗАТЕЛЬНО sheet-layout.
+            # Иначе Outsee по короткому changes_text рисует cinematic scene.
+            prompt_text = build_ref_variation_sheet_prompt(
+                ch, style=hero_style_content
+            )
         else:
             # Не-реф: полный GPT-промт по brief из excel + проектный стиль.
             hero_template = gtb.get_effective_text(project, "hero")

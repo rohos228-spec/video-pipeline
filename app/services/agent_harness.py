@@ -263,7 +263,67 @@ def verify_project_disk(project_id: int, data_dir: Path, status: str) -> Harness
             f"n={len(videos)} required={videos_required} status={status}",
         )
     )
-    checks.append(HarnessCheck("heroes_png", True, f"n={len(heroes)}"))  # optional
+    # Персонажи: после hero_ready png обязательны, если в xlsx есть записи.
+    excel_persons: list[Any] = []
+    polluted: list[str] = []
+    if xlsx.is_file():
+        try:
+            from app.services.excel_characters import (
+                is_polluted_character_field,
+                parse_persons_sheet,
+            )
+
+            excel_persons = parse_persons_sheet(xlsx)
+            for ch in excel_persons:
+                if is_polluted_character_field(ch.name) or is_polluted_character_field(
+                    ch.look
+                ):
+                    polluted.append(ch.id)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("harness persons parse skip: {}", e)
+
+    _HEROES_REQUIRED_STATUSES = {
+        "hero_ready",
+        "items_ready",
+        "generating_items",
+        "enrich_1_ready",
+        "enrich_2_ready",
+        "enrich_3_ready",
+        "enrich_4_ready",
+        "enrich_5_ready",
+        "generating_image_prompts",
+        "image_prompts_ready",
+        *_SCENES_REQUIRED_STATUSES,
+    }
+    heroes_required = bool(excel_persons) and status in _HEROES_REQUIRED_STATUSES
+    heroes_ok = (not heroes_required) or len(heroes) >= len(excel_persons)
+    checks.append(
+        HarnessCheck(
+            "heroes_png",
+            heroes_ok,
+            f"n={len(heroes)} excel={len(excel_persons)} "
+            f"required={heroes_required} status={status}",
+        )
+    )
+    if heroes_required and not heroes_ok:
+        repair.append("hero")
+
+    names_ok = not polluted
+    checks.append(
+        HarnessCheck(
+            "excel_hero_fields_sane",
+            names_ok,
+            (
+                "ok"
+                if names_ok
+                else f"polluted character fields: {', '.join(polluted)} "
+                "(служебный текст агента в имени/внешности — не данные персонажа)"
+            ),
+        )
+    )
+    if polluted:
+        repair.append("hero")
+
     checks.append(
         HarnessCheck(
             "final_mp4",

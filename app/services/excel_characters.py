@@ -40,6 +40,76 @@ SHEET_PERSONS = "Персонажи"
 # в имя файла (`<id>.png`) и в callback_data Telegram-инлайн-кнопок.
 _ID_RE = re.compile(r"^[^\W\d_][\w-]*$", re.UNICODE)
 
+# Имя/поля, куда агент слил служебный текст вместо персонажа.
+_POLLUTED_PERSON_FIELD_RE = re.compile(
+    r"(оставь\s+формат|формат\s+неизмен|не\s+выдумывай|нет\s+исходных\s+данных|"
+    r"apply-ops|промт_картинки|frame_uuid|characters\s*\[)",
+    re.IGNORECASE,
+)
+
+
+def is_polluted_character_field(text: str) -> bool:
+    """True если в ячейке инструкции агента, а не данные персонажа."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    return bool(_POLLUTED_PERSON_FIELD_RE.search(t))
+
+
+def build_ref_variation_sheet_prompt(
+    ch: "ExcelCharacter",
+    *,
+    style: str = "",
+    max_chars: int = 4900,
+) -> str:
+    """Промт Outsee для реф-вариации: sheet + изменения, не cinematic scene.
+
+    Раньше в ref-пути уходил только changes_text → генератор рисовал
+    сцену в комнате вместо turnaround sheet.
+    """
+    changes = ch.changes_text().strip()
+    style_bit = (style or "").strip()
+    if len(style_bit) > 900:
+        style_bit = style_bit[:900].rstrip() + "…"
+
+    parts = [
+        (
+            "Create a dense professional character model sheet / turnaround sheet "
+            "for the SAME exact character as in the reference image(s). "
+            "Aspect ratio 16:9. Pure white background (#FFFFFF). "
+            "No environment, no room, no furniture, no background shadows, "
+            "no decorative elements, no text, no labels, no watermark. "
+            "NOT a cinematic still, NOT a story scene, NOT a photograph of a room. "
+            "Neutral standing pose, arms slightly away from body, "
+            "orthographic turnaround feel, minimal perspective distortion. "
+            "LEFT: 4 large full-body views side by side — front, 3/4 front, side, back. "
+            "RIGHT UPPER: head turnaround — front, 3/4, side, back. "
+            "Tight packed production reference sheet, fill most of the canvas, "
+            "minimal empty margins."
+        ),
+        f"Character id: {ch.id}.",
+    ]
+    if changes:
+        parts.append(
+            "Apply ONLY these appearance / outfit changes to the reference "
+            "character; keep identity locked to the reference:\n" + changes
+        )
+    else:
+        parts.append(
+            "Keep the reference character appearance; produce a fresh "
+            "turnaround sheet composition only."
+        )
+    if style_bit:
+        parts.append("Visual style (must apply):\n" + style_bit)
+    parts.append(
+        "STRICT CONSISTENCY: same face, hair, proportions and identity as "
+        "the reference, updated only by the listed changes."
+    )
+    text = "\n\n".join(parts)
+    if len(text) > max_chars:
+        return text[:max_chars]
+    return text
+
 
 @dataclass
 class ExcelCharacter:
