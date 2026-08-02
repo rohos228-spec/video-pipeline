@@ -52,10 +52,11 @@ interface ChatMsg {
 /** Префикс к API (в чате пользователю не показываем). */
 const FIX_BUGS_PREFIX =
   "Режим «Фикс багов» / поручение оператора ниже. " +
-  "Если просят удалить/создать проекты или шаги Studio — делай это через actions " +
-  "(delete_projects / create_project / run_step…), не через edit_files. " +
-  "Если просят починить КОД — edit_files + короткий run_tests + git_commit_push auto=false. " +
-  "Кратко по-русски.\n\nПОРУЧЕНИЕ:\n";
+  "Это НЕ вопрос «что не так» — нужно НАЙТИ и ПОЧИНИТЬ. " +
+  "Сначала действия: run_harness / run_step / repair_graph / hitl_decision; " +
+  "если баг в коде — edit_files + короткий run_tests + git_commit_push auto=false. " +
+  "Проекты/ноды Studio — через actions (delete_projects / create_project / add_node…), " +
+  "не через edit_files. Кратко по-русски: причина + что исправил.\n\nПОРУЧЕНИЕ:\n";
 
 export function OrchestratorPanel({ projectId }: Props) {
   const [open, setOpen] = usePersistedState("vp-orchestrator-open", true);
@@ -116,7 +117,7 @@ export function OrchestratorPanel({ projectId }: Props) {
           projectId,
           apiText,
           next.slice(-9, -1).map((m) => ({ role: m.role, content: m.content })),
-          { signal: ac.signal },
+          { signal: ac.signal, fixBugs: asFix },
         );
         if (ac.signal.aborted) return;
         const notes: string[] = [];
@@ -563,7 +564,8 @@ export function OrchestratorPanel({ projectId }: Props) {
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
             {fixBugsMode ? (
               <div className="mb-2 rounded-md border border-amber-400/30 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-100/90">
-                Режим фикса включён. Напиши баг → Enter. Повторное нажатие «Фикс багов» — выход.
+                Режим фикса: оркестратор должен чинить (шаги/код), не только объяснить.
+                Напиши баг → Enter. Ещё раз «Фикс багов» — выход в обычный чат.
               </div>
             ) : null}
             {chatLog.length === 0 && !fixBugsMode ? (

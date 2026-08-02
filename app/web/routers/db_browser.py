@@ -557,8 +557,32 @@ def _log_tail_context(project: Project, max_lines: int = 25) -> list[str]:
     return out[-max_lines:]
 
 
-def _is_diagnose_only_question(message: str) -> bool:
-    """Вопрос «что сломалось» — ответ текстом, без read_file/правок кода."""
+_FIX_BUGS_MARKERS = (
+    "режим «фикс багов»",
+    "режим \"фикс багов\"",
+    "режим фикс багов",
+    "поручение оператора ниже",
+)
+
+
+def _is_fix_bugs_mode(message: str, *, flag: bool | None = None) -> bool:
+    """Кнопка «Фикс багов» в Studio или явный флаг API."""
+    if flag is True:
+        return True
+    t = (message or "").strip().lower()
+    return any(m in t for m in _FIX_BUGS_MARKERS)
+
+
+def _is_diagnose_only_question(
+    message: str, *, fix_bugs: bool | None = None
+) -> bool:
+    """Вопрос «что сломалось» — ответ текстом, без read_file/правок кода.
+
+    Режим «Фикс багов» НИКОГДА не diagnose-only: иначе кнопка бесполезна
+    (тот же текстовый ответ, что без неё).
+    """
+    if _is_fix_bugs_mode(message, flag=fix_bugs):
+        return False
     t = (message or "").strip().lower()
     if not t:
         return False
@@ -568,6 +592,7 @@ def _is_diagnose_only_question(message: str) -> bool:
         r"закоммить|commit_and_push|edit_files|"
         r"почини\s+баг\s+в\s+код|исправь\s+в\s+коде",
         t,
+        flags=re.IGNORECASE,
     ):
         return False
     return bool(
@@ -578,7 +603,8 @@ def _is_diagnose_only_question(message: str) -> bool:
             r"у\s+меня\s+опять\s+ошиб|опять\s+ошиб|"
             r"нод[аы].{0,40}(ошиб|не\s+работ|косяч|упал)|"
             r"работа\s+гпт.{0,30}(ошиб|не\s+работ)|"
-            r"поиск\s+баг|диагност|что\s+сломал",
+            r"поиск\s+баг|диагност|что\s+сломал|"
+            r"персонаж.{0,40}(не\s+коррект|некоррект|крив|сломал|ошиб)",
             t,
         )
     )
@@ -2085,6 +2111,8 @@ def _orchestrator_context(graph: dict) -> str:
 class OrchestratorChatBody(BaseModel):
     message: str = Field(min_length=1)
     history: list[dict] = Field(default_factory=list)
+    # Кнопка «Фикс багов» в Studio — чинить, не только объяснить.
+    fix_bugs: bool = False
 
 
 @router.post("/projects/{project_id}/orchestrator/chat")
@@ -2113,7 +2141,10 @@ async def orchestrator_chat(
     diag_lines = await _diagnostics_context(session, project)
     canvas_lines, canvas_keymap = await _canvas_nodes_context(session, project)
     catalog_lines = await _projects_catalog_context(session)
-    diagnose_only = _is_diagnose_only_question(body.message)
+    fix_bugs = _is_fix_bugs_mode(body.message, flag=bool(body.fix_bugs))
+    diagnose_only = _is_diagnose_only_question(
+        body.message, fix_bugs=fix_bugs
+    )
     code_lines = (
         []
         if diagnose_only
@@ -2145,7 +2176,14 @@ async def orchestrator_chat(
             "\n\nРЕЖИМ: вопрос про ошибку — ответь ТОЛЬКО текстом по-русски "
             "из ДИАГНОСТИКА, без JSON и без read_file."
             if diagnose_only
-            else ""
+            else (
+                "\n\nРЕЖИМ ФИКС БАГОВ: пользователь нажал кнопку «Фикс багов». "
+                "Не ограничивайся объяснением. Найди причину по ДИАГНОСТИКА "
+                "и СРАЗУ чини: actions (run_step/run_harness/…) и при необходимости "
+                "edit_files + run_tests. Краткий отчёт по-русски что сломано и что сделал."
+                if fix_bugs
+                else ""
+            )
         )
         + "\n\nПОЛЬЗОВАТЕЛЬ: "
         + body.message

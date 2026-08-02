@@ -393,7 +393,7 @@ export const api = {
     projectId: number,
     message: string,
     history: { role: string; content: string }[],
-    opts?: { signal?: AbortSignal },
+    opts?: { signal?: AbortSignal; fixBugs?: boolean },
   ) =>
     http<{
       reply: string;
@@ -436,7 +436,11 @@ export const api = {
       `/api/db/projects/${projectId}/orchestrator/chat`,
       {
         method: "POST",
-        body: JSON.stringify({ message, history }),
+        body: JSON.stringify({
+          message,
+          history,
+          fix_bugs: Boolean(opts?.fixBugs),
+        }),
         signal: opts?.signal,
       },
       // GPT-вызов длинный (контекст графа + ответ): 10 минут, как ask_fresh.
