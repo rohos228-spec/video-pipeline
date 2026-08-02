@@ -390,14 +390,25 @@ def resolve_excel_gpt_node_key_for_slot(
         matches.sort(
             key=lambda n: float((n.get("position") or {}).get("x", 0)),
         )
+        # Несколько нод с одним slotIndex: берём первую НЕ завершённую
+        # по ключу. Иначе leftmost (часто до hero) откатывает пайплайн назад.
+        done_keys = completed_node_keys(project)
+        incomplete = [
+            n
+            for n in matches
+            if str(n.get("id") or "").strip() not in done_keys
+        ]
+        pick = incomplete[0] if incomplete else matches[0]
         if len(matches) > 1:
             logger.warning(
-                "excel_gpt: slotIndex={} collides on {} nodes — using leftmost {}",
+                "excel_gpt: slotIndex={} collides on {} nodes — using {} "
+                "(incomplete={})",
                 slot,
                 len(matches),
-                matches[0].get("id"),
+                pick.get("id"),
+                len(incomplete),
             )
-        nid = str(matches[0].get("id") or "").strip()
+        nid = str(pick.get("id") or "").strip()
         return nid or None
     ordered = sorted(
         [

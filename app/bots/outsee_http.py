@@ -588,10 +588,11 @@ async def generate_image(
             body["reference_images"] = hosted
 
     logger.info(
-        "outsee_api.image model={} aspect={} res={} project={}",
+        "outsee_api.image model={} aspect={} res={} refs={} project={}",
         model,
         body.get("aspect_ratio"),
         body.get("resolution"),
+        len(body.get("reference_images") or []),
         project_id,
     )
     submitted = await _post_generate("/api/v1/images/generate", body)

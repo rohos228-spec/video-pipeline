@@ -1100,10 +1100,7 @@ async def _generate_one_excel_character(
         outsee = OutseeBot(bs)
 
         # Сборка промта.
-        from app.services.excel_characters import (
-            build_ref_variation_sheet_prompt,
-            is_polluted_character_field,
-        )
+        from app.services.excel_characters import is_polluted_character_field
 
         if is_polluted_character_field(ch.name):
             raise RuntimeError(
@@ -1112,10 +1109,23 @@ async def _generate_one_excel_character(
             )
 
         if used_refs:
-            # Реф-вариация (rules=c01): рабочая механика — реф-картинка +
-            # changes_text. Sheet-мастер слота hero тут НЕ нужен.
-            prompt_text = build_ref_variation_sheet_prompt(
-                ch, style=hero_style_content
+            # Реф = картинка + короткий текст. Длинный style/sheet → Outsee
+            # игнорит reference_images.
+            changes = ch.changes_text().strip()
+            prompt_text = (
+                "Use the attached reference image as the exact character. "
+                "Create a 16:9 character turnaround / model sheet on white "
+                "background. Keep face, body, clothes identity from reference."
+            )
+            if changes:
+                prompt_text = prompt_text + "\n\nChanges:\n" + changes[:800]
+            logger.info(
+                "[#{}] excel_hero {}: REF mode refs={} files={} prompt_len={}",
+                project.id,
+                ch.id,
+                ch.ref_ids,
+                [str(p) for p in ref_paths],
+                len(prompt_text),
             )
         else:
             # Base-персонаж: слот hero = turnaround sheet (не агент реестра).
