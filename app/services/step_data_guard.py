@@ -72,6 +72,20 @@ async def ready_status_confirmed_by_data(
     ready_status: ProjectStatus,
 ) -> bool:
     """True если данные в БД подтверждают *_ready (не шаблон/заглушка)."""
+    # frames_ready: кадры есть + (split_completed ИЛИ статус уже frames_ready).
+    # Не требуем длинный general_plan и НЕ смотрим stale NodeRun.done —
+    # иначе recompute после разбивки откатывает в `new` и цепочка встаёт.
+    if ready_status is ProjectStatus.frames_ready:
+        fr_n = (
+            await session.execute(
+                select(func.count(Frame.id)).where(Frame.project_id == project.id)
+            )
+        ).scalar_one()
+        if int(fr_n or 0) >= 1:
+            meta = project.meta if isinstance(project.meta, dict) else {}
+            if meta.get("split_completed") or project.status is ProjectStatus.frames_ready:
+                return True
+
     # enrich_*_ready до split: кадры могут отсутствовать — смотрим meta / статус.
     if ready_status in (
         ProjectStatus.enrich_1_ready,

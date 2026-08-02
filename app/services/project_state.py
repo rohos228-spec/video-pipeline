@@ -172,6 +172,10 @@ def clear_stale_downstream_meta(project: Project) -> list[str]:
         # но на всякий случай: если когда-нибудь order поменяют — не сносим.
         if _enrich_meta_allowed_for_status(project):
             return []
+        # Ложный откат frames_ready→new: не сносить split_completed, иначе
+        # пайплайн навсегда теряет разбивку и auto_advance встаёт.
+        if cur is ProjectStatus.new and meta.get("split_completed"):
+            return []
         return clear_pipeline_progress_meta(project)
 
     if (
@@ -284,8 +288,12 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
     «контрольные точки» (ready / new / assembled / published).
     """
     pid = project.id
-    has_plan = is_meaningful_general_plan(project.general_plan)
-    has_script = bool(project.script_text)
+    meta0 = project.meta if isinstance(project.meta, dict) else {}
+    # План: колонка ИЛИ meta (DB-first / дочерние без длинного general_plan).
+    has_plan = is_meaningful_general_plan(project.general_plan) or is_meaningful_general_plan(
+        meta0.get("general_plan") if isinstance(meta0.get("general_plan"), str) else None
+    )
+    has_script = bool((project.script_text or "").strip())
     has_hero_descr = bool(project.hero_description)
 
     fr_total = (
@@ -371,12 +379,17 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
 
     # Идём снизу вверх. Каждый уровень — это AND условие: для уровня N
     # все prerequisite N-1 тоже должны быть выполнены.
-    if not has_plan:
+    #
+    # Пустой/короткий general_plan при живом script/кадрах НЕ роняет в `new`:
+    # иначе сразу после split recompute делает frames_ready→new, сносит
+    # split_completed и auto_advance по связи никогда не стартует.
+    if not has_plan and not has_script and fr_total == 0:
         return ProjectStatus.new
-    # plan ✓
-    if not has_script:
+    if has_plan and not has_script and fr_total == 0:
         return ProjectStatus.plan_ready
-    # script ✓
+    if not has_script and fr_total == 0:
+        return ProjectStatus.plan_ready if has_plan else ProjectStatus.new
+    # script ✓ (или кадры уже есть)
     if fr_total == 0:
         # Canvas: excel_gpt часто до split — кадров ещё нет. Не откатывать
         # enrich_*_ready в script_ready (иначе auto_advance снова жмёт ту же GPT-ноду).
@@ -400,6 +413,8 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
         ProjectStatus.frames_ready
     ):
         meta_now = project.meta if isinstance(project.meta, dict) else {}
+        # Только meta.split_completed текущего прогона. NodeRun.done со
+        # прошлого круга НЕ поднимает в frames_ready (прыжок через ноды).
         if not bool(meta_now.get("split_completed")):
             # Уже на enrich до split (canvas) — не сбрасывать в script_ready.
             if _enrich_meta_allowed_for_status(project):
@@ -543,6 +558,29 @@ async def recompute_status(
     new = await compute_actual_status(session, project)
     from app.telegram.menu import status_order as _ord
 
+    # ЖЕЛЕЗО: никогда не сбрасывать прогресс в `new`, если уже есть script
+    # или кадры. Именно это месяцами ломало auto_advance после разбивки
+    # (frames_ready → new из‑за пустого general_plan / гонки web_get).
+    if new is ProjectStatus.new and old is not ProjectStatus.new:
+        fr_n = (
+            await session.execute(
+                select(func.count(Frame.id)).where(Frame.project_id == project.id)
+            )
+        ).scalar_one()
+        has_script = bool((project.script_text or "").strip())
+        if int(fr_n or 0) >= 1 or has_script:
+            logger.warning(
+                "[#{}] {}: BLOCKED {} → new (есть {} кадров / script={}) — "
+                "оставляем {}, иначе ноды не идут по связи",
+                project.id,
+                log_prefix,
+                old.value,
+                int(fr_n or 0),
+                has_script,
+                old.value,
+            )
+            return old, old, False
+
     # Откат разрешён, если текущий *_ready не подтверждён данными (ложный plan_ready).
     if _ord(new) < _ord(old):
         from app.services.step_data_guard import ready_status_confirmed_by_data
@@ -564,15 +602,12 @@ async def recompute_status(
             new.value,
         )
 
-    # Последовательный пайплайн: из *_ready не прыгаем вперёд по stale данным.
-    # Вперёд двигает только шаг / auto_advance (plan_ready → scripting и т.д.).
-    if (
-        _ord(new) > _ord(old)
-        and old.value.endswith("_ready")
-        and new.value.endswith("_ready")
-    ):
+    # Последовательный пайплайн: из *_ready НЕ прыгаем вперёд по stale данным
+    # (в т.ч. frames_ready → assembled). Вперёд — только шаг / auto_advance
+    # по связям канваса.
+    if _ord(new) > _ord(old) and str(old.value).endswith("_ready"):
         logger.info(
-            "[#{}] {}: keep {} (no upgrade to {} — sequential)",
+            "[#{}] {}: keep {} (no upgrade to {} — sequential, edges/auto_advance)",
             project.id,
             log_prefix,
             old.value,
