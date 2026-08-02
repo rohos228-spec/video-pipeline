@@ -40,20 +40,23 @@ interface ChatMsg {
   confirm?: PendingConfirm;
 }
 
-const FIX_BUGS_PROMPT =
-  "Режим «Фикс багов»: по диагностике/ошибкам этого проекта найди баг в app/. " +
-  "Сначала кратко по-русски: что сломано. Потом точечный edit_files (1–3 файла). " +
-  "run_tests только короткий smoke (tests/test_code_autofix_allowlist.py), без полного suite. " +
-  "git_commit_push с auto=false — я подтвержу push. Ветка = ORCHESTRATOR_GIT_BRANCH.";
+/** Префикс к сообщению пользователя — только после того как он описал баг. */
+const FIX_BUGS_PREFIX =
+  "Режим «Фикс багов». Исправь ТОЛЬКО баг ниже (не сканируй весь проект вслепую). " +
+  "Кратко по-русски → точечный edit_files (1–3 файла) → " +
+  "run_tests только tests/test_code_autofix_allowlist.py → " +
+  "git_commit_push auto=false. Ветка = ORCHESTRATOR_GIT_BRANCH.\n\nБАГ:\n";
 
 export function OrchestratorPanel({ projectId }: Props) {
   const [open, setOpen] = usePersistedState("vp-orchestrator-open", true);
-  const [expanded, setExpanded] = usePersistedState("vp-orchestrator-expanded", true);
+  const [expanded, setExpanded] = usePersistedState("vp-orchestrator-expanded", false);
   const storageKey = `vp-orchestrator-log-${projectId ?? "none"}`;
   const [chatLog, setChatLog] = usePersistedState<ChatMsg[]>(storageKey, []);
   const [chatInput, setChatInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [fixBugsMode, setFixBugsMode] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     try {
@@ -78,19 +81,25 @@ export function OrchestratorPanel({ projectId }: Props) {
   }, []);
 
   const sendMessage = useCallback(
-    async (msg: string) => {
+    async (msg: string, opts?: { fixBugs?: boolean }) => {
       if (projectId == null || !msg.trim() || busy) return;
+      const userText = msg.trim();
+      const asFix = Boolean(opts?.fixBugs || fixBugsMode);
+      const apiText = asFix ? `${FIX_BUGS_PREFIX}${userText}` : userText;
+      const displayText = asFix ? `[фикс багов] ${userText}` : userText;
+      if (asFix) setFixBugsMode(false);
+
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
       setBusy(true);
       setOpen(true);
-      const next: ChatMsg[] = [...chatLog, { role: "user", content: msg.trim() }];
+      const next: ChatMsg[] = [...chatLog, { role: "user", content: displayText }];
       setChatLog(next);
       try {
         const r = await api.dbOrchestratorChat(
           projectId,
-          msg.trim(),
+          apiText,
           next.slice(-9, -1).map((m) => ({ role: m.role, content: m.content })),
           { signal: ac.signal },
         );
@@ -202,15 +211,27 @@ export function OrchestratorPanel({ projectId }: Props) {
         setBusy(false);
       }
     },
-    [projectId, busy, chatLog, setChatLog, setOpen],
+    [projectId, busy, chatLog, fixBugsMode, setChatLog, setOpen],
   );
 
   const sendChat = useCallback(async () => {
     if (!chatInput.trim()) return;
     const msg = chatInput.trim();
     setChatInput("");
-    await sendMessage(msg);
-  }, [chatInput, sendMessage]);
+    await sendMessage(msg, { fixBugs: fixBugsMode });
+  }, [chatInput, sendMessage, fixBugsMode]);
+
+  const armFixBugsMode = useCallback(() => {
+    // НЕ слать GPT сразу — только режим + фокус на ввод
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setBusy(false);
+    setFixBugsMode(true);
+    setOpen(true);
+    setExpanded(false);
+    setChatInput("");
+    window.setTimeout(() => inputRef.current?.focus(), 50);
+  }, [setOpen, setExpanded]);
 
   const resolveRemove = useCallback(
     async (msgIndex: number, confirm: PendingConfirm, approve: boolean) => {
@@ -315,8 +336,10 @@ export function OrchestratorPanel({ projectId }: Props) {
             {projectId == null
               ? "открой проект"
               : busy
-                ? "думает… можно Отмена"
-                : "шаги · база · фикс багов → push"}
+                ? "думает… жми Отмена"
+                : fixBugsMode
+                  ? "режим фикса — опиши баг ниже и Enter"
+                  : "шаги · база · фикс багов → push"}
           </span>
           {open ? (
             <ChevronDown className="ml-auto h-4 w-4 shrink-0" />
@@ -339,17 +362,18 @@ export function OrchestratorPanel({ projectId }: Props) {
           <Button
             size="sm"
             variant="outline"
-            className="h-7 gap-1.5 border-amber-400/40 bg-amber-500/10 text-[11px] text-amber-100 hover:bg-amber-500/20"
+            className={cn(
+              "h-7 gap-1.5 text-[11px]",
+              fixBugsMode
+                ? "border-amber-300 bg-amber-500/30 text-amber-50"
+                : "border-amber-400/40 bg-amber-500/10 text-amber-100 hover:bg-amber-500/20",
+            )}
             disabled={projectId == null}
-            onClick={() => {
-              setExpanded(true);
-              setOpen(true);
-              void sendMessage(FIX_BUGS_PROMPT);
-            }}
-            title="Найти и починить баги в коде, подготовить push"
+            onClick={armFixBugsMode}
+            title="Включить режим фикса: потом напиши какой баг чинить"
           >
             <Bug className="h-3.5 w-3.5" />
-            Фикс багов
+            {fixBugsMode ? "Жду описание бага" : "Фикс багов"}
           </Button>
         )}
         <Button
@@ -374,12 +398,18 @@ export function OrchestratorPanel({ projectId }: Props) {
           )}
         >
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
-            {chatLog.length === 0 ? (
-              <div className="text-[11px] text-white/25">
-                Пиши по-русски: шаги пайплайна, правки базы, или жми «Фикс багов» в шапке.
-                Если зависло — кнопка «Отмена».
+            {fixBugsMode ? (
+              <div className="mb-2 rounded-md border border-amber-400/30 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-100/90">
+                Режим фикса включён. Напиши <b>какой баг</b> чинить и нажми Enter / Отправить.
+                Запрос к GPT уйдёт только после этого — кнопка сама ничего не шлёт.
               </div>
-            ) : (
+            ) : null}
+            {chatLog.length === 0 && !fixBugsMode ? (
+              <div className="text-[11px] text-white/25">
+                Пиши по-русски. «Фикс багов» → опиши баг → Отправить. Если зависло — Отмена.
+              </div>
+            ) : null}
+            {chatLog.length > 0 ? (
               chatLog.map((m, i) => (
                 <div key={i} className="mb-2 text-[12px] leading-relaxed">
                   <span className={m.role === "user" ? "text-primary" : "text-white/45"}>
@@ -444,10 +474,11 @@ export function OrchestratorPanel({ projectId }: Props) {
                   ) : null}
                 </div>
               ))
-            )}
+            ) : null}
           </div>
           <div className="flex items-center gap-2 border-t border-white/[0.06] px-3 py-2">
             <input
+              ref={inputRef}
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && !busy && void sendChat()}
@@ -457,9 +488,14 @@ export function OrchestratorPanel({ projectId }: Props) {
                   ? "сначала открой проект"
                   : busy
                     ? "оркестратор думает… жми Отмена в шапке"
-                    : "сообщение оркестратору…"
+                    : fixBugsMode
+                      ? "опиши баг для фикса…"
+                      : "сообщение оркестратору…"
               }
-              className="h-9 flex-1 rounded-md border border-white/10 bg-black/40 px-3 text-xs disabled:opacity-40"
+              className={cn(
+                "h-9 flex-1 rounded-md border bg-black/40 px-3 text-xs disabled:opacity-40",
+                fixBugsMode ? "border-amber-400/50" : "border-white/10",
+              )}
             />
             <Button
               size="sm"
