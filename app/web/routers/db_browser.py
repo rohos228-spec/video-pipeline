@@ -250,10 +250,13 @@ _ORCHESTRATOR_SYSTEM = (
     "«ждёт аппрува человека» = HITL-гейт ждёт решения пользователя).\n"
     "На вопросы про проверки/проверку/статусы нод отвечай СТРОГО по этим "
     "разделам контекста — если прогона проверок не было, скажи это прямо.\n"
-    "Если есть раздел ДИАГНОСТИКА (ошибки нод/проверок/лог) или пользователь "
+    "ЗАПРЕТ ОТКАЗОВ: не пиши «не поддерживается / нет такого действия / "
+    "не умею», если действие есть в списке ниже. Сначала выдай JSON action, "
+    "потом коротко по-русски. Если не хватает файла — read_file, не отказ.\n"
+    "Если есть раздел ДИАГНОСТИКА / КОД РАБОЧЕЙ ОБЛАСТИ или пользователь "
     "просит починить/исправить баг в КОДЕ программы — отвечай как кодинг-агент: "
-    "причина → файл → точечный фикс через edit_files + run_tests + "
-    "git_commit_push (см. действия 16–18). Без воды. "
+    "read_file → причина → edit_files → run_tests → git_commit_push "
+    "(действия 16–20). Без воды. "
     "Правь только app/, tests/, prompts/. Не трогай .env и data/.\n"
     "ПОРЯДОК ШАГОВ — ТОЛЬКО ТАКОЙ (другого не существует, не выдумывай):\n"
     "plan → script → split → hero → items → enrich_1..5 → img_pr → img → "
@@ -282,7 +285,8 @@ _ORCHESTRATOR_SYSTEM = (
     "7) ОТКРЫТЬ окна программы → {\"actions\":[{\"open_ui\":{...}}]} — kinds: "
     "step_prompts (плюс step; ОБЯЗАТЕЛЬНО при выборе/сравнении вариантов "
     "промтов — человек выбирает в окне), node_studio/prompt_builder/hitl "
-    "(плюс node_type), topic (тема), baza, gpt_chat, create, fleet, settings. "
+    "(плюс node_type), topic (тема), baza, gpt_chat, create (Create/Outsee), "
+    "fleet, settings. "
     "ТОЧНЕЕ — с node_key из раздела НОДЫ КАНВАСА: "
     "{\"open_ui\":{\"kind\":\"node_studio\",\"node_key\":\"n_plan\"}}.\n"
     "НАЗВАНИЯ НОД: маппи русские названия пользователя на node_key по "
@@ -290,14 +294,15 @@ _ORCHESTRATOR_SYSTEM = (
     "plan (n_plan); «Закадровый текст» — script (n_script); «Работа с GPT» — "
     "ноды excel_gpt (n_excel_gpt_1, n_excel_gpt_2…).\n"
     "8) HITL-РЕШЕНИЕ (когда нода ждёт аппрува) → "
-    "{\"actions\":[{\"hitl_decision\":\"approve|regenerate|reject\"}]}.\n"
+    "{\"actions\":[{\"hitl_decision\":\"approve|regenerate|reject|edit_prompt\"}]}.\n"
     "9) ТЕМА проекта → {\"actions\":[{\"set_topic\":\"…\"}]}.\n"
     "ВАЖНО: ноды topic и storage — конфиг, у них НЕТ промтов и студии. "
     "Для темы используй set_topic или open_ui topic; не открывай для них "
     "step_prompts/node_studio/prompt_builder.\n"
-    "10) СОЗДАТЬ проект → {\"actions\":[{\"create_project\":{\"title\":\"…\"}}]} — "
-    "сам создаёт проект (НЕ открывай окна генерации/Create — работа только "
-    "в пайплайне).\n"
+    "10) СОЗДАТЬ проект → "
+    "{\"actions\":[{\"create_project\":{\"title\":\"…\",\"hero_mode\":\"auto\"}}]} — "
+    "hero_mode ∈ hero|no_hero|auto (по умолчанию auto). "
+    "Создаёт проект и открывает его (open_project).\n"
     "10b) ДОЧЕРНИЙ проект из родителя → "
     "{\"actions\":[{\"create_child\":{\"parent_id\":<id>}}]} или "
     "{\"create_child\":{\"parent_title\":\"История ведьм\"}} или "
@@ -325,26 +330,31 @@ _ORCHESTRATOR_SYSTEM = (
     "граф сломан — repair_graph идёт в actions ПЕРВЫМ, до add_node.\n"
     "14) ПРОГНАТЬ проверки (harness) → {\"actions\":[{\"run_harness\":true}]}.\n"
     "15) Вопрос/обсуждение без изменений — обычный текст.\n"
-    "16) ПРАВКА КОДА (allowlist app/ tests/ prompts/) → "
+    "16) ПРОЧИТАТЬ КОД (allowlist app/ tests/ prompts/) → "
+    "{\"actions\":[{\"read_file\":{\"path\":\"app/...py\","
+    "\"start_line\":1,\"end_line\":120}}]} — "
+    "сначала читай, потом правь. Содержимое вернётся в ответе Studio.\n"
+    "17) ПРАВКА КОДА → "
     "{\"actions\":[{\"edit_files\":[{\"path\":\"app/...py\","
     "\"old_string\":\"…\",\"new_string\":\"…\"}]}]} — "
     "old_string должен встречаться ровно 1 раз. "
     "Новый мелкий файл: {\"path\":\"tests/....py\",\"content\":\"...\"}.\n"
-    "17) ПРОГНАТЬ pytest → "
+    "18) ПРОГНАТЬ pytest → "
     "{\"actions\":[{\"run_tests\":[\"tests/test_....py\"]}]}. "
-    "После edit_files — обязательно, перед push.\n"
-    "18) COMMIT+PUSH в origin/<ветка этого ПК> → "
+    "После edit_files — обязательно, перед push. FAIL не отменяет другие "
+    "действия — смотри вывод и чини дальше.\n"
+    "19) COMMIT+PUSH в origin/<ветка этого ПК> → "
     "{\"actions\":[{\"git_commit_push\":{\"message\":\"fix: …\","
     "\"files\":[\"app/....py\"],\"auto\":false}}]} — "
-    "ветка = ORCHESTRATOR_GIT_BRANCH (housepc|tompc|strangepc|workpc|main). "
+    "ветка = из раздела КОД РАБОЧЕЙ ОБЛАСТИ / ORCHESTRATOR_GIT_BRANCH. "
     "по умолчанию auto=false: человек жмёт «Подтвердить push» в чате. "
     "auto=true — сразу push (только если пользователь явно просит "
     "«сразу запушь» / «без подтверждения»). Без force-push.\n"
-    "19) УДАЛИТЬ ПРОЕКТЫ (ПОДДЕРЖИВАЕТСЯ) → "
+    "20) УДАЛИТЬ ПРОЕКТЫ → "
     "{\"actions\":[{\"delete_projects\":{\"ids\":[52,50]}}]} или "
     "{\"delete_projects\":{\"titles\":[\"тест оркестра\",\"Тестовый трукрайм\"]}}. "
     "id/title бери из раздела ПРОЕКТЫ В СТУДИИ. "
-    "НИКОГДА не пиши «удаление не поддерживается» — action delete_projects есть. "
+    "НИКОГДА не пиши «удаление не поддерживается». "
     "Удаление НЕ сразу: человек жмёт «Подтвердить удаление проектов» в чате.\n"
     "ТИПЫ НОД по-человечески (объясняй так, если спрашивают «что это»): "
     "hitl_gate — нода проверки: пайплайн встаёт и ждёт аппрува человека; "
@@ -543,6 +553,33 @@ async def _diagnostics_context(session: AsyncSession, project: Project) -> list[
     return []
 
 
+def _code_workspace_context() -> list[str]:
+    """Ветка git + грязные allowlist-файлы — чтобы оркестратор не гадал."""
+    lines = ["КОД РАБОЧЕЙ ОБЛАСТИ (для read_file / edit_files / git):"]
+    try:
+        from app.services.code_autofix import ALLOWED_PREFIXES
+        from app.services.git_ops import changed_paths, current_branch, push_branch
+
+        want = push_branch()
+        br = current_branch()
+        lines.append(f"- push-ветка (ORCHESTRATOR_GIT_BRANCH): {want}")
+        lines.append(f"- текущий HEAD: {br}" + (" ✓" if br == want else " ← СНАЧАЛА checkout нужной ветки"))
+        lines.append(f"- allowlist путей: {', '.join(ALLOWED_PREFIXES)}")
+        dirty = [
+            p
+            for p in changed_paths()
+            if any(p.startswith(pref) for pref in ALLOWED_PREFIXES)
+        ][:40]
+        if dirty:
+            lines.append("- изменённые файлы (allowlist):")
+            lines.extend(f"  · {p}" for p in dirty)
+        else:
+            lines.append("- изменённых allowlist-файлов нет")
+    except Exception as e:  # noqa: BLE001
+        lines.append(f"- git недоступен: {e}")
+    return lines
+
+
 _NODE_STATUS_RU = {
     "pending": "ждёт",
     "queued": "в очереди",
@@ -716,8 +753,7 @@ def _apply_set_prompt(project: Project, step: object, variant: object) -> str:
 
 
 _UI_NODE_KINDS = ("node_studio", "prompt_builder", "hitl")
-# Окна-генерации (create) оркестратору запрещены: работа только в пайплайне.
-_UI_SIMPLE_KINDS = ("topic", "baza", "gpt_chat", "fleet", "settings")
+_UI_SIMPLE_KINDS = ("topic", "baza", "gpt_chat", "create", "fleet", "settings")
 
 
 def _all_node_types() -> set[str]:
@@ -1575,18 +1611,24 @@ async def orchestrator_chat(
     diag_lines = await _diagnostics_context(session, project)
     canvas_lines, canvas_keymap = await _canvas_nodes_context(session, project)
     catalog_lines = await _projects_catalog_context(session)
+    code_lines = await asyncio.to_thread(_code_workspace_context)
+    topic_snip = (project.topic or "").strip().replace("\n", " ")[:160]
     prompt = (
         _ORCHESTRATOR_SYSTEM
         + "\n\n"
         + "\n".join(catalog_lines)
         + "\n\nТЕКУЩИЙ ПРОЕКТ В ЧАТЕ: "
         f"#{project.id} | {project.slug} | {(project.title or '') or '—'} | "
-        f"{getattr(project.status, 'value', project.status)}\n"
+        f"{getattr(project.status, 'value', project.status)}"
+        + (f"\nТЕМА: {topic_snip}" if topic_snip else "")
+        + "\n"
         + "\nШАГИ ПАЙПЛАЙНА (реальный порядок и состояние):\n"
         + "\n".join(_pipeline_state_lines(project))
         + "\n\n"
         + "\n".join(await _checks_context(session, project))
         + ("\n\n" + "\n".join(diag_lines) if diag_lines else "")
+        + "\n\n"
+        + "\n".join(code_lines)
         + "\n\n"
         + "\n".join(_settings_context(project))
         + ("\n\n" + "\n".join(canvas_lines) if canvas_lines else "")
@@ -1762,6 +1804,33 @@ async def orchestrator_chat(
                     actions_run.append(
                         {"run_harness": "ок" if rep.ok else f"НЕОК: {bad}"}
                     )
+                elif "read_file" in act:
+                    from app.services.code_autofix import CodeAutofixError, read_file
+
+                    spec = act.get("read_file") or {}
+                    if isinstance(spec, str):
+                        spec = {"path": spec}
+                    try:
+                        rfile = await asyncio.to_thread(
+                            lambda: read_file(
+                                str(spec.get("path") or ""),
+                                start_line=spec.get("start_line"),
+                                end_line=spec.get("end_line"),
+                            )
+                        )
+                    except CodeAutofixError as e:
+                        raise db_apply.ApplyOpsError(str(e)) from None
+                    actions_run.append(
+                        {
+                            "read_file": (
+                                f"{rfile['path']} L{rfile['start_line']}-"
+                                f"{rfile['end_line']}/{rfile['total_lines']}"
+                                + (" …" if rfile["truncated"] else "")
+                                + "\n"
+                                + rfile["content"]
+                            )
+                        }
+                    )
                 elif "edit_files" in act:
                     from app.services.code_autofix import (
                         CodeAutofixError,
@@ -1798,12 +1867,16 @@ async def orchestrator_chat(
                         )
                     except CodeAutofixError as e:
                         raise db_apply.ApplyOpsError(str(e)) from None
-                    if not tres["ok"]:
-                        raise db_apply.ApplyOpsError(
-                            "run_tests FAIL: " + (tres.get("output") or "")[:500]
-                        )
+                    # FAIL не рвёт весь батч — модель видит вывод и чинит дальше
+                    tag = "ok" if tres["ok"] else "FAIL"
+                    out = (tres.get("output") or "")[:500]
                     actions_run.append(
-                        {"run_tests": f"ok {', '.join(tres['tests'][:6])}"}
+                        {
+                            "run_tests": (
+                                f"{tag} {', '.join(tres['tests'][:6])}"
+                                + (f"\n{out}" if out and not tres["ok"] else "")
+                            )
+                        }
                     )
                 elif "git_commit_push" in act:
                     from app.services.code_autofix import CodeAutofixError
@@ -1850,6 +1923,15 @@ async def orchestrator_chat(
                                 "nodes": [str(x) for x in files][:20],
                             }
                         )
+                else:
+                    keys = sorted(str(k) for k in act.keys())
+                    raise db_apply.ApplyOpsError(
+                        f"неизвестное действие {keys}; есть: run_step, stop_step, "
+                        "set_option, set_prompt, set_text_llm, open_ui, hitl_decision, "
+                        "set_topic, create_project, create_child, delete_projects, "
+                        "add_node, remove_node, rename_node, repair_graph, run_harness, "
+                        "read_file, edit_files, run_tests, git_commit_push"
+                    )
             except db_apply.ApplyOpsError as e:
                 error = str(e)
             except Exception as e:  # noqa: BLE001

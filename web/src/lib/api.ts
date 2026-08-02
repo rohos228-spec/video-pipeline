@@ -406,10 +406,18 @@ export const api = {
         set_prompt?: string;
         set_text_llm?: string;
         run_harness?: string;
+        read_file?: string;
         edit_files?: string;
         run_tests?: string;
         git_commit_push?: string;
         delete_projects?: string;
+        create_project?: string;
+        create_child?: string;
+        add_node?: string;
+        rename_node?: string;
+        repair_graph?: string;
+        hitl_decision?: string;
+        set_topic?: string;
       }[];
       ui_actions: { kind: string; step?: string; node_type?: string; node_key?: string; hitl_id?: number; project_id?: number }[];
       pending_confirm: {

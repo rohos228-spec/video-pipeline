@@ -87,6 +87,40 @@ def abs_path(rel: str) -> Path:
     return full
 
 
+def read_file(
+    path: str,
+    *,
+    start_line: int | None = None,
+    end_line: int | None = None,
+    max_chars: int = 12_000,
+) -> dict[str, Any]:
+    """Read allowlisted source for orchestrator context (1-based line range)."""
+    rel = assert_path_allowed(path)
+    full = abs_path(rel)
+    if not full.is_file():
+        raise CodeAutofixError(f"read_file: файл не найден: {rel}")
+    text = full.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+    total = len(lines)
+    s = 1 if start_line is None else max(1, int(start_line))
+    e = total if end_line is None else min(total, int(end_line))
+    if e < s:
+        raise CodeAutofixError(f"read_file: пустой диапазон {s}-{e}")
+    chunk = "\n".join(f"{i}|{lines[i - 1]}" for i in range(s, e + 1))
+    truncated = False
+    if len(chunk) > max_chars:
+        chunk = chunk[:max_chars] + "\n…(обрезано)"
+        truncated = True
+    return {
+        "path": rel,
+        "start_line": s,
+        "end_line": e,
+        "total_lines": total,
+        "truncated": truncated,
+        "content": chunk,
+    }
+
+
 def apply_edits(edits: list[dict[str, Any]]) -> dict[str, Any]:
     """Apply search-replace or full-content writes under allowlist.
 

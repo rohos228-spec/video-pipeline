@@ -43,6 +43,9 @@ interface PendingConfirm {
 interface ChatMsg {
   role: string;
   content: string;
+  /** Одно или несколько подтверждений (удаление / push). */
+  confirms?: PendingConfirm[];
+  /** @deprecated legacy single confirm — читается вместе с confirms */
   confirm?: PendingConfirm;
 }
 
@@ -131,10 +134,18 @@ export function OrchestratorPanel({ projectId }: Props) {
           else if (a.set_prompt) notes.push(`промт: ${a.set_prompt}`);
           else if (a.set_text_llm) notes.push(`LLM: ${a.set_text_llm}`);
           else if (a.run_harness) notes.push(`проверки: ${a.run_harness}`);
+          else if (a.read_file) notes.push(`файл:\n${a.read_file}`);
           else if (a.edit_files) notes.push(`код: ${a.edit_files}`);
           else if (a.run_tests) notes.push(`pytest: ${a.run_tests}`);
           else if (a.git_commit_push) notes.push(`git: ${a.git_commit_push}`);
           else if (a.delete_projects) notes.push(`проекты: ${a.delete_projects}`);
+          else if (a.create_project) notes.push(`создан проект: ${a.create_project}`);
+          else if (a.create_child) notes.push(`дочерний: ${a.create_child}`);
+          else if (a.add_node) notes.push(`нода: ${typeof a.add_node === "string" ? a.add_node : JSON.stringify(a.add_node)}`);
+          else if (a.rename_node) notes.push(`переименовано: ${a.rename_node}`);
+          else if (a.repair_graph) notes.push(`граф: ${a.repair_graph}`);
+          else if (a.hitl_decision) notes.push(`HITL: ${a.hitl_decision}`);
+          else if (a.set_topic) notes.push(`тема: ${a.set_topic}`);
         }
         for (const u of r.ui_actions ?? []) {
           const nodeKey = u.node_key ?? (u.node_type ? `n_${u.node_type}` : null);
@@ -186,21 +197,25 @@ export function OrchestratorPanel({ projectId }: Props) {
           } else if (u.kind === "fleet") {
             window.dispatchEvent(new CustomEvent("studio-open-fleet"));
             notes.push("открыл «Сеть»");
+          } else if (u.kind === "create") {
+            window.dispatchEvent(
+              new CustomEvent("studio-open-outsee", {
+                detail: { projectId },
+              }),
+            );
+            notes.push("открыл Create / Outsee");
           }
         }
         if (r.error) notes.push(`ошибка: ${r.error}`);
-        const pendRemove = (r.pending_confirm ?? []).find((p) => p.kind === "remove_node");
-        const pendDelete = (r.pending_confirm ?? []).find((p) => p.kind === "delete_projects");
-        const pendGit = (r.pending_confirm ?? []).find((p) => p.kind === "git_commit_push");
-        const pend = pendDelete ?? pendGit ?? pendRemove;
-        if (pendDelete) {
-          notes.push(`к удалению проектов: ${pendDelete.count} — кнопки ниже`);
-        }
-        if (pendRemove) {
-          notes.push(`к удалению нод: ${pendRemove.count} — кнопки ниже`);
-        }
-        if (pendGit) {
-          notes.push(`к push: подтверди кнопку ниже`);
+        const pendAll = (r.pending_confirm ?? []).map((p) => ({ ...p, resolved: false }));
+        for (const p of pendAll) {
+          if (p.kind === "delete_projects") {
+            notes.push(`к удалению проектов: ${p.count} — кнопки ниже`);
+          } else if (p.kind === "remove_node") {
+            notes.push(`к удалению нод: ${p.count} — кнопки ниже`);
+          } else if (p.kind === "git_commit_push") {
+            notes.push(`к push: подтверди кнопку ниже`);
+          }
         }
         setChatLog([
           ...next,
@@ -208,7 +223,7 @@ export function OrchestratorPanel({ projectId }: Props) {
             role: "assistant",
             content:
               (r.reply || "(пустой ответ)") + (notes.length ? `\n\n— ${notes.join("; ")}` : ""),
-            confirm: pend ? { ...pend, resolved: false } : undefined,
+            confirms: pendAll.length ? pendAll : undefined,
           },
         ]);
       } catch (e) {
@@ -287,8 +302,28 @@ export function OrchestratorPanel({ projectId }: Props) {
     [open, expanded, setOpen, setExpanded],
   );
 
+  const withConfirmResolved = useCallback(
+    (prev: ChatMsg[], msgIndex: number, confirmIndex: number, followUp: ChatMsg) => {
+      const next = prev.map((m, i) => {
+        if (i !== msgIndex) return m;
+        const list = [...(m.confirms ?? (m.confirm ? [m.confirm] : []))];
+        if (list[confirmIndex]) {
+          list[confirmIndex] = { ...list[confirmIndex], resolved: true };
+        }
+        return { ...m, confirms: list, confirm: undefined };
+      });
+      return [...next, followUp];
+    },
+    [],
+  );
+
   const resolveRemove = useCallback(
-    async (msgIndex: number, confirm: PendingConfirm, approve: boolean) => {
+    async (
+      msgIndex: number,
+      confirmIndex: number,
+      confirm: PendingConfirm,
+      approve: boolean,
+    ) => {
       if (projectId == null || busy) return;
       setBusy(true);
       try {
@@ -298,19 +333,19 @@ export function OrchestratorPanel({ projectId }: Props) {
             node_type: confirm.node_type,
             only: confirm.only,
           });
-          setChatLog((prev) => [
-            ...prev.map((m, i) =>
-              i === msgIndex && m.confirm ? { ...m, confirm: { ...m.confirm, resolved: true } } : m,
-            ),
-            { role: "assistant", content: `Подтверждено: ${r.remove_node}.` },
-          ]);
+          setChatLog((prev) =>
+            withConfirmResolved(prev, msgIndex, confirmIndex, {
+              role: "assistant",
+              content: `Подтверждено: ${r.remove_node}.`,
+            }),
+          );
         } else {
-          setChatLog((prev) => [
-            ...prev.map((m, i) =>
-              i === msgIndex && m.confirm ? { ...m, confirm: { ...m.confirm, resolved: true } } : m,
-            ),
-            { role: "assistant", content: "Удаление отменено — ноды на месте." },
-          ]);
+          setChatLog((prev) =>
+            withConfirmResolved(prev, msgIndex, confirmIndex, {
+              role: "assistant",
+              content: "Удаление отменено — ноды на месте.",
+            }),
+          );
         }
       } catch (e) {
         setChatLog((prev) => [
@@ -324,11 +359,16 @@ export function OrchestratorPanel({ projectId }: Props) {
         setBusy(false);
       }
     },
-    [projectId, busy, setChatLog],
+    [projectId, busy, setChatLog, withConfirmResolved],
   );
 
   const resolveDeleteProjects = useCallback(
-    async (msgIndex: number, confirm: PendingConfirm, approve: boolean) => {
+    async (
+      msgIndex: number,
+      confirmIndex: number,
+      confirm: PendingConfirm,
+      approve: boolean,
+    ) => {
       if (projectId == null || busy) return;
       setBusy(true);
       try {
@@ -337,12 +377,12 @@ export function OrchestratorPanel({ projectId }: Props) {
             .map((x) => Number(x))
             .filter((n) => Number.isFinite(n) && n > 0);
           const r = await api.dbOrchestratorConfirmDeleteProjects(projectId, { ids });
-          setChatLog((prev) => [
-            ...prev.map((m, i) =>
-              i === msgIndex && m.confirm ? { ...m, confirm: { ...m.confirm, resolved: true } } : m,
-            ),
-            { role: "assistant", content: `${r.delete_projects}` },
-          ]);
+          setChatLog((prev) =>
+            withConfirmResolved(prev, msgIndex, confirmIndex, {
+              role: "assistant",
+              content: `${r.delete_projects}`,
+            }),
+          );
           window.dispatchEvent(new CustomEvent("studio-projects-changed"));
           if (ids.includes(projectId)) {
             window.dispatchEvent(
@@ -350,12 +390,12 @@ export function OrchestratorPanel({ projectId }: Props) {
             );
           }
         } else {
-          setChatLog((prev) => [
-            ...prev.map((m, i) =>
-              i === msgIndex && m.confirm ? { ...m, confirm: { ...m.confirm, resolved: true } } : m,
-            ),
-            { role: "assistant", content: "Удаление проектов отменено — ничего не стёрто." },
-          ]);
+          setChatLog((prev) =>
+            withConfirmResolved(prev, msgIndex, confirmIndex, {
+              role: "assistant",
+              content: "Удаление проектов отменено — ничего не стёрто.",
+            }),
+          );
         }
       } catch (e) {
         setChatLog((prev) => [
@@ -369,11 +409,16 @@ export function OrchestratorPanel({ projectId }: Props) {
         setBusy(false);
       }
     },
-    [projectId, busy, setChatLog],
+    [projectId, busy, setChatLog, withConfirmResolved],
   );
 
   const resolveGitPush = useCallback(
-    async (msgIndex: number, confirm: PendingConfirm, approve: boolean) => {
+    async (
+      msgIndex: number,
+      confirmIndex: number,
+      confirm: PendingConfirm,
+      approve: boolean,
+    ) => {
       if (projectId == null || busy) return;
       setBusy(true);
       try {
@@ -382,22 +427,19 @@ export function OrchestratorPanel({ projectId }: Props) {
             message: confirm.message || "fix: orchestrator",
             files: confirm.files ?? confirm.nodes,
           });
-          setChatLog((prev) => [
-            ...prev.map((m, i) =>
-              i === msgIndex && m.confirm ? { ...m, confirm: { ...m.confirm, resolved: true } } : m,
-            ),
-            { role: "assistant", content: `${r.git_commit_push}` },
-          ]);
+          setChatLog((prev) =>
+            withConfirmResolved(prev, msgIndex, confirmIndex, {
+              role: "assistant",
+              content: `${r.git_commit_push}`,
+            }),
+          );
         } else {
-          setChatLog((prev) => [
-            ...prev.map((m, i) =>
-              i === msgIndex && m.confirm ? { ...m, confirm: { ...m.confirm, resolved: true } } : m,
-            ),
-            {
+          setChatLog((prev) =>
+            withConfirmResolved(prev, msgIndex, confirmIndex, {
               role: "assistant",
               content: "Push отменён — правки на диске остались, в git не ушли.",
-            },
-          ]);
+            }),
+          );
         }
       } catch (e) {
         setChatLog((prev) => [
@@ -411,7 +453,7 @@ export function OrchestratorPanel({ projectId }: Props) {
         setBusy(false);
       }
     },
-    [projectId, busy, setChatLog],
+    [projectId, busy, setChatLog, withConfirmResolved],
   );
 
   return (
@@ -529,92 +571,111 @@ export function OrchestratorPanel({ projectId }: Props) {
                   {m.role === "user" ? "ты" : "оркестратор"}:{" "}
                 </span>
                 <span className="whitespace-pre-wrap text-white/85">{m.content}</span>
-                {m.confirm && !m.confirm.resolved && m.confirm.kind === "remove_node" ? (
-                  <span className="mt-1.5 flex items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5">
-                    <Trash2 className="h-3.5 w-3.5 text-red-400" />
-                    <span className="flex-1 text-[11px] text-white/80">
-                      Удалить {m.confirm.count} нод
-                      {m.confirm.node_type ? ` типа «${m.confirm.node_type}»` : ""}
-                      {m.confirm.only === "duplicates" ? " (только дубли)" : ""}?
-                    </span>
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      className="h-7 text-[11px]"
-                      disabled={busy}
-                      onClick={() => void resolveRemove(i, m.confirm!, true)}
-                    >
-                      Подтвердить удаление
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 text-[11px]"
-                      disabled={busy}
-                      onClick={() => void resolveRemove(i, m.confirm!, false)}
-                    >
-                      Отмена
-                    </Button>
-                  </span>
-                ) : null}
-                {m.confirm && !m.confirm.resolved && m.confirm.kind === "delete_projects" ? (
-                  <span className="mt-1.5 flex items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5">
-                    <Trash2 className="h-3.5 w-3.5 text-red-400" />
-                    <span className="flex-1 text-[11px] text-white/80">
-                      Удалить {m.confirm.count} проект(ов)
-                      {(m.confirm.files ?? []).length
-                        ? `: ${(m.confirm.files ?? []).slice(0, 4).join(", ")}`
-                        : ""}
-                      ?
-                    </span>
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      className="h-7 text-[11px]"
-                      disabled={busy}
-                      onClick={() => void resolveDeleteProjects(i, m.confirm!, true)}
-                    >
-                      Подтвердить удаление проектов
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 text-[11px]"
-                      disabled={busy}
-                      onClick={() => void resolveDeleteProjects(i, m.confirm!, false)}
-                    >
-                      Отмена
-                    </Button>
-                  </span>
-                ) : null}
-                {m.confirm && !m.confirm.resolved && m.confirm.kind === "git_commit_push" ? (
-                  <span className="mt-1.5 flex items-center gap-2 rounded-md border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1.5">
-                    <GitBranch className="h-3.5 w-3.5 text-emerald-400" />
-                    <span className="flex-1 text-[11px] text-white/80">
-                      Push: {m.confirm.message || "commit"}
-                      {(m.confirm.files ?? m.confirm.nodes).length
-                        ? ` (${(m.confirm.files ?? m.confirm.nodes).slice(0, 3).join(", ")})`
-                        : ""}
-                    </span>
-                    <Button
-                      size="sm"
-                      className="h-7 text-[11px]"
-                      disabled={busy}
-                      onClick={() => void resolveGitPush(i, m.confirm!, true)}
-                    >
-                      Подтвердить push
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 text-[11px]"
-                      disabled={busy}
-                      onClick={() => void resolveGitPush(i, m.confirm!, false)}
-                    >
-                      Отмена
-                    </Button>
-                  </span>
-                ) : null}
+                {(m.confirms ?? (m.confirm ? [m.confirm] : [])).map((c, ci) => {
+                  if (c.resolved) return null;
+                  if (c.kind === "remove_node") {
+                    return (
+                      <span
+                        key={`rm-${ci}`}
+                        className="mt-1.5 flex items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5"
+                      >
+                        <Trash2 className="h-3.5 w-3.5 text-red-400" />
+                        <span className="flex-1 text-[11px] text-white/80">
+                          Удалить {c.count} нод
+                          {c.node_type ? ` типа «${c.node_type}»` : ""}
+                          {c.only === "duplicates" ? " (только дубли)" : ""}?
+                        </span>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          className="h-7 text-[11px]"
+                          disabled={busy}
+                          onClick={() => void resolveRemove(i, ci, c, true)}
+                        >
+                          Подтвердить удаление
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-[11px]"
+                          disabled={busy}
+                          onClick={() => void resolveRemove(i, ci, c, false)}
+                        >
+                          Отмена
+                        </Button>
+                      </span>
+                    );
+                  }
+                  if (c.kind === "delete_projects") {
+                    return (
+                      <span
+                        key={`del-${ci}`}
+                        className="mt-1.5 flex items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5"
+                      >
+                        <Trash2 className="h-3.5 w-3.5 text-red-400" />
+                        <span className="flex-1 text-[11px] text-white/80">
+                          Удалить {c.count} проект(ов)
+                          {(c.files ?? []).length
+                            ? `: ${(c.files ?? []).slice(0, 4).join(", ")}`
+                            : ""}
+                          ?
+                        </span>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          className="h-7 text-[11px]"
+                          disabled={busy}
+                          onClick={() => void resolveDeleteProjects(i, ci, c, true)}
+                        >
+                          Подтвердить удаление проектов
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-[11px]"
+                          disabled={busy}
+                          onClick={() => void resolveDeleteProjects(i, ci, c, false)}
+                        >
+                          Отмена
+                        </Button>
+                      </span>
+                    );
+                  }
+                  if (c.kind === "git_commit_push") {
+                    return (
+                      <span
+                        key={`git-${ci}`}
+                        className="mt-1.5 flex items-center gap-2 rounded-md border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1.5"
+                      >
+                        <GitBranch className="h-3.5 w-3.5 text-emerald-400" />
+                        <span className="flex-1 text-[11px] text-white/80">
+                          Push: {c.message || "commit"}
+                          {(c.files ?? c.nodes).length
+                            ? ` (${(c.files ?? c.nodes).slice(0, 3).join(", ")})`
+                            : ""}
+                        </span>
+                        <Button
+                          size="sm"
+                          className="h-7 text-[11px]"
+                          disabled={busy}
+                          onClick={() => void resolveGitPush(i, ci, c, true)}
+                        >
+                          Подтвердить push
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-[11px]"
+                          disabled={busy}
+                          onClick={() => void resolveGitPush(i, ci, c, false)}
+                        >
+                          Отмена
+                        </Button>
+                      </span>
+                    );
+                  }
+                  return null;
+                })}
               </div>
             ))}
           </div>
