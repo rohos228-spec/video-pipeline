@@ -28,10 +28,9 @@ alwaysApply: true
 
 ## Запуск и обновление
 - Studio: `STUDIO.cmd` → пункт [1] → http://127.0.0.1:8765
-- Первый запуск: меню выбора ветки ПК (`housepc`/`tompc`/`strangepc`/`workpc`) → `data/studio-pc-branch` + `.env`
-- Обновление с GitHub: `STUDIO.cmd` → **[5]** → [1] Обновить (stash перед reset на сохранённую ветку)
-- Смена ветки ПК: `STUDIO.cmd` → **[5]** → [2]
-- Починить установку: `STUDIO.cmd` → **[4]**
+- Первый запуск: выбор ветки из 4 (`housepc`/`tompc`/`strangepc`/`workpc`) → `data/studio-pc-branch` + `.env`
+- Ветка ПК / обновление / смена: только **[5]**
+- Починить установку: **[4]**; [1][2][3][6] как раньше
 - Локальный код без git reset: правки вручную, затем `stop-backend.cmd` + `STUDIO.cmd` [1]
 - **НЕ** использовать скрипты из `scripts/legacy/` (старые FORCE-UPDATE / VideoPipelineStudio)
 - Ветка этого ПК: `housepc` (`ORCHESTRATOR_GIT_BRANCH=housepc`)

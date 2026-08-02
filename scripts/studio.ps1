@@ -105,7 +105,7 @@ function Show-StudioBranchPicker {
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host "  Выберите ветку этого ПК" -ForegroundColor Cyan
-    Write-Host "  (сохранится; обновление — только пункт [5])" -ForegroundColor DarkGray
+    Write-Host "  (сохранится; обновление/смена — только пункт [5])" -ForegroundColor DarkGray
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
     for ($i = 0; $i -lt $script:PcBranches.Count; $i++) {
@@ -161,16 +161,10 @@ function Invoke-StudioBranchHub {
         Write-Host ""
         $sub = Read-Host "Выберите"
         switch ($sub) {
-            "1" {
-                return (Invoke-StudioUpdateAndStart)
-            }
-            "2" {
-                $null = Show-StudioBranchPicker -AllowCancel
-            }
+            "1" { return (Invoke-StudioUpdateAndStart) }
+            "2" { $null = Show-StudioBranchPicker -AllowCancel }
             "0" { return $true }
-            default {
-                Write-StudioMsg "Неизвестный пункт: $sub" "Yellow"
-            }
+            default { Write-StudioMsg "Неизвестный пункт: $sub" "Yellow" }
         }
     }
 }
@@ -511,7 +505,7 @@ function Invoke-StudioReturnPromptEditsFromStash {
 function Invoke-StudioGitUpdate {
     $StudioBranch = $script:StudioBranch
     if (-not (Test-StudioPcBranchName $StudioBranch)) {
-        Write-StudioMsg "ОШИБКА: ветка ПК не задана. Выберите через пункт [5]." "Red"
+        Write-StudioMsg "ОШИБКА: ветка ПК не задана. Закройте Studio и выберите ветку при старте." "Red"
         return $false
     }
     Write-StudioMsg "==> git fetch origin $StudioBranch" "Cyan"
@@ -931,10 +925,6 @@ function Show-StudioMenu {
     Write-Host "  [6] Диагностика (версия, git, порты, logs/doctor.log)"
     Write-Host "  [0] Выход"
     Write-Host ""
-    if (-not $script:StudioBranch) {
-        Write-Host "  Нет ветки ПК — при старте спросит housepc/tompc/strangepc/workpc" -ForegroundColor DarkYellow
-        Write-Host ""
-    }
 }
 
 # --- main ---
