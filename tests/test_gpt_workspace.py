@@ -360,6 +360,79 @@ async def test_ask_rework_text_to_file_calls_gpt(
     assert any("дело" in line for line in out["messages"][-1]["content"].splitlines())
 
 
+def test_reply_fails_file_delivery_detects_excuse_and_planning() -> None:
+    assert gw._reply_fails_file_delivery(
+        "В текущем чате у меня нет доступного инструмента для создания "
+        "и прикрепления .txt файла. Могу вернуть полный текст.",
+        user_text="пришли агента тхт файлом",
+    )
+    assert gw._reply_fails_file_delivery(
+        "Исправляю: возьму именно переделанный промт агента и сохраню.",
+        user_text="пришли переделанного агента в тхт файле",
+    )
+    assert not gw._reply_fails_file_delivery(
+        "Агент: character_registry\n\n" + ("правило.\n" * 40),
+        user_text="пришли агента тхт файлом",
+    )
+    assert not gw._reply_fails_file_delivery(
+        "",
+        user_text="пришли мне пустой txt файл",
+    )
+
+
+@pytest.mark.asyncio
+async def test_ask_file_excuse_retries_and_packs_txt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Отмазка «нет инструмента» → повтор → полный текст в .txt, не тишина."""
+    import app.services.gpt_client as gc
+
+    calls: list[str] = []
+    full = (
+        "Агент: character_registry_database_agent_v3_web_verified\n\n"
+        + ("Правило заполнения персонажей.\n" * 30)
+    )
+
+    class FakeGpt:
+        async def ask_with_files(self, text, files, **kwargs):
+            calls.append(text)
+            if len(calls) == 1:
+                return (
+                    "В текущем чате у меня нет доступного инструмента "
+                    "для создания и прикрепления .txt файла. "
+                    "Могу вернуть полный текст следующим сообщением."
+                )
+            assert "СТОП" in text or "ПОЛНЫЙ текст" in text
+            return full
+
+        async def download_attachment_from_last_reply(self, *a, **k):
+            return None
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: FakeGpt())
+    s = gw.create_session()
+    gw.save_attachment(
+        s["id"],
+        "agent.txt",
+        "старый промт агента персонажей".encode("utf-8"),
+    )
+    out = await gw.ask(
+        s["id"],
+        "переделай агента по созданию персонажей и пришли тхт файлом",
+    )
+    assert len(calls) == 2
+    names = [o["name"] for o in out["outputs"] if not o["name"].startswith("reply_")]
+    assert any(n.endswith(".txt") for n in names)
+    assert "Готовые файлы" in out["messages"][-1]["content"]
+    packed = next(
+        o
+        for o in out["outputs"]
+        if o["name"].endswith(".txt") and not o["name"].startswith("reply_")
+    )
+    body = Path(packed["path"]).read_text(encoding="utf-8")
+    assert "character_registry_database_agent_v3_web_verified" in body
+    assert "нет доступного инструмента" not in body
+
+
 @pytest.mark.asyncio
 async def test_ask_send_file_packs_previous_assistant_reply(
     monkeypatch: pytest.MonkeyPatch,

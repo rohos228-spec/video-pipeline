@@ -26,6 +26,10 @@ _WORKSPACE_SYSTEM = (
     "Ты в чате Studio GPT (HTTP API). Вложения пользователя уже приложены.\n"
     "Изображения во вложениях — vision: ты их видишь и анализируешь.\n"
     "ЗАПРЕЩЕНО писать, что не можешь прикрепить файл / нет инструмента вложений.\n"
+    "ЗАПРЕЩЕНО: «нет инструмента», «не могу создать файл», «могу только текстом», "
+    "«исправляю/сейчас подготовлю» без самого текста файла. "
+    "Когда просят .txt/.docx/файл — СРАЗУ выдай ПОЛНОЕ тело документа в ответе. "
+    "Studio сама сохранит ответ как скачиваемый файл. Не планируй — пиши документ.\n"
     "Если в ЭТОМ сообщении есть новые файлы (PDF/Excel/Word/txt) — приоритет "
     "у них: переводи/суммируй/разбирай ИМЕННО вложения, а не старые длинные "
     "сообщения чата (там может быть чужой промт кадра/сцены).\n"
@@ -38,6 +42,15 @@ _WORKSPACE_SYSTEM = (
     "Excel — TSV с строками «# Лист: …». Word — обычный текст документа.\n"
     "Если просят и Excel, и Word — сначала блок(и) # Лист:, затем текст для .docx.\n"
     "Неизвестные поля — прочерки «—»."
+)
+
+_FILE_DELIVERY_NUDGE = (
+    "СТОП. Запрещено писать про отсутствие инструментов/вложений и запрещены "
+    "преамбулы «исправляю/сейчас подготовлю/могу вернуть текстом».\n"
+    "Сейчас выдай ПОЛНЫЙ текст итогового документа целиком в ответе. "
+    "Без объяснений до и после. Только тело файла. "
+    "Studio сама сохранит ответ как скачиваемый .txt/.docx.\n\n"
+    "Исходный запрос пользователя:\n"
 )
 
 # Короткий запрос + документ → не тащить в API километровые прошлые промты сцен.
@@ -98,10 +111,40 @@ _BLANK_FILE_RE = re.compile(
 
 _EXCUSE_RE = re.compile(
     r"(?im)^.*("
-    r"недоступен инструмент|не\s+могу\s+прикрепить|не\s+смогу\s+прикрепить|"
+    r"недоступен инструмент|нет\s+(?:доступного\s+)?инструмент|"
+    r"не\s+могу\s+прикрепить|не\s+смогу\s+прикрепить|"
+    r"не\s+(?:могу|смогу|умею)\s+(?:создать|отправить|выдать).{0,40}файл|"
+    r"не\s+могу\s+создать\s+и\s+прикрепить|"
     r"генерации файлов|создания новых вложений|прикрепить\s+\.docx|"
-    r"cannot\s+attach|no\s+attachment\s+tool"
+    r"прикрепления\s+\.txt|создания\s+и\s+прикрепления|"
+    r"могу\s+вернуть\s+полный\s+текст|"
+    r"cannot\s+attach|no\s+attachment\s+tool|no\s+available\s+tool"
     r").*(?:\n|$)"
+)
+
+# Отмазка / план без тела файла — Studio должна переспросить, а не замолчать.
+_FILE_REFUSAL_RE = re.compile(
+    r"(?is)("
+    r"нет\s+(?:доступного\s+)?инструмент|"
+    r"недоступен\s+инструмент|"
+    r"не\s+(?:могу|смогу|умею)\s+"
+    r"(?:прикрепить|создать|отправить|выдать|сформировать).{0,60}"
+    r"(?:файл|вложен|\.txt|\.docx)|"
+    r"не\s+могу\s+создать\s+и\s+прикрепить|"
+    r"нет\s+доступного\s+инструмента\s+для\s+создания|"
+    r"могу\s+(?:только\s+)?вернуть\s+полный\s+текст|"
+    r"верну\s+полный\s+текст\s+.*(?:следующ|прямо)|"
+    r"cannot\s+(?:attach|create).{0,40}file|"
+    r"no\s+(?:available\s+)?(?:tool|instrument).{0,60}(?:file|attach|txt)"
+    r")"
+)
+_PLANNING_ONLY_RE = re.compile(
+    r"(?is)^\s*(?:"
+    r"исправляю|переделываю|беру\s+именно|"
+    r"сейчас\s+(?:сделаю|подготовлю|найду|возьму|верну|пришлю|исправлю)|"
+    r"сначала\s+(?:найду|открою|возьму|прочитаю)|"
+    r"сейчас\s+верну\s+полный\s+текст"
+    r")\b.{0,900}$"
 )
 
 # Совместимость со старыми тестами / именами
@@ -299,6 +342,32 @@ def _write_simple_xlsx(path: Path, text: str) -> None:
 def _strip_attachment_excuses(text: str) -> str:
     cleaned = _EXCUSE_RE.sub("", text or "")
     return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+def _reply_fails_file_delivery(reply: str, *, user_text: str) -> bool:
+    """Ответ нельзя класть в «Готовые файлы»: отмазка, план или пустота."""
+    if _wants_blank_file(user_text):
+        return False
+    t = (reply or "").strip()
+    if not t:
+        return True
+    if _FILE_REFUSAL_RE.search(t):
+        return True
+    if _PLANNING_ONLY_RE.search(t):
+        return True
+    cleaned = _strip_attachment_excuses(t)
+    if not cleaned:
+        return True
+    # Короткая мета-отписка вместо документа при явном «пришли файлом».
+    if len(cleaned) < 120 and (
+        _asks_file(user_text) or _needs_work(user_text)
+    ):
+        if re.search(
+            r"(?i)инструмент|прикрепить|вложен|следующ|исправляю|подготов",
+            t,
+        ):
+            return True
+    return False
 
 
 def _last_assistant_document(prior_raw: list[Any]) -> str:
@@ -1351,6 +1420,62 @@ async def ask(
                 raise
         reply = (reply or "").strip()
 
+        # Просили файл, а модель отмазалась / «сейчас сделаю» / замолчала —
+        # один жёсткий повтор: полный текст в ответе → Studio упакует в .txt.
+        if want_pack and _reply_fails_file_delivery(reply, user_text=text):
+            logger.warning(
+                "gpt_workspace: session={} file-delivery refuse/plan "
+                "reply_len={} → retry once",
+                session_id,
+                len(reply),
+            )
+            meta = _read_json(d / "meta.json", {})
+            meta["phase"] = "thinking"
+            meta["phase_detail"] = (
+                "Повтор: модель должна выдать полный текст файла…"
+            )
+            meta["updated_at"] = _now()
+            _write_json(d / "meta.json", meta)
+            retry_history = list(history) + [
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": reply or "(пусто)"},
+            ]
+            try:
+                reply2 = await gpt.ask_with_files(
+                    _FILE_DELIVERY_NUDGE + text,
+                    files,
+                    timeout=ask_timeout,
+                    expect_file_download=has_xlsx,
+                    history=retry_history,
+                    treat_txt_as_prompt=False,
+                    system=_WORKSPACE_SYSTEM,
+                    max_retries=0,
+                )
+                reply2 = (reply2 or "").strip()
+                if reply2 and not _reply_fails_file_delivery(
+                    reply2, user_text=text
+                ):
+                    reply = reply2
+                elif reply2:
+                    c1 = _strip_attachment_excuses(reply)
+                    c2 = _strip_attachment_excuses(reply2)
+                    reply = c2 if len(c2) >= len(c1) else (c1 or reply2)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "gpt_workspace: session={} file-delivery retry failed: {}",
+                    session_id,
+                    e,
+                )
+            if _reply_fails_file_delivery(reply, user_text=text):
+                # Не молчим и не подсовываем старый кривой document_*.txt —
+                # явный текст в пузыре; want_pack упакует только если ответ стал норм.
+                reply = (
+                    "Не удалось получить текст файла от модели "
+                    "(отмазка про «нет инструмента» / «сейчас сделаю» без текста). "
+                    "Напиши ещё раз: «выдай ПОЛНЫЙ текст документа прямо в ответе» — "
+                    "Studio сама сохранит его как .txt."
+                )
+
         # Excel во вложении: если TSV-ответ — кусок книги, дозапросить продолжение.
         if has_xlsx and reply:
             try:
@@ -1512,6 +1637,11 @@ async def ask(
             and _asks_file(text)
         ):
             pack_doc = True
+        # Не пакуем отмазку / наш fallback-текст про провал выдачи.
+        if pack_doc and _reply_fails_file_delivery(reply, user_text=text):
+            pack_doc = False
+        if pack_doc and reply.startswith("Не удалось получить текст файла от модели"):
+            pack_doc = False
         if (
             pack_doc
             and not any(p.suffix.lower() in {".xlsx", ".xlsm"} for p in files)
