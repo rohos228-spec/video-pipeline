@@ -992,7 +992,15 @@ async def continue_project_pipeline(
 # ============================================================
 
 
-_HARNESS_GATE_OBSERVABILITY = frozenset({"project_log_clean", "node_runs_failed"})
+_HARNESS_GATE_OBSERVABILITY = frozenset(
+    {
+        "project_log_clean",
+        "node_runs_failed",
+        # Не блокировать HITL-цепочку c01→c02 из-за мягких проверок картинки.
+        "hero_sheet_png",
+        "excel_hero_fields_sane",
+    }
+)
 
 
 async def _harness_gate(

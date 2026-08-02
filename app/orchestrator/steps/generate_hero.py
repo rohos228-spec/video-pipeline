@@ -1105,26 +1105,21 @@ async def _generate_one_excel_character(
             is_polluted_character_field,
         )
 
-        if is_polluted_character_field(ch.name) or is_polluted_character_field(
-            ch.look
-        ):
+        if is_polluted_character_field(ch.name):
             raise RuntimeError(
-                f"excel_hero {ch.id}: в имени/внешности служебный текст агента "
+                f"excel_hero {ch.id}: в имени служебный текст агента "
                 f"(name={ch.name!r}). Исправь лист «Персонажи» и перезапусти hero."
             )
 
-        # Слот hero обязан быть turnaround sheet (не агент реестра).
-        # rules=c01 у вариации — штатная механика «на основе c01».
-        gtb.assert_hero_master_is_sheet(project)
-
         if used_refs:
-            # Реф-вариация: без GPT, но ОБЯЗАТЕЛЬНО sheet-layout + style.
-            # Реф = тот же лист/стиль, изменения внешности/одежды из карточки.
+            # Реф-вариация (rules=c01): рабочая механика — реф-картинка +
+            # changes_text. Sheet-мастер слота hero тут НЕ нужен.
             prompt_text = build_ref_variation_sheet_prompt(
                 ch, style=hero_style_content
             )
         else:
-            # Не-реф: полный GPT-промт по brief из excel + проектный стиль.
+            # Base-персонаж: слот hero = turnaround sheet (не агент реестра).
+            gtb.assert_hero_master_is_sheet(project)
             hero_template = gtb.get_effective_text(project, "hero")
             brief = ch.brief_for_gpt()
             hero_ask = gtb.render_hero_text(

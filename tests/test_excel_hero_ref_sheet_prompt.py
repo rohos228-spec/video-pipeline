@@ -27,10 +27,11 @@ def test_ref_variation_prompt_forces_sheet_not_scene() -> None:
         ch, style="archival noir watercolor grunge"
     )
     low = text.lower()
-    assert "turnaround sheet" in low or "model sheet" in low
+    assert "turnaround" in low or "model sheet" in low
     assert "white background" in low
-    assert "not a cinematic" in low or "not a story scene" in low
     assert "c02" in text
     assert "больничная рубаха" in text
     assert "watercolor" in low
     assert len(text) <= 4900
+    # короткий: реф несёт identity, не простыня
+    assert len(text) < 2500

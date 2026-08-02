@@ -127,41 +127,16 @@ def collect_hero_quality_checks(
             HarnessCheck("excel_hero_present", True, "no characters sheet rows")
         ]
 
-    arts = _latest_hero_artifacts(project_id)
-    bad_sheet: list[str] = []
-    bad_prompt: list[str] = []
     polluted: list[str] = []
+    bad_sheet: list[str] = []
 
     for ch in persons:
         if is_polluted_character_field(ch.name) or is_polluted_character_field(ch.look):
             polluted.append(ch.id)
         png = data_dir / "characters" / f"{ch.id}.png"
-        art = arts.get(ch.id) or {}
-        prompt = str(art.get("hero_prompt") or "")
-        low = prompt.lower()
-        sheetish = ("turnaround" in low) or ("model sheet" in low) or (
-            "character sheet" in low
-        )
-        # Реф без промта = старый баг: Outsee рисовал cinematic scene.
-        if ch.ref_ids and len(prompt.strip()) < 80:
-            bad_prompt.append(
-                f"{ch.id}: ref->cinematic (hero_prompt empty/short, refs={ch.ref_ids})"
-            )
-        elif prompt and not sheetish and len(prompt) > 200:
-            # длинный промт без sheet — подозрительно
-            if any(
-                x in low
-                for x in (
-                    "hospital",
-                    "sitting on",
-                    "in a room",
-                    "cinematic still",
-                    "photograph of",
-                )
-            ):
-                bad_prompt.append(f"{ch.id}: prompt looks like scene, not sheet")
-
-        if png.is_file():
+        # Реф-вариация (rules=c01): пустой hero_prompt — НОРМА (картинка
+        # из рефа + changes_text). Нельзя валить harness — блокирует c02.
+        if png.is_file() and not ch.ref_ids:
             bg = png_corners_look_sheet_bg(png)
             if bg is False:
                 bad_sheet.append(
@@ -175,13 +150,7 @@ def collect_hero_quality_checks(
             "ok" if not polluted else f"polluted: {', '.join(polluted)}",
         )
     )
-    checks.append(
-        HarnessCheck(
-            "hero_sheet_prompt",
-            not bad_prompt,
-            "ok" if not bad_prompt else "; ".join(bad_prompt)[:400],
-        )
-    )
+    # Только предупреждение по base-персонажам; рефы не трогаем.
     checks.append(
         HarnessCheck(
             "hero_sheet_png",

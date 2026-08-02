@@ -282,9 +282,10 @@ def verify_project_disk(project_id: int, data_dir: Path, status: str) -> Harness
         except Exception as e:  # noqa: BLE001
             logger.debug("harness persons parse skip: {}", e)
 
-    _HEROES_REQUIRED_STATUSES = {
-        "hero_ready",
-        "generating_hero",
+    # Полный комплект characters/*.png — только ПОСЛЕ фазы hero.
+    # На hero_ready в HITL/ai_control нормально 1 из N (сначала c01, аппрув,
+    # потом c02-реф). Требовать всех сразу → harness PAUSE, c02 не стартует.
+    _HEROES_FULL_STATUSES = {
         "items_ready",
         "generating_items",
         "enrich_1_ready",
@@ -298,17 +299,17 @@ def verify_project_disk(project_id: int, data_dir: Path, status: str) -> Harness
         "images_ready",
         *_SCENES_REQUIRED_STATUSES,
     }
-    heroes_required = bool(excel_persons) and status in _HEROES_REQUIRED_STATUSES
-    heroes_ok = (not heroes_required) or len(heroes) >= len(excel_persons)
+    heroes_full = bool(excel_persons) and status in _HEROES_FULL_STATUSES
+    heroes_ok = (not heroes_full) or len(heroes) >= len(excel_persons)
     checks.append(
         HarnessCheck(
             "heroes_png",
             heroes_ok,
             f"n={len(heroes)} excel={len(excel_persons)} "
-            f"required={heroes_required} status={status}",
+            f"full_required={heroes_full} status={status}",
         )
     )
-    if heroes_required and not heroes_ok:
+    if heroes_full and not heroes_ok:
         repair.append("hero")
 
     if polluted:
@@ -351,10 +352,9 @@ def verify_project_disk(project_id: int, data_dir: Path, status: str) -> Harness
         repair.append("video")
 
     r48 = _count_r48_filled(xlsx) if xlsx.is_file() else 0
-    need_r48 = max(len(scenes), 1) if scenes else 0
-    r48_ok = (not scenes) or (r48 >= min(need_r48, 9) if need_r48 else r48 >= 0)
-    # If we have N scenes, expect N anim prompts when assembled/videos_ready+
-    if scenes and status in {
+    # R48 обязателен только на/после anim_pr. На hero_ready старые scenes/
+    # пустой R48 НЕ должны PAUSE'ить генерацию c02.
+    _R48_REQUIRED_STATUSES = {
         "animation_prompts_ready",
         "generating_videos",
         "videos_ready",
@@ -365,11 +365,20 @@ def verify_project_disk(project_id: int, data_dir: Path, status: str) -> Harness
         "assembling",
         "assembled",
         "published",
-    }:
+    }
+    if scenes and status in _R48_REQUIRED_STATUSES:
         r48_ok = r48 >= len(scenes)
         if not r48_ok:
             repair.append("anim_pr")
-    checks.append(HarnessCheck("r48_anim", r48_ok, f"filled={r48} scenes={len(scenes)}"))
+    else:
+        r48_ok = True
+    checks.append(
+        HarnessCheck(
+            "r48_anim",
+            r48_ok,
+            f"filled={r48} scenes={len(scenes)} status={status}",
+        )
+    )
 
     # DB frames ↔ xlsx plan parity (строго для assembled, иначе диагностика).
     plan_rows = _count_plan_rows_filled(

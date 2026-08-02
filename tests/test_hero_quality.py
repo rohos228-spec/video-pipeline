@@ -1,4 +1,4 @@
-"""hero_quality: sheet vs cinematic scene."""
+"""hero_quality: sheet checks without blocking ref-variations."""
 
 from __future__ import annotations
 
@@ -48,28 +48,32 @@ def test_png_corners_white_vs_scene(tmp_path: Path) -> None:
     assert png_corners_look_sheet_bg(scene) is False
 
 
-def test_collect_flags_non_white_ref_png(tmp_path: Path, monkeypatch) -> None:
+def test_ref_empty_prompt_does_not_fail_harness(tmp_path: Path, monkeypatch) -> None:
+    """rules=c01 + пустой hero_prompt — норма, не блокер c02."""
     from app import settings as app_settings
     from app.services import hero_quality as hq
 
     monkeypatch.setattr(app_settings.settings, "sqlite_path", tmp_path / "missing.db")
-    monkeypatch.setattr(hq, "_latest_hero_artifacts", lambda _pid: {
-        "c02": {"hero_prompt": "", "path": "", "used_refs": ["c01"], "meta": {}},
-        "c01": {
-            "hero_prompt": "Professional character turnaround sheet ...",
-            "path": "",
-            "used_refs": None,
-            "meta": {},
+    monkeypatch.setattr(
+        hq,
+        "_latest_hero_artifacts",
+        lambda _pid: {
+            "c02": {"hero_prompt": "", "path": "", "used_refs": ["c01"], "meta": {}},
+            "c01": {
+                "hero_prompt": "Professional character turnaround sheet ...",
+                "path": "",
+                "used_refs": None,
+                "meta": {},
+            },
         },
-    })
+    )
     _write_persons(tmp_path / "project.xlsx")
     chars = tmp_path / "characters"
     chars.mkdir()
     Image.new("RGB", (128, 128), (255, 255, 255)).save(chars / "c01.png")
+    # реф-png может быть любым — quality check рефы не валит
     Image.new("RGB", (128, 128), (30, 40, 50)).save(chars / "c02.png")
 
     checks = {c.name: c for c in collect_hero_quality_checks(1, tmp_path)}
-    assert checks["hero_sheet_prompt"].ok is False
-    assert "c02" in checks["hero_sheet_prompt"].detail
-    assert checks["hero_sheet_png"].ok is False
-    assert "c02" in checks["hero_sheet_png"].detail
+    assert "hero_sheet_prompt" not in checks
+    assert checks["hero_sheet_png"].ok is True

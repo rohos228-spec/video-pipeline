@@ -62,49 +62,33 @@ def build_ref_variation_sheet_prompt(
     style: str = "",
     max_chars: int = 4900,
 ) -> str:
-    """Промт Outsee для реф-вариации: sheet + изменения, не cinematic scene.
+    """Промт Outsee для реф-вариации: реф-картинка + изменения.
 
-    Раньше в ref-пути уходил только changes_text → генератор рисовал
-    сцену в комнате вместо turnaround sheet.
+    База — короткий changes_text (как раньше). Добавляем только короткий
+    sheet-lock, без простыни — иначе Outsee игнорит реф.
     """
     changes = ch.changes_text().strip()
     style_bit = (style or "").strip()
-    if len(style_bit) > 900:
-        style_bit = style_bit[:900].rstrip() + "…"
+    if len(style_bit) > 500:
+        style_bit = style_bit[:500].rstrip() + "…"
 
-    parts = [
+    parts: list[str] = [
         (
-            "Create a dense professional character model sheet / turnaround sheet "
-            "for the SAME exact character as in the reference image(s). "
-            "Aspect ratio 16:9. Pure white background (#FFFFFF). "
-            "No environment, no room, no furniture, no background shadows, "
-            "no decorative elements, no text, no labels, no watermark. "
-            "NOT a cinematic still, NOT a story scene, NOT a photograph of a room. "
-            "Neutral standing pose, arms slightly away from body, "
-            "orthographic turnaround feel, minimal perspective distortion. "
-            "LEFT: 4 large full-body views side by side — front, 3/4 front, side, back. "
-            "RIGHT UPPER: head turnaround — front, 3/4, side, back. "
-            "Tight packed production reference sheet, fill most of the canvas, "
-            "minimal empty margins."
+            "Same exact character as the reference image(s). "
+            "Produce a dense 16:9 character model sheet / turnaround on "
+            "pure white background (#FFFFFF): full-body front, 3/4, side, back "
+            "+ head turnaround. No environment, no room, no text, no labels."
         ),
         f"Character id: {ch.id}.",
     ]
     if changes:
-        parts.append(
-            "Apply ONLY these appearance / outfit changes to the reference "
-            "character; keep identity locked to the reference:\n" + changes
-        )
+        parts.append(changes)
     else:
         parts.append(
-            "Keep the reference character appearance; produce a fresh "
-            "turnaround sheet composition only."
+            "Different turnaround sheet composition; keep identity from reference."
         )
     if style_bit:
-        parts.append("Visual style (must apply):\n" + style_bit)
-    parts.append(
-        "STRICT CONSISTENCY: same face, hair, proportions and identity as "
-        "the reference, updated only by the listed changes."
-    )
+        parts.append("Visual style:\n" + style_bit)
     text = "\n\n".join(parts)
     if len(text) > max_chars:
         return text[:max_chars]
