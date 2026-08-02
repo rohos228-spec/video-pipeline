@@ -88,13 +88,20 @@ async function http<T>(
 ): Promise<T> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  const external = options.signal;
+  const onExtAbort = () => controller.abort();
+  if (external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener("abort", onExtAbort);
+  }
   try {
     // FormData: не ставить Content-Type вручную — браузер сам добавит
     // multipart boundary. Иначе FastAPI не видит UploadFile.
     const isFormData =
       typeof FormData !== "undefined" && options.body instanceof FormData;
+    const { signal: _ignoredSignal, ...rest } = options;
     const res = await fetch(path, {
-      ...options,
+      ...rest,
       signal: controller.signal,
       headers: {
         ...(isFormData ? {} : { "Content-Type": "application/json" }),
@@ -114,6 +121,9 @@ async function http<T>(
     return res.json() as Promise<T>;
   } catch (e) {
     if (e instanceof DOMException && e.name === "AbortError") {
+      if (external?.aborted) {
+        throw new ApiError(0, "Отменено");
+      }
       const sec = Math.max(1, Math.round(timeoutMs / 1000));
       const isGptLong = timeoutMs >= 120_000;
       const looksOperator =
@@ -131,6 +141,7 @@ async function http<T>(
     throw e;
   } finally {
     window.clearTimeout(timer);
+    external?.removeEventListener("abort", onExtAbort);
   }
 }
 
@@ -378,7 +389,12 @@ export const api = {
       `/api/db/projects/${projectId}/apply-ops`,
       { method: "POST", body: JSON.stringify({ ops, export_xlsx: exportXlsx }) },
     ),
-  dbOrchestratorChat: (projectId: number, message: string, history: { role: string; content: string }[]) =>
+  dbOrchestratorChat: (
+    projectId: number,
+    message: string,
+    history: { role: string; content: string }[],
+    opts?: { signal?: AbortSignal },
+  ) =>
     http<{
       reply: string;
       applied: { updated: number; exported: { frames: number; cells: number } | null } | null;
@@ -411,6 +427,7 @@ export const api = {
       {
         method: "POST",
         body: JSON.stringify({ message, history }),
+        signal: opts?.signal,
       },
       // GPT-вызов длинный (контекст графа + ответ): 10 минут, как ask_fresh.
       600_000,

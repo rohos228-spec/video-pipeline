@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -1662,7 +1664,10 @@ async def orchestrator_chat(
                     )
 
                     try:
-                        result = apply_edits(act.get("edit_files") or [])
+                        # sync FS — в thread, иначе блокирует весь Studio UI
+                        result = await asyncio.to_thread(
+                            apply_edits, act.get("edit_files") or []
+                        )
                     except CodeAutofixError as e:
                         raise db_apply.ApplyOpsError(str(e)) from None
                     actions_run.append(
@@ -1682,7 +1687,10 @@ async def orchestrator_chat(
                     spec = act.get("run_tests")
                     paths = spec if isinstance(spec, list) else None
                     try:
-                        tres = run_tests(paths)
+                        # pytest sync — не блокировать event loop (зависание всего UI)
+                        tres = await asyncio.to_thread(
+                            lambda: run_tests(paths, timeout=90.0)
+                        )
                     except CodeAutofixError as e:
                         raise db_apply.ApplyOpsError(str(e)) from None
                     if not tres["ok"]:
@@ -1712,8 +1720,10 @@ async def orchestrator_chat(
                         raise db_apply.ApplyOpsError("git_commit_push: пустой message")
                     if auto:
                         try:
-                            pushed = commit_and_push(
-                                [str(x) for x in files], message
+                            pushed = await asyncio.to_thread(
+                                commit_and_push,
+                                [str(x) for x in files],
+                                message,
                             )
                         except (GitOpsError, CodeAutofixError) as e:
                             raise db_apply.ApplyOpsError(str(e)) from None
@@ -1834,7 +1844,9 @@ async def orchestrator_confirm_git_push(
     from app.services.git_ops import GitOpsError, commit_and_push
 
     try:
-        pushed = commit_and_push(list(body.files or []), body.message.strip())
+        pushed = await asyncio.to_thread(
+            commit_and_push, list(body.files or []), body.message.strip()
+        )
     except (GitOpsError, CodeAutofixError) as e:
         raise HTTPException(400, str(e)) from None
     return {

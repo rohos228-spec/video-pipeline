@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Bug,
   ChevronDown,
@@ -10,6 +10,7 @@ import {
   MessageSquare,
   Minimize2,
   Send,
+  Square,
   Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -40,10 +41,10 @@ interface ChatMsg {
 }
 
 const FIX_BUGS_PROMPT =
-  "Режим «Фикс багов»: посмотри диагностику/ошибки этого проекта и код программы. " +
-  "Найди баги в app/, предложи точечный фикс через edit_files + run_tests + " +
-  "git_commit_push (auto=false — я подтвержу push кнопкой). " +
-  "Пуш только в ветку этого ПК (ORCHESTRATOR_GIT_BRANCH). Кратко по-русски.";
+  "Режим «Фикс багов»: по диагностике/ошибкам этого проекта найди баг в app/. " +
+  "Сначала кратко по-русски: что сломано. Потом точечный edit_files (1–3 файла). " +
+  "run_tests только короткий smoke (tests/test_code_autofix_allowlist.py), без полного suite. " +
+  "git_commit_push с auto=false — я подтвержу push. Ветка = ORCHESTRATOR_GIT_BRANCH.";
 
 export function OrchestratorPanel({ projectId }: Props) {
   const [open, setOpen] = usePersistedState("vp-orchestrator-open", true);
@@ -52,6 +53,7 @@ export function OrchestratorPanel({ projectId }: Props) {
   const [chatLog, setChatLog] = usePersistedState<ChatMsg[]>(storageKey, []);
   const [chatInput, setChatInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     try {
@@ -63,9 +65,24 @@ export function OrchestratorPanel({ projectId }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storageKey]);
 
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
+
+  const cancelBusy = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setBusy(false);
+  }, []);
+
   const sendMessage = useCallback(
     async (msg: string) => {
       if (projectId == null || !msg.trim() || busy) return;
+      abortRef.current?.abort();
+      const ac = new AbortController();
+      abortRef.current = ac;
       setBusy(true);
       setOpen(true);
       const next: ChatMsg[] = [...chatLog, { role: "user", content: msg.trim() }];
@@ -75,7 +92,9 @@ export function OrchestratorPanel({ projectId }: Props) {
           projectId,
           msg.trim(),
           next.slice(-9, -1).map((m) => ({ role: m.role, content: m.content })),
+          { signal: ac.signal },
         );
+        if (ac.signal.aborted) return;
         const notes: string[] = [];
         if (r.applied) {
           notes.push(
@@ -152,9 +171,7 @@ export function OrchestratorPanel({ projectId }: Props) {
         const pendGit = (r.pending_confirm ?? []).find((p) => p.kind === "git_commit_push");
         const pend = pendGit ?? pendRemove;
         if (pendRemove) {
-          notes.push(
-            `к удалению: ${pendRemove.count} нод — кнопки ниже`,
-          );
+          notes.push(`к удалению: ${pendRemove.count} нод — кнопки ниже`);
         }
         if (pendGit) {
           notes.push(`к push: подтверди кнопку ниже`);
@@ -169,11 +186,19 @@ export function OrchestratorPanel({ projectId }: Props) {
           },
         ]);
       } catch (e) {
+        if (ac.signal.aborted) {
+          setChatLog([
+            ...next,
+            { role: "assistant", content: "Отменено — Studio снова отвечает." },
+          ]);
+          return;
+        }
         setChatLog([
           ...next,
           { role: "assistant", content: `Ошибка: ${e instanceof Error ? e.message : e}` },
         ]);
       } finally {
+        if (abortRef.current === ac) abortRef.current = null;
         setBusy(false);
       }
     },
@@ -274,7 +299,7 @@ export function OrchestratorPanel({ projectId }: Props) {
       className={cn(
         "absolute z-40 border border-white/[0.1] bg-[#0c0c0c]/97 shadow-2xl backdrop-blur transition-all",
         open && expanded
-          ? "inset-x-3 bottom-3 top-[12%] rounded-xl"
+          ? "inset-x-3 bottom-3 top-[18%] max-h-[78vh] rounded-xl"
           : "inset-x-0 bottom-0 rounded-none border-x-0 border-b-0",
       )}
     >
@@ -289,7 +314,9 @@ export function OrchestratorPanel({ projectId }: Props) {
           <span className="truncate text-white/35">
             {projectId == null
               ? "открой проект"
-              : "шаги · база · фикс багов → push на ветку ПК"}
+              : busy
+                ? "думает… можно Отмена"
+                : "шаги · база · фикс багов → push"}
           </span>
           {open ? (
             <ChevronDown className="ml-auto h-4 w-4 shrink-0" />
@@ -297,21 +324,34 @@ export function OrchestratorPanel({ projectId }: Props) {
             <ChevronUp className="ml-auto h-4 w-4 shrink-0" />
           )}
         </button>
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 gap-1.5 border-amber-400/40 bg-amber-500/10 text-[11px] text-amber-100 hover:bg-amber-500/20"
-          disabled={projectId == null || busy}
-          onClick={() => {
-            setExpanded(true);
-            setOpen(true);
-            void sendMessage(FIX_BUGS_PROMPT);
-          }}
-          title="Найти и починить баги в коде, подготовить push"
-        >
-          <Bug className="h-3.5 w-3.5" />
-          Фикс багов
-        </Button>
+        {busy ? (
+          <Button
+            size="sm"
+            variant="destructive"
+            className="h-7 gap-1.5 text-[11px]"
+            onClick={cancelBusy}
+            title="Прервать запрос — разморозить Studio"
+          >
+            <Square className="h-3 w-3 fill-current" />
+            Отмена
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1.5 border-amber-400/40 bg-amber-500/10 text-[11px] text-amber-100 hover:bg-amber-500/20"
+            disabled={projectId == null}
+            onClick={() => {
+              setExpanded(true);
+              setOpen(true);
+              void sendMessage(FIX_BUGS_PROMPT);
+            }}
+            title="Найти и починить баги в коде, подготовить push"
+          >
+            <Bug className="h-3.5 w-3.5" />
+            Фикс багов
+          </Button>
+        )}
         <Button
           size="sm"
           variant="ghost"
@@ -336,8 +376,8 @@ export function OrchestratorPanel({ projectId }: Props) {
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
             {chatLog.length === 0 ? (
               <div className="text-[11px] text-white/25">
-                Пиши по-русски: шаги пайплайна, правки базы, или жми «Фикс багов» в шапке —
-                оркестратор найдёт баг в коде, прогонит тесты и подготовит push.
+                Пиши по-русски: шаги пайплайна, правки базы, или жми «Фикс багов» в шапке.
+                Если зависло — кнопка «Отмена».
               </div>
             ) : (
               chatLog.map((m, i) => (
@@ -410,10 +450,14 @@ export function OrchestratorPanel({ projectId }: Props) {
             <input
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && void sendChat()}
+              onKeyDown={(e) => e.key === "Enter" && !busy && void sendChat()}
               disabled={projectId == null || busy}
               placeholder={
-                projectId == null ? "сначала открой проект" : "сообщение оркестратору…"
+                projectId == null
+                  ? "сначала открой проект"
+                  : busy
+                    ? "оркестратор думает… жми Отмена в шапке"
+                    : "сообщение оркестратору…"
               }
               className="h-9 flex-1 rounded-md border border-white/10 bg-black/40 px-3 text-xs disabled:opacity-40"
             />
