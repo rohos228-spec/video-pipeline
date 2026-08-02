@@ -66,6 +66,32 @@ _SLOT_MAP: dict[int, tuple[ProjectStatus, ProjectStatus, str]] = {
 _MAX_RETRIES = 3
 
 
+def _apply_enrich_ready_status(
+    project: Project,
+    *,
+    running_status: ProjectStatus,
+    ready_status: ProjectStatus,
+) -> bool:
+    """Ставит enrich_N_ready, не откатывая media/более поздний шаг.
+
+    API-путь раньше всегда писал ready_status и затирал generating_videos,
+    если video/run стартовал параллельно с долгим checkMode excel_gpt.
+    """
+    from app.telegram.menu import status_order as _ord
+
+    cur = project.status
+    if cur is running_status or _ord(cur) < _ord(ready_status):
+        project.status = ready_status
+        return True
+    logger.warning(
+        "[#{}] enrich_xlsx: skip status → {} (project already at {})",
+        project.id,
+        ready_status.value,
+        cur.value if cur is not None else None,
+    )
+    return False
+
+
 async def _after_excel_gpt_done(
     session: AsyncSession,
     project: Project,
@@ -609,6 +635,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 api_res.analysis.to_dict() if getattr(api_res, "analysis", None) else None
             ),
         )
+        ready_status = _SLOT_MAP[slot_idx][1]
+        running_status = _SLOT_MAP[slot_idx][0]
+        # status мог уйти в generating_* пока шёл долгий API-check
+        await session.refresh(project)
         meta = dict(project.meta or {})
         completed = [
             int(x) for x in (meta.get("enrich_completed_slots") or []) if str(x).isdigit()
@@ -624,8 +654,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         meta.pop("active_excel_gpt_node_key", None)
         project.meta = meta
         flag_modified(project, "meta")
-        ready_status = _SLOT_MAP[slot_idx][1]
-        project.status = ready_status
+        _apply_enrich_ready_status(
+            project,
+            running_status=running_status,
+            ready_status=ready_status,
+        )
         await session.flush()
         if output_mode == "project_file" and any(
             p.name == "project.xlsx" and p.exists() for p in api_res.output_paths
@@ -920,10 +953,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         await session.flush()
 
     # 5. Ставим статус slot_<i>_ready (не откатываем более продвинутый шаг).
-    from app.telegram.menu import status_order as _ord
-
     await session.refresh(project)
-    cur = project.status
     meta = dict(project.meta or {})
     completed = [int(x) for x in (meta.get("enrich_completed_slots") or []) if str(x).isdigit()]
     if slot_idx not in completed:
@@ -948,8 +978,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
     project.meta = meta
 
-    if project.status is running_status or _ord(project.status) < _ord(ready_status):
-        project.status = ready_status
+    _apply_enrich_ready_status(
+        project,
+        running_status=running_status,
+        ready_status=ready_status,
+    )
     await session.flush()
     try:
         from app.services.node_xlsx_snapshot import snapshot_and_bind_node_xlsx
