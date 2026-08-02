@@ -79,7 +79,13 @@ HERO_RELAX = True
 def _read_hero_style(project: Project) -> str | None:
     """Возвращает содержимое выбранного для проекта пресета стиля
     из prompts/04_hero_style/. Если стиль не задан или файл отсутствует
-    — возвращает None (вызывающий должен решить, как фоллбэчить)."""
+    — возвращает None (вызывающий должен решить, как фоллбэчить).
+
+    Fail-closed: шаблон sheet / агент реестра в слоте стиля — RuntimeError,
+    чтобы не генерить персонажей «не в том стиле» молча.
+    """
+    from app.services.hero_prompt_contract import validate_hero_style_or_error
+
     overrides = getattr(project, "prompt_overrides", None) or {}
     meta = getattr(project, "meta", None) or {}
     name = resolve_project_prompt_name(overrides, "hero_style", meta=meta)
@@ -87,12 +93,16 @@ def _read_hero_style(project: Project) -> str | None:
     if not p.exists():
         return None
     try:
-        return p.read_text(encoding="utf-8")
+        text = p.read_text(encoding="utf-8")
     except Exception as e:  # noqa: BLE001
         logger.warning(
             "[#{}] hero_style read failed ({}): {}", project.id, p, e
         )
         return None
+    err = validate_hero_style_or_error(text, source_name=str(name))
+    if err:
+        raise RuntimeError(err)
+    return text
 
 
 def _hero_target_pairs(

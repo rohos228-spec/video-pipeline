@@ -59,7 +59,12 @@ def get_global_active(step_code: str) -> str | None:
 
 
 def set_global_active(step_code: str, name: str) -> None:
-    from app.services.prompt_library import ENRICH_STEP_CODES, EXCEL_GPT_UNIFIED_STEP
+    from app.services.hero_prompt_contract import validate_prompt_variant_for_step
+    from app.services.prompt_library import (
+        ENRICH_STEP_CODES,
+        EXCEL_GPT_UNIFIED_STEP,
+        read_prompt,
+    )
 
     if step_code in ENRICH_STEP_CODES:
         step_code = EXCEL_GPT_UNIFIED_STEP
@@ -70,6 +75,25 @@ def set_global_active(step_code: str, name: str) -> None:
         if not prompt_path(step_code, clean).is_file():
             return
     except ValueError:
+        return
+    try:
+        body = read_prompt(step_code, clean)
+    except (OSError, FileNotFoundError, ValueError) as e:
+        logger.warning(
+            "prompt_active_global: skip {}={!r} (read failed: {})",
+            step_code,
+            clean,
+            e,
+        )
+        return
+    err = validate_prompt_variant_for_step(step_code, body, source_name=clean)
+    if err:
+        logger.warning(
+            "prompt_active_global: REFUSED {}={!r}: {}",
+            step_code,
+            clean,
+            err,
+        )
         return
     data = load_global_active()
     data[step_code] = clean

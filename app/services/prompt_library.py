@@ -354,17 +354,28 @@ def _clean_variant_name(raw: str) -> str:
     return name if name else ""
 
 
+# Какой slot_id в Node Studio соответствует step_code.
+# hero_style живёт в слоте `style`, не в `main` (там sheet/агент).
+_STEP_PREFERRED_SLOT: dict[str, str] = {
+    "hero_style": "style",
+}
+
+
 def _variant_from_studio_meta(meta: dict | None, step_code: str) -> str | None:
     """Вариант из Node Studio: `meta.prompt_slot_variants[node][slot]`.
 
     Зеркало `web/src/lib/prompt-slot-storage.ts` → `activeVariantForSlot`:
-    сначала слот `main`, иначе любой слот с существующим файлом для шага.
+    для hero_style — слот `style`; иначе сначала `main`, потом любой
+    существующий файл шага.
     """
     if not meta or step_code not in STEP_FOLDERS:
         return None
     slot_variants = meta.get("prompt_slot_variants")
     if not isinstance(slot_variants, dict):
         return None
+    preferred_slot = _STEP_PREFERRED_SLOT.get(step_code, "main")
+    found_preferred: str | None = None
+    found_main: str | None = None
     found_other: str | None = None
     for slots in slot_variants.values():
         if not isinstance(slots, dict):
@@ -380,11 +391,13 @@ def _variant_from_studio_meta(meta: dict | None, step_code: str) -> str | None:
             )
             if not exists:
                 continue
-            if slot_id == "main":
-                return clean
-            if found_other is None:
+            if slot_id == preferred_slot:
+                found_preferred = clean
+            elif slot_id == "main" and found_main is None:
+                found_main = clean
+            elif found_other is None:
                 found_other = clean
-    return found_other
+    return found_preferred or found_main or found_other
 
 
 def resolve_project_prompt_name(

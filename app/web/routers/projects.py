@@ -298,6 +298,22 @@ async def patch_project(
 
     was_auto = bool(p.auto_mode)
     topic_changed = False
+    if "prompt_overrides" in payload:
+        from app.services.prompt_slot_guard import guard_prompt_overrides
+
+        err = guard_prompt_overrides(
+            payload.get("prompt_overrides")
+            if isinstance(payload.get("prompt_overrides"), dict)
+            else None
+        )
+        if err:
+            raise HTTPException(status_code=400, detail=err)
+    if "meta" in payload and isinstance(payload.get("meta"), dict):
+        from app.services.prompt_slot_guard import guard_prompt_slot_variants
+
+        err = guard_prompt_slot_variants(payload["meta"])
+        if err:
+            raise HTTPException(status_code=400, detail=err)
     for k, v in payload.items():
         if k == "meta":
             apply_project_meta_patch(p, v, source="patch_project")
