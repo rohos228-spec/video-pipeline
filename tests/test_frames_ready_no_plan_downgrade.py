@@ -59,6 +59,36 @@ async def test_ready_confirmed_frames_ready_keeps_current_status() -> None:
 
 
 @pytest.mark.asyncio
+async def test_clamp_never_downgrades_frames_ready_to_new(monkeypatch) -> None:
+    """auto_advance зовёт clamp — он тоже не имеет права frames_ready→new."""
+    from app.services.step_data_guard import clamp_status_to_data
+
+    p = Project(
+        id=50,
+        topic="t",
+        slug="t",
+        status=ProjectStatus.frames_ready,
+        general_plan="",
+        script_text="script text",
+        meta={"split_completed": True},
+        auto_mode=True,
+    )
+
+    async def _fake_compute(session, project):
+        return ProjectStatus.new
+
+    monkeypatch.setattr(
+        "app.services.step_data_guard.compute_actual_status", _fake_compute
+    )
+    monkeypatch.setattr(
+        "app.services.project_state.compute_actual_status", _fake_compute
+    )
+    result = await clamp_status_to_data(_session_with_frame_count(8), p)
+    assert result is None
+    assert p.status is ProjectStatus.frames_ready
+
+
+@pytest.mark.asyncio
 async def test_recompute_never_downgrades_frames_ready_to_new(monkeypatch) -> None:
     """Железо: web_get/list не имеют права сносить frames_ready в new."""
     p = Project(

@@ -32,10 +32,20 @@ from app.services.excel_gpt_node import (
 )
 from app.services.disabled_nodes import disabled_node_types
 
-PASSTHROUGH_NODE_TYPES: frozenset[str] = frozenset({"excel_feed", "storage"})
+# excel_feed — прозрачный вход. storage — НЕ passthrough: это side-sink
+# (много рёбер work→storage), иначе predecessors раздуваются на весь граф.
+PASSTHROUGH_NODE_TYPES: frozenset[str] = frozenset({"excel_feed"})
+SIDE_SINK_NODE_TYPES: frozenset[str] = frozenset({"storage"})
+
+
+def is_side_sink_node_type(node_type: str) -> bool:
+    return str(node_type or "") in SIDE_SINK_NODE_TYPES
 
 
 def is_passthrough_node_type(node_type: str) -> bool:
+    # storage — side-sink, не «прозрачный» узел цепочки.
+    if is_side_sink_node_type(node_type):
+        return False
     return (
         is_hitl_node_type(node_type)
         or is_config_node_type(node_type)
@@ -73,6 +83,29 @@ class WorkflowGraph:
 
     def edge_kind(self, source: str, target: str) -> str:
         return self._edge_kind.get((source, target), "after")
+
+    def _pipeline_successors(self, node_key: str) -> list[str]:
+        """Исходящие рёбра цепочки — без веток на storage (side-sink)."""
+        out: list[str] = []
+        for tgt in self._out.get(node_key, []):
+            if is_side_sink_node_type(self.node_type(tgt)):
+                continue
+            out.append(tgt)
+        return out
+
+    def _pipeline_prereq_sources(self, node_key: str) -> list[str]:
+        """Входящие источники-prerequisite без fail-retry и без storage."""
+        from app.services.gpt_operator import is_fail_edge_kind
+
+        out: list[str] = []
+        for src in self._in.get(node_key, []):
+            if is_side_sink_node_type(self.node_type(src)):
+                continue
+            kind = self.edge_kind(src, node_key)
+            if is_fail_edge_kind(kind):
+                continue
+            out.append(src)
+        return out
 
     def gate_blocks_edge(self, project: Project, source: str, target: str) -> bool:
         """True — по этой стрелке нельзя идти (ветка не совпала с вердиктом / нет вердикта)."""
@@ -133,16 +166,7 @@ class WorkflowGraph:
 
     def _incoming_prereq_sources(self, node_key: str) -> list[str]:
         """Входящие источники, которые являются prerequisite (не fail-retry)."""
-        from app.services.gpt_operator import is_fail_edge_kind
-
-        out: list[str] = []
-        for src in self._in.get(node_key, []):
-            kind = self.edge_kind(src, node_key)
-            # fail = «не ок → назад»; это не условие первого запуска target.
-            if is_fail_edge_kind(kind):
-                continue
-            out.append(src)
-        return out
+        return self._pipeline_prereq_sources(node_key)
 
     def _effective_predecessors(self, node_key: str, skipped: set[str]) -> set[str]:
         """Предшественники с учётом пропуска hitl/disabled (они прозрачны)."""
@@ -154,6 +178,8 @@ class WorkflowGraph:
             if cur in seen:
                 continue
             seen.add(cur)
+            if is_side_sink_node_type(self.node_type(cur)):
+                continue
             if cur in skipped:
                 stack.extend(self._incoming_prereq_sources(cur))
                 continue
@@ -169,6 +195,8 @@ class WorkflowGraph:
         roots: list[str] = []
         for nid, n in self._by_id.items():
             typ = str(n.get("type") or "")
+            if is_side_sink_node_type(typ):
+                continue
             if is_config_node_type(typ) or typ in PASSTHROUGH_NODE_TYPES:
                 roots.append(nid)
         for nid in self._by_id:
@@ -190,7 +218,7 @@ class WorkflowGraph:
             typ = self.node_type(key)
             if key not in skipped and is_work_node_type(typ):
                 reachable.add(key)
-            queue.extend(self._out.get(key, []))
+            queue.extend(self._pipeline_successors(key))
         return reachable
 
     def _work_types_done(self, project: Project) -> set[str]:
@@ -294,7 +322,7 @@ class WorkflowGraph:
         queue: deque[str] = deque()
         done = self._work_types_done(project)
         for k in start_keys:
-            for nxt in self._out.get(k, []):
+            for nxt in self._pipeline_successors(k):
                 queue.append(nxt)
 
         while queue:
@@ -302,15 +330,17 @@ class WorkflowGraph:
             if key in visited:
                 continue
             if key in skipped:
-                queue.extend(self._out.get(key, []))
+                queue.extend(self._pipeline_successors(key))
                 continue
             visited.add(key)
             typ = self.node_type(key)
+            if is_side_sink_node_type(typ):
+                continue
             if is_passthrough_node_type(typ):
-                queue.extend(self._out.get(key, []))
+                queue.extend(self._pipeline_successors(key))
                 continue
             if not is_work_node_type(typ):
-                queue.extend(self._out.get(key, []))
+                queue.extend(self._pipeline_successors(key))
                 continue
             n = self._by_id.get(key) or {}
             if typ == EXCEL_GPT_NODE_TYPE:
@@ -336,10 +366,10 @@ class WorkflowGraph:
                         or key in completed_node_keys(project)
                     )
                 ):
-                    queue.extend(self._out.get(key, []))
+                    queue.extend(self._pipeline_successors(key))
                     continue
             elif typ in done:
-                queue.extend(self._out.get(key, []))
+                queue.extend(self._pipeline_successors(key))
                 continue
             preds = self._effective_predecessors(key, skipped)
             if all(self._is_ready(p, project, skipped) for p in preds):
@@ -374,7 +404,7 @@ class WorkflowGraph:
                 )
                 if spec:
                     return key, spec.running_status
-            queue.extend(self._out.get(key, []))
+            queue.extend(self._pipeline_successors(key))
 
         return None
 
@@ -416,7 +446,7 @@ class WorkflowGraph:
         visited: set[str] = set()
         queue: deque[str] = deque()
         for k in start_keys:
-            for nxt in self._out.get(k, []):
+            for nxt in self._pipeline_successors(k):
                 queue.append(nxt)
         done = self._work_types_done(project)
         done.add(typ)  # treat disabled current as done
@@ -426,18 +456,18 @@ class WorkflowGraph:
             if key in visited:
                 continue
             if key in skipped:
-                queue.extend(self._out.get(key, []))
+                queue.extend(self._pipeline_successors(key))
                 continue
             visited.add(key)
             ntyp = self.node_type(key)
             if is_passthrough_node_type(ntyp):
-                queue.extend(self._out.get(key, []))
+                queue.extend(self._pipeline_successors(key))
                 continue
             if not is_work_node_type(ntyp):
-                queue.extend(self._out.get(key, []))
+                queue.extend(self._pipeline_successors(key))
                 continue
             if ntyp in disabled:
-                queue.extend(self._out.get(key, []))
+                queue.extend(self._pipeline_successors(key))
                 continue
             n = self._by_id.get(key) or {}
             if ntyp == EXCEL_GPT_NODE_TYPE:
@@ -450,7 +480,7 @@ class WorkflowGraph:
                         or key in completed_node_keys(project)
                     )
                 ):
-                    queue.extend(self._out.get(key, []))
+                    queue.extend(self._pipeline_successors(key))
                     continue
             preds = self._effective_predecessors(key, skipped)
             if all(self.node_type(p) in done for p in preds):
@@ -461,7 +491,7 @@ class WorkflowGraph:
                 )
                 if spec:
                     return spec.running_status
-            queue.extend(self._out.get(key, []))
+            queue.extend(self._pipeline_successors(key))
 
         return None
 

@@ -302,7 +302,11 @@ async def can_enter_running(
 async def clamp_status_to_data(
     session: AsyncSession, project: Project
 ) -> ProjectStatus | None:
-    """Если status «впереди» данных — откатить к compute_actual_status."""
+    """Если status «впереди» данных — откатить к compute_actual_status.
+
+    Железо: никогда не сбрасывать frames_ready/script_ready → new при живых
+    кадрах/script — иначе auto_advance откатывает на предыдущую ноду.
+    """
     from app.services.gen_queue_run import is_user_stopped
     from app.services.project_state import clear_stale_downstream_meta
 
@@ -313,10 +317,43 @@ async def clamp_status_to_data(
     # plan_ready и auto_advance заново шлёт тот же запрос в GPT.
     if is_running_status(project.status):
         return None
+
+    old = project.status
+    # Сначала проверяем: текущий ready уже подтверждён — не трогаем и не
+    # чистим meta (иначе clear_stale сносит split_completed до проверки).
+    if old.value.endswith("_ready") and await ready_status_confirmed_by_data(
+        session, project, old
+    ):
+        return None
+
     clear_stale_downstream_meta(project)
     actual = await compute_actual_status(session, project)
-    if status_order(project.status) > status_order(actual):
-        old = project.status
+
+    # Тот же BLOCKED, что в recompute_status: * → new при script/кадрах.
+    if actual is ProjectStatus.new and old is not ProjectStatus.new:
+        fr_n = (
+            await session.execute(
+                select(func.count(Frame.id)).where(Frame.project_id == project.id)
+            )
+        ).scalar_one()
+        has_script = bool((project.script_text or "").strip())
+        if int(fr_n or 0) >= 1 or has_script:
+            logger.warning(
+                "[#{}] clamp_status_to_data: BLOCKED {} → new "
+                "(кадров={}, script={}) — иначе предыдущая нода стартует снова",
+                project.id,
+                old.value,
+                int(fr_n or 0),
+                has_script,
+            )
+            return None
+
+    if status_order(old) > status_order(actual):
+        # Повторная страховка: confirmed ready не откатываем.
+        if old.value.endswith("_ready") and await ready_status_confirmed_by_data(
+            session, project, old
+        ):
+            return None
         project.status = actual
         await session.flush()
         logger.warning(

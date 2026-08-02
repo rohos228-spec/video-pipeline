@@ -172,11 +172,20 @@ def clear_stale_downstream_meta(project: Project) -> list[str]:
         # но на всякий случай: если когда-нибудь order поменяют — не сносим.
         if _enrich_meta_allowed_for_status(project):
             return []
-        # Ложный откат frames_ready→new: не сносить split_completed, иначе
-        # пайплайн навсегда теряет разбивку и auto_advance встаёт.
-        if cur is ProjectStatus.new and meta.get("split_completed"):
-            return []
-        return clear_pipeline_progress_meta(project)
+        # НЕ вызываем clear_pipeline_progress_meta отсюда: она убивает
+        # split_completed. Полный сброс — только явный start_step/reset_step.
+        # Здесь чистим только enrich-хвосты, чтобы не прыгать на excel_gpt #3.
+        for key in (
+            "enrich_completed_slots",
+            "excel_gpt_completed_keys",
+            "active_excel_gpt_node_key",
+        ):
+            if key in meta:
+                meta.pop(key, None)
+                cleared.append(key)
+        if cleared:
+            project.meta = meta
+        return cleared
 
     if (
         cur is ProjectStatus.frames_ready
