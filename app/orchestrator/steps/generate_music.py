@@ -20,10 +20,56 @@ from app.services import gpt_text_builder as gtb
 from app.settings import settings
 
 
+def _find_music_on_disk(music_dir: Path) -> Path | None:
+    """Готовый mp3/wav в music/ — без Outsee (API audio нет)."""
+    if not music_dir.is_dir():
+        return None
+    cands: list[Path] = []
+    for pat in ("music_*.mp3", "music_*.wav", "*.mp3", "*.wav"):
+        cands.extend(p for p in music_dir.glob(pat) if p.is_file() and p.stat().st_size > 1000)
+    if not cands:
+        return None
+    cands.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return cands[0]
+
+
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_music:
         return
     logger.info("[#{}] generate_music starting", project.id)
+
+    music_dir = project.data_dir / "music"
+    music_dir.mkdir(parents=True, exist_ok=True)
+    disk_music = _find_music_on_disk(music_dir)
+    if disk_music is not None:
+        logger.info(
+            "[#{}] generate_music: музыка на диске → {} — пропускаю Outsee/Suno",
+            project.id,
+            disk_music.name,
+        )
+        session.add(
+            Artifact(
+                project_id=project.id,
+                kind=ArtifactKind.music,
+                uuid=uuid.uuid4().hex,
+                path=str(disk_music.resolve()),
+            )
+        )
+        await session.flush()
+        from app.services.post_step_validate import finalize_or_retry
+
+        if not await finalize_or_retry(
+            session,
+            project,
+            step="music",
+            ready_status=ProjectStatus.music_ready,
+            running_status=ProjectStatus.generating_music,
+        ):
+            return
+        project.status = ProjectStatus.music_ready
+        await session.flush()
+        logger.info("[#{}] generate_music done (disk) → {}", project.id, disk_music.name)
+        return
 
     voiceover_path = project.data_dir / "voiceover.txt"
     voiceover_text = ""
@@ -65,8 +111,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         len(suno_prompt),
     )
 
-    music_dir = project.data_dir / "music"
-    music_dir.mkdir(parents=True, exist_ok=True)
     short_uuid = uuid.uuid4().hex[:8]
     music_path = music_dir / f"music_{short_uuid}.mp3"
     prompt_id_prefix = f"[ID: P{project.id}-MUSIC-{short_uuid}]"
