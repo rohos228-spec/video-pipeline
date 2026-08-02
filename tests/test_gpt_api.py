@@ -645,3 +645,19 @@ def test_is_pdf_provider_failure() -> None:
         GptApiError("GPT timeout 90s", context={"error_kind": "timeout", "retryable": True})
     )
     assert not is_pdf_provider_failure(GptApiError("bad key", context={"status_code": 401}))
+
+@pytest.mark.asyncio
+async def test_download_content_html_renamed_off_xlsx(monkeypatch, tmp_path: Path) -> None:
+    """Страница HTML, сохранённая как .xlsx, переименовывается в .html."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"<!DOCTYPE html><html>err</html>",
+            headers={"content-type": "text/html"},
+        )
+
+    _mock_httpx(monkeypatch, handler)
+    out = tmp_path / "got.xlsx"
+    got = await download_content("https://cdn.test/file", out)
+    assert got.suffix == ".html"
+    assert got.read_bytes().startswith(b"<!DOCTYPE")

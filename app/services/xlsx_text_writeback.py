@@ -606,6 +606,18 @@ def writeback_project_xlsx(
 
     for p in downloaded_paths:
         if p.suffix.lower() in {".xlsx", ".xlsm", ".xls"} and p.exists() and p.stat().st_size > 64:
+            try:
+                magic = p.read_bytes()[:2]
+            except OSError:
+                magic = b""
+            if magic != b"PK":
+                # HTML/ошибка авторизации с именем .xlsx — дальше пробуем TSV.
+                logger.warning(
+                    "xlsx_writeback: skip не-zip download {} (magic={})",
+                    p.name,
+                    magic.hex() if magic else "?",
+                )
+                continue
             project_xlsx.parent.mkdir(parents=True, exist_ok=True)
             if p.resolve() == project_xlsx.resolve():
                 return project_xlsx

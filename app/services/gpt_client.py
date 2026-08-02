@@ -265,9 +265,10 @@ class ApiGptClient:
         suffix = target.suffix.lower()
 
         downloaded: list[Path] = []
+        want_xlsx = suffix in {".xlsx", ".xlsm", ".xls"}
         for i, url in enumerate(collect_result_urls(reply or "")):
             url_suffix = Path(url.split("?")[0]).suffix.lower()
-            if suffix in {".xlsx", ".xlsm", ".xls"} and url_suffix not in {
+            if want_xlsx and url_suffix not in {
                 ".xlsx",
                 ".xlsm",
                 ".xls",
@@ -279,11 +280,29 @@ class ApiGptClient:
             dest = target.with_name(f".gpt_url_{target.stem}_{i}{url_suffix or suffix}")
             try:
                 got = await download_content(url, dest, timeout=float(timeout))
-                downloaded.append(got)
             except Exception as e:  # noqa: BLE001
                 logger.warning("gpt_client: не скачал {}: {}", url, e)
+                continue
+            # HTML/SVG под видом xlsx — не в writeback (иначе 3c21444f / PK fail)
+            if want_xlsx:
+                try:
+                    magic = got.read_bytes()[:8]
+                except OSError:
+                    magic = b""
+                if magic[:2] != b"PK":
+                    logger.warning(
+                        "gpt_client: URL не xlsx (magic={}…), skip {}",
+                        magic[:4].hex() if magic else "?",
+                        url[:120],
+                    )
+                    try:
+                        got.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    continue
+            downloaded.append(got)
 
-        if suffix in {".xlsx", ".xlsm", ".xls"}:
+        if want_xlsx:
             # Пишем во временный файл, не в живой project.xlsx.
             staging = target.with_name(f".gpt_dl_{target.stem}.xlsx")
             if staging.exists():
@@ -311,7 +330,9 @@ class ApiGptClient:
                     return target
                 raise RuntimeError(
                     "gpt_client: API не вернул xlsx/TSV для записи "
-                    f"в {target.name}"
+                    f"в {target.name}. Часто модель кидает ссылку на HTML "
+                    "(логин/ошибка) вместо книги или блока «# Лист:» — "
+                    "нужен TSV writeback или настоящий .xlsx URL."
                 )
             src = wrote or downloaded[0]
             if src.resolve() != target.resolve():

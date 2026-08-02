@@ -650,3 +650,28 @@ def test_apply_creates_missing_sheet(tmp_path: Path) -> None:
     assert "Новый" in wb.sheetnames
     assert wb["Новый"]["B1"].value == "b"
     wb.close()
+def test_writeback_skips_html_named_xlsx_uses_tsv(tmp_path: Path) -> None:
+    """HTML с расширением .xlsx не должен затирать книгу — берём TSV."""
+    src = tmp_path / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "план"
+    ws["A1"] = "номер кадра"
+    ws["A10"] = "фон"
+    ws["B10"] = "OLD"
+    wb.create_sheet("Общий план")
+    wb.save(src)
+    wb.close()
+
+    fake = tmp_path / "fake.xlsx"
+    fake.write_bytes(b"<!DOCTYPE html><html><body>login</body></html>")
+
+    reply = "# Лист: план\n@row=10\tфон\tFROM_TSV\n"
+    out = writeback_project_xlsx(
+        project_xlsx=src, reply_text=reply, downloaded_paths=[fake]
+    )
+    assert out == src
+    wb2 = load_workbook(src, data_only=True)
+    assert wb2["план"]["B10"].value == "FROM_TSV"
+    wb2.close()

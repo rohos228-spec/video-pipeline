@@ -1615,9 +1615,17 @@ def finalize_downloaded_file(
     cur = path.suffix.lower()
     if cur == ext:
         return path
+    # Office-имя + HTML/SVG/текст внутри = типичный «скачали страницу ошибки
+    # как .xlsx» (magic 3c21444f = <!DO). Иначе writeback заливает мусор.
+    _office = {".xlsx", ".xlsm", ".xls", ".docx"}
+    _not_office = {".html", ".htm", ".svg", ".txt", ".json", ".xml", ".dat"}
+    office_lied = cur in _office and ext in _not_office
     # слабое имя или несовпадение с картинкой / принудительно убрать .bin
-    if cur in _WEAK_SUFFIXES or cur == ".bin" or (
-        ext in _IMAGE_SUFFIXES and cur not in _IMAGE_SUFFIXES
+    if (
+        cur in _WEAK_SUFFIXES
+        or cur == ".bin"
+        or office_lied
+        or (ext in _IMAGE_SUFFIXES and cur not in _IMAGE_SUFFIXES)
     ):
         target = path.with_suffix(ext)
         n = 2

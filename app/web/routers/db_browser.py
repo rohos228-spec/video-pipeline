@@ -253,6 +253,13 @@ _ORCHESTRATOR_SYSTEM = (
     "ЗАПРЕТ ОТКАЗОВ: не пиши «не поддерживается / нет такого действия / "
     "не умею», если действие есть в списке ниже. Сначала выдай JSON action, "
     "потом коротко по-русски. Если не хватает файла — read_file, не отказ.\n"
+    "ФОРМАТ ОТВЕТА ПРИ ФИКСЕ КОДА: один JSON "
+    "{\"actions\":[{\"read_file\":…},{\"edit_files\":[…]},{\"run_tests\":[…]},"
+    "{\"git_commit_push\":{…}}]} — плоский список, БЕЗ вложенного "
+    "{\"actions\":[{\"actions\":…}]}. "
+    "В чат НЕ вставляй исходники файлов и не дублируй JSON много раз — "
+    "только краткий итог по-русски после actions. "
+    "Нельзя закончить на одних read_file: после чтения сразу edit_files.\n"
     "Если есть раздел ДИАГНОСТИКА / КОД РАБОЧЕЙ ОБЛАСТИ или пользователь "
     "просит починить/исправить баг в КОДЕ программы — отвечай как кодинг-агент: "
     "read_file → причина → edit_files → run_tests → git_commit_push "
@@ -1665,7 +1672,31 @@ async def orchestrator_chat(
             except db_apply.ApplyOpsError as e:
                 await session.rollback()
                 error = str(e)
-        for act in ops_data.get("actions") or []:
+        raw_actions = list(ops_data.get("actions") or [])
+
+        def _flatten_orchestrator_actions(items: list) -> list[dict]:
+            """Модель иногда вкладывает {\"actions\":[…]} внутрь — разворачиваем."""
+            flat: list[dict] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                nested = item.get("actions")
+                if isinstance(nested, list) and (
+                    len(item) == 1
+                    or all(k == "actions" for k in item)
+                ):
+                    flat.extend(_flatten_orchestrator_actions(nested))
+                    continue
+                if isinstance(nested, list):
+                    rest = {k: v for k, v in item.items() if k != "actions"}
+                    if rest:
+                        flat.append(rest)
+                    flat.extend(_flatten_orchestrator_actions(nested))
+                    continue
+                flat.append(item)
+            return flat
+
+        for act in _flatten_orchestrator_actions(raw_actions):
             act = act or {}
             try:
                 if "run_step" in act:
