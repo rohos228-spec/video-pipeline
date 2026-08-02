@@ -260,9 +260,14 @@ async def test_completed_excel_gpt_slots_skip_to_next_incomplete() -> None:
         topic="t",
         slug="t",
         status=ProjectStatus.frames_ready,
-        meta={"enrich_completed_slots": [1, 2], "split_completed": True},
+        meta={
+            "enrich_completed_slots": [1, 2],
+            "split_completed": True,
+            # Готовность excel_gpt — только по ключу ноды, не по slotIndex.
+            "excel_gpt_completed_keys": ["n_eg1", "n_eg2"],
+        },
     )
-    # После реального split + завершения 1–2 — следующий incomplete = slot 3.
+    # После реального split + завершения n_eg1/n_eg2 — следующий = n_eg3.
     assert g.next_running_after_ready(p, ProjectStatus.frames_ready) is (
         ProjectStatus.enriching_3
     )

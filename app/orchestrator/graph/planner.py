@@ -275,13 +275,17 @@ class WorkflowGraph:
             return True
         done = self._work_types_done(project)
         if typ == EXCEL_GPT_NODE_TYPE:
-            n = self._by_id.get(node_key) or {}
-            slot = slot_index_from_node(n)
-            legacy = f"enrich_{slot}"
-            if legacy in done:
-                return True
+            # Каждая excel_gpt-нода уникальна по id. slotIndex — только
+            # ProjectStatus (enriching_N), не «все ноды слота N готовы».
             if node_key in completed_node_keys(project):
                 return True
+            meta = project.meta if isinstance(project.meta, dict) else {}
+            active = str(meta.get("active_excel_gpt_node_key") or "").strip()
+            if active == node_key:
+                n = self._by_id.get(node_key) or {}
+                ready = ready_status_for_slot(slot_index_from_node(n))
+                if project.status is ready:
+                    return True
             return False
         return typ in done
 
@@ -344,11 +348,9 @@ class WorkflowGraph:
                 continue
             n = self._by_id.get(key) or {}
             if typ == EXCEL_GPT_NODE_TYPE:
-                # Готово: (1) ключ ноды в excel_gpt_completed_keys; (2) слот
-                # в enrich_completed_slots — только если slotIndex уникален.
-                # Несколько excel_gpt с одним slot=5 (check до/после hero):
-                # slot-done раньше сносило ВСЕ → hero_ready → image_prompts.
-                # После enrich_N_ready слот M>N — force_rerun. chain_to: тоже.
+                # Нода готова ТОЛЬКО если её id в excel_gpt_completed_keys.
+                # slotIndex общий у многих нод — никогда не скипать «весь слот».
+                # force_rerun: следующий слот M>N / enrich_auto_chain_to.
                 slot = slot_index_from_node(n)
                 finished_slot = slot_from_ready_status(ready_status)
                 later_after_ready = (
@@ -358,12 +360,7 @@ class WorkflowGraph:
                     slot in excel_gpt_force_rerun_slots(project)
                     and (finished_slot is None or slot > finished_slot)
                 )
-                slot_unique = len(self.excel_gpt_keys_for_slot(slot)) <= 1
-                slot_done = f"enrich_{slot}" in done and slot_unique
-                if (
-                    not force_rerun
-                    and (key in completed_node_keys(project) or slot_done)
-                ):
+                if not force_rerun and key in completed_node_keys(project):
                     queue.extend(self._pipeline_successors(key))
                     continue
             elif typ in done:
@@ -471,12 +468,7 @@ class WorkflowGraph:
             if ntyp == EXCEL_GPT_NODE_TYPE:
                 slot = slot_index_from_node(n)
                 force_rerun = slot in excel_gpt_force_rerun_slots(project)
-                slot_unique = len(self.excel_gpt_keys_for_slot(slot)) <= 1
-                slot_done = f"enrich_{slot}" in done and slot_unique
-                if (
-                    not force_rerun
-                    and (key in completed_node_keys(project) or slot_done)
-                ):
+                if not force_rerun and key in completed_node_keys(project):
                     queue.extend(self._pipeline_successors(key))
                     continue
             preds = self._effective_predecessors(key, skipped)
@@ -546,25 +538,22 @@ class WorkflowGraph:
                     running = running_status_for_slot(slot)
                     ready = ready_status_for_slot(slot)
                     meta = project.meta if isinstance(project.meta, dict) else {}
-                    slots_done = {
-                        int(x)
-                        for x in (meta.get("enrich_completed_slots") or [])
-                        if str(x).isdigit()
-                    }
-                    if nid in completed_node_keys(project) or slot in slots_done:
+                    active_key = str(
+                        meta.get("active_excel_gpt_node_key") or ""
+                    ).strip()
+                    if nid in completed_node_keys(project):
                         out[nid] = NodeRunStatus.done
-                    elif status == running:
+                    elif active_key == nid and status == running:
                         out[nid] = NodeRunStatus.running
-                    elif status == ready:
+                    elif active_key == nid and status == ready:
+                        out[nid] = NodeRunStatus.done
+                    elif not active_key and status == running:
+                        # legacy: один слот без pin — подсветить все с этим slot
+                        out[nid] = NodeRunStatus.running
+                    elif not active_key and status == ready:
                         out[nid] = NodeRunStatus.done
                     else:
-                        from app.telegram.menu import status_order as _ord
-
-                        out[nid] = (
-                            NodeRunStatus.done
-                            if _ord(status) > _ord(ready)
-                            else NodeRunStatus.pending
-                        )
+                        out[nid] = NodeRunStatus.pending
                     continue
                 if typ == active_type:
                     out[nid] = active_state

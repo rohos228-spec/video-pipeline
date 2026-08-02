@@ -103,7 +103,11 @@ def test_excel_gpt_predecessor_allows_hero() -> None:
         topic="t",
         slug="t",
         status=ProjectStatus.enrich_1_ready,
-        meta={"enrich_completed_slots": [1]},
+        meta={
+            "enrich_completed_slots": [1],
+            "excel_gpt_completed_keys": ["n_excel_gpt_1"],
+            "active_excel_gpt_node_key": "n_excel_gpt_1",
+        },
     )
     assert g.is_step_reachable(p, "hero") is True
     nxt = g.next_running_after_ready(p, ProjectStatus.enrich_1_ready)

@@ -24,11 +24,10 @@ def _edge(src: str, tgt: str, kind: str = "after") -> dict:
     }
 
 
-def test_hero_ready_does_not_skip_post_hero_slot5_to_image_prompts() -> None:
-    """#50: hero → excel_gpt(slot5) → excel_gpt(slot5) → image_prompts.
+def test_hero_ready_runs_next_edge_node_not_slot_siblings() -> None:
+    """Каждая нода уникальна: после hero — следующий id по стрелке.
 
-    Stale enrich_completed_slots=[5] НЕ должен пропустить оба check и
-    прыгнуть сразу в image_prompts.
+    Общий slotIndex=5 / enrich_completed_slots не делают ноды «одинаковыми».
     """
     nodes = [
         _node("n_hero", "hero", x=100),
