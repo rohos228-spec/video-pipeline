@@ -46,12 +46,13 @@ interface ChatMsg {
   confirm?: PendingConfirm;
 }
 
-/** Префикс к сообщению пользователя — только после того как он описал баг. */
+/** Префикс к API (в чате пользователю не показываем). */
 const FIX_BUGS_PREFIX =
-  "Режим «Фикс багов». Исправь ТОЛЬКО баг ниже (не сканируй весь проект вслепую). " +
-  "Кратко по-русски → точечный edit_files (1–3 файла) → " +
-  "run_tests только tests/test_code_autofix_allowlist.py → " +
-  "git_commit_push auto=false. Ветка = ORCHESTRATOR_GIT_BRANCH.\n\nБАГ:\n";
+  "Режим «Фикс багов» / поручение оператора ниже. " +
+  "Если просят удалить/создать проекты или шаги Studio — делай это через actions " +
+  "(delete_projects / create_project / run_step…), не через edit_files. " +
+  "Если просят починить КОД — edit_files + короткий run_tests + git_commit_push auto=false. " +
+  "Кратко по-русски.\n\nПОРУЧЕНИЕ:\n";
 
 export function OrchestratorPanel({ projectId }: Props) {
   const [open, setOpen] = usePersistedState("vp-orchestrator-open", true);
@@ -63,6 +64,7 @@ export function OrchestratorPanel({ projectId }: Props) {
   const [fixBugsMode, setFixBugsMode] = useState(false);
   const fixBugsModeRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
+  const userCancelRef = useRef(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -79,13 +81,8 @@ export function OrchestratorPanel({ projectId }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storageKey]);
 
-  useEffect(() => {
-    return () => {
-      abortRef.current?.abort();
-    };
-  }, []);
-
   const cancelBusy = useCallback(() => {
+    userCancelRef.current = true;
     abortRef.current?.abort();
     abortRef.current = null;
     setBusy(false);
@@ -97,18 +94,19 @@ export function OrchestratorPanel({ projectId }: Props) {
       const userText = msg.trim();
       const asFix = Boolean(opts?.fixBugs || fixBugsModeRef.current || fixBugsMode);
       const apiText = asFix ? `${FIX_BUGS_PREFIX}${userText}` : userText;
-      const displayText = asFix ? `[фикс багов] ${userText}` : userText;
       if (asFix) {
         fixBugsModeRef.current = false;
         setFixBugsMode(false);
       }
 
+      // Тихий abort предыдущего запроса (не писать «Отменено» в чат)
       abortRef.current?.abort();
+      userCancelRef.current = false;
       const ac = new AbortController();
       abortRef.current = ac;
       setBusy(true);
       setOpen(true);
-      const next: ChatMsg[] = [...chatLog, { role: "user", content: displayText }];
+      const next: ChatMsg[] = [...chatLog, { role: "user", content: userText }];
       setChatLog(next);
       try {
         const r = await api.dbOrchestratorChat(
@@ -136,6 +134,7 @@ export function OrchestratorPanel({ projectId }: Props) {
           else if (a.edit_files) notes.push(`код: ${a.edit_files}`);
           else if (a.run_tests) notes.push(`pytest: ${a.run_tests}`);
           else if (a.git_commit_push) notes.push(`git: ${a.git_commit_push}`);
+          else if (a.delete_projects) notes.push(`проекты: ${a.delete_projects}`);
         }
         for (const u of r.ui_actions ?? []) {
           const nodeKey = u.node_key ?? (u.node_type ? `n_${u.node_type}` : null);
@@ -191,10 +190,14 @@ export function OrchestratorPanel({ projectId }: Props) {
         }
         if (r.error) notes.push(`ошибка: ${r.error}`);
         const pendRemove = (r.pending_confirm ?? []).find((p) => p.kind === "remove_node");
+        const pendDelete = (r.pending_confirm ?? []).find((p) => p.kind === "delete_projects");
         const pendGit = (r.pending_confirm ?? []).find((p) => p.kind === "git_commit_push");
-        const pend = pendGit ?? pendRemove;
+        const pend = pendDelete ?? pendGit ?? pendRemove;
+        if (pendDelete) {
+          notes.push(`к удалению проектов: ${pendDelete.count} — кнопки ниже`);
+        }
         if (pendRemove) {
-          notes.push(`к удалению: ${pendRemove.count} нод — кнопки ниже`);
+          notes.push(`к удалению нод: ${pendRemove.count} — кнопки ниже`);
         }
         if (pendGit) {
           notes.push(`к push: подтверди кнопку ниже`);
@@ -210,10 +213,13 @@ export function OrchestratorPanel({ projectId }: Props) {
         ]);
       } catch (e) {
         if (ac.signal.aborted) {
-          setChatLog([
-            ...next,
-            { role: "assistant", content: "Отменено — Studio снова отвечает." },
-          ]);
+          if (userCancelRef.current) {
+            userCancelRef.current = false;
+            setChatLog([
+              ...next,
+              { role: "assistant", content: "Отменено — Studio снова отвечает." },
+            ]);
+          }
           return;
         }
         setChatLog([
@@ -312,6 +318,51 @@ export function OrchestratorPanel({ projectId }: Props) {
           {
             role: "assistant",
             content: `Ошибка удаления: ${e instanceof Error ? e.message : e}`,
+          },
+        ]);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [projectId, busy, setChatLog],
+  );
+
+  const resolveDeleteProjects = useCallback(
+    async (msgIndex: number, confirm: PendingConfirm, approve: boolean) => {
+      if (projectId == null || busy) return;
+      setBusy(true);
+      try {
+        if (approve) {
+          const ids = (confirm.nodes || [])
+            .map((x) => Number(x))
+            .filter((n) => Number.isFinite(n) && n > 0);
+          const r = await api.dbOrchestratorConfirmDeleteProjects(projectId, { ids });
+          setChatLog((prev) => [
+            ...prev.map((m, i) =>
+              i === msgIndex && m.confirm ? { ...m, confirm: { ...m.confirm, resolved: true } } : m,
+            ),
+            { role: "assistant", content: `${r.delete_projects}` },
+          ]);
+          window.dispatchEvent(new CustomEvent("studio-projects-changed"));
+          if (ids.includes(projectId)) {
+            window.dispatchEvent(
+              new CustomEvent("studio-select-project", { detail: { projectId: null } }),
+            );
+          }
+        } else {
+          setChatLog((prev) => [
+            ...prev.map((m, i) =>
+              i === msgIndex && m.confirm ? { ...m, confirm: { ...m.confirm, resolved: true } } : m,
+            ),
+            { role: "assistant", content: "Удаление проектов отменено — ничего не стёрто." },
+          ]);
+        }
+      } catch (e) {
+        setChatLog((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: `Ошибка удаления проектов: ${e instanceof Error ? e.message : e}`,
           },
         ]);
       } finally {
@@ -501,6 +552,36 @@ export function OrchestratorPanel({ projectId }: Props) {
                       className="h-7 text-[11px]"
                       disabled={busy}
                       onClick={() => void resolveRemove(i, m.confirm!, false)}
+                    >
+                      Отмена
+                    </Button>
+                  </span>
+                ) : null}
+                {m.confirm && !m.confirm.resolved && m.confirm.kind === "delete_projects" ? (
+                  <span className="mt-1.5 flex items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5">
+                    <Trash2 className="h-3.5 w-3.5 text-red-400" />
+                    <span className="flex-1 text-[11px] text-white/80">
+                      Удалить {m.confirm.count} проект(ов)
+                      {(m.confirm.files ?? []).length
+                        ? `: ${(m.confirm.files ?? []).slice(0, 4).join(", ")}`
+                        : ""}
+                      ?
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      className="h-7 text-[11px]"
+                      disabled={busy}
+                      onClick={() => void resolveDeleteProjects(i, m.confirm!, true)}
+                    >
+                      Подтвердить удаление проектов
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-[11px]"
+                      disabled={busy}
+                      onClick={() => void resolveDeleteProjects(i, m.confirm!, false)}
                     >
                       Отмена
                     </Button>

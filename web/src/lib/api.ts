@@ -409,6 +409,7 @@ export const api = {
         edit_files?: string;
         run_tests?: string;
         git_commit_push?: string;
+        delete_projects?: string;
       }[];
       ui_actions: { kind: string; step?: string; node_type?: string; node_key?: string; hitl_id?: number; project_id?: number }[];
       pending_confirm: {
@@ -437,6 +438,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  dbOrchestratorConfirmDeleteProjects: (projectId: number, body: { ids: number[] }) =>
+    http<{ delete_projects: string; ids: number[] }>(
+      `/api/db/projects/${projectId}/orchestrator/confirm-delete-projects`,
+      { method: "POST", body: JSON.stringify(body) },
+      120_000,
+    ),
   dbOrchestratorConfirmGitPush: (
     projectId: number,
     body: { message: string; files?: string[] },

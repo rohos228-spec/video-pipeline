@@ -325,6 +325,15 @@ export function ProjectSidebar({
     onSelect(list[0].id);
   }, [projects.data, selectedProjectId, onSelect]);
 
+  useEffect(() => {
+    const onChanged = () => {
+      void qc.invalidateQueries({ queryKey: ["projects"] });
+      void qc.invalidateQueries({ queryKey: ["sidebar-layout"] });
+    };
+    window.addEventListener("studio-projects-changed", onChanged);
+    return () => window.removeEventListener("studio-projects-changed", onChanged);
+  }, [qc]);
+
   // Раскрывать папку только при СМЕНЕ выбранного проекта — не на каждом
   // refetch projects (иначе свёрнутая папка снова открывается каждые 5с).
   useEffect(() => {

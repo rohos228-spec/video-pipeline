@@ -340,6 +340,12 @@ _ORCHESTRATOR_SYSTEM = (
     "по умолчанию auto=false: человек жмёт «Подтвердить push» в чате. "
     "auto=true — сразу push (только если пользователь явно просит "
     "«сразу запушь» / «без подтверждения»). Без force-push.\n"
+    "19) УДАЛИТЬ ПРОЕКТЫ (ПОДДЕРЖИВАЕТСЯ) → "
+    "{\"actions\":[{\"delete_projects\":{\"ids\":[52,50]}}]} или "
+    "{\"delete_projects\":{\"titles\":[\"тест оркестра\",\"Тестовый трукрайм\"]}}. "
+    "id/title бери из раздела ПРОЕКТЫ В СТУДИИ. "
+    "НИКОГДА не пиши «удаление не поддерживается» — action delete_projects есть. "
+    "Удаление НЕ сразу: человек жмёт «Подтвердить удаление проектов» в чате.\n"
     "ТИПЫ НОД по-человечески (объясняй так, если спрашивают «что это»): "
     "hitl_gate — нода проверки: пайплайн встаёт и ждёт аппрува человека; "
     "excel_gpt — работа/автопроверка через GPT; plan — «Сценарий»; "
@@ -861,6 +867,91 @@ async def _apply_create_project(session: AsyncSession, spec: dict) -> dict:
         CreateProjectRequest(title=title, hero_mode=hero_mode), session
     )
     return {"id": detail.id, "title": detail.title or title, "slug": detail.slug}
+
+
+async def _resolve_delete_project_ids(session: AsyncSession, spec: dict) -> list[tuple[int, str]]:
+    """Вернуть [(id, title), ...] по ids и/или titles из каталога."""
+    raw_ids = spec.get("ids") or spec.get("project_ids") or []
+    if isinstance(raw_ids, (int, str)):
+        raw_ids = [raw_ids]
+    titles = spec.get("titles") or spec.get("names") or []
+    if isinstance(titles, str):
+        titles = [titles]
+    if not raw_ids and not titles:
+        raise db_apply.ApplyOpsError(
+            "delete_projects: нужен ids:[…] и/или titles:[…] из ПРОЕКТЫ В СТУДИИ"
+        )
+
+    want_ids: set[int] = set()
+    for x in raw_ids:
+        try:
+            want_ids.add(int(x))
+        except (TypeError, ValueError) as e:
+            raise db_apply.ApplyOpsError(f"delete_projects: плохой id {x!r}") from e
+
+    rows = (
+        await session.execute(select(Project.id, Project.title, Project.slug, Project.topic))
+    ).all()
+    by_id = {int(r[0]): r for r in rows}
+    for tid in list(want_ids):
+        if tid not in by_id:
+            raise db_apply.ApplyOpsError(f"delete_projects: проект #{tid} не найден")
+
+    for title in titles:
+        q = str(title or "").strip().lower()
+        if not q:
+            continue
+        matches = [
+            r
+            for r in rows
+            if q in ((r[1] or "").strip().lower())
+            or q in ((r[2] or "").strip().lower())
+            or q in ((r[3] or "")[:80].strip().lower())
+        ]
+        if not matches:
+            raise db_apply.ApplyOpsError(
+                f"delete_projects: не найден проект по названию {title!r}"
+            )
+        if len(matches) > 1:
+            opts = ", ".join(f"#{m[0]} {(m[1] or m[2])}" for m in matches[:8])
+            raise db_apply.ApplyOpsError(
+                f"delete_projects: «{title}» неоднозначно ({opts}) — укажи ids"
+            )
+        want_ids.add(int(matches[0][0]))
+
+    out: list[tuple[int, str]] = []
+    for pid in sorted(want_ids):
+        r = by_id[pid]
+        label = (r[1] or "").strip() or (r[2] or "") or f"#{pid}"
+        out.append((pid, label))
+    if not out:
+        raise db_apply.ApplyOpsError("delete_projects: пустой список")
+    return out
+
+
+async def _apply_delete_projects(session: AsyncSession, ids: list[int]) -> dict:
+    """Удалить проекты (тот же путь, что DELETE /api/projects/{id})."""
+    from app.services.event_bus import publish_project_event
+    from app.services.sidebar_layout import remove_project_from_layout
+
+    deleted: list[str] = []
+    for pid in ids:
+        p = await session.get(Project, int(pid))
+        if p is None:
+            continue
+        title = (p.title or p.slug or str(pid)).strip()
+        remove_project_from_layout(int(pid))
+        await session.delete(p)
+        deleted.append(f"#{pid} {title}")
+    await session.commit()
+    for pid in ids:
+        try:
+            await publish_project_event(int(pid), event_type="project_deleted")
+        except Exception:  # noqa: BLE001
+            pass
+    if not deleted:
+        raise db_apply.ApplyOpsError("delete_projects: нечего удалять (уже нет)")
+    return {"delete_projects": f"удалено: {', '.join(deleted)}", "ids": ids}
 
 
 async def _projects_catalog_context(session: AsyncSession) -> list[str]:
@@ -1605,6 +1696,20 @@ async def orchestrator_chat(
                         {"create_project": f"#{created['id']} {created['title']}"}
                     )
                     ui_actions.append({"kind": "open_project", "project_id": created["id"]})
+                elif "delete_projects" in act:
+                    # Удаление проектов — только после кнопки подтверждения в чате.
+                    spec = act.get("delete_projects") or {}
+                    targets = await _resolve_delete_project_ids(session, spec)
+                    pending_confirm.append(
+                        {
+                            "kind": "delete_projects",
+                            "count": len(targets),
+                            "nodes": [str(pid) for pid, _ in targets],
+                            "files": [f"#{pid} {title}" for pid, title in targets],
+                            "message": "удалить проекты: "
+                            + ", ".join(f"#{pid} {title}" for pid, title in targets),
+                        }
+                    )
                 elif "create_child" in act:
                     created = await _apply_create_child(
                         session, project, act.get("create_child")
@@ -1823,6 +1928,27 @@ async def orchestrator_confirm_remove(
             project,
             {"node_key": body.node_key, "node_type": body.node_type, "only": body.only},
         )
+    except db_apply.ApplyOpsError as e:
+        raise HTTPException(400, str(e)) from None
+
+
+class ConfirmDeleteProjectsBody(BaseModel):
+    ids: list[int] = Field(default_factory=list)
+
+
+@router.post("/projects/{project_id}/orchestrator/confirm-delete-projects")
+async def orchestrator_confirm_delete_projects(
+    project_id: int,
+    body: ConfirmDeleteProjectsBody,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Подтверждённое удаление проектов (кнопка в чате оркестратора)."""
+    await _project(session, project_id)  # auth / existence of chat context
+    ids = [int(x) for x in (body.ids or [])]
+    if not ids:
+        raise HTTPException(400, "delete_projects: пустой ids")
+    try:
+        return await _apply_delete_projects(session, ids)
     except db_apply.ApplyOpsError as e:
         raise HTTPException(400, str(e)) from None
 
