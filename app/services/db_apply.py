@@ -328,7 +328,10 @@ async def apply_ops(
             raise ApplyOpsError("проект: пустые fields")
         meta = dict(project.meta or {})
         if "general_plan" in fields:
-            meta["general_plan"] = str(fields["general_plan"] or "")
+            plan_val = str(fields["general_plan"] or "")
+            meta["general_plan"] = plan_val
+            # Колонка HITL/статусов — тот же SoT, что meta (не только Excel B2).
+            project.general_plan = plan_val
         project.meta = meta
         updated += 1
 

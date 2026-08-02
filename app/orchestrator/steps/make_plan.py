@@ -1,6 +1,6 @@
-"""Шаг 1: тема → общий план (xlsx-flow через ChatGPT web).
+"""Шаг 1: тема → общий план (DB SoT через apply-ops).
 
-GPT-сессия и post-processing — `xlsx_step_runners` (как Telegram bot).
+Excel (`project.xlsx`) — только экспорт после записи в базу.
 """
 
 from __future__ import annotations
@@ -19,23 +19,35 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.planning:
         return
     logger.info(
-        "[#{}] make_plan (xlsx-flow, {}) starting: '{}'",
+        "[#{}] make_plan (db-first, {}) starting: '{}'",
         project.id,
         xsr.XLSX_STEP_RUNNERS_ID,
         project.topic,
     )
 
-    await xsr.run_plan_xlsx(project)
-    proj_xlsx = project.data_dir / "project.xlsx"
+    result = await xsr.run_plan_xlsx(project)
+    plan_text = (result.plan_text or "").strip()
+    if not plan_text:
+        raise RuntimeError("make_plan: пустой общий_план после GPT")
+
+    project.general_plan = plan_text
+    await session.flush()
+
+    from app.services import db_apply
+
+    await db_apply.apply_ops(
+        session,
+        project,
+        [{"target": "project", "fields": {"общий_план": plan_text}}],
+        export_xlsx=True,
+    )
+
     try:
         from app.services.node_xlsx_snapshot import snapshot_and_bind_node_xlsx
 
-        await snapshot_and_bind_node_xlsx(
-            session, project, node_type="plan"
-        )
+        await snapshot_and_bind_node_xlsx(session, project, node_type="plan")
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] plan xlsx snapshot bind failed: {}", project.id, e)
-    await xsr.sync_after_plan(session, project, proj_xlsx)
 
     try:
         from app.services.storage_step_sync import sync_storage_after_step
@@ -46,20 +58,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] make_plan: sync downstream storage failed: {}", project.id, e)
 
-    plan_text = (project.general_plan or "").strip()
     project.status = ProjectStatus.plan_ready
     await session.flush()
-
-    # DB SoT: общий план — через apply-ops (meta + экспорт «Общий план»!B2).
-    if plan_text:
-        from app.services import db_apply
-
-        await db_apply.apply_ops(
-            session,
-            project,
-            [{"target": "project", "fields": {"общий_план": plan_text}}],
-            export_xlsx=True,
-        )
 
     try:
         _sheet_for_project(project).write_general(
@@ -72,7 +72,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] project_sheet plan write failed: {}", project.id, e)
 
-    # Harness-гейт перед HITL: с плохими данными аппрув не просим.
     await session.commit()
     from app.services.agent_harness import harness_gate_or_raise
 

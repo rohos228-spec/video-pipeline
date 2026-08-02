@@ -193,12 +193,14 @@ def _try_reuse_split_download(
 
 @dataclass
 class XlsxRoundtripResult:
-    """Результат GPT round-trip с xlsx."""
+    """Результат GPT round-trip (xlsx legacy или DB-first)."""
 
     reply_text: str
     downloaded_path: Path
     project_xlsx: Path
     backup_path: Path | None = None
+    # DB-first plan: текст общего плана из apply-ops (без скачивания xlsx).
+    plan_text: str | None = None
 
 
 def _ts() -> str:
@@ -218,13 +220,51 @@ def _ensure_project_xlsx(project: Project) -> Path:
     return proj_xlsx
 
 
+_PLAN_DB_HINT = (
+    "\n\n# ЗАПИСЬ СЦЕНАРИЯ — ИСТОЧНИК ПРАВДЫ БАЗА (НЕ Excel)\n"
+    "Верни ТОЛЬКО JSON apply-ops. Без TSV, без `# Лист:`, без `@row=`, "
+    "без ссылок на скачивание .xlsx:\n"
+    '{"ops":[{"target":"project","fields":{"общий_план":"<полный текст сценария>"}}]}\n'
+    "Текст в общем_плане — полный содержательный сценарий/план "
+    "(минимум ~200 символов). Никакой прозы вокруг JSON.\n"
+)
+
+
+def extract_general_plan_from_gpt_reply(reply: str) -> str:
+    """Достать общий_план из apply-ops JSON ответа модели."""
+    from app.services import db_apply
+
+    data = db_apply.extract_apply_ops_json(reply or "")
+    if isinstance(data, dict):
+        for op in data.get("ops") or []:
+            if not isinstance(op, dict):
+                continue
+            fields = op.get("fields") or {}
+            if not isinstance(fields, dict):
+                continue
+            for key in ("общий_план", "general_plan", "план", "сценарий"):
+                val = fields.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+            if str(op.get("target") or "").strip().lower() == "project":
+                for val in fields.values():
+                    if isinstance(val, str) and len(val.strip()) >= 80:
+                        return val.strip()
+    return ""
+
+
 async def run_plan_xlsx(
     project: Project,
     *,
     topic: str | None = None,
     project_id: int | None = None,
 ) -> XlsxRoundtripResult:
-    """Шаг «План»: prompt.md + project.xlsx → обновлённый xlsx."""
+    """Шаг «План»: GPT → apply-ops (общий_план) → DB; Excel только экспорт позже.
+
+    Больше не скачиваем .xlsx / TSV writeback (HTML-страницы ломали шаг).
+    """
+    from app.services.plan_validation import is_meaningful_general_plan
+
     proj_xlsx = _ensure_project_xlsx(project)
     actual_topic = topic if topic is not None else (project.topic or "")
 
@@ -236,43 +276,39 @@ async def run_plan_xlsx(
     chat_msg = cx.chat_message(
         project, "plan", topic=actual_topic, prompt_file_name=prompt_file.name
     )
-    downloaded = tmp_dir / f"plan_{ts}.xlsx"
+    chat_msg = f"{chat_msg}{_PLAN_DB_HINT}"
 
     logger.info(
-        "plan_xlsx: prompt_file={} ({} байт), xlsx={}, chat_len={}",
+        "plan_db: prompt_file={} ({} байт), chat_len={} (без xlsx-download)",
         prompt_file.name,
         prompt_file.stat().st_size,
-        proj_xlsx,
         len(chat_msg),
     )
 
     async def _gpt() -> str:
-        return await xgf.telegram_style_ask_and_download(
+        # Промт + xlsx только как контекст; запись — JSON apply-ops, не файл.
+        return await xgf.telegram_style_ask_with_files(
             chat_msg,
             [prompt_file, proj_xlsx],
-            downloaded,
             project_id=project_id or project.id,
-            validate_xlsx_download=True,
         )
 
     reply = await xgf.run_under_xlsx_lock(project.id, "plan", _gpt)
+    plan_text = extract_general_plan_from_gpt_reply(reply)
+    if not is_meaningful_general_plan(plan_text):
+        raise RuntimeError(
+            "GPT не вернул общий_план в apply-ops JSON "
+            f"(досталось {len(plan_text)} символов). Нужен формат: "
+            '{"ops":[{"target":"project","fields":{"общий_план":"…"}}]}'
+        )
 
-    validation_err = validate_xlsx(downloaded)
-    if validation_err is not None:
-        if normalize_xlsx_to_reference_layout(downloaded, proj_xlsx):
-            validation_err = validate_xlsx(downloaded)
-    if validation_err is not None:
-        raise RuntimeError(f"скачанный xlsx невалиден: {validation_err}")
-
-    _assert_downloaded_plan_meaningful(downloaded)
-
-    backup = backup_to_old(proj_xlsx)
-    replace_with(proj_xlsx, downloaded)
+    logger.info("plan_db: общий_план len={}", len(plan_text))
     return XlsxRoundtripResult(
         reply_text=reply,
-        downloaded_path=downloaded,
+        downloaded_path=proj_xlsx,
         project_xlsx=proj_xlsx,
-        backup_path=backup,
+        backup_path=None,
+        plan_text=plan_text,
     )
 
 

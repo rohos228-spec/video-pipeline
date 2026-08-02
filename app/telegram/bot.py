@@ -5897,10 +5897,12 @@ async def _run_plan_xlsx(
 
         result = await xsr.run_plan_xlsx(project, topic=topic)
         backup = result.backup_path
+        plan_text = (result.plan_text or "").strip()
         logger.info(
-            "plan_xlsx: GPT roundtrip ok (project #{}, prompt={})",
+            "plan_db: GPT ok (project #{}, prompt={}, plan_len={})",
             project_id,
             prompt_name,
+            len(plan_text),
         )
 
         async with session_scope() as s:
@@ -5910,13 +5912,21 @@ async def _run_plan_xlsx(
                 )
             ).scalar_one_or_none()
             if project is not None:
-                await xsr.sync_after_plan(s, project, proj_xlsx)
+                from app.services import db_apply
+
+                project.general_plan = plan_text
+                await db_apply.apply_ops(
+                    s,
+                    project,
+                    [{"target": "project", "fields": {"общий_план": plan_text}}],
+                    export_xlsx=True,
+                )
                 project.status = ProjectStatus.plan_ready
     except Exception as e:  # noqa: BLE001
-        logger.exception("plan_xlsx failed: {}", e)
+        logger.exception("plan_db failed: {}", e)
         await msg.answer(
-            f"❌ ChatGPT вернул ошибку: {e}\n"
-            f"project.xlsx не подменён, можно попробовать ещё раз."
+            f"❌ GPT вернул ошибку: {e}\n"
+            f"База не перезаписана планом — можно попробовать ещё раз."
         )
         return
 
@@ -5926,7 +5936,7 @@ async def _run_plan_xlsx(
         else ""
     )
     await msg.answer(
-        f"✅ План готов. project.xlsx обновлён.{backup_note}",
+        f"✅ План готов (записан в базу, Excel — экспорт).{backup_note}",
         parse_mode="HTML",
     )
     try:
