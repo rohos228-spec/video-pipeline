@@ -27,10 +27,9 @@ from app.storage import for_project as _sheet_for_project
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_animation_prompts:
         return
-    logger.info("[#{}] make_animation_prompts starting (batch GPT flow)", project.id)
+    logger.info("[#{}] make_animation_prompts starting (batch GPT flow, DB SoT)", project.id)
 
-    synced = await apg.sync_animation_prompts_from_xlsx(session, project)
-    # DB SoT: uuid кадров обязаны существовать до записи через apply_ops.
+    # Не синкаем из R48 в DB — Excel только экспорт после apply-ops.
     await db_v2.backfill_project_v2(session, project)
     frames = (
         await session.execute(
@@ -53,11 +52,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
         project.status = await compute_actual_status(session, project)
         logger.info(
-            "[#{}] make_animation_prompts: nothing to do (synced={}, "
-            "plan R48={}, картинок на диске={}) → status={}",
+            "[#{}] make_animation_prompts: nothing to do "
+            "(db_ready={}, png={}) → status={}",
             project.id,
-            synced,
-            xlsx_filled,
+            already_done,
             with_image,
             project.status.value,
         )
@@ -65,12 +63,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
 
     logger.info(
-        "[#{}] anim_pr: очередь shot_01={} shot_02={} (synced={}, plan R48={}, png={})",
+        "[#{}] anim_pr: очередь shot_01={} shot_02={} (db_ready={}, png={})",
         project.id,
         len(pending),
         len(pending_shot2),
-        synced,
-        xlsx_filled,
+        already_done,
         with_image,
     )
 
@@ -79,11 +76,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         first_batch = pending if pending else pending_shot2
         first_pending = first_batch[0].frame.number
         logger.info(
-            "[#{}] anim_pr: догонка — {} готово, synced={}, первая пачка с кадра {} "
+            "[#{}] anim_pr: догонка — {} готово, первая пачка с кадра {} "
             "(shot_01={}, shot_02={})",
             project.id,
             already_done,
-            synced,
             first_pending,
             len(pending),
             len(pending_shot2),

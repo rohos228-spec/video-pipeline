@@ -1,11 +1,6 @@
-"""Шаг 5: промты картинок одним xlsx round-trip в ChatGPT.
-
-Мастер-промт уходит файлом; в чат — только override или дефолт.
-"""
+"""Шаг img_pr: промты картинок через apply-ops (DB SoT)."""
 
 from __future__ import annotations
-
-from pathlib import Path
 
 from aiogram import Bot
 from loguru import logger
@@ -14,51 +9,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, FrameStatus, Project, ProjectStatus
 from app.services.step_cancel import StepCancelledError, raise_if_cancelled
-from app.services.xlsx_v8_import import (
-    read_v8_active_frame_count,
-    read_v8_image_prompts_from_path,
-)
 from app.storage import for_project as _sheet_for_project
 
 
-def _frames_needing_image_prompt(
-    frames: list[Frame],
-    *,
-    xlsx_path: Path | None = None,
-    project_id: int | None = None,
-) -> list[Frame]:
-    """Кадры, для которых обязателен image_prompt после img_pr.
-
-    Если в xlsx N колонок voiceover — проверяем только кадры 1..N.
-    Лишние Frame в БД (старый split) не должны валить шаг.
-    """
-    if xlsx_path is not None:
-        n = read_v8_active_frame_count(xlsx_path)
-        if n > 0:
-            active = [fr for fr in frames if fr.number <= n]
-            extra = [
-                fr.number
-                for fr in frames
-                if fr.number > n and (fr.voiceover_text or "").strip()
-            ]
-            if extra:
-                logger.warning(
-                    "[#{}] img_pr: в БД есть кадры {}, в xlsx только {} колонок — "
-                    "image_prompt для них не требуем",
-                    project_id or "?",
-                    extra,
-                    n,
-                )
-            return active
+def _frames_needing_image_prompt(frames: list[Frame]) -> list[Frame]:
     return [fr for fr in frames if (fr.voiceover_text or "").strip()]
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_image_prompts:
         return
-    logger.info(
-        "[#{}] generate_image_prompts (xlsx-flow) starting", project.id
-    )
+    logger.info("[#{}] generate_image_prompts (db-first) starting", project.id)
+
+    from app.services import db_v2
+
+    await db_v2.backfill_project_v2(session, project)
 
     frames = (
         await session.execute(
@@ -68,32 +33,21 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if not frames:
         raise RuntimeError("нет кадров — нечего составлять промты")
 
+    need = _frames_needing_image_prompt(frames)
+    if not need:
+        raise RuntimeError("нет кадров с закадром — нечего составлять промты")
+
+    uuid_map = "\n".join(
+        f"кадр {fr.number} = {fr.uuid}" for fr in need if fr.uuid
+    )
+    if not uuid_map.strip():
+        raise RuntimeError("у кадров нет uuid — backfill не сработал")
+
     sheet = _sheet_for_project(project)
     try:
-        sheet.ensure_frame_columns(len(frames))
+        sheet.ensure_initialized(project_id=project.id, slug=project.slug)
     except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "[#{}] xlsx ensure_frame_columns failed: {}", project.id, e
-        )
-
-    xlsx_path: Path = sheet.ensure_initialized(
-        project_id=project.id, slug=project.slug
-    )
-    if not xlsx_path.exists():
-        raise RuntimeError(
-            f"generate_image_prompts: project.xlsx не найден: {xlsx_path}"
-        )
-
-    n_xlsx = read_v8_active_frame_count(xlsx_path)
-    n_work = n_xlsx if n_xlsx > 0 else len(frames)
-    if n_xlsx and n_xlsx < len(frames):
-        logger.info(
-            "[#{}] generate_image_prompts: xlsx {} кадров, в БД {} — "
-            "работаем по xlsx",
-            project.id,
-            n_xlsx,
-            len(frames),
-        )
+        logger.warning("[#{}] ensure_initialized: {}", project.id, e)
 
     cancelled = False
     last_err: Exception | None = None
@@ -107,11 +61,20 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             cancelled = True
             break
         try:
-            from app.services import xlsx_step_runners as xsr
+            from app.services import db_apply, xlsx_step_runners as xsr
 
-            await xsr.run_img_pr_xlsx(
-                project, n_frames=n_work, project_id=project.id
+            result = await xsr.run_img_pr_xlsx(
+                project,
+                n_frames=len(need),
+                project_id=project.id,
+                uuid_map_text=uuid_map,
             )
+            ops = list(result.apply_ops or [])
+            if not ops:
+                raise RuntimeError("пустой apply-ops после GPT")
+            await db_apply.apply_ops(session, project, ops, export_xlsx=True)
+            await session.commit()
+
             try:
                 from app.services.node_xlsx_snapshot import snapshot_and_bind_node_xlsx
 
@@ -120,11 +83,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 )
             except Exception as snap_err:  # noqa: BLE001
                 logger.warning(
-                    "[#{}] image_prompts xlsx snapshot bind failed: {}",
+                    "[#{}] image_prompts snapshot failed: {}",
                     project.id,
                     snap_err,
                 )
-            await xsr.sync_after_img_pr(session, project, xlsx_path)
+
             await session.refresh(project)
             frames = (
                 await session.execute(
@@ -133,19 +96,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     .order_by(Frame.number)
                 )
             ).scalars().all()
-            need = _frames_needing_image_prompt(frames, xlsx_path=xlsx_path)
+            need = _frames_needing_image_prompt(frames)
             if need and all((fr.image_prompt or "").strip() for fr in need):
                 break
             missing = [
-                fr.number
-                for fr in need
-                if not (fr.image_prompt or "").strip()
+                fr.number for fr in need if not (fr.image_prompt or "").strip()
             ]
-            filled_r45 = len(read_v8_image_prompts_from_path(xlsx_path))
             raise RuntimeError(
-                f"после xlsx-sync промты не заполнены (попытка {attempt}): "
-                f"кадры {missing}; в xlsx {n_xlsx or '?'} колонок voiceover, "
-                f"строка R45 заполнена для {filled_r45}"
+                f"после apply-ops промты не заполнены (попытка {attempt}): "
+                f"кадры {missing}"
             )
         except Exception as e:  # noqa: BLE001
             last_err = e
@@ -164,77 +123,21 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         try:
             await session.refresh(project)
         except Exception:  # noqa: BLE001
-            logger.warning(
-                "[#{}] не смог refresh project после ⏹", project.id
-            )
+            pass
         return
 
-    need = _frames_needing_image_prompt(
-        frames, xlsx_path=xlsx_path, project_id=project.id
-    )
-    missing = [
-        fr.number for fr in need if not (fr.image_prompt or "").strip()
-    ]
+    need = _frames_needing_image_prompt(frames)
+    missing = [fr.number for fr in need if not (fr.image_prompt or "").strip()]
     if missing:
         raise RuntimeError(
             f"GPT не заполнил image_prompt для кадров: {missing}"
         )
 
-    from app.storage.plan_sheet_v8 import write_plan_image_prompts_bulk
-
-    prompts_map = {
-        fr.number: (fr.image_prompt or "").strip()
-        for fr in need
-        if (fr.image_prompt or "").strip()
-    }
-    n_xlsx = write_plan_image_prompts_bulk(project, prompts_map)
-    if n_xlsx:
-        logger.info(
-            "[#{}] v8 plan R45: записано image_prompt для {} кадров",
-            project.id,
-            n_xlsx,
-        )
-
     for fr in need:
         fr.status = FrameStatus.image_prompt_ready
-        await session.flush()
-        try:
-            sheet.write_frame(
-                fr.number,
-                image_prompt=fr.image_prompt,
-                frame_status=fr.status.value,
-                gen_type="image",
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[#{}] xlsx write image_prompt frame {} failed: {}",
-                project.id,
-                fr.number,
-                e,
-            )
-        logger.info(
-            "[#{}] frame {}: image_prompt готов ({} симв)",
-            project.id,
-            fr.number,
-            len(fr.image_prompt or ""),
-        )
-
     project.status = ProjectStatus.image_prompts_ready
     await session.flush()
 
-    # DB SoT: версии промтов + экспорт R45 через apply-ops (по uuid кадров).
-    from app.services import db_apply, db_v2
-
-    await db_v2.backfill_project_v2(session, project)
-    ops = [
-        {"frame_uuid": fr.uuid, "fields": {"промт_картинки": (fr.image_prompt or "").strip()}}
-        for fr in need
-        if fr.uuid and (fr.image_prompt or "").strip()
-    ]
-    if ops:
-        await db_apply.apply_ops(session, project, ops, export_xlsx=True)
-
-    # Harness-гейт: промты должны быть заполнены и консистентны.
     await session.commit()
     from app.services.agent_harness import harness_gate_or_raise
 
@@ -242,8 +145,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     await session.commit()
 
     logger.info(
-        "[#{}] generate_image_prompts complete: {} промтов (xlsx-flow)",
+        "[#{}] generate_image_prompts complete: {} промтов (DB)",
         project.id,
-        len(frames),
+        len(need),
     )
     _ = last_err

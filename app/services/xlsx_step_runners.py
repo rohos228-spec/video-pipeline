@@ -193,7 +193,7 @@ def _try_reuse_split_download(
 
 @dataclass
 class XlsxRoundtripResult:
-    """Результат GPT round-trip (xlsx legacy или DB-first)."""
+    """Результат GPT round-trip (DB-first; xlsx только экспорт)."""
 
     reply_text: str
     downloaded_path: Path
@@ -201,6 +201,10 @@ class XlsxRoundtripResult:
     backup_path: Path | None = None
     # DB-first plan: текст общего плана из apply-ops (без скачивания xlsx).
     plan_text: str | None = None
+    # split: список {закадр, длительность?}
+    frames_spec: list[dict] | None = None
+    # img_pr / др.: готовые ops для apply_ops
+    apply_ops: list[dict] | None = None
 
 
 def _ts() -> str:
@@ -312,56 +316,99 @@ async def run_plan_xlsx(
     )
 
 
+_SCRIPT_DB_HINT = (
+    "\n\n# ЗАПИСЬ ЗАКАДРА — ИСТОЧНИК ПРАВДЫ БАЗА (НЕ Excel)\n"
+    "Верни ТОЛЬКО JSON apply-ops ИЛИ блок <<<VOICEOVER>>>…<<<END>>>:\n"
+    '{"ops":[{"target":"project","fields":{"закадровый_текст":"<полный закадр>"}}]}\n'
+    "Без TSV, без `# Лист:`, без скачивания файлов.\n"
+)
+
+
 async def run_script_xlsx(
     project: Project,
     *,
     project_id: int | None = None,
 ) -> tuple[XlsxRoundtripResult, str]:
-    """Шаг «Закадровый текст»: prompt + project.xlsx [+ voiceover.txt] → voiceover.txt.
+    """Шаг «Закадровый текст»: GPT → текст/apply-ops → DB+voiceover.txt (без download)."""
+    from app.services import db_apply
+    from app.services.voiceover_sanitize import (
+        ensure_voiceover_format_instruction,
+        extract_voiceover_block,
+    )
 
-    К текущему шагу крепим актуальный voiceover.txt (не самый старый бэкап) —
-    иначе GPT/проверка получают чужой черновик и «реген» уходит в прошлое.
-    """
     proj_xlsx = _ensure_project_xlsx(project)
     source_voiceover = cx.ensure_current_voiceover(project)
 
     ts = _ts()
     tmp_dir = cx.tmp_gpt_dir(project)
     prompt_file = cx.write_script_prompt_file(project, tmp_dir, ts=ts)
-    chat_msg = cx.chat_message(
-        project, "script", prompt_file_name=prompt_file.name
+    chat_msg = ensure_voiceover_format_instruction(
+        cx.chat_message(project, "script", prompt_file_name=prompt_file.name)
     )
-    downloaded = tmp_dir / f"voiceover_{ts}.txt"
-    attach_files: list[Path] = [prompt_file, proj_xlsx]
+    chat_msg = f"{chat_msg}{_SCRIPT_DB_HINT}"
+    attach_files: list[Path] = [prompt_file]
+    # Контекст: общий план / прошлый закадр — без ожидания скачивания xlsx.
+    if (project.general_plan or "").strip():
+        gp = tmp_dir / f"general_plan_{ts}.txt"
+        gp.write_text(project.general_plan or "", encoding="utf-8")
+        attach_files.append(gp)
     if source_voiceover is not None:
         attach_files.append(source_voiceover)
 
     logger.info(
-        "script_xlsx: prompt_file={} ({} байт), xlsx={}, voiceover={}, chat_len={}",
+        "script_db: prompt_file={} chat_len={} (без xlsx-download)",
         prompt_file.name,
-        prompt_file.stat().st_size,
-        proj_xlsx,
-        source_voiceover.name if source_voiceover else "—",
         len(chat_msg),
     )
 
     async def _gpt() -> str:
-        return await xgf.telegram_style_ask_and_download(
+        return await xgf.telegram_style_ask_with_files(
             chat_msg,
             attach_files,
-            downloaded,
+            timeout=1800.0,
             project_id=project_id or project.id,
-            ask_timeout=1800.0,
         )
 
     reply = await xgf.run_under_xlsx_lock(project.id, "script", _gpt)
 
-    if not downloaded.exists() or downloaded.stat().st_size < 10:
+    voiceover_text = ""
+    data = db_apply.extract_apply_ops_json(reply or "")
+    if isinstance(data, dict):
+        for op in data.get("ops") or []:
+            if not isinstance(op, dict):
+                continue
+            fields = op.get("fields") or {}
+            if not isinstance(fields, dict):
+                continue
+            for key in (
+                "закадровый_текст",
+                "script_text",
+                "сценарий",
+                "voiceover",
+                "общий_план",
+            ):
+                # общий_план тут не пишем в VO — только script aliases
+                if key == "общий_план":
+                    continue
+                val = fields.get(key)
+                if isinstance(val, str) and len(val.strip()) >= 80:
+                    voiceover_text = val.strip()
+                    break
+            if voiceover_text:
+                break
+    if not voiceover_text:
+        voiceover_text = (extract_voiceover_block(reply) or "").strip()
+    if not voiceover_text:
+        # Последний шанс: весь ответ, если это не голый JSON
+        raw = (reply or "").strip()
+        if raw and '"ops"' not in raw[:40] and len(raw) >= 200:
+            voiceover_text = raw
+    if len(voiceover_text) < 200:
         raise RuntimeError(
-            f"скачанный txt пустой или повреждён: {downloaded}"
+            "GPT не вернул закадр (apply-ops закадровый_текст или "
+            f"<<<VOICEOVER>>>, len={len(voiceover_text)})"
         )
 
-    voiceover_text = downloaded.read_text(encoding="utf-8").strip()
     voiceover_text = cx.save_voiceover_text(
         project, proj_xlsx.parent / "voiceover.txt", voiceover_text
     )
@@ -369,11 +416,60 @@ async def run_script_xlsx(
     return (
         XlsxRoundtripResult(
             reply_text=reply,
-            downloaded_path=downloaded,
+            downloaded_path=proj_xlsx.parent / "voiceover.txt",
             project_xlsx=proj_xlsx,
+            apply_ops=[
+                {
+                    "target": "project",
+                    "fields": {"закадровый_текст": voiceover_text},
+                }
+            ],
         ),
         voiceover_text,
     )
+
+
+_SPLIT_DB_HINT = (
+    "\n\n# РАЗБИВКА — ИСТОЧНИК ПРАВДЫ БАЗА (НЕ Excel)\n"
+    "Верни ТОЛЬКО JSON apply-ops. Без TSV, без `# Лист:`, без `@row=`, "
+    "без скачивания .xlsx:\n"
+    '{"ops":[{"target":"replace_frames","frames":['
+    '{"закадр":"текст кадра 1","длительность":3},'
+    '{"закадр":"текст кадра 2"}'
+    "]}]}\n"
+    "Нужно ≥2 кадра. Каждый кадр — отдельный объект с полем закадр.\n"
+)
+
+
+def extract_frames_spec_from_gpt_reply(reply: str, *, voiceover_path: Path | None) -> list[dict]:
+    """Достать кадры из replace_frames JSON или --- блоков / локальной разбивки."""
+    from app.services import db_apply
+
+    data = db_apply.extract_apply_ops_json(reply or "")
+    if isinstance(data, dict):
+        for op in data.get("ops") or []:
+            if not isinstance(op, dict):
+                continue
+            if str(op.get("target") or "") != "replace_frames":
+                continue
+            raw = op.get("frames") or op.get("кадры") or []
+            if isinstance(raw, list) and len(raw) >= 2:
+                out: list[dict] = []
+                for item in raw:
+                    if isinstance(item, str) and item.strip():
+                        out.append({"закадр": item.strip()})
+                    elif isinstance(item, dict):
+                        out.append(item)
+                if len(out) >= 2:
+                    return out
+    blocks = parse_dash_separated_blocks(reply or "")
+    if len(blocks) < 2 and voiceover_path is not None and voiceover_path.exists():
+        blocks = split_voiceover_locally(
+            voiceover_path.read_text(encoding="utf-8", errors="replace")
+        )
+    if len(blocks) >= 2:
+        return [{"закадр": b.strip()} for b in blocks if b.strip()]
+    return []
 
 
 async def run_split_xlsx(
@@ -381,7 +477,7 @@ async def run_split_xlsx(
     *,
     project_id: int | None = None,
 ) -> XlsxRoundtripResult:
-    """Шаг «Разбивка»: prompt + project.xlsx + voiceover.txt → xlsx."""
+    """Шаг «Разбивка»: GPT → replace_frames (DB); Excel только через export."""
     proj_xlsx = _ensure_project_xlsx(project)
     voiceover = cx.ensure_current_voiceover(project)
     if voiceover is None:
@@ -392,102 +488,52 @@ async def run_split_xlsx(
     ts = _ts()
     tmp_dir = cx.tmp_gpt_dir(project)
     prompt_file = cx.write_split_prompt_file(project, tmp_dir, ts=ts)
-    chat_msg = cx.chat_message(
-        project, "split", prompt_file_name=prompt_file.name
+    chat_msg = (
+        cx.chat_message(project, "split", prompt_file_name=prompt_file.name)
+        + _SPLIT_DB_HINT
     )
-    downloaded = tmp_dir / f"split_{ts}.xlsx"
-
-    reused = _try_reuse_split_download(tmp_dir, proj_xlsx)
-    if reused is not None:
-        return reused
 
     logger.info(
-        "split_xlsx: prompt={}, xlsx={}, voiceover={}, chat_len={}",
+        "split_db: prompt={}, voiceover={}, chat_len={} (без xlsx-download)",
         prompt_file.name,
-        proj_xlsx.name,
         voiceover.name,
         len(chat_msg),
     )
 
     async def _gpt() -> str:
-        return await xgf.telegram_style_ask_and_download(
+        return await xgf.telegram_style_ask_with_files(
             chat_msg,
-            [prompt_file, proj_xlsx, voiceover],
-            downloaded,
+            [prompt_file, voiceover],
             project_id=project_id or project.id,
-            validate_xlsx_download=True,
         )
 
     reply = await xgf.run_under_xlsx_lock(project.id, "split", _gpt)
-
-    validation_err = validate_xlsx(downloaded)
-    if validation_err is not None:
-        raise RuntimeError(f"скачанный xlsx невалиден: {validation_err}")
-
-    downloaded_blocks = _count_v8_voiceover_blocks(downloaded)
-    if downloaded_blocks < 2:
-        downloaded_blocks = _apply_split_fallback(
-            downloaded, voiceover, gpt_reply=reply or ""
+    frames_spec = extract_frames_spec_from_gpt_reply(reply, voiceover_path=voiceover)
+    if len(frames_spec) < 2:
+        raise RuntimeError(
+            "GPT не вернул разбивку в apply-ops replace_frames "
+            f"(кадров={len(frames_spec)}). Нужен JSON "
+            '{"ops":[{"target":"replace_frames","frames":[...]}]}'
         )
 
-    on_disk_blocks = _count_v8_voiceover_blocks(proj_xlsx)
-    logger.info(
-        "split_xlsx: voiceover blocks — downloaded={}, project.xlsx={}",
-        downloaded_blocks,
-        on_disk_blocks,
-    )
-
-    backup: Path | None = None
-    if downloaded_blocks >= 2:
-        from app.storage.plan_sheet_v8 import merge_gpt_voiceover_row_into_project
-
-        backup = backup_to_old(proj_xlsx)
-        merged = merge_gpt_voiceover_row_into_project(proj_xlsx, downloaded)
-        if merged < 2:
-            # Шаблон без «план» / merge не сработал — полный replace.
-            logger.warning(
-                "split_xlsx: R49 merge={} (<2) — fallback full replace",
-                merged,
-            )
-            replace_with(proj_xlsx, downloaded)
-        else:
-            logger.info(
-                "split_xlsx: R49 merged {} cells into project.xlsx (enrich сохранён)",
-                merged,
-            )
-        downloaded_blocks = _count_v8_voiceover_blocks(proj_xlsx)
-    elif on_disk_blocks >= 2:
-        logger.warning(
-            "split_xlsx: GPT xlsx has {} blocks (<2) — keeping project.xlsx "
-            "({} blocks), skip replace",
-            downloaded_blocks,
-            on_disk_blocks,
-        )
-        downloaded = proj_xlsx
-    else:
-        on_disk_blocks = _apply_split_fallback(
-            proj_xlsx, voiceover, gpt_reply=reply or ""
-        )
-        if on_disk_blocks >= 2:
-            logger.warning(
-                "split_xlsx: applied local fallback — {} blocks in project.xlsx",
-                on_disk_blocks,
-            )
-            downloaded = proj_xlsx
-        else:
-            diag = diagnose_split_xlsx(downloaded)
-            raise RuntimeError(
-                "разбивка не найдена в xlsx после GPT — "
-                f"downloaded={downloaded_blocks} блоков, "
-                f"project.xlsx={on_disk_blocks} блоков. {diag}"
-            )
-
+    logger.info("split_db: кадров из GPT/fallback={}", len(frames_spec))
     return XlsxRoundtripResult(
         reply_text=reply,
-        downloaded_path=downloaded,
+        downloaded_path=proj_xlsx,
         project_xlsx=proj_xlsx,
-        backup_path=backup,
+        backup_path=None,
+        frames_spec=frames_spec,
+        apply_ops=[{"target": "replace_frames", "frames": frames_spec}],
     )
+
+
+_IMG_PR_DB_HINT = (
+    "\n\n# ПРОМТЫ КАРТИНОК — ИСТОЧНИК ПРАВДЫ БАЗА (НЕ Excel)\n"
+    "Верни ТОЛЬКО JSON apply-ops. Без TSV, без `# Лист:`, без `@row=`, "
+    "без скачивания .xlsx:\n"
+    '{"ops":[{"frame_uuid":"<uuid>","fields":{"промт_картинки":"…"}}]}\n'
+    "Адрес кадра — ТОЛЬКО frame_uuid из списка ниже. Одна операция = один кадр.\n"
+)
 
 
 async def run_img_pr_xlsx(
@@ -495,8 +541,11 @@ async def run_img_pr_xlsx(
     *,
     n_frames: int | None = None,
     project_id: int | None = None,
+    uuid_map_text: str = "",
 ) -> XlsxRoundtripResult:
-    """Шаг «Промты картинок»: prompt.md + project.xlsx → xlsx с image_prompt."""
+    """Шаг «Промты картинок»: GPT → apply-ops (DB); Excel через export."""
+    from app.services import db_apply
+
     proj_xlsx = _ensure_project_xlsx(project)
 
     ts = _ts()
@@ -508,49 +557,68 @@ async def run_img_pr_xlsx(
         prompt_file_name=prompt_file.name,
         n_frames=n_frames or 0,
     )
-    downloaded = tmp_dir / f"img_pr_{ts}.xlsx"
+    chat_msg = f"{chat_msg}{_IMG_PR_DB_HINT}"
+    if uuid_map_text.strip():
+        chat_msg = f"{chat_msg}\nАдресация кадров (номер = uuid):\n{uuid_map_text.strip()}\n"
+
+    # Контекст закадров — текстовый файл, не бинарный xlsx-download.
+    ctx_parts: list[str] = []
+    attach: list[Path] = [prompt_file]
+    vo = cx.ensure_current_voiceover(project)
+    if vo is not None:
+        attach.append(vo)
 
     logger.info(
-        "img_pr_xlsx: prompt_file={} ({} байт), xlsx={}, chat_len={}",
+        "img_pr_db: prompt_file={} chat_len={} (без xlsx-download)",
         prompt_file.name,
-        prompt_file.stat().st_size,
-        proj_xlsx,
         len(chat_msg),
     )
 
     async def _gpt() -> str:
-        return await xgf.telegram_style_ask_and_download(
+        return await xgf.telegram_style_ask_with_files(
             chat_msg,
-            [prompt_file, proj_xlsx],
-            downloaded,
+            attach,
             project_id=project_id or project.id,
-            validate_xlsx_download=True,
         )
 
     reply = await xgf.run_under_xlsx_lock(project.id, "img_pr", _gpt)
-
-    validation_err = validate_xlsx(downloaded)
-    if validation_err is not None:
-        raise RuntimeError(f"скачанный xlsx невалиден: {validation_err}")
-
-    backup = backup_to_old(proj_xlsx)
-    from app.storage.plan_sheet_v8 import merge_gpt_image_prompt_rows_into_project
-
-    n45, n46 = merge_gpt_image_prompt_rows_into_project(proj_xlsx, downloaded)
-    if n45 == 0:
+    data = db_apply.extract_apply_ops_json(reply or "")
+    ops = list((data or {}).get("ops") or []) if isinstance(data, dict) else []
+    # Только frame ops с промтом картинки
+    clean: list[dict] = []
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        if str(op.get("target") or "frame") not in {"frame", ""}:
+            continue
+        fields = op.get("fields") or {}
+        if not isinstance(fields, dict):
+            continue
+        if not any(
+            k in fields
+            for k in (
+                "промт_картинки",
+                "image_prompt",
+                "промпт_картинки",
+                "промт_картинки_2",
+                "image_prompt_shot2",
+            )
+        ):
+            continue
+        clean.append(op)
+    if not clean:
         raise RuntimeError(
-            "GPT не заполнил строку 45 (промты картинок) — project.xlsx не изменён"
+            "GPT не вернул apply-ops с промт_картинки по frame_uuid. "
+            'Нужен {"ops":[{"frame_uuid":"…","fields":{"промт_картинки":"…"}}]}'
         )
-    logger.info(
-        "img_pr_xlsx: в project.xlsx слиты R45={} R46={} (enrich сохранён)",
-        n45,
-        n46,
-    )
+
+    logger.info("img_pr_db: ops={}", len(clean))
     return XlsxRoundtripResult(
         reply_text=reply,
-        downloaded_path=downloaded,
+        downloaded_path=proj_xlsx,
         project_xlsx=proj_xlsx,
-        backup_path=backup,
+        backup_path=None,
+        apply_ops=clean,
     )
 
 

@@ -180,19 +180,9 @@ def animation_prompt_in_plan_xlsx(project: Project, frame_number: int) -> str:
 
 
 def has_animation_prompt_for_frame(project: Project, frame: Frame) -> bool:
-    """Готов ли промт: plan R48 в xlsx — источник истины, если project.xlsx есть."""
-    db_ok = len((frame.animation_prompt or "").strip()) >= MIN_ANIM_PROMPT_LEN
-    if frame.status in _VIDEO_DONE_STATUSES and db_ok:
-        return True
-    if _plan_xlsx_exists(project):
-        xlsx_ok = (
-            len(animation_prompt_in_plan_xlsx(project, frame.number))
-            >= MIN_ANIM_PROMPT_LEN
-        )
-        if xlsx_ok:
-            return True
-        return db_ok
-    return db_ok
+    """Готов ли промт: источник правды — DB (Frame.animation_prompt)."""
+    _ = project  # xlsx больше не SoT для skip
+    return len((frame.animation_prompt or "").strip()) >= MIN_ANIM_PROMPT_LEN
 
 
 _VIDEO_DONE_STATUSES = frozenset(

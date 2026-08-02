@@ -1,4 +1,4 @@
-"""Шаг 3: разбивка (xlsx-flow, как Telegram _run_split_xlsx)."""
+"""Шаг 3: разбивка — GPT → replace_frames (DB SoT), Excel только экспорт."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from app.storage import for_project as _sheet_for_project
 async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -> None:
     if project.status is not ProjectStatus.splitting:
         return
-    logger.info("[#{}] split_frames (xlsx-flow) starting", project.id)
+    logger.info("[#{}] split_frames (db-first) starting", project.id)
 
     existing_frames = (
         await session.execute(
@@ -25,9 +25,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         )
     ).scalars().all()
     meta = dict(project.meta or {})
-    # Нельзя считать разбивку готовой только из‑за stale Frame с прошлого
-    # прогона: иначе UI/auto_advance помечают split ✅ и прыгают дальше.
-    # Короткий путь — только если этот прогон уже пометил split_completed.
     if len(existing_frames) >= 2 and meta.get("split_completed"):
         logger.info(
             "[#{}] split_frames: split_completed + {} кадров — пропуск GPT",
@@ -39,17 +36,27 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         return
 
     result = await xsr.run_split_xlsx(project)
+    ops = list(result.apply_ops or [])
+    if not ops and result.frames_spec:
+        ops = [{"target": "replace_frames", "frames": result.frames_spec}]
+    if not ops:
+        raise RuntimeError("split_frames: пустой replace_frames после GPT")
+
+    from app.services import db_apply
+
+    applied = await db_apply.apply_ops(session, project, ops, export_xlsx=True)
+    logger.info(
+        "[#{}] split_frames: replace_frames → {} кадров",
+        project.id,
+        applied.get("replace_frames") or applied.get("updated"),
+    )
+
     try:
         from app.services.node_xlsx_snapshot import snapshot_and_bind_node_xlsx
 
-        await snapshot_and_bind_node_xlsx(
-            session, project, node_type="split"
-        )
+        await snapshot_and_bind_node_xlsx(session, project, node_type="split")
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] split xlsx snapshot bind failed: {}", project.id, e)
-    sync_info = await xsr.sync_after_split(session, project, result.project_xlsx)
-    if sync_info:
-        logger.info("[#{}] split_frames sync: {}", project.id, sync_info)
 
     try:
         from app.services.storage_step_sync import sync_storage_after_step
@@ -71,32 +78,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
             .order_by(Frame.number)
         )
     ).scalars().all()
-    if not frames:
-        blocks = xsr._count_v8_voiceover_blocks(result.project_xlsx)
-        diag = xsr.diagnose_split_xlsx(result.project_xlsx)
+    if len(frames) < 2:
         raise RuntimeError(
-            "после xlsx-sync кадры не созданы — в project.xlsx найдено "
-            f"{blocks} voiceover-блоков. {diag} "
-            "Проверь: строка 49 листа «план», колонки C..N."
+            f"после replace_frames в БД кадров {len(frames)} (нужно ≥2)"
         )
 
-    # DB SoT: uuid кадрам + закадр/длительность через apply-ops (экспорт R49/R50).
-    from app.services import db_apply, db_v2
-
-    await db_v2.backfill_project_v2(session, project)
-    ops = []
-    for fr in frames:
-        if not fr.uuid:
-            continue
-        fields: dict = {"закадр": fr.voiceover_text or ""}
-        if fr.duration_seconds is not None:
-            fields["длительность"] = fr.duration_seconds
-        ops.append({"frame_uuid": fr.uuid, "fields": fields})
-    if ops:
-        await db_apply.apply_ops(session, project, ops, export_xlsx=True)
-
     meta = dict(project.meta or {})
-    # Новый успешный split сбрасывает stale excel_gpt completion с прошлого круга.
     for key in (
         "enrich_completed_slots",
         "excel_gpt_completed_keys",
@@ -107,14 +94,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     project.meta = meta
     project.status = ProjectStatus.frames_ready
     await session.flush()
-    logger.info("[#{}] split_frames: {} кадров из xlsx", project.id, len(frames))
+    logger.info("[#{}] split_frames: {} кадров в DB", project.id, len(frames))
 
     try:
         _sheet_for_project(project).write_general(status=project.status.value)
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] project_sheet split write failed: {}", project.id, e)
 
-    # Harness-гейт: кадры/закадр должны быть консистентны (DB↔xlsx).
     await session.commit()
     from app.services.agent_harness import harness_gate_or_raise
 

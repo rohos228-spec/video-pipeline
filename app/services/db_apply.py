@@ -75,9 +75,13 @@ PROJECT_FIELD_ALIASES: dict[str, str] = {
     "general_plan": "general_plan",
     "общий_план": "general_plan",
     "план": "general_plan",
+    "script_text": "script_text",
+    "закадровый_текст": "script_text",
+    "сценарий": "script_text",
+    "voiceover": "script_text",
 }
 
-TARGETS = ("frame", "project")
+TARGETS = ("frame", "project", "replace_frames")
 
 
 class ApplyOpsError(ValueError):
@@ -229,8 +233,9 @@ async def apply_ops(
 ) -> dict:
     """Применить JSON-операции к проекту (fail-closed, одна транзакция).
 
-    ``ops`` — список ``{"target": "frame"|"project", "frame_uuid": str|None,
-    "fields": {...}}``. После записи по умолчанию экспортируем в project.xlsx.
+    ``ops`` — список ``{"target": "frame"|"project"|"replace_frames", ...}``.
+    ``replace_frames``: ``{"target":"replace_frames","frames":[{"закадр":"…"},…]}``.
+    После записи по умолчанию экспортируем в project.xlsx.
     """
     from app.services.plan_shot2 import SHOT2_PROMPT_ATTR, SHOT2_VIDEO_PROMPT_ATTR
 
@@ -242,8 +247,34 @@ async def apply_ops(
                 f"неизвестный target {op.get('target')!r}; разрешены: {list(TARGETS)}"
             )
 
+    replace_ops = [op for op in ops if op.get("target") == "replace_frames"]
+    if len(replace_ops) > 1:
+        raise ApplyOpsError("replace_frames: только одна операция за раз")
+    if replace_ops and len(ops) > 1:
+        raise ApplyOpsError(
+            "replace_frames нельзя смешивать с другими ops в одном запросе"
+        )
+
     frame_ops = [op for op in ops if op.get("target", "frame") == "frame"]
     project_ops = [op for op in ops if op.get("target", "frame") == "project"]
+
+    if replace_ops:
+        specs = replace_ops[0].get("frames") or replace_ops[0].get("кадры") or []
+        if not isinstance(specs, list):
+            raise ApplyOpsError("replace_frames: нужен список frames")
+        try:
+            created = await db_v2.replace_all_frames(session, project, specs)
+        except ValueError as e:
+            raise ApplyOpsError(str(e)) from None
+        exported = None
+        if export_xlsx:
+            exported = export_project_xlsx(project, created)
+        return {
+            "ok": True,
+            "updated": len(created),
+            "exported": exported,
+            "replace_frames": len(created),
+        }
 
     by_uuid: dict[str, Frame] = {}
     if frame_ops:
@@ -332,6 +363,15 @@ async def apply_ops(
             meta["general_plan"] = plan_val
             # Колонка HITL/статусов — тот же SoT, что meta (не только Excel B2).
             project.general_plan = plan_val
+        if "script_text" in fields:
+            project.script_text = str(fields["script_text"] or "")
+            # Файл voiceover.txt — артефакт для audio/music (зеркало DB).
+            try:
+                vo_path = project.data_dir / "voiceover.txt"
+                vo_path.parent.mkdir(parents=True, exist_ok=True)
+                vo_path.write_text(project.script_text or "", encoding="utf-8")
+            except OSError:
+                pass
         project.meta = meta
         updated += 1
 

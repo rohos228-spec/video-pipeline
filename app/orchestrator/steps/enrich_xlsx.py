@@ -608,22 +608,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         f"enrich_xlsx node={node_key}: apply-ops отклонён: {e}"
                     ) from None
             else:
-                wrote = any(
-                    p.name == "project.xlsx" and p.exists() for p in api_res.output_paths
+                # DB SoT: без apply-ops шаг не принимаем (TSV/xlsx writeback отключён).
+                raise RuntimeError(
+                    f"enrich_xlsx node={node_key}: модель не вернула apply-ops JSON. "
+                    "Нужен {\"ops\":[{\"frame_uuid\":\"…\",\"fields\":{…}}]} — "
+                    "запись через Excel/TSV больше не поддерживается."
                 )
-                if wrote:
-                    try:
-                        from app.services.chatgpt_xlsx import sync_project_xlsx
-
-                        await sync_project_xlsx(
-                            session, project, project.data_dir / "project.xlsx",
-                            keep_fields=False,
-                        )
-                    except Exception:  # noqa: BLE001
-                        logger.exception(
-                            "[#{}] enrich_xlsx API: sync_project_xlsx after writeback failed",
-                            project.id,
-                        )
         save_operator_result(
             project,
             node_key,

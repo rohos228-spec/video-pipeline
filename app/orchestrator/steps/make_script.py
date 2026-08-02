@@ -1,4 +1,4 @@
-"""Шаг 2: общий план → закадровый текст (xlsx-flow, как Telegram _run_script_xlsx)."""
+"""Шаг 2: общий план → закадровый текст (DB SoT через apply-ops)."""
 
 from __future__ import annotations
 
@@ -20,14 +20,23 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if is_user_stopped(project):
         logger.info("[#{}] make_script: user_stop — не запускаем GPT", project.id)
         return
-    logger.info("[#{}] make_script (xlsx-flow) starting", project.id)
+    logger.info("[#{}] make_script (db-first) starting", project.id)
 
-    _result, voiceover_text = await xsr.run_script_xlsx(project)
+    result, voiceover_text = await xsr.run_script_xlsx(project)
 
     if len(voiceover_text) < 200:
-        raise RuntimeError("ChatGPT вернул пустой/слишком короткий сценарий")
+        raise RuntimeError("GPT вернул пустой/слишком короткий закадр")
 
     project.script_text = voiceover_text
+    await session.flush()
+
+    from app.services import db_apply
+
+    ops = list(result.apply_ops or []) or [
+        {"target": "project", "fields": {"закадровый_текст": voiceover_text}}
+    ]
+    await db_apply.apply_ops(session, project, ops, export_xlsx=True)
+
     project.status = ProjectStatus.script_ready
     await session.flush()
 

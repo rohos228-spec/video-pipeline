@@ -24,9 +24,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    Artifact,
     Entity,
     Frame,
     FrameEdge,
+    FrameStatus,
     FrameText,
     Project,
     PromptVersion,
@@ -58,6 +60,107 @@ async def migrate_db_v2_schema(conn: Any) -> None:
 
 def new_frame_uuid() -> str:
     return _uuid_mod.uuid4().hex[:24]
+
+
+async def replace_all_frames(
+    session: AsyncSession,
+    project: Project,
+    specs: list[dict[str, Any]],
+) -> list[Frame]:
+    """Полная замена кадров проекта (шаг split, DB SoT).
+
+    ``specs`` — список ``{"voiceover_text"|"закадр": str, "duration_seconds"|"длительность"?: float}``.
+    Артефакты отвязываются (frame_id=NULL), не удаляются с диска.
+    """
+    from sqlalchemy import delete, update
+
+    if not specs or len(specs) < 2:
+        raise ValueError(f"replace_all_frames: нужно ≥2 кадра, получили {len(specs)}")
+
+    # Не трогаем файлы на диске — только отвязка от старых Frame.id.
+    await session.execute(
+        update(Artifact)
+        .where(Artifact.project_id == project.id)
+        .values(frame_id=None)
+    )
+    await session.execute(
+        delete(FrameEdge).where(FrameEdge.project_id == project.id)
+    )
+    old_ids = list(
+        (
+            await session.execute(select(Frame.id).where(Frame.project_id == project.id))
+        ).scalars()
+    )
+    if old_ids:
+        await session.execute(
+            delete(PromptVersion).where(PromptVersion.frame_id.in_(old_ids))
+        )
+        await session.execute(
+            delete(FrameText).where(FrameText.frame_id.in_(old_ids))
+        )
+        await session.execute(delete(Frame).where(Frame.project_id == project.id))
+    await session.flush()
+
+    # Одна сцена-контейнер
+    scene = (
+        await session.execute(
+            select(Scene).where(Scene.project_id == project.id).order_by(Scene.sort_key)
+        )
+    ).scalars().first()
+    if scene is None:
+        scene = Scene(project_id=project.id, sort_key=_SORT_STEP, title="main")
+        session.add(scene)
+        await session.flush()
+
+    created: list[Frame] = []
+    for i, raw in enumerate(specs, start=1):
+        if not isinstance(raw, dict):
+            raise ValueError(f"replace_all_frames: кадр {i} не объект")
+        vo = str(
+            raw.get("voiceover_text")
+            or raw.get("закадр")
+            or raw.get("voiceover")
+            or ""
+        ).strip()
+        if not vo:
+            raise ValueError(f"replace_all_frames: кадр {i} без закадра")
+        dur_raw = raw.get("duration_seconds", raw.get("длительность"))
+        dur: float | None
+        try:
+            dur = float(dur_raw) if dur_raw is not None and dur_raw != "" else None
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"replace_all_frames: кадр {i} длительность не число") from e
+        fr = Frame(
+            project_id=project.id,
+            number=i,
+            voiceover_text=vo,
+            duration_seconds=dur,
+            uuid=new_frame_uuid(),
+            sort_key=float(i) * _SORT_STEP,
+            scene_id=scene.id,
+            status=FrameStatus.planned,
+            attrs={},
+        )
+        session.add(fr)
+        created.append(fr)
+    await session.flush()
+    for a, b in zip(created, created[1:], strict=False):
+        session.add(
+            FrameEdge(
+                project_id=project.id,
+                from_frame_id=a.id,
+                to_frame_id=b.id,
+                type="next",
+            )
+        )
+    await session.flush()
+    await backfill_project_v2(session, project)
+    logger.info(
+        "[#{}] replace_all_frames: {} кадров (DB SoT)",
+        project.id,
+        len(created),
+    )
+    return created
 
 
 def sort_key_between(before: float | None, after: float | None) -> float:
