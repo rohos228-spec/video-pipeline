@@ -712,9 +712,24 @@ def mark_ok_tokens_from_reply(project: Project, reply: str) -> None:
 
 
 def scene_regen_allows(project: Project, frame_number: int, shot: int = 1) -> bool | None:
-    """None = фильтра нет (обычный режим); True/False = точечный regen."""
+    """Фильтр точечного vision-regen.
+
+    None — фильтра нет (обычный режим).
+    True — можно генерировать (в regen-списке или «дыра» без PNG вне passed).
+    False — пропуск (уже утверждён в vision_check_passed).
+
+    Важно: кадры НЕ из scene_check_regen, но без PNG и не в passed,
+    нельзя блокировать — иначе post_validate крутит generating_images вечно.
+    """
     targets = get_scene_check_regen(project)
     if not targets:
         return None
+    num, sh = int(frame_number), int(shot) if int(shot) in (1, 2) else 1
     want = {(int(t["number"]), int(t.get("shot") or 1)) for t in targets}
-    return (int(frame_number), int(shot)) in want
+    if (num, sh) in want:
+        return True
+    tok = _token_frame(num, sh)
+    if tok in get_vision_passed(project):
+        return False
+    # Не в regen и не passed — разрешаем (claim сам отсеет «уже есть PNG»).
+    return True

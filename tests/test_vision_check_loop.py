@@ -390,9 +390,15 @@ def test_start_scenes_loop(
 def test_scene_regen_allows() -> None:
     p = Project(slug="x", topic="t", status=ProjectStatus.generating_images, meta={})
     assert vcl.scene_regen_allows(p, 1, 1) is None
-    p.meta = {"scene_check_regen": [{"number": 3, "shot": 1}]}
+    p.meta = {
+        "scene_check_regen": [{"number": 3, "shot": 1}],
+        "vision_check_passed": ["f1"],
+    }
     assert vcl.scene_regen_allows(p, 3, 1) is True
+    # Утверждённые — skip
     assert vcl.scene_regen_allows(p, 1, 1) is False
+    # Дырка вне regen (нет PNG / не passed) — НЕ блокировать
+    assert vcl.scene_regen_allows(p, 9, 1) is True
 
 
 def test_extract_ok_vision_tokens() -> None:

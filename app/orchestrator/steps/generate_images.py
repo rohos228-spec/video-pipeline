@@ -1242,7 +1242,8 @@ async def _all_frames_have_image_or_failed(
     from app.services.vision_check_loop import get_scene_check_regen, scene_regen_allows
 
     if project is not None and get_scene_check_regen(project):
-        # Только точечные shot1 из scene_check_regen.
+        # Regen-targets + дырки (не passed / без PNG). Не считать «готово»,
+        # пока post_validate ещё видит missing кадры вне списка regen.
         frames = (
             await session.execute(
                 select(Frame)
@@ -1250,12 +1251,11 @@ async def _all_frames_have_image_or_failed(
                 .order_by(Frame.number)
             )
         ).scalars().all()
-        by_num = {fr.number: fr for fr in frames}
-        for t in get_scene_check_regen(project):
-            if int(t.get("shot") or 1) != 1:
+        for fr in frames:
+            allow = scene_regen_allows(project, fr.number, 1)
+            if allow is False:
                 continue
-            fr = by_num.get(int(t["number"]))
-            if fr is None:
+            if is_skippable_empty_prompt(fr.image_prompt or ""):
                 continue
             if fr.status is FrameStatus.failed:
                 continue
