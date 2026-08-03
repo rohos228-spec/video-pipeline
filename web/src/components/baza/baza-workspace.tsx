@@ -406,7 +406,28 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
                       startRow={sheetPreview?.start_row ?? 1}
                       colLetters={sheetPreview?.col_letters}
                       nowrap
+                      editable
                       onCellClick={(_ri, ci) => selectFrameByExcelCol(ci)}
+                      onCellCommit={async (ri, ci, value) => {
+                        if (projectId == null) return;
+                        const start = sheetPreview?.start_row ?? 1;
+                        try {
+                          await api.dbPatchSheetCell(projectId, {
+                            sheet: frameSheet,
+                            row: start + ri,
+                            col: ci + 1,
+                            value,
+                          });
+                          toast.success("Ячейка сохранена");
+                          setSheetTick((t) => t + 1);
+                          void loadGraph(projectId);
+                        } catch (e) {
+                          toast.error(
+                            `Ячейка: ${e instanceof Error ? e.message : e}`,
+                          );
+                          throw e;
+                        }
+                      }}
                     />
                   ) : (
                     <div className="flex flex-1 items-center justify-center text-center text-sm text-white/30">
@@ -996,6 +1017,25 @@ function EntitiesPanel({
           startRow={preview?.start_row ?? 1}
           colLetters={preview?.col_letters}
           nowrap
+          editable
+          onCellCommit={async (ri, ci, value) => {
+            if (projectId == null) return;
+            const start = preview?.start_row ?? 1;
+            try {
+              await api.dbPatchSheetCell(projectId, {
+                sheet,
+                row: start + ri,
+                col: ci + 1,
+                value,
+              });
+              toast.success("Ячейка сохранена");
+              setTick((t) => t + 1);
+              await onChanged();
+            } catch (e) {
+              toast.error(`Ячейка: ${e instanceof Error ? e.message : e}`);
+              throw e;
+            }
+          }}
         />
       ) : (
         <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden">

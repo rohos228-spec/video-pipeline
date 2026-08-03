@@ -204,6 +204,38 @@ async def export_xlsx(
         raise HTTPException(400, str(e)) from None
 
 
+class SheetCellBody(BaseModel):
+    sheet: str = Field(..., min_length=1, max_length=120)
+    row: int = Field(..., ge=1)
+    col: int = Field(..., ge=1)
+    value: str = ""
+
+
+@router.patch("/projects/{project_id}/sheet-cell")
+async def patch_sheet_cell(
+    project_id: int,
+    body: SheetCellBody,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Точечная правка любой ячейки project.xlsx (+ sync известных полей в DB)."""
+    from app.services.sheet_cell_edit import write_sheet_cell
+
+    project = await _project(session, project_id)
+    try:
+        result = await write_sheet_cell(
+            session,
+            project,
+            sheet=body.sheet,
+            row=body.row,
+            col=body.col,
+            value=body.value,
+        )
+    except db_apply.ApplyOpsError as e:
+        raise HTTPException(400, str(e)) from None
+    await session.commit()
+    return result
+
+
 class ApplyOp(BaseModel):
     target: str = Field(default="frame", max_length=16)
     frame_uuid: str | None = Field(default=None, max_length=64)

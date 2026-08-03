@@ -380,6 +380,22 @@ export const api = {
       `/api/db/projects/${projectId}/export-xlsx`,
       { method: "POST" },
     ),
+  dbPatchSheetCell: (
+    projectId: number,
+    body: { sheet: string; row: number; col: number; value: string },
+  ) =>
+    http<{
+      ok: boolean;
+      sheet: string;
+      row: number;
+      col: number;
+      value: string;
+      synced: string | null;
+      backup: string | null;
+    }>(`/api/db/projects/${projectId}/sheet-cell`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
   dbApplyOps: (
     projectId: number,
     ops: { frame_uuid: string; fields: Record<string, string | number | null> }[],

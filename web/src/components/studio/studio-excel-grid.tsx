@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
 /** Нормальная сетка Excel: буквы колонок, номера строк, оба скроллбара. */
@@ -11,6 +12,8 @@ export function StudioExcelGrid({
   /** Как в Excel: ячейки в одну строку, без переноса текста. */
   nowrap = false,
   onCellClick,
+  editable = false,
+  onCellCommit,
 }: {
   rows: string[][];
   startRow?: number;
@@ -18,6 +21,12 @@ export function StudioExcelGrid({
   className?: string;
   nowrap?: boolean;
   onCellClick?: (rowIndex: number, colIndex: number) => void;
+  editable?: boolean;
+  onCellCommit?: (
+    rowIndex: number,
+    colIndex: number,
+    value: string,
+  ) => void | Promise<void>;
 }) {
   const width = Math.max(0, ...rows.map((r) => r.length), colLetters?.length ?? 0);
   const letters =
@@ -33,6 +42,56 @@ export function StudioExcelGrid({
           }
           return s;
         });
+
+  const [edit, setEdit] = useState<{ ri: number; ci: number } | null>(null);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    const el = inputRef.current ?? textAreaRef.current;
+    if (edit && el) {
+      el.focus();
+      el.select();
+    }
+  }, [edit]);
+
+  const beginEdit = (ri: number, ci: number) => {
+    if (!editable || saving) return;
+    setEdit({ ri, ci });
+    setDraft(rows[ri]?.[ci] ?? "");
+    onCellClick?.(ri, ci);
+  };
+
+  const cancelEdit = () => {
+    setEdit(null);
+    setDraft("");
+  };
+
+  const commitEdit = async () => {
+    if (!edit || !onCellCommit) {
+      cancelEdit();
+      return;
+    }
+    const { ri, ci } = edit;
+    const prev = rows[ri]?.[ci] ?? "";
+    const next = draft;
+    if (next === prev) {
+      cancelEdit();
+      return;
+    }
+    setSaving(true);
+    try {
+      await onCellCommit(ri, ci, next);
+      setEdit(null);
+      setDraft("");
+    } catch {
+      // parent shows toast; keep editor open
+    } finally {
+      setSaving(false);
+    }
+  };
 
   if (!rows.length) {
     return (
@@ -51,6 +110,7 @@ export function StudioExcelGrid({
         "[&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-white/25",
         "[&::-webkit-scrollbar-thumb:hover]:bg-white/40",
         "[&::-webkit-scrollbar-track]:bg-transparent",
+        saving && "opacity-80",
         className,
       )}
     >
@@ -79,11 +139,18 @@ export function StudioExcelGrid({
               {Array.from({ length: width }, (_, ci) => {
                 const cell = row[ci] ?? "";
                 const isFirst = ci === 0;
+                const isEditing = edit?.ri === ri && edit?.ci === ci;
                 return (
                   <td
                     key={ci}
-                    title={cell || undefined}
-                    onClick={onCellClick ? () => onCellClick(ri, ci) : undefined}
+                    title={isEditing ? undefined : cell || undefined}
+                    onClick={
+                      editable
+                        ? () => beginEdit(ri, ci)
+                        : onCellClick
+                          ? () => onCellClick(ri, ci)
+                          : undefined
+                    }
                     className={cn(
                       "border-r border-white/5 px-2 py-1.5 align-top text-foreground/90",
                       nowrap
@@ -91,10 +158,52 @@ export function StudioExcelGrid({
                         : "whitespace-pre-wrap",
                       !nowrap && (isFirst ? "min-w-[160px] max-w-[640px]" : "min-w-[72px] max-w-[320px]"),
                       nowrap && (isFirst ? "min-w-[160px]" : "min-w-[120px]"),
-                      onCellClick && "cursor-pointer",
+                      (editable || onCellClick) && "cursor-pointer",
+                      isEditing && "p-0",
                     )}
                   >
-                    {cell || "\u00a0"}
+                    {isEditing ? (
+                      nowrap ? (
+                        <input
+                          ref={inputRef}
+                          value={draft}
+                          disabled={saving}
+                          onChange={(e) => setDraft(e.target.value)}
+                          onBlur={() => void commitEdit()}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              void commitEdit();
+                            } else if (e.key === "Escape") {
+                              e.preventDefault();
+                              cancelEdit();
+                            }
+                          }}
+                          className="box-border w-full min-w-[120px] border-0 bg-primary/15 px-2 py-1.5 text-xs text-foreground outline-none ring-1 ring-primary"
+                        />
+                      ) : (
+                        <textarea
+                          ref={textAreaRef}
+                          value={draft}
+                          disabled={saving}
+                          rows={3}
+                          onChange={(e) => setDraft(e.target.value)}
+                          onBlur={() => void commitEdit()}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey) {
+                              e.preventDefault();
+                              void commitEdit();
+                            } else if (e.key === "Escape") {
+                              e.preventDefault();
+                              cancelEdit();
+                            }
+                          }}
+                          className="box-border w-full min-w-[160px] resize-y border-0 bg-primary/15 px-2 py-1.5 text-xs text-foreground outline-none ring-1 ring-primary"
+                        />
+                      )
+                    ) : (
+                      cell || "\u00a0"
+                    )}
                   </td>
                 );
               })}
