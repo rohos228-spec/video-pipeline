@@ -95,6 +95,63 @@ def test_incoming_edge_pulls_scene_images(tmp_path: Path, monkeypatch) -> None:
     assert all(f["origin"] in ("edge", "snapshot") for f in res["files"] if f["ok"])
 
 
+def test_project_file_injects_xlsx_after_check_edge(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """После check на OK часто только отчёт — project_file должен получить xlsx."""
+    p = _project(tmp_path, monkeypatch)
+    check = "n_check"
+    next_gpt = "n_excel_gpt_2"
+    (p.data_dir / "project.xlsx").write_bytes(b"PK" + b"0" * 200)
+    up = p.data_dir / "excel_gpt_uploads" / check
+    up.mkdir(parents=True)
+    report = up / "check_report.txt"
+    report.write_text("# ОТЧЁТ\nverdict: pass\n", encoding="utf-8")
+    reply = up / "gpt_reply.txt"
+    reply.write_text("ok", encoding="utf-8")
+    p.meta = {
+        "canvas_graph": {
+            "nodes": [
+                {"id": check, "type": "excel_gpt", "position": {"x": 0, "y": 0}},
+                {"id": next_gpt, "type": "excel_gpt", "position": {"x": 200, "y": 0}},
+            ],
+            "edges": [
+                {
+                    "id": "e_ok",
+                    "source": check,
+                    "target": next_gpt,
+                    "data": {"kind": "ok"},
+                }
+            ],
+        },
+        "excel_gpt_nodes": {
+            check: {
+                "role": "review",
+                "checkMode": True,
+                "emitKinds": ["reply_txt"],
+                "transport": "api",
+            },
+            next_gpt: {
+                "role": "assist",
+                "outputMode": "project_file",
+                "transport": "api",
+                "takeFromEdges": True,
+            },
+        },
+        "gpt_operator_results": {
+            check: {
+                "gateStatus": "pass",
+                "outputPaths": [str(report), str(reply)],
+                "inputPaths": [],
+            }
+        },
+    }
+    res = resolve_operator(p, next_gpt)
+    names = {str(f.get("name") or "") for f in res["files"] if f.get("ok")}
+    assert "project.xlsx" in names
+    assert any("подставлен project.xlsx" in w for w in res["warnings"])
+
+
 def test_take_from_edges_off_skips_incoming(tmp_path: Path, monkeypatch) -> None:
     p = _project(tmp_path, monkeypatch)
     scenes = p.data_dir / "scenes"

@@ -1128,6 +1128,24 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
         seen.add(key)
         unique_files.append(f)
 
+    check_mode = bool(cfg.get("checkMode"))
+    # project_file после check (OK): на стрелке часто только check_report /
+    # gpt_reply — модель не видит книгу и отвечает пустым apply-ops.
+    if output_mode == "project_file" and not check_mode:
+        has_xlsx = any(
+            str(f.get("name") or "").lower().endswith((".xlsx", ".xlsm", ".xls"))
+            and f.get("ok")
+            for f in unique_files
+        )
+        if not has_xlsx:
+            xlsx = project.data_dir / "project.xlsx"
+            if xlsx.is_file() and xlsx.stat().st_size > 0:
+                unique_files.append(_file_probe(xlsx, origin="project"))
+                warnings.append(
+                    "project_file: на входе не было xlsx (часто после check) — "
+                    "подставлен project.xlsx"
+                )
+
     ok_files = [f for f in unique_files if f.get("ok")]
     for f in unique_files:
         if not f.get("ok"):
@@ -1139,7 +1157,6 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
     if not take_from_edges and incoming:
         warnings.append("вход со стрелок выключен — файлы прошлых нод не берутся")
 
-    check_mode = bool(cfg.get("checkMode"))
     check_fix = bool(cfg.get("checkFix", True))
     check_prompt_source = str(cfg.get("checkPromptSource") or "upstream")
     if check_prompt_source not in VALID_CHECK_PROMPT_SOURCES:
