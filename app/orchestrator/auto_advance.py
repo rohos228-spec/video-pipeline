@@ -1244,6 +1244,35 @@ async def maybe_auto_advance(
         )
         return False
 
+    # check→regen→check: с images_ready/hero_ready сразу обратно на check,
+    # не ждём HITL и не идём в anim_pr.
+    if status in (ProjectStatus.images_ready, ProjectStatus.hero_ready):
+        try:
+            from app.services.vision_check_loop import (
+                maybe_return_to_check_after_vision_ready,
+                vision_check_loop_active,
+            )
+
+            if vision_check_loop_active(project):
+                check_nxt = await maybe_return_to_check_after_vision_ready(
+                    session, project
+                )
+                if check_nxt is not None:
+                    project.status = check_nxt
+                    await session.flush()
+                    logger.info(
+                        "auto_advance: #{} {} → vision_check_loop {}",
+                        project.id,
+                        status.value,
+                        check_nxt.value,
+                    )
+                    return True
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "auto_advance: #{} vision_check_loop early return failed",
+                project.id,
+            )
+
     # Центральный harness-гейт: проверка данных перед продвижением из ready.
     if not await _harness_gate(session, project, status):
         return False

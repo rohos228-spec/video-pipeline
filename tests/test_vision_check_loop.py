@@ -336,6 +336,38 @@ def test_scene_regen_allows() -> None:
     assert vcl.scene_regen_allows(p, 1, 1) is False
 
 
+def test_recheck_filters_only_regen_targets(tmp_path: Path) -> None:
+    p = Project(
+        slug="x",
+        topic="t",
+        status=ProjectStatus.enrich_1_ready,
+        meta={
+            "vision_check_return_node": "n_check",
+            "vision_check_kind": "scenes",
+            "scene_check_regen": [{"number": 3, "shot": 1}, {"number": 7, "shot": 2}],
+        },
+    )
+    paths = [
+        tmp_path / "frame_001_aaa.png",
+        tmp_path / "frame_003_bbb.png",
+        tmp_path / "frame_007_s2_ccc.png",
+        tmp_path / "frame_009_ddd.png",
+    ]
+    for path in paths:
+        path.write_bytes(b"x")
+    got = vcl.filter_image_paths_for_recheck(p, paths)
+    names = {x.name for x in got}
+    assert names == {"frame_003_bbb.png", "frame_007_s2_ccc.png"}
+
+
+def test_first_check_keeps_all_images(tmp_path: Path) -> None:
+    p = Project(slug="x", topic="t", status=ProjectStatus.enrich_1_ready, meta={})
+    paths = [tmp_path / "frame_001_a.png", tmp_path / "frame_002_b.png"]
+    for path in paths:
+        path.write_bytes(b"x")
+    assert vcl.filter_image_paths_for_recheck(p, paths) == paths
+
+
 def test_hero_compat_extract_still_works() -> None:
     assert extract_hero_regen_ids("regen: c01, c3") == ["c01", "c03"]
 

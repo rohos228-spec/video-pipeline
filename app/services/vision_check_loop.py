@@ -121,6 +121,37 @@ def clear_vision_check_meta(project: Project) -> None:
         flag_modified(project, "meta")
 
 
+def _check_input_image_paths(project: Project, node_key: str) -> list[Path]:
+    """PNG, которые ушли на последнюю проверку (для mark passed)."""
+    from app.services.gpt_api import is_image_path
+
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    results = meta.get("gpt_operator_results")
+    paths: list[Path] = []
+    if isinstance(results, dict):
+        entry = results.get(node_key)
+        if isinstance(entry, dict):
+            for raw in entry.get("inputPaths") or []:
+                p = Path(str(raw))
+                if not p.is_file():
+                    p = project.data_dir / str(raw)
+                if p.is_file() and is_image_path(p):
+                    paths.append(p)
+    if paths:
+        return paths
+    # Fallback: scenes / characters на диске
+    kind = _infer_kind(project, node_key)
+    if kind == "hero":
+        root = project.data_dir / "characters"
+    else:
+        root = project.data_dir / "scenes"
+    if root.is_dir():
+        for p in sorted(root.iterdir()):
+            if p.is_file() and is_image_path(p):
+                paths.append(p)
+    return paths
+
+
 def _check_reply_text(project: Project, node_key: str) -> str:
     from app.services.excel_gpt_node import upload_dir
 
@@ -244,9 +275,20 @@ async def _delete_scene_pngs(
     targets: list[dict[str, Any]],
 ) -> int:
     """Удалить PNG плохих кадров (+ artifact), чтобы generate_images перегенерил."""
-    from app.services.plan_shot2 import find_shot1_image, find_shot2_image
+    from app.models import FrameStatus
+    from app.services.plan_shot2 import (
+        SHOT2_STATUS_ATTR,
+        find_shot1_image,
+        find_shot2_image,
+    )
 
     out_dir = Path(project.data_dir) / "scenes"
+    frames = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project.id)
+        )
+    ).scalars().all()
+    by_num = {fr.number: fr for fr in frames}
     removed = 0
     for t in targets:
         num = int(t["number"])
@@ -256,6 +298,14 @@ async def _delete_scene_pngs(
             if shot == 2
             else find_shot1_image(out_dir, num)
         )
+        fr = by_num.get(num)
+        if fr is not None:
+            if shot == 2:
+                attrs = dict(fr.attrs or {})
+                attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
+                fr.attrs = attrs
+            else:
+                fr.status = FrameStatus.image_prompt_ready
         if path is None or not path.is_file():
             continue
         try:
@@ -381,22 +431,21 @@ async def maybe_start_vision_check_loop_after_check(
 
     await _apply_db_patch(session, project, patch)
 
-    # mark previously-not-failed as passed? We only know fails; leave passed set
-    # as-is and extend when we see pass tokens in future. Optional: remove fails
-    # from passed.
-    passed = get_vision_passed(project)
-    if kind == "hero":
-        for cid in hero_ids:
-            passed.discard(_token_hero(cid))
-    else:
-        for t in frame_tgts:
-            passed.discard(_token_frame(int(t["number"]), int(t.get("shot") or 1)))
+    # Сначала проверили ВСЕ; на recheck уйдут только critical.
+    # Остальные PNG помечаем passed (не слать в GPT снова).
+    all_paths = _check_input_image_paths(project, key)
+    mark_passed_except_regen(
+        project,
+        kind=kind,
+        all_image_paths=all_paths,
+        regen_hero_ids=hero_ids if kind == "hero" else None,
+        regen_frames=frame_tgts if kind == "scenes" else None,
+    )
 
     meta = dict(project.meta or {})
     meta[META_RETURN] = key
     meta[META_KIND] = kind
     meta[META_ROUND] = round_n
-    meta[META_PASSED] = sorted(passed)
     if kind == "hero":
         meta[META_HERO_IDS] = hero_ids
         meta[META_HERO_ROUND] = round_n
@@ -521,38 +570,111 @@ async def maybe_return_to_check_after_vision_ready(
     return nxt
 
 
+def _parse_image_token(path: Path) -> str | None:
+    """c01.png → c01; frame_003_….png → f3; frame_003_s2_….png → f3s2."""
+    name = path.name
+    m = re.match(r"^(c\d{1,3})\.", name, re.IGNORECASE)
+    if m:
+        return m.group(1).lower()
+    fm = re.search(
+        r"frame[_-]?(\d{1,4})(?:[_-]s2[_-]|[_-]?(?:s2|shot2|02))?",
+        name,
+        re.IGNORECASE,
+    )
+    if not fm:
+        return None
+    num = int(fm.group(1))
+    shot = 2 if re.search(r"(?:_s2_|s2|shot2|_02)", name, re.IGNORECASE) else 1
+    return _token_frame(num, shot)
+
+
 def filter_image_paths_for_recheck(
     project: Project,
     paths: list[Path],
 ) -> list[Path]:
-    """На recheck можно не слать уже passed PNG (экономия vision-слотов)."""
+    """Первый проход — все PNG. Recheck — только переделанные (regen targets)."""
     if not vision_check_loop_active(project):
         return paths
+
+    kind = get_vision_kind(project)
+    # Явный список на переген: шлём ТОЛЬКО их (остальные уже приняты).
+    if kind == "scenes":
+        targets = get_scene_check_regen(project)
+        if targets:
+            want = {
+                _token_frame(int(t["number"]), int(t.get("shot") or 1))
+                for t in targets
+            }
+            out = [p for p in paths if _parse_image_token(p) in want]
+            if out:
+                logger.info(
+                    "[#{}] vision_check_loop: recheck только {} PNG (из {})",
+                    project.id,
+                    len(out),
+                    len(paths),
+                )
+                return out
+    if kind == "hero":
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        raw_ids = meta.get(META_HERO_IDS) or []
+        want = {
+            str(x).strip().lower()
+            for x in raw_ids
+            if str(x).strip()
+        }
+        if want:
+            out = [p for p in paths if (_parse_image_token(p) or "") in want]
+            if out:
+                logger.info(
+                    "[#{}] vision_check_loop: recheck только {} hero PNG",
+                    project.id,
+                    len(out),
+                )
+                return out
+
     passed = get_vision_passed(project)
     if not passed:
         return paths
-    out: list[Path] = []
+    out = []
     for p in paths:
-        name = p.name
-        m = re.match(r"^(c\d{1,3})\.", name, re.IGNORECASE)
-        if m:
-            tok = m.group(1).lower()
-            if tok in passed:
-                continue
-            out.append(p)
+        tok = _parse_image_token(p)
+        if tok and tok in passed:
             continue
-        fm = re.search(
-            r"frame[_-]?(\d{1,4})(?:[_-]?(?:s2|shot2|02))?",
-            name,
-            re.IGNORECASE,
-        )
-        if fm:
-            num = int(fm.group(1))
-            shot = 2 if re.search(r"(?:s2|shot2|_02)", name, re.IGNORECASE) else 1
-            if _token_frame(num, shot) in passed:
-                continue
         out.append(p)
     return out or paths
+
+
+def mark_passed_except_regen(
+    project: Project,
+    *,
+    kind: VisionKind,
+    all_image_paths: list[Path] | None,
+    regen_hero_ids: list[str] | None = None,
+    regen_frames: list[dict[str, Any]] | None = None,
+) -> None:
+    """После полного check: всё кроме critical-regen помечаем passed."""
+    passed = get_vision_passed(project)
+    regen_tokens: set[str] = set()
+    if kind == "hero":
+        for cid in regen_hero_ids or []:
+            regen_tokens.add(_token_hero(cid))
+    else:
+        for t in regen_frames or []:
+            regen_tokens.add(
+                _token_frame(int(t["number"]), int(t.get("shot") or 1))
+            )
+    for p in all_image_paths or []:
+        tok = _parse_image_token(p)
+        if not tok:
+            continue
+        if tok in regen_tokens:
+            passed.discard(tok)
+        else:
+            passed.add(tok)
+    meta = dict(project.meta or {})
+    meta[META_PASSED] = sorted(passed)
+    project.meta = meta
+    flag_modified(project, "meta")
 
 
 def scene_regen_allows(project: Project, frame_number: int, shot: int = 1) -> bool | None:

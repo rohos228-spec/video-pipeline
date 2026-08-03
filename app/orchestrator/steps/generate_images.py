@@ -934,6 +934,29 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     await session.flush()
     logger.info("[#{}] generate_images complete", project.id)
 
+    # Цикл check→regen→check: сразу обратно на check (без ожидания HITL/auto).
+    try:
+        from app.services.vision_check_loop import (
+            maybe_return_to_check_after_vision_ready,
+            vision_check_loop_active,
+        )
+
+        if vision_check_loop_active(project):
+            nxt = await maybe_return_to_check_after_vision_ready(session, project)
+            if nxt is not None:
+                project.status = nxt
+                await session.flush()
+                logger.info(
+                    "[#{}] generate_images: vision_check_loop → {}",
+                    project.id,
+                    nxt.value,
+                )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "[#{}] generate_images: return to vision check failed",
+            project.id,
+        )
+
 
 # ---------------------------------------------------------------------------
 
