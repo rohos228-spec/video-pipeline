@@ -110,7 +110,10 @@ path: <относительный путь от корня проекта или
 Система сама наложит TSV на копию книги. Остальные листы не трогай.
 """.strip().format(marker=CHECK_WRITEBACK_MARKER)
 
-_SECTION_RE = re.compile(r"(?m)^##\s+(summary|analysis|findings|related|logic|actions|forward)\s*$")
+_SECTION_RE = re.compile(
+    r"(?m)^##\s+(summary|analysis|findings|related|logic|actions|forward|"
+    r"scores|issues|regen_heroes|regen_frames|db_patch)\s*$"
+)
 _HEADER_VERDICT_RE = re.compile(r"(?im)^\s*verdict\s*:\s*(\S+)\s*$")
 _HEADER_MODE_RE = re.compile(r"(?im)^\s*mode\s*:\s*(\S+)\s*$")
 _HEADER_SOURCES_RE = re.compile(r"(?im)^\s*source_prompts\s*:\s*(.+?)\s*$")
@@ -134,64 +137,73 @@ regen: c01, c03
 
 # Порог pass для vision-check (оси 0..1). Regen только при critical.
 VISION_PASS_THRESHOLD = 0.7
-VISION_SCORE_AXES = ("character", "format", "text", "angles")
+VISION_SCORE_AXES = (
+    "style",
+    "character",
+    "format",
+    "pose",
+    "clones",
+    "text",
+    "angles",
+    "quality",
+    "hands",
+)
 
 # Единый хвост для vision-check (hero + scenes): scores + severity + regen.
 VISION_CHECK_REPORT_HINT = """
 ## vision_check (обязательно при проверке PNG)
 Сверяй каждое изображение с блоком «## База (source of truth)» во входе.
 Не выдумывай поля — только БД + видимое на картинке.
+Имена файлов: c01.png / frame_003_….png — только так ссылайся.
 
-Критерии (ставь score 0.0–1.0 по каждой оси, потом overall = среднее):
+Оси score 0.0–1.0 (overall = взвешенное из агента, иначе среднее осей):
+- style — единый визуальный стиль; сильный уход стиля = низкий score / critical
 - character — identity vs База (лицо/тело/одежда)
-- format — sheet 16:9 / композиция кадра / белый фон для hero
-- text — читаемый текст НЕ на предмете мира = низкий score;
-  текст на вывеске/книге/этикетке в мире кадра — ок
-- angles — персонаж с разных сторон (hero turnaround: front/3/4/side/back;
-  одинаковый ракурс везде = низкий score)
+- format — формат sheet/кадра (16:9 turnaround, белый фон hero и т.п.)
+- pose — позиции/раскладка по формату; для не-человека/существа —
+  допустимы иные позы, если промт/База это подразумевают
+- clones — если в Базе несколько персонажей/клонов: различия (одежда,
+  возраст, детали) должны быть читаемы на картинке и согласованы с промтом
+- text — текст только в мире героя/сцены (вывеска, книга, этикетка);
+  текст «в воздухе», подписи панелей, watermark вне контекста — брак
+- angles — разные стороны (hero turnaround; клоны одного ракурса — плохо)
+- quality — общий брак (лицо, глаза, артефакты, склейки)
+- hands — руки/пальцы/конечности; грубый брак рук = critical
 
-SEVERITY (важно — от этого зависит переген):
-- critical — нельзя принимать: чужой персонаж, нет turnaround, крупный текст
-  на sheet/в воздухе, грубый брак лица/рук. Только critical → regen.
-- warning — заметно, но можно принять (шум, мелкий артефакт). НЕ regen.
-- minor — косметика. НЕ regen.
+SEVERITY:
+- critical → regen (только это)
+- warning / minor → НЕ regen
+pass = overall >= 0.70 И нет critical.
 
-СИСТЕМНЫЙ ВЕРДИКТ (пиши scores честно; система сама посчитает pass/fail):
-pass = overall >= 0.70 И нет ни одного critical.
-fail = overall < 0.70 ИЛИ есть critical.
-Не ставь fail из‑за одних warning/minor.
-
-Шаблон ответа (дополнительно к обычному отчёту):
+После обычных секций отчёта обязательно:
 
 ## scores
-character: 0.85
+style: 0.85
+character: 0.90
 format: 0.90
-text: 0.80
-angles: 0.75
-overall: 0.82
+pose: 0.85
+clones: 0.80
+text: 0.90
+angles: 0.80
+quality: 0.85
+hands: 0.80
+overall: 0.85
 
 ## issues
-- [critical] c01: нет вида со спины на turnaround
-- [warning] c02: лёгкий шум на фоне
-- [minor] frame_003_xxx.png: чуть плотный кроп
+- [critical] c01: …
+- [warning] frame_003_xxx.png: …
 
 ## regen_heroes
 regen: c01
-(ТОЛЬКО id с critical; warning/minor сюда НЕ писать)
 
 ## regen_frames
 frames: 3, 7s2
-(ТОЛЬКО кадры с critical)
 
 ## db_patch
 ```json
-{
-  "characters": [{"id":"c02","внешность":"...","одежда":"..."}],
-  "ops": [{"frame_uuid":"<uuid>","fields":{"промт_картинки":"..."}}]
-}
+{"characters":[{"id":"c02","внешность":"..."}],"ops":[{"frame_uuid":"<uuid>","fields":{"промт_картинки":"..."}}]}
 ```
-db_patch — только если critical требует правки описания/промта.
-Если critical нет — секции regen_* / db_patch не пиши (даже при warning).
+Без critical — regen_* / db_patch не пиши. Без воды вне секций.
 """.strip()
 
 _FRAMES_LINE_RE = re.compile(r"(?im)^\s*frames\s*:\s*(.+?)\s*$")
@@ -438,7 +450,8 @@ def extract_db_patch(text: str) -> dict[str, Any] | None:
 
 
 _SCORE_LINE_RE = re.compile(
-    r"(?im)^\s*(character|format|text|angles|overall)\s*[:=]\s*"
+    r"(?im)^\s*(style|character|format|pose|clones|text|angles|quality|"
+    r"hands|overall)\s*[:=]\s*"
     r"(0(?:\.\d+)?|1(?:\.0+)?|\.\d+)\s*$"
 )
 _ISSUE_LINE_RE = re.compile(

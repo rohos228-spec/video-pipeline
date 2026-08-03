@@ -98,10 +98,15 @@ verdict: fail
 мелочи
 
 ## scores
+style: 0.85
 character: 0.85
 format: 0.90
+pose: 0.85
+clones: 1.0
 text: 0.80
 angles: 0.75
+quality: 0.85
+hands: 0.80
 overall: 0.82
 
 ## issues
@@ -122,10 +127,15 @@ verdict: pass
 брак
 
 ## scores
+style: 0.90
 character: 0.90
 format: 0.90
+pose: 0.90
+clones: 0.90
 text: 0.90
 angles: 0.90
+quality: 0.90
+hands: 0.90
 overall: 0.90
 
 ## issues
@@ -145,10 +155,15 @@ def test_vision_gate_fail_low_overall_no_regen() -> None:
 verdict: fail
 
 ## scores
+style: 0.50
 character: 0.50
 format: 0.60
+pose: 0.55
+clones: 1.0
 text: 0.55
 angles: 0.50
+quality: 0.50
+hands: 0.50
 overall: 0.54
 
 ## issues
@@ -158,6 +173,17 @@ frames: 3
 """
     assert resolve_vision_check_gate(text) == "fail"
     assert extract_critical_frame_regen_targets(text) == []
+
+
+def test_extract_extended_score_axes() -> None:
+    from app.services.check_analysis import extract_vision_scores
+
+    scores = extract_vision_scores(
+        "## scores\nstyle: 0.7\nhands: 0.4\noverall: 0.6\n"
+    )
+    assert scores["style"] == 0.7
+    assert scores["hands"] == 0.4
+    assert scores["overall"] == 0.6
 
 
 def _project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slug: str) -> Project:
