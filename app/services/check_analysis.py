@@ -395,10 +395,10 @@ def extract_prose_reject_frame_targets(text: str) -> list[dict[str, Any]]:
         found.append({"number": key[0], "shot": key[1]})
 
     patterns = (
-        r"(?i)не\s+утвержд[^\n]{0,120}"
+        r"(?i)не\s+(?:утвержд|принят)[^\n]{0,120}"
         r"(frame[_-]?\d{1,4}[^\s`\"']*\.(?:png|jpe?g|webp|gif))",
         r"(?i)(frame[_-]?\d{1,4}[^\s`\"']*\.(?:png|jpe?g|webp|gif))"
-        r"[^\n]{0,80}не\s+утвержд",
+        r"[^\n]{0,80}не\s+(?:утвержд|принят)",
         r"(?i)на\s+перегенерац\w*[^\n]{0,160}"
         r"(frame[_-]?\d{1,4}[^\s`\"']*\.(?:png|jpe?g|webp|gif))",
         r"(?i)переген\w*[^\n]{0,40}только[^\n]{0,80}"

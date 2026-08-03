@@ -436,6 +436,44 @@ frame_010_2c9cefe1.png утверждён.
     assert resolve_vision_check_gate(batch2) == "pass"
 
 
+def test_clone_fix_prepended_and_hard() -> None:
+    from types import SimpleNamespace
+
+    from app.services.vision_regen_fix import (
+        merge_prompt_with_fix,
+        plan_vision_prompt_fixes,
+    )
+
+    fr = SimpleNamespace(
+        number=9,
+        uuid="uuid-9",
+        image_prompt="c02 in archive hall, many shelves",
+        attrs={"персонажи": "c02"},
+    )
+    reply = """
+## summary
+frame_009_e28b8eab.png не принят из-за пяти лишних двойников c02
+## actions
+на перегенерацию направлен только frame_009_e28b8eab.png
+"""
+    ops = plan_vision_prompt_fixes(
+        reply,
+        frames_by_num={9: fr},  # type: ignore[arg-type]
+        char_rows=[{"id": "c02", "name": "архивариус", "look": "усы", "clothes": "халат"}],
+        frame_targets=[{"number": 9, "shot": 1}],
+        clone_hard=True,
+    )
+    assert len(ops) == 1
+    p = ops[0]["fields"]["промт_картинки"]
+    assert p.startswith("[VISION_FIX]")
+    assert "SINGLE HERO RULE" in p
+    assert "CLONE RETRY" in p
+    assert "c02 in archive hall" in p
+    assert merge_prompt_with_fix("base", "[VISION_FIX]\nx\n[/VISION_FIX]").startswith(
+        "[VISION_FIX]"
+    )
+
+
 def test_auto_vision_fix_missing_c02() -> None:
     from types import SimpleNamespace
 
@@ -469,22 +507,21 @@ def test_auto_vision_fix_missing_c02() -> None:
     )
     by_u = {o["frame_uuid"]: o["fields"]["промт_картинки"] for o in ops}
     assert "uuid-5" in by_u
-    assert "VISION_FIX" in by_u["uuid-5"]
+    assert by_u["uuid-5"].startswith("[VISION_FIX]")
     assert "c02" in by_u["uuid-5"]
-    assert "MUST show" in by_u["uuid-5"]
+    assert "MUST show" in by_u["uuid-5"] or "SINGLE HERO" in by_u["uuid-5"]
     assert "uuid-6" in by_u
-    assert "FORBIDDEN" in by_u["uuid-6"]
+    assert "NO CLONES" in by_u["uuid-6"] or "FORBIDDEN" in by_u["uuid-6"]
 
     merged = merge_db_patches(
         {"ops": [{"frame_uuid": "uuid-5", "fields": {"промт_картинки": "from-model"}}]},
         ops,
     )
     assert merged is not None
-    # модель для uuid-5 важнее
-    assert any(
-        o["frame_uuid"] == "uuid-5" and o["fields"]["промт_картинки"] == "from-model"
-        for o in merged["ops"]
-    )
+    # модель + VISION_FIX в начале
+    p5 = next(o["fields"]["промт_картинки"] for o in merged["ops"] if o["frame_uuid"] == "uuid-5")
+    assert p5.startswith("[VISION_FIX]")
+    assert "from-model" in p5
     assert any(o["frame_uuid"] == "uuid-6" for o in merged["ops"])
 
 
