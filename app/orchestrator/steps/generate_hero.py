@@ -1213,6 +1213,7 @@ async def _generate_one_excel_character(
                     prompt_id_prefix=prompt_id_prefix,
                     reference_image=(ref_paths or None) if used_refs else None,
                     timeout=600,
+                    project_id=project.id,
                 )
             except OutseeImageError as e:
                 is_moderation = isinstance(e, OutseeContentRejectedError)

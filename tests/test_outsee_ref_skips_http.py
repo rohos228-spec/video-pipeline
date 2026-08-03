@@ -83,3 +83,17 @@ async def test_try_http_image_skips_when_refs(monkeypatch: pytest.MonkeyPatch) -
     )
     assert res is None
     assert called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_outsee_http_generate_image_rejects_refs(tmp_path: Path) -> None:
+    from app.bots.outsee_http import OutseeHttpError, generate_image
+
+    ref = tmp_path / "c01.png"
+    ref.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 40)
+    with pytest.raises(OutseeHttpError, match="CDP file-attach"):
+        await generate_image(
+            "x",
+            tmp_path / "out.png",
+            reference_images=[ref],
+        )

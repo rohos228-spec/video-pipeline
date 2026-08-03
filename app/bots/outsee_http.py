@@ -578,21 +578,26 @@ async def generate_image(
         }
         body["detail_level"] = mapping.get(dl, dl)
     refs = _normalize_refs(reference_images)
+    # Не слать character-ref через HTTP: API пишет refs=1, в UI Outsee
+    # файл не появляется, gpt-image-2 identity не держит. Caller обязан
+    # идти в CDP attach (см. outsee_retry / OutseeBot._try_http_image).
     if refs:
-        hosted: list[str] = []
-        for u in refs:
-            pub = await ensure_public_image_url(u)
-            if pub:
-                hosted.append(pub)
-        if hosted:
-            body["reference_images"] = hosted
+        raise OutseeHttpError(
+            "outsee_api.image: reference_images запрещены на HTTP — "
+            "нужен CDP file-attach (иначе реф «не видно» в браузере)",
+            context={
+                "refs": len(refs),
+                "model": model,
+                "project_id": project_id,
+            },
+        )
 
     logger.info(
         "outsee_api.image model={} aspect={} res={} refs={} project={}",
         model,
         body.get("aspect_ratio"),
         body.get("resolution"),
-        len(body.get("reference_images") or []),
+        0,
         project_id,
     )
     submitted = await _post_generate("/api/v1/images/generate", body)
