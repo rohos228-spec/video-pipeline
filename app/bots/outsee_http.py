@@ -554,7 +554,11 @@ async def generate_image(
     project_id: int | None = None,
     **_kwargs: Any,
 ) -> GenerationResult:
-    """Картинка через POST /api/v1/images/generate."""
+    """Картинка через POST /api/v1/images/generate.
+
+    Рефы → публичные URL в поле ``image_urls`` (не ``reference_images``:
+    каталог models врёт max_reference_images, generate это поле игнорит).
+    """
     if prompt_id_prefix:
         prompt = prepend_gen_id(prompt, prompt_id_prefix)
     model = studio_id_to_outsee_image_slug(model_slug)
@@ -586,13 +590,16 @@ async def generate_image(
                 hosted.append(pub)
         if not hosted:
             raise OutseeApiError(
-                "outsee_api.image: reference_images не удалось залить "
+                "outsee_api.image: рефы не удалось залить "
                 "(uguu/litterbox/catbox) — генерация без рефа запрещена",
                 context={"raw_refs": len(refs), "model": model, "project_id": project_id},
             )
-        body["reference_images"] = hosted
+        # Живой probe 2026-08-03: field `reference_images` Outsee МОЛЧА
+        # игнорит (результат без identity). Рабочее поле — `image_urls`
+        # (как video: `image_url`, не first_frame_url).
+        body["image_urls"] = hosted
         logger.info(
-            "outsee_api.image refs ready model={} n={} urls={}",
+            "outsee_api.image refs ready model={} n={} image_urls={}",
             model,
             len(hosted),
             [u[:80] for u in hosted],
@@ -603,7 +610,7 @@ async def generate_image(
         model,
         body.get("aspect_ratio"),
         body.get("resolution"),
-        len(body.get("reference_images") or []),
+        len(body.get("image_urls") or []),
         project_id,
     )
     submitted = await _post_generate("/api/v1/images/generate", body)

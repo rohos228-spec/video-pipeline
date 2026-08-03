@@ -668,7 +668,7 @@ async def generate_image_with_retries(
                     )
                     if ref_list:
                         logger.info(
-                            "outsee_retry: {} ref(s) → Outsee HTTP API reference_images",
+                            "outsee_retry: {} ref(s) → Outsee HTTP API image_urls",
                             len(ref_list),
                         )
                     result = await outsee_api_generate_image(

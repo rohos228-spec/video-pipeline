@@ -1,4 +1,4 @@
-"""С реф-картинкой outsee_retry шлёт reference_images в Outsee HTTP API."""
+"""С реф-картинкой outsee_retry шлёт рефы в Outsee HTTP API как image_urls."""
 
 from __future__ import annotations
 
@@ -93,4 +93,5 @@ async def test_outsee_http_generate_image_hosts_and_sends_refs(
     )
     assert result.file_path == out
     assert posted[0]["path"] == "/api/v1/images/generate"
-    assert posted[0]["body"]["reference_images"] == ["https://example.test/ref.png"]
+    assert "reference_images" not in posted[0]["body"]
+    assert posted[0]["body"]["image_urls"] == ["https://example.test/ref.png"]
