@@ -207,6 +207,11 @@ frames: 3, 7s2
 ```
 Без critical — regen_* / db_patch не пиши. Без воды вне секций.
 
+ЦИКЛ УТВЕРЖДЕНИЯ:
+- [ok] = утверждено (больше не регенерить / не перепроверять).
+- [critical]/не ок = переген + перепроверка только этих файлов.
+- Повторять, пока ВСЕ изображения не будут утверждены (полный pass).
+
 VISION OVERRIDE (важнее checkFix / XLSX_WRITEBACK):
 - mode: report_only всегда. forward: file: original.
 - НЕ пиши --- XLSX_WRITEBACK --- и НЕ требуй TSV листа «Общий план».
@@ -553,6 +558,64 @@ def extract_vision_issues(text: str) -> list[dict[str, Any]]:
 
 def has_critical_vision_issues(text: str) -> bool:
     return any(i.get("severity") == "critical" for i in extract_vision_issues(text))
+
+
+_OK_LINE_RE = re.compile(
+    r"(?im)^\s*[-*]\s*\[ok\]\s*(.+?)\s*$"
+)
+
+
+def extract_ok_vision_tokens(text: str) -> list[str]:
+    """Токены принятых PNG: ``f3`` / ``f7s2`` / ``c01`` из строк ``[ok]``."""
+    raw = text or ""
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(tok: str | None) -> None:
+        if tok and tok not in seen:
+            seen.add(tok)
+            out.append(tok)
+
+    def _frame_tok(name: str) -> str | None:
+        fm = re.search(
+            r"frame[_-]?(\d{1,4})(?:[_-]s2[_-]|[_-]?(?:s2|shot2|02))?",
+            name,
+            re.IGNORECASE,
+        )
+        if not fm:
+            return None
+        num = int(fm.group(1))
+        shot = 2 if re.search(r"(?:_s2_|s2|shot2|_02)", name, re.IGNORECASE) else 1
+        return f"f{num}s2" if shot == 2 else f"f{num}"
+
+    for m in _OK_LINE_RE.finditer(raw):
+        body = (m.group(1) or "").strip()
+        if not body:
+            continue
+        if not re.search(r"(?i)\bframe[_-]?\d+|c\d{1,3}\b", body):
+            continue
+        for fm in re.finditer(
+            r"\b(c\d{1,3}|frame[_-]?\d{1,4}[^\s`\"']*)\.(?:png|jpe?g|webp|gif)\b",
+            body,
+            re.IGNORECASE,
+        ):
+            name = fm.group(0)
+            hm = re.match(r"^(c\d{1,3})\.", name, re.IGNORECASE)
+            if hm:
+                _add(hm.group(1).lower())
+            else:
+                _add(_frame_tok(name))
+        if re.search(r"\.(?:png|jpe?g|webp|gif)\b", body, re.IGNORECASE):
+            continue
+        for hm in re.finditer(r"\bc(\d{1,3})\b", body, re.IGNORECASE):
+            _add(f"c{int(hm.group(1)):02d}")
+        for fm in re.finditer(
+            r"\bframe[_-]?(\d{1,4})(?:[_-]?(?:s2|shot2))?\b",
+            body,
+            re.IGNORECASE,
+        ):
+            _add(_frame_tok(fm.group(0) + ".png"))
+    return out
 
 
 def looks_like_scored_vision_report(text: str) -> bool:

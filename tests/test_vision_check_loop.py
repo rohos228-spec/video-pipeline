@@ -395,6 +395,38 @@ def test_scene_regen_allows() -> None:
     assert vcl.scene_regen_allows(p, 1, 1) is False
 
 
+def test_extract_ok_vision_tokens() -> None:
+    from app.services.check_analysis import extract_ok_vision_tokens
+
+    text = """
+## findings
+- [ok] `frame_001_ec15f244.png`: один персонаж
+- [critical] frame_005_x.png: нет c02
+- [ok] c01.png: принято
+- [ok] замечаний нет
+"""
+    toks = extract_ok_vision_tokens(text)
+    assert "f1" in toks
+    assert "c01" in toks
+    assert "f5" not in toks
+
+
+def test_mark_ok_keeps_passed_across_rounds() -> None:
+    p = Project(
+        slug="x",
+        topic="t",
+        status=ProjectStatus.enrich_1_ready,
+        meta={"vision_check_passed": ["f2"]},
+    )
+    vcl.mark_ok_tokens_from_reply(
+        p,
+        "## findings\n- [ok] frame_001_aaa.png: ок\n- [critical] frame_003_b.png: брак\n",
+    )
+    assert "f1" in vcl.get_vision_passed(p)
+    assert "f2" in vcl.get_vision_passed(p)
+    assert "f3" not in vcl.get_vision_passed(p)
+
+
 def test_recheck_filters_only_regen_targets(tmp_path: Path) -> None:
     p = Project(
         slug="x",

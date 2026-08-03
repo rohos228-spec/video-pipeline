@@ -35,7 +35,8 @@ META_HERO_IDS = "hero_check_regen_ids"
 META_HERO_ROUND = "hero_check_round"
 META_HERO_RETURN = "hero_check_return_node"
 
-MAX_VISION_CHECK_ROUNDS = 3
+# Крутим ok/не-ok → regen → recheck, пока все не pass (не сдаёмся на 3-м круге).
+MAX_VISION_CHECK_ROUNDS = 20
 
 VisionKind = Literal["hero", "scenes"]
 
@@ -371,11 +372,15 @@ async def maybe_start_vision_check_loop_after_check(
     gate = (_gate_status(project, key) or "").strip().lower()
     if resolved in ("pass", "fail"):
         gate = resolved
+
+    # [ok] из отчёта сразу в passed — больше не проверяем/не регенерим.
+    mark_ok_tokens_from_reply(project, reply)
+
     if gate == "pass":
         if vision_check_loop_active(project):
             clear_vision_check_meta(project)
             logger.info(
-                "[#{}] vision_check_loop: pass на {} — цикл сброшен",
+                "[#{}] vision_check_loop: pass на {} — всё утверждено, цикл сброшен",
                 project.id,
                 key,
             )
@@ -383,24 +388,35 @@ async def maybe_start_vision_check_loop_after_check(
     if gate != "fail":
         return False
 
-    # Scores/severity: auto-regen только при critical. Warning/minor или
-    # overall < threshold без critical → fail-edge, но без wipe/regen.
-    if looks_like_scored_vision_report(reply) and not has_critical_vision_issues(
-        reply
-    ):
-        logger.info(
-            "[#{}] vision_check_loop: fail на {} без critical "
-            "(scores/threshold) — без auto-regen",
-            project.id,
-            key,
-        )
-        return False
-
     hero_ids = extract_critical_hero_regen_ids(reply) if kind == "hero" else []
     frame_tgts = (
         extract_critical_frame_regen_targets(reply) if kind == "scenes" else []
     )
     patch = extract_db_patch(reply)
+
+    # Scores/severity: auto-regen при critical. Если цикл уже идёт, а critical
+    # нет (overall < порога) — повторяем те же pending, пока не утвердят.
+    scored_no_critical = looks_like_scored_vision_report(
+        reply
+    ) and not has_critical_vision_issues(reply)
+    if scored_no_critical:
+        if kind == "scenes" and not frame_tgts:
+            frame_tgts = list(get_scene_check_regen(project))
+        if kind == "hero" and not hero_ids:
+            meta0 = project.meta if isinstance(project.meta, dict) else {}
+            hero_ids = [
+                str(x).strip().lower()
+                for x in (meta0.get(META_HERO_IDS) or [])
+                if str(x).strip()
+            ]
+        if not frame_tgts and not hero_ids and not patch:
+            logger.info(
+                "[#{}] vision_check_loop: fail на {} без critical "
+                "(scores/threshold) — без auto-regen",
+                project.id,
+                key,
+            )
+            return False
 
     if kind == "hero" and not hero_ids and not patch:
         logger.info(
@@ -421,7 +437,8 @@ async def maybe_start_vision_check_loop_after_check(
     round_n = int(meta.get(META_ROUND) or meta.get(META_HERO_ROUND) or 0) + 1
     if round_n > MAX_VISION_CHECK_ROUNDS:
         logger.warning(
-            "[#{}] vision_check_loop: лимит {} раундов на {} — сдаёмся",
+            "[#{}] vision_check_loop: лимит {} раундов на {} — сдаёмся "
+            "(всё ещё не утверждено)",
             project.id,
             MAX_VISION_CHECK_ROUNDS,
             key,
@@ -431,8 +448,7 @@ async def maybe_start_vision_check_loop_after_check(
 
     await _apply_db_patch(session, project, patch)
 
-    # Сначала проверили ВСЕ; на recheck уйдут только critical.
-    # Остальные PNG помечаем passed (не слать в GPT снова).
+    # Ок остаются; не-ок (critical/pending) → regen → recheck только их.
     all_paths = _check_input_image_paths(project, key)
     mark_passed_except_regen(
         project,
@@ -533,14 +549,8 @@ async def maybe_return_to_check_after_vision_ready(
         clear_vision_check_meta(project)
         return None
 
-    # Ids/frames уже отработали — чистим очереди, return оставляем до pass.
-    meta2 = dict(project.meta or {})
-    if meta2.get(META_HERO_IDS):
-        meta2[META_HERO_IDS] = []
-    if meta2.get(META_SCENE):
-        meta2[META_SCENE] = []
-    project.meta = meta2
-    flag_modified(project, "meta")
+    # Не чистим scene_check_regen / hero_check_regen_ids: recheck фильтрует
+    # по ним (ок уже в vision_check_passed). Сброс только при полном pass.
 
     _clear_check_node_completion(project, return_key)
     nxt = running_status_for_slot(slot)
@@ -652,7 +662,7 @@ def mark_passed_except_regen(
     regen_hero_ids: list[str] | None = None,
     regen_frames: list[dict[str, Any]] | None = None,
 ) -> None:
-    """После полного check: всё кроме critical-regen помечаем passed."""
+    """После check: ок/не-critical → passed; не-ок (regen) снимаем с passed."""
     passed = get_vision_passed(project)
     regen_tokens: set[str] = set()
     if kind == "hero":
@@ -675,6 +685,30 @@ def mark_passed_except_regen(
     meta[META_PASSED] = sorted(passed)
     project.meta = meta
     flag_modified(project, "meta")
+
+
+def mark_ok_tokens_from_reply(project: Project, reply: str) -> None:
+    """Строки ``[ok] frame_… / c01`` → vision_check_passed."""
+    from app.services.check_analysis import extract_ok_vision_tokens
+
+    oks = extract_ok_vision_tokens(reply)
+    if not oks:
+        return
+    passed = get_vision_passed(project)
+    before = len(passed)
+    passed.update(oks)
+    if len(passed) == before:
+        return
+    meta = dict(project.meta or {})
+    meta[META_PASSED] = sorted(passed)
+    project.meta = meta
+    flag_modified(project, "meta")
+    logger.info(
+        "[#{}] vision_check_loop: +{} ok → passed (всего {})",
+        project.id,
+        len(passed) - before,
+        len(passed),
+    )
 
 
 def scene_regen_allows(project: Project, frame_number: int, shot: int = 1) -> bool | None:
