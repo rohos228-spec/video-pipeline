@@ -66,6 +66,8 @@ class Settings(BaseSettings):
     # Outsee API concurrency_limit=4 — не ставить выше 4.
     create_max_parallel_outsee: int = Field(4, alias="CREATE_MAX_PARALLEL_OUTSEE")
     create_max_parallel_grsai: int = Field(10, alias="CREATE_MAX_PARALLEL_GRSAI")
+    # Пайплайн img: параллельные кадры 0..4 (0=не генерить; дефолт для проектов).
+    img_max_streams: int = Field(1, alias="IMG_MAX_STREAMS")
 
     # Grsai API (https://grsai.com / https://grsaiapi.com) — image/video без CDP
     grsai_api_key: str = Field("", alias="GRSAI_API_KEY")

@@ -427,7 +427,11 @@ def export_project_xlsx(
     Пишет строки DB: R45/R46/R48/R64/R49, R50, R15, плюс R8 (персонажи кадра)
     и лист «Персонажи» из Entity. Перед записью — backup.
     """
-    from app.services.plan_shot2 import SHOT2_PROMPT_ATTR, SHOT2_VIDEO_PROMPT_ATTR
+    from app.services.plan_shot2 import (
+        SHOT2_PROMPT_ATTR,
+        SHOT2_STATUS_ATTR,
+        SHOT2_VIDEO_PROMPT_ATTR,
+    )
     from app.services.xlsx_versioning import backup_to_old
 
     ROW_PERSONS_PRIMARY = 8  # как в generate_images / baza
@@ -523,7 +527,11 @@ async def apply_ops(
     После записи по умолчанию экспортируем в project.xlsx.
     """
     from app.models import Entity
-    from app.services.plan_shot2 import SHOT2_PROMPT_ATTR, SHOT2_VIDEO_PROMPT_ATTR
+    from app.services.plan_shot2 import (
+        SHOT2_PROMPT_ATTR,
+        SHOT2_STATUS_ATTR,
+        SHOT2_VIDEO_PROMPT_ATTR,
+    )
 
     ops = list(ops or [])
     chars_n = 0
@@ -619,6 +627,15 @@ async def apply_ops(
                 text=fr.image_prompt or "",
                 set_active=True,
             )
+            # Чтобы шаг images подхватил кадр после excel_gpt/img_pr apply-ops.
+            from app.models import FrameStatus
+            from app.generation_options import is_skippable_empty_prompt
+
+            if not is_skippable_empty_prompt(fr.image_prompt or "") and fr.status not in (
+                FrameStatus.image_generated,
+                FrameStatus.image_approved,
+            ):
+                fr.status = FrameStatus.image_prompt_ready
         if "animation_prompt" in fields:
             fr.animation_prompt = (
                 None
@@ -636,6 +653,11 @@ async def apply_ops(
         attrs = dict(fr.attrs or {})
         if "image_prompt_shot2" in fields:
             attrs[SHOT2_PROMPT_ATTR] = str(fields["image_prompt_shot2"] or "")
+            from app.generation_options import is_skippable_empty_prompt
+
+            if not is_skippable_empty_prompt(attrs[SHOT2_PROMPT_ATTR]):
+                attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
+
         if "animation_prompt_shot2" in fields:
             attrs[SHOT2_VIDEO_PROMPT_ATTR] = str(fields["animation_prompt_shot2"] or "")
         if "characters" in fields:

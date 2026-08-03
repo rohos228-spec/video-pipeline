@@ -25,6 +25,7 @@ import asyncio
 import re
 import uuid
 from pathlib import Path
+from typing import Any
 
 from aiogram import Bot
 from loguru import logger
@@ -75,6 +76,11 @@ from app.services.scan_frames import (
     frame_needs_shot1_image,
     is_valid_scene_image,
     newest_frame_image_path,
+)
+from app.services.img_streams import (
+    INFLIGHT_ATTR,
+    acquire_image_slot,
+    get_img_streams,
 )
 from app.services.outsee_retry import generate_image_with_retries
 from app.services.step_cancel import (
@@ -718,140 +724,190 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 with_prompt,
             )
 
-    async with browser_session() as bs:
-        outsee = OutseeBot(bs)
-        # `gpt` нужен для GPT-rewrite внутри generate_image_with_retries —
-        # после 3 неудачных попыток в outsee он попросит ChatGPT переписать
-        # промт без триггеров модерации, потом ещё 3 попытки.
-        gpt = get_gpt_client()
-        phase = "shot1"
-        shot2_queued = 0
-        try:
-            while True:
-                raise_if_cancelled(project.id)
+    # Снять зависшие lease с прошлого обрыва.
+    for fr in frames:
+        attrs = dict(fr.attrs or {})
+        if attrs.pop(INFLIGHT_ATTR, None) is not None:
+            fr.attrs = attrs
+    await session.flush()
 
-                if phase == "shot1":
-                    await _apply_pending_regens(session, project.id)
-                    target = await _next_frame_to_process(
-                        session, project.id, out_dir, project=project
-                    )
-                    if target is not None:
-                        await _generate_and_send(
-                            session, bot, outsee, gpt, project, target, out_dir,
-                            shot=1,
+    streams = get_img_streams(project)
+    logger.info(
+        "[#{}] generate_images: img_streams={} (0=skip provider, 1=serial, 2..4=parallel)",
+        project.id,
+        streams,
+    )
+    if streams == 0:
+        missing_png = [
+            fr.number
+            for fr in frames
+            if not is_skippable_empty_prompt(fr.image_prompt or "")
+            and not disk_has_valid_frame_image(out_dir, fr.number)
+            and fr.status is not FrameStatus.failed
+        ]
+        if missing_png:
+            raise RuntimeError(
+                f"img_streams=0: провайдер отключён, но нет PNG у кадров "
+                f"{missing_png[:12]}{'…' if len(missing_png) > 12 else ''}. "
+                f"Поставь meta.img_streams 1..4 или сгенерируй картинки."
+            )
+        logger.info(
+            "[#{}] generate_images: img_streams=0 — все PNG на диске, outsee не нужен",
+            project.id,
+        )
+    else:
+        async with browser_session() as bs:
+            outsee = OutseeBot(bs)
+            # `gpt` нужен для GPT-rewrite внутри generate_image_with_retries —
+            # после 3 неудачных попыток в outsee он попросит ChatGPT переписать
+            # промт без триггеров модерации, потом ещё 3 попытки.
+            gpt = get_gpt_client()
+            phase = "shot1"
+            shot2_queued = 0
+            try:
+                while True:
+                    raise_if_cancelled(project.id)
+
+                    if phase == "shot1":
+                        await _apply_pending_regens(session, project.id)
+                        batch = await _claim_shot1_batch(
+                            session,
+                            project.id,
+                            out_dir,
+                            project=project,
+                            limit=streams,
                         )
-                        continue
-                    if await _all_frames_have_image_or_failed(
-                        session, project.id, out_dir, project=project
-                    ):
-                        from app.services.vision_check_loop import get_scene_check_regen
+                        if batch:
+                            logger.info(
+                                "[#{}] generate_images: shot1 batch n={} frames={}",
+                                project.id,
+                                len(batch),
+                                [f.number for f in batch],
+                            )
+                            await _run_claimed_batch(
+                                session=session,
+                                bot=bot,
+                                outsee=outsee,
+                                gpt=gpt,
+                                project=project,
+                                out_dir=out_dir,
+                                claimed=batch,
+                                shot=1,
+                                streams=streams,
+                            )
+                            continue
+                        if await _all_frames_have_image_or_failed(
+                            session, project.id, out_dir, project=project
+                        ):
+                            from app.services.vision_check_loop import get_scene_check_regen
 
-                        # Точечный vision-regen: только failed shots, без полной очереди shot2.
-                        regen_tgts = get_scene_check_regen(project)
-                        if regen_tgts:
-                            need_s2 = False
-                            by_num = {fr.number: fr for fr in frames}
-                            for t in regen_tgts:
-                                if int(t.get("shot") or 1) != 2:
+                            # Точечный vision-regen: только failed shots, без полной очереди shot2.
+                            regen_tgts = get_scene_check_regen(project)
+                            if regen_tgts:
+                                need_s2 = False
+                                by_num = {fr.number: fr for fr in frames}
+                                for t in regen_tgts:
+                                    if int(t.get("shot") or 1) != 2:
+                                        continue
+                                    num = int(t["number"])
+                                    if disk_has_shot2_image(out_dir, num):
+                                        continue
+                                    fr = by_num.get(num)
+                                    if fr is None:
+                                        continue
+                                    attrs = dict(fr.attrs or {})
+                                    if not (attrs.get(SHOT2_PROMPT_ATTR) or "").strip():
+                                        # shot2 без промта — скипаем
+                                        continue
+                                    attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
+                                    fr.attrs = attrs
+                                    need_s2 = True
+                                if need_s2:
+                                    await session.flush()
+                                    phase = "shot2"
                                     continue
-                                num = int(t["number"])
-                                if disk_has_shot2_image(out_dir, num):
-                                    continue
-                                fr = by_num.get(num)
-                                if fr is None:
-                                    continue
-                                attrs = dict(fr.attrs or {})
-                                if not (attrs.get(SHOT2_PROMPT_ATTR) or "").strip():
-                                    # shot2 без промта — скипаем
-                                    continue
-                                attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
-                                fr.attrs = attrs
-                                need_s2 = True
-                            if need_s2:
-                                await session.flush()
+                                logger.info(
+                                    "[#{}] generate_images: scene_check_regen done — завершаю",
+                                    project.id,
+                                )
+                                break
+                            xlsx_path = project.data_dir / "project.xlsx"
+                            shot2_queued = await _init_shot2_queue(
+                                session, project, frames, out_dir, xlsx_path
+                            )
+                            if shot2_queued:
+                                logger.info(
+                                    "[#{}] generate_images: фаза shot_02 — {} сцен",
+                                    project.id, shot2_queued,
+                                )
                                 phase = "shot2"
                                 continue
                             logger.info(
-                                "[#{}] generate_images: scene_check_regen done — завершаю",
+                                "[#{}] generate_images: shot_02 нет — завершаю",
                                 project.id,
                             )
                             break
-                        xlsx_path = project.data_dir / "project.xlsx"
-                        shot2_queued = await _init_shot2_queue(
-                            session, project, frames, out_dir, xlsx_path
+                        pending = await _pending_shot1_numbers(
+                            session, project.id, out_dir, project=project
                         )
-                        if shot2_queued:
-                            logger.info(
-                                "[#{}] generate_images: фаза shot_02 — {} сцен",
-                                project.id, shot2_queued,
+                        if pending:
+                            logger.warning(
+                                "[#{}] generate_images: нет image_prompt_ready, "
+                                "но {} кадров без PNG — жду: {}{}",
+                                project.id,
+                                len(pending),
+                                pending[:8],
+                                "…" if len(pending) > 8 else "",
                             )
-                            phase = "shot2"
-                            continue
-                        logger.info(
-                            "[#{}] generate_images: shot_02 нет — завершаю",
-                            project.id,
-                        )
-                        break
-                    pending = await _pending_shot1_numbers(
-                        session, project.id, out_dir, project=project
-                    )
-                    if pending:
-                        logger.warning(
-                            "[#{}] generate_images: нет image_prompt_ready, "
-                            "но {} кадров без PNG — жду: {}{}",
-                            project.id,
-                            len(pending),
-                            pending[:8],
-                            "…" if len(pending) > 8 else "",
-                        )
-                    await sleep_cancellable(3.0, project.id)
-                    continue
-
-                # phase == "shot2"
-                target2 = await _next_shot2_frame_to_process(
-                    session, project.id, project=project
-                )
-                if target2 is not None:
-                    ref1 = find_shot1_image(out_dir, target2.number)
-                    if ref1 is None:
-                        logger.error(
-                            "[#{}] frame {} shot_02: нет PNG shot_01 — skip",
-                            project.id, target2.number,
-                        )
-                        attrs = dict(target2.attrs or {})
-                        attrs[SHOT2_STATUS_ATTR] = "failed"
-                        target2.attrs = attrs
-                        await session.flush()
+                        await sleep_cancellable(3.0, project.id)
                         continue
-                    await _generate_and_send(
-                        session, bot, outsee, gpt, project, target2, out_dir,
-                        shot=2,
-                        shot1_reference=ref1,
+
+                    # phase == "shot2"
+                    batch2 = await _claim_shot2_batch(
+                        session, project.id, project=project, limit=streams
                     )
-                    continue
-                if await _all_shot2_done(session, project.id):
-                    break
-                await sleep_cancellable(3.0, project.id)
-        except StepCancelledError as e:
-            consume_stop(project.id)
-            # ⏹ Остановить — статус уже откачен обработчиком кнопки в
-            # другой сессии. Обновляем наш ORM-объект, чтобы worker'овый
-            # commit() не перезаписал откат старым running-статусом.
-            # НЕ ставим images_ready.
-            logger.info("[#{}] generate_images: {} — выхожу из цикла",
-                        project.id, e)
-            try:
-                await session.refresh(project)
-            except Exception:  # noqa: BLE001
-                logger.warning("[#{}] не смог refresh project после ⏹", project.id)
-            return
-        except asyncio.CancelledError:
-            logger.info("[#{}] generate_images: hard-cancel (⏹)", project.id)
-            try:
-                await session.refresh(project)
-            except Exception:  # noqa: BLE001
-                pass
-            raise
+                    if batch2:
+                        logger.info(
+                            "[#{}] generate_images: shot2 batch n={} frames={}",
+                            project.id,
+                            len(batch2),
+                            [f.number for f in batch2],
+                        )
+                        await _run_claimed_batch(
+                            session=session,
+                            bot=bot,
+                            outsee=outsee,
+                            gpt=gpt,
+                            project=project,
+                            out_dir=out_dir,
+                            claimed=batch2,
+                            shot=2,
+                            streams=streams,
+                        )
+                        continue
+                    if await _all_shot2_done(session, project.id):
+                        break
+                    await sleep_cancellable(3.0, project.id)
+            except StepCancelledError as e:
+                consume_stop(project.id)
+                # ⏹ Остановить — статус уже откачен обработчиком кнопки в
+                # другой сессии. Обновляем наш ORM-объект, чтобы worker'овый
+                # commit() не перезаписал откат старым running-статусом.
+                # НЕ ставим images_ready.
+                logger.info("[#{}] generate_images: {} — выхожу из цикла",
+                            project.id, e)
+                try:
+                    await session.refresh(project)
+                except Exception:  # noqa: BLE001
+                    logger.warning("[#{}] не смог refresh project после ⏹", project.id)
+                return
+            except asyncio.CancelledError:
+                logger.info("[#{}] generate_images: hard-cancel (⏹)", project.id)
+                try:
+                    await session.refresh(project)
+                except Exception:  # noqa: BLE001
+                    pass
+                raise
 
     raise_if_cancelled(project.id)
     await session.refresh(project)
@@ -917,8 +973,31 @@ async def _next_frame_to_process(
     project: Project | None = None,
 ) -> Frame | None:
     """Следующий кадр для outsee: промт есть, валидного PNG на диске нет."""
+    batch = await _claim_shot1_batch(
+        session, project_id, out_dir, project=project, limit=1
+    )
+    return batch[0] if batch else None
+
+
+def _clear_inflight(frame: Frame) -> None:
+    attrs = dict(frame.attrs or {})
+    if attrs.pop(INFLIGHT_ATTR, None) is not None:
+        frame.attrs = attrs
+
+
+async def _claim_shot1_batch(
+    session: AsyncSession,
+    project_id: int,
+    out_dir: Path,
+    *,
+    project: Project | None = None,
+    limit: int = 1,
+) -> list[Frame]:
+    """Забрать до ``limit`` кадров под генерацию (lease через attrs)."""
     from app.services.vision_check_loop import scene_regen_allows
 
+    if limit < 1:
+        return []
     frames = (
         await session.execute(
             select(Frame)
@@ -926,6 +1005,7 @@ async def _next_frame_to_process(
             .order_by(Frame.number)
         )
     ).scalars().all()
+    claimed: list[Frame] = []
     for fr in frames:
         if project is not None:
             allow = scene_regen_allows(project, fr.number, 1)
@@ -933,10 +1013,199 @@ async def _next_frame_to_process(
                 continue
         if not frame_needs_shot1_image(fr, out_dir):
             continue
+        attrs = dict(fr.attrs or {})
+        if attrs.get(INFLIGHT_ATTR):
+            continue
+        attrs[INFLIGHT_ATTR] = True
+        fr.attrs = attrs
         if fr.status is not FrameStatus.image_prompt_ready:
             fr.status = FrameStatus.image_prompt_ready
-        return fr
-    return None
+        claimed.append(fr)
+        if len(claimed) >= limit:
+            break
+    if claimed:
+        await session.flush()
+    return claimed
+
+
+async def _claim_shot2_batch(
+    session: AsyncSession,
+    project_id: int,
+    *,
+    project: Project | None = None,
+    limit: int = 1,
+) -> list[Frame]:
+    from app.services.vision_check_loop import scene_regen_allows
+
+    if limit < 1:
+        return []
+    frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project_id)
+            .order_by(Frame.number)
+        )
+    ).scalars().all()
+    claimed: list[Frame] = []
+    for fr in frames:
+        if project is not None:
+            allow = scene_regen_allows(project, fr.number, 2)
+            if allow is False:
+                continue
+        attrs = dict(fr.attrs or {})
+        if attrs.get(SHOT2_STATUS_ATTR) != "image_prompt_ready":
+            continue
+        if attrs.get(INFLIGHT_ATTR):
+            continue
+        if is_skippable_empty_prompt(attrs.get(SHOT2_PROMPT_ATTR) or ""):
+            continue
+        attrs[INFLIGHT_ATTR] = True
+        fr.attrs = attrs
+        claimed.append(fr)
+        if len(claimed) >= limit:
+            break
+    if claimed:
+        await session.flush()
+    return claimed
+
+
+async def _generate_frame_job(
+    *,
+    project_id: int,
+    frame_id: int,
+    out_dir: Path,
+    shot: int,
+    shot1_reference: Path | None,
+    bot: Bot,
+    outsee: OutseeBot,
+    gpt: Any,
+) -> None:
+    """Один кадр в отдельной DB-сессии + слот провайдера (для streams>1)."""
+    from app.db import SessionLocal
+
+    async with acquire_image_slot():
+        async with SessionLocal() as session:
+            project = await session.get(Project, project_id)
+            frame = await session.get(Frame, frame_id)
+            if project is None or frame is None:
+                return
+            try:
+                await _generate_and_send(
+                    session,
+                    bot,
+                    outsee,
+                    gpt,
+                    project,
+                    frame,
+                    out_dir,
+                    shot=shot,
+                    shot1_reference=shot1_reference,
+                )
+            finally:
+                # _generate_and_send уже commit'ит; освежим и снимем lease
+                try:
+                    await session.refresh(frame)
+                except Exception:  # noqa: BLE001
+                    pass
+                _clear_inflight(frame)
+                try:
+                    await session.commit()
+                except Exception:  # noqa: BLE001
+                    pass
+
+
+async def _run_claimed_batch(
+    *,
+    session: AsyncSession,
+    bot: Bot,
+    outsee: OutseeBot,
+    gpt: Any,
+    project: Project,
+    out_dir: Path,
+    claimed: list[Frame],
+    shot: int,
+    streams: int,
+) -> None:
+    """streams==1 — в текущей сессии; иначе gather + отдельные сессии."""
+    if not claimed:
+        return
+    if streams <= 1:
+        fr = claimed[0]
+        try:
+            ref = (
+                find_shot1_image(out_dir, fr.number) if shot == 2 else None
+            )
+            if shot == 2 and ref is None:
+                logger.error(
+                    "[#{}] frame {} shot_02: нет PNG shot_01 — skip",
+                    project.id,
+                    fr.number,
+                )
+                attrs = dict(fr.attrs or {})
+                attrs[SHOT2_STATUS_ATTR] = "failed"
+                _clear_inflight(fr)
+                fr.attrs = attrs
+                await session.flush()
+                return
+            async with acquire_image_slot():
+                await _generate_and_send(
+                    session,
+                    bot,
+                    outsee,
+                    gpt,
+                    project,
+                    fr,
+                    out_dir,
+                    shot=shot,
+                    shot1_reference=ref,
+                )
+        finally:
+            try:
+                await session.refresh(fr)
+            except Exception:  # noqa: BLE001
+                pass
+            _clear_inflight(fr)
+            await session.flush()
+        return
+
+    await session.commit()
+    jobs = []
+    for fr in claimed:
+        ref = find_shot1_image(out_dir, fr.number) if shot == 2 else None
+        if shot == 2 and ref is None:
+            from app.db import SessionLocal
+
+            async with SessionLocal() as s:
+                f2 = await s.get(Frame, fr.id)
+                if f2 is not None:
+                    attrs = dict(f2.attrs or {})
+                    attrs[SHOT2_STATUS_ATTR] = "failed"
+                    attrs.pop(INFLIGHT_ATTR, None)
+                    f2.attrs = attrs
+                    await s.commit()
+            continue
+        jobs.append(
+            _generate_frame_job(
+                project_id=project.id,
+                frame_id=fr.id,
+                out_dir=out_dir,
+                shot=shot,
+                shot1_reference=ref,
+                bot=bot,
+                outsee=outsee,
+                gpt=gpt,
+            )
+        )
+    if jobs:
+        results = await asyncio.gather(*jobs, return_exceptions=True)
+        for r in results:
+            if isinstance(r, StepCancelledError):
+                raise r
+            if isinstance(r, Exception):
+                logger.exception(
+                    "[#{}] img stream worker failed: {}", project.id, r
+                )
+    await session.refresh(project)
 
 
 async def _all_frames_have_image_or_failed(
