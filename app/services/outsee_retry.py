@@ -656,17 +656,6 @@ async def generate_image_with_retries(
                         ref_list = [refs]
                     elif isinstance(refs, list):
                         ref_list = [p for p in refs if p is not None]
-                    # С рефами — только CDP: HTTP API пишет refs=1, но модель
-                    # часто игнорирует identity (c02 ≠ c01). Browser attach
-                    # реально прикладывает файл на странице Outsee.
-                    if ref_list:
-                        logger.info(
-                            "outsee_retry: {} ref(s) → CDP attach (skip HTTP API)",
-                            len(ref_list),
-                        )
-                        return await outsee.generate_image(
-                            send_prompt, out_path, **attempt_kwargs
-                        )
                     raw_slug = attempt_kwargs.get("model_slug") or getattr(
                         _settings, "outsee_default_image_model", None
                     )
@@ -677,6 +666,11 @@ async def generate_image_with_retries(
                     res = attempt_kwargs.get("resolution") or attempt_kwargs.get(
                         "image_resolution"
                     )
+                    if ref_list:
+                        logger.info(
+                            "outsee_retry: {} ref(s) → Outsee HTTP API reference_images",
+                            len(ref_list),
+                        )
                     result = await outsee_api_generate_image(
                         send_prompt,
                         out_path,
@@ -684,7 +678,7 @@ async def generate_image_with_retries(
                         aspect_ratio=str(ar).replace("_", ":"),
                         resolution=str(res) if res else "2K",
                         detail_level=attempt_kwargs.get("quality"),
-                        reference_images=None,
+                        reference_images=ref_list,
                         prompt_id_prefix=attempt_kwargs.get("prompt_id_prefix"),
                         timeout=float(attempt_kwargs.get("timeout") or 600),
                         gen_id=attempt_kwargs.get("gen_id"),

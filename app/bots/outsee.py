@@ -1900,17 +1900,6 @@ class OutseeBot:
 
         if not oh.outsee_http_enabled():
             return None
-        # HTTP API часто принимает reference_images (refs=1 в логе), но
-        # gpt-image-2 не держит identity персонажа. CDP file-attach надёжнее
-        # для hero REF-вариаций (rules=c01 → c02).
-        refs = kwargs.get("reference_images")
-        if refs:
-            n = len(refs) if isinstance(refs, list) else 1
-            logger.info(
-                "outsee HTTP skip: {} reference_image(s) → CDP attach",
-                n,
-            )
-            return None
         try:
             return await oh.generate_image(**kwargs)
         except oh.OutseeHttpAuthError as e:
@@ -2310,36 +2299,17 @@ class OutseeBot:
                         "outsee.generate_image: reference {} не найден на диске",
                         ref_path,
                     )
-                need = [p for p in refs if p.exists()]
                 attached_n = await self._attach_reference_images_robust(
                     page,
-                    need,
+                    [p for p in refs if p.exists()],
                     where="generate_image",
                     project_id=project_id,
                 )
-                if attached_n < len(need):
+                if attached_n < len(refs) - len(missing):
                     h, p = await _dump_page(page, "ref_input_notfound")
                     for x in (h, p):
                         if x:
                             dumps.append(x)
-                    # Fail-closed: без видимого attach не генерим «вслепую».
-                    raise OutseeImageError(
-                        f"outsee image: не прикрепил референс "
-                        f"({attached_n}/{len(need)}): "
-                        f"{[x.name for x in need]}",
-                        context={
-                            "gen_id": gen_id,
-                            "attached": attached_n,
-                            "needed": [str(x) for x in need],
-                        },
-                        dumps=dumps,
-                    )
-                logger.info(
-                    "outsee.generate_image: REF attached OK {}/{} files={}",
-                    attached_n,
-                    len(need),
-                    [p.name for p in need],
-                )
 
             # 3) кнопка generate
             gen_sel = await _first_visible(

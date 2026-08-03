@@ -1,4 +1,4 @@
-"""С реф-картинкой outsee_retry не ходит в HTTP API — только CDP attach."""
+"""С реф-картинкой outsee_retry шлёт reference_images в Outsee HTTP API."""
 
 from __future__ import annotations
 
@@ -11,26 +11,24 @@ from app.services import outsee_retry as mod
 
 
 @pytest.mark.asyncio
-async def test_generate_with_reference_uses_cdp_not_http_api(
+async def test_generate_with_reference_uses_http_api_refs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     ref = tmp_path / "c01.png"
     ref.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 80)
     out = tmp_path / "c02.png"
-    api_calls: list[str] = []
-    cdp_calls: list[dict] = []
+    api_calls: list[dict] = []
 
-    async def fake_api(*_a, **_k):
-        api_calls.append("hit")
-        raise AssertionError("HTTP API must not be called when refs present")
+    async def fake_api(prompt, out_path, **kwargs):
+        api_calls.append({"prompt": prompt, "refs": kwargs.get("reference_images")})
+        out_path.write_bytes(b"ok" * 50)
+        return GenerationResult(
+            file_path=out_path, raw_url="https://example/x.png", gen_id="g1"
+        )
 
     class FakeOutsee:
-        async def generate_image(self, prompt: str, out_path: Path, **kwargs):
-            cdp_calls.append({"prompt": prompt, "ref": kwargs.get("reference_image")})
-            out_path.write_bytes(b"ok" * 50)
-            return GenerationResult(
-                file_path=out_path, raw_url="https://example/x.png", gen_id="g1"
-            )
+        async def generate_image(self, *_a, **_k):
+            raise AssertionError("CDP generate_image must not run when Outsee API on")
 
     async def fake_prepare(gpt, body, prefix, *, project_id=None):
         return body
@@ -40,9 +38,7 @@ async def test_generate_with_reference_uses_cdp_not_http_api(
     monkeypatch.setattr(
         "app.bots.outsee_http.outsee_api_enabled_for_image", lambda: True
     )
-    monkeypatch.setattr(
-        "app.bots.outsee_http.generate_image", fake_api
-    )
+    monkeypatch.setattr("app.bots.outsee_http.generate_image", fake_api)
 
     result = await mod.generate_image_with_retries(
         FakeOutsee(),
@@ -55,45 +51,46 @@ async def test_generate_with_reference_uses_cdp_not_http_api(
         project_id=1,
     )
     assert result.file_path == out
-    assert api_calls == []
-    assert len(cdp_calls) == 1
-    assert cdp_calls[0]["ref"] == [ref]
+    assert len(api_calls) == 1
+    assert api_calls[0]["refs"] == [ref]
 
 
 @pytest.mark.asyncio
-async def test_try_http_image_skips_when_refs(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.bots.outsee import OutseeBot
-
-    called = {"n": 0}
-
-    async def boom(**_k):
-        called["n"] += 1
-        raise AssertionError("generate_image HTTP must not run")
-
-    monkeypatch.setattr(
-        "app.bots.outsee_http.outsee_http_enabled", lambda: True
-    )
-    monkeypatch.setattr("app.bots.outsee_http.generate_image", boom)
-
-    bot = OutseeBot(session=None)  # type: ignore[arg-type]
-    res = await bot._try_http_image(
-        prompt="x",
-        out_path=Path("y.png"),
-        reference_images=[Path("a.png")],
-    )
-    assert res is None
-    assert called["n"] == 0
-
-
-@pytest.mark.asyncio
-async def test_outsee_http_generate_image_rejects_refs(tmp_path: Path) -> None:
-    from app.bots.outsee_http import OutseeHttpError, generate_image
+async def test_outsee_http_generate_image_hosts_and_sends_refs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from app.bots import outsee_http as oh
 
     ref = tmp_path / "c01.png"
     ref.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 40)
-    with pytest.raises(OutseeHttpError, match="CDP file-attach"):
-        await generate_image(
-            "x",
-            tmp_path / "out.png",
-            reference_images=[ref],
-        )
+    out = tmp_path / "out.png"
+    posted: list[dict] = []
+
+    async def fake_host(url: str | None):
+        assert url and url.startswith("data:")
+        return "https://example.test/ref.png"
+
+    async def fake_post(path: str, body: dict):
+        posted.append({"path": path, "body": body})
+        return {"id": "task-1"}
+
+    async def fake_poll(task_id: str, *, timeout: float = 600):
+        return {"status": "completed", "result_url": "https://example.test/out.png"}
+
+    async def fake_download(url: str, dest: Path):
+        dest.write_bytes(b"png")
+
+    monkeypatch.setattr(oh, "ensure_public_image_url", fake_host)
+    monkeypatch.setattr(oh, "_post_generate", fake_post)
+    monkeypatch.setattr(oh, "_poll_generation", fake_poll)
+    monkeypatch.setattr(oh, "_download", fake_download)
+
+    result = await oh.generate_image(
+        "x",
+        out,
+        reference_images=[ref],
+        model_slug="gpt-image-2",
+    )
+    assert result.file_path == out
+    assert posted[0]["path"] == "/api/v1/images/generate"
+    assert posted[0]["body"]["reference_images"] == ["https://example.test/ref.png"]
