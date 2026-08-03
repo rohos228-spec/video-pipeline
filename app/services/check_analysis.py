@@ -132,53 +132,66 @@ regen: c01, c03
 Если все ок — строку regen не пиши.
 """.strip()
 
-# Единый хвост для vision-check (hero + scenes): сверка с БД + regen + db_patch.
+# Порог pass для vision-check (оси 0..1). Regen только при critical.
+VISION_PASS_THRESHOLD = 0.7
+VISION_SCORE_AXES = ("character", "format", "text", "angles")
+
+# Единый хвост для vision-check (hero + scenes): scores + severity + regen.
 VISION_CHECK_REPORT_HINT = """
 ## vision_check (обязательно при проверке PNG)
 Сверяй каждое изображение с блоком «## База (source of truth)» во входе.
 Не выдумывай поля — только БД + видимое на картинке.
 
-ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА (нарушение = fail + regen):
-1) ТЕКСТ НА КАРТИНКЕ: запрещён любой читаемый текст, буквы, цифры, подписи,
-   watermark, UI-лейблы, плашки — ЕСЛИ они не являются частью предмета в сцене
-   (вывеска на здании, надпись на книге/этикетке/экране телефона и т.п.,
-   явно уместная в мире кадра). Текст «в воздухе», на фоне, как подпись к
-   персонажу/панели, на белом листе sheet — всегда fail.
-2) РАКУРСЫ ПЕРСОНАЖА: на каждом изображении персонаж должен быть показан
-   с РАЗНЫХ сторон (не один и тот же ракурс).
-   - Hero sheet (characters/cXX.png): обязателен turnaround — full-body
-     front + 3/4 + side + back и head turnaround с разных сторон; если все
-     фигуры/головы смотрят в одну сторону или дублируют один ракурс — fail.
-   - Scenes: если на кадре несколько появлений одного персонажа (коллаж /
-     мульти-панель) — стороны/ракурсы должны отличаться; один клон в одном
-     ракурсе несколько раз — fail. Одиночный кадр сцены: ракурс должен
-     соответствовать промту; при явной просьбе turnaround в промте —
-     проверяй разнообразие сторон.
+Критерии (ставь score 0.0–1.0 по каждой оси, потом overall = среднее):
+- character — identity vs База (лицо/тело/одежда)
+- format — sheet 16:9 / композиция кадра / белый фон для hero
+- text — читаемый текст НЕ на предмете мира = низкий score;
+  текст на вывеске/книге/этикетке в мире кадра — ок
+- angles — персонаж с разных сторон (hero turnaround: front/3/4/side/back;
+  одинаковый ракурс везде = низкий score)
 
-- Hero: формат sheet 16:9 turnaround, белый фон; identity = Entity / excel_hero
-  (внешность, одежда, характер).
-- Scenes: формат кадра + соответствие image_prompt + identity персонажей
-  из attrs.персонажи / Entity.
+SEVERITY (важно — от этого зависит переген):
+- critical — нельзя принимать: чужой персонаж, нет turnaround, крупный текст
+  на sheet/в воздухе, грубый брак лица/рук. Только critical → regen.
+- warning — заметно, но можно принять (шум, мелкий артефакт). НЕ regen.
+- minor — косметика. НЕ regen.
 
-При verdict: fail перечисли ТОЛЬКО провалившиеся (прошедшие не пиши):
+СИСТЕМНЫЙ ВЕРДИКТ (пиши scores честно; система сама посчитает pass/fail):
+pass = overall >= 0.70 И нет ни одного critical.
+fail = overall < 0.70 ИЛИ есть critical.
+Не ставь fail из‑за одних warning/minor.
+
+Шаблон ответа (дополнительно к обычному отчёту):
+
+## scores
+character: 0.85
+format: 0.90
+text: 0.80
+angles: 0.75
+overall: 0.82
+
+## issues
+- [critical] c01: нет вида со спины на turnaround
+- [warning] c02: лёгкий шум на фоне
+- [minor] frame_003_xxx.png: чуть плотный кроп
 
 ## regen_heroes
-regen: c01, c03
+regen: c01
+(ТОЛЬКО id с critical; warning/minor сюда НЕ писать)
 
 ## regen_frames
-frames: 3, 7, 12s2
-(номер кадра; shot2 → Ns2 / N_s2)
+frames: 3, 7s2
+(ТОЛЬКО кадры с critical)
 
 ## db_patch
 ```json
 {
-  "characters": [{"id":"c02","внешность":"...","одежда":"...","характер":"...","правила":"..."}],
-  "ops": [{"frame_uuid":"<uuid из Базы>","fields":{"промт_картинки":"..."}}]
+  "characters": [{"id":"c02","внешность":"...","одежда":"..."}],
+  "ops": [{"frame_uuid":"<uuid>","fields":{"промт_картинки":"..."}}]
 }
 ```
-Минимальный patch: что исправить в описании персонажа и/или промте кадра перед перегеном.
-Если правки БД не нужны — блок db_patch можно опустить, но regen_* обязателен при fail.
-Если все ок — секции regen_* / db_patch не пиши.
+db_patch — только если critical требует правки описания/промта.
+Если critical нет — секции regen_* / db_patch не пиши (даже при warning).
 """.strip()
 
 _FRAMES_LINE_RE = re.compile(r"(?im)^\s*frames\s*:\s*(.+?)\s*$")
@@ -280,7 +293,12 @@ def append_vision_check_hint(prompt: str) -> str:
     """Дописать единый vision_check хвост (hero + scenes)."""
     base = (prompt or "").rstrip()
     low = base.lower()
-    if "vision_check" in low and "db_patch" in low:
+    if (
+        "vision_check" in low
+        and "db_patch" in low
+        and "## scores" in low
+        and "critical" in low
+    ):
         return base
     if not base:
         return VISION_CHECK_REPORT_HINT
@@ -417,6 +435,218 @@ def extract_db_patch(text: str) -> dict[str, Any] | None:
         if norm_ops:
             out["ops"] = norm_ops
     return out or None
+
+
+_SCORE_LINE_RE = re.compile(
+    r"(?im)^\s*(character|format|text|angles|overall)\s*[:=]\s*"
+    r"(0(?:\.\d+)?|1(?:\.0+)?|\.\d+)\s*$"
+)
+_ISSUE_LINE_RE = re.compile(
+    r"(?im)^\s*[-*]\s*\[(critical|warning|minor|warn|error|fail)\]\s*(.+?)\s*$"
+)
+
+
+def _clamp_score(raw: float) -> float:
+    if raw < 0.0:
+        return 0.0
+    if raw > 1.0:
+        return 1.0
+    return float(raw)
+
+
+def extract_vision_scores(text: str) -> dict[str, float]:
+    """Оси character/format/text/angles/overall из секции ``## scores``."""
+    raw = text or ""
+    found: dict[str, float] = {}
+    # Prefer body under ## scores if present.
+    bodies = _section_bodies(raw) if looks_like_check_report_txt(raw) else {}
+    chunk = bodies.get("scores") or raw
+    for m in _SCORE_LINE_RE.finditer(chunk):
+        key = m.group(1).lower()
+        try:
+            found[key] = _clamp_score(float(m.group(2)))
+        except ValueError:
+            continue
+    if "overall" not in found:
+        axes = [found[a] for a in VISION_SCORE_AXES if a in found]
+        if axes:
+            found["overall"] = _clamp_score(sum(axes) / len(axes))
+    return found
+
+
+def _norm_issue_severity(raw: str) -> str:
+    s = (raw or "").strip().lower()
+    if s in ("critical", "error", "fail"):
+        return "critical"
+    if s in ("warning", "warn"):
+        return "warning"
+    if s == "minor":
+        return "minor"
+    return s or "warning"
+
+
+def extract_vision_issues(text: str) -> list[dict[str, Any]]:
+    """Список ``{severity, text}`` из ``## issues`` (и findings с severity-тегами)."""
+    raw = text or ""
+    out: list[dict[str, Any]] = []
+    bodies = _section_bodies(raw) if looks_like_check_report_txt(raw) else {}
+    chunks: list[str] = []
+    if bodies.get("issues"):
+        chunks.append(bodies["issues"])
+    # Also accept severity tags in findings when scores section exists.
+    if bodies.get("findings") and (
+        bodies.get("scores") or extract_vision_scores(raw)
+    ):
+        chunks.append(bodies["findings"])
+    if not chunks:
+        # Bare ## issues without full report header.
+        m = re.search(r"(?is)##\s*issues\s*\n(.*?)(?=\n##|\n# |\Z)", raw)
+        if m:
+            chunks.append(m.group(1))
+        elif re.search(r"(?i)\[(critical|warning|minor)\]", raw):
+            chunks.append(raw)
+    seen: set[str] = set()
+    for chunk in chunks:
+        for m in _ISSUE_LINE_RE.finditer(chunk or ""):
+            sev = _norm_issue_severity(m.group(1))
+            body = (m.group(2) or "").strip()
+            if not body:
+                continue
+            key = f"{sev}|{body.lower()}"
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"severity": sev, "text": body})
+    return out
+
+
+def has_critical_vision_issues(text: str) -> bool:
+    return any(i.get("severity") == "critical" for i in extract_vision_issues(text))
+
+
+def looks_like_scored_vision_report(text: str) -> bool:
+    """Отчёт с scores и/или severity-issues — применяем порог + critical-only regen."""
+    raw = text or ""
+    if extract_vision_scores(raw):
+        return True
+    if re.search(r"(?i)\[(critical|warning|minor)\]", raw):
+        return True
+    if re.search(r"(?im)^\s*##\s*scores\s*$", raw):
+        return True
+    return False
+
+
+def resolve_vision_check_gate(
+    text: str,
+    *,
+    threshold: float = VISION_PASS_THRESHOLD,
+) -> str | None:
+    """pass|fail по scores+critical, или None если отчёт не scored-vision."""
+    if not looks_like_scored_vision_report(text):
+        return None
+    scores = extract_vision_scores(text)
+    critical = has_critical_vision_issues(text)
+    if critical:
+        return "fail"
+    overall = scores.get("overall")
+    if overall is None:
+        # severity-only report: no critical → pass
+        return "pass"
+    return "pass" if float(overall) >= float(threshold) else "fail"
+
+
+def apply_vision_score_gate(analysis: "CheckAnalysis", text: str) -> "CheckAnalysis":
+    """Переписать verdict по scores/severity, если отчёт scored-vision."""
+    resolved = resolve_vision_check_gate(text)
+    if resolved is None:
+        return analysis
+    if analysis.verdict == resolved:
+        return analysis
+    old = analysis.verdict
+    analysis.verdict = resolved  # type: ignore[assignment]
+    note = (
+        f"vision_gate: {old}→{resolved} "
+        f"(threshold={VISION_PASS_THRESHOLD}, critical="
+        f"{has_critical_vision_issues(text)})"
+    )
+    summary = (analysis.summary or "").strip()
+    analysis.summary = f"{summary}\n{note}".strip() if summary else note
+    return analysis
+
+
+def extract_critical_hero_regen_ids(text: str) -> list[str]:
+    """Hero ids для перегена: только critical (или legacy без scores)."""
+    raw = text or ""
+    if not looks_like_scored_vision_report(raw):
+        return extract_hero_regen_ids(raw)
+    if not has_critical_vision_issues(raw):
+        return []
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _add(token: str) -> None:
+        nid = normalize_hero_excel_id(token)
+        if nid and nid not in seen:
+            seen.add(nid)
+            found.append(nid)
+
+    for issue in extract_vision_issues(raw):
+        if issue.get("severity") != "critical":
+            continue
+        body = str(issue.get("text") or "")
+        for m in _HERO_EXCEL_ID_RE.finditer(body):
+            _add(m.group(0))
+        for m in _HERO_FILE_ID_RE.finditer(body):
+            _add(m.group(1))
+    if found:
+        return found
+    return extract_hero_regen_ids(raw)
+
+
+def extract_critical_frame_regen_targets(text: str) -> list[dict[str, Any]]:
+    """Frame targets для перегена: только critical (или legacy без scores)."""
+    raw = text or ""
+    if not looks_like_scored_vision_report(raw):
+        return extract_frame_regen_targets(raw)
+    if not has_critical_vision_issues(raw):
+        return []
+    found: list[dict[str, Any]] = []
+    seen: set[tuple[int, int]] = set()
+
+    def _add(token: str) -> None:
+        t = normalize_frame_regen_token(token)
+        if not t:
+            return
+        key = (int(t["number"]), int(t["shot"]))
+        if key in seen:
+            return
+        seen.add(key)
+        found.append({"number": key[0], "shot": key[1]})
+
+    for issue in extract_vision_issues(raw):
+        if issue.get("severity") != "critical":
+            continue
+        body = str(issue.get("text") or "")
+        for m in re.finditer(
+            r"\bframe[_-]?\d{1,4}[^\s]*\.(?:png|jpe?g|webp|gif)\b",
+            body,
+            re.IGNORECASE,
+        ):
+            _add(m.group(0))
+        for m in re.finditer(
+            r"\b(\d{1,4})(?:[_-]?(?:s2|shot2))\b|\b(\d{1,4})\b",
+            body,
+            re.IGNORECASE,
+        ):
+            token = m.group(0)
+            # avoid bare years / noise: only short nums near frame words or Ns2
+            if "s2" in token.lower() or "shot" in token.lower():
+                _add(token)
+            elif re.search(r"(?i)frame|кадр", body):
+                _add(token)
+    if found:
+        return found
+    return extract_frame_regen_targets(raw)
 
 
 _JSON_FENCE = re.compile(
@@ -816,12 +1046,12 @@ def parse_check_analysis(text: str, *, require_schema: bool = False) -> CheckAna
                 # возможно это не check-JSON — пробуем TXT
                 txt = parse_check_report_txt(probe)
                 if txt is not None:
-                    return txt
+                    return apply_vision_score_gate(txt, probe)
                 return fail_analysis("в JSON нет поля verdict")
-        return analysis_from_dict(obj)
+        return apply_vision_score_gate(analysis_from_dict(obj), probe)
     txt = parse_check_report_txt(probe)
     if txt is not None:
-        return txt
+        return apply_vision_score_gate(txt, probe)
     return fail_analysis("нет TXT-отчёта и нет JSON vp.check.v1 в ответе")
 
 

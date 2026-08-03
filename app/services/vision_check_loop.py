@@ -307,7 +307,20 @@ async def maybe_start_vision_check_loop_after_check(
     if kind is None:
         return False
 
+    from app.services.check_analysis import (
+        extract_critical_frame_regen_targets,
+        extract_critical_hero_regen_ids,
+        extract_db_patch,
+        has_critical_vision_issues,
+        looks_like_scored_vision_report,
+        resolve_vision_check_gate,
+    )
+
+    reply = _check_reply_text(project, key)
+    resolved = resolve_vision_check_gate(reply)
     gate = (_gate_status(project, key) or "").strip().lower()
+    if resolved in ("pass", "fail"):
+        gate = resolved
     if gate == "pass":
         if vision_check_loop_active(project):
             clear_vision_check_meta(project)
@@ -320,27 +333,35 @@ async def maybe_start_vision_check_loop_after_check(
     if gate != "fail":
         return False
 
-    from app.services.check_analysis import (
-        extract_db_patch,
-        extract_frame_regen_targets,
-        extract_hero_regen_ids,
-    )
+    # Scores/severity: auto-regen только при critical. Warning/minor или
+    # overall < threshold без critical → fail-edge, но без wipe/regen.
+    if looks_like_scored_vision_report(reply) and not has_critical_vision_issues(
+        reply
+    ):
+        logger.info(
+            "[#{}] vision_check_loop: fail на {} без critical "
+            "(scores/threshold) — без auto-regen",
+            project.id,
+            key,
+        )
+        return False
 
-    reply = _check_reply_text(project, key)
-    hero_ids = extract_hero_regen_ids(reply) if kind == "hero" else []
-    frame_tgts = extract_frame_regen_targets(reply) if kind == "scenes" else []
+    hero_ids = extract_critical_hero_regen_ids(reply) if kind == "hero" else []
+    frame_tgts = (
+        extract_critical_frame_regen_targets(reply) if kind == "scenes" else []
+    )
     patch = extract_db_patch(reply)
 
     if kind == "hero" and not hero_ids and not patch:
         logger.info(
-            "[#{}] vision_check_loop: hero fail на {} без regen/patch — без цикла",
+            "[#{}] vision_check_loop: hero fail на {} без critical regen/patch — без цикла",
             project.id,
             key,
         )
         return False
     if kind == "scenes" and not frame_tgts and not patch:
         logger.info(
-            "[#{}] vision_check_loop: scenes fail на {} без frames/patch — без цикла",
+            "[#{}] vision_check_loop: scenes fail на {} без critical frames/patch — без цикла",
             project.id,
             key,
         )

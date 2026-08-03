@@ -12,9 +12,13 @@ from app import settings as app_settings
 from app.models import Project, ProjectStatus
 from app.services.check_analysis import (
     append_vision_check_hint,
+    extract_critical_frame_regen_targets,
+    extract_critical_hero_regen_ids,
     extract_db_patch,
     extract_frame_regen_targets,
     extract_hero_regen_ids,
+    parse_check_analysis,
+    resolve_vision_check_gate,
 )
 from app.services import vision_check_loop as vcl
 from app.services.excel_gpt_node import upload_dir
@@ -78,10 +82,82 @@ regen: c02
 def test_append_vision_hint_idempotent() -> None:
     once = append_vision_check_hint("проверь")
     assert "db_patch" in once
-    assert "ТЕКСТ НА КАРТИНКЕ" in once
-    assert "РАКУРСЫ ПЕРСОНАЖА" in once
+    assert "## scores" in once
+    assert "critical" in once
+    assert "0.70" in once
     twice = append_vision_check_hint(once)
     assert twice.count("vision_check") == once.count("vision_check")
+
+
+def test_vision_gate_pass_on_scores_despite_model_fail() -> None:
+    text = """
+# ОТЧЁТ ПРОВЕРКИ
+verdict: fail
+
+## summary
+мелочи
+
+## scores
+character: 0.85
+format: 0.90
+text: 0.80
+angles: 0.75
+overall: 0.82
+
+## issues
+- [warning] c01: лёгкий шум
+- [minor] c02: чуть плотный кроп
+"""
+    assert resolve_vision_check_gate(text) == "pass"
+    assert parse_check_analysis(text).verdict == "pass"
+    assert extract_critical_hero_regen_ids(text) == []
+
+
+def test_vision_gate_fail_on_critical_even_high_overall() -> None:
+    text = """
+# ОТЧЁТ ПРОВЕРКИ
+verdict: pass
+
+## summary
+брак
+
+## scores
+character: 0.90
+format: 0.90
+text: 0.90
+angles: 0.90
+overall: 0.90
+
+## issues
+- [critical] c01: нет вида со спины
+- [warning] c02: шум
+
+regen: c01, c02
+"""
+    assert resolve_vision_check_gate(text) == "fail"
+    assert parse_check_analysis(text).verdict == "fail"
+    assert extract_critical_hero_regen_ids(text) == ["c01"]
+
+
+def test_vision_gate_fail_low_overall_no_regen() -> None:
+    text = """
+# ОТЧЁТ ПРОВЕРКИ
+verdict: fail
+
+## scores
+character: 0.50
+format: 0.60
+text: 0.55
+angles: 0.50
+overall: 0.54
+
+## issues
+- [warning] frame_003_x.png: слабая композиция
+
+frames: 3
+"""
+    assert resolve_vision_check_gate(text) == "fail"
+    assert extract_critical_frame_regen_targets(text) == []
 
 
 def _project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slug: str) -> Project:
@@ -236,3 +312,63 @@ def test_scene_regen_allows() -> None:
 
 def test_hero_compat_extract_still_works() -> None:
     assert extract_hero_regen_ids("regen: c01, c3") == ["c01", "c03"]
+
+
+def test_scored_warn_only_does_not_start_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _project(tmp_path, monkeypatch, "vw")
+    check_key = "n_check"
+    p.meta = {
+        "excel_gpt_nodes": {
+            check_key: {"checkMode": True, "checkFix": False, "slotIndex": 1},
+        },
+        "gpt_operator_results": {check_key: {"gateStatus": "fail"}},
+        "canvas_graph": {
+            "nodes": [
+                {"id": "n_hero", "type": "hero"},
+                {
+                    "id": check_key,
+                    "type": "excel_gpt",
+                    "data": {"slotIndex": 1, "checkMode": True},
+                },
+            ],
+            "edges": [
+                {
+                    "source": "n_hero",
+                    "target": check_key,
+                    "data": {"kind": "after"},
+                }
+            ],
+        },
+    }
+    out = upload_dir(p, check_key)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "check_report.txt").write_text(
+        """# ОТЧЁТ ПРОВЕРКИ
+verdict: fail
+
+## scores
+character: 0.55
+format: 0.60
+text: 0.50
+angles: 0.55
+overall: 0.55
+
+## issues
+- [warning] c01: мелочь
+
+regen: c01
+""",
+        encoding="utf-8",
+    )
+
+    class _Sess:
+        async def flush(self):
+            return None
+
+    started = asyncio.run(
+        vcl.maybe_start_vision_check_loop_after_check(_Sess(), p, check_key)
+    )
+    assert started is False
+    assert "vision_check_return_node" not in (p.meta or {})
