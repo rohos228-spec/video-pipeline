@@ -36,6 +36,51 @@ from app.services.xlsx_v8_import import (
     _resolve_plan_sheet,
 )
 
+# Аналитика / shot → Excel (лист «план»), хранится в Frame.attrs.
+ROW_MAIN_ACTION_V8 = 52
+ROW_PLACE_V8 = 54
+ROW_ACCENT_V8 = 55
+ROW_SCENE_SENSE_V8 = 56
+ROW_VISUAL_TYPE_V8 = 57
+ROW_SCENE_FEATURE_V8 = 58
+ROW_CLUSTER_V8 = 59
+
+# attr_key → номер строки Excel при экспорте
+_ATTR_EXCEL_ROWS: dict[str, int] = {
+    "main_action": ROW_MAIN_ACTION_V8,
+    "place": ROW_PLACE_V8,
+    "accent": ROW_ACCENT_V8,
+    "scene_sense": ROW_SCENE_SENSE_V8,
+    "visual_type": ROW_VISUAL_TYPE_V8,
+    "scene_feature": ROW_SCENE_FEATURE_V8,
+    "cluster": ROW_CLUSTER_V8,
+    # shot_01
+    "shot01_id_scene": 2,
+    "shot01_id_shot": 3,
+    "shot01_number": 4,
+    "shot01_prev": 5,
+    "shot01_next": 6,
+    "shot01_bg": 7,
+    "shot01_props": 9,
+    "shot01_action": 10,
+    "shot01_description": 11,
+    "shot01_transition": 12,
+    "shot01_notes": 13,
+    "shot01_status": 14,
+    # shot_02 (без 22–24)
+    "shot02_id_scene": 16,
+    "shot02_id_shot": 17,
+    "shot02_number": 18,
+    "shot02_prev": 19,
+    "shot02_next": 20,
+    "shot02_characters": 21,
+    "shot02_action": 25,
+    "shot02_description": 26,
+    "shot02_transition": 27,
+    "shot02_notes": 28,
+    "shot02_status": 29,
+}
+
 # Человеческие имена полей → канонические ключи DB. Ключ нормализуется:
 # lower + пробелы→подчёркивания.
 FIELD_ALIASES: dict[str, str] = {
@@ -57,6 +102,7 @@ FIELD_ALIASES: dict[str, str] = {
     "видео_промт": "animation_prompt",
     "meaning": "meaning",
     "смысл": "meaning",
+    "описание_кадра": "meaning",
     "duration_seconds": "duration_seconds",
     "длительность": "duration_seconds",
     "время": "duration_seconds",
@@ -73,6 +119,72 @@ FIELD_ALIASES: dict[str, str] = {
     "characters": "characters",
     "персонажи": "characters",
     "persons": "characters",
+    # Аналитика 54–59 + главное действие 52 → Frame.attrs + Excel
+    "main_action": "main_action",
+    "главное_действие": "main_action",
+    "главное_действие_в_кадре": "main_action",
+    "place": "place",
+    "место": "place",
+    "accent": "accent",
+    "акцент": "accent",
+    "scene_sense": "scene_sense",
+    "смысл_сцены": "scene_sense",
+    "visual_type": "visual_type",
+    "тип_сцены": "visual_type",
+    "scene_feature": "scene_feature",
+    "особенность_сцены": "scene_feature",
+    "особенность": "scene_feature",
+    "cluster": "cluster",
+    "номер_кластера": "cluster",
+    "кластер": "cluster",
+    # shot_01
+    "shot01_id_scene": "shot01_id_scene",
+    "id_scene": "shot01_id_scene",
+    "shot01_id_shot": "shot01_id_shot",
+    "id_shot": "shot01_id_shot",
+    "shot01_number": "shot01_number",
+    "номер_кадра": "shot01_number",
+    "shot01_prev": "shot01_prev",
+    "предыдущий_кадр": "shot01_prev",
+    "shot01_next": "shot01_next",
+    "следующий_кадр": "shot01_next",
+    "shot01_bg": "shot01_bg",
+    "фон": "shot01_bg",
+    "shot01_props": "shot01_props",
+    "предметы": "shot01_props",
+    "shot01_action": "shot01_action",
+    "действие": "shot01_action",
+    "shot01_description": "shot01_description",
+    "описание_shot01": "shot01_description",
+    "shot01_transition": "shot01_transition",
+    "логика_перехода": "shot01_transition",
+    "shot01_notes": "shot01_notes",
+    "заметки_по_консистенции": "shot01_notes",
+    "shot01_status": "shot01_status",
+    "статус": "shot01_status",
+    # shot_02
+    "shot02_id_scene": "shot02_id_scene",
+    "shot02_id_shot": "shot02_id_shot",
+    "shot02_number": "shot02_number",
+    "shot02_prev": "shot02_prev",
+    "shot02_next": "shot02_next",
+    "shot02_characters": "shot02_characters",
+    "персонажи_shot02": "shot02_characters",
+    "shot02_action": "shot02_action",
+    "действие_shot02": "shot02_action",
+    "shot02_description": "shot02_description",
+    "описание_shot02": "shot02_description",
+    "shot02_transition": "shot02_transition",
+    "логика_перехода_shot02": "shot02_transition",
+    "shot02_notes": "shot02_notes",
+    "shot02_status": "shot02_status",
+}
+
+# Поля, которые живут в Frame.attrs (не колонки Frame.*).
+_ATTR_FIELD_KEYS = frozenset(_ATTR_EXCEL_ROWS) | {
+    "characters",
+    "image_prompt_shot2",
+    "animation_prompt_shot2",
 }
 
 PROJECT_FIELD_ALIASES: dict[str, str] = {
@@ -364,6 +476,15 @@ def export_project_xlsx(
             ).strip()
             ws.cell(row=ROW_PERSONS_PRIMARY, column=col, value=persons)
             cells += 1
+            # Аналитика 52/54–59 + shot_01/shot_02 из attrs
+            for attr_key, row in _ATTR_EXCEL_ROWS.items():
+                if attr_key not in attrs:
+                    continue
+                val = attrs.get(attr_key)
+                if val is None or str(val).strip() == "":
+                    continue
+                ws.cell(row=row, column=col, value=str(val))
+                cells += 1
         general_plan = (project.meta or {}).get("general_plan")
         if general_plan:
             for name in wb.sheetnames:
@@ -522,6 +643,9 @@ async def apply_ops(
             attrs["characters"] = persons
             attrs["persons"] = persons
             attrs["персонажи"] = persons
+        for attr_key in _ATTR_EXCEL_ROWS:
+            if attr_key in fields:
+                attrs[attr_key] = str(fields[attr_key] or "")
         fr.attrs = attrs
         updated += 1
 

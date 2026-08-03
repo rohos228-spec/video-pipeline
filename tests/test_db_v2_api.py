@@ -304,6 +304,64 @@ async def test_apply_ops_characters_and_frame_persons(api_client, tmp_path) -> N
 
 
 @pytest.mark.asyncio
+async def test_apply_ops_plan_analytics_and_shot_export(api_client, tmp_path) -> None:
+    """Аналитика 54–59 + главное действие 52 + shot_01 → attrs и Excel."""
+    client, project_id, factory = api_client
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        uuid = fr.uuid
+
+    r = await client.post(
+        f"/api/db/projects/{project_id}/apply-ops",
+        json={
+            "ops": [
+                {
+                    "frame_uuid": uuid,
+                    "fields": {
+                        "место": "деревенская изба ночью",
+                        "акцент": "дверь",
+                        "смысл_сцены": "персонаж с референса c01 открывает дверь",
+                        "тип_сцены": "Кинематографический реализм",
+                        "особенность_сцены": "Средний план персонажа",
+                        "номер_кластера": "1",
+                        "главное_действие": "персонаж с референса c01 у двери",
+                        "действие": "открывает дверь",
+                        "описание_кадра": "средний план у дверного проёма",
+                        "фон": "тёмный коридор",
+                    },
+                }
+            ]
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        attrs = fr.attrs or {}
+        assert attrs.get("place") == "деревенская изба ночью"
+        assert attrs.get("visual_type") == "Кинематографический реализм"
+        assert attrs.get("main_action") == "персонаж с референса c01 у двери"
+        assert attrs.get("shot01_action") == "открывает дверь"
+
+    wb = load_workbook(tmp_path / "videos" / "dbv2-api" / "project.xlsx")
+    ws = wb["план"]
+    col = 3  # frame 1
+    assert ws.cell(54, col).value == "деревенская изба ночью"
+    assert ws.cell(57, col).value == "Кинематографический реализм"
+    assert ws.cell(52, col).value == "персонаж с референса c01 у двери"
+    assert ws.cell(10, col).value == "открывает дверь"
+    wb.close()
+
+
+@pytest.mark.asyncio
 async def test_apply_ops_project_target_general_plan_exports(api_client, tmp_path) -> None:
     """target=project — поля уровня проекта (нода плана), экспорт в «Общий план»."""
     client, project_id, factory = api_client

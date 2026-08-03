@@ -293,8 +293,18 @@ animation_prompt, meaning, duration_seconds, attrs + excel_rows (что
 | промт_картинки_2 | `image_prompt_shot2` | `Frame.attrs["image_prompt_shot2"]` | R46 | нода enrich (shot_02); читает генерация картинок |
 | промт_видео | `animation_prompt` | `Frame.animation_prompt` + активная `prompt_versions(video)` | R48 | нода anim_pr; читает генерация видео |
 | промт_видео_2 | `animation_prompt_shot2` | `Frame.attrs["animation_prompt_shot2"]` | R64 | нода anim_pr (shot_02); читает генерация видео |
-| смысл | `meaning` | `Frame.meaning` | — (только DB) | enrich/оператор; контекст для промтов |
+| смысл / описание_кадра | `meaning` | `Frame.meaning` | — / описание | enrich/оператор; описание кадра |
 | длительность | `duration_seconds` | `Frame.duration_seconds` | R50 | split/монтаж |
+| персонажи | `characters` | `Frame.attrs["characters"]` | R8 | агент персонажей |
+| место | `place` | `Frame.attrs["place"]` | R54 | аналитика сцен |
+| акцент | `accent` | `Frame.attrs["accent"]` | R55 | аналитика сцен |
+| смысл_сцены | `scene_sense` | `Frame.attrs["scene_sense"]` | R56 | аналитика сцен |
+| тип_сцены | `visual_type` | `Frame.attrs["visual_type"]` | R57 | аналитика сцен |
+| особенность_сцены | `scene_feature` | `Frame.attrs["scene_feature"]` | R58 | аналитика / камера |
+| номер_кластера | `cluster` | `Frame.attrs["cluster"]` | R59 | аналитика сцен |
+| главное_действие | `main_action` | `Frame.attrs["main_action"]` | R52 | этап кадров |
+| действие / фон / … | `shot01_*` | `Frame.attrs` | R2–R14 (кроме R8) | shot_01 |
+| действие_shot02 / … | `shot02_*` | `Frame.attrs` | R16–21, R25–29 | shot_02 |
 
 **Поля проекта (target=project):**
 
