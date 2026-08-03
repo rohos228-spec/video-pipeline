@@ -716,12 +716,16 @@ async def _apply_approve(
         if nxt is not ProjectStatus.generating_hero:
             # Цикл check(hero)→regen→check: не идём «дальше», а обратно в check.
             try:
-                from app.services.hero_check_regen import maybe_return_to_check_after_hero
+                from app.services.vision_check_loop import (
+                    maybe_return_to_check_after_vision_ready,
+                )
 
-                check_nxt = await maybe_return_to_check_after_hero(session, project)
+                check_nxt = await maybe_return_to_check_after_vision_ready(
+                    session, project
+                )
             except Exception:  # noqa: BLE001
                 logger.exception(
-                    "auto_advance: #{} hero_check_regen return failed",
+                    "auto_advance: #{} vision_check_loop return after hero failed",
                     project.id,
                 )
                 check_nxt = None
@@ -754,6 +758,59 @@ async def _apply_approve(
         )
         # allow_restart: после перезапуска plan нода script часто ещё done —
         # без этого UI не показывает «в работе», хотя Project.status=scripting.
+        await _prepare_node_run_for_status(
+            session, project, nxt, allow_restart=True
+        )
+        project.status = nxt
+    elif transition.ready_status is ProjectStatus.images_ready:
+        # Цикл check(scenes)→regen→check; иначе обычный else ниже.
+        check_nxt = None
+        try:
+            from app.services.vision_check_loop import (
+                maybe_return_to_check_after_vision_ready,
+                vision_check_loop_active,
+            )
+
+            if vision_check_loop_active(project):
+                check_nxt = await maybe_return_to_check_after_vision_ready(
+                    session, project
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "auto_advance: #{} vision_check_loop return after images failed",
+                project.id,
+            )
+            check_nxt = None
+        if check_nxt is not None:
+            nxt = check_nxt
+        else:
+            from app.services.excel_gpt_node import prepare_enrich_chain_for_auto_advance
+
+            enrich_nxt = prepare_enrich_chain_for_auto_advance(
+                project, transition.ready_status
+            )
+            if enrich_nxt is not None:
+                nxt = enrich_nxt
+            else:
+                graph_nxt = await _graph_next_running(
+                    session, project, transition.ready_status
+                )
+                if graph_nxt is None:
+                    logger.warning(
+                        "graph: #{} no next step after images_ready — check canvas edges",
+                        project.id,
+                    )
+                    return
+                nxt = graph_nxt
+        skipped = await skip_disabled_running_async(session, project, nxt)
+        if skipped is None:
+            return
+        nxt = await _apply_running_if_data_ok(session, project, skipped or nxt)
+        if nxt is None:
+            return
+        await _pin_excel_gpt_key_after_ready(
+            session, project, ProjectStatus.images_ready, nxt
+        )
         await _prepare_node_run_for_status(
             session, project, nxt, allow_restart=True
         )

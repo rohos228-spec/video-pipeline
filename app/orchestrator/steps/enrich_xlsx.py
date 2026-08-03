@@ -140,22 +140,22 @@ async def _after_excel_gpt_done(
                 node_key,
             )
 
-    # checkMode после hero: fail → точечный переген PNG → снова check.
-    # Работает и без auto_mode (воркер подхватит generating_hero).
+    # checkMode после hero/scenes: fail → db_patch + точечный переген → снова check.
+    # Работает и без auto_mode (воркер подхватит generating_hero / generating_images).
     if node_key:
         try:
-            from app.services.hero_check_regen import (
-                maybe_start_hero_check_regen_after_check,
+            from app.services.vision_check_loop import (
+                maybe_start_vision_check_loop_after_check,
             )
 
-            started = await maybe_start_hero_check_regen_after_check(
+            started = await maybe_start_vision_check_loop_after_check(
                 session, project, node_key
             )
             if started:
                 return
         except Exception:  # noqa: BLE001
             logger.exception(
-                "[#{}] enrich_xlsx: hero_check_regen after {} failed",
+                "[#{}] enrich_xlsx: vision_check_loop after {} failed",
                 project.id,
                 node_key,
             )
@@ -428,6 +428,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             from app.services.gpt_operator import resolve_check_report_format
 
             report_fmt, _ = resolve_check_report_format(project, node_key)
+            from app.services.gpt_operator import append_vision_hint_for_upstream
+
             if check_prompt_source == "agent":
                 master, agent_step = assemble_check_agent_prompt(
                     project,
@@ -436,11 +438,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     reviewer_notes=reviewer_notes,
                     report_format=report_fmt,
                 )
-                from app.services.gpt_operator import upstream_node_type_for_check
-                from app.services.check_analysis import append_hero_regen_hint
-
-                if upstream_node_type_for_check(project, node_key) == "hero":
-                    master = append_hero_regen_hint(master)
+                master = append_vision_hint_for_upstream(project, node_key, master)
                 source_prompt_keys = [f"agent:{agent_step}"] if agent_step else ["agent"]
                 accompanying = ""
                 hint = project_format_hint_for_check(project, node_key)
@@ -466,19 +464,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     reviewer_notes=reviewer_notes,
                     report_format=report_fmt,
                 )
-                from app.services.gpt_operator import upstream_node_type_for_check
-                from app.services.check_analysis import append_hero_regen_hint
-
-                if upstream_node_type_for_check(project, node_key) == "hero":
-                    master = append_hero_regen_hint(master)
-                    for s in ok_sources:
-                        logger.info(
-                            "[#{}] enrich_xlsx check←hero {}: master={} accomp={}",
-                            project.id,
-                            s.get("nodeKey"),
-                            s.get("chars") or 0,
-                            len(str(s.get("accompanying") or "")),
-                        )
+                master = append_vision_hint_for_upstream(project, node_key, master)
                 accompanying = ""
                 hint = project_format_hint_for_check(project, node_key)
                 if hint:
@@ -538,6 +524,43 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         ]
         if not data_paths:
             raise RuntimeError("gpt-operator: нет существующих файлов на входе")
+
+        if check_mode and node_key:
+            from app.services.vision_check_db import build_vision_db_snapshot
+            from app.services.vision_check_loop import (
+                filter_image_paths_for_recheck,
+                get_vision_kind,
+            )
+
+            data_paths = filter_image_paths_for_recheck(project, data_paths)
+            try:
+                from app.services.gpt_operator import upstream_node_type_for_check
+
+                up = upstream_node_type_for_check(project, node_key)
+                kind_hint = get_vision_kind(project)
+                if not kind_hint:
+                    if up == "hero":
+                        kind_hint = "hero"
+                    elif up in ("images", "hitl_images", "image_prompts"):
+                        kind_hint = "scenes"
+                db_snap = await build_vision_db_snapshot(
+                    session,
+                    project,
+                    image_paths=data_paths,
+                    kind=kind_hint,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "[#{}] enrich_xlsx: vision DB snapshot failed",
+                    project.id,
+                )
+                db_snap = ""
+            if db_snap:
+                accompanying = (
+                    f"{accompanying}\n\n{db_snap}".strip()
+                    if accompanying
+                    else db_snap
+                )
 
         role = str(resolved.get("role") or "assist")
         output_mode = "text" if check_mode else str(resolved.get("outputMode") or "text")

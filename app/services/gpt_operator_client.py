@@ -103,7 +103,25 @@ async def run_operator_api(
     OpenAI-совместимого шлюза; иначе — детерминированный stub без сети
     (dev/tests).
     """
-    from app.services.gpt_api import gpt_api_enabled
+    from app.services.gpt_api import gpt_api_enabled, is_image_path
+
+    # Vision limit 8: checkMode с кучей PNG → батчи, один итоговый отчёт.
+    if (
+        gpt_api_enabled()
+        and check_mode
+        and sum(1 for p in input_paths if is_image_path(p)) > 8
+    ):
+        return await _run_check_vision_batched(
+            project_dir=project_dir,
+            node_key=node_key,
+            role=role,
+            output_mode=output_mode,
+            prompt=prompt,
+            accompanying=accompanying,
+            input_paths=input_paths,
+            check_fix=check_fix,
+            source_prompt_keys=source_prompt_keys,
+        )
 
     if gpt_api_enabled():
         return await _run_operator_api_real(
@@ -402,6 +420,147 @@ async def _run_operator_api_real(
         gate_status=gate_status,
         analysis=analysis,
         apply_ops=apply_ops,
+    )
+
+
+async def _run_check_vision_batched(
+    *,
+    project_dir: Path,
+    node_key: str,
+    role: str,
+    output_mode: str,
+    prompt: str,
+    accompanying: str,
+    input_paths: list[Path],
+    check_fix: bool = True,
+    source_prompt_keys: list[str] | None = None,
+) -> OperatorApiResult:
+    """Несколько vision-батчей по 8 PNG → склеенный отчёт + общий verdict."""
+    from app.services.check_analysis import (
+        extract_db_patch,
+        extract_frame_regen_targets,
+        extract_hero_regen_ids,
+    )
+    from app.services.gpt_api import is_image_path
+
+    images = [p for p in input_paths if is_image_path(p)]
+    others = [p for p in input_paths if not is_image_path(p)]
+    batch_size = 8
+    batches = [images[i : i + batch_size] for i in range(0, len(images), batch_size)]
+    logger.info(
+        "gpt_operator/api: vision batch check node={} images={} batches={}",
+        node_key,
+        len(images),
+        len(batches),
+    )
+
+    parts: list[str] = []
+    any_fail = False
+    all_hero: list[str] = []
+    all_frames: list[dict] = []
+    merged_patch: dict = {"characters": [], "ops": []}
+    seen_hero: set[str] = set()
+    seen_frame: set[tuple[int, int]] = set()
+    last: OperatorApiResult | None = None
+
+    for bi, batch in enumerate(batches, start=1):
+        batch_prompt = (
+            f"{prompt}\n\n"
+            f"# BATCH {bi}/{len(batches)}\n"
+            f"Проверь ТОЛЬКО эти файлы: {', '.join(p.name for p in batch)}.\n"
+            "В отчёте укажи regen только для файлов этого батча."
+        )
+        res = await _run_operator_api_real(
+            project_dir=project_dir,
+            node_key=node_key,
+            role=role,
+            output_mode=output_mode,
+            prompt=batch_prompt,
+            accompanying=accompanying,
+            input_paths=list(others) + list(batch),
+            check_mode=True,
+            check_fix=check_fix,
+            source_prompt_keys=source_prompt_keys,
+        )
+        last = res
+        text = res.reply_text or ""
+        parts.append(f"===== BATCH {bi}/{len(batches)} =====\n{text}")
+        if (res.gate_status or "").lower() == "fail" or (
+            res.analysis and res.analysis.verdict == "fail"
+        ):
+            any_fail = True
+        for hid in extract_hero_regen_ids(text):
+            if hid not in seen_hero:
+                seen_hero.add(hid)
+                all_hero.append(hid)
+        for ft in extract_frame_regen_targets(text):
+            key = (int(ft["number"]), int(ft.get("shot") or 1))
+            if key not in seen_frame:
+                seen_frame.add(key)
+                all_frames.append({"number": key[0], "shot": key[1]})
+        patch = extract_db_patch(text)
+        if patch:
+            for c in patch.get("characters") or []:
+                if isinstance(c, dict):
+                    merged_patch["characters"].append(c)
+            for op in patch.get("ops") or []:
+                if isinstance(op, dict):
+                    merged_patch["ops"].append(op)
+
+    verdict = "fail" if any_fail else "pass"
+    regen_lines: list[str] = []
+    if all_hero:
+        regen_lines.append("## regen_heroes")
+        regen_lines.append("regen: " + ", ".join(all_hero))
+    if all_frames:
+        regen_lines.append("## regen_frames")
+        toks = [
+            f"{t['number']}s2" if t["shot"] == 2 else str(t["number"])
+            for t in all_frames
+        ]
+        regen_lines.append("frames: " + ", ".join(toks))
+    if merged_patch["characters"] or merged_patch["ops"]:
+        regen_lines.append("## db_patch")
+        regen_lines.append("```json")
+        regen_lines.append(json.dumps(merged_patch, ensure_ascii=False, indent=2))
+        regen_lines.append("```")
+
+    merged = (
+        "# ОТЧЁТ ПРОВЕРКИ\n"
+        f"verdict: {verdict}\n"
+        "mode: report_only\n"
+        "source_prompts: vision_batched\n\n"
+        "## summary\n"
+        f"Склеенный vision-check: {len(batches)} батч(ей), "
+        f"{len(images)} изображений. Итог: {verdict}.\n\n"
+        + ("\n".join(regen_lines) + "\n\n" if regen_lines else "")
+        + "## analysis\n"
+        + "\n\n".join(parts)
+    )
+
+    out_dir = project_dir / "excel_gpt_uploads" / node_key
+    out_dir.mkdir(parents=True, exist_ok=True)
+    analysis = parse_check_analysis(merged)
+    # Force merged verdict (parse may miss)
+    if analysis.verdict != verdict:
+        analysis.verdict = verdict  # type: ignore[assignment]
+    mode = "fix" if check_fix else "report_only"
+    write_analysis_json(out_dir, analysis)
+    write_check_report_txt(
+        out_dir, analysis, mode=mode, source_prompts=list(source_prompt_keys or [])
+    )
+    # Preserve raw merged text with regen/db_patch for vision_check_loop parsers
+    reply_path = out_dir / "gpt_reply.txt"
+    reply_path.write_text(merged, encoding="utf-8")
+    report_path = out_dir / "check_report.txt"
+    report_path.write_text(merged, encoding="utf-8")
+
+    return OperatorApiResult(
+        reply_text=merged,
+        output_paths=[reply_path, report_path],
+        gate_status=verdict,
+        analysis=analysis,
+        apply_ops=last.apply_ops if last else None,
     )
 
 

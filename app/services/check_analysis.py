@@ -132,6 +132,53 @@ regen: c01, c03
 Если все ок — строку regen не пиши.
 """.strip()
 
+# Единый хвост для vision-check (hero + scenes): сверка с БД + regen + db_patch.
+VISION_CHECK_REPORT_HINT = """
+## vision_check (обязательно при проверке PNG)
+Сверяй каждое изображение с блоком «## База (source of truth)» во входе.
+Не выдумывай поля — только БД + видимое на картинке.
+- Hero (characters/cXX.png): формат sheet 16:9 turnaround, белый фон, без текста на листе;
+  identity = Entity / excel_hero (внешность, одежда, характер).
+- Scenes (scenes/frame_*.png): формат кадра + соответствие image_prompt + identity
+  персонажей из attrs.персонажи / Entity.
+
+При verdict: fail перечисли ТОЛЬКО провалившиеся (прошедшие не пиши):
+
+## regen_heroes
+regen: c01, c03
+
+## regen_frames
+frames: 3, 7, 12s2
+(номер кадра; shot2 → Ns2 / N_s2)
+
+## db_patch
+```json
+{
+  "characters": [{"id":"c02","внешность":"...","одежда":"...","характер":"...","правила":"..."}],
+  "ops": [{"frame_uuid":"<uuid из Базы>","fields":{"промт_картинки":"..."}}]
+}
+```
+Минимальный patch: что исправить в описании персонажа и/или промте кадра перед перегеном.
+Если правки БД не нужны — блок db_patch можно опустить, но regen_* обязателен при fail.
+Если все ок — секции regen_* / db_patch не пиши.
+""".strip()
+
+_FRAMES_LINE_RE = re.compile(r"(?im)^\s*frames\s*:\s*(.+?)\s*$")
+_FRAME_TOKEN_RE = re.compile(
+    r"^(?:frame[_-]?)?(\d{1,4})(?:[_-]?(?:s2|shot2|02))?$",
+    re.IGNORECASE,
+)
+_FRAME_FILE_RE = re.compile(
+    r"\bframe[_-]?(\d{1,4})(?:[_-]s2[_-][^.\s]+|[_-]?(?:s2|shot2|02))?[_-]?[^.\s]*\.(?:png|jpe?g|webp|gif)\b",
+    re.IGNORECASE,
+)
+_DB_PATCH_FENCE_RE = re.compile(
+    r"(?is)##\s*db_patch\s*\n\s*```(?:json)?\s*(\{.*?\})\s*```",
+)
+_DB_PATCH_BARE_RE = re.compile(
+    r"(?is)##\s*db_patch\s*\n\s*(\{[^\n].*?\})\s*(?=\n##|\n# |\Z)",
+)
+
 
 def normalize_hero_excel_id(raw: str) -> str | None:
     """c1 / C01 / c01.png → c01."""
@@ -209,6 +256,150 @@ def append_hero_regen_hint(prompt: str) -> str:
     if not base:
         return HERO_REGEN_REPORT_HINT
     return f"{base}\n\n{HERO_REGEN_REPORT_HINT}"
+
+
+def append_vision_check_hint(prompt: str) -> str:
+    """Дописать единый vision_check хвост (hero + scenes)."""
+    base = (prompt or "").rstrip()
+    low = base.lower()
+    if "vision_check" in low and "db_patch" in low:
+        return base
+    if not base:
+        return VISION_CHECK_REPORT_HINT
+    return f"{base}\n\n{VISION_CHECK_REPORT_HINT}"
+
+
+def normalize_frame_regen_token(raw: str) -> dict[str, Any] | None:
+    """``3`` / ``7s2`` / ``frame_012_s2.png`` → ``{number, shot}``."""
+    s = (raw or "").strip().strip(".,;:)")
+    if not s:
+        return None
+    # file-like: frame_003_abcd.png / frame_003_s2_uuid.png
+    fm = re.search(
+        r"frame[_-]?(\d{1,4})(?:[_-]s2|_s2_|[_-]?(?:s2|shot2))?",
+        s,
+        re.IGNORECASE,
+    )
+    if fm and re.search(r"\.(?:png|jpe?g|webp|gif)\b", s, re.IGNORECASE):
+        num = int(fm.group(1))
+        shot = 2 if re.search(r"(?:_s2_|s2|shot2)", s, re.IGNORECASE) else 1
+        return {"number": num, "shot": shot}
+    stem = Path(s).stem if "." in s else s
+    stem = stem.strip()
+    # 12s2 / 12_s2 / 12-shot2
+    m2 = re.match(
+        r"^(?:frame[_-]?)?(\d{1,4})(?:[_-]?(?:s2|shot2|02))$",
+        stem,
+        re.IGNORECASE,
+    )
+    if m2:
+        return {"number": int(m2.group(1)), "shot": 2}
+    m1 = re.match(r"^(?:frame[_-]?)?(\d{1,4})$", stem, re.IGNORECASE)
+    if m1:
+        return {"number": int(m1.group(1)), "shot": 1}
+    return None
+
+
+def extract_frame_regen_targets(text: str) -> list[dict[str, Any]]:
+    """Список ``{number, shot}`` для перегена сцен из check_report."""
+    raw = text or ""
+    found: list[dict[str, Any]] = []
+    seen: set[tuple[int, int]] = set()
+
+    def _add(token: str) -> None:
+        t = normalize_frame_regen_token(token)
+        if not t:
+            return
+        key = (int(t["number"]), int(t["shot"]))
+        if key in seen:
+            return
+        seen.add(key)
+        found.append({"number": key[0], "shot": key[1]})
+
+    for m in _FRAMES_LINE_RE.finditer(raw):
+        for part in re.split(r"[,;/\s]+", m.group(1) or ""):
+            part = part.strip()
+            if part:
+                _add(part)
+    if found:
+        return found
+
+    # Heuristic: fail findings mentioning frame_NNN_*.png
+    bodies = _section_bodies(raw) if looks_like_check_report_txt(raw) else {}
+    chunks: list[str] = []
+    if bodies:
+        for name in ("findings", "related", "actions", "summary"):
+            section = bodies.get(name) or ""
+            if name == "findings":
+                for fm in _FINDING_RE.finditer(section):
+                    if fm.group(1).lower() in ("error", "fail", "warn"):
+                        chunks.append(fm.group(2))
+            else:
+                low = section.lower()
+                if any(
+                    w in low
+                    for w in ("regen", "переген", "плохо", "брак", "error", "fail")
+                ):
+                    chunks.append(section)
+    else:
+        chunks.append(raw)
+    for chunk in chunks:
+        for m in re.finditer(
+            r"\bframe[_-]?\d{1,4}[^\s]*\.(?:png|jpe?g|webp|gif)\b",
+            chunk,
+            re.IGNORECASE,
+        ):
+            _add(m.group(0))
+    return found
+
+
+def extract_db_patch(text: str) -> dict[str, Any] | None:
+    """JSON из секции ``## db_patch`` → ``{characters?, ops?}`` или None."""
+    raw = text or ""
+    blob: str | None = None
+    m = _DB_PATCH_FENCE_RE.search(raw)
+    if m:
+        blob = m.group(1)
+    else:
+        m2 = _DB_PATCH_BARE_RE.search(raw)
+        if m2:
+            blob = m2.group(1)
+    if not blob:
+        # fallback: fenced JSON containing characters/ops near db_patch
+        if "db_patch" not in raw.lower():
+            return None
+        for fm in _JSON_FENCE.finditer(raw):
+            cand = fm.group(1)
+            if '"characters"' in cand or '"ops"' in cand:
+                blob = cand
+                break
+    if not blob:
+        return None
+    try:
+        data = json.loads(blob)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    chars = data.get("characters")
+    ops = data.get("ops")
+    out: dict[str, Any] = {}
+    if isinstance(chars, list) and chars:
+        out["characters"] = chars
+    if isinstance(ops, list) and ops:
+        # normalize short form → target=frame
+        norm_ops: list[dict[str, Any]] = []
+        for op in ops:
+            if not isinstance(op, dict):
+                continue
+            op2 = dict(op)
+            if "frame_uuid" in op2 and "target" not in op2:
+                op2["target"] = "frame"
+            norm_ops.append(op2)
+        if norm_ops:
+            out["ops"] = norm_ops
+    return out or None
+
 
 _JSON_FENCE = re.compile(
     r"```(?:json)?\s*(\{.*?\})\s*```",

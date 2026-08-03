@@ -363,8 +363,11 @@ def assemble_check_master_prompt_with_hero_hint(
     reviewer_notes: str = "",
     report_format: str | None = None,
 ) -> str:
-    """assemble_check_master_prompt + regen hint если upstream=hero."""
-    from app.services.check_analysis import append_hero_regen_hint
+    """assemble_check_master_prompt + vision_check hint для hero/scenes."""
+    from app.services.check_analysis import (
+        append_hero_regen_hint,
+        append_vision_check_hint,
+    )
 
     text = assemble_check_master_prompt(
         sources,
@@ -372,8 +375,28 @@ def assemble_check_master_prompt_with_hero_hint(
         reviewer_notes=reviewer_notes,
         report_format=report_format,
     )
-    if upstream_node_type_for_check(project, node_key) == "hero":
-        return append_hero_regen_hint(text)
+    typ = upstream_node_type_for_check(project, node_key)
+    if typ == "hero":
+        text = append_vision_check_hint(append_hero_regen_hint(text))
+        return text
+    if typ in ("images", "hitl_images", "image_prompts"):
+        return append_vision_check_hint(text)
+    return text
+
+
+def append_vision_hint_for_upstream(project: Project, node_key: str, prompt: str) -> str:
+    """Дописать vision_check / hero regen hint по типу upstream."""
+    from app.services.check_analysis import (
+        append_hero_regen_hint,
+        append_vision_check_hint,
+    )
+
+    typ = upstream_node_type_for_check(project, node_key)
+    text = prompt or ""
+    if typ == "hero":
+        return append_vision_check_hint(append_hero_regen_hint(text))
+    if typ in ("images", "hitl_images", "image_prompts"):
+        return append_vision_check_hint(text)
     return text
 
 

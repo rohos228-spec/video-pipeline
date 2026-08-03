@@ -733,7 +733,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 if phase == "shot1":
                     await _apply_pending_regens(session, project.id)
                     target = await _next_frame_to_process(
-                        session, project.id, out_dir
+                        session, project.id, out_dir, project=project
                     )
                     if target is not None:
                         await _generate_and_send(
@@ -742,8 +742,40 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         )
                         continue
                     if await _all_frames_have_image_or_failed(
-                        session, project.id, out_dir
+                        session, project.id, out_dir, project=project
                     ):
+                        from app.services.vision_check_loop import get_scene_check_regen
+
+                        # Точечный vision-regen: только failed shots, без полной очереди shot2.
+                        regen_tgts = get_scene_check_regen(project)
+                        if regen_tgts:
+                            need_s2 = False
+                            by_num = {fr.number: fr for fr in frames}
+                            for t in regen_tgts:
+                                if int(t.get("shot") or 1) != 2:
+                                    continue
+                                num = int(t["number"])
+                                if disk_has_shot2_image(out_dir, num):
+                                    continue
+                                fr = by_num.get(num)
+                                if fr is None:
+                                    continue
+                                attrs = dict(fr.attrs or {})
+                                if not (attrs.get(SHOT2_PROMPT_ATTR) or "").strip():
+                                    # shot2 без промта — скипаем
+                                    continue
+                                attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
+                                fr.attrs = attrs
+                                need_s2 = True
+                            if need_s2:
+                                await session.flush()
+                                phase = "shot2"
+                                continue
+                            logger.info(
+                                "[#{}] generate_images: scene_check_regen done — завершаю",
+                                project.id,
+                            )
+                            break
                         xlsx_path = project.data_dir / "project.xlsx"
                         shot2_queued = await _init_shot2_queue(
                             session, project, frames, out_dir, xlsx_path
@@ -761,7 +793,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         )
                         break
                     pending = await _pending_shot1_numbers(
-                        session, project.id, out_dir
+                        session, project.id, out_dir, project=project
                     )
                     if pending:
                         logger.warning(
@@ -776,7 +808,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     continue
 
                 # phase == "shot2"
-                target2 = await _next_shot2_frame_to_process(session, project.id)
+                target2 = await _next_shot2_frame_to_process(
+                    session, project.id, project=project
+                )
                 if target2 is not None:
                     ref1 = find_shot1_image(out_dir, target2.number)
                     if ref1 is None:
@@ -849,8 +883,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
 
 async def _pending_shot1_numbers(
-    session: AsyncSession, project_id: int, out_dir: Path
+    session: AsyncSession,
+    project_id: int,
+    out_dir: Path,
+    *,
+    project: Project | None = None,
 ) -> list[int]:
+    from app.services.vision_check_loop import scene_regen_allows
+
     frames = (
         await session.execute(
             select(Frame)
@@ -858,13 +898,27 @@ async def _pending_shot1_numbers(
             .order_by(Frame.number)
         )
     ).scalars().all()
-    return [fr.number for fr in frames if frame_needs_shot1_image(fr, out_dir)]
+    out: list[int] = []
+    for fr in frames:
+        if project is not None:
+            allow = scene_regen_allows(project, fr.number, 1)
+            if allow is False:
+                continue
+        if frame_needs_shot1_image(fr, out_dir):
+            out.append(fr.number)
+    return out
 
 
 async def _next_frame_to_process(
-    session: AsyncSession, project_id: int, out_dir: Path
+    session: AsyncSession,
+    project_id: int,
+    out_dir: Path,
+    *,
+    project: Project | None = None,
 ) -> Frame | None:
     """Следующий кадр для outsee: промт есть, валидного PNG на диске нет."""
+    from app.services.vision_check_loop import scene_regen_allows
+
     frames = (
         await session.execute(
             select(Frame)
@@ -873,6 +927,10 @@ async def _next_frame_to_process(
         )
     ).scalars().all()
     for fr in frames:
+        if project is not None:
+            allow = scene_regen_allows(project, fr.number, 1)
+            if allow is False:
+                continue
         if not frame_needs_shot1_image(fr, out_dir):
             continue
         if fr.status is not FrameStatus.image_prompt_ready:
@@ -882,9 +940,38 @@ async def _next_frame_to_process(
 
 
 async def _all_frames_have_image_or_failed(
-    session: AsyncSession, project_id: int, out_dir: Path
+    session: AsyncSession,
+    project_id: int,
+    out_dir: Path,
+    *,
+    project: Project | None = None,
 ) -> bool:
     """True когда у каждого кадра с промтом есть валидный PNG или failed."""
+    from app.services.vision_check_loop import get_scene_check_regen, scene_regen_allows
+
+    if project is not None and get_scene_check_regen(project):
+        # Только точечные shot1 из scene_check_regen.
+        frames = (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project_id)
+                .order_by(Frame.number)
+            )
+        ).scalars().all()
+        by_num = {fr.number: fr for fr in frames}
+        for t in get_scene_check_regen(project):
+            if int(t.get("shot") or 1) != 1:
+                continue
+            fr = by_num.get(int(t["number"]))
+            if fr is None:
+                continue
+            if fr.status is FrameStatus.failed:
+                continue
+            if disk_has_valid_frame_image(out_dir, fr.number):
+                continue
+            return False
+        return True
+
     frames = (
         await session.execute(
             select(Frame)
@@ -893,6 +980,10 @@ async def _all_frames_have_image_or_failed(
         )
     ).scalars().all()
     for fr in frames:
+        if project is not None:
+            allow = scene_regen_allows(project, fr.number, 1)
+            if allow is False:
+                continue
         if is_skippable_empty_prompt(fr.image_prompt or ""):
             continue
         if fr.status is FrameStatus.failed:
@@ -936,8 +1027,13 @@ async def _init_shot2_queue(
 
 
 async def _next_shot2_frame_to_process(
-    session: AsyncSession, project_id: int
+    session: AsyncSession,
+    project_id: int,
+    *,
+    project: Project | None = None,
 ) -> Frame | None:
+    from app.services.vision_check_loop import scene_regen_allows
+
     frames = (
         await session.execute(
             select(Frame)
@@ -946,6 +1042,10 @@ async def _next_shot2_frame_to_process(
         )
     ).scalars().all()
     for fr in frames:
+        if project is not None:
+            allow = scene_regen_allows(project, fr.number, 2)
+            if allow is False:
+                continue
         attrs = fr.attrs or {}
         if attrs.get(SHOT2_STATUS_ATTR) != "image_prompt_ready":
             continue
