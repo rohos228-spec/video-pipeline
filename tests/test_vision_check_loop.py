@@ -401,6 +401,58 @@ def test_scene_regen_allows() -> None:
     assert vcl.scene_regen_allows(p, 9, 1) is True
 
 
+def test_auto_vision_fix_missing_c02() -> None:
+    from types import SimpleNamespace
+
+    from app.services.vision_regen_fix import (
+        merge_db_patches,
+        plan_vision_prompt_fixes,
+    )
+
+    fr = SimpleNamespace(
+        number=5,
+        uuid="uuid-5",
+        image_prompt="archive books on table, noir watercolor",
+        attrs={"персонажи": "c02"},
+    )
+    reply = """
+## issues
+- [critical] frame_005_abc.png: по Базе должен быть c02, но видны только книги
+- [critical] frame_006_x.png: лишний двойник похожих мужских фигур
+"""
+    fr6 = SimpleNamespace(
+        number=6,
+        uuid="uuid-6",
+        image_prompt="two men in archive",
+        attrs={"персонажи": "—"},
+    )
+    ops = plan_vision_prompt_fixes(
+        reply,
+        frames_by_num={5: fr, 6: fr6},  # type: ignore[arg-type]
+        char_rows=[{"id": "c02", "name": "архивариус", "look": "усы", "clothes": "халат"}],
+        frame_targets=[{"number": 5, "shot": 1}, {"number": 6, "shot": 1}],
+    )
+    by_u = {o["frame_uuid"]: o["fields"]["промт_картинки"] for o in ops}
+    assert "uuid-5" in by_u
+    assert "VISION_FIX" in by_u["uuid-5"]
+    assert "c02" in by_u["uuid-5"]
+    assert "MUST show" in by_u["uuid-5"]
+    assert "uuid-6" in by_u
+    assert "FORBIDDEN" in by_u["uuid-6"]
+
+    merged = merge_db_patches(
+        {"ops": [{"frame_uuid": "uuid-5", "fields": {"промт_картинки": "from-model"}}]},
+        ops,
+    )
+    assert merged is not None
+    # модель для uuid-5 важнее
+    assert any(
+        o["frame_uuid"] == "uuid-5" and o["fields"]["промт_картинки"] == "from-model"
+        for o in merged["ops"]
+    )
+    assert any(o["frame_uuid"] == "uuid-6" for o in merged["ops"])
+
+
 def test_extract_ok_vision_tokens() -> None:
     from app.services.check_analysis import extract_ok_vision_tokens
 

@@ -418,6 +418,33 @@ async def maybe_start_vision_check_loop_after_check(
             )
             return False
 
+    # Авто-фикс промтов (нет c02 / двойники), если агент не дал db_patch.
+    if kind == "scenes" and frame_tgts:
+        from app.services.vision_regen_fix import (
+            build_auto_vision_db_patch,
+            merge_db_patches,
+        )
+
+        try:
+            auto_ops = await build_auto_vision_db_patch(
+                session, project, reply, frame_tgts
+            )
+            merged = merge_db_patches(patch, auto_ops)
+            if merged is not patch:
+                logger.info(
+                    "[#{}] vision_check_loop: auto prompt fixes ops={} "
+                    "(model_ops={})",
+                    project.id,
+                    len(auto_ops),
+                    len((patch or {}).get("ops") or []),
+                )
+            patch = merged
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "[#{}] vision_check_loop: auto prompt fix failed",
+                project.id,
+            )
+
     if kind == "hero" and not hero_ids and not patch:
         logger.info(
             "[#{}] vision_check_loop: hero fail на {} без critical regen/patch — без цикла",
