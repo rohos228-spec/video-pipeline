@@ -287,3 +287,34 @@ def test_patch_sets_transport_api(tmp_path: Path, monkeypatch) -> None:
     assert res["role"] == "transform"
     assert res["config"]["transport"] == "api"
     assert res["outputMode"] == "sidecar"
+
+
+def test_resolve_hydrates_assist_reply_from_disk(tmp_path: Path, monkeypatch) -> None:
+    """meta.gpt_operator_results стёрты — UI всё равно видит gpt_reply.txt."""
+    p = _project(tmp_path, monkeypatch)
+    key = "n_excel_gpt_2"
+    (p.data_dir / "project.xlsx").write_bytes(b"PK" + b"0" * 200)
+    up = p.data_dir / "excel_gpt_uploads" / key
+    up.mkdir(parents=True)
+    (up / "gpt_reply.txt").write_text(
+        '{"ops":[{"frame_uuid":"abc","fields":{"место":"двор"}}]}\n',
+        encoding="utf-8",
+    )
+    p.meta = {
+        "canvas_graph": {
+            "nodes": [{"id": key, "type": "excel_gpt", "position": {"x": 0, "y": 0}}],
+            "edges": [],
+        },
+        "excel_gpt_nodes": {
+            key: {"role": "assist", "outputMode": "project_file", "transport": "api"}
+        },
+        # как после canvas PATCH / clear_step
+        "gpt_operator_results": {},
+    }
+    res = resolve_operator(p, key)
+    last = res.get("lastResult") or {}
+    assert last.get("replyPreview")
+    assert "frame_uuid" in str(last.get("replyPreview"))
+    assert any(
+        str(p).endswith("gpt_reply.txt") for p in (last.get("outputPaths") or [])
+    )

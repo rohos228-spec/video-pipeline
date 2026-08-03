@@ -1003,15 +1003,28 @@ def hydrate_check_result_from_disk(
             parsed = parse_check_analysis(preview)
             parsed_dict = parsed.to_dict()
 
+    def _fill_reply_preview(dst: dict[str, Any]) -> dict[str, Any]:
+        """assist/project_file: показать gpt_reply даже без check-verdict."""
+        if str(dst.get("replyPreview") or "").strip():
+            return dst
+        for src in (reply_path, report_path):
+            if src.is_file() and src.stat().st_size > 0:
+                try:
+                    dst["replyPreview"] = src.read_text(encoding="utf-8")[:2000]
+                    break
+                except Exception:  # noqa: BLE001
+                    continue
+        return dst
+
     if not parsed_dict:
-        # Даже без verdict — отдать файлы uploads (отчёт может быть plain text).
+        # Даже без verdict — отдать файлы uploads + текст ответа GPT.
         if report_path.is_file() or reply_path.is_file():
-            return _merge_upload_paths(entry)
+            return _fill_reply_preview(_merge_upload_paths(entry))
         return entry
 
     verdict = str(parsed_dict.get("verdict") or "").strip().lower()
     if verdict not in ("pass", "fail"):
-        return _merge_upload_paths(entry)
+        return _fill_reply_preview(_merge_upload_paths(entry))
 
     entry["gateStatus"] = verdict
     entry["analysis"] = parsed_dict
@@ -1019,7 +1032,7 @@ def hydrate_check_result_from_disk(
         preview = report_path.read_text(encoding="utf-8")
     if preview:
         entry["replyPreview"] = preview[:2000]
-    return _merge_upload_paths(entry)
+    return _fill_reply_preview(_merge_upload_paths(entry))
 
 
 def sanitize_check_reviewer_notes(text: str) -> str:
@@ -1225,8 +1238,9 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
     results = meta.get("gpt_operator_results")
     if isinstance(results, dict) and isinstance(results.get(node_key), dict):
         last = dict(results[node_key])
-    if check_mode or role in BRANCHING_ROLES:
-        last = hydrate_check_result_from_disk(project, node_key, last)
+    # Всегда с диска: canvas PATCH / clear_step часто стирают gpt_operator_results,
+    # а gpt_reply.txt остаётся — иначе UI «результат пуст» при готовом ответе.
+    last = hydrate_check_result_from_disk(project, node_key, last)
 
     pass_edges = [e for e in outgoing if is_pass_edge_kind(str(e.get("kind") or ""))]
     fail_edges = [e for e in outgoing if is_fail_edge_kind(str(e.get("kind") or ""))]

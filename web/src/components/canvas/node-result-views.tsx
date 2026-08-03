@@ -66,6 +66,19 @@ export function NodeResultViewBody({
     case "topic_edit":
       return <TopicEditView projectId={projectId} snapshot={snapshot} />;
     default:
+      if (
+        nodeType === "excel_gpt" ||
+        Boolean(nodeType?.startsWith("enrich_"))
+      ) {
+        return (
+          <ExcelGptResultView
+            projectId={projectId}
+            nodeKey={nodeKey}
+            nodeType={nodeType}
+            snapshot={snapshot}
+          />
+        );
+      }
       return (
         <DefaultResultView
           projectId={projectId}
@@ -732,6 +745,59 @@ function TopicEditView({
       <p className="text-xs text-muted-foreground">
         Для массовой генерации используйте Excel с колонкой «Название ролика».
       </p>
+    </div>
+  );
+}
+
+function ExcelGptResultView({
+  projectId,
+  nodeKey,
+  nodeType,
+  snapshot,
+}: {
+  projectId: number;
+  nodeKey?: string | null;
+  nodeType?: string | null;
+  snapshot: NodeResultSnapshot;
+}) {
+  const resolve = useQuery({
+    queryKey: ["gpt-operator-resolve", projectId, nodeKey],
+    queryFn: () => api.resolveGptOperator(projectId, nodeKey!),
+    enabled: Boolean(nodeKey),
+    staleTime: 5000,
+  });
+  const replyFromMeta = snapshot.items.find((i) => i.kind === "text")?.content?.trim();
+  const replyFromApi =
+    typeof resolve.data?.lastResult?.replyPreview === "string"
+      ? String(resolve.data.lastResult.replyPreview).trim()
+      : "";
+  const reply = replyFromMeta || replyFromApi;
+  const xlsxItem = snapshot.items.find((i) => i.kind === "xlsx");
+
+  return (
+    <div className="space-y-3">
+      <XlsxUploadBar
+        projectId={projectId}
+        nodeKey={nodeKey}
+        nodeType={nodeType}
+      />
+      {xlsxItem ? (
+        <p className="text-xs text-muted-foreground">{snapshot.summary}</p>
+      ) : null}
+      {resolve.isLoading && !reply ? (
+        <LoadingBlock />
+      ) : reply ? (
+        <ScrollArea className="max-h-[55vh] rounded-lg border border-white/10 bg-black/20 p-3">
+          <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-foreground/90">
+            {reply}
+          </pre>
+        </ScrollArea>
+      ) : (
+        <p className="py-4 text-sm text-muted-foreground">
+          Ответа GPT пока нет. Запустите ноду — после прогона здесь появится
+          текст из gpt_reply.txt.
+        </p>
+      )}
     </div>
   );
 }

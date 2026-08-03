@@ -396,39 +396,103 @@ function computeNodeResult(
       return empty("Предметы ещё не сгенерированы", "assets");
     }
 
+    case "excel_gpt":
     case "enrich_1":
     case "enrich_2":
     case "enrich_3":
     case "enrich_4":
     case "enrich_5":
     case "enrich": {
+      const meta = project?.meta as
+        | {
+            xlsx_snapshots_by_node?: Record<string, { name?: string }>;
+            excel_gpt_nodes?: Record<
+              string,
+              { lastReplyPath?: string; lastReplyAt?: string }
+            >;
+            gpt_operator_results?: Record<
+              string,
+              { replyPreview?: string; outputPaths?: string[] }
+            >;
+          }
+        | undefined;
+      const last =
+        nodeKey && meta?.gpt_operator_results?.[nodeKey]
+          ? meta.gpt_operator_results[nodeKey]
+          : undefined;
+      const cfg =
+        nodeKey && meta?.excel_gpt_nodes?.[nodeKey]
+          ? meta.excel_gpt_nodes[nodeKey]
+          : undefined;
+      const replyPreview = String(last?.replyPreview || "").trim();
+      const hasReplyMeta = Boolean(replyPreview || cfg?.lastReplyPath);
       const xlsx = xlsxAsset(ctx.assets);
       if (xlsx && project?.id) {
-        const snapMeta = (
-          project.meta as
-            | { xlsx_snapshots_by_node?: Record<string, { name?: string }> }
-            | undefined
-        )?.xlsx_snapshots_by_node;
+        const snapMeta = meta?.xlsx_snapshots_by_node;
         const snapName =
           nodeKey && snapMeta?.[nodeKey]?.name
             ? String(snapMeta[nodeKey].name)
             : null;
+        const items: NodeResultItem[] = [
+          {
+            id: xlsx.id,
+            label: snapName || "project.xlsx",
+            kind: "xlsx",
+            downloadUrl: api.downloadProjectXlsx(project.id, {
+              nodeKey: nodeKey ?? undefined,
+            }),
+          },
+        ];
+        if (replyPreview) {
+          items.push({
+            id: "gpt_reply",
+            label: "Ответ GPT",
+            kind: "text",
+            content: replyPreview,
+          });
+        }
+        return ready(
+          items,
+          snapName
+            ? `Снимок Excel: ${snapName}`
+            : hasReplyMeta
+              ? "Excel + ответ GPT"
+              : "Таблица Excel загружена",
+          "xlsx",
+          "default",
+        );
+      }
+      if (replyPreview) {
         return ready(
           [
             {
-              id: xlsx.id,
-              label: snapName || "project.xlsx",
-              kind: "xlsx",
-              downloadUrl: api.downloadProjectXlsx(project.id, {
-                nodeKey: nodeKey ?? undefined,
-              }),
+              id: "gpt_reply",
+              label: "Ответ GPT",
+              kind: "text",
+              content: replyPreview,
             },
           ],
-          snapName
-            ? `Снимок Excel: ${snapName}`
-            : "Таблица Excel загружена",
-          "xlsx",
+          "Ответ GPT готов",
+          "text",
         );
+      }
+      if (hasReplyMeta) {
+        // Путь есть, текст подтянет панель через /gpt-operator/.../resolve
+        return {
+          hasResult: true,
+          itemCount: 1,
+          summary: "Ответ GPT на диске",
+          items: [
+            {
+              id: "gpt_reply_path",
+              label: "Ответ GPT",
+              kind: "text",
+              content: "",
+            },
+          ],
+          replaceMode: "none",
+          viewMode: "default",
+        };
       }
       return empty("Таблица Excel ещё не создана", "xlsx");
     }

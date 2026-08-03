@@ -70,6 +70,44 @@ _SLOT_MAP: dict[int, tuple[ProjectStatus, ProjectStatus, str]] = {
 _MAX_RETRIES = 3
 
 
+def _persist_excel_gpt_reply_for_ui(
+    project: Project,
+    node_key: str | None,
+    *,
+    data_paths: list[Path],
+    api_res: object,
+) -> None:
+    """Сохранить ответ GPT в meta/диск до raise — иначе UI без результата."""
+    if not node_key:
+        return
+    try:
+        from app.services.gpt_operator import save_operator_result
+
+        reply = str(getattr(api_res, "reply_text", "") or "")
+        outs = list(getattr(api_res, "output_paths", None) or [])
+        save_operator_result(
+            project,
+            node_key,
+            input_paths=list(data_paths or []),
+            output_paths=outs,
+            reply_text=reply,
+            gate_status=getattr(api_res, "gate_status", None),
+            analysis=(
+                api_res.analysis.to_dict()  # type: ignore[attr-defined]
+                if getattr(api_res, "analysis", None) is not None
+                else None
+            ),
+        )
+        if reply.strip():
+            save_gpt_reply_text(project, node_key, reply)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "[#{}] enrich_xlsx: не удалось сохранить reply для UI (node={})",
+            project.id,
+            node_key,
+        )
+
+
 def _apply_enrich_ready_status(
     project: Project,
     *,
@@ -649,6 +687,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         applied.get("characters"),
                     )
                 except db_apply.ApplyOpsError as e:
+                    # Ответ модели уже на диске — сохраняем в meta, иначе UI
+                    # показывает «нет результата» при отклонённых полях.
+                    _persist_excel_gpt_reply_for_ui(
+                        project,
+                        node_key,
+                        data_paths=data_paths,
+                        api_res=api_res,
+                    )
                     raise RuntimeError(
                         f"enrich_xlsx node={node_key}: apply-ops отклонён: {e}"
                     ) from None
@@ -658,6 +704,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     .strip()
                     or "ops и characters пустые"
                 )
+                _persist_excel_gpt_reply_for_ui(
+                    project,
+                    node_key,
+                    data_paths=data_paths,
+                    api_res=api_res,
+                )
                 raise RuntimeError(
                     f"enrich_xlsx node={node_key}: apply-ops JSON пустой — {detail}. "
                     "Нужны непустые ops и/или characters (создай реестр, "
@@ -665,6 +717,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 )
             else:
                 # DB SoT: без apply-ops шаг не принимаем (TSV/xlsx writeback отключён).
+                _persist_excel_gpt_reply_for_ui(
+                    project,
+                    node_key,
+                    data_paths=data_paths,
+                    api_res=api_res,
+                )
                 raise RuntimeError(
                     f"enrich_xlsx node={node_key}: модель не вернула apply-ops JSON. "
                     "Нужен {\"ops\":[…]} и/или {\"characters\":[…]} — "
