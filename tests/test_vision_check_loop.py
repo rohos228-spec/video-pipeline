@@ -401,6 +401,41 @@ def test_scene_regen_allows() -> None:
     assert vcl.scene_regen_allows(p, 9, 1) is True
 
 
+def test_prose_reject_not_negated_pass_batch() -> None:
+    from app.services.check_analysis import (
+        extract_critical_frame_regen_targets,
+        extract_prose_reject_frame_targets,
+        resolve_vision_check_gate,
+    )
+
+    batch1 = """
+# ОТЧЁТ ПРОВЕРКИ
+verdict: fail
+## summary
+`frame_009_a2fc4f85.png` не утверждён: несколько копий c02.
+## findings
+- [ok] frame_001_x.png: ок
+## actions
+На перегенерацию направлен только `frame_009_a2fc4f85.png`.
+"""
+    batch2 = """
+# ОТЧЁТ ПРОВЕРКИ
+verdict: pass
+## summary
+frame_010_2c9cefe1.png утверждён.
+## findings
+- [ok] frame_010_2c9cefe1.png: принято
+## actions
+перегенерация и правки промта не требуются.
+"""
+    assert extract_prose_reject_frame_targets(batch1) == [{"number": 9, "shot": 1}]
+    assert extract_critical_frame_regen_targets(batch1) == [{"number": 9, "shot": 1}]
+    assert resolve_vision_check_gate(batch1) == "fail"
+    assert extract_prose_reject_frame_targets(batch2) == []
+    assert extract_critical_frame_regen_targets(batch2) == []
+    assert resolve_vision_check_gate(batch2) == "pass"
+
+
 def test_auto_vision_fix_missing_c02() -> None:
     from types import SimpleNamespace
 

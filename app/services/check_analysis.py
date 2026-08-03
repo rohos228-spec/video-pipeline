@@ -362,6 +362,62 @@ def normalize_frame_regen_token(raw: str) -> dict[str, Any] | None:
     return None
 
 
+def _section_requests_regen(section: str) -> bool:
+    """True если секция реально просит переген (не «перегенерация не требуется»)."""
+    low = (section or "").lower()
+    cleaned = re.sub(
+        r"(?i)(?:переген\w*|regen)\s+не\s+\w+|"
+        r"не\s+требу\w*\s+(?:переген\w*|regen)|"
+        r"без\s+(?:переген\w*|regen)|"
+        r"(?:переген\w*|regen)\s+не\s+нужн\w*",
+        " ",
+        low,
+    )
+    return any(
+        w in cleaned for w in ("regen", "переген", "плохо", "брак", "не утвержд")
+    )
+
+
+def extract_prose_reject_frame_targets(text: str) -> list[dict[str, Any]]:
+    """Кадры из prose: «не утверждён frame_009», «на перегенерацию … frame_009»."""
+    raw = text or ""
+    found: list[dict[str, Any]] = []
+    seen: set[tuple[int, int]] = set()
+
+    def _add(token: str) -> None:
+        t = normalize_frame_regen_token(token)
+        if not t:
+            return
+        key = (int(t["number"]), int(t["shot"]))
+        if key in seen:
+            return
+        seen.add(key)
+        found.append({"number": key[0], "shot": key[1]})
+
+    patterns = (
+        r"(?i)не\s+утвержд[^\n]{0,120}"
+        r"(frame[_-]?\d{1,4}[^\s`\"']*\.(?:png|jpe?g|webp|gif))",
+        r"(?i)(frame[_-]?\d{1,4}[^\s`\"']*\.(?:png|jpe?g|webp|gif))"
+        r"[^\n]{0,80}не\s+утвержд",
+        r"(?i)на\s+перегенерац\w*[^\n]{0,160}"
+        r"(frame[_-]?\d{1,4}[^\s`\"']*\.(?:png|jpe?g|webp|gif))",
+        r"(?i)переген\w*[^\n]{0,40}только[^\n]{0,80}"
+        r"(frame[_-]?\d{1,4}[^\s`\"']*\.(?:png|jpe?g|webp|gif))",
+        r"(?i)нужен\s+переген[^\n]{0,40}кадров?\s+"
+        r"(\d{1,4}(?:\s*(?:и|,|/)\s*\d{1,4})*)",
+    )
+    for pat in patterns:
+        for m in re.finditer(pat, raw):
+            g1 = m.group(1)
+            if re.fullmatch(r"[\d\s,и/]+", g1 or ""):
+                for part in re.split(r"[\s,и/]+", g1):
+                    if part.strip().isdigit():
+                        _add(part.strip())
+            else:
+                _add(g1)
+    return found
+
+
 def extract_frame_regen_targets(text: str) -> list[dict[str, Any]]:
     """Список ``{number, shot}`` для перегена сцен из check_report."""
     raw = text or ""
@@ -386,6 +442,10 @@ def extract_frame_regen_targets(text: str) -> list[dict[str, Any]]:
     if found:
         return found
 
+    prose = extract_prose_reject_frame_targets(raw)
+    if prose:
+        return prose
+
     # Heuristic: fail findings mentioning frame_NNN_*.png
     bodies = _section_bodies(raw) if looks_like_check_report_txt(raw) else {}
     chunks: list[str] = []
@@ -396,13 +456,8 @@ def extract_frame_regen_targets(text: str) -> list[dict[str, Any]]:
                 for fm in _FINDING_RE.finditer(section):
                     if fm.group(1).lower() in ("error", "fail", "warn"):
                         chunks.append(fm.group(2))
-            else:
-                low = section.lower()
-                if any(
-                    w in low
-                    for w in ("regen", "переген", "плохо", "брак", "error", "fail")
-                ):
-                    chunks.append(section)
+            elif _section_requests_regen(section):
+                chunks.append(section)
     else:
         chunks.append(raw)
     for chunk in chunks:
@@ -513,7 +568,7 @@ def _norm_issue_severity(raw: str) -> str:
 
 
 _VISION_SEV_TAG_RE = re.compile(
-    r"(?i)\[(critical|warning|minor|warn|error|fail)\]"
+    r"(?i)\[(critical|warning|minor|warn|error|fail|ok)\]"
 )
 
 
@@ -640,7 +695,7 @@ def resolve_vision_check_gate(
         return None
     scores = extract_vision_scores(text)
     critical = has_critical_vision_issues(text)
-    if critical:
+    if critical or extract_prose_reject_frame_targets(text):
         return "fail"
     overall = scores.get("overall")
     if overall is None:
@@ -698,12 +753,11 @@ def extract_critical_hero_regen_ids(text: str) -> list[str]:
 
 
 def extract_critical_frame_regen_targets(text: str) -> list[dict[str, Any]]:
-    """Frame targets для перегена: только critical (или legacy без scores)."""
+    """Frame targets для перегена: только critical / prose-reject (не [ok])."""
     raw = text or ""
+    prose = extract_prose_reject_frame_targets(raw)
     if not looks_like_scored_vision_report(raw):
-        return extract_frame_regen_targets(raw)
-    if not has_critical_vision_issues(raw):
-        return []
+        return prose or extract_frame_regen_targets(raw)
     found: list[dict[str, Any]] = []
     seen: set[tuple[int, int]] = set()
 
@@ -717,30 +771,33 @@ def extract_critical_frame_regen_targets(text: str) -> list[dict[str, Any]]:
         seen.add(key)
         found.append({"number": key[0], "shot": key[1]})
 
-    for issue in extract_vision_issues(raw):
-        if issue.get("severity") != "critical":
-            continue
-        body = str(issue.get("text") or "")
-        for m in re.finditer(
-            r"\bframe[_-]?\d{1,4}[^\s]*\.(?:png|jpe?g|webp|gif)\b",
-            body,
-            re.IGNORECASE,
-        ):
-            _add(m.group(0))
-        for m in re.finditer(
-            r"\b(\d{1,4})(?:[_-]?(?:s2|shot2))\b|\b(\d{1,4})\b",
-            body,
-            re.IGNORECASE,
-        ):
-            token = m.group(0)
-            # avoid bare years / noise: only short nums near frame words or Ns2
-            if "s2" in token.lower() or "shot" in token.lower():
-                _add(token)
-            elif re.search(r"(?i)frame|кадр", body):
-                _add(token)
-    if found:
-        return found
-    return extract_frame_regen_targets(raw)
+    if has_critical_vision_issues(raw):
+        for issue in extract_vision_issues(raw):
+            if issue.get("severity") != "critical":
+                continue
+            body = str(issue.get("text") or "")
+            for m in re.finditer(
+                r"\bframe[_-]?\d{1,4}[^\s]*\.(?:png|jpe?g|webp|gif)\b",
+                body,
+                re.IGNORECASE,
+            ):
+                _add(m.group(0))
+            for m in re.finditer(
+                r"\b(\d{1,4})(?:[_-]?(?:s2|shot2))\b|\b(\d{1,4})\b",
+                body,
+                re.IGNORECASE,
+            ):
+                token = m.group(0)
+                if "s2" in token.lower() or "shot" in token.lower():
+                    _add(token)
+                elif re.search(r"(?i)frame|кадр", body):
+                    _add(token)
+    # Prose «не утверждён» / «на перегенерацию только frame_X» — даже без [critical]
+    for t in prose:
+        _add(
+            f"{t['number']}s2" if int(t.get("shot") or 1) == 2 else str(t["number"])
+        )
+    return found
 
 
 _JSON_FENCE = re.compile(

@@ -456,7 +456,9 @@ async def _run_check_vision_batched(
         extract_critical_frame_regen_targets,
         extract_critical_hero_regen_ids,
         extract_db_patch,
+        extract_prose_reject_frame_targets,
         has_critical_vision_issues,
+        resolve_vision_check_gate,
     )
     from app.services.check_streams import acquire_check_slot, clamp_check_streams
     from app.services.gpt_api import is_image_path
@@ -523,21 +525,36 @@ async def _run_check_vision_batched(
         last = res
         text = res.reply_text or ""
         parts.append(f"===== BATCH {bi}/{len(batches)} =====\n{text}")
-        if (res.gate_status or "").lower() == "fail" or (
-            res.analysis and res.analysis.verdict == "fail"
-        ):
+        gate = resolve_vision_check_gate(text)
+        prose_rej = extract_prose_reject_frame_targets(text)
+        has_crit = has_critical_vision_issues(text)
+        batch_fail = (
+            gate == "fail"
+            or (res.gate_status or "").lower() == "fail"
+            or (res.analysis and res.analysis.verdict == "fail")
+            or has_crit
+            or bool(prose_rej)
+        )
+        if batch_fail:
             any_fail = True
-        if has_critical_vision_issues(text):
-            any_fail = True
-        for hid in extract_critical_hero_regen_ids(text):
-            if hid not in seen_hero:
-                seen_hero.add(hid)
-                all_hero.append(hid)
-        for ft in extract_critical_frame_regen_targets(text):
-            key = (int(ft["number"]), int(ft.get("shot") or 1))
-            if key not in seen_frame:
-                seen_frame.add(key)
-                all_frames.append({"number": key[0], "shot": key[1]})
+        # Pass-батч: не тащить кадры из «перегенерация не требуется».
+        batch_pass = (
+            not has_crit
+            and not prose_rej
+            and (res.gate_status or "").lower() != "fail"
+            and not (res.analysis and res.analysis.verdict == "fail")
+            and gate != "fail"
+        )
+        if not batch_pass:
+            for hid in extract_critical_hero_regen_ids(text):
+                if hid not in seen_hero:
+                    seen_hero.add(hid)
+                    all_hero.append(hid)
+            for ft in extract_critical_frame_regen_targets(text):
+                key = (int(ft["number"]), int(ft.get("shot") or 1))
+                if key not in seen_frame:
+                    seen_frame.add(key)
+                    all_frames.append({"number": key[0], "shot": key[1]})
         patch = extract_db_patch(text)
         if patch:
             for c in patch.get("characters") or []:

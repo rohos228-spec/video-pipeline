@@ -141,9 +141,10 @@ source_prompts: <из входа или —>
 Стиль / логика / клоны: что сверял по Базе.
 
 ## findings
-- [critical] frame_005_….png: нет c02 / лишний двойник
+- [critical] frame_009_….png: двойники c02  ← ОБЯЗАТЕЛЬНО тег, не только в summary
 - [warning] frame_003_….png: одежда слегка мимо Базы
 - [ok] frame_001_….png: принято
+(каждый файл батча — отдельная строка [ok]|[warning]|[critical])
 
 ## related
 - <finding> → файл:frame_005_….png | База:uuid=… | персонажи:c02
