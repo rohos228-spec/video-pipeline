@@ -140,6 +140,7 @@ VISION_PASS_THRESHOLD = 0.7
 VISION_SCORE_AXES = (
     "style",
     "character",
+    "logic",
     "format",
     "pose",
     "clones",
@@ -159,6 +160,7 @@ VISION_CHECK_REPORT_HINT = """
 Оси score 0.0–1.0 (overall = взвешенное из агента, иначе среднее осей):
 - style — единый визуальный стиль; сильный уход стиля = низкий score / critical
 - character — identity vs База (лицо/тело/одежда)
+- logic — соответствие промту/смыслу/Базе (не выдуманная сцена)
 - format — формат sheet/кадра (16:9 turnaround, белый фон hero и т.п.)
 - pose — позиции/раскладка по формату; для не-человека/существа —
   допустимы иные позы, если промт/База это подразумевают
@@ -450,7 +452,7 @@ def extract_db_patch(text: str) -> dict[str, Any] | None:
 
 
 _SCORE_LINE_RE = re.compile(
-    r"(?im)^\s*(style|character|format|pose|clones|text|angles|quality|"
+    r"(?im)^\s*(style|character|logic|format|pose|clones|text|angles|quality|"
     r"hands|overall)\s*[:=]\s*"
     r"(0(?:\.\d+)?|1(?:\.0+)?|\.\d+)\s*$"
 )

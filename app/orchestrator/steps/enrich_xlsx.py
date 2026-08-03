@@ -640,6 +640,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             ).strip()
         # Отпустить SQLite write-txn на время GPT (иначе UI: database is locked / 30с).
         await session.commit()
+        check_streams_n = None
+        if check_mode:
+            from app.services.check_streams import get_check_streams
+
+            check_streams_n = get_check_streams(project)
         api_res = await run_operator_api(
             project_dir=project.data_dir,
             node_key=node_key,
@@ -651,6 +656,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             check_mode=check_mode,
             check_fix=check_fix,
             source_prompt_keys=source_prompt_keys,
+            check_streams=check_streams_n,
         )
         await session.refresh(project)
         # После project_file: apply-ops JSON → DB (SoT); иначе legacy xlsx→DB sync.

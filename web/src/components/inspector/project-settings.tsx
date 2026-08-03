@@ -22,6 +22,7 @@ export function ProjectSettingsPanel({ project }: { project: ProjectDetail }) {
         генерацией.
       </p>
       <ImgStreamsControl project={project} />
+      <CheckStreamsControl project={project} />
       <MassFactoryPanel project={project} />
     </div>
   );
@@ -64,6 +65,66 @@ function ImgStreamsControl({ project }: { project: ProjectDetail }) {
       </p>
       <div className="flex flex-wrap gap-1">
         {[0, 1, 2, 3, 4].map((n) => (
+          <button
+            key={n}
+            type="button"
+            disabled={patch.isPending}
+            onClick={() => {
+              setLocal(n);
+              patch.mutate(n);
+            }}
+            className={
+              "h-7 min-w-7 rounded-md px-2 text-xs font-medium transition-colors " +
+              (local === n
+                ? "bg-primary text-primary-foreground"
+                : "bg-muted/60 text-muted-foreground hover:bg-accent/50")
+            }
+          >
+            {n}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Параллельные потоки GPT vision-check (0..10). */
+function CheckStreamsControl({ project }: { project: ProjectDetail }) {
+  const qc = useQueryClient();
+  const meta = (project.meta || {}) as Record<string, unknown>;
+  const current = Math.max(
+    0,
+    Math.min(10, Number(meta.check_streams ?? 2) || 2),
+  );
+  const [local, setLocal] = useState(current);
+
+  useEffect(() => {
+    setLocal(current);
+  }, [current]);
+
+  const patch = useMutation({
+    mutationFn: (n: number) =>
+      api.patchProject(project.id, { meta: { check_streams: n } }),
+    onSuccess: (_data, n) => {
+      toast.success(
+        n === 0
+          ? "Потоки проверки: 0 (GPT check выкл)"
+          : `Потоки проверки GPT: ${n}`,
+      );
+      void qc.invalidateQueries({ queryKey: ["project", project.id] });
+    },
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
+
+  return (
+    <div className="rounded-lg border border-border/50 bg-card/40 px-2.5 py-2">
+      <div className="mb-1.5 text-xs font-medium">Потоки проверки (check)</div>
+      <p className="mb-2 text-[10px] leading-snug text-muted-foreground">
+        Сколько vision-батчей GPT гонять параллельно (0–10). Каждый батч до 8
+        PNG. 0 — check не вызывать.
+      </p>
+      <div className="flex flex-wrap gap-1">
+        {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
           <button
             key={n}
             type="button"

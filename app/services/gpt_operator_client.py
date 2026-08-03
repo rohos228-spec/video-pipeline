@@ -96,6 +96,7 @@ async def run_operator_api(
     check_mode: bool = False,
     check_fix: bool = True,
     source_prompt_keys: list[str] | None = None,
+    check_streams: int | None = None,
 ) -> OperatorApiResult:
     """Вызов API-оператора GPT.
 
@@ -103,7 +104,19 @@ async def run_operator_api(
     OpenAI-совместимого шлюза; иначе — детерминированный stub без сети
     (dev/tests).
     """
+    from app.services.check_streams import clamp_check_streams, default_check_streams
     from app.services.gpt_api import gpt_api_enabled, is_image_path
+
+    streams = (
+        clamp_check_streams(check_streams)
+        if check_streams is not None
+        else default_check_streams()
+    )
+    if check_mode and streams == 0:
+        raise RuntimeError(
+            "check_streams=0: GPT-проверка отключена. "
+            "Поставь meta.check_streams 1..10."
+        )
 
     # Vision limit 8: checkMode с кучей PNG → батчи, один итоговый отчёт.
     if (
@@ -121,6 +134,7 @@ async def run_operator_api(
             input_paths=input_paths,
             check_fix=check_fix,
             source_prompt_keys=source_prompt_keys,
+            check_streams=streams,
         )
 
     if gpt_api_enabled():
@@ -434,25 +448,65 @@ async def _run_check_vision_batched(
     input_paths: list[Path],
     check_fix: bool = True,
     source_prompt_keys: list[str] | None = None,
+    check_streams: int = 2,
 ) -> OperatorApiResult:
     """Несколько vision-батчей по 8 PNG → склеенный отчёт + общий verdict."""
+    import asyncio
+
     from app.services.check_analysis import (
+        extract_critical_frame_regen_targets,
+        extract_critical_hero_regen_ids,
         extract_db_patch,
-        extract_frame_regen_targets,
-        extract_hero_regen_ids,
+        has_critical_vision_issues,
     )
+    from app.services.check_streams import acquire_check_slot, clamp_check_streams
     from app.services.gpt_api import is_image_path
 
     images = [p for p in input_paths if is_image_path(p)]
     others = [p for p in input_paths if not is_image_path(p)]
     batch_size = 8
     batches = [images[i : i + batch_size] for i in range(0, len(images), batch_size)]
+    streams = max(1, clamp_check_streams(check_streams))
     logger.info(
-        "gpt_operator/api: vision batch check node={} images={} batches={}",
+        "gpt_operator/api: vision batch check node={} images={} batches={} "
+        "check_streams={}",
         node_key,
         len(images),
         len(batches),
+        streams,
     )
+
+    async def _one_batch(bi: int, batch: list[Path]) -> tuple[int, OperatorApiResult]:
+        batch_prompt = (
+            f"{prompt}\n\n"
+            f"# BATCH {bi}/{len(batches)}\n"
+            f"Проверь ТОЛЬКО эти файлы: {', '.join(p.name for p in batch)}.\n"
+            "В отчёте укажи regen только для файлов этого батча."
+        )
+        async with acquire_check_slot(streams):
+            res = await _run_operator_api_real(
+                project_dir=project_dir,
+                node_key=node_key,
+                role=role,
+                output_mode=output_mode,
+                prompt=batch_prompt,
+                accompanying=accompanying,
+                input_paths=list(others) + list(batch),
+                check_mode=True,
+                check_fix=check_fix,
+                source_prompt_keys=source_prompt_keys,
+            )
+        return bi, res
+
+    if streams <= 1:
+        ordered: list[tuple[int, OperatorApiResult]] = []
+        for bi, batch in enumerate(batches, start=1):
+            ordered.append(await _one_batch(bi, batch))
+    else:
+        gathered = await asyncio.gather(
+            *[_one_batch(bi, batch) for bi, batch in enumerate(batches, start=1)]
+        )
+        ordered = sorted(gathered, key=lambda x: x[0])
 
     parts: list[str] = []
     any_fail = False
@@ -463,25 +517,7 @@ async def _run_check_vision_batched(
     seen_frame: set[tuple[int, int]] = set()
     last: OperatorApiResult | None = None
 
-    for bi, batch in enumerate(batches, start=1):
-        batch_prompt = (
-            f"{prompt}\n\n"
-            f"# BATCH {bi}/{len(batches)}\n"
-            f"Проверь ТОЛЬКО эти файлы: {', '.join(p.name for p in batch)}.\n"
-            "В отчёте укажи regen только для файлов этого батча."
-        )
-        res = await _run_operator_api_real(
-            project_dir=project_dir,
-            node_key=node_key,
-            role=role,
-            output_mode=output_mode,
-            prompt=batch_prompt,
-            accompanying=accompanying,
-            input_paths=list(others) + list(batch),
-            check_mode=True,
-            check_fix=check_fix,
-            source_prompt_keys=source_prompt_keys,
-        )
+    for bi, res in ordered:
         last = res
         text = res.reply_text or ""
         parts.append(f"===== BATCH {bi}/{len(batches)} =====\n{text}")
@@ -489,11 +525,13 @@ async def _run_check_vision_batched(
             res.analysis and res.analysis.verdict == "fail"
         ):
             any_fail = True
-        for hid in extract_hero_regen_ids(text):
+        if has_critical_vision_issues(text):
+            any_fail = True
+        for hid in extract_critical_hero_regen_ids(text):
             if hid not in seen_hero:
                 seen_hero.add(hid)
                 all_hero.append(hid)
-        for ft in extract_frame_regen_targets(text):
+        for ft in extract_critical_frame_regen_targets(text):
             key = (int(ft["number"]), int(ft.get("shot") or 1))
             if key not in seen_frame:
                 seen_frame.add(key)
