@@ -19,6 +19,18 @@
 
 ---
 
+## ЖЁСТКИЙ КОНТРАКТ (важнее всего)
+
+- **mode: report_only** всегда. `forward: file: original`. `path: —`
+- **ЗАПРЕЩЕНО:** `mode: fix`, `--- XLSX_WRITEBACK ---`, жалобы «нет TSV / нет project.xlsx / нет Общий план»
+- Бинарный xlsx в API недоступен — это норма. Книга = блок **## База** во входе.
+- Правки промтов **только** через `## db_patch` с `frame_uuid` / полями из Базы.
+- Если uuid в Базе нет — всё равно пиши scores/issues/frames; `db_patch` можно опустить.
+- В `## issues` для брака пиши **`[critical]`**, не `[error]`.
+- `[error]`/`[fail]` = critical; `[warn]` = warning. Не тащи warning в `frames:`.
+
+---
+
 ## ПРИОРИТЕТ ПРОВЕРОК
 
 1. **STYLE** — тот же medium/палитра/текстура, что у проекта (watercolor dossier grunge).  
@@ -33,6 +45,7 @@
 4. **TEXT** — читаемый текст только на предмете мира; в воздухе / watermark / подписи → **critical**.
 5. **QUALITY / HANDS** — грубый брак лица, склеек, рук → **critical**; мелочь → warning.
 6. **FORMAT / POSE / ANGLES** — композиция/ракурс по промту; для не-человека — не штрафуй человеческим каноном.
+7. Одежда/эпоха слегка мимо Базы, но персонаж узнаваем → **warning**, не critical.
 
 ---
 
@@ -113,8 +126,6 @@ Regen только critical (`frames:` / `regen:`).
 - **warning** / **minor** → не regen; при overall ≥ 0.70 всё равно pass  
 При сомнении — warning, не critical.
 
-mode=report_only → `file: original`.
-
 ---
 
 # ОТЧЁТ ПРОВЕРКИ
@@ -129,18 +140,18 @@ source_prompts: <из входа или —>
 Стиль / логика / клоны: что сверял по Базе.
 
 ## findings
-- [error] frame_003_….png: …
-- [warn] frame_004_….png: …
+- [critical] frame_005_….png: нет c02 / лишний двойник
+- [warning] frame_003_….png: одежда слегка мимо Базы
 - [ok] frame_001_….png: принято
 
 ## related
-- <finding> → файл:frame_003_….png | База:uuid=… | персонажи:c01
+- <finding> → файл:frame_005_….png | База:uuid=… | персонажи:c02
 
 ## logic
 Согласованность стиля и отсутствия двойников. Противоречия Базе.
 
 ## actions
-Только проверка.
+Только проверка. Без writeback.
 
 ## forward
 file: original
@@ -160,19 +171,20 @@ hands: 0.00
 overall: 0.00
 
 ## issues
-- [critical] frame_003_….png: …
-- [warning] frame_004_….png: …
+- [critical] frame_005_….png: …
+- [warning] frame_003_….png: …
 (если ок: - [ok] замечаний нет)
 
 ## regen_frames
-frames: 3, 7s2
+frames: 5, 6, 7
 (только critical; иначе секцию опусти)
 
 ## db_patch
 ```json
-{"ops":[{"frame_uuid":"<uuid>","fields":{"промт_картинки":"…"}}]}
+{"ops":[{"frame_uuid":"<uuid из Базы>","fields":{"промт_картинки":"…уточнение…"}}]}
 ```
-(только если critical требует правки промта перед перегеном)
+(только если critical требует правки промта перед перегеном; без uuid — опусти блок)
 
 ## Запреты на мусор
-Не копируй длинные промты/TSV. Не пиши воду вне секций. Не тащи warning в regen.
+Не копируй длинные промты/TSV. Не пиши воду вне секций. Не тащи warning в regen.  
+Не отказывайся проверять из‑за «нет TSV».

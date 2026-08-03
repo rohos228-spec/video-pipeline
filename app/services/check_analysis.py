@@ -206,6 +206,13 @@ frames: 3, 7s2
 {"characters":[{"id":"c02","внешность":"..."}],"ops":[{"frame_uuid":"<uuid>","fields":{"промт_картинки":"..."}}]}
 ```
 Без critical — regen_* / db_patch не пиши. Без воды вне секций.
+
+VISION OVERRIDE (важнее checkFix / XLSX_WRITEBACK):
+- mode: report_only всегда. forward: file: original.
+- НЕ пиши --- XLSX_WRITEBACK --- и НЕ требуй TSV листа «Общий план».
+- Правки промтов только через ## db_patch (uuid/поля из ## База).
+- В ## issues / findings для брака пиши [critical] (не [error]).
+- [error]/[fail] в findings = critical. [warn] = warning.
 """.strip()
 
 _FRAMES_LINE_RE = re.compile(r"(?im)^\s*frames\s*:\s*(.+?)\s*$")
@@ -500,6 +507,11 @@ def _norm_issue_severity(raw: str) -> str:
     return s or "warning"
 
 
+_VISION_SEV_TAG_RE = re.compile(
+    r"(?i)\[(critical|warning|minor|warn|error|fail)\]"
+)
+
+
 def extract_vision_issues(text: str) -> list[dict[str, Any]]:
     """Список ``{severity, text}`` из ``## issues`` (и findings с severity-тегами)."""
     raw = text or ""
@@ -508,17 +520,15 @@ def extract_vision_issues(text: str) -> list[dict[str, Any]]:
     chunks: list[str] = []
     if bodies.get("issues"):
         chunks.append(bodies["issues"])
-    # Also accept severity tags in findings when scores section exists.
-    if bodies.get("findings") and (
-        bodies.get("scores") or extract_vision_scores(raw)
-    ):
+    # Findings с [critical]/[error]/… — всегда (модель часто пишет только findings).
+    if bodies.get("findings") and _VISION_SEV_TAG_RE.search(bodies["findings"]):
         chunks.append(bodies["findings"])
     if not chunks:
         # Bare ## issues without full report header.
         m = re.search(r"(?is)##\s*issues\s*\n(.*?)(?=\n##|\n# |\Z)", raw)
         if m:
             chunks.append(m.group(1))
-        elif re.search(r"(?i)\[(critical|warning|minor)\]", raw):
+        elif _VISION_SEV_TAG_RE.search(raw):
             chunks.append(raw)
     seen: set[str] = set()
     for chunk in chunks:
@@ -527,6 +537,12 @@ def extract_vision_issues(text: str) -> list[dict[str, Any]]:
             body = (m.group(2) or "").strip()
             if not body:
                 continue
+            # Meta-жалобы на вход (TSV/xlsx) — не critical для regen кадров.
+            if re.search(
+                r"(?i)\b(tsv|xlsx|writeback|общий\s*план|вход:?\s*отсутств)",
+                body,
+            ) and not re.search(r"(?i)\bframe[_-]?\d+|c\d{2}\b", body):
+                sev = "warning"
             key = f"{sev}|{body.lower()}"
             if key in seen:
                 continue
@@ -544,7 +560,7 @@ def looks_like_scored_vision_report(text: str) -> bool:
     raw = text or ""
     if extract_vision_scores(raw):
         return True
-    if re.search(r"(?i)\[(critical|warning|minor)\]", raw):
+    if _VISION_SEV_TAG_RE.search(raw):
         return True
     if re.search(r"(?im)^\s*##\s*scores\s*$", raw):
         return True

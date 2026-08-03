@@ -186,6 +186,65 @@ def test_extract_extended_score_axes() -> None:
     assert scores["overall"] == 0.6
 
 
+def test_error_findings_are_critical_not_legacy_all_frames() -> None:
+    """Модель часто пишет [error] в findings без ## scores — не тащить frames: 1..N."""
+    from app.services.check_analysis import (
+        has_critical_vision_issues,
+        looks_like_scored_vision_report,
+    )
+
+    text = """
+# ОТЧЁТ ПРОВЕРКИ
+verdict: fail
+mode: fix
+
+## findings
+- [error] `frame_005_5d5b52a3.png`: нет c02
+- [error] `frame_006_69026b39.png`: лишние двойники
+- [error] вход: отсутствует TSV-экспорт листа «Общий план»
+- [ok] `frame_001_ec15f244.png`: ок
+
+## regen_frames
+frames: 5, 6, 7, 3, 4, 8, 2, 1, 9, 11, 12, 10
+"""
+    assert looks_like_scored_vision_report(text)
+    assert has_critical_vision_issues(text)
+    assert resolve_vision_check_gate(text) == "fail"
+    got = extract_critical_frame_regen_targets(text)
+    nums = {t["number"] for t in got}
+    assert nums == {5, 6}
+    assert 1 not in nums
+    assert 12 not in nums
+
+
+def test_vision_assemble_forces_report_only_for_images(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services.gpt_operator import assemble_check_master_prompt_with_hero_hint
+
+    p = _project(tmp_path, monkeypatch, "vfix")
+    check_key = "n_check"
+    p.meta = {
+        "canvas_graph": {
+            "nodes": [
+                {"id": "n_img", "type": "images"},
+                {"id": check_key, "type": "excel_gpt", "data": {"checkMode": True}},
+            ],
+            "edges": [{"source": "n_img", "target": check_key}],
+        }
+    }
+    text = assemble_check_master_prompt_with_hero_hint(
+        p,
+        check_key,
+        [{"ok": True, "nodeKey": "n_img", "text": "agent"}],
+        check_fix=True,
+    )
+    assert "mode: report_only" in text
+    assert "ОБЯЗАТЕЛЕН блок --- XLSX_WRITEBACK" not in text
+    assert "db_patch" in text
+    assert "VISION OVERRIDE" in text
+
+
 def _project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slug: str) -> Project:
     monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path / "data")
     p = Project(

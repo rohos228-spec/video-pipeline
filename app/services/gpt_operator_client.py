@@ -119,11 +119,10 @@ async def run_operator_api(
         )
 
     # Vision limit 8: checkMode с кучей PNG → батчи, один итоговый отчёт.
-    if (
-        gpt_api_enabled()
-        and check_mode
-        and sum(1 for p in input_paths if is_image_path(p)) > 8
-    ):
+    # checkFix/TSV для PNG-check отключаем: правки только через db_patch.
+    vision_png_n = sum(1 for p in input_paths if is_image_path(p))
+    vision_check_fix = False if (check_mode and vision_png_n > 0) else check_fix
+    if gpt_api_enabled() and check_mode and vision_png_n > 8:
         return await _run_check_vision_batched(
             project_dir=project_dir,
             node_key=node_key,
@@ -132,7 +131,7 @@ async def run_operator_api(
             prompt=prompt,
             accompanying=accompanying,
             input_paths=input_paths,
-            check_fix=check_fix,
+            check_fix=vision_check_fix,
             source_prompt_keys=source_prompt_keys,
             check_streams=streams,
         )
@@ -147,7 +146,7 @@ async def run_operator_api(
             accompanying=accompanying,
             input_paths=input_paths,
             check_mode=check_mode,
-            check_fix=check_fix,
+            check_fix=vision_check_fix if check_mode else check_fix,
             source_prompt_keys=source_prompt_keys,
         )
 
@@ -481,7 +480,10 @@ async def _run_check_vision_batched(
             f"{prompt}\n\n"
             f"# BATCH {bi}/{len(batches)}\n"
             f"Проверь ТОЛЬКО эти файлы: {', '.join(p.name for p in batch)}.\n"
-            "В отчёте укажи regen только для файлов этого батча."
+            "Обязательно: mode=report_only; ## scores; ## issues с [critical]/[warning];\n"
+            "regen/frames только для critical этого батча; ## db_patch из uuid ## База.\n"
+            "ЗАПРЕЩЕНО: XLSX_WRITEBACK, жалобы на отсутствие TSV/xlsx, mode=fix.\n"
+            "В findings для брака пиши [critical], не [error]."
         )
         async with acquire_check_slot(streams):
             res = await _run_operator_api_real(

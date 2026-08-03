@@ -369,17 +369,20 @@ def assemble_check_master_prompt_with_hero_hint(
         append_vision_check_hint,
     )
 
+    typ = upstream_node_type_for_check(project, node_key)
+    # PNG vision: только отчёт + db_patch. checkFix/TSV writeback сбивает модель.
+    vision_types = ("hero", "images", "img", "hitl_images", "image_prompts")
+    effective_fix = False if typ in vision_types else check_fix
     text = assemble_check_master_prompt(
         sources,
-        check_fix=check_fix,
+        check_fix=effective_fix,
         reviewer_notes=reviewer_notes,
         report_format=report_format,
     )
-    typ = upstream_node_type_for_check(project, node_key)
     if typ == "hero":
         text = append_vision_check_hint(append_hero_regen_hint(text))
         return text
-    if typ in ("images", "hitl_images", "image_prompts"):
+    if typ in ("images", "img", "hitl_images", "image_prompts"):
         return append_vision_check_hint(text)
     return text
 
