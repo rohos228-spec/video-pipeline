@@ -1900,6 +1900,17 @@ class OutseeBot:
 
         if not oh.outsee_http_enabled():
             return None
+        # HTTP API часто принимает reference_images (refs=1 в логе), но
+        # gpt-image-2 не держит identity персонажа. CDP file-attach надёжнее
+        # для hero REF-вариаций (rules=c01 → c02).
+        refs = kwargs.get("reference_images")
+        if refs:
+            n = len(refs) if isinstance(refs, list) else 1
+            logger.info(
+                "outsee HTTP skip: {} reference_image(s) → CDP attach",
+                n,
+            )
+            return None
         try:
             return await oh.generate_image(**kwargs)
         except oh.OutseeHttpAuthError as e:

@@ -1109,16 +1109,19 @@ async def _generate_one_excel_character(
             )
 
         if used_refs:
-            # Реф = картинка + короткий текст. Длинный style/sheet → Outsee
-            # игнорит reference_images.
-            changes = ch.changes_text().strip()
+            # Реф = картинка (CDP attach) + короткий текст. Без длинного style:
+            # иначе Outsee/модель игнорит reference. Changes — по-английски,
+            # без кириллических подписей (иначе текст рисуется на листе).
+            from app.services.excel_characters import build_ref_variation_sheet_prompt
+
+            prompt_text = build_ref_variation_sheet_prompt(ch, style="")
+            # Дополнительно усиливаем identity lock.
             prompt_text = (
-                "Use the attached reference image as the exact character. "
-                "Create a 16:9 character turnaround / model sheet on white "
-                "background. Keep face, body, clothes identity from reference."
+                "CRITICAL: The attached reference image is the SAME person. "
+                "Copy face, skull, mustache/hair, age, body proportions exactly. "
+                "Only apply the listed Changes; do not invent a new character.\n\n"
+                + prompt_text
             )
-            if changes:
-                prompt_text = prompt_text + "\n\nChanges:\n" + changes[:800]
             logger.info(
                 "[#{}] excel_hero {}: REF mode refs={} files={} prompt_len={}",
                 project.id,

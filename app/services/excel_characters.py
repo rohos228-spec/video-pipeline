@@ -64,10 +64,10 @@ def build_ref_variation_sheet_prompt(
 ) -> str:
     """Промт Outsee для реф-вариации: реф-картинка + изменения.
 
-    База — короткий changes_text (как раньше). Добавляем только короткий
-    sheet-lock, без простыни — иначе Outsee игнорит реф.
+    Changes на английском (кириллические «Имя:/Внешность:» часто
+    рисуются текстом на листе и ослабляют identity lock).
     """
-    changes = ch.changes_text().strip()
+    changes = ch.changes_text_en().strip()
     style_bit = (style or "").strip()
     if len(style_bit) > 500:
         style_bit = style_bit[:500].rstrip() + "…"
@@ -82,7 +82,7 @@ def build_ref_variation_sheet_prompt(
         f"Character id: {ch.id}.",
     ]
     if changes:
-        parts.append(changes)
+        parts.append("Changes (keep face/identity from reference):\n" + changes)
     else:
         parts.append(
             "Different turnaround sheet composition; keep identity from reference."
@@ -129,6 +129,19 @@ class ExcelCharacter:
             parts.append(f"Одежда: {self.clothes}")
         if self.char:
             parts.append(f"Характер: {self.char}")
+        return "\n".join(parts)
+
+    def changes_text_en(self) -> str:
+        """То же для Outsee REF-промта — английские ключи, без кириллицы-лейблов."""
+        parts: list[str] = []
+        if self.name:
+            parts.append(f"Name: {self.name}")
+        if self.look:
+            parts.append(f"Appearance: {self.look}")
+        if self.clothes:
+            parts.append(f"Clothes: {self.clothes}")
+        if self.char:
+            parts.append(f"Personality mood: {self.char}")
         return "\n".join(parts)
 
     def brief_for_gpt(self) -> str:
