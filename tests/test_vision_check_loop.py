@@ -78,6 +78,8 @@ regen: c02
 def test_append_vision_hint_idempotent() -> None:
     once = append_vision_check_hint("проверь")
     assert "db_patch" in once
+    assert "ТЕКСТ НА КАРТИНКЕ" in once
+    assert "РАКУРСЫ ПЕРСОНАЖА" in once
     twice = append_vision_check_hint(once)
     assert twice.count("vision_check") == once.count("vision_check")
 
