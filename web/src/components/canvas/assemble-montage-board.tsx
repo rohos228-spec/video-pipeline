@@ -1002,6 +1002,8 @@ export function AssembleMontageBoard({
       queryFn: () => api.getProject(projectId),
       staleTime: 30_000,
     });
+    // Подтянуть highlights/клипы после apply (staleTime иначе держит пустую подсветку).
+    void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
   }, [open, projectId, queryClient]);
 
   const frames = board.data?.frames ?? [];
@@ -1215,10 +1217,13 @@ export function AssembleMontageBoard({
   }, [open, projectId]);
 
   const handleApplyTerminal = useCallback(
-    (status: string, errText?: string) => {
-      const key = `${status}:${errText || ""}`;
-      if (lastApplyToastKeyRef.current === key) return;
-      lastApplyToastKeyRef.current = key;
+    (status: string, errText?: string, progressKey?: string) => {
+      // Тост дедупим; invalidate/highlights — всегда (иначе повторный done:
+      // ключ "done:" совпадает с прошлым прогоном → зелёная подсветка не подтягивается).
+      const toastKey = `${status}:${errText || ""}:${progressKey || ""}`;
+      const showToast = lastApplyToastKeyRef.current !== toastKey;
+      if (showToast) lastApplyToastKeyRef.current = toastKey;
+
       setApplyRunning(false);
       setApplyProgress(null);
       if (submittedApplyRef.current) {
@@ -1228,12 +1233,30 @@ export function AssembleMontageBoard({
         pendingOpsRef.current = [];
         submittedApplyRef.current = false;
       }
-      if (status === "done") toast.success("Генерация завершена");
-      else if (status === "error") toast.error(errText || "Генерация не удалась");
-      else if (status === "cancelled") toast.message("Генерация остановлена");
-      void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
+      if (showToast) {
+        if (status === "done") toast.success("Генерация завершена");
+        else if (status === "error") toast.error(errText || "Генерация не удалась");
+        else if (status === "cancelled") toast.message("Генерация остановлена");
+      }
+      void queryClient
+        .fetchQuery({
+          queryKey: ["montage-board", projectId],
+          queryFn: () => api.getMontageBoard(projectId!),
+        })
+        .then((data) => {
+          const hl = data?.meta?.highlights;
+          if (Array.isArray(hl)) setHighlights(hl.map(String));
+          const stale = data?.meta?.stale_videos;
+          if (Array.isArray(stale)) setStaleVideos(stale.map(String));
+          const restored = parsePendingOps(data?.meta?.pending_ops);
+          pendingOpsRef.current = restored;
+          setPendingOps(restored);
+        })
+        .catch(() => {
+          void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
+        });
     },
-    [projectId, queryClient],
+    [projectId, queryClient, parsePendingOps],
   );
 
   const handleRecoverTerminal = useCallback(
@@ -1347,7 +1370,12 @@ export function AssembleMontageBoard({
           const err =
             evt.payload.error ||
             (Array.isArray(evt.payload.errors) ? evt.payload.errors.join("; ") : undefined);
-          handleApplyTerminal(status, err);
+          const pk =
+            typeof evt.payload.done_ops === "number" &&
+            typeof evt.payload.total_ops === "number"
+              ? `${evt.payload.done_ops}/${evt.payload.total_ops}`
+              : undefined;
+          handleApplyTerminal(status, err, pk);
         }
         return;
       }
@@ -1412,7 +1440,11 @@ export function AssembleMontageBoard({
         if (!status || status === "idle") return;
         // Stale done/error до первого running — ждём, не автозавершаем.
         if (!applySeenRunningRef.current) return;
-        handleApplyTerminal(status, st.job?.error || undefined);
+        const pk =
+          typeof doneOps === "number" && typeof totalOps === "number"
+            ? `${doneOps}/${totalOps}`
+            : undefined;
+        handleApplyTerminal(status, st.job?.error || undefined, pk);
       } catch {
         // Сетевой сбой — не сбрасываем running.
       }
