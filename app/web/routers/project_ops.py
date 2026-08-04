@@ -717,6 +717,23 @@ async def montage_board_apply(
                 "job": job,
                 "meta": board["meta"],
             }
+        # Сразу пишем running в meta — иначе первый poll UI видит старый
+        # done/error и мгновенно показывает «Генерация завершена».
+        from datetime import datetime, timezone
+
+        from app.services.montage_board_meta import montage_meta, set_montage_meta
+
+        board = montage_meta(p)
+        board["apply_job"] = {
+            "status": "running",
+            "error": None,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "finished_at": None,
+            "total_ops": len(ops),
+            "done_ops": 0,
+        }
+        set_montage_meta(p, board)
+        await session.commit()
         spawn_apply_job(project_id, video_trims=trims, pending_ops=ops)
         return {
             "started": True,

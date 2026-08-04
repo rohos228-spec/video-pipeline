@@ -77,9 +77,47 @@ async def test_get_apply_job_running_with_live_task(project: Project) -> None:
         await task
 
 
+@pytest.mark.asyncio
+async def test_get_apply_job_live_task_overrides_stale_done(project: Project) -> None:
+    """Регрессия: meta ещё done/error, а task уже жив → UI не «завершает» сразу."""
+    board = montage_meta(project)
+    board["apply_job"] = {
+        "status": "done",
+        "finished_at": "2026-08-04T00:00:00+00:00",
+        "total_ops": 1,
+        "done_ops": 1,
+    }
+    set_montage_meta(project, board)
+
+    task = asyncio.create_task(asyncio.sleep(60))
+    _apply_tasks[project.id] = task
+
+    job = get_apply_job(project)
+    assert job["status"] == "running"
+    assert job.get("error") is None
+    assert job.get("finished_at") is None
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
 def test_resolve_job_status_stale_running() -> None:
     job = resolve_job_status(1, {"status": "running"}, live_tasks={})
     assert job["status"] == "error"
+
+
+def test_resolve_job_status_live_overrides_error() -> None:
+    class _Live:
+        def done(self) -> bool:
+            return False
+
+    job = resolve_job_status(
+        7,
+        {"status": "error", "error": "прервано перезапуском сервера"},
+        live_tasks={7: _Live()},  # type: ignore[dict-item]
+    )
+    assert job["status"] == "running"
+    assert job.get("error") is None
 
 
 @pytest.mark.asyncio

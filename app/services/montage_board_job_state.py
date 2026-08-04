@@ -28,12 +28,20 @@ def resolve_job_status(
     *,
     live_tasks: dict[int, asyncio.Task[Any]],
 ) -> dict[str, Any]:
-    """running в meta без живой задачи → error."""
+    """Согласовать meta job с живой asyncio.Task.
+
+    - Есть живая задача → всегда ``running`` (даже если meta ещё done/error:
+      runner пишет status=running асинхронно, UI иначе мгновенно «завершает»).
+    - Meta ``running`` без живой задачи → ``error`` (рестарт/падение).
+    """
     out = dict(job)
-    if out.get("status") != "running":
-        return out
     task = live_tasks.get(project_id)
     if task is not None and not task.done():
+        out["status"] = "running"
+        out["error"] = None
+        out["finished_at"] = None
+        return out
+    if out.get("status") != "running":
         return out
     out["status"] = "error"
     out["error"] = out.get("error") or _STALE_RUNNING_ERROR

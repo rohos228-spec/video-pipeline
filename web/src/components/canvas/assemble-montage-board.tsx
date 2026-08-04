@@ -883,6 +883,8 @@ export function AssembleMontageBoard({
   const submittedApplyRef = useRef(false);
   const trimsDirtyRef = useRef(false);
   const lastApplyToastKeyRef = useRef("");
+  /** Не принимать done/error, пока хотя бы раз не увидели running (гонка stale meta). */
+  const applySeenRunningRef = useRef(false);
   const lastMontageToastKeyRef = useRef("");
   const lastRecoverToastKeyRef = useRef("");
 
@@ -999,6 +1001,7 @@ export function AssembleMontageBoard({
         trimsDirtyRef.current = false;
         setPendingOps([]);
         pendingOpsRef.current = [];
+        applySeenRunningRef.current = false;
         setApplyRunning(true);
         lastApplyToastKeyRef.current = "";
         toast.message(res.message || `Генерация ${queued} операций через API…`);
@@ -1006,6 +1009,7 @@ export function AssembleMontageBoard({
       }
       if (res.already_running) {
         // Чужой/текущий job — НЕ чистим локальную очередь пользователя.
+        applySeenRunningRef.current = false;
         setApplyRunning(true);
         toast.message("Генерация уже выполняется");
         return;
@@ -1035,7 +1039,9 @@ export function AssembleMontageBoard({
       if (queued === 0) {
         toast.success("Trim сохранён");
       } else {
-        toast.success("Генерация завершена");
+        // Фоновый job должен вернуть started/already_running. Иначе не врём «завершено».
+        toast.message(res.message || "Генерация принята — ждём статус…");
+        setApplyRunning(true);
       }
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
@@ -1209,6 +1215,7 @@ export function AssembleMontageBoard({
         const doneOps = evt.payload.done_ops as number | undefined;
         const totalOps = evt.payload.total_ops as number | undefined;
         if (status === "running") {
+          applySeenRunningRef.current = true;
           setApplyRunning(true);
           if (typeof doneOps === "number" && typeof totalOps === "number") {
             setApplyProgress({ done: doneOps, total: totalOps });
@@ -1225,6 +1232,7 @@ export function AssembleMontageBoard({
             setHighlights((prev) => (prev.includes(hl) ? prev : [...prev, hl]));
           }
         } else if (status === "done" || status === "error" || status === "cancelled") {
+          if (!applySeenRunningRef.current && status !== "cancelled") return;
           const err =
             evt.payload.error ||
             (Array.isArray(evt.payload.errors) ? evt.payload.errors.join("; ") : undefined);
@@ -1277,6 +1285,7 @@ export function AssembleMontageBoard({
         const totalOps = st.job?.total_ops;
         if (cancelled) return;
         if (status === "running") {
+          applySeenRunningRef.current = true;
           if (typeof doneOps === "number" && typeof totalOps === "number") {
             setApplyProgress({ done: doneOps, total: totalOps });
             if (doneOps !== lastDone) {
@@ -1288,7 +1297,9 @@ export function AssembleMontageBoard({
           }
           return;
         }
-        if (!status) return;
+        if (!status || status === "idle") return;
+        // Stale done/error до первого running — ждём, не автозавершаем.
+        if (!applySeenRunningRef.current) return;
         handleApplyTerminal(status, st.job?.error || undefined);
       } catch {
         // Сетевой сбой — не сбрасываем running.
