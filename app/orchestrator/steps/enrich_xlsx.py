@@ -178,8 +178,8 @@ async def _after_excel_gpt_done(
                 node_key,
             )
 
-    # checkMode после hero/scenes: fail → db_patch + точечный переген → снова check.
-    # Работает и без auto_mode (воркер подхватит generating_hero / generating_images).
+    # checkMode после hero/scenes/videos: fail → db_patch + точечный переген → снова check.
+    # Работает и без auto_mode (воркер подхватит generating_*).
     if node_key:
         try:
             from app.services.vision_check_loop import (

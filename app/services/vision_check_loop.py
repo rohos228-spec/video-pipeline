@@ -335,7 +335,7 @@ async def _delete_scene_pngs(
         for art in arts:
             ap = Path(str(art.path or ""))
             if ap.name == path.name or str(ap) == str(path):
-                await session.delete(art)
+                session.delete(art)
     await session.flush()
     return removed
 
@@ -345,10 +345,14 @@ async def _delete_video_clips(
     project: Project,
     targets: list[dict[str, Any]],
 ) -> int:
-    """Удалить mp4 плохих клипов (+ artifact), чтобы generate_videos перегенерил."""
-    from app.services.video_sheet import find_shot1_video, find_shot2_video
+    """Удалить ВСЕ mp4 плохих клипов (+ artifact), иначе recover подхватит старый файл."""
+    from app.services.plan_shot2 import (
+        SHOT2_VIDEO_STATUS_ATTR,
+        effective_shot_from_artifact,
+    )
 
     out_dir = Path(project.data_dir) / "videos"
+    sheets_dir = Path(project.data_dir) / "tmp_video_sheets"
     frames = (
         await session.execute(
             select(Frame).where(Frame.project_id == project.id)
@@ -359,52 +363,79 @@ async def _delete_video_clips(
     for t in targets:
         num = int(t["number"])
         shot = int(t.get("shot") or 1)
-        path = (
-            find_shot2_video(out_dir, num)
-            if shot == 2
-            else find_shot1_video(out_dir, num)
-        )
+        if shot not in (1, 2):
+            shot = 1
         fr = by_num.get(num)
         if fr is not None:
-            # animation_prompt_ready → generate_videos снова возьмёт клип
-            if fr.status in (
-                FrameStatus.video_generated,
-                FrameStatus.video_approved,
-                FrameStatus.done,
-            ):
-                fr.status = FrameStatus.animation_prompt_ready
-        if path is None or not path.is_file():
-            continue
-        try:
-            path.unlink()
-            removed += 1
-        except OSError:
-            logger.warning(
-                "[#{}] vision_check_loop: cannot delete video {}",
-                project.id,
-                path,
-            )
-            continue
-        # stale video_sheet рядом с клипом
-        sheets_dir = Path(project.data_dir) / "tmp_video_sheets"
+            # иначе generate_videos skip по video_approved/done без файла
+            fr.status = FrameStatus.animation_prompt_ready
+            if shot == 2:
+                attrs = dict(fr.attrs or {})
+                attrs[SHOT2_VIDEO_STATUS_ATTR] = "animation_prompt_ready"
+                fr.attrs = attrs
+
+        disk_paths: list[Path] = []
+        if out_dir.is_dir():
+            if shot == 2:
+                disk_paths = [
+                    p
+                    for p in out_dir.glob(f"clip_{num:03d}_s2_*.mp4")
+                    if p.is_file()
+                ]
+            else:
+                disk_paths = [
+                    p
+                    for p in out_dir.glob(f"clip_{num:03d}_*.mp4")
+                    if p.is_file() and "_s2_" not in p.name
+                ]
+        for path in disk_paths:
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                logger.warning(
+                    "[#{}] vision_check_loop: cannot delete video {}",
+                    project.id,
+                    path,
+                )
+
         if sheets_dir.is_dir():
-            for sp in sheets_dir.glob(f"video_sheet_{num:03d}*"):
+            pat = (
+                f"video_sheet_{num:03d}_s2*"
+                if shot == 2
+                else f"video_sheet_{num:03d}*"
+            )
+            for sp in sheets_dir.glob(pat):
+                if shot == 1 and "_s2" in sp.name.lower():
+                    continue
                 try:
                     sp.unlink(missing_ok=True)
                 except OSError:
                     pass
+
+        if fr is None:
+            continue
         arts = (
             await session.execute(
                 select(Artifact).where(
                     Artifact.project_id == project.id,
+                    Artifact.frame_id == fr.id,
                     Artifact.kind == ArtifactKind.scene_video,
                 )
             )
         ).scalars().all()
         for art in arts:
             ap = Path(str(art.path or ""))
-            if ap.name == path.name or str(ap) == str(path):
-                await session.delete(art)
+            art_shot = effective_shot_from_artifact(art.meta, ap)
+            if art_shot != shot:
+                continue
+            if ap.is_file():
+                try:
+                    ap.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+            session.delete(art)
     await session.flush()
     return removed
 

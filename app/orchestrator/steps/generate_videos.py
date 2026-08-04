@@ -100,9 +100,11 @@ def resolve_scene_image_path(
 
 
 def _skip_frame_video_generation(fr: Frame, has_video_file: bool) -> bool:
-    """Не гонять outsee, если клип уже есть или кадр финально одобрен."""
-    if fr.status in (FrameStatus.video_approved, FrameStatus.done):
-        return True
+    """Не гонять outsee, если клип уже есть на диске.
+
+    video_approved/done без файла НЕ скипаем — иначе vision-regen / дыры
+    зависают навсегда (post_validate крутит generating_videos).
+    """
     if has_video_file:
         return True
     return False
