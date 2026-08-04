@@ -1,6 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  startTransition,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -163,6 +173,60 @@ function PromptModalBody({
   );
 }
 
+/** Своё состояние open — клик не перерисовывает всю таблицу кадров. */
+function MontageExtrasPopover({
+  projectId,
+}: {
+  projectId: number | null | undefined;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button type="button" size="sm" variant="outline" className="h-9 gap-1.5 text-xs">
+          <Settings2 className="h-4 w-4" />
+          Доп. функции
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        className="z-[10060] max-h-[min(80vh,640px)] w-[min(96vw,420px)] overflow-y-auto p-3"
+      >
+        {open ? (
+          <>
+            <h3 className="mb-3 text-sm font-semibold">Настройки сборки</h3>
+            {projectId != null ? (
+              <>
+                <MontageMediaExtras
+                  onVoiceUpload={async (file) => {
+                    try {
+                      await api.uploadMontageVoice(projectId, file);
+                      toast.success("Озвучка загружена → audio/voice_full.*");
+                    } catch (e) {
+                      toast.error(errorMessageFromUnknown(e));
+                    }
+                  }}
+                  onMusicUpload={async (file) => {
+                    try {
+                      await api.uploadMontageMusic(projectId, file);
+                      toast.success("Музыка загружена → music/bgm.*");
+                    } catch (e) {
+                      toast.error(errorMessageFromUnknown(e));
+                    }
+                  }}
+                />
+                <NodeStepParamsPanel projectId={projectId} nodeType="assemble" />
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground">Проект не выбран</p>
+            )}
+          </>
+        ) : null}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function MontageMediaExtras({
   onVoiceUpload,
   onMusicUpload,
@@ -282,7 +346,7 @@ function MediaLightbox({
   );
 }
 
-function MediaActionBar({
+const MediaActionBar = memo(function MediaActionBar({
   kind,
   onRegen,
   onEditPrompt,
@@ -361,9 +425,9 @@ function MediaActionBar({
       />
     </div>
   );
-}
+});
 
-function ClickableMedia({
+const ClickableMedia = memo(function ClickableMedia({
   url,
   kind,
   label,
@@ -375,6 +439,7 @@ function ClickableMedia({
   onUpload,
   highlighted,
   stale,
+  scrollRootRef,
 }: {
   url: string | null;
   kind: "image" | "video";
@@ -387,6 +452,7 @@ function ClickableMedia({
   onUpload: (file: File) => void;
   highlighted?: boolean;
   stale?: boolean;
+  scrollRootRef?: RefObject<HTMLDivElement | null>;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   // Не монтировать сотни <video>/<img> сразу — Chrome зависает на 150×2 клипах.
@@ -395,15 +461,16 @@ function ClickableMedia({
   useEffect(() => {
     const el = hostRef.current;
     if (!el || !url) return;
+    const root = scrollRootRef?.current ?? null;
     const io = new IntersectionObserver(
       (entries) => {
         if (entries.some((e) => e.isIntersecting)) setInView(true);
       },
-      { root: null, rootMargin: "180px 240px", threshold: 0.01 },
+      { root, rootMargin: "120px 160px", threshold: 0.01 },
     );
     io.observe(el);
     return () => io.disconnect();
-  }, [url]);
+  }, [url, scrollRootRef]);
 
   if (!url) {
     return (
@@ -489,7 +556,7 @@ function ClickableMedia({
       />
     </div>
   );
-}
+});
 
 function formatSecShort(sec: number): string {
   if (!Number.isFinite(sec)) return "—";
@@ -656,7 +723,7 @@ function VideoTrimSlider({
   );
 }
 
-function VideoMediaCell({
+const VideoMediaCell = memo(function VideoMediaCell({
   fr,
   shot,
   url,
@@ -669,6 +736,7 @@ function VideoMediaCell({
   onUpload,
   highlighted,
   stale,
+  scrollRootRef,
 }: {
   fr: MontageBoardFrame;
   shot: 1 | 2;
@@ -682,6 +750,7 @@ function VideoMediaCell({
   onUpload: (file: File) => void;
   highlighted?: boolean;
   stale?: boolean;
+  scrollRootRef?: RefObject<HTMLDivElement | null>;
 }) {
   const isShot2 = shot === 2;
   const sceneUse = isShot2 ? fr.shot2_use_seconds : fr.shot1_use_seconds;
@@ -707,6 +776,7 @@ function VideoMediaCell({
         onUpload={onUpload}
         highlighted={highlighted}
         stale={stale}
+        scrollRootRef={scrollRootRef}
       />
       <VideoTrimSlider
         fileDuration={fileDur}
@@ -716,7 +786,7 @@ function VideoMediaCell({
       />
     </div>
   );
-}
+});
 
 function CharactersCell({
   fr,
@@ -865,7 +935,6 @@ export function AssembleMontageBoard({
   const [trims, setTrims] = useState<Record<string, VideoTrim>>({});
   const [pendingOps, setPendingOps] = useState<MontagePendingOp[]>([]);
   const [promptModal, setPromptModal] = useState<PromptModalState>(null);
-  const [extrasOpen, setExtrasOpen] = useState(false);
   const [highlights, setHighlights] = useState<string[]>([]);
   const [staleVideos, setStaleVideos] = useState<string[]>([]);
   const [montageRunning, setMontageRunning] = useState(false);
@@ -899,9 +968,20 @@ export function AssembleMontageBoard({
     retry: 2,
     retryDelay: (n) => Math.min(1000 * 2 ** n, 4000),
     // Не долбить API+ffprobe при каждом открытии панели (150+ клипов).
-    refetchOnMount: true,
+    refetchOnMount: false,
     staleTime: 60_000,
+    placeholderData: (prev) => prev,
   });
+
+  // Прогрев «Доп. функции» — getProject не блокирует первый клик.
+  useEffect(() => {
+    if (!open || projectId == null) return;
+    void queryClient.prefetchQuery({
+      queryKey: ["project", projectId],
+      queryFn: () => api.getProject(projectId),
+      staleTime: 30_000,
+    });
+  }, [open, projectId, queryClient]);
 
   const frames = board.data?.frames ?? [];
   const meta = board.data?.meta;
@@ -971,6 +1051,10 @@ export function AssembleMontageBoard({
     applyRunning,
     parsePendingOps,
   ]);
+
+  const showPreview = useCallback((p: MediaPreview) => {
+    setPreview(p);
+  }, []);
 
   const queueOp = useCallback((op: MontagePendingOp) => {
     localQueueDirtyRef.current = true;
@@ -1218,11 +1302,12 @@ export function AssembleMontageBoard({
           applySeenRunningRef.current = true;
           setApplyRunning(true);
           if (typeof doneOps === "number" && typeof totalOps === "number") {
-            setApplyProgress({ done: doneOps, total: totalOps });
+            startTransition(() => {
+              setApplyProgress({ done: doneOps, total: totalOps });
+            });
           }
-          // После каждой успешной op — сразу показать новый кадр на доске
-          // (иначе UI держит старый PNG до конца всей очереди).
-          if (evt.payload.refresh_board || typeof doneOps === "number") {
+          // Только когда реально сменился кадр — не на каждый progress-тикт.
+          if (evt.payload.refresh_board) {
             void queryClient.invalidateQueries({
               queryKey: ["montage-board", projectId],
             });
@@ -1287,11 +1372,12 @@ export function AssembleMontageBoard({
         if (status === "running") {
           applySeenRunningRef.current = true;
           if (typeof doneOps === "number" && typeof totalOps === "number") {
-            setApplyProgress({ done: doneOps, total: totalOps });
+            // Не invalidate доски на каждый тик — иначе UI лагает (ffprobe/xlsx).
+            // Обновление кадров приходит по WS (refresh_board).
             if (doneOps !== lastDone) {
               lastDone = doneOps;
-              void queryClient.invalidateQueries({
-                queryKey: ["montage-board", projectId],
+              startTransition(() => {
+                setApplyProgress({ done: doneOps, total: totalOps });
               });
             }
           }
@@ -1602,45 +1688,7 @@ export function AssembleMontageBoard({
               )}
               Монтаж
             </Button>
-            <Popover open={extrasOpen} onOpenChange={setExtrasOpen}>
-              <PopoverTrigger asChild>
-                <Button type="button" size="sm" variant="outline" className="h-9 gap-1.5 text-xs">
-                  <Settings2 className="h-4 w-4" />
-                  Доп. функции
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent
-                align="end"
-                className="z-[10060] max-h-[min(80vh,640px)] w-[min(96vw,420px)] overflow-y-auto p-3"
-              >
-                <h3 className="mb-3 text-sm font-semibold">Настройки сборки</h3>
-                {projectId != null ? (
-                  <>
-                    <MontageMediaExtras
-                      onVoiceUpload={async (file) => {
-                        try {
-                          await api.uploadMontageVoice(projectId, file);
-                          toast.success("Озвучка загружена → audio/voice_full.*");
-                        } catch (e) {
-                          toast.error(errorMessageFromUnknown(e));
-                        }
-                      }}
-                      onMusicUpload={async (file) => {
-                        try {
-                          await api.uploadMontageMusic(projectId, file);
-                          toast.success("Музыка загружена → music/bgm.*");
-                        } catch (e) {
-                          toast.error(errorMessageFromUnknown(e));
-                        }
-                      }}
-                    />
-                    <NodeStepParamsPanel projectId={projectId} nodeType="assemble" />
-                  </>
-                ) : (
-                  <p className="text-xs text-muted-foreground">Проект не выбран</p>
-                )}
-              </PopoverContent>
-            </Popover>
+            <MontageExtrasPopover projectId={projectId} />
             <Button
               type="button"
               size="sm"
@@ -1775,6 +1823,10 @@ export function AssembleMontageBoard({
                                 "relative isolate overflow-hidden px-3 py-2 align-top",
                                 FRAME_COL_CLASS,
                               )}
+                              style={{
+                                contentVisibility: "auto",
+                                containIntrinsicSize: "240px 180px",
+                              }}
                             >
                               {collapsed ? (
                                 <div className="h-8 rounded-md bg-black/10" />
@@ -1783,7 +1835,7 @@ export function AssembleMontageBoard({
                                   {voiceoverForFrame(fr) || "—"}
                                 </p>
                               ) : row.key === "characters" ? (
-                                <CharactersCell fr={fr} onPreview={setPreview} />
+                                <CharactersCell fr={fr} onPreview={showPreview} />
                               ) : row.key === "timestamps" ? (
                                 <TimestampCell fr={fr} />
                               ) : row.key === "image1" ? (
@@ -1791,7 +1843,8 @@ export function AssembleMontageBoard({
                                   url={fr.image_shot1_url}
                                   kind="image"
                                   label={`Изображение 1 · кадр #${fr.number}`}
-                                  onPreview={setPreview}
+                                  onPreview={showPreview}
+                                  scrollRootRef={tableScrollRef}
                                   onRegen={() =>
                                     queueOp({
                                       type: "image_regen",
@@ -1816,7 +1869,8 @@ export function AssembleMontageBoard({
                                   url={fr.image_shot2_url}
                                   kind="image"
                                   label={`Изображение 2 · кадр #${fr.number}`}
-                                  onPreview={setPreview}
+                                  onPreview={showPreview}
+                                  scrollRootRef={tableScrollRef}
                                   onRegen={() =>
                                     queueOp({
                                       type: "image_regen",
@@ -1839,7 +1893,8 @@ export function AssembleMontageBoard({
                                   fr={fr}
                                   shot={1}
                                   url={fr.video_shot1_url}
-                                  onPreview={setPreview}
+                                  onPreview={showPreview}
+                                  scrollRootRef={tableScrollRef}
                                   trim={trims[trimKey(fr.number, 1)]}
                                   onTrimChange={(t) => updateTrim(trimKey(fr.number, 1), t)}
                                   onRegen={() =>
@@ -1860,7 +1915,8 @@ export function AssembleMontageBoard({
                                   fr={fr}
                                   shot={2}
                                   url={fr.video_shot2_url}
-                                  onPreview={setPreview}
+                                  onPreview={showPreview}
+                                  scrollRootRef={tableScrollRef}
                                   trim={trims[trimKey(fr.number, 2)]}
                                   onTrimChange={(t) => updateTrim(trimKey(fr.number, 2), t)}
                                   onRegen={() =>
