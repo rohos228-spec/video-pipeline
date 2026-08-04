@@ -717,6 +717,8 @@ def write_plan_animation_prompt(
     project: Project,
     frame_number: int,
     animation_prompt: str,
+    *,
+    allow_empty: bool = False,
 ) -> bool:
     """Пишет промт анимации в строку 48 листа «план» для кадра `frame_number`."""
     path = project.data_dir / "project.xlsx"
@@ -729,7 +731,7 @@ def write_plan_animation_prompt(
         return False
     col = plan_frame_column(frame_number)
     text = (animation_prompt or "").strip()
-    if not text:
+    if not text and not allow_empty:
         return False
     try:
         with _file_lock(path):
@@ -744,7 +746,7 @@ def write_plan_animation_prompt(
                     path.name,
                 )
                 return False
-            ws.cell(row=ROW_VIDEO_PROMPT_V8, column=col, value=text)
+            ws.cell(row=ROW_VIDEO_PROMPT_V8, column=col, value=text or None)
             wb.save(path)
             wb.close()
         logger.info(
@@ -763,3 +765,42 @@ def write_plan_animation_prompt(
             e,
         )
         return False
+
+
+def clear_plan_animation_prompts(project: Project, frame_numbers: list[int]) -> int:
+    """Очистить R48 (и R64 shot2) для кадров — ручной ▶ anim_pr с заменой."""
+    path = project.data_dir / "project.xlsx"
+    if not path.exists() or not frame_numbers:
+        return 0
+    cleared = 0
+    try:
+        with _file_lock(path):
+            wb = load_workbook(path)
+            ws = _resolve_plan_sheet(wb)
+            if ws is None:
+                wb.close()
+                return 0
+            for num in frame_numbers:
+                col = plan_frame_column(int(num))
+                for row in (ROW_VIDEO_PROMPT_V8, ROW_VIDEO_PROMPT_2_V8):
+                    cell = ws.cell(row=row, column=col)
+                    if cell.value not in (None, ""):
+                        cell.value = None
+                        cleared += 1
+            wb.save(path)
+            wb.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] clear_plan_animation_prompts failed: {}",
+            project.id,
+            e,
+        )
+        return 0
+    if cleared:
+        logger.info(
+            "[#{}] clear_plan_animation_prompts: cleared {} cells for {} frames",
+            project.id,
+            cleared,
+            len(frame_numbers),
+        )
+    return cleared

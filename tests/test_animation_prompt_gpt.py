@@ -113,7 +113,7 @@ async def test_sync_clears_stale_db_when_xlsx_r48_empty(
 async def test_start_step_anim_pr_skips_when_no_missing_on_disk(
     anim_pr_session, tmp_path: Path, monkeypatch
 ) -> None:
-    """Промты в БД есть, картинок нет — anim_pr ready, НЕ откат в картинки."""
+    """Авто-старт без missing — ready, НЕ картинки и НЕ video."""
     from app.settings import settings
 
     session, project = anim_pr_session
@@ -122,12 +122,37 @@ async def test_start_step_anim_pr_skips_when_no_missing_on_disk(
     data_dir.mkdir(parents=True)
     (data_dir / "scenes").mkdir()
 
-    status = await start_step(session, project, "anim_pr")
+    status = await start_step(session, project, "anim_pr", explicit_ui_start=False)
     assert status is ProjectStatus.animation_prompts_ready
     assert project.status is ProjectStatus.animation_prompts_ready
-    # Регресс: раньше compute_actual_status → image_prompts_ready → auto img
     assert project.status is not ProjectStatus.image_prompts_ready
     assert project.status is not ProjectStatus.generating_images
+    assert project.status is not ProjectStatus.generating_videos
+
+
+@pytest.mark.asyncio
+async def test_start_step_anim_pr_explicit_reruns_even_if_ready(
+    anim_pr_session, tmp_path: Path, monkeypatch
+) -> None:
+    """Ручной ▶ всегда regenerates: wipe → generating_animation_prompts."""
+    from app.settings import settings
+    from sqlalchemy import select
+
+    from app.models import Frame
+
+    session, project = anim_pr_session
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    data_dir = tmp_path / "videos" / project.slug
+    scenes = data_dir / "scenes"
+    scenes.mkdir(parents=True)
+    (scenes / "frame_001_abcd1234.png").write_bytes(b"x" * 250_000)
+
+    status = await start_step(session, project, "anim_pr", explicit_ui_start=True)
+    assert status is ProjectStatus.generating_animation_prompts
+    fr = (
+        await session.execute(select(Frame).where(Frame.project_id == project.id))
+    ).scalar_one()
+    assert not (fr.animation_prompt or "").strip()
 
 
 @pytest.mark.asyncio

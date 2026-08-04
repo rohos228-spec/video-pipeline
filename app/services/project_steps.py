@@ -189,35 +189,37 @@ async def start_step(
                 project.id,
             )
 
-        synced = await sync_animation_prompts_from_xlsx(session, project)
-        frames = (
-            await session.execute(
-                select(Frame)
-                .where(Frame.project_id == project.id)
-                .order_by(Frame.number)
-            )
-        ).scalars().all()
-        missing_s1, missing_s2 = scan_missing_animation_prompts_all(project, frames)
-        if not missing_s1 and not missing_s2:
-            ready, xlsx_filled, with_image = count_animation_prompt_stats(
+        # Ручной ▶ из UI: всегда полный переген с заменой (даже если R48 готов).
+        # Авто/очередь без missing — skip на ready (не прыгаем в video/images).
+        if not explicit_ui_start:
+            synced = await sync_animation_prompts_from_xlsx(session, project)
+            frames = (
+                await session.execute(
+                    select(Frame)
+                    .where(Frame.project_id == project.id)
+                    .order_by(Frame.number)
+                )
+            ).scalars().all()
+            missing_s1, missing_s2 = scan_missing_animation_prompts_all(
                 project, frames
             )
-            # НЕ compute_actual_status: при дырах в PNG он откатывает в
-            # image_prompts_ready → auto_advance включает generating_images.
-            # Юзер нажал anim_pr — остаёмся на animation_prompts_ready.
-            project.status = _PS.animation_prompts_ready
-            project.updated_at = datetime.utcnow()
-            await session.flush()
-            logger.info(
-                "[#{}] start_step anim_pr: пропуск — нечего генерировать "
-                "(synced={}, plan R48={}, картинок={}, status={})",
-                project.id,
-                synced,
-                xlsx_filled,
-                with_image,
-                project.status.value,
-            )
-            return project.status
+            if not missing_s1 and not missing_s2:
+                ready, xlsx_filled, with_image = count_animation_prompt_stats(
+                    project, frames
+                )
+                project.status = _PS.animation_prompts_ready
+                project.updated_at = datetime.utcnow()
+                await session.flush()
+                logger.info(
+                    "[#{}] start_step anim_pr: авто-пропуск — нечего генерировать "
+                    "(synced={}, plan R48={}, картинок={}, status={})",
+                    project.id,
+                    synced,
+                    xlsx_filled,
+                    with_image,
+                    project.status.value,
+                )
+                return project.status
 
     clear_stop(project.id)
     from app.services.step_failure_policy import clear_failure_backoff_for_manual_start
@@ -267,13 +269,35 @@ async def start_step(
             ", ".join(cleared),
         )
     try:
-        wiped = await clear_step_outputs_for_rerun(session, project, step_code)
+        # UI ▶ anim_pr: wipe R48/DB, иначе soft-resume оставляет готовые промты
+        # и шаг сразу «ничего делать» → auto уходит в video.
+        force_wipe = bool(explicit_ui_start and step_code == "anim_pr")
+        if force_wipe:
+            from sqlalchemy import select as _select
+
+            from app.models import Frame as _Frame
+            from app.storage.plan_sheet_v8 import clear_plan_animation_prompts
+
+            nums = [
+                int(n)
+                for (n,) in (
+                    await session.execute(
+                        _select(_Frame.number).where(_Frame.project_id == project.id)
+                    )
+                ).all()
+            ]
+            clear_plan_animation_prompts(project, nums)
+        wiped = await clear_step_outputs_for_rerun(
+            session, project, step_code, force_wipe=force_wipe
+        )
         if wiped:
             logger.info(
-                "[#{}] start_step {}: очищены выходы шага перед запуском: {}",
+                "[#{}] start_step {}: очищены выходы шага перед запуском: {} "
+                "(force_wipe={})",
                 project.id,
                 step_code,
                 list(wiped.keys()),
+                force_wipe,
             )
     except Exception as e:  # noqa: BLE001
         logger.exception(

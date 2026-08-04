@@ -651,12 +651,17 @@ async def clear_step_outputs_for_rerun(
     session: AsyncSession,
     project: Project,
     step_code: str,
+    *,
+    force_wipe: bool = False,
 ) -> dict[str, Any]:
     """Очистить только выход этого шага (без downstream) перед повторным запуском.
 
     Вызывается из `start_step` при «▶ Запустить шаг»: каждый перезапуск
     идёт с нуля (промт+файлы в ChatGPT, все кадры/предметы), но данные
     следующих шагов не трогаем — для полного каскада есть reset_step.
+
+    ``force_wipe=True`` — полный wipe даже если для шага есть soft-resume
+    (anim_pr: иначе R48 остаётся и ▶ «готового» шага ничего не перегенерит).
     """
     if not is_reset_supported(step_code):
         return {}
@@ -664,7 +669,10 @@ async def clear_step_outputs_for_rerun(
     codes = _WRAPPER_TO_CODES.get(step_code, [step_code])
     summary: dict[str, Any] = {}
     for code in codes:
-        handler = _STEP_RERUN_BY_CODE.get(code) or _STEP_WIPE_BY_CODE.get(code)
+        if force_wipe:
+            handler = _STEP_WIPE_BY_CODE.get(code) or _STEP_RERUN_BY_CODE.get(code)
+        else:
+            handler = _STEP_RERUN_BY_CODE.get(code) or _STEP_WIPE_BY_CODE.get(code)
         if handler is None:
             continue
         try:
@@ -682,9 +690,10 @@ async def clear_step_outputs_for_rerun(
     if summary:
         await session.flush()
         logger.info(
-            "[#{}] clear_step_outputs_for_rerun: step={} cleared={}",
+            "[#{}] clear_step_outputs_for_rerun: step={} force_wipe={} cleared={}",
             project.id,
             step_code,
+            force_wipe,
             list(summary.keys()),
         )
     return summary

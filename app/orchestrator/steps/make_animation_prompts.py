@@ -48,9 +48,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         project, frames
     )
     if not pending and not pending_shot2:
-        from app.services.project_state import compute_actual_status
-
-        project.status = await compute_actual_status(session, project)
+        # Не compute_actual_status: при готовых клипах уходит в videos_ready →
+        # auto_advance стартует video, хотя юзер ждал anim_pr.
+        project.status = ProjectStatus.animation_prompts_ready
         logger.info(
             "[#{}] make_animation_prompts: nothing to do "
             "(db_ready={}, png={}) → status={}",
