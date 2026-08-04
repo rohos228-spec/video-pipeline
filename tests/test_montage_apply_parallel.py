@@ -36,6 +36,17 @@ def test_order_images_before_videos_and_by_frame_shot() -> None:
     ]
 
 
+def test_montage_parallel_falls_back_to_create_outsee() -> None:
+    from app.services.montage_board_apply import _montage_apply_parallel
+
+    p = Project(id=1, slug="x", topic="t", hero_mode="auto")
+    p.meta = {}
+    assert _montage_apply_parallel(p) == 4  # CREATE_MAX_PARALLEL_OUTSEE default
+
+    p.meta = {"outsee_streams": 2}
+    assert _montage_apply_parallel(p) == 2
+
+
 def test_group_ops_by_frame_shot_order() -> None:
     ops = [
         {"type": "image_regen", "frame_number": 2, "shot": 1},

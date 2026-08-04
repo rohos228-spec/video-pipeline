@@ -111,8 +111,19 @@ def group_ops_by_frame(
 
 
 def _montage_apply_parallel(project: Project) -> int:
-    """Сколько одновременных кадров: как img/video (1..4), 0 → 1."""
-    n = get_img_streams(project)
+    """Сколько одновременных кадров.
+
+    meta.outsee_streams / img_streams — если заданы;
+    иначе CREATE_MAX_PARALLEL_OUTSEE (как Studio Create), не IMG_MAX_STREAMS=1.
+    """
+    from app.services.create_jobs import max_parallel
+    from app.services.img_streams import META_KEY, META_KEY_ALIAS
+
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    if META_KEY_ALIAS in meta or META_KEY in meta:
+        n = get_img_streams(project)
+    else:
+        n = max_parallel("outsee")
     if n <= 0:
         return 1
     return max(1, min(4, n))
