@@ -238,6 +238,42 @@ def _prompts_from_frame_db(frames: list[_FrameBoardSnapshot]) -> dict[int, dict[
     return out
 
 
+async def _overlay_active_prompt_versions(
+    session: AsyncSession,
+    frames: list[Frame],
+) -> None:
+    """Подтянуть активные версии промтов в Frame.* (для UI и same_prompt)."""
+    from app.models import PromptVersion
+
+    if not frames:
+        return
+    ids = [int(fr.id) for fr in frames]
+    rows = (
+        await session.execute(
+            select(PromptVersion).where(
+                PromptVersion.frame_id.in_(ids),
+                PromptVersion.is_active.is_(True),
+            )
+        )
+    ).scalars().all()
+    by_frame: dict[int, dict[str, str]] = {}
+    for pv in rows:
+        text = (pv.text or "").strip()
+        if not text:
+            continue
+        slot = by_frame.setdefault(int(pv.frame_id), {})
+        if pv.kind == "img":
+            slot["img"] = text
+        elif pv.kind == "video":
+            slot["video"] = text
+    for fr in frames:
+        slot = by_frame.get(int(fr.id)) or {}
+        if slot.get("img"):
+            fr.image_prompt = slot["img"]
+        if slot.get("video"):
+            fr.animation_prompt = slot["video"]
+
+
 def _read_source_prompts_once(
     xlsx_path: Path,
     frames: list[_FrameBoardSnapshot],
@@ -280,17 +316,18 @@ def _read_source_prompts_once(
     finally:
         wb.close()
 
+    # БД first, Excel — только запасной вид (не перетирает Frame.*).
     for fr in frames:
         attrs = fr.attrs
         cell = excel.get(fr.number) or {}
-        img1 = cell.get("image_prompt_shot1") or fr.image_prompt
-        img2 = cell.get("image_prompt_shot2") or (
-            attrs.get(SHOT2_PROMPT_ATTR) or ""
-        ).strip()
-        vid1 = cell.get("animation_prompt_shot1") or fr.animation_prompt
-        vid2 = (cell.get("animation_prompt_shot2") or "").strip()
+        img1 = fr.image_prompt or cell.get("image_prompt_shot1") or ""
+        img2 = (attrs.get(SHOT2_PROMPT_ATTR) or "").strip() or (
+            cell.get("image_prompt_shot2") or ""
+        )
+        vid1 = fr.animation_prompt or cell.get("animation_prompt_shot1") or ""
+        vid2 = (attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or "").strip()
         if len(vid2) < MIN_SHOT2_VIDEO_PROMPT_LEN:
-            vid2 = (attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or "").strip()
+            vid2 = (cell.get("animation_prompt_shot2") or "").strip()
         out[fr.number] = {
             "image_prompt_shot1": img1,
             "image_prompt_shot2": img2,
@@ -429,6 +466,14 @@ async def build_montage_board(
     except Exception as e:  # noqa: BLE001
         logger.warning(
             "montage_board: frame_timeline_sync project {}: {}", project_id, e
+        )
+
+    # Активные prompt_versions (DB v2) перекрывают Frame.* перед снимком для UI.
+    try:
+        await _overlay_active_prompt_versions(session, frames_orm)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "montage_board: prompt_versions overlay project {}: {}", project_id, e
         )
 
     # ORM только здесь; дальше — plain snapshots (to_thread не трогает Session).

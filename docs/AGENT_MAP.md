@@ -179,6 +179,7 @@ Series workbook — отдельный трек: `docs/SERIES_XLSX_WORKBOOK.md`.
 | Таймлайн / sync | `app/services/frame_timeline_sync.py`, `mapper.py` |
 | Whisper / ASR | `app/services/whisper.py`; NVIDIA: `ASR_BACKEND=nvidia`, `.[nvidia]`, `scripts/download_nvidia_asr.py` |
 | VO в xlsx | R49 (`ROW_VOICEOVER_V8`) + таймкоды R15 |
+| **Regen на доске** | `montage_board_regen.py` → тот же API, что img/video (`outsee_retry`); промты из БД (`prompt_versions`/Frame), Excel fallback. CDP не нужен при `IMAGE/VIDEO_PROVIDER=outsee\|grsai`. См. `docs/DB_V2.md` §8 |
 
 ---
 
@@ -223,6 +224,7 @@ SoT по тексту GPT: `AGENTS.md` + этот map §8.
 | Ищу | Открыть |
 |-----|---------|
 | **DB v2 / кнопка «База»** | [`DB_V2.md`](DB_V2.md), `app/services/db_v2.py` |
+| Монтаж regen img/video | `montage_board_regen.py` (API = ноды img/video; промты из БД) |
 | step_code / status | `node_registry.py` |
 | R48 anim | `plan_sheet_v8.py`, ops rule |
 | Prompt blocks | `PROMPTS_BLOCKS.md` |

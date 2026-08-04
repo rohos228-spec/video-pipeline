@@ -984,7 +984,7 @@ export function AssembleMontageBoard({
     mutationFn: () => {
       const ops = pendingOpsRef.current;
       if (ops.length > 0) {
-        toast.message(`Генерация: ${ops.length} операций… (Chrome :29229, outsee.io)`);
+        toast.message(`Генерация: ${ops.length} операций… (Outsee/Grsai API)`);
       }
       return api.applyMontageBoard(projectId!, {
         video_trims: trims,
@@ -1001,7 +1001,7 @@ export function AssembleMontageBoard({
         pendingOpsRef.current = [];
         setApplyRunning(true);
         lastApplyToastKeyRef.current = "";
-        toast.message(res.message || `Генерация ${queued} операций… смотрите outsee.io`);
+        toast.message(res.message || `Генерация ${queued} операций через API…`);
         return;
       }
       if (res.already_running) {
@@ -1557,7 +1557,7 @@ export function AssembleMontageBoard({
                 recoverRunning ||
                 applyRunning
               }
-              title="Скачать из Outsee выделенные правки и заменить кадры"
+              title="Опционально: CDP-подбор готовых карточек из галереи Outsee (перегенерация через API этого не требует)"
               onClick={() => recoverOutseeMutation.mutate()}
             >
               {recoverOutseeMutation.isPending || recoverRunning ? (
@@ -1565,7 +1565,7 @@ export function AssembleMontageBoard({
               ) : (
                 <RefreshCw className="h-4 w-4" />
               )}
-              {recoverRunning ? "Забираем из Outsee…" : "Забрать правки из Outsee"}
+              {recoverRunning ? "Забираем из галереи…" : "Галерея Outsee (CDP)"}
             </Button>
             <AudioAlignPopover
               projectId={projectId}

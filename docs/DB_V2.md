@@ -321,7 +321,33 @@ animation_prompt, meaning, duration_seconds, attrs + excel_rows (что
 
 ---
 
-## 8. Roadmap (следующие шаги, ещё НЕ сделано)
+## 8. Монтаж: перегенерация через API + промты из БД
+
+**SoT:** `app/services/montage_board_regen.py`, `app/services/montage_board.py`.
+
+Перегенерация картинок/видео на панели монтажа идёт **тем же путём, что
+ноды img/video**: `generate_*_with_retries` → Grsai / Outsee HTTP API.
+
+- CDP (Chrome :29229) **не требуется**, если `IMAGE_PROVIDER` /
+  `VIDEO_PROVIDER` = `outsee`|`grsai` и задан API-ключ.
+- CDP — только legacy-fallback, когда API-провайдер выключен.
+- Кнопка «Галерея Outsee (CDP)» — опциональный подбор из галереи, не нужна
+  для обычной перегенерации / правки.
+
+Промты на доске и при regen (priority):
+
+1. активная `prompt_versions` (`img` / `video`);
+2. `Frame.image_prompt` / `Frame.animation_prompt` / attrs shot2;
+3. Excel R45/R46/R48/R64 — запасной вид.
+
+«Правка промта» пишет в Frame + новую активную `prompt_versions`; Excel —
+best-effort (сбой Excel не валит операцию).
+
+Тесты: `tests/test_montage_regen_api.py`.
+
+---
+
+## 9. Roadmap (следующие шаги, ещё НЕ сделано)
 
 1. ~~Экспорт v2 → project.xlsx~~ — **сделано**: `export-xlsx` + кнопка
    «Экспорт в Excel» + write-through после правок (2026-07-31).
@@ -335,7 +361,7 @@ animation_prompt, meaning, duration_seconds, attrs + excel_rows (что
 
 ---
 
-## 9. Как управлять и использовать (руководство)
+## 10. Как управлять и использовать (руководство)
 
 **Главное правило:** DB — источник правды, Excel — экспорт. Писатель один.
 
@@ -424,7 +450,7 @@ curl -X POST http://127.0.0.1:8765/api/db/projects/<ID>/apply-ops \
 
 ---
 
-## 10. Быстрые ссылки
+## 11. Быстрые ссылки
 
 | Что | Файл |
 |-----|------|
@@ -435,3 +461,4 @@ curl -X POST http://127.0.0.1:8765/api/db/projects/<ID>/apply-ops \
 | Кнопка | `web/src/components/shell/topbar.tsx` |
 | API фронта | `web/src/lib/api.ts` (`api.db*`, типы `Db*`) |
 | Тесты | `tests/test_db_v2.py` |
+| Монтаж regen (API) | `app/services/montage_board_regen.py`, `tests/test_montage_regen_api.py` |

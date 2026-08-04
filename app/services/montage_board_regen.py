@@ -1,18 +1,24 @@
-"""Перегенерация одного кадра/shot для панели монтажа (без HITL)."""
+"""Перегенерация одного кадра/shot для панели монтажа (без HITL).
+
+Генерация идёт тем же путём, что ноды img/video:
+``generate_*_with_retries`` → Grsai / Outsee HTTP API (CDP — только fallback,
+если API-провайдер выключен).
+
+Промты: source of truth = БД (``prompt_versions`` активная → Frame.* →
+Excel как запасной вид).
+"""
 
 from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bots.browser import browser_session
-from app.services.gpt_client import get_gpt_client
-from app.bots.outsee import OutseeBot
 from app.generation_options import (
     ASPECT_RATIOS_BY_ID,
     DEFAULTS,
@@ -24,11 +30,10 @@ from app.generation_options import (
     clamp_image_resolution_id,
     resolve_image_quality_slug,
 )
-from app.bots.chrome_cdp import fetch_cdp_version
-from app.settings import settings
-from app.models import Frame, Project
+from app.models import Frame, Project, PromptVersion
 from app.orchestrator.steps.generate_images import _load_refs_for_frame
 from app.services.animation_prompt_gpt import animation_prompt_shot2_in_plan_xlsx
+from app.services.gpt_client import get_gpt_client
 from app.services.montage_board_assets import (
     finalize_scene_image,
     finalize_scene_video,
@@ -89,17 +94,50 @@ class VideoRegenPrep:
     video_relax: bool = True
 
 
+def _image_api_enabled() -> bool:
+    from app.bots.grsai import grsai_enabled
+    from app.bots.outsee_http import outsee_api_enabled_for_image
+
+    return bool(grsai_enabled() or outsee_api_enabled_for_image())
+
+
+def _video_api_enabled() -> bool:
+    from app.bots.grsai import grsai_video_enabled
+    from app.bots.outsee_http import outsee_api_enabled_for_video
+
+    return bool(grsai_video_enabled() or outsee_api_enabled_for_video())
+
+
+class _ApiOnlyOutseeStub:
+    """Заглушка OutseeBot: API-путь в outsee_retry не вызывает CDP-методы."""
+
+    async def generate_image(self, *args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError(
+            "CDP fallback выключен: включите IMAGE_PROVIDER=outsee|grsai с API-ключом"
+        )
+
+    async def generate_video(self, *args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError(
+            "CDP fallback выключен: включите VIDEO_PROVIDER=outsee|grsai с API-ключом"
+        )
+
+
 async def _ensure_cdp_ready() -> None:
+    """Только для legacy CDP-пути (когда API-провайдер не настроен)."""
+    from app.bots.chrome_cdp import fetch_cdp_version
+    from app.settings import settings
+
     try:
         await fetch_cdp_version(settings.browser_cdp_url)
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
-            "Chrome CDP :29229 не отвечает — запустите Start-Chrome.cmd и откройте outsee.io"
+            "Chrome CDP :29229 не отвечает — при IMAGE/VIDEO_PROVIDER=outsee|grsai "
+            "CDP не нужен; иначе запустите Start-Chrome.cmd и откройте outsee.io"
         ) from exc
 
 
 def image_prompt_from_excel(project: Project, frame: Frame, shot: int) -> str:
-    """Промт исходного изображения: Excel R45/R46 → Frame/attrs."""
+    """Запасной промт из Excel R45/R46 (если в БД пусто)."""
     cells = read_plan_image_prompt_cells(project, [frame.number], shot=shot)
     excel_prompt = (cells[0][1] if cells else "").strip()
     if excel_prompt:
@@ -111,7 +149,7 @@ def image_prompt_from_excel(project: Project, frame: Frame, shot: int) -> str:
 
 
 def video_prompt_from_excel(project: Project, frame: Frame, shot: int) -> str:
-    """Промт исходного видео: Excel R48/R64 → Frame/attrs."""
+    """Запасной промт из Excel R48/R64 (если в БД пусто)."""
     if shot == 2:
         prompt = animation_prompt_shot2_in_plan_xlsx(project, frame.number)
         if len(prompt) < MIN_SHOT2_VIDEO_PROMPT_LEN:
@@ -142,6 +180,127 @@ async def _frame_by_number(
     ).scalar_one_or_none()
 
 
+async def _active_prompt_text(
+    session: AsyncSession,
+    frame_id: int,
+    kind: str,
+) -> str:
+    """Активная версия из prompt_versions (DB v2), иначе пусто."""
+    pv = (
+        await session.execute(
+            select(PromptVersion).where(
+                PromptVersion.frame_id == frame_id,
+                PromptVersion.kind == kind,
+                PromptVersion.is_active.is_(True),
+            )
+        )
+    ).scalars().first()
+    return (pv.text or "").strip() if pv is not None else ""
+
+
+async def resolve_image_prompt(
+    session: AsyncSession,
+    project: Project,
+    frame: Frame,
+    shot: int,
+) -> str:
+    """БД first: prompt_versions → Frame/attrs → Excel."""
+    if shot == 2:
+        attrs = dict(frame.attrs or {})
+        db = (attrs.get(SHOT2_PROMPT_ATTR) or "").strip()
+        return db or image_prompt_from_excel(project, frame, shot)
+    active = await _active_prompt_text(session, frame.id, "img")
+    if active:
+        return active
+    db = (frame.image_prompt or "").strip()
+    return db or image_prompt_from_excel(project, frame, shot)
+
+
+async def resolve_video_prompt(
+    session: AsyncSession,
+    project: Project,
+    frame: Frame,
+    shot: int,
+) -> str:
+    """БД first: prompt_versions → Frame/attrs → Excel."""
+    if shot == 2:
+        attrs = dict(frame.attrs or {})
+        db = (attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or "").strip()
+        if len(db) >= MIN_SHOT2_VIDEO_PROMPT_LEN:
+            return db
+        return video_prompt_from_excel(project, frame, shot)
+    active = await _active_prompt_text(session, frame.id, "video")
+    if active:
+        return active
+    db = (frame.animation_prompt or "").strip()
+    return db or video_prompt_from_excel(project, frame, shot)
+
+
+async def _persist_image_prompt(
+    session: AsyncSession,
+    project: Project,
+    frame: Frame,
+    shot: int,
+    text: str,
+) -> None:
+    """Запись промта в БД (+ Excel best-effort, не блокирует при сбое)."""
+    from app.services import db_v2
+
+    if shot == 2:
+        attrs = dict(frame.attrs or {})
+        attrs[SHOT2_PROMPT_ATTR] = text
+        frame.attrs = attrs
+        try:
+            write_plan_image_prompt_shot2(project, frame.number, text)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("montage regen: Excel shot2 image prompt write failed: {}", e)
+    else:
+        frame.image_prompt = text
+        try:
+            await db_v2.add_prompt_version(
+                session, project.id, frame.id, kind="img", text=text, set_active=True
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("montage regen: prompt_versions img write failed: {}", e)
+        try:
+            write_plan_image_prompt(project, frame.number, text)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("montage regen: Excel R45 write failed: {}", e)
+    await session.flush()
+
+
+async def _persist_video_prompt(
+    session: AsyncSession,
+    project: Project,
+    frame: Frame,
+    shot: int,
+    text: str,
+) -> None:
+    from app.services import db_v2
+
+    if shot == 2:
+        attrs = dict(frame.attrs or {})
+        attrs[SHOT2_VIDEO_PROMPT_ATTR] = text
+        frame.attrs = attrs
+        try:
+            write_plan_animation_prompt_shot2(project, frame.number, text)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("montage regen: Excel shot2 video prompt write failed: {}", e)
+    else:
+        frame.animation_prompt = text
+        try:
+            await db_v2.add_prompt_version(
+                session, project.id, frame.id, kind="video", text=text, set_active=True
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("montage regen: prompt_versions video write failed: {}", e)
+        try:
+            write_plan_animation_prompt(project, frame.number, text)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("montage regen: Excel R48 write failed: {}", e)
+    await session.flush()
+
+
 async def prepare_image_regen(
     session: AsyncSession,
     project: Project,
@@ -165,17 +324,7 @@ async def prepare_image_regen(
         text = (new_prompt or "").strip()
         if not text:
             raise RuntimeError("пустой промт")
-        if shot == 2:
-            ok = write_plan_image_prompt_shot2(project, frame_number, text)
-            attrs = dict(fr.attrs or {})
-            attrs[SHOT2_PROMPT_ATTR] = text
-            fr.attrs = attrs
-        else:
-            ok = write_plan_image_prompt(project, frame_number, text)
-            fr.image_prompt = text
-        if not ok:
-            raise RuntimeError("не удалось записать промт в Excel")
-        await session.flush()
+        await _persist_image_prompt(session, project, fr, shot, text)
         prompt_text = text
         refs: list[Path] = []
         if shot == 1:
@@ -192,17 +341,16 @@ async def prepare_image_regen(
         if current is None:
             raise RuntimeError("нет текущего изображения для корректировки")
         # Только текст из модалки + текущий кадр как reference.
-        # НЕ склеивать с Excel — иначе в Outsee уходит «другой» промт.
+        # НЕ склеивать с Excel/БД — иначе в генератор уходит «другой» промт.
         prompt_text = text
         refs = [current]
     else:
-        # same_prompt: сначала то, что пришло с доски (UI), иначе Excel/DB.
+        # same_prompt: pin с доски → БД (prompt_versions/Frame) → Excel.
         pinned = (pinned_prompt or "").strip()
-        prompt_text = pinned or _image_prompt_from_excel(project, fr, shot)
+        prompt_text = pinned or await resolve_image_prompt(session, project, fr, shot)
         if not prompt_text:
-            row = "R46" if shot == 2 else "R45"
             raise RuntimeError(
-                f"нет промта картинки в Excel (строка {row}, кадр {frame_number})"
+                f"нет промта картинки в БД/Excel (кадр {frame_number}, shot {shot})"
             )
         if shot == 1:
             refs = await _load_refs_for_frame(session, project, frame_number)
@@ -248,47 +396,70 @@ async def prepare_image_regen(
 
 
 async def execute_image_regen(prep: ImageRegenPrep) -> Path:
-    await _ensure_cdp_ready()
+    use_api = _image_api_enabled()
     preview = (prep.prompt_text or "").replace("\n", " ")[:160]
     logger.info(
-        "montage regen image #{} frame {} shot {} → outsee "
+        "montage regen image #{} frame {} shot {} → {} "
         "({} симв., refs={}, prefix={}, preview={!r})",
         prep.project_id,
         prep.frame_number,
         prep.shot,
+        "API" if use_api else "CDP",
         len(prep.prompt_text),
         len(prep.refs),
         prep.prompt_id_prefix,
         preview,
     )
-    async with browser_session() as bs:
-        outsee = OutseeBot(bs)
-        gpt = get_gpt_client()
+    gpt = get_gpt_client()
+    kwargs = dict(
+        prompt=prep.prompt_text,
+        out_path=prep.file_path,
+        max_attempts_per_prompt=3,
+        gpt_rewrite=True,
+        aspect_ratio=prep.aspect_slug,
+        gen_id=prep.gen_id or uuid.uuid4().hex,
+        model_slug=prep.model_slug,
+        resolution=prep.res_slug,
+        quality=prep.quality_slug,
+        relax=prep.image_relax,
+        prompt_id_prefix=prep.prompt_id_prefix,
+        reference_image=prep.refs if prep.refs else None,
+        project_id=prep.project_id,
+    )
+    if use_api:
         try:
             result = await generate_image_with_retries(
-                outsee,
+                _ApiOnlyOutseeStub(),  # type: ignore[arg-type]
                 gpt,
-                prompt=prep.prompt_text,
-                out_path=prep.file_path,
-                max_attempts_per_prompt=3,
-                gpt_rewrite=True,
-                aspect_ratio=prep.aspect_slug,
-                gen_id=prep.gen_id or uuid.uuid4().hex,
-                model_slug=prep.model_slug,
-                resolution=prep.res_slug,
-                quality=prep.quality_slug,
-                relax=prep.image_relax,
-                prompt_id_prefix=prep.prompt_id_prefix,
-                reference_image=prep.refs if prep.refs else None,
-                project_id=prep.project_id,
+                **kwargs,
             )
             return Path(result.file_path)
         except Exception as exc:  # noqa: BLE001
-            # Generate уже оплачен — один раз ищем готовую карточку в истории.
-            if prep.prompt_id_prefix and not _ready_regen_file(prep.file_path):
-                recovered = await _recover_montage_image_from_history(
-                    outsee, prep
+            if _ready_regen_file(prep.file_path):
+                logger.warning(
+                    "montage regen image #{} frame {} shot {}: "
+                    "API failed but file ready: {}",
+                    prep.project_id,
+                    prep.frame_number,
+                    prep.shot,
+                    exc,
                 )
+                return prep.file_path
+            raise
+
+    # Legacy CDP (только если IMAGE_PROVIDER не API).
+    from app.bots.browser import browser_session
+    from app.bots.outsee import OutseeBot
+
+    await _ensure_cdp_ready()
+    async with browser_session() as bs:
+        outsee = OutseeBot(bs)
+        try:
+            result = await generate_image_with_retries(outsee, gpt, **kwargs)
+            return Path(result.file_path)
+        except Exception as exc:  # noqa: BLE001
+            if prep.prompt_id_prefix and not _ready_regen_file(prep.file_path):
+                recovered = await _recover_montage_image_from_history(outsee, prep)
                 if recovered is not None:
                     return recovered
             if _ready_regen_file(prep.file_path):
@@ -312,10 +483,10 @@ def _ready_regen_file(path: Path, *, min_bytes: int = 200_000) -> bool:
 
 
 async def _recover_montage_image_from_history(
-    outsee: OutseeBot,
+    outsee: Any,
     prep: ImageRegenPrep,
 ) -> Path | None:
-    """После сбоя download: тот же путь, что generate_image (download_image_like_generate)."""
+    """CDP history recover — только для legacy-пути без API."""
     from app.bots.outsee import (
         _image_page_url,
         download_image_like_generate,
@@ -414,22 +585,12 @@ async def prepare_video_regen(
         text = (new_prompt or "").strip()
         if not text:
             raise RuntimeError("пустой промт")
-        if shot == 2:
-            ok = write_plan_animation_prompt_shot2(project, frame_number, text)
-            attrs = dict(fr.attrs or {})
-            attrs[SHOT2_VIDEO_PROMPT_ATTR] = text
-            fr.attrs = attrs
-        else:
-            ok = write_plan_animation_prompt(project, frame_number, text)
-            fr.animation_prompt = text
-        if not ok:
-            raise RuntimeError("не удалось записать промт в Excel")
-        await session.flush()
+        await _persist_video_prompt(session, project, fr, shot, text)
         prompt_text = text
     else:
-        prompt_text = _video_prompt_from_excel(project, fr, shot)
+        prompt_text = await resolve_video_prompt(session, project, fr, shot)
         if not prompt_text:
-            raise RuntimeError("нет промта анимации в Excel")
+            raise RuntimeError("нет промта анимации в БД/Excel")
 
     if shot == 2:
         start_frame = find_shot2_image(scenes_dir, frame_number)
@@ -466,46 +627,58 @@ async def prepare_video_regen(
 
 
 async def execute_video_regen(prep: VideoRegenPrep) -> Path:
-    await _ensure_cdp_ready()
+    use_api = _video_api_enabled()
     logger.info(
-        "montage regen video #{} frame {} shot {} → outsee ({} симв.)",
+        "montage regen video #{} frame {} shot {} → {} ({} симв.)",
         prep.project_id,
         prep.frame_number,
         prep.shot,
+        "API" if use_api else "CDP",
         len(prep.prompt_text),
     )
+    gpt = get_gpt_client()
+    videos_dir = prep.file_path.parent
+    if prep.shot == 2:
+        dup_globs = list(videos_dir.glob(f"clip_{prep.frame_number:03d}_s2_*.mp4"))
+    else:
+        dup_globs = [
+            p
+            for p in videos_dir.glob(f"clip_{prep.frame_number:03d}_*.mp4")
+            if "_s2_" not in p.name
+        ]
+    duplicate_check_paths = list(
+        dict.fromkeys(p.resolve() for p in dup_globs if p.is_file())
+    )
+    kwargs = dict(
+        prompt=prep.prompt_text,
+        out_path=prep.file_path,
+        max_attempts_per_prompt=3,
+        gpt_rewrite=True,
+        project_id=prep.project_id,
+        start_frame=prep.start_frame,
+        aspect_ratio=prep.aspect_slug,
+        timeout=1200,
+        model_slug=prep.video_model_slug,
+        resolution=prep.video_res_slug,
+        relax=prep.video_relax,
+        prompt_id_prefix=prep.prompt_id_prefix,
+        duplicate_check_paths=duplicate_check_paths,
+    )
+    if use_api:
+        result = await generate_video_with_retries(
+            _ApiOnlyOutseeStub(),  # type: ignore[arg-type]
+            gpt,
+            **kwargs,
+        )
+        return Path(result.file_path)
+
+    from app.bots.browser import browser_session
+    from app.bots.outsee import OutseeBot
+
+    await _ensure_cdp_ready()
     async with browser_session() as bs:
         outsee = OutseeBot(bs)
-        gpt = get_gpt_client()
-        videos_dir = prep.file_path.parent
-        if prep.shot == 2:
-            dup_globs = list(videos_dir.glob(f"clip_{prep.frame_number:03d}_s2_*.mp4"))
-        else:
-            dup_globs = [
-                p
-                for p in videos_dir.glob(f"clip_{prep.frame_number:03d}_*.mp4")
-                if "_s2_" not in p.name
-            ]
-        duplicate_check_paths = list(
-            dict.fromkeys(p.resolve() for p in dup_globs if p.is_file())
-        )
-        result = await generate_video_with_retries(
-            outsee,
-            gpt,
-            prompt=prep.prompt_text,
-            out_path=prep.file_path,
-            max_attempts_per_prompt=3,
-            gpt_rewrite=True,
-            project_id=prep.project_id,
-            start_frame=prep.start_frame,
-            aspect_ratio=prep.aspect_slug,
-            timeout=1200,
-            model_slug=prep.video_model_slug,
-            resolution=prep.video_res_slug,
-            relax=prep.video_relax,
-            prompt_id_prefix=prep.prompt_id_prefix,
-            duplicate_check_paths=duplicate_check_paths,
-        )
+        result = await generate_video_with_retries(outsee, gpt, **kwargs)
     return Path(result.file_path)
 
 
