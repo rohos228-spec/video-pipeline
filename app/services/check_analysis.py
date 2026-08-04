@@ -381,7 +381,11 @@ def _section_requests_regen(section: str) -> bool:
 
 
 def extract_prose_reject_frame_targets(text: str) -> list[dict[str, Any]]:
-    """Кадры из prose: «не утверждён frame_009», «на перегенерацию … frame_009»."""
+    """Кадры из prose: «не утверждён frame_009», «на перегенерацию … frame_009».
+
+    Модель часто пишет critical только в summary/actions без ``[critical]``-строк —
+    тогда сюда же попадаем (иначе regen пустой при verdict:fail).
+    """
     raw = text or ""
     found: list[dict[str, Any]] = []
     seen: set[tuple[int, int]] = set()
@@ -395,6 +399,15 @@ def extract_prose_reject_frame_targets(text: str) -> list[dict[str, Any]]:
             return
         seen.add(key)
         found.append({"number": key[0], "shot": key[1]})
+
+    def _add_frames_from_span(span: str) -> None:
+        for m in re.finditer(
+            r"(?i)\b(?:frame|video_sheet|clip)[_-]?(\d{1,4})"
+            r"(?:[_-]s2[_-]|[_-]?(?:s2|shot2))?",
+            span,
+        ):
+            tok = m.group(0)
+            _add(tok)
 
     patterns = (
         r"(?i)не\s+(?:утвержд|принят)[^\n]{0,120}"
@@ -417,6 +430,38 @@ def extract_prose_reject_frame_targets(text: str) -> list[dict[str, Any]]:
                         _add(part.strip())
             else:
                 _add(g1)
+
+    # Строки/фразы без .png: «Critical в frame_003», «frame_018 требует регенерации»,
+    # «на регенерацию направлены только frame_003 и frame_007».
+    span_pats = (
+        r"(?i)\bcritical\b[^\n]{0,240}",
+        r"(?i)(?:на\s+)?регенерац\w*[^\n]{0,240}",
+        r"(?i)требует\s+регенерац\w*[^\n]{0,80}",
+        r"(?i)(?:frame|video_sheet|clip)[_-]?\d{1,4}[^\n]{0,80}"
+        r"требует\s+регенерац\w*",
+        r"(?i)направлены?\s+только[^\n]{0,160}",
+    )
+
+    def _line_at(pos: int) -> str:
+        start = raw.rfind("\n", 0, pos) + 1
+        end = raw.find("\n", pos)
+        if end < 0:
+            end = len(raw)
+        return raw[start:end]
+
+    for pat in span_pats:
+        for m in re.finditer(pat, raw):
+            span = m.group(0)
+            line = _line_at(m.start())
+            # Не тащим номера из утверждённых findings.
+            if re.match(r"(?i)^\s*[-*]\s*\[ok\]", line):
+                continue
+            # «регенерация не требуется» без frame_* — шум.
+            if re.search(r"(?i)не\s+требу", span) and not re.search(
+                r"(?i)(?:frame|video_sheet|clip)[_-]?\d+", span
+            ):
+                continue
+            _add_frames_from_span(span)
     return found
 
 

@@ -132,6 +132,7 @@ source_prompts: <из входа или —>
 Последовательность 1→6 по проблемным клипам: смысл, камера, каст, речь, артефакты.
 
 ## findings
+**(обязательно)** одна строка на **каждый** video_sheet батча. Брак — только тег `[critical]`, не prose в summary.
 - [critical] video_sheet_009_….png cell:3: пять копий c02 / грубый warp лица
 - [warning] video_sheet_004_….png cell:6: лёгкий flicker края
 - [ok] video_sheet_001_….png: смысл и камера ок, артефактов нет
@@ -179,3 +180,5 @@ frames: 9
 
 ## Запреты
 Не требуй TSV/xlsx. Не тащи warning в regen. Мелкие артефакты ≠ critical.
+**Нельзя** писать «critical в frame_X» только в summary/actions без строки `- [critical] video_sheet_00X_….png: …` в findings/issues — система тогда не увидит брак.
+На каждый sheet батча — ровно одна `[ok]` / `[warning]` / `[critical]` строка.

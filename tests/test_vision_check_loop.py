@@ -436,6 +436,35 @@ frame_010_2c9cefe1.png утверждён.
     assert resolve_vision_check_gate(batch2) == "pass"
 
 
+def test_prose_critical_without_severity_tags() -> None:
+    """Модель описала брак в summary/actions, но не поставила [critical]."""
+    from app.services.check_analysis import (
+        extract_critical_frame_regen_targets,
+        extract_prose_reject_frame_targets,
+    )
+
+    report = """
+# ОТЧЁТ ПРОВЕРКИ
+verdict: fail
+## summary
+Critical обнаружены в `frame_003`: скачок камеры, и в `frame_007`: текст.
+## findings
+- [ok] `video_sheet_001_clip_001_x.png`: ок
+- [ok] `video_sheet_008_clip_008_x.png`: критических дефектов нет
+## actions
+на регенерацию направлены только `frame_003` и `frame_007`.
+`frame_018` требует регенерации.
+"""
+    prose = extract_prose_reject_frame_targets(report)
+    nums = {t["number"] for t in prose}
+    assert nums == {3, 7, 18}
+    assert extract_critical_frame_regen_targets(report) == [
+        {"number": 3, "shot": 1},
+        {"number": 7, "shot": 1},
+        {"number": 18, "shot": 1},
+    ]
+
+
 def test_clone_fix_prepended_and_hard() -> None:
     from types import SimpleNamespace
 
