@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Entity, Frame, Project
 
 _FRAME_NUM_RE = re.compile(
-    r"frame[_-]?(\d{1,4})(?:[_-]?(?:s2|shot2|02))?",
+    r"(?:frame|video_sheet|clip)[_-]?(\d{1,4})(?:[_-]?(?:s2|shot2|02))?",
     re.IGNORECASE,
 )
 
@@ -161,8 +161,12 @@ async def build_vision_db_snapshot(
     ]
 
     effective_kind = (kind or "").strip().lower()
-    if not effective_kind:
-        if scene_paths and not hero_paths:
+    if effective_kind == "videos":
+        pass
+    elif not effective_kind:
+        if any(p.name.lower().startswith("video_sheet_") for p in paths):
+            effective_kind = "videos"
+        elif scene_paths and not hero_paths:
             effective_kind = "scenes"
         elif hero_paths and not scene_paths:
             effective_kind = "hero"
@@ -171,36 +175,70 @@ async def build_vision_db_snapshot(
         else:
             effective_kind = "hero"
 
-    if effective_kind == "scenes" or scene_paths:
-        lines.append("### Кадры (по приложенным PNG)")
+    want_videos = effective_kind == "videos" or any(
+        p.name.lower().startswith("video_sheet_") for p in scene_paths
+    )
+
+    if effective_kind in ("scenes", "videos") or scene_paths:
+        label = "Клипы (video_sheet 3×2)" if want_videos else "Кадры (по приложенным PNG)"
+        lines.append(f"### {label}")
         if not scene_paths:
-            lines.append("(нет scene PNG во входе — сверяй все Frame из БД ниже)")
+            lines.append("(нет PNG во входе — сверяй все Frame из БД ниже)")
             for fr in frames[:40]:
-                prompt = (fr.image_prompt or "").strip()
-                if len(prompt) > 400:
-                    prompt = prompt[:400].rstrip() + "…"
-                lines.append(
-                    f"- frame {fr.number} uuid={fr.uuid} "
-                    f"персонажи={_persons_from_frame(fr) or '—'} "
-                    f"промт={prompt or '—'}"
-                )
+                if want_videos:
+                    ap = (fr.animation_prompt or "").strip()
+                    if len(ap) > 400:
+                        ap = ap[:400].rstrip() + "…"
+                    vo = (fr.voiceover_text or "").strip()
+                    if len(vo) > 160:
+                        vo = vo[:160].rstrip() + "…"
+                    lines.append(
+                        f"- frame {fr.number} uuid={fr.uuid} "
+                        f"персонажи={_persons_from_frame(fr) or '—'} "
+                        f"закадр={vo or '—'} промт_видео={ap or '—'}"
+                    )
+                else:
+                    prompt = (fr.image_prompt or "").strip()
+                    if len(prompt) > 400:
+                        prompt = prompt[:400].rstrip() + "…"
+                    lines.append(
+                        f"- frame {fr.number} uuid={fr.uuid} "
+                        f"персонажи={_persons_from_frame(fr) or '—'} "
+                        f"промт={prompt or '—'}"
+                    )
         else:
             for p in scene_paths:
                 fr, shot = match_frame_for_image(p, by_num)
                 if fr is None:
                     lines.append(f"- file={p.name}: кадр не найден в БД")
                     continue
-                prompt = (fr.image_prompt or "").strip()
                 attrs = fr.attrs if isinstance(fr.attrs, dict) else {}
-                if shot == 2:
-                    prompt = str(attrs.get("image_prompt_shot2") or prompt).strip()
-                if len(prompt) > 400:
-                    prompt = prompt[:400].rstrip() + "…"
-                lines.append(
-                    f"- file={p.name} frame={fr.number} shot={shot} "
-                    f"uuid={fr.uuid} персонажи={_persons_from_frame(fr) or '—'} "
-                    f"промт={prompt or '—'}"
-                )
+                if want_videos or p.name.lower().startswith("video_sheet_"):
+                    ap = (fr.animation_prompt or "").strip()
+                    if shot == 2:
+                        ap = str(attrs.get("animation_prompt_shot2") or ap).strip()
+                    if len(ap) > 400:
+                        ap = ap[:400].rstrip() + "…"
+                    vo = (fr.voiceover_text or "").strip()
+                    if len(vo) > 160:
+                        vo = vo[:160].rstrip() + "…"
+                    lines.append(
+                        f"- file={p.name} frame={fr.number} shot={shot} "
+                        f"uuid={fr.uuid} персонажи={_persons_from_frame(fr) or '—'} "
+                        f"закадр={vo or '—'} промт_видео={ap or '—'} "
+                        f"сетка=3x2 cells 1→6 по времени"
+                    )
+                else:
+                    prompt = (fr.image_prompt or "").strip()
+                    if shot == 2:
+                        prompt = str(attrs.get("image_prompt_shot2") or prompt).strip()
+                    if len(prompt) > 400:
+                        prompt = prompt[:400].rstrip() + "…"
+                    lines.append(
+                        f"- file={p.name} frame={fr.number} shot={shot} "
+                        f"uuid={fr.uuid} персонажи={_persons_from_frame(fr) or '—'} "
+                        f"промт={prompt or '—'}"
+                    )
         lines.append("")
 
     if effective_kind == "hero" or hero_paths:

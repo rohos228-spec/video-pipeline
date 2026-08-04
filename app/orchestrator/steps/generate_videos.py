@@ -462,6 +462,30 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     project.status = ProjectStatus.videos_ready
     await session.flush()
 
+    # check→regen→check: сразу обратно на vision-check, без HITL / audio.
+    try:
+        from app.services.vision_check_loop import (
+            maybe_return_to_check_after_vision_ready,
+            vision_check_loop_active,
+        )
+
+        if vision_check_loop_active(project):
+            nxt = await maybe_return_to_check_after_vision_ready(session, project)
+            if nxt is not None:
+                project.status = nxt
+                await session.flush()
+                logger.info(
+                    "[#{}] generate_videos: vision_check_loop → {}",
+                    project.id,
+                    nxt.value,
+                )
+                return
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "[#{}] generate_videos: vision_check_loop return failed",
+            project.id,
+        )
+
     await send_hitl_text(
         bot, session, project,
         kind=HITLKind.approve_videos,

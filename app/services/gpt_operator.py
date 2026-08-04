@@ -371,7 +371,16 @@ def assemble_check_master_prompt_with_hero_hint(
 
     typ = upstream_node_type_for_check(project, node_key)
     # PNG vision: только отчёт + db_patch. checkFix/TSV writeback сбивает модель.
-    vision_types = ("hero", "images", "img", "hitl_images", "image_prompts")
+    vision_types = (
+        "hero",
+        "images",
+        "img",
+        "hitl_images",
+        "image_prompts",
+        "videos",
+        "hitl_videos",
+        "animation_prompts",
+    )
     effective_fix = False if typ in vision_types else check_fix
     text = assemble_check_master_prompt(
         sources,
@@ -382,7 +391,15 @@ def assemble_check_master_prompt_with_hero_hint(
     if typ == "hero":
         text = append_vision_check_hint(append_hero_regen_hint(text))
         return text
-    if typ in ("images", "img", "hitl_images", "image_prompts"):
+    if typ in (
+        "images",
+        "img",
+        "hitl_images",
+        "image_prompts",
+        "videos",
+        "hitl_videos",
+        "animation_prompts",
+    ):
         return append_vision_check_hint(text)
     return text
 
@@ -398,7 +415,14 @@ def append_vision_hint_for_upstream(project: Project, node_key: str, prompt: str
     text = prompt or ""
     if typ == "hero":
         return append_vision_check_hint(append_hero_regen_hint(text))
-    if typ in ("images", "hitl_images", "image_prompts"):
+    if typ in (
+        "images",
+        "hitl_images",
+        "image_prompts",
+        "videos",
+        "hitl_videos",
+        "animation_prompts",
+    ):
         return append_vision_check_hint(text)
     return text
 
@@ -1091,8 +1115,13 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
                 )
         # Любая входящая связь — кандидат на файлы; решает takeFromEdges у этой ноды.
         if take_from_edges and src:
+            # Vision-check: hero/scenes/videos часто >12 файлов — не режем на 12.
+            edge_limit = 80 if is_check_operator(cfg) else 12
             paths = files_from_source_node(
-                project, src, use_snapshot=use_snapshot
+                project,
+                src,
+                use_snapshot=use_snapshot,
+                limit=edge_limit,
             )
             if not paths:
                 msg = f"у ноды {src} нет файлов на диске (вход со стрелки)"

@@ -1244,9 +1244,13 @@ async def maybe_auto_advance(
         )
         return False
 
-    # check→regen→check: с images_ready/hero_ready сразу обратно на check,
-    # не ждём HITL и не идём в anim_pr.
-    if status in (ProjectStatus.images_ready, ProjectStatus.hero_ready):
+    # check→regen→check: с images_ready/hero_ready/videos_ready сразу обратно на check,
+    # не ждём HITL и не идём дальше по пайплайну.
+    if status in (
+        ProjectStatus.images_ready,
+        ProjectStatus.hero_ready,
+        ProjectStatus.videos_ready,
+    ):
         try:
             from app.services.vision_check_loop import (
                 maybe_return_to_check_after_vision_ready,

@@ -581,6 +581,29 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         kind_hint = "hero"
                     elif up in ("images", "hitl_images", "image_prompts"):
                         kind_hint = "scenes"
+                    elif up in ("videos", "hitl_videos", "animation_prompts"):
+                        kind_hint = "videos"
+                # videos/*.mp4 → сетка 3×2 (6 stills) для GPT vision
+                if kind_hint == "videos" or up in (
+                    "videos",
+                    "hitl_videos",
+                ):
+                    from app.services.video_sheet import (
+                        is_video_path,
+                        materialize_video_sheets_for_check,
+                    )
+
+                    if any(is_video_path(p) for p in data_paths):
+                        sheets_dir = project.data_dir / "tmp_video_sheets"
+                        data_paths = await materialize_video_sheets_for_check(
+                            data_paths, sheets_dir
+                        )
+                        kind_hint = "videos"
+                        logger.info(
+                            "[#{}] enrich_xlsx: video→sheet 3×2 → {} файлов",
+                            project.id,
+                            len(data_paths),
+                        )
                 db_snap = await build_vision_db_snapshot(
                     session,
                     project,

@@ -1,13 +1,13 @@
-"""Цикл checkMode vision: FAIL → db_patch → точечный regen (hero|scenes) → снова check.
+"""Цикл checkMode vision: FAIL → db_patch → точечный regen (hero|scenes|videos) → снова check.
 
 Meta keys:
   vision_check_return_node — node_key проверочной ноды
-  vision_check_kind        — hero | scenes
+  vision_check_kind        — hero | scenes | videos
   vision_check_round       — int
   hero_check_regen_ids     — list[str] (совместимость с generate_hero)
   hero_check_return_node   — зеркало return для старого hero_check_regen
   hero_check_round         — зеркало round
-  scene_check_regen        — list[{number, shot}]
+  scene_check_regen        — list[{number, shot}] (scenes и videos)
   vision_check_passed      — list[str] уже pass (c01 / f3 / f7s2)
 """
 
@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.models import Artifact, ArtifactKind, Frame, Project, ProjectStatus
+from app.models import Artifact, ArtifactKind, Frame, FrameStatus, Project, ProjectStatus
 
 META_RETURN = "vision_check_return_node"
 META_KIND = "vision_check_kind"
@@ -38,7 +38,8 @@ META_HERO_RETURN = "hero_check_return_node"
 # Крутим ok/не-ok → regen → recheck, пока все не pass (не сдаёмся на 3-м круге).
 MAX_VISION_CHECK_ROUNDS = 20
 
-VisionKind = Literal["hero", "scenes"]
+VisionKind = Literal["hero", "scenes", "videos"]
+_FRAME_KINDS = frozenset({"scenes", "videos"})
 
 
 def vision_check_loop_active(project: Project) -> bool:
@@ -56,7 +57,7 @@ def get_vision_return_node(project: Project) -> str:
 def get_vision_kind(project: Project) -> VisionKind | None:
     meta = project.meta if isinstance(project.meta, dict) else {}
     k = str(meta.get(META_KIND) or "").strip().lower()
-    if k in ("hero", "scenes"):
+    if k in ("hero", "scenes", "videos"):
         return k  # type: ignore[return-value]
     if meta.get(META_HERO_RETURN) or meta.get(META_HERO_IDS):
         return "hero"
@@ -140,10 +141,12 @@ def _check_input_image_paths(project: Project, node_key: str) -> list[Path]:
                     paths.append(p)
     if paths:
         return paths
-    # Fallback: scenes / characters на диске
+    # Fallback: scenes / characters / video_sheets на диске
     kind = _infer_kind(project, node_key)
     if kind == "hero":
         root = project.data_dir / "characters"
+    elif kind == "videos":
+        root = project.data_dir / "tmp_video_sheets"
     else:
         root = project.data_dir / "scenes"
     if root.is_dir():
@@ -218,6 +221,8 @@ def _infer_kind(project: Project, node_key: str) -> VisionKind | None:
         return "hero"
     if typ in ("images", "hitl_images", "image_prompts"):
         return "scenes"
+    if typ in ("videos", "hitl_videos", "animation_prompts"):
+        return "videos"
     return None
 
 
@@ -335,6 +340,75 @@ async def _delete_scene_pngs(
     return removed
 
 
+async def _delete_video_clips(
+    session: AsyncSession,
+    project: Project,
+    targets: list[dict[str, Any]],
+) -> int:
+    """Удалить mp4 плохих клипов (+ artifact), чтобы generate_videos перегенерил."""
+    from app.services.video_sheet import find_shot1_video, find_shot2_video
+
+    out_dir = Path(project.data_dir) / "videos"
+    frames = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project.id)
+        )
+    ).scalars().all()
+    by_num = {fr.number: fr for fr in frames}
+    removed = 0
+    for t in targets:
+        num = int(t["number"])
+        shot = int(t.get("shot") or 1)
+        path = (
+            find_shot2_video(out_dir, num)
+            if shot == 2
+            else find_shot1_video(out_dir, num)
+        )
+        fr = by_num.get(num)
+        if fr is not None:
+            # animation_prompt_ready → generate_videos снова возьмёт клип
+            if fr.status in (
+                FrameStatus.video_generated,
+                FrameStatus.video_approved,
+                FrameStatus.done,
+            ):
+                fr.status = FrameStatus.animation_prompt_ready
+        if path is None or not path.is_file():
+            continue
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            logger.warning(
+                "[#{}] vision_check_loop: cannot delete video {}",
+                project.id,
+                path,
+            )
+            continue
+        # stale video_sheet рядом с клипом
+        sheets_dir = Path(project.data_dir) / "tmp_video_sheets"
+        if sheets_dir.is_dir():
+            for sp in sheets_dir.glob(f"video_sheet_{num:03d}*"):
+                try:
+                    sp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        arts = (
+            await session.execute(
+                select(Artifact).where(
+                    Artifact.project_id == project.id,
+                    Artifact.kind == ArtifactKind.scene_video,
+                )
+            )
+        ).scalars().all()
+        for art in arts:
+            ap = Path(str(art.path or ""))
+            if ap.name == path.name or str(ap) == str(path):
+                await session.delete(art)
+    await session.flush()
+    return removed
+
+
 async def maybe_start_vision_check_loop_after_check(
     session: AsyncSession,
     project: Project,
@@ -390,7 +464,7 @@ async def maybe_start_vision_check_loop_after_check(
 
     hero_ids = extract_critical_hero_regen_ids(reply) if kind == "hero" else []
     frame_tgts = (
-        extract_critical_frame_regen_targets(reply) if kind == "scenes" else []
+        extract_critical_frame_regen_targets(reply) if kind in _FRAME_KINDS else []
     )
     patch = extract_db_patch(reply)
 
@@ -400,7 +474,7 @@ async def maybe_start_vision_check_loop_after_check(
         reply
     ) and not has_critical_vision_issues(reply)
     if scored_no_critical:
-        if kind == "scenes" and not frame_tgts:
+        if kind in _FRAME_KINDS and not frame_tgts:
             frame_tgts = list(get_scene_check_regen(project))
         if kind == "hero" and not hero_ids:
             meta0 = project.meta if isinstance(project.meta, dict) else {}
@@ -452,10 +526,11 @@ async def maybe_start_vision_check_loop_after_check(
             key,
         )
         return False
-    if kind == "scenes" and not frame_tgts and not patch:
+    if kind in _FRAME_KINDS and not frame_tgts and not patch:
         logger.info(
-            "[#{}] vision_check_loop: scenes fail на {} без critical frames/patch — без цикла",
+            "[#{}] vision_check_loop: {} fail на {} без critical frames/patch — без цикла",
             project.id,
+            kind,
             key,
         )
         return False
@@ -482,7 +557,7 @@ async def maybe_start_vision_check_loop_after_check(
         kind=kind,
         all_image_paths=all_paths,
         regen_hero_ids=hero_ids if kind == "hero" else None,
-        regen_frames=frame_tgts if kind == "scenes" else None,
+        regen_frames=frame_tgts if kind in _FRAME_KINDS else None,
     )
 
     meta = dict(project.meta or {})
@@ -526,6 +601,30 @@ async def maybe_start_vision_check_loop_after_check(
         )
         return True
 
+    if kind == "videos":
+        deleted = await _delete_video_clips(session, project, frame_tgts)
+        try:
+            await prepare_node_for_step_start(
+                session,
+                project,
+                "video",
+                strict=False,
+                explicit_ui_start=True,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[#{}] vision_check_loop: prepare video failed", project.id)
+        project.status = ProjectStatus.generating_videos
+        await session.flush()
+        logger.info(
+            "[#{}] vision_check_loop: fail → round {} videos regen={} deleted={} return={}",
+            project.id,
+            round_n,
+            frame_tgts,
+            deleted,
+            key,
+        )
+        return True
+
     # scenes
     deleted = await _delete_scene_pngs(session, project, frame_tgts)
     try:
@@ -555,7 +654,7 @@ async def maybe_return_to_check_after_vision_ready(
     session: AsyncSession,
     project: Project,
 ) -> ProjectStatus | None:
-    """После hero_ready / images_ready: вернуться на check-ноду."""
+    """После hero_ready / images_ready / videos_ready: вернуться на check-ноду."""
     return_key = get_vision_return_node(project)
     if not return_key:
         return None
@@ -608,13 +707,13 @@ async def maybe_return_to_check_after_vision_ready(
 
 
 def _parse_image_token(path: Path) -> str | None:
-    """c01.png → c01; frame_003_….png → f3; frame_003_s2_….png → f3s2."""
+    """c01.png → c01; frame_003_….png / video_sheet_003_….png → f3."""
     name = path.name
     m = re.match(r"^(c\d{1,3})\.", name, re.IGNORECASE)
     if m:
         return m.group(1).lower()
     fm = re.search(
-        r"frame[_-]?(\d{1,4})(?:[_-]s2[_-]|[_-]?(?:s2|shot2|02))?",
+        r"(?:frame|video_sheet|clip)[_-]?(\d{1,4})(?:[_-]s2[_-]|[_-]?(?:s2|shot2|02))?",
         name,
         re.IGNORECASE,
     )
@@ -635,7 +734,7 @@ def filter_image_paths_for_recheck(
 
     kind = get_vision_kind(project)
     # Явный список на переген: шлём ТОЛЬКО их (остальные уже приняты).
-    if kind == "scenes":
+    if kind in _FRAME_KINDS:
         targets = get_scene_check_regen(project)
         if targets:
             want = {
@@ -695,7 +794,7 @@ def mark_passed_except_regen(
     if kind == "hero":
         for cid in regen_hero_ids or []:
             regen_tokens.add(_token_hero(cid))
-    else:
+    elif kind in _FRAME_KINDS:
         for t in regen_frames or []:
             regen_tokens.add(
                 _token_frame(int(t["number"]), int(t.get("shot") or 1))

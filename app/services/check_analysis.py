@@ -332,17 +332,19 @@ def append_vision_check_hint(prompt: str) -> str:
 
 
 def normalize_frame_regen_token(raw: str) -> dict[str, Any] | None:
-    """``3`` / ``7s2`` / ``frame_012_s2.png`` → ``{number, shot}``."""
+    """``3`` / ``7s2`` / ``frame_012_s2.png`` / ``video_sheet_009_….png`` → ``{number, shot}``."""
     s = (raw or "").strip().strip(".,;:)")
     if not s:
         return None
-    # file-like: frame_003_abcd.png / frame_003_s2_uuid.png
+    # file-like: frame_003_….png / video_sheet_009_….png / clip_003_….mp4
     fm = re.search(
-        r"frame[_-]?(\d{1,4})(?:[_-]s2|_s2_|[_-]?(?:s2|shot2))?",
+        r"(?:frame|video_sheet|clip)[_-]?(\d{1,4})(?:[_-]s2|_s2_|[_-]?(?:s2|shot2))?",
         s,
         re.IGNORECASE,
     )
-    if fm and re.search(r"\.(?:png|jpe?g|webp|gif)\b", s, re.IGNORECASE):
+    if fm and re.search(
+        r"\.(?:png|jpe?g|webp|gif|mp4|webm|mov|mkv)\b", s, re.IGNORECASE
+    ):
         num = int(fm.group(1))
         shot = 2 if re.search(r"(?:_s2_|s2|shot2)", s, re.IGNORECASE) else 1
         return {"number": num, "shot": shot}
@@ -462,7 +464,8 @@ def extract_frame_regen_targets(text: str) -> list[dict[str, Any]]:
         chunks.append(raw)
     for chunk in chunks:
         for m in re.finditer(
-            r"\bframe[_-]?\d{1,4}[^\s]*\.(?:png|jpe?g|webp|gif)\b",
+            r"\b(?:frame|video_sheet|clip)[_-]?\d{1,4}[^\s]*"
+            r"\.(?:png|jpe?g|webp|gif|mp4|webm|mov|mkv)\b",
             chunk,
             re.IGNORECASE,
         ):
@@ -601,7 +604,9 @@ def extract_vision_issues(text: str) -> list[dict[str, Any]]:
             if re.search(
                 r"(?i)\b(tsv|xlsx|writeback|общий\s*план|вход:?\s*отсутств)",
                 body,
-            ) and not re.search(r"(?i)\bframe[_-]?\d+|c\d{2}\b", body):
+            ) and not re.search(
+                r"(?i)\b(?:frame|video_sheet|clip)[_-]?\d+|c\d{2}\b", body
+            ):
                 sev = "warning"
             key = f"{sev}|{body.lower()}"
             if key in seen:
@@ -633,7 +638,8 @@ def extract_ok_vision_tokens(text: str) -> list[str]:
 
     def _frame_tok(name: str) -> str | None:
         fm = re.search(
-            r"frame[_-]?(\d{1,4})(?:[_-]s2[_-]|[_-]?(?:s2|shot2|02))?",
+            r"(?:frame|video_sheet|clip)[_-]?(\d{1,4})"
+            r"(?:[_-]s2[_-]|[_-]?(?:s2|shot2|02))?",
             name,
             re.IGNORECASE,
         )
@@ -647,10 +653,13 @@ def extract_ok_vision_tokens(text: str) -> list[str]:
         body = (m.group(1) or "").strip()
         if not body:
             continue
-        if not re.search(r"(?i)\bframe[_-]?\d+|c\d{1,3}\b", body):
+        if not re.search(
+            r"(?i)\b(?:frame|video_sheet|clip)[_-]?\d+|c\d{1,3}\b", body
+        ):
             continue
         for fm in re.finditer(
-            r"\b(c\d{1,3}|frame[_-]?\d{1,4}[^\s`\"']*)\.(?:png|jpe?g|webp|gif)\b",
+            r"\b(c\d{1,3}|(?:frame|video_sheet|clip)[_-]?\d{1,4}[^\s`\"']*)"
+            r"\.(?:png|jpe?g|webp|gif|mp4)\b",
             body,
             re.IGNORECASE,
         ):
@@ -660,12 +669,12 @@ def extract_ok_vision_tokens(text: str) -> list[str]:
                 _add(hm.group(1).lower())
             else:
                 _add(_frame_tok(name))
-        if re.search(r"\.(?:png|jpe?g|webp|gif)\b", body, re.IGNORECASE):
+        if re.search(r"\.(?:png|jpe?g|webp|gif|mp4)\b", body, re.IGNORECASE):
             continue
         for hm in re.finditer(r"\bc(\d{1,3})\b", body, re.IGNORECASE):
             _add(f"c{int(hm.group(1)):02d}")
         for fm in re.finditer(
-            r"\bframe[_-]?(\d{1,4})(?:[_-]?(?:s2|shot2))?\b",
+            r"\b(?:frame|video_sheet|clip)[_-]?(\d{1,4})(?:[_-]?(?:s2|shot2))?\b",
             body,
             re.IGNORECASE,
         ):
@@ -777,7 +786,8 @@ def extract_critical_frame_regen_targets(text: str) -> list[dict[str, Any]]:
                 continue
             body = str(issue.get("text") or "")
             for m in re.finditer(
-                r"\bframe[_-]?\d{1,4}[^\s]*\.(?:png|jpe?g|webp|gif)\b",
+                r"\b(?:frame|video_sheet|clip)[_-]?\d{1,4}[^\s]*"
+                r"\.(?:png|jpe?g|webp|gif|mp4)\b",
                 body,
                 re.IGNORECASE,
             ):
@@ -790,7 +800,7 @@ def extract_critical_frame_regen_targets(text: str) -> list[dict[str, Any]]:
                 token = m.group(0)
                 if "s2" in token.lower() or "shot" in token.lower():
                     _add(token)
-                elif re.search(r"(?i)frame|кадр", body):
+                elif re.search(r"(?i)frame|video_sheet|clip|кадр|клип", body):
                     _add(token)
     # Prose «не утверждён» / «на перегенерацию только frame_X» — даже без [critical]
     for t in prose:
