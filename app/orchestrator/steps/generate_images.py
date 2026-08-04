@@ -446,6 +446,24 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
     logger.info("[#{}] generate_images starting", project.id)
 
+    # PNG на диске без Artifact (после partial wipe / restore) → подтянуть в БД,
+    # иначе шаг «всё есть» по диску, а compute_actual_status видит дыры.
+    try:
+        from app.services.artifact_recovery import recover_scene_images_from_disk
+
+        recovered = await recover_scene_images_from_disk(session, project)
+        if recovered:
+            logger.info(
+                "[#{}] generate_images: scene_image с диска для кадров {}",
+                project.id,
+                recovered[:40],
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "[#{}] generate_images: recover_scene_images_from_disk failed",
+            project.id,
+        )
+
     xlsx_path = project.data_dir / "project.xlsx"
     from app.services.xlsx_v8_import import bootstrap_frames_for_image_step
 

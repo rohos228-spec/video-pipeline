@@ -280,13 +280,13 @@ async def _delete_scene_pngs(
     project: Project,
     targets: list[dict[str, Any]],
 ) -> int:
-    """Удалить PNG плохих кадров (+ artifact), чтобы generate_images перегенерил."""
+    """Удалить ВСЕ PNG плохих кадров (+ artifact).
+
+    Только newest недостаточно: старый ``frame_NNN_*.png`` остаётся на диске,
+    generate_images скипает кадр, а Artifact уже стёрт → БД < диск.
+    """
     from app.models import FrameStatus
-    from app.services.plan_shot2 import (
-        SHOT2_STATUS_ATTR,
-        find_shot1_image,
-        find_shot2_image,
-    )
+    from app.services.plan_shot2 import SHOT2_STATUS_ATTR, effective_shot_from_artifact
 
     out_dir = Path(project.data_dir) / "scenes"
     frames = (
@@ -299,11 +299,8 @@ async def _delete_scene_pngs(
     for t in targets:
         num = int(t["number"])
         shot = int(t.get("shot") or 1)
-        path = (
-            find_shot2_image(out_dir, num)
-            if shot == 2
-            else find_shot1_image(out_dir, num)
-        )
+        if shot not in (1, 2):
+            shot = 1
         fr = by_num.get(num)
         if fr is not None:
             if shot == 2:
@@ -312,30 +309,64 @@ async def _delete_scene_pngs(
                 fr.attrs = attrs
             else:
                 fr.status = FrameStatus.image_prompt_ready
-        if path is None or not path.is_file():
-            continue
-        try:
-            path.unlink()
-            removed += 1
-        except OSError:
-            logger.warning(
-                "[#{}] vision_check_loop: cannot delete {}",
-                project.id,
-                path,
-            )
+
+        disk_paths: list[Path] = []
+        if out_dir.is_dir():
+            if shot == 2:
+                disk_paths = [
+                    p
+                    for p in out_dir.glob(f"frame_{num:03d}_s2_*.png")
+                    if p.is_file()
+                ]
+                disk_paths.extend(
+                    p
+                    for p in out_dir.glob(f"frame_{num:03d}_*.png")
+                    if p.is_file()
+                    and re.search(r"(?:_s2_|shot2)", p.name, re.IGNORECASE)
+                    and p not in disk_paths
+                )
+            else:
+                disk_paths = [
+                    p
+                    for p in out_dir.glob(f"frame_{num:03d}_*.png")
+                    if p.is_file()
+                    and "_s2_" not in p.name
+                    and not re.search(r"(?:shot2)", p.name, re.IGNORECASE)
+                ]
+        for path in disk_paths:
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                logger.warning(
+                    "[#{}] vision_check_loop: cannot delete {}",
+                    project.id,
+                    path,
+                )
+
+        if fr is None:
             continue
         arts = (
             await session.execute(
                 select(Artifact).where(
                     Artifact.project_id == project.id,
+                    Artifact.frame_id == fr.id,
                     Artifact.kind == ArtifactKind.scene_image,
                 )
             )
         ).scalars().all()
         for art in arts:
             ap = Path(str(art.path or ""))
-            if ap.name == path.name or str(ap) == str(path):
-                session.delete(art)
+            art_shot = effective_shot_from_artifact(art.meta, ap)
+            if art_shot != shot:
+                continue
+            if ap.is_file():
+                try:
+                    ap.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+            session.delete(art)
     await session.flush()
     return removed
 

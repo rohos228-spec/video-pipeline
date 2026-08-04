@@ -106,10 +106,10 @@ async def recover_scene_videos_from_disk(
                         fr.status = FrameStatus.video_generated
                     continue
                 for a in shot_arts:
-                    await session.delete(a)
+                    session.delete(a)
             elif shot_arts:
                 for a in shot_arts:
-                    await session.delete(a)
+                    session.delete(a)
 
             session.add(
                 Artifact(
@@ -200,10 +200,10 @@ async def recover_scene_images_from_disk(
                         fr.status = FrameStatus.image_generated
                     continue
                 for a in shot_arts:
-                    await session.delete(a)
+                    session.delete(a)
             elif shot_arts:
                 for a in shot_arts:
-                    await session.delete(a)
+                    session.delete(a)
 
             session.add(
                 Artifact(

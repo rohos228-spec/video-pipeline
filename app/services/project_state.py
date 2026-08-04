@@ -296,6 +296,24 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
     Никогда не возвращает `paused`/`failed`/`*ing` (running) — только
     «контрольные точки» (ready / new / assembled / published).
     """
+    # Диск → Artifact: иначе PNG/MP4 на диске без строк в БД откатывают статус.
+    try:
+        from app.services.artifact_recovery import (
+            recover_scene_images_from_disk,
+            recover_scene_videos_from_disk,
+        )
+
+        await recover_scene_images_from_disk(session, project)
+        await recover_scene_videos_from_disk(session, project)
+    except Exception:  # noqa: BLE001
+        from loguru import logger as _logger
+
+        _logger.debug(
+            "[#{}] compute_actual_status: artifact recover skipped",
+            project.id,
+            exc_info=True,
+        )
+
     pid = project.id
     meta0 = project.meta if isinstance(project.meta, dict) else {}
     # План: колонка ИЛИ meta (DB-first / дочерние без длинного general_plan).
