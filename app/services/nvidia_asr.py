@@ -448,9 +448,21 @@ def _ensure_mono_for_nemo(audio_path: Path) -> Path:
         return audio_path
     mono_dir = _cache_root() / "mono"
     mono_dir.mkdir(parents=True, exist_ok=True)
-    out = mono_dir / f"{audio_path.stem}_mono16k.wav"
-    src_mtime = audio_path.stat().st_mtime
-    if out.is_file() and out.stat().st_mtime >= src_mtime and out.stat().st_size > 1000:
+    # Имя кэша от полного пути: иначе все voice_full.wav проектов делят один файл
+    # (короткий nicshe затирал длинный istoriya-vedm → краш/битый ASR).
+    import hashlib
+
+    path_key = hashlib.sha1(str(audio_path.resolve()).encode("utf-8")).hexdigest()[:12]
+    src_stat = audio_path.stat()
+    out = mono_dir / f"{audio_path.stem}_{path_key}_mono16k.wav"
+    src_mtime = src_stat.st_mtime
+    # size тоже: смена файла с тем же stem/mtime-краем не должна брать чужой кэш.
+    expect_min = max(1000, int(src_stat.st_size * 0.15))  # mono 16k ≈ меньше stereo
+    if (
+        out.is_file()
+        and out.stat().st_mtime >= src_mtime
+        and out.stat().st_size >= expect_min
+    ):
         logger.info("nvidia_asr: используем mono-кэш {}", out.name)
         return out
     import subprocess
