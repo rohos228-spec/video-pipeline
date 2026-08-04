@@ -520,7 +520,9 @@ async def _assemble_body(
             out_path,
             bgm=bgm,
         )
-        if subs_path is not None and subs_path.is_file():
+        # ASS ещё нет на диске: путь зарезервирован выше, файл пишем здесь.
+        # Старый `subs_path.is_file()` пропускал весь burn на montage-v3.
+        if subs_path is not None:
             ass_w, ass_h = await probe_video_size(out_path)
             make_simple_ass(sub_entries, subs_path, width=ass_w, height=ass_h)
             with tempfile.TemporaryDirectory(prefix="vp_subs_") as td:
@@ -541,6 +543,12 @@ async def _assemble_body(
                 if proc.returncode != 0:
                     raise RuntimeError("ffmpeg subtitle burn failed")
                 shutil.copy2(burned, out_path)
+            logger.info(
+                "[#{}] assemble: субтитры вшиты в montage-v3 ({} cues → {})",
+                project.id,
+                len(sub_entries),
+                subs_path.name,
+            )
 
     skip_intro = skip_intro_seconds_for_project(project)
     if skip_intro > 0:
