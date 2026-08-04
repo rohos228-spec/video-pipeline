@@ -751,7 +751,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     streams = get_img_streams(project)
     logger.info(
-        "[#{}] generate_images: img_streams={} (0=skip provider, 1=serial, 2..4=parallel)",
+        "[#{}] generate_images: outsee_streams={} "
+        "(общий с video/Create; 0=skip, 1=serial, 2..4=parallel)",
         project.id,
         streams,
     )

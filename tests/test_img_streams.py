@@ -28,6 +28,16 @@ def test_clamp_img_streams() -> None:
     assert clamp_img_streams("x") == 1
 
 
+def test_outsee_alias_reads_same_meta() -> None:
+    from app.services.img_streams import get_outsee_streams, set_img_streams_meta
+
+    p = Project(topic="t", slug="s", status=ProjectStatus.new, meta={})
+    set_img_streams_meta(p, 3)
+    assert get_outsee_streams(p) == 3
+    assert p.meta.get("outsee_streams") == 3
+    assert get_img_streams(p) == 3
+
+
 def test_get_img_streams_from_meta(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(app_settings.settings, "img_max_streams", 1)
     p = Project(slug="s", topic="t", status=ProjectStatus.generating_images, meta={})

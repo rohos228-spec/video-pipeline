@@ -28,13 +28,16 @@ export function ProjectSettingsPanel({ project }: { project: ProjectDetail }) {
   );
 }
 
-/** Параллельные потоки генерации картинок пайплайна (0..4). */
+/** Общие потоки Outsee: картинки + видео пайплайна (0..4), один API. */
 function ImgStreamsControl({ project }: { project: ProjectDetail }) {
   const qc = useQueryClient();
   const meta = (project.meta || {}) as Record<string, unknown>;
   const current = Math.max(
     0,
-    Math.min(4, Number(meta.img_streams ?? 1) || 1),
+    Math.min(
+      4,
+      Number(meta.outsee_streams ?? meta.img_streams ?? 1) || 1,
+    ),
   );
   const [local, setLocal] = useState(current);
 
@@ -44,12 +47,14 @@ function ImgStreamsControl({ project }: { project: ProjectDetail }) {
 
   const patch = useMutation({
     mutationFn: (n: number) =>
-      api.patchProject(project.id, { meta: { img_streams: n } }),
+      api.patchProject(project.id, {
+        meta: { img_streams: n, outsee_streams: n },
+      }),
     onSuccess: (_data, n) => {
       toast.success(
         n === 0
-          ? "Потоки картинок: 0 (без генерации)"
-          : `Потоки картинок: ${n}`,
+          ? "Потоки Outsee: 0 (img+video без генерации)"
+          : `Потоки Outsee (img+video): ${n}`,
       );
       void qc.invalidateQueries({ queryKey: ["project", project.id] });
     },
@@ -58,10 +63,10 @@ function ImgStreamsControl({ project }: { project: ProjectDetail }) {
 
   return (
     <div className="rounded-lg border border-border/50 bg-card/40 px-2.5 py-2">
-      <div className="mb-1.5 text-xs font-medium">Потоки картинок (img)</div>
+      <div className="mb-1.5 text-xs font-medium">Потоки Outsee (img + video)</div>
       <p className="mb-2 text-[10px] leading-snug text-muted-foreground">
-        0 — не звать провайдера; 1 — по одному; 2–4 — параллельно (общий лимит с
-        Create Outsee ≤4).
+        Один API — один лимит. 0 — не звать провайдера; 1 — по одному; 2–4 —
+        параллельно для картинок и клипов (вместе с Create ≤4).
       </p>
       <div className="flex flex-wrap gap-1">
         {[0, 1, 2, 3, 4].map((n) => (
