@@ -33,6 +33,8 @@ async def test_ensure_public_hosts_data_url_via_uguu() -> None:
         patch.object(oh, "_host_via_uguu", side_effect=fake_uguu),
         patch.object(oh, "_host_via_litterbox", side_effect=AssertionError("no litter")),
         patch.object(oh, "_host_via_catbox", side_effect=AssertionError("no catbox")),
+        patch.object(oh, "_host_via_0x0", side_effect=AssertionError("no 0x0")),
+        patch.object(oh, "_host_via_tmpfiles", side_effect=AssertionError("no tmp")),
     ):
         out = await oh.ensure_public_image_url(data)
     assert out == "https://n.uguu.se/hosted.png"
@@ -57,9 +59,48 @@ async def test_ensure_public_falls_back_when_uguu_fails() -> None:
         patch.object(oh, "_host_via_uguu", side_effect=boom),
         patch.object(oh, "_host_via_litterbox", side_effect=litter),
         patch.object(oh, "_host_via_catbox", side_effect=AssertionError("no catbox")),
+        patch.object(oh, "_host_via_0x0", side_effect=AssertionError("no 0x0")),
+        patch.object(oh, "_host_via_tmpfiles", side_effect=AssertionError("no tmp")),
     ):
         out = await oh.ensure_public_image_url(data)
     assert out == "https://litter.catbox.moe/ok.png"
+
+
+@pytest.mark.asyncio
+async def test_accept_hosted_url_soft_when_verify_fails() -> None:
+    """catbox отдаёт URL, наш GET пустой — раньше падали, теперь принимаем."""
+    from app.bots import outsee_http as oh
+
+    class _Client:
+        pass
+
+    with patch.object(oh, "_verify_hosted_image", AsyncMock(return_value=False)):
+        url = await oh._accept_hosted_url(
+            _Client(),  # type: ignore[arg-type]
+            "https://files.catbox.moe/b6cnhy.png",
+            host="catbox",
+            raw_len=4_000_000,
+        )
+    assert url == "https://files.catbox.moe/b6cnhy.png"
+
+
+def test_upload_payload_variants_prefer_jpeg_for_huge_png() -> None:
+    from io import BytesIO
+
+    from PIL import Image
+
+    from app.bots.outsee_http import _FRAME_HOST_SOFT_MAX_BYTES, _upload_payload_variants
+
+    # Шумный кадр → PNG > soft max → JPEG идёт первым.
+    img = Image.effect_noise((1800, 1800), 40).convert("RGB")
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    raw = buf.getvalue()
+    assert len(raw) > _FRAME_HOST_SOFT_MAX_BYTES
+    variants = _upload_payload_variants(raw, "image/png")
+    assert variants[0][2].startswith("jpeg")
+    assert variants[0][1] == "image/jpeg"
+    assert any(v[2] == "orig" for v in variants)
 
 
 @pytest.mark.asyncio

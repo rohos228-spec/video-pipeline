@@ -318,14 +318,122 @@ _FRAME_UPLOAD_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
+# Бесплатные хосты часто валятся на 4–6 МБ PNG; JPEG ≤ этого — ок.
+_FRAME_HOST_SOFT_MAX_BYTES = 1_800_000
 
 
-async def _verify_hosted_image(client: httpx.AsyncClient, url: str, *, min_bytes: int = 32) -> bool:
+async def _verify_hosted_image(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    min_bytes: int = 32,
+    attempts: int = 3,
+) -> bool:
+    """GET с ретраями: catbox/litter часто «пустые» первые секунды после upload."""
+    last_err = ""
+    for i in range(max(1, attempts)):
+        try:
+            # HEAD часто режет ботов — пробуем GET с Range, потом полный GET.
+            r = await client.get(url, headers={"Range": "bytes=0-2047"})
+            if r.status_code in (200, 206) and len(r.content or b"") >= min(min_bytes, 16):
+                return True
+            r = await client.get(url)
+            if r.status_code < 400 and len(r.content or b"") >= min_bytes:
+                return True
+            last_err = f"HTTP {r.status_code} bytes={len(r.content or b'')}"
+        except Exception as exc:  # noqa: BLE001
+            last_err = str(exc)[:120]
+        if i + 1 < attempts:
+            await asyncio.sleep(0.7 * (i + 1))
+    logger.debug("outsee_api.frame verify miss {}: {}", url[:100], last_err)
+    return False
+
+
+def _jpeg_variant(raw: bytes, *, max_side: int = 2048, quality: int = 85) -> tuple[bytes, str] | None:
+    """Сжать кадр в JPEG — litterbox/catbox стабильнее на ~1 МБ, чем на 4+ МБ PNG."""
     try:
-        r = await client.get(url)
-        return r.status_code < 400 and len(r.content or b"") >= min_bytes
+        from io import BytesIO
+
+        from PIL import Image
     except Exception:  # noqa: BLE001
-        return False
+        return None
+    try:
+        img = Image.open(BytesIO(raw))
+        img = img.convert("RGB")
+        w, h = img.size
+        scale = min(1.0, float(max_side) / float(max(w, h, 1)))
+        if scale < 0.999:
+            img = img.resize(
+                (max(1, int(w * scale)), max(1, int(h * scale))),
+                Image.Resampling.LANCZOS,
+            )
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        out = buf.getvalue()
+        if len(out) < 64:
+            return None
+        return out, "image/jpeg"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("outsee_api.frame jpeg shrink failed: {}", exc)
+        return None
+
+
+def _upload_payload_variants(raw: bytes, mime: str) -> list[tuple[bytes, str, str]]:
+    """Варианты для заливки: оригинал (если не гигант) + JPEG fallback."""
+    variants: list[tuple[bytes, str, str]] = []
+    if len(raw) <= _FRAME_HOST_SOFT_MAX_BYTES:
+        variants.append((raw, mime, "orig"))
+    else:
+        logger.info(
+            "outsee_api.frame: {} bytes > {} — сначала JPEG, потом orig",
+            len(raw),
+            _FRAME_HOST_SOFT_MAX_BYTES,
+        )
+    jpg = _jpeg_variant(raw)
+    if jpg is not None:
+        jraw, jmime = jpg
+        variants.append((jraw, jmime, f"jpeg:{len(jraw)}"))
+        # Ещё более лёгкий JPEG, если первый всё ещё жирный.
+        if len(jraw) > _FRAME_HOST_SOFT_MAX_BYTES:
+            jpg2 = _jpeg_variant(raw, max_side=1440, quality=72)
+            if jpg2 is not None and len(jpg2[0]) < len(jraw):
+                variants.append((jpg2[0], jpg2[1], f"jpeg72:{len(jpg2[0])}"))
+    # Оригинал в хвост, если ещё не пробовали (маленький шанс на жирный PNG).
+    if not any(v[2] == "orig" for v in variants):
+        variants.append((raw, mime, "orig"))
+    # Уникальные по (len, mime)
+    seen: set[tuple[int, str]] = set()
+    out: list[tuple[bytes, str, str]] = []
+    for item in variants:
+        key = (len(item[0]), item[1])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
+async def _accept_hosted_url(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    host: str,
+    raw_len: int,
+) -> str:
+    """Проверяем URL; если хост отдал http, а GET режет — всё равно принимаем.
+
+    Реальный баг: catbox отдаёт https://files.catbox.moe/….png, наш GET пустой/403,
+    Outsee при этом качает нормально.
+    """
+    ok = await _verify_hosted_image(client, url, min_bytes=min(32, max(16, raw_len // 1000)))
+    if ok:
+        return url
+    logger.warning(
+        "outsee_api.frame host {}: verify miss после upload, принимаем URL {}",
+        host,
+        url[:120],
+    )
+    return url
 
 
 async def _host_via_uguu(client: httpx.AsyncClient, raw: bytes, mime: str, filename: str) -> str:
@@ -333,18 +441,17 @@ async def _host_via_uguu(client: httpx.AsyncClient, raw: bytes, mime: str, filen
         "https://uguu.se/upload.php",
         files={"files[]": (filename, raw, mime)},
     )
+    body_txt = (r.text or "")[:200]
     if r.status_code >= 400:
-        raise OutseeApiError(f"uguu HTTP {r.status_code}: {(r.text or '')[:160]}")
+        raise OutseeApiError(f"uguu HTTP {r.status_code}: {body_txt or '(empty body)'}")
     try:
         payload = r.json()
         url = str((((payload or {}).get("files") or [{}])[0]).get("url") or "").strip()
     except Exception as exc:  # noqa: BLE001
-        raise OutseeApiError(f"uguu bad JSON: {(r.text or '')[:160]}") from exc
+        raise OutseeApiError(f"uguu bad JSON: {body_txt or '(empty body)'}") from exc
     if not url.startswith("http"):
-        raise OutseeApiError(f"uguu no url: {(r.text or '')[:160]}")
-    if not await _verify_hosted_image(client, url, min_bytes=min(32, len(raw))):
-        raise OutseeApiError(f"uguu URL empty/unreachable: {url[:120]}")
-    return url
+        raise OutseeApiError(f"uguu no url: {body_txt or '(empty body)'}")
+    return await _accept_hosted_url(client, url, host="uguu", raw_len=len(raw))
 
 
 async def _host_via_litterbox(client: httpx.AsyncClient, raw: bytes, mime: str, filename: str) -> str:
@@ -355,10 +462,10 @@ async def _host_via_litterbox(client: httpx.AsyncClient, raw: bytes, mime: str, 
     )
     text = (r.text or "").strip()
     if r.status_code >= 400 or not text.startswith("http"):
-        raise OutseeApiError(f"litterbox HTTP {r.status_code}: {text[:160]}")
-    if not await _verify_hosted_image(client, text, min_bytes=min(32, len(raw))):
-        raise OutseeApiError(f"litterbox URL empty/unreachable: {text[:120]}")
-    return text
+        raise OutseeApiError(
+            f"litterbox HTTP {r.status_code}: {text[:160] or '(empty body)'}"
+        )
+    return await _accept_hosted_url(client, text, host="litterbox", raw_len=len(raw))
 
 
 async def _host_via_catbox(client: httpx.AsyncClient, raw: bytes, mime: str, filename: str) -> str:
@@ -369,17 +476,45 @@ async def _host_via_catbox(client: httpx.AsyncClient, raw: bytes, mime: str, fil
     )
     text = (r.text or "").strip()
     if r.status_code >= 400 or not text.startswith("http"):
-        raise OutseeApiError(f"catbox HTTP {r.status_code}: {text[:160]}")
-    # catbox иногда отдаёт URL с 0 байт — проверяем
-    if not await _verify_hosted_image(client, text, min_bytes=min(32, len(raw))):
-        raise OutseeApiError(f"catbox URL empty/unreachable: {text[:120]}")
-    return text
+        raise OutseeApiError(f"catbox HTTP {r.status_code}: {text[:160] or '(empty body)'}")
+    return await _accept_hosted_url(client, text, host="catbox", raw_len=len(raw))
+
+
+async def _host_via_0x0(client: httpx.AsyncClient, raw: bytes, mime: str, filename: str) -> str:
+    r = await client.post(
+        "https://0x0.st",
+        files={"file": (filename, raw, mime)},
+    )
+    text = (r.text or "").strip()
+    if r.status_code >= 400 or not text.startswith("http"):
+        raise OutseeApiError(f"0x0 HTTP {r.status_code}: {text[:160] or '(empty body)'}")
+    return await _accept_hosted_url(client, text.split()[0], host="0x0", raw_len=len(raw))
+
+
+async def _host_via_tmpfiles(client: httpx.AsyncClient, raw: bytes, mime: str, filename: str) -> str:
+    r = await client.post(
+        "https://tmpfiles.org/api/v1/upload",
+        files={"file": (filename, raw, mime)},
+    )
+    if r.status_code >= 400:
+        raise OutseeApiError(f"tmpfiles HTTP {r.status_code}: {(r.text or '')[:160]}")
+    try:
+        payload = r.json()
+        page = str((((payload or {}).get("data") or {}).get("url") or "")).strip()
+    except Exception as exc:  # noqa: BLE001
+        raise OutseeApiError(f"tmpfiles bad JSON: {(r.text or '')[:160]}") from exc
+    if not page.startswith("http"):
+        raise OutseeApiError(f"tmpfiles no url: {(r.text or '')[:160]}")
+    # https://tmpfiles.org/123/name.png → direct https://tmpfiles.org/dl/123/name.png
+    direct = page.replace("://tmpfiles.org/", "://tmpfiles.org/dl/", 1)
+    return await _accept_hosted_url(client, direct, host="tmpfiles", raw_len=len(raw))
 
 
 async def ensure_public_image_url(url: str | None) -> str | None:
     """Outsee image_url принимает только http(s); data: молча игнорит.
 
-    data: → публичный URL (uguu → litterbox → catbox). http(s) → как есть (кроме localhost).
+    data: → публичный URL (JPEG-сжатие + uguu/litterbox/catbox/0x0/tmpfiles).
+    http(s) → как есть (кроме localhost).
     """
     if not url or not str(url).strip():
         return None
@@ -398,31 +533,51 @@ async def ensure_public_image_url(url: str | None) -> str | None:
         logger.warning("outsee_api.frame: не data/http URL, пропускаю")
         return None
     raw, mime = decoded
-    ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}.get(mime, "png")
-    filename = f"frame.{ext}"
     errors: list[str] = []
     hosts = (
         ("uguu", _host_via_uguu),
         ("litterbox", _host_via_litterbox),
         ("catbox", _host_via_catbox),
+        ("0x0", _host_via_0x0),
+        ("tmpfiles", _host_via_tmpfiles),
     )
+    variants = _upload_payload_variants(raw, mime)
     async with httpx.AsyncClient(
         timeout=90.0,
         follow_redirects=True,
         headers={"User-Agent": _FRAME_UPLOAD_UA},
     ) as client:
-        for name, upload in hosts:
-            try:
-                hosted = await upload(client, raw, mime, filename)
-                logger.info("outsee_api.frame hosted via {} {} bytes → {}", name, len(raw), hosted[:120])
-                return hosted
-            except Exception as exc:  # noqa: BLE001
-                msg = str(exc)[:180]
-                errors.append(f"{name}: {msg}")
-                logger.warning("outsee_api.frame host {} failed: {}", name, msg)
+        for payload, pmime, label in variants:
+            ext = {
+                "image/png": "png",
+                "image/jpeg": "jpg",
+                "image/webp": "webp",
+            }.get(pmime, "jpg")
+            filename = f"frame.{ext}"
+            for name, upload in hosts:
+                try:
+                    hosted = await upload(client, payload, pmime, filename)
+                    logger.info(
+                        "outsee_api.frame hosted via {} variant={} {} bytes → {}",
+                        name,
+                        label,
+                        len(payload),
+                        hosted[:120],
+                    )
+                    return hosted
+                except Exception as exc:  # noqa: BLE001
+                    msg = str(exc).strip() or repr(exc)
+                    msg = msg[:180]
+                    errors.append(f"{name}/{label}: {msg}")
+                    logger.warning(
+                        "outsee_api.frame host {} variant={} failed: {}",
+                        name,
+                        label,
+                        msg,
+                    )
     raise OutseeApiError(
-        "frame upload failed: " + " | ".join(errors)[:400],
-        context={"mime": mime, "bytes": len(raw)},
+        "frame upload failed: " + " | ".join(errors)[:500],
+        context={"mime": mime, "bytes": len(raw), "variants": [v[2] for v in variants]},
     )
 
 
