@@ -455,7 +455,8 @@ async def postprocess_veo_mp4(
     from app.services.media_probe import probe_duration
 
     want_dur = int(duration) if duration is not None else None
-    want_mute = generate_audio is False
+    # None / False → mute. True only when Create explicitly asks for audio.
+    want_mute = generate_audio is not True
     if not want_mute and want_dur not in {4, 6}:
         return path
 
@@ -636,7 +637,7 @@ async def generate_video(
     aspect_ratio: str = "9:16",
     resolution: str | None = "720p",
     duration: int | float | None = None,
-    generate_audio: bool | None = None,
+    generate_audio: bool | None = False,
     first_frame_url: str | None = None,
     last_frame_url: str | None = None,
     reference_image: Path | str | None = None,
@@ -678,8 +679,8 @@ async def generate_video(
             dur = 8
     body["duration_sec"] = dur
 
-    if generate_audio is not None:
-        body["generate_audio"] = bool(generate_audio)
+    # Pipeline clips are always silent; Create may pass True for Veo audio.
+    body["generate_audio"] = bool(generate_audio) if generate_audio is not None else False
 
     frame = first_frame_url
     if not frame and isinstance(reference_image, str) and reference_image.startswith(
@@ -724,12 +725,12 @@ async def generate_video(
     if suf in {".mp4", ".webm"} and out_path.suffix.lower() != suf:
         out_path = out_path.with_suffix(suf)
     await _download(url, out_path)
-    if model == "veo-3-1-lite":
-        await postprocess_veo_mp4(
-            out_path,
-            duration=dur,
-            generate_audio=generate_audio,
-        )
+    # Strip AAC even if API ignored generate_audio=false (Veo often still has track).
+    await postprocess_veo_mp4(
+        out_path,
+        duration=dur if model == "veo-3-1-lite" else None,
+        generate_audio=generate_audio,
+    )
     return GenerationResult(
         file_path=out_path,
         raw_url=url,

@@ -1036,6 +1036,7 @@ async def generate_video_with_retries(
                     ar = attempt_kwargs.get("aspect_ratio") or "9:16"
                     res = attempt_kwargs.get("resolution") or "720p"
                     dur = attempt_kwargs.get("duration")
+                    # Кадры пайплайна — всегда без звука (озвучка отдельно на шаге audio).
                     result = await outsee_api_generate_video(
                         send_prompt,
                         out_path,
@@ -1043,6 +1044,7 @@ async def generate_video_with_retries(
                         aspect_ratio=str(ar).replace("_", ":"),
                         resolution=str(res),
                         duration=int(dur) if dur else None,
+                        generate_audio=False,
                         reference_image=attempt_kwargs.get("start_frame"),
                         prompt_id_prefix=attempt_kwargs.get("prompt_id_prefix"),
                         timeout=float(attempt_kwargs.get("timeout") or 900),

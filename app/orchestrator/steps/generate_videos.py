@@ -305,6 +305,7 @@ async def _generate_shot1_one(
         model_slug=model_slug,
         resolution=res_slug,
         relax=relax,
+        generate_audio=False,
         prompt_id_prefix=build_gen_id_prefix(project.id, fr.number, short_uuid),
         duplicate_check_paths=dups,
     )
@@ -369,6 +370,7 @@ async def _generate_shot2_one(
         model_slug=model_slug,
         resolution=res_slug,
         relax=relax,
+        generate_audio=False,
         prompt_id_prefix=build_gen_id_prefix(project.id, fr.number, short_uuid)
         + "-S2",
         duplicate_check_paths=dups,

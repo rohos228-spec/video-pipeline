@@ -152,3 +152,46 @@ async def test_veo_generate_video_hosts_frame_and_postprocesses(
     assert captured["body"]["generate_audio"] is False
     assert captured["body"]["duration_sec"] == 4
     assert captured["pp"] == {"duration": 4, "audio": False}
+
+
+@pytest.mark.asyncio
+async def test_veo_generate_video_defaults_to_silent(tmp_path: Path, monkeypatch) -> None:
+    """Pipeline/API: без явного True клип всегда generate_audio=false + mute pp."""
+    from app.bots import outsee_http as oh
+
+    monkeypatch.setattr(oh.settings, "outsee_api_key", "test-key")
+    out = tmp_path / "v.mp4"
+    captured: dict = {}
+
+    async def fake_post(path: str, body: dict):
+        captured["body"] = body
+        return {"id": 1, "status": "queued"}
+
+    async def fake_poll(gen_id, *, timeout):
+        return {"status": "completed", "result_url": "https://example.com/x.mp4"}
+
+    async def fake_dl(url: str, out_path: Path):
+        out_path.write_bytes(b"\x00" * 64)
+        return out_path
+
+    async def fake_pp(path, *, duration, generate_audio):
+        captured["pp"] = {"duration": duration, "audio": generate_audio}
+        return path
+
+    with (
+        patch.object(oh, "_post_generate", side_effect=fake_post),
+        patch.object(oh, "_poll_generation", side_effect=fake_poll),
+        patch.object(oh, "_download", side_effect=fake_dl),
+        patch.object(oh, "ensure_public_image_url", side_effect=lambda u: u),
+        patch.object(oh, "postprocess_veo_mp4", side_effect=fake_pp),
+    ):
+        await oh.generate_video(
+            "sky",
+            out,
+            model_slug="veo-3-1-lite",
+            aspect_ratio="9:16",
+            duration=8,
+        )
+
+    assert captured["body"]["generate_audio"] is False
+    assert captured["pp"]["audio"] is False
