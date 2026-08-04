@@ -11,7 +11,19 @@ from app.services.check_analysis import (
     normalize_frame_regen_token,
 )
 from app.services.image_strip import compose_grid_strip
-from app.services.video_sheet import parse_clip_number
+from app.services.video_sheet import _sample_times, parse_clip_number
+
+
+def test_sample_times_equal_sixths_of_duration() -> None:
+    """6 кадров = центры равных долей T, шаг T/6."""
+    times = _sample_times(8.0, 6)
+    assert len(times) == 6
+    # 0.5/6*8 … 5.5/6*8
+    expected = [8.0 * (i + 0.5) / 6 for i in range(6)]
+    for got, want in zip(times, expected, strict=True):
+        assert abs(got - want) < 0.05
+    gaps = [times[i + 1] - times[i] for i in range(5)]
+    assert all(abs(g - (8.0 / 6)) < 0.05 for g in gaps)
 
 
 def _solid(path: Path, size: tuple[int, int], color: tuple[int, int, int]) -> None:

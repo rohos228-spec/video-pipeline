@@ -87,24 +87,32 @@ async def _probe_duration_sec(video: Path) -> float:
 
 
 def _sample_times(duration: float, n: int = FRAMES_PER_CLIP) -> list[float]:
-    """Равномерно по клипу, чуть отступая от самого конца."""
+    """Центры n равных долей хронометража [0, duration).
+
+    Для 6 кадров при T=8с → 0.667, 2.000, 3.333, 4.667, 6.000, 7.333
+    (шаг ровно T/6). Не «от 0 до конца с шагом T/5».
+    """
     if n < 1:
         return []
-    safe = max(0.05, float(duration) - 0.05)
+    d = max(0.05, float(duration))
     if n == 1:
-        return [min(0.1, safe)]
-    return [safe * i / (n - 1) for i in range(n)]
+        return [min(0.1, d * 0.5)]
+    # Чуть не упираемся в последний sample-exact EOF (редко пустой кадр).
+    eps = min(0.04, d * 0.002)
+    times = [d * (i + 0.5) / n for i in range(n)]
+    return [min(t, d - eps) for t in times]
 
 
 async def _extract_still(video: Path, at_sec: float, out: Path) -> None:
+    """Точный seek: ``-ss`` после ``-i`` (иначе keyframe-прыжки ≠ равные доли)."""
     out.parent.mkdir(parents=True, exist_ok=True)
     proc = await asyncio.create_subprocess_exec(
         "ffmpeg",
         "-y",
-        "-ss",
-        f"{at_sec:.3f}",
         "-i",
         str(video),
+        "-ss",
+        f"{at_sec:.3f}",
         "-frames:v",
         "1",
         "-q:v",
@@ -158,11 +166,12 @@ async def build_video_sheet(
             max_bytes=3_500_000,
         )
         logger.info(
-            "video_sheet: {} → {} ({}s, cells={})",
+            "video_sheet: {} → {} ({}s, cells={}, t=[{}])",
             video_path.name,
             sheet.name,
             f"{dur:.2f}",
             FRAMES_PER_CLIP,
+            ", ".join(f"{t:.2f}" for t in times),
         )
         return sheet
     finally:
