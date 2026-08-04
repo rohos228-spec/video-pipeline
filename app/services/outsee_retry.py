@@ -564,13 +564,17 @@ async def generate_image_with_retries(
     from app.bots.grsai import studio_id_to_grsai_slug
     from app.bots.outsee_http import (
         generate_image as outsee_api_generate_image,
+        outsee_api_configured,
         outsee_api_enabled_for_image,
         studio_id_to_outsee_image_slug,
     )
     from app.settings import settings as _settings
 
     use_grsai = grsai_enabled()
-    use_outsee_api = (not use_grsai) and outsee_api_enabled_for_image()
+    # Ключ Outsee без CDP — даже если IMAGE_PROVIDER чуть разъехался со settings.
+    use_outsee_api = (not use_grsai) and (
+        outsee_api_enabled_for_image() or outsee_api_configured()
+    )
     last_err: OutseeImageError | None = None
     current_prompt = prompt
     base_prompt_id = kwargs.get("prompt_id_prefix")
@@ -909,13 +913,16 @@ async def generate_video_with_retries(
     from app.bots.grsai import studio_id_to_grsai_video_slug
     from app.bots.outsee_http import (
         generate_video as outsee_api_generate_video,
+        outsee_api_configured,
         outsee_api_enabled_for_video,
         studio_id_to_outsee_video_slug,
     )
     from app.settings import settings as _settings
 
     use_grsai_video = grsai_video_enabled()
-    use_outsee_api_video = (not use_grsai_video) and outsee_api_enabled_for_video()
+    use_outsee_api_video = (not use_grsai_video) and (
+        outsee_api_enabled_for_video() or outsee_api_configured()
+    )
 
     _DOWNLOAD_ONLY_RETRIES = 2
     gen_failures = 0

@@ -120,18 +120,23 @@ async def test_execute_image_regen_api_skips_cdp(
         res.file_path = out
         return res
 
-    async def _boom_cdp():
-        raise AssertionError("CDP не должен вызываться при API")
-
     monkeypatch.setattr(
         "app.services.montage_board_regen._image_api_enabled", lambda: True
     )
     monkeypatch.setattr(
         "app.services.montage_board_regen.generate_image_with_retries", _fake_gen
     )
-    monkeypatch.setattr(
-        "app.services.montage_board_regen._ensure_cdp_ready", _boom_cdp
-    )
+    # Если кто-то снова импортирует browser_session — тест взорвётся.
+    import sys
+    import types
+
+    fake_browser = types.ModuleType("app.bots.browser")
+
+    async def _boom_session(*_a, **_k):
+        raise AssertionError("browser_session не должен вызываться")
+
+    fake_browser.browser_session = _boom_session  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "app.bots.browser", fake_browser)
 
     prep = ImageRegenPrep(
         project_id=1,
@@ -160,17 +165,11 @@ async def test_execute_video_regen_api_skips_cdp(
         res.file_path = out
         return res
 
-    async def _boom_cdp():
-        raise AssertionError("CDP не должен вызываться при API")
-
     monkeypatch.setattr(
         "app.services.montage_board_regen._video_api_enabled", lambda: True
     )
     monkeypatch.setattr(
         "app.services.montage_board_regen.generate_video_with_retries", _fake_gen
-    )
-    monkeypatch.setattr(
-        "app.services.montage_board_regen._ensure_cdp_ready", _boom_cdp
     )
 
     start = tmp_path / "start.png"

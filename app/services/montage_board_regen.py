@@ -95,45 +95,44 @@ class VideoRegenPrep:
 
 
 def _image_api_enabled() -> bool:
+    """Montage image: любой HTTP-путь (grsai / outsee API). Chrome не используем."""
     from app.bots.grsai import grsai_enabled
-    from app.bots.outsee_http import outsee_api_enabled_for_image
+    from app.bots.outsee_http import outsee_api_configured, outsee_api_enabled_for_image
 
-    return bool(grsai_enabled() or outsee_api_enabled_for_image())
+    return bool(
+        grsai_enabled() or outsee_api_enabled_for_image() or outsee_api_configured()
+    )
 
 
 def _video_api_enabled() -> bool:
+    """Montage video: любой HTTP-путь. Chrome не используем."""
     from app.bots.grsai import grsai_video_enabled
-    from app.bots.outsee_http import outsee_api_enabled_for_video
+    from app.bots.outsee_http import outsee_api_configured, outsee_api_enabled_for_video
 
-    return bool(grsai_video_enabled() or outsee_api_enabled_for_video())
+    return bool(
+        grsai_video_enabled()
+        or outsee_api_enabled_for_video()
+        or outsee_api_configured()
+    )
 
 
 class _ApiOnlyOutseeStub:
-    """Заглушка OutseeBot: API-путь в outsee_retry не вызывает CDP-методы."""
+    """Заглушка OutseeBot: montage regen никогда не открывает Chrome CDP."""
 
     async def generate_image(self, *args: Any, **kwargs: Any) -> Any:
         raise RuntimeError(
-            "CDP fallback выключен: включите IMAGE_PROVIDER=outsee|grsai с API-ключом"
+            "montage regen: CDP отключён — нужен OUTSEE_API_KEY / GRSAI_API_KEY"
         )
 
     async def generate_video(self, *args: Any, **kwargs: Any) -> Any:
         raise RuntimeError(
-            "CDP fallback выключен: включите VIDEO_PROVIDER=outsee|grsai с API-ключом"
+            "montage regen: CDP отключён — нужен OUTSEE_API_KEY / GRSAI_API_KEY"
         )
 
-
-async def _ensure_cdp_ready() -> None:
-    """Только для legacy CDP-пути (когда API-провайдер не настроен)."""
-    from app.bots.chrome_cdp import fetch_cdp_version
-    from app.settings import settings
-
-    try:
-        await fetch_cdp_version(settings.browser_cdp_url)
-    except Exception as exc:  # noqa: BLE001
+    async def retry_image_download(self, *args: Any, **kwargs: Any) -> Any:
         raise RuntimeError(
-            "Chrome CDP :29229 не отвечает — при IMAGE/VIDEO_PROVIDER=outsee|grsai "
-            "CDP не нужен; иначе запустите Start-Chrome.cmd и откройте outsee.io"
-        ) from exc
+            "montage regen: CDP download отключён — повтор скачивания только через HTTP API"
+        )
 
 
 def image_prompt_from_excel(project: Project, frame: Frame, shot: int) -> str:
@@ -396,83 +395,57 @@ async def prepare_image_regen(
 
 
 async def execute_image_regen(prep: ImageRegenPrep) -> Path:
-    use_api = _image_api_enabled()
+    """Только HTTP API (Outsee/Grsai). Chrome CDP для монтажа отключён."""
+    if not _image_api_enabled():
+        raise RuntimeError(
+            "montage regen image: нет HTTP API — задайте OUTSEE_API_KEY "
+            "(IMAGE_PROVIDER=outsee) или GRSAI_API_KEY (IMAGE_PROVIDER=grsai). "
+            "Chrome CDP больше не используется."
+        )
     preview = (prep.prompt_text or "").replace("\n", " ")[:160]
     logger.info(
-        "montage regen image #{} frame {} shot {} → {} "
+        "montage regen image #{} frame {} shot {} → API "
         "({} симв., refs={}, prefix={}, preview={!r})",
         prep.project_id,
         prep.frame_number,
         prep.shot,
-        "API" if use_api else "CDP",
         len(prep.prompt_text),
         len(prep.refs),
         prep.prompt_id_prefix,
         preview,
     )
     gpt = get_gpt_client()
-    kwargs = dict(
-        prompt=prep.prompt_text,
-        out_path=prep.file_path,
-        max_attempts_per_prompt=3,
-        gpt_rewrite=True,
-        aspect_ratio=prep.aspect_slug,
-        gen_id=prep.gen_id or uuid.uuid4().hex,
-        model_slug=prep.model_slug,
-        resolution=prep.res_slug,
-        quality=prep.quality_slug,
-        relax=prep.image_relax,
-        prompt_id_prefix=prep.prompt_id_prefix,
-        reference_image=prep.refs if prep.refs else None,
-        project_id=prep.project_id,
-    )
-    if use_api:
-        try:
-            result = await generate_image_with_retries(
-                _ApiOnlyOutseeStub(),  # type: ignore[arg-type]
-                gpt,
-                **kwargs,
+    try:
+        result = await generate_image_with_retries(
+            _ApiOnlyOutseeStub(),  # type: ignore[arg-type]
+            gpt,
+            prompt=prep.prompt_text,
+            out_path=prep.file_path,
+            max_attempts_per_prompt=3,
+            gpt_rewrite=True,
+            aspect_ratio=prep.aspect_slug,
+            gen_id=prep.gen_id or uuid.uuid4().hex,
+            model_slug=prep.model_slug,
+            resolution=prep.res_slug,
+            quality=prep.quality_slug,
+            relax=prep.image_relax,
+            prompt_id_prefix=prep.prompt_id_prefix,
+            reference_image=prep.refs if prep.refs else None,
+            project_id=prep.project_id,
+        )
+        return Path(result.file_path)
+    except Exception as exc:  # noqa: BLE001
+        if _ready_regen_file(prep.file_path):
+            logger.warning(
+                "montage regen image #{} frame {} shot {}: "
+                "API failed but file ready: {}",
+                prep.project_id,
+                prep.frame_number,
+                prep.shot,
+                exc,
             )
-            return Path(result.file_path)
-        except Exception as exc:  # noqa: BLE001
-            if _ready_regen_file(prep.file_path):
-                logger.warning(
-                    "montage regen image #{} frame {} shot {}: "
-                    "API failed but file ready: {}",
-                    prep.project_id,
-                    prep.frame_number,
-                    prep.shot,
-                    exc,
-                )
-                return prep.file_path
-            raise
-
-    # Legacy CDP (только если IMAGE_PROVIDER не API).
-    from app.bots.browser import browser_session
-    from app.bots.outsee import OutseeBot
-
-    await _ensure_cdp_ready()
-    async with browser_session() as bs:
-        outsee = OutseeBot(bs)
-        try:
-            result = await generate_image_with_retries(outsee, gpt, **kwargs)
-            return Path(result.file_path)
-        except Exception as exc:  # noqa: BLE001
-            if prep.prompt_id_prefix and not _ready_regen_file(prep.file_path):
-                recovered = await _recover_montage_image_from_history(outsee, prep)
-                if recovered is not None:
-                    return recovered
-            if _ready_regen_file(prep.file_path):
-                logger.warning(
-                    "montage regen image #{} frame {} shot {}: "
-                    "execute failed but file ready: {}",
-                    prep.project_id,
-                    prep.frame_number,
-                    prep.shot,
-                    exc,
-                )
-                return prep.file_path
-            raise
+            return prep.file_path
+        raise
 
 
 def _ready_regen_file(path: Path, *, min_bytes: int = 200_000) -> bool:
@@ -480,55 +453,6 @@ def _ready_regen_file(path: Path, *, min_bytes: int = 200_000) -> bool:
         return path.is_file() and path.stat().st_size >= min_bytes
     except OSError:
         return False
-
-
-async def _recover_montage_image_from_history(
-    outsee: Any,
-    prep: ImageRegenPrep,
-) -> Path | None:
-    """CDP history recover — только для legacy-пути без API."""
-    from app.bots.outsee import (
-        _image_page_url,
-        download_image_like_generate,
-    )
-    from app.services.outsee_lane import outsee_lane
-
-    prefix = prep.prompt_id_prefix
-    if not prefix:
-        return None
-    try:
-        async with outsee_lane(
-            project_id=prep.project_id, op="montage_history_recover"
-        ):
-            page = await outsee.session.open_page(
-                _image_page_url(prep.model_slug), reuse=True
-            )
-            await download_image_like_generate(
-                page,
-                out_path=prep.file_path,
-                img_url="",
-                gen_id=prep.gen_id or prefix,
-                prompt_id_prefix=prefix,
-                project_id=prep.project_id,
-            )
-            logger.info(
-                "montage history recover #{} frame {} shot {} → {} ({} B)",
-                prep.project_id,
-                prep.frame_number,
-                prep.shot,
-                prep.file_path,
-                prep.file_path.stat().st_size,
-            )
-            return prep.file_path
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "montage history recover #{} frame {} shot {} failed: {}",
-            prep.project_id,
-            prep.frame_number,
-            prep.shot,
-            e,
-        )
-        return None
 
 
 async def finalize_image_regen(
@@ -627,13 +551,18 @@ async def prepare_video_regen(
 
 
 async def execute_video_regen(prep: VideoRegenPrep) -> Path:
-    use_api = _video_api_enabled()
+    """Только HTTP API (Outsee/Grsai). Chrome CDP для монтажа отключён."""
+    if not _video_api_enabled():
+        raise RuntimeError(
+            "montage regen video: нет HTTP API — задайте OUTSEE_API_KEY "
+            "(VIDEO_PROVIDER=outsee) или GRSAI_API_KEY (VIDEO_PROVIDER=grsai). "
+            "Chrome CDP больше не используется."
+        )
     logger.info(
-        "montage regen video #{} frame {} shot {} → {} ({} симв.)",
+        "montage regen video #{} frame {} shot {} → API ({} симв.)",
         prep.project_id,
         prep.frame_number,
         prep.shot,
-        "API" if use_api else "CDP",
         len(prep.prompt_text),
     )
     gpt = get_gpt_client()
@@ -649,7 +578,9 @@ async def execute_video_regen(prep: VideoRegenPrep) -> Path:
     duplicate_check_paths = list(
         dict.fromkeys(p.resolve() for p in dup_globs if p.is_file())
     )
-    kwargs = dict(
+    result = await generate_video_with_retries(
+        _ApiOnlyOutseeStub(),  # type: ignore[arg-type]
+        gpt,
         prompt=prep.prompt_text,
         out_path=prep.file_path,
         max_attempts_per_prompt=3,
@@ -664,21 +595,6 @@ async def execute_video_regen(prep: VideoRegenPrep) -> Path:
         prompt_id_prefix=prep.prompt_id_prefix,
         duplicate_check_paths=duplicate_check_paths,
     )
-    if use_api:
-        result = await generate_video_with_retries(
-            _ApiOnlyOutseeStub(),  # type: ignore[arg-type]
-            gpt,
-            **kwargs,
-        )
-        return Path(result.file_path)
-
-    from app.bots.browser import browser_session
-    from app.bots.outsee import OutseeBot
-
-    await _ensure_cdp_ready()
-    async with browser_session() as bs:
-        outsee = OutseeBot(bs)
-        result = await generate_video_with_retries(outsee, gpt, **kwargs)
     return Path(result.file_path)
 
 
