@@ -1,8 +1,18 @@
-"""Применить правки панели монтажа: trim + очередь regen."""
+"""Применить правки панели монтажа: trim + очередь regen.
+
+Потоки как у генерации: meta.outsee_streams + общий acquire_image_slot
+(лимит слотов Outsee тот же, что у Create/img/video).
+
+Порядок обязательный:
+  1) сначала ВСЕ картинки, потом ВСЕ видео;
+  2) «первый кадр» (shot1) → «второй кадр» (shot2) внутри одного frame #;
+  3) разные frame # — до N параллельно (как нода img).
+"""
 
 from __future__ import annotations
 
 import asyncio
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -11,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import session_scope
 from app.models import Project
+from app.services.img_streams import acquire_image_slot, get_img_streams
 from app.services.montage_board_meta import (
     add_highlight,
     clear_highlights,
@@ -36,6 +47,11 @@ ProgressCb = Callable[[int, int, dict[str, Any]], Awaitable[None]]
 _READY_IMAGE_BYTES = 200_000
 _READY_VIDEO_BYTES = 80_000
 
+_IMAGE_OP_TYPES = frozenset(
+    {"image_regen", "image_regen_prompt", "image_regen_correction"}
+)
+_VIDEO_OP_TYPES = frozenset({"video_regen", "video_regen_prompt"})
+
 
 def _ready_local_asset(path: Path, *, min_bytes: int) -> bool:
     try:
@@ -47,6 +63,59 @@ def _ready_local_asset(path: Path, *, min_bytes: int) -> bool:
 def _is_sqlite_locked(exc: BaseException) -> bool:
     msg = str(exc).lower()
     return "database is locked" in msg or "database is busy" in msg
+
+
+def _op_frame_shot(op: dict[str, Any]) -> tuple[int, int]:
+    try:
+        frame = int(op.get("frame_number") or 0)
+    except (TypeError, ValueError):
+        frame = 0
+    try:
+        shot = int(op.get("shot") or 1)
+    except (TypeError, ValueError):
+        shot = 1
+    return frame, (2 if shot == 2 else 1)
+
+
+def order_montage_pending_ops(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Картинки по (frame, shot) → видео по (frame, shot). Чужие типы — в конец."""
+    images: list[dict[str, Any]] = []
+    videos: list[dict[str, Any]] = []
+    other: list[dict[str, Any]] = []
+    for op in ops:
+        t = str(op.get("type") or "").strip()
+        if t in _IMAGE_OP_TYPES:
+            images.append(op)
+        elif t in _VIDEO_OP_TYPES:
+            videos.append(op)
+        else:
+            other.append(op)
+    images.sort(key=_op_frame_shot)
+    videos.sort(key=_op_frame_shot)
+    return images + videos + other
+
+
+def group_ops_by_frame(
+    ops: list[dict[str, Any]],
+) -> list[tuple[int, list[dict[str, Any]]]]:
+    """Кадры по возрастанию; внутри кадра ops уже отсортированы shot1→shot2."""
+    by_frame: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for op in ops:
+        fr, _ = _op_frame_shot(op)
+        by_frame[fr].append(op)
+    out: list[tuple[int, list[dict[str, Any]]]] = []
+    for fr in sorted(by_frame.keys()):
+        group = sorted(by_frame[fr], key=_op_frame_shot)
+        out.append((fr, group))
+    return out
+
+
+def _montage_apply_parallel(project: Project) -> int:
+    """Сколько одновременных кадров: как img/video (1..4), 0 → 1."""
+    n = get_img_streams(project)
+    if n <= 0:
+        return 1
+    return max(1, min(4, n))
 
 
 async def _finalize_image_with_retry(
@@ -164,13 +233,32 @@ async def _run_op_with_short_sessions(
         else:
             raise RuntimeError(f"неизвестная операция: {op_type}")
 
-    if op_type.startswith("image"):
+    # Слот общий с Create/img/video — не долбим Outsee сверх лимита потоков.
+    async with acquire_image_slot():
+        if op_type.startswith("image"):
+            try:
+                new_path = await execute_image_regen(prep)
+            except Exception as exc:  # noqa: BLE001
+                if _ready_local_asset(prep.file_path, min_bytes=_READY_IMAGE_BYTES):
+                    logger.warning(
+                        "montage apply #{} image frame {} shot {}: "
+                        "execute failed but file ready — finalize: {}",
+                        project_id,
+                        frame_number,
+                        shot,
+                        exc,
+                    )
+                    new_path = prep.file_path
+                else:
+                    raise
+            return await _finalize_image_with_retry(project_id, prep, new_path, board)
+
         try:
-            new_path = await execute_image_regen(prep)
+            new_path = await execute_video_regen(prep)
         except Exception as exc:  # noqa: BLE001
-            if _ready_local_asset(prep.file_path, min_bytes=_READY_IMAGE_BYTES):
+            if _ready_local_asset(prep.file_path, min_bytes=_READY_VIDEO_BYTES):
                 logger.warning(
-                    "montage apply #{} image frame {} shot {}: "
+                    "montage apply #{} video frame {} shot {}: "
                     "execute failed but file ready — finalize: {}",
                     project_id,
                     frame_number,
@@ -180,24 +268,93 @@ async def _run_op_with_short_sessions(
                 new_path = prep.file_path
             else:
                 raise
-        return await _finalize_image_with_retry(project_id, prep, new_path, board)
+        return await _finalize_video_with_retry(project_id, prep, new_path, board)
 
-    try:
-        new_path = await execute_video_regen(prep)
-    except Exception as exc:  # noqa: BLE001
-        if _ready_local_asset(prep.file_path, min_bytes=_READY_VIDEO_BYTES):
-            logger.warning(
-                "montage apply #{} video frame {} shot {}: "
-                "execute failed but file ready — finalize: {}",
-                project_id,
-                frame_number,
-                shot,
-                exc,
-            )
-            new_path = prep.file_path
-        else:
-            raise
-    return await _finalize_video_with_retry(project_id, prep, new_path, board)
+
+async def _run_ops_phase(
+    *,
+    project_id: int,
+    phase_indices: list[int],
+    all_ops: list[dict[str, Any]],
+    board: dict[str, Any],
+    parallel: int,
+    op_status: list[str | None],
+    results: list[dict[str, Any]],
+    errors: list[str],
+    on_progress: ProgressCb | None,
+    phase_label: str,
+) -> None:
+    """Одна фаза: кадры параллельно до N; внутри кадра shot1 → shot2 строго."""
+    if not phase_indices:
+        return
+
+    by_frame: dict[int, list[int]] = defaultdict(list)
+    for idx in phase_indices:
+        fr, _ = _op_frame_shot(all_ops[idx])
+        by_frame[fr].append(idx)
+    for fr in by_frame:
+        by_frame[fr].sort(key=lambda i: _op_frame_shot(all_ops[i]))
+
+    frames = sorted(by_frame.keys())
+    logger.info(
+        "montage apply #{} phase={} frames={} ops={} parallel={}",
+        project_id,
+        phase_label,
+        len(frames),
+        len(phase_indices),
+        parallel,
+    )
+
+    meta_lock = asyncio.Lock()
+    total = len(all_ops)
+
+    def _pending_snapshot() -> list[dict[str, Any]]:
+        return [all_ops[i] for i, st in enumerate(op_status) if st != "ok"]
+
+    async def _finish_op(idx: int, ok: bool, result: dict[str, Any]) -> None:
+        async with meta_lock:
+            op_status[idx] = "ok" if ok else "fail"
+            if ok:
+                results.append(result)
+                highlight = result.get("highlight")
+                if highlight:
+                    add_highlight(board, str(highlight))
+            else:
+                errors.append(str(result.get("error") or "error"))
+                results.append(result)
+            board["pending_ops"] = _pending_snapshot()
+            async with session_scope() as session:
+                project = await session.get(Project, project_id)
+                if project is not None:
+                    set_montage_meta(project, board)
+                    await session.commit()
+            if on_progress is not None:
+                await on_progress(len(results), max(total, 1), result)
+
+    async def _frame_worker(frame: int) -> None:
+        # Shot1 → shot2 строго подряд внутри кадра.
+        for idx in by_frame[frame]:
+            op = all_ops[idx]
+            try:
+                result = await _run_op_with_short_sessions(project_id, op, board)
+                await _finish_op(idx, True, result)
+            except Exception as exc:  # noqa: BLE001
+                msg = str(exc)
+                logger.warning(
+                    "montage apply #{} op {} failed: {}",
+                    project_id,
+                    op,
+                    msg,
+                )
+                await _finish_op(idx, False, {"ok": False, "error": msg, "op": op})
+
+    sem = asyncio.Semaphore(max(1, parallel))
+
+    async def _guarded(frame: int) -> None:
+        async with sem:
+            await _frame_worker(frame)
+
+    await asyncio.gather(*(_guarded(fr) for fr in frames))
 
 
 async def apply_montage_board(
@@ -211,54 +368,85 @@ async def apply_montage_board(
     board = montage_meta(project)
     if video_trims is not None:
         board["video_trims"] = video_trims
-    ops = list(pending_ops or board.get("pending_ops") or [])
+    ops = order_montage_pending_ops(
+        list(pending_ops or board.get("pending_ops") or [])
+    )
     clear_highlights(board)
 
     results: list[dict[str, Any]] = []
     errors: list[str] = []
-    remaining: list[dict[str, Any]] = []
 
-    # НЕ recover_before_regen: нода img идёт сразу в generate_image.
-
-    total = len(ops) + len(results)
     project_id = int(project.id)
+    parallel = _montage_apply_parallel(project)
 
-    for idx, op in enumerate(ops):
-        try:
-            result = await _run_op_with_short_sessions(project_id, op, board)
-            results.append(result)
-            highlight = result.get("highlight")
-            if highlight:
-                add_highlight(board, str(highlight))
-            board["pending_ops"] = list(remaining) + list(ops[idx + 1 :])
-            set_montage_meta(project, board)
-            # CRITICAL: commit после каждой op — иначе write-txn висит на весь
-            # Outsee Generate и finalize следующего кадра → database is locked
-            # (лог F38: файл скачан, archive ok, INSERT artifacts locked).
-            await session.flush()
-            await session.commit()
-            if on_progress is not None:
-                await on_progress(len(results), max(total, 1), result)
-        except Exception as exc:  # noqa: BLE001
-            msg = str(exc)
-            logger.warning(
-                "montage apply #{} op {} failed: {}",
-                project_id,
-                op,
-                msg,
-            )
-            errors.append(msg)
-            results.append({"ok": False, "error": msg, "op": op})
-            remaining.append(op)
-            board["pending_ops"] = list(remaining) + list(ops[idx + 1 :])
-            set_montage_meta(project, board)
-            await session.flush()
-            await session.commit()
-            if on_progress is not None:
-                await on_progress(
-                    len(results), max(total, 1), {"ok": False, "error": msg}
-                )
+    image_indices = [
+        i for i, o in enumerate(ops) if str(o.get("type") or "") in _IMAGE_OP_TYPES
+    ]
+    video_indices = [
+        i for i, o in enumerate(ops) if str(o.get("type") or "") in _VIDEO_OP_TYPES
+    ]
+    other_indices = [
+        i
+        for i, o in enumerate(ops)
+        if str(o.get("type") or "") not in _IMAGE_OP_TYPES
+        and str(o.get("type") or "") not in _VIDEO_OP_TYPES
+    ]
 
+    logger.info(
+        "montage apply #{}: {} image + {} video + {} other, parallel={}",
+        project_id,
+        len(image_indices),
+        len(video_indices),
+        len(other_indices),
+        parallel,
+    )
+
+    # Commit trim/highlights до долгих Outsee — не держим write-txn.
+    board["pending_ops"] = list(ops)
+    set_montage_meta(project, board)
+    await session.flush()
+    await session.commit()
+
+    op_status: list[str | None] = [None] * len(ops)
+
+    await _run_ops_phase(
+        project_id=project_id,
+        phase_indices=image_indices,
+        all_ops=ops,
+        board=board,
+        parallel=parallel,
+        op_status=op_status,
+        results=results,
+        errors=errors,
+        on_progress=on_progress,
+        phase_label="images",
+    )
+    await _run_ops_phase(
+        project_id=project_id,
+        phase_indices=video_indices,
+        all_ops=ops,
+        board=board,
+        parallel=parallel,
+        op_status=op_status,
+        results=results,
+        errors=errors,
+        on_progress=on_progress,
+        phase_label="videos",
+    )
+    await _run_ops_phase(
+        project_id=project_id,
+        phase_indices=other_indices,
+        all_ops=ops,
+        board=board,
+        parallel=1,
+        op_status=op_status,
+        results=results,
+        errors=errors,
+        on_progress=on_progress,
+        phase_label="other",
+    )
+
+    remaining = [ops[i] for i, st in enumerate(op_status) if st != "ok"]
     board["pending_ops"] = remaining
     touch_applied(board)
     set_montage_meta(project, board)
