@@ -8,6 +8,7 @@ type ServerVersion = {
   build: number;
   sha: string;
   label: string;
+  backend_git?: string;
   ui_baked_build?: number;
   ui_stale?: boolean;
   attach_expected?: string;
@@ -39,7 +40,12 @@ export function StudioVersionBadge() {
     };
   }, []);
 
-  const displayLabel = server?.label ?? CLIENT_STUDIO_VERSION;
+  const backendGit = (server?.backend_git || "").slice(0, 7);
+  // Показываем git бэкенда — это то, что реально крутит генерацию.
+  // UI sha в label путает: «не обновляется», хотя Python уже новый.
+  const displayLabel = backendGit
+    ? `v${server?.build ?? "?"} · ${backendGit}`
+    : (server?.label ?? CLIENT_STUDIO_VERSION);
   const uiStale = server != null && server.ui_stale === true;
   const backendStale =
     server != null && (server.pipeline_ok === false || server.backend_ok === false);
@@ -60,7 +66,7 @@ export function StudioVersionBadge() {
             ? `Старый UI в кэше (${CLIENT_STUDIO_VERSION}). Сервер: ${server?.label}. Ctrl+F5 или FIX-VERSION.cmd`
             : server && server.pipeline_ok === false
               ? `Python устарел: attach=${server.backend_attach}`
-              : `Studio ${displayLabel}`
+              : `backend git=${backendGit || "?"} · UI ${server?.label ?? CLIENT_STUDIO_VERSION}`
         }
       >
         {displayLabel}
