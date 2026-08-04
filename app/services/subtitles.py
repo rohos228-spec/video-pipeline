@@ -1,4 +1,4 @@
-"""Субтитры: одно слово = один интервал Whisper, без наложений на экране."""
+"""Субтитры: слова по Whisper; max_words>1 — несколько слов за прогон (строки)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from app.services.whisper import WordTS
 
 SubtitleCue = tuple[float, float, str]
 
-_PAUSE_GAP = 0.05  # минимум пустого экрана между словами
+_PAUSE_GAP = 0.05  # минимум пустого экрана между кусками
 _MIN_VISIBLE = 0.10
 _CHARS_PER_SECOND = 14.0
 
@@ -30,10 +30,11 @@ def build_subtitle_cues_from_cells(
     lead_seconds: float = 0.0,
     chars_per_second: float = _CHARS_PER_SECOND,
 ) -> list[SubtitleCue]:
-    del direct_whisper_times, max_words
+    del direct_whisper_times
     if not frame_timings:
         return []
 
+    words_per_cue = max(1, int(max_words or 1))
     cell_by_number = dict(cells)
     all_cues: list[SubtitleCue] = []
 
@@ -75,18 +76,37 @@ def build_subtitle_cues_from_cells(
             frame_cues.append((round(start, 3), round(end, 3), word_text))
 
         frame_cues = _enforce_non_overlapping(frame_cues, frame_start, frame_end)
+        frame_cues = _pack_word_cues(frame_cues, words_per_cue)
         all_cues.extend(frame_cues)
 
     all_cues = _enforce_non_overlapping(all_cues, cap_end=max_end_ts)
 
-    expected = sum(len(tokenize_display(t)) for _, t in cells)
-    if len(all_cues) < expected:
+    expected_words = sum(len(tokenize_display(t)) for _, t in cells)
+    expected_cues = (expected_words + words_per_cue - 1) // words_per_cue
+    if len(all_cues) < expected_cues:
         logger.warning(
-            "subtitles: {} слов из {} — часть без тайминга",
+            "subtitles: {} cues ({} слов/cue) из ~{} — часть без тайминга",
             len(all_cues),
-            expected,
+            words_per_cue,
+            expected_cues,
         )
     return sorted(all_cues, key=lambda x: x[0])
+
+
+def _pack_word_cues(cues: list[SubtitleCue], max_words: int) -> list[SubtitleCue]:
+    """Склеить подряд идущие слова: 2 → «слово1\\nслово2» (в ASS станет 2 строки)."""
+    if max_words <= 1 or len(cues) <= 1:
+        return cues
+    packed: list[SubtitleCue] = []
+    for i in range(0, len(cues), max_words):
+        chunk = cues[i : i + max_words]
+        start = chunk[0][0]
+        end = max(c[1] for c in chunk)
+        if end <= start:
+            end = round(start + _MIN_VISIBLE, 3)
+        text = "\n".join(c[2] for c in chunk)
+        packed.append((start, round(end, 3), text))
+    return packed
 
 
 def _target_duration(word: str, chars_per_second: float) -> float:

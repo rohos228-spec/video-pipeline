@@ -240,7 +240,8 @@ class Settings(BaseSettings):
     assembly_bgm_mix_ratio: float = Field(0.35, alias="ASSEMBLY_BGM_MIX_RATIO")
 
     # Subtitles — одно слово; опережение озвучки (Whisper системно отстаёт ~0.2–0.3 с)
-    subtitle_max_words: int = Field(1, alias="SUBTITLE_MAX_WORDS")
+    # 2 = два слова за прогон, каждое на своей строке (ASS \\N).
+    subtitle_max_words: int = Field(2, alias="SUBTITLE_MAX_WORDS")
     subtitle_lead_seconds: float = Field(0.18, alias="SUBTITLE_LEAD_SECONDS")
     subtitle_chars_per_second: float = Field(14.0, alias="SUBTITLE_CHARS_PER_SECOND")
     subtitle_rewhisper_on_assemble: bool = Field(

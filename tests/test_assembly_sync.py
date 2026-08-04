@@ -106,6 +106,26 @@ def test_one_word_per_cue_uses_next_word_start_as_end() -> None:
     assert cues[0][1] <= cues[1][0]
 
 
+def test_two_words_per_cue_two_lines() -> None:
+    """2 слова за прогон — текст с переносом строки (ASS → две строки)."""
+    cells = [(1, "раз два три четыре")]
+    words = [
+        WordTS("раз", 0.0, 0.30, 1.0),
+        WordTS("два", 0.32, 0.55, 1.0),
+        WordTS("три", 0.60, 0.80, 1.0),
+        WordTS("четыре", 0.82, 1.10, 1.0),
+    ]
+    timings = [FrameTiming(1, 0.0, 1.5, 1.5)]
+    cues = build_subtitle_cues_from_cells(
+        cells, words, timings, max_words=2, lead_seconds=0.0,
+    )
+    assert len(cues) == 2
+    assert cues[0][2] == "раз\nдва"
+    assert cues[1][2] == "три\nчетыре"
+    assert cues[0][0] <= cues[0][1]
+    assert cues[1][0] >= cues[0][1] + 0.04 - 0.001
+
+
 def test_fallback_when_no_whisper_in_frame_window() -> None:
     cells = [(1, "один два три")]
     words = [WordTS("шум", 5.0, 5.5, 1.0)]
