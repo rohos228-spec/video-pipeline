@@ -169,12 +169,25 @@ async def start_step(
     if step_code == "anim_pr":
         from sqlalchemy import select
 
-        from app.models import Frame
+        from app.models import Frame, ProjectStatus as _PS
         from app.services.animation_prompt_gpt import (
             count_animation_prompt_stats,
             scan_missing_animation_prompts_all,
             sync_animation_prompts_from_xlsx,
         )
+        from app.services.vision_check_loop import (
+            clear_vision_check_meta,
+            get_vision_kind,
+            vision_check_loop_active,
+        )
+
+        # Ручной ▶ anim_pr — не тащим за собой scene vision-regen → картинки.
+        if vision_check_loop_active(project) and get_vision_kind(project) == "scenes":
+            clear_vision_check_meta(project)
+            logger.info(
+                "[#{}] start_step anim_pr: сброшен stale vision_check (scenes)",
+                project.id,
+            )
 
         synced = await sync_animation_prompts_from_xlsx(session, project)
         frames = (
@@ -186,12 +199,13 @@ async def start_step(
         ).scalars().all()
         missing_s1, missing_s2 = scan_missing_animation_prompts_all(project, frames)
         if not missing_s1 and not missing_s2:
-            from app.services.project_state import compute_actual_status
-
             ready, xlsx_filled, with_image = count_animation_prompt_stats(
                 project, frames
             )
-            project.status = await compute_actual_status(session, project)
+            # НЕ compute_actual_status: при дырах в PNG он откатывает в
+            # image_prompts_ready → auto_advance включает generating_images.
+            # Юзер нажал anim_pr — остаёмся на animation_prompts_ready.
+            project.status = _PS.animation_prompts_ready
             project.updated_at = datetime.utcnow()
             await session.flush()
             logger.info(

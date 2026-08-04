@@ -113,7 +113,7 @@ async def test_sync_clears_stale_db_when_xlsx_r48_empty(
 async def test_start_step_anim_pr_skips_when_no_missing_on_disk(
     anim_pr_session, tmp_path: Path, monkeypatch
 ) -> None:
-    """Промты в БД есть, картинок на диске нет — не уходим в generating_animation_prompts."""
+    """Промты в БД есть, картинок нет — anim_pr ready, НЕ откат в картинки."""
     from app.settings import settings
 
     session, project = anim_pr_session
@@ -123,8 +123,11 @@ async def test_start_step_anim_pr_skips_when_no_missing_on_disk(
     (data_dir / "scenes").mkdir()
 
     status = await start_step(session, project, "anim_pr")
-    assert status is not ProjectStatus.generating_animation_prompts
-    assert project.status is not ProjectStatus.generating_animation_prompts
+    assert status is ProjectStatus.animation_prompts_ready
+    assert project.status is ProjectStatus.animation_prompts_ready
+    # Регресс: раньше compute_actual_status → image_prompts_ready → auto img
+    assert project.status is not ProjectStatus.image_prompts_ready
+    assert project.status is not ProjectStatus.generating_images
 
 
 @pytest.mark.asyncio
