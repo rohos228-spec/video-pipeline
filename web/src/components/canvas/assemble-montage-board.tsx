@@ -970,8 +970,29 @@ export function AssembleMontageBoard({
     // Не долбить API+ffprobe при каждом открытии панели (150+ клипов).
     refetchOnMount: false,
     staleTime: 60_000,
-    placeholderData: (prev) => prev,
+    // НЕ placeholderData/keepPreviousData: иначе очередь/кадры чужого проекта
+    // остаются на кнопке «Применить правки» при переключении.
   });
+
+  // Сброс локальной очереди при смене проекта (даже если key сменился снаружи).
+  useEffect(() => {
+    setPendingOps([]);
+    pendingOpsRef.current = [];
+    localQueueDirtyRef.current = false;
+    trimsDirtyRef.current = false;
+    submittedApplyRef.current = false;
+    applySeenRunningRef.current = false;
+    setTrims({});
+    setHighlights([]);
+    setStaleVideos([]);
+    setApplyRunning(false);
+    setApplyProgress(null);
+    setMontageRunning(false);
+    setRecoverRunning(false);
+    setPromptModal(null);
+    setPreview(null);
+    lastApplyToastKeyRef.current = "";
+  }, [projectId]);
 
   // Прогрев «Доп. функции» — getProject не блокирует первый клик.
   useEffect(() => {
@@ -1030,6 +1051,9 @@ export function AssembleMontageBoard({
 
     if (applyRunning) return;
 
+    // Данные доски должны быть от текущего projectId (не stale кэш чужого).
+    if (board.data == null) return;
+
     const restored = parsePendingOps(meta?.pending_ops);
     if (localQueueDirtyRef.current && restored.length === 0) {
       // Локальная очередь пользователя важнее пустого meta.
@@ -1041,6 +1065,8 @@ export function AssembleMontageBoard({
     setPendingOps(restored);
     localQueueDirtyRef.current = false;
   }, [
+    projectId,
+    board.data,
     board.dataUpdatedAt,
     board.isFetching,
     frames.length,
