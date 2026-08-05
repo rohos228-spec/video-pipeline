@@ -32,10 +32,31 @@ def test_parse_img_pr_ops_wraps_style() -> None:
     assert "Final style lock" in body
 
 
-def test_199_frames_is_five_batches_not_thirty_four() -> None:
+def test_199_frames_batch_count_under_ten() -> None:
     chunks = ipb.chunk_frames(list(range(199)))
-    assert len(chunks) == 5
-    assert len(chunks) < 10
+    assert len(chunks) == 8  # 25/batch
+    assert all(len(c) <= 25 for c in chunks)
+    assert len(chunks) < 12
+
+
+def test_salvage_broken_json_персонажи_outside_fields() -> None:
+    # Битый ответ: лишняя } и персонажи вне fields (как в проде).
+    reply = (
+        '{"ops":['
+        '{"frame_uuid":"aaaaaaaaaaaaaaaaaaaaaaaa","fields":{"промт_картинки":"Background: a"},'
+        '"персонажи":"c01"}},'
+        '{"frame_uuid":"bbbbbbbbbbbbbbbbbbbbbbbb","fields":{"промт_картинки":"Action: b"}}'
+        "]}"
+    )
+    from app.services.db_apply import extract_apply_ops_json
+
+    assert extract_apply_ops_json(reply) is None
+    ops = ipb.parse_img_pr_ops(reply, wrap_style=False)
+    assert len(ops) >= 2
+    assert {ipb.uuid_of_op(o) for o in ops} >= {
+        "aaaaaaaaaaaaaaaaaaaaaaaa",
+        "bbbbbbbbbbbbbbbbbbbbbbbb",
+    }
 
 
 def test_checkpoint_roundtrip(tmp_path: Path) -> None:

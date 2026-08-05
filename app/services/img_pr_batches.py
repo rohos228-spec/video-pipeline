@@ -6,25 +6,32 @@ STYLE LOCK вшивает пайплайн (`img_pr_style`) — GPT пишет �
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 from app.services.db_apply import extract_apply_ops_json
 from app.services.img_pr_style import wrap_ops_styles
 
-# Сцена без STYLE ~0.5–1.5k → 40 кадров нормально влезают в ответ.
-_FRAMES_PER_BATCH = 40
+# Меньше кадров → меньше битого JSON (лишние } / персонажи вне fields).
+_FRAMES_PER_BATCH = 25
 _CHECKPOINT_NAME = "img_pr_checkpoint.json"
-_GPT_ATTEMPTS = 2
+_GPT_ATTEMPTS = 3
 
 _BATCH_FOOTER = """
 # BATCH {batch_i}/{batch_n} — только эти {n} кадров из db_frames.json
-Верни ТОЛЬКО JSON:
-{{"ops":[{{"frame_uuid":"<uuid>","fields":{{"промт_картинки":"…","промт_картинки_2":"…","персонажи":"c01"}}}}]}}
+Верни ТОЛЬКО валидный JSON (без markdown, без прозы):
+{{"ops":[{{"frame_uuid":"<uuid>","fields":{{"промт_картинки":"…","персонажи":"c01"}}}}]}}
+
+ЖЁСТКО:
+- `персонажи` ТОЛЬКО внутри `fields`, не рядом с frame_uuid;
+- в тексте промта НЕ используй символ ASCII двойной кавычки \"; пиши «ёлочки»;
+- ровно одна } на конец каждого op; не закрывай массив ops раньше времени;
+- один op на каждый uuid батча.
 
 В `промт_картинки` пиши ТОЛЬКО сцену (ref?/фон/действие/свет/accent/
 scene_sense/scene_feature/детали/место-время). НЕ копируй STYLE LOCK —
-пайплайн допишет стиль сам. Один op на каждый uuid батча. Без markdown.
+пайплайн допишет стиль сам.
 """.strip()
 
 _FOLLOWUP_MSG = """
@@ -84,6 +91,15 @@ def chunk_frames(frames: list[Any], *, size: int = _FRAMES_PER_BATCH) -> list[li
     return [frames[i : i + size] for i in range(0, len(frames), size)]
 
 
+_PROMPT_FIELD_KEYS = (
+    "промт_картинки",
+    "image_prompt",
+    "промпт_картинки",
+    "промт_картинки_2",
+    "image_prompt_shot2",
+)
+
+
 def filter_prompt_ops(ops: list[Any]) -> list[dict]:
     clean: list[dict] = []
     for op in ops:
@@ -91,28 +107,100 @@ def filter_prompt_ops(ops: list[Any]) -> list[dict]:
             continue
         if str(op.get("target") or "frame") not in {"frame", ""}:
             continue
-        fields = op.get("fields") or {}
-        if not isinstance(fields, dict):
+        raw_fields = op.get("fields")
+        if raw_fields is None:
+            fields = {}
+        elif isinstance(raw_fields, dict):
+            fields = dict(raw_fields)
+        else:
             continue
-        if not any(
-            k in fields
-            for k in (
-                "промт_картинки",
-                "image_prompt",
-                "промпт_картинки",
-                "промт_картинки_2",
-                "image_prompt_shot2",
-            )
-        ):
+        # Модель часто пишет персонажи рядом с fields — заберём внутрь.
+        for k in ("персонажи", "characters"):
+            if k in op and k not in fields and op.get(k) is not None:
+                fields[k] = op.get(k)
+        if not any(k in fields for k in _PROMPT_FIELD_KEYS):
+            # Иногда промт лежит на верхнем уровне op.
+            for k in _PROMPT_FIELD_KEYS:
+                if k in op and str(op.get(k) or "").strip():
+                    fields[k] = op.get(k)
+        if not any(k in fields for k in _PROMPT_FIELD_KEYS):
             continue
-        clean.append(op)
+        out = {**op, "fields": fields}
+        clean.append(out)
     return clean
+
+
+def _read_json_string(text: str, start: int) -> tuple[str, int] | None:
+    """Прочитать JSON-строку начиная с start (символ сразу после открывающей \")."""
+    if start < 0 or start > len(text):
+        return None
+    i = start
+    chars: list[str] = []
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\":
+            if i + 1 >= len(text):
+                return None
+            chars.append(text[i : i + 2])
+            i += 2
+            continue
+        if ch == '"':
+            # decode escapes via json
+            raw = '"' + "".join(chars) + '"'
+            try:
+                return json.loads(raw), i + 1
+            except Exception:  # noqa: BLE001
+                return "".join(chars), i + 1
+        chars.append(ch)
+        i += 1
+    return None
+
+
+def salvage_img_pr_ops(reply: str) -> list[dict]:
+    """Достать ops даже из битого JSON (лишние }, персонажи вне fields)."""
+    if not reply:
+        return []
+    ops: list[dict] = []
+    seen: set[str] = set()
+    for m in re.finditer(
+        r'"frame_uuid"\s*:\s*"([a-fA-F0-9]+)"',
+        reply,
+    ):
+        uuid = m.group(1).strip()
+        if not uuid or uuid in seen:
+            continue
+        window = reply[m.end() : m.end() + 12000]
+        pm = re.search(
+            r'"промт_картинки"\s*:\s*"',
+            window,
+        ) or re.search(
+            r'"image_prompt"\s*:\s*"',
+            window,
+        )
+        if not pm:
+            continue
+        read = _read_json_string(window, pm.end())
+        if not read:
+            continue
+        prompt, after = read
+        if not str(prompt).strip():
+            continue
+        fields: dict[str, Any] = {"промт_картинки": prompt}
+        rest = window[after : after + 200]
+        ch = re.search(r'"персонажи"\s*:\s*"([^"]*)"', rest)
+        if ch:
+            fields["персонажи"] = ch.group(1)
+        ops.append({"frame_uuid": uuid, "fields": fields})
+        seen.add(uuid)
+    return ops
 
 
 def parse_img_pr_ops(reply: str, *, wrap_style: bool = True) -> list[dict]:
     data = extract_apply_ops_json(reply or "")
     ops = list((data or {}).get("ops") or []) if isinstance(data, dict) else []
     clean = filter_prompt_ops(ops)
+    if not clean:
+        clean = filter_prompt_ops(salvage_img_pr_ops(reply or ""))
     if wrap_style:
         return wrap_ops_styles(clean)
     return clean
