@@ -22,8 +22,9 @@ def test_expand_binds_by_words_and_maps_one_shot_per_frame() -> None:
             "start_words": "Утром метро",
             "end_words": "мимо пакета",
             "место": "метро Токио",
+            "освещение": "холодный fluorescent сверху",
             "структура_сцены": "continuity",
-            "смысл_сцены": "посев угрозы",
+            "смысл_сцены": "пакет лежит у двери вагона",
             "акцент": "НЕ клонировать на все кадры",
             "shots": [
                 {
@@ -32,6 +33,8 @@ def test_expand_binds_by_words_and_maps_one_shot_per_frame() -> None:
                     "действие": "поток людей в вагоне",
                     "описание_кадра": "общий план вагона",
                     "особенность_сцены": "Общий план локации",
+                    "фон": "серые панели и поручни",
+                    "освещение": "холодный fluorescent сверху",
                 },
                 {
                     "id_shot": "shot_02",
@@ -39,6 +42,8 @@ def test_expand_binds_by_words_and_maps_one_shot_per_frame() -> None:
                     "действие": "камера на пакете",
                     "описание_кадра": "insert пакета",
                     "особенность_сцены": "Деталь объекта",
+                    "фон": "серые панели и поручни — в кадре пол",
+                    "освещение": "холодный fluorescent сверху",
                 },
             ],
         }
@@ -47,9 +52,13 @@ def test_expand_binds_by_words_and_maps_one_shot_per_frame() -> None:
     assert n == 3
     assert frames[0].attrs["shot01_id_scene"] == "scene_01"
     assert frames[0].attrs["place"] == "метро Токио"
+    assert frames[0].attrs["scene_lighting"] == "холодный fluorescent сверху"
+    assert frames[0].attrs["lighting"] == "холодный fluorescent сверху"
+    assert frames[0].attrs["shot01_bg"] == "серые панели и поручни"
     assert frames[0].attrs["shot01_action"] == "поток людей в вагоне"
     assert frames[0].attrs["accent"] == "поток у дверей"
     assert frames[1].attrs["accent"] == "пакет у порога"
+    assert frames[1].attrs["lighting"] == "холодный fluorescent сверху"
     assert frames[1].attrs["shot01_action"] == "камера на пакете"
     # 3-й кадр в сцене, shots только 2 → scene-level без клона действия/акцента
     assert frames[2].attrs["place"] == "метро Токио"

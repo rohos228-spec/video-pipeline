@@ -178,6 +178,10 @@ FIELD_ALIASES: dict[str, str] = {
     "следующий_кадр": "shot01_next",
     "shot01_bg": "shot01_bg",
     "фон": "shot01_bg",
+    "lighting": "lighting",
+    "освещение": "lighting",
+    "scene_lighting": "scene_lighting",
+    "освещение_сцены": "scene_lighting",
     "shot01_props": "shot01_props",
     "предметы": "shot01_props",
     "shot01_action": "shot01_action",
@@ -345,6 +349,9 @@ def _normalize_scene_card(raw: dict[str, Any]) -> dict[str, Any]:
             or ""
         ).strip(),
         "место": str(raw.get("место") or raw.get("place") or "").strip(),
+        "освещение": str(
+            raw.get("освещение") or raw.get("lighting") or raw.get("scene_lighting") or ""
+        ).strip(),
         "акцент": str(raw.get("акцент") or raw.get("accent") or "").strip(),
         "смысл_сцены": str(
             raw.get("смысл_сцены") or raw.get("scene_sense") or ""
@@ -499,6 +506,12 @@ def expand_scene_registry_onto_frames(
                 ("visual_type", sc.get("тип_сцены") or sc.get("visual_type")),
                 ("cluster", sc.get("номер_кластера") or sc.get("cluster")),
                 (
+                    "scene_lighting",
+                    sc.get("освещение")
+                    or sc.get("lighting")
+                    or sc.get("scene_lighting"),
+                ),
+                (
                     "scene_structure",
                     sc.get("структура_сцены") or sc.get("scene_structure"),
                 ),
@@ -531,6 +544,13 @@ def expand_scene_registry_onto_frames(
                     or sh.get("действие")
                     or ""
                 )
+                shot_lighting = (
+                    sh.get("освещение")
+                    or sh.get("lighting")
+                    or sc.get("освещение")
+                    or sc.get("lighting")
+                    or ""
+                )
                 for key, src in (
                     ("scene_feature", sh.get("особенность_сцены") or sh.get("ракурс")),
                     ("shot01_action", sh.get("действие") or sh.get("action")),
@@ -540,6 +560,8 @@ def expand_scene_registry_onto_frames(
                     ),
                     ("shot01_transition", sh.get("логика_перехода")),
                     ("shot01_bg", sh.get("фон")),
+                    ("lighting", shot_lighting),
+                    ("shot01_notes", shot_lighting),
                     ("shot01_props", sh.get("предметы")),
                     ("main_action", sh.get("главное_действие")),
                     ("accent", shot_accent),
@@ -567,13 +589,13 @@ def expand_scene_registry_onto_frames(
 
 
 # Shot-level attrs, которые нельзя массово копировать со сцены на кадры.
+# Не включать shot01_bg / lighting / shot01_notes: одинаковый фон/свет
+# на соседних кадрах одного места — это правильная continuity, не клон-баг.
 _SHOT_DETAIL_ATTR_KEYS = (
     "shot01_action",
     "shot01_description",
-    "shot01_bg",
     "shot01_props",
     "shot01_transition",
-    "shot01_notes",
     "main_action",
     "scene_feature",
     "accent",
