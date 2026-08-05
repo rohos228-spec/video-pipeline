@@ -49,6 +49,18 @@ def _needs_check_writeback_retry(reply_text: str) -> bool:
     return not extract_sheet_blocks(wb or text)
 
 
+def _apply_ops_has_payload(data: dict | None) -> bool:
+    """Есть что писать в DB (не пустой отказ модели)."""
+    if not isinstance(data, dict):
+        return False
+    return bool(
+        data.get("ops")
+        or data.get("actions")
+        or data.get("characters")
+        or data.get("scenes")
+    )
+
+
 def _stub_analysis(*, role: str, prompt: str, accompanying: str) -> CheckAnalysis:
     """Детерминированный stub-вердикт в формате vp.check.v1."""
     probe = f"{prompt}\n{accompanying}\n".lower()
@@ -275,27 +287,43 @@ async def _run_operator_api_real(
     if check_mode and check_fix:
         accomp = build_api_accompany(accomp, expect_xlsx_writeback=True)
 
+    xlsx_contract = (
+        "apply_ops"
+        if effective_output == "project_file" and not is_check
+        else "tsv"
+    )
     result = await chat(
         prompt=prompt_for_model,
         accompanying=accomp,
         input_paths=list(input_paths),
         temperature=0.0 if is_check else None,
+        xlsx_write_contract=xlsx_contract,
     )
     reply_text = result.text
 
-    # DB SoT: project_file → только apply-ops JSON (ops / characters).
+    # DB SoT: project_file → только apply-ops JSON (ops / characters / scenes).
     apply_ops: dict | None = None
     if effective_output == "project_file" and not is_check:
         from app.services.db_apply import extract_apply_ops_json
 
         apply_ops = extract_apply_ops_json(reply_text or "")
-        if apply_ops is not None:
+        if apply_ops is not None and not _apply_ops_has_payload(apply_ops):
+            # Модель вернула {"ops":[],"error":"нет xlsx"} — это НЕ успех.
+            logger.warning(
+                "gpt_operator/api: project_file node={} — пустой apply-ops "
+                "(error/report={})",
+                node_key,
+                str(apply_ops.get("error") or apply_ops.get("report") or "")[:160],
+            )
+            apply_ops = None
+        elif apply_ops is not None:
             logger.info(
                 "gpt_operator/api: project_file node={} — apply-ops JSON "
-                "(ops={}, characters={}), запись через DB",
+                "(ops={}, characters={}, scenes={}), запись через DB",
                 node_key,
                 len(apply_ops.get("ops") or []),
                 len(apply_ops.get("characters") or []),
+                len(apply_ops.get("scenes") or []),
             )
 
     # check+fix: если модель отказалась из‑за «нет project.xlsx» / нет
@@ -318,6 +346,7 @@ async def _run_operator_api_real(
             accompanying=accomp,
             input_paths=list(input_paths),
             temperature=0.0,
+            xlsx_write_contract="tsv",
         )
         reply_text = result.text
 
@@ -383,20 +412,21 @@ async def _run_operator_api_real(
         retry_prompt = (
             f"{prompt_for_model}\n\n"
             "# КОНТРАКТ ЗАПИСИ В БАЗУ (повтор, обязателен)\n"
-            "Предыдущий ответ ОТКЛОНЁН: нужен JSON apply-ops, не TSV и не проза.\n"
-            "Верни ТОЛЬКО один JSON-объект:\n"
-            '{"ops":[{"frame_uuid":"<uuid>","fields":{"закадр":"…"}}]}\n'
-            "или с реестром персонажей:\n"
-            '{"characters":[{"id":"c01","имя":"…","внешность":"…","одежда":"…",'
-            '"характер":"…","правила":""}],'
-            '"ops":[{"frame_uuid":"…","fields":{"персонажи":"c01"}}]}\n'
-            "Без markdown, без объяснений."
+            "Предыдущий ответ ОТКЛОНЁН: нужен JSON apply-ops с данными, "
+            "не TSV, не проза, не пустые списки, не отказ про project.xlsx.\n"
+            "Бинарный xlsx НЕ НУЖЕН — источник правды DB / снимок вложений.\n"
+            "Верни ТОЛЬКО один JSON-объект с непустыми полями:\n"
+            '{"characters":[...],"scenes":[...],"ops":[...],"report":"..."}\n'
+            "или минимум:\n"
+            '{"ops":[{"frame_uuid":"<uuid>","fields":{"место":"…"}}]}\n'
+            "Без markdown, без объяснений, без error про недоступный xlsx."
         )
         retry = await chat(
             prompt=retry_prompt,
             accompanying=accomp,
             input_paths=list(input_paths),
             temperature=0.0,
+            xlsx_write_contract="apply_ops",
         )
         reply_text = retry.text or ""
         try:
@@ -407,6 +437,8 @@ async def _run_operator_api_real(
 
             result = SimpleNamespace(text=reply_text)
         apply_ops = extract_apply_ops_json(reply_text or "")
+        if apply_ops is not None and not _apply_ops_has_payload(apply_ops):
+            apply_ops = None
         if apply_ops is None:
             logger.warning(
                 "gpt_operator/api: project_file всё ещё без apply-ops node={}",
@@ -414,8 +446,8 @@ async def _run_operator_api_real(
             )
             raise RuntimeError(
                 "project_file: модель не вернула apply-ops JSON "
-                '{"ops":[…]} и/или {"characters":[…]}. '
-                "TSV `# Лист:` больше не принимается — пиши в базу через JSON."
+                '{"ops":[…]} / {"characters":[…]} / {"scenes":[…]}. '
+                "TSV `# Лист:` и отказ «нет xlsx» больше не принимаются."
             )
 
     if effective_output == "sidecar":

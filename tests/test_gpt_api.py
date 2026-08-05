@@ -252,6 +252,24 @@ def test_xlsx_to_text(tmp_path: Path) -> None:
     assert "xlsx text-export" in text
     assert "@row=1" in text
     assert "@row=2" in text
+    assert "# Лист:" in text or "для записи верни" in text
+
+
+def test_xlsx_to_text_apply_ops_contract_forbids_tsv_refusal(tmp_path: Path) -> None:
+    """project_file/DB SoT: баннер не толкает модель в отказ «нет xlsx» / TSV."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "план"
+    ws["C49"] = "закадр"
+    p = tmp_path / "project.xlsx"
+    wb.save(p)
+    text = xlsx_to_text(p, write_contract="apply_ops")
+    assert "DB SoT" in text
+    assert "apply-ops" in text.lower() or "JSON" in text
+    assert "ЗАПРЕЩЕНО" in text
+    assert "верни `# Лист:`" not in text
 
 
 def test_xlsx_to_text_sparse_rows_keep_excel_numbers(tmp_path: Path) -> None:

@@ -167,12 +167,15 @@ def xlsx_to_text(
     max_rows: int = _XLSX_DEFAULT_MAX_ROWS,
     max_cols: int = _XLSX_DEFAULT_MAX_COLS,
     max_chars: int | None = None,
+    write_contract: str = "tsv",
 ) -> str:
     """Свернуть xlsx в читаемый TSV-контекст (непустые строки листов).
 
     Приоритетные листы («Общий план») идут первыми.
     На листе «план» сначала пинятся R15/R45–50/R48/R64, затем остаток бюджета.
-    Обрезка ≠ «нет файла» — баннер ниже обязан это сказать модели.
+    ``write_contract``:
+      - ``tsv`` — check/fix: правки через `# Лист:` (legacy);
+      - ``apply_ops`` — DB SoT: запрет TSV, ответ только JSON apply-ops.
     """
     budget = _XLSX_CONTEXT_MAX_CHARS if max_chars is None else max(4_000, int(max_chars))
     try:
@@ -184,14 +187,25 @@ def xlsx_to_text(
     except Exception as e:  # noqa: BLE001
         return f"[xlsx: не удалось открыть {path.name}: {e}]"
     sheets = sorted(list(wb.worksheets), key=lambda ws: (_xlsx_sheet_priority(ws.title), ws.title))
-    out: list[str] = [
-        "[xlsx text-export: это текстовый снимок книги для API; "
-        "бинарный .xlsx в песочнице модели недоступен — это норма. "
-        "Обрезка по лимиту контекста ≠ отсутствие файла. "
-        "Проверяй и правь по TSV ниже; для записи верни `# Лист:` блоки. "
-        "Каждая строка начинается с `@row=<номер Excel>` — сохрани префикс, "
-        "чтобы запись попала в ту же строку шаблона (не уплотняй пустые ряды).]",
-    ]
+    if str(write_contract or "").strip().lower() == "apply_ops":
+        banner = (
+            "[xlsx text-export / DB SoT: снимок для чтения. "
+            "Источник правды — база (frame_uuid + attrs). "
+            "Бинарный .xlsx в песочнице API не нужен — НЕ отказывай из‑за «нет файла». "
+            "ЗАПРЕЩЕНО: TSV, `# Лист:`, `@row=`, отказ «project.xlsx недоступен». "
+            "Для записи верни ТОЛЬКО JSON apply-ops: "
+            '{"ops":[...],"characters":[...],"scenes":[...]} — без markdown.]'
+        )
+    else:
+        banner = (
+            "[xlsx text-export: это текстовый снимок книги для API; "
+            "бинарный .xlsx в песочнице модели недоступен — это норма. "
+            "Обрезка по лимиту контекста ≠ отсутствие файла. "
+            "Проверяй и правь по TSV ниже; для записи верни `# Лист:` блоки. "
+            "Каждая строка начинается с `@row=<номер Excel>` — сохрани префикс, "
+            "чтобы запись попала в ту же строку шаблона (не уплотняй пустые ряды).]"
+        )
+    out: list[str] = [banner]
     used = len(out[0])
     truncated_sheets: list[str] = []
     for ws in sheets:
@@ -428,7 +442,12 @@ def pdf_to_input_file_part(path: Path) -> dict[str, Any] | None:
     }
 
 
-def file_to_context(path: Path, *, max_chars: int = 60_000) -> str:
+def file_to_context(
+    path: Path,
+    *,
+    max_chars: int = 60_000,
+    xlsx_write_contract: str = "tsv",
+) -> str:
     """Текстовое представление файла для вложения в prompt (как attach в ChatGPT)."""
     import base64
 
@@ -436,7 +455,9 @@ def file_to_context(path: Path, *, max_chars: int = 60_000) -> str:
     if suffix in (".xlsx", ".xlsm", ".xls"):
         # Для книг — отдельный большой бюджет; max_chars не режем до 60k.
         xlsx_budget = max(max_chars, _XLSX_CONTEXT_MAX_CHARS)
-        body = xlsx_to_text(path, max_chars=xlsx_budget)
+        body = xlsx_to_text(
+            path, max_chars=xlsx_budget, write_contract=xlsx_write_contract
+        )
     elif suffix in _TEXT_SUFFIXES:
         try:
             body = path.read_text(encoding="utf-8", errors="replace")
@@ -603,6 +624,7 @@ def _compose_user_text(
     accompanying: str = "",
     text_paths: list[Path] | None = None,
     image_names: list[str] | None = None,
+    xlsx_write_contract: str = "tsv",
 ) -> str:
     parts: list[str] = []
     if (prompt or "").strip():
@@ -613,7 +635,9 @@ def _compose_user_text(
     if files:
         parts.append("## Приложенные файлы")
         for p in files:
-            parts.append(file_to_context(p))
+            parts.append(
+                file_to_context(p, xlsx_write_contract=xlsx_write_contract)
+            )
     if image_names:
         parts.append(
             "## Изображения (vision)\n"
@@ -674,6 +698,7 @@ def build_input(
     input_paths: list[Path] | None = None,
     system: str | None = None,
     history: list[dict[str, Any]] | None = None,
+    xlsx_write_contract: str = "tsv",
 ) -> list[dict[str, Any]]:
     """Ввод для Responses API: всегда input[] (kie.ai codex падает на голой строке).
 
@@ -691,6 +716,7 @@ def build_input(
         accompanying=accompanying,
         text_paths=text_paths,
         image_names=[p.name for p in images],
+        xlsx_write_contract=xlsx_write_contract,
     )
     if system:
         text = f"[Инструкция]\n{system}\n\n{text}"
@@ -764,6 +790,7 @@ def build_messages(
     input_paths: list[Path] | None = None,
     system: str | None = None,
     history: list[dict[str, Any]] | None = None,
+    xlsx_write_contract: str = "tsv",
 ) -> list[dict[str, Any]]:
     """Собрать messages для chat/completions (текст + optional vision + история)."""
     messages: list[dict[str, Any]] = []
@@ -778,6 +805,7 @@ def build_messages(
         accompanying=accompanying,
         text_paths=others,
         image_names=[p.name for p in images],
+        xlsx_write_contract=xlsx_write_contract,
     )
     if not images:
         messages.append({"role": "user", "content": text})
@@ -905,6 +933,7 @@ async def chat(
     temperature: float | None = None,
     timeout: float | None = None,
     max_retries: int | None = None,
+    xlsx_write_contract: str = "tsv",
 ) -> GptChatResult:
     """Вызвать текстовый LLM (kie GPT / TokenRouter Kimi) с ретраями."""
     headers = _headers()
@@ -930,6 +959,7 @@ async def chat(
                 input_paths=input_paths,
                 system=system,
                 history=history,
+                xlsx_write_contract=xlsx_write_contract,
             ),
             "stream": False,
         }
@@ -942,6 +972,7 @@ async def chat(
                 input_paths=input_paths,
                 system=system,
                 history=history,
+                xlsx_write_contract=xlsx_write_contract,
             ),
         }
     if temperature is not None:

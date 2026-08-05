@@ -94,6 +94,46 @@ async def test_project_file_tsv_rejected_retries_apply_ops(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_project_file_empty_ops_refusal_retries(tmp_path, monkeypatch) -> None:
+    """Пустой JSON с error про xlsx — не успех; retry должен запросить данные."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "план"
+    wb.save(tmp_path / "project.xlsx")
+    wb.close()
+
+    calls: list[str] = []
+    refusal = (
+        '{"ops":[],"characters":[],"error":'
+        '"Бинарный файл project.xlsx недоступен в рабочей среде"}'
+    )
+    ok = '{"ops":[{"frame_uuid":"u1","fields":{"место":"Веймар"}}]}'
+    monkeypatch.setattr("app.services.gpt_api.gpt_api_enabled", lambda: True)
+
+    async def fake_chat(**kw):
+        calls.append(kw.get("prompt") or "")
+        # Контракт xlsx для project_file — apply_ops, не tsv.
+        assert kw.get("xlsx_write_contract") == "apply_ops"
+        return SimpleNamespace(text=refusal if len(calls) == 1 else ok)
+
+    monkeypatch.setattr("app.services.gpt_api.chat", fake_chat)
+    monkeypatch.setattr("app.services.gpt_api.collect_result_urls", lambda text: [])
+
+    res = await goc.run_operator_api(
+        project_dir=tmp_path,
+        node_key="n_excel_gpt_1",
+        role="assist",
+        output_mode="project_file",
+        prompt="scene grammar",
+        accompanying="",
+        input_paths=[tmp_path / "project.xlsx"],
+    )
+    assert len(calls) == 2
+    assert res.apply_ops is not None
+    assert res.apply_ops["ops"][0]["fields"]["место"] == "Веймар"
+
+
+@pytest.mark.asyncio
 async def test_project_file_without_apply_ops_fails(tmp_path, monkeypatch) -> None:
     wb = Workbook()
     ws = wb.active

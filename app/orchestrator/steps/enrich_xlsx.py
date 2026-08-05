@@ -668,18 +668,66 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         raise_if_cancelled(project.id)
         # DB SoT: для project_file просим apply-ops JSON вместо TSV (+ uuid-мап).
         if output_mode == "project_file" and not check_mode:
+            import json as _json
+
             from sqlalchemy import select as _select
 
-            from app.services import db_v2
+            from app.services import db_apply, db_v2
 
             await db_v2.backfill_project_v2(session, project)
-            frames_for_map = (
-                await session.execute(
-                    _select(Frame)
-                    .where(Frame.project_id == project.id)
-                    .order_by(Frame.number)
+            frames_for_map = list(
+                (
+                    await session.execute(
+                        _select(Frame)
+                        .where(Frame.project_id == project.id)
+                        .order_by(Frame.number)
+                    )
+                ).scalars().all()
+            )
+            # Excel — только зеркало: перед GPT выгружаем attrs из DB в project.xlsx,
+            # иначе модель видит пустую книгу и отказывается («xlsx недоступен»).
+            try:
+                exported = db_apply.export_project_xlsx(project, frames_for_map)
+                logger.info(
+                    "[#{}] enrich_xlsx node={!r}: DB→xlsx перед GPT "
+                    "frames={} cells={}",
+                    project.id,
+                    node_key,
+                    exported.get("frames"),
+                    exported.get("cells"),
                 )
-            ).scalars().all()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[#{}] enrich_xlsx: DB→xlsx export failed: {}",
+                    project.id,
+                    e,
+                )
+            # Компактный снимок DB (SoT) — модель читает uuid/attrs, не Excel.
+            db_ctx = {
+                "source": "db_v2",
+                "project_id": project.id,
+                "slug": project.slug,
+                "frames": [
+                    {
+                        "number": fr.number,
+                        "uuid": fr.uuid,
+                        "voiceover_text": fr.voiceover_text or "",
+                        "meaning": fr.meaning or "",
+                        "attrs": fr.attrs or {},
+                    }
+                    for fr in frames_for_map
+                    if fr.uuid
+                ],
+            }
+            ctx_dir = project.data_dir / "excel_gpt_uploads" / str(node_key)
+            ctx_dir.mkdir(parents=True, exist_ok=True)
+            ctx_path = ctx_dir / "db_frames.json"
+            ctx_path.write_text(
+                _json.dumps(db_ctx, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            # DB-снимок первым во вложениях.
+            data_paths = [ctx_path, *[p for p in data_paths if p.resolve() != ctx_path.resolve()]]
             uuid_frames = [f for f in frames_for_map if f.uuid]
             mapping = ""
             if uuid_frames:
@@ -693,6 +741,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             # уходит в TSV/прозу и шаг падает).
             accompanying = (
                 f"{accompanying}\n\n{hint}{mapping}"
+            ).strip()
+            accompanying = (
+                f"{accompanying}\n\n"
+                "# DB SoT\n"
+                "Файл db_frames.json — кадры из базы (uuid + attrs). "
+                "Не отказывай из‑за «нет бинарного project.xlsx». "
+                "Пиши только JSON apply-ops в базу."
             ).strip()
             if scene_grammar:
                 vo_chunks = [
