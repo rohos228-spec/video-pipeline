@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from app.services.scene_grammar_batches import merge_scene_grammar_payloads
+from pathlib import Path
+
+from app.services.scene_grammar_batches import (
+    clear_scene_grammar_checkpoint,
+    load_scene_grammar_checkpoint,
+    merge_scene_grammar_payloads,
+    save_scene_grammar_checkpoint,
+    _scenes_need_shots,
+)
 
 
 def test_merge_fills_shots_into_outline_scenes() -> None:
@@ -57,3 +65,31 @@ def test_merge_fills_shots_into_outline_scenes() -> None:
     assert len(by["scene_01"]["shots"]) == 2
     assert by["scene_01"]["место"] == "метро"
     assert by["scene_02"]["shots"][0]["действие"] == "молитва"
+
+
+def test_checkpoint_roundtrip_and_need_shots(tmp_path: Path) -> None:
+    outline = {
+        "characters": [{"id": "c01"}],
+        "scenes": [
+            {"id_scene": "scene_01", "shots": []},
+            {"id_scene": "scene_02", "shots": []},
+        ],
+        "ops": [],
+    }
+    batch1 = {
+        "scenes": [
+            {
+                "id_scene": "scene_01",
+                "shots": [{"id_shot": "shot_01", "действие": "a"}],
+            }
+        ]
+    }
+    save_scene_grammar_checkpoint(tmp_path, [outline, batch1])
+    loaded = load_scene_grammar_checkpoint(tmp_path)
+    assert loaded is not None
+    assert len(loaded) == 2
+    merged = merge_scene_grammar_payloads(loaded)
+    need = _scenes_need_shots(merged["scenes"])
+    assert [s["id_scene"] for s in need] == ["scene_02"]
+    clear_scene_grammar_checkpoint(tmp_path)
+    assert load_scene_grammar_checkpoint(tmp_path) is None

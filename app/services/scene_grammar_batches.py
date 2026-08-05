@@ -2,6 +2,9 @@
 
 Модель может наплодить сколько угодно shots — пайплайн дробит приём
 по батчам сцен, пользователь не перезапускает ноду.
+
+Чекпоинт: после outline и каждого shot-батча пишем progress на диск.
+Soft retry / пустой ответ GPT → продолжаем с незакрытых сцен, не с нуля.
 """
 
 from __future__ import annotations
@@ -15,7 +18,10 @@ from loguru import logger
 from app.services.db_apply import extract_apply_ops_json
 from app.services.gpt_operator_client import OperatorApiResult, _apply_ops_has_payload
 
-_SCENES_PER_SHOT_BATCH = 3
+# Меньше сцен на вызов — меньше пустых обрывов GPT на длинных паспортах.
+_SCENES_PER_SHOT_BATCH = 2
+_CHECKPOINT_NAME = "scene_grammar_checkpoint.json"
+_GPT_JSON_ATTEMPTS = 3
 
 _OUTLINE_FOOTER = """
 # BATCH MODE — phase=outline (1/{total_hint})
@@ -124,6 +130,48 @@ def _scenes_need_shots(scenes: list[Any]) -> list[dict[str, Any]]:
     return need
 
 
+def _checkpoint_path(out_dir: Path) -> Path:
+    return out_dir / _CHECKPOINT_NAME
+
+
+def load_scene_grammar_checkpoint(out_dir: Path) -> list[dict[str, Any]] | None:
+    path = _checkpoint_path(out_dir)
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    parts = raw.get("parts") if isinstance(raw, dict) else None
+    if not isinstance(parts, list) or not parts:
+        return None
+    out: list[dict[str, Any]] = []
+    for p in parts:
+        if isinstance(p, dict) and (
+            isinstance(p.get("scenes"), list) or isinstance(p.get("characters"), list)
+        ):
+            out.append(p)
+    return out or None
+
+
+def save_scene_grammar_checkpoint(out_dir: Path, parts: list[dict[str, Any]]) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = _checkpoint_path(out_dir)
+    path.write_text(
+        json.dumps({"parts": parts}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def clear_scene_grammar_checkpoint(out_dir: Path) -> None:
+    path = _checkpoint_path(out_dir)
+    try:
+        if path.is_file():
+            path.unlink()
+    except OSError:
+        pass
+
+
 async def _gpt_apply_json(
     *,
     prompt: str,
@@ -132,40 +180,41 @@ async def _gpt_apply_json(
 ) -> dict[str, Any]:
     from app.services.gpt_api import chat
 
-    result = await chat(
-        prompt=prompt,
-        accompanying=accompanying,
-        input_paths=list(input_paths),
-        temperature=0.0,
-        xlsx_write_contract="apply_ops",
-    )
-    data = extract_apply_ops_json(result.text or "")
-    if data is not None and _apply_ops_has_payload(data):
-        return data
-    err = ""
-    if isinstance(data, dict):
-        err = str(data.get("error") or data.get("report") or "")[:240]
-    # один retry без «отказов»
-    retry_acc = (
-        f"{accompanying}\n\n"
-        "# ПОВТОР\n"
-        "Предыдущий ответ отклонён. Верни непустой JSON "
-        "{characters, scenes, ops, report}. "
-        f"Детали прошлого отказа (игнор если про объём): {err or 'пусто'}"
-    )
-    result2 = await chat(
-        prompt=prompt,
-        accompanying=retry_acc,
-        input_paths=list(input_paths),
-        temperature=0.0,
-        xlsx_write_contract="apply_ops",
-    )
-    data2 = extract_apply_ops_json(result2.text or "")
-    if data2 is not None and _apply_ops_has_payload(data2):
-        return data2
+    last_err = "пустой ответ"
+    acc = accompanying
+    for attempt in range(1, _GPT_JSON_ATTEMPTS + 1):
+        result = await chat(
+            prompt=prompt,
+            accompanying=acc,
+            input_paths=list(input_paths),
+            temperature=0.0,
+            xlsx_write_contract="apply_ops",
+        )
+        data = extract_apply_ops_json(result.text or "")
+        if data is not None and _apply_ops_has_payload(data):
+            return data
+        err = ""
+        if isinstance(data, dict):
+            err = str(data.get("error") or data.get("report") or "")[:240]
+        last_err = err or "пустой ответ"
+        logger.warning(
+            "scene_grammar batch: GPT JSON attempt {}/{} failed: {}",
+            attempt,
+            _GPT_JSON_ATTEMPTS,
+            last_err[:160],
+        )
+        if attempt >= _GPT_JSON_ATTEMPTS:
+            break
+        acc = (
+            f"{accompanying}\n\n"
+            "# ПОВТОР\n"
+            "Предыдущий ответ отклонён. Верни непустой JSON "
+            "{characters, scenes, ops, report}. "
+            f"Детали прошлого отказа (игнор если про объём): {last_err}"
+        )
     raise RuntimeError(
         "scene_grammar batch: GPT не вернул scenes/characters "
-        f"({err or 'пустой ответ'})"
+        f"({last_err})"
     )
 
 
@@ -179,7 +228,7 @@ async def run_scene_grammar_batched(
     project_id: int | None = None,
     scenes_per_batch: int = _SCENES_PER_SHOT_BATCH,
 ) -> OperatorApiResult:
-    """Outline всех сцен → батчи shots → один merge."""
+    """Outline всех сцен → батчи shots → один merge (с resume с чекпоинта)."""
     from app.services.step_cancel import raise_if_cancelled
 
     out_dir = project_dir / "excel_gpt_uploads" / str(node_key)
@@ -188,28 +237,54 @@ async def run_scene_grammar_batched(
     if project_id is not None:
         raise_if_cancelled(project_id)
 
-    logger.info(
-        "scene_grammar batch: node={} phase=outline start",
-        node_key,
-    )
-    outline_acc = f"{accompanying}\n\n{_OUTLINE_FOOTER.format(total_hint='N')}"
-    outline = await _gpt_apply_json(
-        prompt=master_prompt,
-        accompanying=outline_acc,
-        input_paths=input_paths,
-    )
-    parts: list[dict[str, Any]] = [outline]
-    scenes = list(outline.get("scenes") or [])
-    logger.info(
-        "scene_grammar batch: node={} outline scenes={} characters={}",
-        node_key,
-        len(scenes),
-        len(outline.get("characters") or []),
-    )
+    parts = load_scene_grammar_checkpoint(out_dir)
+    if parts:
+        merged_so_far = merge_scene_grammar_payloads(parts)
+        scenes_so_far = list(merged_so_far.get("scenes") or [])
+        still = _scenes_need_shots(scenes_so_far)
+        logger.info(
+            "scene_grammar batch: node={} resume checkpoint parts={} "
+            "scenes={} still_need_shots={}",
+            node_key,
+            len(parts),
+            len(scenes_so_far),
+            len(still),
+        )
+        outline = parts[0]
+        if not still and scenes_so_far:
+            merged = merged_so_far
+            # уже всё есть — сразу финал
+            return _finalize_batched(out_dir, node_key, parts, merged)
+        # база для батчей — актуальный merge (outline + готовые shots)
+        base_scenes = scenes_so_far
+        characters = list(merged_so_far.get("characters") or [])
+    else:
+        logger.info(
+            "scene_grammar batch: node={} phase=outline start",
+            node_key,
+        )
+        outline_acc = f"{accompanying}\n\n{_OUTLINE_FOOTER.format(total_hint='N')}"
+        try:
+            outline = await _gpt_apply_json(
+                prompt=master_prompt,
+                accompanying=outline_acc,
+                input_paths=input_paths,
+            )
+        except Exception:
+            raise
+        parts = [outline]
+        save_scene_grammar_checkpoint(out_dir, parts)
+        base_scenes = list(outline.get("scenes") or [])
+        characters = list(outline.get("characters") or [])
+        logger.info(
+            "scene_grammar batch: node={} outline scenes={} characters={}",
+            node_key,
+            len(base_scenes),
+            len(characters),
+        )
 
-    need = _scenes_need_shots(scenes)
-    # Если модель уже залила shots в outline — второй фазы нет.
-    if not need and scenes:
+    need = _scenes_need_shots(base_scenes)
+    if not need and base_scenes:
         logger.info(
             "scene_grammar batch: node={} shots уже в outline — skip shot-batches",
             node_key,
@@ -225,7 +300,7 @@ async def run_scene_grammar_batched(
             ids = [str(s.get("id_scene") or "") for s in batch]
             ids = [x for x in ids if x]
             stub = {
-                "characters": outline.get("characters") or [],
+                "characters": characters,
                 "scenes": batch,
             }
             footer = _SHOTS_FOOTER.format(
@@ -245,28 +320,44 @@ async def run_scene_grammar_batched(
                 batch_n,
                 ids,
             )
-            part = await _gpt_apply_json(
-                prompt=master_prompt,
-                accompanying=acc,
-                input_paths=input_paths,
-            )
+            try:
+                part = await _gpt_apply_json(
+                    prompt=master_prompt,
+                    accompanying=acc,
+                    input_paths=input_paths,
+                )
+            except Exception:
+                # частичный прогресс уже на диске — soft retry подхватит
+                save_scene_grammar_checkpoint(out_dir, parts)
+                raise
             parts.append(part)
+            save_scene_grammar_checkpoint(out_dir, parts)
 
     merged = merge_scene_grammar_payloads(parts)
+    return _finalize_batched(out_dir, node_key, parts, merged)
+
+
+def _finalize_batched(
+    out_dir: Path,
+    node_key: str,
+    parts: list[dict[str, Any]],
+    merged: dict[str, Any],
+) -> OperatorApiResult:
     reply_text = json.dumps(merged, ensure_ascii=False, indent=2)
     reply_path = out_dir / "gpt_reply.txt"
     reply_path.write_text(reply_text + "\n", encoding="utf-8")
     meta_path = out_dir / "scene_grammar_batches.json"
+    n_shots = sum(
+        len(s.get("shots") or [])
+        for s in (merged.get("scenes") or [])
+        if isinstance(s, dict)
+    )
     meta_path.write_text(
         json.dumps(
             {
                 "batches": len(parts),
                 "scenes": len(merged.get("scenes") or []),
-                "shots": sum(
-                    len(s.get("shots") or [])
-                    for s in (merged.get("scenes") or [])
-                    if isinstance(s, dict)
-                ),
+                "shots": n_shots,
                 "characters": len(merged.get("characters") or []),
             },
             ensure_ascii=False,
@@ -274,15 +365,12 @@ async def run_scene_grammar_batched(
         ),
         encoding="utf-8",
     )
+    clear_scene_grammar_checkpoint(out_dir)
     logger.info(
         "scene_grammar batch: node={} done scenes={} shots={} chars={}",
         node_key,
         len(merged.get("scenes") or []),
-        sum(
-            len(s.get("shots") or [])
-            for s in (merged.get("scenes") or [])
-            if isinstance(s, dict)
-        ),
+        n_shots,
         len(merged.get("characters") or []),
     )
     return OperatorApiResult(
