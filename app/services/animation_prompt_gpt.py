@@ -199,21 +199,24 @@ def build_batch_message(items: list[FrameImageBatchItem]) -> str:
 
 
 def build_batch_strip_path(items: list[FrameImageBatchItem], out_dir: Path) -> Path:
-    """Склеивает до BATCH_SIZE кадров в один PNG для ChatGPT."""
+    """Склеивает до BATCH_SIZE кадров в ленту для GPT vision.
+
+    Фактический суффикс — `.png` или `.jpg` (если PNG > STRIP_MAX_BYTES).
+    """
     from app.services.image_strip import compose_horizontal_strip
 
     if not items:
         raise ValueError("build_batch_strip_path: items пустой")
     numbers = "_".join(f"{it.frame.number:03d}" for it in items)
     out_path = out_dir / f"anim_pr_strip_{numbers}.png"
-    compose_horizontal_strip(
+    # compose_horizontal_strip может вернуть .jpg вместо запрошенного .png
+    return compose_horizontal_strip(
         [it.image_path for it in items],
         out_path,
         gutter_px=STRIP_GUTTER_PX,
         max_height=STRIP_MAX_HEIGHT_PX,
         max_bytes=STRIP_MAX_BYTES,
     )
-    return out_path
 
 
 def _plan_xlsx_exists(project: Project) -> bool:
