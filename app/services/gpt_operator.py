@@ -1174,22 +1174,25 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
         unique_files.append(f)
 
     check_mode = bool(cfg.get("checkMode"))
-    # project_file после check (OK): на стрелке часто только check_report /
-    # gpt_reply — модель не видит книгу и отвечает пустым apply-ops.
-    if output_mode == "project_file" and not check_mode:
-        has_xlsx = any(
-            str(f.get("name") or "").lower().endswith((".xlsx", ".xlsm", ".xls"))
-            and f.get("ok")
+    # project_file = DB SoT (apply-ops). Excel больше НЕ подставляем и не
+    # требуем: enrich_xlsx сам отдаёт db_frames.json. Иначе модель снова
+    # уходит в отказ «нет бинарного project.xlsx».
+    db_sot = output_mode == "project_file" and not check_mode
+    if db_sot:
+        before = len(unique_files)
+        unique_files = [
+            f
             for f in unique_files
-        )
-        if not has_xlsx:
-            xlsx = project.data_dir / "project.xlsx"
-            if xlsx.is_file() and xlsx.stat().st_size > 0:
-                unique_files.append(_file_probe(xlsx, origin="project"))
-                warnings.append(
-                    "project_file: на входе не было xlsx (часто после check) — "
-                    "подставлен project.xlsx"
-                )
+            if not str(f.get("name") or "").lower().endswith(
+                (".xlsx", ".xlsm", ".xls")
+            )
+        ]
+        dropped = before - len(unique_files)
+        if dropped:
+            warnings.append(
+                f"project_file/DB SoT: убрано xlsx со входа ({dropped}) — "
+                "пишем в базу через apply-ops"
+            )
 
     ok_files = [f for f in unique_files if f.get("ok")]
     for f in unique_files:
@@ -1248,8 +1251,13 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
                     )
 
     if not ok_files and role in ("assist", "transform", "extract", "review"):
-        # soft: assist без файлов — ошибка запуска
-        errors.append("нет ни одного существующего файла на входе")
+        if db_sot:
+            warnings.append(
+                "project_file/DB SoT: входных файлов нет — ок, будет db_frames.json"
+            )
+        else:
+            # soft: assist без файлов — ошибка запуска
+            errors.append("нет ни одного существующего файла на входе")
     elif not ok_files and check_mode:
         errors.append("нет ни одного существующего файла на входе")
 
@@ -1369,7 +1377,8 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
         "errors": errors,
         "warnings": warnings,
         "consistent": consistent,
-        "canRun": consistent and (len(ok_files) > 0 or role == "gate"),
+        "canRun": consistent
+        and (len(ok_files) > 0 or role == "gate" or db_sot),
         "lastResult": last,
         "config": {
             "role": role,

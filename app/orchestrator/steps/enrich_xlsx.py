@@ -587,7 +587,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             for f in (resolved.get("files") or [])
             if f.get("ok") and f.get("path")
         ]
-        if not data_paths:
+        # project_file / scene_grammar = DB SoT: файлы не обязательны.
+        output_mode_early = (
+            "text" if check_mode else str(resolved.get("outputMode") or "text")
+        )
+        scene_grammar_early = (not check_mode) and _is_scene_grammar_prompt(
+            variant, master
+        )
+        if (
+            not data_paths
+            and output_mode_early != "project_file"
+            and not scene_grammar_early
+        ):
             raise RuntimeError("gpt-operator: нет существующих файлов на входе")
 
         if check_mode and node_key:
@@ -691,26 +702,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     )
                 ).scalars().all()
             )
-            # Excel — только зеркало: перед GPT выгружаем attrs из DB в project.xlsx,
-            # иначе модель видит пустую книгу и отказывается («xlsx недоступен»).
-            try:
-                exported = db_apply.export_project_xlsx(project, frames_for_map)
-                logger.info(
-                    "[#{}] enrich_xlsx node={!r}: DB→xlsx перед GPT "
-                    "frames={} cells={}",
-                    project.id,
-                    node_key,
-                    exported.get("frames"),
-                    exported.get("cells"),
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "[#{}] enrich_xlsx: DB→xlsx export failed: {}",
-                    project.id,
-                    e,
-                )
-            # Компактный снимок DB (SoT). Для scene_grammar attrs не тащим —
-            # пишем с нуля; иначе раздуваем контекст и провоцируем отказ/524.
+            # Компактный снимок DB (SoT). Excel в GPT не отдаём вообще.
+            # scene_grammar: attrs не тащим — пишем с нуля.
             db_ctx = {
                 "source": "db_v2",
                 "project_id": project.id,
@@ -738,27 +731,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 _json.dumps(db_ctx, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            # DB-снимок первым. scene_grammar: без .xlsx во вложениях —
-            # имя project.xlsx + TSV `# Лист:` снова толкает модель в отказ
-            # «нет бинарного xlsx» (см. backend.log 14:17).
-            rest = [
-                p
-                for p in data_paths
-                if p.resolve() != ctx_path.resolve()
-                and not (
-                    scene_grammar
-                    and p.suffix.lower() in {".xlsx", ".xlsm", ".xls"}
-                )
-            ]
-            data_paths = [ctx_path, *rest]
-            if scene_grammar:
-                logger.info(
-                    "[#{}] enrich_xlsx node={!r}: scene_grammar — "
-                    "вложения без xlsx, files={}",
-                    project.id,
-                    node_key,
-                    [p.name for p in data_paths],
-                )
+            # Только DB-снимок. Никакого project.xlsx / check_report / мусора
+            # со стрелок — иначе модель снова думает про Excel.
+            data_paths = [ctx_path]
+            logger.info(
+                "[#{}] enrich_xlsx node={!r}: project_file/DB SoT — "
+                "только db_frames.json frames={}",
+                project.id,
+                node_key,
+                len(db_ctx["frames"]),
+            )
             uuid_frames = [f for f in frames_for_map if f.uuid]
             mapping = ""
             if uuid_frames:
@@ -777,8 +759,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 f"{accompanying}\n\n"
                 "# DB SoT\n"
                 "Файл db_frames.json — кадры из базы (uuid + voiceover). "
-                "Пайплайн сам запишет твой JSON в DB и обновит зеркало Excel. "
-                "Отвечай только JSON apply-ops; не проси вложений и не пиши TSV."
+                "Пайплайн сам запишет твой JSON в базу. "
+                "Excel не используется. Отвечай только JSON apply-ops."
             ).strip()
             if scene_grammar:
                 vo_chunks = [

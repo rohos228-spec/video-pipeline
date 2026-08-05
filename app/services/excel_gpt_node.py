@@ -521,6 +521,11 @@ def work_mode(project: Project, node_key: str | None) -> WorkMode:
 
 def expects_xlsx_result(project: Project, node_key: str | None) -> bool:
     """True — round-trip ждёт обновлённый .xlsx; False — достаточно ответа GPT."""
+    if node_key:
+        cfg = node_config(project, node_key)
+        # DB SoT: ответ = apply-ops JSON, не файл Excel.
+        if str(cfg.get("outputMode") or "").strip() == "project_file":
+            return False
     src = input_source(project, node_key)
     if src in ("image", "hero_refs", "scene_images", "voiceover"):
         return False
