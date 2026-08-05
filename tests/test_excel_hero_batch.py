@@ -11,10 +11,12 @@ from app.services.project_state import compute_actual_status
 
 
 def test_excel_batch_auto_flag() -> None:
-    p = Project(topic="t", slug="t", auto_mode=True, meta={})
+    """HITL снят: batch всегда, независимо от auto_mode/ai_control."""
+    p = Project(topic="t", slug="t", auto_mode=False, meta={"ai_control": True})
     assert generate_hero._excel_batch_auto(p) is True
-    p.meta = {"ai_control": True}
-    assert generate_hero._excel_batch_auto(p) is False
+    p.auto_mode = True
+    p.meta = {}
+    assert generate_hero._excel_batch_auto(p) is True
 
 
 def test_excel_ref_deps_batch_uses_generated() -> None:
@@ -85,8 +87,8 @@ async def test_compute_actual_status_partial_excel_hero() -> None:
         meta={
             "excel_hero": {
                 "characters": [
-                    {"id": "c01"},
-                    {"id": "c02"},
+                    {"id": "c01", "name": "A", "look": "лицо"},
+                    {"id": "c02", "name": "B", "look": "лицо"},
                 ]
             }
         },

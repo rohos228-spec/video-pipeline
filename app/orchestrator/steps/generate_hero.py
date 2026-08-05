@@ -25,6 +25,7 @@ prompts/04_hero_style/).
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from pathlib import Path
 
@@ -218,9 +219,12 @@ async def _excel_ids_with_artifact(
 
 
 def _excel_batch_auto(project: Project) -> bool:
-    """Пакетная генерация всех персонажей за один run() без HITL-пауз."""
-    meta = project.meta if isinstance(project.meta, dict) else {}
-    return bool(getattr(project, "auto_mode", False)) and not meta.get("ai_control")
+    """Всегда batch: HITL-одобрений персонажей больше нет.
+
+    Параллель = meta.outsee_streams / img_streams (см. ``_run_excel``).
+    """
+    _ = project
+    return True
 
 
 def _excel_ref_deps_met(
@@ -914,15 +918,46 @@ async def _run_excel(
     bot: Bot,
     cfg: dict,
 ) -> None:
-    """Excel-режим: генерирует персонажей из листа «Персонажи».
+    """Entity/Excel-режим: все персонажи за один run(), без HITL.
 
-    * auto_mode без ai_control — все персонажи за один run(), статус
-      остаётся `generating_hero` до конца (без отката recompute).
-    * иначе — по одному с HITL-паузой (`hero_ready` после каждого).
+    Параллель = ``meta.outsee_streams`` / ``img_streams`` (общий пул Outsee).
+    Реф-вариации ждут файл родителя, затем идут следующей волной.
     """
-    batch_auto = _excel_batch_auto(project)
+    from app.db import SessionLocal
+    from app.services.hero_check_regen import META_IDS, get_hero_check_regen_ids
+    from app.services.img_streams import get_img_streams
+    from app.services.step_cancel import raise_if_cancelled
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.check_analysis import normalize_hero_excel_id
+
+    batch_auto = True
+    streams = get_img_streams(project)
+    logger.info(
+        "[#{}] excel_hero: batch+parallel outsee_streams={} (без HITL)",
+        project.id,
+        streams,
+    )
+    if streams == 0:
+        chars0 = _excel_characters_from_meta(cfg)
+        generated0 = await _excel_ids_with_artifact(session, project)
+        missing = [c.id for c in chars0 if c.id not in generated0]
+        if missing:
+            raise RuntimeError(
+                f"outsee_streams=0: нет PNG у {missing[:12]}. "
+                "Поставь потоки 1..4 или положи файлы в characters/."
+            )
+        project.status = ProjectStatus.hero_ready
+        await session.flush()
+        return
+
+    project_id = int(project.id)
 
     while True:
+        raise_if_cancelled(project_id)
+        await session.refresh(project)
+        meta = dict(project.meta or {})
+        cfg = meta.get("excel_hero") or cfg
         chars = _excel_characters_from_meta(cfg)
         if not chars:
             logger.warning(
@@ -932,53 +967,40 @@ async def _run_excel(
             project.status = ProjectStatus.hero_ready
             return
 
-        approved = await _approved_excel_ids(session, project)
+        approved: set[str] = set()  # HITL снят — deps только по файлам
         generated = await _excel_ids_with_artifact(session, project)
-
-        from app.services.hero_check_regen import get_hero_check_regen_ids
-
         regen_ids = set(get_hero_check_regen_ids(project))
 
-        # «Все одобрены» только если у всех ещё есть файл (после wipe HITL
-        # может остаться, а PNG уже в old/ — иначе ложный hero_ready).
-        # Цикл check-regen: не пропускать — нужно перегенерить помеченных.
-        if (
-            not regen_ids
-            and all(ch.id in approved and ch.id in generated for ch in chars)
-        ):
+        if not regen_ids and all(ch.id in generated for ch in chars):
             logger.info(
-                "[#{}] excel_hero: все {} персонажей одобрены — hero_ready",
-                project.id, len(chars),
+                "[#{}] excel_hero: все {} PNG на диске — hero_ready",
+                project.id,
+                len(chars),
             )
             project.status = ProjectStatus.hero_ready
+            await session.flush()
             return
 
-        target: ExcelCharacter | None = None
+        ready: list[ExcelCharacter] = []
         skipped: list[ExcelCharacter] = []
         for ch in chars:
             if regen_ids and ch.id not in regen_ids:
                 continue
             has_file = ch.id in generated
             is_regen = await _is_regen_for_excel_id(session, project, ch.id)
-            # Цикл check→regen: всегда перегенерить помеченные, даже если PNG есть.
             if regen_ids and ch.id in regen_ids:
                 is_regen = True
-            # Approved/generated без файла после wipe — перегенерируем.
-            if ch.id in approved and has_file and not is_regen:
-                continue
-            if batch_auto and has_file and not is_regen:
+            if has_file and not is_regen:
                 continue
             if not _excel_ref_deps_met(
                 ch, approved=approved, generated=generated, batch_auto=batch_auto
             ):
                 skipped.append(ch)
                 continue
-            target = ch
-            break
+            ready.append(ch)
 
-        if target is None:
+        if not ready:
             if regen_ids and not skipped:
-                # Все помеченные уже обработаны (список пуст / файлы есть).
                 logger.info(
                     "[#{}] excel_hero: check-regen ids {} готовы — hero_ready",
                     project.id,
@@ -987,10 +1009,11 @@ async def _run_excel(
                 project.status = ProjectStatus.hero_ready
                 await session.flush()
                 return
-            if batch_auto and len(generated) >= len(chars):
+            if len(generated) >= len(chars):
                 logger.info(
                     "[#{}] excel_hero: batch — все {} артефактов на диске, hero_ready",
-                    project.id, len(chars),
+                    project.id,
+                    len(chars),
                 )
                 project.status = ProjectStatus.hero_ready
                 await session.flush()
@@ -998,10 +1021,9 @@ async def _run_excel(
             names = ", ".join(ch.id for ch in skipped)
             msg = (
                 f"🚫 Проект #{project.id} excel-hero: "
-                f"остались только персонажи с не-одобренными ссылками "
-                f"({names}). Проверь правила (R7) листа «Персонажи» — "
-                "возможно, циклическая ссылка или ссылка на несуществующий "
-                "ID. Статус откатил в <b>frames_ready</b>."
+                f"реф-зависимости не закрыты ({names}). "
+                "Проверь rules/правила (ссылки на cXX). "
+                "Статус откатил в <b>frames_ready</b>."
             )
             logger.error("[#{}] excel_hero deadlock: {}", project.id, names)
             project.status = ProjectStatus.frames_ready
@@ -1014,27 +1036,60 @@ async def _run_excel(
                 logger.warning("[#{}] не удалось отправить TG-deadlock", project.id)
             return
 
-        await _generate_one_excel_character(
-            session,
-            project,
-            bot,
-            target,
-            chars=chars,
-            approved=approved,
-            batch_auto=batch_auto,
+        batch = ready[: max(1, streams)]
+        logger.info(
+            "[#{}] excel_hero wave n={} ids={} (streams={})",
+            project.id,
+            len(batch),
+            [c.id for c in batch],
+            streams,
         )
 
-        # После успешного перегена — убрать id из списка.
-        if regen_ids and target.id in regen_ids:
-            from app.services.check_analysis import normalize_hero_excel_id
-            from app.services.hero_check_regen import META_IDS
-            from sqlalchemy.orm.attributes import flag_modified
+        # Отпустить write-txn на время параллельной генерации.
+        await session.commit()
 
+        async def _one(ch: ExcelCharacter) -> str:
+            async with SessionLocal() as s:
+                p = (
+                    await s.execute(select(Project).where(Project.id == project_id))
+                ).scalar_one()
+                p.status = ProjectStatus.generating_hero
+                await _generate_one_excel_character(
+                    s,
+                    p,
+                    bot,
+                    ch,
+                    chars=chars,
+                    approved=set(),
+                    batch_auto=True,
+                )
+                await s.commit()
+                return ch.id
+
+        results = await asyncio.gather(
+            *(_one(ch) for ch in batch), return_exceptions=True
+        )
+        errors = [r for r in results if isinstance(r, BaseException)]
+        ok_ids = [r for r in results if isinstance(r, str)]
+        for err in errors:
+            logger.error("[#{}] excel_hero wave error: {}", project_id, err)
+        if errors and not ok_ids:
+            await session.refresh(project)
+            project.status = ProjectStatus.frames_ready
+            await session.flush()
+            raise RuntimeError(
+                f"excel_hero: волна упала без успехов: {errors[0]!r}"
+            )
+
+        await session.refresh(project)
+        project.status = ProjectStatus.generating_hero
+
+        if regen_ids and ok_ids:
             meta_r = dict(project.meta or {})
             left = [
                 x
                 for x in (meta_r.get(META_IDS) or [])
-                if normalize_hero_excel_id(str(x)) != target.id
+                if normalize_hero_excel_id(str(x)) not in set(ok_ids)
             ]
             meta_r[META_IDS] = left
             project.meta = meta_r
@@ -1049,15 +1104,8 @@ async def _run_excel(
                 await session.flush()
                 return
 
-        await session.refresh(project)
-        # Missing refs / cancel / HITL-pause — не крутить while True.
         if project.status is not ProjectStatus.generating_hero:
             return
-        if not batch_auto:
-            return
-
-        meta = dict(project.meta or {})
-        cfg = meta.get("excel_hero") or cfg
 
 
 async def _generate_one_excel_character(
@@ -1218,10 +1266,13 @@ async def _generate_one_excel_character(
             project.image_generator, project.image_quality
         )
 
+        from app.services.img_streams import acquire_image_slot
+
         result = None
         if not used_refs and is_regen:
             try:
-                result = await outsee.regenerate_image(out_path)
+                async with acquire_image_slot():
+                    result = await outsee.regenerate_image(out_path)
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "[#{}] excel_hero {} «Повторить» упала ({}), fresh "
@@ -1231,22 +1282,23 @@ async def _generate_one_excel_character(
 
         if result is None:
             try:
-                result = await generate_image_with_retries(
-                    outsee, gpt,
-                    prompt=prompt_text,
-                    out_path=out_path,
-                    max_attempts_per_prompt=3,
-                    gpt_rewrite=not used_refs,
-                    aspect_ratio=HERO_ASPECT_RATIO,
-                    model_slug=img_gen.outsee_slug if img_gen else None,
-                    resolution=ir.outsee_slug if ir else None,
-                    quality=quality_slug,
-                    relax=HERO_RELAX,
-                    prompt_id_prefix=prompt_id_prefix,
-                    reference_image=(ref_paths or None) if used_refs else None,
-                    timeout=600,
-                    project_id=project.id,
-                )
+                async with acquire_image_slot():
+                    result = await generate_image_with_retries(
+                        outsee, gpt,
+                        prompt=prompt_text,
+                        out_path=out_path,
+                        max_attempts_per_prompt=3,
+                        gpt_rewrite=not used_refs,
+                        aspect_ratio=HERO_ASPECT_RATIO,
+                        model_slug=img_gen.outsee_slug if img_gen else None,
+                        resolution=ir.outsee_slug if ir else None,
+                        quality=quality_slug,
+                        relax=HERO_RELAX,
+                        prompt_id_prefix=prompt_id_prefix,
+                        reference_image=(ref_paths or None) if used_refs else None,
+                        timeout=600,
+                        project_id=project.id,
+                    )
             except OutseeImageError as e:
                 is_moderation = isinstance(e, OutseeContentRejectedError)
                 logger.error(
@@ -1300,59 +1352,19 @@ async def _generate_one_excel_character(
         meta=art_meta,
     )
     session.add(art)
-    if batch_auto:
-        project.status = ProjectStatus.generating_hero
-        await session.flush()
-        generated_now = await _excel_ids_with_artifact(session, project)
-        remaining_n = sum(
-            1
-            for c in chars
-            if c.id not in approved and c.id not in generated_now
-        )
-        logger.info(
-            "[#{}] excel_hero batch: {} → {} (осталось {})",
-            project.id, ch.id, file_path.name, remaining_n,
-        )
-        return
-
-    project.status = ProjectStatus.hero_ready
+    # Без HITL: всегда продолжаем batch/wave в _run_excel.
+    project.status = ProjectStatus.generating_hero
     await session.flush()
-
-    # HITL (ручной режим — по одному персонажу).
-    remaining = [c for c in chars if c.id not in approved and c.id != ch.id]
-    if remaining:
-        approve_hint = (
-            f"✅ — принять (осталось {len(remaining)}); "
-            "🔁 — перегенерить этого персонажа."
-        )
-    else:
-        approve_hint = (
-            "✅ — принять (это последний персонаж); "
-            "🔁 — перегенерить этого персонажа."
-        )
-    await send_hitl_photo(
-        bot, session, project,
-        kind=HITLKind.approve_hero,
-        photo_path=str(file_path),
-        caption=(
-            f"{prompt_id_prefix}\n"
-            f"Персонаж <b>{ch.id}</b> (из EXCEL).\n"
-            f"Стиль: {style_chosen}\n"
-            + (
-                f"Реф: {', '.join(ch.ref_ids)}\n"
-                if used_refs else
-                f"Промт: {ch.prompt_name or 'default'}\n"
-            )
-            + approve_hint
-        ),
-        payload={
-            "step": "hero",
-            "artifact_id": art.id,
-            "prompt_id_prefix": prompt_id_prefix,
-            "photo_path": str(file_path),
-            "excel_id": ch.id,
-            "excel_ref_ids": list(ch.ref_ids),
-            "excel_used_refs": used_refs,
-            "hero_style": style_chosen,
-        },
+    generated_now = await _excel_ids_with_artifact(session, project)
+    remaining_n = sum(1 for c in chars if c.id not in generated_now)
+    logger.info(
+        "[#{}] excel_hero batch: {} → {} (осталось {}, style={}, "
+        "batch_auto={}, approved={})",
+        project.id,
+        ch.id,
+        file_path.name,
+        remaining_n,
+        style_chosen,
+        batch_auto,
+        len(approved),
     )
