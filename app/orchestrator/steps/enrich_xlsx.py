@@ -57,6 +57,26 @@ _APPLY_OPS_HINT = (
     "Адресация кадров (номер = uuid):\n"
 )
 
+_SCENE_GRAMMAR_APPLY_HINT = (
+    "# SCENE GRAMMAR — ЗАПИСЬ\n"
+    "Верни ТОЛЬКО один JSON-объект (без markdown, без прозы):\n"
+    '{"characters":[...],"scenes":[...],"ops":[...],"report":"..."}\n'
+    "scenes[].start_words / end_words — дословные цитаты из ПОЛНОГО закадра.\n"
+    "Нельзя: 1 колонка Excel = 1 сцена; TSV; # Лист:; промт_картинки/промт_видео.\n"
+    "Пайплайн запишет characters + scenes + ops в DB (apply-ops).\n"
+    "Адресация кадров (номер = uuid):\n"
+)
+
+_SCENE_GRAMMAR_PROMPT_MARKERS = (
+    "scene_grammar_unified_agent",
+    "scene grammar unified",
+)
+
+
+def _is_scene_grammar_prompt(variant: str | None, master: str | None) -> bool:
+    blob = f"{variant or ''}\n{(master or '')[:400]}".casefold()
+    return any(m in blob for m in _SCENE_GRAMMAR_PROMPT_MARKERS)
+
 # Маппинг slot_idx (1..5) → (running_status, ready_status, step_code).
 _SLOT_MAP: dict[int, tuple[ProjectStatus, ProjectStatus, str]] = {
     1: (ProjectStatus.enriching_1, ProjectStatus.enrich_1_ready, "enrich_1"),
@@ -625,6 +645,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
         role = str(resolved.get("role") or "assist")
         output_mode = "text" if check_mode else str(resolved.get("outputMode") or "text")
+        scene_grammar = (not check_mode) and _is_scene_grammar_prompt(variant, master)
+        if scene_grammar and output_mode != "project_file":
+            logger.info(
+                "[#{}] enrich_xlsx node={!r}: scene_grammar → force "
+                "outputMode=project_file (было {!r})",
+                project.id,
+                node_key,
+                output_mode,
+            )
+            output_mode = "project_file"
         logger.info(
             "[#{}] enrich_xlsx API transport slot={} role={} checkMode={} "
             "output={} files={}",
@@ -656,11 +686,27 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 mapping = "\n".join(
                     f"кадр {f.number} = {f.uuid}" for f in uuid_frames
                 )
+            hint = (
+                _SCENE_GRAMMAR_APPLY_HINT if scene_grammar else _APPLY_OPS_HINT
+            )
             # Контракт apply-ops всегда — даже без uuid-мапы (иначе модель
             # уходит в TSV/прозу и шаг падает).
             accompanying = (
-                f"{accompanying}\n\n{_APPLY_OPS_HINT}{mapping}"
+                f"{accompanying}\n\n{hint}{mapping}"
             ).strip()
+            if scene_grammar:
+                vo_chunks = [
+                    (fr.voiceover_text or "").strip()
+                    for fr in frames_for_map
+                    if (fr.voiceover_text or "").strip()
+                ]
+                full_vo = (project.script_text or "").strip() or " ".join(vo_chunks)
+                if full_vo:
+                    accompanying = (
+                        f"{accompanying}\n\n"
+                        f"# ПОЛНЫЙ ЗАКАДР (для start_words/end_words)\n"
+                        f"{full_vo}"
+                    ).strip()
         # Отпустить SQLite write-txn на время GPT (иначе UI: database is locked / 30с).
         await session.commit()
         check_streams_n = None
@@ -695,7 +741,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 if isinstance(ops_data, dict)
                 else []
             )
-            if ops_data and (ops_list or chars_list):
+            scenes_list = (
+                list(ops_data.get("scenes") or [])
+                if isinstance(ops_data, dict)
+                else []
+            )
+            if ops_data and (ops_list or chars_list or scenes_list):
                 from app.services import db_apply
 
                 try:
@@ -704,16 +755,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         project,
                         ops_list,
                         characters=chars_list or None,
+                        scenes=scenes_list or None,
                         export_xlsx=bool(ops_data.get("export_xlsx", True)),
                     )
                     await session.commit()
                     logger.info(
                         "[#{}] enrich_xlsx node={}: apply-ops записано "
-                        "ops={} characters={} (DB→xlsx)",
+                        "ops={} characters={} scenes={} (DB→xlsx)",
                         project.id,
                         node_key,
                         applied.get("updated"),
                         applied.get("characters"),
+                        applied.get("scenes"),
                     )
                 except db_apply.ApplyOpsError as e:
                     # Ответ модели уже на диске — сохраняем в meta, иначе UI

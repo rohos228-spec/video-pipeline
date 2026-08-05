@@ -242,8 +242,9 @@ async def _apply_db_patch(
     if not patch:
         return False
     chars = patch.get("characters") if isinstance(patch.get("characters"), list) else None
+    scenes = patch.get("scenes") if isinstance(patch.get("scenes"), list) else None
     ops = patch.get("ops") if isinstance(patch.get("ops"), list) else None
-    if not chars and not ops:
+    if not chars and not ops and not scenes:
         return False
     from app.services.db_apply import ApplyOpsError, apply_ops
 
@@ -253,13 +254,15 @@ async def _apply_db_patch(
             project,
             list(ops or []),
             characters=list(chars) if chars else None,
+            scenes=list(scenes) if scenes else None,
             export_xlsx=True,
         )
         await session.flush()
         logger.info(
-            "[#{}] vision_check_loop: db_patch applied chars={} ops={}",
+            "[#{}] vision_check_loop: db_patch applied chars={} scenes={} ops={}",
             project.id,
             len(chars or []),
+            len(scenes or []),
             len(ops or []),
         )
         return True

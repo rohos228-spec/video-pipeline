@@ -44,6 +44,12 @@ ROW_SCENE_SENSE_V8 = 56
 ROW_VISUAL_TYPE_V8 = 57
 ROW_SCENE_FEATURE_V8 = 58
 ROW_CLUSTER_V8 = 59
+# Scene Grammar: структура/стык/переход + словесные границы сцены
+ROW_SCENE_STRUCTURE_V8 = 60
+ROW_EDIT_TYPE_V8 = 61
+ROW_SCENE_TRANSITION_V8 = 62
+ROW_SCENE_START_WORDS_V8 = 65
+ROW_SCENE_END_WORDS_V8 = 66
 
 # attr_key → номер строки Excel при экспорте
 _ATTR_EXCEL_ROWS: dict[str, int] = {
@@ -54,6 +60,11 @@ _ATTR_EXCEL_ROWS: dict[str, int] = {
     "visual_type": ROW_VISUAL_TYPE_V8,
     "scene_feature": ROW_SCENE_FEATURE_V8,
     "cluster": ROW_CLUSTER_V8,
+    "scene_structure": ROW_SCENE_STRUCTURE_V8,
+    "edit_type": ROW_EDIT_TYPE_V8,
+    "scene_transition": ROW_SCENE_TRANSITION_V8,
+    "scene_start_words": ROW_SCENE_START_WORDS_V8,
+    "scene_end_words": ROW_SCENE_END_WORDS_V8,
     # shot_01
     "shot01_id_scene": 2,
     "shot01_id_shot": 3,
@@ -140,6 +151,20 @@ FIELD_ALIASES: dict[str, str] = {
     "cluster": "cluster",
     "номер_кластера": "cluster",
     "кластер": "cluster",
+    # Scene Grammar (сцены по словам, не по столбцу)
+    "scene_structure": "scene_structure",
+    "структура_сцены": "scene_structure",
+    "edit_type": "edit_type",
+    "тип_стыка": "edit_type",
+    "scene_transition": "scene_transition",
+    "переход_в_кадр": "scene_transition",
+    "переход_в_сцену": "scene_transition",
+    "scene_start_words": "scene_start_words",
+    "сцена_start_words": "scene_start_words",
+    "start_words": "scene_start_words",
+    "scene_end_words": "scene_end_words",
+    "сцена_end_words": "scene_end_words",
+    "end_words": "scene_end_words",
     # shot_01
     "shot01_id_scene": "shot01_id_scene",
     "id_scene": "shot01_id_scene",
@@ -234,7 +259,7 @@ _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
 def extract_apply_ops_json(text: str) -> dict[str, Any] | None:
-    """Достать JSON с ``ops`` / ``characters`` из ответа модели."""
+    """Достать JSON с ``ops`` / ``characters`` / ``scenes`` из ответа модели."""
     if not text:
         return None
     candidates: list[str] = [m.group(1) for m in _JSON_FENCE_RE.finditer(text)]
@@ -244,6 +269,7 @@ def extract_apply_ops_json(text: str) -> dict[str, Any] | None:
             text.find('"ops"'),
             text.find('"actions"'),
             text.find('"characters"'),
+            text.find('"scenes"'),
         )
         if i != -1
     ]
@@ -270,9 +296,87 @@ def extract_apply_ops_json(text: str) -> dict[str, Any] | None:
             isinstance(data.get("ops"), list)
             or isinstance(data.get("actions"), list)
             or isinstance(data.get("characters"), list)
+            or isinstance(data.get("scenes"), list)
         ):
             return data
     return None
+
+
+def _normalize_scene_card(raw: dict[str, Any]) -> dict[str, Any]:
+    """Сцена из ответа агента → реестр (границы по словам, не по столбцу)."""
+    if not isinstance(raw, dict):
+        raise ApplyOpsError("scenes: каждый элемент — объект")
+    sid = str(
+        raw.get("id_scene") or raw.get("id") or raw.get("scene_id") or ""
+    ).strip()
+    if not sid:
+        raise ApplyOpsError("scenes: нужен id_scene")
+    start = str(
+        raw.get("start_words")
+        or raw.get("сцена_start_words")
+        or raw.get("scene_start_words")
+        or ""
+    ).strip()
+    end = str(
+        raw.get("end_words")
+        or raw.get("сцена_end_words")
+        or raw.get("scene_end_words")
+        or ""
+    ).strip()
+    if not start or not end:
+        raise ApplyOpsError(
+            f"scenes[{sid}]: нужны start_words и end_words (цитаты из полного закадра)"
+        )
+    shots = raw.get("shots")
+    if shots is not None and not isinstance(shots, list):
+        raise ApplyOpsError(f"scenes[{sid}]: shots должен быть списком")
+    return {
+        "id_scene": sid,
+        "start_words": start,
+        "end_words": end,
+        "структура_сцены": str(
+            raw.get("структура_сцены") or raw.get("scene_structure") or ""
+        ).strip(),
+        "тип_стыка": str(raw.get("тип_стыка") or raw.get("edit_type") or "").strip(),
+        "переход_в_сцену": str(
+            raw.get("переход_в_сцену")
+            or raw.get("переход_в_кадр")
+            or raw.get("scene_transition")
+            or ""
+        ).strip(),
+        "место": str(raw.get("место") or raw.get("place") or "").strip(),
+        "акцент": str(raw.get("акцент") or raw.get("accent") or "").strip(),
+        "смысл_сцены": str(
+            raw.get("смысл_сцены") or raw.get("scene_sense") or ""
+        ).strip(),
+        "тип_сцены": str(raw.get("тип_сцены") or raw.get("visual_type") or "").strip(),
+        "особенность_доминанта": str(
+            raw.get("особенность_доминанта")
+            or raw.get("особенность_сцены")
+            or raw.get("scene_feature")
+            or ""
+        ).strip(),
+        "номер_кластера": str(
+            raw.get("номер_кластера") or raw.get("cluster") or ""
+        ).strip(),
+        "персонажи_сцены": str(
+            raw.get("персонажи_сцены") or raw.get("characters") or ""
+        ).strip(),
+        "shots": list(shots or []),
+    }
+
+
+def upsert_scene_registry(project: Project, scenes: list[Any]) -> int:
+    """Сохранить реестр сцен в ``project.meta["scene_registry"]``."""
+    if not isinstance(scenes, list):
+        raise ApplyOpsError("scenes: нужен список")
+    if not scenes:
+        return 0
+    normalized = [_normalize_scene_card(s) for s in scenes]
+    meta = dict(project.meta or {})
+    meta["scene_registry"] = normalized
+    project.meta = meta
+    return len(normalized)
 
 
 def _normalize_character_card(raw: dict[str, Any]) -> dict[str, Any]:
@@ -520,12 +624,14 @@ async def apply_ops(
     ops: list[dict[str, Any]] | None = None,
     *,
     characters: list[Any] | None = None,
+    scenes: list[Any] | None = None,
     export_xlsx: bool = True,
 ) -> dict:
     """Применить JSON-операции к проекту (fail-closed, одна транзакция).
 
     ``ops`` — список ``{"target": "frame"|"project"|"replace_frames", ...}``.
     ``characters`` — реестр персонажей ``[{id, имя, внешность, …}]`` → Entity.
+    ``scenes`` — реестр сцен с ``start_words``/``end_words`` → meta.scene_registry.
     ``replace_frames``: ``{"target":"replace_frames","frames":[{"закадр":"…"},…]}``.
     После записи по умолчанию экспортируем в project.xlsx.
     """
@@ -538,9 +644,12 @@ async def apply_ops(
 
     ops = list(ops or [])
     chars_n = 0
+    scenes_n = 0
     if characters:
         chars_n = await upsert_characters(session, project, characters)
-    if not ops and not chars_n:
+    if scenes:
+        scenes_n = upsert_scene_registry(project, scenes)
+    if not ops and not chars_n and not scenes_n:
         raise ApplyOpsError("пустой ops — нечего применять")
     for op in ops:
         if op.get("target", "frame") not in TARGETS:
@@ -722,5 +831,6 @@ async def apply_ops(
         "ok": True,
         "updated": updated,
         "characters": chars_n,
+        "scenes": scenes_n,
         "exported": exported,
     }
