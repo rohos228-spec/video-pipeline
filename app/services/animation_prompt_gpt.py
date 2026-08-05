@@ -29,6 +29,7 @@ from app.storage.plan_sheet_v8 import (
     read_plan_animation_prompt_cells,
     read_plan_animation_prompt_shot2_cells,
     read_plan_voiceover,
+    read_plan_voiceover_cells,
     write_plan_animation_prompt_shot2,
 )
 
@@ -71,15 +72,40 @@ def _normalize_ws(s: str) -> str:
 
 def scene_image_path(project: Project, frame_number: int) -> Path | None:
     """Последний `scenes/frame_NNN_*.png` для кадра."""
+    return index_scene_image_paths(project).get(int(frame_number))
+
+
+def index_scene_image_paths(project: Project) -> dict[int, Path]:
+    """Один проход по ``scenes/`` → {номер кадра: newest png}.
+
+    Нельзя звать ``glob(frame_NNN_*)`` на каждый кадр — на 200 кадров это
+    секунды синка в event loop и «зависание» Studio во время anim_pr.
+    """
     scenes_dir = project.data_dir / "scenes"
-    if not scenes_dir.exists():
-        return None
-    candidates = sorted(
-        scenes_dir.glob(f"frame_{frame_number:03d}_*.png"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    return candidates[0] if candidates else None
+    if not scenes_dir.is_dir():
+        return {}
+    best: dict[int, tuple[float, Path]] = {}
+    for path in scenes_dir.glob("frame_*_*.png"):
+        # frame_003_abcd.png / frame_003_s2_abcd.png — shot1 = без _s2_
+        parts = path.stem.split("_")
+        if len(parts) < 3:
+            continue
+        if parts[0] != "frame":
+            continue
+        if len(parts) >= 4 and parts[2] == "s2":
+            continue
+        try:
+            num = int(parts[1])
+        except ValueError:
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        prev = best.get(num)
+        if prev is None or mtime > prev[0]:
+            best[num] = (mtime, path)
+    return {n: p for n, (_m, p) in best.items()}
 
 
 def image_id_for_frame(project: Project, frame: Frame, image_path: Path | None) -> str:
@@ -122,11 +148,34 @@ def build_initial_message(
 
 
 def voiceover_for_frame(project: Project, frame: Frame) -> str:
-    """Закадровый текст: только лист «план» R49 (одна ячейка = один кадр)."""
+    """Закадровый текст кадра.
+
+    Сначала DB (``Frame.voiceover_text``) — иначе каждый вызов открывает
+    весь ``project.xlsx`` (openpyxl + file lock) и на 200 кадров блокирует
+    event loop на минуты.
+    """
+    db_vo = (frame.voiceover_text or "").strip()
+    if db_vo:
+        return db_vo
     from_plan = read_plan_voiceover(project, frame.number)
     if from_plan:
         return from_plan.strip()
-    return (frame.voiceover_text or "").strip()
+    return ""
+
+
+def hydrate_voiceovers_from_plan(project: Project, frames: list[Frame]) -> int:
+    """Один проход R49 → пустые ``Frame.voiceover_text``. Возвращает число заполненных."""
+    need = [fr for fr in frames if not (fr.voiceover_text or "").strip()]
+    if not need:
+        return 0
+    cells = dict(read_plan_voiceover_cells(project, [fr.number for fr in need]))
+    n = 0
+    for fr in need:
+        text = (cells.get(fr.number) or "").strip()
+        if text:
+            fr.voiceover_text = text
+            n += 1
+    return n
 
 
 def build_batch_message(items: list[FrameImageBatchItem]) -> str:
@@ -293,9 +342,8 @@ def count_animation_prompt_stats(
         xlsx_filled = sum(
             1 for n in nums if len((cells.get(n) or "").strip()) >= MIN_ANIM_PROMPT_LEN
         )
-    with_image = sum(
-        1 for fr in frames if scene_image_path(project, fr.number) is not None
-    )
+    img_index = index_scene_image_paths(project)
+    with_image = sum(1 for fr in frames if fr.number in img_index)
     return ready, xlsx_filled, with_image
 
 
@@ -379,7 +427,7 @@ def collect_shot2_batch_items(
         img = scene_shot2_image_path(project, fr.number)
         if img is None:
             continue
-        vo = voiceover_for_frame(project, fr)
+        vo = (fr.voiceover_text or "").strip() or voiceover_for_frame(project, fr)
         out.append(
             FrameImageBatchItem(
                 frame=fr,
@@ -411,14 +459,15 @@ def collect_batch_items(
     frames: list[Frame],
 ) -> list[FrameImageBatchItem]:
     """Кадры с картинкой на диске и без animation_prompt (plan R48)."""
+    img_index = index_scene_image_paths(project)
     out: list[FrameImageBatchItem] = []
     for fr in frames:
         if has_animation_prompt_for_frame(project, fr):
             continue
-        img = scene_image_path(project, fr.number)
+        img = img_index.get(fr.number)
         if img is None:
             continue
-        vo = voiceover_for_frame(project, fr)
+        vo = (fr.voiceover_text or "").strip() or voiceover_for_frame(project, fr)
         out.append(
             FrameImageBatchItem(
                 frame=fr,

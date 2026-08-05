@@ -38,10 +38,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
     ).scalars().all()
 
-    for fr in frames:
-        vo = apg.voiceover_for_frame(project, fr)
-        if vo and not (fr.voiceover_text or "").strip():
-            fr.voiceover_text = vo
+    # Один проход R49 — НЕ voiceover_for_frame() на каждый кадр (openpyxl×N).
+    hydrated = apg.hydrate_voiceovers_from_plan(project, list(frames))
+    if hydrated:
+        logger.info(
+            "[#{}] anim_pr: voiceover из R49 → {} кадров",
+            project.id,
+            hydrated,
+        )
+        await session.flush()
 
     pending = apg.collect_batch_items(project, frames)
     pending_shot2 = apg.collect_shot2_batch_items(project, frames)
