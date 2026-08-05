@@ -33,7 +33,7 @@ from app.storage import for_project as _sheet_for_project
 
 # Должен совпадать со строкой 4 в web/STUDIO_VERSION. Если в логе make_plan
 # нет «xlsx_step_runners» — на диске старый make_plan.py (текст 30k в ask).
-XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v80-img-pr-apply-per-batch"
+XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v81-img-pr-apply-once"
 
 
 def _plan_empty_error(xlsx_path: Path, *, plan_len: int) -> RuntimeError:
@@ -694,34 +694,37 @@ async def run_img_pr_xlsx(
     done_uuids = list(ckpt.get("done_uuids") or [])
     all_ops: list[dict] = list(ckpt.get("ops") or [])
     done_set = set(done_uuids)
-    ops_applied_inline = False
 
-    # Чекпоинт с прошлым прогоном, но DB пустая — сразу влить в базу.
-    if all_ops:
-        await _apply_img_pr_ops_now(
-            project,
-            all_ops,
-            export_xlsx=True,
-            label="checkpoint_flush",
-        )
-        ops_applied_inline = True
-
-    # Source of truth после flush — кадры без image_prompt в DB.
-    frames, cards, general_plan = await _load_img_pr_context(project)
+    # НЕ пишем в DB по батчам (SQLite lock). Чекпоинт на диске → apply один раз в конце.
+    frames, cards, general_plan = await _load_img_pr_context(
+        project, skip_uuids=done_set or None
+    )
     if not frames:
-        logger.info(
-            "img_pr_db: resume — всё уже в DB (checkpoint ops={})",
-            len(all_ops),
-        )
-        return XlsxRoundtripResult(
-            reply_text="(already in DB)",
-            downloaded_path=proj_xlsx,
-            project_xlsx=proj_xlsx,
-            backup_path=None,
-            apply_ops=all_ops,
-            ops_applied_inline=True,
-        )
-    if not frames:
+        if all_ops:
+            logger.info(
+                "img_pr_db: checkpoint complete ops={} — apply once at end",
+                len(all_ops),
+            )
+            return XlsxRoundtripResult(
+                reply_text="(from checkpoint)",
+                downloaded_path=proj_xlsx,
+                project_xlsx=proj_xlsx,
+                backup_path=None,
+                apply_ops=all_ops,
+                ops_applied_inline=False,
+            )
+        # Уже всё в DB с прошлого успешного прогона.
+        frames_db, _, _ = await _load_img_pr_context(project)
+        if not frames_db:
+            logger.info("img_pr_db: nothing to do — all frames already have prompts")
+            return XlsxRoundtripResult(
+                reply_text="(already in DB)",
+                downloaded_path=proj_xlsx,
+                project_xlsx=proj_xlsx,
+                backup_path=None,
+                apply_ops=[],
+                ops_applied_inline=True,
+            )
         raise RuntimeError(
             "нет кадров без image_prompt для img_pr "
             f"(done_checkpoint={len(done_set)})"
@@ -746,7 +749,7 @@ async def run_img_pr_xlsx(
     gpt = get_gpt_client()
 
     async def _run_batches() -> None:
-        nonlocal done_uuids, all_ops, done_set, ops_applied_inline
+        nonlocal done_uuids, all_ops, done_set
         await gpt.new_conversation()
         history: list[dict[str, str]] = []
 
@@ -899,17 +902,10 @@ async def run_img_pr_xlsx(
             ipb.save_checkpoint(
                 project.data_dir, done_uuids=done_uuids, ops=all_ops
             )
-            # Сразу в DB — не ждать остальных батчей.
-            await _apply_img_pr_ops_now(
-                project,
-                batch_ops,
-                export_xlsx=True,
-                label=f"batch_{bi}/{batch_n}",
-            )
-            ops_applied_inline = True
             missing = expected - got_uuids
             logger.info(
-                "img_pr_db: batch {}/{} ops=+{} total={} missing={} DB=written",
+                "img_pr_db: batch {}/{} ops=+{} total={} missing={} "
+                "(checkpoint only, DB apply once at end)",
                 bi,
                 batch_n,
                 len(batch_ops),
@@ -925,14 +921,18 @@ async def run_img_pr_xlsx(
             'Нужен {"ops":[{"frame_uuid":"…","fields":{"промт_картинки":"…"}}]}'
         )
 
-    logger.info("img_pr_db: complete ops={} api_batches={}", len(all_ops), batch_n)
+    logger.info(
+        "img_pr_db: complete ops={} api_batches={} — single DB apply next",
+        len(all_ops),
+        batch_n,
+    )
     return XlsxRoundtripResult(
         reply_text="\n\n---\n\n".join(replies) if replies else "",
         downloaded_path=proj_xlsx,
         project_xlsx=proj_xlsx,
         backup_path=None,
         apply_ops=all_ops,
-        ops_applied_inline=ops_applied_inline,
+        ops_applied_inline=False,
     )
 
 

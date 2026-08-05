@@ -56,6 +56,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     cancelled = False
     last_err: Exception | None = None
+    # Отпустить write-txn на время GPT — иначе SQLite lock / UI 500.
+    await session.commit()
     for attempt in range(1, 3):
         try:
             raise_if_cancelled(project.id)
@@ -66,6 +68,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             cancelled = True
             break
         try:
+            from app.db import SessionLocal
             from app.services import db_apply, xlsx_step_runners as xsr
 
             result = await xsr.run_img_pr_xlsx(
@@ -77,18 +80,58 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             ops = list(result.apply_ops or [])
             if not ops and not result.ops_applied_inline:
                 raise RuntimeError("пустой apply-ops после GPT")
-            # Батчи уже пишут в DB сразу; здесь — только если runner не писал.
+            # Один apply в конце (не по батчам) — отдельная короткая сессия.
             if ops and not result.ops_applied_inline:
-                await db_apply.apply_ops(session, project, ops, export_xlsx=True)
-                await session.commit()
+                import asyncio
+
+                last_apply_err: Exception | None = None
+                for apply_try in range(1, 6):
+                    try:
+                        async with SessionLocal() as apply_session:
+                            proj = await apply_session.get(Project, project.id)
+                            if proj is None:
+                                raise RuntimeError(
+                                    "project gone during img_pr apply"
+                                )
+                            await db_apply.apply_ops(
+                                apply_session, proj, ops, export_xlsx=True
+                            )
+                            await apply_session.commit()
+                        last_apply_err = None
+                        break
+                    except Exception as apply_err:  # noqa: BLE001
+                        last_apply_err = apply_err
+                        msg = str(apply_err).lower()
+                        locked = (
+                            "database is locked" in msg
+                            or "database locked" in msg
+                        )
+                        if not locked or apply_try >= 5:
+                            raise
+                        wait_s = min(2 * apply_try, 10)
+                        logger.warning(
+                            "[#{}] img_pr final apply locked try {}/5 — sleep {}s",
+                            project.id,
+                            apply_try,
+                            wait_s,
+                        )
+                        await asyncio.sleep(wait_s)
+                if last_apply_err is not None:
+                    raise last_apply_err
+                logger.info(
+                    "[#{}] generate_image_prompts: single apply ops={}",
+                    project.id,
+                    len(ops),
+                )
             else:
-                await session.commit()
                 logger.info(
                     "[#{}] generate_image_prompts: ops уже в DB (inline), "
                     "пропуск повторного apply (ops={})",
                     project.id,
                     len(ops),
                 )
+            # Apply был в другой сессии — сбросить identity map.
+            session.expire_all()
 
             try:
                 from app.services.node_xlsx_snapshot import snapshot_and_bind_node_xlsx
@@ -103,7 +146,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     snap_err,
                 )
 
-            await session.refresh(project)
+            session.expire_all()
             frames = (
                 await session.execute(
                     select(Frame)
