@@ -60,12 +60,10 @@ _APPLY_OPS_HINT = (
 _SCENE_GRAMMAR_APPLY_HINT = (
     "# SCENE GRAMMAR — ЗАПИСЬ (v1.4, СЦЕНА = SoT)\n"
     "Верни ТОЛЬКО один JSON {characters, scenes, ops, report}.\n"
-    "Главное = scenes[]: полный паспорт сцены + shots[] по МОНТАЖУ "
-    "(переход, логика, окружение, персонажи, ракурс, видео-логика, смысл).\n"
-    "Число shots ≠ число колонок/uuid. Колонки закадра — только якоря "
-    "start_words/end_words. ops=[] нормально; пайплайн сам разложит сцену "
-    "на кадры по словам. Не пиши 199 ops и не отказывайся из‑за объёма.\n"
-    "Запрет: 1 колонка=1 сцена; TSV; промт_картинки/видео; error про объём/файл.\n"
+    "Главное = scenes[]: паспорт сцены + shots[] по МОНТАЖУ. "
+    "Сколько шотов нужно — столько и пиши (пайплайн сам дробит вызовы). "
+    "Колонки закадра — только якоря start_words/end_words, не число ops. "
+    "ops=[] нормально. Запрет: 1 колонка=1 сцена; TSV; error про объём/файл.\n"
 )
 
 _SCENE_GRAMMAR_PROMPT_MARKERS = (
@@ -783,19 +781,37 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             from app.services.check_streams import get_check_streams
 
             check_streams_n = get_check_streams(project)
-        api_res = await run_operator_api(
-            project_dir=project.data_dir,
-            node_key=node_key,
-            role=role,
-            output_mode=output_mode,
-            prompt=master or "",
-            accompanying=accompanying,
-            input_paths=data_paths,
-            check_mode=check_mode,
-            check_fix=check_fix,
-            source_prompt_keys=source_prompt_keys,
-            check_streams=check_streams_n,
-        )
+        if scene_grammar and output_mode == "project_file" and not check_mode:
+            from app.services.scene_grammar_batches import run_scene_grammar_batched
+
+            logger.info(
+                "[#{}] enrich_xlsx node={!r}: scene_grammar batched run "
+                "(1▶ → outline + shot-batches)",
+                project.id,
+                node_key,
+            )
+            api_res = await run_scene_grammar_batched(
+                project_dir=project.data_dir,
+                node_key=node_key,
+                master_prompt=master or "",
+                accompanying=accompanying,
+                input_paths=data_paths,
+                project_id=project.id,
+            )
+        else:
+            api_res = await run_operator_api(
+                project_dir=project.data_dir,
+                node_key=node_key,
+                role=role,
+                output_mode=output_mode,
+                prompt=master or "",
+                accompanying=accompanying,
+                input_paths=data_paths,
+                check_mode=check_mode,
+                check_fix=check_fix,
+                source_prompt_keys=source_prompt_keys,
+                check_streams=check_streams_n,
+            )
         await session.refresh(project)
         # После project_file: apply-ops JSON → DB (SoT); иначе legacy xlsx→DB sync.
         if output_mode == "project_file":
