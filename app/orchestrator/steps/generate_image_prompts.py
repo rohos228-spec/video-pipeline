@@ -75,10 +75,20 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 uuid_map_text=uuid_map,
             )
             ops = list(result.apply_ops or [])
-            if not ops:
+            if not ops and not result.ops_applied_inline:
                 raise RuntimeError("пустой apply-ops после GPT")
-            await db_apply.apply_ops(session, project, ops, export_xlsx=True)
-            await session.commit()
+            # Батчи уже пишут в DB сразу; здесь — только если runner не писал.
+            if ops and not result.ops_applied_inline:
+                await db_apply.apply_ops(session, project, ops, export_xlsx=True)
+                await session.commit()
+            else:
+                await session.commit()
+                logger.info(
+                    "[#{}] generate_image_prompts: ops уже в DB (inline), "
+                    "пропуск повторного apply (ops={})",
+                    project.id,
+                    len(ops),
+                )
 
             try:
                 from app.services.node_xlsx_snapshot import snapshot_and_bind_node_xlsx
