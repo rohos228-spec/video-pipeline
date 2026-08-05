@@ -113,16 +113,25 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 prompt_file.stat().st_size,
                 len(initial),
             )
-            initial_reply = await gpt.ask_anim_pr_initial(
-                initial,
-                prompt_file,
-                timeout=300,
-                project_id=project.id,
-            )
-            if not (initial_reply or "").strip():
+            try:
+                initial_reply = await gpt.ask_anim_pr_initial(
+                    initial,
+                    prompt_file,
+                    timeout=300,
+                    project_id=project.id,
+                )
+                if not (initial_reply or "").strip():
+                    logger.warning(
+                        "[#{}] anim_pr: пустой ответ на ФАЗУ 1 — всё равно шлём пачки фото",
+                        project.id,
+                    )
+            except Exception as e:  # noqa: BLE001
+                # kie 500 / сети — не валим весь шаг: master уже в файле,
+                # пачки vision несут контекст кадра.
                 logger.warning(
-                    "[#{}] anim_pr: пустой ответ на ФАЗУ 1 — всё равно шлём пачки фото",
+                    "[#{}] anim_pr: ФАЗА 1 упала ({}) — продолжаю пачки shot_01",
                     project.id,
+                    e,
                 )
             raise_if_cancelled(project.id)
         else:
