@@ -33,7 +33,7 @@ from app.storage import for_project as _sheet_for_project
 
 # Должен совпадать со строкой 4 в web/STUDIO_VERSION. Если в логе make_plan
 # нет «xlsx_step_runners» — на диске старый make_plan.py (текст 30k в ask).
-XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v78-img-pr-one-session"
+XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v79-img-pr-no-trim"
 
 
 def _plan_empty_error(xlsx_path: Path, *, plan_len: int) -> RuntimeError:
@@ -605,6 +605,7 @@ def _write_img_pr_db_frames_for(
     general_plan: str,
     *,
     batch_tag: str = "",
+    include_characters: bool = True,
 ) -> Path:
     import json
 
@@ -615,16 +616,23 @@ def _write_img_pr_db_frames_for(
         slug=project.slug or "",
         frames=frames,
         characters=characters,
-        general_plan=general_plan,
+        general_plan=general_plan if include_characters else "",
+        include_characters=include_characters,
+        include_field_map=include_characters,
     )
     name = f"db_frames{('_' + batch_tag) if batch_tag else ''}.json"
     out = tmp_dir / name
-    out.write_text(json.dumps(ctx, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Компактно: меньше шанс упереться в trim 60k в gpt_api.file_to_context.
+    out.write_text(
+        json.dumps(ctx, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
     logger.info(
-        "img_pr_db: {} frames={} characters={}",
+        "img_pr_db: {} frames={} chars={} bytes={}",
         out.name,
         len(ctx.get("frames") or []),
         len(ctx.get("characters") or []),
+        out.stat().st_size,
     )
     return out
 
@@ -710,6 +718,7 @@ async def run_img_pr_xlsx(
                 cards,
                 general_plan,
                 batch_tag=batch_tag,
+                include_characters=(bi == 1),
             )
             uuid_lines = "\n".join(
                 f"кадр {fr.number} = {fr.uuid}" for fr in batch if fr.uuid
@@ -737,34 +746,56 @@ async def run_img_pr_xlsx(
                 if vo is not None:
                     attach.append(vo)
                 treat_txt = True
+                use_history: list[dict[str, str]] | None = None
             else:
-                # Промт уже в истории — только кадры батча.
                 chat_msg = (
                     f"{ipb.followup_message(batch_i=bi, batch_n=batch_n, n=len(batch))}\n"
                     f"Адресация:\n{uuid_lines}\n"
+                    "Файл db_frames полный — не отказывайся из‑за «обрезки». "
+                    "Верни JSON ops на ВСЕ uuid из файла.\n"
                 )
                 attach = [db_path]
                 treat_txt = False
+                use_history = history or None
 
             batch_ops: list[dict] = []
             last_reply = ""
             for attempt in range(1, ipb._GPT_ATTEMPTS + 1):
+                # После фейла follow-up — свежая сессия + короткий master,
+                # чтобы JSON не резался в хвосте длинной history.
+                if attempt > 1 and bi > 1:
+                    await gpt.new_conversation()
+                    history.clear()
+                    use_history = None
+                    treat_txt = True
+                    attach = [prompt_file, db_path]
+                    chat_msg = (
+                        f"{_IMG_PR_DB_HINT}\n{footer}\n"
+                        f"Адресация:\n{uuid_lines}\n"
+                        "Только JSON apply-ops. STYLE LOCK не пиши.\n"
+                    )
+                    logger.info(
+                        "img_pr_db: batch {}/{} fresh session retry",
+                        bi,
+                        batch_n,
+                    )
                 logger.info(
                     "img_pr_db: batch {}/{} attempt {} frames={} attach={} "
-                    "history={}",
+                    "history={} bytes={}",
                     bi,
                     batch_n,
                     attempt,
                     [fr.number for fr in batch],
                     [p.name for p in attach],
-                    len(history),
+                    len(use_history or []),
+                    db_path.stat().st_size,
                 )
                 last_reply = await gpt.ask_with_files(
                     chat_msg,
                     attach,
                     project_id=project_id or project.id,
                     expect_file_download=False,
-                    history=history or None,
+                    history=use_history,
                     treat_txt_as_prompt=treat_txt,
                 )
                 replies.append(last_reply or "")
@@ -788,6 +819,15 @@ async def run_img_pr_xlsx(
                 )
 
             if not batch_ops:
+                if all_ops:
+                    logger.error(
+                        "img_pr_db: batch {}/{} failed — возвращаю partial "
+                        "ops={} (чекпоинт есть, soft retry добьёт)",
+                        bi,
+                        batch_n,
+                        len(all_ops),
+                    )
+                    return
                 raise RuntimeError(
                     f"img_pr batch {bi}/{batch_n}: нет apply-ops "
                     f"(reply_len={len(last_reply or '')}). "

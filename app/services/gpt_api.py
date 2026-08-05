@@ -540,11 +540,15 @@ def file_to_context(
                 f"только имя; скачай исходник кнопкой ↓ в Studio]"
             )
     # XLSX уже укладывается в свой бюджет внутри xlsx_to_text — не резать до 60k.
+    # JSON батчи img_pr (db_frames_*.json) тоже не должны молча обрезаться:
+    # модель тогда отказывается («файл обрезан после кадра N»).
     soft_cap = (
         max(max_chars, _XLSX_CONTEXT_MAX_CHARS)
         if suffix in (".xlsx", ".xlsm", ".xls")
         else max(max_chars, _PDF_CONTEXT_MAX_CHARS)
         if suffix == ".pdf"
+        else max(max_chars, 200_000)
+        if suffix == ".json"
         else max_chars
     )
     if len(body) > soft_cap and "base64," not in body:

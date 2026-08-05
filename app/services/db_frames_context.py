@@ -69,8 +69,13 @@ def build_img_pr_db_context(
     frames: list[Any],
     characters: list[dict[str, str]],
     general_plan: str = "",
+    include_characters: bool = True,
+    include_field_map: bool = False,
 ) -> dict[str, Any]:
-    """Снимок для агента промтов картинок (DB SoT после scene_grammar)."""
+    """Снимок для агента промтов картинок (DB SoT после scene_grammar).
+
+    Без voiceover_text — он раздувает JSON и режется лимитом API (60k).
+    """
     frame_rows: list[dict[str, Any]] = []
     for fr in frames:
         uuid = getattr(fr, "uuid", None) or ""
@@ -79,30 +84,34 @@ def build_img_pr_db_context(
         row: dict[str, Any] = {
             "number": getattr(fr, "number", None),
             "uuid": str(uuid),
-            "voiceover_text": (getattr(fr, "voiceover_text", None) or "") or "",
-            "meaning": (getattr(fr, "meaning", None) or "") or "",
         }
+        meaning = (getattr(fr, "meaning", None) or "") or ""
+        if meaning.strip():
+            row["meaning"] = meaning.strip()
         picked = _pick_attrs(getattr(fr, "attrs", None))
         row.update(picked)
         frame_rows.append(row)
-    return {
+    out: dict[str, Any] = {
         "source": "db_v2",
         "project_id": project_id,
         "slug": slug,
-        "general_plan": (general_plan or "").strip(),
         "frames": frame_rows,
-        "characters": list(characters or []),
-        "field_map": {
-            "place": "место / SETTING",
-            "lighting|scene_lighting": "свет сцены → NOIR_LIGHTING (те же источники)",
-            "shot01_bg": "фон кадра → деталь SETTING",
-            "shot01_action": "видимое действие → ACTION",
-            "shot01_description": "камера/композиция → CAMERA (не выдумывай план)",
-            "shot01_props": "предметы (только из списка)",
-            "accent": "отдельный блок E — визуальный центр шота (FOCAL)",
-            "scene_sense": "отдельный блок F — видимый факт сцены (не литература)",
-            "scene_feature": "отдельный блок G — крупность/роль шота (Общий/Средний/…)",
-            "visual_type": "тон сцены; STYLE LOCK важнее (не уходи в фотореализм)",
-            "characters|персонажи": "коды c01… из Entity",
-        },
     }
+    gp = (general_plan or "").strip()
+    if gp:
+        # Короткий кусок — эпоха, не простыня.
+        out["general_plan"] = gp[:800]
+    if include_characters:
+        out["characters"] = list(characters or [])
+    if include_field_map:
+        out["field_map"] = {
+            "place": "SETTING",
+            "lighting|scene_lighting": "LIGHT",
+            "shot01_bg": "BG",
+            "shot01_action": "ACTION",
+            "shot01_description": "CAMERA",
+            "accent": "FOCAL",
+            "scene_sense": "visible facts",
+            "scene_feature": "shot scale",
+        }
+    return out
