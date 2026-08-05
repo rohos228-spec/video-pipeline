@@ -379,6 +379,140 @@ def upsert_scene_registry(project: Project, scenes: list[Any]) -> int:
     return len(normalized)
 
 
+def _shot_from_scene(scene: dict[str, Any], shot_id: str) -> dict[str, Any] | None:
+    shots = scene.get("shots") if isinstance(scene, dict) else None
+    if not isinstance(shots, list) or not shots:
+        return None
+    want = str(shot_id or "shot_01").strip() or "shot_01"
+    for raw in shots:
+        if not isinstance(raw, dict):
+            continue
+        if str(raw.get("id_shot") or "").strip() == want:
+            return raw
+    first = shots[0]
+    return first if isinstance(first, dict) else None
+
+
+def expand_scene_registry_onto_frames(
+    frames: list[Frame],
+    registry: list[Any] | None,
+) -> int:
+    """Перенести место/действие/описание из ``scenes[].shots[]`` в Frame.attrs.
+
+    Агент часто кладёт детали только в ``scenes``, а в ``ops`` — лишь
+    id_scene/id_shot. Без разворота «База» показывает пустые place/action.
+    Не затирает уже заполненные attrs.
+    """
+    if not registry or not frames:
+        return 0
+    by_id: dict[str, dict[str, Any]] = {}
+    for raw in registry:
+        if not isinstance(raw, dict):
+            continue
+        sid = str(raw.get("id_scene") or "").strip()
+        if sid:
+            by_id[sid] = raw
+    if not by_id:
+        return 0
+
+    def _fill(attrs: dict[str, Any], key: str, value: Any) -> bool:
+        val = str(value or "").strip()
+        if not val:
+            return False
+        if str(attrs.get(key) or "").strip():
+            return False
+        attrs[key] = val
+        return True
+
+    n = 0
+    for fr in frames:
+        attrs = dict(fr.attrs or {})
+        sid = str(attrs.get("shot01_id_scene") or "").strip()
+        if not sid or sid not in by_id:
+            continue
+        sc = by_id[sid]
+        shot = _shot_from_scene(sc, str(attrs.get("shot01_id_shot") or "shot_01"))
+        changed = False
+        # Уровень сцены
+        for key, src in (
+            ("place", sc.get("место") or sc.get("place")),
+            ("accent", sc.get("акцент") or sc.get("accent")),
+            ("scene_sense", sc.get("смысл_сцены") or sc.get("scene_sense")),
+            ("visual_type", sc.get("тип_сцены") or sc.get("visual_type")),
+            (
+                "scene_feature",
+                sc.get("особенность_доминанта")
+                or sc.get("особенность_сцены")
+                or sc.get("scene_feature"),
+            ),
+            ("cluster", sc.get("номер_кластера") or sc.get("cluster")),
+            (
+                "scene_structure",
+                sc.get("структура_сцены") or sc.get("scene_structure"),
+            ),
+            ("edit_type", sc.get("тип_стыка") or sc.get("edit_type")),
+            (
+                "scene_transition",
+                sc.get("переход_в_сцену")
+                or sc.get("переход_в_кадр")
+                or sc.get("scene_transition"),
+            ),
+            (
+                "scene_start_words",
+                sc.get("start_words") or sc.get("scene_start_words"),
+            ),
+            ("scene_end_words", sc.get("end_words") or sc.get("scene_end_words")),
+        ):
+            if _fill(attrs, key, src):
+                changed = True
+        # Персонажи сцены — только если на кадре пусто
+        scene_chars = str(
+            sc.get("персонажи_сцены") or sc.get("characters") or ""
+        ).strip()
+        if scene_chars and not str(attrs.get("characters") or "").strip():
+            attrs["characters"] = scene_chars
+            attrs["persons"] = scene_chars
+            attrs["персонажи"] = scene_chars
+            changed = True
+        # Уровень шота
+        if shot:
+            for key, src in (
+                ("shot01_action", shot.get("действие") or shot.get("action")),
+                (
+                    "shot01_description",
+                    shot.get("описание_кадра")
+                    or shot.get("описание")
+                    or shot.get("description"),
+                ),
+                ("shot01_bg", shot.get("фон") or shot.get("bg")),
+                ("shot01_props", shot.get("предметы") or shot.get("props")),
+                (
+                    "shot01_transition",
+                    shot.get("логика_перехода") or shot.get("transition"),
+                ),
+                (
+                    "scene_feature",
+                    shot.get("особенность_сцены")
+                    or shot.get("особенность_кадра")
+                    or shot.get("scene_feature"),
+                ),
+                ("shot01_notes", shot.get("роль") or shot.get("role")),
+            ):
+                if _fill(attrs, key, src):
+                    changed = True
+            # main_action ≈ действие шота, если пусто
+            if _fill(
+                attrs,
+                "main_action",
+                shot.get("действие") or shot.get("описание_кадра"),
+            ):
+                changed = True
+        if changed:
+            fr.attrs = attrs
+            n += 1
+    return n
+
+
 def _normalize_character_card(raw: dict[str, Any]) -> dict[str, Any]:
     """Карточка персонажа из ответа агента → code/name/attrs."""
     if not isinstance(raw, dict):
@@ -808,17 +942,26 @@ async def apply_ops(
         updated += 1
 
     await session.flush()
+
+    # Детали из scenes[].shots[] → Frame.attrs (place/действие/описание…).
+    all_frames = list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.number)
+            )
+        ).scalars()
+    )
+    meta_now = project.meta if isinstance(project.meta, dict) else {}
+    expanded = expand_scene_registry_onto_frames(
+        all_frames, meta_now.get("scene_registry")
+    )
+    if expanded:
+        await session.flush()
+
     exported = None
     if export_xlsx:
-        all_frames = list(
-            (
-                await session.execute(
-                    select(Frame)
-                    .where(Frame.project_id == project.id)
-                    .order_by(Frame.number)
-                )
-            ).scalars()
-        )
         ents = list(
             (
                 await session.execute(
@@ -832,5 +975,6 @@ async def apply_ops(
         "updated": updated,
         "characters": chars_n,
         "scenes": scenes_n,
+        "expanded_frames": expanded,
         "exported": exported,
     }
