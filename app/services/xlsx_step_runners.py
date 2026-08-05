@@ -33,7 +33,7 @@ from app.storage import for_project as _sheet_for_project
 
 # Должен совпадать со строкой 4 в web/STUDIO_VERSION. Если в логе make_plan
 # нет «xlsx_step_runners» — на диске старый make_plan.py (текст 30k в ask).
-XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v76-img-pr-accent-blocks"
+XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v77-img-pr-batches"
 
 
 def _plan_empty_error(xlsx_path: Path, *, plan_len: int) -> RuntimeError:
@@ -532,8 +532,8 @@ _IMG_PR_DB_HINT = (
     "Верни ТОЛЬКО JSON apply-ops. Без TSV, без `# Лист:`, без `@row=`, "
     "без скачивания .xlsx:\n"
     '{"ops":[{"frame_uuid":"<uuid>","fields":{"промт_картинки":"…"}}]}\n'
-    "Адрес кадра — ТОЛЬКО frame_uuid из db_frames.json / списка ниже.\n"
-    "Одна операция = один кадр. Пройди все кадры из db_frames.json.\n"
+    "Адрес кадра — ТОЛЬКО frame_uuid из db_frames.json ЭТОГО батча.\n"
+    "Одна операция = один кадр. Пройди все кадры из текущего db_frames.json.\n"
     "Сборка кадра (порядок): ref(cXX?) → shot01_bg → shot01_action → "
     "lighting/scene_lighting → accent → scene_sense → scene_feature → "
     "shot01_description/props → place/время → STYLE. "
@@ -542,14 +542,16 @@ _IMG_PR_DB_HINT = (
 )
 
 
-async def _write_img_pr_db_frames(project: Project, tmp_dir: Path) -> Path:
-    """Пишет db_frames.json (attrs после scene_grammar + Entity)."""
-    import json
-
+async def _load_img_pr_context(
+    project: Project,
+    *,
+    only_uuids: set[str] | None = None,
+    skip_uuids: set[str] | None = None,
+) -> tuple[list[Frame], list[dict], str]:
+    """Кадры + Entity cards + general_plan для img_pr."""
     from app.db import SessionLocal
     from app.models import Entity
     from app.services import db_v2
-    from app.services.db_frames_context import build_img_pr_db_context
     from app.services.excel_characters import entity_cards_for_gpt
 
     async with SessionLocal() as session:
@@ -573,23 +575,65 @@ async def _write_img_pr_db_frames(project: Project, tmp_dir: Path) -> Path:
                 )
             ).scalars().all()
         )
-        ctx = build_img_pr_db_context(
-            project_id=proj.id,
-            slug=proj.slug or "",
-            frames=frames,
-            characters=entity_cards_for_gpt(ents),
-            general_plan=proj.general_plan or "",
-        )
+        general_plan = proj.general_plan or ""
+        cards = entity_cards_for_gpt(ents)
 
-    out = tmp_dir / "db_frames.json"
+    selected: list[Frame] = []
+    for fr in frames:
+        uuid = (fr.uuid or "").strip()
+        if not uuid:
+            continue
+        if only_uuids is not None and uuid not in only_uuids:
+            continue
+        if skip_uuids and uuid in skip_uuids:
+            continue
+        if not (fr.voiceover_text or "").strip():
+            continue
+        # Уже заполненные пропускаем (resume / soft retry).
+        if (fr.image_prompt or "").strip():
+            continue
+        selected.append(fr)
+    return selected, cards, general_plan
+
+
+def _write_img_pr_db_frames_for(
+    project: Project,
+    tmp_dir: Path,
+    frames: list[Frame],
+    characters: list[dict],
+    general_plan: str,
+    *,
+    batch_tag: str = "",
+) -> Path:
+    import json
+
+    from app.services.db_frames_context import build_img_pr_db_context
+
+    ctx = build_img_pr_db_context(
+        project_id=project.id,
+        slug=project.slug or "",
+        frames=frames,
+        characters=characters,
+        general_plan=general_plan,
+    )
+    name = f"db_frames{('_' + batch_tag) if batch_tag else ''}.json"
+    out = tmp_dir / name
     out.write_text(json.dumps(ctx, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info(
-        "img_pr_db: db_frames.json frames={} characters={} path={}",
+        "img_pr_db: {} frames={} characters={}",
+        out.name,
         len(ctx.get("frames") or []),
         len(ctx.get("characters") or []),
-        out,
     )
     return out
+
+
+async def _write_img_pr_db_frames(project: Project, tmp_dir: Path) -> Path:
+    """Пишет полный db_frames.json (smoke / legacy)."""
+    frames, cards, general_plan = await _load_img_pr_context(project)
+    return _write_img_pr_db_frames_for(
+        project, tmp_dir, frames, cards, general_plan
+    )
 
 
 async def run_img_pr_xlsx(
@@ -599,83 +643,189 @@ async def run_img_pr_xlsx(
     project_id: int | None = None,
     uuid_map_text: str = "",
 ) -> XlsxRoundtripResult:
-    """Шаг «Промты картинок»: GPT → apply-ops (DB); Excel через export."""
-    from app.services import db_apply
+    """Шаг «Промты картинок»: GPT батчами → apply-ops (DB)."""
+    from app.services import img_pr_batches as ipb
 
     proj_xlsx = _ensure_project_xlsx(project)
-
-    ts = _ts()
     tmp_dir = cx.tmp_gpt_dir(project)
-    prompt_file = cx.write_img_pr_prompt_file(project, tmp_dir, ts=ts)
-    chat_msg = cx.chat_message(
-        project,
-        "img_pr",
-        prompt_file_name=prompt_file.name,
-        n_frames=n_frames or 0,
+    prompt_file = cx.write_img_pr_prompt_file(project, tmp_dir, ts=_ts())
+
+    ckpt = ipb.load_checkpoint(project.data_dir)
+    done_uuids = list(ckpt.get("done_uuids") or [])
+    all_ops: list[dict] = list(ckpt.get("ops") or [])
+    done_set = set(done_uuids)
+
+    frames, cards, general_plan = await _load_img_pr_context(
+        project, skip_uuids=done_set
     )
-    chat_msg = f"{chat_msg}{_IMG_PR_DB_HINT}"
-    if uuid_map_text.strip():
-        chat_msg = f"{chat_msg}\nАдресация кадров (номер = uuid):\n{uuid_map_text.strip()}\n"
-
-    attach: list[Path] = [prompt_file]
-    db_frames = await _write_img_pr_db_frames(project, tmp_dir)
-    attach.append(db_frames)
-    vo = cx.ensure_current_voiceover(project)
-    if vo is not None:
-        attach.append(vo)
-
-    logger.info(
-        "img_pr_db: prompt_file={} chat_len={} attach={} (без xlsx-download)",
-        prompt_file.name,
-        len(chat_msg),
-        [p.name for p in attach],
-    )
-
-    async def _gpt() -> str:
-        return await xgf.telegram_style_ask_with_files(
-            chat_msg,
-            attach,
-            project_id=project_id or project.id,
+    # Кадры, уже закрытые чекпоинтом, но без image_prompt в DB — ops уже есть.
+    if not frames and all_ops:
+        logger.info(
+            "img_pr_db: resume — все кадры в checkpoint, ops={}", len(all_ops)
+        )
+        return XlsxRoundtripResult(
+            reply_text="(checkpoint resume)",
+            downloaded_path=proj_xlsx,
+            project_xlsx=proj_xlsx,
+            backup_path=None,
+            apply_ops=all_ops,
+        )
+    if not frames:
+        raise RuntimeError(
+            "нет кадров без image_prompt для img_pr "
+            f"(done_checkpoint={len(done_set)})"
         )
 
-    reply = await xgf.run_under_xlsx_lock(project.id, "img_pr", _gpt)
-    data = db_apply.extract_apply_ops_json(reply or "")
-    ops = list((data or {}).get("ops") or []) if isinstance(data, dict) else []
-    # Только frame ops с промтом картинки
-    clean: list[dict] = []
-    for op in ops:
-        if not isinstance(op, dict):
-            continue
-        if str(op.get("target") or "frame") not in {"frame", ""}:
-            continue
-        fields = op.get("fields") or {}
-        if not isinstance(fields, dict):
-            continue
-        if not any(
-            k in fields
-            for k in (
-                "промт_картинки",
-                "image_prompt",
-                "промпт_картинки",
-                "промт_картинки_2",
-                "image_prompt_shot2",
+    batches = ipb.chunk_frames(frames)
+    batch_n = len(batches)
+    logger.info(
+        "img_pr_db: batched run frames={} batches={} size~{} "
+        "checkpoint_done={} n_frames_hint={}",
+        len(frames),
+        batch_n,
+        ipb._FRAMES_PER_BATCH,
+        len(done_set),
+        n_frames or 0,
+    )
+
+    vo = cx.ensure_current_voiceover(project)
+    replies: list[str] = []
+
+    for bi, batch in enumerate(batches, start=1):
+        from app.services.step_cancel import raise_if_cancelled
+
+        raise_if_cancelled(project.id)
+        batch_tag = f"b{bi:02d}"
+        db_path = _write_img_pr_db_frames_for(
+            project,
+            tmp_dir,
+            batch,
+            cards,
+            general_plan,
+            batch_tag=batch_tag,
+        )
+        uuid_lines = "\n".join(
+            f"кадр {fr.number} = {fr.uuid}" for fr in batch if fr.uuid
+        )
+        chat_msg = cx.chat_message(
+            project,
+            "img_pr",
+            prompt_file_name=prompt_file.name,
+            n_frames=len(batch),
+        )
+        chat_msg = (
+            f"{chat_msg}{_IMG_PR_DB_HINT}\n"
+            f"{ipb.batch_footer(batch_i=bi, batch_n=batch_n, n=len(batch))}\n"
+            f"Адресация кадров батча:\n{uuid_lines}\n"
+        )
+        if uuid_map_text.strip() and bi == 1:
+            # Полная карта — только справочно в первом батче (не раздувать каждый).
+            chat_msg = (
+                f"{chat_msg}\n# Полная карта uuid (справочно)\n"
+                f"{uuid_map_text.strip()[:4000]}\n"
             )
-        ):
-            continue
-        clean.append(op)
-    if not clean:
+
+        attach: list[Path] = [prompt_file, db_path]
+        if vo is not None:
+            attach.append(vo)
+
+        batch_ops: list[dict] = []
+        last_reply = ""
+        last_reason = "empty"
+        for attempt in range(1, ipb._GPT_ATTEMPTS + 1):
+            logger.info(
+                "img_pr_db: batch {}/{} attempt {} frames={} attach={}",
+                bi,
+                batch_n,
+                attempt,
+                [fr.number for fr in batch],
+                [p.name for p in attach],
+            )
+
+            async def _gpt(
+                msg: str = chat_msg, files: list[Path] = attach
+            ) -> str:
+                return await xgf.telegram_style_ask_with_files(
+                    msg,
+                    files,
+                    project_id=project_id or project.id,
+                )
+
+            last_reply = await xgf.run_under_xlsx_lock(project.id, "img_pr", _gpt)
+            replies.append(last_reply or "")
+            batch_ops = ipb.parse_img_pr_ops(last_reply or "")
+            if batch_ops:
+                break
+            last_reason = "no_prompt_ops"
+            rej = ipb.write_rejected_reply(
+                tmp_dir,
+                batch_i=bi,
+                attempt=attempt,
+                reply=last_reply or "",
+                reason=last_reason,
+            )
+            logger.warning(
+                "img_pr_db: batch {}/{} attempt {} failed ({}) reply_len={} saved={}",
+                bi,
+                batch_n,
+                attempt,
+                last_reason,
+                len(last_reply or ""),
+                rej.name,
+            )
+
+        if not batch_ops:
+            raise RuntimeError(
+                f"img_pr batch {bi}/{batch_n}: GPT не вернул apply-ops "
+                f"с промт_картинки (reply_len={len(last_reply or '')}). "
+                f"Смотри tmp_gpt/img_pr_rejected_b{bi}_*.txt"
+            )
+
+        expected = {(fr.uuid or "").strip() for fr in batch if (fr.uuid or "").strip()}
+        got_uuids = {ipb.uuid_of_op(op) for op in batch_ops if ipb.uuid_of_op(op)}
+        # Частичный успех — в чекпоинт, missing останутся на soft retry.
+        for u in sorted(got_uuids):
+            if u and u not in done_set:
+                done_uuids.append(u)
+                done_set.add(u)
+        all_ops.extend(batch_ops)
+        ipb.save_checkpoint(
+            project.data_dir, done_uuids=done_uuids, ops=all_ops
+        )
+        missing = expected - got_uuids
+        logger.info(
+            "img_pr_db: batch {}/{} ops=+{} total_ops={} done_uuids={} missing={}",
+            bi,
+            batch_n,
+            len(batch_ops),
+            len(all_ops),
+            len(done_uuids),
+            len(missing),
+        )
+        if missing:
+            logger.warning(
+                "img_pr_db: batch {}/{} incomplete {}/{} — "
+                "чекпоинт сохранён, soft retry добьёт missing",
+                bi,
+                batch_n,
+                len(got_uuids),
+                len(expected),
+            )
+
+    if not all_ops:
         raise RuntimeError(
             "GPT не вернул apply-ops с промт_картинки по frame_uuid. "
             'Нужен {"ops":[{"frame_uuid":"…","fields":{"промт_картинки":"…"}}]}'
         )
 
-    logger.info("img_pr_db: ops={}", len(clean))
+    # Чекпоинт чистит generate_image_prompts после успешного apply в DB.
+    logger.info("img_pr_db: complete ops={}", len(all_ops))
     return XlsxRoundtripResult(
-        reply_text=reply,
+        reply_text="\n\n---\n\n".join(replies) if replies else "",
         downloaded_path=proj_xlsx,
         project_xlsx=proj_xlsx,
         backup_path=None,
-        apply_ops=clean,
+        apply_ops=all_ops,
     )
 
 

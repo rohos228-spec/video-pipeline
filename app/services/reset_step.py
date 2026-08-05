@@ -357,6 +357,12 @@ async def _wipe_img_pr(session: AsyncSession, project: Project) -> dict[str, Any
         if fr.status is FrameStatus.image_prompt_ready:
             fr.status = FrameStatus.planned
             status_reset += 1
+    try:
+        from app.services.img_pr_batches import clear_checkpoint
+
+        clear_checkpoint(project.data_dir)
+    except Exception:  # noqa: BLE001
+        pass
     return {"frames_cleared": cleared, "frames_status_reset": status_reset}
 
 

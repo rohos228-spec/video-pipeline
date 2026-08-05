@@ -13,7 +13,12 @@ from app.storage import for_project as _sheet_for_project
 
 
 def _frames_needing_image_prompt(frames: list[Frame]) -> list[Frame]:
-    return [fr for fr in frames if (fr.voiceover_text or "").strip()]
+    return [
+        fr
+        for fr in frames
+        if (fr.voiceover_text or "").strip()
+        and not (fr.image_prompt or "").strip()
+    ]
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
@@ -97,14 +102,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 )
             ).scalars().all()
             need = _frames_needing_image_prompt(frames)
-            if need and all((fr.image_prompt or "").strip() for fr in need):
+            if not need:
+                from app.services import img_pr_batches as ipb
+
+                ipb.clear_checkpoint(project.data_dir)
                 break
-            missing = [
-                fr.number for fr in need if not (fr.image_prompt or "").strip()
-            ]
+            missing = [fr.number for fr in need]
             raise RuntimeError(
                 f"после apply-ops промты не заполнены (попытка {attempt}): "
-                f"кадры {missing}"
+                f"кадры {missing[:20]}{'…' if len(missing) > 20 else ''} "
+                f"(осталось {len(missing)}; чекпоинт img_pr сохранит прогресс)"
             )
         except Exception as e:  # noqa: BLE001
             last_err = e
