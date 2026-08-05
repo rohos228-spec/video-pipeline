@@ -24,15 +24,18 @@ def test_expand_binds_by_words_and_maps_one_shot_per_frame() -> None:
             "место": "метро Токио",
             "структура_сцены": "continuity",
             "смысл_сцены": "посев угрозы",
+            "акцент": "НЕ клонировать на все кадры",
             "shots": [
                 {
                     "id_shot": "shot_01",
+                    "акцент": "поток у дверей",
                     "действие": "поток людей в вагоне",
                     "описание_кадра": "общий план вагона",
                     "особенность_сцены": "Общий план локации",
                 },
                 {
                     "id_shot": "shot_02",
+                    "акцент": "пакет у порога",
                     "действие": "камера на пакете",
                     "описание_кадра": "insert пакета",
                     "особенность_сцены": "Деталь объекта",
@@ -45,10 +48,13 @@ def test_expand_binds_by_words_and_maps_one_shot_per_frame() -> None:
     assert frames[0].attrs["shot01_id_scene"] == "scene_01"
     assert frames[0].attrs["place"] == "метро Токио"
     assert frames[0].attrs["shot01_action"] == "поток людей в вагоне"
+    assert frames[0].attrs["accent"] == "поток у дверей"
+    assert frames[1].attrs["accent"] == "пакет у порога"
     assert frames[1].attrs["shot01_action"] == "камера на пакете"
-    # 3-й кадр в сцене, shots только 2 → scene-level без клона действия
+    # 3-й кадр в сцене, shots только 2 → scene-level без клона действия/акцента
     assert frames[2].attrs["place"] == "метро Токио"
     assert frames[2].attrs.get("shot01_action") in (None, "")
+    assert frames[2].attrs.get("accent") in (None, "")
 
 
 def test_strip_duplicated_shot_details() -> None:

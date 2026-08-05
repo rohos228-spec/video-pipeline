@@ -495,7 +495,6 @@ def expand_scene_registry_onto_frames(
                 changed = True
             for key, src in (
                 ("place", sc.get("место") or sc.get("place")),
-                ("accent", sc.get("акцент") or sc.get("accent")),
                 ("scene_sense", sc.get("смысл_сцены") or sc.get("scene_sense")),
                 ("visual_type", sc.get("тип_сцены") or sc.get("visual_type")),
                 ("cluster", sc.get("номер_кластера") or sc.get("cluster")),
@@ -519,11 +518,19 @@ def expand_scene_registry_onto_frames(
                 if _set(attrs, key, src, overwrite=True):
                     changed = True
             # Один shot → один кадр (по порядку внутри сцены).
+            # accent — с ШОТА, не клон сцены на все колонки.
             if idx < len(shots) and isinstance(shots[idx], dict):
                 sh = shots[idx]
                 shot_id = str(sh.get("id_shot") or f"shot_{idx + 1:02d}").strip()
                 if _set(attrs, "shot01_id_shot", shot_id, overwrite=True):
                     changed = True
+                shot_accent = (
+                    sh.get("акцент")
+                    or sh.get("accent")
+                    or sh.get("предметы")
+                    or sh.get("действие")
+                    or ""
+                )
                 for key, src in (
                     ("scene_feature", sh.get("особенность_сцены") or sh.get("ракурс")),
                     ("shot01_action", sh.get("действие") or sh.get("action")),
@@ -535,6 +542,7 @@ def expand_scene_registry_onto_frames(
                     ("shot01_bg", sh.get("фон")),
                     ("shot01_props", sh.get("предметы")),
                     ("main_action", sh.get("главное_действие")),
+                    ("accent", shot_accent),
                 ):
                     if _set(attrs, key, src, overwrite=True):
                         changed = True
@@ -546,6 +554,12 @@ def expand_scene_registry_onto_frames(
                         attrs, "characters", sc.get("персонажи_сцены"), overwrite=True
                     ):
                         changed = True
+            else:
+                # Кадр без своего shot — не копируем scene.accent (иначе все
+                # колонки сцены с одним акцентом).
+                if "accent" in attrs and len(shots) > 0:
+                    attrs.pop("accent", None)
+                    changed = True
             if changed:
                 fr.attrs = attrs
                 n += 1
@@ -562,6 +576,7 @@ _SHOT_DETAIL_ATTR_KEYS = (
     "shot01_notes",
     "main_action",
     "scene_feature",
+    "accent",
 )
 
 
