@@ -400,6 +400,19 @@ async def _resume_img_pr(session: AsyncSession, project: Project) -> dict[str, A
     }
 
 
+async def _resume_images(session: AsyncSession, project: Project) -> dict[str, Any]:
+    """Soft ▶ img: НЕ wipe scenes/*.png — догнать только missing.
+
+    Восстанавливает PNG из ``old/scenes/`` (если scenes пуст после аварии /
+    ошибочного wipe) и регистрирует ``scene_image`` артефакты с диска.
+    Полный wipe — только через force_wipe / reset_step.
+    """
+    from app.services.artifact_recovery import recover_scene_images_full
+
+    stats = await recover_scene_images_full(session, project)
+    return {"mode": "soft_resume", **stats}
+
+
 def _backup_scenes_before_wipe(project: Project, scenes_dir: Path) -> int:
     """Копия scenes/*.png в data/.../old/scenes/<timestamp>/ перед удалением."""
     if not scenes_dir.is_dir():
@@ -682,6 +695,7 @@ _STEP_WIPE_BY_CODE: dict[str, Any] = dict(_PIPELINE_RESET_LEVELS)
 _STEP_RERUN_BY_CODE: dict[str, Any] = {
     "script": _preserve_script_source_on_rerun,
     "img_pr": _resume_img_pr,
+    "img": _resume_images,
     "anim_pr": _resume_anim_pr_from_xlsx,
     "audio": _preserve_user_media_on_rerun,
     "music": _preserve_user_media_on_rerun,
