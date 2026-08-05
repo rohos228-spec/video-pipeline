@@ -1,7 +1,6 @@
-"""img_pr: один ▶ → несколько GPT-вызовов по кадрам → merge apply-ops.
+"""img_pr: крупные батчи + одна GPT-сессия (промт один раз).
 
-199 кадров × полный trash-polka STYLE LOCK не влезают в один ответ GPT
-(json_truncated / пустой ops). Батчим по N кадров, чекпоинт на диске.
+STYLE LOCK вшивает пайплайн (`img_pr_style`) — GPT пишет только сцену.
 """
 
 from __future__ import annotations
@@ -10,22 +9,28 @@ import json
 from pathlib import Path
 from typing import Any
 
-from loguru import logger
-
 from app.services.db_apply import extract_apply_ops_json
+from app.services.img_pr_style import wrap_ops_styles
 
-_FRAMES_PER_BATCH = 6
+# Сцена без STYLE ~0.5–1.5k → 40 кадров нормально влезают в ответ.
+_FRAMES_PER_BATCH = 40
 _CHECKPOINT_NAME = "img_pr_checkpoint.json"
 _GPT_ATTEMPTS = 2
 
 _BATCH_FOOTER = """
-# BATCH MODE — image prompts {batch_i}/{batch_n}
-В db_frames.json только кадры ЭТОГО батча ({n} шт).
+# BATCH {batch_i}/{batch_n} — только эти {n} кадров из db_frames.json
 Верни ТОЛЬКО JSON:
 {{"ops":[{{"frame_uuid":"<uuid>","fields":{{"промт_картинки":"…","промт_картинки_2":"…","персонажи":"c01"}}}}]}}
 
-Обязательно: один op на КАЖДЫЙ uuid из db_frames.json.frames[].
-Не трогай кадры вне батча. Без markdown, без прозы, без TSV.
+В `промт_картинки` пиши ТОЛЬКО сцену (ref?/фон/действие/свет/accent/
+scene_sense/scene_feature/детали/место-время). НЕ копируй STYLE LOCK —
+пайплайн допишет стиль сам. Один op на каждый uuid батча. Без markdown.
+""".strip()
+
+_FOLLOWUP_MSG = """
+Следующий батч. Те же правила. STYLE LOCK не пиши — только сцена.
+db_frames.json во вложении — только кадры этого батча.
+{footer}
 """.strip()
 
 
@@ -104,14 +109,23 @@ def filter_prompt_ops(ops: list[Any]) -> list[dict]:
     return clean
 
 
-def parse_img_pr_ops(reply: str) -> list[dict]:
+def parse_img_pr_ops(reply: str, *, wrap_style: bool = True) -> list[dict]:
     data = extract_apply_ops_json(reply or "")
     ops = list((data or {}).get("ops") or []) if isinstance(data, dict) else []
-    return filter_prompt_ops(ops)
+    clean = filter_prompt_ops(ops)
+    if wrap_style:
+        return wrap_ops_styles(clean)
+    return clean
 
 
 def batch_footer(*, batch_i: int, batch_n: int, n: int) -> str:
     return _BATCH_FOOTER.format(batch_i=batch_i, batch_n=batch_n, n=n)
+
+
+def followup_message(*, batch_i: int, batch_n: int, n: int) -> str:
+    return _FOLLOWUP_MSG.format(
+        footer=batch_footer(batch_i=batch_i, batch_n=batch_n, n=n)
+    )
 
 
 def write_rejected_reply(
