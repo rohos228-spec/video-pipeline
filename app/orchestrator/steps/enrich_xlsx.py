@@ -66,15 +66,36 @@ _SCENE_GRAMMAR_APPLY_HINT = (
     "ops=[]. Запрет: клон акцента; однословный фон; 1 колонка=1 сцена.\n"
 )
 
+_CHARACTER_REGISTRY_APPLY_HINT = (
+    "# CHARACTER REGISTRY — ЗАПИСЬ (DB SoT)\n"
+    "Верни ТОЛЬКО JSON {characters, ops, report}. "
+    "Вход = db_frames.json (закадр + текущие Entity). "
+    "Пустой characters[] во входе = создай реестр с нуля по закадру. "
+    "Запрет: error «реестр не найден»; Excel; TSV; # Лист:; проза вне JSON. "
+    "ops: только поле персонажи по frame_uuid из входа.\n"
+)
+
 _SCENE_GRAMMAR_PROMPT_MARKERS = (
     "scene_grammar_unified_agent",
     "scene grammar unified",
+)
+
+_CHARACTER_REGISTRY_PROMPT_MARKERS = (
+    "character_registry_database_agent",
+    "агент по созданию персонажей",
+    "агент заполнения реестра персонажей",
+    "реестр персонаж",
 )
 
 
 def _is_scene_grammar_prompt(variant: str | None, master: str | None) -> bool:
     blob = f"{variant or ''}\n{(master or '')[:400]}".casefold()
     return any(m in blob for m in _SCENE_GRAMMAR_PROMPT_MARKERS)
+
+
+def _is_character_registry_prompt(variant: str | None, master: str | None) -> bool:
+    blob = f"{variant or ''}\n{(master or '')[:800]}".casefold()
+    return any(m in blob for m in _CHARACTER_REGISTRY_PROMPT_MARKERS)
 
 # Маппинг slot_idx (1..5) → (running_status, ready_status, step_code).
 _SLOT_MAP: dict[int, tuple[ProjectStatus, ProjectStatus, str]] = {
@@ -596,17 +617,21 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             for f in (resolved.get("files") or [])
             if f.get("ok") and f.get("path")
         ]
-        # project_file / scene_grammar = DB SoT: файлы не обязательны.
+        # project_file / scene_grammar / character_registry = DB SoT.
         output_mode_early = (
             "text" if check_mode else str(resolved.get("outputMode") or "text")
         )
         scene_grammar_early = (not check_mode) and _is_scene_grammar_prompt(
             variant, master
         )
+        character_registry_early = (not check_mode) and _is_character_registry_prompt(
+            variant, master
+        )
         if (
             not data_paths
             and output_mode_early != "project_file"
             and not scene_grammar_early
+            and not character_registry_early
             and not (check_mode and db_sot_check)
         ):
             raise RuntimeError("gpt-operator: нет существующих файлов на входе")
@@ -761,9 +786,21 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         role = str(resolved.get("role") or "assist")
         output_mode = "text" if check_mode else str(resolved.get("outputMode") or "text")
         scene_grammar = (not check_mode) and _is_scene_grammar_prompt(variant, master)
+        character_registry = (not check_mode) and _is_character_registry_prompt(
+            variant, master
+        )
         if scene_grammar and output_mode != "project_file":
             logger.info(
                 "[#{}] enrich_xlsx node={!r}: scene_grammar → force "
+                "outputMode=project_file (было {!r})",
+                project.id,
+                node_key,
+                output_mode,
+            )
+            output_mode = "project_file"
+        if character_registry and output_mode != "project_file":
+            logger.info(
+                "[#{}] enrich_xlsx node={!r}: character_registry → force "
                 "outputMode=project_file (было {!r})",
                 project.id,
                 node_key,
@@ -787,7 +824,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
             from sqlalchemy import select as _select
 
+            from app.models import Entity
             from app.services import db_apply, db_v2
+            from app.services.excel_characters import entity_cards_for_gpt
 
             await db_v2.backfill_project_v2(session, project)
             frames_for_map = list(
@@ -799,27 +838,45 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     )
                 ).scalars().all()
             )
+            ents = list(
+                (
+                    await session.execute(
+                        _select(Entity).where(Entity.project_id == project.id)
+                    )
+                ).scalars().all()
+            )
             # Компактный снимок DB (SoT). Excel в GPT не отдаём вообще.
             # scene_grammar: attrs не тащим — пишем с нуля.
-            db_ctx = {
+            # character_registry: voiceover + текущие персонажи кадра + Entity.
+            frame_rows: list[dict] = []
+            for fr in frames_for_map:
+                if not fr.uuid:
+                    continue
+                row: dict = {
+                    "number": fr.number,
+                    "uuid": fr.uuid,
+                    "voiceover_text": fr.voiceover_text or "",
+                    "meaning": fr.meaning or "",
+                }
+                if scene_grammar:
+                    pass
+                elif character_registry:
+                    attrs = fr.attrs or {}
+                    row["персонажи"] = str(
+                        attrs.get("characters")
+                        or attrs.get("персонажи")
+                        or attrs.get("persons")
+                        or ""
+                    )
+                else:
+                    row["attrs"] = fr.attrs or {}
+                frame_rows.append(row)
+            db_ctx: dict = {
                 "source": "db_v2",
                 "project_id": project.id,
                 "slug": project.slug,
-                "frames": [
-                    {
-                        "number": fr.number,
-                        "uuid": fr.uuid,
-                        "voiceover_text": fr.voiceover_text or "",
-                        "meaning": fr.meaning or "",
-                        **(
-                            {}
-                            if scene_grammar
-                            else {"attrs": fr.attrs or {}}
-                        ),
-                    }
-                    for fr in frames_for_map
-                    if fr.uuid
-                ],
+                "frames": frame_rows,
+                "characters": entity_cards_for_gpt(ents),
             }
             ctx_dir = project.data_dir / "excel_gpt_uploads" / str(node_key)
             ctx_dir.mkdir(parents=True, exist_ok=True)
@@ -833,14 +890,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             data_paths = [ctx_path]
             logger.info(
                 "[#{}] enrich_xlsx node={!r}: project_file/DB SoT — "
-                "только db_frames.json frames={}",
+                "только db_frames.json frames={} characters={}",
                 project.id,
                 node_key,
                 len(db_ctx["frames"]),
+                len(db_ctx.get("characters") or []),
             )
-            hint = (
-                _SCENE_GRAMMAR_APPLY_HINT if scene_grammar else _APPLY_OPS_HINT
-            )
+            if scene_grammar:
+                hint = _SCENE_GRAMMAR_APPLY_HINT
+            elif character_registry:
+                hint = _CHARACTER_REGISTRY_APPLY_HINT
+            else:
+                hint = _APPLY_OPS_HINT
             if scene_grammar:
                 accompanying = (
                     f"{accompanying}\n\n{hint}\n"
@@ -861,6 +922,33 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         f"{accompanying}\n\n"
                         f"# ПОЛНЫЙ ЗАКАДР (для start_words/end_words)\n"
                         f"{full_vo}"
+                    ).strip()
+            elif character_registry:
+                uuid_frames = [f for f in frames_for_map if f.uuid]
+                mapping = ""
+                if uuid_frames:
+                    mapping = "\n".join(
+                        f"кадр {f.number} = {f.uuid}" for f in uuid_frames
+                    )
+                accompanying = (
+                    f"{accompanying}\n\n{hint}\n"
+                    f"{mapping}\n"
+                    "# DB SoT\n"
+                    "db_frames.json: frames[].voiceover_text + персонажи, "
+                    "characters[] = текущий Entity (может быть []). "
+                    "Пустой реестр — норма: создай characters с нуля. "
+                    "Пайплайн запишет JSON в Entity + attrs. Excel нет."
+                ).strip()
+                vo_chunks = [
+                    (fr.voiceover_text or "").strip()
+                    for fr in frames_for_map
+                    if (fr.voiceover_text or "").strip()
+                ]
+                full_vo = (project.script_text or "").strip() or " ".join(vo_chunks)
+                if full_vo:
+                    accompanying = (
+                        f"{accompanying}\n\n"
+                        f"# ПОЛНЫЙ ЗАКАДР\n{full_vo}"
                     ).strip()
             else:
                 uuid_frames = [f for f in frames_for_map if f.uuid]

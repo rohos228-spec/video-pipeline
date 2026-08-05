@@ -336,45 +336,74 @@ async def get_excel_hero(
 async def load_excel_hero(
     project_id: int, session: AsyncSession = Depends(get_session)
 ) -> dict:
-    """Перечитать лист «Персонажи» из project.xlsx → project.meta['excel_hero'].
+    """Загрузить персонажей в meta['excel_hero']: Entity (SoT) → fallback Excel.
 
     После этого шаг hero пойдёт по excel-ветке (`_run_excel`), беря данные
     из meta, без необходимости заполнять hero_descriptions/hero_count.
     """
-    from app.services.excel_characters import parse_persons_sheet
+    from sqlalchemy import select
+
+    from app.models import Entity
+    from app.services.excel_characters import (
+        characters_from_entities,
+        parse_persons_sheet,
+    )
 
     p = _project_or_404(await session.get(Project, project_id))
-    xlsx = p.data_dir / "project.xlsx"
-    if not xlsx.exists():
-        raise HTTPException(
-            status_code=404,
-            detail=f"project.xlsx не найден по пути {xlsx}",
-        )
-    try:
-        chars = parse_persons_sheet(xlsx)
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(
-            status_code=400,
-            detail=f"не удалось распарсить лист «Персонажи»: {e}",
-        ) from e
+    ents = list(
+        (
+            await session.execute(
+                select(Entity)
+                .where(
+                    Entity.project_id == p.id,
+                    Entity.type == "character",
+                )
+                .order_by(Entity.sort_key, Entity.id)
+            )
+        ).scalars().all()
+    )
+    chars = characters_from_entities(ents)
+    source = "entity"
+    if not chars:
+        xlsx = p.data_dir / "project.xlsx"
+        if not xlsx.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "в Базе нет персонажей (Entity) и нет project.xlsx "
+                    f"по пути {xlsx}"
+                ),
+            )
+        try:
+            chars = parse_persons_sheet(xlsx)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(
+                status_code=400,
+                detail=f"не удалось распарсить лист «Персонажи»: {e}",
+            ) from e
+        source = "xlsx"
     if not chars:
         raise HTTPException(
             status_code=400,
-            detail="на листе «Персонажи» нет ни одного заполненного персонажа",
+            detail="нет заполненных персонажей ни в Базе, ни на листе «Персонажи»",
         )
     meta = dict(p.meta or {})
-    meta["excel_hero"] = {"characters": [c.to_dict() for c in chars]}
+    meta["excel_hero"] = {
+        "characters": [c.to_dict() for c in chars],
+        "source": source,
+    }
     p.meta = meta
     p.updated_at = datetime.utcnow()
     await session.commit()
     await publish_project_event(
         project_id,
         event_type="project_updated",
-        payload={"excel_hero": len(chars)},
+        payload={"excel_hero": len(chars), "source": source},
     )
     return {
         "loaded": True,
         "count": len(chars),
+        "source": source,
         "characters": [c.to_dict() for c in chars],
     }
 

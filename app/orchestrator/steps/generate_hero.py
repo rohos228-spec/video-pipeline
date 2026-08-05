@@ -314,15 +314,39 @@ async def _v1_artifact_for_hero(
     return None
 
 
+async def _load_entity_characters(
+    session: AsyncSession, project: Project
+) -> list:
+    """Entity(type=character) → ExcelCharacter list (пусто если нет)."""
+    from sqlalchemy import select
+
+    from app.models import Entity
+    from app.services.excel_characters import characters_from_entities
+
+    try:
+        ents = list(
+            (
+                await session.execute(
+                    select(Entity)
+                    .where(
+                        Entity.project_id == project.id,
+                        Entity.type == "character",
+                    )
+                    .order_by(Entity.sort_key, Entity.id)
+                )
+            ).scalars().all()
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[#{}] excel_hero Entity load failed: {}", project.id, e)
+        return []
+    return characters_from_entities(ents)
+
+
 async def _load_excel_hero_from_xlsx(
     session: AsyncSession,
     project: Project,
 ) -> dict | None:
-    """Прочитать лист «Персонажи» из project.xlsx → meta['excel_hero']."""
-    xlsx = project.data_dir / "project.xlsx"
-    if not xlsx.exists():
-        return None
-
+    """Загрузить персонажей для hero: Entity (SoT) → fallback лист Excel."""
     meta = dict(project.meta or {})
     if project.hero_mode == "no_hero":
         return None
@@ -337,23 +361,31 @@ async def _load_excel_hero_from_xlsx(
 
     from app.services.excel_characters import parse_persons_sheet
 
-    try:
-        chars = parse_persons_sheet(xlsx)
-    except Exception as e:  # noqa: BLE001
-        logger.debug("[#{}] excel_hero load: parse failed: {}", project.id, e)
-        return None
+    chars = await _load_entity_characters(session, project)
+    source = "entity"
+    if not chars:
+        xlsx = project.data_dir / "project.xlsx"
+        if not xlsx.exists():
+            return None
+        try:
+            chars = parse_persons_sheet(xlsx)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[#{}] excel_hero load: parse failed: {}", project.id, e)
+            return None
+        source = "xlsx"
 
     if not chars:
         return None
 
-    cfg = {"characters": [c.to_dict() for c in chars]}
+    cfg = {"characters": [c.to_dict() for c in chars], "source": source}
     meta["excel_hero"] = cfg
     project.meta = meta
     await session.flush()
     logger.info(
-        "[#{}] excel_hero load: {} персонаж(ей) из project.xlsx",
+        "[#{}] excel_hero load: {} персонаж(ей) из {} ",
         project.id,
         len(chars),
+        source,
     )
     return cfg
 

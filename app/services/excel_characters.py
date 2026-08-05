@@ -22,6 +22,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 # Какие строки на листе «Персонажи» какому полю соответствуют.
 # (1-based, как в openpyxl).
@@ -193,6 +194,64 @@ def _cell_text(ws, row: int, col: int) -> str:
     if v is None:
         return ""
     return str(v).strip()
+
+
+def characters_from_entities(entities: list[Any]) -> list[ExcelCharacter]:
+    """Entity(type=character) → ExcelCharacter (тот же shape, что лист «Персонажи»)."""
+    rows: list[Any] = []
+    for e in entities or []:
+        code = str(getattr(e, "code", None) or "").strip()
+        etype = str(getattr(e, "type", None) or "").strip()
+        if etype != "character" or not code or not _ID_RE.match(code):
+            continue
+        rows.append(e)
+    rows.sort(
+        key=lambda e: (
+            float(getattr(e, "sort_key", 0) or 0),
+            str(getattr(e, "code", "") or ""),
+        )
+    )
+    known_ids = {str(e.code).strip() for e in rows}
+    out: list[ExcelCharacter] = []
+    for e in rows:
+        cid = str(e.code).strip()
+        attrs = e.attrs if isinstance(getattr(e, "attrs", None), dict) else {}
+        name = str(getattr(e, "name", None) or "").strip()
+        look = str(attrs.get("look") or attrs.get("внешность") or "").strip()
+        clothes = str(attrs.get("clothes") or attrs.get("одежда") or "").strip()
+        char = str(attrs.get("char") or attrs.get("характер") or "").strip()
+        rules = str(attrs.get("rules") or attrs.get("правила") or "").strip()
+        if not any([name, look, clothes, char, rules]):
+            continue
+        out.append(
+            ExcelCharacter(
+                id=cid,
+                name=name,
+                look=look,
+                clothes=clothes,
+                char=char,
+                rules=rules,
+                ref_ids=_extract_refs(rules, known_ids, exclude=cid),
+            )
+        )
+    return out
+
+
+def entity_cards_for_gpt(entities: list[Any]) -> list[dict[str, str]]:
+    """Карточки Entity → JSON shape агента персонажей (id/имя/внешность/…)."""
+    cards: list[dict[str, str]] = []
+    for ch in characters_from_entities(entities):
+        cards.append(
+            {
+                "id": ch.id,
+                "имя": ch.name,
+                "внешность": ch.look,
+                "одежда": ch.clothes,
+                "характер": ch.char,
+                "правила": ch.rules,
+            }
+        )
+    return cards
 
 
 def parse_persons_sheet(xlsx_path: Path) -> list[ExcelCharacter]:

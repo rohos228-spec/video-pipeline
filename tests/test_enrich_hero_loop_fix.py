@@ -78,6 +78,10 @@ async def test_bootstrap_excel_hero_from_xlsx(
     fake_char = ExcelCharacter(id="c01", name="Сталин", look="лицо")
     import app.services.excel_characters as ec
 
+    async def _no_ents(_session, _project):
+        return []
+
+    monkeypatch.setattr(generate_hero, "_load_entity_characters", _no_ents)
     monkeypatch.setattr(ec, "parse_persons_sheet", lambda _p: [fake_char])
     monkeypatch.setattr(settings, "data_dir", tmp_path)
 
