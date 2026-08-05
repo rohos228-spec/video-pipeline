@@ -143,14 +143,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             pass
         return
 
-    need = _frames_needing_image_prompt(frames)
-    missing = [fr.number for fr in need if not (fr.image_prompt or "").strip()]
-    if missing:
+    # После успеха need пуст (все с image_prompt). Считаем/помечаем заполненные.
+    filled = [
+        fr
+        for fr in frames
+        if (fr.voiceover_text or "").strip() and (fr.image_prompt or "").strip()
+    ]
+    still_missing = _frames_needing_image_prompt(frames)
+    if still_missing:
+        missing_nums = [fr.number for fr in still_missing]
         raise RuntimeError(
-            f"GPT не заполнил image_prompt для кадров: {missing}"
+            f"GPT не заполнил image_prompt для кадров: {missing_nums}"
         )
+    if not filled:
+        raise RuntimeError("GPT не заполнил ни одного image_prompt")
 
-    for fr in need:
+    for fr in filled:
         fr.status = FrameStatus.image_prompt_ready
     project.status = ProjectStatus.image_prompts_ready
     await session.flush()
@@ -164,6 +172,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     logger.info(
         "[#{}] generate_image_prompts complete: {} промтов (DB)",
         project.id,
-        len(need),
+        len(filled),
     )
     _ = last_err
