@@ -19,10 +19,12 @@ def test_assemble_check_db_sot_forbids_excel_findings() -> None:
     )
     assert "db_check.json" in text
     assert "DB SoT" in text
-    assert "XLSX_WRITEBACK" not in text
     assert "не ошибка" in text.casefold() or "НЕ ошибка" in text
     low = text.casefold()
     assert "tsv во вложении = книга" not in low
+    # Можно запретить маркером «НЕ пиши XLSX_WRITEBACK», но не требовать writeback.
+    assert "ОБЯЗАТЕЛЕН блок --- XLSX_WRITEBACK" not in text
+    assert "# Лист: Общий план" not in text or "НЕ пиши" in text
 
 
 def test_assemble_check_legacy_still_mentions_tsv() -> None:
