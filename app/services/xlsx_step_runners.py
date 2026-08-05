@@ -33,7 +33,7 @@ from app.storage import for_project as _sheet_for_project
 
 # Должен совпадать со строкой 4 в web/STUDIO_VERSION. Если в логе make_plan
 # нет «xlsx_step_runners» — на диске старый make_plan.py (текст 30k в ask).
-XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v74-normalize"
+XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v75-img-pr-db-frames"
 
 
 def _plan_empty_error(xlsx_path: Path, *, plan_len: int) -> RuntimeError:
@@ -532,8 +532,62 @@ _IMG_PR_DB_HINT = (
     "Верни ТОЛЬКО JSON apply-ops. Без TSV, без `# Лист:`, без `@row=`, "
     "без скачивания .xlsx:\n"
     '{"ops":[{"frame_uuid":"<uuid>","fields":{"промт_картинки":"…"}}]}\n'
-    "Адрес кадра — ТОЛЬКО frame_uuid из списка ниже. Одна операция = один кадр.\n"
+    "Адрес кадра — ТОЛЬКО frame_uuid из db_frames.json / списка ниже.\n"
+    "Одна операция = один кадр. Пройди все кадры из db_frames.json.\n"
+    "Сборка кадра: place + shot01_bg + lighting/scene_lighting + "
+    "shot01_action + shot01_description + accent + scene_sense + "
+    "characters[] Entity. Не копируй voiceover_text.\n"
 )
+
+
+async def _write_img_pr_db_frames(project: Project, tmp_dir: Path) -> Path:
+    """Пишет db_frames.json (attrs после scene_grammar + Entity)."""
+    import json
+
+    from app.db import SessionLocal
+    from app.models import Entity
+    from app.services import db_v2
+    from app.services.db_frames_context import build_img_pr_db_context
+    from app.services.excel_characters import entity_cards_for_gpt
+
+    async with SessionLocal() as session:
+        proj = await session.get(Project, project.id)
+        if proj is None:
+            raise RuntimeError(f"project #{project.id} not found for img_pr db_frames")
+        await db_v2.backfill_project_v2(session, proj)
+        frames = list(
+            (
+                await session.execute(
+                    select(Frame)
+                    .where(Frame.project_id == proj.id)
+                    .order_by(Frame.number)
+                )
+            ).scalars().all()
+        )
+        ents = list(
+            (
+                await session.execute(
+                    select(Entity).where(Entity.project_id == proj.id)
+                )
+            ).scalars().all()
+        )
+        ctx = build_img_pr_db_context(
+            project_id=proj.id,
+            slug=proj.slug or "",
+            frames=frames,
+            characters=entity_cards_for_gpt(ents),
+            general_plan=proj.general_plan or "",
+        )
+
+    out = tmp_dir / "db_frames.json"
+    out.write_text(json.dumps(ctx, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info(
+        "img_pr_db: db_frames.json frames={} characters={} path={}",
+        len(ctx.get("frames") or []),
+        len(ctx.get("characters") or []),
+        out,
+    )
+    return out
 
 
 async def run_img_pr_xlsx(
@@ -561,17 +615,18 @@ async def run_img_pr_xlsx(
     if uuid_map_text.strip():
         chat_msg = f"{chat_msg}\nАдресация кадров (номер = uuid):\n{uuid_map_text.strip()}\n"
 
-    # Контекст закадров — текстовый файл, не бинарный xlsx-download.
-    ctx_parts: list[str] = []
     attach: list[Path] = [prompt_file]
+    db_frames = await _write_img_pr_db_frames(project, tmp_dir)
+    attach.append(db_frames)
     vo = cx.ensure_current_voiceover(project)
     if vo is not None:
         attach.append(vo)
 
     logger.info(
-        "img_pr_db: prompt_file={} chat_len={} (без xlsx-download)",
+        "img_pr_db: prompt_file={} chat_len={} attach={} (без xlsx-download)",
         prompt_file.name,
         len(chat_msg),
+        [p.name for p in attach],
     )
 
     async def _gpt() -> str:
