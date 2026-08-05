@@ -2019,47 +2019,120 @@ export interface PromptVersionContent {
 /**
  * WebSocket подписка на канал. Возвращает функцию отписки.
  * channel: "global" | "runs.<id>" | "projects.<id>" | "hitl.<id>" | "logs.<id>"
+ *
+ * Один сокет на channel (hub): иначе React remount / несколько панелей /
+ * CONNECTING без close() копят 100+ WS и душат backend (anim_pr / GPT).
  */
+type WsHandler = (event: unknown) => void;
+
+type WsHub = {
+  channel: string;
+  ws: WebSocket | null;
+  handlers: Set<WsHandler>;
+  reconnectTimer: ReturnType<typeof setTimeout> | null;
+  backoffMs: number;
+  closing: boolean;
+};
+
+const WS_HUBS = new Map<string, WsHub>();
+const WS_BACKOFF_MIN_MS = 1000;
+const WS_BACKOFF_MAX_MS = 15000;
+
+function _wsCloseQuiet(ws: WebSocket | null): void {
+  if (!ws) return;
+  try {
+    // Важно: CLOSE и CONNECTING — иначе orphan-сокеты копятся.
+    if (
+      ws.readyState === WebSocket.CONNECTING ||
+      ws.readyState === WebSocket.OPEN
+    ) {
+      ws.close();
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function _wsConnectHub(hub: WsHub): void {
+  if (hub.closing || hub.handlers.size === 0) return;
+  if (
+    hub.ws &&
+    (hub.ws.readyState === WebSocket.CONNECTING ||
+      hub.ws.readyState === WebSocket.OPEN)
+  ) {
+    return;
+  }
+  const protocol = location.protocol === "https:" ? "wss" : "ws";
+  const url = `${protocol}://${location.host}/ws/${hub.channel}`;
+  const ws = new WebSocket(url);
+  hub.ws = ws;
+  ws.addEventListener("open", () => {
+    hub.backoffMs = WS_BACKOFF_MIN_MS;
+  });
+  ws.addEventListener("message", (ev) => {
+    let data: unknown;
+    try {
+      data = JSON.parse(ev.data);
+    } catch (e) {
+      console.warn("ws parse error", e);
+      return;
+    }
+    for (const h of [...hub.handlers]) {
+      try {
+        h(data);
+      } catch (e) {
+        console.warn("ws handler error", e);
+      }
+    }
+  });
+  ws.addEventListener("close", () => {
+    if (hub.ws === ws) hub.ws = null;
+    if (hub.closing || hub.handlers.size === 0) return;
+    if (hub.reconnectTimer) clearTimeout(hub.reconnectTimer);
+    const delay = hub.backoffMs;
+    hub.backoffMs = Math.min(hub.backoffMs * 2, WS_BACKOFF_MAX_MS);
+    hub.reconnectTimer = setTimeout(() => {
+      hub.reconnectTimer = null;
+      _wsConnectHub(hub);
+    }, delay);
+  });
+  ws.addEventListener("error", () => {
+    // close handler сделает reconnect
+  });
+}
+
 export function subscribeWS(
   channel: string,
-  onMessage: (event: unknown) => void,
+  onMessage: WsHandler,
   onClose?: (reason: string) => void
 ): () => void {
-  let ws: WebSocket | null = null;
-  let closed = false;
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-
-  const connect = () => {
-    if (closed) return;
-    const protocol = location.protocol === "https:" ? "wss" : "ws";
-    const url = `${protocol}://${location.host}/ws/${channel}`;
-    ws = new WebSocket(url);
-    ws.addEventListener("message", (ev) => {
-      try {
-        const data = JSON.parse(ev.data);
-        onMessage(data);
-      } catch (e) {
-        console.warn("ws parse error", e);
-      }
-    });
-    ws.addEventListener("close", () => {
-      if (closed) {
-        onClose?.("closed");
-        return;
-      }
-      // backoff reconnect
-      reconnectTimer = setTimeout(connect, 1500);
-    });
-    ws.addEventListener("error", () => {
-      // close handler сделает reconnect
-    });
-  };
-
-  connect();
+  let hub = WS_HUBS.get(channel);
+  if (!hub) {
+    hub = {
+      channel,
+      ws: null,
+      handlers: new Set(),
+      reconnectTimer: null,
+      backoffMs: WS_BACKOFF_MIN_MS,
+      closing: false,
+    };
+    WS_HUBS.set(channel, hub);
+  }
+  hub.closing = false;
+  hub.handlers.add(onMessage);
+  _wsConnectHub(hub);
 
   return () => {
-    closed = true;
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+    hub!.handlers.delete(onMessage);
+    if (hub!.handlers.size > 0) return;
+    hub!.closing = true;
+    if (hub!.reconnectTimer) {
+      clearTimeout(hub!.reconnectTimer);
+      hub!.reconnectTimer = null;
+    }
+    _wsCloseQuiet(hub!.ws);
+    hub!.ws = null;
+    WS_HUBS.delete(channel);
+    onClose?.("closed");
   };
 }

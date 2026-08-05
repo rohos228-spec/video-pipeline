@@ -254,12 +254,31 @@ def create_app() -> FastAPI:
         )
 
     # ── WebSocket: live-стрим событий выбранного канала ──
+    # Лимит: утечки на клиенте (до WS-hub) иначе копят 200+ сокетов и
+    # душат event loop — anim_pr / GPT API выглядят «зависшими».
+    _ws_active = {"n": 0}
+    _WS_MAX = 48
+
     @app.websocket("/ws/{channel:path}")
     async def ws_channel(ws: WebSocket, channel: str) -> None:
         """Клиент подписывается на канал (например, `runs.42`, `global`,
         `hitl.7`). Сервер шлёт JSON-сообщения каждое полученное событие.
         """
+        if _ws_active["n"] >= _WS_MAX:
+            await ws.accept()
+            with suppress(Exception):
+                await ws.send_text(
+                    json.dumps(
+                        {
+                            "type": "error",
+                            "detail": f"too many websocket connections (max {_WS_MAX})",
+                        }
+                    )
+                )
+                await ws.close(code=1013)
+            return
         await ws.accept()
+        _ws_active["n"] += 1
         bus = get_bus()
         try:
             async with bus.subscribe(channel) as queue:
@@ -296,6 +315,8 @@ def create_app() -> FastAPI:
             logger.exception("ws channel={} crashed", channel)
             with suppress(Exception):
                 await ws.close(code=1011)
+        finally:
+            _ws_active["n"] = max(0, _ws_active["n"] - 1)
 
     # ── Health ──
     @app.get(f"{API_PREFIX}/health")

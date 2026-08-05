@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 
 from aiogram import Bot  # noqa: F401
@@ -133,7 +134,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 break
 
             batch = pending[: apg.BATCH_SIZE]
-            strip_path = apg.build_batch_strip_path(batch, tmp_dir)
+            strip_path = await asyncio.to_thread(
+                apg.build_batch_strip_path, batch, tmp_dir
+            )
             batch_msg = apg.build_batch_message(batch)
             logger.info(
                 "[#{}] anim_pr: ФАЗА 2 shot_01 batch {} кадров {} — лента {} ({} симв.)",
@@ -166,7 +169,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 break
 
             batch2 = pending2[: apg.BATCH_SIZE]
-            strip2 = apg.build_batch_strip_path(batch2, tmp_dir)
+            strip2 = await asyncio.to_thread(
+                apg.build_batch_strip_path, batch2, tmp_dir
+            )
             batch_msg2 = apg.build_batch_message_shot2(batch2)
             logger.info(
                 "[#{}] anim_pr: ФАЗА 2 shot_02 batch {} кадров {} — лента {} ({} симв.)",

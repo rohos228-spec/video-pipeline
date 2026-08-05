@@ -269,24 +269,9 @@ async def start_step(
             ", ".join(cleared),
         )
     try:
-        # UI ▶ anim_pr: wipe R48/DB, иначе soft-resume оставляет готовые промты
-        # и шаг сразу «ничего делать» → auto уходит в video.
-        force_wipe = bool(explicit_ui_start and step_code == "anim_pr")
-        if force_wipe:
-            from sqlalchemy import select as _select
-
-            from app.models import Frame as _Frame
-            from app.storage.plan_sheet_v8 import clear_plan_animation_prompts
-
-            nums = [
-                int(n)
-                for (n,) in (
-                    await session.execute(
-                        _select(_Frame.number).where(_Frame.project_id == project.id)
-                    )
-                ).all()
-            ]
-            clear_plan_animation_prompts(project, nums)
+        # Soft ▶ anim_pr: не wipe R48 (как img_pr) — иначе рестарт backend /
+        # повторный ▶ сжигает уже сгенерированные пачки. Полный wipe — reset_step.
+        force_wipe = False
         wiped = await clear_step_outputs_for_rerun(
             session, project, step_code, force_wipe=force_wipe
         )
