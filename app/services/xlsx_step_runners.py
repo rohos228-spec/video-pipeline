@@ -33,7 +33,7 @@ from app.storage import for_project as _sheet_for_project
 
 # Должен совпадать со строкой 4 в web/STUDIO_VERSION. Если в логе make_plan
 # нет «xlsx_step_runners» — на диске старый make_plan.py (текст 30k в ask).
-XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v75-img-pr-db-frames"
+XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v76-img-pr-accent-blocks"
 
 
 def _plan_empty_error(xlsx_path: Path, *, plan_len: int) -> RuntimeError:
@@ -534,8 +534,10 @@ _IMG_PR_DB_HINT = (
     '{"ops":[{"frame_uuid":"<uuid>","fields":{"промт_картинки":"…"}}]}\n'
     "Адрес кадра — ТОЛЬКО frame_uuid из db_frames.json / списка ниже.\n"
     "Одна операция = один кадр. Пройди все кадры из db_frames.json.\n"
-    "Сборка кадра: place + shot01_bg + lighting/scene_lighting + "
-    "shot01_action + shot01_description + accent + scene_sense + "
+    "Сборка кадра (порядок): ref(cXX?) → shot01_bg → shot01_action → "
+    "lighting/scene_lighting → accent → scene_sense → scene_feature → "
+    "shot01_description/props → place/время → STYLE. "
+    "accent/scene_sense/scene_feature — отдельные строки. "
     "characters[] Entity. Не копируй voiceover_text.\n"
 )
 

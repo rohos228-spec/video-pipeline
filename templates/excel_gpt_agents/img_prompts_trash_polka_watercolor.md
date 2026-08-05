@@ -7,7 +7,7 @@
 Не пишет: `voiceover_text`/`закадр`, `промт_видео`, `промт_видео_2`,
 `длительность`, `общий_план`, паспорт сцены (place/lighting/shot01_*).
 
-Источник стиля: «треш полька акварель» v2.8 — **не упрощать и не заменять другим стилем**.
+Источник стиля: «треш полька акварель» v2.9 — **не упрощать и не заменять другим стилем**.
 
 ---
 
@@ -125,24 +125,42 @@ Continuity внутри одного `place`: один и тот же базов
 Переформулируй через watercolor noir (§5 LIGHT_VECTOR), **не меняя**
 источники локации.
 
-### Блок E — ВАЖНЫЕ ДЕТАЛИ
+### Блок E — ACCENT (обязательно, отдельной фразой)
 
-- фокус = `accent` (один);
-- камера/крупность = `shot01_description` (или `scene_feature` если description пуст);
-- props = только `shot01_props` (+ то, что явно в accent/action);
-- `scene_sense` = видимые факты, не мета.
+Поле `accent` из кадра = **один** визуальный центр шота (конкретный объект/жест).  
+В промте явно: `Accent / focal point: […]`.  
+Не копируй accent соседних кадров. Не подменяй абстракцией («напряжение»).
 
-### Блок F — МЕСТО И ВРЕМЯ
+### Блок F — SCENE_SENSE (обязательно, отдельной фразой)
+
+Поле `scene_sense` = видимый факт сцены.  
+В промте: `Scene sense (visible): […]`.  
+Только то, что можно увидеть; запрещена литература («зритель не знает», «намёк»).  
+Не копировать как закадр; можно сжать до 1 предложения фактов.
+
+### Блок G — SCENE_FEATURE (обязательно, отдельной фразой)
+
+Поле `scene_feature` = роль/крупность шота («Общий план локации», «Средний план…»).  
+В промте: `Scene feature / shot scale: […]`.  
+Согласуй с камерой из `shot01_description` (description точнее; feature — якорь плана).  
+Если description пуст — бери крупность из `scene_feature`.
+
+### Блок H — ВАЖНЫЕ ДЕТАЛИ (остальное)
+
+- камера/композиция = `shot01_description`;
+- props = только `shot01_props` (+ то, что явно в accent/action).
+
+### Блок I — МЕСТО И ВРЕМЯ
 
 - место = `place` (конкретная локация);
 - время/эпоха = кратко из `general_plan` (год/эпоха/контекст), без копипаста абзацев.
 
-### Блок G — СТИЛЬ (часть стиля — обязательно)
+### Блок J — СТИЛЬ (часть стиля — обязательно)
 
-В конце (или сразу после F) вставь **часть STYLE LOCK**:  
+В конце вставь **часть STYLE LOCK**:  
 STYLE_LABEL + STYLE_CORE + короткий RENDERING/COLOR + Final style lock + Negative  
 (полный словарь — §5; шаблон — §6). Стиль **нельзя** выкидывать ради лимита —
-режь сюжет/воду в B–E, не style-блок.
+режь сюжет/воду в B–H, не style-блок.
 
 ### Запрет двойников / клонов (в каждом промте)
 
@@ -277,7 +295,8 @@ one unified scene (not literal collage); archival dossier montage energy → int
 
 ## 6. Шаблон сборки `промт_картинки`
 
-Порядок блоков A→G (§2). Скобки `[…]` — данные из Базы. Style-часть (§ G) не выкидывай.
+Порядок блоков A→J (§2). Скобки `[…]` — данные из Базы. Style-часть (J) не выкидывай.
+`accent` / `scene_sense` / `scene_feature` — **отдельные строки**, не прячь в «details».
 
 ```
 [A — только если есть cXX]
@@ -289,11 +308,17 @@ Reference: character sheet for [cXX / Name] — identity lock for this ONE perso
 
 [D] Light: exaggerated noir through watercolor — [lighting/scene_lighting: source, direction, contrast, tone], deep charcoal shadows, strong silhouette, soft pigment bloom. Keep the same location light sources.
 
-[E] Important details: focal point [accent]; camera [shot01_description / scene_feature]; props only [shot01_props]; visible facts [scene_sense]. Single unified scene, not collage panels. No invented clues/documents. No copied voiceover. Extras (if any) must look different from referenced character — no duplicate identical faces.
+[E] Accent / focal point: [accent — one concrete object or gesture for THIS shot].
 
-[F] Place and time: [place]; [TIME_PERIOD / epoch from general_plan, short].
+[F] Scene sense (visible): [scene_sense — visible facts only, no literary meta, no voiceover copy].
 
-[G — STYLE part]
+[G] Scene feature / shot scale: [scene_feature]; camera: [shot01_description — height, axis, framing; if empty use scene_feature].
+
+[H] Important details: props only [shot01_props]. Single unified scene, not collage panels. No invented clues/documents. No copied voiceover. Extras (if any) must look different from referenced character — no duplicate identical faces.
+
+[I] Place and time: [place]; [TIME_PERIOD / epoch from general_plan, short].
+
+[J — STYLE part]
 STYLE: Archival Noir Watercolor Grunge Dossier Poster Illustration. archival true-crime noir dossier poster + dark watercolor wash + grunge prison mystery illustration + distressed printmaking + noir comic graphic novel inking + high-contrast historical mixed media. Transparent watercolor washes, gray-blue wash layers, dirty cream pigment bleeding into paper, ink-and-water stains, raw brush smears, rough ink splashes, distressed/torn archive paper, worn newspaper texture, halftone dots, rough print imperfections, gritty comic inking, charcoal shadow masses. Palette: washed gray-blue, cold oceanic gray, off-white, dirty cream, charcoal, muted amber-gray, faded paper yellow, diluted ink black; rare distressed blood-red stress marks only. One unified poster frame. Improve only inside this style (stronger wash/silhouette/grain), never change medium.
 
 Final style lock: unified cinematic frame, Archival Noir Watercolor Grunge Dossier Poster Illustration, dark comic graphic novel inking, distressed printmaking, realistic historical texture via watercolor absorption, high-contrast mixed media, transparent washes, paper-absorbed pigment, washed gray-blue and dirty cream palette, ink-and-water stains, rough contour lines, heavy charcoal shadow masses, halftone grain, damaged archive-paper surface, raw brush smears, rough ink splashes, torn newspaper fragments, minimal distressed red stress marks only, no red circles/arrows, no photorealism, no glossy 3D, no clean vector, no pastel, no neon, no multi-panel collage, no automatic detective board, no large foreground props, no copper basin/washstand, no twins/clones/duplicate faces of the same character id, character id when present, no copied voiceover.
@@ -326,10 +351,11 @@ photorealism, glossy 3D render, clean minimalist, cute, pastel, bright cheerful 
 
 ## 9. Финальный чеклист перед JSON
 
-- [ ] Порядок блоков: **A(ref?) → B фон → C действие → D свет → E детали → F место/время → G стиль**  
+- [ ] Порядок: **A(ref?) → B фон → C действие → D свет → E accent → F scene_sense → G scene_feature → H детали → I место/время → J стиль**  
+- [ ] `accent`, `scene_sense`, `scene_feature` — отдельные явные строки из Базы  
 - [ ] Если есть cXX: в A указано где стоит и что делает; **один** экземпляр, no clones  
 - [ ] Фон подробный (`shot01_bg`), не одно слово  
-- [ ] Style-часть (G) на месте; нет style drift  
+- [ ] Style-часть (J) на месте; нет style drift  
 - [ ] Только JSON apply-ops; все uuid из `db_frames.json`  
 - [ ] id = `c01`… не `char_01`  
 - [ ] Камера из `shot01_description`  
