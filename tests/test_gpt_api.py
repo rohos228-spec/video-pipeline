@@ -268,8 +268,11 @@ def test_xlsx_to_text_apply_ops_contract_forbids_tsv_refusal(tmp_path: Path) -> 
     text = xlsx_to_text(p, write_contract="apply_ops")
     assert "DB SoT" in text
     assert "apply-ops" in text.lower() or "JSON" in text
-    assert "ЗАПРЕЩЕНО" in text
+    assert "[SHEET: план]" in text
+    assert "# Лист:" not in text
     assert "верни `# Лист:`" not in text
+    # Не провоцировать parrot-отказ модели.
+    assert "недоступен" not in text.casefold()
 
 
 def test_xlsx_to_text_sparse_rows_keep_excel_numbers(tmp_path: Path) -> None:

@@ -412,19 +412,25 @@ async def _run_operator_api_real(
         retry_prompt = (
             f"{prompt_for_model}\n\n"
             "# КОНТРАКТ ЗАПИСИ В БАЗУ (повтор, обязателен)\n"
-            "Предыдущий ответ ОТКЛОНЁН: нужен JSON apply-ops с данными, "
-            "не TSV, не проза, не пустые списки, не отказ про project.xlsx.\n"
-            "Бинарный xlsx НЕ НУЖЕН — источник правды DB / снимок вложений.\n"
+            "Предыдущий ответ ОТКЛОНЁН. Нужен JSON apply-ops с данными.\n"
+            "Источник: db_frames.json + закадр во вложении/accompanying. "
+            "Пайплайн запишет JSON в DB сам.\n"
             "Верни ТОЛЬКО один JSON-объект с непустыми полями:\n"
             '{"characters":[...],"scenes":[...],"ops":[...],"report":"..."}\n'
             "или минимум:\n"
             '{"ops":[{"frame_uuid":"<uuid>","fields":{"место":"…"}}]}\n'
-            "Без markdown, без объяснений, без error про недоступный xlsx."
+            "Без markdown, без TSV, без поля error, без просьб о вложениях."
         )
+        # Retry без xlsx — иначе модель снова упирается в «нет файла».
+        retry_paths = [
+            p
+            for p in input_paths
+            if p.suffix.lower() not in {".xlsx", ".xlsm", ".xls"}
+        ]
         retry = await chat(
             prompt=retry_prompt,
             accompanying=accomp,
-            input_paths=list(input_paths),
+            input_paths=retry_paths or list(input_paths),
             temperature=0.0,
             xlsx_write_contract="apply_ops",
         )

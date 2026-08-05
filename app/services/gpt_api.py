@@ -187,14 +187,15 @@ def xlsx_to_text(
     except Exception as e:  # noqa: BLE001
         return f"[xlsx: не удалось открыть {path.name}: {e}]"
     sheets = sorted(list(wb.worksheets), key=lambda ws: (_xlsx_sheet_priority(ws.title), ws.title))
-    if str(write_contract or "").strip().lower() == "apply_ops":
+    apply_ops_mode = str(write_contract or "").strip().lower() == "apply_ops"
+    if apply_ops_mode:
+        # Не писать «бинарный / недоступен / нет файла» — модель копирует это в отказ.
         banner = (
-            "[xlsx text-export / DB SoT: снимок для чтения. "
-            "Источник правды — база (frame_uuid + attrs). "
-            "Бинарный .xlsx в песочнице API не нужен — НЕ отказывай из‑за «нет файла». "
-            "ЗАПРЕЩЕНО: TSV, `# Лист:`, `@row=`, отказ «project.xlsx недоступен». "
-            "Для записи верни ТОЛЬКО JSON apply-ops: "
-            '{"ops":[...],"characters":[...],"scenes":[...]} — без markdown.]'
+            "[DB SoT READ SNAPSHOT] Ниже текстовый снимок зеркала Excel. "
+            "Источник правды для записи — frame_uuid + attrs (см. db_frames.json). "
+            "Ответ = ТОЛЬКО JSON apply-ops "
+            '{"ops":[...],"characters":[...],"scenes":[...]} без markdown. '
+            "Не возвращай TSV и не требуй вложений: пайплайн сам запишет JSON в DB.]"
         )
     else:
         banner = (
@@ -209,10 +210,20 @@ def xlsx_to_text(
     used = len(out[0])
     truncated_sheets: list[str] = []
     for ws in sheets:
-        header = f"# Лист: {ws.title}"
+        # apply_ops: не использовать `# Лист:` — иначе модель уходит в TSV/отказ.
+        header = (
+            f"[SHEET: {ws.title}]"
+            if apply_ops_mode
+            else f"# Лист: {ws.title}"
+        )
         if used + len(header) + 32 > budget:
             truncated_sheets.append(ws.title)
-            out.append(f"# Лист: {ws.title}\n… (лист пропущен: лимит контекста)")
+            skip = (
+                f"[SHEET: {ws.title}]\n… (лист пропущен: лимит контекста)"
+                if apply_ops_mode
+                else f"# Лист: {ws.title}\n… (лист пропущен: лимит контекста)"
+            )
+            out.append(skip)
             continue
         sheet_lines = [header]
         sheet_used = len(header)
@@ -284,12 +295,19 @@ def xlsx_to_text(
     with contextlib.suppress(Exception):
         wb.close()
     if truncated_sheets:
-        out.append(
-            "[xlsx text-export: частично обрезаны листы (это НЕ «нет project.xlsx»): "
-            + ", ".join(truncated_sheets)
-            + " — ЗАПРЕЩЕНО считать книгу полной; запроси продолжение экспорта "
-            "или заполни только видимые @row, пометив remaining: truncated]"
-        )
+        if apply_ops_mode:
+            out.append(
+                "[DB SoT READ SNAPSHOT: частично обрезаны листы: "
+                + ", ".join(truncated_sheets)
+                + " — пиши JSON apply-ops по видимым кадрам/db_frames.json]"
+            )
+        else:
+            out.append(
+                "[xlsx text-export: частично обрезаны листы (это НЕ «нет project.xlsx»): "
+                + ", ".join(truncated_sheets)
+                + " — ЗАПРЕЩЕНО считать книгу полной; запроси продолжение экспорта "
+                "или заполни только видимые @row, пометив remaining: truncated]"
+            )
         logger.warning(
             "xlsx_to_text: обрезаны листы {} path={} chars~{}",
             truncated_sheets,

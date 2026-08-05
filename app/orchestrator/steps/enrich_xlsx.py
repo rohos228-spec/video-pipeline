@@ -69,7 +69,8 @@ _SCENE_GRAMMAR_APPLY_HINT = (
     "особенность_сцены (ракурс ЭТОГО кадра), действие, описание_кадра, "
     "главное_действие, предметы. Кадр ВШИТ в сцену (те же границы/кластер).\n"
     "Запрет: дубли действия/описания; ops только id_scene/id_shot; "
-    "1 колонка=1 сцена; TSV; промт_картинки/видео.\n"
+    "1 колонка=1 сцена; TSV; промт_картинки/видео; просьбы приложить xlsx; "
+    "поле error про «нет файла».\n"
     "Адресация кадров (номер = uuid):\n"
 )
 
@@ -708,7 +709,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     project.id,
                     e,
                 )
-            # Компактный снимок DB (SoT) — модель читает uuid/attrs, не Excel.
+            # Компактный снимок DB (SoT). Для scene_grammar attrs не тащим —
+            # пишем с нуля; иначе раздуваем контекст и провоцируем отказ/524.
             db_ctx = {
                 "source": "db_v2",
                 "project_id": project.id,
@@ -719,7 +721,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         "uuid": fr.uuid,
                         "voiceover_text": fr.voiceover_text or "",
                         "meaning": fr.meaning or "",
-                        "attrs": fr.attrs or {},
+                        **(
+                            {}
+                            if scene_grammar
+                            else {"attrs": fr.attrs or {}}
+                        ),
                     }
                     for fr in frames_for_map
                     if fr.uuid
@@ -732,8 +738,27 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 _json.dumps(db_ctx, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            # DB-снимок первым во вложениях.
-            data_paths = [ctx_path, *[p for p in data_paths if p.resolve() != ctx_path.resolve()]]
+            # DB-снимок первым. scene_grammar: без .xlsx во вложениях —
+            # имя project.xlsx + TSV `# Лист:` снова толкает модель в отказ
+            # «нет бинарного xlsx» (см. backend.log 14:17).
+            rest = [
+                p
+                for p in data_paths
+                if p.resolve() != ctx_path.resolve()
+                and not (
+                    scene_grammar
+                    and p.suffix.lower() in {".xlsx", ".xlsm", ".xls"}
+                )
+            ]
+            data_paths = [ctx_path, *rest]
+            if scene_grammar:
+                logger.info(
+                    "[#{}] enrich_xlsx node={!r}: scene_grammar — "
+                    "вложения без xlsx, files={}",
+                    project.id,
+                    node_key,
+                    [p.name for p in data_paths],
+                )
             uuid_frames = [f for f in frames_for_map if f.uuid]
             mapping = ""
             if uuid_frames:
@@ -751,9 +776,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             accompanying = (
                 f"{accompanying}\n\n"
                 "# DB SoT\n"
-                "Файл db_frames.json — кадры из базы (uuid + attrs). "
-                "Не отказывай из‑за «нет бинарного project.xlsx». "
-                "Пиши только JSON apply-ops в базу."
+                "Файл db_frames.json — кадры из базы (uuid + voiceover). "
+                "Пайплайн сам запишет твой JSON в DB и обновит зеркало Excel. "
+                "Отвечай только JSON apply-ops; не проси вложений и не пиши TSV."
             ).strip()
             if scene_grammar:
                 vo_chunks = [
