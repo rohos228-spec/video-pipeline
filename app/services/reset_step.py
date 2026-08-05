@@ -366,6 +366,40 @@ async def _wipe_img_pr(session: AsyncSession, project: Project) -> dict[str, Any
     return {"frames_cleared": cleared, "frames_status_reset": status_reset}
 
 
+async def _resume_img_pr(session: AsyncSession, project: Project) -> dict[str, Any]:
+    """Soft ▶ img_pr: НЕ стирать image_prompt / чекпоинт.
+
+    Если в DB пусто, а в project.xlsx уже есть R45 — подтянуть (после
+    успешного apply + падения на greenlet / случайного wipe).
+    """
+    frames = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project.id)
+        )
+    ).scalars().all()
+    have = sum(1 for fr in frames if (fr.image_prompt or "").strip())
+    need = sum(
+        1
+        for fr in frames
+        if (fr.voiceover_text or "").strip() and not (fr.image_prompt or "").strip()
+    )
+    restored: list[int] = []
+    if need and not have:
+        xlsx_path = project.data_dir / "project.xlsx"
+        if xlsx_path.is_file():
+            from app.services.xlsx_v8_import import apply_v8_image_prompts_from_xlsx
+
+            restored = await apply_v8_image_prompts_from_xlsx(
+                session, project, xlsx_path
+            )
+    return {
+        "mode": "soft_resume",
+        "had_prompts": have,
+        "needed": need,
+        "restored_from_xlsx": restored,
+    }
+
+
 def _backup_scenes_before_wipe(project: Project, scenes_dir: Path) -> int:
     """Копия scenes/*.png в data/.../old/scenes/<timestamp>/ перед удалением."""
     if not scenes_dir.is_dir():
@@ -647,6 +681,7 @@ _STEP_WIPE_BY_CODE: dict[str, Any] = dict(_PIPELINE_RESET_LEVELS)
 # «Запустить шаг» / retry — не обнулять, а догонять с xlsx.
 _STEP_RERUN_BY_CODE: dict[str, Any] = {
     "script": _preserve_script_source_on_rerun,
+    "img_pr": _resume_img_pr,
     "anim_pr": _resume_anim_pr_from_xlsx,
     "audio": _preserve_user_media_on_rerun,
     "music": _preserve_user_media_on_rerun,

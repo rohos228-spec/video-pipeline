@@ -81,14 +81,20 @@ _STEP_TMP_GLOBS: dict[str, tuple[str, ...]] = {
     "plan": ("plan_*.xlsx", "prompt_plan_*"),
     "script": ("script_*.txt", "prompt_script_*"),
     "split": ("split_*.xlsx", "prompt_split_*"),
-    "img_pr": ("prompt_img_pr_*"),
-    "anim_pr": ("prompt_anim_pr_*"),
+    # ВАЖНО: trailing comma — иначе ("x") это str, и glob("*") сносит весь tmp_gpt.
+    "img_pr": ("prompt_img_pr_*", "db_frames_*.json", "img_pr_rejected_*.txt"),
+    "anim_pr": ("prompt_anim_pr_*",),
     "enrich_1": ("prompt_enrich_1_*", "enrich_1_*.xlsx"),
     "enrich_2": ("prompt_enrich_2_*", "enrich_2_*.xlsx"),
     "enrich_3": ("prompt_enrich_3_*", "enrich_3_*.xlsx"),
     "enrich_4": ("prompt_enrich_4_*", "enrich_4_*.xlsx"),
     "enrich_5": ("prompt_enrich_5_*", "enrich_5_*.xlsx"),
 }
+
+# Чекпоинты / resume — никогда не удалять через purge.
+_PURGE_TMP_GPT_KEEP_NAMES: frozenset[str] = frozenset({
+    "img_pr_checkpoint.json",
+})
 
 
 def purge_tmp_gpt_for_step(project: Project, step_code: str) -> int:
@@ -98,8 +104,22 @@ def purge_tmp_gpt_for_step(project: Project, step_code: str) -> int:
         return 0
     removed = 0
     protect_enrich = not step_code.startswith("enrich_")
-    for pattern in _STEP_TMP_GLOBS.get(step_code, ()):
+    patterns = _STEP_TMP_GLOBS.get(step_code, ())
+    if isinstance(patterns, str):
+        # Защита от регресса: одиночная строка ≠ tuple паттернов.
+        patterns = (patterns,)
+    for pattern in patterns:
+        if not pattern or pattern == "*":
+            logger.error(
+                "[#{}] purge_tmp_gpt {}: refuse glob {!r}",
+                project.id,
+                step_code,
+                pattern,
+            )
+            continue
         for path in tmp_dir.glob(pattern):
+            if path.name in _PURGE_TMP_GPT_KEEP_NAMES:
+                continue
             if protect_enrich and path.name.startswith("prompt_enrich_"):
                 continue
             try:
