@@ -173,7 +173,11 @@ async def db_graph(
     # Сводка последних проверок — чип «Проверки» в «Базе».
     from app.services.agent_harness import read_ops_telemetry
 
-    tel = read_ops_telemetry(project.meta if isinstance(project.meta, dict) else {})
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    # Сцены по словам (scene grammar) — SoT в meta, не в Excel.
+    registry = meta.get("scene_registry")
+    graph["scene_registry"] = registry if isinstance(registry, list) else []
+    tel = read_ops_telemetry(meta)
     checks = tel.get("checks") or []
     graph["harness"] = {
         "outcome": tel.get("last_outcome"),

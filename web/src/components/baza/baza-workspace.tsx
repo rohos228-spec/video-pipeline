@@ -95,8 +95,49 @@ const EDGE_TYPE_RU: Record<string, string> = {
 };
 const EDGE_TYPES = Object.keys(EDGE_TYPE_RU);
 
+/** Поля Frame.attrs — источник правды в «Базе» (не Excel). */
+const ATTR_FIELD_DEFS: { key: string; label: string; rows?: number }[] = [
+  { key: "place", label: "Место" },
+  { key: "main_action", label: "Главное действие", rows: 3 },
+  { key: "accent", label: "Акцент" },
+  { key: "scene_sense", label: "Смысл сцены", rows: 3 },
+  { key: "visual_type", label: "Тип сцены" },
+  { key: "scene_feature", label: "Особенность сцены" },
+  { key: "cluster", label: "Кластер" },
+  { key: "characters", label: "Персонажи (коды)" },
+  { key: "scene_structure", label: "Структура сцены" },
+  { key: "edit_type", label: "Тип стыка" },
+  { key: "scene_transition", label: "Переход в сцену" },
+  { key: "scene_start_words", label: "Сцена · start words" },
+  { key: "scene_end_words", label: "Сцена · end words" },
+  { key: "shot01_id_scene", label: "shot01 · id сцены" },
+  { key: "shot01_id_shot", label: "shot01 · id шота" },
+  { key: "shot01_action", label: "shot01 · действие", rows: 2 },
+  { key: "shot01_description", label: "shot01 · описание", rows: 2 },
+  { key: "shot01_bg", label: "shot01 · фон" },
+  { key: "shot01_props", label: "shot01 · предметы" },
+  { key: "shot01_transition", label: "shot01 · логика перехода" },
+  { key: "shot01_notes", label: "shot01 · заметки", rows: 2 },
+];
+
 const ru = (map: Record<string, string>, key: string | null | undefined) =>
   (key && map[key]) || key || "—";
+
+function attrStr(attrs: Record<string, unknown> | null | undefined, key: string): string {
+  const v = attrs?.[key];
+  if (v == null) return "";
+  return typeof v === "string" ? v : String(v);
+}
+
+function frameHasImg(f: DbFrame): boolean {
+  if ((f.image_prompt || "").trim()) return true;
+  return f.prompts.some((p) => p.kind === "img" && p.is_active && p.text.trim());
+}
+
+function frameHasVideo(f: DbFrame): boolean {
+  if ((f.animation_prompt || "").trim()) return true;
+  return f.prompts.some((p) => p.kind === "video" && p.is_active && p.text.trim());
+}
 
 function colLetter(n: number): string {
   let s = "";
@@ -120,6 +161,8 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
   const [frameId, setFrameId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState<"frames" | "entities">("frames");
+  /** Основной вид «Базы» — карточки DB; Excel только зеркало (опционально). */
+  const [framesView, setFramesView] = useState<"cards" | "excel">("cards");
   /** Вкладки = бывшие листы Excel (кадры: «Общий план», «план»; сущности: «Персонажи»…). */
   const [frameSheets, setFrameSheets] = useState<string[]>([...FRAME_SHEETS_DEFAULT]);
   const [entitySheets, setEntitySheets] = useState<string[]>([...ENTITY_SHEETS_DEFAULT]);
@@ -175,7 +218,7 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
   }, [open, projectId, loadGraph, loadSheetMeta]);
 
   useEffect(() => {
-    if (!open || projectId == null || tab !== "frames") return;
+    if (!open || projectId == null || tab !== "frames" || framesView !== "excel") return;
     let cancelled = false;
     setSheetLoading(true);
     void api
@@ -201,7 +244,14 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [open, projectId, tab, frameSheet, sheetTick]);
+  }, [open, projectId, tab, frameSheet, sheetTick, framesView]);
+
+  // Автовыбор первого кадра из DB (не из Excel-колонки).
+  useEffect(() => {
+    if (!graph?.frames.length) return;
+    if (frameId != null && graph.frames.some((f) => f.id === frameId)) return;
+    setFrameId(graph.frames[0]!.id);
+  }, [graph, frameId]);
 
   const reload = useCallback(async () => {
     if (projectId == null) return;
@@ -374,28 +424,62 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
 
               {tab === "frames" ? (
                 <div className="flex min-h-0 flex-1 flex-col gap-2">
-                  {/* Вкладки = листы Excel, которые остались у кадров */}
-                  <div className="flex shrink-0 flex-nowrap items-center gap-1.5 overflow-x-auto">
+                  <div className="flex shrink-0 flex-wrap items-center gap-1.5">
                     <span className="mr-1 shrink-0 text-[10px] uppercase tracking-[0.18em] text-white/35">
-                      Лист
+                      Вид
                     </span>
-                    {frameSheets.map((name) => (
-                      <button
-                        key={name}
-                        type="button"
-                        onClick={() => setFrameSheet(name)}
-                        className={`shrink-0 rounded-md px-2.5 py-1 text-xs whitespace-nowrap ${
-                          frameSheet === name
-                            ? "bg-primary/20 text-primary"
-                            : "bg-white/[0.04] text-white/55 hover:bg-white/[0.08]"
-                        }`}
-                      >
-                        {name}
-                      </button>
-                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setFramesView("cards")}
+                      className={`shrink-0 rounded-md px-2.5 py-1 text-xs ${
+                        framesView === "cards"
+                          ? "bg-primary/20 text-primary"
+                          : "bg-white/[0.04] text-white/55 hover:bg-white/[0.08]"
+                      }`}
+                    >
+                      Карточки DB
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFramesView("excel")}
+                      className={`shrink-0 rounded-md px-2.5 py-1 text-xs ${
+                        framesView === "excel"
+                          ? "bg-primary/20 text-primary"
+                          : "bg-white/[0.04] text-white/55 hover:bg-white/[0.08]"
+                      }`}
+                    >
+                      Зеркало Excel
+                    </button>
+                    {framesView === "excel" ? (
+                      <>
+                        <span className="mx-1 text-white/20">|</span>
+                        {frameSheets.map((name) => (
+                          <button
+                            key={name}
+                            type="button"
+                            onClick={() => setFrameSheet(name)}
+                            className={`shrink-0 rounded-md px-2.5 py-1 text-xs whitespace-nowrap ${
+                              frameSheet === name
+                                ? "bg-white/10 text-white"
+                                : "bg-white/[0.04] text-white/55 hover:bg-white/[0.08]"
+                            }`}
+                          >
+                            {name}
+                          </button>
+                        ))}
+                      </>
+                    ) : null}
                   </div>
 
-                  {sheetLoading && !sheetPreview ? (
+                  {framesView === "cards" ? (
+                    <FramesCardsPanel
+                      graph={graph}
+                      frameId={frameId}
+                      onSelect={setFrameId}
+                      projectId={projectId}
+                      onChanged={handleChanged}
+                    />
+                  ) : sheetLoading && !sheetPreview ? (
                     <div className="flex flex-1 items-center justify-center text-sm text-white/30">
                       Загрузка листа…
                     </div>
@@ -431,9 +515,9 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
                     />
                   ) : (
                     <div className="flex flex-1 items-center justify-center text-center text-sm text-white/30">
-                      Лист «{frameSheet}» пуст или project.xlsx ещё не создан.
+                      Зеркало Excel пусто — это не ошибка.
                       <br />
-                      Экспортируй базу в Excel или запусти шаг пайплайна.
+                      Переключись на «Карточки DB»: данные уже в базе.
                     </div>
                   )}
                 </div>
@@ -457,14 +541,15 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
             <FrameDetails
               frame={frame}
               excelRow={graph.excel_rows?.[String(frame.number)] ?? null}
+              sceneRegistry={graph.scene_registry ?? []}
               allFrames={graph.frames}
               onChanged={handleChanged}
             />
           ) : (
             <div className="flex h-full items-center justify-center text-center text-xs text-white/30">
-              На листе «план» кликни колонку кадра,
+              Выбери карточку кадра слева —
               <br />
-              чтобы настроить его справа
+              справа правятся поля из DB
             </div>
           )}
         </aside>
@@ -528,7 +613,270 @@ function HarnessChip({
   );
 }
 
+function FramesCardsPanel({
+  graph,
+  frameId,
+  onSelect,
+  projectId,
+  onChanged,
+}: {
+  graph: DbGraph | null;
+  frameId: number | null;
+  onSelect: (id: number) => void;
+  projectId: number | null;
+  onChanged: () => Promise<void>;
+}) {
+  if (!graph) {
+    return (
+      <div className="flex flex-1 items-center justify-center text-sm text-white/30">
+        Нет графа
+      </div>
+    );
+  }
+  const orphan = graph.frames.filter((f) => f.scene_id == null);
+  const groups: { key: string; title: string; frames: DbFrame[] }[] = graph.scenes.map((sc) => ({
+    key: `sc-${sc.id}`,
+    title: sc.title || sc.place || `Сцена ${sc.sort_key}`,
+    frames: graph.frames.filter((f) => f.scene_id === sc.id),
+  }));
+  if (orphan.length || !groups.length) {
+    groups.push({
+      key: "orphan",
+      title: groups.length ? "Без сцены" : "Все кадры",
+      frames: orphan.length ? orphan : graph.frames,
+    });
+  }
+  // Если сцены есть, но кадры все без scene_id — уже добавили. Если кадры в сценах — не дублировать all.
+  const shownIds = new Set(groups.flatMap((g) => g.frames.map((f) => f.id)));
+  const missing = graph.frames.filter((f) => !shownIds.has(f.id));
+  if (missing.length) {
+    groups.push({ key: "rest", title: "Остальные", frames: missing });
+  }
+
+  return (
+    <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+      {graph.frames.length === 0 ? (
+        <div className="flex h-40 items-center justify-center text-sm text-white/30">
+          В базе нет кадров
+        </div>
+      ) : null}
+      {groups.map((g) =>
+        g.frames.length === 0 ? null : (
+          <div key={g.key}>
+            <div className="mb-1.5 flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-white/40">
+              <Layers className="h-3 w-3" />
+              {g.title}
+              <span className="text-white/25">{g.frames.length}</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 xl:grid-cols-3">
+              {g.frames.map((f) => {
+                const active = f.id === frameId;
+                const place = attrStr(f.attrs, "place");
+                const sense = attrStr(f.attrs, "scene_sense");
+                return (
+                  <div
+                    key={f.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onSelect(f.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") onSelect(f.id);
+                    }}
+                    className={`cursor-pointer rounded-md border p-2.5 text-left transition ${
+                      active
+                        ? "border-primary/50 bg-primary/10"
+                        : "border-white/[0.08] bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]"
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-mono text-[11px] text-white/70">#{f.number}</span>
+                      <span className="truncate text-[10px] text-white/35">
+                        {ru(STATUS_RU, f.status)}
+                      </span>
+                      <span className="ml-auto flex gap-1 text-[9px]">
+                        <span className={frameHasImg(f) ? "text-emerald-400" : "text-white/25"}>
+                          img {frameHasImg(f) ? "✓" : "—"}
+                        </span>
+                        <span className={frameHasVideo(f) ? "text-emerald-400" : "text-white/25"}>
+                          vid {frameHasVideo(f) ? "✓" : "—"}
+                        </span>
+                      </span>
+                    </div>
+                    <div className="mt-1 line-clamp-2 text-[11px] text-white/80">
+                      {place || f.voiceover_text || "—"}
+                    </div>
+                    {sense ? (
+                      <div className="mt-1 line-clamp-2 text-[10px] text-white/40">{sense}</div>
+                    ) : null}
+                    <div className="mt-2 flex items-center justify-between">
+                      <span className="text-[9px] text-white/30">
+                        {attrStr(f.attrs, "cluster")
+                          ? `кластер ${attrStr(f.attrs, "cluster")}`
+                          : colLetter(f.number + 2)}
+                      </span>
+                      <button
+                        type="button"
+                        title="Вставить кадр после"
+                        className="rounded p-0.5 text-white/30 hover:bg-white/10 hover:text-white"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (projectId == null) return;
+                          void (async () => {
+                            await api.dbInsertFrame(projectId, f.id, f.scene_id);
+                            toast.success("Кадр добавлен");
+                            void onChanged();
+                          })();
+                        }}
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ),
+      )}
+    </div>
+  );
+}
+
+function AttrsEditor({
+  frame,
+  onSave,
+}: {
+  frame: DbFrame;
+  onSave: (attrs: Record<string, unknown>, label: string) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    const next: Record<string, string> = {};
+    for (const def of ATTR_FIELD_DEFS) {
+      next[def.key] = attrStr(frame.attrs, def.key);
+    }
+    // Любые прочие ключи attrs — тоже показать (read/edit).
+    for (const [k, v] of Object.entries(frame.attrs || {})) {
+      if (next[k] === undefined) {
+        next[k] = typeof v === "string" ? v : v == null ? "" : String(v);
+      }
+    }
+    setDraft(next);
+  }, [frame.id, frame.attrs]);
+
+  const known = new Set(ATTR_FIELD_DEFS.map((d) => d.key));
+  const extras = Object.keys(draft).filter((k) => !known.has(k)).sort();
+
+  const persist = (keys: string[]) => {
+    const merged: Record<string, unknown> = { ...(frame.attrs || {}) };
+    for (const k of keys) {
+      merged[k] = draft[k] ?? "";
+    }
+    void onSave(merged, "Поля DB сохранены");
+  };
+
+  return (
+    <div className="rounded-md border border-white/[0.08] bg-white/[0.02] p-2">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.18em] text-white/40">
+          <Database className="h-3 w-3" />
+          Поля кадра (DB attrs)
+        </div>
+        <button
+          type="button"
+          className="text-[10px] text-primary hover:underline"
+          onClick={() => persist(Object.keys(draft))}
+        >
+          сохранить все
+        </button>
+      </div>
+      <div className="flex max-h-[28rem] flex-col gap-2 overflow-y-auto pr-1">
+        {ATTR_FIELD_DEFS.map((def) => (
+          <div key={def.key}>
+            <div className="mb-0.5 flex items-center justify-between">
+              <span className="text-[9px] uppercase tracking-wide text-white/35">{def.label}</span>
+              <button
+                type="button"
+                className="text-[9px] text-white/35 hover:text-primary"
+                onClick={() => persist([def.key])}
+              >
+                сохранить
+              </button>
+            </div>
+            <textarea
+              value={draft[def.key] ?? ""}
+              onChange={(e) => setDraft((d) => ({ ...d, [def.key]: e.target.value }))}
+              rows={def.rows ?? 2}
+              className="w-full rounded-md border border-white/10 bg-black/40 p-1.5 text-[11px] text-white/85"
+            />
+          </div>
+        ))}
+        {extras.map((key) => (
+          <div key={key}>
+            <div className="mb-0.5 flex items-center justify-between">
+              <span className="font-mono text-[9px] text-white/35">{key}</span>
+              <button
+                type="button"
+                className="text-[9px] text-white/35 hover:text-primary"
+                onClick={() => persist([key])}
+              >
+                сохранить
+              </button>
+            </div>
+            <textarea
+              value={draft[key] ?? ""}
+              onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value }))}
+              rows={2}
+              className="w-full rounded-md border border-white/10 bg-black/40 p-1.5 text-[11px] text-white/85"
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SceneRegistryBlock({
+  registry,
+}: {
+  registry: NonNullable<DbGraph["scene_registry"]>;
+}) {
+  if (!registry.length) {
+    return (
+      <div className="rounded-md border border-dashed border-white/10 bg-white/[0.01] p-2 text-[11px] text-white/30">
+        scene_registry пуст — агент scene_grammar ещё не записал сцены по словам в meta.
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-md border border-white/[0.08] bg-white/[0.02] p-2">
+      <div className="mb-1 text-[10px] uppercase tracking-[0.18em] text-white/40">
+        Сцены по словам ({registry.length})
+      </div>
+      <div className="flex max-h-48 flex-col gap-1.5 overflow-y-auto pr-1">
+        {registry.map((sc, i) => (
+          <div key={String(sc.id_scene ?? i)} className="rounded bg-black/30 p-1.5">
+            <div className="font-mono text-[10px] text-primary/80">
+              {String(sc.id_scene ?? `scene_${i + 1}`)}
+              {sc.structure ? ` · ${String(sc.structure)}` : ""}
+              {sc.edit_type ? ` · ${String(sc.edit_type)}` : ""}
+            </div>
+            <div className="mt-0.5 text-[10px] text-white/55">
+              «{String(sc.start_words || "—")}» → «{String(sc.end_words || "—")}»
+            </div>
+            {sc.transition ? (
+              <div className="mt-0.5 text-[10px] text-white/35">{String(sc.transition)}</div>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ExcelRowsBlock({ row }: { row: DbExcelRow | null }) {
+  const [open, setOpen] = useState(false);
   const items: [string, string | null][] = row
     ? [
         [`R45 · промт картинки 1`, row.r45_image_prompt],
@@ -543,27 +891,33 @@ function ExcelRowsBlock({ row }: { row: DbExcelRow | null }) {
       ]
     : [];
   return (
-    <div className="rounded-md border border-white/[0.08] bg-white/[0.02] p-2">
-      <div className="mb-1 flex items-center gap-1.5 text-[10px] uppercase tracking-[0.18em] text-white/40">
+    <div className="rounded-md border border-white/[0.06] bg-white/[0.01] p-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-1.5 text-left text-[10px] uppercase tracking-[0.18em] text-white/35 hover:text-white/55"
+      >
         <FileSpreadsheet className="h-3 w-3" />
-        Excel-строки кадра {row ? `(колонка ${colLetter(row.column)})` : ""}
-      </div>
-      {row == null ? (
-        <div className="text-[11px] text-white/30">
-          project.xlsx не найден или лист «план» пуст — строки не прочитаны.
-        </div>
-      ) : (
-        <div className="flex max-h-72 flex-col gap-1 overflow-y-auto pr-1">
-          {items.map(([label, value]) => (
-            <div key={label} className="rounded bg-black/30 p-1.5">
-              <div className="text-[9px] uppercase tracking-wide text-white/35">{label}</div>
-              <div className="whitespace-pre-wrap text-[11px] text-white/80">
-                {value || <span className="text-white/25">—</span>}
+        Зеркало Excel {row ? `(кол. ${colLetter(row.column)})` : ""} · {open ? "свернуть" : "показать"}
+      </button>
+      {open ? (
+        row == null ? (
+          <div className="mt-1 text-[11px] text-white/30">
+            Excel пуст — смотри поля DB выше. Экспорт в шапке при необходимости.
+          </div>
+        ) : (
+          <div className="mt-1 flex max-h-48 flex-col gap-1 overflow-y-auto pr-1">
+            {items.map(([label, value]) => (
+              <div key={label} className="rounded bg-black/30 p-1.5">
+                <div className="text-[9px] uppercase tracking-wide text-white/35">{label}</div>
+                <div className="whitespace-pre-wrap text-[11px] text-white/80">
+                  {value || <span className="text-white/25">—</span>}
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        )
+      ) : null}
     </div>
   );
 }
@@ -571,11 +925,13 @@ function ExcelRowsBlock({ row }: { row: DbExcelRow | null }) {
 function FrameDetails({
   frame,
   excelRow,
+  sceneRegistry,
   allFrames,
   onChanged,
 }: {
   frame: DbFrame;
   excelRow: DbExcelRow | null;
+  sceneRegistry: NonNullable<DbGraph["scene_registry"]>;
   allFrames: DbFrame[];
   onChanged: () => Promise<void>;
 }) {
@@ -614,7 +970,7 @@ function FrameDetails({
     <div className="flex flex-col gap-4 text-xs">
       <div>
         <div className="mb-1 text-[10px] uppercase tracking-[0.18em] text-white/40">
-          Кадр {frame.number} · колонка {colLetter(frame.number + 2)} · {frame.uuid}
+          Кадр {frame.number} · {frame.uuid}
         </div>
         <div className="flex gap-2">
           <select
@@ -654,10 +1010,17 @@ function FrameDetails({
         </div>
       </div>
 
-      <ExcelRowsBlock row={excelRow} />
+      <SceneRegistryBlock registry={sceneRegistry} />
+
+      <AttrsEditor
+        frame={frame}
+        onSave={async (attrs, label) => {
+          await save({ attrs }, label);
+        }}
+      />
 
       <LabeledArea
-        label="Закадровый текст (R49)"
+        label="Закадровый текст"
         value={voiceover}
         onChange={setVoiceover}
         onSave={() => void save({ voiceover_text: voiceover }, "Закадр сохранён")}
@@ -668,6 +1031,8 @@ function FrameDetails({
         onChange={setMeaning}
         onSave={() => void save({ meaning }, "Смысл сохранён")}
       />
+
+      <ExcelRowsBlock row={excelRow} />
 
       {/* Тексты */}
       <div>

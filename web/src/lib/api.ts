@@ -332,12 +332,24 @@ export interface DbHarnessSummary {
   next_action: string | null;
 }
 
+export interface DbSceneRegistryEntry {
+  id_scene?: string | null;
+  start_words?: string | null;
+  end_words?: string | null;
+  structure?: string | null;
+  edit_type?: string | null;
+  transition?: string | null;
+  [key: string]: unknown;
+}
+
 export interface DbGraph {
   project: { id: number; slug: string; title: string | null; topic: string | null; status: string | null };
   scenes: DbScene[];
   frames: DbFrame[];
   entities: DbEntity[];
   excel_rows?: Record<string, DbExcelRow>;
+  /** Сцены по словам (meta.scene_registry) — SoT для scene grammar. */
+  scene_registry?: DbSceneRegistryEntry[];
   harness?: DbHarnessSummary;
 }
 
