@@ -379,73 +379,176 @@ def upsert_scene_registry(project: Project, scenes: list[Any]) -> int:
     return len(normalized)
 
 
+def _join_frame_voiceovers(
+    frames: list[Frame],
+) -> tuple[str, list[tuple[Frame, int, int]]]:
+    """Склейка закадра + span каждого кадра в общей строке."""
+    chunks: list[str] = []
+    spans: list[tuple[Frame, int, int]] = []
+    pos = 0
+    for fr in frames:
+        text = (getattr(fr, "voiceover_text", None) or "").strip()
+        if chunks and text:
+            chunks.append(" ")
+            pos += 1
+        start = pos
+        if text:
+            chunks.append(text)
+            pos += len(text)
+        spans.append((fr, start, pos))
+    return "".join(chunks), spans
+
+
+def _scene_span_in_text(full: str, start_words: str, end_words: str) -> tuple[int, int] | None:
+    """Найти [start, end) сцены по цитатам; None если не найдено однозначно."""
+    s = (start_words or "").strip()
+    e = (end_words or "").strip()
+    if not s or not e or not full:
+        return None
+    i0 = full.find(s)
+    if i0 < 0:
+        return None
+    i1 = full.find(e, i0)
+    if i1 < 0:
+        return None
+    return i0, i1 + len(e)
+
+
 def expand_scene_registry_onto_frames(
     frames: list[Frame],
     registry: list[Any] | None,
 ) -> int:
-    """Только scene-level поля → Frame.attrs (границы/место/структура).
+    """Сцена → кадры: привязка по словам + scene-level + 1 shot → 1 кадр.
 
-    **Не** копирует ``scenes[].shots[].действие/описание`` на каждый кадр
-    сцены — иначе База заливается одинаковым текстом 10+ раз.
-    Детали шота пишутся только из ``ops[].fields`` (уникально на кадр).
+    SoT = ``scenes[]`` (монтаж), не число колонок закадра.
+    1) кадры в диапазоне start_words…end_words получают id_scene;
+    2) scene-level поля (место/структура/…) на все кадры сцены;
+    3) ``shots[i]`` → i-й кадр сцены (действие/ракурс уникально), лишние
+       колонки внутри сцены получают только scene-level (не клон шота).
     """
     if not registry or not frames:
         return 0
-    by_id: dict[str, dict[str, Any]] = {}
+    scenes: list[dict[str, Any]] = []
     for raw in registry:
-        if not isinstance(raw, dict):
-            continue
-        sid = str(raw.get("id_scene") or "").strip()
-        if sid:
-            by_id[sid] = raw
-    if not by_id:
+        if isinstance(raw, dict) and str(raw.get("id_scene") or "").strip():
+            scenes.append(raw)
+    if not scenes:
         return 0
 
-    def _fill(attrs: dict[str, Any], key: str, value: Any) -> bool:
+    full, spans = _join_frame_voiceovers(frames)
+    # sid → frames in order
+    scene_frames: dict[str, list[Frame]] = {str(sc["id_scene"]).strip(): [] for sc in scenes}
+    for fr, a, b in spans:
+        if a >= b and not (getattr(fr, "voiceover_text", None) or "").strip():
+            continue
+        for sc in scenes:
+            sid = str(sc.get("id_scene") or "").strip()
+            span = _scene_span_in_text(
+                full,
+                str(sc.get("start_words") or sc.get("scene_start_words") or ""),
+                str(sc.get("end_words") or sc.get("scene_end_words") or ""),
+            )
+            if span is None:
+                continue
+            s0, s1 = span
+            # пересечение span кадра со сценой
+            if b > s0 and a < s1:
+                scene_frames[sid].append(fr)
+                break
+
+    def _set(attrs: dict[str, Any], key: str, value: Any, *, overwrite: bool = False) -> bool:
         val = str(value or "").strip()
         if not val:
             return False
-        if str(attrs.get(key) or "").strip():
+        if not overwrite and str(attrs.get(key) or "").strip():
             return False
         attrs[key] = val
         return True
 
     n = 0
+    by_id = {str(sc.get("id_scene") or "").strip(): sc for sc in scenes}
+    # Также кадры, у которых id_scene уже был из ops, но слова не сматчились.
     for fr in frames:
         attrs = dict(fr.attrs or {})
         sid = str(attrs.get("shot01_id_scene") or "").strip()
-        if not sid or sid not in by_id:
+        if sid and sid in by_id and fr not in scene_frames.get(sid, []):
+            scene_frames.setdefault(sid, []).append(fr)
+
+    for sid, frs in scene_frames.items():
+        sc = by_id.get(sid)
+        if not sc or not frs:
             continue
-        sc = by_id[sid]
-        changed = False
-        for key, src in (
-            ("place", sc.get("место") or sc.get("place")),
-            ("accent", sc.get("акцент") or sc.get("accent")),
-            ("scene_sense", sc.get("смысл_сцены") or sc.get("scene_sense")),
-            ("visual_type", sc.get("тип_сцены") or sc.get("visual_type")),
-            ("cluster", sc.get("номер_кластера") or sc.get("cluster")),
-            (
-                "scene_structure",
-                sc.get("структура_сцены") or sc.get("scene_structure"),
-            ),
-            ("edit_type", sc.get("тип_стыка") or sc.get("edit_type")),
-            (
-                "scene_transition",
-                sc.get("переход_в_сцену")
-                or sc.get("переход_в_кадр")
-                or sc.get("scene_transition"),
-            ),
-            (
-                "scene_start_words",
-                sc.get("start_words") or sc.get("scene_start_words"),
-            ),
-            ("scene_end_words", sc.get("end_words") or sc.get("scene_end_words")),
-        ):
-            if _fill(attrs, key, src):
+        # de-dupe preserving order
+        seen: set[int] = set()
+        ordered: list[Frame] = []
+        for fr in frs:
+            fid = id(fr)
+            if fid in seen:
+                continue
+            seen.add(fid)
+            ordered.append(fr)
+        shots = sc.get("shots") if isinstance(sc.get("shots"), list) else []
+        for idx, fr in enumerate(ordered):
+            attrs = dict(fr.attrs or {})
+            changed = False
+            if _set(attrs, "shot01_id_scene", sid, overwrite=True):
                 changed = True
-        if changed:
-            fr.attrs = attrs
-            n += 1
+            for key, src in (
+                ("place", sc.get("место") or sc.get("place")),
+                ("accent", sc.get("акцент") or sc.get("accent")),
+                ("scene_sense", sc.get("смысл_сцены") or sc.get("scene_sense")),
+                ("visual_type", sc.get("тип_сцены") or sc.get("visual_type")),
+                ("cluster", sc.get("номер_кластера") or sc.get("cluster")),
+                (
+                    "scene_structure",
+                    sc.get("структура_сцены") or sc.get("scene_structure"),
+                ),
+                ("edit_type", sc.get("тип_стыка") or sc.get("edit_type")),
+                (
+                    "scene_transition",
+                    sc.get("переход_в_сцену")
+                    or sc.get("переход_в_кадр")
+                    or sc.get("scene_transition"),
+                ),
+                (
+                    "scene_start_words",
+                    sc.get("start_words") or sc.get("scene_start_words"),
+                ),
+                ("scene_end_words", sc.get("end_words") or sc.get("scene_end_words")),
+            ):
+                if _set(attrs, key, src, overwrite=True):
+                    changed = True
+            # Один shot → один кадр (по порядку внутри сцены).
+            if idx < len(shots) and isinstance(shots[idx], dict):
+                sh = shots[idx]
+                shot_id = str(sh.get("id_shot") or f"shot_{idx + 1:02d}").strip()
+                if _set(attrs, "shot01_id_shot", shot_id, overwrite=True):
+                    changed = True
+                for key, src in (
+                    ("scene_feature", sh.get("особенность_сцены") or sh.get("ракурс")),
+                    ("shot01_action", sh.get("действие") or sh.get("action")),
+                    (
+                        "shot01_description",
+                        sh.get("описание_кадра") or sh.get("description"),
+                    ),
+                    ("shot01_transition", sh.get("логика_перехода")),
+                    ("shot01_bg", sh.get("фон")),
+                    ("shot01_props", sh.get("предметы")),
+                    ("main_action", sh.get("главное_действие")),
+                ):
+                    if _set(attrs, key, src, overwrite=True):
+                        changed = True
+                if sh.get("персонажи") is not None:
+                    if _set(attrs, "characters", sh.get("персонажи"), overwrite=True):
+                        changed = True
+                elif sc.get("персонажи_сцены") is not None:
+                    if _set(
+                        attrs, "characters", sc.get("персонажи_сцены"), overwrite=True
+                    ):
+                        changed = True
+            if changed:
+                fr.attrs = attrs
+                n += 1
     return n
 
 

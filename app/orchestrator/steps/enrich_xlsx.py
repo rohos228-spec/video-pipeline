@@ -58,20 +58,14 @@ _APPLY_OPS_HINT = (
 )
 
 _SCENE_GRAMMAR_APPLY_HINT = (
-    "# SCENE GRAMMAR — ЗАПИСЬ (v1.3)\n"
+    "# SCENE GRAMMAR — ЗАПИСЬ (v1.4, СЦЕНА = SoT)\n"
     "Верни ТОЛЬКО один JSON {characters, scenes, ops, report}.\n"
-    "СЦЕНА (scenes[]): полный паспорт — переход_в_сцену, структура_сцены, "
-    "тип_стыка, место, персонажи_сцены, особенность_доминанта (ракурс), "
-    "тип_сцены, смысл_сцены, акцент, номер_кластера, shots[] по числу битов.\n"
-    "КАДР (ops[]): на КАЖДЫЙ uuid — персонажи, id_scene, id_shot, "
-    "сцена_start/end_words, структура, тип_стыка, переход_в_кадр, "
-    "логика_перехода, место, фон, акцент, смысл_сцены, тип_сцены, "
-    "особенность_сцены (ракурс ЭТОГО кадра), действие, описание_кадра, "
-    "главное_действие, предметы. Кадр ВШИТ в сцену (те же границы/кластер).\n"
-    "Запрет: дубли действия/описания; ops только id_scene/id_shot; "
-    "1 колонка=1 сцена; TSV; промт_картинки/видео; просьбы приложить xlsx; "
-    "поле error про «нет файла».\n"
-    "Адресация кадров (номер = uuid):\n"
+    "Главное = scenes[]: полный паспорт сцены + shots[] по МОНТАЖУ "
+    "(переход, логика, окружение, персонажи, ракурс, видео-логика, смысл).\n"
+    "Число shots ≠ число колонок/uuid. Колонки закадра — только якоря "
+    "start_words/end_words. ops=[] нормально; пайплайн сам разложит сцену "
+    "на кадры по словам. Не пиши 199 ops и не отказывайся из‑за объёма.\n"
+    "Запрет: 1 колонка=1 сцена; TSV; промт_картинки/видео; error про объём/файл.\n"
 )
 
 _SCENE_GRAMMAR_PROMPT_MARKERS = (
@@ -741,28 +735,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 node_key,
                 len(db_ctx["frames"]),
             )
-            uuid_frames = [f for f in frames_for_map if f.uuid]
-            mapping = ""
-            if uuid_frames:
-                mapping = "\n".join(
-                    f"кадр {f.number} = {f.uuid}" for f in uuid_frames
-                )
             hint = (
                 _SCENE_GRAMMAR_APPLY_HINT if scene_grammar else _APPLY_OPS_HINT
             )
-            # Контракт apply-ops всегда — даже без uuid-мапы (иначе модель
-            # уходит в TSV/прозу и шаг падает).
-            accompanying = (
-                f"{accompanying}\n\n{hint}{mapping}"
-            ).strip()
-            accompanying = (
-                f"{accompanying}\n\n"
-                "# DB SoT\n"
-                "Файл db_frames.json — кадры из базы (uuid + voiceover). "
-                "Пайплайн сам запишет твой JSON в базу. "
-                "Excel не используется. Отвечай только JSON apply-ops."
-            ).strip()
             if scene_grammar:
+                accompanying = (
+                    f"{accompanying}\n\n{hint}\n"
+                    "# DB SoT\n"
+                    "db_frames.json — куски закадра (якоря границ). "
+                    "Не плоди ops по числу uuid. Пиши characters + scenes "
+                    "(полный паспорт + shots[]). ops=[] допустим. "
+                    "Пайплайн сам привяжет сцены к кадрам по словам."
+                ).strip()
                 vo_chunks = [
                     (fr.voiceover_text or "").strip()
                     for fr in frames_for_map
@@ -775,6 +759,23 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         f"# ПОЛНЫЙ ЗАКАДР (для start_words/end_words)\n"
                         f"{full_vo}"
                     ).strip()
+            else:
+                uuid_frames = [f for f in frames_for_map if f.uuid]
+                mapping = ""
+                if uuid_frames:
+                    mapping = "\n".join(
+                        f"кадр {f.number} = {f.uuid}" for f in uuid_frames
+                    )
+                accompanying = (
+                    f"{accompanying}\n\n{hint}{mapping}"
+                ).strip()
+                accompanying = (
+                    f"{accompanying}\n\n"
+                    "# DB SoT\n"
+                    "Файл db_frames.json — кадры из базы (uuid + voiceover). "
+                    "Пайплайн сам запишет твой JSON в базу. "
+                    "Excel не используется. Отвечай только JSON apply-ops."
+                ).strip()
         # Отпустить SQLite write-txn на время GPT (иначе UI: database is locked / 30с).
         await session.commit()
         check_streams_n = None
