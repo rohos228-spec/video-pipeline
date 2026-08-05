@@ -6,6 +6,7 @@ from pathlib import Path
 
 from app.services.scene_grammar_batches import (
     clear_scene_grammar_checkpoint,
+    diagnose_apply_ops_text,
     load_scene_grammar_checkpoint,
     merge_scene_grammar_payloads,
     save_scene_grammar_checkpoint,
@@ -93,3 +94,21 @@ def test_checkpoint_roundtrip_and_need_shots(tmp_path: Path) -> None:
     assert [s["id_scene"] for s in need] == ["scene_02"]
     clear_scene_grammar_checkpoint(tmp_path)
     assert load_scene_grammar_checkpoint(tmp_path) is None
+
+
+def test_diagnose_truncated_and_empty_arrays() -> None:
+    reason, data = diagnose_apply_ops_text(
+        '{"characters":[],"scenes":[{"id_scene":"scene_01","shots":[{"id_shot":"x"'
+    )
+    assert reason == "json_truncated"
+    assert data is None
+    reason2, data2 = diagnose_apply_ops_text(
+        '{"characters":[],"scenes":[],"ops":[],"report":""}'
+    )
+    assert reason2 == "empty_arrays"
+    assert isinstance(data2, dict)
+    reason3, data3 = diagnose_apply_ops_text(
+        '{"characters":[],"scenes":[{"id_scene":"s1","shots":[]}],"ops":[]}'
+    )
+    assert reason3 == "ok"
+    assert data3 is not None

@@ -172,11 +172,58 @@ def clear_scene_grammar_checkpoint(out_dir: Path) -> None:
         pass
 
 
+def diagnose_apply_ops_text(text: str) -> tuple[str, dict[str, Any] | None]:
+    """Почему ответ не годится: reason + распарсенный dict если есть."""
+    raw = text or ""
+    if not raw.strip():
+        return "empty_body", None
+    data = extract_apply_ops_json(raw)
+    if data is None:
+        has_scenes_key = '"scenes"' in raw or '"characters"' in raw or '"ops"' in raw
+        if has_scenes_key and raw.count("{") > raw.count("}"):
+            return "json_truncated", None
+        if has_scenes_key:
+            return "json_unparseable", None
+        if len(raw) < 1200:
+            return "short_non_json", None
+        return "no_apply_ops_json", None
+    if not _apply_ops_has_payload(data):
+        err = str(data.get("error") or "").strip()
+        if err:
+            return f"model_error:{err[:180]}", data
+        return "empty_arrays", data
+    return "ok", data
+
+
+def _save_rejected_reply(
+    out_dir: Path | None,
+    *,
+    attempt: int,
+    reason: str,
+    text: str,
+) -> None:
+    if out_dir is None:
+        return
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"scene_grammar_rejected_a{attempt}_{reason.split(':')[0]}.txt"
+        path.write_text(text or "", encoding="utf-8")
+        logger.warning(
+            "scene_grammar batch: saved rejected reply → {} ({} chars, reason={})",
+            path.name,
+            len(text or ""),
+            reason[:120],
+        )
+    except OSError as exc:
+        logger.warning("scene_grammar batch: cannot save rejected reply: {}", exc)
+
+
 async def _gpt_apply_json(
     *,
     prompt: str,
     accompanying: str,
     input_paths: list[Path],
+    out_dir: Path | None = None,
 ) -> dict[str, Any]:
     from app.services.gpt_api import chat
 
@@ -190,27 +237,44 @@ async def _gpt_apply_json(
             temperature=0.0,
             xlsx_write_contract="apply_ops",
         )
-        data = extract_apply_ops_json(result.text or "")
-        if data is not None and _apply_ops_has_payload(data):
+        text = result.text or ""
+        reason, data = diagnose_apply_ops_text(text)
+        if reason == "ok" and data is not None:
             return data
         err = ""
         if isinstance(data, dict):
             err = str(data.get("error") or data.get("report") or "")[:240]
-        last_err = err or "пустой ответ"
+        last_err = f"{reason}" + (f" | {err}" if err else "")
+        _save_rejected_reply(out_dir, attempt=attempt, reason=reason, text=text)
         logger.warning(
-            "scene_grammar batch: GPT JSON attempt {}/{} failed: {}",
+            "scene_grammar batch: GPT JSON attempt {}/{} failed: {} (chars={})",
             attempt,
             _GPT_JSON_ATTEMPTS,
             last_err[:160],
+            len(text),
         )
         if attempt >= _GPT_JSON_ATTEMPTS:
             break
+        hint = {
+            "json_truncated": (
+                "Предыдущий JSON обрезан (не закрыты скобки). "
+                "Верни ПОЛНЫЙ короткий JSON только на запрошенные сцены."
+            ),
+            "json_unparseable": (
+                "Предыдущий JSON битый. Верни один валидный JSON-объект без markdown."
+            ),
+            "short_non_json": (
+                "Предыдущий ответ слишком короткий / без scenes. Не пиши отказ — верни JSON."
+            ),
+            "empty_arrays": (
+                "Предыдущий JSON с пустыми scenes/characters. Заполни scenes[]."
+            ),
+        }.get(reason.split(":")[0], "Верни непустой JSON {characters, scenes, ops, report}.")
         acc = (
             f"{accompanying}\n\n"
-            "# ПОВТОР\n"
-            "Предыдущий ответ отклонён. Верни непустой JSON "
-            "{characters, scenes, ops, report}. "
-            f"Детали прошлого отказа (игнор если про объём): {last_err}"
+            f"# ПОВТОР (причина отказа: {reason})\n"
+            f"{hint}\n"
+            f"Детали: {err or reason}"
         )
     raise RuntimeError(
         "scene_grammar batch: GPT не вернул scenes/characters "
@@ -269,6 +333,7 @@ async def run_scene_grammar_batched(
                 prompt=master_prompt,
                 accompanying=outline_acc,
                 input_paths=input_paths,
+                out_dir=out_dir,
             )
         except Exception:
             raise
@@ -325,6 +390,7 @@ async def run_scene_grammar_batched(
                     prompt=master_prompt,
                     accompanying=acc,
                     input_paths=input_paths,
+                    out_dir=out_dir,
                 )
             except Exception:
                 # частичный прогресс уже на диске — soft retry подхватит
