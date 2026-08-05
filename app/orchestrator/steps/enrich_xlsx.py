@@ -460,6 +460,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     check_fix = True
     check_prompt_source = "upstream"
     source_prompt_keys: list[str] = []
+    db_sot_check = False
     if node_key and resolved is not None:
         role_name = str(resolved.get("role") or "")
         check_mode = bool(resolved.get("checkMode") or op_cfg.get("checkMode"))
@@ -487,6 +488,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             report_fmt, _ = resolve_check_report_format(project, node_key)
             from app.services.gpt_operator import append_vision_hint_for_upstream
 
+            # Нет картинок на входе → проверка по DB, не по Excel/TSV.
+            _img_ext = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+            _has_vision = any(
+                Path(str(f.get("name") or f.get("path") or "")).suffix.lower()
+                in _img_ext
+                for f in (resolved.get("files") or [])
+                if f.get("ok")
+            )
+            db_sot_check = not _has_vision
+
             if check_prompt_source == "agent":
                 master, agent_step = assemble_check_agent_prompt(
                     project,
@@ -494,6 +505,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     check_fix=check_fix,
                     reviewer_notes=reviewer_notes,
                     report_format=report_fmt,
+                    db_sot=db_sot_check,
                 )
                 master = append_vision_hint_for_upstream(project, node_key, master)
                 source_prompt_keys = [f"agent:{agent_step}"] if agent_step else ["agent"]
@@ -502,10 +514,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 if hint:
                     accompanying = hint
                 logger.info(
-                    "[#{}] enrich_xlsx node={!r}: checkMode agent={} chars={}",
+                    "[#{}] enrich_xlsx node={!r}: checkMode agent={} "
+                    "db_sot={} chars={}",
                     project.id,
                     node_key,
                     agent_step,
+                    db_sot_check,
                     len(master),
                 )
             else:
@@ -520,6 +534,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     check_fix=check_fix,
                     reviewer_notes=reviewer_notes,
                     report_format=report_fmt,
+                    db_sot=db_sot_check,
                 )
                 master = append_vision_hint_for_upstream(project, node_key, master)
                 accompanying = ""
@@ -527,10 +542,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 if hint:
                     accompanying = hint
                 logger.info(
-                    "[#{}] enrich_xlsx node={!r}: checkMode sources={} chars={}",
+                    "[#{}] enrich_xlsx node={!r}: checkMode sources={} "
+                    "db_sot={} chars={}",
                     project.id,
                     node_key,
                     source_prompt_keys,
+                    db_sot_check,
                     len(master),
                 )
         elif branching_role:
@@ -590,8 +607,96 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             not data_paths
             and output_mode_early != "project_file"
             and not scene_grammar_early
+            and not (check_mode and db_sot_check)
         ):
             raise RuntimeError("gpt-operator: нет существующих файлов на входе")
+
+        if check_mode and node_key and db_sot_check:
+            import json as _json
+
+            from sqlalchemy import select as _select
+
+            from app.models import Entity
+            from app.services import db_v2
+
+            await db_v2.backfill_project_v2(session, project)
+            frames_chk = list(
+                (
+                    await session.execute(
+                        _select(Frame)
+                        .where(Frame.project_id == project.id)
+                        .order_by(Frame.number)
+                    )
+                ).scalars().all()
+            )
+            ents = list(
+                (
+                    await session.execute(
+                        _select(Entity).where(Entity.project_id == project.id)
+                    )
+                ).scalars().all()
+            )
+            meta = project.meta if isinstance(project.meta, dict) else {}
+            db_check = {
+                "source": "db_v2",
+                "project_id": project.id,
+                "slug": project.slug,
+                "scene_registry": meta.get("scene_registry") or [],
+                "characters": [
+                    {
+                        "id": e.code or e.name,
+                        "имя": e.name,
+                        "type": e.type,
+                        "attrs": e.attrs or {},
+                    }
+                    for e in ents
+                ],
+                "frames": [
+                    {
+                        "number": fr.number,
+                        "uuid": fr.uuid,
+                        "voiceover_text": fr.voiceover_text or "",
+                        "meaning": fr.meaning or "",
+                        "attrs": fr.attrs or {},
+                    }
+                    for fr in frames_chk
+                    if fr.uuid
+                ],
+            }
+            ctx_dir = project.data_dir / "excel_gpt_uploads" / str(node_key)
+            ctx_dir.mkdir(parents=True, exist_ok=True)
+            db_check_path = ctx_dir / "db_check.json"
+            db_check_path.write_text(
+                _json.dumps(db_check, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            # Только DB. Excel/TSV со стрелок/inputSource выкидываем.
+            data_paths = [
+                db_check_path,
+                *[
+                    p
+                    for p in data_paths
+                    if p.suffix.lower()
+                    not in {".xlsx", ".xlsm", ".xls", ".tsv", ".csv"}
+                    and p.resolve() != db_check_path.resolve()
+                ],
+            ]
+            accompanying = (
+                f"{accompanying}\n\n"
+                "# DB SoT CHECK\n"
+                "Вложение db_check.json — кадры (uuid+attrs), scene_registry, "
+                "characters. Excel не существует для этой проверки. "
+                "Не пиши findings про TSV / project.xlsx / # Лист:."
+            ).strip()
+            logger.info(
+                "[#{}] enrich_xlsx node={!r}: checkMode DB SoT — "
+                "db_check.json frames={} scenes={} files={}",
+                project.id,
+                node_key,
+                len(db_check["frames"]),
+                len(db_check["scene_registry"] or []),
+                [p.name for p in data_paths],
+            )
 
         if check_mode and node_key:
             from app.services.vision_check_db import build_vision_db_snapshot
@@ -811,10 +916,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 check_fix=check_fix,
                 source_prompt_keys=source_prompt_keys,
                 check_streams=check_streams_n,
+                db_sot_check=db_sot_check,
             )
         await session.refresh(project)
-        # После project_file: apply-ops JSON → DB (SoT); иначе legacy xlsx→DB sync.
-        if output_mode == "project_file":
+        # После project_file / DB-check: apply-ops JSON → DB (SoT).
+        if output_mode == "project_file" or (
+            check_mode and db_sot_check and getattr(api_res, "apply_ops", None)
+        ):
             ops_data = getattr(api_res, "apply_ops", None)
             ops_list = (
                 list(ops_data.get("ops") or [])

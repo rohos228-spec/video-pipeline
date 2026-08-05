@@ -109,6 +109,7 @@ async def run_operator_api(
     check_fix: bool = True,
     source_prompt_keys: list[str] | None = None,
     check_streams: int | None = None,
+    db_sot_check: bool = False,
 ) -> OperatorApiResult:
     """Вызов API-оператора GPT.
 
@@ -160,6 +161,7 @@ async def run_operator_api(
             check_mode=check_mode,
             check_fix=vision_check_fix if check_mode else check_fix,
             source_prompt_keys=source_prompt_keys,
+            db_sot_check=db_sot_check,
         )
 
     out_dir = project_dir / "excel_gpt_uploads" / node_key
@@ -257,6 +259,7 @@ async def _run_operator_api_real(
     check_mode: bool = False,
     check_fix: bool = True,
     source_prompt_keys: list[str] | None = None,
+    db_sot_check: bool = False,
 ) -> OperatorApiResult:
     """Реальный вызов GPT через OpenAI-совместимый API (без браузера/CDP)."""
     from app.services.gpt_api import chat, collect_result_urls, download_content
@@ -282,43 +285,53 @@ async def _run_operator_api_real(
 
     accomp = accompanying or ""
     effective_output = "text" if check_mode else output_mode
-    # TSV writeback — только check+fix. project_file = DB SoT (apply-ops),
-    # не подсовываем модели Excel-диалект.
-    if check_mode and check_fix:
+    # TSV writeback — только legacy check+fix. DB SoT — никогда.
+    if check_mode and check_fix and not db_sot_check:
         accomp = build_api_accompany(accomp, expect_xlsx_writeback=True)
 
     xlsx_contract = (
         "apply_ops"
-        if effective_output == "project_file" and not is_check
+        if (effective_output == "project_file" and not is_check) or db_sot_check
         else "tsv"
     )
+    chat_paths = list(input_paths)
+    if db_sot_check:
+        chat_paths = [
+            p
+            for p in chat_paths
+            if p.suffix.lower() not in {".xlsx", ".xlsm", ".xls"}
+        ] or chat_paths
     result = await chat(
         prompt=prompt_for_model,
         accompanying=accomp,
-        input_paths=list(input_paths),
+        input_paths=chat_paths,
         temperature=0.0 if is_check else None,
         xlsx_write_contract=xlsx_contract,
     )
     reply_text = result.text
 
-    # DB SoT: project_file → только apply-ops JSON (ops / characters / scenes).
+    # DB SoT: project_file / check DB → apply-ops JSON.
     apply_ops: dict | None = None
-    if effective_output == "project_file" and not is_check:
+    if (effective_output == "project_file" and not is_check) or (
+        check_mode and db_sot_check
+    ):
         from app.services.db_apply import extract_apply_ops_json
 
         apply_ops = extract_apply_ops_json(reply_text or "")
         if apply_ops is not None and not _apply_ops_has_payload(apply_ops):
-            # Модель вернула {"ops":[],"error":"нет xlsx"} — это НЕ успех.
-            logger.warning(
-                "gpt_operator/api: project_file node={} — пустой apply-ops "
-                "(error/report={})",
-                node_key,
-                str(apply_ops.get("error") or apply_ops.get("report") or "")[:160],
-            )
+            if not (check_mode and not check_fix):
+                logger.warning(
+                    "gpt_operator/api: node={} — пустой apply-ops "
+                    "(error/report={})",
+                    node_key,
+                    str(apply_ops.get("error") or apply_ops.get("report") or "")[
+                        :160
+                    ],
+                )
             apply_ops = None
         elif apply_ops is not None:
             logger.info(
-                "gpt_operator/api: project_file node={} — apply-ops JSON "
+                "gpt_operator/api: node={} — apply-ops JSON "
                 "(ops={}, characters={}, scenes={}), запись через DB",
                 node_key,
                 len(apply_ops.get("ops") or []),
@@ -326,9 +339,13 @@ async def _run_operator_api_real(
                 len(apply_ops.get("scenes") or []),
             )
 
-    # check+fix: если модель отказалась из‑за «нет project.xlsx» / нет
-    # XLSX_WRITEBACK — один retry с жёстким API-контрактом (см. D5).
-    if check_mode and check_fix and _needs_check_writeback_retry(result.text):
+    # check+fix legacy Excel: retry на XLSX_WRITEBACK. DB SoT — skip.
+    if (
+        check_mode
+        and check_fix
+        and not db_sot_check
+        and _needs_check_writeback_retry(result.text)
+    ):
         logger.warning(
             "gpt_operator/api: check+fix без XLSX_WRITEBACK node={} — retry",
             node_key,
@@ -344,7 +361,7 @@ async def _run_operator_api_real(
         result = await chat(
             prompt=retry_prompt,
             accompanying=accomp,
-            input_paths=list(input_paths),
+            input_paths=chat_paths,
             temperature=0.0,
             xlsx_write_contract="tsv",
         )
@@ -373,7 +390,7 @@ async def _run_operator_api_real(
             analysis.fix.rewrite_file = None
             analysis.forward.mode = "inherit"
             analysis.forward.paths = []
-        elif check_fix:
+        elif check_fix and not db_sot_check:
             fixed_rel = _apply_check_fix_writeback(
                 project_dir=project_dir,
                 node_key=node_key,
@@ -388,6 +405,12 @@ async def _run_operator_api_real(
                 analysis.fix.target = "xlsx"
                 analysis.forward.mode = "explicit"
                 analysis.forward.paths = [fixed_rel]
+        elif check_fix and db_sot_check and apply_ops is not None:
+            analysis.fix.target = "db"
+            analysis.fix.instructions = (
+                analysis.fix.instructions
+                or "apply-ops JSON → DB (scene_registry / frames)"
+            )
         gate_status = analysis.verdict
         output_paths.insert(0, write_analysis_json(out_dir, analysis))
         report_path = write_check_report_txt(

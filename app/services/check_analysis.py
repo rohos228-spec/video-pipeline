@@ -110,6 +110,57 @@ path: <относительный путь от корня проекта или
 Система сама наложит TSV на копию книги. Остальные листы не трогай.
 """.strip().format(marker=CHECK_WRITEBACK_MARKER)
 
+TXT_REPORT_FOOTER_DB_SOT = """
+---
+ФОРМАТ ОТВЕТА (строго): один текстовый отчёт на русском по БАЗЕ.
+НЕ JSON в секциях отчёта. Excel / TSV / `# Лист:` / project.xlsx НЕ используются.
+
+ВАЖНО ПРО ДАННЫЕ:
+- Источник правды — вложение db_check.json: frames[].uuid + attrs + voiceover,
+  scene_registry, characters.
+- Пустой Excel или отсутствие .xlsx — НЕ ошибка и НЕ finding.
+- Запрещены findings про TSV, `@row=`, «нет frame_uuid в TSV», «нет project.xlsx».
+- UUID кадров бери только из frames[].uuid.
+
+Шаблон (все секции обязательны, в этом порядке):
+
+# ОТЧЁТ ПРОВЕРКИ
+verdict: pass|fail
+mode: fix|report_only
+source_prompts: <nodeKey[, nodeKey…]>
+
+## summary
+2–4 предложения: итог по базе / scene_registry / кадрам.
+
+## analysis
+Что проверяли по исходным промтам; что увидели в db_check.json.
+
+## findings
+- [error] …
+- [warn] …
+
+## related
+- <finding> → промт:<узел> | frame_uuid:… | scene:… | поле:…
+
+## logic
+Что логично / согласовано.
+Что странно или противоречит.
+
+## actions
+Что сделано в этой ноде.
+Что осталось.
+
+## forward
+file: original|fixed
+path: —
+
+Правила:
+- mode=report_only → только отчёт, файл/DB не меняй.
+- mode=fix и нужна правка → после ## forward верни JSON apply-ops:
+  {"ops":[...],"characters":[...],"scenes":[...]}
+  Пайплайн запишет в DB. НЕ пиши --- XLSX_WRITEBACK --- и не пиши TSV.
+""".strip()
+
 _SECTION_RE = re.compile(
     r"(?m)^##\s+(summary|analysis|findings|related|logic|actions|forward|"
     r"scores|issues|regen_heroes|regen_frames|db_patch)\s*$"
