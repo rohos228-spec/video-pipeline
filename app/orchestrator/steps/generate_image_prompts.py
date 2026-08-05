@@ -21,6 +21,65 @@ def _frames_needing_image_prompt(frames: list[Frame]) -> list[Frame]:
     ]
 
 
+def _frames_with_image_prompt(frames: list[Frame]) -> list[Frame]:
+    return [
+        fr
+        for fr in frames
+        if (fr.voiceover_text or "").strip() and (fr.image_prompt or "").strip()
+    ]
+
+
+async def _reload_frames(session: AsyncSession, project_id: int) -> list[Frame]:
+    return list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project_id)
+                .order_by(Frame.number)
+                .execution_options(populate_existing=True)
+            )
+        ).scalars().all()
+    )
+
+
+async def _finish_success(
+    session: AsyncSession, project: Project, frames: list[Frame]
+) -> None:
+    filled = _frames_with_image_prompt(frames)
+    still_missing = _frames_needing_image_prompt(frames)
+    if still_missing:
+        missing_nums = [fr.number for fr in still_missing]
+        raise RuntimeError(
+            f"GPT не заполнил image_prompt для кадров: {missing_nums}"
+        )
+    if not filled:
+        raise RuntimeError("GPT не заполнил ни одного image_prompt")
+
+    for fr in filled:
+        fr.status = FrameStatus.image_prompt_ready
+    project.status = ProjectStatus.image_prompts_ready
+    await session.flush()
+    await session.commit()
+
+    from app.services.agent_harness import harness_gate_or_raise
+
+    await harness_gate_or_raise(session, project, step="img_pr")
+    await session.commit()
+
+    from app.services import img_pr_batches as ipb
+
+    try:
+        ipb.clear_checkpoint(project.data_dir)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] clear img_pr checkpoint: {}", project.id, e)
+
+    logger.info(
+        "[#{}] generate_image_prompts complete: {} промтов (DB)",
+        project.id,
+        len(filled),
+    )
+
+
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_image_prompts:
         return
@@ -30,16 +89,20 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     await db_v2.backfill_project_v2(session, project)
 
-    frames = (
-        await session.execute(
-            select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
-        )
-    ).scalars().all()
+    frames = await _reload_frames(session, project.id)
     if not frames:
         raise RuntimeError("нет кадров — нечего составлять промты")
 
     need = _frames_needing_image_prompt(frames)
     if not need:
+        # Уже всё в DB (прошлый apply успел, а шаг упал на snapshot/greenlet).
+        if _frames_with_image_prompt(frames):
+            logger.info(
+                "[#{}] generate_image_prompts: prompts already in DB — finish",
+                project.id,
+            )
+            await _finish_success(session, project, frames)
+            return
         raise RuntimeError("нет кадров с закадром — нечего составлять промты")
 
     uuid_map = "\n".join(
@@ -130,9 +193,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     project.id,
                     len(ops),
                 )
-            # Apply был в другой сессии — сбросить identity map.
-            session.expire_all()
 
+            # Apply в другой сессии — подтянуть project/frames без expire_all
+            # (expire_all + lazy project.data_dir → MissingGreenlet).
+            await session.refresh(project)
             try:
                 from app.services.node_xlsx_snapshot import snapshot_and_bind_node_xlsx
 
@@ -146,19 +210,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     snap_err,
                 )
 
-            session.expire_all()
-            frames = (
-                await session.execute(
-                    select(Frame)
-                    .where(Frame.project_id == project.id)
-                    .order_by(Frame.number)
-                )
-            ).scalars().all()
+            frames = await _reload_frames(session, project.id)
             need = _frames_needing_image_prompt(frames)
             if not need:
-                from app.services import img_pr_batches as ipb
-
-                ipb.clear_checkpoint(project.data_dir)
                 break
             missing = [fr.number for fr in need]
             raise RuntimeError(
@@ -186,35 +240,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             pass
         return
 
-    # После успеха need пуст (все с image_prompt). Считаем/помечаем заполненные.
-    filled = [
-        fr
-        for fr in frames
-        if (fr.voiceover_text or "").strip() and (fr.image_prompt or "").strip()
-    ]
-    still_missing = _frames_needing_image_prompt(frames)
-    if still_missing:
-        missing_nums = [fr.number for fr in still_missing]
-        raise RuntimeError(
-            f"GPT не заполнил image_prompt для кадров: {missing_nums}"
-        )
-    if not filled:
-        raise RuntimeError("GPT не заполнил ни одного image_prompt")
-
-    for fr in filled:
-        fr.status = FrameStatus.image_prompt_ready
-    project.status = ProjectStatus.image_prompts_ready
-    await session.flush()
-
-    await session.commit()
-    from app.services.agent_harness import harness_gate_or_raise
-
-    await harness_gate_or_raise(session, project, step="img_pr")
-    await session.commit()
-
-    logger.info(
-        "[#{}] generate_image_prompts complete: {} промтов (DB)",
-        project.id,
-        len(filled),
-    )
+    frames = await _reload_frames(session, project.id)
+    await _finish_success(session, project, frames)
     _ = last_err
