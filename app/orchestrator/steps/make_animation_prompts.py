@@ -150,6 +150,42 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
         await session.flush()
 
+    # Старый парсер клал весь JSON apply-ops в первый кадр пачки — распакуем
+    # уже оплаченные ответы GPT, иначе has_* считает их «пустыми» и шлёт заново.
+    unpacked = apg.unpack_animation_prompt_blobs(list(frames))
+    if unpacked:
+        repair_ops = apg.build_apply_ops_from_pairs(
+            [
+                apg.ParsedAnimationPair(
+                    image_id=(fr.uuid or f"F{fr.number}"),
+                    animation_text=(fr.animation_prompt or "").strip(),
+                    frame_number=fr.number,
+                )
+                for fr in frames
+                if (fr.animation_prompt or "").strip()
+                and not apg.is_apply_ops_blob(fr.animation_prompt or "")
+            ],
+            list(frames),
+            shot=1,
+        )
+        if repair_ops:
+            try:
+                await db_apply.apply_ops(
+                    session, project, repair_ops, export_xlsx=True
+                )
+            except db_apply.ApplyOpsError as e:
+                logger.warning(
+                    "[#{}] anim_pr: unpack→apply_ops: {} — оставляю DB",
+                    project.id,
+                    e,
+                )
+        await session.flush()
+        logger.info(
+            "[#{}] anim_pr: распаковано {} промтов из JSON-blob в DB/R48",
+            project.id,
+            unpacked,
+        )
+
     pending = apg.collect_batch_items(project, frames)
     pending_shot2 = apg.collect_shot2_batch_items(project, frames)
     already_done, xlsx_filled, with_image = apg.count_animation_prompt_stats(

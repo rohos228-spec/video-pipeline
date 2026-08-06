@@ -24,7 +24,7 @@ def test_clean_animation_text_strips_label() -> None:
 
 
 def test_build_batch_message_has_id_and_voiceover() -> None:
-    fr = SimpleNamespace(number=3, voiceover_text="Hello")
+    fr = SimpleNamespace(number=3, voiceover_text="Hello", uuid="P9-F3-deadbeef")
     item = FrameImageBatchItem(
         frame=fr,
         image_path=Path("/x.png"),
@@ -33,9 +33,87 @@ def test_build_batch_message_has_id_and_voiceover() -> None:
     )
     msg = build_batch_message([item])
     assert "ID изображения: [ID: P9-F3-deadbeef]" in msg
+    assert "frame_uuid: P9-F3-deadbeef" in msg
     assert "Закадровый текст: Hello" in msg
+    assert "apply-ops" in msg
+    assert "промт_видео" in msg
     assert "лента" in msg
     assert "Позиция 1" in msg
+
+
+def test_parse_animation_reply_json_apply_ops_all_frames() -> None:
+    from app.services.animation_prompt_gpt import parse_animation_reply
+
+    frames = [
+        SimpleNamespace(number=1, uuid="P1-F1-aaa", voiceover_text="a", image_prompt=""),
+        SimpleNamespace(number=2, uuid="P1-F2-bbb", voiceover_text="b", image_prompt=""),
+        SimpleNamespace(number=3, uuid="P1-F3-ccc", voiceover_text="c", image_prompt=""),
+    ]
+    batch = [
+        FrameImageBatchItem(
+            frame=frames[i],
+            image_path=Path(f"/{i}.png"),
+            image_id=f"[ID: {frames[i].uuid}]",
+            voiceover=frames[i].voiceover_text,
+        )
+        for i in range(3)
+    ]
+    reply = (
+        '{"ops":['
+        '{"frame_uuid":"P1-F1-aaa","fields":{"промт_видео":"Slow push on hero, NO VOICE."}},'
+        '{"frame_uuid":"P1-F2-bbb","fields":{"промт_видео":"Gentle pan across room, silent."}},'
+        '{"frame_uuid":"P1-F3-ccc","fields":{"промт_видео":"Dolly in on detail, no speech."}}'
+        "]}"
+    )
+    pairs = parse_animation_reply(reply, frames, batch_items=batch)
+    assert [p.frame_number for p in pairs] == [1, 2, 3]
+    assert "Slow push" in pairs[0].animation_text
+    assert "Gentle pan" in pairs[1].animation_text
+    assert not pairs[0].animation_text.startswith("{")
+
+
+def test_unpack_animation_prompt_blobs_splits_batch_json() -> None:
+    from app.services.animation_prompt_gpt import (
+        has_animation_prompt_for_frame,
+        unpack_animation_prompt_blobs,
+    )
+
+    blob = (
+        '{"ops":['
+        '{"frame_uuid":"u1","fields":{"промт_видео":"Camera A movement, NO VOICE silent."}},'
+        '{"frame_uuid":"u2","fields":{"промт_видео":"Camera B pan right, no speech."}},'
+        '{"frame_uuid":"u3","fields":{"промт_видео":"Camera C tilt up, mouth idle."}}'
+        "]}"
+    )
+    frames = [
+        SimpleNamespace(
+            number=1,
+            uuid="u1",
+            animation_prompt=blob,
+            status=FrameStatus.image_prompt_ready,
+        ),
+        SimpleNamespace(
+            number=2,
+            uuid="u2",
+            animation_prompt=None,
+            status=FrameStatus.image_prompt_ready,
+        ),
+        SimpleNamespace(
+            number=3,
+            uuid="u3",
+            animation_prompt=None,
+            status=FrameStatus.image_prompt_ready,
+        ),
+    ]
+    project = SimpleNamespace(id=1)
+    assert not has_animation_prompt_for_frame(project, frames[0])  # type: ignore[arg-type]
+    n = unpack_animation_prompt_blobs(frames)  # type: ignore[arg-type]
+    assert n == 3
+    assert has_animation_prompt_for_frame(project, frames[0])  # type: ignore[arg-type]
+    assert has_animation_prompt_for_frame(project, frames[1])  # type: ignore[arg-type]
+    assert "Camera A" in frames[0].animation_prompt
+    assert "Camera B" in frames[1].animation_prompt
+    assert not frames[0].animation_prompt.startswith("{")
 
 
 @pytest_asyncio.fixture
