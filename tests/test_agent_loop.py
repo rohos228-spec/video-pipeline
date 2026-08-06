@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.models import AgentSessionStatus, Base, Frame, Project, ProjectStatus
 from app.services import gpt_api
 from app.services.agent import journal, loop, sessions
-from app.services.agent import tools_read
+from app.services.agent import tools_read, tools_write
 
 
 @pytest.fixture
@@ -19,7 +19,7 @@ async def env(tmp_path, monkeypatch):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
-    for mod in (sessions, journal, tools_read):
+    for mod in (sessions, journal, tools_read, tools_write):
         monkeypatch.setattr(mod, "SessionLocal", factory)
     yield engine, factory
     await engine.dispose()
@@ -190,3 +190,107 @@ async def test_read_tool_get_project(env) -> None:
     assert out["step_failure"]["error"] == "boom"
     fails = json.loads(await execute_tool("get_frame_video_failures", '{"project_id": 7}'))
     assert fails["failures"][0]["fail_count"] == 3
+
+
+# ─────────────────────────── write tools ───────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_write_tool_set_project_streams(env) -> None:
+    from app.services.agent.registry import execute_tool
+
+    engine, factory = env
+    async with factory() as s:
+        s.add(
+            Project(
+                id=9, slug="p9", topic="t",
+                status=ProjectStatus.frames_ready, auto_mode=True, meta={},
+            )
+        )
+        await s.commit()
+    out = json.loads(
+        await execute_tool(
+            "set_project_streams",
+            '{"project_id": 9, "outsee_streams": 3, "check_streams": 5}',
+        )
+    )
+    assert out["applied"] == {"outsee_streams": 3, "check_streams": 5}
+    async with factory() as s:
+        p = await s.get(Project, 9)
+        meta = p.meta
+        assert meta.get("outsee_streams") == 3 or meta.get("img_streams") == 3
+        assert meta.get("check_streams") == 5
+
+
+@pytest.mark.asyncio
+async def test_write_tool_pause_resume(env) -> None:
+    from app.services.agent.registry import execute_tool
+
+    engine, factory = env
+    async with factory() as s:
+        s.add(
+            Project(
+                id=10, slug="p10", topic="t",
+                status=ProjectStatus.generating_videos, auto_mode=True, meta={},
+            )
+        )
+        await s.commit()
+    out = json.loads(await execute_tool("pause_project", '{"project_id": 10}'))
+    assert out["ok"]
+    async with factory() as s:
+        p = await s.get(Project, 10)
+        assert p.status == ProjectStatus.paused
+        assert (p.meta or {}).get("paused_from_status") == "generating_videos"
+    back = json.loads(await execute_tool("resume_project", '{"project_id": 10}'))
+    assert back["after"] == "generating_videos"
+
+
+@pytest.mark.asyncio
+async def test_worker_max_parallel_tool(env, tmp_path, monkeypatch) -> None:
+    from app.services import runtime_streams as rs
+    from app.services.agent.registry import execute_tool
+
+    monkeypatch.setattr(rs.settings, "data_dir", tmp_path)
+    monkeypatch.setattr(rs.settings, "worker_max_parallel", 1)
+    monkeypatch.setattr(rs.settings, "img_max_streams", 1)
+    monkeypatch.setattr(rs.settings, "check_max_streams", 2)
+    out = json.loads(await execute_tool("set_worker_max_parallel", '{"value": 3}'))
+    assert out["worker_max_parallel"] == 3
+    assert rs.get_worker_max_parallel() == 3
+
+
+def test_risk_gating_matrix() -> None:
+    from app.services.agent.registry import risk_allowed
+
+    assert risk_allowed("read", "advisor")
+    assert not risk_allowed("write", "advisor")
+    assert risk_allowed("write", "operator")
+    assert not risk_allowed("danger", "operator")
+    assert risk_allowed("danger", "autopilot")
+
+
+@pytest.mark.asyncio
+async def test_danger_tool_denied_for_operator(env, monkeypatch) -> None:
+    """reset_step (danger) под operator не исполняется — denied в журнале."""
+    engine, factory = env
+    async with factory() as s:
+        s.add(
+            Project(
+                id=11, slug="p11", topic="t",
+                status=ProjectStatus.frames_ready, auto_mode=True, meta={},
+            )
+        )
+        await s.commit()
+
+    async def fake_chat(**kwargs):
+        return _fc_result("reset_step", {"project_id": 11, "step_code": "img"})
+
+    monkeypatch.setattr(loop.gpt_api, "chat", fake_chat)
+    sess = await sessions.create_session(autonomy="operator")
+    await loop.run_agent_turn(sess.uuid, "сбрось img", max_iterations=2)
+    actions = await journal.recent_actions(session_id=sess.id)
+    assert actions[0]["tool"] == "reset_step"
+    assert actions[0]["status"] == "denied"
+    async with factory() as s:
+        p = await s.get(Project, 11)
+        assert p.status == ProjectStatus.frames_ready  # не тронут

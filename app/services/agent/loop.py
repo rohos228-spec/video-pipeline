@@ -25,8 +25,9 @@ from app.services.agent.registry import (
     tool_schemas,
 )
 
-# Импорт регистрирует read-tools (side-effect декораторов).
+# Импорт регистрирует tools (side-effect декораторов).
 from app.services.agent import tools_read as _tools_read  # noqa: F401
+from app.services.agent import tools_write as _tools_write  # noqa: F401
 
 SYSTEM_PROMPT = (
     "Ты — встроенный LLM-агент пайплайна генерации вертикальных видео "
