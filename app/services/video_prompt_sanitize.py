@@ -69,6 +69,30 @@ _MULTI_NL_RE = re.compile(r"\n{3,}")
 # После 3 ошибок — короткий кадр: визуал + действие, без воды.
 _SIMPLIFY_MAX_CHARS = 900
 
+# Veo часто игнорит generate_audio=false и сам клеит речь → CONTENT_POLICY по аудио.
+_SILENT_VIDEO_GUARD = (
+    "Silent video only: no speech, no dialogue, no narration, no music, "
+    "no sound effects, no voice. Mute. Visual motion only."
+)
+_SILENT_MARKERS = (
+    "silent video only",
+    "no speech",
+    "mute.",
+    "без звука",
+    "без речи",
+)
+
+
+def ensure_silent_video_prompt(text: str) -> str:
+    """Гарантировать silent-инструкцию в начале video-промта."""
+    body = (text or "").strip()
+    low = body.lower()
+    if any(m in low for m in _SILENT_MARKERS):
+        return body
+    if not body:
+        return _SILENT_VIDEO_GUARD
+    return f"{_SILENT_VIDEO_GUARD}\n\n{body}"
+
 
 def replace_trigger_words(text: str) -> tuple[str, int]:
     """Заменить триггерные слова. Возвращает (новый_текст, число_замен)."""
@@ -107,7 +131,16 @@ def sanitize_video_prompt_after_errors(
 ) -> tuple[str, dict[str, int | bool]]:
     """Триггеры → замены; опционально упростить. stats для лога."""
     replaced, n = replace_trigger_words(text)
-    out = simplify_video_prompt(replaced, max_chars=max_chars) if simplify else replaced
+    # Запас под silent-guard в начале.
+    guard_budget = len(_SILENT_VIDEO_GUARD) + 2
+    body_cap = max(200, max_chars - guard_budget)
+    out = (
+        simplify_video_prompt(replaced, max_chars=body_cap) if simplify else replaced
+    )
+    out = ensure_silent_video_prompt(out)
+    if len(out) > max_chars:
+        out = simplify_video_prompt(out, max_chars=max_chars)
+        out = ensure_silent_video_prompt(out)
     return out, {
         "trigger_replacements": n,
         "simplified": simplify and out != replaced,

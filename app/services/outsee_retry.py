@@ -81,7 +81,10 @@ from app.generation_options import (
 )
 from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 from app.services.step_cancel import StepCancelledError
-from app.services.video_prompt_sanitize import sanitize_video_prompt_after_errors
+from app.services.video_prompt_sanitize import (
+    ensure_silent_video_prompt,
+    sanitize_video_prompt_after_errors,
+)
 
 
 def _apply_local_prompt_sanitize(
@@ -1163,6 +1166,9 @@ async def generate_video_with_retries(
                     prefix,
                     project_id=project_id,
                 )
+                send_prompt = ensure_silent_video_prompt(send_prompt)
+                # Пайплайн: звук всегда выкл (не тащим True из kwargs/Create).
+                attempt_kwargs["generate_audio"] = False
                 if use_grsai_video:
                     raw_slug = attempt_kwargs.get("model_slug") or getattr(
                         _settings, "grsai_default_video_model", None
@@ -1341,19 +1347,23 @@ async def generate_video_with_retries(
                     attempt -= 1
                     await sleep_cancellable(2.0, project_id)
                     continue
-                # Аудиодорожка (Veo игнорит generate_audio=false) — сразу санация.
+                # Аудиодорожка (Veo игнорит generate_audio=false) — silent+санация.
                 if _is_audio_content_policy_error(e):
                     logger.warning(
                         "outsee.generate_video [{}]: CONTENT_POLICY аудио — "
-                        "санация промта (id={})",
+                        "silent+санация промта (id={})",
                         round_label,
                         attempt_kwargs.get("prompt_id_prefix") or "—",
                     )
-                    current_prompt = _apply_local_prompt_sanitize(
-                        current_prompt,
-                        where="video audio CONTENT_POLICY",
+                    current_prompt = ensure_silent_video_prompt(
+                        _apply_local_prompt_sanitize(
+                            current_prompt,
+                            where="video audio CONTENT_POLICY",
+                        )
                     )
                     local_sanitized = True
+                    # Не тащить start_frame если он провоцирует «говорящую» сцену?
+                    # Оставляем кадр — проблема в звуке, не в celebrity.
                 # Сеть / host рефа — не жечь GPT-rewrite, просто пауза и retry.
                 if _is_transient_network_error(e):
                     logger.warning(

@@ -303,7 +303,9 @@ async def test_veo_generate_video_defaults_to_silent(tmp_path: Path, monkeypatch
             model_slug="veo-3-1-lite",
             aspect_ratio="9:16",
             duration=8,
+            generate_audio=True,  # даже явный True — форсим off
         )
 
     assert captured["body"]["generate_audio"] is False
+    assert "Silent video only" in captured["body"]["prompt"]
     assert captured["pp"]["audio"] is False

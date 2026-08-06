@@ -843,6 +843,10 @@ async def generate_video(
     """
     if prompt_id_prefix:
         prompt = prepend_gen_id(prompt, prompt_id_prefix)
+    from app.services.video_prompt_sanitize import ensure_silent_video_prompt
+
+    # Звук всегда off: + явный silent в промте (Veo иначе сам клеит речь).
+    prompt = ensure_silent_video_prompt(prompt)
     model = studio_id_to_outsee_video_slug(model_slug)
     aspect = (aspect_ratio or "9:16").replace("_", ":")
     if aspect not in {"16:9", "9:16"}:
@@ -867,8 +871,13 @@ async def generate_video(
             dur = 8
     body["duration_sec"] = dur
 
-    # Pipeline clips are always silent; Create may pass True for Veo audio.
-    body["generate_audio"] = bool(generate_audio) if generate_audio is not None else False
+    # Пайплайн / Studio: звук ВСЕГДА выкл. Veo всё равно может вшить AAC —
+    # тогда режем локально; на API шлём только false.
+    if generate_audio:
+        logger.warning(
+            "outsee_api.video: generate_audio=True проигнорирован — всегда silent"
+        )
+    body["generate_audio"] = False
 
     want_start = bool(first_frame_url) or reference_image is not None
     frame = first_frame_url
@@ -964,11 +973,11 @@ async def generate_video(
     if suf in {".mp4", ".webm"} and out_path.suffix.lower() != suf:
         out_path = out_path.with_suffix(suf)
     await _download(url, out_path)
-    # Strip AAC even if API ignored generate_audio=false (Veo often still has track).
+    # Strip AAC always — generate_audio на API форсится False.
     await postprocess_veo_mp4(
         out_path,
         duration=dur if model == "veo-3-1-lite" else None,
-        generate_audio=generate_audio,
+        generate_audio=False,
     )
     return GenerationResult(
         file_path=out_path,

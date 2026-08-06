@@ -9,6 +9,17 @@ from app.services.video_prompt_sanitize import (
 )
 
 
+def test_ensure_silent_video_prompt() -> None:
+    from app.services.video_prompt_sanitize import ensure_silent_video_prompt
+
+    out = ensure_silent_video_prompt("Animate soft light")
+    assert out.lower().startswith("silent video only")
+    assert "Animate soft light" in out
+    # повторно не дублирует
+    out2 = ensure_silent_video_prompt(out)
+    assert out2.count("Silent video only") == 1
+
+
 def test_replace_asahara_with_accent() -> None:
     text = "Портрет Асаха́ры на стене, Мацумо́то говорит о зарине."
     out, n = replace_trigger_words(text)
