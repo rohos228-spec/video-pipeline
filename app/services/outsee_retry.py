@@ -141,6 +141,37 @@ _PROMPT_ERROR_MARKERS = (
     "gpt недоступен для сжатия",
 )
 
+# Outsee API: аккаунт держит ≤N queued/processing; локальный семафор уже
+# отпущен после «connection failed», а слоты на стороне API ещё заняты.
+_CONCURRENCY_MARKERS = (
+    "лимит одновремен",
+    "одновременных генерац",
+    "дождитесь завершения текущих",
+    "too many concurrent",
+    "concurrent generation",
+    "concurrency limit",
+)
+_CONCURRENCY_MAX_WAITS = 24
+_CONCURRENCY_BACKOFF_S = (45.0, 75.0, 120.0, 180.0)
+
+
+def _is_concurrency_limit_error(err: BaseException) -> bool:
+    """Лимит одновременных генераций Outsee — ждать слот, не GPT-rewrite."""
+    reason = ""
+    if isinstance(err, OutseeImageError):
+        reason = (err.reason or "").lower()
+        code = str((err.context or {}).get("code") or "").lower()
+        if code in {"rate_limit", "too_many_requests", "concurrency_limit"}:
+            return True
+    else:
+        reason = str(err).lower()
+    return any(m in reason for m in _CONCURRENCY_MARKERS)
+
+
+def _concurrency_backoff_s(wait_n: int) -> float:
+    idx = max(0, min(wait_n - 1, len(_CONCURRENCY_BACKOFF_S) - 1))
+    return _CONCURRENCY_BACKOFF_S[idx]
+
 
 def _is_prompt_related_error(err: OutseeImageError) -> bool:
     """Ошибки длины/обрезки промта — нужно GPT-сжатие, не rewrite модерации."""
@@ -585,7 +616,10 @@ async def generate_image_with_retries(
 
     for round_idx, (round_label, _) in enumerate(rounds):
         pid = kwargs.get("project_id")
-        for attempt in range(1, max_attempts_per_prompt + 1):
+        attempt = 0
+        concurrency_waits = 0
+        while attempt < max_attempts_per_prompt:
+            attempt += 1
             abort_if_cancelled(pid if isinstance(pid, int) else None)
             attempt_kwargs = dict(kwargs)
             attempt_kwargs["prompt_id_prefix"] = base_prompt_id
@@ -766,6 +800,26 @@ async def generate_image_with_retries(
                 raise last_err or e
             except OutseeImageError as e:
                 last_err = e
+                if _is_concurrency_limit_error(e):
+                    concurrency_waits += 1
+                    if concurrency_waits > _CONCURRENCY_MAX_WAITS:
+                        raise
+                    delay = _concurrency_backoff_s(concurrency_waits)
+                    attempt -= 1
+                    logger.warning(
+                        "outsee.generate_image [{}] лимит одновременных "
+                        "генераций — жду {:.0f}с (wait {}/{}, id={})",
+                        round_label,
+                        delay,
+                        concurrency_waits,
+                        _CONCURRENCY_MAX_WAITS,
+                        attempt_kwargs.get("prompt_id_prefix") or "—",
+                    )
+                    await sleep_cancellable(
+                        delay,
+                        pid if isinstance(pid, int) else None,
+                    )
+                    continue
                 err_kind = _retry_err_label(e)
                 is_moderation = outsee_error_is_moderation(e)
                 if is_moderation:
@@ -929,7 +983,10 @@ async def generate_video_with_retries(
     fallback_logged = False
 
     for round_idx, round_label in enumerate(rounds):
-        for attempt in range(1, max_attempts_per_prompt + 1):
+        attempt = 0
+        concurrency_waits = 0
+        while attempt < max_attempts_per_prompt:
+            attempt += 1
             abort_if_cancelled(project_id)
             use_fallback = _should_use_video_fallback(
                 round_idx=round_idx, gen_failures=gen_failures
@@ -1123,6 +1180,23 @@ async def generate_video_with_retries(
                 raise last_err or e
             except OutseeImageError as e:
                 last_err = e
+                if _is_concurrency_limit_error(e):
+                    concurrency_waits += 1
+                    if concurrency_waits > _CONCURRENCY_MAX_WAITS:
+                        raise
+                    delay = _concurrency_backoff_s(concurrency_waits)
+                    attempt -= 1  # не сжигать попытку / не уходить в GPT-rewrite
+                    logger.warning(
+                        "outsee.generate_video [{}] лимит одновременных "
+                        "генераций — жду {:.0f}с (wait {}/{}, id={})",
+                        round_label,
+                        delay,
+                        concurrency_waits,
+                        _CONCURRENCY_MAX_WAITS,
+                        attempt_kwargs.get("prompt_id_prefix") or "—",
+                    )
+                    await sleep_cancellable(delay, project_id)
+                    continue
                 gen_failures += 1
                 err_kind = _retry_err_label(e)
                 logger.warning(

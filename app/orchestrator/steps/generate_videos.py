@@ -610,10 +610,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         ],
                         return_exceptions=True,
                     )
+                    fail_n = 0
                     for r in results:
                         if isinstance(r, StepCancelledError):
                             raise r
                         if isinstance(r, Exception):
+                            fail_n += 1
                             logger.exception(
                                 "[#{}] video stream worker failed: {}",
                                 project.id,
@@ -621,6 +623,23 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             )
                         else:
                             generated += 1
+                    # После массового fail (часто «лимит 4» из-за ghost jobs)
+                    # дать Outsee освободить слоты, прежде чем claim следующей пачки.
+                    if fail_n and fail_n >= len(results):
+                        from app.services.outsee_retry import (
+                            _is_concurrency_limit_error,
+                        )
+
+                        if any(
+                            isinstance(r, Exception) and _is_concurrency_limit_error(r)
+                            for r in results
+                        ):
+                            logger.warning(
+                                "[#{}] generate_videos: вся пачка упёрлась в "
+                                "лимит Outsee — пауза 60с перед следующей",
+                                project.id,
+                            )
+                            await asyncio.sleep(60)
                     await session.refresh(project)
 
                 # shot_02

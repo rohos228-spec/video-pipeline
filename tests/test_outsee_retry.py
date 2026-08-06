@@ -16,6 +16,17 @@ from app.generation_options import OUTSEE_PROMPT_MAX_CHARS
 from app.services import outsee_retry as mod
 
 
+def test_is_concurrency_limit_error() -> None:
+    err = OutseeImageError(
+        "Outsee API /api/v1/videos/generate: Достигнут лимит одновременных "
+        "генераций (4). Дождитесь завершения текущих задач."
+    )
+    assert mod._is_concurrency_limit_error(err) is True
+    assert mod._is_concurrency_limit_error(OutseeImageError("контент отклонён")) is False
+    assert mod._concurrency_backoff_s(1) == 45.0
+    assert mod._concurrency_backoff_s(99) == 180.0
+
+
 def test_is_prompt_related_error_truncation() -> None:
     err = OutseeImageError(
         "outsee: промт обрезан outsee (3200 из 4800 симв)",
