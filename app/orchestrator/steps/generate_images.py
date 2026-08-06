@@ -1572,6 +1572,7 @@ async def _generate_and_send(
     try:
         if use_regen_button:
             try:
+                await session.commit()
                 result = await outsee.regenerate_image(
                     file_path,
                     gen_id=gen_id,
@@ -1587,6 +1588,8 @@ async def _generate_and_send(
                     project.id,
                     frame.number,
                 )
+                # Отпустить SQLite txn перед долгим Outsee (parallel → db locked).
+                await session.commit()
                 result = await generate_image_with_retries(
                     outsee, gpt,
                     prompt=prompt_text,
@@ -1606,6 +1609,7 @@ async def _generate_and_send(
         else:
             # До 3 попыток с исходным image_prompt; если все 3 провалились —
             # GPT-rewrite промта (убирает триггеры модерации) + ещё 3 попытки.
+            await session.commit()
             result = await generate_image_with_retries(
                 outsee, gpt,
                 prompt=prompt_text,

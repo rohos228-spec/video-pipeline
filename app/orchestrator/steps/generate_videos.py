@@ -497,6 +497,7 @@ async def _shot1_job(
     session_clip_paths: list[Path],
     clips_lock: asyncio.Lock,
 ) -> None:
+    """Outsee ждёт минуты — SQLite-сессию НЕ держим (иначе parallel → database is locked)."""
     from app.db import SessionLocal
 
     async with acquire_outsee_slot():
@@ -505,36 +506,83 @@ async def _shot1_job(
             fr = await session.get(Frame, frame_id)
             if project is None or fr is None:
                 return
-            try:
-                await _generate_shot1_one(
-                    session=session,
-                    outsee=outsee,
-                    gpt=gpt,
-                    project=project,
-                    fr=fr,
-                    out_dir=out_dir,
-                    scenes_dir=scenes_dir,
-                    session_clip_paths=session_clip_paths,
-                    clips_lock=clips_lock,
-                )
-                await session.commit()
-                await _reset_video_fail_db(project_id, frame_id)
-            except Exception as e:
-                # Cancel/soft: inflight всё равно снимем в finally, счётчик не трогаем
-                if isinstance(e, (StepCancelledError, asyncio.CancelledError)):
-                    raise
+            if not fr.animation_prompt:
+                raise RuntimeError(f"у кадра {fr.number} нет animation_prompt")
+            start = await _shot1_start_frame(session, project, fr, scenes_dir)
+            prompt = fr.animation_prompt
+            frame_number = fr.number
+            model_slug, res_slug, aspect, relax = _video_opts(project)
+            # session закрывается здесь — до Outsee
+
+        short_uuid = uuid.uuid4().hex[:8]
+        file_path = out_dir / f"clip_{frame_number:03d}_{short_uuid}.mp4"
+        async with clips_lock:
+            dups = _dup_paths(out_dir, frame_number, list(session_clip_paths))
+        try:
+            result = await generate_video_with_retries(
+                outsee,
+                gpt,
+                prompt=prompt,
+                out_path=file_path,
+                max_attempts_per_prompt=3,
+                gpt_rewrite=True,
+                project_id=project_id,
+                start_frame=start,
+                aspect_ratio=aspect,
+                timeout=1200,
+                model_slug=model_slug,
+                resolution=res_slug,
+                relax=relax,
+                generate_audio=False,
+                prompt_id_prefix=build_gen_id_prefix(
+                    project_id, frame_number, short_uuid
+                ),
+                duplicate_check_paths=dups,
+            )
+        except Exception as e:
+            if not isinstance(e, (StepCancelledError, asyncio.CancelledError)):
                 await _note_video_fail_db(project_id, frame_id, e)
-                raise
-            finally:
-                try:
-                    await session.refresh(fr)
-                except Exception:  # noqa: BLE001
-                    pass
-                _clear_video_inflight(fr)
-                try:
+            async with SessionLocal() as session:
+                fr = await session.get(Frame, frame_id)
+                if fr is not None:
+                    _clear_video_inflight(fr)
                     await session.commit()
-                except Exception:  # noqa: BLE001
-                    pass
+            raise
+
+        async with SessionLocal() as session:
+            fr = await session.get(Frame, frame_id)
+            if fr is None:
+                return
+            session.add(
+                Artifact(
+                    project_id=project_id,
+                    frame_id=fr.id,
+                    kind=ArtifactKind.scene_video,
+                    uuid=uuid.uuid4().hex,
+                    path=str(result.file_path),
+                    meta={"shot": 1},
+                )
+            )
+            fr.status = FrameStatus.video_generated
+            _clear_video_inflight(fr)
+            await session.commit()
+        await _reset_video_fail_db(project_id, frame_id)
+        out = Path(result.file_path)
+        async with clips_lock:
+            session_clip_paths.append(out)
+        logger.info(
+            "[#{}] frame {} video: {}", project_id, frame_number, result.file_path
+        )
+        try:
+            from app.services.event_bus import publish_project_event
+
+            await publish_project_event(
+                project_id,
+                event_type="video_generated",
+                payload={"frame_number": frame_number, "path": str(result.file_path)},
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
 
 async def _shot2_job(
@@ -549,6 +597,7 @@ async def _shot2_job(
     session_clip_paths: list[Path],
     clips_lock: asyncio.Lock,
 ) -> None:
+    """Как _shot1_job: без открытой SQLite-сессии на время Outsee."""
     from app.db import SessionLocal
 
     async with acquire_outsee_slot():
@@ -557,36 +606,71 @@ async def _shot2_job(
             fr = await session.get(Frame, frame_id)
             if project is None or fr is None:
                 return
-            try:
-                await _generate_shot2_one(
-                    session=session,
-                    outsee=outsee,
-                    gpt=gpt,
-                    project=project,
-                    fr=fr,
-                    prompt2=prompt2,
-                    s2_img=s2_img,
-                    out_dir=out_dir,
-                    session_clip_paths=session_clip_paths,
-                    clips_lock=clips_lock,
+            frame_number = fr.number
+            model_slug, res_slug, aspect, relax = _video_opts(project)
+
+        short_uuid = uuid.uuid4().hex[:8]
+        file_path = out_dir / f"clip_{frame_number:03d}_s2_{short_uuid}.mp4"
+        async with clips_lock:
+            dups = list(session_clip_paths)
+        try:
+            result = await generate_video_with_retries(
+                outsee,
+                gpt,
+                prompt=prompt2,
+                out_path=file_path,
+                max_attempts_per_prompt=3,
+                gpt_rewrite=True,
+                project_id=project_id,
+                start_frame=s2_img,
+                aspect_ratio=aspect,
+                timeout=1200,
+                model_slug=model_slug,
+                resolution=res_slug,
+                relax=relax,
+                generate_audio=False,
+                prompt_id_prefix=build_gen_id_prefix(
+                    project_id, frame_number, short_uuid
                 )
-                await session.commit()
-                await _reset_video_fail_db(project_id, frame_id)
-            except Exception as e:
-                if isinstance(e, (StepCancelledError, asyncio.CancelledError)):
-                    raise
+                + "-S2",
+                duplicate_check_paths=dups,
+            )
+        except Exception as e:
+            if not isinstance(e, (StepCancelledError, asyncio.CancelledError)):
                 await _note_video_fail_db(project_id, frame_id, e)
-                raise
-            finally:
-                try:
-                    await session.refresh(fr)
-                except Exception:  # noqa: BLE001
-                    pass
-                _clear_video_inflight(fr)
-                try:
+            async with SessionLocal() as session:
+                fr = await session.get(Frame, frame_id)
+                if fr is not None:
+                    _clear_video_inflight(fr)
                     await session.commit()
-                except Exception:  # noqa: BLE001
-                    pass
+            raise
+
+        async with SessionLocal() as session:
+            fr = await session.get(Frame, frame_id)
+            if fr is None:
+                return
+            session.add(
+                Artifact(
+                    project_id=project_id,
+                    frame_id=fr.id,
+                    kind=ArtifactKind.scene_video,
+                    uuid=uuid.uuid4().hex,
+                    path=str(result.file_path),
+                    meta={"shot": 2},
+                )
+            )
+            _clear_video_inflight(fr)
+            await session.commit()
+        await _reset_video_fail_db(project_id, frame_id)
+        out = Path(result.file_path)
+        async with clips_lock:
+            session_clip_paths.append(out)
+        logger.info(
+            "[#{}] frame {} shot_02 video: {}",
+            project_id,
+            frame_number,
+            result.file_path,
+        )
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
@@ -674,27 +758,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         len(batch),
                         [f.number for f in batch],
                     )
-                    if streams <= 1:
-                        fr = batch[0]
-                        try:
-                            async with acquire_outsee_slot():
-                                await _generate_shot1_one(
-                                    session=session,
-                                    outsee=outsee,
-                                    gpt=gpt,
-                                    project=project,
-                                    fr=fr,
-                                    out_dir=out_dir,
-                                    scenes_dir=scenes_dir,
-                                    session_clip_paths=session_clip_paths,
-                                    clips_lock=clips_lock,
-                                )
-                            generated += 1
-                        finally:
-                            _clear_video_inflight(fr)
-                            await session.flush()
-                        continue
-
+                    # commit ДО Outsee: иначе parent-сессия + N stream-сессий
+                    # держат SQLite → parallel projects: database is locked.
                     await session.commit()
                     results = await asyncio.gather(
                         *[

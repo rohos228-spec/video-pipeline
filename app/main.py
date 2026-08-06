@@ -350,7 +350,27 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
     ) -> None:
         """Один advance + post-processing в своих сессиях (безопасно для parallel)."""
         try:
-            result = await advance_project_job(project_id, bot)
+            result = None
+            db_locked_err: BaseException | None = None
+            for _db_try in range(1, 4):
+                try:
+                    result = await advance_project_job(project_id, bot)
+                    db_locked_err = None
+                    break
+                except Exception as e:  # noqa: BLE001
+                    msg = str(e).lower()
+                    if "database is locked" not in msg and "database is busy" not in msg:
+                        raise
+                    db_locked_err = e
+                    logger.warning(
+                        "[#{}] advance_project: database locked — retry {}/3",
+                        project_id,
+                        _db_try,
+                    )
+                    await asyncio.sleep(2.0 * _db_try)
+            if db_locked_err is not None:
+                raise db_locked_err
+            assert result is not None
             async with session_scope() as s:
                 p = await s.get(Project, project_id)
                 if p is not None:
