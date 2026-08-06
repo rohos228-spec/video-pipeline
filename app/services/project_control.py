@@ -107,16 +107,22 @@ async def halt_all_related_generation(
         for child in await list_mass_children(session, parent_id):
             if child.id == project.id:
                 continue
+            # Уже крутящиеся соседи НЕ трогаем: ⏹ в одном дочернем
+            # раньше hard-cancel'ил video/anim_pr у остальных (#54→#55/#56).
             if is_running_status(child.status):
-                await stop_project_running(session, child, cascade=True)
-            else:
-                await _gate_idle_project(child)
                 logger.info(
-                    "[#{}] STOP cascade: sibling #{} user_stop (status={})",
+                    "[#{}] STOP: sibling #{} generating — оставляю (без cascade cancel)",
                     project.id,
                     child.id,
-                    child.status.value,
                 )
+                continue
+            await _gate_idle_project(child)
+            logger.info(
+                "[#{}] STOP cascade: sibling #{} user_stop (status={})",
+                project.id,
+                child.id,
+                child.status.value,
+            )
 
     queue = get_gen_queue()
     for pid in queue:
@@ -125,9 +131,16 @@ async def halt_all_related_generation(
         peer = await session.get(Project, pid)
         if peer is None:
             continue
+        # Бегущие слоты очереди не hard-cancel'им — ⏹ только текущий проект.
+        # Idle соседей гейтим, чтобы tick не стартанул следующий сам.
         if is_running_status(peer.status):
-            await stop_project_running(session, peer, cascade=True)
-        elif not is_user_stopped(peer):
+            logger.info(
+                "[#{}] STOP: gen_queue #{} generating — оставляю (без cascade cancel)",
+                project.id,
+                peer.id,
+            )
+            continue
+        if not is_user_stopped(peer):
             await _gate_idle_project(peer)
             logger.info(
                 "[#{}] STOP cascade: gen_queue #{} user_stop (status={})",
