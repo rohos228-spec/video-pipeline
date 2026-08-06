@@ -498,3 +498,116 @@ async def swap_shot_media(
     else:
         result["ok"] = True
     return result
+
+
+def _find_shot_image(scenes_dir: Path, frame_number: int, shot: int) -> Path | None:
+    if shot == 2:
+        return find_shot2_image(scenes_dir, frame_number)
+    return find_shot1_image(scenes_dir, frame_number)
+
+
+def _get_image_prompt(fr: Frame, shot: int) -> str:
+    if shot == 2:
+        return str((fr.attrs or {}).get(SHOT2_PROMPT_ATTR) or "").strip()
+    return (fr.image_prompt or "").strip()
+
+
+def _set_image_prompt(fr: Frame, shot: int, value: str) -> None:
+    text = (value or "").strip()
+    if shot == 2:
+        attrs = dict(fr.attrs or {})
+        if text:
+            attrs[SHOT2_PROMPT_ATTR] = text
+        else:
+            attrs.pop(SHOT2_PROMPT_ATTR, None)
+        fr.attrs = attrs
+        flag_modified(fr, "attrs")
+    else:
+        fr.image_prompt = text or None
+
+
+async def move_scene_image(
+    session: AsyncSession,
+    project: Project,
+    *,
+    from_frame: int,
+    from_shot: int,
+    to_frame: int,
+    to_shot: int,
+) -> dict[str, Any]:
+    """Перенос/обмен картинки между слотами (в т.ч. в пустую ячейку).
+
+    Если цель пуста — move (источник очищается). Если занята — swap.
+    Промты изображений едут вместе с файлами.
+    """
+    if from_shot not in (1, 2) or to_shot not in (1, 2):
+        return {"ok": False, "reason": "shot должен быть 1 или 2"}
+    if from_frame == to_frame and from_shot == to_shot:
+        return {"ok": False, "reason": "тот же слот"}
+
+    scenes = project.data_dir / "scenes"
+    scenes.mkdir(parents=True, exist_ok=True)
+    src_path = _find_shot_image(scenes, from_frame, from_shot)
+    if src_path is None or not src_path.is_file():
+        return {"ok": False, "reason": "в источнике нет картинки"}
+
+    dst_path = _find_shot_image(scenes, to_frame, to_shot)
+    src_bytes = src_path.read_bytes()
+    src_suf = src_path.suffix or ".png"
+    dst_bytes = (
+        dst_path.read_bytes() if dst_path is not None and dst_path.is_file() else None
+    )
+    dst_suf = (dst_path.suffix if dst_path is not None else ".png") or ".png"
+    mode = "swap" if dst_bytes is not None else "move"
+
+    await delete_scene_image(session, project, from_frame, shot=from_shot)
+    await delete_scene_image(session, project, to_frame, shot=to_shot)
+
+    await save_scene_image_upload(
+        session,
+        project,
+        to_frame,
+        shot=to_shot,
+        content=src_bytes,
+        suffix=src_suf,
+    )
+    if dst_bytes is not None:
+        await save_scene_image_upload(
+            session,
+            project,
+            from_frame,
+            shot=from_shot,
+            content=dst_bytes,
+            suffix=dst_suf,
+        )
+
+    fr_from = await _frame(session, project.id, from_frame)
+    fr_to = (
+        fr_from
+        if from_frame == to_frame
+        else await _frame(session, project.id, to_frame)
+    )
+    prompts_moved = False
+    if fr_from is not None and fr_to is not None:
+        p_from = _get_image_prompt(fr_from, from_shot)
+        p_to = _get_image_prompt(fr_to, to_shot)
+        _set_image_prompt(fr_to, to_shot, p_from)
+        _set_image_prompt(fr_from, from_shot, p_to if mode == "swap" else "")
+        prompts_moved = True
+
+    from app.services.montage_board_meta import mark_stale_videos, montage_meta, set_montage_meta
+
+    board = montage_meta(project)
+    mark_stale_videos(board, from_frame, shot=from_shot)
+    mark_stale_videos(board, to_frame, shot=to_shot)
+    set_montage_meta(project, board)
+    await session.flush()
+    return {
+        "ok": True,
+        "mode": mode,
+        "from_frame": from_frame,
+        "from_shot": from_shot,
+        "to_frame": to_frame,
+        "to_shot": to_shot,
+        "prompts_moved": prompts_moved,
+    }

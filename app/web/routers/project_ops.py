@@ -918,6 +918,36 @@ async def montage_board_swap_shots(
     return result
 
 
+@router.post("/{project_id}/montage-board/move-image")
+async def montage_board_move_image(
+    project_id: int,
+    from_frame: int = Query(..., ge=1),
+    from_shot: int = Query(..., ge=1, le=2),
+    to_frame: int = Query(..., ge=1),
+    to_shot: int = Query(..., ge=1, le=2),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Перенести картинку в другой слот (в т.ч. пустой); если цель занята — swap."""
+    from app.services.montage_board_assets import move_scene_image
+
+    p = _project_or_404(await session.get(Project, project_id))
+    result = await move_scene_image(
+        session,
+        p,
+        from_frame=from_frame,
+        from_shot=from_shot,
+        to_frame=to_frame,
+        to_shot=to_shot,
+    )
+    await session.commit()
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=400,
+            detail=result.get("reason") or "не удалось перенести",
+        )
+    return result
+
+
 @router.post("/{project_id}/montage-board/delete-image")
 async def montage_board_delete_image(
     project_id: int,

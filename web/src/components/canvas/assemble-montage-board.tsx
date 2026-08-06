@@ -9,6 +9,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type DragEvent as ReactDragEvent,
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
@@ -428,6 +429,33 @@ const MediaActionBar = memo(function MediaActionBar({
   );
 });
 
+const MONTAGE_IMAGE_DRAG = "application/x-vp-montage-image";
+
+type ImageSlotRef = { frameNumber: number; shot: 1 | 2 };
+
+/** Chrome часто не отдаёт custom mime в dragOver.types — держим активный drag здесь. */
+let activeImageDrag: ImageSlotRef | null = null;
+
+function parseImageDrag(e: ReactDragEvent): ImageSlotRef | null {
+  if (activeImageDrag) return activeImageDrag;
+  try {
+    const raw =
+      e.dataTransfer.getData(MONTAGE_IMAGE_DRAG) ||
+      e.dataTransfer.getData("text/plain");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ImageSlotRef;
+    if (
+      typeof parsed.frameNumber === "number" &&
+      (parsed.shot === 1 || parsed.shot === 2)
+    ) {
+      return parsed;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
 const ClickableMedia = memo(function ClickableMedia({
   url,
   kind,
@@ -441,6 +469,8 @@ const ClickableMedia = memo(function ClickableMedia({
   highlighted,
   stale,
   scrollRootRef,
+  imageSlot,
+  onImageDrop,
 }: {
   url: string | null;
   kind: "image" | "video";
@@ -454,10 +484,15 @@ const ClickableMedia = memo(function ClickableMedia({
   highlighted?: boolean;
   stale?: boolean;
   scrollRootRef?: RefObject<HTMLDivElement | null>;
+  /** Слот картинки: drag с файла + drop в пустую/занятую ячейку. */
+  imageSlot?: ImageSlotRef;
+  onImageDrop?: (from: ImageSlotRef) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   // Не монтировать сотни <video>/<img> сразу — Chrome зависает на 150×2 клипах.
   const [inView, setInView] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const canDropImage = kind === "image" && !!imageSlot && !!onImageDrop;
 
   useEffect(() => {
     const el = hostRef.current;
@@ -473,11 +508,46 @@ const ClickableMedia = memo(function ClickableMedia({
     return () => io.disconnect();
   }, [url, scrollRootRef]);
 
+  const dropHandlers = canDropImage
+    ? {
+        onDragOver: (e: ReactDragEvent) => {
+          if (!activeImageDrag) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          setDragOver(true);
+        },
+        onDragLeave: () => setDragOver(false),
+        onDrop: (e: ReactDragEvent) => {
+          e.preventDefault();
+          setDragOver(false);
+          const from = parseImageDrag(e);
+          activeImageDrag = null;
+          if (!from || !imageSlot || !onImageDrop) return;
+          if (from.frameNumber === imageSlot.frameNumber && from.shot === imageSlot.shot) {
+            return;
+          }
+          onImageDrop(from);
+        },
+      }
+    : {};
+
   if (!url) {
     return (
-      <div className={cn(highlighted && "ring-2 ring-emerald-400/60 rounded-lg")}>
-        <div className="flex h-32 w-full items-center justify-center rounded-lg border border-dashed border-white/15 bg-black/20 text-xs text-muted-foreground">
-          нет файла
+      <div
+        className={cn(
+          "rounded-lg",
+          highlighted && "ring-2 ring-emerald-400/60",
+          dragOver && "ring-2 ring-sky-400/70",
+        )}
+        {...dropHandlers}
+      >
+        <div
+          className={cn(
+            "flex h-32 w-full items-center justify-center rounded-lg border border-dashed bg-black/20 text-xs text-muted-foreground",
+            dragOver ? "border-sky-400/60 bg-sky-500/10 text-sky-100" : "border-white/15",
+          )}
+        >
+          {dragOver ? "отпустить сюда" : canDropImage ? "нет файла · можно бросить" : "нет файла"}
         </div>
         <MediaActionBar
           kind={kind}
@@ -500,7 +570,9 @@ const ClickableMedia = memo(function ClickableMedia({
         "rounded-lg",
         highlighted && "ring-2 ring-emerald-400/60",
         stale && "ring-2 ring-amber-500/50",
+        dragOver && "ring-2 ring-sky-400/70",
       )}
+      {...dropHandlers}
     >
       {kind === "video" ? (
         <button
@@ -529,9 +601,26 @@ const ClickableMedia = memo(function ClickableMedia({
       ) : (
         <button
           type="button"
-          className="group block h-32 w-full overflow-hidden rounded-lg border border-white/10 bg-black"
+          draggable={!!imageSlot}
+          className="group block h-32 w-full cursor-grab overflow-hidden rounded-lg border border-white/10 bg-black active:cursor-grabbing"
           onClick={open}
-          title={`Открыть ${label}`}
+          title={
+            imageSlot
+              ? `Открыть ${label} · перетащи в другую ячейку (в т.ч. пустую)`
+              : `Открыть ${label}`
+          }
+          onDragStart={(e) => {
+            if (!imageSlot) return;
+            activeImageDrag = imageSlot;
+            const payload = JSON.stringify(imageSlot);
+            e.dataTransfer.setData(MONTAGE_IMAGE_DRAG, payload);
+            e.dataTransfer.setData("text/plain", payload);
+            e.dataTransfer.effectAllowed = "move";
+          }}
+          onDragEnd={() => {
+            activeImageDrag = null;
+            setDragOver(false);
+          }}
         >
           {inView ? (
             /* eslint-disable-next-line @next/next/no-img-element */
@@ -540,6 +629,7 @@ const ClickableMedia = memo(function ClickableMedia({
               alt={label}
               loading="lazy"
               decoding="async"
+              draggable={false}
               className="h-full w-full object-cover transition group-hover:scale-[1.02] group-hover:brightness-110"
             />
           ) : (
@@ -942,6 +1032,7 @@ export function AssembleMontageBoard({
   const [applyRunning, setApplyRunning] = useState(false);
   const [recoverRunning, setRecoverRunning] = useState(false);
   const [swapBusyFrame, setSwapBusyFrame] = useState<number | null>(null);
+  const [moveImageBusy, setMoveImageBusy] = useState(false);
   const [applyProgress, setApplyProgress] = useState<{ done: number; total: number } | null>(
     null,
   );
@@ -1503,6 +1594,37 @@ export function AssembleMontageBoard({
     }
   };
 
+  const handleMoveImage = async (from: ImageSlotRef, to: ImageSlotRef) => {
+    if (!projectId || moveImageBusy) return;
+    if (from.frameNumber === to.frameNumber && from.shot === to.shot) return;
+    setMoveImageBusy(true);
+    try {
+      const res = await api.moveMontageImage(
+        projectId,
+        from.frameNumber,
+        from.shot,
+        to.frameNumber,
+        to.shot,
+      );
+      setStaleVideos((prev) => {
+        const next = new Set(prev);
+        next.add(trimKey(from.frameNumber, from.shot));
+        next.add(trimKey(to.frameNumber, to.shot));
+        return [...next];
+      });
+      refreshBoard();
+      toast.success(
+        res.mode === "move"
+          ? `Картинка → #${to.frameNumber} shot${to.shot}`
+          : `Обмен #${from.frameNumber}.${from.shot} ↔ #${to.frameNumber}.${to.shot}`,
+      );
+    } catch (e) {
+      toast.error(errorMessageFromUnknown(e));
+    } finally {
+      setMoveImageBusy(false);
+    }
+  };
+
   const handleDeleteVideo = async (frameNumber: number, shot: 1 | 2) => {
     if (!projectId) return;
     try {
@@ -1990,6 +2112,13 @@ export function AssembleMontageBoard({
                                   label={`Изображение 1 · кадр #${fr.number}`}
                                   onPreview={showPreview}
                                   scrollRootRef={tableScrollRef}
+                                  imageSlot={{ frameNumber: fr.number, shot: 1 }}
+                                  onImageDrop={(from) =>
+                                    void handleMoveImage(from, {
+                                      frameNumber: fr.number,
+                                      shot: 1,
+                                    })
+                                  }
                                   onRegen={() =>
                                     queueOp({
                                       type: "image_regen",
@@ -2007,15 +2136,19 @@ export function AssembleMontageBoard({
                                   highlighted={isHighlighted(`${fr.number}:image1`)}
                                 />
                               ) : row.key === "image2" ? (
-                                !fr.has_shot2 ? (
-                                  <p className="text-xs text-muted-foreground">Второй кадр не задан</p>
-                                ) : (
                                 <ClickableMedia
                                   url={fr.image_shot2_url}
                                   kind="image"
                                   label={`Изображение 2 · кадр #${fr.number}`}
                                   onPreview={showPreview}
                                   scrollRootRef={tableScrollRef}
+                                  imageSlot={{ frameNumber: fr.number, shot: 2 }}
+                                  onImageDrop={(from) =>
+                                    void handleMoveImage(from, {
+                                      frameNumber: fr.number,
+                                      shot: 2,
+                                    })
+                                  }
                                   onRegen={() =>
                                     queueOp({
                                       type: "image_regen",
@@ -2032,7 +2165,6 @@ export function AssembleMontageBoard({
                                   onUpload={(file) => void handleUploadImage(fr.number, 2, file)}
                                   highlighted={isHighlighted(`${fr.number}:image2`)}
                                 />
-                                )
                               ) : row.key === "video1" ? (
                                 <VideoMediaCell
                                   fr={fr}

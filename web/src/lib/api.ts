@@ -967,6 +967,27 @@ export const api = {
       { method: "POST" },
     ),
 
+  moveMontageImage: (
+    projectId: number,
+    fromFrame: number,
+    fromShot: 1 | 2,
+    toFrame: number,
+    toShot: 1 | 2,
+  ) =>
+    http<{
+      ok: boolean;
+      mode: "move" | "swap";
+      from_frame: number;
+      from_shot: number;
+      to_frame: number;
+      to_shot: number;
+    }>(
+      `/api/projects/${projectId}/montage-board/move-image` +
+        `?from_frame=${fromFrame}&from_shot=${fromShot}` +
+        `&to_frame=${toFrame}&to_shot=${toShot}`,
+      { method: "POST" },
+    ),
+
   deleteMontageImage: (projectId: number, frameNumber: number, shot: 1 | 2) =>
     http<{ ok: boolean }>(
       `/api/projects/${projectId}/montage-board/delete-image?frame_number=${frameNumber}&shot=${shot}`,

@@ -14,6 +14,7 @@ from app.services.montage_board_apply import apply_montage_board
 from app.services.montage_board_assets import (
     delete_scene_image,
     finalize_scene_image,
+    move_scene_image,
     save_scene_image_upload,
     save_scene_video_upload,
     swap_shot_media,
@@ -358,3 +359,96 @@ async def test_swap_shot_images_and_prompts(
     assert shot1_vids and shot2_vids
     assert shot1_vids[0].read_bytes() == b"VB" * 600
     assert shot2_vids[0].read_bytes() == b"VA" * 600
+
+
+@pytest.mark.asyncio
+async def test_move_image_into_empty_shot2(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="t",
+        status="planned",
+        image_prompt="ONLY_SHOT1",
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+    await save_scene_image_upload(
+        session, montage_project, 1, shot=1, content=b"ONLY" * 40, suffix=".png"
+    )
+    scenes = montage_project.data_dir / "scenes"
+    assert find_shot1_image(scenes, 1) is not None
+    assert find_shot2_image(scenes, 1) is None
+
+    result = await move_scene_image(
+        session,
+        montage_project,
+        from_frame=1,
+        from_shot=1,
+        to_frame=1,
+        to_shot=2,
+    )
+    await session.commit()
+    assert result["ok"] is True
+    assert result["mode"] == "move"
+    assert find_shot1_image(scenes, 1) is None
+    img2 = find_shot2_image(scenes, 1)
+    assert img2 is not None
+    assert img2.read_bytes() == b"ONLY" * 40
+    await session.refresh(fr)
+    assert not (fr.image_prompt or "").strip()
+    assert (fr.attrs or {}).get(SHOT2_PROMPT_ATTR) == "ONLY_SHOT1"
+
+
+@pytest.mark.asyncio
+async def test_move_image_swap_when_target_occupied(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    fr1 = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="a",
+        status="planned",
+        image_prompt="P1",
+    )
+    fr2 = Frame(
+        project_id=montage_project.id,
+        number=2,
+        voiceover_text="b",
+        status="planned",
+        image_prompt="P2",
+    )
+    session.add(montage_project)
+    session.add(fr1)
+    session.add(fr2)
+    await session.flush()
+    await save_scene_image_upload(
+        session, montage_project, 1, shot=1, content=b"A1" * 64, suffix=".png"
+    )
+    await save_scene_image_upload(
+        session, montage_project, 2, shot=1, content=b"B1" * 64, suffix=".png"
+    )
+    scenes = montage_project.data_dir / "scenes"
+    a = find_shot1_image(scenes, 1).read_bytes()  # type: ignore[union-attr]
+    b = find_shot1_image(scenes, 2).read_bytes()  # type: ignore[union-attr]
+
+    result = await move_scene_image(
+        session,
+        montage_project,
+        from_frame=1,
+        from_shot=1,
+        to_frame=2,
+        to_shot=1,
+    )
+    await session.commit()
+    assert result["mode"] == "swap"
+    assert find_shot1_image(scenes, 1).read_bytes() == b  # type: ignore[union-attr]
+    assert find_shot1_image(scenes, 2).read_bytes() == a  # type: ignore[union-attr]
+    await session.refresh(fr1)
+    await session.refresh(fr2)
+    assert fr1.image_prompt == "P2"
+    assert fr2.image_prompt == "P1"
