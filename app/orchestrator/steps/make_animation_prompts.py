@@ -21,6 +21,7 @@ from app.models import Frame, FrameStatus, Project, ProjectStatus
 from app.services import animation_prompt_gpt as apg
 from app.services import db_apply, db_v2
 from app.services.chatgpt_xlsx import tmp_gpt_dir, write_anim_pr_prompt_file
+from app.services.animation_prompt_local import build_local_ops_for_missing
 from app.services.gpt_api import GptApiError
 from app.services.gpt_client import get_gpt_client
 from app.services.step_cancel import StepCancelledError, consume_stop, raise_if_cancelled
@@ -29,6 +30,12 @@ from app.storage import for_project as _sheet_for_project
 # kie maintenance / 5xx: не валим шаг — ждём провайдера и повторяем пачку.
 _BATCH_BACKOFF_S = (45, 90, 180, 300, 300)
 _PHASE1_MAX_RETRIES = 1
+# После N outage на одной пачке — local Veo fallback на весь остаток.
+_BATCH_OUTAGE_BEFORE_LOCAL = 3
+
+
+class _LocalFallbackNeeded(RuntimeError):
+    """kie outage слишком долгий — добиваем локальным composer."""
 
 
 def _provider_outage(exc: BaseException) -> bool:
@@ -54,7 +61,7 @@ async def _ask_batch_until_ok(
     system: str | None,
     label: str,
 ) -> str:
-    """Пачка vision: при outage kie — backoff и снова, пока не ответит или ⏹."""
+    """Пачка vision: при outage kie — backoff; после лимита → local fallback."""
     attempt = 0
     while True:
         raise_if_cancelled(project_id)
@@ -70,17 +77,54 @@ async def _ask_batch_until_ok(
         except Exception as e:  # noqa: BLE001
             if not _provider_outage(e):
                 raise
-            delay = _BATCH_BACKOFF_S[min(attempt, len(_BATCH_BACKOFF_S) - 1)]
             attempt += 1
+            if attempt >= _BATCH_OUTAGE_BEFORE_LOCAL:
+                raise _LocalFallbackNeeded(str(e)) from e
+            delay = _BATCH_BACKOFF_S[min(attempt - 1, len(_BATCH_BACKOFF_S) - 1)]
             logger.warning(
-                "[#{}] anim_pr: {} GPT outage ({}) — повтор #{}, жду {}с",
+                "[#{}] anim_pr: {} GPT outage ({}) — повтор #{}/{}, жду {}с",
                 project_id,
                 label,
                 e,
                 attempt,
+                _BATCH_OUTAGE_BEFORE_LOCAL,
                 delay,
             )
             await asyncio.sleep(delay)
+
+
+async def _fill_remaining_local(
+    session: AsyncSession,
+    project: Project,
+    frames: list[Frame],
+    sheet,
+) -> int:
+    """Добить пустые shot_01 промты локальным Veo-composer (без GPT)."""
+    ops = build_local_ops_for_missing(frames, shot=1)
+    if not ops:
+        return 0
+    logger.warning(
+        "[#{}] anim_pr: local fallback — заполняю {} кадров без GPT",
+        project.id,
+        len(ops),
+    )
+    saved = 0
+    for i in range(0, len(ops), 40):
+        part = ops[i : i + 40]
+        result = await db_apply.apply_ops(session, project, part, export_xlsx=True)
+        saved += int(result.get("updated") or 0)
+        await session.commit()
+    for fr in frames:
+        if (fr.animation_prompt or "").strip():
+            fr.status = FrameStatus.animation_prompt_ready
+            try:
+                sheet.write_frame(fr.number, frame_status=fr.status.value)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[#{}] xlsx write_frame(status) failed: {}", project.id, e
+                )
+    await session.flush()
+    return saved
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
@@ -228,14 +272,23 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 strip_path.name,
                 len(batch_msg),
             )
-            reply = await _ask_batch_until_ok(
-                gpt,
-                batch_msg,
-                strip_path,
-                project_id=project.id,
-                system=master_system or None,
-                label=f"shot_01 {[it.frame.number for it in batch]}",
-            )
+            try:
+                reply = await _ask_batch_until_ok(
+                    gpt,
+                    batch_msg,
+                    strip_path,
+                    project_id=project.id,
+                    system=master_system or None,
+                    label=f"shot_01 {[it.frame.number for it in batch]}",
+                )
+            except _LocalFallbackNeeded as e:
+                logger.warning(
+                    "[#{}] anim_pr: GPT outage лимит — local fallback ({})",
+                    project.id,
+                    e,
+                )
+                await _fill_remaining_local(session, project, list(frames), sheet)
+                break
             await _save_anim_pr_batch(
                 session,
                 project,
@@ -265,14 +318,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 strip2.name,
                 len(batch_msg2),
             )
-            reply2 = await _ask_batch_until_ok(
-                gpt,
-                batch_msg2,
-                strip2,
-                project_id=project.id,
-                system=master_system or None,
-                label=f"shot_02 {[it.frame.number for it in batch2]}",
-            )
+            try:
+                reply2 = await _ask_batch_until_ok(
+                    gpt,
+                    batch_msg2,
+                    strip2,
+                    project_id=project.id,
+                    system=master_system or None,
+                    label=f"shot_02 {[it.frame.number for it in batch2]}",
+                )
+            except _LocalFallbackNeeded as e:
+                logger.warning(
+                    "[#{}] anim_pr: shot_02 GPT outage — пропускаю остаток shot_02 ({})",
+                    project.id,
+                    e,
+                )
+                break
             await _save_anim_pr_batch(
                 session,
                 project,
