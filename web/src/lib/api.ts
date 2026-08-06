@@ -554,6 +554,31 @@ export const api = {
 
   // ── Sidebar layout ───────────────────────────────────────────────
   getSidebarLayout: () => http<SidebarLayout>(`/api/sidebar-layout`),
+  getRuntimeStreams: () =>
+    http<{
+      worker_max_parallel: number;
+      default_outsee_streams: number;
+      default_check_streams: number;
+      worker_busy: number;
+      create_max_parallel_outsee: number;
+      limits: Record<string, [number, number]>;
+    }>(`/api/runtime-streams`),
+  patchRuntimeStreams: (body: {
+    worker_max_parallel?: number;
+    default_outsee_streams?: number;
+    default_check_streams?: number;
+  }) =>
+    http<{
+      worker_max_parallel: number;
+      default_outsee_streams: number;
+      default_check_streams: number;
+      worker_busy: number;
+      create_max_parallel_outsee: number;
+      limits: Record<string, [number, number]>;
+    }>(`/api/runtime-streams`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
   updateSidebarLayout: (body: Partial<SidebarLayout>) =>
     http<SidebarLayout>(`/api/sidebar-layout`, {
       method: "PUT",

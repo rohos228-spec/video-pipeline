@@ -1,8 +1,9 @@
 """Очередь генерации проектов по сайдбару (top-N окно).
 
 При WORKER_MAX_PARALLEL=1 — строго по одному (как раньше).
-При N>1 — одновременно выполняются до N первых незакрытых слотов.
-paused/user_stop у более раннего слота по-прежнему жёстко стопорят хвост.
+При N>1 — одновременно выполняются до N runnable слотов.
+paused/user_stop пропускаются (не занимают окно) — хвост может работать,
+если есть свободные слоты параллели.
 """
 
 from __future__ import annotations
@@ -25,7 +26,6 @@ from app.services.gen_queue_run import (
     skip_gen_queue_slot,
 )
 from app.services.sidebar_layout import get_gen_queue, is_gen_queue_halted
-from app.settings import settings
 from app.telegram.menu import step_by_code, step_by_running_status
 
 GEN_QUEUE_BUSY_STATUSES = [
@@ -62,12 +62,13 @@ def _slot_closed(project: Project) -> bool:
 
 
 def worker_max_parallel() -> int:
-    """Сколько проектов очереди могут выполняться одновременно (минимум 1)."""
-    try:
-        n = int(settings.worker_max_parallel)
-    except (TypeError, ValueError):
-        n = 1
-    return max(1, n)
+    """Сколько проектов очереди могут выполняться одновременно (1..4).
+
+    Источник: data/runtime_streams.json → env WORKER_MAX_PARALLEL → 1.
+    """
+    from app.services.runtime_streams import get_worker_max_parallel
+
+    return get_worker_max_parallel()
 
 
 def gen_queue_is_active() -> bool:
@@ -297,11 +298,10 @@ async def get_gen_queue_idle_info(session: AsyncSession) -> dict[str, Any] | Non
             continue
         if await _close_slot_if_already_at_target(session, project, queue_pos=idx + 1):
             continue
+        if _slot_blocked(project):
+            # paused/⏹ не считаем простоем очереди — хвост может работать.
+            continue
         if project.status is ProjectStatus.failed:
-            return _idle_reason_for_project(project, position=idx + 1)
-        if _user_stop_blocks_queue(project):
-            return _idle_reason_for_project(project, position=idx + 1)
-        if project.status is ProjectStatus.paused:
             return _idle_reason_for_project(project, position=idx + 1)
         if project.status is ProjectStatus.new and not project.auto_mode:
             return _idle_reason_for_project(project, position=idx + 1)
@@ -321,7 +321,10 @@ async def gen_queue_head_project(session: AsyncSession) -> Project | None:
 
 
 async def gen_queue_window_projects(session: AsyncSession) -> list[Project]:
-    """Первые N незакрытых слотов очереди (top-N окно)."""
+    """Первые N runnable слотов очереди (top-N окно).
+
+    paused/user_stop не входят в окно — освобождают параллель для следующих.
+    """
     queue = get_gen_queue()
     n = worker_max_parallel()
     out: list[Project] = []
@@ -330,6 +333,8 @@ async def gen_queue_window_projects(session: AsyncSession) -> list[Project]:
         if project is None or is_mass_factory_child(project):
             continue
         if _slot_closed(project):
+            continue
+        if _slot_blocked(project):
             continue
         out.append(project)
         if len(out) >= n:
@@ -405,8 +410,8 @@ async def gen_queue_incomplete_earlier(
 ) -> int | None:
     """Блокирующий более ранний слот, если проект вне top-N окна.
 
-    paused/user_stop у любого более раннего незакрытого слота — жёсткий стоп.
-    Иначе блокирует N-й незакрытый предшественник (окно заполнено).
+    paused/user_stop пропускаются. Блокирует N-й runnable предшественник
+    (окно параллели заполнено).
     """
     queue = get_gen_queue()
     if not queue or project_id not in queue:
@@ -420,18 +425,12 @@ async def gen_queue_incomplete_earlier(
             continue
         if _slot_closed(project):
             continue
-        if _user_stop_blocks_queue(project):
+        if _slot_blocked(project):
             logger.debug(
-                "gen_queue: #{} блокирует очередь (user_stop)",
+                "gen_queue: #{} пропуск (paused/user_stop) — не блокирует хвост",
                 project.id,
             )
-            return project.id
-        if project.status is ProjectStatus.paused:
-            logger.debug(
-                "gen_queue: #{} блокирует очередь (paused)",
-                project.id,
-            )
-            return project.id
+            continue
         holding.append(project.id)
         if len(holding) >= n:
             return holding[n - 1]
@@ -470,20 +469,14 @@ async def gen_queue_tick(session: AsyncSession) -> int:
             continue
         if _slot_closed(project):
             continue
-        if _user_stop_blocks_queue(project):
+        if _slot_blocked(project):
             logger.info(
-                "gen_queue: ждём #{} (позиция {}, user_stop)",
+                "gen_queue: #{} {} — пропуск слота, ищем свободный (позиция {})",
                 project.id,
+                "user_stop" if _user_stop_blocks_queue(project) else "paused",
                 idx + 1,
             )
-            return started_total
-        if project.status is ProjectStatus.paused:
-            logger.info(
-                "gen_queue: #{} paused — очередь стоит (позиция {})",
-                project.id,
-                idx + 1,
-            )
-            return started_total
+            continue
         if project.status is ProjectStatus.failed:
             fs = (project.meta or {}).get("step_failure") or {}
             err = str(fs.get("last_error") or "ошибка шага")[:120]

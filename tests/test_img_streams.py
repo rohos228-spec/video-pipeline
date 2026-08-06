@@ -38,7 +38,8 @@ def test_outsee_alias_reads_same_meta() -> None:
     assert get_img_streams(p) == 3
 
 
-def test_get_img_streams_from_meta(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_img_streams_from_meta(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path)
     monkeypatch.setattr(app_settings.settings, "img_max_streams", 1)
     p = Project(slug="s", topic="t", status=ProjectStatus.generating_images, meta={})
     assert get_img_streams(p) == 1

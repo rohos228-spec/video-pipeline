@@ -14,7 +14,6 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 from app.models import Project
-from app.settings import settings
 
 META_KEY = "img_streams"
 META_KEY_ALIAS = "outsee_streams"
@@ -33,7 +32,9 @@ def clamp_img_streams(raw: Any) -> int:
 
 
 def default_img_streams() -> int:
-    return clamp_img_streams(getattr(settings, "img_max_streams", 1) or 1)
+    from app.services.runtime_streams import get_default_outsee_streams
+
+    return clamp_img_streams(get_default_outsee_streams())
 
 
 def get_img_streams(project: Project | None) -> int:
