@@ -1907,6 +1907,31 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  // ── Agent (LLM-оркестратор) ──
+  agentListSessions: () =>
+    http<{ sessions: AgentSessionSummary[] }>(`/api/agent/sessions`),
+  agentCreateSession: (title?: string, autonomy?: AgentAutonomy) =>
+    http<AgentSession>(`/api/agent/sessions`, {
+      method: "POST",
+      body: JSON.stringify({ title: title || "", autonomy: autonomy || "operator" }),
+    }),
+  agentGetSession: (uuid: string) =>
+    http<AgentSessionDetail>(`/api/agent/sessions/${encodeURIComponent(uuid)}`),
+  agentAsk: (uuid: string, text: string) =>
+    http<{ ok?: boolean; text?: string; error?: string; waiting_choice?: boolean }>(
+      `/api/agent/sessions/${encodeURIComponent(uuid)}/ask?background=true`,
+      { method: "POST", body: JSON.stringify({ text }) },
+    ),
+  agentAnswer: (uuid: string, choiceId: string) =>
+    http<{ text?: string; error?: string; waiting_choice?: boolean }>(
+      `/api/agent/sessions/${encodeURIComponent(uuid)}/answer`,
+      { method: "POST", body: JSON.stringify({ choice_id: choiceId }) },
+    ),
+  agentStop: (uuid: string) =>
+    http<{ ok: boolean }>(`/api/agent/sessions/${encodeURIComponent(uuid)}/stop`, {
+      method: "POST",
+    }),
+
   // ── GPT Workspace (свободный чат) ──
   gptListSessions: () =>
     http<{ sessions: GptWorkspaceSessionSummary[] }>(`/api/gpt-workspace/sessions`),
@@ -1983,6 +2008,45 @@ export const api = {
       `/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}/save-voiceover`,
       { method: "POST", body: JSON.stringify(body) },
     ),
+};
+
+export type AgentAutonomy = "advisor" | "operator" | "autopilot";
+
+export type AgentChoiceOption = {
+  id: string;
+  label: string;
+  description?: string;
+};
+
+export type AgentChoiceCard = {
+  kind: "confirm" | "choice" | "variant_picker";
+  question: string;
+  options: AgentChoiceOption[];
+  _call_id?: string;
+};
+
+export type AgentSessionSummary = {
+  id: number;
+  uuid: string;
+  title: string;
+  status: "idle" | "running" | "waiting_choice" | "error" | "stopped";
+  autonomy: AgentAutonomy;
+  pending_choice?: AgentChoiceCard | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AgentSession = AgentSessionSummary;
+
+export type AgentMessage = {
+  role: "user" | "assistant" | "tool" | "event";
+  content: string;
+  payload?: Record<string, unknown>;
+  created_at: string;
+};
+
+export type AgentSessionDetail = AgentSessionSummary & {
+  messages: AgentMessage[];
 };
 
 export type GptWorkspaceSessionSummary = {

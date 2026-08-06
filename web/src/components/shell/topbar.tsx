@@ -84,6 +84,16 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
           <Button
             variant="outline"
             size="sm"
+            onClick={() => window.dispatchEvent(new CustomEvent("studio-open-agent"))}
+            className="gap-2 text-xs font-semibold"
+            title="LLM-агент оркестратора: управление пайплайном через tools"
+          >
+            <Bot className="h-3.5 w-3.5 text-[#D1FE17]" />
+            Агент
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() =>
               window.dispatchEvent(
                 new CustomEvent("studio-open-node-prompts", { detail: {} }),
