@@ -168,6 +168,38 @@ def _is_concurrency_limit_error(err: BaseException) -> bool:
     return any(m in reason for m in _CONCURRENCY_MARKERS)
 
 
+def _is_start_frame_content_policy_error(err: BaseException) -> bool:
+    """CONTENT_POLICY на стартовом кадре (celebrity / лицо) — не лечится rewrite."""
+    reason = str(getattr(err, "reason", None) or err).lower()
+    body = ""
+    if isinstance(err, OutseeImageError):
+        ctx = err.context or {}
+        body = str(ctx.get("body") or ctx.get("status") or "").lower()
+        code = str(ctx.get("code") or "").lower()
+        if code == "content_policy" and (
+            "изображен" in reason
+            or "личност" in reason
+            or "известн" in reason
+            or "image" in reason
+        ):
+            return True
+    blob = f"{reason}\n{body}"
+    if "content_policy" not in blob and "контент" not in blob:
+        return False
+    return any(
+        m in blob
+        for m in (
+            "загруженное изображение",
+            "известную личность",
+            "известной личности",
+            "uploaded image",
+            "celebrity",
+            "known person",
+            "на нём известн",
+        )
+    )
+
+
 def _concurrency_backoff_s(wait_n: int) -> float:
     idx = max(0, min(wait_n - 1, len(_CONCURRENCY_BACKOFF_S) - 1))
     return _CONCURRENCY_BACKOFF_S[idx]
@@ -1196,6 +1228,23 @@ async def generate_video_with_retries(
                         attempt_kwargs.get("prompt_id_prefix") or "—",
                     )
                     await sleep_cancellable(delay, project_id)
+                    continue
+                # Celebrity / image CONTENT_POLICY: rewrite промта бесполезен —
+                # убираем start_frame и пробуем text→video.
+                if (
+                    _is_start_frame_content_policy_error(e)
+                    and kwargs.get("start_frame") is not None
+                ):
+                    logger.warning(
+                        "outsee.generate_video [{}]: CONTENT_POLICY на "
+                        "стартовом кадре — повтор без image_url (id={})",
+                        round_label,
+                        attempt_kwargs.get("prompt_id_prefix") or "—",
+                    )
+                    kwargs = dict(kwargs)
+                    kwargs["start_frame"] = None
+                    attempt -= 1
+                    await sleep_cancellable(2.0, project_id)
                     continue
                 gen_failures += 1
                 err_kind = _retry_err_label(e)

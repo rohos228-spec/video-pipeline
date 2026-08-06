@@ -188,11 +188,14 @@ async def _claim_shot1_video_batch(
 ) -> list[Frame]:
     if limit < 1:
         return []
+    # populate_existing: после parallel SessionLocal() attrs.inflight иначе stale
+    # в identity map родителя → кадры навсегда пропускаются.
     frames = (
         await session.execute(
             select(Frame)
             .where(Frame.project_id == project_id)
             .order_by(Frame.number)
+            .execution_options(populate_existing=True)
         )
     ).scalars().all()
     claimed: list[Frame] = []
@@ -238,6 +241,7 @@ async def _claim_shot2_video_batch(
             select(Frame)
             .where(Frame.project_id == project.id)
             .order_by(Frame.number)
+            .execution_options(populate_existing=True)
         )
     ).scalars().all()
     claimed: list[tuple[Frame, str, Path]] = []
@@ -610,6 +614,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         ],
                         return_exceptions=True,
                     )
+                    session.expire_all()
                     fail_n = 0
                     for r in results:
                         if isinstance(r, StepCancelledError):
@@ -700,6 +705,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         ],
                         return_exceptions=True,
                     )
+                    session.expire_all()
                     for r in results2:
                         if isinstance(r, StepCancelledError):
                             raise r

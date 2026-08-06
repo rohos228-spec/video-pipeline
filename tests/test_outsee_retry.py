@@ -27,6 +27,21 @@ def test_is_concurrency_limit_error() -> None:
     assert mod._concurrency_backoff_s(99) == 180.0
 
 
+def test_is_start_frame_content_policy_error() -> None:
+    err = OutseeImageError(
+        "Outsee generation failed: {'code': 'CONTENT_POLICY', 'message': "
+        "'Загруженное изображение отклонено — модель определила на нём "
+        "известную личность. Попробуйте использовать другое изображение'}"
+    )
+    assert mod._is_start_frame_content_policy_error(err) is True
+    assert (
+        mod._is_start_frame_content_policy_error(
+            OutseeImageError("Аудиодорожка видео не прошла модерацию")
+        )
+        is False
+    )
+
+
 def test_is_prompt_related_error_truncation() -> None:
     err = OutseeImageError(
         "outsee: промт обрезан outsee (3200 из 4800 симв)",
