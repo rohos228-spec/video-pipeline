@@ -1,4 +1,4 @@
-"""Файловые операции панели монтажа: upload / delete / archive."""
+"""Файловые операции панели монтажа: upload / delete / archive / swap shots."""
 
 from __future__ import annotations
 
@@ -6,14 +6,20 @@ import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Literal
 
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models import Artifact, ArtifactKind, Frame, Project
 from app.services.plan_shot2 import (
+    SHOT2_PROMPT_ATTR,
+    SHOT2_VIDEO_PROMPT_ATTR,
     effective_shot_from_artifact,
+    find_shot1_image,
+    find_shot2_image,
     shot2_file_pattern,
     shot2_video_file_pattern,
 )
@@ -275,3 +281,220 @@ async def save_scene_video_upload(
     dest.write_bytes(content)
     await finalize_scene_video(session, project, frame_number, shot=shot, new_path=dest)
     return dest
+
+
+def _find_shot1_video(videos_dir: Path, frame_number: int) -> Path | None:
+    if not videos_dir.is_dir():
+        return None
+    candidates = [
+        p
+        for p in videos_dir.glob(f"clip_{frame_number:03d}_*.mp4")
+        if "_s2_" not in p.name
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
+def _find_shot2_video(videos_dir: Path, frame_number: int) -> Path | None:
+    if not videos_dir.is_dir():
+        return None
+    candidates = list(videos_dir.glob(shot2_video_file_pattern(frame_number)))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
+def _swap_prompt_fields(fr: Frame) -> dict[str, str]:
+    """Меняет местами промты shot1 ↔ shot2 на Frame."""
+    attrs = dict(fr.attrs or {})
+    img1 = (fr.image_prompt or "").strip()
+    img2 = (attrs.get(SHOT2_PROMPT_ATTR) or "").strip()
+    vid1 = (fr.animation_prompt or "").strip()
+    vid2 = (attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or "").strip()
+    fr.image_prompt = img2
+    fr.animation_prompt = vid2
+    if img1:
+        attrs[SHOT2_PROMPT_ATTR] = img1
+    else:
+        attrs.pop(SHOT2_PROMPT_ATTR, None)
+    if vid1:
+        attrs[SHOT2_VIDEO_PROMPT_ATTR] = vid1
+    else:
+        attrs.pop(SHOT2_VIDEO_PROMPT_ATTR, None)
+    fr.attrs = attrs
+    flag_modified(fr, "attrs")
+    return {
+        "image_prompt_shot1": fr.image_prompt or "",
+        "image_prompt_shot2": img1,
+        "animation_prompt_shot1": fr.animation_prompt or "",
+        "animation_prompt_shot2": vid1,
+    }
+
+
+def _swap_trim_keys(board_meta: dict[str, Any], frame_number: int) -> None:
+    from app.services.montage_board_meta import trim_key
+
+    trims = board_meta.get("video_trims")
+    if not isinstance(trims, dict):
+        return
+    k1, k2 = trim_key(frame_number, 1), trim_key(frame_number, 2)
+    t1, t2 = trims.get(k1), trims.get(k2)
+    if t1 is None and t2 is None:
+        return
+    if t2 is None:
+        trims.pop(k1, None)
+    else:
+        trims[k1] = t2
+    if t1 is None:
+        trims.pop(k2, None)
+    else:
+        trims[k2] = t1
+    board_meta["video_trims"] = trims
+
+
+async def swap_shot_media(
+    session: AsyncSession,
+    project: Project,
+    frame_number: int,
+    *,
+    kind: Literal["image", "video", "both"] = "both",
+) -> dict[str, Any]:
+    """Поменять местами shot1 ↔ shot2 (файлы + промты + trim)."""
+    result: dict[str, Any] = {
+        "frame_number": frame_number,
+        "kind": kind,
+        "images_swapped": False,
+        "videos_swapped": False,
+        "prompts_swapped": False,
+    }
+    do_img = kind in ("image", "both")
+    do_vid = kind in ("video", "both")
+
+    if do_img:
+        scenes = project.data_dir / "scenes"
+        scenes.mkdir(parents=True, exist_ok=True)
+        src1 = find_shot1_image(scenes, frame_number)
+        src2 = find_shot2_image(scenes, frame_number)
+        bytes1 = src1.read_bytes() if src1 is not None and src1.is_file() else None
+        bytes2 = src2.read_bytes() if src2 is not None and src2.is_file() else None
+        suf1 = src1.suffix if src1 is not None else ".png"
+        suf2 = src2.suffix if src2 is not None else ".png"
+        if bytes1 is not None or bytes2 is not None:
+            # Архив старых + запись с новыми именами (чтобы не пересечься).
+            await delete_scene_image(session, project, frame_number, shot=1)
+            await delete_scene_image(session, project, frame_number, shot=2)
+            if bytes2 is not None:
+                await save_scene_image_upload(
+                    session,
+                    project,
+                    frame_number,
+                    shot=1,
+                    content=bytes2,
+                    suffix=suf2 or ".png",
+                )
+            if bytes1 is not None:
+                await save_scene_image_upload(
+                    session,
+                    project,
+                    frame_number,
+                    shot=2,
+                    content=bytes1,
+                    suffix=suf1 or ".png",
+                )
+            result["images_swapped"] = True
+
+    if do_vid:
+        videos = project.data_dir / "videos"
+        videos.mkdir(parents=True, exist_ok=True)
+        src1 = _find_shot1_video(videos, frame_number)
+        src2 = _find_shot2_video(videos, frame_number)
+        bytes1 = src1.read_bytes() if src1 is not None and src1.is_file() else None
+        bytes2 = src2.read_bytes() if src2 is not None and src2.is_file() else None
+        suf1 = src1.suffix if src1 is not None else ".mp4"
+        suf2 = src2.suffix if src2 is not None else ".mp4"
+        if bytes1 is not None or bytes2 is not None:
+            await delete_scene_video(session, project, frame_number, shot=1)
+            await delete_scene_video(session, project, frame_number, shot=2)
+            if bytes2 is not None:
+                await save_scene_video_upload(
+                    session,
+                    project,
+                    frame_number,
+                    shot=1,
+                    content=bytes2,
+                    suffix=suf2 or ".mp4",
+                )
+            if bytes1 is not None:
+                await save_scene_video_upload(
+                    session,
+                    project,
+                    frame_number,
+                    shot=2,
+                    content=bytes1,
+                    suffix=suf1 or ".mp4",
+                )
+            result["videos_swapped"] = True
+
+    fr = await _frame(session, project.id, frame_number)
+    if fr is not None and (do_img or do_vid):
+        # Промты меняем вместе с соответствующим kind; при both — оба.
+        if kind == "both":
+            result["prompts"] = _swap_prompt_fields(fr)
+            result["prompts_swapped"] = True
+        elif kind == "image":
+            attrs = dict(fr.attrs or {})
+            img1 = (fr.image_prompt or "").strip()
+            img2 = (attrs.get(SHOT2_PROMPT_ATTR) or "").strip()
+            fr.image_prompt = img2
+            if img1:
+                attrs[SHOT2_PROMPT_ATTR] = img1
+            else:
+                attrs.pop(SHOT2_PROMPT_ATTR, None)
+            fr.attrs = attrs
+            flag_modified(fr, "attrs")
+            result["prompts_swapped"] = True
+        elif kind == "video":
+            attrs = dict(fr.attrs or {})
+            vid1 = (fr.animation_prompt or "").strip()
+            vid2 = (attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or "").strip()
+            fr.animation_prompt = vid2
+            if vid1:
+                attrs[SHOT2_VIDEO_PROMPT_ATTR] = vid1
+            else:
+                attrs.pop(SHOT2_VIDEO_PROMPT_ATTR, None)
+            fr.attrs = attrs
+            flag_modified(fr, "attrs")
+            result["prompts_swapped"] = True
+
+    if do_vid:
+        from app.services.montage_board_meta import montage_meta, set_montage_meta
+
+        board = montage_meta(project)
+        _swap_trim_keys(board, frame_number)
+        # Оба слота stale после swap — картинка могла не совпадать с клипом.
+        stale = list(board.get("stale_videos") or [])
+        for shot in (1, 2):
+            key = f"{frame_number}:{shot}"
+            if key not in stale:
+                stale.append(key)
+        board["stale_videos"] = stale
+        set_montage_meta(project, board)
+
+    if do_img and not do_vid:
+        from app.services.montage_board_meta import mark_stale_videos, montage_meta, set_montage_meta
+
+        board = montage_meta(project)
+        mark_stale_videos(board, frame_number, shot=1)
+        mark_stale_videos(board, frame_number, shot=2)
+        set_montage_meta(project, board)
+
+    await session.flush()
+    if not result["images_swapped"] and not result["videos_swapped"] and not result["prompts_swapped"]:
+        result["ok"] = False
+        result["reason"] = "нечего менять"
+    else:
+        result["ok"] = True
+    return result

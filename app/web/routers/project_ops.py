@@ -895,6 +895,29 @@ async def montage_board_recover_outsee_status(
     return {"job": get_recover_job(p)}
 
 
+@router.post("/{project_id}/montage-board/swap-shots")
+async def montage_board_swap_shots(
+    project_id: int,
+    frame_number: int = Query(..., ge=1),
+    kind: str = Query("both", pattern="^(image|video|both)$"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Поменять местами shot1 ↔ shot2 (картинки и/или видео + промты)."""
+    from app.services.montage_board_assets import swap_shot_media
+
+    p = _project_or_404(await session.get(Project, project_id))
+    result = await swap_shot_media(
+        session, p, frame_number, kind=kind  # type: ignore[arg-type]
+    )
+    await session.commit()
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=400,
+            detail=result.get("reason") or "нечего менять",
+        )
+    return result
+
+
 @router.post("/{project_id}/montage-board/delete-image")
 async def montage_board_delete_image(
     project_id: int,

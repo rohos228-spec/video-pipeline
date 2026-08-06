@@ -950,6 +950,23 @@ export const api = {
       last?: Record<string, unknown> | null;
     }>(`/api/projects/${projectId}/audio-align/status`),
 
+  swapMontageShots: (
+    projectId: number,
+    frameNumber: number,
+    kind: "image" | "video" | "both" = "both",
+  ) =>
+    http<{
+      ok: boolean;
+      frame_number: number;
+      kind: string;
+      images_swapped?: boolean;
+      videos_swapped?: boolean;
+      prompts_swapped?: boolean;
+    }>(
+      `/api/projects/${projectId}/montage-board/swap-shots?frame_number=${frameNumber}&kind=${kind}`,
+      { method: "POST" },
+    ),
+
   deleteMontageImage: (projectId: number, frameNumber: number, shot: 1 | 2) =>
     http<{ ok: boolean }>(
       `/api/projects/${projectId}/montage-board/delete-image?frame_number=${frameNumber}&shot=${shot}`,

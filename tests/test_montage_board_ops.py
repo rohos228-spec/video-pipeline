@@ -15,6 +15,14 @@ from app.services.montage_board_assets import (
     delete_scene_image,
     finalize_scene_image,
     save_scene_image_upload,
+    save_scene_video_upload,
+    swap_shot_media,
+)
+from app.services.plan_shot2 import (
+    SHOT2_PROMPT_ATTR,
+    SHOT2_VIDEO_PROMPT_ATTR,
+    find_shot1_image,
+    find_shot2_image,
 )
 from app.services.montage_board_meta import montage_meta, trim_key
 from app.services.xlsx_v8_import import SHEET_PLAN_V8, ROW_VOICEOVER_V8
@@ -282,3 +290,71 @@ async def test_apply_finalizes_when_file_ready_despite_execute_error(
     assert prep_box["prep"].file_path.is_file()
     assert not old.is_file()
     assert montage_meta(montage_project).get("pending_ops") == []
+
+
+@pytest.mark.asyncio
+async def test_swap_shot_images_and_prompts(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="t",
+        status="planned",
+        image_prompt="PROMPT_A",
+        animation_prompt="VID_A",
+        attrs={
+            SHOT2_PROMPT_ATTR: "PROMPT_B",
+            SHOT2_VIDEO_PROMPT_ATTR: "VID_B",
+        },
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    await save_scene_image_upload(
+        session, montage_project, 1, shot=1, content=b"A" * 128, suffix=".png"
+    )
+    await save_scene_image_upload(
+        session, montage_project, 1, shot=2, content=b"B" * 128, suffix=".png"
+    )
+    await save_scene_video_upload(
+        session, montage_project, 1, shot=1, content=b"VA" * 600, suffix=".mp4"
+    )
+    await save_scene_video_upload(
+        session, montage_project, 1, shot=2, content=b"VB" * 600, suffix=".mp4"
+    )
+
+    scenes = montage_project.data_dir / "scenes"
+    videos = montage_project.data_dir / "videos"
+    img1_before = find_shot1_image(scenes, 1)
+    img2_before = find_shot2_image(scenes, 1)
+    assert img1_before is not None and img2_before is not None
+    a_bytes, b_bytes = img1_before.read_bytes(), img2_before.read_bytes()
+
+    result = await swap_shot_media(session, montage_project, 1, kind="both")
+    await session.commit()
+    assert result["ok"] is True
+    assert result["images_swapped"] is True
+    assert result["videos_swapped"] is True
+
+    img1_after = find_shot1_image(scenes, 1)
+    img2_after = find_shot2_image(scenes, 1)
+    assert img1_after is not None and img2_after is not None
+    assert img1_after.read_bytes() == b_bytes
+    assert img2_after.read_bytes() == a_bytes
+
+    await session.refresh(fr)
+    assert fr.image_prompt == "PROMPT_B"
+    assert (fr.attrs or {}).get(SHOT2_PROMPT_ATTR) == "PROMPT_A"
+    assert fr.animation_prompt == "VID_B"
+    assert (fr.attrs or {}).get(SHOT2_VIDEO_PROMPT_ATTR) == "VID_A"
+
+    shot1_vids = [
+        p for p in videos.glob("clip_001_*.mp4") if "_s2_" not in p.name
+    ]
+    shot2_vids = list(videos.glob("clip_001_s2_*.mp4"))
+    assert shot1_vids and shot2_vids
+    assert shot1_vids[0].read_bytes() == b"VB" * 600
+    assert shot2_vids[0].read_bytes() == b"VA" * 600

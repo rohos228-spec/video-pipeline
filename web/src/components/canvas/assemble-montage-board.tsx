@@ -14,6 +14,7 @@ import {
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  ArrowLeftRight,
   ChevronDown,
   ChevronRight,
   Clapperboard,
@@ -940,6 +941,7 @@ export function AssembleMontageBoard({
   const [montageRunning, setMontageRunning] = useState(false);
   const [applyRunning, setApplyRunning] = useState(false);
   const [recoverRunning, setRecoverRunning] = useState(false);
+  const [swapBusyFrame, setSwapBusyFrame] = useState<number | null>(null);
   const [applyProgress, setApplyProgress] = useState<{ done: number; total: number } | null>(
     null,
   );
@@ -1538,6 +1540,50 @@ export function AssembleMontageBoard({
     }
   };
 
+  const handleSwapShots = async (
+    frameNumber: number,
+    kind: "image" | "video" | "both",
+  ) => {
+    if (!projectId || swapBusyFrame != null) return;
+    setSwapBusyFrame(frameNumber);
+    try {
+      const res = await api.swapMontageShots(projectId, frameNumber, kind);
+      // Trim keys shot1↔shot2 на клиенте тоже
+      setTrims((prev) => {
+        const k1 = trimKey(frameNumber, 1);
+        const k2 = trimKey(frameNumber, 2);
+        const t1 = prev[k1];
+        const t2 = prev[k2];
+        if (t1 == null && t2 == null) return prev;
+        const next = { ...prev };
+        if (t2 == null) delete next[k1];
+        else next[k1] = t2;
+        if (t1 == null) delete next[k2];
+        else next[k2] = t1;
+        return next;
+      });
+      setStaleVideos((prev) => {
+        const keys = [trimKey(frameNumber, 1), trimKey(frameNumber, 2)];
+        const out = prev.filter((k) => !keys.includes(k));
+        return [...out, ...keys];
+      });
+      refreshBoard();
+      const parts: string[] = [];
+      if (res.images_swapped) parts.push("картинки");
+      if (res.videos_swapped) parts.push("видео");
+      if (res.prompts_swapped) parts.push("промты");
+      toast.success(
+        parts.length
+          ? `Кадр #${frameNumber}: поменяли ${parts.join(" + ")} 1↔2`
+          : `Кадр #${frameNumber}: обмен выполнен`,
+      );
+    } catch (e) {
+      toast.error(errorMessageFromUnknown(e));
+    } finally {
+      setSwapBusyFrame(null);
+    }
+  };
+
   const sourcePromptFor = (
     kind: "image" | "video",
     frameNumber: number,
@@ -1835,11 +1881,52 @@ export function AssembleMontageBoard({
                         <th
                           key={fr.frame_id}
                           className={cn(
-                            "border-b border-white/10 px-3 py-2 text-center font-mono text-xs",
+                            "border-b border-white/10 px-2 py-2 text-center font-mono text-xs",
                             FRAME_COL_CLASS,
                           )}
                         >
-                          #{fr.number}
+                          <div className="flex flex-col items-center gap-1">
+                            <span>#{fr.number}</span>
+                            <div className="flex flex-wrap items-center justify-center gap-1">
+                              <button
+                                type="button"
+                                disabled={swapBusyFrame === fr.number}
+                                title="Поменять картинки 1 ↔ 2"
+                                className="inline-flex items-center gap-0.5 rounded-md border border-white/15 bg-black/30 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition hover:border-amber-400/50 hover:text-amber-200 disabled:opacity-50"
+                                onClick={() => void handleSwapShots(fr.number, "image")}
+                              >
+                                {swapBusyFrame === fr.number ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <ArrowLeftRight className="h-3 w-3" />
+                                )}
+                                img
+                              </button>
+                              <button
+                                type="button"
+                                disabled={swapBusyFrame === fr.number}
+                                title="Поменять видео 1 ↔ 2"
+                                className="inline-flex items-center gap-0.5 rounded-md border border-white/15 bg-black/30 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition hover:border-amber-400/50 hover:text-amber-200 disabled:opacity-50"
+                                onClick={() => void handleSwapShots(fr.number, "video")}
+                              >
+                                {swapBusyFrame === fr.number ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <ArrowLeftRight className="h-3 w-3" />
+                                )}
+                                vid
+                              </button>
+                              <button
+                                type="button"
+                                disabled={swapBusyFrame === fr.number}
+                                title="Поменять и картинки, и видео 1 ↔ 2"
+                                className="inline-flex items-center gap-0.5 rounded-md border border-amber-400/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200/90 transition hover:border-amber-400/60 hover:bg-amber-500/20 disabled:opacity-50"
+                                onClick={() => void handleSwapShots(fr.number, "both")}
+                              >
+                                1↔2
+                              </button>
+                            </div>
+                          </div>
                         </th>
                       ))}
                     </tr>
