@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -99,6 +100,9 @@ class GptChatResult:
     finish_reason: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
+    # Нормализованные tool calls (function calling), если переданы tools.
+    # Формат: [{"id", "call_id", "name", "arguments"}]; arguments — JSON-строка.
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
 
 def gpt_api_enabled() -> bool:
@@ -944,6 +948,114 @@ def _parse_choice(payload: dict[str, Any]) -> tuple[str, str]:
     return text, finish
 
 
+# ─────────────────────────── tool calling (function calling) ───────────────────────────
+
+
+def _parse_responses_tool_calls(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """function_call items из ответа Responses API → нормализованный список."""
+    calls: list[dict[str, Any]] = []
+    output = payload.get("output")
+    if not isinstance(output, list):
+        return calls
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            continue
+        calls.append(
+            {
+                "id": str(item.get("id") or ""),
+                "call_id": str(item.get("call_id") or item.get("id") or ""),
+                "name": str(item.get("name") or ""),
+                "arguments": str(item.get("arguments") or ""),
+            }
+        )
+    return calls
+
+
+def _parse_choice_tool_calls(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """message.tool_calls из ответа chat/completions → нормализованный список."""
+    calls: list[dict[str, Any]] = []
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return calls
+    first = choices[0] if isinstance(choices[0], dict) else {}
+    message = first.get("message") if isinstance(first.get("message"), dict) else {}
+    raw_calls = message.get("tool_calls")
+    if not isinstance(raw_calls, list):
+        return calls
+    for tc in raw_calls:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+        name = str(fn.get("name") or tc.get("name") or "")
+        args = fn.get("arguments", tc.get("arguments", ""))
+        calls.append(
+            {
+                "id": str(tc.get("id") or ""),
+                "call_id": str(tc.get("id") or ""),
+                "name": name,
+                "arguments": args if isinstance(args, str) else json.dumps(args),
+            }
+        )
+    return calls
+
+
+def make_function_call_output(call_id: str, output: str) -> dict[str, Any]:
+    """Responses API: item с результатом выполнения tool call."""
+    return {"type": "function_call_output", "call_id": call_id, "output": output}
+
+
+def responses_tool_followup_input(
+    original_input: list[dict[str, Any]],
+    raw_payload: dict[str, Any],
+    results: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Собрать input для следующего шага agent loop (Responses API).
+
+    original_input + эхо function_call items из ответа + function_call_output
+    с результатами. ``results``: {call_id: output_json_string}.
+    """
+    follow = list(original_input)
+    output = raw_payload.get("output")
+    if isinstance(output, list):
+        for item in output:
+            if isinstance(item, dict) and item.get("type") == "function_call":
+                follow.append(item)
+                cid = str(item.get("call_id") or item.get("id") or "")
+                follow.append(make_function_call_output(cid, results.get(cid, "{}")))
+    return follow
+
+
+def chat_tool_followup_messages(
+    messages: list[dict[str, Any]],
+    raw_payload: dict[str, Any],
+    results: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Собрать messages для следующего шага agent loop (chat/completions).
+
+    messages + assistant message с tool_calls + по одному tool message на call.
+    """
+    follow = list(messages)
+    choices = raw_payload.get("choices")
+    first = choices[0] if isinstance(choices, list) and choices else {}
+    message = first.get("message") if isinstance(first, dict) else {}
+    if isinstance(message, dict) and message.get("tool_calls"):
+        follow.append(
+            {
+                "role": "assistant",
+                "content": message.get("content") or "",
+                "tool_calls": message["tool_calls"],
+            }
+        )
+        for tc in message["tool_calls"]:
+            if not isinstance(tc, dict):
+                continue
+            tid = str(tc.get("id") or "")
+            follow.append(
+                {"role": "tool", "tool_call_id": tid, "content": results.get(tid, "{}")}
+            )
+    return follow
+
+
 async def chat(
     *,
     prompt: str,
@@ -956,8 +1068,19 @@ async def chat(
     timeout: float | None = None,
     max_retries: int | None = None,
     xlsx_write_contract: str = "tsv",
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, Any] | None = None,
+    input_items: list[dict[str, Any]] | None = None,
+    messages: list[dict[str, Any]] | None = None,
 ) -> GptChatResult:
-    """Вызвать текстовый LLM (kie GPT / TokenRouter Kimi) с ретраями."""
+    """Вызвать текстовый LLM (kie GPT / TokenRouter Kimi) с ретраями.
+
+    Аддитивные параметры (дефолт = поведение как раньше):
+      - ``tools``/``tool_choice`` — нативный function calling (оба API).
+      - ``input_items`` — готовый ``input`` для Responses API (agent loop
+        follow-up через :func:`responses_tool_followup_input`); иначе build_input.
+      - ``messages`` — готовый массив для chat/completions; иначе build_messages.
+    """
     headers = _headers()
     use_model = (model or settings.gpt_model_effective or "gpt-5.5").strip()
     url = _chat_url(use_model)
@@ -975,28 +1098,40 @@ async def chat(
     if responses_mode:
         body: dict[str, Any] = {
             "model": use_model,
-            "input": build_input(
-                prompt=prompt,
-                accompanying=accompanying,
-                input_paths=input_paths,
-                system=system,
-                history=history,
-                xlsx_write_contract=xlsx_write_contract,
+            "input": (
+                input_items
+                if input_items is not None
+                else build_input(
+                    prompt=prompt,
+                    accompanying=accompanying,
+                    input_paths=input_paths,
+                    system=system,
+                    history=history,
+                    xlsx_write_contract=xlsx_write_contract,
+                )
             ),
             "stream": False,
         }
     else:
         body = {
             "model": use_model,
-            "messages": build_messages(
-                prompt=prompt,
-                accompanying=accompanying,
-                input_paths=input_paths,
-                system=system,
-                history=history,
-                xlsx_write_contract=xlsx_write_contract,
+            "messages": (
+                messages
+                if messages is not None
+                else build_messages(
+                    prompt=prompt,
+                    accompanying=accompanying,
+                    input_paths=input_paths,
+                    system=system,
+                    history=history,
+                    xlsx_write_contract=xlsx_write_contract,
+                )
             ),
         }
+    if tools:
+        body["tools"] = tools
+        if tool_choice is not None:
+            body["tool_choice"] = tool_choice
     if temperature is not None:
         body["temperature"] = temperature
 
@@ -1039,20 +1174,42 @@ async def chat(
                     f"GPT: ответ не JSON: {resp.text[:300]}",
                     context={"retryable": True, "model": use_model},
                 ) from e
-            text, finish = (
-                _parse_responses(payload) if responses_mode else _parse_choice(payload)
+            tool_calls = (
+                _parse_responses_tool_calls(payload)
+                if responses_mode
+                else _parse_choice_tool_calls(payload)
             )
+            try:
+                text, finish = (
+                    _parse_responses(payload) if responses_mode else _parse_choice(payload)
+                )
+            except GptApiError:
+                if not tool_calls:
+                    raise
+                # Чистый tool-ответ без текста — норма при function calling.
+                text = ""
+                finish = (
+                    str(payload.get("status") or "tool_calls")
+                    if responses_mode
+                    else "tool_calls"
+                )
             usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
             logger.info(
-                "gpt_api.chat OK provider={} model={} attempt={} finish={} chars={}",
+                "gpt_api.chat OK provider={} model={} attempt={} finish={} chars={} tool_calls={}",
                 provider_label,
                 use_model,
                 attempt,
                 finish,
                 len(text),
+                len(tool_calls),
             )
             return GptChatResult(
-                text=text, model=use_model, finish_reason=finish, usage=usage, raw=payload
+                text=text,
+                model=use_model,
+                finish_reason=finish,
+                usage=usage,
+                raw=payload,
+                tool_calls=tool_calls,
             )
         except httpx.TimeoutException:
             hint = ""
