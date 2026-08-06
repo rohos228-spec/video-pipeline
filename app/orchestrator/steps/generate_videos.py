@@ -43,8 +43,7 @@ from app.services.img_streams import (
     get_outsee_streams,
 )
 from app.services.outsee_retry import generate_video_with_retries
-from app.services.plan_shot2 import (
-    MIN_SHOT2_VIDEO_PROMPT_LEN,
+from app.services.plan_shot2 import (    MIN_SHOT2_VIDEO_PROMPT_LEN,
     SHOT2_VIDEO_PROMPT_ATTR,
     disk_has_shot2_video,
     effective_shot_from_artifact,
@@ -108,10 +107,50 @@ def _skip_frame_video_generation(fr: Frame, has_video_file: bool) -> bool:
     return bool(has_video_file)
 
 
+VIDEO_FAIL_ATTR = "video_gen_fail_count"
+VIDEO_SKIP_ATTR = "video_gen_skip"
+VIDEO_FAIL_SKIP_AFTER = 5
+
+
 def _clear_video_inflight(frame: Frame) -> None:
     attrs = dict(frame.attrs or {})
     if attrs.pop(VIDEO_INFLIGHT_ATTR, None) is not None:
         frame.attrs = attrs
+
+
+def _note_video_fail(frame: Frame, error: BaseException) -> int:
+    """+1 к счётчику ошибок кадра; после 5 подряд → video_gen_skip.
+
+    Больше не кладём ``video_gen_skip`` автоматически в attrs при каждом
+    increment: запись в БД делает только ``_note_video_fail_db``, иначе
+    параллельные ``SessionLocal()`` в shot jobs перетирали бы skip inflight'ами.
+    """
+    attrs = dict(frame.attrs or {})
+    try:
+        n = int(attrs.get(VIDEO_FAIL_ATTR) or 0) + 1
+    except (TypeError, ValueError):
+        n = 1
+    attrs[VIDEO_FAIL_ATTR] = n
+    skipped = n >= VIDEO_FAIL_SKIP_AFTER
+    if skipped:
+        attrs[VIDEO_SKIP_ATTR] = str(type(error).__name__)[:200]
+    frame.attrs = attrs
+    return n
+
+
+def _video_skip_warn(project_id: int, frame_number: int, n: int, err: BaseException) -> None:
+    logger.warning(
+        "[#{}] frame {}: {} подряд ошибок видео ({}) — ПРОПУСК кадра",
+        project_id,
+        frame_number,
+        n,
+        type(err).__name__,
+    )
+
+
+def _video_skipped(frame: Frame) -> bool:
+    attrs = frame.attrs if isinstance(frame.attrs, dict) else {}
+    return bool(attrs.get(VIDEO_SKIP_ATTR))
 
 
 def _video_opts(project: Project) -> tuple[str | None, str | None, str, bool]:
@@ -203,6 +242,9 @@ async def _claim_shot1_video_batch(
         attrs = dict(fr.attrs or {})
         if attrs.get(VIDEO_INFLIGHT_ATTR):
             continue
+        if attrs.get(VIDEO_SKIP_ATTR):
+            # ≥5 ошибок подряд — кадр пропущен (ручной reset снимет).
+            continue
         clip = await _scene_video_file_on_disk(session, project_id, fr.id, shot=1)
         if _skip_frame_video_generation(fr, clip is not None):
             if clip is not None and fr.status not in (
@@ -251,6 +293,8 @@ async def _claim_shot2_video_batch(
             continue
         attrs = dict(fr.attrs or {})
         if attrs.get(VIDEO_INFLIGHT_ATTR):
+            continue
+        if attrs.get(VIDEO_SKIP_ATTR):
             continue
         if disk_has_shot2_video(out_dir, fr.number):
             continue
@@ -402,6 +446,46 @@ async def _generate_shot2_one(
     return out
 
 
+async def _note_video_fail_db(
+    project_id: int, frame_id: int, err: BaseException
+) -> int:
+    """+1 счётчик ошибок в БД; ≥5 подряд → video_gen_skip (кадр больше не claim)."""
+    from app.db import SessionLocal
+
+    async with SessionLocal() as s:
+        fr = await s.get(Frame, frame_id)
+        if fr is None:
+            return 0
+        n = _note_video_fail(fr, err)
+        await s.commit()
+    if n >= VIDEO_FAIL_SKIP_AFTER:
+        _video_skip_warn(project_id, frame_id, n, err)
+    else:
+        logger.info(
+            "[#{}] frame {}: ошибка видео #{} ({})",
+            project_id,
+            frame_id,
+            n,
+            type(err).__name__,
+        )
+    return n
+
+
+async def _reset_video_fail_db(project_id: int, frame_id: int) -> None:
+    """Клип сгенерировался — сбросить счётчик ошибок кадра."""
+    from app.db import SessionLocal
+
+    async with SessionLocal() as s:
+        fr = await s.get(Frame, frame_id)
+        if fr is None:
+            return
+        attrs = dict(fr.attrs or {})
+        attrs.pop(VIDEO_FAIL_ATTR, None)
+        attrs.pop(VIDEO_SKIP_ATTR, None)
+        fr.attrs = attrs
+        await s.commit()
+
+
 async def _shot1_job(
     *,
     project_id: int,
@@ -434,6 +518,13 @@ async def _shot1_job(
                     clips_lock=clips_lock,
                 )
                 await session.commit()
+                await _reset_video_fail_db(project_id, frame_id)
+            except Exception as e:
+                # Cancel/soft: inflight всё равно снимем в finally, счётчик не трогаем
+                if isinstance(e, (StepCancelledError, asyncio.CancelledError)):
+                    raise
+                await _note_video_fail_db(project_id, frame_id, e)
+                raise
             finally:
                 try:
                     await session.refresh(fr)
@@ -480,6 +571,12 @@ async def _shot2_job(
                     clips_lock=clips_lock,
                 )
                 await session.commit()
+                await _reset_video_fail_db(project_id, frame_id)
+            except Exception as e:
+                if isinstance(e, (StepCancelledError, asyncio.CancelledError)):
+                    raise
+                await _note_video_fail_db(project_id, frame_id, e)
+                raise
             finally:
                 try:
                     await session.refresh(fr)

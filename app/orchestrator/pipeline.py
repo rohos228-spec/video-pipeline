@@ -94,11 +94,21 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
     if task is not None:
         register_advance_task(project.id, task)
     ran_status: ProjectStatus | None = None
+    _step_lock_cm = None
     try:
         abort_if_cancelled(project.id)
         status = project.status
         ran_status = status
         logger.debug("advance #{} status={}", project.id, status.value)
+
+        # Параллельные проекты + SQLite: split — строго по одному (иначе db is locked).
+        from app.services.step_global_lock import (
+            acquire_step_lock,
+            step_code_from_status,
+        )
+
+        _step_lock_cm = acquire_step_lock(step_code_from_status(status))
+        await _step_lock_cm.__aenter__()
 
         # UI SSoT: NodeRun → running, иначе на ноде нет «в работе».
         try:
@@ -157,4 +167,9 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
         if ran_status is not None:
             await _sync_storage_after_advance(session, project, ran_status)
     finally:
+        if _step_lock_cm is not None:
+            try:
+                await _step_lock_cm.__aexit__(None, None, None)
+            except Exception:  # noqa: BLE001
+                pass
         unregister_advance_task(project.id)
