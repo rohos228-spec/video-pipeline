@@ -85,6 +85,16 @@ async def stop(sess_uuid: str) -> dict[str, Any]:
     return {"ok": True}
 
 
+class AnswerBody(BaseModel):
+    choice_id: str = Field(..., min_length=1, max_length=100)
+
+
+@router.post("/sessions/{sess_uuid}/answer")
+async def answer(sess_uuid: str, body: AnswerBody) -> dict[str, Any]:
+    """Ответ пользователя на интерактивную карточку (кнопки/варианты)."""
+    return await loop.resume_with_choice(sess_uuid, body.choice_id)
+
+
 @router.get("/actions")
 async def actions(session_uuid: str | None = None, limit: int = 30) -> dict[str, Any]:
     sid: int | None = None

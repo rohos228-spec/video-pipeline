@@ -294,3 +294,109 @@ async def test_danger_tool_denied_for_operator(env, monkeypatch) -> None:
     async with factory() as s:
         p = await s.get(Project, 11)
         assert p.status == ProjectStatus.frames_ready  # не тронут
+
+
+# ─────────────────────────── интерактив (present_choice) ───────────────────────────
+
+
+def _choice_fc_result() -> gpt_api.GptChatResult:
+    args = {
+        "kind": "confirm",
+        "question": "Перезапустить шаг видео?",
+        "options": [
+            {"id": "yes", "label": "Да, перезапустить"},
+            {"id": "no", "label": "Нет"},
+        ],
+    }
+    raw = {
+        "output": [
+            {
+                "type": "function_call",
+                "id": "fc_c1",
+                "call_id": "call_c1",
+                "name": "present_choice",
+                "arguments": json.dumps(args),
+            }
+        ]
+    }
+    return gpt_api.GptChatResult(
+        text="",
+        model="m",
+        raw=raw,
+        tool_calls=[
+            {
+                "id": "fc_c1",
+                "call_id": "call_c1",
+                "name": "present_choice",
+                "arguments": json.dumps(args),
+            }
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_present_choice_pause_and_resume(env, monkeypatch) -> None:
+    """Карточка выбора: ход паузится, answer продолжает с выбранной опцией."""
+    from app.models import AgentSessionStatus
+
+    n = {"i": 0}
+    seen_items: list[list[dict]] = []
+
+    async def fake_chat(**kwargs):
+        n["i"] += 1
+        seen_items.append(list(kwargs["input_items"]))
+        if n["i"] == 1:
+            return _choice_fc_result()
+        return _text_result("Хорошо, перезапускаю.")
+
+    monkeypatch.setattr(loop.gpt_api, "chat", fake_chat)
+    sess = await sessions.create_session(autonomy="operator")
+    events: list[str] = []
+
+    async def on_event(kind, data):
+        events.append(kind)
+
+    res = await loop.run_agent_turn(sess.uuid, "перезапусти видео?", on_event=on_event)
+    assert res.get("waiting_choice") is True
+    assert res["choice"]["question"] == "Перезапустить шаг видео?"
+    assert "choice" in events
+
+    reloaded = await sessions.get_session(sess.id)
+    assert reloaded.status == AgentSessionStatus.waiting_choice
+    assert reloaded.pending_choice["_call_id"] == "call_c1"
+    # echo без output: function_call есть, function_call_output ещё нет
+    assert any(it.get("type") == "function_call" for it in reloaded.input_items)
+    assert not any(
+        it.get("type") == "function_call_output" for it in reloaded.input_items
+    )
+
+    # новый user-text во время ожидания — отказ
+    blocked = await loop.run_agent_turn(sess.uuid, "э")
+
+    assert "error" in blocked
+
+    # ответ на карточку
+    res2 = await loop.resume_with_choice(sess.uuid, "yes", on_event=on_event)
+    assert res2["text"] == "Хорошо, перезапускаю."
+    # модель получила selected_id
+    last_items = seen_items[-1]
+    fco = [it for it in last_items if it.get("type") == "function_call_output"]
+    assert fco and '"selected_id": "yes"' in fco[-1]["output"]
+
+    done = await sessions.get_session(sess.id)
+    assert done.status == AgentSessionStatus.idle
+    assert done.pending_choice is None
+
+
+@pytest.mark.asyncio
+async def test_resume_with_bad_option(env, monkeypatch) -> None:
+    async def fake_chat(**kwargs):
+        return _choice_fc_result()
+
+    monkeypatch.setattr(loop.gpt_api, "chat", fake_chat)
+    sess = await sessions.create_session()
+    await loop.run_agent_turn(sess.uuid, "выбери")
+    bad = await loop.resume_with_choice(sess.uuid, "nope")
+    assert "error" in bad
+    still = await sessions.get_session(sess.id)
+    assert still.status == AgentSessionStatus.waiting_choice  # карточка жива
