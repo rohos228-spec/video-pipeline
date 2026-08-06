@@ -403,6 +403,10 @@ async def _compress_prompt_for_outsee(
     return None
 
 
+# HTTP API /api/v1/videos/generate жёстко режет на 4096; CDP textarea — 4900.
+_OUTSEE_API_VIDEO_PROMPT_MAX = 4096
+
+
 async def _prepare_prompt_for_outsee(
     gpt: Any | None,
     prompt_body: str,
@@ -410,11 +414,17 @@ async def _prepare_prompt_for_outsee(
     *,
     project_id: int | None = None,
     max_body: int | None = None,
+    max_full: int | None = None,
 ) -> str:
     prompt_body = strip_prompt_id_lines(prompt_body)
+    full_limit = max_full if max_full is not None else OUTSEE_PROMPT_MAX_CHARS
     full = _outsee_full_prompt(prompt_body, prefix)
-    body_limit = max_body if max_body is not None else _max_body_for_prefix(prefix)
-    if len(prompt_body) <= body_limit and len(full) <= OUTSEE_PROMPT_MAX_CHARS:
+    body_limit = (
+        max_body
+        if max_body is not None
+        else _max_body_for_prefix(prefix, cap=full_limit)
+    )
+    if len(prompt_body) <= body_limit and len(full) <= full_limit:
         return prompt_body
     logger.warning(
         "outsee_retry: промт {} симв (full {}), лимит body {} / outsee {} — "
@@ -422,18 +432,17 @@ async def _prepare_prompt_for_outsee(
         len(prompt_body),
         len(full),
         body_limit,
-        OUTSEE_PROMPT_MAX_CHARS,
+        full_limit,
     )
     if gpt is None:
-        raise OutseePromptTooLongError(
-            f"outsee: промт {len(full)} симв — лимит {OUTSEE_PROMPT_MAX_CHARS}, "
-            "GPT недоступен для сжатия",
-            context={
-                "prompt_len": len(full),
-                "limit": OUTSEE_PROMPT_MAX_CHARS,
-                "error_kind": "length",
-            },
+        cut = _hard_truncate_prompt(prompt_body, body_limit)
+        logger.warning(
+            "outsee_retry: GPT недоступен — hard-truncate {} → {} (лимит {})",
+            len(prompt_body),
+            len(cut),
+            full_limit,
         )
+        return cut
     compressed = await _compress_prompt_for_outsee(
         gpt,
         prompt_body,
@@ -442,26 +451,23 @@ async def _prepare_prompt_for_outsee(
         max_body=body_limit,
     )
     if not compressed:
-        raise OutseePromptTooLongError(
-            f"outsee: не удалось сжать промт {len(full)} симв до "
-            f"{OUTSEE_PROMPT_MAX_CHARS}",
-            context={
-                "prompt_len": len(full),
-                "limit": OUTSEE_PROMPT_MAX_CHARS,
-                "error_kind": "length",
-            },
+        cut = _hard_truncate_prompt(prompt_body, body_limit)
+        logger.warning(
+            "outsee_retry: GPT-сжатие не удалось — hard-truncate {} → {}",
+            len(prompt_body),
+            len(cut),
         )
+        return cut
     full2 = _outsee_full_prompt(compressed, prefix)
-    if len(full2) > OUTSEE_PROMPT_MAX_CHARS:
-        raise OutseePromptTooLongError(
-            f"outsee: после сжатия промт всё ещё {len(full2)} симв "
-            f"(лимит {OUTSEE_PROMPT_MAX_CHARS})",
-            context={
-                "prompt_len": len(full2),
-                "limit": OUTSEE_PROMPT_MAX_CHARS,
-                "error_kind": "length",
-            },
+    if len(full2) > full_limit:
+        cut = _hard_truncate_prompt(compressed, body_limit)
+        logger.warning(
+            "outsee_retry: после сжатия full {} > {} — hard-truncate to {}",
+            len(full2),
+            full_limit,
+            len(cut),
         )
+        return cut
     return compressed
 
 
@@ -1160,13 +1166,32 @@ async def generate_video_with_retries(
                     if isinstance(attempt_kwargs.get("prompt_id_prefix"), str)
                     else None
                 )
+                # Silent-guard ПЕРЕД сжатием. API video жёстко 4096 (не 4900 CDP).
+                send_prompt = ensure_silent_video_prompt(current_prompt)
+                api_full_cap = (
+                    _OUTSEE_API_VIDEO_PROMPT_MAX
+                    if use_outsee_api_video
+                    else OUTSEE_PROMPT_MAX_CHARS
+                )
                 send_prompt = await _prepare_prompt_for_outsee(
                     gpt,
-                    current_prompt,
+                    send_prompt,
                     prefix,
                     project_id=project_id,
+                    max_full=api_full_cap,
                 )
                 send_prompt = ensure_silent_video_prompt(send_prompt)
+                full_len = len(_outsee_full_prompt(send_prompt, prefix))
+                if full_len > api_full_cap:
+                    body_cap = _max_body_for_prefix(prefix, cap=api_full_cap)
+                    send_prompt = _hard_truncate_prompt(send_prompt, body_cap)
+                    logger.warning(
+                        "outsee_retry: video prompt after silent still {} > {} — "
+                        "hard-truncate to {}",
+                        full_len,
+                        api_full_cap,
+                        len(send_prompt),
+                    )
                 # Пайплайн: звук всегда выкл (не тащим True из kwargs/Create).
                 attempt_kwargs["generate_audio"] = False
                 if use_grsai_video:

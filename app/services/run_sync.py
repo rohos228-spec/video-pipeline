@@ -1062,6 +1062,25 @@ async def _reconcile_stale_node_runs(
                             initiator,
                         )
                     continue
+                # Рестарт mid-генерации (video/img/anim_pr…): не красим ноду в
+                # failed — иначе UI «постоянно ошибки», хотя воркер сейчас подхватит.
+                running_type = _canvas_node_type_for_running(project.status)
+                status_val = getattr(project.status, "value", str(project.status))
+                if (
+                    running_type is not None
+                    and running_type == nr.node_type
+                    and str(status_val).startswith("generating_")
+                ):
+                    logger.info(
+                        "[#{}] NodeRun {}/{}: keep {} (project still {}, {})",
+                        run.project_id,
+                        nr.node_type,
+                        nr.node_key,
+                        old.value,
+                        status_val,
+                        initiator,
+                    )
+                    continue
                 if fail_node(
                     nr,
                     _STALE_NODE_RUN_ERROR,

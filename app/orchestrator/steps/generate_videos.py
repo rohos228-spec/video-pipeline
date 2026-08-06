@@ -456,16 +456,18 @@ async def _note_video_fail_db(
         fr = await s.get(Frame, frame_id)
         if fr is None:
             return 0
+        frame_no = fr.number
         n = _note_video_fail(fr, err)
         await s.commit()
     if n >= VIDEO_FAIL_SKIP_AFTER:
         _video_skip_warn(project_id, frame_id, n, err)
     else:
-        logger.info(
-            "[#{}] frame {}: ошибка видео #{} ({})",
+        logger.warning(
+            "[#{}] frame {}: ошибка видео #{}/{} ({}) — продолжаем остальные",
             project_id,
-            frame_id,
+            frame_no,
             n,
+            VIDEO_FAIL_SKIP_AFTER,
             type(err).__name__,
         )
     return n
@@ -496,8 +498,11 @@ async def _shot1_job(
     gpt: Any,
     session_clip_paths: list[Path],
     clips_lock: asyncio.Lock,
-) -> None:
-    """Outsee ждёт минуты — SQLite-сессию НЕ держим (иначе parallel → database is locked)."""
+) -> bool:
+    """Outsee ждёт минуты — SQLite-сессию НЕ держим (иначе parallel → database is locked).
+
+    Returns True если клип записан, False если кадр пропущен после ошибки.
+    """
     from app.db import SessionLocal
 
     async with acquire_outsee_slot():
@@ -505,7 +510,7 @@ async def _shot1_job(
             project = await session.get(Project, project_id)
             fr = await session.get(Frame, frame_id)
             if project is None or fr is None:
-                return
+                return False
             if not fr.animation_prompt:
                 raise RuntimeError(f"у кадра {fr.number} нет animation_prompt")
             start = await _shot1_start_frame(session, project, fr, scenes_dir)
@@ -540,19 +545,26 @@ async def _shot1_job(
                 duplicate_check_paths=dups,
             )
         except Exception as e:
-            if not isinstance(e, (StepCancelledError, asyncio.CancelledError)):
-                await _note_video_fail_db(project_id, frame_id, e)
+            if isinstance(e, (StepCancelledError, asyncio.CancelledError)):
+                async with SessionLocal() as session:
+                    fr = await session.get(Frame, frame_id)
+                    if fr is not None:
+                        _clear_video_inflight(fr)
+                        await session.commit()
+                raise
+            # Один кадр (policy/сеть/длина) — не валим весь video-step.
+            await _note_video_fail_db(project_id, frame_id, e)
             async with SessionLocal() as session:
                 fr = await session.get(Frame, frame_id)
                 if fr is not None:
                     _clear_video_inflight(fr)
                     await session.commit()
-            raise
+            return False
 
         async with SessionLocal() as session:
             fr = await session.get(Frame, frame_id)
             if fr is None:
-                return
+                return False
             session.add(
                 Artifact(
                     project_id=project_id,
@@ -583,6 +595,7 @@ async def _shot1_job(
             )
         except Exception:  # noqa: BLE001
             pass
+        return True
 
 
 async def _shot2_job(
@@ -596,7 +609,7 @@ async def _shot2_job(
     gpt: Any,
     session_clip_paths: list[Path],
     clips_lock: asyncio.Lock,
-) -> None:
+) -> bool:
     """Как _shot1_job: без открытой SQLite-сессии на время Outsee."""
     from app.db import SessionLocal
 
@@ -605,7 +618,7 @@ async def _shot2_job(
             project = await session.get(Project, project_id)
             fr = await session.get(Frame, frame_id)
             if project is None or fr is None:
-                return
+                return False
             frame_number = fr.number
             model_slug, res_slug, aspect, relax = _video_opts(project)
 
@@ -636,19 +649,25 @@ async def _shot2_job(
                 duplicate_check_paths=dups,
             )
         except Exception as e:
-            if not isinstance(e, (StepCancelledError, asyncio.CancelledError)):
-                await _note_video_fail_db(project_id, frame_id, e)
+            if isinstance(e, (StepCancelledError, asyncio.CancelledError)):
+                async with SessionLocal() as session:
+                    fr = await session.get(Frame, frame_id)
+                    if fr is not None:
+                        _clear_video_inflight(fr)
+                        await session.commit()
+                raise
+            await _note_video_fail_db(project_id, frame_id, e)
             async with SessionLocal() as session:
                 fr = await session.get(Frame, frame_id)
                 if fr is not None:
                     _clear_video_inflight(fr)
                     await session.commit()
-            raise
+            return False
 
         async with SessionLocal() as session:
             fr = await session.get(Frame, frame_id)
             if fr is None:
-                return
+                return False
             session.add(
                 Artifact(
                     project_id=project_id,
@@ -671,6 +690,7 @@ async def _shot2_job(
             frame_number,
             result.file_path,
         )
+        return True
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
@@ -786,14 +806,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             raise r
                         if isinstance(r, Exception):
                             fail_n += 1
-                            logger.error(
-                                "[#{}] video stream worker failed: {}: {}",
+                            logger.warning(
+                                "[#{}] video stream worker exception (кадр "
+                                "пропущен, шаг идёт дальше): {}: {}",
                                 project_id,
                                 type(r).__name__,
                                 r or repr(r),
                             )
-                        else:
+                        elif r is True:
                             generated += 1
+                        else:
+                            fail_n += 1
                     # После массового fail (часто «лимит 4» из-за ghost jobs)
                     # дать Outsee освободить слоты, прежде чем claim следующей пачки.
                     if fail_n and fail_n >= len(results):
@@ -876,12 +899,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         if isinstance(r, StepCancelledError):
                             raise r
                         if isinstance(r, Exception):
-                            logger.error(
-                                "[#{}] video s2 stream worker failed: {}",
+                            logger.warning(
+                                "[#{}] video s2 stream worker exception: {}",
                                 project_id,
                                 r,
                             )
-                        else:
+                        elif r is True:
                             shot2_generated += 1
                     await session.refresh(project)
 
