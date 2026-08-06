@@ -18,7 +18,7 @@ async def test_ensure_public_keeps_http() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ensure_public_hosts_data_url_via_uguu() -> None:
+async def test_ensure_public_hosts_data_url_via_litterbox_first() -> None:
     from app.bots import outsee_http as oh
 
     png = base64.b64encode(
@@ -26,22 +26,22 @@ async def test_ensure_public_hosts_data_url_via_uguu() -> None:
     ).decode("ascii")
     data = f"data:image/png;base64,{png}"
 
-    async def fake_uguu(_client, _raw, _mime, _filename):
-        return "https://n.uguu.se/hosted.png"
+    async def fake_litter(_client, _raw, _mime, _filename):
+        return "https://litter.catbox.moe/hosted.png"
 
     with (
-        patch.object(oh, "_host_via_uguu", side_effect=fake_uguu),
-        patch.object(oh, "_host_via_litterbox", side_effect=AssertionError("no litter")),
+        patch.object(oh, "_host_via_litterbox", side_effect=fake_litter),
+        patch.object(oh, "_host_via_uguu", side_effect=AssertionError("no uguu")),
         patch.object(oh, "_host_via_catbox", side_effect=AssertionError("no catbox")),
         patch.object(oh, "_host_via_0x0", side_effect=AssertionError("no 0x0")),
         patch.object(oh, "_host_via_tmpfiles", side_effect=AssertionError("no tmp")),
     ):
         out = await oh.ensure_public_image_url(data)
-    assert out == "https://n.uguu.se/hosted.png"
+    assert out == "https://litter.catbox.moe/hosted.png"
 
 
 @pytest.mark.asyncio
-async def test_ensure_public_falls_back_when_uguu_fails() -> None:
+async def test_ensure_public_falls_back_when_litterbox_fails() -> None:
     from app.bots import outsee_http as oh
 
     png = base64.b64encode(
@@ -50,20 +50,20 @@ async def test_ensure_public_falls_back_when_uguu_fails() -> None:
     data = f"data:image/png;base64,{png}"
 
     async def boom(*_a, **_k):
-        raise oh.OutseeApiError("uguu down")
+        raise oh.OutseeApiError("litterbox down")
 
-    async def litter(_client, _raw, _mime, _filename):
-        return "https://litter.catbox.moe/ok.png"
+    async def catbox(_client, _raw, _mime, _filename):
+        return "https://files.catbox.moe/ok.png"
 
     with (
-        patch.object(oh, "_host_via_uguu", side_effect=boom),
-        patch.object(oh, "_host_via_litterbox", side_effect=litter),
-        patch.object(oh, "_host_via_catbox", side_effect=AssertionError("no catbox")),
+        patch.object(oh, "_host_via_litterbox", side_effect=boom),
+        patch.object(oh, "_host_via_catbox", side_effect=catbox),
+        patch.object(oh, "_host_via_uguu", side_effect=AssertionError("no uguu")),
         patch.object(oh, "_host_via_0x0", side_effect=AssertionError("no 0x0")),
         patch.object(oh, "_host_via_tmpfiles", side_effect=AssertionError("no tmp")),
     ):
         out = await oh.ensure_public_image_url(data)
-    assert out == "https://litter.catbox.moe/ok.png"
+    assert out == "https://files.catbox.moe/ok.png"
 
 
 @pytest.mark.asyncio

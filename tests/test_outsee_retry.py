@@ -42,6 +42,82 @@ def test_is_start_frame_content_policy_error() -> None:
     )
 
 
+def test_soften_start_frame_for_policy(tmp_path: Path) -> None:
+    from PIL import Image
+
+    src = tmp_path / "frame.png"
+    Image.new("RGB", (800, 1200), (40, 80, 120)).save(src)
+    out = mod._soften_start_frame_for_policy(src, strength=1)
+    assert out is not None
+    assert out.is_file()
+    assert out.suffix == ".jpg"
+    assert src.read_bytes() != out.read_bytes()
+
+
+@pytest.mark.asyncio
+async def test_video_content_policy_keeps_start_frame(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """CONTENT_POLICY celebrity: soften + retry, НЕ снимать start_frame."""
+    from PIL import Image
+
+    frame = tmp_path / "start.png"
+    Image.new("RGB", (640, 960), (10, 20, 30)).save(frame)
+    seen_frames: list[Path | None] = []
+    calls = 0
+
+    class FakeOutsee:
+        async def generate_video(self, prompt: str, out_path, **kwargs):
+            nonlocal calls
+            calls += 1
+            seen_frames.append(kwargs.get("start_frame"))
+            if calls == 1:
+                raise OutseeImageError(
+                    "Outsee generation failed: {'code': 'CONTENT_POLICY', "
+                    "'message': 'Загруженное изображение отклонено — модель "
+                    "определила на нём известную личность.'}"
+                )
+            out_path.write_bytes(b"mp4" * 40)
+            return GenerationResult(
+                file_path=out_path, raw_url="https://x/v.mp4", gen_id="g1"
+            )
+
+    async def fake_prepare(gpt, body, prefix, *, project_id=None, max_full=None):
+        return body
+
+    async def no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
+    monkeypatch.setattr(mod, "sleep_cancellable", no_sleep)
+    monkeypatch.setattr("app.bots.grsai.grsai_video_enabled", lambda: False)
+    monkeypatch.setattr(
+        "app.bots.outsee_http.outsee_api_enabled_for_video", lambda: False
+    )
+    monkeypatch.setattr(
+        "app.bots.outsee_http.outsee_api_configured", lambda: False
+    )
+
+    result = await mod.generate_video_with_retries(
+        FakeOutsee(),
+        None,
+        prompt="silent archival noir scene",
+        out_path=tmp_path / "out.mp4",
+        max_attempts_per_prompt=3,
+        gpt_rewrite=False,
+        project_id=1,
+        start_frame=frame,
+    )
+    assert result.file_path.exists()
+    assert calls == 2
+    assert seen_frames[0] == frame
+    assert seen_frames[1] is not None
+    assert seen_frames[1] != frame
+    assert Path(seen_frames[1]).is_file()
+    # кадр ни разу не снят
+    assert all(f is not None for f in seen_frames)
+
+
 def test_is_audio_content_policy_error() -> None:
     err = OutseeImageError(
         "Outsee generation failed: {'code': 'CONTENT_POLICY', 'message': "

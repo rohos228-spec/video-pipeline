@@ -546,7 +546,7 @@ async def _host_via_tmpfiles(client: httpx.AsyncClient, raw: bytes, mime: str, f
 async def ensure_public_image_url(url: str | None) -> str | None:
     """Outsee image_url принимает только http(s); data: молча игнорит.
 
-    data: → публичный URL (JPEG-сжатие + uguu/litterbox/catbox/0x0/tmpfiles).
+    data: → публичный URL (JPEG-сжатие + litterbox/catbox/tmpfiles/0x0/uguu).
     http(s) → как есть (кроме localhost).
     """
     if not url or not str(url).strip():
@@ -567,12 +567,13 @@ async def ensure_public_image_url(url: str | None) -> str | None:
         return None
     raw, mime = decoded
     errors: list[str] = []
+    # litterbox/catbox стабильнее; uguu часто 502 — в хвосте.
     hosts = (
-        ("uguu", _host_via_uguu),
         ("litterbox", _host_via_litterbox),
         ("catbox", _host_via_catbox),
-        ("0x0", _host_via_0x0),
         ("tmpfiles", _host_via_tmpfiles),
+        ("0x0", _host_via_0x0),
+        ("uguu", _host_via_uguu),
     )
     variants = _upload_payload_variants(raw, mime)
     async with httpx.AsyncClient(

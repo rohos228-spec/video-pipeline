@@ -229,6 +229,57 @@ def _is_start_frame_content_policy_error(err: BaseException) -> bool:
     )
 
 
+# Сколько раз пробуем «размыть» start_frame до обычного fail (кадр НЕ снимаем).
+_START_FRAME_SOFTEN_MAX = 2
+
+
+def _soften_start_frame_for_policy(src: Path, *, strength: int) -> Path | None:
+    """JPEG + blur/downscale — чаще проходит celebrity-модерацию Outsee.
+
+    Возвращает новый файл рядом с src (не трогает оригинал). None = не смогли.
+    strength 1 = мягко, 2 = сильнее.
+    """
+    try:
+        from io import BytesIO
+
+        from PIL import Image, ImageFilter
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(src, Path) or not src.is_file():
+        return None
+    s = max(1, min(int(strength), 3))
+    max_side = {1: 1400, 2: 1024, 3: 768}[s]
+    quality = {1: 62, 2: 45, 3: 35}[s]
+    blur = {1: 1.4, 2: 2.8, 3: 4.0}[s]
+    try:
+        with Image.open(src) as im:
+            img = im.convert("RGB")
+            w, h = img.size
+            scale = min(1.0, float(max_side) / float(max(w, h, 1)))
+            if scale < 0.999:
+                img = img.resize(
+                    (max(1, int(w * scale)), max(1, int(h * scale))),
+                    Image.Resampling.LANCZOS,
+                )
+            if blur > 0:
+                img = img.filter(ImageFilter.GaussianBlur(radius=blur))
+            buf = BytesIO()
+            img.save(buf, format="JPEG", quality=quality, optimize=True)
+            raw = buf.getvalue()
+        if len(raw) < 64:
+            return None
+        out = src.with_name(f"{src.stem}.policy_s{s}.jpg")
+        out.write_bytes(raw)
+        return out
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "outsee_retry: soften start_frame failed ({}): {}",
+            src.name,
+            exc,
+        )
+        return None
+
+
 def _is_audio_content_policy_error(err: BaseException) -> bool:
     """Veo всё равно клеит звук — CONTENT_POLICY по аудиодорожке."""
     reason = str(getattr(err, "reason", None) or err).lower()
@@ -1101,6 +1152,7 @@ async def generate_video_with_retries(
     gen_failures = 0
     fallback_logged = False
     local_sanitized = False
+    start_frame_policy_hits = 0
 
     for round_idx, round_label in enumerate(rounds):
         attempt = 0
@@ -1350,28 +1402,54 @@ async def generate_video_with_retries(
                     )
                     await sleep_cancellable(delay, project_id)
                     continue
-                # Celebrity / image CONTENT_POLICY: rewrite промта бесполезен —
-                # убираем start_frame и пробуем text→video + локальная санация имён.
+                # Celebrity / image CONTENT_POLICY: rewrite промта бесполезен.
+                # РАНЬШЕ тут молча снимали start_frame → text→video без кадра.
+                # Теперь: soften JPEG+blur и оставляем image_url; кадр не теряем.
                 if (
                     _is_start_frame_content_policy_error(e)
                     and kwargs.get("start_frame") is not None
                 ):
-                    logger.warning(
+                    start_frame_policy_hits += 1
+                    sf = kwargs.get("start_frame")
+                    sf_path = sf if isinstance(sf, Path) else Path(str(sf))
+                    if start_frame_policy_hits <= _START_FRAME_SOFTEN_MAX:
+                        softened = _soften_start_frame_for_policy(
+                            sf_path, strength=start_frame_policy_hits
+                        )
+                        if softened is not None:
+                            logger.warning(
+                                "outsee.generate_video [{}]: CONTENT_POLICY на "
+                                "стартовом кадре — повтор С кадром "
+                                "(soften s{}, {}→{} bytes, id={})",
+                                round_label,
+                                start_frame_policy_hits,
+                                sf_path.stat().st_size if sf_path.is_file() else "?",
+                                softened.stat().st_size,
+                                attempt_kwargs.get("prompt_id_prefix") or "—",
+                            )
+                            kwargs = dict(kwargs)
+                            kwargs["start_frame"] = softened
+                            current_prompt = _apply_local_prompt_sanitize(
+                                current_prompt,
+                                where="video soften start_frame CONTENT_POLICY",
+                            )
+                            local_sanitized = True
+                            attempt -= 1
+                            await sleep_cancellable(2.0, project_id)
+                            continue
+                    logger.error(
                         "outsee.generate_video [{}]: CONTENT_POLICY на "
-                        "стартовом кадре — повтор без image_url (id={})",
+                        "стартовом кадре — кадр ОСТАВЛЯЕМ (soften исчерпан), "
+                        "не снимаем image_url (id={})",
                         round_label,
                         attempt_kwargs.get("prompt_id_prefix") or "—",
                     )
-                    kwargs = dict(kwargs)
-                    kwargs["start_frame"] = None
                     current_prompt = _apply_local_prompt_sanitize(
                         current_prompt,
-                        where="video drop start_frame CONTENT_POLICY",
+                        where="video keep start_frame CONTENT_POLICY",
                     )
                     local_sanitized = True
-                    attempt -= 1
-                    await sleep_cancellable(2.0, project_id)
-                    continue
+                    # fall through → считаем ошибку / дальше retry с тем же кадром
                 # Аудиодорожка (Veo игнорит generate_audio=false) — silent+санация.
                 if _is_audio_content_policy_error(e):
                     logger.warning(
