@@ -837,29 +837,80 @@ async def generate_video(
     # Pipeline clips are always silent; Create may pass True for Veo audio.
     body["generate_audio"] = bool(generate_audio) if generate_audio is not None else False
 
+    want_start = bool(first_frame_url) or reference_image is not None
     frame = first_frame_url
-    if not frame and isinstance(reference_image, str) and reference_image.startswith(
-        ("http", "data:")
-    ):
-        frame = reference_image
-    elif not frame and isinstance(reference_image, Path) and reference_image.is_file():
-        frame = _path_to_data_url(reference_image)
+    if not frame and reference_image is not None:
+        if isinstance(reference_image, str):
+            s = reference_image.strip()
+            if s.startswith(("http://", "https://", "data:")):
+                frame = s
+            else:
+                p = Path(s)
+                if not p.is_file():
+                    raise OutseeApiError(
+                        f"стартовый кадр не найден на диске: {s[:200]}",
+                        context={"project_id": project_id},
+                    )
+                frame = _path_to_data_url(p)
+        elif isinstance(reference_image, Path):
+            if not reference_image.is_file():
+                raise OutseeApiError(
+                    f"стартовый кадр не найден на диске: {reference_image}",
+                    context={"project_id": project_id},
+                )
+            frame = _path_to_data_url(reference_image)
+        else:
+            raise OutseeApiError(
+                f"стартовый кадр: неподдерживаемый тип {type(reference_image).__name__}",
+                context={"project_id": project_id},
+            )
     frame = await ensure_public_image_url(frame)
     if frame:
         # Outsee Developer API: стартовый кадр = image_url (first_frame_url молча игнорит!)
         body["image_url"] = frame
+    elif want_start:
+        # Раньше молча уходили в text→video без рефа — клипы «не похожи» на кадр.
+        raise OutseeApiError(
+            "стартовый кадр передан, но image_url не получен (upload/host)",
+            context={"project_id": project_id},
+        )
 
+    want_end = bool(last_frame_url) or last_frame_image is not None
     last = last_frame_url
-    if not last and isinstance(last_frame_image, str) and last_frame_image.startswith(
-        ("http", "data:")
-    ):
-        last = last_frame_image
-    elif not last and isinstance(last_frame_image, Path) and last_frame_image.is_file():
-        last = _path_to_data_url(last_frame_image)
+    if not last and last_frame_image is not None:
+        if isinstance(last_frame_image, str):
+            s = last_frame_image.strip()
+            if s.startswith(("http://", "https://", "data:")):
+                last = s
+            else:
+                p = Path(s)
+                if not p.is_file():
+                    raise OutseeApiError(
+                        f"конечный кадр не найден на диске: {s[:200]}",
+                        context={"project_id": project_id},
+                    )
+                last = _path_to_data_url(p)
+        elif isinstance(last_frame_image, Path):
+            if not last_frame_image.is_file():
+                raise OutseeApiError(
+                    f"конечный кадр не найден на диске: {last_frame_image}",
+                    context={"project_id": project_id},
+                )
+            last = _path_to_data_url(last_frame_image)
+        else:
+            raise OutseeApiError(
+                f"конечный кадр: неподдерживаемый тип {type(last_frame_image).__name__}",
+                context={"project_id": project_id},
+            )
     last = await ensure_public_image_url(last)
     if last:
         # конечный кадр в каталоге не заявлен; пробуем end_image_url
         body["end_image_url"] = last
+    elif want_end:
+        raise OutseeApiError(
+            "конечный кадр передан, но end_image_url не получен (upload/host)",
+            context={"project_id": project_id},
+        )
 
     logger.info(
         "outsee_api.video model={} aspect={} res={} dur={} audio={} image_url={} end={} project={}",

@@ -15,6 +15,18 @@ from app.generation_options import (
 from app.services import outsee_retry as mod
 
 
+@pytest.fixture(autouse=True)
+def _force_cdp_video_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Тесты бьют FakeOutsee.generate_video — не уходить в живой Outsee HTTP."""
+    monkeypatch.setattr("app.bots.grsai.grsai_video_enabled", lambda: False)
+    monkeypatch.setattr(
+        "app.bots.outsee_http.outsee_api_enabled_for_video", lambda: False
+    )
+    monkeypatch.setattr(
+        "app.bots.outsee_http.outsee_api_configured", lambda: False
+    )
+
+
 def test_outsee_video_fallback_constants() -> None:
     fb = outsee_video_fallback_fields()
     assert fb["model_slug"] == "kling-2-5-turbo"
@@ -141,3 +153,54 @@ async def test_generate_video_switches_model_after_three_failures(monkeypatch) -
     for call in calls[OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES:]:
         assert call["model_slug"] == fb["model_slug"]
         assert call["aspect_ratio"] == fb["aspect_ratio"]
+
+
+@pytest.mark.asyncio
+async def test_generate_video_sanitizes_triggers_after_three_failures(
+    monkeypatch,
+) -> None:
+    """После 3 ошибок — локальная замена триггеров до GPT-rewrite."""
+    prompts: list[str] = []
+
+    class FakeOutsee:
+        async def generate_video(self, prompt: str, out_path: Path, **kwargs):
+            prompts.append(prompt)
+            if len(prompts) <= OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES:
+                raise OutseeImageError(
+                    "outsee video: контент отклонён",
+                    context={"kind": "moderation"},
+                )
+            return GenerationResult(file_path=out_path, gen_id="ok")
+
+    async def _no_prepare(gpt, body, prefix, *, project_id=None):
+        return body
+
+    class FakeGpt:
+        async def ask_fresh(self, ask: str, *, timeout: float = 300, project_id=None) -> str:
+            # GPT «забыл» убрать имя — локальный пост-проход должен поймать.
+            return "Асахара walks slowly in soft light " * 3
+
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", _no_prepare)
+    monkeypatch.setattr(mod, "sleep_cancellable", _no_sleep)
+
+    await mod.generate_video_with_retries(
+        FakeOutsee(),
+        FakeGpt(),
+        prompt="Портрет Асахары и зарин в метро",
+        out_path=Path("/tmp/clip.mp4"),
+        max_attempts_per_prompt=3,
+        gpt_rewrite=True,
+        model_slug="veo-3-fast",
+        resolution="720p",
+        aspect_ratio="9:16",
+    )
+
+    assert len(prompts) == OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES + 1
+    assert "Асахар" in prompts[0]
+    # 4-я попытка (rewritten round) — без триггеров
+    assert "Асахар" not in prompts[-1]
+    assert "зарин" not in prompts[-1].lower()
+    assert "лидер группы" in prompts[-1] or "group leader" in prompts[-1].lower()

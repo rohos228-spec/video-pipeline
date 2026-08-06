@@ -81,6 +81,32 @@ from app.generation_options import (
 )
 from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 from app.services.step_cancel import StepCancelledError
+from app.services.video_prompt_sanitize import sanitize_video_prompt_after_errors
+
+
+def _apply_local_prompt_sanitize(
+    prompt: str,
+    *,
+    where: str,
+    force_simplify: bool = True,
+) -> str:
+    """Локальная замена триггеров (+ упрощение). Без GPT."""
+    cleaned, stats = sanitize_video_prompt_after_errors(
+        prompt, simplify=force_simplify
+    )
+    if cleaned.strip() == (prompt or "").strip():
+        return prompt
+    logger.info(
+        "outsee_retry: локальная санация промта [{}]: "
+        "triggers={} simplified={} {}→{} симв",
+        where,
+        stats["trigger_replacements"],
+        stats["simplified"],
+        stats["chars_before"],
+        stats["chars_after"],
+    )
+    return cleaned
+
 
 def _gpt_moderation_rewrite_meta(body_limit: int) -> str:
     """Meta для GPT-rewrite при модерации — лимит = тело без [ID:], не full."""
@@ -1013,6 +1039,7 @@ async def generate_video_with_retries(
     _DOWNLOAD_ONLY_RETRIES = 2
     gen_failures = 0
     fallback_logged = False
+    local_sanitized = False
 
     for round_idx, round_label in enumerate(rounds):
         attempt = 0
@@ -1040,6 +1067,17 @@ async def generate_video_with_retries(
                     fb["aspect_ratio"],
                 )
                 fallback_logged = True
+            # После 3 сбоев генерации — локально убрать триггеры и упростить
+            # (GPT-rewrite часто недоступен / maintenance).
+            if (
+                gen_failures >= OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES
+                and not local_sanitized
+            ):
+                current_prompt = _apply_local_prompt_sanitize(
+                    current_prompt,
+                    where=f"video failures≥{OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES}",
+                )
+                local_sanitized = True
             provider_label = (
                 "grsai"
                 if use_grsai_video
@@ -1230,7 +1268,7 @@ async def generate_video_with_retries(
                     await sleep_cancellable(delay, project_id)
                     continue
                 # Celebrity / image CONTENT_POLICY: rewrite промта бесполезен —
-                # убираем start_frame и пробуем text→video.
+                # убираем start_frame и пробуем text→video + локальная санация имён.
                 if (
                     _is_start_frame_content_policy_error(e)
                     and kwargs.get("start_frame") is not None
@@ -1243,10 +1281,25 @@ async def generate_video_with_retries(
                     )
                     kwargs = dict(kwargs)
                     kwargs["start_frame"] = None
+                    current_prompt = _apply_local_prompt_sanitize(
+                        current_prompt,
+                        where="video drop start_frame CONTENT_POLICY",
+                    )
+                    local_sanitized = True
                     attempt -= 1
                     await sleep_cancellable(2.0, project_id)
                     continue
                 gen_failures += 1
+                # Сразу после 3-й ошибки — санация до следующей попытки в раунде.
+                if (
+                    gen_failures >= OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES
+                    and not local_sanitized
+                ):
+                    current_prompt = _apply_local_prompt_sanitize(
+                        current_prompt,
+                        where=f"video after {gen_failures} errors",
+                    )
+                    local_sanitized = True
                 err_kind = _retry_err_label(e)
                 logger.warning(
                     "outsee.generate_video [{}] попытка {}/{} ({}, id={}): {}",
@@ -1291,6 +1344,14 @@ async def generate_video_with_retries(
         is_last_round = round_idx == len(rounds) - 1
         if is_last_round:
             break
+        # Между раундами всегда локальная санация (триггеры → синонимы),
+        # даже если GPT-rewrite потом упадёт.
+        if not local_sanitized:
+            current_prompt = _apply_local_prompt_sanitize(
+                current_prompt,
+                where=f"video before round after «{round_label}»",
+            )
+            local_sanitized = True
         if gpt is None:
             logger.warning(
                 "outsee.generate_video [{}]: GPT недоступен — rewrite пропущен",
@@ -1311,10 +1372,14 @@ async def generate_video_with_retries(
         if not rewritten:
             logger.warning(
                 "outsee.generate_video: GPT-rewrite не вернул текст — "
-                "продолжаю с исходным промтом"
+                "продолжаю с локально санированным промтом"
             )
         else:
-            current_prompt = rewritten
+            # GPT мог вернуть триггеры обратно — ещё раз локально.
+            current_prompt = _apply_local_prompt_sanitize(
+                rewritten,
+                where="video after GPT-rewrite",
+            )
 
     if last_err is None:
         raise RuntimeError("generate_video_with_retries: unreachable")
