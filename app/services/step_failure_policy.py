@@ -234,6 +234,35 @@ async def record_step_failure(
     from app.services.project_state import is_running_status
     from app.services.step_cancel import is_stop_requested
 
+    # SQLite busy / PendingRollback при parallel projects — не копить к 30-мин sleep.
+    err_code_early, err_msg_early = describe_error(error)
+    if err_code_early == "infra_db_locked":
+        running = project.status
+        step = step_by_running_status(running)
+        step_code = step.code if step else running.value
+        await _soft_retry_without_wipe(session, project, step_code)
+        fs = _failure_state(project)
+        fs["last_error"] = err_msg_early
+        fs["last_error_code"] = err_code_early
+        fs["last_running"] = running.value
+        fs.pop("sleep_until", None)
+        _save_failure_state(project, fs)
+        if step is not None:
+            project.status = step.running_status
+        from app.services.run_sync import update_active_node_progress_text
+
+        await update_active_node_progress_text(
+            session,
+            project,
+            f"БД занята — повтор без счётчика: {err_msg_early[:80]}",
+        )
+        await session.flush()
+        logger.warning(
+            "[#{}] infra_db_locked: soft retry без fail-счётчика (не sleep)",
+            project.id,
+        )
+        return "retry"
+
     # ⏹ уже нажат — не поднимать planning снова soft-retry'ем (иначе крутилка вечная)
     if is_user_stopped(project) or is_stop_requested(project.id):
         from app.services.run_sync import mark_running_node_failed

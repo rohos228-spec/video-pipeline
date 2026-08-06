@@ -200,8 +200,19 @@ export function FlowCanvas({
     // Не рисуем factory-layout, пока project.meta ещё грузится — иначе
     // позиции залипают и потом перезаписывают canvas_graph при autosave.
     if (projectId != null && !project.isFetched) return null;
+    // Пустой canvas_graph у дочерних — брать snapshot WorkflowRun, не дефолтный
+    // шаблон на 16 нод (иначе пропадают excel_gpt / storage).
+    const runNodes = run.data?.nodes_snapshot;
+    const runEdges = run.data?.edges_snapshot;
+    if (Array.isArray(runNodes) && runNodes.length > 0) {
+      return {
+        ...workflow.data,
+        nodes: runNodes,
+        edges: Array.isArray(runEdges) ? runEdges : [],
+      };
+    }
     return workflow.data;
-  }, [workflow.data, canvasGraph, projectId, project.isFetched]);
+  }, [workflow.data, canvasGraph, projectId, project.isFetched, run.data]);
 
   const baseNodes = useMemo(() => {
     if (!graphSource) return [];

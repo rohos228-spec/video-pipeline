@@ -125,6 +125,46 @@ async def session() -> AsyncSession:
 
 
 @pytest.mark.asyncio
+async def test_record_step_failure_db_locked_skips_fail_counter(
+    session: AsyncSession,
+) -> None:
+    p = Project(
+        slug="db-lock-img",
+        topic="t",
+        status=ProjectStatus.generating_images,
+        auto_mode=False,
+        meta={"step_failure": {"total_fails": {"generating_images": 2}}},
+    )
+    session.add(p)
+    await session.flush()
+
+    with (
+        patch(
+            "app.services.step_failure_policy._soft_retry_without_wipe",
+            new_callable=AsyncMock,
+        ) as soft,
+        patch(
+            "app.services.run_sync.update_active_node_progress_text",
+            new_callable=AsyncMock,
+        ),
+    ):
+        action = await record_step_failure(
+            session,
+            p,
+            error=RuntimeError("database is locked"),
+        )
+
+    assert action == "retry"
+    soft.assert_awaited_once()
+    assert p.status is ProjectStatus.generating_images
+    fs = (p.meta or {}).get("step_failure") or {}
+    # Не копить к sleep: счётчик остаётся прежним
+    assert fs["total_fails"]["generating_images"] == 2
+    assert fs.get("last_error_code") == "infra_db_locked"
+    assert "sleep_until" not in fs
+
+
+@pytest.mark.asyncio
 async def test_record_step_failure_user_stop_does_not_revive(
     session: AsyncSession,
 ) -> None:

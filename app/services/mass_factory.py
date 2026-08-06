@@ -47,6 +47,9 @@ COPY_META_KEYS = (
     "custom_prompts",
     "disabled_nodes",
     "excel_lane_bindings",
+    "canvas_graph",
+    "excel_gpt_nodes",
+    "node_step_params",
 )
 
 STRIP_META_KEYS = frozenset(
