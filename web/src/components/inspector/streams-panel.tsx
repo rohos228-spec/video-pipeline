@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Layers, Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -83,22 +83,27 @@ export function StreamsPanel({ project }: { project: ProjectDetail | null }) {
   });
 
   const meta = (project?.meta || {}) as Record<string, unknown>;
-  const outseeCur = Math.max(
-    0,
-    Math.min(4, Number(meta.outsee_streams ?? meta.img_streams ?? cfg.default_outsee_streams ?? 1) || 1),
+  const outseeRaw = meta.outsee_streams ?? meta.img_streams ?? cfg.default_outsee_streams ?? 1;
+  const outseeCur = Math.max(0, Math.min(4, Number(outseeRaw)));
+  const checkRaw = meta.check_streams ?? cfg.default_check_streams ?? 2;
+  const checkCur = Math.max(0, Math.min(10, Number(checkRaw)));
+  const [outseeLocal, setOutseeLocal] = useState(
+    Number.isFinite(outseeCur) ? outseeCur : 1,
   );
-  const checkCur = Math.max(
-    0,
-    Math.min(10, Number(meta.check_streams ?? cfg.default_check_streams ?? 2) || 2),
+  const [checkLocal, setCheckLocal] = useState(
+    Number.isFinite(checkCur) ? checkCur : 2,
   );
-  const [outseeLocal, setOutseeLocal] = useState(outseeCur);
-  const [checkLocal, setCheckLocal] = useState(checkCur);
+  // Пока PATCH только что сохранён — не откатывать local из stale refetch.
+  const outseeHoldUntilRef = useRef(0);
+  const checkHoldUntilRef = useRef(0);
 
   useEffect(() => {
-    setOutseeLocal(outseeCur);
+    if (Date.now() < outseeHoldUntilRef.current) return;
+    if (Number.isFinite(outseeCur)) setOutseeLocal(outseeCur);
   }, [outseeCur]);
   useEffect(() => {
-    setCheckLocal(checkCur);
+    if (Date.now() < checkHoldUntilRef.current) return;
+    if (Number.isFinite(checkCur)) setCheckLocal(checkCur);
   }, [checkCur]);
 
   const patchProject = useMutation({
@@ -106,14 +111,16 @@ export function StreamsPanel({ project }: { project: ProjectDetail | null }) {
       if (!project) throw new Error("Нет проекта");
       return api.patchProject(project.id, body);
     },
-    onSuccess: (_d, vars) => {
+    onSuccess: (data, vars) => {
       const m = vars.meta;
-      if (m.img_streams != null) {
+      if (m.img_streams != null || m.outsee_streams != null) {
+        const n = Number(m.img_streams ?? m.outsee_streams);
         toast.success(
-          m.img_streams === 0
+          n === 0
             ? "Потоки Outsee: 0 (без генерации)"
-            : `Потоки Outsee (проект): ${m.img_streams}`,
+            : `Потоки Outsee (проект): ${n}`,
         );
+        outseeHoldUntilRef.current = Date.now() + 8000;
       }
       if (m.check_streams != null) {
         toast.success(
@@ -121,8 +128,22 @@ export function StreamsPanel({ project }: { project: ProjectDetail | null }) {
             ? "Потоки проверки: 0"
             : `Потоки проверки (проект): ${m.check_streams}`,
         );
+        checkHoldUntilRef.current = Date.now() + 8000;
       }
       if (project) {
+        // Optimistic: сразу пишем meta в кэш — иначе refetch/старый project
+        // откатывает кнопки потоков на default=1.
+        qc.setQueryData<ProjectDetail>(["project", project.id], (prev) => {
+          const base = data ?? prev;
+          if (!base) return prev;
+          return {
+            ...base,
+            meta: {
+              ...(base.meta || {}),
+              ...m,
+            },
+          };
+        });
         void qc.invalidateQueries({ queryKey: ["project", project.id] });
       }
     },
