@@ -20,6 +20,9 @@ from loguru import logger
 
 from app.services.event_bus import get_bus
 from app.web.routers import (
+    agent as agent_router,
+)
+from app.web.routers import (
     artifacts as artifacts_router,
 )
 from app.web.routers import (
@@ -220,6 +223,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(workflows_router.router, prefix=API_PREFIX)
+    app.include_router(agent_router.router, prefix=API_PREFIX)
     app.include_router(projects_router.router, prefix=API_PREFIX)
     app.include_router(project_ops_router.router, prefix=API_PREFIX)
     app.include_router(generation_options_router.router, prefix=API_PREFIX)

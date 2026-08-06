@@ -851,3 +851,79 @@ class WorkflowVersion(Base):
     edges: Mapped[list] = mapped_column(JSON, default=list)
     message: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(default=_now, index=True)
+
+
+# ─────────────────────────── LLM-агент (оркестратор) ───────────────────────────
+
+
+class AgentSessionStatus(str, enum.Enum):
+    idle = "idle"
+    running = "running"
+    waiting_choice = "waiting_choice"
+    error = "error"
+    stopped = "stopped"
+
+
+class AgentSession(Base):
+    """Сессия LLM-агента: durable (переживает рестарт бэкенда)."""
+
+    __tablename__ = "agent_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    uuid: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(300), default="")
+    status: Mapped[AgentSessionStatus] = mapped_column(
+        Enum(AgentSessionStatus, name="agent_session_status"),
+        default=AgentSessionStatus.idle,
+        index=True,
+    )
+    # advisor | operator | autopilot — потолок риска tool calls.
+    autonomy: Mapped[str] = mapped_column(String(20), default="operator")
+    # Точное состояние диалога для Responses API (input items), чтобы
+    # продолжить после рестарта без потери контекста.
+    input_items: Mapped[list] = mapped_column(JSON, default=list)
+    # pending choice card (confirm/choice/variant_picker), когда ждём ответа UI.
+    pending_choice: Mapped[dict | None] = mapped_column(JSON, default=None)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
+    updated_at: Mapped[datetime] = mapped_column(default=_now, onupdate=_now)
+
+    messages: Mapped[list[AgentMessage]] = relationship(
+        back_populates="session", cascade="all,delete-orphan"
+    )
+
+
+class AgentMessage(Base):
+    """Человекочитаемый лог диалога/событий для UI (user/assistant/tool/event)."""
+
+    __tablename__ = "agent_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[str] = mapped_column(String(20), index=True)  # user/assistant/tool/event
+    content: Mapped[str] = mapped_column(Text, default="")
+    # Для tool-сообщений: имя, аргументы, статус, риск.
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(default=_now, index=True)
+
+    session: Mapped[AgentSession] = relationship(back_populates="messages")
+
+
+class AgentAction(Base):
+    """Журнал действий агента (память эпизодов + аудит)."""
+
+    __tablename__ = "agent_actions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="SET NULL"), default=None, index=True
+    )
+    tool: Mapped[str] = mapped_column(String(80), index=True)
+    risk: Mapped[str] = mapped_column(String(10), default="read")  # read/write/danger
+    args: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(20), default="ok")  # ok/error/denied
+    result_excerpt: Mapped[str] = mapped_column(Text, default="")
+    project_id: Mapped[int | None] = mapped_column(default=None, index=True)
+    created_at: Mapped[datetime] = mapped_column(default=_now, index=True)
