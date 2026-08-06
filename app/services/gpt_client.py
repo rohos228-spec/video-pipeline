@@ -219,6 +219,7 @@ class ApiGptClient:
         *,
         timeout: float = 300,
         project_id: int | None = None,
+        max_retries: int | None = None,
     ) -> str:
         return await self.ask_with_files(
             text,
@@ -226,6 +227,7 @@ class ApiGptClient:
             timeout=timeout,
             project_id=project_id,
             expect_file_download=False,
+            max_retries=max_retries,
         )
 
     async def ask_anim_pr_batch(
@@ -235,6 +237,8 @@ class ApiGptClient:
         *,
         timeout: float = 600,
         project_id: int | None = None,
+        system: str | None = None,
+        max_retries: int | None = None,
     ) -> str:
         return await self.ask_with_files(
             text,
@@ -242,6 +246,8 @@ class ApiGptClient:
             timeout=timeout,
             project_id=project_id,
             expect_file_download=False,
+            system=system,
+            max_retries=max_retries,
         )
 
     async def download_attachment_from_last_reply(

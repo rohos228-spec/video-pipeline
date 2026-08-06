@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from pathlib import Path
 
 from aiogram import Bot  # noqa: F401
 from loguru import logger
@@ -20,9 +21,66 @@ from app.models import Frame, FrameStatus, Project, ProjectStatus
 from app.services import animation_prompt_gpt as apg
 from app.services import db_apply, db_v2
 from app.services.chatgpt_xlsx import tmp_gpt_dir, write_anim_pr_prompt_file
+from app.services.gpt_api import GptApiError
 from app.services.gpt_client import get_gpt_client
 from app.services.step_cancel import StepCancelledError, consume_stop, raise_if_cancelled
 from app.storage import for_project as _sheet_for_project
+
+# kie maintenance / 5xx: не валим шаг — ждём провайдера и повторяем пачку.
+_BATCH_BACKOFF_S = (45, 90, 180, 300, 300)
+_PHASE1_MAX_RETRIES = 1
+
+
+def _provider_outage(exc: BaseException) -> bool:
+    if isinstance(exc, GptApiError) and exc.retryable:
+        return True
+    msg = str(exc).lower()
+    return (
+        "server exception" in msg
+        or "being maintained" in msg
+        or "try again later" in msg
+        or "code=500" in msg
+        or "code=502" in msg
+        or "code=503" in msg
+    )
+
+
+async def _ask_batch_until_ok(
+    gpt,
+    batch_msg: str,
+    strip_path: Path,
+    *,
+    project_id: int,
+    system: str | None,
+    label: str,
+) -> str:
+    """Пачка vision: при outage kie — backoff и снова, пока не ответит или ⏹."""
+    attempt = 0
+    while True:
+        raise_if_cancelled(project_id)
+        try:
+            return await gpt.ask_anim_pr_batch(
+                batch_msg,
+                [strip_path],
+                timeout=600,
+                project_id=project_id,
+                system=system,
+                max_retries=2,
+            )
+        except Exception as e:  # noqa: BLE001
+            if not _provider_outage(e):
+                raise
+            delay = _BATCH_BACKOFF_S[min(attempt, len(_BATCH_BACKOFF_S) - 1)]
+            attempt += 1
+            logger.warning(
+                "[#{}] anim_pr: {} GPT outage ({}) — повтор #{}, жду {}с",
+                project_id,
+                label,
+                e,
+                attempt,
+                delay,
+            )
+            await asyncio.sleep(delay)
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
@@ -99,6 +157,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     )
     sheet = _sheet_for_project(project)
 
+    # Master rules → system у каждой пачки (фаза 1 при maintenance kie часто жжёт 5 мин впустую).
+    master_system = ""
+    try:
+        master_system = prompt_file.read_text(encoding="utf-8").strip()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] anim_pr: не прочитал master prompt: {}", project.id, e)
+    if len(master_system) > 12_000:
+        master_system = master_system[:12_000] + "\n…"
+
     logger.info("[#{}] anim_pr: GPT API…", project.id)
     gpt = get_gpt_client()
     try:
@@ -107,18 +174,20 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         raise_if_cancelled(project.id)
         if not skip_phase1:
             logger.info(
-                "[#{}] anim_pr: ФАЗА 1 текст+файл {} ({} байт), {} симв.",
+                "[#{}] anim_pr: ФАЗА 1 текст+файл {} ({} байт), {} симв. (max_retries={})",
                 project.id,
                 prompt_file.name,
                 prompt_file.stat().st_size,
                 len(initial),
+                _PHASE1_MAX_RETRIES,
             )
             try:
                 initial_reply = await gpt.ask_anim_pr_initial(
                     initial,
                     prompt_file,
-                    timeout=300,
+                    timeout=180,
                     project_id=project.id,
+                    max_retries=_PHASE1_MAX_RETRIES,
                 )
                 if not (initial_reply or "").strip():
                     logger.warning(
@@ -126,8 +195,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         project.id,
                     )
             except Exception as e:  # noqa: BLE001
-                # kie 500 / сети — не валим весь шаг: master уже в файле,
-                # пачки vision несут контекст кадра.
+                # kie 500 / maintenance — не валим шаг: system=master на пачках.
                 logger.warning(
                     "[#{}] anim_pr: ФАЗА 1 упала ({}) — продолжаю пачки shot_01",
                     project.id,
@@ -160,11 +228,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 strip_path.name,
                 len(batch_msg),
             )
-            reply = await gpt.ask_anim_pr_batch(
+            reply = await _ask_batch_until_ok(
+                gpt,
                 batch_msg,
-                [strip_path],
-                timeout=600,
+                strip_path,
                 project_id=project.id,
+                system=master_system or None,
+                label=f"shot_01 {[it.frame.number for it in batch]}",
             )
             await _save_anim_pr_batch(
                 session,
@@ -195,11 +265,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 strip2.name,
                 len(batch_msg2),
             )
-            reply2 = await gpt.ask_anim_pr_batch(
+            reply2 = await _ask_batch_until_ok(
+                gpt,
                 batch_msg2,
-                [strip2],
-                timeout=600,
+                strip2,
                 project_id=project.id,
+                system=master_system or None,
+                label=f"shot_02 {[it.frame.number for it in batch2]}",
             )
             await _save_anim_pr_batch(
                 session,
