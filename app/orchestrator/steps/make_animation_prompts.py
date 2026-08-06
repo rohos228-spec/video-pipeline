@@ -408,8 +408,14 @@ async def _save_anim_pr_batch(
         fr = next((f for f in frames if f.number == pair.frame_number), None)
         if fr is None:
             continue
-        if shot == 1:
+        text = pair.animation_text.strip()
+        # apply_ops пишет в те же ORM-объекты; дублируем, чтобы while-collect
+        # сразу видел прогресс (без re-fetch / soft-retry).
+        if shot == 1 and len(text) >= apg.MIN_ANIM_PROMPT_LEN:
+            fr.animation_prompt = text
             fr.status = FrameStatus.animation_prompt_ready
+        elif shot == 2:
+            apg.save_animation_prompt_shot2(fr, project, text)
         try:
             sheet.write_frame(fr.number, frame_status=fr.status.value)
         except Exception as e:  # noqa: BLE001
@@ -421,7 +427,7 @@ async def _save_anim_pr_batch(
             project.id,
             fr.number,
             shot,
-            len(pair.animation_text.strip()),
+            len(text),
             plan_row,
         )
 
@@ -435,10 +441,25 @@ async def _save_anim_pr_batch(
         plan_row,
     )
 
-    still_missing = {it.frame.number for it in batch} - {
-        p.frame_number for p in pairs if p.frame_number is not None
+    # GPT часто отдаёт 1 из BATCH_SIZE — это не hard-fail: сохраняем частичный
+    # прогресс и крутим while True дальше по remaining (без soft-retry/30м паузы).
+    batch_nums = {it.frame.number for it in batch}
+    filled_from_batch = {
+        p.frame_number
+        for p in pairs
+        if p.frame_number is not None and p.frame_number in batch_nums
     }
-    if still_missing:
+    still_missing = sorted(batch_nums - filled_from_batch)
+    if still_missing and not filled_from_batch:
         raise RuntimeError(
-            f"не получены animation_prompt shot_0{shot} для кадров {sorted(still_missing)}"
+            f"не получены animation_prompt shot_0{shot} для кадров {still_missing}"
+        )
+    if still_missing:
+        logger.warning(
+            "[#{}] anim_pr: частичный ответ shot_0{} — сохранено {}, "
+            "остались {} (продолжаю без fail)",
+            project.id,
+            shot,
+            sorted(filled_from_batch),
+            still_missing,
         )
