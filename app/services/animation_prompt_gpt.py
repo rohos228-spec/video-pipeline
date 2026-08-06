@@ -35,7 +35,7 @@ from app.storage.plan_sheet_v8 import (
 
 MIN_ANIM_PROMPT_LEN = 10
 
-BATCH_SIZE = 5
+BATCH_SIZE = 6
 STRIP_GUTTER_PX = 6
 STRIP_MAX_HEIGHT_PX = 512
 STRIP_MAX_BYTES = 3_500_000
