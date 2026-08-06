@@ -198,9 +198,14 @@ async def _soft_retry_without_wipe(
         from app.services.artifact_recovery import recover_scene_videos_from_disk
 
         recovered = await recover_scene_videos_from_disk(session, project)
+        videos_dir = project.data_dir / "videos"
+        on_disk = (
+            len(list(videos_dir.glob("clip_*.mp4"))) if videos_dir.is_dir() else 0
+        )
         logger.info(
-            "[#{}] soft retry video: {} clip на диске (без wipe)",
+            "[#{}] soft retry video: {} clip на диске, {} newly linked (без wipe)",
             project.id,
+            on_disk,
             len(recovered),
         )
     else:

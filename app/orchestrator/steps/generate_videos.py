@@ -495,7 +495,8 @@ async def _shot2_job(
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_videos:
         return
-    logger.info("[#{}] generate_videos starting", project.id)
+    project_id = project.id
+    logger.info("[#{}] generate_videos starting", project_id)
 
     img_recovered = await recover_scene_images_from_disk(session, project)
     if img_recovered:
@@ -614,6 +615,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         ],
                         return_exceptions=True,
                     )
+                    # expire_all: identity map после parallel SessionLocal() stale;
+                    # PK project.id после expire нельзя трогать — lazy-load → MissingGreenlet.
                     session.expire_all()
                     fail_n = 0
                     for r in results:
@@ -621,9 +624,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             raise r
                         if isinstance(r, Exception):
                             fail_n += 1
-                            logger.exception(
+                            logger.error(
                                 "[#{}] video stream worker failed: {}",
-                                project.id,
+                                project_id,
                                 r,
                             )
                         else:
@@ -642,7 +645,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             logger.warning(
                                 "[#{}] generate_videos: вся пачка упёрлась в "
                                 "лимит Outsee — пауза 60с перед следующей",
-                                project.id,
+                                project_id,
                             )
                             await asyncio.sleep(60)
                     await session.refresh(project)
@@ -710,9 +713,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         if isinstance(r, StepCancelledError):
                             raise r
                         if isinstance(r, Exception):
-                            logger.exception(
+                            logger.error(
                                 "[#{}] video s2 stream worker failed: {}",
-                                project.id,
+                                project_id,
                                 r,
                             )
                         else:
