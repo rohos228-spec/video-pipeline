@@ -530,6 +530,18 @@ async def _wipe_anim_pr(session: AsyncSession, project: Project) -> dict[str, An
     return {"frames_cleared": cleared, "frames_status_reset": status_reset}
 
 
+async def _resume_videos(session: AsyncSession, project: Project) -> dict[str, Any]:
+    """Soft ▶ video: НЕ wipe clip_*.mp4 — догнать только missing.
+
+    Регистрирует ``scene_video`` с диска. Полный wipe — только через
+    force_wipe / reset_step.
+    """
+    from app.services.artifact_recovery import recover_scene_videos_from_disk
+
+    recovered = await recover_scene_videos_from_disk(session, project)
+    return {"mode": "soft_resume", "recovered_frames": recovered}
+
+
 async def _wipe_videos(session: AsyncSession, project: Project) -> dict[str, Any]:
     """Сброс шага 9 «Видео»: scene_video артефакты + файлы. Также
     сбрасываем frame.status video_* → animation_prompt_ready."""
@@ -697,6 +709,7 @@ _STEP_RERUN_BY_CODE: dict[str, Any] = {
     "img_pr": _resume_img_pr,
     "img": _resume_images,
     "anim_pr": _resume_anim_pr_from_xlsx,
+    "video": _resume_videos,
     "audio": _preserve_user_media_on_rerun,
     "music": _preserve_user_media_on_rerun,
 }
@@ -716,7 +729,8 @@ async def clear_step_outputs_for_rerun(
     следующих шагов не трогаем — для полного каскада есть reset_step.
 
     ``force_wipe=True`` — полный wipe даже если для шага есть soft-resume
-    (anim_pr: иначе R48 остаётся и ▶ «готового» шага ничего не перегенерит).
+    (anim_pr: иначе R48 остаётся и ▶ «готового» шага ничего не перегенерит;
+    video: иначе clip_*.mp4 остаются и ▶ догоняет только missing).
     """
     if not is_reset_supported(step_code):
         return {}

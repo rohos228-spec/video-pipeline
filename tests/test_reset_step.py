@@ -342,6 +342,57 @@ async def test_clear_step_outputs_for_rerun_script_preserves_voiceover(
 
 
 @pytest.mark.asyncio
+async def test_clear_step_outputs_for_rerun_video_preserves_mp4(
+    session, tmp_path: Path, monkeypatch,
+):
+    """Soft ▶ video: не удаляет clip_*.mp4, только soft-resume с диска."""
+    import app.settings as app_settings
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path / "data")
+
+    p = await _mkproject(session)
+    p.data_dir.mkdir(parents=True, exist_ok=True)
+    videos_dir = p.data_dir / "videos"
+    videos_dir.mkdir(parents=True, exist_ok=True)
+    clip = videos_dir / "clip_001_abcd.mp4"
+    clip.write_bytes(b"fake-mp4")
+
+    fr = await _mkframe(
+        session,
+        p,
+        1,
+        image_prompt="ip",
+        animation_prompt="anim",
+        status=FrameStatus.video_generated,
+    )
+    await _mkart(
+        session,
+        p,
+        ArtifactKind.scene_video,
+        path=str(clip),
+        frame_id=fr.id,
+    )
+    p.status = ProjectStatus.generating_videos
+    await session.flush()
+
+    summary = await clear_step_outputs_for_rerun(session, p, "video", force_wipe=False)
+    assert summary.get("video", {}).get("mode") == "soft_resume"
+    assert clip.exists()
+    videos_left = (
+        await session.execute(
+            select(Artifact).where(
+                Artifact.project_id == p.id,
+                Artifact.kind == ArtifactKind.scene_video,
+            )
+        )
+    ).scalars().all()
+    assert len(videos_left) == 1
+    await session.refresh(fr)
+    assert fr.status is FrameStatus.video_generated
+
+
+@pytest.mark.asyncio
 async def test_clear_step_outputs_for_rerun_anim_pr_preserves(session, tmp_path: Path):
     """Повторный запуск anim_pr: не стираем animation_prompt (догонка с xlsx)."""
     p = await _mkproject(session)
