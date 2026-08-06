@@ -423,6 +423,150 @@ async def sync_frame_timestamps_if_needed(
     )
 
 
+def _xlsx_mtime_key(mtime: float) -> float:
+    """Стабильный ключ mtime для JSON meta (float round-trip)."""
+    return round(float(mtime), 3)
+
+
+def _count_clip_drift(
+    frames: list[Frame],
+    clips: list[FrameAudioClip],
+    *,
+    eps: float = 0.5,
+) -> tuple[int, int]:
+    """Сколько кадров с ts сдвинулось бы на >eps сек (без мутации ORM)."""
+    by_num = {c.frame_number: c for c in clips}
+    compared = 0
+    drifted = 0
+    for fr in frames:
+        clip = by_num.get(fr.number)
+        if clip is None:
+            continue
+        if fr.start_ts is None or fr.end_ts is None:
+            continue
+        compared += 1
+        if (
+            abs(float(fr.start_ts) - float(clip.start_ts)) > eps
+            or abs(float(fr.end_ts) - float(clip.end_ts)) > eps
+        ):
+            drifted += 1
+    return drifted, compared
+
+
+# process-local: не ждать SQLite write на каждый GET, пока video держит lock
+_R15_MEMORY: dict[int, tuple[float, int, str]] = {}
+
+
+def _r15_memory_hit(project_id: int, xlsx_key: float, frame_count: int) -> bool:
+    mem = _R15_MEMORY.get(int(project_id))
+    return bool(mem and mem[0] == xlsx_key and mem[1] == int(frame_count))
+
+
+def _r15_memory_set(
+    project_id: int, xlsx_key: float, frame_count: int, source: str
+) -> None:
+    _R15_MEMORY[int(project_id)] = (xlsx_key, int(frame_count), source)
+
+
+async def _persist_r15_cache_background(
+    project_id: int,
+    *,
+    xlsx_mtime: float,
+    frame_count: int,
+    parsed: int,
+    source: str,
+) -> None:
+    """Отдельная короткая сессия — не блокирует ответ GET /montage-board."""
+    from app.db import session_scope
+
+    try:
+        async with session_scope() as bg:
+            project = await bg.get(Project, project_id)
+            if project is None:
+                return
+            await _stamp_r15_sync_cache(
+                bg,
+                project,
+                xlsx_mtime=xlsx_mtime,
+                frame_count=frame_count,
+                parsed=parsed,
+                source=source,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "[#{}] montage_r15_sync bg persist failed ({}): {}",
+            project_id,
+            source,
+            exc,
+        )
+
+
+async def _stamp_r15_sync_cache(
+    session: AsyncSession,
+    project: Project,
+    *,
+    xlsx_mtime: float,
+    frame_count: int,
+    parsed: int,
+    source: str,
+) -> dict[str, Any]:
+    """Записать meta.montage_r15_sync в текущей сессии."""
+    payload = {
+        "xlsx_mtime": _xlsx_mtime_key(xlsx_mtime),
+        "frame_count": int(frame_count),
+        "parsed": int(parsed),
+        "source": source,
+    }
+    meta = dict(project.meta or {}) if isinstance(project.meta, dict) else {}
+    meta["montage_r15_sync"] = payload
+    project.meta = meta
+    try:
+        from sqlalchemy.orm.attributes import flag_modified
+
+        flag_modified(project, "meta")
+    except Exception:  # noqa: BLE001 — тесты с SimpleNamespace
+        pass
+    await session.flush()
+    return payload
+
+
+def _schedule_r15_cache_persist(
+    project: Project,
+    *,
+    xlsx_mtime: float,
+    frame_count: int,
+    parsed: int,
+    source: str,
+) -> dict[str, Any]:
+    """In-memory сразу + persist в фоне (без dirty ORM на запросе GET)."""
+    xlsx_key = _xlsx_mtime_key(xlsx_mtime)
+    payload = {
+        "xlsx_mtime": xlsx_key,
+        "frame_count": int(frame_count),
+        "parsed": int(parsed),
+        "source": source,
+    }
+    try:
+        pid = int(project.id)
+    except Exception:  # noqa: BLE001
+        return payload
+    _r15_memory_set(pid, xlsx_key, frame_count, source)
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(
+            _persist_r15_cache_background(
+                pid,
+                xlsx_mtime=xlsx_mtime,
+                frame_count=frame_count,
+                parsed=parsed,
+                source=source,
+            )
+        )
+    except RuntimeError:
+        pass
+    return payload
+
+
 async def sync_frame_timestamps_for_board(
     session: AsyncSession,
     project: Project,
@@ -430,12 +574,13 @@ async def sync_frame_timestamps_for_board(
 ) -> dict[str, Any]:
     """Обновить Frame.start_ts/end_ts для доски монтажа.
 
-    Приоритет: Excel R15 (то, что пишет «Разбор аудио» / remount).
-    Не затирать выбранную методику auto/proportional из words.json.
+    Приоритет при дырах в БД: Excel R15 (после «Разбор аудио» / remount).
+    Если у кадров уже есть таймкоды — не переписываем их на каждый GET
+    (иначе 150–200 UPDATE + busy_timeout вешают API и видео в соседних
+    проектах: одна SQLite на все).
 
-    На повторном открытии доски: если project.xlsx не менялся и у кадров
-    уже есть таймкоды — пропускаем тяжёлый openpyxl R15 (иначе каждый
-    GET /montage-board парсит Excel дважды на 150+ колонок).
+    R15 применяем только когда ts не хватает, или xlsx реально сменился
+    и метки не «уплыли» относительно текущей шкалы (>50% кадров >0.5s).
     """
     if frames is None:
         frames = list(
@@ -452,6 +597,7 @@ async def sync_frame_timestamps_for_board(
 
     xlsx_path = project.data_dir / "project.xlsx"
     xlsx_mtime = xlsx_path.stat().st_mtime if xlsx_path.is_file() else 0.0
+    xlsx_key = _xlsx_mtime_key(xlsx_mtime)
     meta = dict(project.meta or {}) if isinstance(project.meta, dict) else {}
     cache = meta.get("montage_r15_sync") if isinstance(meta.get("montage_r15_sync"), dict) else {}
     have_ts = sum(
@@ -459,11 +605,16 @@ async def sync_frame_timestamps_for_board(
         for f in frames
         if f.start_ts is not None and f.end_ts is not None and float(f.end_ts) > float(f.start_ts)
     )
-    if (
-        cache.get("xlsx_mtime") == xlsx_mtime
+    ts_ok = have_ts >= max(1, int(len(frames) * 0.85))
+    cache_mtime = _xlsx_mtime_key(float(cache.get("xlsx_mtime") or 0.0)) if cache else None
+    cache_hit = (
+        cache_mtime is not None
+        and cache_mtime == xlsx_key
         and int(cache.get("frame_count") or 0) == len(frames)
-        and have_ts >= max(1, int(len(frames) * 0.85))
-    ):
+        and ts_ok
+    )
+    mem_hit = ts_ok and _r15_memory_hit(int(project.id), xlsx_key, len(frames))
+    if cache_hit or mem_hit:
         logger.debug(
             "[#{}] montage_board sync: skip R15 (cache hit, {}/{} ts, mtime={:.0f})",
             project.id,
@@ -473,6 +624,29 @@ async def sync_frame_timestamps_for_board(
         )
         return {
             "skipped": "r15_cache_hit",
+            "updated": [],
+            "frame_count": len(frames),
+            "with_ts": have_ts,
+        }
+
+    # Уже есть шкала в БД и xlsx не менялся (или кэша ещё не было) —
+    # не трогаем кадры. Persist meta в фоне — иначе GET ждёт busy_timeout.
+    if ts_ok and (not cache or cache_mtime == xlsx_key or cache_mtime is None):
+        _schedule_r15_cache_persist(
+            project,
+            xlsx_mtime=xlsx_mtime,
+            frame_count=len(frames),
+            parsed=have_ts,
+            source="db_keep",
+        )
+        logger.info(
+            "[#{}] montage_board sync: keep DB timestamps ({}/{}), no R15 rewrite",
+            project.id,
+            have_ts,
+            len(frames),
+        )
+        return {
+            "skipped": "db_timestamps_ok",
             "updated": [],
             "frame_count": len(frames),
             "with_ts": have_ts,
@@ -492,7 +666,7 @@ async def sync_frame_timestamps_for_board(
     master = await probe_duration(voice_path)
     frame_numbers = [f.number for f in timeline_frames]
 
-    # 1) Excel R15 — источник правды после «Разбор аудио» / generate_audio.
+    # 1) Excel R15 — только при дырах в БД или после смены xlsx (с drift-guard).
     try:
         from app.services.plan_timestamps import (
             count_parsed_timestamp_cells,
@@ -528,6 +702,36 @@ async def sync_frame_timestamps_for_board(
                     )
                 )
             if clips:
+                drifted, compared = _count_clip_drift(timeline_frames, clips)
+                # xlsx сменился, но R15 «другая шкала» (часто битый/чужой ряд) —
+                # не убиваем рабочий таймлайн на открытии доски.
+                if (
+                    ts_ok
+                    and compared >= max(1, int(len(timeline_frames) * 0.5))
+                    and drifted >= max(1, int(compared * 0.5))
+                ):
+                    _schedule_r15_cache_persist(
+                        project,
+                        xlsx_mtime=xlsx_mtime,
+                        frame_count=len(frames),
+                        parsed=parsed_n,
+                        source="r15_rejected_drift",
+                    )
+                    logger.warning(
+                        "[#{}] montage_board sync: R15 drift {}/{} — keep DB "
+                        "(xlsx mtime changed, но метки сильно другие)",
+                        project.id,
+                        drifted,
+                        compared,
+                    )
+                    return {
+                        "skipped": "r15_drift",
+                        "updated": [],
+                        "frame_count": len(frames),
+                        "with_ts": have_ts,
+                        "r15_parsed": parsed_n,
+                        "drifted": drifted,
+                    }
                 updated = _apply_clips_to_frames(timeline_frames, clips)
                 if updated:
                     await session.flush()
@@ -547,14 +751,14 @@ async def sync_frame_timestamps_for_board(
                         project.id,
                         len(clips),
                     )
-                meta["montage_r15_sync"] = {
-                    "xlsx_mtime": xlsx_mtime,
-                    "frame_count": len(frames),
-                    "parsed": parsed_n,
-                    "source": "r15",
-                }
-                project.meta = meta
-                await session.flush()
+                await _stamp_r15_sync_cache(
+                    session,
+                    project,
+                    xlsx_mtime=xlsx_mtime,
+                    frame_count=len(frames),
+                    parsed=parsed_n,
+                    source="r15",
+                )
                 return {
                     "source": "r15",
                     "updated": updated,
@@ -597,14 +801,14 @@ async def sync_frame_timestamps_for_board(
             project.id,
             len(updated),
         )
-    meta["montage_r15_sync"] = {
-        "xlsx_mtime": xlsx_mtime,
-        "frame_count": len(frames),
-        "parsed": len(clips),
-        "source": "words_json",
-    }
-    project.meta = meta
-    await session.flush()
+    await _stamp_r15_sync_cache(
+        session,
+        project,
+        xlsx_mtime=xlsx_mtime,
+        frame_count=len(frames),
+        parsed=len(clips),
+        source="words_json",
+    )
     return {
         "source": "words_json",
         "updated": updated,

@@ -97,7 +97,7 @@ async def test_montage_board_exposes_source_prompts_from_excel(
     montage_project: Project,
     session: AsyncSession,
 ) -> None:
-    """«Редактировать промт» должен получать промт исходника (Excel → board DTO)."""
+    """Промты на доске: Frame.* (БД) перекрывают Excel — regen идёт из БД."""
     xlsx = montage_project.data_dir / "project.xlsx"
     wb = Workbook()
     ws = wb.active
@@ -127,10 +127,11 @@ async def test_montage_board_exposes_source_prompts_from_excel(
 
     board = await build_montage_board(session, montage_project)
     row = board["frames"][0]
-    assert row["image_prompt_shot1"] == "IMG SHOT1 PROMPT"
-    assert row["image_prompt_shot2"] == "IMG SHOT2 PROMPT"
-    assert row["animation_prompt_shot1"] == "VID SHOT1 PROMPT"
-    assert row["animation_prompt_shot2"] == "VID SHOT2 PROMPT long enough"
+    # БД first (regen с доски) — Excel только fallback, если Frame.* пуст.
+    assert row["image_prompt_shot1"] == "stale-db-image"
+    assert row["image_prompt_shot2"] == "stale-db-img2"
+    assert row["animation_prompt_shot1"] == "stale-db-video"
+    assert row["animation_prompt_shot2"] == "stale-db-vid2"
 
 
 @pytest.mark.asyncio
@@ -165,15 +166,14 @@ async def test_montage_board_prompt_falls_back_to_frame_db(
 
 
 @pytest.mark.asyncio
-async def test_montage_board_recalculates_stale_timestamps(
+async def test_montage_board_keeps_existing_timestamps_on_open(
     montage_project: Project,
     session: AsyncSession,
 ) -> None:
-    """При каждом открытии монтажа таймкоды пересчитываются, а не берутся из БД как есть."""
+    """GET доски не переписывает уже заполненную шкалу (иначе SQLite lock + Failed to fetch)."""
     from unittest.mock import patch
 
     from app.models import Artifact, ArtifactKind
-    from app.services.whisper import WordTS
 
     xlsx = montage_project.data_dir / "project.xlsx"
     wb = Workbook()
@@ -228,8 +228,8 @@ async def test_montage_board_recalculates_stale_timestamps(
 
     row = board["frames"][0]
     assert row["start_ts"] == 0.0
-    assert row["end_ts"] == 1.0
-    assert row["duration_seconds"] == 1.0
+    assert row["end_ts"] == 4.24
+    assert row["duration_seconds"] == 4.24
 
 
 def test_preview_url_encodes_spaces() -> None:
@@ -289,7 +289,8 @@ async def test_build_montage_board_survives_expired_frames(
     board = await build_montage_board(session, montage_project)
 
     assert board["frame_count"] == 1
-    assert board["frames"][0]["image_prompt_shot1"] == "EXPIRED SAFE PROMPT"
+    # Snapshot снят до expire — промт из БД (Excel только fallback).
+    assert board["frames"][0]["image_prompt_shot1"] == "db-fallback"
 
 
 @pytest.mark.asyncio
@@ -316,8 +317,8 @@ async def test_read_source_prompts_once_accepts_plain_snapshots(
         _FrameBoardSnapshot(
             id=1,
             number=1,
-            image_prompt="db",
-            animation_prompt="anim",
+            image_prompt="",  # пусто → Excel fallback
+            animation_prompt="",
             attrs={},
         )
     ]

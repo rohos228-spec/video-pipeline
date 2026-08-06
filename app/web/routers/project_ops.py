@@ -706,7 +706,11 @@ async def montage_board(
     from app.services.montage_board import build_montage_board
 
     try:
-        return await build_montage_board(session, p)
+        board = await build_montage_board(session, p)
+        # get_session не коммитит сам — без commit кэш R15/meta откатывается,
+        # и каждый GET снова пишет сотни кадров → database is locked + Failed to fetch.
+        await session.commit()
+        return board
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001

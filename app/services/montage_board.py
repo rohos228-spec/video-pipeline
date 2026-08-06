@@ -23,7 +23,6 @@ from app.orchestrator.steps.generate_images import (
 from app.services.excel_characters import parse_persons_sheet
 from app.services.montage_board_cache import (
     get_cached_plan_excel_cells,
-    get_cached_shot2_columns,
     get_cached_source_prompts,
     probe_video_durations_parallel,
 )
@@ -351,6 +350,9 @@ def _load_montage_xlsx_bundle(
 
     Раньше три параллельных openpyxl на один project.xlsx → на Windows
     PermissionError / lock → API 500 → «Не удалось загрузить данные монтажа».
+
+    На 150–200 кадрах каждый openpyxl ~30–40с. Промпты берём из БД, если
+    они уже есть (≥85% кадров) — Excel только fallback (иначе GET >90с).
     """
     excel_by_frame: dict[int, dict[str, Any]] = {}
     prompts_by_frame = _prompts_from_frame_db(frames)
@@ -365,21 +367,32 @@ def _load_montage_xlsx_bundle(
         logger.warning("montage_board: plan excel {}: {}", xlsx_path, e)
         excel_by_frame = {}
 
-    try:
-        frame_sig = ",".join(str(fr.number) for fr in frames)
-        prompts_by_frame = get_cached_source_prompts(
-            xlsx_path,
-            frame_sig=frame_sig,
-            loader=lambda: _read_source_prompts_once(xlsx_path, frames),
+    db_prompt_filled = sum(
+        1
+        for row in prompts_by_frame.values()
+        if (row.get("image_prompt_shot1") or row.get("animation_prompt_shot1") or "").strip()
+    )
+    need_excel_prompts = db_prompt_filled < max(1, int(len(frames) * 0.85))
+    if need_excel_prompts:
+        try:
+            frame_sig = ",".join(str(fr.number) for fr in frames)
+            prompts_by_frame = get_cached_source_prompts(
+                xlsx_path,
+                frame_sig=frame_sig,
+                loader=lambda: _read_source_prompts_once(xlsx_path, frames),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("montage_board: prompts excel {}: {}", xlsx_path, e)
+    else:
+        logger.debug(
+            "montage_board: skip prompts excel (DB has {}/{} prompts)",
+            db_prompt_filled,
+            len(frames),
         )
-    except Exception as e:  # noqa: BLE001
-        logger.warning("montage_board: prompts excel {}: {}", xlsx_path, e)
 
-    try:
-        shot2_by = get_cached_shot2_columns(xlsx_path)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("montage_board: shot2 excel {}: {}", xlsx_path, e)
-        shot2_by = {}
+    # shot2 excel (load_workbook без read_only, иногда 2 прохода) на 200 кадрах
+    # легко >60с. has_shot2 на доске считаем по attrs/диску в build_montage_board.
+    shot2_by = {}
 
     return excel_by_frame, prompts_by_frame, shot2_by
 
@@ -499,8 +512,16 @@ async def build_montage_board(
         ex = excel_by_frame.get(fr.number, {})
         vid1 = _find_shot1_video(videos_dir, fr.number)
         vid2 = _find_shot2_video(videos_dir, fr.number)
+        img2_quick = find_shot2_image(scenes_dir, fr.number)
         shot2_info = shot2_by.get(fr.number)
-        has_shot2 = bool(shot2_info is not None and shot2_info.has_shot2)
+        attrs = fr.attrs or {}
+        has_shot2 = bool(
+            (shot2_info is not None and shot2_info.has_shot2)
+            or (attrs.get(SHOT2_PROMPT_ATTR) or "").strip()
+            or (attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or "").strip()
+            or img2_quick is not None
+            or (vid2 is not None and vid2.is_file())
+        )
         has_shot2_video = has_shot2 and vid2 is not None and vid2.is_file()
         frame_videos.append((fr, vid1, vid2, ex, has_shot2, has_shot2_video))
         all_vid_paths.extend([vid1, vid2])
