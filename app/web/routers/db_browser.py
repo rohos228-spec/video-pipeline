@@ -13,7 +13,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -166,8 +166,23 @@ async def db_graph(
     project_id: int, session: AsyncSession = Depends(get_session)
 ) -> dict:
     project = await _project(session, project_id)
-    await db_v2.backfill_project_v2(session, project)
-    await session.commit()
+    # Backfill только если есть кадры без v2-полей — иначе UI «Базы» тормозит
+    # десятки секунд и успевает мелькнуть чужой stale-граф.
+    needs_backfill = (
+        await session.execute(
+            select(func.count(Frame.id)).where(
+                Frame.project_id == project.id,
+                or_(
+                    Frame.uuid.is_(None),
+                    Frame.sort_key.is_(None),
+                    Frame.scene_id.is_(None),
+                ),
+            )
+        )
+    ).scalar_one()
+    if needs_backfill:
+        await db_v2.backfill_project_v2(session, project)
+        await session.commit()
     graph = await db_v2.project_graph(session, project)
     graph["excel_rows"] = _excel_rows_for_project(project)
     # Сводка последних проверок — чип «Проверки» в «Базе».

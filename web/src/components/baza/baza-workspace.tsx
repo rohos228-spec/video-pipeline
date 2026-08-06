@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   X,
   Database,
@@ -170,25 +170,38 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
   const [sheetPreview, setSheetPreview] = useState<XlsxPreview | null>(null);
   const [sheetLoading, setSheetLoading] = useState(false);
   const [sheetTick, setSheetTick] = useState(0);
+  /** Отбрасываем ответы API от предыдущего проекта / закрытой «Базы». */
+  const loadGenRef = useRef(0);
 
-  const loadGraph = useCallback(async (pid: number) => {
+  const loadGraph = useCallback(async (pid: number, gen: number) => {
     setLoading(true);
     try {
-      setGraph(await api.dbGraph(pid));
+      const next = await api.dbGraph(pid);
+      if (loadGenRef.current !== gen) return;
+      // Жёсткая привязка: в UI только граф запрошенного projectId.
+      if (next?.project?.id !== pid) {
+        setGraph(null);
+        toast.error(`База: ответ API не от проекта #${pid}`);
+        return;
+      }
+      setGraph(next);
     } catch (e) {
+      if (loadGenRef.current !== gen) return;
+      setGraph(null);
       toast.error(`Граф: ${e instanceof Error ? e.message : e}`);
     } finally {
-      setLoading(false);
+      if (loadGenRef.current === gen) setLoading(false);
     }
   }, []);
 
-  const loadSheetMeta = useCallback(async (pid: number) => {
+  const loadSheetMeta = useCallback(async (pid: number, gen: number) => {
     try {
       const meta = await api.previewProjectXlsx(pid, {
         maxRows: 1,
         maxCols: 1,
         raw: true,
       });
+      if (loadGenRef.current !== gen) return;
       const split = splitWorkbookSheets(meta.sheets ?? []);
       setFrameSheets(split.frameSheets);
       setEntitySheets(split.entitySheets);
@@ -200,20 +213,31 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
             : split.frameSheets[0] ?? SHEET_PLAN_V8,
       );
     } catch {
+      if (loadGenRef.current !== gen) return;
       setFrameSheets([...FRAME_SHEETS_DEFAULT]);
       setEntitySheets([...ENTITY_SHEETS_DEFAULT]);
     }
   }, []);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      loadGenRef.current += 1;
+      setGraph(null);
+      setFrameId(null);
+      setSheetPreview(null);
+      setLoading(false);
+      return;
+    }
+    // Сразу сбрасываем чужой граф — иначе до ответа API видно базу прошлого проекта.
+    const gen = ++loadGenRef.current;
+    setGraph(null);
     setFrameId(null);
     setSheetPreview(null);
     if (projectId != null) {
-      void loadGraph(projectId);
-      void loadSheetMeta(projectId);
+      void loadGraph(projectId, gen);
+      void loadSheetMeta(projectId, gen);
     } else {
-      setGraph(null);
+      setLoading(false);
     }
   }, [open, projectId, loadGraph, loadSheetMeta]);
 
@@ -246,17 +270,25 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
     };
   }, [open, projectId, tab, frameSheet, sheetTick, framesView]);
 
+  /** Никогда не показываем кадры чужого проекта (защита от stale/race). */
+  const scopedGraph = useMemo(() => {
+    if (projectId == null || !graph) return null;
+    return graph.project.id === projectId ? graph : null;
+  }, [graph, projectId]);
+
   // Автовыбор первого кадра из DB (не из Excel-колонки).
   useEffect(() => {
-    if (!graph?.frames.length) return;
-    if (frameId != null && graph.frames.some((f) => f.id === frameId)) return;
-    setFrameId(graph.frames[0]!.id);
-  }, [graph, frameId]);
+    if (!scopedGraph?.frames.length) return;
+    if (frameId != null && scopedGraph.frames.some((f) => f.id === frameId)) return;
+    setFrameId(scopedGraph.frames[0]!.id);
+  }, [scopedGraph, frameId]);
 
   const reload = useCallback(async () => {
     if (projectId == null) return;
-    await loadGraph(projectId);
-    await loadSheetMeta(projectId);
+    const gen = ++loadGenRef.current;
+    setGraph(null);
+    await loadGraph(projectId, gen);
+    await loadSheetMeta(projectId, gen);
     setSheetTick((t) => t + 1);
   }, [loadGraph, loadSheetMeta, projectId]);
 
@@ -273,18 +305,19 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
   const handleChanged = useCallback(async () => {
     if (projectId == null) return;
     await exportXlsx();
-    await loadGraph(projectId);
+    const gen = loadGenRef.current;
+    await loadGraph(projectId, gen);
     setSheetTick((t) => t + 1);
   }, [projectId, exportXlsx, loadGraph]);
 
   const frame: DbFrame | null = useMemo(
-    () => graph?.frames.find((f) => f.id === frameId) ?? null,
-    [graph, frameId],
+    () => scopedGraph?.frames.find((f) => f.id === frameId) ?? null,
+    [scopedGraph, frameId],
   );
 
   const selectFrameByExcelCol = useCallback(
     (colIndex: number) => {
-      if (!graph) return;
+      if (!scopedGraph) return;
       // Лист «план»: кадр N → колонка N+2 (A=подписи, C=кадр1).
       const isPlan =
         frameSheet.trim().toLowerCase() === SHEET_PLAN_V8.toLowerCase() ||
@@ -292,10 +325,10 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
       if (!isPlan) return;
       const frameNumber = colIndex - 1; // 0-based: C=2 → кадр 1
       if (frameNumber < 1) return;
-      const f = graph.frames.find((x) => x.number === frameNumber);
+      const f = scopedGraph.frames.find((x) => x.number === frameNumber);
       if (f) setFrameId(f.id);
     },
-    [graph, frameSheet],
+    [scopedGraph, frameSheet],
   );
 
   if (!open) return null;
@@ -314,10 +347,14 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
           </button>
           <Database className="h-4 w-4 text-primary" />
           <span className="text-sm font-semibold">База проекта</span>
-          {graph ? (
+          {projectId != null ? (
             <span className="text-xs text-white/50">
-              #{graph.project.id} {graph.project.title || graph.project.slug} ·{" "}
-              {graph.frames.length} кадров
+              #{projectId}
+              {graph && graph.project.id === projectId
+                ? ` ${graph.project.title || graph.project.slug} · ${graph.frames.length} кадров`
+                : loading
+                  ? " · загрузка…"
+                  : ""}
             </span>
           ) : (
             <span className="text-xs text-white/40">текущий проект пайплайна</span>
@@ -325,7 +362,7 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
         </div>
         <div className="flex items-center gap-2">
           <HarnessChip
-            graph={graph}
+            graph={scopedGraph}
             disabled={projectId == null}
             onRun={async () => {
               if (projectId == null) return;
@@ -381,9 +418,9 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
               <br />
               «База» покажет карточки именно этого проекта.
             </div>
-          ) : loading && !graph ? (
+          ) : loading && !scopedGraph ? (
             <div className="flex h-full items-center justify-center text-sm text-white/30">
-              Загрузка графа…
+              Загрузка базы проекта #{projectId}…
             </div>
           ) : (
             <>
@@ -404,7 +441,7 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
                     tab === "entities" ? "bg-white/10 text-white" : "text-white/50 hover:bg-white/5"
                   }`}
                 >
-                  <Users className="h-3.5 w-3.5" /> Сущности ({graph?.entities.length ?? 0})
+                  <Users className="h-3.5 w-3.5" /> Сущности ({scopedGraph?.entities.length ?? 0})
                 </button>
                 <div className="flex-1" />
                 <Button
@@ -413,7 +450,9 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
                   className="gap-1.5 text-xs"
                   onClick={async () => {
                     if (projectId == null) return;
-                    await api.dbAddScene(projectId, { title: `Сцена ${(graph?.scenes.length ?? 0) + 1}` });
+                    await api.dbAddScene(projectId, {
+                      title: `Сцена ${(scopedGraph?.scenes.length ?? 0) + 1}`,
+                    });
                     toast.success("Сцена добавлена");
                     void handleChanged();
                   }}
@@ -473,7 +512,7 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
 
                   {framesView === "cards" ? (
                     <FramesCardsPanel
-                      graph={graph}
+                      graph={scopedGraph}
                       frameId={frameId}
                       onSelect={setFrameId}
                       projectId={projectId}
@@ -504,7 +543,7 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
                           });
                           toast.success("Ячейка сохранена");
                           setSheetTick((t) => t + 1);
-                          void loadGraph(projectId);
+                          void loadGraph(projectId, loadGenRef.current);
                         } catch (e) {
                           toast.error(
                             `Ячейка: ${e instanceof Error ? e.message : e}`,
@@ -524,7 +563,7 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
               ) : (
                 <div className="min-h-0 flex-1 overflow-hidden">
                   <EntitiesPanel
-                    graph={graph}
+                    graph={scopedGraph}
                     projectId={projectId}
                     sheetNames={entitySheets}
                     onChanged={handleChanged}
@@ -537,12 +576,12 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
 
         {/* Детали кадра */}
         <aside className="w-[420px] shrink-0 overflow-y-auto border-l border-white/[0.06] p-3">
-          {frame && graph ? (
+          {frame && scopedGraph ? (
             <FrameDetails
               frame={frame}
-              excelRow={graph.excel_rows?.[String(frame.number)] ?? null}
-              sceneRegistry={graph.scene_registry ?? []}
-              allFrames={graph.frames}
+              excelRow={scopedGraph.excel_rows?.[String(frame.number)] ?? null}
+              sceneRegistry={scopedGraph.scene_registry ?? []}
+              allFrames={scopedGraph.frames}
               onChanged={handleChanged}
             />
           ) : (
