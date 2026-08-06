@@ -189,25 +189,33 @@ async def fetch_balance() -> dict[str, Any]:
 
 
 async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        r = await client.post(
-            f"{_base_url()}{path}", headers=_headers(), json=body
-        )
-        if r.status_code >= 400:
-            _raise_api(r, where=path)
-        data = r.json()
-        if not isinstance(data, dict) or data.get("id") is None:
-            raise OutseeApiError(
-                "Outsee generate: нет id",
-                context={"path": path, "body": data},
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.post(
+                f"{_base_url()}{path}", headers=_headers(), json=body
             )
-        logger.info(
-            "outsee_api.submitted path={} id={} status={}",
-            path,
-            data.get("id"),
-            data.get("status"),
-        )
-        return data
+            if r.status_code >= 400:
+                _raise_api(r, where=path)
+            data = r.json()
+            if not isinstance(data, dict) or data.get("id") is None:
+                raise OutseeApiError(
+                    "Outsee generate: нет id",
+                    context={"path": path, "body": data},
+                )
+            logger.info(
+                "outsee_api.submitted path={} id={} status={}",
+                path,
+                data.get("id"),
+                data.get("status"),
+            )
+            return data
+    except OutseeApiError:
+        raise
+    except (httpx.HTTPError, OSError) as e:
+        raise OutseeApiError(
+            f"Outsee API network {path}: {e}",
+            context={"path": path, "network": True},
+        ) from e
 
 
 async def _poll_generation(
@@ -216,26 +224,51 @@ async def _poll_generation(
     deadline = asyncio.get_running_loop().time() + timeout
     last: dict[str, Any] = {}
     url = f"{_base_url()}/api/v1/generations/{gen_id}"
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        while asyncio.get_running_loop().time() < deadline:
-            r = await client.get(url, headers=_headers())
-            if r.status_code >= 400:
-                _raise_api(r, where=f"generations/{gen_id}")
-            data = r.json()
-            if not isinstance(data, dict):
-                await asyncio.sleep(_POLL_INTERVAL_S)
-                continue
-            last = data
-            status = (data.get("status") or "").lower()
-            if status in {"queued", "processing", "pending", "running"}:
-                await asyncio.sleep(_POLL_INTERVAL_S)
-                continue
-            if status in {"failed", "error", "rejected", "cancelled"}:
-                raise OutseeApiError(
-                    f"Outsee generation failed: {data.get('error') or status}",
-                    context={"id": gen_id, "status": data},
-                )
-            return data
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            while asyncio.get_running_loop().time() < deadline:
+                try:
+                    r = await client.get(url, headers=_headers())
+                except (httpx.HTTPError, OSError) as e:
+                    logger.warning(
+                        "outsee_api.poll network id={} err={} — retry",
+                        gen_id,
+                        e,
+                    )
+                    await asyncio.sleep(_POLL_INTERVAL_S)
+                    continue
+                if r.status_code >= 400:
+                    _raise_api(r, where=f"generations/{gen_id}")
+                data = r.json()
+                if not isinstance(data, dict):
+                    await asyncio.sleep(_POLL_INTERVAL_S)
+                    continue
+                last = data
+                status = (data.get("status") or "").lower()
+                if status in {"queued", "processing", "pending", "running"}:
+                    await asyncio.sleep(_POLL_INTERVAL_S)
+                    continue
+                if status in {"failed", "error", "rejected", "cancelled"}:
+                    err = data.get("error") or status
+                    code = ""
+                    if isinstance(err, dict):
+                        code = str(err.get("code") or "")
+                    raise OutseeApiError(
+                        f"Outsee generation failed: {err}",
+                        context={
+                            "id": gen_id,
+                            "status": data,
+                            "code": code.lower() if code else "",
+                        },
+                    )
+                return data
+    except OutseeApiError:
+        raise
+    except (httpx.HTTPError, OSError) as e:
+        raise OutseeApiError(
+            f"Outsee API network poll id={gen_id}: {e}",
+            context={"id": gen_id, "network": True},
+        ) from e
     raise OutseeApiError(
         f"Outsee: таймаут ожидания id={gen_id} ({timeout:.0f}s)",
         context={"last": last},

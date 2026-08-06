@@ -42,6 +42,38 @@ def test_is_start_frame_content_policy_error() -> None:
     )
 
 
+def test_is_audio_content_policy_error() -> None:
+    err = OutseeImageError(
+        "Outsee generation failed: {'code': 'CONTENT_POLICY', 'message': "
+        "'Аудиодорожка видео не прошла модерацию. Попробуйте выбрать другую "
+        "модель или дать более аккуратное описание'}"
+    )
+    assert mod._is_audio_content_policy_error(err) is True
+    assert mod._is_start_frame_content_policy_error(err) is False
+    assert (
+        mod._is_audio_content_policy_error(OutseeImageError("известную личность"))
+        is False
+    )
+
+
+def test_is_transient_network_error() -> None:
+    assert (
+        mod._is_transient_network_error(
+            OutseeImageError("Outsee API network /api/v1/videos/generate: "
+                             "All connection attempts failed")
+        )
+        is True
+    )
+    assert (
+        mod._is_transient_network_error(
+            OutseeImageError("frame upload failed: uguu: All connection attempts failed")
+        )
+        is True
+    )
+    assert mod._is_transient_network_error(OutseeImageError("контент отклонён")) is False
+
+
+
 def test_is_prompt_related_error_truncation() -> None:
     err = OutseeImageError(
         "outsee: промт обрезан outsee (3200 из 4800 симв)",

@@ -625,9 +625,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         if isinstance(r, Exception):
                             fail_n += 1
                             logger.error(
-                                "[#{}] video stream worker failed: {}",
+                                "[#{}] video stream worker failed: {}: {}",
                                 project_id,
-                                r,
+                                type(r).__name__,
+                                r or repr(r),
                             )
                         else:
                             generated += 1

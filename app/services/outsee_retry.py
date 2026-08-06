@@ -226,6 +226,58 @@ def _is_start_frame_content_policy_error(err: BaseException) -> bool:
     )
 
 
+def _is_audio_content_policy_error(err: BaseException) -> bool:
+    """Veo всё равно клеит звук — CONTENT_POLICY по аудиодорожке."""
+    reason = str(getattr(err, "reason", None) or err).lower()
+    body = ""
+    code = ""
+    if isinstance(err, OutseeImageError):
+        ctx = err.context or {}
+        body = str(ctx.get("body") or ctx.get("status") or "").lower()
+        code = str(ctx.get("code") or "").lower()
+    blob = f"{reason}\n{body}\n{code}"
+    if "аудиодорож" in blob or "audio track" in blob or "audio moderation" in blob:
+        return True
+    if "content_policy" in blob and "аудио" in blob:
+        return True
+    return False
+
+
+def _is_transient_network_error(err: BaseException) -> bool:
+    """Сеть к Outsee / host рефов — retry, не wipe кадра."""
+    if isinstance(err, (OSError, TimeoutError)):
+        return True
+    try:
+        import httpx
+
+        if isinstance(err, httpx.HTTPError):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    msg = str(getattr(err, "reason", None) or err).lower()
+    ctx = ""
+    if isinstance(err, OutseeImageError):
+        ctx = str((err.context or {}).get("network") or "")
+    blob = f"{msg} {ctx}"
+    return any(
+        m in blob
+        for m in (
+            "all connection attempts failed",
+            "connection reset",
+            "connection refused",
+            "temporarily unavailable",
+            "network",
+            "timed out",
+            "timeout",
+            "frame upload failed",
+            "image_url не получен",
+            "name or service not known",
+            "getaddrinfo failed",
+            "server disconnected",
+        )
+    )
+
+
 def _concurrency_backoff_s(wait_n: int) -> float:
     idx = max(0, min(wait_n - 1, len(_CONCURRENCY_BACKOFF_S) - 1))
     return _CONCURRENCY_BACKOFF_S[idx]
@@ -1289,17 +1341,34 @@ async def generate_video_with_retries(
                     attempt -= 1
                     await sleep_cancellable(2.0, project_id)
                     continue
-                gen_failures += 1
-                # Сразу после 3-й ошибки — санация до следующей попытки в раунде.
-                if (
-                    gen_failures >= OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES
-                    and not local_sanitized
-                ):
+                # Аудиодорожка (Veo игнорит generate_audio=false) — сразу санация.
+                if _is_audio_content_policy_error(e):
+                    logger.warning(
+                        "outsee.generate_video [{}]: CONTENT_POLICY аудио — "
+                        "санация промта (id={})",
+                        round_label,
+                        attempt_kwargs.get("prompt_id_prefix") or "—",
+                    )
                     current_prompt = _apply_local_prompt_sanitize(
                         current_prompt,
-                        where=f"video after {gen_failures} errors",
+                        where="video audio CONTENT_POLICY",
                     )
                     local_sanitized = True
+                # Сеть / host рефа — не жечь GPT-rewrite, просто пауза и retry.
+                if _is_transient_network_error(e):
+                    logger.warning(
+                        "outsee.generate_video [{}] сеть/host {}/{} (id={}): {}",
+                        round_label,
+                        attempt,
+                        max_attempts_per_prompt,
+                        attempt_kwargs.get("prompt_id_prefix") or "—",
+                        e.reason,
+                    )
+                    if attempt < max_attempts_per_prompt:
+                        await sleep_cancellable(3.0, project_id)
+                        continue
+                    # последняя попытка раунда — уйдёт в gen_failures ниже
+                gen_failures += 1
                 err_kind = _retry_err_label(e)
                 logger.warning(
                     "outsee.generate_video [{}] попытка {}/{} ({}, id={}): {}",
@@ -1338,8 +1407,40 @@ async def generate_video_with_retries(
                             len(fixed),
                         )
                         current_prompt = fixed
+                # Сразу после 3-й ошибки — санация до следующей попытки в раунде.
+                if (
+                    gen_failures >= OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES
+                    and not local_sanitized
+                ):
+                    current_prompt = _apply_local_prompt_sanitize(
+                        current_prompt,
+                        where=f"video after {gen_failures} errors",
+                    )
+                    local_sanitized = True
                 if attempt < max_attempts_per_prompt:
                     await sleep_cancellable(2.0, project_id)
+            except Exception as e:
+                # ConnectError и пр. до wrap — иначе gather убивает весь stream.
+                if not _is_transient_network_error(e):
+                    raise
+                last_err = OutseeImageError(
+                    f"outsee video network: {e}",
+                    context={"network": True, "exc_type": type(e).__name__},
+                )
+                logger.warning(
+                    "outsee.generate_video [{}] сеть {}/{} (id={}): {}: {}",
+                    round_label,
+                    attempt,
+                    max_attempts_per_prompt,
+                    attempt_kwargs.get("prompt_id_prefix") or "—",
+                    type(e).__name__,
+                    e,
+                )
+                if attempt >= max_attempts_per_prompt:
+                    gen_failures += 1
+                else:
+                    await sleep_cancellable(3.0, project_id)
+                    continue
 
         is_last_round = round_idx == len(rounds) - 1
         if is_last_round:
