@@ -92,12 +92,15 @@ export function ProjectSidebar({
   const projects = useQuery({
     queryKey: ["projects"],
     queryFn: api.listProjects,
-    refetchInterval: 5000,
+    // Не чаще 10с; не стакуем poll, пока предыдущий ещё в полёте.
+    refetchInterval: (q) => (q.state.fetchStatus === "fetching" ? false : 10_000),
+    staleTime: 5_000,
   });
   const layout = useQuery({
     queryKey: ["sidebar-layout"],
     queryFn: api.getSidebarLayout,
-    refetchInterval: 5000,
+    refetchInterval: (q) => (q.state.fetchStatus === "fetching" ? false : 10_000),
+    staleTime: 5_000,
   });
   const qc = useQueryClient();
 

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import defer, selectinload
 
 from app.models import Artifact, ArtifactKind, BatchProject, Frame, Project, ProjectStatus
 from app.services.default_project import default_auto_mode_for_new_project
@@ -57,9 +57,32 @@ def _slugify(s: str) -> str:
 @router.get("", response_model=list[ProjectSummary])
 async def list_projects(
     session: AsyncSession = Depends(get_session),
-) -> list[Project]:
+) -> list[ProjectSummary]:
+    """Лёгкий список для сайдбара: без recompute/disk-recover.
+
+    Раньше на каждый poll (5с) гоняли ``recompute_status`` по всем root —
+    внутри ``recover_*_from_disk`` + куча COUNT. При живой генерации это
+    давало 6–14с на ``GET /api/projects`` и сайдбар «висел».
+    Статус в списке = то, что уже в БД; тяжёлый recompute остаётся в
+    ``GET /projects/{id}`` и воркере.
+    """
     rows = (
-        await session.execute(select(Project).order_by(Project.id.desc()))
+        await session.execute(
+            select(Project)
+            .options(
+                defer(Project.general_plan),
+                defer(Project.script_text),
+                defer(Project.hero_description),
+                defer(Project.hero_descriptions),
+                defer(Project.hero_variations),
+                defer(Project.hero_variation_modifiers),
+                defer(Project.item_descriptions),
+                defer(Project.item_variations),
+                defer(Project.prompt_overrides),
+                defer(Project.gpt_text_overrides),
+            )
+            .order_by(Project.id.desc())
+        )
     ).scalars().all()
     root_ids = {
         p.id for p in rows if mass_parent_id(p) is None and p.batch_id is None
@@ -98,8 +121,6 @@ async def list_projects(
         except (TypeError, ValueError):
             order = None
         fid = pl.get("folder_id")
-        if mass_parent_id(p) is None and p.batch_id is None:
-            await recompute_status(session, p, log_prefix="recompute(list)")
         out.append(
             project_to_summary(
                 p,
@@ -108,7 +129,6 @@ async def list_projects(
                 gen_queue_position=qpos,
             )
         )
-    await session.commit()
     return out
 
 
