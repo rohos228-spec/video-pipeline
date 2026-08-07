@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,13 +32,51 @@ def _archive_dir(project: Project, sub: str) -> Path:
     return d
 
 
+def _is_file_busy_error(exc: BaseException) -> bool:
+    """WinError 32 / errno busy — файл открыт превью Studio, Defender и т.п."""
+    winerr = getattr(exc, "winerror", None)
+    if winerr == 32:
+        return True
+    if getattr(exc, "errno", None) in {13, 16, 11}:  # EACCES / EBUSY / EAGAIN
+        return True
+    msg = str(exc).lower()
+    return "winerror 32" in msg or "занят другим процессом" in msg or "being used by another" in msg
+
+
 def archive_file(path: Path, project: Project, sub: str) -> Path | None:
+    """Перенос в ``old/<sub>/``. При блокировке файла — retry, затем copy+unlink."""
     if not path.is_file():
         return None
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     dest = _archive_dir(project, sub) / f"{stamp}_{path.name}"
-    shutil.move(str(path), str(dest))
-    logger.info("montage: archived {} → {}", path.name, dest)
+    last_err: OSError | None = None
+    for attempt in range(8):
+        try:
+            shutil.move(str(path), str(dest))
+            logger.info("montage: archived {} → {}", path.name, dest)
+            return dest
+        except OSError as exc:
+            last_err = exc
+            if not _is_file_busy_error(exc):
+                raise
+            time.sleep(0.12 * (attempt + 1))
+    # Fallback: копия в old/, unlink исходника (если всё ещё locked — оставляем оба).
+    try:
+        shutil.copy2(str(path), str(dest))
+    except OSError:
+        if last_err is not None:
+            raise last_err
+        raise
+    try:
+        path.unlink()
+        logger.info("montage: archived {} → {} (copy+unlink)", path.name, dest)
+    except OSError as unlink_exc:
+        logger.warning(
+            "montage: archived copy {} → {} (source still locked: {})",
+            path.name,
+            dest,
+            unlink_exc,
+        )
     return dest
 
 

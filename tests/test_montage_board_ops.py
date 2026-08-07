@@ -12,6 +12,8 @@ from app.models import Base, Frame, Project
 from app.orchestrator.steps.generate_images import _XLSX_ROWS_PERSONS
 from app.services.montage_board_apply import apply_montage_board
 from app.services.montage_board_assets import (
+    _is_file_busy_error,
+    archive_file,
     delete_scene_image,
     finalize_scene_image,
     move_scene_image,
@@ -560,3 +562,51 @@ async def test_swap_media_slots_videos_across_frames(
     await session.refresh(fr2)
     assert fr1.animation_prompt == "VID2"
     assert fr2.animation_prompt == "VID1"
+
+
+def test_is_file_busy_error_win32() -> None:
+    assert _is_file_busy_error(
+        OSError(
+            "[WinError 32] Процесс не может получить доступ к файлу, "
+            "так как этот файл занят другим процессом"
+        )
+    )
+    busy = OSError(32, "busy")
+    busy.winerror = 32  # type: ignore[attr-defined]
+    assert _is_file_busy_error(busy)
+    assert not _is_file_busy_error(OSError(2, "no such file"))
+
+
+def test_archive_file_copy_unlink_fallback(
+    montage_project: Project,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Если shutil.move ловит WinError 32 — архивируем через copy+unlink."""
+    src = montage_project.data_dir / "videos"
+    src.mkdir(parents=True, exist_ok=True)
+    path = src / "clip_001_locked.mp4"
+    path.write_bytes(b"VIDEO" * 200)
+
+    calls = {"n": 0}
+
+    def _busy_move(a: str, b: str) -> None:
+        calls["n"] += 1
+        err = OSError(32, "busy")
+        err.winerror = 32  # type: ignore[attr-defined]
+        raise err
+
+    monkeypatch.setattr(
+        "app.services.montage_board_assets.shutil.move",
+        _busy_move,
+    )
+    monkeypatch.setattr(
+        "app.services.montage_board_assets.time.sleep",
+        lambda _s: None,
+    )
+
+    dest = archive_file(path, montage_project, "videos")
+    assert dest is not None
+    assert dest.is_file()
+    assert dest.read_bytes() == b"VIDEO" * 200
+    assert not path.exists()
+    assert calls["n"] == 8
