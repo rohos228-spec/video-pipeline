@@ -453,20 +453,33 @@ async def _accept_hosted_url(
     host: str,
     raw_len: int,
 ) -> str:
-    """Проверяем URL; если хост отдал http, а GET режет — всё равно принимаем.
+    """Проверяем, что URL реально отдаёт байты — иначе Outsee тоже не скачает.
 
-    Реальный баг: catbox отдаёт https://files.catbox.moe/….png, наш GET пустой/403,
-    Outsee при этом качает нормально.
+    Soft-accept (раньше) залипал на catbox с пустым GET → Outsee:
+    «Не удалось скачать изображение по ссылке».
     """
     ok = await _verify_hosted_image(client, url, min_bytes=min(32, max(16, raw_len // 1000)))
     if ok:
         return url
-    logger.warning(
-        "outsee_api.frame host {}: verify miss после upload, принимаем URL {}",
-        host,
-        url[:120],
+    raise OutseeApiError(
+        f"{host}: verify miss после upload ({url[:100]})",
+        context={"host": host, "url": url[:160]},
     )
-    return url
+
+
+def _host_name_from_url(url: str) -> str | None:
+    low = (url or "").lower()
+    if "litter.catbox" in low or "litterbox" in low:
+        return "litterbox"
+    if "catbox.moe" in low:
+        return "catbox"
+    if "tmpfiles.org" in low:
+        return "tmpfiles"
+    if "0x0.st" in low:
+        return "0x0"
+    if "uguu.se" in low:
+        return "uguu"
+    return None
 
 
 async def _host_via_uguu(client: httpx.AsyncClient, raw: bytes, mime: str, filename: str) -> str:
@@ -543,16 +556,23 @@ async def _host_via_tmpfiles(client: httpx.AsyncClient, raw: bytes, mime: str, f
     return await _accept_hosted_url(client, direct, host="tmpfiles", raw_len=len(raw))
 
 
-async def ensure_public_image_url(url: str | None) -> str | None:
+async def ensure_public_image_url(
+    url: str | None,
+    *,
+    skip_hosts: frozenset[str] | set[str] | None = None,
+    force_rehost: bool = False,
+) -> str | None:
     """Outsee image_url принимает только http(s); data: молча игнорит.
 
-    data: → публичный URL (JPEG-сжатие + litterbox/catbox/tmpfiles/0x0/uguu).
-    http(s) → как есть (кроме localhost).
+    data: → публичный URL (JPEG-сжатие + litterbox/tmpfiles/0x0/uguu/catbox).
+    http(s) → как есть (кроме localhost), либо force_rehost=True → скачать и
+    перезалить, пропуская skip_hosts.
     """
     if not url or not str(url).strip():
         return None
     u = str(url).strip()
-    if u.startswith(("http://", "https://")):
+    skip = {str(x).lower() for x in (skip_hosts or ())}
+    if u.startswith(("http://", "https://")) and not force_rehost:
         # Outsee не скачает localhost / 127.0.0.1 — молча получится чужое видео
         low = u.lower()
         if "://127." in low or "://localhost" in low or "://[::1]" in low:
@@ -561,19 +581,40 @@ async def ensure_public_image_url(url: str | None) -> str | None:
                 context={"url": u[:120]},
             )
         return u
-    decoded = _decode_data_url(u)
-    if not decoded:
-        logger.warning("outsee_api.frame: не data/http URL, пропускаю")
-        return None
-    raw, mime = decoded
+    raw: bytes
+    mime: str
+    if u.startswith(("http://", "https://")) and force_rehost:
+        async with httpx.AsyncClient(
+            timeout=90.0,
+            follow_redirects=True,
+            headers={"User-Agent": _FRAME_UPLOAD_UA},
+        ) as client:
+            r = await client.get(u)
+            if r.status_code >= 400 or len(r.content or b"") < 64:
+                raise OutseeApiError(
+                    f"force_rehost: не скачал исходник HTTP {r.status_code}",
+                    context={"url": u[:160]},
+                )
+            raw = r.content
+            ctype = (r.headers.get("content-type") or "").split(";")[0].strip().lower()
+            mime = ctype if ctype.startswith("image/") else "image/jpeg"
+            known = _host_name_from_url(u)
+            if known:
+                skip.add(known)
+    else:
+        decoded = _decode_data_url(u)
+        if not decoded:
+            logger.warning("outsee_api.frame: не data/http URL, пропускаю")
+            return None
+        raw, mime = decoded
     errors: list[str] = []
-    # litterbox/catbox стабильнее; uguu часто 502 — в хвосте.
+    # litterbox часто 500; catbox заливается, но Outsee не качает — в хвосте.
     hosts = (
         ("litterbox", _host_via_litterbox),
-        ("catbox", _host_via_catbox),
         ("tmpfiles", _host_via_tmpfiles),
         ("0x0", _host_via_0x0),
         ("uguu", _host_via_uguu),
+        ("catbox", _host_via_catbox),
     )
     variants = _upload_payload_variants(raw, mime)
     async with httpx.AsyncClient(
@@ -589,6 +630,8 @@ async def ensure_public_image_url(url: str | None) -> str | None:
             }.get(pmime, "jpg")
             filename = f"frame.{ext}"
             for name, upload in hosts:
+                if name in skip:
+                    continue
                 try:
                     hosted = await upload(client, payload, pmime, filename)
                     logger.info(
@@ -612,6 +655,22 @@ async def ensure_public_image_url(url: str | None) -> str | None:
     raise OutseeApiError(
         "frame upload failed: " + " | ".join(errors)[:500],
         context={"mime": mime, "bytes": len(raw), "variants": [v[2] for v in variants]},
+    )
+
+
+def _is_outsee_image_fetch_error(err: BaseException) -> bool:
+    """Outsee не смог скачать наш image_url (хост/сеть) — нужна смена хоста."""
+    blob = str(getattr(err, "reason", None) or err).lower()
+    return any(
+        m in blob
+        for m in (
+            "не удалось скачать изображение",
+            "скачать изображение по ссылке",
+            "failed to download the image",
+            "failed to download image",
+            "could not download image",
+            "unable to download image",
+        )
     )
 
 
@@ -907,6 +966,7 @@ async def generate_video(
                 f"стартовый кадр: неподдерживаемый тип {type(reference_image).__name__}",
                 context={"project_id": project_id},
             )
+    frame_source = frame  # data: или исходный http — для rehost при fetch-fail Outsee
     frame = await ensure_public_image_url(frame)
     if frame:
         # Outsee Developer API: стартовый кадр = image_url (first_frame_url молча игнорит!)
@@ -955,18 +1015,58 @@ async def generate_video(
             context={"project_id": project_id},
         )
 
-    logger.info(
-        "outsee_api.video model={} aspect={} res={} dur={} audio={} image_url={} end={} project={}",
-        model,
-        body.get("aspect_ratio"),
-        body.get("resolution"),
-        body.get("duration_sec"),
-        body.get("generate_audio"),
-        bool(body.get("image_url")),
-        bool(body.get("end_image_url")),
-        project_id,
-    )
-    submitted = await _post_generate("/api/v1/videos/generate", body)
+    skip_hosts: set[str] = set()
+    submitted: dict[str, Any] | None = None
+    last_submit_err: BaseException | None = None
+    for host_try in range(1, 4):
+        logger.info(
+            "outsee_api.video model={} aspect={} res={} dur={} audio={} "
+            "image_url={} end={} project={} host_try={}",
+            model,
+            body.get("aspect_ratio"),
+            body.get("resolution"),
+            body.get("duration_sec"),
+            body.get("generate_audio"),
+            bool(body.get("image_url")),
+            bool(body.get("end_image_url")),
+            project_id,
+            host_try,
+        )
+        try:
+            submitted = await _post_generate("/api/v1/videos/generate", body)
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_submit_err = exc
+            if (
+                not _is_outsee_image_fetch_error(exc)
+                or not frame_source
+                or host_try >= 3
+            ):
+                raise
+            bad = _host_name_from_url(str(body.get("image_url") or ""))
+            if bad:
+                skip_hosts.add(bad)
+            logger.warning(
+                "outsee_api.video: Outsee не скачал image_url (host={}) — "
+                "rehost skip={} try {}/3",
+                bad or "?",
+                sorted(skip_hosts),
+                host_try,
+                3,
+            )
+            # Rehost из исходного data:/файла, не из мёртвого catbox URL.
+            rehosted = await ensure_public_image_url(
+                frame_source if str(frame_source).startswith("data:") else frame_source,
+                skip_hosts=skip_hosts,
+                force_rehost=bool(
+                    str(frame_source).startswith(("http://", "https://"))
+                ),
+            )
+            if not rehosted or rehosted == body.get("image_url"):
+                raise
+            body["image_url"] = rehosted
+    if submitted is None:
+        raise last_submit_err or OutseeApiError("video generate: no submit")
     task_id = submitted["id"]
     done = await _poll_generation(task_id, timeout=timeout)
     url = _pick_result_url(done)

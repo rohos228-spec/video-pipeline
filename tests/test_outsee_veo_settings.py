@@ -52,36 +52,50 @@ async def test_ensure_public_falls_back_when_litterbox_fails() -> None:
     async def boom(*_a, **_k):
         raise oh.OutseeApiError("litterbox down")
 
-    async def catbox(_client, _raw, _mime, _filename):
-        return "https://files.catbox.moe/ok.png"
+    async def tmp(_client, _raw, _mime, _filename):
+        return "https://tmpfiles.org/dl/1/ok.png"
 
     with (
         patch.object(oh, "_host_via_litterbox", side_effect=boom),
-        patch.object(oh, "_host_via_catbox", side_effect=catbox),
+        patch.object(oh, "_host_via_tmpfiles", side_effect=tmp),
+        patch.object(oh, "_host_via_catbox", side_effect=AssertionError("no catbox")),
         patch.object(oh, "_host_via_uguu", side_effect=AssertionError("no uguu")),
         patch.object(oh, "_host_via_0x0", side_effect=AssertionError("no 0x0")),
-        patch.object(oh, "_host_via_tmpfiles", side_effect=AssertionError("no tmp")),
     ):
         out = await oh.ensure_public_image_url(data)
-    assert out == "https://files.catbox.moe/ok.png"
+    assert out == "https://tmpfiles.org/dl/1/ok.png"
 
 
 @pytest.mark.asyncio
-async def test_accept_hosted_url_soft_when_verify_fails() -> None:
-    """catbox отдаёт URL, наш GET пустой — раньше падали, теперь принимаем."""
+async def test_accept_hosted_url_rejects_verify_miss() -> None:
+    """Verify miss → следующий хост (не soft-accept мёртвого catbox)."""
     from app.bots import outsee_http as oh
 
     class _Client:
         pass
 
     with patch.object(oh, "_verify_hosted_image", AsyncMock(return_value=False)):
-        url = await oh._accept_hosted_url(
-            _Client(),  # type: ignore[arg-type]
-            "https://files.catbox.moe/b6cnhy.png",
-            host="catbox",
-            raw_len=4_000_000,
+        with pytest.raises(oh.OutseeApiError, match="verify miss"):
+            await oh._accept_hosted_url(
+                _Client(),  # type: ignore[arg-type]
+                "https://files.catbox.moe/b6cnhy.png",
+                host="catbox",
+                raw_len=4_000_000,
+            )
+
+
+def test_is_outsee_image_fetch_error() -> None:
+    from app.bots.outsee_http import OutseeApiError, _is_outsee_image_fetch_error
+
+    assert _is_outsee_image_fetch_error(
+        OutseeApiError(
+            "Outsee API /api/v1/videos/generate: Не удалось скачать "
+            "изображение по ссылке (таймаут или сеть)."
         )
-    assert url == "https://files.catbox.moe/b6cnhy.png"
+    )
+    assert not _is_outsee_image_fetch_error(
+        OutseeApiError("CONTENT_POLICY celebrity")
+    )
 
 
 def test_upload_payload_variants_prefer_jpeg_for_huge_png() -> None:
