@@ -446,6 +446,8 @@ def _step_label(status: ProjectStatus) -> str:
         "script_ready": "2. сценарий готов",
         "splitting": "3. разбивка",
         "frames_ready": "3. разбивка готова",
+        "scene_designing": "3.5. сцены (агенты)",
+        "scene_design_ready": "3.5. сцены готовы",
         "generating_hero": "4. персонажи",
         "hero_ready": "4. персонажи готовы",
         "generating_items": "4. предметы",

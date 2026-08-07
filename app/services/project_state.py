@@ -42,6 +42,7 @@ _RUNNING_STATUSES = {
     ProjectStatus.planning,
     ProjectStatus.scripting,
     ProjectStatus.splitting,
+    ProjectStatus.scene_designing,
     ProjectStatus.generating_hero,
     ProjectStatus.generating_items,
     ProjectStatus.enriching_1,
@@ -459,6 +460,15 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
     # frames ✓
     hero_required = _hero_step_required(project)
     meta_now = project.meta if isinstance(project.meta, dict) else {}
+    # scene_design выполнен (meta.scene_design.status=done) — не откатывать
+    # в frames_ready: recompute иначе зациклил бы auto_advance на повторный
+    # запуск ноды. Данные ноды — attrs кадров, отдельного счётчика нет.
+    _sd = meta_now.get("scene_design")
+    frames_exit = (
+        ProjectStatus.scene_design_ready
+        if isinstance(_sd, dict) and _sd.get("status") == "done"
+        else ProjectStatus.frames_ready
+    )
     if meta_now.get("hero_skipped_empty") and hero_arts == 0 and not has_hero_descr:
         # Пустой skip зафиксирован — не откатывать в frames_ready (цикл auto).
         if fr_with_img_prompt < fr_total:
@@ -479,16 +489,16 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
             if n_excel > 0:
                 n_excel_done = await _count_excel_hero_artifacts(session, pid)
                 if n_excel_done == 0:
-                    return ProjectStatus.frames_ready
+                    return frames_exit
                 if n_excel_done < n_excel:
                     return ProjectStatus.hero_ready
-            return ProjectStatus.frames_ready
+            return frames_exit
         if hero_arts == 0:
             if n_excel > 0:
                 n_excel_done = await _count_excel_hero_artifacts(session, pid)
                 if n_excel_done < n_excel:
                     return ProjectStatus.hero_ready
-            return ProjectStatus.frames_ready
+            return frames_exit
     # Excel-hero / items / enrich — только пока нет image_prompt на всех кадрах.
     # Иначе recompute откатывал image_prompts_ready → hero_ready при частичном hero.
     if fr_with_img_prompt < fr_total:
@@ -511,7 +521,7 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
             return ProjectStatus.items_ready
         if hero_required:
             return ProjectStatus.hero_ready
-        return ProjectStatus.frames_ready
+        return frames_exit
     # image_prompts ✓
     if scene_image_arts < fr_total:
         return ProjectStatus.image_prompts_ready

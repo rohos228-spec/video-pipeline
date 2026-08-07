@@ -342,6 +342,20 @@ function computeNodeResult(
       return empty("Раскадровка ещё не создана", "studio", "xlsx_split_row");
     }
 
+    case "scene_design": {
+      if (ctx.frames.length > 0) {
+        return {
+          hasResult: true,
+          itemCount: ctx.frames.length,
+          summary: "Сцены и атрибуты кадров (лист «план»)",
+          items: [{ id: "scene_design_row", label: "Сцены", kind: "frames" }],
+          replaceMode: "studio",
+          viewMode: "xlsx_split_row",
+        };
+      }
+      return empty("Сцены ещё не собраны", "studio", "xlsx_split_row");
+    }
+
     case "hero":
     case "hitl_hero": {
       const heroAssets = ctx.assets.filter(

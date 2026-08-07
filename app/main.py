@@ -312,9 +312,10 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
     # Маппинг running-статус → handler смотри в `pipeline.advance_project`.
     active = [
         ProjectStatus.planning,
-        ProjectStatus.scripting,
-        ProjectStatus.splitting,
-        ProjectStatus.generating_hero,
+            ProjectStatus.scripting,
+            ProjectStatus.splitting,
+            ProjectStatus.scene_designing,
+            ProjectStatus.generating_hero,
         ProjectStatus.generating_items,
         ProjectStatus.enriching_1,
         ProjectStatus.enriching_2,

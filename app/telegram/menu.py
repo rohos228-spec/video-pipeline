@@ -104,36 +104,38 @@ _STATUS_ORDER: dict[ProjectStatus, int] = {
     ProjectStatus.script_ready: 4,
     ProjectStatus.splitting: 5,
     ProjectStatus.frames_ready: 6,
-    ProjectStatus.generating_hero: 7,
-    ProjectStatus.hero_ready: 8,
-    ProjectStatus.generating_items: 9,
-    ProjectStatus.items_ready: 10,
-    ProjectStatus.enriching_1: 11,
-    ProjectStatus.enrich_1_ready: 12,
-    ProjectStatus.enriching_2: 13,
-    ProjectStatus.enrich_2_ready: 14,
-    ProjectStatus.enriching_3: 15,
-    ProjectStatus.enrich_3_ready: 16,
-    ProjectStatus.enriching_4: 17,
-    ProjectStatus.enrich_4_ready: 18,
-    ProjectStatus.enriching_5: 19,
-    ProjectStatus.enrich_5_ready: 20,
-    ProjectStatus.generating_image_prompts: 21,
-    ProjectStatus.image_prompts_ready: 22,
-    ProjectStatus.generating_images: 23,
-    ProjectStatus.images_ready: 24,
-    ProjectStatus.generating_animation_prompts: 25,
-    ProjectStatus.animation_prompts_ready: 26,
-    ProjectStatus.generating_videos: 27,
-    ProjectStatus.videos_ready: 28,
-    ProjectStatus.generating_audio: 29,
-    ProjectStatus.audio_ready: 30,
-    ProjectStatus.generating_music: 31,
-    ProjectStatus.music_ready: 32,
-    ProjectStatus.assembling: 33,
-    ProjectStatus.assembled: 34,
-    ProjectStatus.publishing: 35,
-    ProjectStatus.published: 36,
+    ProjectStatus.scene_designing: 7,
+    ProjectStatus.scene_design_ready: 8,
+    ProjectStatus.generating_hero: 9,
+    ProjectStatus.hero_ready: 10,
+    ProjectStatus.generating_items: 11,
+    ProjectStatus.items_ready: 12,
+    ProjectStatus.enriching_1: 13,
+    ProjectStatus.enrich_1_ready: 14,
+    ProjectStatus.enriching_2: 15,
+    ProjectStatus.enrich_2_ready: 16,
+    ProjectStatus.enriching_3: 17,
+    ProjectStatus.enrich_3_ready: 18,
+    ProjectStatus.enriching_4: 19,
+    ProjectStatus.enrich_4_ready: 20,
+    ProjectStatus.enriching_5: 21,
+    ProjectStatus.enrich_5_ready: 22,
+    ProjectStatus.generating_image_prompts: 23,
+    ProjectStatus.image_prompts_ready: 24,
+    ProjectStatus.generating_images: 25,
+    ProjectStatus.images_ready: 26,
+    ProjectStatus.generating_animation_prompts: 27,
+    ProjectStatus.animation_prompts_ready: 28,
+    ProjectStatus.generating_videos: 29,
+    ProjectStatus.videos_ready: 30,
+    ProjectStatus.generating_audio: 31,
+    ProjectStatus.audio_ready: 32,
+    ProjectStatus.generating_music: 33,
+    ProjectStatus.music_ready: 34,
+    ProjectStatus.assembling: 35,
+    ProjectStatus.assembled: 36,
+    ProjectStatus.publishing: 37,
+    ProjectStatus.published: 38,
     ProjectStatus.paused: 0,
     ProjectStatus.failed: 0,
 }
@@ -305,6 +307,13 @@ _STEP_BY_CODE["hero"] = StepDef(
     ProjectStatus.generating_hero, ProjectStatus.hero_ready,
     ProjectStatus.frames_ready,
 )
+# Sub-step «Сцены (агенты)» — мульти-агентный scene_design между split и
+# hero. В основном меню нет (n=-1), запуск через Studio canvas / API.
+_STEP_BY_CODE["scene_d"] = StepDef(
+    -1, "scene_d", "Сцены (агенты)",
+    ProjectStatus.scene_designing, ProjectStatus.scene_design_ready,
+    ProjectStatus.frames_ready,
+)
 _STEP_BY_CODE["audio"] = StepDef(
     -1, "audio", "Озвучка",
     ProjectStatus.generating_audio, ProjectStatus.audio_ready,
@@ -339,7 +348,7 @@ def step_by_running_status(running_status: ProjectStatus) -> StepDef | None:
     приоритет на sub-step'ах — на будущее).
     """
     # Sub-step'ы (точнее, чем wrapper'ы).
-    for code in ("hero", "items", "audio", *(f"enrich_{i}" for i in range(1, MAX_ENRICH_SLOTS + 1))):
+    for code in ("hero", "items", "audio", "scene_d", *(f"enrich_{i}" for i in range(1, MAX_ENRICH_SLOTS + 1))):
         sd = _STEP_BY_CODE.get(code)
         if sd is not None and sd.running_status is running_status:
             return sd

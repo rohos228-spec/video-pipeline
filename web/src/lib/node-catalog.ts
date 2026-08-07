@@ -78,6 +78,15 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
     accent: "200 65% 58%",
     iconKey: "split",
   },
+  scene_design: {
+    type: "scene_design",
+    label: "Сцены (агенты)",
+    description:
+      "Мульти-агентный дизайн сцен: персонажи/мир/стиль/камера/действие → сборщик. Без флага SCENE_DESIGN_ENABLED — pass-through.",
+    category: "planning",
+    accent: "175 60% 55%",
+    iconKey: "sparkles",
+  },
   hero: {
     type: "hero",
     label: "Персонажи",

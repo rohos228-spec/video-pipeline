@@ -88,6 +88,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         "enrich_completed_slots",
         "excel_gpt_completed_keys",
         "active_excel_gpt_node_key",
+        # Кадры пересозданы — чекпоинты/реестр scene_design невалидны.
+        "scene_design",
+        "scene_registry",
     ):
         meta.pop(key, None)
     meta["split_completed"] = True

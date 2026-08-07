@@ -9,6 +9,7 @@
   planning                       → make_plan
   scripting                      → make_script
   splitting                      → split_frames
+  scene_designing                → scene_design (мульти-агентная режиссура)
   generating_hero                → generate_hero
   generating_image_prompts       → generate_image_prompts (только промты)
   generating_images              → generate_images        (только картинки)
@@ -121,6 +122,10 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
             await make_script.run(session, project, bot)
         elif status is ProjectStatus.splitting:
             await split_frames.run(session, project)
+        elif status is ProjectStatus.scene_designing:
+            from app.orchestrator.steps import scene_design
+
+            await scene_design.run(session, project, bot)
         elif status is ProjectStatus.generating_hero:
             await generate_hero.run(session, project, bot)
         elif status is ProjectStatus.generating_items:

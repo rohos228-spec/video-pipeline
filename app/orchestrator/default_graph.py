@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-LAYOUT_VERSION = 7
+LAYOUT_VERSION = 8
 
 
 def default_graph() -> tuple[list[dict], list[dict]]:
@@ -12,6 +12,11 @@ def default_graph() -> tuple[list[dict], list[dict]]:
         ("plan", "Сценарий", "Сценарий ролика"),
         ("script", "Закадровый текст", "Закадровый текст по кадрам"),
         ("split", "Разбивка", "Разбивка на кадры"),
+        (
+            "scene_design",
+            "Сцены (агенты)",
+            "Мульти-агентный дизайн сцен (SCENE_DESIGN_ENABLED)",
+        ),
         ("excel_gpt", "Работа с GPT", "xlsx round-trip перед персонажами"),
         ("hero", "Персонажи", "Генерация референсов героев"),
         ("items", "Предметы", "Генерация референсов предметов"),

@@ -11,6 +11,8 @@ const PROJECT_STATUS: Partial<Record<ProjectStatus, string>> = {
   script_ready: "закадровый текст готов",
   splitting: "разбивка",
   frames_ready: "кадры готовы",
+  scene_designing: "сцены (агенты)",
+  scene_design_ready: "сцены готовы",
   generating_hero: "персонажи",
   hero_ready: "персонажи готовы",
   generating_items: "предметы",
