@@ -17,6 +17,7 @@ from app.services.montage_board_assets import (
     move_scene_image,
     save_scene_image_upload,
     save_scene_video_upload,
+    swap_media_slots,
     swap_shot_media,
 )
 from app.services.plan_shot2 import (
@@ -452,3 +453,110 @@ async def test_move_image_swap_when_target_occupied(
     await session.refresh(fr2)
     assert fr1.image_prompt == "P2"
     assert fr2.image_prompt == "P1"
+
+
+@pytest.mark.asyncio
+async def test_swap_media_slots_images_across_frames(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    fr1 = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="a",
+        status="planned",
+        image_prompt="IMG1",
+    )
+    fr2 = Frame(
+        project_id=montage_project.id,
+        number=3,
+        voiceover_text="c",
+        status="planned",
+        attrs={SHOT2_PROMPT_ATTR: "IMG3S2"},
+    )
+    session.add(montage_project)
+    session.add(fr1)
+    session.add(fr2)
+    await session.flush()
+    await save_scene_image_upload(
+        session, montage_project, 1, shot=1, content=b"AA" * 64, suffix=".png"
+    )
+    await save_scene_image_upload(
+        session, montage_project, 3, shot=2, content=b"BB" * 64, suffix=".png"
+    )
+    scenes = montage_project.data_dir / "scenes"
+    a = find_shot1_image(scenes, 1).read_bytes()  # type: ignore[union-attr]
+    b = find_shot2_image(scenes, 3).read_bytes()  # type: ignore[union-attr]
+
+    result = await swap_media_slots(
+        session,
+        montage_project,
+        kind="image",
+        a_frame=1,
+        a_shot=1,
+        b_frame=3,
+        b_shot=2,
+    )
+    await session.commit()
+    assert result["ok"] is True
+    assert result["mode"] == "swap"
+    assert find_shot1_image(scenes, 1).read_bytes() == b  # type: ignore[union-attr]
+    assert find_shot2_image(scenes, 3).read_bytes() == a  # type: ignore[union-attr]
+    await session.refresh(fr1)
+    await session.refresh(fr2)
+    assert fr1.image_prompt == "IMG3S2"
+    assert (fr2.attrs or {}).get(SHOT2_PROMPT_ATTR) == "IMG1"
+
+
+@pytest.mark.asyncio
+async def test_swap_media_slots_videos_across_frames(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    fr1 = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="a",
+        status="planned",
+        animation_prompt="VID1",
+    )
+    fr2 = Frame(
+        project_id=montage_project.id,
+        number=2,
+        voiceover_text="b",
+        status="planned",
+        animation_prompt="VID2",
+    )
+    session.add(montage_project)
+    session.add(fr1)
+    session.add(fr2)
+    await session.flush()
+    await save_scene_video_upload(
+        session, montage_project, 1, shot=1, content=b"VA" * 600, suffix=".mp4"
+    )
+    await save_scene_video_upload(
+        session, montage_project, 2, shot=1, content=b"VB" * 600, suffix=".mp4"
+    )
+    videos = montage_project.data_dir / "videos"
+
+    result = await swap_media_slots(
+        session,
+        montage_project,
+        kind="video",
+        a_frame=1,
+        a_shot=1,
+        b_frame=2,
+        b_shot=1,
+    )
+    await session.commit()
+    assert result["ok"] is True
+    assert result["mode"] == "swap"
+    v1 = [p for p in videos.glob("clip_001_*.mp4") if "_s2_" not in p.name]
+    v2 = [p for p in videos.glob("clip_002_*.mp4") if "_s2_" not in p.name]
+    assert v1 and v2
+    assert v1[0].read_bytes() == b"VB" * 600
+    assert v2[0].read_bytes() == b"VA" * 600
+    await session.refresh(fr1)
+    await session.refresh(fr2)
+    assert fr1.animation_prompt == "VID2"
+    assert fr2.animation_prompt == "VID1"

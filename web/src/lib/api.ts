@@ -967,6 +967,29 @@ export const api = {
       { method: "POST" },
     ),
 
+  /** Обмен двух слотов (картинка↔картинка или видео↔видео) из любых кадров. */
+  swapMontageSlots: (
+    projectId: number,
+    kind: "image" | "video",
+    a: { frameNumber: number; shot: 1 | 2 },
+    b: { frameNumber: number; shot: 1 | 2 },
+  ) =>
+    http<{
+      ok: boolean;
+      mode: "move" | "swap";
+      kind: string;
+      from_frame: number;
+      from_shot: number;
+      to_frame: number;
+      to_shot: number;
+    }>(
+      `/api/projects/${projectId}/montage-board/swap-slots` +
+        `?kind=${kind}` +
+        `&a_frame=${a.frameNumber}&a_shot=${a.shot}` +
+        `&b_frame=${b.frameNumber}&b_shot=${b.shot}`,
+      { method: "POST" },
+    ),
+
   moveMontageImage: (
     projectId: number,
     fromFrame: number,

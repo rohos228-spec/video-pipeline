@@ -348,6 +348,12 @@ function MediaLightbox({
   );
 }
 
+type SwapSlotPick = {
+  kind: "image" | "video";
+  frameNumber: number;
+  shot: 1 | 2;
+};
+
 const MediaActionBar = memo(function MediaActionBar({
   kind,
   onRegen,
@@ -355,6 +361,9 @@ const MediaActionBar = memo(function MediaActionBar({
   onRegenWithCorrection,
   onDelete,
   onUpload,
+  onSwapPick,
+  swapSelected,
+  swapBusy,
 }: {
   kind: "image" | "video";
   onRegen: () => void;
@@ -362,6 +371,10 @@ const MediaActionBar = memo(function MediaActionBar({
   onRegenWithCorrection?: () => void;
   onDelete: () => void;
   onUpload: (file: File) => void;
+  /** Кнопка обмена: первый клик — выбор, второй — swap с другим слотом. */
+  onSwapPick?: () => void;
+  swapSelected?: boolean;
+  swapBusy?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const imageActions = [
@@ -379,6 +392,32 @@ const MediaActionBar = memo(function MediaActionBar({
 
   return (
     <div className="mt-2 flex items-center gap-1">
+      {onSwapPick && (
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          disabled={swapBusy}
+          className={cn(
+            "h-7 w-7 shrink-0",
+            swapSelected
+              ? "border-amber-400/70 bg-amber-500/25 text-amber-100"
+              : "text-muted-foreground hover:border-amber-400/50 hover:text-amber-200",
+          )}
+          title={
+            swapSelected
+              ? "Выбрано — нажмите ↔ на другом слоте того же типа"
+              : "Обмен: нажмите ↔ на двух слотах (картинка↔картинка или видео↔видео)"
+          }
+          onClick={onSwapPick}
+        >
+          {swapBusy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <ArrowLeftRight className="h-3.5 w-3.5" />
+          )}
+        </Button>
+      )}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button type="button" variant="outline" size="sm" className="h-7 flex-1 px-2 text-[10px]">
@@ -471,6 +510,9 @@ const ClickableMedia = memo(function ClickableMedia({
   scrollRootRef,
   imageSlot,
   onImageDrop,
+  onSwapPick,
+  swapSelected,
+  swapBusy,
 }: {
   url: string | null;
   kind: "image" | "video";
@@ -487,6 +529,9 @@ const ClickableMedia = memo(function ClickableMedia({
   /** Слот картинки: drag с файла + drop в пустую/занятую ячейку. */
   imageSlot?: ImageSlotRef;
   onImageDrop?: (from: ImageSlotRef) => void;
+  onSwapPick?: () => void;
+  swapSelected?: boolean;
+  swapBusy?: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   // Не монтировать сотни <video>/<img> сразу — Chrome зависает на 150×2 клипах.
@@ -537,6 +582,7 @@ const ClickableMedia = memo(function ClickableMedia({
         className={cn(
           "rounded-lg",
           highlighted && "ring-2 ring-emerald-400/60",
+          swapSelected && "ring-2 ring-amber-400/70",
           dragOver && "ring-2 ring-sky-400/70",
         )}
         {...dropHandlers}
@@ -545,6 +591,7 @@ const ClickableMedia = memo(function ClickableMedia({
           className={cn(
             "flex h-32 w-full items-center justify-center rounded-lg border border-dashed bg-black/20 text-xs text-muted-foreground",
             dragOver ? "border-sky-400/60 bg-sky-500/10 text-sky-100" : "border-white/15",
+            swapSelected && "border-amber-400/50 bg-amber-500/10",
           )}
         >
           {dragOver ? "отпустить сюда" : canDropImage ? "нет файла · можно бросить" : "нет файла"}
@@ -556,6 +603,9 @@ const ClickableMedia = memo(function ClickableMedia({
           onRegenWithCorrection={onRegenWithCorrection}
           onDelete={onDelete}
           onUpload={onUpload}
+          onSwapPick={onSwapPick}
+          swapSelected={swapSelected}
+          swapBusy={swapBusy}
         />
       </div>
     );
@@ -570,6 +620,7 @@ const ClickableMedia = memo(function ClickableMedia({
         "rounded-lg",
         highlighted && "ring-2 ring-emerald-400/60",
         stale && "ring-2 ring-amber-500/50",
+        swapSelected && "ring-2 ring-amber-400/70",
         dragOver && "ring-2 ring-sky-400/70",
       )}
       {...dropHandlers}
@@ -644,6 +695,9 @@ const ClickableMedia = memo(function ClickableMedia({
         onRegenWithCorrection={onRegenWithCorrection}
         onDelete={onDelete}
         onUpload={onUpload}
+        onSwapPick={onSwapPick}
+        swapSelected={swapSelected}
+        swapBusy={swapBusy}
       />
     </div>
   );
@@ -828,6 +882,9 @@ const VideoMediaCell = memo(function VideoMediaCell({
   highlighted,
   stale,
   scrollRootRef,
+  onSwapPick,
+  swapSelected,
+  swapBusy,
 }: {
   fr: MontageBoardFrame;
   shot: 1 | 2;
@@ -842,6 +899,9 @@ const VideoMediaCell = memo(function VideoMediaCell({
   highlighted?: boolean;
   stale?: boolean;
   scrollRootRef?: RefObject<HTMLDivElement | null>;
+  onSwapPick?: () => void;
+  swapSelected?: boolean;
+  swapBusy?: boolean;
 }) {
   const isShot2 = shot === 2;
   const sceneUse = isShot2 ? fr.shot2_use_seconds : fr.shot1_use_seconds;
@@ -868,6 +928,9 @@ const VideoMediaCell = memo(function VideoMediaCell({
         highlighted={highlighted}
         stale={stale}
         scrollRootRef={scrollRootRef}
+        onSwapPick={onSwapPick}
+        swapSelected={swapSelected}
+        swapBusy={swapBusy}
       />
       <VideoTrimSlider
         fileDuration={fileDur}
@@ -1031,7 +1094,8 @@ export function AssembleMontageBoard({
   const [montageRunning, setMontageRunning] = useState(false);
   const [applyRunning, setApplyRunning] = useState(false);
   const [recoverRunning, setRecoverRunning] = useState(false);
-  const [swapBusyFrame, setSwapBusyFrame] = useState<number | null>(null);
+  const [swapPick, setSwapPick] = useState<SwapSlotPick | null>(null);
+  const [swapBusy, setSwapBusy] = useState(false);
   const [moveImageBusy, setMoveImageBusy] = useState(false);
   const [applyProgress, setApplyProgress] = useState<{ done: number; total: number } | null>(
     null,
@@ -1084,6 +1148,8 @@ export function AssembleMontageBoard({
     setRecoverRunning(false);
     setPromptModal(null);
     setPreview(null);
+    setSwapPick(null);
+    setSwapBusy(false);
     lastApplyToastKeyRef.current = "";
   }, [projectId]);
 
@@ -1662,47 +1728,75 @@ export function AssembleMontageBoard({
     }
   };
 
-  const handleSwapShots = async (
-    frameNumber: number,
-    kind: "image" | "video" | "both",
-  ) => {
-    if (!projectId || swapBusyFrame != null) return;
-    setSwapBusyFrame(frameNumber);
+  const isSwapSelected = (kind: "image" | "video", frameNumber: number, shot: 1 | 2) =>
+    swapPick?.kind === kind &&
+    swapPick.frameNumber === frameNumber &&
+    swapPick.shot === shot;
+
+  const handleSwapPick = async (slot: SwapSlotPick) => {
+    if (!projectId || swapBusy) return;
+    if (!swapPick) {
+      setSwapPick(slot);
+      toast.message(
+        slot.kind === "image"
+          ? `Выбрано изображение #${slot.frameNumber}.${slot.shot} — нажмите ↔ на другом`
+          : `Выбрано видео #${slot.frameNumber}.${slot.shot} — нажмите ↔ на другом`,
+      );
+      return;
+    }
+    if (
+      swapPick.kind === slot.kind &&
+      swapPick.frameNumber === slot.frameNumber &&
+      swapPick.shot === slot.shot
+    ) {
+      setSwapPick(null);
+      return;
+    }
+    if (swapPick.kind !== slot.kind) {
+      setSwapPick(slot);
+      toast.message(
+        slot.kind === "image"
+          ? `Выбрано изображение #${slot.frameNumber}.${slot.shot} — нажмите ↔ на другом`
+          : `Выбрано видео #${slot.frameNumber}.${slot.shot} — нажмите ↔ на другом`,
+      );
+      return;
+    }
+    setSwapBusy(true);
     try {
-      const res = await api.swapMontageShots(projectId, frameNumber, kind);
-      // Trim keys shot1↔shot2 на клиенте тоже
-      setTrims((prev) => {
-        const k1 = trimKey(frameNumber, 1);
-        const k2 = trimKey(frameNumber, 2);
-        const t1 = prev[k1];
-        const t2 = prev[k2];
-        if (t1 == null && t2 == null) return prev;
-        const next = { ...prev };
-        if (t2 == null) delete next[k1];
-        else next[k1] = t2;
-        if (t1 == null) delete next[k2];
-        else next[k2] = t1;
-        return next;
-      });
+      const res = await api.swapMontageSlots(projectId, slot.kind, swapPick, slot);
+      if (slot.kind === "video") {
+        setTrims((prev) => {
+          const k1 = trimKey(swapPick.frameNumber, swapPick.shot);
+          const k2 = trimKey(slot.frameNumber, slot.shot);
+          const t1 = prev[k1];
+          const t2 = prev[k2];
+          if (t1 == null && t2 == null) return prev;
+          const next = { ...prev };
+          if (t2 == null) delete next[k1];
+          else next[k1] = t2;
+          if (t1 == null) delete next[k2];
+          else next[k2] = t1;
+          return next;
+        });
+      }
       setStaleVideos((prev) => {
-        const keys = [trimKey(frameNumber, 1), trimKey(frameNumber, 2)];
-        const out = prev.filter((k) => !keys.includes(k));
-        return [...out, ...keys];
+        const next = new Set(prev);
+        next.add(trimKey(swapPick.frameNumber, swapPick.shot));
+        next.add(trimKey(slot.frameNumber, slot.shot));
+        return [...next];
       });
+      setSwapPick(null);
       refreshBoard();
-      const parts: string[] = [];
-      if (res.images_swapped) parts.push("картинки");
-      if (res.videos_swapped) parts.push("видео");
-      if (res.prompts_swapped) parts.push("промты");
+      const label = slot.kind === "image" ? "картинки" : "видео";
       toast.success(
-        parts.length
-          ? `Кадр #${frameNumber}: поменяли ${parts.join(" + ")} 1↔2`
-          : `Кадр #${frameNumber}: обмен выполнен`,
+        res.mode === "move"
+          ? `${label}: перенос #${res.from_frame}.${res.from_shot} → #${res.to_frame}.${res.to_shot}`
+          : `${label}: обмен #${swapPick.frameNumber}.${swapPick.shot} ↔ #${slot.frameNumber}.${slot.shot}`,
       );
     } catch (e) {
       toast.error(errorMessageFromUnknown(e));
     } finally {
-      setSwapBusyFrame(null);
+      setSwapBusy(false);
     }
   };
 
@@ -1815,11 +1909,17 @@ export function AssembleMontageBoard({
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !preview) onClose();
+      if (e.key !== "Escape") return;
+      if (swapPick) {
+        e.preventDefault();
+        setSwapPick(null);
+        return;
+      }
+      if (!preview) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose, preview]);
+  }, [open, onClose, preview, swapPick]);
 
   const toggleRow = (key: RowKey) => {
     setCollapsedRows((prev) => {
@@ -1846,7 +1946,9 @@ export function AssembleMontageBoard({
             <div>
               <h2 className="text-base font-semibold">Панель монтажа</h2>
               <p className="text-xs text-muted-foreground">
-                Кадры ролика — озвучка, персонажи, медиа и таймкоды
+                {swapPick
+                  ? `Обмен ${swapPick.kind === "image" ? "картинок" : "видео"}: выбран #${swapPick.frameNumber}.${swapPick.shot} — нажмите ↔ на другом слоте (Esc — отмена)`
+                  : "Кадры ролика — ↔ на двух слотах меняет местами картинки или видео"}
               </p>
             </div>
           </div>
@@ -2007,48 +2109,7 @@ export function AssembleMontageBoard({
                             FRAME_COL_CLASS,
                           )}
                         >
-                          <div className="flex flex-col items-center gap-1">
-                            <span>#{fr.number}</span>
-                            <div className="flex flex-wrap items-center justify-center gap-1">
-                              <button
-                                type="button"
-                                disabled={swapBusyFrame === fr.number}
-                                title="Поменять картинки 1 ↔ 2"
-                                className="inline-flex items-center gap-0.5 rounded-md border border-white/15 bg-black/30 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition hover:border-amber-400/50 hover:text-amber-200 disabled:opacity-50"
-                                onClick={() => void handleSwapShots(fr.number, "image")}
-                              >
-                                {swapBusyFrame === fr.number ? (
-                                  <Loader2 className="h-3 w-3 animate-spin" />
-                                ) : (
-                                  <ArrowLeftRight className="h-3 w-3" />
-                                )}
-                                img
-                              </button>
-                              <button
-                                type="button"
-                                disabled={swapBusyFrame === fr.number}
-                                title="Поменять видео 1 ↔ 2"
-                                className="inline-flex items-center gap-0.5 rounded-md border border-white/15 bg-black/30 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition hover:border-amber-400/50 hover:text-amber-200 disabled:opacity-50"
-                                onClick={() => void handleSwapShots(fr.number, "video")}
-                              >
-                                {swapBusyFrame === fr.number ? (
-                                  <Loader2 className="h-3 w-3 animate-spin" />
-                                ) : (
-                                  <ArrowLeftRight className="h-3 w-3" />
-                                )}
-                                vid
-                              </button>
-                              <button
-                                type="button"
-                                disabled={swapBusyFrame === fr.number}
-                                title="Поменять и картинки, и видео 1 ↔ 2"
-                                className="inline-flex items-center gap-0.5 rounded-md border border-amber-400/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200/90 transition hover:border-amber-400/60 hover:bg-amber-500/20 disabled:opacity-50"
-                                onClick={() => void handleSwapShots(fr.number, "both")}
-                              >
-                                1↔2
-                              </button>
-                            </div>
-                          </div>
+                          #{fr.number}
                         </th>
                       ))}
                     </tr>
@@ -2134,6 +2195,15 @@ export function AssembleMontageBoard({
                                   onDelete={() => void handleDeleteImage(fr.number, 1)}
                                   onUpload={(file) => void handleUploadImage(fr.number, 1, file)}
                                   highlighted={isHighlighted(`${fr.number}:image1`)}
+                                  onSwapPick={() =>
+                                    void handleSwapPick({
+                                      kind: "image",
+                                      frameNumber: fr.number,
+                                      shot: 1,
+                                    })
+                                  }
+                                  swapSelected={isSwapSelected("image", fr.number, 1)}
+                                  swapBusy={swapBusy}
                                 />
                               ) : row.key === "image2" ? (
                                 <ClickableMedia
@@ -2164,6 +2234,15 @@ export function AssembleMontageBoard({
                                   onDelete={() => void handleDeleteImage(fr.number, 2)}
                                   onUpload={(file) => void handleUploadImage(fr.number, 2, file)}
                                   highlighted={isHighlighted(`${fr.number}:image2`)}
+                                  onSwapPick={() =>
+                                    void handleSwapPick({
+                                      kind: "image",
+                                      frameNumber: fr.number,
+                                      shot: 2,
+                                    })
+                                  }
+                                  swapSelected={isSwapSelected("image", fr.number, 2)}
+                                  swapBusy={swapBusy}
                                 />
                               ) : row.key === "video1" ? (
                                 <VideoMediaCell
@@ -2186,6 +2265,15 @@ export function AssembleMontageBoard({
                                   onUpload={(file) => void handleUploadVideo(fr.number, 1, file)}
                                   highlighted={isHighlighted(trimKey(fr.number, 1))}
                                   stale={isStaleVideo(fr.number, 1)}
+                                  onSwapPick={() =>
+                                    void handleSwapPick({
+                                      kind: "video",
+                                      frameNumber: fr.number,
+                                      shot: 1,
+                                    })
+                                  }
+                                  swapSelected={isSwapSelected("video", fr.number, 1)}
+                                  swapBusy={swapBusy}
                                 />
                               ) : (
                                 <VideoMediaCell
@@ -2208,6 +2296,15 @@ export function AssembleMontageBoard({
                                   onUpload={(file) => void handleUploadVideo(fr.number, 2, file)}
                                   highlighted={isHighlighted(trimKey(fr.number, 2))}
                                   stale={isStaleVideo(fr.number, 2)}
+                                  onSwapPick={() =>
+                                    void handleSwapPick({
+                                      kind: "video",
+                                      frameNumber: fr.number,
+                                      shot: 2,
+                                    })
+                                  }
+                                  swapSelected={isSwapSelected("video", fr.number, 2)}
+                                  swapBusy={swapBusy}
                                 />
                               )}
                             </td>

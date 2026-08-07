@@ -506,6 +506,12 @@ def _find_shot_image(scenes_dir: Path, frame_number: int, shot: int) -> Path | N
     return find_shot1_image(scenes_dir, frame_number)
 
 
+def _find_shot_video(videos_dir: Path, frame_number: int, shot: int) -> Path | None:
+    if shot == 2:
+        return _find_shot2_video(videos_dir, frame_number)
+    return _find_shot1_video(videos_dir, frame_number)
+
+
 def _get_image_prompt(fr: Frame, shot: int) -> str:
     if shot == 2:
         return str((fr.attrs or {}).get(SHOT2_PROMPT_ATTR) or "").strip()
@@ -524,6 +530,53 @@ def _set_image_prompt(fr: Frame, shot: int, value: str) -> None:
         flag_modified(fr, "attrs")
     else:
         fr.image_prompt = text or None
+
+
+def _get_video_prompt(fr: Frame, shot: int) -> str:
+    if shot == 2:
+        return str((fr.attrs or {}).get(SHOT2_VIDEO_PROMPT_ATTR) or "").strip()
+    return (fr.animation_prompt or "").strip()
+
+
+def _set_video_prompt(fr: Frame, shot: int, value: str) -> None:
+    text = (value or "").strip()
+    if shot == 2:
+        attrs = dict(fr.attrs or {})
+        if text:
+            attrs[SHOT2_VIDEO_PROMPT_ATTR] = text
+        else:
+            attrs.pop(SHOT2_VIDEO_PROMPT_ATTR, None)
+        fr.attrs = attrs
+        flag_modified(fr, "attrs")
+    else:
+        fr.animation_prompt = text or None
+
+
+def _swap_trim_between(
+    board_meta: dict[str, Any],
+    a_frame: int,
+    a_shot: int,
+    b_frame: int,
+    b_shot: int,
+) -> None:
+    from app.services.montage_board_meta import trim_key
+
+    trims = board_meta.get("video_trims")
+    if not isinstance(trims, dict):
+        return
+    ka, kb = trim_key(a_frame, a_shot), trim_key(b_frame, b_shot)
+    ta, tb = trims.get(ka), trims.get(kb)
+    if ta is None and tb is None:
+        return
+    if tb is None:
+        trims.pop(ka, None)
+    else:
+        trims[ka] = tb
+    if ta is None:
+        trims.pop(kb, None)
+    else:
+        trims[kb] = ta
+    board_meta["video_trims"] = trims
 
 
 async def move_scene_image(
@@ -605,9 +658,152 @@ async def move_scene_image(
     return {
         "ok": True,
         "mode": mode,
+        "kind": "image",
         "from_frame": from_frame,
         "from_shot": from_shot,
         "to_frame": to_frame,
         "to_shot": to_shot,
         "prompts_moved": prompts_moved,
     }
+
+
+async def move_scene_video(
+    session: AsyncSession,
+    project: Project,
+    *,
+    from_frame: int,
+    from_shot: int,
+    to_frame: int,
+    to_shot: int,
+) -> dict[str, Any]:
+    """Перенос/обмен видео между слотами (любые кадры). Промты + trim едут вместе."""
+    if from_shot not in (1, 2) or to_shot not in (1, 2):
+        return {"ok": False, "reason": "shot должен быть 1 или 2"}
+    if from_frame == to_frame and from_shot == to_shot:
+        return {"ok": False, "reason": "тот же слот"}
+
+    videos = project.data_dir / "videos"
+    videos.mkdir(parents=True, exist_ok=True)
+    src_path = _find_shot_video(videos, from_frame, from_shot)
+    if src_path is None or not src_path.is_file():
+        return {"ok": False, "reason": "в источнике нет видео"}
+
+    dst_path = _find_shot_video(videos, to_frame, to_shot)
+    src_bytes = src_path.read_bytes()
+    src_suf = src_path.suffix or ".mp4"
+    dst_bytes = (
+        dst_path.read_bytes() if dst_path is not None and dst_path.is_file() else None
+    )
+    dst_suf = (dst_path.suffix if dst_path is not None else ".mp4") or ".mp4"
+    mode = "swap" if dst_bytes is not None else "move"
+
+    await delete_scene_video(session, project, from_frame, shot=from_shot)
+    await delete_scene_video(session, project, to_frame, shot=to_shot)
+
+    await save_scene_video_upload(
+        session,
+        project,
+        to_frame,
+        shot=to_shot,
+        content=src_bytes,
+        suffix=src_suf,
+    )
+    if dst_bytes is not None:
+        await save_scene_video_upload(
+            session,
+            project,
+            from_frame,
+            shot=from_shot,
+            content=dst_bytes,
+            suffix=dst_suf,
+        )
+
+    fr_from = await _frame(session, project.id, from_frame)
+    fr_to = (
+        fr_from
+        if from_frame == to_frame
+        else await _frame(session, project.id, to_frame)
+    )
+    prompts_moved = False
+    if fr_from is not None and fr_to is not None:
+        p_from = _get_video_prompt(fr_from, from_shot)
+        p_to = _get_video_prompt(fr_to, to_shot)
+        _set_video_prompt(fr_to, to_shot, p_from)
+        _set_video_prompt(fr_from, from_shot, p_to if mode == "swap" else "")
+        prompts_moved = True
+
+    from app.services.montage_board_meta import mark_stale_videos, montage_meta, set_montage_meta
+
+    board = montage_meta(project)
+    _swap_trim_between(board, from_frame, from_shot, to_frame, to_shot)
+    mark_stale_videos(board, from_frame, shot=from_shot)
+    mark_stale_videos(board, to_frame, shot=to_shot)
+    set_montage_meta(project, board)
+    await session.flush()
+    return {
+        "ok": True,
+        "mode": mode,
+        "kind": "video",
+        "from_frame": from_frame,
+        "from_shot": from_shot,
+        "to_frame": to_frame,
+        "to_shot": to_shot,
+        "prompts_moved": prompts_moved,
+    }
+
+
+async def swap_media_slots(
+    session: AsyncSession,
+    project: Project,
+    *,
+    kind: Literal["image", "video"],
+    a_frame: int,
+    a_shot: int,
+    b_frame: int,
+    b_shot: int,
+) -> dict[str, Any]:
+    """Обмен двух слотов одного типа (картинка↔картинка или видео↔видео).
+
+    Слоты могут быть из любых кадров. Если один пуст — перенос заполненного.
+    """
+    if a_shot not in (1, 2) or b_shot not in (1, 2):
+        return {"ok": False, "reason": "shot должен быть 1 или 2"}
+    if a_frame == b_frame and a_shot == b_shot:
+        return {"ok": False, "reason": "тот же слот"}
+
+    if kind == "image":
+        scenes = project.data_dir / "scenes"
+        a_path = _find_shot_image(scenes, a_frame, a_shot)
+        b_path = _find_shot_image(scenes, b_frame, b_shot)
+        a_has = a_path is not None and a_path.is_file()
+        b_has = b_path is not None and b_path.is_file()
+        if not a_has and not b_has:
+            return {"ok": False, "reason": "оба слота пустые"}
+        from_frame, from_shot = (a_frame, a_shot) if a_has else (b_frame, b_shot)
+        to_frame, to_shot = (b_frame, b_shot) if a_has else (a_frame, a_shot)
+        return await move_scene_image(
+            session,
+            project,
+            from_frame=from_frame,
+            from_shot=from_shot,
+            to_frame=to_frame,
+            to_shot=to_shot,
+        )
+
+    videos = project.data_dir / "videos"
+    a_path = _find_shot_video(videos, a_frame, a_shot)
+    b_path = _find_shot_video(videos, b_frame, b_shot)
+    a_has = a_path is not None and a_path.is_file()
+    b_has = b_path is not None and b_path.is_file()
+    if not a_has and not b_has:
+        return {"ok": False, "reason": "оба слота пустые"}
+    from_frame, from_shot = (a_frame, a_shot) if a_has else (b_frame, b_shot)
+    to_frame, to_shot = (b_frame, b_shot) if a_has else (a_frame, a_shot)
+    return await move_scene_video(
+        session,
+        project,
+        from_frame=from_frame,
+        from_shot=from_shot,
+        to_frame=to_frame,
+        to_shot=to_shot,
+    )

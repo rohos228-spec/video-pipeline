@@ -918,6 +918,38 @@ async def montage_board_swap_shots(
     return result
 
 
+@router.post("/{project_id}/montage-board/swap-slots")
+async def montage_board_swap_slots(
+    project_id: int,
+    kind: str = Query(..., pattern="^(image|video)$"),
+    a_frame: int = Query(..., ge=1),
+    a_shot: int = Query(..., ge=1, le=2),
+    b_frame: int = Query(..., ge=1),
+    b_shot: int = Query(..., ge=1, le=2),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Обмен двух слотов одного типа между любыми кадрами (кнопка↔кнопка в UI)."""
+    from app.services.montage_board_assets import swap_media_slots
+
+    p = _project_or_404(await session.get(Project, project_id))
+    result = await swap_media_slots(
+        session,
+        p,
+        kind=kind,  # type: ignore[arg-type]
+        a_frame=a_frame,
+        a_shot=a_shot,
+        b_frame=b_frame,
+        b_shot=b_shot,
+    )
+    await session.commit()
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=400,
+            detail=result.get("reason") or "не удалось поменять местами",
+        )
+    return result
+
+
 @router.post("/{project_id}/montage-board/move-image")
 async def montage_board_move_image(
     project_id: int,
