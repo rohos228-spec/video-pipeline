@@ -43,41 +43,129 @@ def _is_file_busy_error(exc: BaseException) -> bool:
     return "winerror 32" in msg or "занят другим процессом" in msg or "being used by another" in msg
 
 
-def archive_file(path: Path, project: Project, sub: str) -> Path | None:
-    """Перенос в ``old/<sub>/``. При блокировке файла — retry, затем copy+unlink."""
+def _sidecar_companions(path: Path) -> list[Path]:
+    """Соседние meta-файлы того же stem (``clip_001_ab.json`` рядом с ``.mp4``)."""
+    out: list[Path] = []
+    for ext in (".json",):
+        side = path.with_suffix(ext)
+        if side.is_file() and side.resolve() != path.resolve():
+            out.append(side)
+    return out
+
+
+def archive_file(
+    path: Path,
+    project: Project,
+    sub: str,
+    *,
+    with_sidecars: bool = True,
+) -> Path | None:
+    """Перенос в ``old/<sub>/``. При блокировке файла — retry, затем copy+unlink.
+
+    После успеха уводит sidecar ``.json`` с тем же stem — иначе старые meta
+    остаются рядом с новым ``clip_NNN_<hash>.mp4``.
+    """
     if not path.is_file():
         return None
+    sidecars = _sidecar_companions(path) if with_sidecars else []
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     dest = _archive_dir(project, sub) / f"{stamp}_{path.name}"
     last_err: OSError | None = None
+    moved = False
     for attempt in range(8):
         try:
             shutil.move(str(path), str(dest))
             logger.info("montage: archived {} → {}", path.name, dest)
-            return dest
+            moved = True
+            break
         except OSError as exc:
             last_err = exc
             if not _is_file_busy_error(exc):
                 raise
             time.sleep(0.12 * (attempt + 1))
-    # Fallback: копия в old/, unlink исходника (если всё ещё locked — оставляем оба).
-    try:
-        shutil.copy2(str(path), str(dest))
-    except OSError:
-        if last_err is not None:
-            raise last_err
-        raise
-    try:
-        path.unlink()
-        logger.info("montage: archived {} → {} (copy+unlink)", path.name, dest)
-    except OSError as unlink_exc:
-        logger.warning(
-            "montage: archived copy {} → {} (source still locked: {})",
-            path.name,
-            dest,
-            unlink_exc,
-        )
+    if not moved:
+        # Fallback: копия в old/, unlink исходника (если всё ещё locked — оставляем оба).
+        try:
+            shutil.copy2(str(path), str(dest))
+        except OSError:
+            if last_err is not None:
+                raise last_err
+            raise
+        try:
+            path.unlink()
+            logger.info("montage: archived {} → {} (copy+unlink)", path.name, dest)
+            moved = True
+        except OSError as unlink_exc:
+            logger.warning(
+                "montage: archived copy {} → {} (source still locked: {})",
+                path.name,
+                dest,
+                unlink_exc,
+            )
+    if with_sidecars:
+        for side in sidecars:
+            archive_file(side, project, sub, with_sidecars=False)
+        # json мог появиться/остаться по тому же stem после move
+        for side in _sidecar_companions(path):
+            archive_file(side, project, sub, with_sidecars=False)
     return dest
+
+
+def _is_shot1_media_name(name: str) -> bool:
+    return "_s2_" not in name
+
+
+def purge_replaced_media(
+    folder: Path,
+    *,
+    patterns: list[str],
+    keep: Path,
+    project: Project,
+    sub: str,
+    shot: int,
+    also_json: bool = True,
+) -> int:
+    """Убрать из рабочей папки всё кроме ``keep`` (и его stem.json).
+
+    Гарантирует: после regen старый ``clip_NNN_<oldhash>.mp4`` не лежит рядом
+    с новым — уходит в ``old/`` вместе с sidecar json.
+    """
+    if not folder.is_dir():
+        return 0
+    keep_res = keep.resolve()
+    keep_stem = keep.stem
+    n = 0
+    seen: set[Path] = set()
+    globs = list(patterns)
+    if also_json:
+        for pat in list(patterns):
+            if pat.endswith(".mp4"):
+                globs.append(pat[:-4] + ".json")
+            elif pat.endswith(".png"):
+                globs.append(pat[:-4] + ".json")
+    for g in globs:
+        for p in list(folder.glob(g)):
+            try:
+                res = p.resolve()
+            except OSError:
+                continue
+            if res in seen:
+                continue
+            seen.add(res)
+            if shot == 1 and not _is_shot1_media_name(p.name):
+                continue
+            if res == keep_res:
+                continue
+            if p.suffix.lower() == ".json" and p.stem == keep_stem:
+                continue
+            archive_file(p, project, sub)
+            n += 1
+            if p.is_file():
+                logger.error(
+                    "montage: orphan still present after archive (locked?): {}",
+                    p,
+                )
+    return n
 
 
 async def _frame(session: AsyncSession, project_id: int, frame_number: int) -> Frame | None:
@@ -110,17 +198,25 @@ async def finalize_scene_image(
     _assert_new_file_ready(new_path)
     scenes = project.data_dir / "scenes"
     if shot == 2:
-        pattern = shot2_file_pattern(frame_number)
+        patterns = [shot2_file_pattern(frame_number)]
     else:
-        pattern = f"frame_{frame_number:03d}_*.png"
-    new_resolved = new_path.resolve()
-    if scenes.is_dir():
-        for p in list(scenes.glob(pattern)):
-            if shot == 1 and "_s2_" in p.name:
-                continue
-            if p.resolve() == new_resolved:
-                continue
-            archive_file(p, project, "scenes")
+        patterns = [f"frame_{frame_number:03d}_*.png"]
+    purged = purge_replaced_media(
+        scenes,
+        patterns=patterns,
+        keep=new_path,
+        project=project,
+        sub="scenes",
+        shot=shot,
+    )
+    if purged:
+        logger.info(
+            "montage: finalize image #{} F{} s{} purged {} old file(s)",
+            project.id,
+            frame_number,
+            shot,
+            purged,
+        )
     fr = await _frame(session, project.id, frame_number)
     if fr is not None:
         arts = (
@@ -161,18 +257,25 @@ async def finalize_scene_video(
     _assert_new_file_ready(new_path, min_bytes=1024)
     videos = project.data_dir / "videos"
     if shot == 2:
-        globs = [shot2_video_file_pattern(frame_number)]
+        patterns = [shot2_video_file_pattern(frame_number)]
     else:
-        globs = [f"clip_{frame_number:03d}_*.mp4"]
-    new_resolved = new_path.resolve()
-    if videos.is_dir():
-        for g in globs:
-            for p in list(videos.glob(g)):
-                if shot == 1 and "_s2_" in p.name:
-                    continue
-                if p.resolve() == new_resolved:
-                    continue
-                archive_file(p, project, "videos")
+        patterns = [f"clip_{frame_number:03d}_*.mp4"]
+    purged = purge_replaced_media(
+        videos,
+        patterns=patterns,
+        keep=new_path,
+        project=project,
+        sub="videos",
+        shot=shot,
+    )
+    if purged:
+        logger.info(
+            "montage: finalize video #{} F{} s{} purged {} old file(s)",
+            project.id,
+            frame_number,
+            shot,
+            purged,
+        )
     fr = await _frame(session, project.id, frame_number)
     if fr is not None:
         arts = (

@@ -610,3 +610,51 @@ def test_archive_file_copy_unlink_fallback(
     assert dest.read_bytes() == b"VIDEO" * 200
     assert not path.exists()
     assert calls["n"] == 8
+
+
+def test_archive_file_moves_json_sidecar(montage_project: Project) -> None:
+    src = montage_project.data_dir / "videos"
+    src.mkdir(parents=True, exist_ok=True)
+    mp4 = src / "clip_007_aabbccdd.mp4"
+    meta = src / "clip_007_aabbccdd.json"
+    mp4.write_bytes(b"VIDEO" * 200)
+    meta.write_text('{"ok":1}', encoding="utf-8")
+
+    dest = archive_file(mp4, montage_project, "videos")
+    assert dest is not None
+    assert not mp4.exists()
+    assert not meta.exists()
+    old = montage_project.data_dir / "old" / "videos"
+    assert any(p.name.endswith("clip_007_aabbccdd.mp4") for p in old.iterdir())
+    assert any(p.name.endswith("clip_007_aabbccdd.json") for p in old.iterdir())
+
+
+def test_purge_replaced_media_keeps_only_new(montage_project: Project) -> None:
+    from app.services.montage_board_assets import purge_replaced_media
+
+    videos = montage_project.data_dir / "videos"
+    videos.mkdir(parents=True, exist_ok=True)
+    keep = videos / "clip_005_newhash01.mp4"
+    keep.write_bytes(b"NEW" * 400)
+    (videos / "clip_005_newhash01.json").write_text("{}", encoding="utf-8")
+    old = videos / "clip_005_oldhash99.mp4"
+    old.write_bytes(b"OLD" * 400)
+    (videos / "clip_005_oldhash99.json").write_text("{}", encoding="utf-8")
+    # shot2 must stay
+    s2 = videos / "clip_005_s2_zzzzzzzz.mp4"
+    s2.write_bytes(b"S2" * 400)
+
+    n = purge_replaced_media(
+        videos,
+        patterns=["clip_005_*.mp4"],
+        keep=keep,
+        project=montage_project,
+        sub="videos",
+        shot=1,
+    )
+    assert n >= 1  # mp4; sidecar json уходит внутри archive_file
+    assert keep.is_file()
+    assert (videos / "clip_005_newhash01.json").is_file()
+    assert not old.exists()
+    assert not (videos / "clip_005_oldhash99.json").exists()
+    assert s2.is_file()
