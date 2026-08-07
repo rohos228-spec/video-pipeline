@@ -248,9 +248,11 @@ def _soften_start_frame_for_policy(src: Path, *, strength: int) -> Path | None:
     if not isinstance(src, Path) or not src.is_file():
         return None
     s = max(1, min(int(strength), 3))
-    max_side = {1: 1400, 2: 1024, 3: 768}[s]
-    quality = {1: 62, 2: 45, 3: 35}[s]
-    blur = {1: 1.4, 2: 2.8, 3: 4.0}[s]
+    # Раньше s1 давал ~80KB JPEG (q62+blur) → Veo выдавал «мыло» как 360p.
+    # Держим лицо/детали: лёгкий blur, высокий JPEG, почти полный 1080/2K side.
+    max_side = {1: 1920, 2: 1600, 3: 1280}[s]
+    quality = {1: 85, 2: 76, 3: 68}[s]
+    blur = {1: 0.55, 2: 1.15, 3: 1.9}[s]
     try:
         with Image.open(src) as im:
             img = im.convert("RGB")

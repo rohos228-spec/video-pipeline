@@ -174,7 +174,7 @@ async def test_veo_generate_video_hosts_frame_and_postprocesses(
         return {"status": "completed", "result_url": "https://example.com/x.mp4"}
 
     async def fake_dl(url: str, out_path: Path):
-        out_path.write_bytes(b"\x00" * 64)
+        out_path.write_bytes(b"\x00" * 2_500_000)
         return out_path
 
     async def fake_host(url):
@@ -251,7 +251,7 @@ async def test_veo_generate_video_accepts_str_path_ref(
         return {"status": "completed", "result_url": "https://example.com/x.mp4"}
 
     async def fake_dl(url: str, out_path: Path):
-        out_path.write_bytes(b"\x00" * 64)
+        out_path.write_bytes(b"\x00" * 2_500_000)
         return out_path
 
     async def fake_host(url):
@@ -297,7 +297,7 @@ async def test_veo_generate_video_defaults_to_silent(tmp_path: Path, monkeypatch
         return {"status": "completed", "result_url": "https://example.com/x.mp4"}
 
     async def fake_dl(url: str, out_path: Path):
-        out_path.write_bytes(b"\x00" * 64)
+        out_path.write_bytes(b"\x00" * 2_500_000)
         return out_path
 
     async def fake_pp(path, *, duration, generate_audio):
@@ -323,3 +323,15 @@ async def test_veo_generate_video_defaults_to_silent(tmp_path: Path, monkeypatch
     assert captured["body"]["generate_audio"] is False
     assert "Silent video only" in captured["body"]["prompt"]
     assert captured["pp"]["audio"] is False
+
+
+def test_assert_video_not_mush_rejects_tiny_file(tmp_path: Path) -> None:
+    from app.bots import outsee_http as oh
+
+    tiny = tmp_path / "soft.mp4"
+    tiny.write_bytes(b"\x00" * 800_000)
+    with pytest.raises(oh.OutseeApiError, match="слишком лёгкое"):
+        oh._assert_video_not_mush(tiny, duration_sec=8)
+    ok = tmp_path / "ok.mp4"
+    ok.write_bytes(b"\x00" * 2_500_000)
+    oh._assert_video_not_mush(ok, duration_sec=8)

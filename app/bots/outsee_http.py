@@ -306,6 +306,31 @@ async def _download(url: str, out_path: Path) -> Path:
     ) from last_err
 
 
+def _assert_video_not_mush(path: Path, *, duration_sec: int) -> None:
+    """Отбраковать «мыло» Veo: 720p 8с при ~1.5Mbps выглядит как 360p.
+
+    Порог ≈ 2.4 Mbps (300 KB/s). Soften-кадры CONTENT_POLICY раньше давали
+    такие лёгкие ролики — retry подхватит с более мягким soften.
+    """
+    if not path.is_file():
+        raise OutseeApiError(f"видео не скачано: {path.name}")
+    size = path.stat().st_size
+    dur = max(1, int(duration_sec or 8))
+    min_bytes = max(1_500_000, dur * 300_000)
+    if size < min_bytes:
+        raise OutseeApiError(
+            f"видео слишком лёгкое ({size} bytes < {min_bytes}, ~{dur}s) — "
+            "низкое качество, нужен retry",
+            context={
+                "path": str(path),
+                "bytes": size,
+                "min_bytes": min_bytes,
+                "duration_sec": dur,
+                "low_quality": True,
+            },
+        )
+
+
 def _pick_result_url(status: dict[str, Any]) -> str:
     urls = status.get("result_urls")
     if isinstance(urls, list):
@@ -1080,6 +1105,7 @@ async def generate_video(
         duration=dur if model == "veo-3-1-lite" else None,
         generate_audio=False,
     )
+    _assert_video_not_mush(out_path, duration_sec=dur)
     return GenerationResult(
         file_path=out_path,
         raw_url=url,

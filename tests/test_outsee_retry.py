@@ -46,12 +46,22 @@ def test_soften_start_frame_for_policy(tmp_path: Path) -> None:
     from PIL import Image
 
     src = tmp_path / "frame.png"
-    Image.new("RGB", (800, 1200), (40, 80, 120)).save(src)
+    # Шумная картинка — иначе JPEG сплошного цвета слишком мелкий.
+    img = Image.new("RGB", (1600, 900), (40, 80, 120))
+    px = img.load()
+    for y in range(0, 900, 3):
+        for x in range(0, 1600, 3):
+            px[x, y] = ((x * 17) % 255, (y * 13) % 255, 90)
+    img.save(src)
     out = mod._soften_start_frame_for_policy(src, strength=1)
     assert out is not None
     assert out.is_file()
     assert out.suffix == ".jpg"
     assert src.read_bytes() != out.read_bytes()
+    # Не давим в «мыло»: s1 должен оставаться относительно крупным.
+    assert out.stat().st_size >= 80_000
+    with Image.open(out) as soft:
+        assert max(soft.size) >= 1600
 
 
 @pytest.mark.asyncio
