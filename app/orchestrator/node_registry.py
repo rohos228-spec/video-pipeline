@@ -38,6 +38,12 @@ WORK_NODES: dict[str, WorkNodeSpec] = {
     "split": WorkNodeSpec(
         "split", "split", ProjectStatus.splitting, ProjectStatus.frames_ready
     ),
+    "scene_design": WorkNodeSpec(
+        "scene_design",
+        "scene_d",
+        ProjectStatus.scene_designing,
+        ProjectStatus.scene_design_ready,
+    ),
     "hero": WorkNodeSpec(
         "hero", "hero", ProjectStatus.generating_hero, ProjectStatus.hero_ready
     ),
@@ -111,6 +117,7 @@ LINEAR_NODE_TYPES: list[str] = [
     "plan",
     "script",
     "split",
+    "scene_design",
     "hero",
     "items",
     "enrich_1",

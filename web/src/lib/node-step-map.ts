@@ -4,6 +4,7 @@ export const NODE_TO_STEP: Record<string, string> = {
   plan: "plan",
   script: "script",
   split: "split",
+  scene_design: "scene_d",
   hero: "hero",
   items: "items",
   excel_gpt: "excel_gpt",

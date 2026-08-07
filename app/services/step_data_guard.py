@@ -86,6 +86,26 @@ async def ready_status_confirmed_by_data(
             if meta.get("split_completed") or project.status is ProjectStatus.frames_ready:
                 return True
 
+    # scene_design_ready: кадры есть + (meta.scene_design.status=done ИЛИ
+    # фича выключена — pass-through ноды не оставляет флага).
+    if ready_status is ProjectStatus.scene_design_ready:
+        fr_n = (
+            await session.execute(
+                select(func.count(Frame.id)).where(Frame.project_id == project.id)
+            )
+        ).scalar_one()
+        if int(fr_n or 0) < 1:
+            return False
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        sd = meta.get("scene_design")
+        if isinstance(sd, dict) and sd.get("status") == "done":
+            return True
+        if project.status is ProjectStatus.scene_design_ready:
+            return True
+        from app.services.scene_design import scene_design_enabled
+
+        return not scene_design_enabled(project)
+
     # enrich_*_ready до split: кадры могут отсутствовать — смотрим meta / статус.
     if ready_status in (
         ProjectStatus.enrich_1_ready,

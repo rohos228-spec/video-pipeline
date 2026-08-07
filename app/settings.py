@@ -256,6 +256,14 @@ class Settings(BaseSettings):
     # (строго по одному). Chrome больше нет — можно >1 безопасно.
     worker_max_parallel: int = Field(1, alias="WORKER_MAX_PARALLEL")
 
+    # Мульти-агентный дизайн сцен (нода scene_design между split и hero).
+    # False + нет meta.scene_design_enabled → нода pass-through без GPT.
+    scene_design_enabled: bool = Field(False, alias="SCENE_DESIGN_ENABLED")
+    # Сколько категорийных агентов дёргают GPT одновременно внутри ноды.
+    scene_design_max_parallel: int = Field(5, alias="SCENE_DESIGN_MAX_PARALLEL")
+    # Сколько категорийных агентов дёргают GPT одновременно внутри ноды.
+    scene_design_max_parallel: int = Field(5, alias="SCENE_DESIGN_MAX_PARALLEL")
+
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")
     hitl_auto_approve: bool = Field(False, alias="HITL_AUTO_APPROVE")

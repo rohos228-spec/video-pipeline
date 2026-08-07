@@ -111,9 +111,17 @@ def _build_transitions() -> dict[ProjectStatus, StepTransition]:
     transitions[ProjectStatus.script_ready] = StepTransition(
         ProjectStatus.script_ready, ProjectStatus.splitting, HITLKind.approve_script
     )
-    # frames_ready → generating_hero (объекты → персонажи)
+    # frames_ready → generating_hero (объекты → персонажи).
+    # Если включён scene_design — _apply_approve перенаправляет на
+    # scene_designing (см. хук ниже), а из scene_design_ready — сюда же.
     transitions[ProjectStatus.frames_ready] = StepTransition(
         ProjectStatus.frames_ready, ProjectStatus.generating_hero, HITLKind.approve_hero
+    )
+    # scene_design_ready → generating_hero (без HITL: автомат по плану).
+    transitions[ProjectStatus.scene_design_ready] = StepTransition(
+        ProjectStatus.scene_design_ready,
+        ProjectStatus.generating_hero,
+        HITLKind.approve_hero,
     )
     # hero_ready → generating_items (если предметы есть) или enriching_1
     # Простой default — generating_items; если предметов нет, шаг сам сразу
@@ -238,9 +246,19 @@ def expected_status_progression(project: Project | None) -> list[ProjectStatus]:
         ProjectStatus.planning,
         ProjectStatus.scripting,
         ProjectStatus.splitting,
+    ]
+    # Нода scene_design — только когда фича включена (env/per-project).
+    try:
+        from app.services.scene_design import scene_design_enabled
+
+        if scene_design_enabled(project):
+            progression.append(ProjectStatus.scene_designing)
+    except Exception:  # noqa: BLE001
+        pass
+    progression.extend([
         ProjectStatus.generating_hero,
         ProjectStatus.generating_items,
-    ]
+    ])
     enrich_running = [
         ProjectStatus.enriching_1,
         ProjectStatus.enriching_2,
@@ -328,6 +346,7 @@ def _running_for_ready(ready: ProjectStatus) -> ProjectStatus | None:
     # Это может быть sub-step (hero / items / enrich_i) — STEPS их не
     # содержит. Маппинг руками:
     sub_map: dict[ProjectStatus, ProjectStatus] = {
+        ProjectStatus.scene_design_ready: ProjectStatus.scene_designing,
         ProjectStatus.hero_ready: ProjectStatus.generating_hero,
         ProjectStatus.items_ready: ProjectStatus.generating_items,
         ProjectStatus.enrich_1_ready: ProjectStatus.enriching_1,
@@ -835,6 +854,21 @@ async def _apply_approve(
             graph_nxt = await _graph_next_running(
                 session, project, transition.ready_status
             )
+        # frames_ready → scene_designing: флаг включён (env/per-project) и
+        # нода ещё не пройдена — идём в мульти-агентный дизайн сцен, даже
+        # если ноды scene_design нет на канвасе проекта.
+        if (
+            transition.ready_status is ProjectStatus.frames_ready
+            and graph_nxt is ProjectStatus.generating_hero
+        ):
+            from app.services.scene_design import scene_design_done, scene_design_enabled
+
+            if scene_design_enabled(project) and not scene_design_done(project):
+                graph_nxt = ProjectStatus.scene_designing
+                logger.info(
+                    "auto_advance: #{} frames_ready → scene_designing (flag on)",
+                    project.id,
+                )
         # frames_ready → hero: если данных персонажей нет / уже skipped empty —
         # не запускать generating_hero снова (иначе цикл skip↔frames_ready).
         if (
@@ -854,6 +888,12 @@ async def _apply_approve(
                     alt.value if alt is not None else "none",
                 )
                 graph_nxt = alt
+        if (
+            transition.ready_status is ProjectStatus.scene_design_ready
+            and graph_nxt is None
+        ):
+            # Нода запущена флагом без узла на канвасе — линейный fallback.
+            graph_nxt = ProjectStatus.generating_hero
         if graph_nxt is None:
             # assembled без publish на графе — нормальный idle, не WARNING каждые 5с
             if transition.ready_status in (

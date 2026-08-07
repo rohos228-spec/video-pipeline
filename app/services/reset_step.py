@@ -221,6 +221,8 @@ async def _wipe_split(session: AsyncSession, project: Project) -> dict[str, Any]
         "excel_gpt_completed_keys",
         "active_excel_gpt_node_key",
         "split_completed",
+        "scene_design",
+        "scene_registry",
     ):
         if key in meta:
             meta.pop(key, None)
@@ -231,6 +233,48 @@ async def _wipe_split(session: AsyncSession, project: Project) -> dict[str, Any]
         "frames_deleted": len(frames),
         "frame_artifact_files": files_deleted,
         "meta_cleared": meta_cleared,
+    }
+
+
+async def _wipe_scene_design(session: AsyncSession, project: Project) -> dict[str, Any]:
+    """Сброс scene_design: чекпоинты агентов (meta + файлы), scene_registry,
+    scene-attrs на кадрах. Кадры и закадр НЕ трогаем."""
+    import shutil
+
+    from app.services.db_apply import _ATTR_EXCEL_ROWS
+
+    meta = dict(project.meta or {})
+    meta_cleared = [
+        k for k in ("scene_design", "scene_registry") if meta.pop(k, None) is not None
+    ]
+    if meta_cleared:
+        project.meta = meta
+
+    sd_dir = project.data_dir / "scene_design"
+    files_deleted = 0
+    if sd_dir.is_dir():
+        files_deleted = sum(1 for p in sd_dir.rglob("*") if p.is_file())
+        shutil.rmtree(sd_dir, ignore_errors=True)
+
+    frames = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project.id)
+        )
+    ).scalars().all()
+    attr_keys = set(_ATTR_EXCEL_ROWS) | {"characters", "persons", "персонажи"}
+    frames_cleared = 0
+    for fr in frames:
+        attrs = dict(fr.attrs or {})
+        before = len(attrs)
+        for k in attr_keys:
+            attrs.pop(k, None)
+        if len(attrs) != before:
+            fr.attrs = attrs
+            frames_cleared += 1
+    return {
+        "meta_cleared": meta_cleared,
+        "checkpoint_files": files_deleted,
+        "frames_attrs_cleared": frames_cleared,
     }
 
 
@@ -642,6 +686,7 @@ _PIPELINE_RESET_LEVELS: list[tuple[str, Any]] = [
     ("plan",      _wipe_plan),
     ("script",    _wipe_script),
     ("split",     _wipe_split),
+    ("scene_d",   _wipe_scene_design),
     ("hero",      _wipe_hero),
     ("items",     _wipe_items),
     ("enrich_1",  _enrich_slot_wiper(1)),
@@ -689,6 +734,7 @@ def _resolve_start_index(step_code: str) -> int | None:
 # показывать ли кнопку «🔁 Прогнать шаг с нуля».
 RESET_SUPPORTED_STEP_CODES: frozenset[str] = frozenset({
     "plan", "script", "split",
+    "scene_d",
     "objects", "hero", "items",
     "enrich",
     "enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5",

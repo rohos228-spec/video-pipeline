@@ -22,6 +22,8 @@ class ProjectStatus(str, enum.Enum):
     planning = "planning"  # шаг 1: план
     scripting = "scripting"  # шаг 2: сценарий → закадровые тексты
     splitting = "splitting"  # шаг 3: разбивка на кадры
+    # Шаг 3.5: мульти-агентный дизайн сцен (между split и hero)
+    scene_designing = "scene_designing"
     # ───── Шаг 4: «Объекты» — sub-menu внутри ────
     generating_hero = "generating_hero"  # шаг 4a: персонажи (former hero)
     generating_items = "generating_items"  # шаг 4b: предметы (new)
@@ -44,6 +46,7 @@ class ProjectStatus(str, enum.Enum):
     plan_ready = "plan_ready"
     script_ready = "script_ready"
     frames_ready = "frames_ready"
+    scene_design_ready = "scene_design_ready"  # сцены собраны агентами
     hero_ready = "hero_ready"  # персонажи готовы
     items_ready = "items_ready"  # предметы готовы (new)
     enrich_1_ready = "enrich_1_ready"
