@@ -33,6 +33,12 @@ def prompts_dir() -> Path:
     return find_project_root() / PROMPTS_SUBDIR
 
 
+# Доп. файлы, доклеиваемые к базовому промпту агента (каталоги, словари).
+PROMPT_INCLUDES: dict[str, tuple[str, ...]] = {
+    "camera": ("camera_sets.md",),
+}
+
+
 def load_prompt(agent: str) -> str:
     path = prompts_dir() / f"{agent}.md"
     if not path.is_file():
@@ -40,6 +46,15 @@ def load_prompt(agent: str) -> str:
     text = path.read_text(encoding="utf-8").strip()
     if not text:
         raise SceneDesignAgentError(f"scene_design: пустой промпт {path}")
+    for extra_name in PROMPT_INCLUDES.get(agent, ()):
+        extra_path = prompts_dir() / extra_name
+        if not extra_path.is_file():
+            raise SceneDesignAgentError(
+                f"scene_design: нет файла включаемого промпта {extra_path}"
+            )
+        extra = extra_path.read_text(encoding="utf-8").strip()
+        if extra:
+            text = f"{text}\n\n---\n\n{extra}"
     return text
 
 
