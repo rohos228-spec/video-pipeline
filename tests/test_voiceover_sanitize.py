@@ -26,6 +26,20 @@ def test_extract_voiceover_markers() -> None:
     assert "план работы" not in out
 
 
+def test_unclosed_voiceover_block_stripped() -> None:
+    """GPT открыл <<<VOICEOVER>>> и забыл <<<END>>> — маркер и мусорный
+    префикс перед ним не должны попасть в закадр."""
+    raw = (
+        "`.\n<<<VOICEOVER>>>\n"
+        "День на старой пасеке начинается раньше, чем поле наполнится звуком. "
+        "Утренний обход начинается с летков."
+    )
+    out = sanitize_voiceover_text(raw)
+    assert "VOICEOVER" not in out
+    assert not out.startswith("`")
+    assert out.startswith("День на старой пасеке")
+
+
 def test_ensure_voiceover_format_instruction_idempotent() -> None:
     base = "Сделай закадровый текст."
     once = ensure_voiceover_format_instruction(base)
