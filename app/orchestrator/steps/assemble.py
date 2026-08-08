@@ -436,6 +436,14 @@ async def _assemble_body(
         fr.end_ts = ac.end_ts
         fr.duration_seconds = ac.duration
 
+    # Метки «Время на кадр» (R50) из таймлинга озвучки — в те же колонки,
+    # где лежит закадровый текст кадра (R49).
+    from app.storage.plan_sheet_v8 import write_plan_durations
+
+    write_plan_durations(
+        project, [(c.frame_number, c.duration) for c in audio_clips]
+    )
+
     out_dir = project.data_dir / "final"
     out_path = out_dir / f"{project.slug}.mp4"
     bgm = resolve_bgm(project)
