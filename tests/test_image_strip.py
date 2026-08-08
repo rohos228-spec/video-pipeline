@@ -43,6 +43,28 @@ def test_compose_horizontal_strip_layout(tmp_path: Path) -> None:
         strip.close()
 
 
+def test_compose_horizontal_strip_burns_panel_labels(tmp_path: Path) -> None:
+    p1 = tmp_path / "a.png"
+    p2 = tmp_path / "b.png"
+    _solid(p1, (80, 80), (255, 0, 0))
+    _solid(p2, (80, 80), (0, 255, 0))
+    out = compose_horizontal_strip(
+        [p1, p2],
+        tmp_path / "labeled.png",
+        gutter_px=4,
+        max_height=80,
+        panel_labels=["F001", "F002"],
+    )
+    strip = Image.open(out)
+    try:
+        # Нижняя полоса первой панели — чёрная (метка).
+        assert strip.getpixel((10, 75)) == (0, 0, 0)
+        # Центр панели выше полосы — красный.
+        assert strip.getpixel((40, 30)) == (255, 0, 0)
+    finally:
+        strip.close()
+
+
 def test_build_batch_strip_path(tmp_path: Path) -> None:
     from types import SimpleNamespace
 

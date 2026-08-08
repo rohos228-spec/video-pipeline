@@ -41,6 +41,37 @@ def test_build_batch_message_has_id_and_voiceover() -> None:
     assert "Позиция 1" in msg
 
 
+def test_parse_animation_reply_no_positional_zip_mixup() -> None:
+    """Без ID/JSON нельзя раскладывать чанки по порядку — это путало кадры."""
+    from app.services.animation_prompt_gpt import parse_animation_reply
+
+    frames = [
+        SimpleNamespace(number=1, uuid="u1", voiceover_text="a", image_prompt=""),
+        SimpleNamespace(number=2, uuid="u2", voiceover_text="b", image_prompt=""),
+    ]
+    batch = [
+        FrameImageBatchItem(
+            frame=frames[0],
+            image_path=Path("/1.png"),
+            image_id="[ID: u1]",
+            voiceover="a",
+        ),
+        FrameImageBatchItem(
+            frame=frames[1],
+            image_path=Path("/2.png"),
+            image_id="[ID: u2]",
+            voiceover="b",
+        ),
+    ]
+    # Два абзаца без ID — раньше zip клал их в F1/F2 вперемешку с риском ошибки.
+    reply = (
+        "Slow push on wrong scene, NO VOICE.\n\n"
+        "Gentle pan that belonged to another frame, silent."
+    )
+    pairs = parse_animation_reply(reply, frames, batch_items=batch)
+    assert pairs == []
+
+
 def test_parse_animation_reply_json_apply_ops_all_frames() -> None:
     from app.services.animation_prompt_gpt import parse_animation_reply
 

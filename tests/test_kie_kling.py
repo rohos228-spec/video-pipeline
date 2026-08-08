@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from app.bots import kie_kling as kk
@@ -117,6 +118,60 @@ async def test_generate_video_t2v_without_frame(
     monkeypatch.setattr(kk, "_download", _dl)
 
     await kk.generate_video("hello", tmp_path / "t.mp4", generate_audio=False)
+
+
+@pytest.mark.asyncio
+async def test_generate_video_fails_if_start_frame_host_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(kk, "kie_api_configured", lambda: True)
+    monkeypatch.setattr(kk, "_frame_to_public_url", AsyncMock(return_value=None))
+    frame = tmp_path / "f.png"
+    frame.write_bytes(b"png")
+    with pytest.raises(kk.KieKlingError) as ei:
+        await kk.generate_video("hello", tmp_path / "t.mp4", start_frame=frame)
+    assert ei.value.context.get("error_kind") == "frame_host"
+
+
+@pytest.mark.asyncio
+async def test_poll_retries_transport_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(kk, "kie_api_key", lambda: "k")
+    monkeypatch.setattr(kk, "kie_api_base_url", lambda: "https://api.kie.ai")
+    monkeypatch.setattr(kk, "_POLL_INTERVAL_S", 0.01)
+    calls = {"n": 0}
+
+    class FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {
+                "code": 200,
+                "data": {
+                    "taskId": "t",
+                    "state": "success",
+                    "resultJson": json.dumps(
+                        {"resultUrls": ["https://cdn.example/v.mp4"]}
+                    ),
+                },
+            }
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def get(self, *a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise httpx.ReadError("boom")
+            return FakeResp()
+
+    monkeypatch.setattr(kk.httpx, "AsyncClient", lambda **k: FakeClient())
+    data = await kk._poll_task("t", timeout_s=30)
+    assert data["state"] == "success"
+    assert calls["n"] == 2
 
 
 @pytest.mark.asyncio

@@ -157,13 +157,44 @@ async def _create_task(body: dict[str, Any]) -> str:
 async def _poll_task(task_id: str, *, timeout_s: float) -> dict[str, Any]:
     url = f"{kie_api_base_url()}{_DETAIL_PATH}"
     deadline = asyncio.get_event_loop().time() + max(30.0, timeout_s)
+    net_fail_streak = 0
     async with httpx.AsyncClient(timeout=60.0) as client:
         while True:
-            r = await client.get(
-                url,
-                headers=_auth_headers(),
-                params={"taskId": task_id},
-            )
+            try:
+                r = await client.get(
+                    url,
+                    headers=_auth_headers(),
+                    params={"taskId": task_id},
+                )
+                net_fail_streak = 0
+            except (httpx.TransportError, httpx.TimeoutException) as e:
+                net_fail_streak += 1
+                logger.warning(
+                    "kie_kling: poll net error {}/8 taskId={} ({})",
+                    net_fail_streak,
+                    task_id,
+                    type(e).__name__,
+                )
+                if net_fail_streak >= 8:
+                    raise KieKlingError(
+                        f"kie Kling: сеть при poll task {task_id}: {type(e).__name__}",
+                        context={
+                            "provider_code": 503,
+                            "task_id": task_id,
+                            "kind": "network",
+                        },
+                    ) from e
+                if asyncio.get_event_loop().time() >= deadline:
+                    raise KieKlingError(
+                        f"kie Kling: таймаут ожидания task {task_id}",
+                        context={
+                            "provider_code": 504,
+                            "task_id": task_id,
+                            "kind": "timeout",
+                        },
+                    ) from e
+                await asyncio.sleep(_POLL_INTERVAL_S)
+                continue
             try:
                 payload = r.json()
             except Exception:  # noqa: BLE001
@@ -291,6 +322,18 @@ async def generate_video(
     sound = bool(generate_audio)
     image_url = await _frame_to_public_url(start_frame)
     gid = gen_id or uuid4().hex[:12]
+
+    # Пайплайн всегда передаёт start_frame: без публичного URL нельзя уходить в t2v
+    # (молча «успех без картинки» = вечный баг «не приложилось»).
+    if start_frame is not None and not image_url:
+        raise KieKlingError(
+            "kie Kling: start_frame передан, но public image_url не получен (host/upload)",
+            context={
+                "provider_code": 502,
+                "error_kind": "frame_host",
+                "project_id": project_id,
+            },
+        )
 
     if image_url:
         model = KLING_I2V_MODEL

@@ -418,11 +418,32 @@ async def _save_anim_pr_batch(
     *,
     shot: int,
 ) -> None:
+    # Целый JSON-blob в reply не должен попасть в R48 одним куском.
+    if apg.is_apply_ops_blob(reply) and not apg.parse_apply_ops_animation_reply(
+        reply, frames
+    ):
+        raise RuntimeError(
+            f"anim_pr: ответ — битый JSON apply-ops для кадров "
+            f"{[it.frame.number for it in batch]} (shot_0{shot})"
+        )
+
     pairs = apg.parse_animation_reply(reply, frames, batch_items=batch)
     if not pairs:
         raise RuntimeError(
             "ChatGPT не вернул пары «ID изображения» / «текст анимации» "
             f"для кадров {[it.frame.number for it in batch]} (shot_0{shot})"
+        )
+    # Защита: никогда не писать сырой JSON в промт кадра.
+    pairs = [
+        p
+        for p in pairs
+        if not apg.is_apply_ops_blob(p.animation_text)
+        and len(p.animation_text.strip()) >= apg.MIN_ANIM_PROMPT_LEN
+    ]
+    if not pairs:
+        raise RuntimeError(
+            f"anim_pr: после фильтра blob/коротких текстов нет валидных пар "
+            f"для {[it.frame.number for it in batch]} (shot_0{shot})"
         )
 
     plan_row = 48 if shot == 1 else 64

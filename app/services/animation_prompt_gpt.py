@@ -188,22 +188,30 @@ def hydrate_voiceovers_from_plan(project: Project, frames: list[Frame]) -> int:
     return n
 
 
+def panel_label_for_item(it: FrameImageBatchItem) -> str:
+    """Текст на панели ленты: F003 — совпадает со списком в batch-сообщении."""
+    return f"F{it.frame.number:03d}"
+
+
 def build_batch_message(items: list[FrameImageBatchItem]) -> str:
     """Текст к пачке: одна PNG-лента + uuid/закадровый; ответ — JSON apply-ops."""
     n = len(items)
     parts: list[str] = [
         "Прикреплено одно изображение-лента: кадры идут слева направо, "
         "между ними тонкие белые вертикальные разделители.",
+        "На каждой панели снизу чёрная метка FNNN (номер кадра) — "
+        "привязывай промт ТОЛЬКО по frame_uuid из списка, не по догадке о порядке.",
         "Порядок слева → направо совпадает со списком ниже.",
         "",
         f"Верни ТОЛЬКО JSON apply-ops на все {n} кадров (без markdown, без прозы):",
         '{"ops":[{"frame_uuid":"…","fields":{"промт_видео":"…"}}, …]}',
         f"Ровно {n} объектов в ops — по одному на каждый frame_uuid ниже.",
+        "Нельзя писать весь JSON в одно поле промта — только короткий текст анимации.",
         "",
     ]
     for pos, it in enumerate(items, start=1):
         uuid = (getattr(it.frame, "uuid", None) or "").strip() or it.image_id
-        parts.append(f"Позиция {pos} (слева→направо)")
+        parts.append(f"Позиция {pos} (слева→направо) метка={panel_label_for_item(it)}")
         parts.append(f"frame_uuid: {uuid}")
         parts.append(f"ID изображения: {it.image_id}")
         parts.append(f"Закадровый текст: {it.voiceover}")
@@ -229,6 +237,7 @@ def build_batch_strip_path(items: list[FrameImageBatchItem], out_dir: Path) -> P
         gutter_px=STRIP_GUTTER_PX,
         max_height=STRIP_MAX_HEIGHT_PX,
         max_bytes=STRIP_MAX_BYTES,
+        panel_labels=[panel_label_for_item(it) for it in items],
     )
 
 
@@ -403,6 +412,7 @@ def build_batch_message_shot2(items: list[FrameImageBatchItem]) -> str:
     parts: list[str] = [
         "Прикреплено одно изображение-лента: это вторые кадры сцен (shot_02), "
         "слева направо, между ними тонкие белые вертикальные разделители.",
+        "На каждой панели снизу метка FNNN — привязывай промт только по frame_uuid.",
         "Порядок слева → направо совпадает со списком ниже.",
         "",
         f"Верни ТОЛЬКО JSON apply-ops на все {n} shot_02 (без markdown):",
@@ -412,7 +422,9 @@ def build_batch_message_shot2(items: list[FrameImageBatchItem]) -> str:
     ]
     for pos, it in enumerate(items, start=1):
         uuid = (getattr(it.frame, "uuid", None) or "").strip() or it.image_id
-        parts.append(f"Позиция {pos} (слева→направо, shot_02)")
+        parts.append(
+            f"Позиция {pos} (слева→направо, shot_02) метка={panel_label_for_item(it)}"
+        )
         parts.append(f"frame_uuid: {uuid}")
         parts.append(f"ID изображения: {it.image_id}")
         parts.append(f"Закадровый текст сцены: {it.voiceover}")
@@ -744,14 +756,24 @@ def parse_animation_reply(
 
     Сначала JSON apply-ops (мастер-промт veo31), затем legacy
     «ID изображения» / «текст анимации».
+
+    Позиционный zip «чанк N → кадр N» запрещён: он перепутывал промты
+    между кадрами при сбое порядка/частичном JSON.
     """
+    batch_nums = {it.frame.number for it in batch_items}
+
     json_pairs = parse_apply_ops_animation_reply(reply, frames)
     if json_pairs:
-        # Если JSON есть — не кормим fallback целым blob'ом в первый кадр.
-        return json_pairs
+        # Только кадры этой пачки; чужие uuid игнорируем.
+        return [p for p in json_pairs if p.frame_number in batch_nums]
+
+    # Целый apply-ops blob без разбора — не раскладываем по позициям.
+    if is_apply_ops_blob(reply or ""):
+        return []
 
     results: list[ParsedAnimationPair] = []
     seen_frames: set[int] = set()
+    batch_ids = {(it.image_id or "").strip() for it in batch_items}
 
     for m in _REPLY_BLOCK_RE.finditer(reply or ""):
         image_id = (m.group("id") or "").strip()
@@ -760,15 +782,15 @@ def parse_animation_reply(
             continue
         fr = _frame_from_image_id(frames, image_id)
         if fr is None:
-            # Попробуем сопоставить по закадровому из batch (порядок ID в ответе)
-            for it in batch_items:
-                if it.image_id in image_id or image_id in it.image_id:
-                    fr = it.frame
-                    break
-        if fr is None:
             continue
-        if fr.number in seen_frames:
+        if fr.number not in batch_nums or fr.number in seen_frames:
             continue
+        # Без fuzzy «id in id»: только точное сопоставление через uuid/ID.
+        if batch_ids and image_id not in batch_ids:
+            # Допуск: модель вернула сырой uuid без обёртки [ID: …]
+            uid = (fr.uuid or "").strip()
+            if uid and uid not in image_id and image_id not in uid:
+                continue
         seen_frames.add(fr.number)
         results.append(
             ParsedAnimationPair(
@@ -778,29 +800,4 @@ def parse_animation_reply(
             )
         )
 
-    # Fallback: порядок блоков = порядок кадров в batch (если ID не распознаны)
-    if len(results) < len(batch_items) and not is_apply_ops_blob(reply or ""):
-        got = {p.frame_number for p in results if p.frame_number is not None}
-        chunks = [c.strip() for c in re.split(r"\n{2,}", reply or "") if c.strip()]
-        for it, chunk in zip(batch_items, chunks, strict=False):
-            if it.frame.number in got:
-                continue
-            anim = _clean_animation_text(chunk)
-            if len(anim) < 10:
-                m_anim = re.search(
-                    r"текст\s+анимации\s*:\s*(.+)",
-                    chunk,
-                    re.IGNORECASE | re.DOTALL,
-                )
-                if m_anim:
-                    anim = _clean_animation_text(m_anim.group(1))
-            if len(anim) >= 10 and not is_apply_ops_blob(anim):
-                got.add(it.frame.number)
-                results.append(
-                    ParsedAnimationPair(
-                        image_id=it.image_id,
-                        animation_text=anim,
-                        frame_number=it.frame.number,
-                    )
-                )
     return results
