@@ -44,6 +44,8 @@ export interface PipelineNodeData extends Record<string, unknown> {
   label?: string;
   description?: string;
   slotIndex?: number;
+  /** Нода вне enrich-слотов 1..5 (например проверки scene-веера) — запуск по node_key. */
+  slotOverflow?: boolean;
   inputSource?: ExcelGptInputSource;
   uploadedFileName?: string;
   workMode?: ExcelGptWorkMode;

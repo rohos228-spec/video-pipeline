@@ -41,6 +41,9 @@ class GroupNodeSpec:
     dy: float  # смещение по вертикали относительно центра группы
     marker: str | None = None  # data.sd_agent
     prompt_variant: str | None = None  # файл в 05_excel_gpt (sd_<агент>)
+    slot_overflow: bool = False  # data.slotOverflow — вне enrich-слотов 1..5
+    # Конфиг «Работы с GPT» → meta.excel_gpt_nodes[node_id] (проверки и т.п.)
+    operator_config: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -53,19 +56,51 @@ class NodeGroupDef:
     category: str  # planning / objects / enrich / media / audio / assembly / publish
     default_after_type: str  # после ноды этого типа вшивать по умолчанию
     nodes: tuple[GroupNodeSpec, ...]
-    internal_edges: tuple[tuple[str, str], ...]  # (local src, local tgt)
+    # (local src, local tgt, kind): kind = after|pass|fail (pass=«Ок», fail=«Не ок»)
+    internal_edges: tuple[tuple[str, str, str], ...]
     entry_keys: tuple[str, ...]  # локальные ключи нод, принимающих внешний вход
     exit_key: str  # локальный ключ ноды-выхода
     project_meta: dict[str, Any] = field(default_factory=dict)
     # Типы нод, которые группа ЗАМЕНЯЕТ на канвасе (монолит scene_design
     # удаляется при вставке веера, pipeline-рёбра перекидываются мостом).
     replaces_types: tuple[str, ...] = ()
+    # kind рёбер от выхода группы к старым целям якоря («pass» — через вердикт).
+    exit_edge_kind: str = "after"
+
+
+# Конфиг ноды проверки — как в эталонном проекте «nicshe» (#50):
+# тумблер «Проверка» + «Чинить», правила — промт ноды-источника (upstream).
+_CHECK_OPERATOR_CONFIG: dict[str, Any] = {
+    "outputMode": "text",
+    "emitKinds": ["inputs", "reply_txt"],
+    "checkMode": True,
+    "checkFix": True,
+    "checkPromptSource": "upstream",
+    "transport": "api",
+}
+
+
+def _check_spec(local_key: str, label: str, descr: str, dx: float, dy: float) -> GroupNodeSpec:
+    return GroupNodeSpec(
+        local_key=local_key,
+        node_type="excel_gpt",
+        label=label,
+        description=descr,
+        preferred_id=f"n_excel_gpt_sd_{local_key}",
+        dx=dx,
+        dy=dy,
+        slot_overflow=True,  # проверки не занимают enrich-слоты 1..5
+        operator_config=dict(_CHECK_OPERATOR_CONFIG),
+    )
 
 
 def _scene_design_group() -> NodeGroupDef:
     agents: list[GroupNodeSpec] = []
+    checks: list[GroupNodeSpec] = []
+    edges: list[tuple[str, str, str]] = []
     mid = (len(SD_FANOUT) - 1) / 2
     for i, (agent, label, descr) in enumerate(SD_FANOUT):
+        dy = (i - mid) * _FAN_DY
         agents.append(
             GroupNodeSpec(
                 local_key=agent,
@@ -74,37 +109,62 @@ def _scene_design_group() -> NodeGroupDef:
                 description=descr,
                 preferred_id=f"n_excel_gpt_sd_{agent}",
                 dx=_STEP_X,
-                dy=(i - mid) * _FAN_DY,
+                dy=dy,
                 marker=agent,
                 prompt_variant=f"sd_{agent}",
             )
         )
+        check_key = f"check_{agent}"
+        short = label.removeprefix("GPT: ")
+        checks.append(
+            _check_spec(
+                check_key,
+                f"Проверка: {short}",
+                f"Проверка ответа агента «{short}» по его промту (как в nicshe)",
+                dx=_STEP_X * 2,
+                dy=dy,
+            )
+        )
+        # агент → своя проверка; «Ок» → сборщик; «Не ок» → назад агенту.
+        edges.append((agent, check_key, "after"))
+        edges.append((check_key, "assemble", "pass"))
+        edges.append((check_key, agent, "fail"))
     asm = GroupNodeSpec(
         local_key="assemble",
         node_type="excel_gpt",
         label="GPT: сборка сцен",
         description="Финальный агент-сборщик: ячейки → scene_registry + attrs кадров",
         preferred_id="n_excel_gpt_sd_asm",
-        dx=_STEP_X * 2,
+        dx=_STEP_X * 3,
         dy=0.0,
         marker="assemble",
         prompt_variant="sd_assemble",
     )
+    check_asm = _check_spec(
+        "check_asm",
+        "Проверка: сборка сцен",
+        "Проверка scene_registry и attrs кадров по промту сборщика",
+        dx=_STEP_X * 4,
+        dy=0.0,
+    )
+    edges.append(("assemble", "check_asm", "after"))
     return NodeGroupDef(
         group_id="scene_design_fanout",
         title="Сцены: веер агентов",
         description=(
             "5 GPT-агентов (персонажи/мир/стиль/камера/действие) параллельно "
-            "+ сборщик сцен. Промты sd_* из 05_excel_gpt выставляются сразу."
+            "+ сборщик сцен; после каждой ноды — её проверка (Ок/Не ок). "
+            "Промты sd_* из 05_excel_gpt выставляются сразу."
         ),
         category="planning",
         default_after_type="split",
-        nodes=(*agents, asm),
-        internal_edges=tuple((a, "assemble") for a, _l, _d in SD_FANOUT),
+        nodes=(*agents, *checks, asm, check_asm),
+        internal_edges=tuple(edges),
         entry_keys=tuple(a for a, _l, _d in SD_FANOUT),
-        exit_key="assemble",
+        exit_key="check_asm",
         project_meta={"scene_design_enabled": True},
         replaces_types=("scene_design",),
+        exit_edge_kind="pass",
     )
 
 
@@ -331,6 +391,8 @@ async def insert_node_group(
         data: dict[str, Any] = {"label": spec.label, "description": spec.description}
         if spec.marker:
             data["sd_agent"] = spec.marker
+        if spec.slot_overflow:
+            data["slotOverflow"] = True
         new_nodes.append(
             {
                 "id": local_to_id[spec.local_key],
@@ -351,30 +413,41 @@ async def insert_node_group(
         )
     ]
 
-    def _edge(src: str, tgt: str, eid: str) -> dict:
-        return {
+    _EDGE_LABELS = {"pass": "Ок", "fail": "Не ок"}
+
+    def _edge(src: str, tgt: str, eid: str, kind: str = "after") -> dict:
+        e: dict[str, Any] = {
             "id": eid,
             "source": src,
             "target": tgt,
             "sourceHandle": "out",
             "targetHandle": "in",
+            "data": {"kind": kind},
         }
+        label = _EDGE_LABELS.get(kind)
+        if label:
+            e["label"] = label
+            e["data"]["label"] = label
+        return e
 
     for key in group.entry_keys:
         out_edges.append(
             _edge(anchor_id, local_to_id[key], f"e_{anchor_id}_{local_to_id[key]}")
         )
-    for src_key, tgt_key in group.internal_edges:
+    for src_key, tgt_key, kind in group.internal_edges:
         out_edges.append(
             _edge(
                 local_to_id[src_key],
                 local_to_id[tgt_key],
                 f"e_{local_to_id[src_key]}_{local_to_id[tgt_key]}",
+                kind,
             )
         )
     exit_id = local_to_id[group.exit_key]
     for tgt in old_targets:
-        out_edges.append(_edge(exit_id, tgt, f"e_{exit_id}_{tgt}"))
+        out_edges.append(
+            _edge(exit_id, tgt, f"e_{exit_id}_{tgt}", group.exit_edge_kind)
+        )
 
     all_nodes = nodes + new_nodes
     new_ids = [n["id"] for n in new_nodes]
@@ -389,6 +462,18 @@ async def insert_node_group(
         if spec.prompt_variant:
             variants[local_to_id[spec.local_key]] = {"main": spec.prompt_variant}
     meta["prompt_slot_variants"] = variants
+
+    # Конфиги «Работы с GPT» (тумблер «Проверка» у check-нод и т.п.).
+    # У проверок промта в variants нет — правила тянутся с промта источника
+    # (checkPromptSource=upstream), как в эталонном «nicshe».
+    egn = meta.get("excel_gpt_nodes")
+    egn = dict(egn) if isinstance(egn, dict) else {}
+    for rid in removed_replaced:
+        egn.pop(rid, None)
+    for spec in group.nodes:
+        if spec.operator_config:
+            egn[local_to_id[spec.local_key]] = dict(spec.operator_config)
+    meta["excel_gpt_nodes"] = egn
 
     # Флаги проекта из группы (например scene_design_enabled).
     for k, v in group.project_meta.items():
@@ -426,5 +511,8 @@ async def insert_node_group(
             for s in group.nodes
             if s.prompt_variant
         },
+        "check_nodes": [
+            local_to_id[s.local_key] for s in group.nodes if s.operator_config
+        ],
         "project_meta": dict(group.project_meta),
     }

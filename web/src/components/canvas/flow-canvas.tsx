@@ -1772,6 +1772,7 @@ function workflowToReactFlowNodes(
         label: (typeof data.label === "string" && data.label.trim()) || spec.label,
         description: (data.description as string | undefined) ?? spec.description,
         slotIndex: data.slotIndex as number | undefined,
+        slotOverflow: data.slotOverflow === true ? true : undefined,
         inputSource: data.inputSource as PipelineNodeData["inputSource"],
         uploadedFileName: data.uploadedFileName as string | undefined,
         workMode: data.workMode as PipelineNodeData["workMode"],

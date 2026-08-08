@@ -106,19 +106,47 @@ async def _mk_project(session: AsyncSession, *, with_canvas: bool = True) -> Pro
     return project
 
 
+_AGENTS = ("characters", "world", "style", "camera", "action")
+
+
 def test_catalog_has_scene_fanout() -> None:
     groups = list_node_groups()
     fan = next(g for g in groups if g["id"] == "scene_design_fanout")
     assert fan["category"] == "planning"
-    assert fan["node_count"] == 6
+    assert fan["node_count"] == 12  # 5 агентов + 5 проверок + сборщик + его проверка
     assert fan["default_after_type"] == "split"
     keys = {n["key"] for n in fan["nodes"]}
-    assert keys == {"characters", "world", "style", "camera", "action", "assemble"}
+    assert keys == {
+        *_AGENTS,
+        "assemble",
+        "check_asm",
+        *(f"check_{a}" for a in _AGENTS),
+    }
     grp = get_node_group("scene_design_fanout")
     assert grp is not None
     assert grp.project_meta.get("scene_design_enabled") is True
+    assert grp.exit_key == "check_asm"
+    assert grp.exit_edge_kind == "pass"
     for spec in grp.nodes:
-        assert spec.prompt_variant and spec.prompt_variant.startswith("sd_")
+        if spec.marker:
+            # рабочие ноды (агенты + сборщик) — со своими промтами sd_*
+            assert spec.prompt_variant and spec.prompt_variant.startswith("sd_")
+            assert spec.operator_config is None
+        else:
+            # проверки — без своего промта, правила с промта источника
+            assert spec.prompt_variant is None
+            cfg = spec.operator_config
+            assert cfg and cfg["checkMode"] is True
+            assert cfg["checkFix"] is True
+            assert cfg["checkPromptSource"] == "upstream"
+            assert spec.slot_overflow is True
+    # Топология рёбер: агент → проверка →(Ок)→ сборщик, проверка →(Не ок)→ агент.
+    edge_map = {(s, t): k for s, t, k in grp.internal_edges}
+    for a in _AGENTS:
+        assert edge_map[(a, f"check_{a}")] == "after"
+        assert edge_map[(f"check_{a}", "assemble")] == "pass"
+        assert edge_map[(f"check_{a}", a)] == "fail"
+    assert edge_map[("assemble", "check_asm")] == "after"
 
 
 async def test_insert_fanout_after_split(mem_db) -> None:
@@ -127,12 +155,12 @@ async def test_insert_fanout_after_split(mem_db) -> None:
         res = await insert_node_group(session, project, "scene_design_fanout")
 
     assert res["after"] == "n_split"
-    assert len(res["nodes"]) == 6
+    assert len(res["nodes"]) == 12
     cg = project.meta["canvas_graph"]
     by_id = {n["id"]: n for n in cg["nodes"]}
     split_x = by_id["n_split"]["position"]["x"]
     split_y = by_id["n_split"]["position"]["y"]
-    for agent in ("characters", "world", "style", "camera", "action"):
+    for agent in _AGENTS:
         nid = f"n_excel_gpt_sd_{agent}"
         n = by_id[nid]
         assert n["type"] == "excel_gpt"
@@ -140,17 +168,47 @@ async def test_insert_fanout_after_split(mem_db) -> None:
         assert "slotIndex" not in n["data"]  # веер слоты enrich не занимает
         assert n["position"]["x"] == split_x + 290.0
         assert project.meta["prompt_slot_variants"][nid] == {"main": f"sd_{agent}"}
+        # проверка агента — рядом, вне enrich-слотов, с тумблером «Проверка»
+        chk = by_id[f"n_excel_gpt_sd_check_{agent}"]
+        assert chk["type"] == "excel_gpt"
+        assert "sd_agent" not in chk["data"]
+        assert chk["data"]["slotOverflow"] is True
+        assert chk["position"]["x"] == split_x + 580.0
+        assert chk["position"]["y"] == n["position"]["y"]
+        cfg = project.meta["excel_gpt_nodes"][f"n_excel_gpt_sd_check_{agent}"]
+        assert cfg["checkMode"] is True
+        assert cfg["checkFix"] is True
+        assert cfg["checkPromptSource"] == "upstream"
+        # у проверки нет своего промта — правила с промта агента
+        assert f"n_excel_gpt_sd_check_{agent}" not in project.meta["prompt_slot_variants"]
     asm = by_id["n_excel_gpt_sd_asm"]
     assert asm["data"]["sd_agent"] == "assemble"
-    assert asm["position"]["x"] == split_x + 580.0
+    assert asm["position"]["x"] == split_x + 870.0
     assert asm["position"]["y"] == split_y
+    check_asm = by_id["n_excel_gpt_sd_check_asm"]
+    assert check_asm["position"]["x"] == split_x + 1160.0
+    assert check_asm["position"]["y"] == split_y
+    assert project.meta["excel_gpt_nodes"]["n_excel_gpt_sd_check_asm"]["checkMode"] is True
 
     pairs = {(e["source"], e["target"]) for e in cg["edges"]}
     assert ("n_split", "n_hero") not in pairs  # перешито
-    for agent in ("characters", "world", "style", "camera", "action"):
+    for agent in _AGENTS:
         assert ("n_split", f"n_excel_gpt_sd_{agent}") in pairs
-        assert (f"n_excel_gpt_sd_{agent}", "n_excel_gpt_sd_asm") in pairs
-    assert ("n_excel_gpt_sd_asm", "n_hero") in pairs
+        assert (f"n_excel_gpt_sd_{agent}", f"n_excel_gpt_sd_check_{agent}") in pairs
+        assert (f"n_excel_gpt_sd_check_{agent}", "n_excel_gpt_sd_asm") in pairs
+        # петля «Не ок»: проверка → назад агенту
+        assert (f"n_excel_gpt_sd_check_{agent}", f"n_excel_gpt_sd_{agent}") in pairs
+    assert ("n_excel_gpt_sd_asm", "n_excel_gpt_sd_check_asm") in pairs
+    assert ("n_excel_gpt_sd_check_asm", "n_hero") in pairs
+
+    # kind рёбер: «Ок»/«Не ок» как в nicshe.
+    kinds = {(e["source"], e["target"]): (e.get("data") or {}).get("kind") for e in cg["edges"]}
+    assert kinds[("n_excel_gpt_sd_check_camera", "n_excel_gpt_sd_asm")] == "pass"
+    assert kinds[("n_excel_gpt_sd_check_camera", "n_excel_gpt_sd_camera")] == "fail"
+    assert kinds[("n_excel_gpt_sd_check_asm", "n_hero")] == "pass"
+    labels = {(e["source"], e["target"]): e.get("label") for e in cg["edges"]}
+    assert labels[("n_excel_gpt_sd_check_camera", "n_excel_gpt_sd_asm")] == "Ок"
+    assert labels[("n_excel_gpt_sd_check_camera", "n_excel_gpt_sd_camera")] == "Не ок"
 
     assert project.meta["scene_design_enabled"] is True
 
@@ -199,7 +257,7 @@ async def test_insert_explicit_after(mem_db) -> None:
     pairs = {(e["source"], e["target"]) for e in cg["edges"]}
     assert ("n_plan", "n_script") not in pairs
     assert ("n_plan", "n_excel_gpt_sd_characters") in pairs
-    assert ("n_excel_gpt_sd_asm", "n_script") in pairs
+    assert ("n_excel_gpt_sd_check_asm", "n_script") in pairs
 
 
 async def test_insert_without_canvas_uses_default_workflow(mem_db) -> None:
@@ -248,5 +306,5 @@ async def test_insert_replaces_legacy_scene_design_node(mem_db) -> None:
     pairs = {(e["source"], e["target"]) for e in cg["edges"]}
     assert not any("n_scene_design" in p for p in pairs)
     assert ("n_split", "n_excel_gpt_sd_camera") in pairs
-    assert ("n_excel_gpt_sd_asm", "n_hero") in pairs
+    assert ("n_excel_gpt_sd_check_asm", "n_hero") in pairs
     assert "n_scene_design" not in project.meta["prompt_slot_variants"]

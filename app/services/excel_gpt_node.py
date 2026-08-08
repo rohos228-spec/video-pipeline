@@ -143,14 +143,21 @@ def slot_index_from_node(node: dict[str, Any]) -> int:
 def assign_slot_indices(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Нумерует excel_gpt ноды слева направо (1..5). Лишние — без slotIndex.
 
-    Ноды с маркером sd_agent (scene-агенты) слоты не занимают.
+    Ноды с маркером sd_agent (scene-агенты) слоты не занимают. Ноды с
+    явным data.slotOverflow (проверки scene-веера и т.п.) закреплены вне
+    слотов: нумерацию пропускают, флаг сохраняют.
     """
+    def _pinned_overflow(n: dict[str, Any]) -> bool:
+        data = n.get("data")
+        return isinstance(data, dict) and data.get("slotOverflow") is True
+
     excel_nodes = sorted(
         [
             n
             for n in nodes
             if is_excel_gpt_node_type(str(n.get("type") or ""))
             and not sd_agent_marker(n)
+            and not _pinned_overflow(n)
         ],
         key=lambda n: float((n.get("position") or {}).get("x", 0)),
     )
@@ -170,6 +177,17 @@ def assign_slot_indices(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         label = str(data.get("label") or "").strip()
         if not label or is_legacy_enrich_label(label):
             data["label"] = default_excel_gpt_label(MAX_EXCEL_GPT_SLOTS)
+        out.append({**n, "data": data, "type": EXCEL_GPT_NODE_TYPE})
+    # Закреплённые overflow-ноды: флаг сохранить, slotIndex не давать.
+    for n in nodes:
+        if not (
+            is_excel_gpt_node_type(str(n.get("type") or ""))
+            and not sd_agent_marker(n)
+            and _pinned_overflow(n)
+        ):
+            continue
+        data = dict(n.get("data") or {})
+        data.pop("slotIndex", None)
         out.append({**n, "data": data, "type": EXCEL_GPT_NODE_TYPE})
     keyed = {n["id"]: n for n in out}
     result: list[dict[str, Any]] = []

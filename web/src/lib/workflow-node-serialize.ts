@@ -45,6 +45,11 @@ export function workflowNodeFromCanvas(n: Node): WorkflowNode {
   const legacySlot = slotFromLegacyType(d.type);
   if (legacySlot != null) data.slotIndex = legacySlot;
   if (typeof d.slotIndex === "number") data.slotIndex = d.slotIndex;
+  // slotOverflow (проверки scene-веера и т.п.) — вне enrich-слотов, не терять.
+  if (d.slotOverflow === true) {
+    data.slotOverflow = true;
+    delete data.slotIndex;
+  }
   if (typeof d.inputSource === "string") data.inputSource = d.inputSource;
   if (typeof d.uploadedFileName === "string") data.uploadedFileName = d.uploadedFileName;
   if (typeof d.workMode === "string") data.workMode = d.workMode;
@@ -66,14 +71,22 @@ export function assignExcelGptSlotIndices(nodes: WorkflowNode[]): WorkflowNode[]
   const isSceneAgent = (n: WorkflowNode) =>
     typeof (n.data as Record<string, unknown> | undefined)?.sd_agent === "string" ||
     typeof (n.data as Record<string, unknown> | undefined)?.agent === "string";
+  // slotOverflow — закреплённые вне слотов (проверки scene-веера): не трогаем.
+  const isOverflow = (n: WorkflowNode) =>
+    (n.data as Record<string, unknown> | undefined)?.slotOverflow === true;
   const excel = nodes
-    .filter((n) => n.type === "excel_gpt" && !isSceneAgent(n))
+    .filter((n) => n.type === "excel_gpt" && !isSceneAgent(n) && !isOverflow(n))
     .sort((a, b) => (a.position?.x ?? 0) - (b.position?.x ?? 0));
   const slotById = new Map<string, number>();
   excel.forEach((n, i) => slotById.set(n.id, Math.min(i + 1, 5)));
   return nodes.map((n) => {
     if (n.type !== "excel_gpt") return n;
     if (isSceneAgent(n)) {
+      const data = { ...(n.data || {}) } as Record<string, unknown>;
+      delete data.slotIndex;
+      return { ...n, data };
+    }
+    if (isOverflow(n)) {
       const data = { ...(n.data || {}) } as Record<string, unknown>;
       delete data.slotIndex;
       return { ...n, data };

@@ -41,6 +41,50 @@ async def _load_frames(session: AsyncSession, project: Project) -> list[Frame]:
     )
 
 
+def _sd_node_ids_by_marker(project: Project) -> dict[str, str]:
+    """marker (characters/…/assemble) → node id на канвасе проекта."""
+    from app.services.canvas_graph import canvas_graph_from_meta
+    from app.services.excel_gpt_node import sd_agent_marker
+
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    cg = canvas_graph_from_meta(meta) or {}
+    out: dict[str, str] = {}
+    for n in cg.get("nodes") or []:
+        if not isinstance(n, dict):
+            continue
+        marker = sd_agent_marker(n)
+        nid = str(n.get("id") or "").strip()
+        if marker and nid:
+            out[marker] = nid
+    return out
+
+
+def _write_sd_reply_file(project: Project, marker: str, payload: object) -> None:
+    """Ответ агента/сборщика → excel_gpt_uploads/<нода>/ — вход для ноды проверки
+    (files_from_source_node для excel_gpt сканирует именно эту папку)."""
+    import json
+
+    from app.services.excel_gpt_node import upload_dir
+
+    nid = _sd_node_ids_by_marker(project).get(marker)
+    if not nid:
+        return
+    try:
+        udir = upload_dir(project, nid)
+        udir.mkdir(parents=True, exist_ok=True)
+        (udir / f"sd_{marker}_reply.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=1),
+            encoding="utf-8",
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] scene_design: reply-файл для {} не записан: {}",
+            project.id,
+            marker,
+            e,
+        )
+
+
 async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -> None:
     """Фаза 1: категорийные агенты (параллельно) → staging-ячейки."""
     if project.status is not ProjectStatus.scene_designing:
@@ -84,6 +128,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
             cell_stats[agent_name] = await sd_cells.store_cells(
                 session, project, agent_name, converted
             )
+            # Ответ агента на диск ноды — материал для её ноды проверки.
+            _write_sd_reply_file(project, agent_name, slice_data)
         logger.info("[#{}] scene_design cells: {}", project.id, cell_stats)
 
         runner.mark_agents_done(project)
@@ -188,6 +234,8 @@ async def run_assemble(
             )
 
         applied = await sd_apply.apply_scene_design(session, project, payload)
+        # Пayload сборщика на диск ноды — материал для «Проверка: сборка сцен».
+        _write_sd_reply_file(project, "assemble", payload)
         runner.mark_done(project, str(payload.get("report") or ""))
         project.status = ProjectStatus.scene_design_ready
         await session.flush()
