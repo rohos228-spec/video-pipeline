@@ -19,12 +19,13 @@
      промтом. Если и она провалилась — пробрасывает последнюю ошибку
      из второй серии (caller сам решит, что делать).
 
-  Видео (`generate_video_with_retries`): после 3 сбоев генерации переключает
-  outsee на Kling 2.5 Turbo, 720p и соотношение «Исходное»; дальнейшие
-  попытки (включая раунд GPT-rewrite) идут уже с этими параметрами.
+  Видео (`generate_video_with_retries`) — лестница на клип:
+    1) primary (Veo / модель проекта): 3 попытки с заменой текста промта
+    2) primary: ещё 1 финальная попытка
+    3) один раз смена модели → Kling 2.6 (kie.ai), без отката
+    4) Kling: 3 попытки → VideoLadderExhaustedError (пропуск кадра)
 
-  3) Если `gpt=None` или GPT-rewrite сам упал — caller получит
-     последнюю ошибку первой серии.
+  3) Если `gpt=None` или GPT-rewrite сам упал — идём с локальной санацией.
 
 Использование:
     result = await generate_image_with_retries(
@@ -73,14 +74,26 @@ from app.bots.outsee import (
     outsee_error_kind_label,
 )
 from app.generation_options import (
+    KIE_KLING_FALLBACK_SLUG,
+    KIE_KLING_PROMPT_MAX_CHARS,
     OUTSEE_PROMPT_MAX_CHARS,
     OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES,
+    VIDEO_FALLBACK_ATTEMPTS,
+    VIDEO_PRIMARY_REWRITE_ATTEMPTS,
+    VIDEO_PRIMARY_TOTAL_ATTEMPTS,
     outsee_video_fallback_fields,
     prepend_gen_id,
     strip_prompt_id_lines,
 )
 from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 from app.services.step_cancel import StepCancelledError
+from app.services.video_error_policy import (
+    VideoErrorAction,
+    VideoLadderExhaustedError,
+    classify_video_error,
+    ladder_summary,
+    should_rewrite_after_primary_burn,
+)
 from app.services.video_prompt_sanitize import (
     ensure_silent_video_prompt,
     sanitize_video_prompt_after_errors,
@@ -693,18 +706,14 @@ def _retry_err_label(e: OutseeImageError) -> str:
 
 
 def _apply_video_fallback_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
-    """Kling 2.5 / 720p / «Исходное» поверх настроек проекта."""
+    """Kling 2.6 slug + дефолты поверх настроек проекта (для логов/CDP)."""
     merged = dict(kwargs)
     merged.update(outsee_video_fallback_fields())
     return merged
 
 
 def _should_use_video_fallback(*, round_idx: int, gen_failures: int) -> bool:
-    """После исчерпания раунда «original» (3 попытки) — всегда fallback.
-
-    Дополнительно: если счётчик сбоев дошёл до порога внутри раунда — тоже
-    fallback (на случай max_attempts_per_prompt > 3).
-    """
+    """True после исчерпания primary (4 burns) или со 2-го раунда (compat)."""
     if round_idx > 0:
         return True
     return gen_failures >= OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES
@@ -712,11 +721,8 @@ def _should_use_video_fallback(*, round_idx: int, gen_failures: int) -> bool:
 
 def _video_fallback_active(kwargs: dict[str, Any]) -> bool:
     fb = outsee_video_fallback_fields()
-    return (
-        str(kwargs.get("model_slug") or "") == fb["model_slug"]
-        and str(kwargs.get("resolution") or "") == fb["resolution"]
-        and str(kwargs.get("aspect_ratio") or "") == fb["aspect_ratio"]
-    )
+    slug = str(kwargs.get("model_slug") or "")
+    return slug in (fb["model_slug"], KIE_KLING_FALLBACK_SLUG, "kling_2_6")
 
 
 def _uniquify_prompt_id(base: str | None, round_idx: int, attempt: int) -> str | None:
@@ -1115,28 +1121,25 @@ async def generate_video_with_retries(
     uniquify_prompt_id: bool = False,
     **kwargs: Any,
 ) -> GenerationResult:
-    """Аналог `generate_image_with_retries` для видео-генерации.
+    """Лестница видео на клип: Veo (3 rewrite + 1 final) → Kling 2.6 ×3 → skip.
 
-    1) До 3 попыток с моделью проекта (раунд «original»).
-    2) Со 2-го раунда (GPT-rewrite / fallback) — Kling 2.5 Turbo, 720p,
-       соотношение «Исходное» (по стартовому кадру).
-    3) Если в одном раунде >3 попыток — fallback также после 3 сбоев.
-
-    `outsee.generate_video` бросает тот же базовый класс `OutseeImageError`
-    при ошибках UI-уровня (не нашлась кнопка / таймаут), поэтому мы
-    переиспользуем тот же except-handler.
+    `max_attempts_per_prompt` сохранён для совместимости вызовов; фактические
+    лимиты — VIDEO_PRIMARY_TOTAL_ATTEMPTS / VIDEO_FALLBACK_ATTEMPTS.
     """
-    last_err: OutseeImageError | None = None
+    del max_attempts_per_prompt  # лестница фиксирована константами
+    last_err: BaseException | None = None
     current_prompt = prompt
     base_prompt_id = kwargs.get("prompt_id_prefix")
-    rounds: list[str] = ["original"]
-    if gpt_rewrite and gpt is not None:
-        rounds.append("rewritten")
-    else:
-        rounds.append("fallback_model")
+    primary_kwargs = dict(kwargs)
+    primary_slug = str(primary_kwargs.get("model_slug") or "veo")
 
     from app.bots.grsai import grsai_video_enabled, generate_video as grsai_generate_video
     from app.bots.grsai import studio_id_to_grsai_video_slug
+    from app.bots.kie_kling import (
+        generate_video as kie_kling_generate_video,
+        kie_api_configured,
+        truncate_kling_prompt,
+    )
     from app.bots.outsee_http import (
         generate_video as outsee_api_generate_video,
         outsee_api_configured,
@@ -1151,452 +1154,441 @@ async def generate_video_with_retries(
     )
 
     _DOWNLOAD_ONLY_RETRIES = 2
-    gen_failures = 0
-    fallback_logged = False
+    primary_burns = 0
+    fallback_burns = 0
     local_sanitized = False
     start_frame_policy_hits = 0
+    concurrency_waits = 0
+    transient_streak = 0
+    fallback_started = False
+    phase = "primary"
 
-    for round_idx, round_label in enumerate(rounds):
-        attempt = 0
-        concurrency_waits = 0
-        while attempt < max_attempts_per_prompt:
-            attempt += 1
-            abort_if_cancelled(project_id)
-            use_fallback = _should_use_video_fallback(
-                round_idx=round_idx, gen_failures=gen_failures
+    async def _prepare_send(prompt_body: str, attempt_kwargs: dict[str, Any], *, kling: bool) -> str:
+        prefix = (
+            attempt_kwargs.get("prompt_id_prefix")
+            if isinstance(attempt_kwargs.get("prompt_id_prefix"), str)
+            else None
+        )
+        send_prompt = ensure_silent_video_prompt(prompt_body)
+        if kling:
+            send_prompt = truncate_kling_prompt(send_prompt)
+            return ensure_silent_video_prompt(send_prompt)
+        api_full_cap = (
+            _OUTSEE_API_VIDEO_PROMPT_MAX
+            if use_outsee_api_video
+            else OUTSEE_PROMPT_MAX_CHARS
+        )
+        send_prompt = await _prepare_prompt_for_outsee(
+            gpt,
+            send_prompt,
+            prefix,
+            project_id=project_id,
+            max_full=api_full_cap,
+        )
+        send_prompt = ensure_silent_video_prompt(send_prompt)
+        full_len = len(_outsee_full_prompt(send_prompt, prefix))
+        if full_len > api_full_cap:
+            body_cap = _max_body_for_prefix(prefix, cap=api_full_cap)
+            send_prompt = _hard_truncate_prompt(send_prompt, body_cap)
+            logger.warning(
+                "outsee_retry: video prompt still {} > {} — hard-truncate to {}",
+                full_len,
+                api_full_cap,
+                len(send_prompt),
             )
-            attempt_kwargs = (
-                _apply_video_fallback_kwargs(kwargs)
-                if use_fallback
-                else dict(kwargs)
+        return send_prompt
+
+    async def _dispatch(
+        send_prompt: str,
+        attempt_kwargs: dict[str, Any],
+        *,
+        kling: bool,
+    ) -> GenerationResult:
+        attempt_kwargs = dict(attempt_kwargs)
+        attempt_kwargs["generate_audio"] = False
+        if kling:
+            if not kie_api_configured():
+                raise OutseeImageError(
+                    "kie Kling 2.6: API не настроен (KIE_API_KEY / GPT_API_KEY)",
+                    context={"provider_code": 401, "error_kind": "no_key"},
+                )
+            result = await kie_kling_generate_video(
+                send_prompt,
+                out_path,
+                start_frame=attempt_kwargs.get("start_frame"),
+                aspect_ratio=str(attempt_kwargs.get("aspect_ratio") or "9:16"),
+                duration=attempt_kwargs.get("duration") or 5,
+                generate_audio=False,
+                timeout=float(attempt_kwargs.get("timeout") or 900),
+                project_id=project_id,
+                gen_id=attempt_kwargs.get("gen_id"),
             )
-            if use_fallback and not fallback_logged:
-                fb = outsee_video_fallback_fields()
+            try:
+                from app.services.generation_storage import write_sidecar
+
+                write_sidecar(
+                    result.file_path,
+                    media="video",
+                    model=KIE_KLING_FALLBACK_SLUG,
+                    prompt=send_prompt,
+                    params={
+                        "aspect": str(attempt_kwargs.get("aspect_ratio") or "9:16"),
+                        "duration": attempt_kwargs.get("duration") or 5,
+                        "project_id": project_id,
+                        "ladder": "fallback",
+                    },
+                    raw_url=result.raw_url,
+                    quote=None,
+                    provider="kie",
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("kie video sidecar skipped", exc_info=True)
+            return result
+        if use_grsai_video:
+            raw_slug = attempt_kwargs.get("model_slug") or getattr(
+                _settings, "grsai_default_video_model", None
+            )
+            slug = studio_id_to_grsai_video_slug(str(raw_slug) if raw_slug else None)
+            ar = attempt_kwargs.get("aspect_ratio") or "9:16"
+            res = attempt_kwargs.get("resolution") or "720p"
+            dur = attempt_kwargs.get("duration") or 5
+            result = await grsai_generate_video(
+                send_prompt,
+                out_path,
+                model_slug=slug,
+                aspect_ratio=str(ar).replace("_", ":"),
+                resolution=str(res),
+                duration=int(dur) if dur else 5,
+                timeout=float(attempt_kwargs.get("timeout") or 900),
+                gen_id=attempt_kwargs.get("gen_id"),
+                project_id=project_id,
+                start_frame=attempt_kwargs.get("start_frame"),
+            )
+            try:
+                from app.services.generation_storage import write_sidecar
+                from app.services.grsai_pricing import quote_generation
+
+                write_sidecar(
+                    result.file_path,
+                    media="video",
+                    model=slug,
+                    prompt=send_prompt,
+                    params={
+                        "aspect": str(ar).replace("_", ":"),
+                        "resolution": str(res),
+                        "duration": dur,
+                        "project_id": project_id,
+                        "ladder": "primary",
+                    },
+                    raw_url=result.raw_url,
+                    quote=quote_generation(
+                        media="video",
+                        model=slug,
+                        resolution=str(res),
+                        duration=int(dur) if dur else 5,
+                    ),
+                    provider="grsai",
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("grsai video sidecar skipped", exc_info=True)
+            return result
+        if use_outsee_api_video:
+            raw_slug = attempt_kwargs.get("model_slug") or getattr(
+                _settings, "outsee_default_video_model", None
+            )
+            slug = studio_id_to_outsee_video_slug(str(raw_slug) if raw_slug else None)
+            ar = attempt_kwargs.get("aspect_ratio") or "9:16"
+            res = attempt_kwargs.get("resolution") or "720p"
+            dur = attempt_kwargs.get("duration")
+            result = await outsee_api_generate_video(
+                send_prompt,
+                out_path,
+                model_slug=slug,
+                aspect_ratio=str(ar).replace("_", ":"),
+                resolution=str(res),
+                duration=int(dur) if dur else None,
+                generate_audio=False,
+                reference_image=attempt_kwargs.get("start_frame"),
+                prompt_id_prefix=attempt_kwargs.get("prompt_id_prefix"),
+                timeout=float(attempt_kwargs.get("timeout") or 900),
+                gen_id=attempt_kwargs.get("gen_id"),
+                project_id=project_id,
+            )
+            try:
+                from app.services.generation_storage import write_sidecar
+
+                write_sidecar(
+                    result.file_path,
+                    media="video",
+                    model=slug,
+                    prompt=send_prompt,
+                    params={
+                        "aspect": str(ar).replace("_", ":"),
+                        "resolution": str(res),
+                        "duration": dur,
+                        "project_id": project_id,
+                        "ladder": "primary",
+                    },
+                    raw_url=result.raw_url,
+                    quote=None,
+                    provider="outsee",
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("outsee video sidecar skipped", exc_info=True)
+            return result
+        return await outsee.generate_video(
+            send_prompt, out_path, project_id=project_id, **attempt_kwargs
+        )
+
+    async def _rewrite_prompt_after_fail(err: BaseException) -> None:
+        nonlocal current_prompt, local_sanitized
+        prefix = base_prompt_id if isinstance(base_prompt_id, str) else None
+        fixed: str | None = None
+        if gpt_rewrite and gpt is not None and isinstance(err, OutseeImageError):
+            fixed = await _fix_prompt_after_outsee_error(
+                gpt, current_prompt, err, prefix=prefix, project_id=project_id
+            )
+        if fixed and fixed.strip() != current_prompt.strip():
+            current_prompt = _apply_local_prompt_sanitize(
+                fixed, where="video ladder rewrite", force_simplify=False
+            )
+            local_sanitized = True
+            return
+        # GPT недоступен / не помог — локальная санация (триггеры + simplify)
+        current_prompt = _apply_local_prompt_sanitize(
+            current_prompt, where="video ladder local sanitize"
+        )
+        local_sanitized = True
+
+    while True:
+        abort_if_cancelled(project_id)
+        use_kling = phase == "fallback"
+        if use_kling:
+            if fallback_burns >= VIDEO_FALLBACK_ATTEMPTS:
+                break
+            attempt_n = fallback_burns + 1
+            attempt_max = VIDEO_FALLBACK_ATTEMPTS
+            attempt_kwargs = _apply_video_fallback_kwargs(primary_kwargs)
+            if not fallback_started:
                 logger.info(
-                    "outsee_retry: fallback video (round={}, failures={}): "
-                    "model={} resolution={} aspect={}",
-                    round_label,
-                    gen_failures,
-                    fb["model_slug"],
-                    fb["resolution"],
-                    fb["aspect_ratio"],
+                    "outsee_retry: video FALLBACK → Kling 2.6 ({})",
+                    ladder_summary(
+                        primary_burns=primary_burns,
+                        fallback_burns=fallback_burns,
+                        model_primary=primary_slug,
+                        model_fallback=KIE_KLING_FALLBACK_SLUG,
+                    ),
                 )
-                fallback_logged = True
-            # После 3 сбоев генерации — локально убрать триггеры и упростить
-            # (GPT-rewrite часто недоступен / maintenance).
-            if (
-                gen_failures >= OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES
-                and not local_sanitized
-            ):
-                current_prompt = _apply_local_prompt_sanitize(
-                    current_prompt,
-                    where=f"video failures≥{OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES}",
+                fallback_started = True
+                if not local_sanitized:
+                    current_prompt = _apply_local_prompt_sanitize(
+                        current_prompt, where="video before Kling fallback"
+                    )
+                    local_sanitized = True
+                current_prompt = truncate_kling_prompt(
+                    ensure_silent_video_prompt(current_prompt),
+                    max_chars=KIE_KLING_PROMPT_MAX_CHARS,
                 )
-                local_sanitized = True
-            provider_label = (
+        else:
+            if primary_burns >= VIDEO_PRIMARY_TOTAL_ATTEMPTS:
+                phase = "fallback"
+                continue
+            attempt_n = primary_burns + 1
+            attempt_max = VIDEO_PRIMARY_TOTAL_ATTEMPTS
+            attempt_kwargs = dict(primary_kwargs)
+
+        if uniquify_prompt_id:
+            attempt_kwargs["prompt_id_prefix"] = _uniquify_prompt_id(
+                base_prompt_id if isinstance(base_prompt_id, str) else None,
+                1 if use_kling else 0,
+                attempt_n,
+            )
+        else:
+            attempt_kwargs["prompt_id_prefix"] = base_prompt_id
+
+        provider_label = (
+            "kie-kling"
+            if use_kling
+            else (
                 "grsai"
                 if use_grsai_video
                 else ("outsee-api" if use_outsee_api_video else "outsee-cdp")
             )
-            logger.info(
-                "outsee_retry: video [{}] попытка {}/{} model={} res={} aspect={} provider={}",
-                round_label,
-                attempt,
-                max_attempts_per_prompt,
-                attempt_kwargs.get("model_slug"),
-                attempt_kwargs.get("resolution"),
-                attempt_kwargs.get("aspect_ratio"),
-                provider_label,
+        )
+        logger.info(
+            "outsee_retry: video [{}] попытка {}/{} model={} provider={} {}",
+            phase,
+            attempt_n,
+            attempt_max,
+            attempt_kwargs.get("model_slug"),
+            provider_label,
+            ladder_summary(
+                primary_burns=primary_burns,
+                fallback_burns=fallback_burns,
+                model_primary=primary_slug,
+                model_fallback=KIE_KLING_FALLBACK_SLUG,
+            ),
+        )
+        try:
+            send_prompt = await _prepare_send(
+                current_prompt, attempt_kwargs, kling=use_kling
             )
-            if uniquify_prompt_id:
-                attempt_kwargs["prompt_id_prefix"] = _uniquify_prompt_id(
-                    base_prompt_id, round_idx, attempt
-                )
-            else:
-                attempt_kwargs["prompt_id_prefix"] = base_prompt_id
-            try:
-                prefix = (
-                    attempt_kwargs.get("prompt_id_prefix")
-                    if isinstance(attempt_kwargs.get("prompt_id_prefix"), str)
-                    else None
-                )
-                # Silent-guard ПЕРЕД сжатием. API video жёстко 4096 (не 4900 CDP).
-                send_prompt = ensure_silent_video_prompt(current_prompt)
-                api_full_cap = (
-                    _OUTSEE_API_VIDEO_PROMPT_MAX
-                    if use_outsee_api_video
-                    else OUTSEE_PROMPT_MAX_CHARS
-                )
-                send_prompt = await _prepare_prompt_for_outsee(
-                    gpt,
-                    send_prompt,
-                    prefix,
-                    project_id=project_id,
-                    max_full=api_full_cap,
-                )
-                send_prompt = ensure_silent_video_prompt(send_prompt)
-                full_len = len(_outsee_full_prompt(send_prompt, prefix))
-                if full_len > api_full_cap:
-                    body_cap = _max_body_for_prefix(prefix, cap=api_full_cap)
-                    send_prompt = _hard_truncate_prompt(send_prompt, body_cap)
-                    logger.warning(
-                        "outsee_retry: video prompt after silent still {} > {} — "
-                        "hard-truncate to {}",
-                        full_len,
-                        api_full_cap,
-                        len(send_prompt),
-                    )
-                # Пайплайн: звук всегда выкл (не тащим True из kwargs/Create).
-                attempt_kwargs["generate_audio"] = False
-                if use_grsai_video:
-                    raw_slug = attempt_kwargs.get("model_slug") or getattr(
-                        _settings, "grsai_default_video_model", None
-                    )
-                    slug = studio_id_to_grsai_video_slug(
-                        str(raw_slug) if raw_slug else None
-                    )
-                    ar = attempt_kwargs.get("aspect_ratio") or "9:16"
-                    res = attempt_kwargs.get("resolution") or "720p"
-                    dur = attempt_kwargs.get("duration") or 5
-                    result = await grsai_generate_video(
-                        send_prompt,
-                        out_path,
-                        model_slug=slug,
-                        aspect_ratio=str(ar).replace("_", ":"),
-                        resolution=str(res),
-                        duration=int(dur) if dur else 5,
-                        timeout=float(attempt_kwargs.get("timeout") or 900),
-                        gen_id=attempt_kwargs.get("gen_id"),
-                        project_id=project_id,
-                        start_frame=attempt_kwargs.get("start_frame"),
-                    )
+            return await _dispatch(send_prompt, attempt_kwargs, kling=use_kling)
+        except StepCancelledError:
+            raise
+        except OutseeDownloadError as e:
+            last_err = e
+            video_url = e.context.get("video_url")
+            gen_id = str(e.context.get("gen_id") or "")
+            if isinstance(video_url, str) and video_url and gen_id and not use_kling:
+                for dl_try in range(1, _DOWNLOAD_ONLY_RETRIES + 1):
+                    abort_if_cancelled(project_id)
                     try:
-                        from app.services.generation_storage import write_sidecar
-                        from app.services.grsai_pricing import quote_generation
-
-                        write_sidecar(
-                            result.file_path,
-                            media="video",
-                            model=slug,
-                            prompt=send_prompt,
-                            params={
-                                "aspect": str(ar).replace("_", ":"),
-                                "resolution": str(res),
-                                "duration": dur,
-                                "project_id": project_id,
-                            },
-                            raw_url=result.raw_url,
-                            quote=quote_generation(
-                                media="video",
-                                model=slug,
-                                resolution=str(res),
-                                duration=int(dur) if dur else 5,
-                            ),
-                            provider="grsai",
+                        return await outsee.retry_video_download(
+                            video_url=video_url,
+                            out_path=out_path,
+                            gen_id=gen_id,
+                            prompt_id_prefix=attempt_kwargs.get("prompt_id_prefix"),
+                            project_id=project_id,
+                            model_slug=attempt_kwargs.get("model_slug"),
                         )
-                    except Exception:  # noqa: BLE001
-                        logger.debug("grsai video sidecar skipped", exc_info=True)
-                    return result
-                if use_outsee_api_video:
-                    raw_slug = attempt_kwargs.get("model_slug") or getattr(
-                        _settings, "outsee_default_video_model", None
-                    )
-                    slug = studio_id_to_outsee_video_slug(
-                        str(raw_slug) if raw_slug else None
-                    )
-                    ar = attempt_kwargs.get("aspect_ratio") or "9:16"
-                    res = attempt_kwargs.get("resolution") or "720p"
-                    dur = attempt_kwargs.get("duration")
-                    # Кадры пайплайна — всегда без звука (озвучка отдельно на шаге audio).
-                    result = await outsee_api_generate_video(
-                        send_prompt,
-                        out_path,
-                        model_slug=slug,
-                        aspect_ratio=str(ar).replace("_", ":"),
-                        resolution=str(res),
-                        duration=int(dur) if dur else None,
-                        generate_audio=False,
-                        reference_image=attempt_kwargs.get("start_frame"),
-                        prompt_id_prefix=attempt_kwargs.get("prompt_id_prefix"),
-                        timeout=float(attempt_kwargs.get("timeout") or 900),
-                        gen_id=attempt_kwargs.get("gen_id"),
-                        project_id=project_id,
-                    )
-                    try:
-                        from app.services.generation_storage import write_sidecar
-
-                        write_sidecar(
-                            result.file_path,
-                            media="video",
-                            model=slug,
-                            prompt=send_prompt,
-                            params={
-                                "aspect": str(ar).replace("_", ":"),
-                                "resolution": str(res),
-                                "duration": dur,
-                                "project_id": project_id,
-                            },
-                            raw_url=result.raw_url,
-                            quote=None,
-                            provider="outsee",
-                        )
-                    except Exception:  # noqa: BLE001
-                        logger.debug("outsee video sidecar skipped", exc_info=True)
-                    return result
-                return await outsee.generate_video(
-                    send_prompt, out_path, project_id=project_id,
-                    **attempt_kwargs,
-                )
-            except StepCancelledError:
-                raise
-            except OutseeDownloadError as e:
-                video_url = e.context.get("video_url")
-                gen_id = str(e.context.get("gen_id") or "")
-                if isinstance(video_url, str) and video_url and gen_id:
-                    for dl_try in range(1, _DOWNLOAD_ONLY_RETRIES + 1):
-                        abort_if_cancelled(project_id)
-                        try:
-                            return await outsee.retry_video_download(
-                                video_url=video_url,
-                                out_path=out_path,
-                                gen_id=gen_id,
-                                prompt_id_prefix=attempt_kwargs.get(
-                                    "prompt_id_prefix"
-                                ),
-                                project_id=project_id,
-                                model_slug=attempt_kwargs.get("model_slug"),
-                            )
-                        except OutseeDownloadError as dl_err:
-                            last_err = dl_err
-                            logger.warning(
-                                "outsee.retry_video_download [{}] {}/{}: {}",
-                                round_label,
-                                dl_try,
-                                _DOWNLOAD_ONLY_RETRIES,
-                                dl_err.reason,
-                            )
-                            if dl_try < _DOWNLOAD_ONLY_RETRIES:
-                                await sleep_cancellable(2.0, project_id)
-                    logger.warning(
-                        "outsee.generate_video [{}] download-only retries "
-                        "исчерпаны (id={}) — без нового Generate",
-                        round_label,
-                        attempt_kwargs.get("prompt_id_prefix") or "—",
-                    )
-                # Ролик уже на outsee — не кликаем Generate снова.
-                raise last_err or e
-            except OutseeImageError as e:
-                last_err = e
-                if _is_concurrency_limit_error(e):
-                    concurrency_waits += 1
-                    if concurrency_waits > _CONCURRENCY_MAX_WAITS:
-                        raise
-                    delay = _concurrency_backoff_s(concurrency_waits)
-                    attempt -= 1  # не сжигать попытку / не уходить в GPT-rewrite
-                    logger.warning(
-                        "outsee.generate_video [{}] лимит одновременных "
-                        "генераций — жду {:.0f}с (wait {}/{}, id={})",
-                        round_label,
-                        delay,
-                        concurrency_waits,
-                        _CONCURRENCY_MAX_WAITS,
-                        attempt_kwargs.get("prompt_id_prefix") or "—",
-                    )
-                    await sleep_cancellable(delay, project_id)
-                    continue
-                # Celebrity / image CONTENT_POLICY: rewrite промта бесполезен.
-                # РАНЬШЕ тут молча снимали start_frame → text→video без кадра.
-                # Теперь: soften JPEG+blur и оставляем image_url; кадр не теряем.
-                if (
-                    _is_start_frame_content_policy_error(e)
-                    and kwargs.get("start_frame") is not None
-                ):
-                    start_frame_policy_hits += 1
-                    sf = kwargs.get("start_frame")
-                    sf_path = sf if isinstance(sf, Path) else Path(str(sf))
-                    if start_frame_policy_hits <= _START_FRAME_SOFTEN_MAX:
-                        softened = _soften_start_frame_for_policy(
-                            sf_path, strength=start_frame_policy_hits
-                        )
-                        if softened is not None:
-                            logger.warning(
-                                "outsee.generate_video [{}]: CONTENT_POLICY на "
-                                "стартовом кадре — повтор С кадром "
-                                "(soften s{}, {}→{} bytes, id={})",
-                                round_label,
-                                start_frame_policy_hits,
-                                sf_path.stat().st_size if sf_path.is_file() else "?",
-                                softened.stat().st_size,
-                                attempt_kwargs.get("prompt_id_prefix") or "—",
-                            )
-                            kwargs = dict(kwargs)
-                            kwargs["start_frame"] = softened
-                            current_prompt = _apply_local_prompt_sanitize(
-                                current_prompt,
-                                where="video soften start_frame CONTENT_POLICY",
-                            )
-                            local_sanitized = True
-                            attempt -= 1
+                    except OutseeDownloadError as dl_err:
+                        last_err = dl_err
+                        if dl_try < _DOWNLOAD_ONLY_RETRIES:
                             await sleep_cancellable(2.0, project_id)
-                            continue
-                    logger.error(
-                        "outsee.generate_video [{}]: CONTENT_POLICY на "
-                        "стартовом кадре — кадр ОСТАВЛЯЕМ (soften исчерпан), "
-                        "не снимаем image_url (id={})",
-                        round_label,
-                        attempt_kwargs.get("prompt_id_prefix") or "—",
-                    )
-                    current_prompt = _apply_local_prompt_sanitize(
-                        current_prompt,
-                        where="video keep start_frame CONTENT_POLICY",
-                    )
-                    local_sanitized = True
-                    # fall through → считаем ошибку / дальше retry с тем же кадром
-                # Аудиодорожка (Veo игнорит generate_audio=false) — silent+санация.
-                if _is_audio_content_policy_error(e):
-                    logger.warning(
-                        "outsee.generate_video [{}]: CONTENT_POLICY аудио — "
-                        "silent+санация промта (id={})",
-                        round_label,
-                        attempt_kwargs.get("prompt_id_prefix") or "—",
-                    )
-                    current_prompt = ensure_silent_video_prompt(
-                        _apply_local_prompt_sanitize(
-                            current_prompt,
-                            where="video audio CONTENT_POLICY",
-                        )
-                    )
-                    local_sanitized = True
-                    # Не тащить start_frame если он провоцирует «говорящую» сцену?
-                    # Оставляем кадр — проблема в звуке, не в celebrity.
-                # Сеть / host рефа — не жечь GPT-rewrite, просто пауза и retry.
-                if _is_transient_network_error(e):
-                    logger.warning(
-                        "outsee.generate_video [{}] сеть/host {}/{} (id={}): {}",
-                        round_label,
-                        attempt,
-                        max_attempts_per_prompt,
-                        attempt_kwargs.get("prompt_id_prefix") or "—",
-                        e.reason,
-                    )
-                    if attempt < max_attempts_per_prompt:
-                        await sleep_cancellable(3.0, project_id)
-                        continue
-                    # последняя попытка раунда — уйдёт в gen_failures ниже
-                gen_failures += 1
-                err_kind = _retry_err_label(e)
-                logger.warning(
-                    "outsee.generate_video [{}] попытка {}/{} ({}, id={}): {}",
-                    round_label, attempt, max_attempts_per_prompt,
-                    err_kind,
-                    attempt_kwargs.get("prompt_id_prefix") or "—",
-                    e.reason,
-                )
-                prefix = (
-                    attempt_kwargs.get("prompt_id_prefix")
-                    if isinstance(attempt_kwargs.get("prompt_id_prefix"), str)
-                    else None
-                )
-                if (
-                    gpt is not None
-                    and attempt < max_attempts_per_prompt
-                    and (
-                        isinstance(e, OutseePromptTooLongError)
-                        or _is_prompt_related_error(e)
-                        or isinstance(e, OutseeContentRejectedError)
-                    )
-                ):
-                    fixed = await _fix_prompt_after_outsee_error(
-                        gpt,
-                        current_prompt,
-                        e,
-                        prefix=prefix,
-                        project_id=project_id,
-                    )
-                    if fixed and fixed.strip() != current_prompt.strip():
-                        logger.info(
-                            "outsee.generate_video [{}]: prompt-fix OK "
-                            "({} → {} симв)",
-                            round_label,
-                            len(current_prompt),
-                            len(fixed),
-                        )
-                        current_prompt = fixed
-                # Сразу после 3-й ошибки — санация до следующей попытки в раунде.
-                if (
-                    gen_failures >= OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES
-                    and not local_sanitized
-                ):
-                    current_prompt = _apply_local_prompt_sanitize(
-                        current_prompt,
-                        where=f"video after {gen_failures} errors",
-                    )
-                    local_sanitized = True
-                if attempt < max_attempts_per_prompt:
-                    await sleep_cancellable(2.0, project_id)
-            except Exception as e:
-                # ConnectError и пр. до wrap — иначе gather убивает весь stream.
-                if not _is_transient_network_error(e):
-                    raise
-                last_err = OutseeImageError(
-                    f"outsee video network: {e}",
-                    context={"network": True, "exc_type": type(e).__name__},
-                )
-                logger.warning(
-                    "outsee.generate_video [{}] сеть {}/{} (id={}): {}: {}",
-                    round_label,
-                    attempt,
-                    max_attempts_per_prompt,
-                    attempt_kwargs.get("prompt_id_prefix") or "—",
-                    type(e).__name__,
-                    e,
-                )
-                if attempt >= max_attempts_per_prompt:
-                    gen_failures += 1
-                else:
-                    await sleep_cancellable(3.0, project_id)
-                    continue
+                raise last_err
+            # download без повторного Generate — считаем burn
+            classified = classify_video_error(e)
+        except OutseeImageError as e:
+            last_err = e
+            classified = classify_video_error(e)
+        except Exception as e:  # noqa: BLE001
+            if isinstance(e, VideoLadderExhaustedError):
+                raise
+            if not _is_transient_network_error(e):
+                raise
+            last_err = OutseeImageError(
+                f"outsee video network: {e}",
+                context={"network": True, "exc_type": type(e).__name__},
+            )
+            classified = classify_video_error(last_err)
 
-        is_last_round = round_idx == len(rounds) - 1
-        if is_last_round:
-            break
-        # Между раундами всегда локальная санация (триггеры → синонимы),
-        # даже если GPT-rewrite потом упадёт.
-        if not local_sanitized:
+        action = classified.action
+        logger.warning(
+            "outsee_retry: video [{}] {}/{} code={} action={} :: {}",
+            phase,
+            attempt_n,
+            attempt_max,
+            classified.code,
+            action.value,
+            classified.detail[:180],
+        )
+
+        if action == VideoErrorAction.STOP_CANCEL:
+            raise last_err or StepCancelledError("video cancelled")
+        if action == VideoErrorAction.STOP_AUTH:
+            raise last_err or OutseeImageError(classified.detail)
+
+        if action == VideoErrorAction.RETRY_SAME or (
+            action == VideoErrorAction.DOWNLOAD_RETRY and use_kling
+        ):
+            if _is_concurrency_limit_error(last_err or Exception()):
+                concurrency_waits += 1
+                if concurrency_waits > _CONCURRENCY_MAX_WAITS:
+                    raise last_err or OutseeImageError("video concurrency exhausted")
+                delay = _concurrency_backoff_s(concurrency_waits)
+                await sleep_cancellable(delay, project_id)
+                continue
+            transient_streak += 1
+            if transient_streak <= 2:
+                await sleep_cancellable(3.0, project_id)
+                continue
+            # слишком много transient подряд — сжигаем попытку
+            action = VideoErrorAction.RETRY_BURN
+
+        if action == VideoErrorAction.SOFTEN_FRAME:
+            sf = primary_kwargs.get("start_frame")
+            sf_path = sf if isinstance(sf, Path) else (Path(str(sf)) if sf else None)
+            start_frame_policy_hits += 1
+            if (
+                sf_path is not None
+                and start_frame_policy_hits <= _START_FRAME_SOFTEN_MAX
+            ):
+                softened = _soften_start_frame_for_policy(
+                    sf_path, strength=start_frame_policy_hits
+                )
+                if softened is not None:
+                    primary_kwargs = dict(primary_kwargs)
+                    primary_kwargs["start_frame"] = softened
+                    current_prompt = _apply_local_prompt_sanitize(
+                        current_prompt,
+                        where="video soften start_frame CONTENT_POLICY",
+                    )
+                    local_sanitized = True
+                    await sleep_cancellable(2.0, project_id)
+                    continue
             current_prompt = _apply_local_prompt_sanitize(
-                current_prompt,
-                where=f"video before round after «{round_label}»",
+                current_prompt, where="video keep start_frame CONTENT_POLICY"
             )
             local_sanitized = True
-        if gpt is None:
-            logger.warning(
-                "outsee.generate_video [{}]: GPT недоступен — rewrite пропущен",
-                round_label,
-            )
-            break
-        logger.info(
-            "outsee.generate_video: GPT-rewrite после раунда «{}»",
-            round_label,
-        )
-        rewritten = await _ask_gpt_to_rewrite(
-            gpt,
-            current_prompt,
-            project_id=project_id,
-            last_error=last_err,
-            prefix=base_prompt_id if isinstance(base_prompt_id, str) else None,
-        )
-        if not rewritten:
-            logger.warning(
-                "outsee.generate_video: GPT-rewrite не вернул текст — "
-                "продолжаю с локально санированным промтом"
-            )
-        else:
-            # GPT мог вернуть триггеры обратно — ещё раз локально.
-            current_prompt = _apply_local_prompt_sanitize(
-                rewritten,
-                where="video after GPT-rewrite",
-            )
+            action = VideoErrorAction.RETRY_BURN
 
-    if last_err is None:
-        raise RuntimeError("generate_video_with_retries: unreachable")
-    raise last_err
+        if action == VideoErrorAction.SILENT_AUDIO:
+            current_prompt = ensure_silent_video_prompt(
+                _apply_local_prompt_sanitize(
+                    current_prompt, where="video audio CONTENT_POLICY"
+                )
+            )
+            local_sanitized = True
+            action = VideoErrorAction.RETRY_REWRITE
+
+        # burn attempt
+        transient_streak = 0
+        if phase == "primary":
+            primary_burns += 1
+            do_rewrite = (
+                action in (VideoErrorAction.RETRY_REWRITE, VideoErrorAction.RETRY_BURN)
+                and should_rewrite_after_primary_burn(primary_burns)
+            )
+            # На попытках 1..3 после fail — всегда меняем текст (контракт).
+            if primary_burns <= VIDEO_PRIMARY_REWRITE_ATTEMPTS:
+                do_rewrite = True
+            if do_rewrite:
+                await _rewrite_prompt_after_fail(last_err or Exception(classified.detail))
+            if primary_burns >= VIDEO_PRIMARY_TOTAL_ATTEMPTS:
+                phase = "fallback"
+            else:
+                await sleep_cancellable(2.0, project_id)
+            continue
+
+        # fallback burns
+        fallback_burns += 1
+        if action == VideoErrorAction.RETRY_REWRITE or fallback_burns < VIDEO_FALLBACK_ATTEMPTS:
+            current_prompt = truncate_kling_prompt(
+                _apply_local_prompt_sanitize(
+                    current_prompt, where=f"kling attempt {fallback_burns}"
+                ),
+                max_chars=KIE_KLING_PROMPT_MAX_CHARS,
+            )
+        if fallback_burns >= VIDEO_FALLBACK_ATTEMPTS:
+            break
+        await sleep_cancellable(2.0, project_id)
+
+    summary = ladder_summary(
+        primary_burns=primary_burns,
+        fallback_burns=fallback_burns,
+        model_primary=primary_slug,
+        model_fallback=KIE_KLING_FALLBACK_SLUG,
+    )
+    detail = str(last_err.reason if isinstance(last_err, OutseeImageError) else last_err)
+    raise VideoLadderExhaustedError(
+        f"video ladder exhausted: {summary}; last={detail[:240]}",
+        context={
+            "primary_burns": primary_burns,
+            "fallback_burns": fallback_burns,
+            "primary_model": primary_slug,
+            "fallback_model": KIE_KLING_FALLBACK_SLUG,
+            "last_error": detail[:300],
+        },
+    )
+

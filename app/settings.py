@@ -97,6 +97,9 @@ class Settings(BaseSettings):
     gpt_api_key: str = Field("", alias="GPT_API_KEY")
     gpt_base_url: str = Field("", alias="GPT_BASE_URL")
     gpt_model: str = Field("gpt-5-6-sol", alias="GPT_MODEL")
+    # Kie Market (Kling 2.6 video fallback). Пусто → GPT_API_KEY + api.kie.ai.
+    kie_api_key: str = Field("", alias="KIE_API_KEY")
+    kie_api_base_url: str = Field("https://api.kie.ai", alias="KIE_API_BASE_URL")
     # Шаблон пути chat-эндпоинта. grsai/OpenAI: /v1/chat/completions;
     # kie.ai: путь зависит от модели → /{model}/v1/chat/completions.
     # Плейсхолдер {model} подставляется слагом модели.

@@ -141,8 +141,9 @@ def studio_id_to_outsee_video_slug(studio_id: str | None) -> str:
         "veo-3-fast": "veo-3-1-lite",
         "veo3.1-fast": "veo-3-1-lite",
         "veo3.1-lite": "veo-3-1-lite",
-        "kling_2_5_turbo": "veo-3-1-lite",
-        "kling-2-5-turbo": "veo-3-1-lite",
+        # Kling 2.6 fallback идёт через kie.ai (app/bots/kie_kling.py), не Outsee API.
+        # Если slug Kling попал сюда по ошибке — не притворяемся Veo молча:
+        # падаем в default Veo primary (логирует caller).
     }
     return mapping.get(s, default)
 

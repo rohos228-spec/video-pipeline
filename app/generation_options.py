@@ -261,17 +261,36 @@ IMAGE_QUALITIES_BY_ID = _by_id(IMAGE_QUALITIES)
 VIDEO_GENERATORS_BY_ID = _by_id(VIDEO_GENERATORS)
 VIDEO_RESOLUTIONS_BY_ID = _by_id(VIDEO_RESOLUTIONS)
 
-# ---- Outsee video fallback (после 3 неудач generate_video_with_retries) ----
+# ---- Video retry ladder (Veo primary → Kling 2.6 fallback) -----------------
+#
+# Контракт на клип:
+#   1) primary (обычно Veo): 3 попытки с заменой текста промта
+#   2) primary: ещё 1 финальная попытка (без новой rewrite-серии)
+#   3) один раз смена модели → Kling 2.6 (kie.ai), без отката назад
+#   4) Kling: 3 попытки → ошибка и пропуск кадра
+#
+# См. app/services/video_error_policy.py, app/bots/kie_kling.py.
 
-OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES = 3
-OUTSEE_VIDEO_FALLBACK_GENERATOR_ID = "kling_2_5_turbo"
+VIDEO_PRIMARY_REWRITE_ATTEMPTS = 3
+VIDEO_PRIMARY_FINAL_ATTEMPTS = 1
+VIDEO_PRIMARY_TOTAL_ATTEMPTS = (
+    VIDEO_PRIMARY_REWRITE_ATTEMPTS + VIDEO_PRIMARY_FINAL_ATTEMPTS
+)  # 4
+VIDEO_FALLBACK_ATTEMPTS = 3
+
+# Совместимость со старыми тестами/импортами: порог смены модели = primary total.
+OUTSEE_VIDEO_FALLBACK_AFTER_FAILURES = VIDEO_PRIMARY_TOTAL_ATTEMPTS
+OUTSEE_VIDEO_FALLBACK_GENERATOR_ID = "kling_2_6"
 OUTSEE_VIDEO_FALLBACK_RESOLUTION_ID = "720p"
-# Kling image-to-video: соотношение стартового кадра (кнопка на outsee.io).
+# Для CDP/Outsee UI (если fallback когда-то идёт туда): «Исходное» по кадру.
 OUTSEE_VIDEO_FALLBACK_ASPECT_LABEL = "Исходное"
+# kie.ai Kling 2.6 i2v не принимает resolution; aspect только для t2v.
+KIE_KLING_FALLBACK_SLUG = "kling-2-6"
+KIE_KLING_PROMPT_MAX_CHARS = 1000
 
 
 def outsee_video_fallback_fields() -> dict[str, str]:
-    """Параметры outsee.generate_video для запасной модели (без merge-логики)."""
+    """Параметры запасной модели Kling 2.6 (slug + дефолты для логов/CDP)."""
     vg = VIDEO_GENERATORS_BY_ID[OUTSEE_VIDEO_FALLBACK_GENERATOR_ID]
     vr = VIDEO_RESOLUTIONS_BY_ID[OUTSEE_VIDEO_FALLBACK_RESOLUTION_ID]
     return {

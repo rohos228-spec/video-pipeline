@@ -121,15 +121,25 @@ def _clear_video_inflight(frame: Frame) -> None:
 def _note_video_fail(frame: Frame, error: BaseException) -> int:
     """+1 к счётчику ошибок кадра; после 5 подряд → video_gen_skip.
 
+    Если исчерпана лестница Veo→Kling (`VideoLadderExhaustedError`) — сразу skip.
+
     Больше не кладём ``video_gen_skip`` автоматически в attrs при каждом
     increment: запись в БД делает только ``_note_video_fail_db``, иначе
     параллельные ``SessionLocal()`` в shot jobs перетирали бы skip inflight'ами.
     """
+    from app.services.video_error_policy import VideoLadderExhaustedError
+
     attrs = dict(frame.attrs or {})
     try:
         n = int(attrs.get(VIDEO_FAIL_ATTR) or 0) + 1
     except (TypeError, ValueError):
         n = 1
+    ctx = getattr(error, "context", None)
+    ladder_done = isinstance(error, VideoLadderExhaustedError) or (
+        isinstance(ctx, dict) and bool(ctx.get("video_ladder_exhausted"))
+    )
+    if ladder_done:
+        n = max(n, VIDEO_FAIL_SKIP_AFTER)
     attrs[VIDEO_FAIL_ATTR] = n
     skipped = n >= VIDEO_FAIL_SKIP_AFTER
     if skipped:
