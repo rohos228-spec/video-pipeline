@@ -57,6 +57,9 @@ class NodeGroupDef:
     entry_keys: tuple[str, ...]  # локальные ключи нод, принимающих внешний вход
     exit_key: str  # локальный ключ ноды-выхода
     project_meta: dict[str, Any] = field(default_factory=dict)
+    # Типы нод, которые группа ЗАМЕНЯЕТ на канвасе (монолит scene_design
+    # удаляется при вставке веера, pipeline-рёбра перекидываются мостом).
+    replaces_types: tuple[str, ...] = ()
 
 
 def _scene_design_group() -> NodeGroupDef:
@@ -101,6 +104,7 @@ def _scene_design_group() -> NodeGroupDef:
         entry_keys=tuple(a for a, _l, _d in SD_FANOUT),
         exit_key="assemble",
         project_meta={"scene_design_enabled": True},
+        replaces_types=("scene_design",),
     )
 
 
@@ -231,6 +235,47 @@ async def insert_node_group(
 
     by_id = {str(n.get("id")): n for n in nodes}
 
+    # Замена устаревших типов (монолит scene_design → веер): ноды убираем,
+    # pipeline-рёбра перекидываем мостом вход→выход.
+    removed_replaced: list[str] = []
+    if group.replaces_types:
+        replace_ids = {
+            str(n.get("id"))
+            for n in nodes
+            if str(n.get("type") or "") in group.replaces_types
+        }
+        if replace_ids:
+            incoming: dict[str, list[str]] = {rid: [] for rid in replace_ids}
+            outgoing: dict[str, list[str]] = {rid: [] for rid in replace_ids}
+            kept: list[dict] = []
+            for e in edges:
+                src, tgt = str(e.get("source")), str(e.get("target"))
+                if tgt in replace_ids:
+                    if src not in replace_ids:
+                        incoming[tgt].append(src)
+                    continue
+                if src in replace_ids:
+                    if tgt not in replace_ids:
+                        outgoing[src].append(tgt)
+                    continue
+                kept.append(e)
+            for rid in replace_ids:
+                for src in incoming[rid]:
+                    for tgt in outgoing[rid]:
+                        kept.append(
+                            {
+                                "id": f"e_{src}_{tgt}",
+                                "source": src,
+                                "target": tgt,
+                                "sourceHandle": "out",
+                                "targetHandle": "in",
+                            }
+                        )
+            edges = kept
+            nodes = [n for n in nodes if str(n.get("id")) not in replace_ids]
+            by_id = {str(n.get("id")): n for n in nodes}
+            removed_replaced = sorted(replace_ids)
+
     # Дубль-защита: маркеры группы уже на канвасе.
     group_markers = {n.marker for n in group.nodes if n.marker}
     existing_markers = {m for n in nodes if (m := sd_agent_marker(n))}
@@ -338,6 +383,8 @@ async def insert_node_group(
     # Промпт-варианты нод (SSoT — meta.prompt_slot_variants, как у всех GPT-нод).
     variants = meta.get("prompt_slot_variants")
     variants = dict(variants) if isinstance(variants, dict) else {}
+    for rid in removed_replaced:
+        variants.pop(rid, None)
     for spec in group.nodes:
         if spec.prompt_variant:
             variants[local_to_id[spec.local_key]] = {"main": spec.prompt_variant}
@@ -369,6 +416,7 @@ async def insert_node_group(
         "group": group.group_id,
         "after": anchor_id,
         "nodes": new_ids,
+        "replaced_nodes": removed_replaced,
         "edges_added": len(group.entry_keys)
         + len(group.internal_edges)
         + len(old_targets)

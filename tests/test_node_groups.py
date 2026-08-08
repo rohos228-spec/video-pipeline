@@ -210,3 +210,43 @@ async def test_insert_without_canvas_uses_default_workflow(mem_db) -> None:
     cg = project.meta["canvas_graph"]
     assert cg["workflow_id"]  # не 0 — фронт иначе отбросит граф
     assert any(n["id"] == "n_excel_gpt_sd_asm" for n in cg["nodes"])
+
+
+async def test_insert_replaces_legacy_scene_design_node(mem_db) -> None:
+    """Монолит scene_design на канвасе удаляется, рёбра перекидываются мостом."""
+    async with mem_db() as session:
+        project = await _mk_project(session)
+        meta = dict(project.meta)
+        cg = dict(meta["canvas_graph"])
+        nodes = [dict(n) for n in cg["nodes"]]
+        edges = [dict(e) for e in cg["edges"]]
+        # split → scene_design → hero вместо split → hero.
+        nodes.append(
+            {
+                "id": "n_scene_design",
+                "type": "scene_design",
+                "position": {"x": 1500.0, "y": 200.0},
+                "data": {"label": "Сцены (агенты)"},
+            }
+        )
+        edges = [e for e in edges if e["id"] != "e_3"]
+        edges.append({"id": "e_3a", "source": "n_split", "target": "n_scene_design"})
+        edges.append({"id": "e_3b", "source": "n_scene_design", "target": "n_hero"})
+        cg["nodes"] = nodes
+        cg["edges"] = edges
+        meta["canvas_graph"] = cg
+        meta["prompt_slot_variants"] = {"n_scene_design": {"main": "old"}}
+        project.meta = meta
+        await session.commit()
+
+        res = await insert_node_group(session, project, "scene_design_fanout")
+
+    assert res["replaced_nodes"] == ["n_scene_design"]
+    cg = project.meta["canvas_graph"]
+    by_id = {n["id"]: n for n in cg["nodes"]}
+    assert "n_scene_design" not in by_id
+    pairs = {(e["source"], e["target"]) for e in cg["edges"]}
+    assert not any("n_scene_design" in p for p in pairs)
+    assert ("n_split", "n_excel_gpt_sd_camera") in pairs
+    assert ("n_excel_gpt_sd_asm", "n_hero") in pairs
+    assert "n_scene_design" not in project.meta["prompt_slot_variants"]
