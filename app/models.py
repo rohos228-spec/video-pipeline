@@ -426,6 +426,31 @@ class FrameEdge(Base):
     created_at: Mapped[datetime] = mapped_column(default=_now)
 
 
+class SceneDesignCell(Base):
+    """Staging-ячейка scene_design: атомарный факт от одного агента.
+
+    Промежуточное хранилище между категорийными агентами и финальной сборкой:
+    каждая ячейка чётко привязана (агент → тип сущности → ключ → поле),
+    валидируется при записи, в боевые таблицы попадает только после
+    финальной сборки через apply-ops.
+    """
+
+    __tablename__ = "scene_design_cells"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    agent: Mapped[str] = mapped_column(String(16), index=True)  # characters/world/style/camera/action
+    kind: Mapped[str] = mapped_column(String(24), index=True)  # character/location/style_stage/scene/shot
+    target_key: Mapped[str] = mapped_column(String(64), index=True)  # c01 / loc01 / scene_01 / …
+    field: Mapped[str] = mapped_column(String(48))  # имя / start_words / крупность / …
+    value: Mapped[str] = mapped_column(Text)  # текст или JSON-скаляр/список
+    seq: Mapped[int] = mapped_column(default=0)  # порядок внутри (agent, kind, target_key)
+    vo_offset: Mapped[int | None] = mapped_column(default=None, index=True)  # смещение в закадре (хронология)
+    status: Mapped[str] = mapped_column(String(16), default="ok", index=True)  # ok / rejected
+    error: Mapped[str | None] = mapped_column(String(300), default=None)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
+
+
 class Artifact(Base):
     __tablename__ = "artifacts"
 

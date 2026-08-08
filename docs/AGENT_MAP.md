@@ -70,7 +70,7 @@ docs/                     # human/agent docs
 | plan | plan | план ролика |
 | script | script | сценарий / VO |
 | split | split | разбивка кадров |
-| scene_design | scene_d | мульти-агентный дизайн сцен (5 GPT-агентов параллельно + сборщик → `scene_registry` + attrs кадров). Флаг `SCENE_DESIGN_ENABLED` / `meta.scene_design_enabled`; выключен — pass-through. Модуль: [`app/services/scene_design/`](../app/services/scene_design/), промпты `prompts/scene_design/*.md` |
+| scene_design | scene_d | мульти-агентный дизайн сцен: 5 GPT-агентов параллельно → staging-ячейки `scene_design_cells` (валидация при записи, `cells.py`) → хронология по закадру + привязка кадров (`chronology.py`) → сборщик → валидация → apply-ops. В боевые таблицы пишет только финальная сборка. Флаг `SCENE_DESIGN_ENABLED` / `meta.scene_design_enabled`; выключен — pass-through. Модуль: [`app/services/scene_design/`](../app/services/scene_design/), промпты `prompts/scene_design/*.md` |
 | hero | hero | hero-кадр |
 | items | items | предметы/рефы |
 | enrich_1…5 | enrich_* | доп. Excel-слоты |

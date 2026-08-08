@@ -256,6 +256,10 @@ async def _wipe_scene_design(session: AsyncSession, project: Project) -> dict[st
         files_deleted = sum(1 for p in sd_dir.rglob("*") if p.is_file())
         shutil.rmtree(sd_dir, ignore_errors=True)
 
+    from app.services.scene_design import cells as sd_cells
+
+    cells_deleted = await sd_cells.wipe_cells(session, project)
+
     frames = (
         await session.execute(
             select(Frame).where(Frame.project_id == project.id)
@@ -274,6 +278,7 @@ async def _wipe_scene_design(session: AsyncSession, project: Project) -> dict[st
     return {
         "meta_cleared": meta_cleared,
         "checkpoint_files": files_deleted,
+        "staging_cells_deleted": cells_deleted,
         "frames_attrs_cleared": frames_cleared,
     }
 

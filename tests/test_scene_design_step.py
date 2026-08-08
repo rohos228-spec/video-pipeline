@@ -25,8 +25,12 @@ _AGENT_MARKERS = {
 
 
 def _assembler_reply(prompt_text: str) -> str:
-    """Собрать валидный payload: uuid кадров вытаскиваем из контекста."""
-    uuids = re.findall(r'"uuid":\s*"([^"]+)"', prompt_text)
+    """Собрать валидный payload: uuid кадров вытаскиваем из контекста.
+
+    uuid встречаются и в КАДРЫ, и в ячейках scenes_chrono — дедуплицируем,
+    порядок сохраняем.
+    """
+    uuids = list(dict.fromkeys(re.findall(r'"uuid":\s*"([^"]+)"', prompt_text)))
     assert uuids, "в контексте сборщика нет uuid кадров"
     payload = {
         "characters": [{"id": "c01", "имя": "Альфа", "внешность": "высокий"}],

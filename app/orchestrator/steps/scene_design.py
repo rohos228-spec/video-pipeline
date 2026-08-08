@@ -1,9 +1,12 @@
 """Нода scene_design: мульти-агентная режиссура сцен (между split и hero).
 
 5 категорийных GPT-агентов параллельно (characters/world/style/camera/action)
-→ финальный агент-сборщик → валидация → apply-ops (scene_registry + attrs
-кадров). Выключена (SCENE_DESIGN_ENABLED=false и нет per-project override) —
-прозрачный pass-through в scene_design_ready.
+→ срезы конвертируются в staging-ячейки (``scene_design_cells``, валидация
+при записи, коммит частями) → хронологическая выкладка по закадру с
+привязкой кадров к сценам → финальный агент-сборщик → валидация →
+apply-ops (scene_registry + attrs кадров). В боевые таблицы пишет только
+финальная сборка. Выключена (SCENE_DESIGN_ENABLED=false и нет per-project
+override) — прозрачный pass-through в scene_design_ready.
 """
 
 from __future__ import annotations
@@ -58,12 +61,30 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         # Чекпоинты агентов уже в meta — зафиксировать до долгой сборки.
         await session.commit()
 
+        # Срезы → staging-ячейки (валидация при записи, коммит частями).
         full_vo = context_builder.full_voiceover(project, frames)
+        from app.services.scene_design import cells as sd_cells
+        from app.services.scene_design import chronology as sd_chronology
+
+        cell_stats: dict[str, dict[str, int]] = {}
+        for agent_name, slice_data in slices.items():
+            converted = sd_cells.slice_to_cells(project, agent_name, slice_data, full_vo)
+            cell_stats[agent_name] = await sd_cells.store_cells(
+                session, project, agent_name, converted
+            )
+        logger.info("[#{}] scene_design cells: {}", project.id, cell_stats)
+
+        # Ячейки → хронологический вход сборщика (сцены + кадры по закадру).
+        all_cells = await sd_cells.load_cells(session, project)
+        assembly_input = sd_chronology.build_assembly_input(
+            project, frames, all_cells, full_vo
+        )
+
         payload = None
         feedback: str | None = None
         for attempt in range(1, _MAX_ASSEMBLE_ATTEMPTS + 1):
             candidate = await runner.run_assembler(
-                project, context, slices, feedback=feedback
+                project, context, assembly_input, feedback=feedback
             )
             problems = sd_assembler.validate_payload(project, frames, candidate, full_vo)
             if not problems:

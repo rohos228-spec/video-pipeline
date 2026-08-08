@@ -173,17 +173,26 @@ async def run_category_agents(
 async def run_assembler(
     project: Project,
     context: str,
-    slices: dict[str, dict[str, Any]],
+    assembly_input: dict[str, Any],
     *,
     feedback: str | None = None,
     timeout: float = 1200,
 ) -> dict[str, Any]:
-    """Финальный агент-сборщик: срезы + кадры → {characters, scenes, ops}."""
+    """Финальный агент-сборщик: упорядоченные ячейки + кадры → {characters, scenes, ops}.
+
+    ``assembly_input`` — выход ``chronology.build_assembly_input``: сцены,
+    шоты и этапы стиля уже в хронологии закадра, кадры привязаны к сценам.
+    """
     from app.services import gpt_client
 
     prompt = ag.load_prompt(ag.ASSEMBLER)
-    slices_json = json.dumps(slices, ensure_ascii=False, indent=1)
-    parts = [prompt, "---", context, f"# СРЕЗЫ АГЕНТОВ (JSON)\n{slices_json}"]
+    cells_json = json.dumps(assembly_input, ensure_ascii=False, indent=1)
+    parts = [
+        prompt,
+        "---",
+        context,
+        f"# ЯЧЕЙКИ АГЕНТОВ (JSON, хронологический порядок, кадры привязаны к сценам)\n{cells_json}",
+    ]
     if feedback:
         parts.append(f"# ОШИБКИ ПРОШЛОЙ СБОРКИ (исправь)\n{feedback}")
     reply = await gpt_client.gpt_ask_fresh(
