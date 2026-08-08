@@ -287,9 +287,21 @@ def _restore_nemo_model(model_name: str, nemo_path: Path):
     set_hf_offline(offline=True)
     configure_nvidia_asr_environment(force=True)
     import nemo.collections.asr as nemo_asr
+    import torch
 
     logger.info("nvidia_asr: restore_from {}", nemo_path)
-    return nemo_asr.models.ASRModel.restore_from(restore_path=str(nemo_path.resolve()))
+    model = nemo_asr.models.ASRModel.restore_from(restore_path=str(nemo_path.resolve()))
+    if torch.cuda.is_available():
+        model = model.cuda()
+        model.eval()
+        logger.info("nvidia_asr: модель на GPU ({})", torch.cuda.get_device_name(0))
+    else:
+        logger.warning(
+            "nvidia_asr: CUDA недоступна (torch {}) — транскрипция на CPU, "
+            "это в разы медленнее; поставь CUDA-сборку torch",
+            torch.__version__,
+        )
+    return model
 
 
 def _download_model(model_name: str):
