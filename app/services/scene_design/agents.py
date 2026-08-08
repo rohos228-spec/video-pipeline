@@ -39,13 +39,69 @@ PROMPT_INCLUDES: dict[str, tuple[str, ...]] = {
 }
 
 
-def load_prompt(agent: str) -> str:
-    path = prompts_dir() / f"{agent}.md"
-    if not path.is_file():
-        raise SceneDesignAgentError(f"scene_design: нет файла промпта {path}")
-    text = path.read_text(encoding="utf-8").strip()
+def _excel_gpt_prompts_dir() -> Path:
+    from app.services.prompt_library import step_dir
+
+    return step_dir("excel_gpt")
+
+
+def _node_prompt_variant(project: Any, agent: str) -> str | None:
+    """Вариант промпта, назначенный на ноду агента на канвасе (SSoT —
+    meta.prompt_slot_variants[node_key], как у всех нод «Работа с GPT»)."""
+    from app.services.excel_gpt_node import sd_agent_marker
+
+    meta = getattr(project, "meta", None)
+    if not isinstance(meta, dict):
+        return None
+    cg = meta.get("canvas_graph")
+    if not isinstance(cg, dict):
+        return None
+    node_key: str | None = None
+    for n in cg.get("nodes") or []:
+        if sd_agent_marker(n) == agent:
+            node_key = str(n.get("id") or "") or None
+            break
+    if not node_key:
+        return None
+    slots = meta.get("prompt_slot_variants")
+    if not isinstance(slots, dict):
+        return None
+    per_node = slots.get(node_key)
+    if not isinstance(per_node, dict):
+        return None
+    for slot_id in ("main", "gpt", "prompt"):
+        v = str(per_node.get(slot_id) or "").strip()
+        if v:
+            return v
+    return None
+
+
+def load_prompt(agent: str, project: Any | None = None) -> str:
+    """Промпт агента: сначала вариант ноды «Работа с GPT» (05_excel_gpt),
+    затем конвенция sd_<агент>.md там же, затем legacy scene_design/<агент>.md.
+    """
+    text = ""
+    excel_dir = _excel_gpt_prompts_dir()
+    if project is not None:
+        variant = _node_prompt_variant(project, agent)
+        if variant:
+            from app.services.prompt_library import is_valid_prompt_name
+
+            if is_valid_prompt_name(variant):
+                p = excel_dir / f"{variant}.md"
+                if p.is_file():
+                    text = p.read_text(encoding="utf-8").strip()
     if not text:
-        raise SceneDesignAgentError(f"scene_design: пустой промпт {path}")
+        conv = excel_dir / f"sd_{agent}.md"
+        if conv.is_file():
+            text = conv.read_text(encoding="utf-8").strip()
+    if not text:
+        path = prompts_dir() / f"{agent}.md"
+        if not path.is_file():
+            raise SceneDesignAgentError(f"scene_design: нет файла промпта {path}")
+        text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        raise SceneDesignAgentError(f"scene_design: пустой промпт агента {agent}")
     for extra_name in PROMPT_INCLUDES.get(agent, ()):
         extra_path = prompts_dir() / extra_name
         if not extra_path.is_file():

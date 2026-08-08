@@ -43,6 +43,7 @@ _RUNNING_STATUSES = {
     ProjectStatus.scripting,
     ProjectStatus.splitting,
     ProjectStatus.scene_designing,
+    ProjectStatus.scene_assembling,
     ProjectStatus.generating_hero,
     ProjectStatus.generating_items,
     ProjectStatus.enriching_1,
@@ -463,12 +464,15 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
     # scene_design выполнен (meta.scene_design.status=done) — не откатывать
     # в frames_ready: recompute иначе зациклил бы auto_advance на повторный
     # запуск ноды. Данные ноды — attrs кадров, отдельного счётчика нет.
+    # Промежуточная фаза agents_done → scene_agents_ready (сборка впереди).
     _sd = meta_now.get("scene_design")
-    frames_exit = (
-        ProjectStatus.scene_design_ready
-        if isinstance(_sd, dict) and _sd.get("status") == "done"
-        else ProjectStatus.frames_ready
-    )
+    _sd_status = _sd.get("status") if isinstance(_sd, dict) else None
+    if _sd_status == "done":
+        frames_exit = ProjectStatus.scene_design_ready
+    elif _sd_status == "agents_done":
+        frames_exit = ProjectStatus.scene_agents_ready
+    else:
+        frames_exit = ProjectStatus.frames_ready
     if meta_now.get("hero_skipped_empty") and hero_arts == 0 and not has_hero_descr:
         # Пустой skip зафиксирован — не откатывать в frames_ready (цикл auto).
         if fr_with_img_prompt < fr_total:

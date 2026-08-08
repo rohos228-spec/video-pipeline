@@ -283,6 +283,61 @@ async def _wipe_scene_design(session: AsyncSession, project: Project) -> dict[st
     }
 
 
+async def _wipe_scene_assemble(session: AsyncSession, project: Project) -> dict[str, Any]:
+    """Сброс только сборщика: scene_registry + scene-attrs кадров + статус
+    сборки в meta. Чекпоинты и ячейки агентов НЕ трогаем — повторный запуск
+    scene_asm соберёт из тех же ячеек без GPT-вызовов агентов."""
+    from app.services.db_apply import _ATTR_EXCEL_ROWS
+
+    meta = dict(project.meta or {})
+    meta_cleared = [k for k in ("scene_registry",) if meta.pop(k, None) is not None]
+    sd = meta.get("scene_design")
+    if isinstance(sd, dict) and sd.get("status") == "done":
+        sd = dict(sd)
+        sd["status"] = "agents_done"
+        sd.pop("report", None)
+        sd.pop("finished_at", None)
+        meta["scene_design"] = sd
+        meta_cleared.append("scene_design.status")
+    if meta_cleared:
+        project.meta = meta
+
+    frames = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project.id)
+        )
+    ).scalars().all()
+    attr_keys = set(_ATTR_EXCEL_ROWS) | {"characters", "persons", "персонажи"}
+    frames_cleared = 0
+    for fr in frames:
+        attrs = dict(fr.attrs or {})
+        before = len(attrs)
+        for k in attr_keys:
+            attrs.pop(k, None)
+        if len(attrs) != before:
+            fr.attrs = attrs
+            frames_cleared += 1
+    return {"meta_cleared": meta_cleared, "frames_attrs_cleared": frames_cleared}
+
+
+def _sd_agent_wiper(step_code: str):
+    """Wipe одного агента веера (sd_char/sd_world/...): чекпоинт + ячейки."""
+
+    async def _wipe(session: AsyncSession, project: Project) -> dict[str, Any]:
+        from app.orchestrator.node_registry import SD_AGENT_STEP_CODES
+        from app.services.scene_design import invalidate_agent
+        from app.services.scene_design import cells as sd_cells
+
+        agent = SD_AGENT_STEP_CODES.get(step_code)
+        if not agent:
+            return {"error": f"unknown agent step {step_code}"}
+        ok = invalidate_agent(project, agent)
+        cells_deleted = await sd_cells.wipe_cells(session, project, agent=agent)
+        return {"agent": agent, "checkpoint_reset": ok, "cells_deleted": cells_deleted}
+
+    return _wipe
+
+
 async def _wipe_hero(session: AsyncSession, project: Project) -> dict[str, Any]:
     """Сброс шага 4a «Персонажи»: удалить hero_reference артефакты.
 
@@ -692,6 +747,12 @@ _PIPELINE_RESET_LEVELS: list[tuple[str, Any]] = [
     ("script",    _wipe_script),
     ("split",     _wipe_split),
     ("scene_d",   _wipe_scene_design),
+    ("scene_asm", _wipe_scene_assemble),
+    ("sd_char",   _sd_agent_wiper("sd_char")),
+    ("sd_world",  _sd_agent_wiper("sd_world")),
+    ("sd_style",  _sd_agent_wiper("sd_style")),
+    ("sd_cam",    _sd_agent_wiper("sd_cam")),
+    ("sd_act",    _sd_agent_wiper("sd_act")),
     ("hero",      _wipe_hero),
     ("items",     _wipe_items),
     ("enrich_1",  _enrich_slot_wiper(1)),
@@ -718,9 +779,22 @@ _WRAPPER_TO_CODES: dict[str, list[str]] = {
 
 # При явном reset_step: шаги, которые не сносим как downstream.
 # Музыка независима от озвучки — сброс audio не должен удалять music/.
+# Веер scene_design: агенты sd_* стоят в списке после scene_asm, но по смыслу
+# они UPSTREAM сборщика. Сброс scene_asm не должен сносить чекпоинты агентов,
+# а сброс одного агента — чекпоинты соседей (иначе перезапуск сборщика
+# требует полного GPT-прогона всех пяти).
+_SD_AGENT_CODES: frozenset[str] = frozenset(
+    {"sd_char", "sd_world", "sd_style", "sd_cam", "sd_act"}
+)
 _RESET_SKIP_DOWNSTREAM: dict[str, frozenset[str]] = {
     "audio": frozenset({"music"}),
     "video": frozenset({"music"}),
+    "scene_asm": _SD_AGENT_CODES,
+    "sd_char": _SD_AGENT_CODES - {"sd_char"},
+    "sd_world": _SD_AGENT_CODES - {"sd_world"},
+    "sd_style": _SD_AGENT_CODES - {"sd_style"},
+    "sd_cam": _SD_AGENT_CODES - {"sd_cam"},
+    "sd_act": _SD_AGENT_CODES - {"sd_act"},
 }
 
 
@@ -739,7 +813,8 @@ def _resolve_start_index(step_code: str) -> int | None:
 # показывать ли кнопку «🔁 Прогнать шаг с нуля».
 RESET_SUPPORTED_STEP_CODES: frozenset[str] = frozenset({
     "plan", "script", "split",
-    "scene_d",
+    "scene_d", "scene_asm",
+    "sd_char", "sd_world", "sd_style", "sd_cam", "sd_act",
     "objects", "hero", "items",
     "enrich",
     "enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5",

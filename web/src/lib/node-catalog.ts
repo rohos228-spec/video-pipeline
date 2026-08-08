@@ -82,9 +82,27 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
     type: "scene_design",
     label: "Сцены (агенты)",
     description:
-      "Мульти-агентный дизайн сцен: персонажи/мир/стиль/камера/действие → сборщик. Без флага SCENE_DESIGN_ENABLED — pass-through.",
+      "Legacy-нода старых канвасов: весь мульти-агентный дизайн сцен одной нодой. Новые канвасы — веер sd_agent ×5 + sd_assemble.",
     category: "planning",
     accent: "175 60% 55%",
+    iconKey: "sparkles",
+  },
+  sd_agent: {
+    type: "sd_agent",
+    label: "GPT-агент сцен",
+    description:
+      "Работа с GPT: категорийный агент дизайна сцен (data.agent: characters/world/style/camera/action). Свой промт prompts/scene_design/<агент>.md — кнопка GPT на ноде. 5 нод веера работают параллельно, ▶ на ноде — перезапуск только этого агента.",
+    category: "planning",
+    accent: "270 55% 64%",
+    iconKey: "sparkles",
+  },
+  sd_assemble: {
+    type: "sd_assemble",
+    label: "GPT-сборка сцен",
+    description:
+      "Работа с GPT: финальный агент-сборщик (промт prompts/scene_design/assemble.md): staging-ячейки агентов → scene_registry + атрибуты кадров. Перезапуск не трогает чекпоинты агентов.",
+    category: "planning",
+    accent: "270 55% 64%",
     iconKey: "sparkles",
   },
   hero: {
@@ -208,6 +226,16 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
     accent: "0 0% 58%",
     iconKey: "check-square",
   },
+};
+
+/** Имена категорийных агентов scene_design (data.sd_agent → по-русски). */
+export const SD_AGENT_LABELS: Record<string, string> = {
+  characters: "персонажи",
+  world: "мир",
+  style: "стиль",
+  camera: "камера",
+  action: "действие",
+  assemble: "сборка",
 };
 
 export function formatNodeTypeLabel(type: string): string {

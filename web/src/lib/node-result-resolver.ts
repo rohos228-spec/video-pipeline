@@ -342,7 +342,8 @@ function computeNodeResult(
       return empty("Раскадровка ещё не создана", "studio", "xlsx_split_row");
     }
 
-    case "scene_design": {
+    case "scene_design":
+    case "sd_assemble": {
       if (ctx.frames.length > 0) {
         return {
           hasResult: true,
@@ -354,6 +355,20 @@ function computeNodeResult(
         };
       }
       return empty("Сцены ещё не собраны", "studio", "xlsx_split_row");
+    }
+
+    case "sd_agent": {
+      if (ctx.frames.length > 0) {
+        return {
+          hasResult: true,
+          itemCount: ctx.frames.length,
+          summary: "Срез агента лёг в staging-ячейки; кадры — после сборки",
+          items: [{ id: "sd_agent_row", label: "Агент сцен", kind: "frames" }],
+          replaceMode: "studio",
+          viewMode: "xlsx_split_row",
+        };
+      }
+      return empty("Агент ещё не отработал", "studio", "xlsx_split_row");
     }
 
     case "hero":

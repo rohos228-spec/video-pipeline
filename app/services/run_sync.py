@@ -115,7 +115,7 @@ async def ensure_run_for_project(
             nr = NodeRun(
                 workflow_run_id=run.id,
                 node_key=node["id"],
-                node_type=node["type"],
+                node_type=effective_node_type(node),
             )
             s.add(nr)
         await s.flush()
@@ -140,6 +140,7 @@ from app.services.excel_gpt_node import (
     active_excel_gpt_node_key,
     clear_slot_completion_meta,
     completed_node_keys,
+    effective_node_type,
     resolve_excel_gpt_node_key_for_slot,
     slot_for_excel_gpt_node_key,
     slot_from_ready_status,
@@ -416,6 +417,18 @@ async def resolve_node_run_for_step(
         key = active_excel_gpt_node_key(project)
     if step_code == "excel_gpt" and not key and enrich_slot is not None:
         key = resolve_excel_gpt_node_key_for_slot(project, enrich_slot)
+    # Per-agent шаги веера scene_design: нода по маркеру data.sd_agent.
+    from app.orchestrator.node_registry import SD_AGENT_STEP_CODES
+    from app.services.excel_gpt_node import effective_node_type, sd_agent_marker
+
+    sd_agent_name = SD_AGENT_STEP_CODES.get(step_code)
+    if sd_agent_name and not key:
+        for n in run.nodes_snapshot or []:
+            if effective_node_type(n) != "sd_agent":
+                continue
+            if sd_agent_marker(n) == sd_agent_name:
+                key = str(n.get("id") or "") or None
+                break
     if key:
         for nr in run.node_runs:
             if nr.node_key == key:
@@ -424,6 +437,9 @@ async def resolve_node_run_for_step(
     if node_type is None:
         return None
     matches = [nr for nr in run.node_runs if nr.node_type == node_type]
+    if not matches and node_type in ("sd_agent", "sd_assemble"):
+        # Legacy-канвас: одна нода scene_design вместо веера sd_*.
+        matches = [nr for nr in run.node_runs if nr.node_type == "scene_design"]
     if len(matches) == 1:
         return matches[0]
     if key:
@@ -562,6 +578,28 @@ async def prepare_node_for_step_start(
                 f"(текущий статус: {nr.status.value})"
             )
         return False
+    # Веер scene_design: общий шаг scene_d гоняет все 5 нод sd_agent разом —
+    # поднять queued→running и для остальных (не только первой найденной).
+    if step_code == "scene_d" and not resolved_key and nr.node_type == "sd_agent":
+        run_fan = await _workflow_run_with_nodes(session, project.id)
+        if run_fan is not None:
+            for other in run_fan.node_runs:
+                if other.node_type != "sd_agent" or other.node_key == nr.node_key:
+                    continue
+                if other.status == NodeRunStatus.skipped:
+                    continue
+                if other.status in (NodeRunStatus.done, NodeRunStatus.waiting_hitl):
+                    if not explicit_ui_start:
+                        continue
+                    reset_node_to_pending(
+                        other, project_id=project.id, initiator="ui_restart"
+                    )
+                if other.status in (NodeRunStatus.running, NodeRunStatus.queued):
+                    reset_node_to_pending(
+                        other, project_id=project.id, initiator="auto_unstick"
+                    )
+                queue_node_for_start(other, project_id=project.id, initiator="api")
+                start_node_running(other, project_id=project.id, initiator="api")
     await session.flush()
     run = await _workflow_run_with_nodes(session, project.id)
     if run is not None:
@@ -681,6 +719,17 @@ async def complete_active_node_for_step(
     if run is None:
         return
 
+    # Legacy-канвас: нод sd_agent/sd_assemble нет — закрываем scene_design.
+    if (
+        node_type in ("sd_agent", "sd_assemble")
+        and not any(nr.node_type == node_type for nr in run.node_runs)
+        and any(nr.node_type == "scene_design" for nr in run.node_runs)
+    ):
+        node_type = "scene_design"
+
+    # Веер scene_design: фаза агентов завершает все 5 нод sd_agent разом.
+    complete_all = node_type == "sd_agent"
+
     # excel_gpt auto-chain УЖЕ ставит active_excel_gpt_node_key на СЛЕДУЮЩУЮ
     # ноду до вызова complete (enriching_N → enriching_N+1). Брать active_key
     # первым = пометить next done и оставить prev running — UI врёт, xlsx
@@ -752,7 +801,9 @@ async def complete_active_node_for_step(
                     prev_status.value,
                     new_status.value,
                 )
-            return
+            if not complete_all:
+                return
+            continue
         # Recovery: шаг успешен, но prepare не нашёл ноду (осталась pending).
         if (
             node_type == EXCEL_GPT_NODE_TYPE
@@ -810,6 +861,15 @@ async def mark_running_node_failed(
     node_type = _canvas_node_type_for_running(project.status)
     if not node_type:
         return
+    # Legacy-канвас: нод sd_agent/sd_assemble нет — фейлим scene_design.
+    if (
+        node_type in ("sd_agent", "sd_assemble")
+        and not any(nr.node_type == node_type for nr in run.node_runs)
+        and any(nr.node_type == "scene_design" for nr in run.node_runs)
+    ):
+        node_type = "scene_design"
+    # Веер scene_design: фейлим все running-ноды агентов, не только первую.
+    fail_all = node_type == "sd_agent"
     active_key = (
         active_excel_gpt_node_key(project) if node_type == EXCEL_GPT_NODE_TYPE else None
     )
@@ -844,7 +904,8 @@ async def mark_running_node_failed(
                 node_key=nr.node_key,
                 payload=payload,
             )
-            return
+            if not fail_all:
+                return
 
 
 async def update_active_node_progress_text(
@@ -885,6 +946,37 @@ async def reset_nodes_from_step(
     """Сбросить ноды начиная с step_code → pending (явный reset)."""
     run = await _workflow_run_with_nodes(session, project_id)
     if run is None:
+        return
+    # Per-agent сброс веера scene_design: только нода этого агента
+    # (по маркеру data.sd_agent из snapshot'а) + sd_assemble и downstream.
+    # Соседние агенты не трогаем — их чекпоинты валидны.
+    from app.orchestrator.node_registry import SD_AGENT_STEP_CODES
+    from app.services.excel_gpt_node import effective_node_type, sd_agent_marker
+
+    sd_agent_name = SD_AGENT_STEP_CODES.get(step_code)
+    if sd_agent_name is not None:
+        target_key: str | None = None
+        for n in run.nodes_snapshot or []:
+            if effective_node_type(n) != "sd_agent":
+                continue
+            if sd_agent_marker(n) == sd_agent_name:
+                target_key = str(n.get("id") or "") or None
+                break
+        try:
+            asm_idx = NODE_TYPE_ORDER.index("sd_assemble")
+        except ValueError:
+            asm_idx = len(NODE_TYPE_ORDER)
+        for nr in run.node_runs:
+            if nr.node_key == target_key:
+                reset_node_to_pending(nr, project_id=project_id, initiator="api_reset")
+                continue
+            if nr.node_type in NODE_TYPE_ORDER:
+                idx = NODE_TYPE_ORDER.index(nr.node_type)
+                if idx >= asm_idx and nr.node_type != "sd_agent":
+                    reset_node_to_pending(
+                        nr, project_id=project_id, initiator="api_reset"
+                    )
+        await session.flush()
         return
     node_type = STEP_CODE_TO_NODE_TYPE.get(step_code)
     if step_code == "excel_gpt":
@@ -966,6 +1058,9 @@ NODE_TYPE_ORDER: list[str] = [
     "plan",
     "script",
     "split",
+    "scene_design",
+    "sd_agent",
+    "sd_assemble",
     "hero",
     "items",
     "enrich_1",

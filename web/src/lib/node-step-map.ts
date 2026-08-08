@@ -5,6 +5,8 @@ export const NODE_TO_STEP: Record<string, string> = {
   script: "script",
   split: "split",
   scene_design: "scene_d",
+  sd_agent: "scene_d",
+  sd_assemble: "scene_asm",
   hero: "hero",
   items: "items",
   excel_gpt: "excel_gpt",

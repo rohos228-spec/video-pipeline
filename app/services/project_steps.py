@@ -78,6 +78,37 @@ async def start_step(
     explicit_ui_start: bool = False,
 ) -> ProjectStatus:
     """Перевести проект в running-статус шага — воркер подхватит."""
+    # Ноды «Работа с GPT» с маркером data.sd_agent — scene-агенты: их ▶
+    # приходит как excel_gpt (таков тип ноды), но гоняется шагами
+    # scene_d/scene_asm, а не enrich-слотами.
+    if step_code == "excel_gpt" and node_key:
+        try:
+            from app.services.canvas_graph import canvas_graph_from_meta
+            from app.services.excel_gpt_node import (
+                SCENE_AGENT_ASSEMBLER,
+                sd_agent_marker,
+            )
+
+            cg = canvas_graph_from_meta(
+                project.meta if isinstance(project.meta, dict) else {}
+            )
+            for n in (cg or {}).get("nodes") or []:
+                if str(n.get("id") or "") != str(node_key):
+                    continue
+                marker = sd_agent_marker(n)
+                if marker:
+                    step_code = (
+                        "scene_asm"
+                        if marker == SCENE_AGENT_ASSEMBLER
+                        else "scene_d"
+                    )
+                break
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[#{}] start_step: sd_agent reroute по node_key failed",
+                project.id,
+                exc_info=True,
+            )
     # Studio/явный UI: очередь и «уже running» не блокируют — preempt + старт.
     if explicit_ui_start:
         skip_queue_guard = True
@@ -163,6 +194,67 @@ async def start_step(
             step_code,
             step_code,
         )
+
+    # Per-agent перезапуск веера scene_design: сбросить чекпоинт ТОЛЬКО этого
+    # агента (остальные возьмутся из чекпоинтов без GPT) + сборка → stale.
+    # Два входа: шаги sd_char/sd_world/... ИЛИ scene_d с node_key ноды
+    # sd_agent (кнопка ▶ на ноде агента на канвасе).
+    from app.orchestrator.node_registry import SD_AGENT_STEP_CODES
+
+    sd_agent_name = SD_AGENT_STEP_CODES.get(step_code)
+    if sd_agent_name is None and step_code == "scene_d" and node_key:
+        try:
+            from app.services.canvas_graph import canvas_graph_from_meta
+            from app.services.excel_gpt_node import (
+                SCENE_AGENT_ASSEMBLER,
+                sd_agent_marker,
+            )
+
+            cg = canvas_graph_from_meta(
+                project.meta if isinstance(project.meta, dict) else {}
+            )
+            for n in (cg or {}).get("nodes") or []:
+                if str(n.get("id") or "") != str(node_key):
+                    continue
+                cand = sd_agent_marker(n)
+                if cand and cand != SCENE_AGENT_ASSEMBLER:
+                    sd_agent_name = cand
+                break
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[#{}] start_step scene_d: agent resolve по node_key failed",
+                project.id,
+                exc_info=True,
+            )
+    if sd_agent_name:
+        from app.services.scene_design import invalidate_agent
+
+        invalidate_agent(project, sd_agent_name)
+        logger.info(
+            "[#{}] start_step {}: чекпоинт агента {} сброшен (per-agent rerun)",
+            project.id,
+            step_code,
+            sd_agent_name,
+        )
+        # Нода сборщика на канвасе → pending (сборка устарела).
+        try:
+            from app.services.run_sync import _workflow_run_with_nodes
+            from app.services.node_status_machine import reset_node_to_pending
+
+            run = await _workflow_run_with_nodes(session, project.id)
+            if run is not None:
+                for nr in run.node_runs:
+                    if nr.node_type == "sd_assemble" and nr.status.value == "done":
+                        reset_node_to_pending(
+                            nr, project_id=project.id, initiator="ui_restart"
+                        )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[#{}] start_step {}: sd_assemble reset failed",
+                project.id,
+                step_code,
+                exc_info=True,
+            )
 
     # Ручной старт: порядок нод и data-guard не блокируют запуск.
 

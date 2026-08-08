@@ -123,6 +123,7 @@ def _mock_harness(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.asyncio
 async def test_scene_design_step_end_to_end(sd_session, monkeypatch) -> None:
+    """Две фазы: run (агенты) → scene_agents_ready, run_assemble → scene_design_ready."""
     session, project = sd_session
     calls: list[str] = []
     _mock_gpt(monkeypatch, calls)
@@ -132,16 +133,27 @@ async def test_scene_design_step_end_to_end(sd_session, monkeypatch) -> None:
 
     await scene_design.run(session, project)
 
+    assert project.status is ProjectStatus.scene_agents_ready
+    # Фаза 1 — только категорийные агенты, сборщик ещё не вызывался.
+    assert sorted(calls) == sorted(_AGENT_MARKERS.keys())
+    meta = project.meta or {}
+    sd = meta.get("scene_design") or {}
+    assert sd.get("status") == "agents_done"
+    assert set((sd.get("agents") or {}).keys()) == {
+        "characters", "world", "style", "camera", "action",
+    }
+
+    # Фаза 2 — сборщик.
+    project.status = ProjectStatus.scene_assembling
+    await session.commit()
+    await scene_design.run_assemble(session, project)
+
     assert project.status is ProjectStatus.scene_design_ready
-    # 5 категорийных агентов + сборщик.
-    assert sorted(calls) == sorted([*_AGENT_MARKERS.keys(), "ASSEMBLER V1"])
+    assert calls[-1] == "ASSEMBLER V1"
 
     meta = project.meta or {}
     sd = meta.get("scene_design") or {}
     assert sd.get("status") == "done"
-    assert set((sd.get("agents") or {}).keys()) == {
-        "characters", "world", "style", "camera", "action",
-    }
     registry = meta.get("scene_registry")
     assert isinstance(registry, list) and registry[0]["id_scene"] == "sc01"
 
@@ -178,12 +190,16 @@ async def test_scene_design_pass_through_when_disabled(sd_session, monkeypatch) 
     from app.orchestrator.steps import scene_design
 
     await scene_design.run(session, project)
+    assert project.status is ProjectStatus.scene_agents_ready
+    project.status = ProjectStatus.scene_assembling
+    await session.commit()
+    await scene_design.run_assemble(session, project)
     assert project.status is ProjectStatus.scene_design_ready
 
 
 @pytest.mark.asyncio
 async def test_scene_design_checkpoints_skip_gpt_on_retry(sd_session, monkeypatch) -> None:
-    """Повторный прогон: категорийные агенты из чекпоинтов, GPT — только сборщик."""
+    """Повторная фаза агентов: все из чекпоинтов, GPT не дёргается вообще."""
     session, project = sd_session
     from app.services.scene_design import runner
 
@@ -205,5 +221,94 @@ async def test_scene_design_checkpoints_skip_gpt_on_retry(sd_session, monkeypatc
 
     await scene_design.run(session, project)
 
+    assert project.status is ProjectStatus.scene_agents_ready
+    assert calls == []
+
+    # Сборка из чекпоинтов: GPT — только сборщик.
+    project.status = ProjectStatus.scene_assembling
+    await session.commit()
+    await scene_design.run_assemble(session, project)
     assert project.status is ProjectStatus.scene_design_ready
     assert calls == ["ASSEMBLER V1"]
+
+
+@pytest.mark.asyncio
+async def test_scene_design_per_agent_rerun(sd_session, monkeypatch) -> None:
+    """invalidate_agent: повторная фаза гоняет GPT только для одного агента."""
+    session, project = sd_session
+    calls: list[str] = []
+    _mock_gpt(monkeypatch, calls)
+    _mock_harness(monkeypatch)
+
+    from app.orchestrator.steps import scene_design
+    from app.services.scene_design import invalidate_agent
+
+    await scene_design.run(session, project)
+    assert project.status is ProjectStatus.scene_agents_ready
+    assert len(calls) == 5
+
+    # Перезапуск одного агента (камера): сборка стала stale.
+    calls.clear()
+    assert invalidate_agent(project, "camera") is True
+    await session.commit()
+    assert (project.meta or {}).get("scene_design", {}).get("status") == "agents_done"
+
+    project.status = ProjectStatus.scene_designing
+    await session.commit()
+    await scene_design.run(session, project)
+
+    assert project.status is ProjectStatus.scene_agents_ready
+    assert calls == ["CAMERA V1"]
+
+
+@pytest.mark.asyncio
+async def test_scene_assemble_requires_agents(sd_session, monkeypatch) -> None:
+    """Сборщик без чекпоинтов агентов — понятная ошибка, GPT не дёргается."""
+    session, project = sd_session
+    calls: list[str] = []
+    _mock_gpt(monkeypatch, calls)
+    _mock_harness(monkeypatch)
+
+    from app.orchestrator.steps import scene_design
+
+    project.status = ProjectStatus.scene_assembling
+    await session.commit()
+    with pytest.raises(RuntimeError, match="агенты ещё не отработали"):
+        await scene_design.run_assemble(session, project)
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_reset_scene_asm_keeps_agent_checkpoints(sd_session, monkeypatch) -> None:
+    """Каскад reset: scene_asm не сносит чекпоинты агентов (они upstream),
+    reset одного агента не трогает соседей."""
+    session, project = sd_session
+    calls: list[str] = []
+    _mock_gpt(monkeypatch, calls)
+    _mock_harness(monkeypatch)
+
+    from app.orchestrator.steps import scene_design
+    from app.services.reset_step import reset_step
+    from app.services.scene_design.runner import _agent_file
+
+    await scene_design.run(session, project)
+    assert project.status is ProjectStatus.scene_agents_ready
+    for name in ("characters", "world", "style", "camera", "action"):
+        assert _agent_file(project, name).is_file(), name
+
+    # Сброс сборщика: все 5 чекпоинтов агентов на месте.
+    summary = await reset_step(session, project, "scene_asm")
+    wiped = summary.get("__steps_wiped") or []
+    assert "scene_asm" in wiped
+    assert not (set(wiped) & {"sd_char", "sd_world", "sd_style", "sd_cam", "sd_act"})
+    for name in ("characters", "world", "style", "camera", "action"):
+        assert _agent_file(project, name).is_file(), name
+
+    # Сброс одного агента (камера): только его чекпоинт удалён.
+    summary = await reset_step(session, project, "sd_cam")
+    wiped = summary.get("__steps_wiped") or []
+    assert "sd_cam" in wiped
+    assert not (set(wiped) & {"sd_char", "sd_world", "sd_style", "sd_act"})
+    assert not _agent_file(project, "camera").is_file()
+    for name in ("characters", "world", "style", "action"):
+        assert _agent_file(project, name).is_file(), name

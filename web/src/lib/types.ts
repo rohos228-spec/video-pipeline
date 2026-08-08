@@ -4,7 +4,7 @@
 
 export type ProjectStatus =
   | "new" | "planning" | "scripting" | "splitting"
-  | "scene_designing" | "scene_design_ready"
+  | "scene_designing" | "scene_agents_ready" | "scene_assembling" | "scene_design_ready"
   | "generating_hero" | "generating_items"
   | "enriching_1" | "enriching_2" | "enriching_3" | "enriching_4" | "enriching_5"
   | "generating_image_prompts" | "generating_images"
@@ -18,7 +18,7 @@ export type ProjectStatus =
   | "assembled" | "published" | "paused" | "failed";
 
 export type NodeType =
-  | "plan" | "script" | "split" | "scene_design"
+  | "plan" | "script" | "split" | "scene_design" | "sd_agent" | "sd_assemble"
   | "hero" | "items"
   | "enrich_1" | "enrich_2" | "enrich_3" | "enrich"
   | "image_prompts" | "images"

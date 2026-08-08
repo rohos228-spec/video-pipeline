@@ -30,6 +30,7 @@ import {
   pipelinePromptSlots,
   resolvePromptSlots,
   resolvePromptSlotsForNode,
+  sceneAgentFromNodeKey,
   type NodePromptSlot,
 } from "@/lib/node-prompts";
 import { nodeSupportsGptText } from "@/lib/gpt-text-steps";
@@ -327,7 +328,10 @@ export function NodeStudio({
           )
       : "default";
   const activeVariantSourceLabel = promptSourceLabel(activeVariantSource);
-  const preferredFile = preferredPromptFileName(activeSlot);
+  const sdAgentFromKey = sceneAgentFromNodeKey(nodeKey);
+  const preferredFile =
+    preferredPromptFileName(activeSlot) ??
+    (sdAgentFromKey ? `sd_${sdAgentFromKey}` : undefined);
 
   const activateVariant = useMutation({
     mutationFn: async (variant: string) => {

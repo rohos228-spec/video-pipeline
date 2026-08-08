@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from loguru import logger
@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import NodeRun, Project, WorkflowRun
+from app.services.excel_gpt_node import effective_node_type
 
 
 def canvas_graph_from_meta(meta: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -59,7 +60,7 @@ def build_canvas_graph_payload(
         "workflow_id": workflow_id,
         "nodes": nodes,
         "edges": edges,
-        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "saved_at": datetime.now(UTC).isoformat(),
     }
 
 
@@ -139,7 +140,7 @@ async def sync_run_snapshot_from_canvas_graph(
             NodeRun(
                 workflow_run_id=run.id,
                 node_key=str(nid),
-                node_type=str(n.get("type") or ""),
+                node_type=effective_node_type(n),
             )
         )
     for nr in list(run.node_runs):

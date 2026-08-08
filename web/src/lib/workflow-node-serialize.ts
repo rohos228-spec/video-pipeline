@@ -49,6 +49,10 @@ export function workflowNodeFromCanvas(n: Node): WorkflowNode {
   if (typeof d.uploadedFileName === "string") data.uploadedFileName = d.uploadedFileName;
   if (typeof d.workMode === "string") data.workMode = d.workMode;
   if (typeof d.role === "string") data.role = d.role;
+  // sd_agent: имя агента — идентичность ноды (per-agent rerun), не терять.
+  if (typeof d.agent === "string") data.agent = d.agent;
+  // Маркер scene-агента на ноде «Работа с GPT» — идентичность, не терять.
+  if (typeof d.sdAgent === "string") data.sd_agent = d.sdAgent;
   return {
     id: n.id,
     type,
@@ -58,13 +62,22 @@ export function workflowNodeFromCanvas(n: Node): WorkflowNode {
 }
 
 export function assignExcelGptSlotIndices(nodes: WorkflowNode[]): WorkflowNode[] {
+  // scene-агенты (data.sd_agent) — не enrich-слоты: нумерацию пропускают.
+  const isSceneAgent = (n: WorkflowNode) =>
+    typeof (n.data as Record<string, unknown> | undefined)?.sd_agent === "string" ||
+    typeof (n.data as Record<string, unknown> | undefined)?.agent === "string";
   const excel = nodes
-    .filter((n) => n.type === "excel_gpt")
+    .filter((n) => n.type === "excel_gpt" && !isSceneAgent(n))
     .sort((a, b) => (a.position?.x ?? 0) - (b.position?.x ?? 0));
   const slotById = new Map<string, number>();
   excel.forEach((n, i) => slotById.set(n.id, Math.min(i + 1, 5)));
   return nodes.map((n) => {
     if (n.type !== "excel_gpt") return n;
+    if (isSceneAgent(n)) {
+      const data = { ...(n.data || {}) } as Record<string, unknown>;
+      delete data.slotIndex;
+      return { ...n, data };
+    }
     const slotIndex = slotById.get(n.id) ?? 1;
     const rawLabel = (n.data?.label as string) || "";
     const label =

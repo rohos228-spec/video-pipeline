@@ -261,8 +261,6 @@ class Settings(BaseSettings):
     scene_design_enabled: bool = Field(False, alias="SCENE_DESIGN_ENABLED")
     # Сколько категорийных агентов дёргают GPT одновременно внутри ноды.
     scene_design_max_parallel: int = Field(5, alias="SCENE_DESIGN_MAX_PARALLEL")
-    # Сколько категорийных агентов дёргают GPT одновременно внутри ноды.
-    scene_design_max_parallel: int = Field(5, alias="SCENE_DESIGN_MAX_PARALLEL")
 
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")

@@ -283,9 +283,12 @@ async def load_cells(
     return list((await session.execute(stmt)).scalars().all())
 
 
-async def wipe_cells(session: AsyncSession, project: Project) -> int:
-    """Удалить все staging-ячейки проекта (reset шага)."""
-    res = await session.execute(
-        delete(SceneDesignCell).where(SceneDesignCell.project_id == project.id)
-    )
+async def wipe_cells(
+    session: AsyncSession, project: Project, *, agent: str | None = None
+) -> int:
+    """Удалить staging-ячейки проекта (reset шага); ``agent`` — только одного."""
+    stmt = delete(SceneDesignCell).where(SceneDesignCell.project_id == project.id)
+    if agent:
+        stmt = stmt.where(SceneDesignCell.agent == agent)
+    res = await session.execute(stmt)
     return int(res.rowcount or 0)

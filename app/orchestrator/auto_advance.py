@@ -117,6 +117,12 @@ def _build_transitions() -> dict[ProjectStatus, StepTransition]:
     transitions[ProjectStatus.frames_ready] = StepTransition(
         ProjectStatus.frames_ready, ProjectStatus.generating_hero, HITLKind.approve_hero
     )
+    # scene_agents_ready → scene_assembling (фаза 2: сборщик; без HITL).
+    transitions[ProjectStatus.scene_agents_ready] = StepTransition(
+        ProjectStatus.scene_agents_ready,
+        ProjectStatus.scene_assembling,
+        HITLKind.approve_hero,
+    )
     # scene_design_ready → generating_hero (без HITL: автомат по плану).
     transitions[ProjectStatus.scene_design_ready] = StepTransition(
         ProjectStatus.scene_design_ready,
@@ -253,6 +259,7 @@ def expected_status_progression(project: Project | None) -> list[ProjectStatus]:
 
         if scene_design_enabled(project):
             progression.append(ProjectStatus.scene_designing)
+            progression.append(ProjectStatus.scene_assembling)
     except Exception:  # noqa: BLE001
         pass
     progression.extend([
@@ -346,7 +353,8 @@ def _running_for_ready(ready: ProjectStatus) -> ProjectStatus | None:
     # Это может быть sub-step (hero / items / enrich_i) — STEPS их не
     # содержит. Маппинг руками:
     sub_map: dict[ProjectStatus, ProjectStatus] = {
-        ProjectStatus.scene_design_ready: ProjectStatus.scene_designing,
+        ProjectStatus.scene_agents_ready: ProjectStatus.scene_designing,
+        ProjectStatus.scene_design_ready: ProjectStatus.scene_assembling,
         ProjectStatus.hero_ready: ProjectStatus.generating_hero,
         ProjectStatus.items_ready: ProjectStatus.generating_items,
         ProjectStatus.enrich_1_ready: ProjectStatus.enriching_1,
@@ -888,6 +896,12 @@ async def _apply_approve(
                     alt.value if alt is not None else "none",
                 )
                 graph_nxt = alt
+        if (
+            transition.ready_status is ProjectStatus.scene_agents_ready
+            and graph_nxt is None
+        ):
+            # Старый канвас без нод sd_agent/sd_assemble — линейный fallback.
+            graph_nxt = ProjectStatus.scene_assembling
         if (
             transition.ready_status is ProjectStatus.scene_design_ready
             and graph_nxt is None
@@ -1656,6 +1670,8 @@ async def serial_busy_in_batch(session: AsyncSession, batch_id: int) -> int | No
         ProjectStatus.planning,
         ProjectStatus.scripting,
         ProjectStatus.splitting,
+        ProjectStatus.scene_designing,
+        ProjectStatus.scene_assembling,
         ProjectStatus.generating_hero,
         ProjectStatus.generating_items,
         ProjectStatus.enriching_1,
@@ -1773,6 +1789,8 @@ MASS_LANE_BUSY_STATUSES = [
     ProjectStatus.planning,
     ProjectStatus.scripting,
     ProjectStatus.splitting,
+    ProjectStatus.scene_designing,
+    ProjectStatus.scene_assembling,
     ProjectStatus.generating_hero,
     ProjectStatus.generating_items,
     ProjectStatus.enriching_1,

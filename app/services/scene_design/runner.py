@@ -119,12 +119,58 @@ def mark_done(project: Project, report: str) -> None:
     _save_state(project, sd)
 
 
+def mark_agents_done(project: Project) -> None:
+    """Фаза агентов завершена: срезы + ячейки записаны, сборка ещё впереди."""
+    sd = _meta_state(project)
+    sd["status"] = "agents_done"
+    sd["agents_finished_at"] = datetime.now(UTC).isoformat()
+    sd.pop("error", None)
+    _save_state(project, sd)
+
+
+def mark_assemble_running(project: Project) -> None:
+    sd = _meta_state(project)
+    sd["status"] = "assembling"
+    sd.pop("error", None)
+    _save_state(project, sd)
+
+
+def invalidate_agent(project: Project, name: str) -> bool:
+    """Сбросить чекпоинт одного агента (per-agent перезапуск с ноды канваса).
+
+    Удаляет meta-статус и файл ``scene_design/<agent>.json``; ячейки агента
+    перезапишет ``store_cells`` при следующем прогоне. Возвращает True,
+    если агент известен.
+    """
+    if name not in ag.CATEGORY_AGENTS:
+        return False
+    sd = _meta_state(project)
+    agents_meta = dict(sd.get("agents") or {})
+    agents_meta.pop(name, None)
+    sd["agents"] = agents_meta
+    # Сборка стала stale — статус больше не «done».
+    if sd.get("status") == "done":
+        sd["status"] = "agents_done"
+        sd.pop("report", None)
+        sd.pop("finished_at", None)
+    _save_state(project, sd)
+    path = _agent_file(project, name)
+    if path.is_file():
+        path.unlink()
+    return True
+
+
+def agents_all_done(project: Project) -> bool:
+    """Все 5 категорийных агентов имеют валидные чекпоинты."""
+    return all(load_checkpoint(project, name) is not None for name in ag.CATEGORY_AGENTS)
+
+
 async def _run_one_agent(
     project: Project, name: str, context: str, *, timeout: float
 ) -> dict[str, Any]:
     from app.services import gpt_client
 
-    prompt = ag.load_prompt(name)
+    prompt = ag.load_prompt(name, project)
     text = f"{prompt}\n\n---\n\n{context}"
     reply = await gpt_client.gpt_ask_fresh(text, timeout=timeout, project_id=project.id)
     return ag.parse_agent_slice(name, reply)
@@ -185,7 +231,7 @@ async def run_assembler(
     """
     from app.services import gpt_client
 
-    prompt = ag.load_prompt(ag.ASSEMBLER)
+    prompt = ag.load_prompt(ag.ASSEMBLER, project)
     cells_json = json.dumps(assembly_input, ensure_ascii=False, indent=1)
     parts = [
         prompt,

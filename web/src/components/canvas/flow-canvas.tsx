@@ -878,8 +878,11 @@ export function FlowCanvas({
       if (!workflow.data) return;
       const id = `n_${type}_${Date.now()}`;
       const spec = getNodeSpec(type);
+      // scene-агенты (sdAgent) слоты enrich не занимают — не считаем их.
       const excelCount = nodes.filter(
-        (n) => (n.data as PipelineNodeData).type === "excel_gpt",
+        (n) =>
+          (n.data as PipelineNodeData).type === "excel_gpt" &&
+          !(n.data as PipelineNodeData).sdAgent,
       ).length;
 
       let position = { x: 120, y: 200 };
@@ -1221,8 +1224,14 @@ function WorkflowToolbar({
   onDuplicateBelow: () => void;
   onAddExcelFeed: () => void;
 }) {
+  // sd_agent/sd_assemble — legacy-типы старых канвасов; scene-агенты теперь
+  // создаются дефолтным графом как ноды «Работа с GPT» с маркером sd_agent.
   const addable = Object.keys(NODE_CATALOG).filter(
-    (t) => !t.startsWith("hitl_") && t !== "excel_feed",
+    (t) =>
+      !t.startsWith("hitl_") &&
+      t !== "excel_feed" &&
+      t !== "sd_agent" &&
+      t !== "sd_assemble",
   );
   const qc = useQueryClient();
 
@@ -1691,6 +1700,8 @@ function workflowToReactFlowNodes(
         uploadedFileName: data.uploadedFileName as string | undefined,
         workMode: data.workMode as PipelineNodeData["workMode"],
         role: data.role as string | undefined,
+        agent: data.agent as string | undefined,
+        sdAgent: (data.sd_agent ?? data.agent) as string | undefined,
         status: (nr?.status ?? "pending") as PipelineNodeData["status"],
         progress: nr?.progress ?? 0,
         progressText: nr?.progress_text ?? null,

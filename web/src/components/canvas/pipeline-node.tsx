@@ -12,7 +12,7 @@ import {
   X,
 } from "lucide-react";
 import type { NodeRunStatus } from "@/lib/types";
-import { getNodeSpec, formatNodeTypeLabel } from "@/lib/node-catalog";
+import { getNodeSpec, formatNodeTypeLabel, SD_AGENT_LABELS } from "@/lib/node-catalog";
 import { getNodeIcon } from "@/lib/node-icons";
 import { cn } from "@/lib/utils";
 import {
@@ -49,6 +49,10 @@ export interface PipelineNodeData extends Record<string, unknown> {
   workMode?: ExcelGptWorkMode;
   /** Полная роль оператора (assist/review/…/gate); workMode — legacy. */
   role?: string;
+  /** Имя агента для legacy-нод sd_agent (characters/world/style/camera/action). */
+  agent?: string;
+  /** Маркер scene-агента на ноде «Работа с GPT» (data.sd_agent, + "assemble"). */
+  sdAgent?: string;
   status: NodeRunStatus;
   progress: number;
   progressText: string | null;
@@ -73,7 +77,28 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const running = d.status === "running";
   const wide = needsWidePanel(d.type);
 
-  const slots = actions?.getPromptSlots(d.nodeKey, d.type) ?? [];
+  const rawSlots = actions?.getPromptSlots(d.nodeKey, d.type) ?? [];
+  // Scene-агент: legacy-тип (sd_agent/sd_assemble) ИЛИ marked «Работа с GPT»
+  // (excel_gpt + data.sd_agent). agentName — characters/…/action/assemble.
+  const agentName =
+    d.sdAgent ??
+    (d.type === "sd_agent" || d.type === "sd_assemble" ? d.agent : undefined) ??
+    (d.type === "sd_assemble" ? "assemble" : undefined);
+  const isSdAgent =
+    d.type === "sd_agent" || d.type === "sd_assemble" || !!d.sdAgent;
+  // Ноде агента подставляем её файл промпта (05_excel_gpt/sd_<агент>.md).
+  const slots =
+    isSdAgent && agentName
+      ? rawSlots.map((s) =>
+          s.id === "main"
+            ? {
+                ...s,
+                preferredFile: `sd_${agentName}`,
+                title: `Промт: ${SD_AGENT_LABELS[agentName] ?? agentName}`,
+              }
+            : s,
+        )
+      : rawSlots;
   const assetKind = assetTrayKindForNodeType(d.type);
   const vMenuOpen = actions?.vMenuNodeKey === d.nodeKey;
   const resultSnapshot = actions?.getNodeResult(d.type, d.status, d.nodeKey);
@@ -81,6 +106,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const isStorage = d.type === "storage";
   const isHero = d.type === "hero";
   const isExcelGpt = isExcelGptNode(d.type);
+  const isGptWork = isExcelGpt || isSdAgent;
   const isAssemble = d.type === "assemble";
   const anchorRef = useRef<HTMLDivElement>(null);
 
@@ -108,7 +134,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
             ref={anchorRef}
             className={cn(
               "group relative overflow-visible rounded-3xl border border-white/10 bg-card/80 shadow-lg shadow-black/40 backdrop-blur-md premium-node-glow",
-              isExcelGpt || isStorage ? "w-[300px]" : "w-[260px]",
+              isGptWork || isStorage ? "w-[300px]" : "w-[260px]",
               "hover:-translate-y-0.5 hover:border-primary/35",
               running && "glow-running border-amber-400/60",
               d.status === "done" && "border-emerald-500/40",
@@ -135,8 +161,14 @@ export function PipelineNode({ data, selected }: NodeProps) {
             {actions && !isHitlNodeType(d.type) && !isExcelFeed && !isStorage && (
               <VTrigger
                 open={!!vMenuOpen}
-                title={isExcelGpt ? "Пульт оператора + промты (V)" : "Меню промтов (V)"}
-                label={isExcelGpt ? "GPT" : "V"}
+                title={
+                  isExcelGpt
+                    ? "Пульт оператора + промты (V)"
+                    : isSdAgent
+                      ? "Промт агента + меню (V)"
+                      : "Меню промтов (V)"
+                }
+                label={isGptWork ? "GPT" : "V"}
                 onToggle={() => actions.setVMenuNodeKey(vMenuOpen ? null : d.nodeKey)}
               />
             )}
@@ -212,7 +244,19 @@ export function PipelineNode({ data, selected }: NodeProps) {
                       ? "Хранилище всех входящих файлов. Имя: номерНоды_время_файл."
                       : spec.description}
                 </span>
-                {isExcelGpt ? (
+                {isSdAgent ? (
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    <span className="rounded-full border border-violet-400/25 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-medium text-violet-100/90">
+                      {agentName && agentName !== "assemble"
+                        ? `агент: ${SD_AGENT_LABELS[agentName] ?? agentName}`
+                        : "сборщик сцен"}
+                    </span>
+                    <span className="rounded-full border border-emerald-400/20 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-100/90">
+                      GPT API
+                    </span>
+                  </div>
+                ) : null}
+                {!isSdAgent && isExcelGpt ? (
                   <div className="mt-1.5 flex flex-wrap gap-1">
                     <span className="rounded-full border border-violet-400/25 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-medium text-violet-100/90">
                       {d.role ? roleChip(d.role) : workModeChip(d.workMode)}

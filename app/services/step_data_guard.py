@@ -86,6 +86,24 @@ async def ready_status_confirmed_by_data(
             if meta.get("split_completed") or project.status is ProjectStatus.frames_ready:
                 return True
 
+    # scene_agents_ready: кадры есть + (все 5 чекпоинтов агентов done ИЛИ
+    # фича выключена — pass-through фазы не оставляет чекпоинтов).
+    if ready_status is ProjectStatus.scene_agents_ready:
+        fr_n = (
+            await session.execute(
+                select(func.count(Frame.id)).where(Frame.project_id == project.id)
+            )
+        ).scalar_one()
+        if int(fr_n or 0) < 1:
+            return False
+        if project.status is ProjectStatus.scene_agents_ready:
+            return True
+        from app.services.scene_design import agents_all_done, scene_design_enabled
+
+        if not scene_design_enabled(project):
+            return True
+        return agents_all_done(project)
+
     # scene_design_ready: кадры есть + (meta.scene_design.status=done ИЛИ
     # фича выключена — pass-through ноды не оставляет флага).
     if ready_status is ProjectStatus.scene_design_ready:
@@ -184,6 +202,19 @@ async def can_enter_running(
             if not voice.is_file() or voice.stat().st_size < 50:
                 actual = await compute_actual_status(session, project)
                 return False, "закадровый текст не готов", actual
+
+    if target is ProjectStatus.scene_assembling:
+        # Сборщик требует готовых чекпоинтов всех агентов (или выключенную
+        # фичу — тогда это pass-through).
+        from app.services.scene_design import agents_all_done, scene_design_enabled
+
+        if scene_design_enabled(project) and not agents_all_done(project):
+            return (
+                False,
+                "агенты scene_design ещё не отработали",
+                ProjectStatus.scene_designing,
+            )
+        return True, "", None
 
     if target in (
         ProjectStatus.planning,

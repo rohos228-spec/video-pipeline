@@ -315,6 +315,7 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
             ProjectStatus.scripting,
             ProjectStatus.splitting,
             ProjectStatus.scene_designing,
+            ProjectStatus.scene_assembling,
             ProjectStatus.generating_hero,
         ProjectStatus.generating_items,
         ProjectStatus.enriching_1,

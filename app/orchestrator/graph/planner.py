@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import NodeRunStatus, Project, ProjectStatus, WorkflowRun
 from app.orchestrator.node_registry import (
-    NODE_TYPE_TO_RUNNING,
     READY_TO_NODE_TYPE,
     RUNNING_TO_NODE_TYPE,
     is_config_node_type,
@@ -20,9 +19,11 @@ from app.orchestrator.node_registry import (
     spec_for_step_code,
     spec_for_type,
 )
+from app.services.disabled_nodes import disabled_node_types
 from app.services.excel_gpt_node import (
     EXCEL_GPT_NODE_TYPE,
     completed_node_keys,
+    effective_node_type,
     excel_gpt_force_rerun_slots,
     ready_status_for_slot,
     running_status_for_slot,
@@ -30,7 +31,6 @@ from app.services.excel_gpt_node import (
     slot_from_running_status,
     slot_index_from_node,
 )
-from app.services.disabled_nodes import disabled_node_types
 
 # excel_feed — прозрачный вход. storage — НЕ passthrough: это side-sink
 # (много рёбер work→storage), иначе predecessors раздуваются на весь граф.
@@ -139,10 +139,16 @@ class WorkflowGraph:
 
     def node_type(self, node_key: str) -> str:
         n = self._by_id.get(node_key) or {}
-        return str(n.get("type") or "")
+        # Эффективный тип: marked «Работа с GPT» (data.sd_agent) → sd_agent/
+        # sd_assemble, чтобы веер scene_design не смешивался с enrich-слотами.
+        return effective_node_type(n)
 
     def keys_of_type(self, node_type: str) -> list[str]:
-        return [nid for nid, n in self._by_id.items() if n.get("type") == node_type]
+        return [
+            nid
+            for nid, n in self._by_id.items()
+            if effective_node_type(n) == node_type
+        ]
 
     def excel_gpt_keys_for_slot(self, slot: int) -> list[str]:
         return [
@@ -194,7 +200,7 @@ class WorkflowGraph:
         """Рабочие ноды, достижимые от topic/excel_feed и от «входных» без предшественников."""
         roots: list[str] = []
         for nid, n in self._by_id.items():
-            typ = str(n.get("type") or "")
+            typ = effective_node_type(n)
             if is_side_sink_node_type(typ):
                 continue
             if is_config_node_type(typ) or typ in PASSTHROUGH_NODE_TYPES:
@@ -203,9 +209,12 @@ class WorkflowGraph:
             if nid in skipped:
                 continue
             typ = self.node_type(nid)
-            if is_work_node_type(typ) and not self._effective_predecessors(nid, skipped):
-                if nid not in roots:
-                    roots.append(nid)
+            if (
+                is_work_node_type(typ)
+                and not self._effective_predecessors(nid, skipped)
+                and nid not in roots
+            ):
+                roots.append(nid)
 
         reachable: set[str] = set()
         queue: deque[str] = deque(roots)
@@ -241,6 +250,17 @@ class WorkflowGraph:
         elif status is ProjectStatus.published:
             for key in self._flow_work_keys(skipped):
                 done.add(self.node_type(key))
+        # Веер scene_design: фазы и legacy-тип scene_design (старые канвасы
+        # с одной нодой вместо sd_agent ×5 + sd_assemble).
+        from app.telegram.menu import status_order as _ord
+
+        if status is not None and _ord(status) >= _ord(ProjectStatus.scene_design_ready):
+            done.update({"sd_agent", "sd_assemble", "scene_design"})
+        elif status in (
+            ProjectStatus.scene_agents_ready,
+            ProjectStatus.scene_assembling,
+        ):
+            done.add("sd_agent")
         meta = project.meta if isinstance(project.meta, dict) else {}
         # enrich_completed_slots учитываем только после реального split
         # (split_completed) или когда уже внутри enrich-зоны. Иначе stale
@@ -506,7 +526,7 @@ class WorkflowGraph:
         flow = self._flow_work_keys(skipped)
 
         for nid, n in self._by_id.items():
-            typ = str(n.get("type") or "")
+            typ = effective_node_type(n)
             if nid in skipped or typ in disabled_node_types(project):
                 out[nid] = NodeRunStatus.skipped
                 continue
@@ -516,9 +536,7 @@ class WorkflowGraph:
             if is_hitl_node_type(typ):
                 preds = self._effective_predecessors(nid, skipped)
                 if preds and all(self.node_type(p) in done_types for p in preds):
-                    if active_type and typ == f"hitl_{active_type.replace('image_prompts', 'images')}":
-                        out[nid] = NodeRunStatus.waiting_hitl
-                    elif status in READY_TO_NODE_TYPE:
+                    if active_type and typ == f"hitl_{active_type.replace('image_prompts', 'images')}" or status in READY_TO_NODE_TYPE:
                         out[nid] = NodeRunStatus.waiting_hitl
                     else:
                         out[nid] = NodeRunStatus.done
@@ -567,7 +585,7 @@ class WorkflowGraph:
 
     def _linear_prereq_met(self, project: Project, step_code: str) -> bool:
         """Линейный prerequisite шага (когда на канвасе нет входящих связей)."""
-        from app.telegram.menu import step_by_code, status_order
+        from app.telegram.menu import status_order, step_by_code
 
         step = step_by_code(step_code)
         if step is None:
@@ -578,7 +596,6 @@ class WorkflowGraph:
 
     def is_step_reachable(self, project: Project, step_code: str) -> bool:
         """Можно ли запустить step_code с текущего статуса проекта по графу."""
-        from app.orchestrator.node_registry import spec_for_step_code
 
         spec = spec_for_step_code(step_code)
         if spec is None:

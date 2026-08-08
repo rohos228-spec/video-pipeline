@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import NodeRun, Workflow, WorkflowRun
+from app.services.excel_gpt_node import effective_node_type
 
 
 async def sync_runs_from_workflow(session: AsyncSession, workflow: Workflow) -> int:
@@ -34,7 +35,7 @@ async def sync_runs_from_workflow(session: AsyncSession, workflow: Workflow) -> 
                 NodeRun(
                     workflow_run_id=run.id,
                     node_key=nid,
-                    node_type=str(n.get("type") or ""),
+                    node_type=effective_node_type(n),
                 )
             )
         for nr in list(run.node_runs):

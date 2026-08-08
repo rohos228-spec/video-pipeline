@@ -1,12 +1,17 @@
-"""Нода scene_design: мульти-агентная режиссура сцен (между split и hero).
+"""Ноды scene_design: мульти-агентная режиссура сцен (между split и hero).
 
+Фаза 1 — ``run`` (статус scene_designing, ноды sd_agent ×5 на канвасе):
 5 категорийных GPT-агентов параллельно (characters/world/style/camera/action)
 → срезы конвертируются в staging-ячейки (``scene_design_cells``, валидация
-при записи, коммит частями) → хронологическая выкладка по закадру с
-привязкой кадров к сценам → финальный агент-сборщик → валидация →
-apply-ops (scene_registry + attrs кадров). В боевые таблицы пишет только
-финальная сборка. Выключена (SCENE_DESIGN_ENABLED=false и нет per-project
-override) — прозрачный pass-through в scene_design_ready.
+при записи, коммит частями) → статус scene_agents_ready.
+
+Фаза 2 — ``run_assemble`` (статус scene_assembling, нода sd_assemble):
+ячейки → хронологическая выкладка по закадру с привязкой кадров к сценам
+→ финальный агент-сборщик → валидация → apply-ops (scene_registry + attrs
+кадров) → scene_design_ready. В боевые таблицы пишет только сборка.
+
+Выключена (SCENE_DESIGN_ENABLED=false и нет per-project override) —
+обе фазы прозрачный pass-through.
 """
 
 from __future__ import annotations
@@ -22,29 +27,39 @@ from app.storage import for_project as _sheet_for_project
 _MAX_ASSEMBLE_ATTEMPTS = 2
 
 
+async def _load_frames(session: AsyncSession, project: Project) -> list[Frame]:
+    return (
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
 async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -> None:
+    """Фаза 1: категорийные агенты (параллельно) → staging-ячейки."""
     if project.status is not ProjectStatus.scene_designing:
         return
     from app.services import db_v2
-    from app.services.scene_design import apply as sd_apply
-    from app.services.scene_design import assembler as sd_assembler
+    from app.services.scene_design import cells as sd_cells
     from app.services.scene_design import context_builder, runner
 
-    logger.info("[#{}] scene_design starting", project.id)
+    logger.info("[#{}] scene_design agents phase starting", project.id)
 
     if not runner.scene_design_enabled(project):
         logger.info("[#{}] scene_design disabled — pass-through", project.id)
-        project.status = ProjectStatus.scene_design_ready
+        project.status = ProjectStatus.scene_agents_ready
         await session.flush()
         await session.commit()
         return
 
     await db_v2.backfill_project_v2(session, project)
-    frames = (
-        await session.execute(
-            select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
-        )
-    ).scalars().all()
+    frames = await _load_frames(session, project)
     if not frames:
         raise RuntimeError("scene_design: нет кадров — сначала split")
     if any(not fr.uuid for fr in frames):
@@ -58,14 +73,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     try:
         context = context_builder.build_shared_context(project, frames)
         slices = await runner.run_category_agents(project, context)
-        # Чекпоинты агентов уже в meta — зафиксировать до долгой сборки.
+        # Чекпоинты агентов уже в meta — зафиксировать до записи ячеек.
         await session.commit()
 
         # Срезы → staging-ячейки (валидация при записи, коммит частями).
         full_vo = context_builder.full_voiceover(project, frames)
-        from app.services.scene_design import cells as sd_cells
-        from app.services.scene_design import chronology as sd_chronology
-
         cell_stats: dict[str, dict[str, int]] = {}
         for agent_name, slice_data in slices.items():
             converted = sd_cells.slice_to_cells(project, agent_name, slice_data, full_vo)
@@ -73,6 +85,78 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
                 session, project, agent_name, converted
             )
         logger.info("[#{}] scene_design cells: {}", project.id, cell_stats)
+
+        runner.mark_agents_done(project)
+        project.status = ProjectStatus.scene_agents_ready
+        await session.flush()
+        await session.commit()
+    except Exception as e:
+        runner.mark_failed(project, str(e))
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            await session.commit()
+        raise
+
+    logger.info(
+        "[#{}] scene_design agents done: cells={}",
+        project.id,
+        {k: v.get("stored") for k, v in cell_stats.items()},
+    )
+
+    try:
+        _sheet_for_project(project).write_general(status=project.status.value)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] project_sheet scene_design write failed: {}", project.id, e)
+
+    from app.services.agent_harness import harness_gate_or_raise
+
+    await harness_gate_or_raise(session, project, step="scene_d")
+    await session.commit()
+
+
+async def run_assemble(
+    session: AsyncSession, project: Project, bot: Bot | None = None
+) -> None:
+    """Фаза 2: финальный агент-сборщик → scene_registry + attrs кадров."""
+    if project.status is not ProjectStatus.scene_assembling:
+        return
+    from app.services.scene_design import apply as sd_apply
+    from app.services.scene_design import assembler as sd_assembler
+    from app.services.scene_design import cells as sd_cells
+    from app.services.scene_design import chronology as sd_chronology
+    from app.services.scene_design import context_builder, runner
+
+    logger.info("[#{}] scene_design assemble phase starting", project.id)
+
+    if not runner.scene_design_enabled(project):
+        logger.info("[#{}] scene_design disabled — pass-through", project.id)
+        project.status = ProjectStatus.scene_design_ready
+        await session.flush()
+        await session.commit()
+        return
+
+    frames = await _load_frames(session, project)
+    if not frames:
+        raise RuntimeError("scene_asm: нет кадров — сначала split")
+    if not runner.agents_all_done(project):
+        missing = [
+            name
+            for name in ("characters", "world", "style", "camera", "action")
+            if runner.load_checkpoint(project, name) is None
+        ]
+        raise RuntimeError(
+            f"scene_asm: агенты ещё не отработали ({', '.join(missing)}) — "
+            "сначала запустите ноды агентов (scene_d)"
+        )
+
+    runner.mark_assemble_running(project)
+    await session.flush()
+    await session.commit()
+
+    try:
+        context = context_builder.build_shared_context(project, frames)
+        full_vo = context_builder.full_voiceover(project, frames)
 
         # Ячейки → хронологический вход сборщика (сцены + кадры по закадру).
         all_cells = await sd_cells.load_cells(session, project)
@@ -117,7 +201,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         raise
 
     logger.info(
-        "[#{}] scene_design done: ops={} characters={} scenes={}",
+        "[#{}] scene_design assemble done: ops={} characters={} scenes={}",
         project.id,
         applied.get("updated"),
         applied.get("characters"),
@@ -140,5 +224,5 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
 
     from app.services.agent_harness import harness_gate_or_raise
 
-    await harness_gate_or_raise(session, project, step="scene_d")
+    await harness_gate_or_raise(session, project, step="scene_asm")
     await session.commit()
