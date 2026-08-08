@@ -58,6 +58,32 @@ def _resolve_whisper_runtime(
     return "cpu", "int8"
 
 
+def _register_nvidia_dll_dirs() -> None:
+    """Windows: ctranslate2 грузит cublas64_12.dll / cudnn64_9.dll из PATH.
+
+    pip-пакеты nvidia-cublas-cu12 / nvidia-cudnn-cu12 кладут DLL в
+    site-packages/nvidia/*/bin — регистрируем их, иначе GPU-падение
+    «Library cublas64_12.dll is not found».
+    """
+    if os.name != "nt":
+        return
+    import sys
+
+    added = False
+    for prefix in {sys.prefix, sys.base_prefix}:
+        nvidia = Path(prefix) / "Lib" / "site-packages" / "nvidia"
+        for pkg in ("cublas", "cudnn"):
+            bin_dir = nvidia / pkg / "bin"
+            if bin_dir.is_dir():
+                os.add_dll_directory(str(bin_dir))
+                os.environ["PATH"] = (
+                    str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
+                )
+                added = True
+    if added:
+        logger.debug("whisper: nvidia DLL dirs (cublas/cudnn) зарегистрированы")
+
+
 def _create_model(
     model_name: str,
     device: str | None = None,
@@ -68,6 +94,8 @@ def _create_model(
     from faster_whisper import WhisperModel
 
     dev, ctype = _resolve_whisper_runtime(device, compute_type)
+    if dev == "cuda":
+        _register_nvidia_dll_dirs()
     logger.info(
         "whisper: loading model '{}' (device={}, compute={}) ...",
         model_name,
