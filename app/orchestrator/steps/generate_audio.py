@@ -138,13 +138,25 @@ async def _persist_audio_results(
         from app.services.frame_timeline_sync import _r49_content_hash
 
         whisper_meta["r49_hash"] = _r49_content_hash(cells)
+    art_uuid = uuid.uuid4().hex
     session.add(Artifact(
         project_id=project.id,
         kind=ArtifactKind.whisper_words,
-        uuid=uuid.uuid4().hex,
+        uuid=art_uuid,
         path=str(words_path),
         meta=whisper_meta or None,
     ))
+    from app.services.asr import active_asr_backend
+    from app.services.asr_words_store import replace_project_asr_words
+
+    await replace_project_asr_words(
+        session,
+        project.id,
+        words,
+        backend=active_asr_backend(),
+        artifact_uuid=art_uuid,
+        frame_segments=frame_segments,
+    )
 
     from app.services.plan_timestamps import write_asr_timestamps_to_r15
 

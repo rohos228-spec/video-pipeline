@@ -471,13 +471,24 @@ async def ensure_whisper_words(
     audio_dir.mkdir(parents=True, exist_ok=True)
     words_path = audio_dir / f"words_{uuid.uuid4().hex[:8]}.json"
     dump_words_json(words, words_path)
+    art_uuid = uuid.uuid4().hex
     session.add(
         Artifact(
             project_id=project.id,
             kind=ArtifactKind.whisper_words,
-            uuid=uuid.uuid4().hex,
+            uuid=art_uuid,
             path=str(words_path.resolve()),
         )
+    )
+    from app.services.asr import active_asr_backend
+    from app.services.asr_words_store import replace_project_asr_words
+
+    await replace_project_asr_words(
+        session,
+        project.id,
+        words,
+        backend=active_asr_backend(),
+        artifact_uuid=art_uuid,
     )
     await session.flush()
     logger.info(

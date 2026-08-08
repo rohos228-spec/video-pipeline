@@ -1805,6 +1805,28 @@ async def audio_align_methods_list() -> dict:
     return {"methods": list_align_methods()}
 
 
+@router.get("/{project_id}/asr-words")
+async def project_asr_words(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Word-level транскрибация из БД (таблица asr_words)."""
+    from app.services.asr_words_store import asr_words_to_dicts, load_project_asr_words
+
+    _project_or_404(await session.get(Project, project_id))
+    rows = await load_project_asr_words(session, project_id)
+    words = asr_words_to_dicts(rows)
+    run_uuid = words[0]["run_uuid"] if words else None
+    backend = words[0]["backend"] if words else None
+    return {
+        "project_id": project_id,
+        "count": len(words),
+        "run_uuid": run_uuid,
+        "backend": backend,
+        "words": words,
+    }
+
+
 @router.post("/{project_id}/audio-align")
 async def audio_align_start(
     project_id: int,

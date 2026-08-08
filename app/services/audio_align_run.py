@@ -129,13 +129,14 @@ async def _persist_align_db(
     method_id: str,
     clips: list[FrameAudioClip],
     words_path: Path | None,
+    words: list | None,
     speech_source: str,
     crumbs: int,
     master_s: float,
     r15_written: int,
     engine: str,
 ) -> None:
-    """Короткий write: bulk UPDATE кадров + meta + artifact."""
+    """Короткий write: bulk UPDATE кадров + meta + artifact + asr_words."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     for clip in clips:
         await session.execute(
@@ -151,6 +152,7 @@ async def _persist_align_db(
             )
         )
 
+    art_uuid: str | None = None
     if words_path is not None:
         speech_kind = (
             "nemo_chunks"
@@ -159,11 +161,12 @@ async def _persist_align_db(
             if method_id in SHARED_NEMO_FULL_METHODS
             else "other"
         )
+        art_uuid = uuid.uuid4().hex
         session.add(
             Artifact(
                 project_id=project.id,
                 kind=ArtifactKind.whisper_words,
-                uuid=uuid.uuid4().hex,
+                uuid=art_uuid,
                 path=str(words_path),
                 meta={
                     "source": "audio_align",
@@ -172,6 +175,26 @@ async def _persist_align_db(
                     "engine": "nemo",
                 },
             )
+        )
+
+    if words:
+        from app.services.asr_words_store import replace_project_asr_words
+
+        frame_segments = [
+            {
+                "frame_number": c.frame_number,
+                "start_ts": c.start_ts,
+                "end_ts": c.end_ts,
+            }
+            for c in clips
+        ]
+        await replace_project_asr_words(
+            session,
+            project.id,
+            words,
+            backend=engine or method_id,
+            artifact_uuid=art_uuid,
+            frame_segments=frame_segments,
         )
 
     meta = dict(project.meta or {}) if isinstance(project.meta, dict) else {}
@@ -193,6 +216,7 @@ async def _persist_align_db_with_retry(
     method_id: str,
     clips: list[FrameAudioClip],
     words_path: Path | None,
+    words: list | None,
     speech_source: str,
     crumbs: int,
     master_s: float,
@@ -212,6 +236,7 @@ async def _persist_align_db_with_retry(
                     method_id=method_id,
                     clips=clips,
                     words_path=words_path,
+                    words=words,
                     speech_source=speech_source,
                     crumbs=crumbs,
                     master_s=master_s,
@@ -337,6 +362,7 @@ async def run_audio_align_for_project(
             method_id=method_id,
             clips=clips,
             words_path=words_path,
+            words=list(result.words or []),
             speech_source=result.speech_source,
             crumbs=crumbs,
             master_s=summary["master_s"],

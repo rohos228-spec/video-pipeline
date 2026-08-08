@@ -179,6 +179,7 @@ Series workbook — отдельный трек: `docs/SERIES_XLSX_WORKBOOK.md`.
 | Сборка ролика | `app/orchestrator/steps/assemble.py` |
 | Таймлайн / sync | `app/services/frame_timeline_sync.py`, `mapper.py` |
 | Whisper / ASR | `app/services/whisper.py`; NVIDIA: `ASR_BACKEND=nvidia`, `.[nvidia]`, `scripts/download_nvidia_asr.py` |
+| Word-level в БД | таблица `asr_words` (`app/models.py` AsrWord), запись `app/services/asr_words_store.py`; API `GET /api/projects/{id}/asr-words` |
 | VO в xlsx | R49 (`ROW_VOICEOVER_V8`) + таймкоды R15 |
 | **Regen на доске** | `montage_board_regen.py` → тот же API, что img/video (`outsee_retry`); промты из БД (`prompt_versions`/Frame), Excel fallback. CDP не нужен при `IMAGE/VIDEO_PROVIDER=outsee\|grsai`. См. `docs/DB_V2.md` §8 |
 

@@ -6,7 +6,7 @@ import enum
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import JSON, Enum, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Enum, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
 
 from app.settings import settings
@@ -466,6 +466,38 @@ class Artifact(Base):
 
     project: Mapped[Project] = relationship(back_populates="artifacts")
     frame: Mapped[Frame | None] = relationship(back_populates="artifacts")
+
+
+class AsrWord(Base):
+    """Word-level транскрибация озвучки (NVIDIA/Whisper) — SoT для работы со словами.
+
+    На каждый новый ASR-прогон строки проекта заменяются целиком (один активный run).
+    Файл words.json остаётся артефактом на диске; эта таблица — для запросов/монтажа.
+    """
+
+    __tablename__ = "asr_words"
+    __table_args__ = (
+        Index("ix_asr_words_project_idx", "project_id", "idx"),
+        Index("ix_asr_words_project_run", "project_id", "run_uuid"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    run_uuid: Mapped[str] = mapped_column(String(64), index=True)
+    idx: Mapped[int] = mapped_column()  # 0-based порядок в полном audio
+    word: Mapped[str] = mapped_column(String(256))
+    start_s: Mapped[float] = mapped_column()
+    end_s: Mapped[float] = mapped_column()
+    prob: Mapped[float] = mapped_column(default=0.0)
+    frame_number: Mapped[int | None] = mapped_column(default=None, index=True)
+    frame_id: Mapped[int | None] = mapped_column(
+        ForeignKey("frames.id", ondelete="SET NULL"), default=None, index=True
+    )
+    backend: Mapped[str] = mapped_column(String(64), default="")
+    artifact_uuid: Mapped[str | None] = mapped_column(String(64), default=None)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
 
 
 class MasterPrompt(Base):
