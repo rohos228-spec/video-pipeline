@@ -97,7 +97,10 @@ def test_parse_assembler_error_field() -> None:
 # ── validate_payload ─────────────────────────────────────────────────
 
 _VO = "Альфа начало истории. Бета середина пути. Гамма финал рассказа."
-_FRAMES = [SimpleNamespace(uuid=f"u{i}") for i in range(1, 4)]
+_FRAMES = [
+    SimpleNamespace(uuid=f"u{i}", duration_seconds=3.0, voiceover_text=f"кадр {i}")
+    for i in range(1, 4)
+]
 _PROJECT = SimpleNamespace(id=1)
 
 
@@ -109,6 +112,7 @@ def _valid_payload() -> dict:
                 "id_scene": "sc01",
                 "start_words": "Альфа начало",
                 "end_words": "финал рассказа",
+                "время_сек": 9.0,
             }
         ],
         "ops": [
@@ -120,6 +124,26 @@ def _valid_payload() -> dict:
 
 def test_validate_ok() -> None:
     assert validate_payload(_PROJECT, _FRAMES, _valid_payload(), _VO) == []
+
+
+def test_validate_scene_time_required() -> None:
+    p = _valid_payload()
+    del p["scenes"][0]["время_сек"]
+    problems = validate_payload(_PROJECT, _FRAMES, p, _VO)
+    assert any("время_сек" in x for x in problems)
+
+
+def test_validate_scene_time_mismatch() -> None:
+    p = _valid_payload()
+    p["scenes"][0]["время_сек"] = 25.0  # кадры дают 9.0
+    problems = validate_payload(_PROJECT, _FRAMES, p, _VO)
+    assert any("не бьётся с суммой кадров" in x for x in problems)
+
+
+def test_validate_scene_time_within_tolerance() -> None:
+    p = _valid_payload()
+    p["scenes"][0]["время_сек"] = 10.0  # diff 1.0 < tolerance max(1.5, 3.15)
+    assert validate_payload(_PROJECT, _FRAMES, p, _VO) == []
 
 
 def test_validate_quote_not_in_voiceover() -> None:

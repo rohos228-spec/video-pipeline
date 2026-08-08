@@ -199,8 +199,9 @@ def slice_to_cells(
                 continue
             part = _item_fields(
                 project, agent, "scene", key, item,
-                ("start_words", "end_words", "структура_сцены", "тип_стыка",
-                 "переход_в_сцену", "цепь_действия", "смысл_сцены", "мотив"),
+                ("start_words", "end_words", "время_сек", "структура_сцены",
+                 "тип_стыка", "переход_в_сцену", "цепь_действия", "смысл_сцены",
+                 "мотив"),
                 quote_field="start_words", full_vo_norm=vo_norm,
             )
             for c in part:

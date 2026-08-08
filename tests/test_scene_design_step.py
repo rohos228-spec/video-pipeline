@@ -28,10 +28,15 @@ def _assembler_reply(prompt_text: str) -> str:
     """Собрать валидный payload: uuid кадров вытаскиваем из контекста.
 
     uuid встречаются и в КАДРЫ, и в ячейках scenes_chrono — дедуплицируем,
-    порядок сохраняем.
+    порядок сохраняем. Хронометраж сцены = сумма время_сек её кадров.
     """
+    pairs = re.findall(
+        r'"uuid":\s*"([^"]+)"[^{}]*?"время_сек":\s*([\d.]+)', prompt_text
+    )
+    frame_times = dict(pairs)
     uuids = list(dict.fromkeys(re.findall(r'"uuid":\s*"([^"]+)"', prompt_text)))
     assert uuids, "в контексте сборщика нет uuid кадров"
+    scene_time = round(sum(float(frame_times.get(u) or 0.0) for u in uuids), 1)
     payload = {
         "characters": [{"id": "c01", "имя": "Альфа", "внешность": "высокий"}],
         "scenes": [
@@ -39,6 +44,7 @@ def _assembler_reply(prompt_text: str) -> str:
                 "id_scene": "sc01",
                 "start_words": "Альфа начало",
                 "end_words": "финал рассказа",
+                "время_сек": scene_time,
             }
         ],
         "ops": [
@@ -156,6 +162,8 @@ async def test_scene_design_step_end_to_end(sd_session, monkeypatch) -> None:
     assert sd.get("status") == "done"
     registry = meta.get("scene_registry")
     assert isinstance(registry, list) and registry[0]["id_scene"] == "sc01"
+    # Хронометраж сцены доехал до реестра (3 кадра × 3.0 сек из БД).
+    assert registry[0]["время_сек"] == 9.0
 
     frames = (
         await session.execute(

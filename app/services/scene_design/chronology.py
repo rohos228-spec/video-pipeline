@@ -13,6 +13,7 @@ import re
 from typing import Any
 
 from app.models import Frame, Project, SceneDesignCell
+from app.services.scene_design.context_builder import frame_seconds
 
 
 def _norm(text: str) -> str:
@@ -117,11 +118,12 @@ def assign_frames_to_scenes(
         if not fr.uuid:
             continue
         offset = offsets.get(fr.uuid)
+        sec, _source = frame_seconds(fr)
         frame_row = {
             "uuid": fr.uuid,
             "number": fr.number,
             "закадр": (fr.voiceover_text or "").strip(),
-            "длительность": fr.duration_seconds,
+            "время_сек": sec,
         }
         target = None
         if offset is not None:
@@ -140,6 +142,16 @@ def assign_frames_to_scenes(
             unassigned.append(frame_row)
         else:
             target["row"]["кадры"].append(frame_row)
+    for sp in spans:
+        row = sp["row"]
+        scene_frames = row["кадры"]
+        if scene_frames:
+            # Хронометраж сцены = сумма времён её кадров (из БД или оценка);
+            # точнее декларации агента action, поэтому перезаписывает её.
+            row["время_сек"] = round(
+                sum(float(f.get("время_сек") or 0.0) for f in scene_frames), 1
+            )
+        row["кадров"] = len(scene_frames)
     return unassigned
 
 

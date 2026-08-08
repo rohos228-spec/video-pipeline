@@ -334,10 +334,18 @@ def _normalize_scene_card(raw: dict[str, Any]) -> dict[str, Any]:
     shots = raw.get("shots")
     if shots is not None and not isinstance(shots, list):
         raise ApplyOpsError(f"scenes[{sid}]: shots должен быть списком")
+    time_sec: float | None = None
+    time_raw = raw.get("время_сек", raw.get("длительность_сек", raw.get("duration_seconds")))
+    if time_raw is not None and str(time_raw).strip() != "":
+        try:
+            time_sec = round(float(time_raw), 1)
+        except (TypeError, ValueError):
+            time_sec = None
     return {
         "id_scene": sid,
         "start_words": start,
         "end_words": end,
+        "время_сек": time_sec,
         "структура_сцены": str(
             raw.get("структура_сцены") or raw.get("scene_structure") or ""
         ).strip(),
@@ -527,6 +535,7 @@ def expand_scene_registry_onto_frames(
                     sc.get("start_words") or sc.get("scene_start_words"),
                 ),
                 ("scene_end_words", sc.get("end_words") or sc.get("scene_end_words")),
+                ("scene_time_sec", sc.get("время_сек")),
             ):
                 if _set(attrs, key, src, overwrite=True):
                     changed = True

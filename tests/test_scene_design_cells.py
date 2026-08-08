@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.models import Base, Project
 from app.services.scene_design import cells as sd_cells
 from app.services.scene_design import chronology as sd_chronology
+from app.services.scene_design import context_builder as sd_context
 
 _VO = (
     "Альфа начало истории. Бета середина пути. Гамма финал рассказа. "
@@ -235,6 +236,63 @@ def test_build_assembly_input_chronology() -> None:
     assert [s["id_scene"] for s in scenes] == ["scene_01", "scene_02"]
     assert [f["uuid"] for f in scenes[0]["кадры"]] == ["u1", "u2"]
     assert [f["uuid"] for f in scenes[1]["кадры"]] == ["u3", "u4"]
+    # Хронометраж: у кадров время из БД (3.0), у сцены — сумма её кадров.
+    assert scenes[0]["кадры"][0]["время_сек"] == 3.0
+    assert scenes[0]["время_сек"] == 6.0
+    assert scenes[0]["кадров"] == 2
+    assert scenes[1]["время_сек"] == 6.0
+
+
+def test_action_scene_time_cell_passes() -> None:
+    p = _project()
+    slice_data = {
+        "scenes": [
+            {
+                "id_scene": "scene_01",
+                "start_words": "Альфа начало",
+                "end_words": "середина пути",
+                "время_сек": 6.0,
+                "структура_сцены": "continuity",
+            }
+        ]
+    }
+    cells = sd_cells.slice_to_cells(p, "action", slice_data, _VO)
+    time_cell = next(
+        (c for c in cells if c.field == "время_сек" and c.status == "ok"), None
+    )
+    assert time_cell is not None
+    assert time_cell.value == "6.0"
+
+
+# ── хронометраж кадров (context_builder.frame_seconds) ──────────────
+
+
+def test_frame_seconds_db_duration_wins() -> None:
+    fr = SimpleNamespace(duration_seconds=4.2, voiceover_text="короткий")
+    assert sd_context.frame_seconds(fr) == (4.2, "бд")
+
+
+def test_frame_seconds_estimate_from_voiceover() -> None:
+    fr = SimpleNamespace(duration_seconds=None, voiceover_text="а" * 28)
+    sec, source = sd_context.frame_seconds(fr)
+    assert source == "оценка"
+    assert sec == 2.0  # 28 символов / 14 сим/сек
+
+
+def test_shared_context_has_frame_times_and_total() -> None:
+    p = SimpleNamespace(
+        script_text="", general_plan="", meta={},
+    )
+    frames = [
+        _frame("u1", 1, "Альфа начало истории."),
+        SimpleNamespace(uuid="u2", number=2, voiceover_text="а" * 28,
+                        duration_seconds=None),
+    ]
+    ctx = sd_context.build_shared_context(p, frames)
+    assert '"время_сек": 3.0' in ctx
+    assert '"время_источник": "бд"' in ctx
+    assert '"время_источник": "оценка"' in ctx
+    assert "ИТОГО по всем кадрам: 5.0 сек" in ctx
 
 
 def test_build_assembly_input_unassigned_frames_kept() -> None:
