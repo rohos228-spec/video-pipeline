@@ -52,3 +52,7 @@ prompts/*
 !prompts/.gitkeep
 # Промпты scene_design — часть кода ноды, без них load_prompt падает: держим в git
 !prompts/scene_design/
+# Промпты scene-агентов веера (группа «Сцены: веер агентов») — часть пресета,
+# наследуются всеми ПК: держим в git
+!prompts/05_excel_gpt/
+!prompts/05_excel_gpt/sd_*.md

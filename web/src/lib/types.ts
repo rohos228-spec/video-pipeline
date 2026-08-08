@@ -92,6 +92,17 @@ export interface WorkflowDetail extends WorkflowSummary {
   meta: Record<string, unknown>;
 }
 
+/** Группа нод (пресет канваса) из GET /api/node-groups. */
+export interface NodeGroupSummary {
+  id: string;
+  title: string;
+  description: string;
+  category: string;
+  node_count: number;
+  nodes: { key: string; label: string; type: string }[];
+  default_after_type: string;
+}
+
 export interface ProjectSummary {
   id: number;
   slug: string;

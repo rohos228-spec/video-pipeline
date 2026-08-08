@@ -22,6 +22,7 @@ import type {
   WorkflowEdge,
   WorkflowRunDetail,
   WorkflowSummary,
+  NodeGroupSummary,
 } from "./types";
 import type { BlockSelection } from "./prompt-styles";
 
@@ -526,6 +527,21 @@ export const api = {
     http<void>(`/api/workflows/${id}`, { method: "DELETE" }),
   resetDefaultWorkflow: () =>
     http<WorkflowDetail>(`/api/workflows/default/reset`, { method: "POST" }),
+
+  // ── Группы нод (пресеты канваса) ──────────────────────────────────
+  listNodeGroups: () => http<NodeGroupSummary[]>(`/api/node-groups`),
+  insertNodeGroup: (projectId: number, groupId: string, after?: string) =>
+    http<{
+      group: string;
+      after: string;
+      nodes: string[];
+      edges_added: number;
+      prompt_variants: Record<string, string>;
+      project_meta: Record<string, unknown>;
+    }>(`/api/projects/${projectId}/canvas/groups/${groupId}`, {
+      method: "POST",
+      body: JSON.stringify(after ? { after } : {}),
+    }),
 
   // ── Projects ─────────────────────────────────────────────────────
   listProjects: () => http<ProjectSummary[]>(`/api/projects`),

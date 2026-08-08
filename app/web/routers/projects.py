@@ -180,7 +180,9 @@ async def create_project(
         hero_mode=body.hero_mode,
         status=ProjectStatus.new,
         auto_mode=auto_mode,
-        meta={},
+        # Веер scene_design — в дефолтном шаблоне: включаем агентов сразу,
+        # иначе 6 нод на канвасе прошли бы pass-through мимо GPT.
+        meta={"scene_design_enabled": True},
     )
     session.add(p)
     await session.flush()

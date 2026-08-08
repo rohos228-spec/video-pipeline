@@ -95,6 +95,9 @@ from app.web.routers import (
     runtime_streams as runtime_streams_router,
 )
 from app.web.routers import (
+    node_groups as node_groups_router,
+)
+from app.web.routers import (
     workflows as workflows_router,
 )
 from app.web.settings_default import seed_default_workflow
@@ -246,6 +249,7 @@ def create_app() -> FastAPI:
     app.include_router(fleet_router.router, prefix=API_PREFIX)
     app.include_router(auth_router.router, prefix=API_PREFIX)
     app.include_router(db_browser_router.router, prefix=API_PREFIX)
+    app.include_router(node_groups_router.router, prefix=API_PREFIX)
 
     @app.api_route(f"{API_PREFIX}/{{rest:path}}", methods=["POST", "PUT", "PATCH", "DELETE"])
     async def api_write_not_found(rest: str) -> None:

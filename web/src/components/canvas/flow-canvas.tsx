@@ -48,7 +48,13 @@ import type {
   WorkflowNode,
   WorkflowRunDetail,
 } from "@/lib/types";
-import { getNodeSpec, NODE_CATALOG } from "@/lib/node-catalog";
+import {
+  getNodeSpec,
+  NODE_CATALOG,
+  NODE_CATEGORY_LABELS,
+  NODE_CATEGORY_ORDER,
+  type NodeCategory,
+} from "@/lib/node-catalog";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { formatNodeKeyLabel, formatRunStatus, formatStepCode } from "@/lib/format-labels";
 import { buildExcelLaneBindings } from "@/lib/excel-lane-bindings";
@@ -1088,6 +1094,7 @@ export function FlowCanvas({
       </div>
       <WorkflowToolbar
         workflowId={workflow.data?.id}
+        projectId={projectId}
         onSave={persistWorkflow}
         saving={saving}
         onAddNode={addNode}
@@ -1201,6 +1208,7 @@ export function FlowCanvas({
 
 function WorkflowToolbar({
   workflowId,
+  projectId,
   onSave,
   saving,
   onAddNode,
@@ -1213,6 +1221,7 @@ function WorkflowToolbar({
   onAddExcelFeed,
 }: {
   workflowId?: number;
+  projectId?: number | null;
   onSave: () => void;
   saving: boolean;
   onAddNode: (type: string) => void;
@@ -1233,7 +1242,39 @@ function WorkflowToolbar({
       t !== "sd_agent" &&
       t !== "sd_assemble",
   );
+  // Механика категорий: палитра группирует ноды по category из каталога.
+  const addableByCategory = new Map<NodeCategory, string[]>();
+  for (const t of addable) {
+    const cat = getNodeSpec(t).category;
+    addableByCategory.set(cat, [...(addableByCategory.get(cat) ?? []), t]);
+  }
   const qc = useQueryClient();
+
+  // Группы нод (пресеты из репозитория): вставка целиком на бэкенде —
+  // позиции, связи, промпт-варианты и флаги проекта выставляются атомарно.
+  const nodeGroups = useQuery({
+    queryKey: ["node-groups"],
+    queryFn: api.listNodeGroups,
+    staleTime: 300_000,
+  });
+  const insertGroup = async (groupId: string) => {
+    if (!projectId) {
+      toast.error("Сначала выбери проект");
+      return;
+    }
+    try {
+      const res = await api.insertNodeGroup(projectId, groupId);
+      await qc.invalidateQueries({ queryKey: ["project", projectId] });
+      await qc.invalidateQueries({ queryKey: ["project-run", projectId] });
+      toast.success(`Группа вставлена: ${res.nodes.length} нод после «${res.after}»`);
+    } catch (e) {
+      toast.error(errorMessageFromUnknown(e));
+    }
+  };
+  const groupsByCategory = new Map<string, typeof nodeGroups.data>();
+  for (const g of nodeGroups.data ?? []) {
+    groupsByCategory.set(g.category, [...(groupsByCategory.get(g.category) ?? []), g]);
+  }
 
   const duplicateWf = async () => {
     if (!workflowId) return;
@@ -1260,12 +1301,47 @@ function WorkflowToolbar({
           }}
         >
           <option value="">+ Нода</option>
-          {addable.map((t) => (
-            <option key={t} value={t}>
-              {getNodeSpec(t).label}
-            </option>
-          ))}
+          {NODE_CATEGORY_ORDER.filter((cat) => addableByCategory.has(cat)).map(
+            (cat) => (
+              <optgroup key={cat} label={NODE_CATEGORY_LABELS[cat]}>
+                {(addableByCategory.get(cat) ?? []).map((t) => (
+                  <option key={t} value={t}>
+                    {getNodeSpec(t).label}
+                  </option>
+                ))}
+              </optgroup>
+            ),
+          )}
         </select>
+        {(nodeGroups.data ?? []).length > 0 && (
+          <select
+            className="studio-select h-8 max-w-[170px] rounded-md border border-input bg-card px-2 text-xs"
+            defaultValue=""
+            title="Вставить группу нод с готовыми промтами и связями"
+            onChange={(e) => {
+              if (e.target.value) {
+                void insertGroup(e.target.value);
+                e.target.value = "";
+              }
+            }}
+          >
+            <option value="">+ Группа</option>
+            {[...groupsByCategory.entries()].map(([cat, groups]) => (
+              <optgroup
+                key={cat}
+                label={
+                  NODE_CATEGORY_LABELS[cat as NodeCategory] ?? cat
+                }
+              >
+                {(groups ?? []).map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.title} ({g.node_count})
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+        )}
         <Button size="sm" variant="ghost" className="h-8 gap-1 text-xs" onClick={onSave} disabled={saving}>
           {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
           Сохранить граф

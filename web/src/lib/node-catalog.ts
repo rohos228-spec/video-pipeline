@@ -15,6 +15,30 @@ export type NodeCategory =
   | "publish"
   | "hitl";
 
+/** Человеческие подписи категорий для палитры (optgroup). */
+export const NODE_CATEGORY_LABELS: Record<NodeCategory, string> = {
+  planning: "Планирование",
+  objects: "Герои и предметы",
+  enrich: "Работа с GPT",
+  media: "Медиа",
+  audio: "Аудио",
+  assembly: "Сборка",
+  publish: "Публикация",
+  hitl: "Проверки",
+};
+
+/** Порядок категорий в палитре. */
+export const NODE_CATEGORY_ORDER: NodeCategory[] = [
+  "planning",
+  "objects",
+  "enrich",
+  "media",
+  "audio",
+  "assembly",
+  "publish",
+  "hitl",
+];
+
 export interface NodeSpec {
   type: NodeType;
   label: string;
