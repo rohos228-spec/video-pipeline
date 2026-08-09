@@ -142,6 +142,15 @@ async def _lifespan(app: FastAPI):
 
     try:
         from app.db import session_scope
+        from app.services.node_groups import backfill_group_stamps
+
+        async with session_scope() as s:
+            await backfill_group_stamps(s)
+    except Exception:  # noqa: BLE001
+        logger.exception("node_groups backfill failed (non-fatal)")
+
+    try:
+        from app.db import session_scope
         from app.services.startup_guard import block_pipeline_autorun_on_startup
 
         async with session_scope() as s:

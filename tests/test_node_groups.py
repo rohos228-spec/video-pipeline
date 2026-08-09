@@ -18,6 +18,7 @@ from app.models import (
 )
 from app.services import node_groups as ng
 from app.services.node_groups import (
+    backfill_group_stamps,
     delete_custom_group,
     get_node_group,
     group_from_canvas,
@@ -422,6 +423,43 @@ def test_slugify_group_id() -> None:
     assert slugify_group_id("Моя связка GPT") == "moya_svyazka_gpt"
     assert slugify_group_id("  ") .startswith("group_")
     assert slugify_group_id("Chain 2/проверка") == "chain_2_proverka"
+
+
+async def test_backfill_group_stamps(mem_db) -> None:
+    """Старый проект (веер без штампов) → бэкфилл проставляет groupId."""
+    async with mem_db() as session:
+        project = await _mk_project(session)
+        await insert_node_group(session, project, "scene_design_fanout")
+        # Симулируем проект «до штампов»: снимаем groupId/groupTitle.
+        meta = dict(project.meta)
+        for n in meta["canvas_graph"]["nodes"]:
+            n.get("data", {}).pop("groupId", None)
+            n.get("data", {}).pop("groupTitle", None)
+        project.meta = meta
+        await session.commit()
+
+        stats = await backfill_group_stamps(session)
+
+    assert stats["nodes"] == 12  # 5 агентов + сборщик + 6 проверок
+    assert stats["projects"] == 1
+    cg = project.meta["canvas_graph"]
+    stamped = [
+        n
+        for n in cg["nodes"]
+        if (n.get("data") or {}).get("groupId") == "scene_design_fanout"
+    ]
+    assert len(stamped) == 12
+    assert all(
+        n["data"]["groupTitle"] == "Сцены: веер агентов" for n in stamped
+    )
+    # Посторонние ноды не тронуты.
+    by_id = {n["id"]: n for n in cg["nodes"]}
+    assert "groupId" not in by_id["n_split"]["data"]
+
+    # Идемпотентно: повторный прогон ничего не меняет.
+    async with mem_db() as session:
+        stats2 = await backfill_group_stamps(session)
+    assert stats2 == {"projects": 0, "nodes": 0}
 
 
 async def test_group_from_canvas_and_reinsert(mem_db) -> None:

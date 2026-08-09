@@ -488,6 +488,59 @@ def get_node_group(group_id: str) -> NodeGroupDef | None:
     return all_groups().get(str(group_id or "").strip())
 
 
+async def backfill_group_stamps(session: AsyncSession) -> dict[str, int]:
+    """Проставить groupId/groupTitle на нодах веера scene_design в старых проектах.
+
+    Рамка группы на канвасе рисуется по ``data.groupId``; веер, вставленный
+    до появления штампов, рамки не имеет. Идемпотентно: трогаем только ноды
+    без ``groupId``. Агенты/сборщик — по маркеру sd_agent, проверки — по
+    префиксу id ``n_excel_gpt_sd_check_`` (preferred-id группы + суффиксы).
+    """
+    from sqlalchemy import select
+
+    fanout = NODE_GROUPS["scene_design_fanout"]
+    projects = (await session.execute(select(Project))).scalars().all()
+    stamped_projects = 0
+    stamped_nodes = 0
+    for p in projects:
+        meta = p.meta if isinstance(p.meta, dict) else None
+        if not meta:
+            continue
+        cg = meta.get("canvas_graph")
+        if not isinstance(cg, dict):
+            continue
+        nodes = cg.get("nodes")
+        if not isinstance(nodes, list):
+            continue
+        changed = False
+        for n in nodes:
+            if not isinstance(n, dict):
+                continue
+            data = n.get("data")
+            if not isinstance(data, dict) or data.get("groupId"):
+                continue
+            nid = str(n.get("id") or "")
+            if sd_agent_marker(n) is None and not nid.startswith(
+                "n_excel_gpt_sd_check_"
+            ):
+                continue
+            data["groupId"] = fanout.group_id
+            data["groupTitle"] = fanout.title
+            changed = True
+            stamped_nodes += 1
+        if changed:
+            p.meta = dict(meta)
+            stamped_projects += 1
+    if stamped_projects:
+        await session.commit()
+        logger.info(
+            "node_groups backfill: штампы scene_design_fanout в {} проектах ({} нод)",
+            stamped_projects,
+            stamped_nodes,
+        )
+    return {"projects": stamped_projects, "nodes": stamped_nodes}
+
+
 async def group_from_canvas(
     session: AsyncSession,
     project: Project,
