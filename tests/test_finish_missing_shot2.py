@@ -141,6 +141,53 @@ async def test_trigger_finish_missing_only_shot2(tmp_path: Path, monkeypatch) ->
     assert project.status.value == "generating_images"
 
 
+@pytest.mark.asyncio
+async def test_finish_missing_cancels_stuck_advance(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Доделка при already_running должна снять залипший advance-task."""
+    import asyncio
+
+    from app.services import step_cancel as sc
+
+    data_dir = tmp_path / "p17"
+    scenes = data_dir / "scenes"
+    _valid_png(scenes / "frame_001_abc12345.png")
+    _write_plan_with_shot2(data_dir / "project.xlsx")
+
+    project = _project(data_dir, status=ProjectStatus.generating_images)
+    project.meta = {}
+    fr = Frame(project_id=17, number=1, voiceover_text="v", image_prompt="wide")
+    fr.status = FrameStatus.image_generated
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(return_value=MagicMock(all=lambda: [fr])))
+    )
+    session.flush = AsyncMock()
+    monkeypatch.setattr(
+        "app.services.project_control.flag_modified", lambda *_a, **_k: None
+    )
+
+    async def _never() -> None:
+        await asyncio.sleep(3600)
+
+    task = asyncio.create_task(_never())
+    sc.register_advance_task(17, task)
+    try:
+        assert sc.is_generation_active(17) is True
+        info = await trigger_finish_missing_images(session, project)
+        assert "cancel_advance" in (info.get("restart_actions") or [])
+        await asyncio.sleep(0.05)
+        assert task.cancelled() or task.done()
+    finally:
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        sc.unregister_advance_task(17)
+        sc.clear_stop(17)
+
+
 def test_video_shot1_glob_ignores_s2(tmp_path: Path) -> None:
     videos = tmp_path / "videos"
     videos.mkdir()
@@ -248,7 +295,9 @@ async def test_finish_missing_clears_error_sleep(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_finish_missing_videos_clears_user_stop(tmp_path: Path) -> None:
+async def test_finish_missing_videos_clears_user_stop(
+    tmp_path: Path, monkeypatch
+) -> None:
     data_dir = tmp_path / "p46"
     scenes = data_dir / "scenes"
     videos = data_dir / "videos"
@@ -273,6 +322,9 @@ async def test_finish_missing_videos_clears_user_stop(tmp_path: Path) -> None:
     )
     session.flush = AsyncMock()
     session.get = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "app.services.project_control.flag_modified", lambda *_a, **_k: None
+    )
 
     info = await trigger_finish_missing_videos(session, project)
     assert info["missing_shot1"] == [1]

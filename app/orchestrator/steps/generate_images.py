@@ -906,6 +906,47 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         continue
                     if await _all_shot2_done(session, project.id):
                         break
+                    # Пустой claim при неготовых shot2: часто stale session /
+                    # залипший img_gen_inflight после обрыва. Перечитываем БД
+                    # и пересобираем очередь — иначе вечный sleep 3с.
+                    cleared = await _clear_stale_inflight(session, project.id)
+                    try:
+                        await session.commit()
+                    except Exception:  # noqa: BLE001
+                        await session.rollback()
+                    session.expire_all()
+                    frames_fresh = (
+                        await session.execute(
+                            select(Frame)
+                            .where(Frame.project_id == project.id)
+                            .order_by(Frame.number)
+                        )
+                    ).scalars().all()
+                    xlsx_path = project.data_dir / "project.xlsx"
+                    requeued = 0
+                    if xlsx_path.is_file():
+                        requeued = await _init_shot2_queue(
+                            session,
+                            project,
+                            list(frames_fresh),
+                            out_dir,
+                            xlsx_path,
+                        )
+                        try:
+                            await session.commit()
+                        except Exception:  # noqa: BLE001
+                            await session.rollback()
+                    logger.warning(
+                        "[#{}] generate_images: shot2 claim пуст — "
+                        "inflight_cleared={} requeued={} (ждём 3с)",
+                        project.id,
+                        cleared,
+                        requeued,
+                    )
+                    if requeued == 0 and await _all_shot2_done(
+                        session, project.id
+                    ):
+                        break
                     await sleep_cancellable(3.0, project.id)
             except StepCancelledError as e:
                 consume_stop(project.id)
@@ -978,6 +1019,24 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
 
 # ---------------------------------------------------------------------------
+
+
+async def _clear_stale_inflight(session: AsyncSession, project_id: int) -> int:
+    """Снять ``img_gen_inflight`` со всех кадров (после обрыва streams)."""
+    frames = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project_id)
+        )
+    ).scalars().all()
+    n = 0
+    for fr in frames:
+        attrs = dict(fr.attrs or {})
+        if attrs.pop(INFLIGHT_ATTR, None) is not None:
+            fr.attrs = attrs
+            n += 1
+    if n:
+        await session.flush()
+    return n
 
 
 async def _pending_shot1_numbers(

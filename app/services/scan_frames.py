@@ -265,6 +265,10 @@ async def reset_shot2_to_prompt_ready(
         attrs = dict(fr.attrs or {})
         attrs[SHOT2_PROMPT_ATTR] = info.prompt
         attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
+        # Снять залипший lease — иначе claim вечно пропускает кадр.
+        from app.services.img_streams import INFLIGHT_ATTR
+
+        attrs.pop(INFLIGHT_ATTR, None)
         fr.attrs = attrs
         changed += 1
     await session.flush()
