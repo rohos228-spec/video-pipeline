@@ -104,3 +104,85 @@ async def test_create_child_inherits_settings_not_content(
     assert (child.data_dir / "project.xlsx").is_file()
     assert (child.data_dir / "project.xlsx").read_bytes() != b"parent-xlsx"
 
+
+@pytest.mark.asyncio
+async def test_child_noderun_uses_effective_sd_types(
+    session: AsyncSession, tmp_path, monkeypatch
+) -> None:
+    """Баг #59: ребёнок получал NodeRun.type=excel_gpt → ложные «прервано».
+
+    Родитель создаётся через ensure_run → effective_node_type (sd_agent).
+    ensure_child_workflow_from_parent должен писать то же, не raw node['type'].
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from app import settings as app_settings
+    from app.models import NodeRun, WorkflowRun
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path / "data")
+    sd_nodes = [
+        {
+            "id": f"n_excel_gpt_sd_{a}",
+            "type": "excel_gpt",
+            "data": {"sd_agent": a},
+        }
+        for a in ("characters", "world", "style", "camera", "action")
+    ]
+    sd_nodes.append(
+        {
+            "id": "n_excel_gpt_sd_asm",
+            "type": "excel_gpt",
+            "data": {"sd_agent": "assemble"},
+        }
+    )
+    parent = Project(
+        slug="parent-sd",
+        topic="Родитель SD",
+        status=ProjectStatus.scene_design_ready,
+        meta={"canvas_graph": {"nodes": sd_nodes, "edges": []}},
+    )
+    session.add(parent)
+    await session.flush()
+    # Как у живого родителя: NodeRun уже с effective type.
+    parent_run = WorkflowRun(
+        workflow_id=(
+            await session.execute(select(Workflow).where(Workflow.is_default == True))  # noqa: E712
+        )
+        .scalar_one()
+        .id,
+        project_id=parent.id,
+        status="done",
+        nodes_snapshot=sd_nodes,
+        edges_snapshot=[],
+    )
+    session.add(parent_run)
+    await session.flush()
+    for n in sd_nodes:
+        marker = n["data"]["sd_agent"]
+        typ = "sd_assemble" if marker == "assemble" else "sd_agent"
+        session.add(
+            NodeRun(
+                workflow_run_id=parent_run.id,
+                node_key=n["id"],
+                node_type=typ,
+                status="done",
+            )
+        )
+    await session.flush()
+
+    child = await create_child_from_parent(session, parent, slugify=_slugify)
+    await session.commit()
+
+    child_run = (
+        await session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == child.id)
+            .options(selectinload(WorkflowRun.node_runs))
+        )
+    ).scalar_one()
+    by_key = {nr.node_key: nr.node_type for nr in child_run.node_runs}
+    assert by_key["n_excel_gpt_sd_camera"] == "sd_agent"
+    assert by_key["n_excel_gpt_sd_asm"] == "sd_assemble"
+    assert by_key["n_excel_gpt_sd_characters"] == "sd_agent"
+
