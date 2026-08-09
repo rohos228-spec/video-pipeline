@@ -202,6 +202,10 @@ async def run_assemble(
 
     try:
         full_vo = context_builder.full_voiceover(project, frames)
+        # Держим script_text = SoT кадров (иначе UI/старые пути видят урезанный текст).
+        if full_vo and (project.script_text or "").strip() != full_vo:
+            project.script_text = full_vo
+            await session.flush()
 
         # Ячейки → camera SET дробит VO-диапазон на кадры → сцены (≥VO).
         all_cells = await sd_cells.load_cells(session, project)
