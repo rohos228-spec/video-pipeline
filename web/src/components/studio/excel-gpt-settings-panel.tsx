@@ -326,28 +326,27 @@ export function ExcelGptSettingsPanel({
                     )}
                     Загрузить .txt / .md
                   </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5"
+                    title="Просмотр текста агента (файл или builtin)"
+                    onClick={() => setViewTarget({ kind: "agent" })}
+                  >
+                    <Eye className="h-3.5 w-3.5" />
+                    Просмотр
+                  </Button>
                   {checkAgentFileName ? (
-                    <>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="gap-1.5"
-                        onClick={() => setViewTarget({ kind: "agent" })}
-                      >
-                        <Eye className="h-3.5 w-3.5" />
-                        Просмотр
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        disabled={clearAgent.isPending}
-                        onClick={() => clearAgent.mutate()}
-                      >
-                        Сбросить
-                      </Button>
-                    </>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      disabled={clearAgent.isPending}
+                      onClick={() => clearAgent.mutate()}
+                    >
+                      Сбросить
+                    </Button>
                   ) : null}
                 </div>
               </div>

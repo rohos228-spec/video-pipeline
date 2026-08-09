@@ -1648,23 +1648,17 @@ async def get_check_agent_file(
     node_key: str,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Текст загруженного агента проверки — кнопка «Просмотр» в Studio."""
-    from app.services.gpt_operator import (
-        load_custom_check_agent_body,
-        operator_config,
-    )
+    """Текст агента проверки (свой файл или builtin) — кнопка «Просмотр» в Studio."""
+    from app.services.gpt_operator import load_check_agent_view
 
     p = _project_or_404(await session.get(Project, project_id))
-    cfg = operator_config(p, node_key)
-    name = str(cfg.get("checkAgentFileName") or "").strip()
-    text = load_custom_check_agent_body(p, node_key)
-    if text is None:
-        raise HTTPException(status_code=404, detail="агент не загружен")
-    return {
-        "fileName": name or "check_agent.txt",
-        "chars": len(text),
-        "text": text,
-    }
+    view = load_check_agent_view(p, node_key)
+    if view is None:
+        raise HTTPException(
+            status_code=404,
+            detail="агент не найден — загрузите .txt или проведите стрелку от результата",
+        )
+    return view
 
 
 @router.get("/{project_id}/gpt-operator/{node_key}/check-prompt-preview")

@@ -1,8 +1,8 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, RefreshCw, Upload } from "lucide-react";
+import { Eye, Loader2, RefreshCw, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
@@ -17,6 +17,13 @@ import {
   type OperatorRole,
 } from "@/lib/gpt-operator";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 
 function syncNodeLabelOnCanvas(nodeKey: string, label: string, role: string) {
@@ -45,6 +52,7 @@ export function GptOperatorMenuPanel({
 }) {
   const qc = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
+  const [agentViewOpen, setAgentViewOpen] = useState(false);
 
   const resolve = useQuery({
     queryKey: ["gpt-operator-resolve", projectId, nodeKey],
@@ -156,6 +164,12 @@ export function GptOperatorMenuPanel({
   });
 
   const agentFileRef = useRef<HTMLInputElement>(null);
+  const agentFileView = useQuery({
+    queryKey: ["check-agent-file", projectId, nodeKey],
+    queryFn: () => api.getCheckAgentFile(projectId, nodeKey),
+    enabled: agentViewOpen,
+    staleTime: 10_000,
+  });
 
   const data = resolve.data;
   const role = (data?.role || "assist") as OperatorRole;
@@ -188,6 +202,7 @@ export function GptOperatorMenuPanel({
   };
 
   return (
+    <>
     <div className="mt-2 space-y-2 border-t border-white/10 pt-2">
       <div className="flex items-center justify-between gap-2">
         <span className="text-[9px] font-semibold uppercase tracking-widest text-sky-300/90">
@@ -378,6 +393,15 @@ export function GptOperatorMenuPanel({
                       <Upload className="h-3 w-3" />
                     )}
                     Загрузить .txt
+                  </button>
+                  <button
+                    type="button"
+                    title="Просмотр текста агента (файл или builtin)"
+                    onClick={() => setAgentViewOpen(true)}
+                    className="inline-flex items-center gap-1 rounded-md border border-white/15 px-1.5 py-1 text-[9px] text-muted-foreground hover:border-white/30 hover:text-foreground"
+                  >
+                    <Eye className="h-3 w-3" />
+                    Просмотр
                   </button>
                   {checkAgentFileName ? (
                     <button
@@ -782,5 +806,39 @@ export function GptOperatorMenuPanel({
         </p>
       ) : null}
     </div>
+
+    <Dialog open={agentViewOpen} onOpenChange={setAgentViewOpen}>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader>
+          <DialogTitle className="font-mono text-sm">
+            {agentFileView.data?.fileName ||
+              checkAgentFileName ||
+              (checkAgentStep ? `builtin: ${checkAgentStep}` : "Агент проверки")}
+            {agentFileView.data?.chars ? (
+              <span className="ml-2 text-xs font-normal text-muted-foreground">
+                {agentFileView.data.chars} симв.
+              </span>
+            ) : null}
+          </DialogTitle>
+        </DialogHeader>
+        <ScrollArea className="max-h-[70vh] rounded-lg border border-white/10 bg-black/30">
+          {agentFileView.isLoading ? (
+            <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Загружаю агента…
+            </div>
+          ) : agentFileView.isError ? (
+            <p className="p-4 text-xs text-destructive">
+              {errorMessageFromUnknown(agentFileView.error)}
+            </p>
+          ) : (
+            <pre className="whitespace-pre-wrap p-4 font-mono text-[11px] leading-snug text-foreground/90">
+              {agentFileView.data?.text || ""}
+            </pre>
+          )}
+        </ScrollArea>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

@@ -35,7 +35,10 @@ export function CheckNodePromptPanel({
   const cps = resolve?.checkPromptSource === "agent" ? "agent" : "upstream";
   const sources = resolve?.sourcePrompts || [];
   const [viewTarget, setViewTarget] = useState<
-    { kind: "prompt" } | { kind: "source"; key: string } | null
+    | { kind: "prompt" }
+    | { kind: "agent" }
+    | { kind: "source"; key: string }
+    | null
   >(null);
   const viewSourceKey = viewTarget?.kind === "source" ? viewTarget.key : null;
   const sourcePromptView = useQuery({
@@ -50,12 +53,28 @@ export function CheckNodePromptPanel({
     enabled: viewTarget?.kind === "prompt",
     staleTime: 10_000,
   });
+  const agentFileView = useQuery({
+    queryKey: ["check-agent-file", projectId, nodeKey],
+    queryFn: () => api.getCheckAgentFile(projectId, nodeKey),
+    enabled: viewTarget?.kind === "agent",
+    staleTime: 10_000,
+  });
   const activeView =
-    viewTarget?.kind === "prompt" ? checkPromptPreview : sourcePromptView;
+    viewTarget?.kind === "prompt"
+      ? checkPromptPreview
+      : viewTarget?.kind === "agent"
+        ? agentFileView
+        : sourcePromptView;
   const viewTitle =
     viewTarget?.kind === "prompt"
       ? "Промт проверки — финальный, как уйдёт в GPT"
-      : `${viewSourceKey ?? ""}${sourcePromptView.data?.variant ? ` · ${sourcePromptView.data.variant}` : ""}`;
+      : viewTarget?.kind === "agent"
+        ? agentFileView.data?.fileName ||
+          resolve?.checkAgentFileName ||
+          (resolve?.checkAgentStep
+            ? `builtin: ${resolve.checkAgentStep}`
+            : "Агент проверки")
+        : `${viewSourceKey ?? ""}${sourcePromptView.data?.variant ? ` · ${sourcePromptView.data.variant}` : ""}`;
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-rose-400/25 bg-rose-500/[0.06] p-4 text-sm">
       <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
@@ -87,7 +106,7 @@ export function CheckNodePromptPanel({
       ) : cps === "agent" ? (
         <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-xs">
           <p className="font-medium text-muted-foreground">
-            Критерии — готовый агент (файл: Настройки → Проверка → «Просмотр»):
+            Критерии — готовый агент проверки:
           </p>
           <p className="mt-1 font-mono text-foreground">
             {resolve?.checkAgentFileName
@@ -98,6 +117,16 @@ export function CheckNodePromptPanel({
                 }`
               : `builtin: ${resolve?.checkAgentStep || "—"}`}
           </p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="mt-2 w-fit gap-1.5"
+            onClick={() => setViewTarget({ kind: "agent" })}
+          >
+            <Eye className="h-3.5 w-3.5" />
+            Просмотр агента
+          </Button>
         </div>
       ) : (
         <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-xs">

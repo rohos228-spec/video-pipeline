@@ -489,6 +489,41 @@ def load_custom_check_agent_body(project: Project, node_key: str) -> str | None:
     return None
 
 
+def load_check_agent_view(
+    project: Project, node_key: str
+) -> dict[str, Any] | None:
+    """Текст агента для кнопки «Просмотр»: свой файл или builtin check_operator."""
+    from app.services.check_analysis import (
+        load_check_operator_prompt_body,
+        resolve_check_operator_step,
+    )
+
+    cfg = operator_config(project, node_key)
+    custom = load_custom_check_agent_body(project, node_key)
+    if custom:
+        name = str(cfg.get("checkAgentFileName") or "").strip() or "check_agent.txt"
+        return {
+            "fileName": name,
+            "chars": len(custom),
+            "text": custom,
+            "source": "upload",
+        }
+    typ = upstream_node_type_for_check(project, node_key)
+    if not typ:
+        return None
+    step = resolve_check_operator_step(typ)
+    body = load_check_operator_prompt_body(typ)
+    if not body:
+        return None
+    return {
+        "fileName": f"builtin:{step}",
+        "chars": len(body),
+        "text": body,
+        "source": "builtin",
+        "step": step,
+    }
+
+
 def assemble_check_agent_prompt(
     project: Project,
     node_key: str,

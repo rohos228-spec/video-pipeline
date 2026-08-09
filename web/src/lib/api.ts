@@ -731,7 +731,13 @@ export const api = {
       { method: "DELETE" },
     ),
   getCheckAgentFile: (projectId: number, nodeKey: string) =>
-    http<{ fileName: string; chars: number; text: string }>(
+    http<{
+      fileName: string;
+      chars: number;
+      text: string;
+      source?: "upload" | "builtin";
+      step?: string;
+    }>(
       `/api/projects/${projectId}/gpt-operator/${encodeURIComponent(nodeKey)}/check-agent`,
       {},
       90_000,
