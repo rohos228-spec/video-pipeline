@@ -11,6 +11,7 @@ from app.models import Project
 from app.services.event_bus import publish_project_event
 from app.services.node_groups import (
     delete_custom_group,
+    get_group_detail,
     get_node_group,
     group_from_canvas,
     insert_node_group,
@@ -34,6 +35,15 @@ def _summary(group_id: str) -> dict[str, Any]:
 async def get_node_groups() -> list[dict[str, Any]]:
     """Каталог групп нод для палитры: встроенные + пользовательские."""
     return list_node_groups()
+
+
+@router.get("/node-groups/{group_id}")
+async def get_node_group_detail(group_id: str) -> dict[str, Any]:
+    """Полный spec группы: превью дизайна (позиции/связи) и состав нод."""
+    detail = get_group_detail(group_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="group not found")
+    return detail
 
 
 @router.post("/node-groups")

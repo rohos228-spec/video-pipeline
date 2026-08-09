@@ -488,6 +488,48 @@ def get_node_group(group_id: str) -> NodeGroupDef | None:
     return all_groups().get(str(group_id or "").strip())
 
 
+def get_group_detail(group_id: str) -> dict[str, Any] | None:
+    """Полный spec группы для менеджера: позиции, рёбра, промты, флаги.
+
+    Используется палитрой для визуального превью дизайна группы (мини-канвас)
+    и просмотра состава до вставки.
+    """
+    g = get_node_group(group_id)
+    if g is None:
+        return None
+    return {
+        "id": g.group_id,
+        "title": g.title,
+        "description": g.description,
+        "category": g.category,
+        "builtin": g.builtin,
+        "updated_at": g.updated_at,
+        "default_after_type": g.default_after_type,
+        "entry_keys": list(g.entry_keys),
+        "exit_key": g.exit_key,
+        "exit_edge_kind": g.exit_edge_kind,
+        "project_meta": dict(g.project_meta),
+        "nodes": [
+            {
+                "key": n.local_key,
+                "label": n.label,
+                "type": n.node_type,
+                "description": n.description,
+                "dx": n.dx,
+                "dy": n.dy,
+                "marker": n.marker,
+                "prompt_variant": n.prompt_variant,
+                "slot_overflow": n.slot_overflow,
+                "has_operator_config": n.operator_config is not None,
+            }
+            for n in g.nodes
+        ],
+        "internal_edges": [
+            {"source": s, "target": t, "kind": k} for s, t, k in g.internal_edges
+        ],
+    }
+
+
 async def backfill_group_stamps(session: AsyncSession) -> dict[str, int]:
     """Проставить groupId/groupTitle на нодах веера scene_design в старых проектах.
 

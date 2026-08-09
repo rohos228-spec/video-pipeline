@@ -20,6 +20,7 @@ from app.services import node_groups as ng
 from app.services.node_groups import (
     backfill_group_stamps,
     delete_custom_group,
+    get_group_detail,
     get_node_group,
     group_from_canvas,
     insert_node_group,
@@ -423,6 +424,29 @@ def test_slugify_group_id() -> None:
     assert slugify_group_id("Моя связка GPT") == "moya_svyazka_gpt"
     assert slugify_group_id("  ") .startswith("group_")
     assert slugify_group_id("Chain 2/проверка") == "chain_2_proverka"
+
+
+def test_group_detail_spec() -> None:
+    """Детальный spec группы для превью: позиции, рёбра, промты, входы/выход."""
+    d = get_group_detail("scene_design_fanout")
+    assert d is not None
+    assert d["builtin"] is True
+    assert d["exit_key"] == "check_asm"
+    assert set(d["entry_keys"]) == {
+        "characters", "world", "style", "camera", "action"
+    }
+    by_key = {n["key"]: n for n in d["nodes"]}
+    cam = by_key["camera"]
+    assert cam["prompt_variant"] == "sd_camera"
+    assert cam["marker"] == "camera"
+    assert cam["dx"] == 290.0
+    chk = by_key["check_camera"]
+    assert chk["slot_overflow"] is True
+    assert chk["has_operator_config"] is True
+    kinds = {(e["source"], e["target"]): e["kind"] for e in d["internal_edges"]}
+    assert kinds[("check_camera", "assemble")] == "pass"
+    assert kinds[("check_camera", "camera")] == "fail"
+    assert get_group_detail("nope") is None
 
 
 async def test_backfill_group_stamps(mem_db) -> None:
