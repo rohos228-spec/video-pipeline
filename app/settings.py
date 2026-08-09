@@ -261,6 +261,11 @@ class Settings(BaseSettings):
     scene_design_enabled: bool = Field(False, alias="SCENE_DESIGN_ENABLED")
     # Сколько категорийных агентов дёргают GPT одновременно внутри ноды.
     scene_design_max_parallel: int = Field(5, alias="SCENE_DESIGN_MAX_PARALLEL")
+    # Сборка: сколько Frame-строк пайплайна в одном GPT-запросе (чанк).
+    # 0 / 1 = один запрос на весь ролик (старое поведение, легко ловит 524).
+    scene_design_assemble_chunk_frames: int = Field(
+        10, alias="SCENE_DESIGN_ASSEMBLE_CHUNK_FRAMES"
+    )
 
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")

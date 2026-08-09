@@ -228,6 +228,7 @@ async def run_assembler(
 
     ``assembly_input`` — выход ``chronology.build_assembly_input``: сцены,
     шоты и этапы стиля уже в хронологии закадра, кадры привязаны к сценам.
+    Для больших роликов вызывай ``run_assembler_chunked``.
     """
     from app.services import gpt_client
 
@@ -245,3 +246,80 @@ async def run_assembler(
         "\n\n".join(parts), timeout=timeout, project_id=project.id
     )
     return ag.parse_assembler_payload(reply)
+
+
+async def run_assembler_chunked(
+    project: Project,
+    frames: list[Any],
+    full_vo: str,
+    assembly_input: dict[str, Any],
+    *,
+    max_frames: int | None = None,
+    feedback: str | None = None,
+    timeout: float = 900,
+) -> dict[str, Any]:
+    """Сборка кусками: несколько GPT-вызовов → merge → один payload.
+
+    ``max_frames`` — размер чанка (Frame-строки пайплайна). ``None`` → из settings.
+    При ``max_frames <= 1`` — один вызов на весь ролик (legacy).
+    """
+    from app.models import Frame
+    from app.services.scene_design import assemble_chunks as chunks
+    from app.settings import settings
+
+    frame_list = [f for f in frames if isinstance(f, Frame)]
+    n = (
+        int(max_frames)
+        if max_frames is not None
+        else int(settings.scene_design_assemble_chunk_frames)
+    )
+    if n <= 1 or len(frame_list) <= n:
+        # Legacy: полный shared context + весь assembly_input.
+        from app.services.scene_design import context_builder
+
+        context = context_builder.build_shared_context(project, frame_list)
+        return await run_assembler(
+            project, context, assembly_input, feedback=feedback, timeout=timeout
+        )
+
+    batches = chunks.split_frame_batches(frame_list, max_frames=n)
+    logger.info(
+        "[#{}] scene_design assemble chunked: {} chunks ×≤{} frames (total {})",
+        project.id,
+        len(batches),
+        n,
+        len(frame_list),
+    )
+    parts: list[dict[str, Any]] = []
+    total = len(batches)
+    for i, batch in enumerate(batches, start=1):
+        chunk_input = chunks.filter_assembly_input_for_frames(
+            assembly_input,
+            batch,
+            frame_list,
+            full_vo,
+            include_characters=(i == 1),
+        )
+        chunk_ctx = chunks.build_chunk_context(
+            full_vo, batch, chunk_index=i, chunk_total=total
+        )
+        # Feedback только на первый чанк — иначе раздувает все запросы.
+        fb = feedback if i == 1 else None
+        logger.info(
+            "[#{}] scene_design assemble chunk {}/{} frames={}",
+            project.id,
+            i,
+            total,
+            [f.number for f in batch],
+        )
+        part = await run_assembler(
+            project, chunk_ctx, chunk_input, feedback=fb, timeout=timeout
+        )
+        parts.append(part)
+
+    merged = chunks.merge_assembler_payloads(parts)
+    if not merged.get("scenes") or not merged.get("ops"):
+        raise ag.SceneDesignAgentError(
+            "scene_design/assemble: после склейки чанков пустой scenes/ops"
+        )
+    return merged

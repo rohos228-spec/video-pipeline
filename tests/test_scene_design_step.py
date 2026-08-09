@@ -16,7 +16,7 @@ from app.models import Base, Frame, Project, ProjectStatus
 _VO = "Альфа начало истории. Бета середина пути. Гамма финал рассказа."
 
 _AGENT_MARKERS = {
-    "CHARACTERS V1": {"characters": [{"id": "c01", "имя": "Альфа", "внешность": "высокий"}]},
+    "CHARACTERS V2": {"characters": [{"id": "c01", "имя": "Альфа", "внешность": "высокий"}]},
     "WORLD V1": {"locations": [{"id": "loc01", "name": "лес"}]},
     "STYLE V1": {"style_arc": [{"scene_hint": "мрачно"}]},
     "CAMERA V1": {"shot_plan": [{"hint": "крупный план"}]},
@@ -111,8 +111,8 @@ def _mock_gpt(monkeypatch: pytest.MonkeyPatch, calls: list[str]) -> None:
             if marker in text:
                 calls.append(marker)
                 return json.dumps(payload, ensure_ascii=False)
-        assert "ASSEMBLER V1" in text, "неизвестный промпт GPT"
-        calls.append("ASSEMBLER V1")
+        assert "ASSEMBLER V2" in text, "неизвестный промпт GPT"
+        calls.append("ASSEMBLER V2")
         return _assembler_reply(text)
 
     monkeypatch.setattr(gpt_client, "gpt_ask_fresh", fake_ask)
@@ -155,7 +155,7 @@ async def test_scene_design_step_end_to_end(sd_session, monkeypatch) -> None:
     await scene_design.run_assemble(session, project)
 
     assert project.status is ProjectStatus.scene_design_ready
-    assert calls[-1] == "ASSEMBLER V1"
+    assert calls[-1] == "ASSEMBLER V2"
 
     meta = project.meta or {}
     sd = meta.get("scene_design") or {}
@@ -237,7 +237,7 @@ async def test_scene_design_checkpoints_skip_gpt_on_retry(sd_session, monkeypatc
     await session.commit()
     await scene_design.run_assemble(session, project)
     assert project.status is ProjectStatus.scene_design_ready
-    assert calls == ["ASSEMBLER V1"]
+    assert calls == ["ASSEMBLER V2"]
 
 
 @pytest.mark.asyncio

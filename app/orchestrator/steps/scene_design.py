@@ -201,7 +201,6 @@ async def run_assemble(
     await session.commit()
 
     try:
-        context = context_builder.build_shared_context(project, frames)
         full_vo = context_builder.full_voiceover(project, frames)
 
         # Ячейки → хронологический вход сборщика (сцены + кадры по закадру).
@@ -213,8 +212,13 @@ async def run_assemble(
         payload = None
         feedback: str | None = None
         for attempt in range(1, _MAX_ASSEMBLE_ATTEMPTS + 1):
-            candidate = await runner.run_assembler(
-                project, context, assembly_input, feedback=feedback
+            # Чанки по Frame-строкам — один жирный GPT-запрос ломает kie (524).
+            candidate = await runner.run_assembler_chunked(
+                project,
+                frames,
+                full_vo,
+                assembly_input,
+                feedback=feedback,
             )
             problems = sd_assembler.validate_payload(project, frames, candidate, full_vo)
             if not problems:
