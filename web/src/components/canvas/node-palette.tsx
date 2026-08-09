@@ -46,6 +46,57 @@ const HIDDEN_NODE_TYPES = new Set(["excel_feed", "sd_agent", "sd_assemble"]);
 
 const GROUP_CATEGORY_OPTIONS = NODE_CATEGORY_ORDER.filter((c) => c !== "hitl");
 
+/**
+ * Выбор категории без нативного <select>: системный дропдаун открывается
+ * поверх поповера и съедает клики. Здесь — inline-список в потоке формы.
+ */
+function CategoryPicker({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (cat: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const label =
+    NODE_CATEGORY_LABELS[value as NodeCategory] ?? value ?? "Категория";
+  return (
+    <div className="rounded-md border border-white/10 bg-black/30">
+      <button
+        type="button"
+        className="flex h-7 w-full items-center justify-between px-2 text-xs"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="text-muted-foreground">Категория:</span>
+        <span className="font-medium">{label}</span>
+        <span className="text-muted-foreground">{open ? "▴" : "▾"}</span>
+      </button>
+      {open && (
+        <div className="grid grid-cols-2 gap-0.5 border-t border-white/10 p-1">
+          {GROUP_CATEGORY_OPTIONS.map((c) => (
+            <button
+              key={c}
+              type="button"
+              className={cn(
+                "rounded px-1.5 py-1 text-left text-[10px] transition-colors",
+                c === value
+                  ? "bg-primary/15 text-primary"
+                  : "text-muted-foreground hover:bg-white/5 hover:text-foreground",
+              )}
+              onClick={() => {
+                onChange(c);
+                setOpen(false);
+              }}
+            >
+              {NODE_CATEGORY_LABELS[c]}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function NodePalette({
   projectId,
   onAddNode,
@@ -377,17 +428,7 @@ function CreateGroupForm({
         placeholder="Описание — что делает связка (необязательно)"
         className="min-h-[48px] text-xs"
       />
-      <select
-        className="studio-select h-7 rounded-md border border-input bg-card px-2 text-xs"
-        value={category}
-        onChange={(e) => setCategory(e.target.value)}
-      >
-        {GROUP_CATEGORY_OPTIONS.map((c) => (
-          <option key={c} value={c}>
-            {NODE_CATEGORY_LABELS[c]}
-          </option>
-        ))}
-      </select>
+      <CategoryPicker value={category} onChange={setCategory} />
       <div className="mt-0.5 flex gap-1.5">
         <Button
           size="sm"
@@ -492,17 +533,7 @@ function GroupCard({
           placeholder="Описание"
           className="min-h-[48px] text-xs"
         />
-        <select
-          className="studio-select h-7 rounded-md border border-input bg-card px-2 text-xs"
-          value={category}
-          onChange={(e) => setCategory(e.target.value)}
-        >
-          {GROUP_CATEGORY_OPTIONS.map((c) => (
-            <option key={c} value={c}>
-              {NODE_CATEGORY_LABELS[c]}
-            </option>
-          ))}
-        </select>
+        <CategoryPicker value={category} onChange={setCategory} />
         <div className="mt-0.5 flex gap-1.5">
           <Button
             size="sm"
