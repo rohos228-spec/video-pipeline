@@ -100,6 +100,31 @@ def validate_payload(
     if missing:
         problems.append(f"ops: кадры без привязки: {len(missing)} шт")
 
+    # Сцена с 1 Frame при multi-shot camera — брак (если сцен > 1, чтобы пилоты
+    # из одного кадра не ломать).
+    frames_per_scene: dict[str, int] = {}
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields") or {}
+        if not isinstance(fields, dict):
+            continue
+        sid = str(
+            fields.get("id_scene") or fields.get("shot01_id_scene") or ""
+        ).strip()
+        if not sid:
+            continue
+        frames_per_scene[sid] = frames_per_scene.get(sid, 0) + 1
+    if len(scenes) > 1:
+        singles = [sid for sid, n in frames_per_scene.items() if n < 2]
+        # Допускаем ≤15% однокадровых (SET на 1 кадр / хвост); иначе — ошибка.
+        if singles and len(singles) > max(1, int(0.15 * len(frames_per_scene))):
+            problems.append(
+                f"слишком много сцен с 1 кадром ({len(singles)}/{len(frames_per_scene)}): "
+                f"camera задала лестницу/SET из нескольких шотов — склей VO-Frame "
+                f"в сцену (примеры: {', '.join(singles[:8])})"
+            )
+
     # Сверка хронометража: declared сцены vs сумма времён привязанных кадров.
     frame_by_uuid = {fr.uuid: fr for fr in frames if fr.uuid}
     expected_time: dict[str, float] = {}

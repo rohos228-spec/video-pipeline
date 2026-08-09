@@ -203,10 +203,20 @@ async def run_assemble(
     try:
         full_vo = context_builder.full_voiceover(project, frames)
 
-        # Ячейки → хронологический вход сборщика (сцены + кадры по закадру).
+        # Ячейки → хронология → сцены от camera (лестница/SET), не 1 Frame = 1 сцена.
         all_cells = await sd_cells.load_cells(session, project)
         assembly_input = sd_chronology.build_assembly_input(
             project, frames, all_cells, full_vo
+        )
+        from app.services.scene_design import camera_expand as sd_camera_expand
+
+        assembly_input = sd_camera_expand.rebuild_scenes_from_camera(
+            frames, assembly_input, full_vo
+        )
+        logger.info(
+            "[#{}] camera_expand report: {}",
+            project.id,
+            assembly_input.get("camera_expand_report"),
         )
 
         payload = None
