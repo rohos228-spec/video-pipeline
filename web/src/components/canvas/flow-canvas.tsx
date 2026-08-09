@@ -1045,6 +1045,12 @@ export function FlowCanvas({
             ignoreSelectionChangeRef.current -= 1;
             return;
           }
+          // Мультивыделение (marquee правой кнопкой): не сводить к одной ноде —
+          // onSelectNode(first) переключил бы selectedNodeKey, а эффект синка
+          // выделения стёр бы остальные. Инспектор keeps последнюю одиночную.
+          if (sel.nodes.length > 1) {
+            return;
+          }
           const first = sel.nodes[0];
           if (first) {
             onSelectNode((first.data as PipelineNodeData).nodeKey);
