@@ -58,6 +58,9 @@ export function workflowNodeFromCanvas(n: Node): WorkflowNode {
   if (typeof d.agent === "string") data.agent = d.agent;
   // Маркер scene-агента на ноде «Работа с GPT» — идентичность, не терять.
   if (typeof d.sdAgent === "string") data.sd_agent = d.sdAgent;
+  // Принадлежность к импортированной группе — обводка на канвасе, не терять.
+  if (typeof d.groupId === "string") data.groupId = d.groupId;
+  if (typeof d.groupTitle === "string") data.groupTitle = d.groupTitle;
   return {
     id: n.id,
     type,

@@ -48,13 +48,7 @@ import type {
   WorkflowNode,
   WorkflowRunDetail,
 } from "@/lib/types";
-import {
-  getNodeSpec,
-  NODE_CATALOG,
-  NODE_CATEGORY_LABELS,
-  NODE_CATEGORY_ORDER,
-  type NodeCategory,
-} from "@/lib/node-catalog";
+import { getNodeSpec } from "@/lib/node-catalog";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { formatNodeKeyLabel, formatRunStatus, formatStepCode } from "@/lib/format-labels";
 import { buildExcelLaneBindings } from "@/lib/excel-lane-bindings";
@@ -73,6 +67,8 @@ import {
 } from "@/lib/canvas-clipboard";
 import { excelGptSlotIndex } from "@/lib/excel-gpt-config";
 import { PipelineNode, type PipelineNodeData } from "./pipeline-node";
+import { NodePalette } from "./node-palette";
+import { GroupFrames } from "./group-frames";
 import {
   assignExcelGptSlotIndices,
   migrateWorkflowNodes,
@@ -1069,6 +1065,7 @@ export function FlowCanvas({
           variant={BackgroundVariant.Dots}
         />
         {onCanvasZoom ? <ViewportZoomReporter onZoom={onCanvasZoom} /> : null}
+        <GroupFrames />
         <EdgeKindControls edges={edges} onEdgesLocal={setEdges} />
         <Controls position="bottom-right" showInteractive={false} />
         <MiniMap
@@ -1098,6 +1095,7 @@ export function FlowCanvas({
         onSave={persistWorkflow}
         saving={saving}
         onAddNode={addNode}
+        getSelectedNodeIds={() => selectedNodesRef.current.map((n) => n.id)}
         onCopy={copySelectedNodes}
         onPaste={pasteFromClipboard}
         canPaste={hasClipboard}
@@ -1212,6 +1210,7 @@ function WorkflowToolbar({
   onSave,
   saving,
   onAddNode,
+  getSelectedNodeIds,
   onCopy,
   onPaste,
   canPaste,
@@ -1225,6 +1224,7 @@ function WorkflowToolbar({
   onSave: () => void;
   saving: boolean;
   onAddNode: (type: string) => void;
+  getSelectedNodeIds: () => string[];
   onCopy: () => void;
   onPaste: () => void;
   canPaste: boolean;
@@ -1233,48 +1233,7 @@ function WorkflowToolbar({
   onDuplicateBelow: () => void;
   onAddExcelFeed: () => void;
 }) {
-  // sd_agent/sd_assemble — legacy-типы старых канвасов; scene-агенты теперь
-  // создаются дефолтным графом как ноды «Работа с GPT» с маркером sd_agent.
-  const addable = Object.keys(NODE_CATALOG).filter(
-    (t) =>
-      !t.startsWith("hitl_") &&
-      t !== "excel_feed" &&
-      t !== "sd_agent" &&
-      t !== "sd_assemble",
-  );
-  // Механика категорий: палитра группирует ноды по category из каталога.
-  const addableByCategory = new Map<NodeCategory, string[]>();
-  for (const t of addable) {
-    const cat = getNodeSpec(t).category;
-    addableByCategory.set(cat, [...(addableByCategory.get(cat) ?? []), t]);
-  }
   const qc = useQueryClient();
-
-  // Группы нод (пресеты из репозитория): вставка целиком на бэкенде —
-  // позиции, связи, промпт-варианты и флаги проекта выставляются атомарно.
-  const nodeGroups = useQuery({
-    queryKey: ["node-groups"],
-    queryFn: api.listNodeGroups,
-    staleTime: 300_000,
-  });
-  const insertGroup = async (groupId: string) => {
-    if (!projectId) {
-      toast.error("Сначала выбери проект");
-      return;
-    }
-    try {
-      const res = await api.insertNodeGroup(projectId, groupId);
-      await qc.invalidateQueries({ queryKey: ["project", projectId] });
-      await qc.invalidateQueries({ queryKey: ["project-run", projectId] });
-      toast.success(`Группа вставлена: ${res.nodes.length} нод после «${res.after}»`);
-    } catch (e) {
-      toast.error(errorMessageFromUnknown(e));
-    }
-  };
-  const groupsByCategory = new Map<string, typeof nodeGroups.data>();
-  for (const g of nodeGroups.data ?? []) {
-    groupsByCategory.set(g.category, [...(groupsByCategory.get(g.category) ?? []), g]);
-  }
 
   const duplicateWf = async () => {
     if (!workflowId) return;
@@ -1290,58 +1249,11 @@ function WorkflowToolbar({
   return (
     <div className="pointer-events-none absolute left-4 top-4 z-10 flex max-w-[calc(100%-2rem)] flex-wrap gap-2">
       <div className="pointer-events-auto flex flex-wrap items-center gap-1 rounded-lg border border-border bg-card/80 p-1 backdrop-blur-sm">
-        <select
-          className="studio-select h-8 max-w-[140px] rounded-md border border-input bg-card px-2 text-xs"
-          defaultValue=""
-          onChange={(e) => {
-            if (e.target.value) {
-              onAddNode(e.target.value);
-              e.target.value = "";
-            }
-          }}
-        >
-          <option value="">+ Нода</option>
-          {NODE_CATEGORY_ORDER.filter((cat) => addableByCategory.has(cat)).map(
-            (cat) => (
-              <optgroup key={cat} label={NODE_CATEGORY_LABELS[cat]}>
-                {(addableByCategory.get(cat) ?? []).map((t) => (
-                  <option key={t} value={t}>
-                    {getNodeSpec(t).label}
-                  </option>
-                ))}
-              </optgroup>
-            ),
-          )}
-        </select>
-        {(nodeGroups.data ?? []).length > 0 && (
-          <select
-            className="studio-select h-8 max-w-[170px] rounded-md border border-input bg-card px-2 text-xs"
-            defaultValue=""
-            title="Вставить группу нод с готовыми промтами и связями"
-            onChange={(e) => {
-              if (e.target.value) {
-                void insertGroup(e.target.value);
-                e.target.value = "";
-              }
-            }}
-          >
-            <option value="">+ Группа</option>
-            {[...groupsByCategory.entries()].map(([cat, groups]) => (
-              <optgroup
-                key={cat}
-                label={
-                  NODE_CATEGORY_LABELS[cat as NodeCategory] ?? cat
-                }
-              >
-                {(groups ?? []).map((g) => (
-                  <option key={g.id} value={g.id}>
-                    {g.title} ({g.node_count})
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
-        )}
+        <NodePalette
+          projectId={projectId ?? null}
+          onAddNode={onAddNode}
+          getSelectedNodeIds={getSelectedNodeIds}
+        />
         <Button size="sm" variant="ghost" className="h-8 gap-1 text-xs" onClick={onSave} disabled={saving}>
           {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
           Сохранить граф
@@ -1779,6 +1691,8 @@ function workflowToReactFlowNodes(
         role: data.role as string | undefined,
         agent: data.agent as string | undefined,
         sdAgent: (data.sd_agent ?? data.agent) as string | undefined,
+        groupId: data.groupId as string | undefined,
+        groupTitle: data.groupTitle as string | undefined,
         status: (nr?.status ?? "pending") as PipelineNodeData["status"],
         progress: nr?.progress ?? 0,
         progressText: nr?.progress_text ?? null,

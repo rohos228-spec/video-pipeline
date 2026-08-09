@@ -542,6 +542,31 @@ export const api = {
       method: "POST",
       body: JSON.stringify(after ? { after } : {}),
     }),
+  createNodeGroupFromSelection: (
+    projectId: number,
+    body: {
+      node_ids: string[];
+      title: string;
+      description?: string;
+      category?: string;
+    },
+  ) =>
+    http<NodeGroupSummary>(`/api/projects/${projectId}/node-groups/from-selection`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  updateNodeGroup: (
+    groupId: string,
+    patch: { title?: string; description?: string; category?: string },
+  ) =>
+    http<NodeGroupSummary>(`/api/node-groups/${encodeURIComponent(groupId)}`, {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    }),
+  deleteNodeGroup: (groupId: string) =>
+    http<{ deleted: string }>(`/api/node-groups/${encodeURIComponent(groupId)}`, {
+      method: "DELETE",
+    }),
 
   // ── Projects ─────────────────────────────────────────────────────
   listProjects: () => http<ProjectSummary[]>(`/api/projects`),

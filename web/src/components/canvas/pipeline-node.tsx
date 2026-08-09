@@ -14,6 +14,7 @@ import {
 import type { NodeRunStatus } from "@/lib/types";
 import { getNodeSpec, formatNodeTypeLabel, SD_AGENT_LABELS } from "@/lib/node-catalog";
 import { getNodeIcon } from "@/lib/node-icons";
+import { groupHue } from "@/lib/group-color";
 import { cn } from "@/lib/utils";
 import {
   assetTrayKindForNodeType,
@@ -55,6 +56,9 @@ export interface PipelineNodeData extends Record<string, unknown> {
   agent?: string;
   /** Маркер scene-агента на ноде «Работа с GPT» (data.sd_agent, + "assemble"). */
   sdAgent?: string;
+  /** Импортированная группа (штамп при вставке группы) — рамка на канвасе. */
+  groupId?: string;
+  groupTitle?: string;
   status: NodeRunStatus;
   progress: number;
   progressText: string | null;
@@ -231,7 +235,16 @@ export function PipelineNode({ data, selected }: NodeProps) {
               </OrbIcon>
               <div className="min-w-0 flex-1 pr-8 leading-tight">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-[13px] font-semibold tracking-tight">{title}</span>
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    {d.groupId ? (
+                      <span
+                        className="inline-block h-2 w-2 shrink-0 rounded-full"
+                        style={{ background: `hsl(${groupHue(d.groupId)} 85% 65%)` }}
+                        title={`Импортированная группа: ${d.groupTitle ?? d.groupId}`}
+                      />
+                    ) : null}
+                    <span className="truncate text-[13px] font-semibold tracking-tight">{title}</span>
+                  </span>
                   <span className={cn("status-pill shrink-0", statusConfig.bg, statusConfig.text)}>
                     {running ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <StatusIcon className="h-2.5 w-2.5" />}
                     {statusConfig.label}

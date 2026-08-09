@@ -100,6 +100,10 @@ export interface NodeGroupSummary {
   category: string;
   node_count: number;
   nodes: { key: string; label: string; type: string }[];
+  /** Встроенная (из кода) — true; пользовательская (node_groups/*.json) — false. */
+  builtin: boolean;
+  /** ISO-время последнего обновления (у пользовательских). */
+  updated_at?: string | null;
   default_after_type: string;
 }
 
