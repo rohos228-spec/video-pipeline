@@ -17,6 +17,15 @@ def _norm_words(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().casefold())
 
 
+def _fold_ru(text: str) -> str:
+    """casefold + снять combining accents (Алекса́ндр → александр)."""
+    import unicodedata
+
+    nfkd = unicodedata.normalize("NFKD", text or "")
+    bare = "".join(ch for ch in nfkd if not unicodedata.combining(ch))
+    return _norm_words(bare)
+
+
 def _as_plain_text(value: Any) -> str:
     """Никогда не отдавать dict/list в Excel/UI как ``[object Object]``."""
     if value is None:
@@ -108,6 +117,103 @@ def attach_action_chains_to_scenes(
     return out
 
 
+def stamp_characters_onto_ops(
+    payload: dict[str, Any],
+    assembly_input: dict[str, Any],
+    frames: list[Frame] | None = None,
+) -> dict[str, Any]:
+    """Прописать коды персонажей (c01…) в ops, если GPT оставил пусто.
+
+    Источники: ``персонажи``/``персонажи_сцены`` из ответа GPT; иначе — совпадение
+    имён из реестра characters с закадром кадра.
+    """
+    char_rows = [
+        c
+        for c in (payload.get("characters") or assembly_input.get("characters") or [])
+        if isinstance(c, dict)
+    ]
+    name_to_id: dict[str, str] = {}
+    for c in char_rows:
+        cid = str(c.get("id") or "").strip()
+        if not re.fullmatch(r"c\d{2}", cid):
+            continue
+        name = str(c.get("имя") or c.get("name") or "").strip()
+        if not name:
+            continue
+        name_to_id[_fold_ru(name)] = cid
+        for part in re.split(r"[\s,]+", name):
+            p = _fold_ru(part)
+            if len(p) >= 4:
+                name_to_id.setdefault(p, cid)
+
+    scene_persons: dict[str, str] = {}
+    for sc in payload.get("scenes") or []:
+        if not isinstance(sc, dict):
+            continue
+        sid = str(sc.get("id_scene") or "").strip()
+        raw = sc.get("персонажи_сцены") or sc.get("персонажи") or sc.get("characters")
+        if sid and raw is not None and str(raw).strip():
+            scene_persons[sid] = _as_plain_text(raw)
+
+    # Сохранить персонажи_сцены из сырого GPT до force_scenes (если ещё в payload).
+    for sc in assembly_input.get("scenes_chrono") or []:
+        if not isinstance(sc, dict):
+            continue
+        sid = str(sc.get("id_scene") or "").strip()
+        if sid and sid not in scene_persons:
+            raw = sc.get("персонажи_сцены") or sc.get("персонажи")
+            if raw is not None and str(raw).strip():
+                scene_persons[sid] = _as_plain_text(raw)
+
+    uuid_vo: dict[str, str] = {}
+    for fr in frames or []:
+        if getattr(fr, "uuid", None):
+            uuid_vo[str(fr.uuid)] = _fold_ru(fr.voiceover_text or "")
+
+    out = dict(payload)
+    ops_out: list[dict[str, Any]] = []
+    for op in out.get("ops") or []:
+        if not isinstance(op, dict):
+            continue
+        op2 = dict(op)
+        fields = (
+            dict(op2.get("fields") or {})
+            if isinstance(op2.get("fields"), dict)
+            else {}
+        )
+        current = _as_plain_text(
+            fields.get("персонажи")
+            or fields.get("characters")
+            or fields.get("persons")
+            or ""
+        )
+        if current:
+            fields["персонажи"] = current
+            fields["characters"] = current
+            op2["fields"] = fields
+            ops_out.append(op2)
+            continue
+
+        sid = str(fields.get("id_scene") or "").strip()
+        picked = scene_persons.get(sid, "").strip()
+        if not picked:
+            vo = uuid_vo.get(str(op2.get("frame_uuid") or "").strip(), "")
+            ids: list[str] = []
+            for name, cid in name_to_id.items():
+                if name and name in vo and cid not in ids:
+                    ids.append(cid)
+            # стабильный порядок c01, c02…
+            ids.sort()
+            picked = ", ".join(ids)
+        if picked:
+            fields["персонажи"] = picked
+            fields["characters"] = picked
+        op2["fields"] = fields
+        ops_out.append(op2)
+    out["ops"] = ops_out
+    return out
+
+
 def stamp_actions_onto_ops(
     payload: dict[str, Any],
     assembly_input: dict[str, Any],
@@ -188,6 +294,7 @@ def stamp_actions_onto_ops(
 def force_scenes_from_chrono(
     payload: dict[str, Any],
     assembly_input: dict[str, Any],
+    frames: list[Frame] | None = None,
 ) -> dict[str, Any]:
     """Границы сцен — только из camera_expand (scenes_chrono), не из GPT.
 
@@ -195,13 +302,23 @@ def force_scenes_from_chrono(
     уже склеена по лестнице/SET и цитаты проверены на уникальность.
     ops сохраняем; id_scene у каждого op переписываем по uuid кадра.
     """
+    # Персонажи сцен из сырого GPT — force перезапишет scenes[].
+    gpt_scene_persons: dict[str, str] = {}
+    for sc in payload.get("scenes") or []:
+        if not isinstance(sc, dict):
+            continue
+        sid = str(sc.get("id_scene") or "").strip()
+        raw = sc.get("персонажи_сцены") or sc.get("персонажи") or sc.get("characters")
+        if sid and raw is not None and str(raw).strip():
+            gpt_scene_persons[sid] = _as_plain_text(raw)
+
     chrono = [
         sc
         for sc in (assembly_input.get("scenes_chrono") or [])
         if isinstance(sc, dict) and str(sc.get("id_scene") or "").strip()
     ]
     if not chrono:
-        return payload
+        return stamp_characters_onto_ops(payload, assembly_input, frames)
 
     uuid_to_scene: dict[str, str] = {}
     scenes_out: list[dict[str, Any]] = []
@@ -221,6 +338,7 @@ def force_scenes_from_chrono(
                 "набор": sc.get("набор"),
                 "camera_ladder": sc.get("camera_ladder") or [],
                 "camera_shots_required": sc.get("camera_shots_required"),
+                "персонажи_сцены": gpt_scene_persons.get(sid, ""),
             }
         )
         for kid in sc.get("кадры") or []:
@@ -255,11 +373,12 @@ def force_scenes_from_chrono(
         ops_out.append(op2)
     out["ops"] = ops_out
     out = stamp_actions_onto_ops(out, {**assembly_input, "scenes_chrono": chrono})
+    out = stamp_characters_onto_ops(out, assembly_input, frames)
     report = str(out.get("report") or "")
     stamp = (
         f"camera_scenes:{len(scenes_out)}; "
         f"multi_frame:{sum(1 for s in chrono if int(s.get('кадров') or 0) >= 2)}; "
-        f"actions_stamped:1"
+        f"actions_stamped:1; chars_stamped:1"
     )
     out["report"] = f"{report}; {stamp}" if report else stamp
     return out

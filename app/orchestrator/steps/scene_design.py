@@ -249,7 +249,7 @@ async def run_assemble(
             )
             # Границы сцен — из camera_expand, не из GPT (ломает цитаты в чанках).
             candidate = sd_assembler.force_scenes_from_chrono(
-                candidate, assembly_input
+                candidate, assembly_input, frames=frames
             )
             problems = sd_assembler.validate_payload(project, frames, candidate, full_vo)
             if not problems:

@@ -1,16 +1,11 @@
-"""Разворот camera SET/лестницы: дробим VO-диапазон на визуальные кадры.
+"""Разворот camera SET/лестницы для сборки сцен.
 
-Один временной диапазон пайплайна (VO-Frame) — это сцена (иногда две), а не
-один визуальный кадр. Camera пишет ``VLS→MS→CU`` / ``набор: SET_01`` —
-это N шотов **внутри** этого диапазона.
+Один VO-Frame = одна ячейка закадра (текст не режем и не разбрасываем).
+Camera пишет ``VLS→MS→CU`` / ``набор: SET_01`` — лестница живёт в attrs и
+в ``shot_plan`` для сборщика. Новые Frame-карточки под шоты НЕ вставляем:
+это ломало закадр (20→66 обрывков).
 
-Правильно:
-1) вставить N−1 новых Frame-карточек внутри VO-диапазона;
-2) разрезать закадр и время пропорционально;
-3) собрать ≥N_vo сцен (обычно одна сцена на исходный VO-родитель).
-
-Неправильно: склеивать соседние VO-ячейки в одну сцену, чтобы «набрать»
-мульти-кадр — от этого сцен становится меньше, а кадров не прибавляется.
+Сцены: обычно 1 VO = 1 сцена; SET описывает визуал внутри сцены в ops.
 """
 
 from __future__ import annotations
@@ -26,7 +21,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project
 from app.project_root import find_project_root
-from app.services.db_v2 import insert_frame_after
 from app.services.scene_design.chronology import _norm, frame_offsets
 from app.services.scene_design.context_builder import frame_seconds
 
@@ -352,10 +346,12 @@ async def subdivide_vo_frames_by_camera(
     *,
     set_counts: dict[str, tuple[int, int]] | None = None,
 ) -> tuple[list[Frame], dict[str, Any]]:
-    """Дробит каждый исходный VO-Frame на N shot-Frame по SET/лестнице.
+    """Пометить VO-кадры лестницей SET — **без** вставки Frame и без резки закадра.
 
-    Возвращает (актуальный список кадров, report). Идемпотентно: если уже
-    есть ``attrs.camera_subdivide`` — не трогает.
+    Раньше сюда вставлялись N−1 карточек и ``split_text_into_parts`` резал
+    voiceover по ячейкам (20→66 с обрывками текста). Это ломало заказной VO.
+    Теперь: одна VO-ячейка остаётся одной; SET/лестница пишется в attrs.
+    Сборщик читает лестницу из shot_plan + attrs, текст не трогаем.
     """
     set_counts = set_counts if set_counts is not None else load_set_shot_counts()
     shots = [
@@ -369,11 +365,14 @@ async def subdivide_vo_frames_by_camera(
         "inserted": 0,
         "frames_before": len(frames),
         "frames_after": len(frames),
+        "vo_text_untouched": True,
     }
     if already_subdivided(frames):
+        # Если старый прогон уже нарезал текст — не считаем «готово»: снимем
+        # только метку у «чистых» родителей; детей тут не трогаем (wipe отдельно).
         report["skipped"] = True
         logger.info(
-            "[#{}] camera_subdivide: already done (frames={})",
+            "[#{}] camera_subdivide: already marked (frames={})",
             project.id,
             len(frames),
         )
@@ -383,38 +382,17 @@ async def subdivide_vo_frames_by_camera(
         report["skipped"] = True
         return frames, report
 
-    # Только «родители» — исходные VO-ячейки (ещё без дробления).
-    parents = [
-        f
-        for f in frames
-        if f.uuid and not _is_shot_child(f)
-    ]
+    parents = [f for f in frames if f.uuid and not _is_shot_child(f)]
     parents.sort(key=lambda f: (f.sort_key is None, f.sort_key or 0.0, f.number or 0))
     offsets = frame_offsets(parents, full_vo)
     spans = _beat_vo_spans(shots, full_vo)
 
-    inserted = 0
-    # С конца — insert_frame_after не сдвигает уже обработанных слева.
-    for parent in reversed(parents):
+    for parent in parents:
         beat = camera_beat_for_frame(parent, shots, spans, offsets) or {}
         sec, _ = frame_seconds(parent)
         need = clamp_shots_to_duration(
             required_shots_for_beat(beat, set_counts, duration_sec=sec), sec
         )
-        if need <= 1:
-            # Пометим как 1-шот, чтобы идемпотентность сработала.
-            attrs = dict(parent.attrs or {})
-            attrs[_ATTR_KEY] = {
-                "role": "shot",
-                "parent_uuid": parent.uuid,
-                "shot_index": 1,
-                "shots_in_beat": 1,
-                "набор": beat.get("набор"),
-                "ladder": parse_krupnost_ladder(str(beat.get("крупность") or "")),
-            }
-            parent.attrs = attrs
-            continue
-
         ladder = parse_krupnost_ladder(str(beat.get("крупность") or ""))
         if len(ladder) <= 1 and need >= 3:
             ladder = ["VLS", "MS", "CU"]
@@ -423,53 +401,29 @@ async def subdivide_vo_frames_by_camera(
         while len(ladder) < need:
             ladder.append(ladder[-1] if ladder else "MS")
         ladder = ladder[:need]
-        texts = split_text_into_parts(parent.voiceover_text or "", need)
-        total_sec = float(sec) if sec > 0 else float(need * _MIN_SEC_PER_SHOT)
-        part_sec = round(total_sec / need, 2)
-
-        # Вставляем need-1 карточек сразу после parent.
-        children: list[Frame] = []
-        after_id = parent.id
-        for _ in range(need - 1):
-            child = await insert_frame_after(
-                session, project, after_frame_id=after_id
-            )
-            children.append(child)
-            after_id = child.id
-            inserted += 1
-
-        group = [parent, *children]
-        parent_uuid = parent.uuid
-        nab = beat.get("набор")
-        for i, fr in enumerate(group):
-            fr.voiceover_text = texts[i]
-            fr.duration_seconds = part_sec
-            attrs = dict(fr.attrs or {})
-            attrs[_ATTR_KEY] = {
-                "role": "shot",
-                "parent_uuid": parent_uuid,
-                "shot_index": i + 1,
-                "shots_in_beat": need,
-                "набор": nab,
-                "ladder": ladder,
-                "крупность": ladder[i],
-            }
-            fr.attrs = attrs
+        # Закадр и duration НЕ трогаем.
+        attrs = dict(parent.attrs or {})
+        attrs[_ATTR_KEY] = {
+            "role": "vo_parent",
+            "parent_uuid": parent.uuid,
+            "shot_index": 1,
+            "shots_in_beat": need,
+            "набор": beat.get("набор"),
+            "ladder": ladder,
+            "крупность": ladder[0] if ladder else "",
+        }
+        parent.attrs = attrs
 
     await session.flush()
-    ordered = await renumber_frames_by_sort_key(session, project)
     report["parents"] = len(parents)
-    report["inserted"] = inserted
-    report["frames_after"] = len(ordered)
+    report["frames_after"] = len(frames)
     logger.info(
-        "[#{}] camera_subdivide: parents={} inserted={} frames {}→{}",
+        "[#{}] camera_subdivide: annotate-only parents={} frames={} (no VO split)",
         project.id,
         report["parents"],
-        inserted,
-        report["frames_before"],
         report["frames_after"],
     )
-    return ordered, report
+    return frames, report
 
 
 def _group_frames_into_scenes(
