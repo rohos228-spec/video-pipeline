@@ -247,6 +247,52 @@ def _enrich_meta_allowed_for_status(project: Project) -> bool:
     return _status_ord(cur) >= _status_ord(ProjectStatus.enriching_1)
 
 
+def _shot_index_from_attrs(attrs: object) -> int:
+    """shot_index из attrs.camera_subdivide (SET); без метки = 1 (primary)."""
+    if not isinstance(attrs, dict):
+        return 1
+    cs = attrs.get("camera_subdivide")
+    if isinstance(cs, dict):
+        try:
+            return max(1, int(cs.get("shot_index") or 1))
+        except (TypeError, ValueError):
+            return 1
+    try:
+        return max(1, int(attrs.get("shot_index") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+async def _primary_image_prompt_counts(
+    session, project_id: int
+) -> tuple[int, int, int]:
+    """(primary_total, primary_with_img_prompt, all_with_img_prompt).
+
+    После camera_subdivide SET-дети часто без своего image_prompt — gate
+    «промты готовы» смотрит на primary (shot_index=1), иначе recompute
+    вечно видит fr_with < fr_total → enrich_1_ready → auto hero loop.
+    """
+    rows = (
+        await session.execute(select(Frame).where(Frame.project_id == project_id))
+    ).scalars().all()
+    primary_total = 0
+    primary_with = 0
+    all_with = 0
+    for fr in rows:
+        has = bool((getattr(fr, "image_prompt", None) or "").strip())
+        if has:
+            all_with += 1
+        if _shot_index_from_attrs(getattr(fr, "attrs", None)) <= 1:
+            primary_total += 1
+            if has:
+                primary_with += 1
+    if primary_total == 0:
+        # Нет SET-меток — все кадры primary.
+        primary_total = len(rows)
+        primary_with = all_with
+    return primary_total, primary_with, all_with
+
+
 def _excel_hero_expected_count(project: Project) -> int:
     """Сколько персонажей в meta.excel_hero с данными для генерации.
 
@@ -330,15 +376,11 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
             select(func.count(Frame.id)).where(Frame.project_id == pid)
         )
     ).scalar_one()
-    fr_with_img_prompt = (
-        await session.execute(
-            select(func.count(Frame.id)).where(
-                Frame.project_id == pid,
-                Frame.image_prompt.isnot(None),
-                Frame.image_prompt != "",
-            )
-        )
-    ).scalar_one()
+    (
+        fr_primary_total,
+        fr_primary_with_img_prompt,
+        fr_with_img_prompt,
+    ) = await _primary_image_prompt_counts(session, pid)
     fr_with_anim_prompt = (
         await session.execute(
             select(func.count(Frame.id)).where(
@@ -473,12 +515,20 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
         frames_exit = ProjectStatus.scene_agents_ready
     else:
         frames_exit = ProjectStatus.frames_ready
+    # SET: gate по primary (shot_index=1), не по всем Frame после subdivide.
+    img_prompts_incomplete = fr_primary_with_img_prompt < fr_primary_total
+
     if meta_now.get("hero_skipped_empty") and hero_arts == 0 and not has_hero_descr:
         # Пустой skip зафиксирован — не откатывать в frames_ready (цикл auto).
-        if fr_with_img_prompt < fr_total:
+        if img_prompts_incomplete:
             if _enrich_meta_allowed_for_status(project):
                 enrich_st = _enrich_ready_from_meta(project)
-                if enrich_st is not None:
+                cur = getattr(project, "status", None)
+                # Не откатывать image_prompts_ready/hero_ready → enrich_1
+                # из‑за stale enrich_completed_slots (цикл auto → hero).
+                if enrich_st is not None and _status_ord(cur) <= _status_ord(
+                    enrich_st
+                ):
                     return enrich_st
             if _items_step_required(project):
                 item_descs = _nonempty_item_descriptions(project)
@@ -503,14 +553,15 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
                 if n_excel_done < n_excel:
                     return ProjectStatus.hero_ready
             return frames_exit
-    # Excel-hero / items / enrich — только пока нет image_prompt на всех кадрах.
-    # Иначе recompute откатывал image_prompts_ready → hero_ready при частичном hero.
-    if fr_with_img_prompt < fr_total:
+    # Excel-hero / items / enrich — пока нет image_prompt на primary-кадрах.
+    # SET-дети без промта не должны откатывать в enrich_1 → hero loop.
+    if img_prompts_incomplete:
         # Зафиксированные enrich-слоты важнее частичного excel-hero —
-        # но только если проект уже дошёл до frames_ready (не stale meta).
+        # но только если проект ещё не ушёл дальше этого enrich_*_ready.
         if _enrich_meta_allowed_for_status(project):
             enrich_st = _enrich_ready_from_meta(project)
-            if enrich_st is not None:
+            cur = getattr(project, "status", None)
+            if enrich_st is not None and _status_ord(cur) <= _status_ord(enrich_st):
                 return enrich_st
         if hero_required:
             n_excel = _excel_hero_expected_count(project)
@@ -526,14 +577,15 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
         if hero_required:
             return ProjectStatus.hero_ready
         return frames_exit
-    # image_prompts ✓
-    if scene_image_arts < fr_total:
+    # image_prompts ✓ (primary). Картинки ждём по кадрам с промтом, не по fr_total.
+    images_needed = max(int(fr_with_img_prompt or 0), int(fr_primary_total or 0))
+    if scene_image_arts < images_needed:
         return ProjectStatus.image_prompts_ready
     # images ✓
-    if fr_with_anim_prompt < fr_total:
+    if fr_with_anim_prompt < images_needed:
         return ProjectStatus.images_ready
     # animation_prompts ✓
-    if scene_video_arts < fr_total:
+    if scene_video_arts < images_needed:
         return ProjectStatus.animation_prompts_ready
     # videos ✓
     if audio_arts == 0:
