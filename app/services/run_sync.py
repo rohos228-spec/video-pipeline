@@ -161,6 +161,32 @@ def _canvas_node_type_for_ready(status: ProjectStatus) -> str | None:
     return READY_TO_NODE_TYPE.get(status)
 
 
+def _effective_type_from_nr(nr: NodeRun) -> str:
+    """Оркестраторный тип без snapshot: excel_gpt + ключ sd_* → sd_agent/sd_assemble.
+
+    На канвасе веер лежит как «Работа с GPT» (node_type=excel_gpt в NodeRun
+    после старых sync / ручного create). Ключ ``n_excel_gpt_sd_*`` — канон
+    node_groups; check-ноды ``*_sd_check_*`` не трогаем.
+    """
+    if nr.node_type in ("sd_agent", "sd_assemble", "scene_design"):
+        return nr.node_type
+    key = nr.node_key or ""
+    if nr.node_type == EXCEL_GPT_NODE_TYPE and "_sd_" in key:
+        if key.endswith("_sd_asm") or key.endswith("sd_asm"):
+            return "sd_assemble"
+        if "sd_check" not in key:
+            return "sd_agent"
+    return nr.node_type
+
+
+def _nr_effective_type(run: WorkflowRun, nr: NodeRun) -> str:
+    """Тип ноды для оркестратора: snapshot marker побеждает raw NodeRun.node_type."""
+    for n in run.nodes_snapshot or []:
+        if str(n.get("id") or "") == (nr.node_key or ""):
+            return effective_node_type(n)
+    return _effective_type_from_nr(nr)
+
+
 async def _workflow_run_with_nodes(
     session: AsyncSession, project_id: int
 ) -> WorkflowRun | None:
@@ -244,6 +270,20 @@ async def sync_run_for_project(
         ).scalar_one_or_none()
         if run is None:
             return
+
+        # Repair: NodeRun.node_type=excel_gpt при маркере sd_* → sd_agent/sd_assemble.
+        # Иначе complete/reconcile не находят веер и UI горит «ошибка».
+        for nr in run.node_runs:
+            want = _nr_effective_type(run, nr)
+            if want != nr.node_type:
+                logger.info(
+                    "[#{}] repair NodeRun type {}/{} → {}",
+                    project_id,
+                    nr.node_type,
+                    nr.node_key,
+                    want,
+                )
+                nr.node_type = want
 
         disabled = disabled_node_types(project)
         for nr in run.node_runs:
@@ -357,6 +397,29 @@ async def sync_run_for_project(
                     nr.node_key,
                 )
 
+        # UI truth: project в scene_assembling, а sd_asm ещё pending/failed —
+        # поднять в running (assemble идёт, prepare раньше не нашёл excel_gpt-typed).
+        if project.status is ProjectStatus.scene_assembling:
+            for nr in run.node_runs:
+                if _nr_effective_type(run, nr) != "sd_assemble":
+                    continue
+                if nr.status == NodeRunStatus.done:
+                    continue
+                if nr.status == NodeRunStatus.failed:
+                    reset_node_to_pending(
+                        nr, project_id=project_id, initiator="auto_unstick"
+                    )
+                if nr.status == NodeRunStatus.pending:
+                    queue_node_for_start(nr, project_id=project_id, initiator="api")
+                    start_node_running(nr, project_id=project_id, initiator="api")
+                    logger.info(
+                        "[#{}] NodeRun {} → running (scene_assembling UI sync)",
+                        project_id,
+                        nr.node_key,
+                    )
+                elif nr.status == NodeRunStatus.queued:
+                    start_node_running(nr, project_id=project_id, initiator="api")
+
         _aggregate_workflow_run_status(run, project)
 
     if session is not None:
@@ -436,10 +499,16 @@ async def resolve_node_run_for_step(
     node_type = STEP_CODE_TO_NODE_TYPE.get(step_code)
     if node_type is None:
         return None
-    matches = [nr for nr in run.node_runs if nr.node_type == node_type]
+    matches = [
+        nr for nr in run.node_runs if _nr_effective_type(run, nr) == node_type
+    ]
     if not matches and node_type in ("sd_agent", "sd_assemble"):
         # Legacy-канвас: одна нода scene_design вместо веера sd_*.
-        matches = [nr for nr in run.node_runs if nr.node_type == "scene_design"]
+        matches = [
+            nr
+            for nr in run.node_runs
+            if _nr_effective_type(run, nr) == "scene_design"
+        ]
     if len(matches) == 1:
         return matches[0]
     if key:
@@ -580,11 +649,18 @@ async def prepare_node_for_step_start(
         return False
     # Веер scene_design: общий шаг scene_d гоняет все 5 нод sd_agent разом —
     # поднять queued→running и для остальных (не только первой найденной).
-    if step_code == "scene_d" and not resolved_key and nr.node_type == "sd_agent":
+    if (
+        step_code == "scene_d"
+        and not resolved_key
+        and _effective_type_from_nr(nr) == "sd_agent"
+    ):
         run_fan = await _workflow_run_with_nodes(session, project.id)
         if run_fan is not None:
             for other in run_fan.node_runs:
-                if other.node_type != "sd_agent" or other.node_key == nr.node_key:
+                if (
+                    _nr_effective_type(run_fan, other) != "sd_agent"
+                    or other.node_key == nr.node_key
+                ):
                     continue
                 if other.status == NodeRunStatus.skipped:
                     continue
@@ -722,8 +798,10 @@ async def complete_active_node_for_step(
     # Legacy-канвас: нод sd_agent/sd_assemble нет — закрываем scene_design.
     if (
         node_type in ("sd_agent", "sd_assemble")
-        and not any(nr.node_type == node_type for nr in run.node_runs)
-        and any(nr.node_type == "scene_design" for nr in run.node_runs)
+        and not any(_nr_effective_type(run, nr) == node_type for nr in run.node_runs)
+        and any(
+            _nr_effective_type(run, nr) == "scene_design" for nr in run.node_runs
+        )
     ):
         node_type = "scene_design"
 
@@ -772,7 +850,7 @@ async def complete_active_node_for_step(
         return
 
     for nr in run.node_runs:
-        if nr.node_type != node_type:
+        if _nr_effective_type(run, nr) != node_type:
             continue
         if finished_key and nr.node_key != finished_key:
             continue
@@ -804,16 +882,16 @@ async def complete_active_node_for_step(
             if not complete_all:
                 return
             continue
-        # Recovery: шаг успешен, но prepare не нашёл ноду (осталась pending).
-        if (
-            node_type == EXCEL_GPT_NODE_TYPE
-            and finished_key
-            and nr.node_key == finished_key
-            and nr.status == NodeRunStatus.pending
-        ):
-            queue_node_for_start(nr, project_id=project.id, initiator="worker")
-            start_node_running(nr, project_id=project.id, initiator="worker")
-            if complete_node(nr, project_id=project.id, initiator="worker"):
+        # Recovery: шаг успешен, но prepare не нашёл ноду (осталась pending /
+        # failed после ложного background_reconcile на excel_gpt-typed sd_*).
+        if nr.status not in (NodeRunStatus.pending, NodeRunStatus.failed):
+            continue
+        if node_type == EXCEL_GPT_NODE_TYPE and not finished_key:
+            continue
+        if node_type not in (EXCEL_GPT_NODE_TYPE, "sd_agent", "sd_assemble"):
+            continue
+        if nr.status == NodeRunStatus.failed:
+            if heal_failed_node_done(nr, project_id=project.id):
                 await session.flush()
                 await publish_node_event(
                     run.id,
@@ -821,17 +899,42 @@ async def complete_active_node_for_step(
                     node_key=nr.node_key,
                     payload={
                         "node_type": nr.node_type,
-                        "from": "pending",
+                        "from": "failed",
                         "to": nr.status.value,
                         "project_id": project.id,
                     },
                 )
                 logger.info(
-                    "[#{}] NodeRun {} → done (recovery pending→done, prev={})",
+                    "[#{}] NodeRun {} → done (heal failed after success, prev={})",
                     project.id,
                     nr.node_key,
                     prev_status.value,
                 )
+            if not complete_all:
+                return
+            continue
+        queue_node_for_start(nr, project_id=project.id, initiator="worker")
+        start_node_running(nr, project_id=project.id, initiator="worker")
+        if complete_node(nr, project_id=project.id, initiator="worker"):
+            await session.flush()
+            await publish_node_event(
+                run.id,
+                event_type="node_status_changed",
+                node_key=nr.node_key,
+                payload={
+                    "node_type": nr.node_type,
+                    "from": "pending",
+                    "to": nr.status.value,
+                    "project_id": project.id,
+                },
+            )
+            logger.info(
+                "[#{}] NodeRun {} → done (recovery pending→done, prev={})",
+                project.id,
+                nr.node_key,
+                prev_status.value,
+            )
+        if not complete_all:
             return
 
 
@@ -864,8 +967,10 @@ async def mark_running_node_failed(
     # Legacy-канвас: нод sd_agent/sd_assemble нет — фейлим scene_design.
     if (
         node_type in ("sd_agent", "sd_assemble")
-        and not any(nr.node_type == node_type for nr in run.node_runs)
-        and any(nr.node_type == "scene_design" for nr in run.node_runs)
+        and not any(_nr_effective_type(run, nr) == node_type for nr in run.node_runs)
+        and any(
+            _nr_effective_type(run, nr) == "scene_design" for nr in run.node_runs
+        )
     ):
         node_type = "scene_design"
     # Веер scene_design: фейлим все running-ноды агентов, не только первую.
@@ -878,7 +983,7 @@ async def mark_running_node_failed(
         if slot is not None:
             active_key = resolve_excel_gpt_node_key_for_slot(project, slot)
     for nr in run.node_runs:
-        if nr.node_type != node_type:
+        if _nr_effective_type(run, nr) != node_type:
             continue
         if active_key and nr.node_key != active_key:
             continue
@@ -926,7 +1031,7 @@ async def update_active_node_progress_text(
         if slot is not None:
             active_key = resolve_excel_gpt_node_key_for_slot(project, slot)
     for nr in run.node_runs:
-        if node_type and nr.node_type != node_type:
+        if node_type and _nr_effective_type(run, nr) != node_type:
             continue
         if active_key and nr.node_key != active_key:
             continue
@@ -1091,18 +1196,26 @@ def _node_already_succeeded_for_project(project: Project, nr: NodeRun) -> bool:
         ProjectStatus.published,
     ):
         return True
-    if READY_TO_NODE_TYPE.get(project.status) == nr.node_type:
+    eff = _effective_type_from_nr(nr)
+    # Веер scene_design: агенты done при scene_agents_ready / assembling / дальше.
+    if eff == "sd_agent" and project.status in (
+        ProjectStatus.scene_agents_ready,
+        ProjectStatus.scene_assembling,
+        ProjectStatus.scene_design_ready,
+    ):
         return True
-    if nr.node_type not in LINEAR_NODE_TYPES:
+    if READY_TO_NODE_TYPE.get(project.status) == eff:
+        return True
+    if eff not in LINEAR_NODE_TYPES:
         return False
-    nr_i = LINEAR_NODE_TYPES.index(nr.node_type)
+    nr_i = LINEAR_NODE_TYPES.index(eff)
     cur_type = READY_TO_NODE_TYPE.get(project.status) or RUNNING_TO_NODE_TYPE.get(
         project.status
     )
     if cur_type in LINEAR_NODE_TYPES and LINEAR_NODE_TYPES.index(cur_type) > nr_i:
         return True
     # ready-статус этой ноды уже пройден (project на следующем ready/running)
-    ready = NODE_TYPE_TO_READY.get(nr.node_type)
+    ready = NODE_TYPE_TO_READY.get(eff)
     if ready is not None and project.status == ready:
         return True
     return False
@@ -1157,14 +1270,19 @@ async def _reconcile_stale_node_runs(
                             initiator,
                         )
                     continue
-                # Рестарт mid-генерации (video/img/anim_pr…): не красим ноду в
+                # Рестарт mid-генерации / mid scene_design: не красим ноду в
                 # failed — иначе UI «постоянно ошибки», хотя воркер сейчас подхватит.
                 running_type = _canvas_node_type_for_running(project.status)
                 status_val = getattr(project.status, "value", str(project.status))
+                eff = _effective_type_from_nr(nr)
                 if (
                     running_type is not None
-                    and running_type == nr.node_type
-                    and str(status_val).startswith("generating_")
+                    and running_type == eff
+                    and (
+                        str(status_val).startswith("generating_")
+                        or status_val
+                        in ("scene_designing", "scene_assembling")
+                    )
                 ):
                     logger.info(
                         "[#{}] NodeRun {}/{}: keep {} (project still {}, {})",

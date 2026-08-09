@@ -404,3 +404,85 @@ async def test_assembled_heals_failed_run_status(mem_db) -> None:
         assert nr is not None
         assert nr.status == NodeRunStatus.done
         assert not (nr.error or "")
+
+
+@pytest.mark.asyncio
+async def test_scene_assembling_heals_false_failed_excel_gpt_sd_agents(mem_db) -> None:
+    """Веер на канвасе — excel_gpt+sd_marker; NodeRun.type=excel_gpt.
+
+    После agents_done reconcile красил ноды в «прервано…» — UI «везде ошибки»,
+    хотя meta.agents=done и идёт assemble. sync должен: type→sd_*, failed→done,
+    sd_asm → running.
+    """
+    slug = f"sd-fan-{uuid.uuid4().hex[:8]}"
+    agents = ("characters", "world", "style", "camera", "action")
+    async with mem_db() as session:
+        wf = Workflow(name=f"wf-{uuid.uuid4().hex[:8]}", is_default=False, nodes=[], edges=[])
+        session.add(wf)
+        await session.flush()
+        project = Project(
+            slug=slug, topic="t", status=ProjectStatus.scene_assembling
+        )
+        session.add(project)
+        await session.flush()
+        nodes = []
+        for a in agents:
+            nodes.append(
+                {
+                    "id": f"n_excel_gpt_sd_{a}",
+                    "type": "excel_gpt",
+                    "data": {"sd_agent": a},
+                }
+            )
+        nodes.append(
+            {
+                "id": "n_excel_gpt_sd_asm",
+                "type": "excel_gpt",
+                "data": {"sd_agent": "assemble"},
+            }
+        )
+        run = WorkflowRun(
+            project_id=project.id,
+            workflow_id=wf.id,
+            status=WorkflowRunStatus.failed,
+            nodes_snapshot=nodes,
+            edges_snapshot=[],
+        )
+        session.add(run)
+        await session.flush()
+        agent_ids: list[int] = []
+        for a in agents:
+            nr = NodeRun(
+                workflow_run_id=run.id,
+                node_key=f"n_excel_gpt_sd_{a}",
+                node_type="excel_gpt",
+                status=NodeRunStatus.failed,
+                error="прервано: рабочий процесс не активен",
+            )
+            session.add(nr)
+            await session.flush()
+            agent_ids.append(nr.id)
+        asm = NodeRun(
+            workflow_run_id=run.id,
+            node_key="n_excel_gpt_sd_asm",
+            node_type="excel_gpt",
+            status=NodeRunStatus.pending,
+        )
+        session.add(asm)
+        await session.flush()
+        asm_id = asm.id
+        project_id = project.id
+
+    await sync_run_for_project(project_id)
+
+    async with mem_db() as session:
+        for nid in agent_ids:
+            nr = await session.get(NodeRun, nid)
+            assert nr is not None
+            assert nr.node_type == "sd_agent"
+            assert nr.status == NodeRunStatus.done
+            assert not (nr.error or "")
+        asm_row = await session.get(NodeRun, asm_id)
+        assert asm_row is not None
+        assert asm_row.node_type == "sd_assemble"
+        assert asm_row.status == NodeRunStatus.running
