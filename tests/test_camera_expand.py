@@ -36,6 +36,19 @@ def test_required_shots_uses_ladder_and_set():
     assert (
         required_shots_for_beat({"крупность": "MS", "набор": None}, set_counts) == 1
     )
+    # Длинный VO без лестницы — всё равно минимум шотов.
+    assert (
+        required_shots_for_beat(
+            {"крупность": "MS", "набор": None}, set_counts, duration_sec=5.0
+        )
+        == 2
+    )
+    assert (
+        required_shots_for_beat(
+            {"крупность": "MS", "набор": None}, set_counts, duration_sec=9.0
+        )
+        == 3
+    )
 
 
 def test_clamp_shots_to_duration():

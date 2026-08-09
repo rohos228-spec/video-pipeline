@@ -78,6 +78,8 @@ def load_set_shot_counts(catalog_path: Path | None = None) -> dict[str, tuple[in
 def required_shots_for_beat(
     shot: dict[str, Any],
     set_counts: dict[str, tuple[int, int]],
+    *,
+    duration_sec: float = 0.0,
 ) -> int:
     ladder = parse_krupnost_ladder(str(shot.get("крупность") or ""))
     n_ladder = len(ladder) if ladder else 1
@@ -85,7 +87,13 @@ def required_shots_for_beat(
     if nab in ("", "NONE", "NULL", "NONE."):
         nab = ""
     n_set = set_counts.get(nab, (0, 0))[0] if nab else 0
-    return max(n_ladder, n_set, 1)
+    need = max(n_ladder, n_set, 1)
+    # Если GPT сдал один план на длинный VO — всё равно дробим (минимум динамики).
+    if duration_sec >= 8.0 and need < 3:
+        need = 3
+    elif duration_sec >= 4.0 and need < 2:
+        need = 2
+    return need
 
 
 def clamp_shots_to_duration(need: int, duration_sec: float) -> int:
@@ -110,9 +118,15 @@ def expand_shot_plan_rows(
         ladder = parse_krupnost_ladder(str(sh.get("крупность") or ""))
         if not ladder:
             ladder = ["MS"]
-        need = required_shots_for_beat(sh, set_counts)
+        dur = float(sh.get("время_сек") or sh.get("duration_sec") or 0.0)
+        need = required_shots_for_beat(sh, set_counts, duration_sec=dur)
+        if len(ladder) <= 1 and need >= 3:
+            ladder = ["VLS", "MS", "CU"]
+        elif len(ladder) <= 1 and need >= 2:
+            ladder = ["MS", "CU"]
         while len(ladder) < need:
             ladder.append(ladder[-1])
+        ladder = ladder[:need]
         moves = parse_krupnost_ladder(str(sh.get("движение") or ""))
         for step_i, kr in enumerate(ladder):
             row = copy.deepcopy(sh)
@@ -385,7 +399,7 @@ async def subdivide_vo_frames_by_camera(
         beat = camera_beat_for_frame(parent, shots, spans, offsets) or {}
         sec, _ = frame_seconds(parent)
         need = clamp_shots_to_duration(
-            required_shots_for_beat(beat, set_counts), sec
+            required_shots_for_beat(beat, set_counts, duration_sec=sec), sec
         )
         if need <= 1:
             # Пометим как 1-шот, чтобы идемпотентность сработала.
@@ -402,6 +416,10 @@ async def subdivide_vo_frames_by_camera(
             continue
 
         ladder = parse_krupnost_ladder(str(beat.get("крупность") or ""))
+        if len(ladder) <= 1 and need >= 3:
+            ladder = ["VLS", "MS", "CU"]
+        elif len(ladder) <= 1 and need >= 2:
+            ladder = ["MS", "CU"]
         while len(ladder) < need:
             ladder.append(ladder[-1] if ladder else "MS")
         ladder = ladder[:need]
