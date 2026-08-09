@@ -746,6 +746,19 @@ export const api = {
       {},
       90_000,
     ),
+  getCheckPromptPreview: (projectId: number, nodeKey: string) =>
+    http<{
+      text: string;
+      chars: number;
+      mode: string;
+      checkPromptSource: string;
+      source: string;
+      dbSot: boolean;
+    }>(
+      `/api/projects/${projectId}/gpt-operator/${encodeURIComponent(nodeKey)}/check-prompt-preview`,
+      {},
+      90_000,
+    ),
   patchCanvasEdgeKind: (
     projectId: number,
     edgeId: string,

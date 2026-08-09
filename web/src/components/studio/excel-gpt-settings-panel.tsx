@@ -100,33 +100,46 @@ export function ExcelGptSettingsPanel({
   ]);
 
   const agentFileRef = useRef<HTMLInputElement>(null);
-  const [agentViewOpen, setAgentViewOpen] = useState(false);
+  // Что смотрим в диалоге: финальный промт проверки / файл агента / промт источника.
+  const [viewTarget, setViewTarget] = useState<
+    { kind: "prompt" } | { kind: "agent" } | { kind: "source"; key: string } | null
+  >(null);
   const agentFileView = useQuery({
     queryKey: ["check-agent-file", projectId, nodeKey],
     queryFn: () => api.getCheckAgentFile(projectId, nodeKey),
-    enabled: agentViewOpen,
+    enabled: viewTarget?.kind === "agent",
     staleTime: 10_000,
   });
-  const [viewSourceKey, setViewSourceKey] = useState<string | null>(null);
+  const viewSourceKey = viewTarget?.kind === "source" ? viewTarget.key : null;
   const sourcePromptView = useQuery({
     queryKey: ["check-source-prompt", projectId, nodeKey, viewSourceKey],
     queryFn: () => api.getGptOperatorSourcePrompt(projectId, nodeKey, viewSourceKey!),
     enabled: viewSourceKey !== null,
     staleTime: 10_000,
   });
-  const viewOpen = agentViewOpen || viewSourceKey !== null;
-  const viewLoading =
-    viewSourceKey !== null ? sourcePromptView.isLoading : agentFileView.isLoading;
-  const viewError =
-    viewSourceKey !== null ? sourcePromptView.error : agentFileView.error;
-  const viewText =
-    viewSourceKey !== null ? sourcePromptView.data?.text : agentFileView.data?.text;
+  const checkPromptPreview = useQuery({
+    queryKey: ["check-prompt-preview", projectId, nodeKey],
+    queryFn: () => api.getCheckPromptPreview(projectId, nodeKey),
+    enabled: viewTarget?.kind === "prompt",
+    staleTime: 10_000,
+  });
+  const activeView =
+    viewTarget?.kind === "prompt"
+      ? checkPromptPreview
+      : viewTarget?.kind === "agent"
+        ? agentFileView
+        : sourcePromptView;
+  const viewOpen = viewTarget !== null;
+  const viewLoading = activeView.isLoading;
+  const viewError = activeView.isError ? activeView.error : null;
+  const viewText = activeView.data?.text;
+  const viewChars = activeView.data?.chars;
   const viewTitle =
-    viewSourceKey !== null
-      ? `${viewSourceKey}${sourcePromptView.data?.variant ? ` · ${sourcePromptView.data.variant}` : ""}`
-      : agentFileView.data?.fileName || checkAgentFileName || "Агент проверки";
-  const viewChars =
-    viewSourceKey !== null ? sourcePromptView.data?.chars : agentFileView.data?.chars;
+    viewTarget?.kind === "prompt"
+      ? "Промт проверки — финальный, как уйдёт в GPT"
+      : viewTarget?.kind === "source"
+        ? `${viewTarget.key}${sourcePromptView.data?.variant ? ` · ${sourcePromptView.data.variant}` : ""}`
+        : agentFileView.data?.fileName || checkAgentFileName || "Агент проверки";
   const uploadAgent = useMutation({
     mutationFn: (file: File) => api.uploadCheckAgentFile(projectId, nodeKey, file),
     onSuccess: (res) => {
@@ -221,6 +234,18 @@ export function ExcelGptSettingsPanel({
           ) : null}
         </div>
         {checkMode ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="default"
+            className="mt-3 w-fit gap-1.5"
+            onClick={() => setViewTarget({ kind: "prompt" })}
+          >
+            <Eye className="h-3.5 w-3.5" />
+            Просмотр промта проверки
+          </Button>
+        ) : null}
+        {checkMode ? (
           <div className="mt-3 space-y-2">
             <p className="text-[11px] font-medium text-muted-foreground">
               Откуда критерии отчёта
@@ -308,7 +333,7 @@ export function ExcelGptSettingsPanel({
                         size="sm"
                         variant="outline"
                         className="gap-1.5"
-                        onClick={() => setAgentViewOpen(true)}
+                        onClick={() => setViewTarget({ kind: "agent" })}
                       >
                         <Eye className="h-3.5 w-3.5" />
                         Просмотр
@@ -352,7 +377,9 @@ export function ExcelGptSettingsPanel({
                           type="button"
                           title="Просмотр промта источника"
                           className="shrink-0 rounded p-0.5 text-muted-foreground transition hover:bg-white/10 hover:text-foreground"
-                          onClick={() => setViewSourceKey(String(s.nodeKey))}
+                          onClick={() =>
+                            setViewTarget({ kind: "source", key: String(s.nodeKey) })
+                          }
                         >
                           <Eye className="h-3.5 w-3.5" />
                         </button>
@@ -569,10 +596,7 @@ export function ExcelGptSettingsPanel({
       <Dialog
         open={viewOpen}
         onOpenChange={(o) => {
-          if (!o) {
-            setAgentViewOpen(false);
-            setViewSourceKey(null);
-          }
+          if (!o) setViewTarget(null);
         }}
       >
         <DialogContent className="max-w-3xl">

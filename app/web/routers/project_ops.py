@@ -1667,6 +1667,85 @@ async def get_check_agent_file(
     }
 
 
+@router.get("/{project_id}/gpt-operator/{node_key}/check-prompt-preview")
+async def get_check_prompt_preview(
+    project_id: int,
+    node_key: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Финальный master-промт проверки ровно как при запуске — просмотр в Studio."""
+    from pathlib import Path
+
+    from app.orchestrator.steps.enrich_xlsx import _get_accompanying_text
+    from app.services.excel_gpt_node import EXCEL_GPT_STEP_CODE
+    from app.services.gpt_operator import (
+        append_vision_hint_for_upstream,
+        assemble_check_agent_prompt,
+        assemble_check_master_prompt,
+        collect_source_prompts,
+        operator_config,
+        resolve_check_report_format,
+        resolve_operator,
+        sanitize_check_reviewer_notes,
+    )
+
+    p = _project_or_404(await session.get(Project, project_id))
+    cfg = operator_config(p, node_key)
+    if not bool(cfg.get("checkMode")):
+        raise HTTPException(status_code=400, detail="у ноды не включена «Проверка»")
+    check_fix = bool(cfg.get("checkFix", True))
+    cps = str(cfg.get("checkPromptSource") or "upstream").strip().lower()
+    if cps not in ("upstream", "agent"):
+        cps = "upstream"
+
+    resolved = resolve_operator(p, node_key)
+    img_ext = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+    has_vision = any(
+        Path(str(f.get("name") or f.get("path") or "")).suffix.lower() in img_ext
+        for f in (resolved.get("files") or [])
+        if f.get("ok")
+    )
+    db_sot = not has_vision
+    accompanying = _get_accompanying_text(p, EXCEL_GPT_STEP_CODE)
+    reviewer_notes = sanitize_check_reviewer_notes(accompanying or "")
+    report_fmt, _ = resolve_check_report_format(p, node_key)
+
+    if cps == "agent":
+        master, agent_step = assemble_check_agent_prompt(
+            p,
+            node_key,
+            check_fix=check_fix,
+            reviewer_notes=reviewer_notes,
+            report_format=report_fmt,
+            db_sot=db_sot,
+        )
+        source = f"agent:{agent_step}" if agent_step else "agent"
+    else:
+        sources = collect_source_prompts(p, node_key)
+        ok_sources = [s for s in sources if s.get("ok")]
+        if not ok_sources:
+            raise HTTPException(
+                status_code=404, detail="нет исходного промта для проверки"
+            )
+        master = assemble_check_master_prompt(
+            ok_sources,
+            check_fix=check_fix,
+            reviewer_notes=reviewer_notes,
+            report_format=report_fmt,
+            db_sot=db_sot,
+        )
+        source = ",".join(str(s.get("nodeKey") or "") for s in ok_sources)
+    master = append_vision_hint_for_upstream(p, node_key, master)
+    return {
+        "text": master,
+        "chars": len(master),
+        "mode": "fix" if check_fix else "report_only",
+        "checkPromptSource": cps,
+        "source": source,
+        "dbSot": db_sot,
+    }
+
+
 @router.get("/{project_id}/gpt-operator/{node_key}/source-prompt")
 async def get_gpt_operator_source_prompt(
     project_id: int,

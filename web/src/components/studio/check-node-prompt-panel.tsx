@@ -6,6 +6,7 @@ import { Eye, Loader2, ShieldCheck } from "lucide-react";
 import { api } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import type { OperatorResolve } from "@/lib/gpt-operator";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -33,13 +34,28 @@ export function CheckNodePromptPanel({
 }) {
   const cps = resolve?.checkPromptSource === "agent" ? "agent" : "upstream";
   const sources = resolve?.sourcePrompts || [];
-  const [viewSourceKey, setViewSourceKey] = useState<string | null>(null);
+  const [viewTarget, setViewTarget] = useState<
+    { kind: "prompt" } | { kind: "source"; key: string } | null
+  >(null);
+  const viewSourceKey = viewTarget?.kind === "source" ? viewTarget.key : null;
   const sourcePromptView = useQuery({
     queryKey: ["check-source-prompt", projectId, nodeKey, viewSourceKey],
     queryFn: () => api.getGptOperatorSourcePrompt(projectId, nodeKey, viewSourceKey!),
     enabled: viewSourceKey !== null,
     staleTime: 10_000,
   });
+  const checkPromptPreview = useQuery({
+    queryKey: ["check-prompt-preview", projectId, nodeKey],
+    queryFn: () => api.getCheckPromptPreview(projectId, nodeKey),
+    enabled: viewTarget?.kind === "prompt",
+    staleTime: 10_000,
+  });
+  const activeView =
+    viewTarget?.kind === "prompt" ? checkPromptPreview : sourcePromptView;
+  const viewTitle =
+    viewTarget?.kind === "prompt"
+      ? "Промт проверки — финальный, как уйдёт в GPT"
+      : `${viewSourceKey ?? ""}${sourcePromptView.data?.variant ? ` · ${sourcePromptView.data.variant}` : ""}`;
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-rose-400/25 bg-rose-500/[0.06] p-4 text-sm">
       <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
@@ -53,6 +69,16 @@ export function CheckNodePromptPanel({
         проверки перечислены ниже. Доп. указания можно писать в
         «Сопроводительный текст» — они попадут в отчёт как указания ревьюера.
       </p>
+      <Button
+        type="button"
+        size="sm"
+        variant="default"
+        className="w-fit gap-1.5"
+        onClick={() => setViewTarget({ kind: "prompt" })}
+      >
+        <Eye className="h-3.5 w-3.5" />
+        Просмотр промта проверки
+      </Button>
       {loading ? (
         <p className="flex items-center gap-2 text-xs text-muted-foreground">
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -61,8 +87,7 @@ export function CheckNodePromptPanel({
       ) : cps === "agent" ? (
         <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-xs">
           <p className="font-medium text-muted-foreground">
-            Критерии — готовый агент (просмотр: Настройки → Проверка →
-            «Просмотр»):
+            Критерии — готовый агент (файл: Настройки → Проверка → «Просмотр»):
           </p>
           <p className="mt-1 font-mono text-foreground">
             {resolve?.checkAgentFileName
@@ -102,7 +127,9 @@ export function CheckNodePromptPanel({
                     type="button"
                     title="Просмотр промта источника"
                     className="shrink-0 rounded p-0.5 text-muted-foreground transition hover:bg-white/10 hover:text-foreground"
-                    onClick={() => setViewSourceKey(String(s.nodeKey))}
+                    onClick={() =>
+                      setViewTarget({ kind: "source", key: String(s.nodeKey) })
+                    }
                   >
                     <Eye className="h-3.5 w-3.5" />
                   </button>
@@ -119,36 +146,35 @@ export function CheckNodePromptPanel({
       )}
 
       <Dialog
-        open={viewSourceKey !== null}
+        open={viewTarget !== null}
         onOpenChange={(o) => {
-          if (!o) setViewSourceKey(null);
+          if (!o) setViewTarget(null);
         }}
       >
         <DialogContent className="max-w-3xl">
           <DialogHeader>
             <DialogTitle className="font-mono text-sm">
-              {viewSourceKey}
-              {sourcePromptView.data?.variant ? ` · ${sourcePromptView.data.variant}` : ""}
-              {sourcePromptView.data?.chars ? (
+              {viewTitle}
+              {activeView.data?.chars ? (
                 <span className="ml-2 text-xs font-normal text-muted-foreground">
-                  {sourcePromptView.data.chars} симв.
+                  {activeView.data.chars} симв.
                 </span>
               ) : null}
             </DialogTitle>
           </DialogHeader>
           <ScrollArea className="max-h-[70vh] rounded-lg border border-white/10 bg-black/30">
-            {sourcePromptView.isLoading ? (
+            {activeView.isLoading ? (
               <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                Читаю промт…
+                Собираю промт…
               </div>
-            ) : sourcePromptView.isError ? (
+            ) : activeView.isError ? (
               <p className="p-4 text-xs text-destructive">
-                {errorMessageFromUnknown(sourcePromptView.error)}
+                {errorMessageFromUnknown(activeView.error)}
               </p>
             ) : (
               <pre className="whitespace-pre-wrap p-4 font-mono text-[11px] leading-snug text-foreground/90">
-                {sourcePromptView.data?.text || ""}
+                {activeView.data?.text || ""}
               </pre>
             )}
           </ScrollArea>
