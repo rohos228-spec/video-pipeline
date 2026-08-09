@@ -880,6 +880,8 @@ export function NodeStudio({
                     />
                   ) : showFilesPanel && isCheckNode ? (
                     <CheckNodePromptPanel
+                      projectId={projectId!}
+                      nodeKey={nodeKey!}
                       resolve={operatorResolve.data}
                       loading={operatorResolve.isLoading}
                     />

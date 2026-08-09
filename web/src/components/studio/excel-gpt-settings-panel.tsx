@@ -107,6 +107,26 @@ export function ExcelGptSettingsPanel({
     enabled: agentViewOpen,
     staleTime: 10_000,
   });
+  const [viewSourceKey, setViewSourceKey] = useState<string | null>(null);
+  const sourcePromptView = useQuery({
+    queryKey: ["check-source-prompt", projectId, nodeKey, viewSourceKey],
+    queryFn: () => api.getGptOperatorSourcePrompt(projectId, nodeKey, viewSourceKey!),
+    enabled: viewSourceKey !== null,
+    staleTime: 10_000,
+  });
+  const viewOpen = agentViewOpen || viewSourceKey !== null;
+  const viewLoading =
+    viewSourceKey !== null ? sourcePromptView.isLoading : agentFileView.isLoading;
+  const viewError =
+    viewSourceKey !== null ? sourcePromptView.error : agentFileView.error;
+  const viewText =
+    viewSourceKey !== null ? sourcePromptView.data?.text : agentFileView.data?.text;
+  const viewTitle =
+    viewSourceKey !== null
+      ? `${viewSourceKey}${sourcePromptView.data?.variant ? ` · ${sourcePromptView.data.variant}` : ""}`
+      : agentFileView.data?.fileName || checkAgentFileName || "Агент проверки";
+  const viewChars =
+    viewSourceKey !== null ? sourcePromptView.data?.chars : agentFileView.data?.chars;
   const uploadAgent = useMutation({
     mutationFn: (file: File) => api.uploadCheckAgentFile(projectId, nodeKey, file),
     onSuccess: (res) => {
@@ -316,12 +336,27 @@ export function ExcelGptSettingsPanel({
                   sourcePrompts.map((s) => (
                     <li
                       key={String(s.nodeKey)}
-                      className={s.ok ? "text-emerald-200/90" : "text-destructive"}
+                      className={cn(
+                        "flex items-center gap-1.5",
+                        s.ok ? "text-emerald-200/90" : "text-destructive",
+                      )}
                     >
-                      {s.ok ? "✓" : "✗"} {s.nodeKey}
-                      {s.variant ? ` · ${s.variant}` : ""}
-                      {s.chars ? ` · ${s.chars} симв` : ""}
-                      {s.error ? ` · ${s.error}` : ""}
+                      <span className="min-w-0 flex-1 truncate">
+                        {s.ok ? "✓" : "✗"} {s.nodeKey}
+                        {s.variant ? ` · ${s.variant}` : ""}
+                        {s.chars ? ` · ${s.chars} симв` : ""}
+                        {s.error ? ` · ${s.error}` : ""}
+                      </span>
+                      {s.ok ? (
+                        <button
+                          type="button"
+                          title="Просмотр промта источника"
+                          className="shrink-0 rounded p-0.5 text-muted-foreground transition hover:bg-white/10 hover:text-foreground"
+                          onClick={() => setViewSourceKey(String(s.nodeKey))}
+                        >
+                          <Eye className="h-3.5 w-3.5" />
+                        </button>
+                      ) : null}
                     </li>
                   ))
                 ) : (
@@ -531,31 +566,39 @@ export function ExcelGptSettingsPanel({
         </ul>
       </section>
 
-      <Dialog open={agentViewOpen} onOpenChange={setAgentViewOpen}>
+      <Dialog
+        open={viewOpen}
+        onOpenChange={(o) => {
+          if (!o) {
+            setAgentViewOpen(false);
+            setViewSourceKey(null);
+          }
+        }}
+      >
         <DialogContent className="max-w-3xl">
           <DialogHeader>
             <DialogTitle className="font-mono text-sm">
-              {agentFileView.data?.fileName || checkAgentFileName || "Агент проверки"}
-              {agentFileView.data ? (
+              {viewTitle}
+              {viewChars ? (
                 <span className="ml-2 text-xs font-normal text-muted-foreground">
-                  {agentFileView.data.chars} симв.
+                  {viewChars} симв.
                 </span>
               ) : null}
             </DialogTitle>
           </DialogHeader>
           <ScrollArea className="max-h-[70vh] rounded-lg border border-white/10 bg-black/30">
-            {agentFileView.isLoading ? (
+            {viewLoading ? (
               <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 Читаю файл…
               </div>
-            ) : agentFileView.isError ? (
+            ) : viewError ? (
               <p className="p-4 text-xs text-destructive">
-                {errorMessageFromUnknown(agentFileView.error)}
+                {errorMessageFromUnknown(viewError)}
               </p>
             ) : (
               <pre className="whitespace-pre-wrap p-4 font-mono text-[11px] leading-snug text-foreground/90">
-                {agentFileView.data?.text || ""}
+                {viewText || ""}
               </pre>
             )}
           </ScrollArea>

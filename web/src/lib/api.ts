@@ -736,6 +736,16 @@ export const api = {
       {},
       90_000,
     ),
+  getGptOperatorSourcePrompt: (
+    projectId: number,
+    nodeKey: string,
+    sourceKey: string,
+  ) =>
+    http<{ nodeKey: string; variant: string | null; chars: number; text: string }>(
+      `/api/projects/${projectId}/gpt-operator/${encodeURIComponent(nodeKey)}/source-prompt?source=${encodeURIComponent(sourceKey)}`,
+      {},
+      90_000,
+    ),
   patchCanvasEdgeKind: (
     projectId: number,
     edgeId: string,

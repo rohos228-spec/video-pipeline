@@ -1667,6 +1667,33 @@ async def get_check_agent_file(
     }
 
 
+@router.get("/{project_id}/gpt-operator/{node_key}/source-prompt")
+async def get_gpt_operator_source_prompt(
+    project_id: int,
+    node_key: str,
+    source: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Текст мастер-промта ноды-источника (критерии проверки) — просмотр в Studio."""
+    from app.services.gpt_operator import collect_source_prompts
+
+    p = _project_or_404(await session.get(Project, project_id))
+    for s in collect_source_prompts(p, node_key):
+        if str(s.get("nodeKey") or "") == source:
+            if not s.get("ok"):
+                raise HTTPException(
+                    status_code=404,
+                    detail=str(s.get("error") or "промт не прочитан"),
+                )
+            return {
+                "nodeKey": source,
+                "variant": s.get("variant"),
+                "chars": int(s.get("chars") or 0),
+                "text": str(s.get("text") or ""),
+            }
+    raise HTTPException(status_code=404, detail="источник не найден")
+
+
 @router.post("/{project_id}/excel-gpt/remap-keys")
 async def remap_excel_gpt_keys(
     project_id: int,
