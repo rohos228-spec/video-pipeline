@@ -17,6 +17,174 @@ def _norm_words(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().casefold())
 
 
+def _as_plain_text(value: Any) -> str:
+    """Никогда не отдавать dict/list в Excel/UI как ``[object Object]``."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, list):
+        parts = [_as_plain_text(x) for x in value]
+        return " → ".join(p for p in parts if p)
+    if isinstance(value, dict):
+        # Частый баг камеры: вложила объект вместо строки.
+        for key in ("текст", "text", "описание", "value", "label", "действие"):
+            if key in value:
+                return _as_plain_text(value.get(key))
+        import json
+
+        return json.dumps(value, ensure_ascii=False)
+    return str(value).strip()
+
+
+def _parse_action_chain(raw: Any) -> list[str]:
+    if isinstance(raw, list):
+        return [_as_plain_text(x) for x in raw if _as_plain_text(x)]
+    text = _as_plain_text(raw)
+    if not text:
+        return []
+    if text.startswith("["):
+        import json
+
+        try:
+            data = json.loads(text)
+            if isinstance(data, list):
+                return [_as_plain_text(x) for x in data if _as_plain_text(x)]
+        except Exception:  # noqa: BLE001
+            pass
+    for sep in ("→", "->", "⇒", ";"):
+        if sep in text:
+            return [p.strip() for p in text.split(sep) if p.strip()]
+    return [text]
+
+
+def attach_action_chains_to_scenes(
+    scenes_chrono: list[dict[str, Any]],
+    action_scenes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Перенести цепь_действия из action в сцены camera_expand по пересечению цитат."""
+    if not scenes_chrono or not action_scenes:
+        return scenes_chrono
+    vo_norm = ""  # сравнение по нормализованным цитатам без полного VO
+    action_rows: list[tuple[str, str, list[str], dict[str, Any]]] = []
+    for ac in action_scenes:
+        if not isinstance(ac, dict):
+            continue
+        sw = _norm_words(str(ac.get("start_words") or ""))
+        ew = _norm_words(str(ac.get("end_words") or ""))
+        chain = _parse_action_chain(ac.get("цепь_действия"))
+        if sw or chain:
+            action_rows.append((sw, ew, chain, ac))
+
+    out: list[dict[str, Any]] = []
+    for sc in scenes_chrono:
+        row = dict(sc)
+        sw = _norm_words(str(row.get("start_words") or ""))
+        best: dict[str, Any] | None = None
+        best_score = -1
+        for a_sw, a_ew, chain, ac in action_rows:
+            score = 0
+            if a_sw and sw and (a_sw in sw or sw in a_sw):
+                score += 2
+            if a_ew and _norm_words(str(row.get("end_words") or "")):
+                ew = _norm_words(str(row.get("end_words") or ""))
+                if a_ew in ew or ew in a_ew:
+                    score += 1
+            if score > best_score:
+                best_score = score
+                best = ac
+                row["цепь_действия"] = chain or _parse_action_chain(
+                    ac.get("цепь_действия")
+                )
+        if best is not None and best_score >= 0:
+            if not row.get("смысл_сцены"):
+                row["смысл_сцены"] = best.get("смысл_сцены") or ""
+            if not row.get("структура_сцены"):
+                row["структура_сцены"] = best.get("структура_сцены") or "continuity"
+        out.append(row)
+    _ = vo_norm
+    return out
+
+
+def stamp_actions_onto_ops(
+    payload: dict[str, Any],
+    assembly_input: dict[str, Any],
+) -> dict[str, Any]:
+    """Прописать уникальные фазы цепь_действия в ``действие`` каждого op.
+
+    Запрет: GPT-«камера вводит…» и копипаст одного действия на все кадры сцены.
+    """
+    chrono = [
+        sc
+        for sc in (assembly_input.get("scenes_chrono") or [])
+        if isinstance(sc, dict)
+    ]
+    by_scene: dict[str, dict[str, Any]] = {
+        str(sc.get("id_scene") or "").strip(): sc for sc in chrono if sc.get("id_scene")
+    }
+    # uuid → (id_scene, index_in_scene)
+    uuid_pos: dict[str, tuple[str, int]] = {}
+    for sc in chrono:
+        sid = str(sc.get("id_scene") or "").strip()
+        kids = [k for k in (sc.get("кадры") or []) if isinstance(k, dict)]
+        for i, kid in enumerate(kids):
+            uid = str(kid.get("uuid") or "").strip()
+            if uid:
+                uuid_pos[uid] = (sid, i)
+
+    out = dict(payload)
+    ops_out: list[dict[str, Any]] = []
+    seen_actions: set[str] = set()
+    for op in out.get("ops") or []:
+        if not isinstance(op, dict):
+            continue
+        op2 = dict(op)
+        fields = (
+            dict(op2.get("fields") or {})
+            if isinstance(op2.get("fields"), dict)
+            else {}
+        )
+        # Почистить [object Object] / вложенные объекты во всех строковых полях.
+        for k, v in list(fields.items()):
+            if isinstance(v, (dict, list)) or (
+                isinstance(v, str) and "[object Object]" in v
+            ):
+                fields[k] = _as_plain_text(v) if "[object Object]" not in str(v) else ""
+
+        uid = str(op2.get("frame_uuid") or "").strip()
+        pos = uuid_pos.get(uid)
+        if pos:
+            sid, idx = pos
+            sc = by_scene.get(sid) or {}
+            chain = _parse_action_chain(sc.get("цепь_действия"))
+            action = ""
+            if chain:
+                action = chain[idx] if idx < len(chain) else chain[-1]
+            # Анти-повтор: если фаза уже была — дописать отличие по индексу шота.
+            key = _norm_words(action)
+            if action and key in seen_actions and len(chain) > 1:
+                # взять следующую неиспользованную фазу
+                for cand in chain:
+                    ck = _norm_words(cand)
+                    if ck not in seen_actions:
+                        action = cand
+                        key = ck
+                        break
+            if action:
+                seen_actions.add(key)
+                fields["действие"] = action
+                fields["shot01_action"] = action
+            sense = _as_plain_text(sc.get("смысл_сцены") or "")
+            if sense:
+                fields["смысл_сцены"] = sense
+        op2["fields"] = fields
+        ops_out.append(op2)
+    out["ops"] = ops_out
+    return out
+
+
 def force_scenes_from_chrono(
     payload: dict[str, Any],
     assembly_input: dict[str, Any],
@@ -49,6 +217,7 @@ def force_scenes_from_chrono(
                 "тип_стыка": sc.get("тип_стыка") or "action",
                 "переход_в_сцену": sc.get("переход_в_сцену") or "cut",
                 "смысл_сцены": sc.get("смысл_сцены") or sc.get("мотив") or "",
+                "цепь_действия": _parse_action_chain(sc.get("цепь_действия")),
                 "набор": sc.get("набор"),
                 "camera_ladder": sc.get("camera_ladder") or [],
                 "camera_shots_required": sc.get("camera_shots_required"),
@@ -76,13 +245,21 @@ def force_scenes_from_chrono(
         uid = str(op2.get("frame_uuid") or "").strip()
         if uid in uuid_to_scene:
             fields["id_scene"] = uuid_to_scene[uid]
+        # Почистить object-поля до stamp_actions.
+        for k, v in list(fields.items()):
+            if isinstance(v, (dict, list)):
+                fields[k] = _as_plain_text(v)
+            elif isinstance(v, str) and "[object Object]" in v:
+                fields[k] = ""
         op2["fields"] = fields
         ops_out.append(op2)
     out["ops"] = ops_out
+    out = stamp_actions_onto_ops(out, {**assembly_input, "scenes_chrono": chrono})
     report = str(out.get("report") or "")
     stamp = (
         f"camera_scenes:{len(scenes_out)}; "
-        f"multi_frame:{sum(1 for s in chrono if int(s.get('кадров') or 0) >= 2)}"
+        f"multi_frame:{sum(1 for s in chrono if int(s.get('кадров') or 0) >= 2)}; "
+        f"actions_stamped:1"
     )
     out["report"] = f"{report}; {stamp}" if report else stamp
     return out

@@ -205,6 +205,47 @@ def test_rebuild_does_not_merge_neighbor_vo_into_one_scene():
     assert out["camera_expand_report"]["scenes"] >= 2
 
 
+def test_stamp_actions_from_chain():
+    from app.services.scene_design.assembler import stamp_actions_onto_ops
+
+    assembly = {
+        "scenes_chrono": [
+            {
+                "id_scene": "scene_01",
+                "цепь_действия": ["вошёл", "сел", "взял перо"],
+                "кадры": [
+                    {"uuid": "a"},
+                    {"uuid": "b"},
+                    {"uuid": "c"},
+                ],
+            }
+        ]
+    }
+    gpt = {
+        "ops": [
+            {
+                "frame_uuid": "a",
+                "fields": {"id_scene": "scene_01", "действие": "камера вводит"},
+            },
+            {
+                "frame_uuid": "b",
+                "fields": {"id_scene": "scene_01", "действие": "камера вводит"},
+            },
+            {
+                "frame_uuid": "c",
+                "fields": {
+                    "id_scene": "scene_01",
+                    "действие": {"текст": "object"},
+                },
+            },
+        ]
+    }
+    out = stamp_actions_onto_ops(gpt, assembly)
+    assert out["ops"][0]["fields"]["действие"] == "вошёл"
+    assert out["ops"][1]["fields"]["действие"] == "сел"
+    assert out["ops"][2]["fields"]["действие"] == "взял перо"
+
+
 def test_force_scenes_from_chrono_overrides_gpt_quotes():
     assembly = {
         "scenes_chrono": [

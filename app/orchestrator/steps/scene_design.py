@@ -210,6 +210,13 @@ async def run_assemble(
         )
         from app.services.scene_design import camera_expand as sd_camera_expand
 
+        # Action-цепи ДО rebuild (rebuild перезапишет scenes_chrono).
+        action_scenes = [
+            sc
+            for sc in (assembly_input.get("scenes_chrono") or [])
+            if isinstance(sc, dict)
+        ]
+
         frames, subdiv_report = await sd_camera_expand.subdivide_vo_frames_by_camera(
             session, project, frames, assembly_input, full_vo
         )
@@ -218,6 +225,10 @@ async def run_assemble(
         # shot_plan в assembly_input ещё от исходных VO — rebuild сцен после дроби.
         assembly_input = sd_camera_expand.rebuild_scenes_from_camera(
             frames, assembly_input, full_vo
+        )
+        assembly_input["scenes_chrono"] = sd_assembler.attach_action_chains_to_scenes(
+            list(assembly_input.get("scenes_chrono") or []),
+            action_scenes,
         )
         logger.info(
             "[#{}] camera_expand report: {}",
