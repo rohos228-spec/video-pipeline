@@ -7,7 +7,13 @@
  */
 
 import { useMemo } from "react";
-import { ViewportPortal, useNodes, type Node } from "@xyflow/react";
+import {
+  ViewportPortal,
+  useNodes,
+  useReactFlow,
+  type Node,
+} from "@xyflow/react";
+import { toast } from "sonner";
 import type { PipelineNodeData } from "./pipeline-node";
 import { groupHue } from "@/lib/group-color";
 
@@ -29,6 +35,21 @@ interface GroupFrame {
 
 export function GroupFrames() {
   const nodes = useNodes<Node<PipelineNodeData>>();
+  const { setNodes } = useReactFlow();
+
+  // Клик по подписи рамки — выделить все ноды группы (удобно для обзора
+  // и «Сохранить выделение как группу»).
+  const selectGroup = (gid: string, title: string) => {
+    let count = 0;
+    setNodes((prev) =>
+      prev.map((n) => {
+        const inGroup = (n.data as PipelineNodeData)?.groupId === gid;
+        if (inGroup) count += 1;
+        return { ...n, selected: inGroup };
+      }),
+    );
+    toast.message(`Группа «${title}»: выделено ${count} нод`);
+  };
 
   const frames = useMemo<GroupFrame[]>(() => {
     const byGroup = new Map<string, { title: string; ns: Node<PipelineNodeData>[] }>();
@@ -92,14 +113,16 @@ export function GroupFrames() {
                 boxShadow: active ? `0 0 32px hsl(${hue} 85% 60% / 0.25)` : undefined,
               }}
             />
-            <div
-              className="absolute left-4 top-3 flex max-w-[calc(100%-2rem)] items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium backdrop-blur-sm"
+            <button
+              type="button"
+              className="nodrag nopan nowheel pointer-events-auto absolute left-4 top-3 flex max-w-[calc(100%-2rem)] cursor-pointer items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium backdrop-blur-sm transition-transform hover:scale-[1.03]"
               style={{
                 borderColor: `hsl(${hue} 70% 60% / 0.45)`,
                 background: `hsl(${hue} 60% 16% / 0.75)`,
                 color: `hsl(${hue} 85% 82%)`,
               }}
-              title={`Импортированная группа «${f.title}» (${f.gid})`}
+              title={`Импортированная группа «${f.title}» — клик выделяет все ноды группы`}
+              onClick={() => selectGroup(f.gid, f.title)}
             >
               <span
                 className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
@@ -109,7 +132,7 @@ export function GroupFrames() {
               <span className="shrink-0 opacity-60">
                 · группа{active ? ` · в работе: ${f.runningCount}` : ""}
               </span>
-            </div>
+            </button>
           </div>
         );
       })}

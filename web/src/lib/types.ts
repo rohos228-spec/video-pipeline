@@ -100,11 +100,39 @@ export interface NodeGroupSummary {
   category: string;
   node_count: number;
   nodes: { key: string; label: string; type: string }[];
+  default_after_type: string;
   /** Встроенная (из кода) — true; пользовательская (node_groups/*.json) — false. */
   builtin: boolean;
   /** ISO-время последнего обновления (у пользовательских). */
   updated_at?: string | null;
+}
+
+/** Полный spec группы из GET /api/node-groups/{id} — для превью дизайна. */
+export interface NodeGroupDetail {
+  id: string;
+  title: string;
+  description: string;
+  category: string;
+  builtin: boolean;
+  updated_at?: string | null;
   default_after_type: string;
+  entry_keys: string[];
+  exit_key: string;
+  exit_edge_kind: string;
+  project_meta: Record<string, unknown>;
+  nodes: {
+    key: string;
+    label: string;
+    type: string;
+    description: string;
+    dx: number;
+    dy: number;
+    marker: string | null;
+    prompt_variant: string | null;
+    slot_overflow: boolean;
+    has_operator_config: boolean;
+  }[];
+  internal_edges: { source: string; target: string; kind: string }[];
 }
 
 export interface ProjectSummary {

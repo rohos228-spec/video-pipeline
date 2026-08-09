@@ -23,6 +23,7 @@ import type {
   WorkflowRunDetail,
   WorkflowSummary,
   NodeGroupSummary,
+  NodeGroupDetail,
 } from "./types";
 import type { BlockSelection } from "./prompt-styles";
 
@@ -530,6 +531,8 @@ export const api = {
 
   // ── Группы нод (пресеты канваса) ──────────────────────────────────
   listNodeGroups: () => http<NodeGroupSummary[]>(`/api/node-groups`),
+  getNodeGroup: (groupId: string) =>
+    http<NodeGroupDetail>(`/api/node-groups/${encodeURIComponent(groupId)}`),
   insertNodeGroup: (projectId: number, groupId: string, after?: string) =>
     http<{
       group: string;
