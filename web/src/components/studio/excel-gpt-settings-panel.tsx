@@ -2,13 +2,20 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, RefreshCw, Upload } from "lucide-react";
+import { Eye, Loader2, RefreshCw, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import type { ExcelGptNodeConfig } from "@/lib/excel-gpt-config";
 import {
@@ -93,6 +100,13 @@ export function ExcelGptSettingsPanel({
   ]);
 
   const agentFileRef = useRef<HTMLInputElement>(null);
+  const [agentViewOpen, setAgentViewOpen] = useState(false);
+  const agentFileView = useQuery({
+    queryKey: ["check-agent-file", projectId, nodeKey],
+    queryFn: () => api.getCheckAgentFile(projectId, nodeKey),
+    enabled: agentViewOpen,
+    staleTime: 10_000,
+  });
   const uploadAgent = useMutation({
     mutationFn: (file: File) => api.uploadCheckAgentFile(projectId, nodeKey, file),
     onSuccess: (res) => {
@@ -268,15 +282,27 @@ export function ExcelGptSettingsPanel({
                     Загрузить .txt / .md
                   </Button>
                   {checkAgentFileName ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      disabled={clearAgent.isPending}
-                      onClick={() => clearAgent.mutate()}
-                    >
-                      Сбросить
-                    </Button>
+                    <>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="gap-1.5"
+                        onClick={() => setAgentViewOpen(true)}
+                      >
+                        <Eye className="h-3.5 w-3.5" />
+                        Просмотр
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={clearAgent.isPending}
+                        onClick={() => clearAgent.mutate()}
+                      >
+                        Сбросить
+                      </Button>
+                    </>
                   ) : null}
                 </div>
               </div>
@@ -504,6 +530,37 @@ export function ExcelGptSettingsPanel({
           ) : null}
         </ul>
       </section>
+
+      <Dialog open={agentViewOpen} onOpenChange={setAgentViewOpen}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="font-mono text-sm">
+              {agentFileView.data?.fileName || checkAgentFileName || "Агент проверки"}
+              {agentFileView.data ? (
+                <span className="ml-2 text-xs font-normal text-muted-foreground">
+                  {agentFileView.data.chars} симв.
+                </span>
+              ) : null}
+            </DialogTitle>
+          </DialogHeader>
+          <ScrollArea className="max-h-[70vh] rounded-lg border border-white/10 bg-black/30">
+            {agentFileView.isLoading ? (
+              <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Читаю файл…
+              </div>
+            ) : agentFileView.isError ? (
+              <p className="p-4 text-xs text-destructive">
+                {errorMessageFromUnknown(agentFileView.error)}
+              </p>
+            ) : (
+              <pre className="whitespace-pre-wrap p-4 font-mono text-[11px] leading-snug text-foreground/90">
+                {agentFileView.data?.text || ""}
+              </pre>
+            )}
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -730,6 +730,12 @@ export const api = {
       `/api/projects/${projectId}/gpt-operator/${encodeURIComponent(nodeKey)}/check-agent`,
       { method: "DELETE" },
     ),
+  getCheckAgentFile: (projectId: number, nodeKey: string) =>
+    http<{ fileName: string; chars: number; text: string }>(
+      `/api/projects/${projectId}/gpt-operator/${encodeURIComponent(nodeKey)}/check-agent`,
+      {},
+      90_000,
+    ),
   patchCanvasEdgeKind: (
     projectId: number,
     edgeId: string,
