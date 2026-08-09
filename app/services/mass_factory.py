@@ -50,6 +50,8 @@ COPY_META_KEYS = (
     "canvas_graph",
     "excel_gpt_nodes",
     "node_step_params",
+    # Иначе ребёнок идёт pass-through: 1 VO = 1 кадр, без SET/сцен.
+    "scene_design_enabled",
 )
 
 STRIP_META_KEYS = frozenset(
