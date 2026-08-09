@@ -751,9 +751,10 @@ def _write_persons_sheet(wb: Any, entities: list[Any]) -> int:
         ws["A6"] = "характер"
         ws["A7"] = "правила"
     # Чистим старые колонки B.. (до разумного лимита)
+    # openpyxl: cell(..., value=None) не пишет — только .value = None
     for col in range(2, max(ws.max_column or 2, 2) + 1):
         for row in (ROW_ID, ROW_NAME, ROW_LOOK, ROW_CLOTHES, ROW_CHAR, ROW_RULES):
-            ws.cell(row=row, column=col, value=None)
+            ws.cell(row=row, column=col).value = None
     cells = 0
     for i, en in enumerate(chars):
         col = 2 + i
@@ -857,6 +858,28 @@ def export_project_xlsx(
                     continue
                 ws.cell(row=row, column=col, value=str(val))
                 cells += 1
+        # Стереть хвост колонок после последнего кадра — иначе sync_project_xlsx
+        # снова поднимет удалённые VO/таймкоды (было 182 после truncate до 20).
+        max_col = int(ws.max_column or 2)
+        clear_from = len(frames) + 3  # number N → col N+2; первая лишняя = N+3
+        if clear_from <= max_col:
+            rows_clear = {
+                ROW_IMAGE_PROMPT_V8,
+                ROW_IMAGE_PROMPT_2_V8,
+                ROW_VIDEO_PROMPT_V8,
+                ROW_VIDEO_PROMPT_2_V8,
+                ROW_VOICEOVER_V8,
+                ROW_DURATION_V8,
+                ROW_TIMECODE_V8,
+                ROW_PERSONS_PRIMARY,
+                *(_ATTR_EXCEL_ROWS.values()),
+            }
+            for col in range(clear_from, max_col + 1):
+                for row in rows_clear:
+                    # openpyxl: cell(..., value=None) НЕ пишет — None значит «не менять»
+                    ws.cell(row=row, column=col).value = None
+                    cells += 1
+
         general_plan = (project.meta or {}).get("general_plan")
         if general_plan:
             for name in wb.sheetnames:
