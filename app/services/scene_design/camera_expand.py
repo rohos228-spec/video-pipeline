@@ -233,6 +233,50 @@ def merge_beats_for_multi_shot(
     return out_shots, out_buckets, out_need
 
 
+def _pick_unique_quote(
+    text: str,
+    full_vo: str,
+    used: set[str],
+    *,
+    from_end: bool,
+) -> str:
+    """Цитата из текста кадра: есть в закадре, не совпадает с уже взятыми."""
+    vo_norm = _norm(full_vo)
+    words = (text or "").strip().split()
+    if not words:
+        return ""
+    # Растим окно, пока цитата не станет уникальной среди used.
+    for n in range(min(6, len(words)), len(words) + 1):
+        chunk = " ".join(words[-n:] if from_end else words[:n])
+        cn = _norm(chunk)
+        if cn and cn in vo_norm and cn not in used:
+            used.add(cn)
+            return chunk
+    # Весь текст кадра — последний шанс.
+    whole = " ".join(words)
+    wn = _norm(whole)
+    if wn and wn in vo_norm and wn not in used:
+        used.add(wn)
+        return whole
+    # Fallback: уникальный хвост/голова из полного закадра вокруг вхождения.
+    idx = vo_norm.find(wn) if wn else -1
+    if idx < 0:
+        idx = 0
+    vo_words = full_vo.split()
+    # Грубо: берём сдвиг по словам, пока не уникально.
+    for extra in range(1, 12):
+        if from_end:
+            chunk = " ".join(vo_words[max(0, len(vo_words) - 8 - extra) :])
+        else:
+            chunk = " ".join(vo_words[: 8 + extra])
+        cn = _norm(chunk)
+        if cn and cn in vo_norm and cn not in used:
+            used.add(cn)
+            return chunk
+    used.add(wn or "scene")
+    return whole or "scene"
+
+
 def rebuild_scenes_from_camera(
     frames: list[Frame],
     assembly_input: dict[str, Any],
@@ -258,15 +302,26 @@ def rebuild_scenes_from_camera(
     expanded = expand_shot_plan_rows(shots, set_counts)
     scenes: list[dict[str, Any]] = []
     scene_i = 0
+    used_quotes: set[str] = set()
     for beat_i, (sh, frs, req) in enumerate(zip(shots, buckets, need)):
         if not frs:
             continue
         scene_i += 1
         kids = [_frame_row(f) for f in frs]
-        start_words = (frs[0].voiceover_text or "").strip().split()
-        end_words = (frs[-1].voiceover_text or "").strip().split()
-        sw = " ".join(start_words[:8]) if start_words else str(sh.get("цитата") or "")
-        ew = " ".join(end_words[-8:]) if end_words else sw
+        sw = _pick_unique_quote(
+            frs[0].voiceover_text or str(sh.get("цитата") or ""),
+            full_vo,
+            used_quotes,
+            from_end=False,
+        )
+        ew = _pick_unique_quote(
+            frs[-1].voiceover_text or sw,
+            full_vo,
+            used_quotes,
+            from_end=True,
+        )
+        if not ew:
+            ew = sw
         ladder = parse_krupnost_ladder(str(sh.get("крупность") or ""))
         scenes.append(
             {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from app.services.scene_design.assembler import force_scenes_from_chrono
 from app.services.scene_design.camera_expand import (
     expand_shot_plan_rows,
     parse_krupnost_ladder,
@@ -113,3 +114,43 @@ def test_rebuild_merges_frames_when_ladder_needs_multi():
     assert scenes[0]["camera_shots_required"] >= 3
     assert len(out["shot_plan_chrono"]) >= 3
     assert out["camera_expand_report"]["multi_frame_scenes"] >= 1
+
+
+def test_force_scenes_from_chrono_overrides_gpt_quotes():
+    assembly = {
+        "scenes_chrono": [
+            {
+                "id_scene": "scene_01",
+                "start_words": "Альфа один тут",
+                "end_words": "Бета два тут",
+                "время_сек": 10,
+                "кадров": 2,
+                "кадры": [
+                    {"uuid": "a", "number": 1},
+                    {"uuid": "b", "number": 2},
+                ],
+                "структура_сцены": "continuity",
+            }
+        ]
+    }
+    gpt = {
+        "characters": [],
+        "scenes": [
+            {
+                "id_scene": "scene_99",
+                "start_words": "ВЫДУМАННАЯ ЦИТАТА XXX",
+                "end_words": "ТОЖЕ ФЕЙК",
+                "время_сек": 10,
+            }
+        ],
+        "ops": [
+            {"frame_uuid": "a", "fields": {"id_scene": "scene_99", "x": 1}},
+            {"frame_uuid": "b", "fields": {"id_scene": "scene_99", "x": 2}},
+        ],
+        "report": "gpt",
+    }
+    out = force_scenes_from_chrono(gpt, assembly)
+    assert out["scenes"][0]["id_scene"] == "scene_01"
+    assert out["scenes"][0]["start_words"] == "Альфа один тут"
+    assert out["ops"][0]["fields"]["id_scene"] == "scene_01"
+    assert out["ops"][1]["fields"]["id_scene"] == "scene_01"

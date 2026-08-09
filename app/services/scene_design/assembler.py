@@ -17,6 +17,77 @@ def _norm_words(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().casefold())
 
 
+def force_scenes_from_chrono(
+    payload: dict[str, Any],
+    assembly_input: dict[str, Any],
+) -> dict[str, Any]:
+    """Границы сцен — только из camera_expand (scenes_chrono), не из GPT.
+
+    GPT часто ломает start_words/end_words при чанках. Машинная хронология
+    уже склеена по лестнице/SET и цитаты проверены на уникальность.
+    ops сохраняем; id_scene у каждого op переписываем по uuid кадра.
+    """
+    chrono = [
+        sc
+        for sc in (assembly_input.get("scenes_chrono") or [])
+        if isinstance(sc, dict) and str(sc.get("id_scene") or "").strip()
+    ]
+    if not chrono:
+        return payload
+
+    uuid_to_scene: dict[str, str] = {}
+    scenes_out: list[dict[str, Any]] = []
+    for sc in chrono:
+        sid = str(sc.get("id_scene") or "").strip()
+        scenes_out.append(
+            {
+                "id_scene": sid,
+                "start_words": sc.get("start_words") or "",
+                "end_words": sc.get("end_words") or "",
+                "время_сек": sc.get("время_сек") or 0,
+                "структура_сцены": sc.get("структура_сцены") or "continuity",
+                "тип_стыка": sc.get("тип_стыка") or "action",
+                "переход_в_сцену": sc.get("переход_в_сцену") or "cut",
+                "смысл_сцены": sc.get("смысл_сцены") or sc.get("мотив") or "",
+                "набор": sc.get("набор"),
+                "camera_ladder": sc.get("camera_ladder") or [],
+                "camera_shots_required": sc.get("camera_shots_required"),
+            }
+        )
+        for kid in sc.get("кадры") or []:
+            if not isinstance(kid, dict):
+                continue
+            uid = str(kid.get("uuid") or "").strip()
+            if uid:
+                uuid_to_scene[uid] = sid
+
+    out = dict(payload)
+    out["scenes"] = scenes_out
+    ops_out: list[dict[str, Any]] = []
+    for op in out.get("ops") or []:
+        if not isinstance(op, dict):
+            continue
+        op2 = dict(op)
+        fields = (
+            dict(op2.get("fields") or {})
+            if isinstance(op2.get("fields"), dict)
+            else {}
+        )
+        uid = str(op2.get("frame_uuid") or "").strip()
+        if uid in uuid_to_scene:
+            fields["id_scene"] = uuid_to_scene[uid]
+        op2["fields"] = fields
+        ops_out.append(op2)
+    out["ops"] = ops_out
+    report = str(out.get("report") or "")
+    stamp = (
+        f"camera_scenes:{len(scenes_out)}; "
+        f"multi_frame:{sum(1 for s in chrono if int(s.get('кадров') or 0) >= 2)}"
+    )
+    out["report"] = f"{report}; {stamp}" if report else stamp
+    return out
+
+
 def validate_payload(
     project: Project,
     frames: list[Frame],
