@@ -808,7 +808,11 @@ export function GptOperatorMenuPanel({
     </div>
 
     <Dialog open={agentViewOpen} onOpenChange={setAgentViewOpen}>
-      <DialogContent className="max-w-3xl">
+      {/* Выше premium-sheet node-studio (z-[100]), иначе «РАБОТА С GPT» перекрывает просмотр */}
+      <DialogContent
+        className="z-[120] max-w-3xl"
+        overlayClassName="z-[120]"
+      >
         <DialogHeader>
           <DialogTitle className="font-mono text-sm">
             {agentFileView.data?.fileName ||
