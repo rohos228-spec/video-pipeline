@@ -2,19 +2,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Eye, Loader2, RefreshCw, Upload } from "lucide-react";
+import { Eye, Loader2, RefreshCw, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import type { ExcelGptNodeConfig } from "@/lib/excel-gpt-config";
@@ -237,9 +231,11 @@ export function ExcelGptSettingsPanel({
           <Button
             type="button"
             size="sm"
-            variant="default"
+            variant={viewTarget?.kind === "prompt" ? "outline" : "default"}
             className="mt-3 w-fit gap-1.5"
-            onClick={() => setViewTarget({ kind: "prompt" })}
+            onClick={() =>
+              setViewTarget(viewTarget?.kind === "prompt" ? null : { kind: "prompt" })
+            }
           >
             <Eye className="h-3.5 w-3.5" />
             Просмотр промта проверки
@@ -332,7 +328,11 @@ export function ExcelGptSettingsPanel({
                     variant="outline"
                     className="gap-1.5"
                     title="Просмотр текста агента (файл или builtin)"
-                    onClick={() => setViewTarget({ kind: "agent" })}
+                    onClick={() =>
+                      setViewTarget(
+                        viewTarget?.kind === "agent" ? null : { kind: "agent" },
+                      )
+                    }
                   >
                     <Eye className="h-3.5 w-3.5" />
                     Просмотр
@@ -592,24 +592,25 @@ export function ExcelGptSettingsPanel({
         </ul>
       </section>
 
-      <Dialog
-        open={viewOpen}
-        onOpenChange={(o) => {
-          if (!o) setViewTarget(null);
-        }}
-      >
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
-            <DialogTitle className="font-mono text-sm">
+      {viewOpen ? (
+        <section className="overflow-hidden rounded-xl border border-white/10 bg-black/30">
+          <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-1.5">
+            <p className="min-w-0 truncate font-mono text-[11px] text-foreground">
               {viewTitle}
               {viewChars ? (
-                <span className="ml-2 text-xs font-normal text-muted-foreground">
-                  {viewChars} симв.
-                </span>
+                <span className="text-muted-foreground"> · {viewChars} симв.</span>
               ) : null}
-            </DialogTitle>
-          </DialogHeader>
-          <ScrollArea className="max-h-[70vh] rounded-lg border border-white/10 bg-black/30">
+            </p>
+            <button
+              type="button"
+              title="Скрыть"
+              className="shrink-0 rounded p-0.5 text-muted-foreground transition hover:bg-white/10 hover:text-foreground"
+              onClick={() => setViewTarget(null)}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <ScrollArea className="max-h-[55vh]">
             {viewLoading ? (
               <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -625,8 +626,8 @@ export function ExcelGptSettingsPanel({
               </pre>
             )}
           </ScrollArea>
-        </DialogContent>
-      </Dialog>
+        </section>
+      ) : null}
     </div>
   );
 }

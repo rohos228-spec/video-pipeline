@@ -2,17 +2,11 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Eye, Loader2, ShieldCheck } from "lucide-react";
+import { Eye, Loader2, ShieldCheck, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import type { OperatorResolve } from "@/lib/gpt-operator";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
 /**
@@ -20,6 +14,9 @@ import { ScrollArea } from "@/components/ui/scroll-area";
  * Свой мастер-промт такой ноде не нужен: критерии — промт источника
  * (upstream) или загруженный файл агента. Показываем фактические критерии,
  * иначе селектор мастер-промта рисует одинаковый дефолт у всех проверок.
+ *
+ * Просмотр — ИНЛАЙН, без модалки: Node Studio сам портал с оверлеем,
+ * вложенный Dialog ловит z-index/focus-конфликты (клики уходят в оверлей).
  */
 export function CheckNodePromptPanel({
   projectId,
@@ -35,10 +32,7 @@ export function CheckNodePromptPanel({
   const cps = resolve?.checkPromptSource === "agent" ? "agent" : "upstream";
   const sources = resolve?.sourcePrompts || [];
   const [viewTarget, setViewTarget] = useState<
-    | { kind: "prompt" }
-    | { kind: "agent" }
-    | { kind: "source"; key: string }
-    | null
+    { kind: "prompt" } | { kind: "source"; key: string } | null
   >(null);
   const viewSourceKey = viewTarget?.kind === "source" ? viewTarget.key : null;
   const sourcePromptView = useQuery({
@@ -53,28 +47,12 @@ export function CheckNodePromptPanel({
     enabled: viewTarget?.kind === "prompt",
     staleTime: 10_000,
   });
-  const agentFileView = useQuery({
-    queryKey: ["check-agent-file", projectId, nodeKey],
-    queryFn: () => api.getCheckAgentFile(projectId, nodeKey),
-    enabled: viewTarget?.kind === "agent",
-    staleTime: 10_000,
-  });
   const activeView =
-    viewTarget?.kind === "prompt"
-      ? checkPromptPreview
-      : viewTarget?.kind === "agent"
-        ? agentFileView
-        : sourcePromptView;
+    viewTarget?.kind === "prompt" ? checkPromptPreview : sourcePromptView;
   const viewTitle =
     viewTarget?.kind === "prompt"
       ? "Промт проверки — финальный, как уйдёт в GPT"
-      : viewTarget?.kind === "agent"
-        ? agentFileView.data?.fileName ||
-          resolve?.checkAgentFileName ||
-          (resolve?.checkAgentStep
-            ? `builtin: ${resolve.checkAgentStep}`
-            : "Агент проверки")
-        : `${viewSourceKey ?? ""}${sourcePromptView.data?.variant ? ` · ${sourcePromptView.data.variant}` : ""}`;
+      : `${viewSourceKey ?? ""}${sourcePromptView.data?.variant ? ` · ${sourcePromptView.data.variant}` : ""}`;
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-rose-400/25 bg-rose-500/[0.06] p-4 text-sm">
       <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
@@ -91,9 +69,11 @@ export function CheckNodePromptPanel({
       <Button
         type="button"
         size="sm"
-        variant="default"
+        variant={viewTarget?.kind === "prompt" ? "outline" : "default"}
         className="w-fit gap-1.5"
-        onClick={() => setViewTarget({ kind: "prompt" })}
+        onClick={() =>
+          setViewTarget(viewTarget?.kind === "prompt" ? null : { kind: "prompt" })
+        }
       >
         <Eye className="h-3.5 w-3.5" />
         Просмотр промта проверки
@@ -106,7 +86,7 @@ export function CheckNodePromptPanel({
       ) : cps === "agent" ? (
         <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-xs">
           <p className="font-medium text-muted-foreground">
-            Критерии — готовый агент проверки:
+            Критерии — готовый агент (файл: Настройки → Проверка → «Просмотр»):
           </p>
           <p className="mt-1 font-mono text-foreground">
             {resolve?.checkAgentFileName
@@ -117,16 +97,6 @@ export function CheckNodePromptPanel({
                 }`
               : `builtin: ${resolve?.checkAgentStep || "—"}`}
           </p>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="mt-2 w-fit gap-1.5"
-            onClick={() => setViewTarget({ kind: "agent" })}
-          >
-            <Eye className="h-3.5 w-3.5" />
-            Просмотр агента
-          </Button>
         </div>
       ) : (
         <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-xs">
@@ -157,7 +127,12 @@ export function CheckNodePromptPanel({
                     title="Просмотр промта источника"
                     className="shrink-0 rounded p-0.5 text-muted-foreground transition hover:bg-white/10 hover:text-foreground"
                     onClick={() =>
-                      setViewTarget({ kind: "source", key: String(s.nodeKey) })
+                      setViewTarget(
+                        viewTarget?.kind === "source" &&
+                          viewTarget.key === String(s.nodeKey)
+                          ? null
+                          : { kind: "source", key: String(s.nodeKey) },
+                      )
                     }
                   >
                     <Eye className="h-3.5 w-3.5" />
@@ -174,24 +149,28 @@ export function CheckNodePromptPanel({
         </div>
       )}
 
-      <Dialog
-        open={viewTarget !== null}
-        onOpenChange={(o) => {
-          if (!o) setViewTarget(null);
-        }}
-      >
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
-            <DialogTitle className="font-mono text-sm">
+      {viewTarget !== null ? (
+        <div className="overflow-hidden rounded-lg border border-white/10 bg-black/30">
+          <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-1.5">
+            <p className="min-w-0 truncate font-mono text-[11px] text-foreground">
               {viewTitle}
               {activeView.data?.chars ? (
-                <span className="ml-2 text-xs font-normal text-muted-foreground">
-                  {activeView.data.chars} симв.
+                <span className="text-muted-foreground">
+                  {" "}
+                  · {activeView.data.chars} симв.
                 </span>
               ) : null}
-            </DialogTitle>
-          </DialogHeader>
-          <ScrollArea className="max-h-[70vh] rounded-lg border border-white/10 bg-black/30">
+            </p>
+            <button
+              type="button"
+              title="Скрыть"
+              className="shrink-0 rounded p-0.5 text-muted-foreground transition hover:bg-white/10 hover:text-foreground"
+              onClick={() => setViewTarget(null)}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <ScrollArea className="max-h-[55vh]">
             {activeView.isLoading ? (
               <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -207,8 +186,8 @@ export function CheckNodePromptPanel({
               </pre>
             )}
           </ScrollArea>
-        </DialogContent>
-      </Dialog>
+        </div>
+      ) : null}
     </div>
   );
 }
