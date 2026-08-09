@@ -1,10 +1,16 @@
-"""Разворот camera shot_plan в явные шоты + сцены по битам SET.
+"""Разворот camera SET/лестницы: дробим VO-диапазон на визуальные кадры.
 
-Camera часто пишет один JSON-бит с лестницей ``VLS→MS→CU`` и ``набор: SET_01``.
-Это УЖЕ описание сцены из нескольких визуальных кадров. Сборщик обязан:
-1) развернуть лестницу/SET в список шотов;
-2) склеить VO-Frame пайплайна в сцену так, чтобы на бит было ≥2 Frame
-   (если в лестнице/SET ≥2 шота) — сцена ≠ 1 Frame.
+Один временной диапазон пайплайна (VO-Frame) — это сцена (иногда две), а не
+один визуальный кадр. Camera пишет ``VLS→MS→CU`` / ``набор: SET_01`` —
+это N шотов **внутри** этого диапазона.
+
+Правильно:
+1) вставить N−1 новых Frame-карточек внутри VO-диапазона;
+2) разрезать закадр и время пропорционально;
+3) собрать ≥N_vo сцен (обычно одна сцена на исходный VO-родитель).
+
+Неправильно: склеивать соседние VO-ячейки в одну сцену, чтобы «набрать»
+мульти-кадр — от этого сцен становится меньше, а кадров не прибавляется.
 """
 
 from __future__ import annotations
@@ -15,9 +21,12 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Frame
+from app.models import Frame, Project
 from app.project_root import find_project_root
+from app.services.db_v2 import insert_frame_after
 from app.services.scene_design.chronology import _norm, frame_offsets
 from app.services.scene_design.context_builder import frame_seconds
 
@@ -31,6 +40,8 @@ _SET_HEADER_LOOSE = re.compile(
     r"^##\s+(SET_\d+)\b[^\n]*?(\d+)\s*[–\-]\s*(\d+)\s*кадр",
     re.MULTILINE | re.IGNORECASE,
 )
+_ATTR_KEY = "camera_subdivide"
+_MIN_SEC_PER_SHOT = 2.0
 
 
 def parse_krupnost_ladder(raw: str) -> list[str]:
@@ -39,7 +50,6 @@ def parse_krupnost_ladder(raw: str) -> list[str]:
     if not text:
         return []
     parts = [p.strip() for p in _LADDER_SPLIT.split(text) if p.strip()]
-    # Убрать хвосты вроде "left" отдельно не надо — "MCU left" ок как шаг.
     return parts if parts else [text]
 
 
@@ -78,6 +88,15 @@ def required_shots_for_beat(
     return max(n_ladder, n_set, 1)
 
 
+def clamp_shots_to_duration(need: int, duration_sec: float) -> int:
+    """Не плодим шоты короче ~2с — сжатие SET по каталогу."""
+    need = max(1, int(need))
+    if duration_sec <= 0:
+        return need
+    by_time = max(1, int(duration_sec // _MIN_SEC_PER_SHOT))
+    return max(1, min(need, by_time))
+
+
 def expand_shot_plan_rows(
     shots: list[dict[str, Any]],
     set_counts: dict[str, tuple[int, int]] | None = None,
@@ -92,7 +111,6 @@ def expand_shot_plan_rows(
         if not ladder:
             ladder = ["MS"]
         need = required_shots_for_beat(sh, set_counts)
-        # Если SET требует больше шагов, чем стрелок — добиваем последней крупностью.
         while len(ladder) < need:
             ladder.append(ladder[-1])
         moves = parse_krupnost_ladder(str(sh.get("движение") or ""))
@@ -109,6 +127,28 @@ def expand_shot_plan_rows(
     return expanded
 
 
+def split_text_into_parts(text: str, n: int) -> list[str]:
+    """Разрезать закадр на n кусков по словам (хвост забирает остаток)."""
+    words = (text or "").strip().split()
+    n = max(1, int(n))
+    if n == 1:
+        return [" ".join(words)]
+    if not words:
+        return [""] * n
+    if len(words) < n:
+        # Мало слов — первые куски по слову, пустые хвосты недопустимы: дублируем.
+        parts = words + [words[-1]] * (n - len(words))
+        return parts[:n]
+    base, rem = divmod(len(words), n)
+    parts: list[str] = []
+    i = 0
+    for k in range(n):
+        take = base + (1 if k < rem else 0)
+        parts.append(" ".join(words[i : i + take]))
+        i += take
+    return parts
+
+
 def _frame_row(fr: Frame) -> dict[str, Any]:
     sec, _src = frame_seconds(fr)
     return {
@@ -117,6 +157,21 @@ def _frame_row(fr: Frame) -> dict[str, Any]:
         "закадр": (fr.voiceover_text or "").strip(),
         "время_сек": sec,
     }
+
+
+def _subdivide_attr(fr: Frame) -> dict[str, Any]:
+    attrs = fr.attrs if isinstance(fr.attrs, dict) else {}
+    raw = attrs.get(_ATTR_KEY)
+    return raw if isinstance(raw, dict) else {}
+
+
+def _is_shot_child(fr: Frame) -> bool:
+    meta = _subdivide_attr(fr)
+    return int(meta.get("shot_index") or 1) > 1
+
+
+def already_subdivided(frames: list[Frame]) -> bool:
+    return any(_subdivide_attr(f) for f in frames)
 
 
 def _beat_vo_spans(
@@ -176,7 +231,6 @@ def assign_frames_to_camera_beats(
                 break
         if not placed:
             orphan.append(fr)
-    # Сироты — к ближайшему непустому биту слева, иначе в первый.
     for fr in orphan:
         off = offsets.get(fr.uuid) if fr.uuid else None
         target = 0
@@ -186,51 +240,31 @@ def assign_frames_to_camera_beats(
                     target = i
         buckets[target].append(fr)
     for b in buckets:
-        b.sort(key=lambda f: f.number or 0)
+        b.sort(key=lambda f: (f.sort_key is None, f.sort_key or 0.0, f.number or 0))
     return buckets
 
 
-def merge_beats_for_multi_shot(
+def camera_beat_for_frame(
+    fr: Frame,
     shots: list[dict[str, Any]],
-    buckets: list[list[Frame]],
-    need: list[int],
-) -> tuple[list[dict[str, Any]], list[list[Frame]], list[int]]:
-    """Биты с лестницей/SET ≥2 шота не могут остаться с 1 Frame — поглощаем следующих."""
-    out_shots: list[dict[str, Any]] = []
-    out_buckets: list[list[Frame]] = []
-    out_need: list[int] = []
-    i = 0
-    n = len(shots)
-    while i < n:
-        frs = list(buckets[i])
-        req = int(need[i])
-        sh = shots[i]
-        j = i + 1
-        # Пока camera требует несколько шотов, а VO-Frame мало — забираем следующие биты.
-        target_frames = max(req, 2) if req >= 2 else 1
-        while req >= 2 and len(frs) < target_frames and j < n:
-            frs.extend(buckets[j])
-            # Лестницу ведущего бита не размываем — это его SET; req остаётся от лидера.
-            j += 1
-        # Если всё ещё 1 Frame при req≥2 — всё равно тащим ещё бит (если есть).
-        while req >= 2 and len(frs) < 2 and j < n:
-            frs.extend(buckets[j])
-            j += 1
-        frs.sort(key=lambda f: f.number or 0)
-        # Дедуп uuid
-        seen: set[str] = set()
-        uniq: list[Frame] = []
-        for f in frs:
-            if not f.uuid or f.uuid in seen:
-                continue
-            seen.add(f.uuid)
-            uniq.append(f)
-        if uniq:
-            out_shots.append(sh)
-            out_buckets.append(uniq)
-            out_need.append(req)
-        i = max(j, i + 1)
-    return out_shots, out_buckets, out_need
+    spans: list[tuple[int, int]],
+    offsets: dict[str, int | None],
+) -> dict[str, Any] | None:
+    if not fr.uuid or not shots:
+        return None
+    off = offsets.get(fr.uuid)
+    if off is None:
+        return shots[0] if shots else None
+    for i, (lo, hi) in enumerate(spans):
+        if lo < 0:
+            continue
+        if lo <= off < hi:
+            return shots[i]
+    best_i = 0
+    for i, (lo, hi) in enumerate(spans):
+        if lo >= 0 and lo <= off:
+            best_i = i
+    return shots[best_i]
 
 
 def _pick_unique_quote(
@@ -245,25 +279,18 @@ def _pick_unique_quote(
     words = (text or "").strip().split()
     if not words:
         return ""
-    # Растим окно, пока цитата не станет уникальной среди used.
     for n in range(min(6, len(words)), len(words) + 1):
         chunk = " ".join(words[-n:] if from_end else words[:n])
         cn = _norm(chunk)
         if cn and cn in vo_norm and cn not in used:
             used.add(cn)
             return chunk
-    # Весь текст кадра — последний шанс.
     whole = " ".join(words)
     wn = _norm(whole)
     if wn and wn in vo_norm and wn not in used:
         used.add(wn)
         return whole
-    # Fallback: уникальный хвост/голова из полного закадра вокруг вхождения.
-    idx = vo_norm.find(wn) if wn else -1
-    if idx < 0:
-        idx = 0
     vo_words = full_vo.split()
-    # Грубо: берём сдвиг по словам, пока не уникально.
     for extra in range(1, 12):
         if from_end:
             chunk = " ".join(vo_words[max(0, len(vo_words) - 8 - extra) :])
@@ -277,6 +304,225 @@ def _pick_unique_quote(
     return whole or "scene"
 
 
+async def renumber_frames_by_sort_key(
+    session: AsyncSession, project: Project
+) -> list[Frame]:
+    """number = 1..N по sort_key (insert даёт max+1 — ломает порядок)."""
+    frames = list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        ).scalars()
+    )
+    if not frames:
+        return frames
+    base = 10_000_000
+    for i, fr in enumerate(frames):
+        fr.number = base + i
+    await session.flush()
+    for i, fr in enumerate(frames, 1):
+        fr.number = i
+    await session.flush()
+    return frames
+
+
+async def subdivide_vo_frames_by_camera(
+    session: AsyncSession,
+    project: Project,
+    frames: list[Frame],
+    assembly_input: dict[str, Any],
+    full_vo: str,
+    *,
+    set_counts: dict[str, tuple[int, int]] | None = None,
+) -> tuple[list[Frame], dict[str, Any]]:
+    """Дробит каждый исходный VO-Frame на N shot-Frame по SET/лестнице.
+
+    Возвращает (актуальный список кадров, report). Идемпотентно: если уже
+    есть ``attrs.camera_subdivide`` — не трогает.
+    """
+    set_counts = set_counts if set_counts is not None else load_set_shot_counts()
+    shots = [
+        s
+        for s in (assembly_input.get("shot_plan_chrono") or [])
+        if isinstance(s, dict)
+    ]
+    report: dict[str, Any] = {
+        "skipped": False,
+        "parents": 0,
+        "inserted": 0,
+        "frames_before": len(frames),
+        "frames_after": len(frames),
+    }
+    if already_subdivided(frames):
+        report["skipped"] = True
+        logger.info(
+            "[#{}] camera_subdivide: already done (frames={})",
+            project.id,
+            len(frames),
+        )
+        return frames, report
+    if not shots:
+        logger.warning("[#{}] camera_subdivide: нет shot_plan — skip", project.id)
+        report["skipped"] = True
+        return frames, report
+
+    # Только «родители» — исходные VO-ячейки (ещё без дробления).
+    parents = [
+        f
+        for f in frames
+        if f.uuid and not _is_shot_child(f)
+    ]
+    parents.sort(key=lambda f: (f.sort_key is None, f.sort_key or 0.0, f.number or 0))
+    offsets = frame_offsets(parents, full_vo)
+    spans = _beat_vo_spans(shots, full_vo)
+
+    inserted = 0
+    # С конца — insert_frame_after не сдвигает уже обработанных слева.
+    for parent in reversed(parents):
+        beat = camera_beat_for_frame(parent, shots, spans, offsets) or {}
+        sec, _ = frame_seconds(parent)
+        need = clamp_shots_to_duration(
+            required_shots_for_beat(beat, set_counts), sec
+        )
+        if need <= 1:
+            # Пометим как 1-шот, чтобы идемпотентность сработала.
+            attrs = dict(parent.attrs or {})
+            attrs[_ATTR_KEY] = {
+                "role": "shot",
+                "parent_uuid": parent.uuid,
+                "shot_index": 1,
+                "shots_in_beat": 1,
+                "набор": beat.get("набор"),
+                "ladder": parse_krupnost_ladder(str(beat.get("крупность") or "")),
+            }
+            parent.attrs = attrs
+            continue
+
+        ladder = parse_krupnost_ladder(str(beat.get("крупность") or ""))
+        while len(ladder) < need:
+            ladder.append(ladder[-1] if ladder else "MS")
+        ladder = ladder[:need]
+        texts = split_text_into_parts(parent.voiceover_text or "", need)
+        total_sec = float(sec) if sec > 0 else float(need * _MIN_SEC_PER_SHOT)
+        part_sec = round(total_sec / need, 2)
+
+        # Вставляем need-1 карточек сразу после parent.
+        children: list[Frame] = []
+        after_id = parent.id
+        for _ in range(need - 1):
+            child = await insert_frame_after(
+                session, project, after_frame_id=after_id
+            )
+            children.append(child)
+            after_id = child.id
+            inserted += 1
+
+        group = [parent, *children]
+        parent_uuid = parent.uuid
+        nab = beat.get("набор")
+        for i, fr in enumerate(group):
+            fr.voiceover_text = texts[i]
+            fr.duration_seconds = part_sec
+            attrs = dict(fr.attrs or {})
+            attrs[_ATTR_KEY] = {
+                "role": "shot",
+                "parent_uuid": parent_uuid,
+                "shot_index": i + 1,
+                "shots_in_beat": need,
+                "набор": nab,
+                "ladder": ladder,
+                "крупность": ladder[i],
+            }
+            fr.attrs = attrs
+
+    await session.flush()
+    ordered = await renumber_frames_by_sort_key(session, project)
+    report["parents"] = len(parents)
+    report["inserted"] = inserted
+    report["frames_after"] = len(ordered)
+    logger.info(
+        "[#{}] camera_subdivide: parents={} inserted={} frames {}→{}",
+        project.id,
+        report["parents"],
+        inserted,
+        report["frames_before"],
+        report["frames_after"],
+    )
+    return ordered, report
+
+
+def _group_frames_into_scenes(
+    frames: list[Frame],
+    shots: list[dict[str, Any]],
+    full_vo: str,
+    set_counts: dict[str, tuple[int, int]],
+) -> list[tuple[list[Frame], dict[str, Any], int]]:
+    """Группы кадров → (frames, camera_beat, shots_required).
+
+    После subdivide группа = все shot с одним parent_uuid.
+    Иначе — один Frame = одна сцена (камера только подсказка).
+    """
+    by_parent: dict[str, list[Frame]] = {}
+    singles: list[Frame] = []
+    for fr in frames:
+        if not fr.uuid:
+            continue
+        meta = _subdivide_attr(fr)
+        parent_u = str(meta.get("parent_uuid") or "").strip()
+        if parent_u:
+            by_parent.setdefault(parent_u, []).append(fr)
+        else:
+            singles.append(fr)
+
+    offsets = frame_offsets(frames, full_vo)
+    spans = _beat_vo_spans(shots, full_vo) if shots else []
+
+    groups: list[tuple[list[Frame], dict[str, Any], int]] = []
+
+    def _sort_key(f: Frame) -> tuple:
+        return (f.sort_key is None, f.sort_key or 0.0, f.number or 0)
+
+    # Родители в порядке появления.
+    parent_order: list[str] = []
+    seen_p: set[str] = set()
+    for fr in sorted(frames, key=_sort_key):
+        meta = _subdivide_attr(fr)
+        pu = str(meta.get("parent_uuid") or "").strip()
+        if pu and pu not in seen_p:
+            seen_p.add(pu)
+            parent_order.append(pu)
+
+    for pu in parent_order:
+        frs = sorted(by_parent.get(pu) or [], key=_sort_key)
+        if not frs:
+            continue
+        lead = next(
+            (f for f in frs if int(_subdivide_attr(f).get("shot_index") or 1) == 1),
+            frs[0],
+        )
+        beat = camera_beat_for_frame(lead, shots, spans, offsets) or {}
+        meta = _subdivide_attr(lead)
+        req = int(meta.get("shots_in_beat") or len(frs) or 1)
+        if not req:
+            req = required_shots_for_beat(beat, set_counts)
+        groups.append((frs, beat, req))
+
+    for fr in sorted(singles, key=_sort_key):
+        beat = camera_beat_for_frame(fr, shots, spans, offsets) or {}
+        req = required_shots_for_beat(beat, set_counts) if beat else 1
+        groups.append(([fr], beat, req))
+
+    # Если групп нет — fallback: каждый кадр = сцена.
+    if not groups:
+        for fr in sorted(frames, key=_sort_key):
+            if fr.uuid:
+                groups.append(([fr], {}, 1))
+    return groups
+
+
 def rebuild_scenes_from_camera(
     frames: list[Frame],
     assembly_input: dict[str, Any],
@@ -284,65 +530,78 @@ def rebuild_scenes_from_camera(
     *,
     set_counts: dict[str, tuple[int, int]] | None = None,
 ) -> dict[str, Any]:
-    """Пересобрать scenes_chrono + shot_plan_chrono от camera-битов (не от action 1:1)."""
+    """Сцены = VO-диапазоны (родители); внутри — кадры после subdivide.
+
+    Не склеивает соседние VO. Число сцен ≈ число исходных диапазонов (≥).
+    """
     set_counts = set_counts if set_counts is not None else load_set_shot_counts()
     shots = [
         s
         for s in (assembly_input.get("shot_plan_chrono") or [])
         if isinstance(s, dict)
     ]
-    if not shots:
+    if not shots and not already_subdivided(frames):
         logger.warning("camera_expand: нет shot_plan — scenes_chrono не трогаем")
         return assembly_input
 
-    need = [required_shots_for_beat(s, set_counts) for s in shots]
-    buckets = assign_frames_to_camera_beats(frames, shots, full_vo)
-    shots, buckets, need = merge_beats_for_multi_shot(shots, buckets, need)
+    groups = _group_frames_into_scenes(frames, shots, full_vo, set_counts)
+    expanded = expand_shot_plan_rows(shots, set_counts) if shots else []
 
-    expanded = expand_shot_plan_rows(shots, set_counts)
     scenes: list[dict[str, Any]] = []
-    scene_i = 0
     used_quotes: set[str] = set()
-    for beat_i, (sh, frs, req) in enumerate(zip(shots, buckets, need)):
+    for frs, beat, _req in groups:
         if not frs:
             continue
-        scene_i += 1
-        kids = [_frame_row(f) for f in frs]
-        sw = _pick_unique_quote(
-            frs[0].voiceover_text or str(sh.get("цитата") or ""),
-            full_vo,
-            used_quotes,
-            from_end=False,
+        meta0 = _subdivide_attr(frs[0])
+        ladder = meta0.get("ladder") or parse_krupnost_ladder(
+            str(beat.get("крупность") or "")
         )
-        ew = _pick_unique_quote(
-            frs[-1].voiceover_text or sw,
-            full_vo,
-            used_quotes,
-            from_end=True,
-        )
-        if not ew:
-            ew = sw
-        ladder = parse_krupnost_ladder(str(sh.get("крупность") or ""))
-        scenes.append(
-            {
-                "id_scene": f"scene_{scene_i:02d}",
-                "start_words": sw,
-                "end_words": ew,
-                "время_сек": round(sum(float(k["время_сек"]) for k in kids), 1),
-                "кадры": kids,
-                "кадров": len(kids),
-                "набор": sh.get("набор"),
-                "camera_beat": beat_i + 1,
-                "camera_shots_required": req,
-                "camera_ladder": ladder,
-                "мотив": sh.get("мотив") or "",
-                "структура_сцены": "continuity",
-                "тип_стыка": sh.get("тип_стыка") or "action",
-                "переход_в_сцену": sh.get("переход") or "cut",
-                "цепь_действия": [],
-                "смысл_сцены": str(sh.get("мотив") or "")[:200],
-            }
-        )
+        kids_all = [_frame_row(f) for f in frs]
+        total_sec = sum(float(k["время_сек"]) for k in kids_all)
+        # Длинный диапазон + ≥4 шота → две сцены внутри одного VO.
+        chunks: list[list[Frame]] = [frs]
+        if len(frs) >= 4 and total_sec >= 12.0:
+            mid = len(frs) // 2
+            chunks = [frs[:mid], frs[mid:]]
+
+        for chunk in chunks:
+            if not chunk:
+                continue
+            c_kids = [_frame_row(f) for f in chunk]
+            c_vo = " ".join(
+                (f.voiceover_text or "").strip()
+                for f in chunk
+                if (f.voiceover_text or "").strip()
+            )
+            c_sw = _pick_unique_quote(
+                c_vo or str(beat.get("цитата") or ""),
+                full_vo,
+                used_quotes,
+                from_end=False,
+            )
+            c_ew = _pick_unique_quote(
+                c_vo or c_sw, full_vo, used_quotes, from_end=True
+            )
+            sid = len(scenes) + 1
+            scenes.append(
+                {
+                    "id_scene": f"scene_{sid:02d}",
+                    "start_words": c_sw,
+                    "end_words": c_ew or c_sw,
+                    "время_сек": round(sum(float(k["время_сек"]) for k in c_kids), 1),
+                    "кадры": c_kids,
+                    "кадров": len(c_kids),
+                    "набор": beat.get("набор") or meta0.get("набор"),
+                    "camera_shots_required": max(1, len(chunk)),
+                    "camera_ladder": ladder,
+                    "мотив": beat.get("мотив") or "",
+                    "структура_сцены": "continuity",
+                    "тип_стыка": beat.get("тип_стыка") or "action",
+                    "переход_в_сцену": beat.get("переход") or "cut",
+                    "цепь_действия": [],
+                    "смысл_сцены": str(beat.get("мотив") or "")[:200],
+                }
+            )
 
     out = copy.deepcopy(assembly_input)
     out["scenes_chrono"] = scenes
@@ -350,9 +609,9 @@ def rebuild_scenes_from_camera(
     out["shot_plan_beats"] = shots
     out["camera_expand_report"] = {
         "beats_in": len(assembly_input.get("shot_plan_chrono") or []),
-        "beats_out": len(shots),
         "scenes": len(scenes),
         "expanded_shots": len(expanded),
+        "frames": len(frames),
         "single_frame_scenes": sum(1 for s in scenes if s["кадров"] < 2),
         "multi_frame_scenes": sum(1 for s in scenes if s["кадров"] >= 2),
         "need_ge2_but_got1": sum(
@@ -362,10 +621,9 @@ def rebuild_scenes_from_camera(
         ),
     }
     logger.info(
-        "camera_expand: in_beats={} out_scenes={} expanded_shots={} multi={} single={} stuck1={}",
-        out["camera_expand_report"]["beats_in"],
+        "camera_expand: scenes={} frames={} multi={} single={} stuck1={}",
         len(scenes),
-        len(expanded),
+        len(frames),
         out["camera_expand_report"]["multi_frame_scenes"],
         out["camera_expand_report"]["single_frame_scenes"],
         out["camera_expand_report"]["need_ge2_but_got1"],

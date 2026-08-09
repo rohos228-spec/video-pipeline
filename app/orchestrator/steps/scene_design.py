@@ -33,7 +33,7 @@ async def _load_frames(session: AsyncSession, project: Project) -> list[Frame]:
             await session.execute(
                 select(Frame)
                 .where(Frame.project_id == project.id)
-                .order_by(Frame.number)
+                .order_by(Frame.sort_key, Frame.number)
             )
         )
         .scalars()
@@ -203,13 +203,19 @@ async def run_assemble(
     try:
         full_vo = context_builder.full_voiceover(project, frames)
 
-        # Ячейки → хронология → сцены от camera (лестница/SET), не 1 Frame = 1 сцена.
+        # Ячейки → camera SET дробит VO-диапазон на кадры → сцены (≥VO).
         all_cells = await sd_cells.load_cells(session, project)
         assembly_input = sd_chronology.build_assembly_input(
             project, frames, all_cells, full_vo
         )
         from app.services.scene_design import camera_expand as sd_camera_expand
 
+        frames, subdiv_report = await sd_camera_expand.subdivide_vo_frames_by_camera(
+            session, project, frames, assembly_input, full_vo
+        )
+        await session.flush()
+        logger.info("[#{}] camera_subdivide report: {}", project.id, subdiv_report)
+        # shot_plan в assembly_input ещё от исходных VO — rebuild сцен после дроби.
         assembly_input = sd_camera_expand.rebuild_scenes_from_camera(
             frames, assembly_input, full_vo
         )

@@ -1,4 +1,4 @@
-"""Разворот camera лестниц/SET → сцены с несколькими Frame."""
+"""Разворот camera SET: дробление VO-диапазона на кадры, не склейка."""
 
 from __future__ import annotations
 
@@ -6,10 +6,12 @@ from types import SimpleNamespace
 
 from app.services.scene_design.assembler import force_scenes_from_chrono
 from app.services.scene_design.camera_expand import (
+    clamp_shots_to_duration,
     expand_shot_plan_rows,
     parse_krupnost_ladder,
     rebuild_scenes_from_camera,
     required_shots_for_beat,
+    split_text_into_parts,
 )
 
 
@@ -36,6 +38,25 @@ def test_required_shots_uses_ladder_and_set():
     )
 
 
+def test_clamp_shots_to_duration():
+    assert clamp_shots_to_duration(4, 10) == 4
+    assert clamp_shots_to_duration(4, 5) == 2
+    assert clamp_shots_to_duration(3, 3) == 1
+
+
+def test_split_text_into_parts():
+    parts = split_text_into_parts("один два три четыре пять шесть", 3)
+    assert len(parts) == 3
+    assert " ".join(parts).split() == [
+        "один",
+        "два",
+        "три",
+        "четыре",
+        "пять",
+        "шесть",
+    ]
+
+
 def test_expand_shot_plan_rows():
     shots = [
         {
@@ -46,57 +67,101 @@ def test_expand_shot_plan_rows():
         }
     ]
     exp = expand_shot_plan_rows(shots, {"SET_01": (3, 4)})
-    assert len(exp) == 3  # SET min 3
+    assert len(exp) == 3
     assert exp[0]["крупность"] == "VLS"
     assert exp[0]["shot_index"] == 1
     assert exp[0]["shots_in_beat"] == 3
 
 
-def _fr(num: int, uuid: str, text: str, sec: float = 5.0):
+def _fr(num: int, uuid: str, text: str, sec: float = 5.0, **attrs):
     return SimpleNamespace(
-        number=num, uuid=uuid, voiceover_text=text, duration_seconds=sec
+        number=num,
+        uuid=uuid,
+        voiceover_text=text,
+        duration_seconds=sec,
+        sort_key=float(num),
+        attrs=attrs.get("attrs", {}),
     )
 
 
-def test_rebuild_merges_frames_when_ladder_needs_multi():
-    vo = "Альфа один тут. Бета два тут. Гамма три тут. Дельта четыре тут."
+def test_rebuild_one_scene_per_vo_parent_after_subdivide():
+    """После дроби: 2 VO-родителя → 2 сцены, внутри по несколько кадров."""
+    vo = "Альфа один тут слово. Бета два тут слово. Гамма три тут слово. Дельта четыре тут слово."
+    # Два родителя, каждый уже раздроблен на 2 шота.
     frames = [
-        _fr(1, "a", "Альфа один тут."),
-        _fr(2, "b", "Бета два тут."),
-        _fr(3, "c", "Гамма три тут."),
-        _fr(4, "d", "Дельта четыре тут."),
+        _fr(
+            1,
+            "a1",
+            "Альфа один тут слово.",
+            attrs={
+                "camera_subdivide": {
+                    "parent_uuid": "a1",
+                    "shot_index": 1,
+                    "shots_in_beat": 2,
+                    "ladder": ["VLS", "CU"],
+                    "набор": "SET_01",
+                }
+            },
+        ),
+        _fr(
+            2,
+            "a2",
+            "Бета два тут слово.",
+            attrs={
+                "camera_subdivide": {
+                    "parent_uuid": "a1",
+                    "shot_index": 2,
+                    "shots_in_beat": 2,
+                    "ladder": ["VLS", "CU"],
+                    "набор": "SET_01",
+                }
+            },
+        ),
+        _fr(
+            3,
+            "b1",
+            "Гамма три тут слово.",
+            attrs={
+                "camera_subdivide": {
+                    "parent_uuid": "b1",
+                    "shot_index": 1,
+                    "shots_in_beat": 2,
+                    "ladder": ["LS", "CU"],
+                    "набор": "SET_40",
+                }
+            },
+        ),
+        _fr(
+            4,
+            "b2",
+            "Дельта четыре тут слово.",
+            attrs={
+                "camera_subdivide": {
+                    "parent_uuid": "b1",
+                    "shot_index": 2,
+                    "shots_in_beat": 2,
+                    "ladder": ["LS", "CU"],
+                    "набор": "SET_40",
+                }
+            },
+        ),
     ]
     assembly = {
         "characters": [],
         "locations": [],
         "style_arc": [],
-        "scenes_chrono": [
-            {
-                "id_scene": "scene_01",
-                "start_words": "Альфа один",
-                "end_words": "Альфа один тут",
-                "кадры": [{"uuid": "a", "number": 1, "время_сек": 5}],
-                "кадров": 1,
-            },
-            {
-                "id_scene": "scene_02",
-                "start_words": "Бета два",
-                "end_words": "Бета два тут",
-                "кадры": [{"uuid": "b", "number": 2, "время_сек": 5}],
-                "кадров": 1,
-            },
-        ],
+        "scenes_chrono": [],
         "shot_plan_chrono": [
             {
                 "цитата": "Альфа один",
-                "крупность": "VLS→MS→CU",
+                "крупность": "VLS→CU",
                 "набор": "SET_01",
                 "мотив": "open",
             },
             {
                 "цитата": "Гамма три",
-                "крупность": "Insert→ECU",
-                "набор": "SET_10",
+                "крупность": "LS→CU",
+                "набор": "SET_40",
                 "мотив": "detail",
             },
         ],
@@ -105,15 +170,39 @@ def test_rebuild_merges_frames_when_ladder_needs_multi():
         frames,
         assembly,
         vo,
-        set_counts={"SET_01": (3, 4), "SET_10": (2, 2)},
+        set_counts={"SET_01": (3, 4), "SET_40": (2, 2)},
     )
     scenes = out["scenes_chrono"]
-    assert scenes, "scenes rebuilt"
-    # Первая сцена должна забрать ≥2 Frame под лестницу 3 шота.
-    assert scenes[0]["кадров"] >= 2
-    assert scenes[0]["camera_shots_required"] >= 3
-    assert len(out["shot_plan_chrono"]) >= 3
-    assert out["camera_expand_report"]["multi_frame_scenes"] >= 1
+    assert len(scenes) == 2, scenes
+    assert scenes[0]["кадров"] == 2
+    assert scenes[1]["кадров"] == 2
+    assert out["camera_expand_report"]["scenes"] == 2
+
+
+def test_rebuild_does_not_merge_neighbor_vo_into_one_scene():
+    """Без subdivide attrs — каждый Frame остаётся своей сценой (не merge)."""
+    vo = "Альфа один тут. Бета два тут. Гамма три тут."
+    frames = [
+        _fr(1, "a", "Альфа один тут."),
+        _fr(2, "b", "Бета два тут."),
+        _fr(3, "c", "Гамма три тут."),
+    ]
+    assembly = {
+        "scenes_chrono": [],
+        "shot_plan_chrono": [
+            {"цитата": "Альфа один", "крупность": "VLS→MS→CU", "набор": "SET_01"},
+            {"цитата": "Гамма три", "крупность": "Insert→ECU", "набор": "SET_10"},
+        ],
+    }
+    out = rebuild_scenes_from_camera(
+        frames,
+        assembly,
+        vo,
+        set_counts={"SET_01": (3, 4), "SET_10": (2, 2)},
+    )
+    # Без дроби БД — сцен не меньше числа VO-кадров (не склеиваем в 1–2).
+    assert len(out["scenes_chrono"]) >= 2
+    assert out["camera_expand_report"]["scenes"] >= 2
 
 
 def test_force_scenes_from_chrono_overrides_gpt_quotes():

@@ -171,8 +171,7 @@ def validate_payload(
     if missing:
         problems.append(f"ops: кадры без привязки: {len(missing)} шт")
 
-    # Сцена с 1 Frame при multi-shot camera — брак (если сцен > 1, чтобы пилоты
-    # из одного кадра не ломать).
+    # После camera_subdivide сцена с multi-shot SET не должна остаться с 1 кадром.
     frames_per_scene: dict[str, int] = {}
     for op in ops:
         if not isinstance(op, dict):
@@ -187,13 +186,22 @@ def validate_payload(
             continue
         frames_per_scene[sid] = frames_per_scene.get(sid, 0) + 1
     if len(scenes) > 1:
+        # Сцен должно быть много (≈ VO-диапазонов), не 20 из склейки.
+        if len(scenes) < max(3, int(0.5 * len(frame_uuids))):
+            # После дроби frames >> scenes; сравниваем с числом сцен из payload.
+            # Если сцен мало относительно ops — скорее всего опять склеили VO.
+            if len(scenes) * 3 < len(ops):
+                problems.append(
+                    f"слишком мало сцен ({len(scenes)} на {len(ops)} кадров): "
+                    f"один VO-диапазон = сцена (или две), кадры SET — внутри неё; "
+                    f"не склеивай соседние VO в одну сцену"
+                )
         singles = [sid for sid, n in frames_per_scene.items() if n < 2]
-        # Допускаем ≤15% однокадровых (SET на 1 кадр / хвост); иначе — ошибка.
-        if singles and len(singles) > max(1, int(0.15 * len(frames_per_scene))):
+        if singles and len(singles) > max(1, int(0.35 * len(frames_per_scene))):
             problems.append(
                 f"слишком много сцен с 1 кадром ({len(singles)}/{len(frames_per_scene)}): "
-                f"camera задала лестницу/SET из нескольких шотов — склей VO-Frame "
-                f"в сцену (примеры: {', '.join(singles[:8])})"
+                f"camera SET/лестница требует дробить VO-диапазон на кадры "
+                f"(примеры: {', '.join(singles[:8])})"
             )
 
     # Сверка хронометража: declared сцены vs сумма времён привязанных кадров.
