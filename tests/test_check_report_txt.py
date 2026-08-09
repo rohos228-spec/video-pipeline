@@ -87,6 +87,41 @@ def test_parse_check_report_txt_verdict() -> None:
     assert parse_check_analysis(SAMPLE_TXT).verdict == "fail"
 
 
+def test_render_preserves_warn_findings_not_error() -> None:
+    """warn→error в check_report ломало vision_check_loop (regen при pass)."""
+    from app.services.check_analysis import (
+        extract_critical_hero_regen_ids,
+        resolve_vision_check_gate,
+    )
+
+    raw = """
+# ОТЧЁТ ПРОВЕРКИ
+verdict: pass
+mode: report_only
+
+## summary
+Все ок, у c07 лёгкое предупреждение без регена.
+
+## findings
+- [ok] c01.png: ок
+- [warn] c07.png: куртка чуть иначе, без регенерации
+- [ok] c08.png: ок
+
+## actions
+Критических замечаний нет.
+""".strip()
+    parsed = parse_check_report_txt(raw)
+    assert parsed is not None
+    assert parsed.verdict == "pass"
+    assert any(c.id.startswith("warn_") for c in parsed.checks)
+    rendered = render_check_report_txt(parsed, mode="report_only")
+    assert "- [warn] c07.png:" in rendered
+    assert "- [error] c07.png:" not in rendered
+    assert resolve_vision_check_gate(rendered) == "pass"
+    assert extract_critical_hero_regen_ids(rendered) == []
+    assert parse_check_analysis(rendered).verdict == "pass"
+
+
 def test_json_fallback_renders_txt(tmp_path: Path) -> None:
     raw = json.dumps(
         {

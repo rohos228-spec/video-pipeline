@@ -170,7 +170,9 @@ _HEADER_MODE_RE = re.compile(r"(?im)^\s*mode\s*:\s*(\S+)\s*$")
 _HEADER_SOURCES_RE = re.compile(r"(?im)^\s*source_prompts\s*:\s*(.+?)\s*$")
 _FORWARD_FILE_RE = re.compile(r"(?im)^\s*file\s*:\s*(\S+)\s*$")
 _FORWARD_PATH_RE = re.compile(r"(?im)^\s*path\s*:\s*(.+?)\s*$")
-_FINDING_RE = re.compile(r"(?m)^\s*[-*]\s*\[(error|warn|ok|pass|fail)\]\s*(.+?)\s*$")
+_FINDING_RE = re.compile(
+    r"(?m)^\s*[-*]\s*\[(critical|error|warn|warning|minor|ok|pass|fail)\]\s*(.+?)\s*$"
+)
 _REGEN_LINE_RE = re.compile(r"(?im)^\s*regen\s*:\s*(.+?)\s*$")
 _HERO_EXCEL_ID_RE = re.compile(r"\bc(\d{1,3})\b", re.IGNORECASE)
 _HERO_FILE_ID_RE = re.compile(
@@ -713,7 +715,20 @@ def extract_vision_issues(text: str) -> list[dict[str, Any]]:
 
 
 def has_critical_vision_issues(text: str) -> bool:
-    return any(i.get("severity") == "critical" for i in extract_vision_issues(text))
+    """Есть ли critical для regen.
+
+    Явный ``verdict: pass`` без тега ``[critical]``: ``[error]`` не считаем
+    critical (часто это warn, схлопнутый render_check_report_txt, или мягкий
+    finding при pass) — иначе цикл зря гоняет hero/img.
+    """
+    raw = text or ""
+    if not any(i.get("severity") == "critical" for i in extract_vision_issues(raw)):
+        return False
+    if re.search(r"(?im)^\s*verdict\s*:\s*pass\b", raw) and not re.search(
+        r"(?i)\[critical\]", raw
+    ):
+        return False
+    return True
 
 
 _OK_LINE_RE = re.compile(
@@ -1208,6 +1223,22 @@ def parse_check_report_txt(text: str) -> CheckAnalysis | None:
     )
 
 
+def _finding_tag_for_check(item: CheckItem) -> str:
+    """Тег findings из CheckItem: не схлопывать warn→error (иначе vision regen)."""
+    if item.ok:
+        return "ok"
+    prefix = (item.id or "").strip().lower().split("_", 1)[0]
+    if prefix in ("warn", "warning"):
+        return "warn"
+    if prefix == "minor":
+        return "minor"
+    if prefix == "critical":
+        return "critical"
+    if prefix in ("error", "fail"):
+        return "error"
+    return "error"
+
+
 def render_check_report_txt(
     analysis: CheckAnalysis,
     *,
@@ -1219,7 +1250,7 @@ def render_check_report_txt(
     sources = ", ".join(str(x).strip() for x in (source_prompts or []) if str(x).strip()) or "—"
     findings_lines: list[str] = []
     for c in analysis.checks:
-        tag = "ok" if c.ok else "error"
+        tag = _finding_tag_for_check(c)
         note = (c.note or c.id or "").strip() or "—"
         findings_lines.append(f"- [{tag}] {note}")
     if not findings_lines:
