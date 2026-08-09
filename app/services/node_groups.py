@@ -1,15 +1,22 @@
-"""Группы нод (пресеты канваса): веер scene_design и будущие связки.
+"""Группы нод (пресеты канваса): веер scene_design и пользовательские связки.
 
 Определения живут в репозитории — наследуются всеми ПК через git pull.
-Группа = набор нод (тип, data-маркеры, промпт-вариант, относительные
-позиции) + внутренние связи + точки входа/выхода для вшивания в цепочку
-существующего канваса. Результаты работ (чекпоинты, ячейки, реестры) в
-группу не входят — только структура, промты и флаги meta.
+Встроенные группы — в коде (NODE_GROUPS ниже), пользовательские — JSON-файлы
+в ``node_groups/*.json`` в корне репо (создание/переименование/удаление из
+палитры Studio). Группа = набор нод (тип, data-маркеры, промпт-вариант,
+относительные позиции) + внутренние связи + точки входа/выхода для вшивания
+в цепочку существующего канваса. Результаты работ (чекпоинты, ячейки,
+реестры) в группу не входят — только структура, промты и флаги meta.
 """
 
 from __future__ import annotations
 
+import json
+import re
+import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -17,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project
 from app.orchestrator.default_graph import SD_FANOUT
+from app.project_root import find_project_root
 from app.services.canvas_graph import (
     build_canvas_graph_payload,
     canvas_graph_from_meta,
@@ -66,6 +74,10 @@ class NodeGroupDef:
     replaces_types: tuple[str, ...] = ()
     # kind рёбер от выхода группы к старым целям якоря («pass» — через вердикт).
     exit_edge_kind: str = "after"
+    # Встроенная (из кода) или пользовательская (node_groups/*.json).
+    builtin: bool = True
+    # ISO-время последнего обновления (у пользовательских — из JSON).
+    updated_at: str | None = None
 
 
 # Конфиг ноды проверки — как в эталонном проекте «nicshe» (#50):
@@ -172,9 +184,287 @@ NODE_GROUPS: dict[str, NodeGroupDef] = {
     g.group_id: g for g in (_scene_design_group(),)
 }
 
+# Категории, которые понимает палитра (см. NODE_CATEGORY_LABELS на фронте).
+GROUP_CATEGORIES = (
+    "planning",
+    "objects",
+    "enrich",
+    "media",
+    "audio",
+    "assembly",
+    "publish",
+    "hitl",
+)
+
+_EDGE_KINDS = ("after", "pass", "fail")
+
+
+# ── Пользовательские группы: node_groups/*.json в корне репо ─────────────
+# Файлы коммитятся → наследуются всеми ПК через git pull, как и код.
+
+
+def custom_groups_dir() -> Path:
+    return find_project_root() / "node_groups"
+
+
+def _group_file(group_id: str) -> Path:
+    return custom_groups_dir() / f"{group_id}.json"
+
+
+def _spec_from_dict(raw: dict[str, Any], *, builtin: bool) -> GroupNodeSpec:
+    return GroupNodeSpec(
+        local_key=str(raw["local_key"]),
+        node_type=str(raw.get("node_type") or "excel_gpt"),
+        label=str(raw.get("label") or raw["local_key"]),
+        description=str(raw.get("description") or ""),
+        preferred_id=str(raw.get("preferred_id") or f"n_{raw['local_key']}"),
+        dx=float(raw.get("dx") or 0.0),
+        dy=float(raw.get("dy") or 0.0),
+        marker=(str(raw["marker"]) if raw.get("marker") else None),
+        prompt_variant=(
+            str(raw["prompt_variant"]) if raw.get("prompt_variant") else None
+        ),
+        slot_overflow=bool(raw.get("slot_overflow")),
+        operator_config=(
+            dict(raw["operator_config"])
+            if isinstance(raw.get("operator_config"), dict)
+            else None
+        ),
+    )
+
+
+def _group_from_dict(raw: dict[str, Any], *, builtin: bool) -> NodeGroupDef:
+    nodes = tuple(_spec_from_dict(n, builtin=builtin) for n in raw["nodes"])
+    edges = tuple(
+        (str(s), str(t), str(k)) for s, t, k in raw.get("internal_edges") or []
+    )
+    return NodeGroupDef(
+        group_id=str(raw["group_id"]),
+        title=str(raw.get("title") or raw["group_id"]),
+        description=str(raw.get("description") or ""),
+        category=str(raw.get("category") or "planning"),
+        default_after_type=str(raw.get("default_after_type") or ""),
+        nodes=nodes,
+        internal_edges=edges,
+        entry_keys=tuple(str(k) for k in raw.get("entry_keys") or ()),
+        exit_key=str(raw.get("exit_key") or nodes[-1].local_key),
+        project_meta=dict(raw.get("project_meta") or {}),
+        replaces_types=tuple(str(t) for t in raw.get("replaces_types") or ()),
+        exit_edge_kind=str(raw.get("exit_edge_kind") or "after"),
+        builtin=builtin,
+        updated_at=(str(raw["updated_at"]) if raw.get("updated_at") else None),
+    )
+
+
+def _group_to_dict(g: NodeGroupDef) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "group_id": g.group_id,
+        "title": g.title,
+        "description": g.description,
+        "category": g.category,
+        "default_after_type": g.default_after_type,
+        "nodes": [
+            {
+                "local_key": n.local_key,
+                "node_type": n.node_type,
+                "label": n.label,
+                "description": n.description,
+                "preferred_id": n.preferred_id,
+                "dx": n.dx,
+                "dy": n.dy,
+                **({"marker": n.marker} if n.marker else {}),
+                **({"prompt_variant": n.prompt_variant} if n.prompt_variant else {}),
+                **({"slot_overflow": True} if n.slot_overflow else {}),
+                **(
+                    {"operator_config": n.operator_config}
+                    if n.operator_config
+                    else {}
+                ),
+            }
+            for n in g.nodes
+        ],
+        "internal_edges": [list(e) for e in g.internal_edges],
+        "entry_keys": list(g.entry_keys),
+        "exit_key": g.exit_key,
+        "project_meta": g.project_meta,
+        **({"replaces_types": list(g.replaces_types)} if g.replaces_types else {}),
+        "exit_edge_kind": g.exit_edge_kind,
+        "updated_at": g.updated_at,
+    }
+
+
+def validate_group_payload(raw: dict[str, Any]) -> list[str]:
+    """Ошибки spec'а группы (пустой список = ок)."""
+    errors: list[str] = []
+    gid = str(raw.get("group_id") or "").strip()
+    if not gid:
+        errors.append("group_id пуст")
+    elif not re.fullmatch(r"[a-z0-9][a-z0-9_\-]{1,63}", gid):
+        errors.append(
+            "group_id: только латиница/цифры/дефис/подчёркивание (2–64 символа)"
+        )
+    if not str(raw.get("title") or "").strip():
+        errors.append("title пуст")
+    cat = str(raw.get("category") or "planning")
+    if cat not in GROUP_CATEGORIES:
+        errors.append(f"category {cat!r} не из {sorted(GROUP_CATEGORIES)}")
+    nodes = raw.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        errors.append("nodes: нужна хотя бы одна нода")
+        return errors
+    keys: list[str] = []
+    for i, n in enumerate(nodes):
+        if not isinstance(n, dict):
+            errors.append(f"nodes[{i}]: не объект")
+            continue
+        key = str(n.get("local_key") or "").strip()
+        if not key:
+            errors.append(f"nodes[{i}]: local_key пуст")
+        elif key in keys:
+            errors.append(f"nodes[{i}]: дубль local_key {key!r}")
+        keys.append(key)
+        try:
+            float(n.get("dx") or 0.0)
+            float(n.get("dy") or 0.0)
+        except (TypeError, ValueError):
+            errors.append(f"nodes[{i}]: dx/dy не числа")
+    key_set = set(keys)
+    for e in raw.get("internal_edges") or []:
+        if not (isinstance(e, (list, tuple)) and len(e) == 3):
+            errors.append(f"internal_edges: плохое ребро {e!r}")
+            continue
+        s, t, k = str(e[0]), str(e[1]), str(e[2])
+        if s not in key_set or t not in key_set:
+            errors.append(f"internal_edges: {s!r}→{t!r} вне nodes")
+        if k not in _EDGE_KINDS:
+            errors.append(f"internal_edges: kind {k!r} не из {_EDGE_KINDS}")
+    for k in raw.get("entry_keys") or []:
+        if str(k) not in key_set:
+            errors.append(f"entry_keys: {k!r} вне nodes")
+    exit_key = str(raw.get("exit_key") or "")
+    if exit_key and exit_key not in key_set:
+        errors.append(f"exit_key {exit_key!r} вне nodes")
+    return errors
+
+
+def load_custom_groups() -> dict[str, NodeGroupDef]:
+    """Пользовательские группы из node_groups/*.json (без кэша — файлы мелкие)."""
+    out: dict[str, NodeGroupDef] = {}
+    folder = custom_groups_dir()
+    if not folder.is_dir():
+        return out
+    for path in sorted(folder.glob("*.json")):
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            errs = validate_group_payload(raw)
+            if errs:
+                logger.warning("node_groups: {} пропущен: {}", path.name, errs)
+                continue
+            g = _group_from_dict(raw, builtin=False)
+            if g.group_id in NODE_GROUPS:
+                logger.warning(
+                    "node_groups: {} — id {!r} занят встроенной группой, пропуск",
+                    path.name,
+                    g.group_id,
+                )
+                continue
+            out[g.group_id] = g
+        except Exception as e:  # noqa: BLE001 — битый файл не роняет каталог
+            logger.warning("node_groups: не смог прочитать {}: {}", path.name, e)
+    return out
+
+
+def all_groups() -> dict[str, NodeGroupDef]:
+    """Встроенные + пользовательские (пользовательские перечитываются с диска)."""
+    return {**NODE_GROUPS, **load_custom_groups()}
+
+
+def save_custom_group(raw: dict[str, Any]) -> NodeGroupDef:
+    """Создать/перезаписать пользовательскую группу (JSON в репо)."""
+    errs = validate_group_payload(raw)
+    if errs:
+        raise ValueError("спек группы невалиден: " + "; ".join(errs))
+    gid = str(raw["group_id"]).strip()
+    if gid in NODE_GROUPS:
+        raise ValueError(f"group_id {gid!r} занят встроенной группой")
+    payload = dict(raw)
+    payload["group_id"] = gid
+    payload["updated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+    group = _group_from_dict(payload, builtin=False)
+    folder = custom_groups_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    _group_file(gid).write_text(
+        json.dumps(_group_to_dict(group), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    logger.info("node_groups: сохранена пользовательская группа {}", gid)
+    return group
+
+
+def update_custom_group(group_id: str, patch: dict[str, Any]) -> NodeGroupDef:
+    """Обновить название/описание/категорию пользовательской группы."""
+    gid = str(group_id or "").strip()
+    if gid in NODE_GROUPS:
+        raise ValueError(f"группа {gid!r} встроенная — правится только в коде")
+    path = _group_file(gid)
+    if not path.is_file():
+        raise ValueError(f"неизвестная группа {gid!r}")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    for key in ("title", "description", "category"):
+        if key in patch and patch[key] is not None:
+            raw[key] = str(patch[key])
+    return save_custom_group(raw)
+
+
+def delete_custom_group(group_id: str) -> None:
+    gid = str(group_id or "").strip()
+    if gid in NODE_GROUPS:
+        raise ValueError(f"группа {gid!r} встроенная — удалить нельзя")
+    path = _group_file(gid)
+    if not path.is_file():
+        raise ValueError(f"неизвестная группа {gid!r}")
+    path.unlink()
+    logger.info("node_groups: удалена пользовательская группа {}", gid)
+
+
+_RU_TRANSLIT = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "sch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+
+
+def slugify_group_id(title: str) -> str:
+    """«Моя связка GPT» → moya_svyazka_gpt; пусто → group_<hex8>."""
+    out: list[str] = []
+    for ch in title.strip().lower():
+        if ch in _RU_TRANSLIT:
+            out.append(_RU_TRANSLIT[ch])
+        elif ch.isascii() and (ch.isalnum() or ch in "_-"):
+            out.append(ch)
+        elif ch in " /":
+            out.append("_")
+    slug = re.sub(r"_+", "_", "".join(out)).strip("_-")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_\-]{1,63}", slug or ""):
+        slug = f"group_{uuid.uuid4().hex[:8]}"
+    return slug[:64]
+
+
+def unique_group_id(base: str) -> str:
+    gid = base
+    k = 2
+    existing = all_groups()
+    while gid in existing or _group_file(gid).exists():
+        gid = f"{base}_{k}"
+        k += 1
+    return gid
+
 
 def list_node_groups() -> list[dict[str, Any]]:
-    """Каталог групп для палитры (API)."""
+    """Каталог групп для палитры (API): встроенные + пользовательские."""
     return [
         {
             "id": g.group_id,
@@ -187,13 +477,163 @@ def list_node_groups() -> list[dict[str, Any]]:
                 for n in g.nodes
             ],
             "default_after_type": g.default_after_type,
+            "builtin": g.builtin,
+            "updated_at": g.updated_at,
         }
-        for g in NODE_GROUPS.values()
+        for g in all_groups().values()
     ]
 
 
 def get_node_group(group_id: str) -> NodeGroupDef | None:
-    return NODE_GROUPS.get(str(group_id or "").strip())
+    return all_groups().get(str(group_id or "").strip())
+
+
+async def group_from_canvas(
+    session: AsyncSession,
+    project: Project,
+    node_ids: list[str],
+    *,
+    title: str,
+    description: str = "",
+    category: str = "planning",
+    group_id: str | None = None,
+) -> NodeGroupDef:
+    """Собрать пользовательскую группу из выделенных нод канваса проекта.
+
+    В группу уходят: типы нод, подписи/описания, data-маркеры (sd_agent,
+    slotOverflow), промпт-варианты (meta.prompt_slot_variants), конфиги
+    «Работы с GPT» (meta.excel_gpt_nodes), относительные позиции и связи
+    внутри выделения (с kind). Результаты работ не копируются.
+    """
+    ids = [str(i).strip() for i in node_ids if str(i).strip()]
+    if not ids:
+        raise ValueError("не выбрано ни одной ноды")
+
+    meta = dict(project.meta or {})
+    graph = canvas_graph_from_meta(meta)
+    if graph is None:
+        from sqlalchemy import select
+
+        from app.models import Workflow
+
+        wf = (
+            await session.execute(
+                select(Workflow).where(Workflow.is_default.is_(True))
+            )
+        ).scalars().first()
+        if wf is None:
+            raise ValueError("group_from_canvas: нет ни canvas_graph, ни workflow")
+        nodes = [dict(n) for n in (wf.nodes or [])]
+        edges = [dict(e) for e in (wf.edges or [])]
+    else:
+        nodes = [dict(n) for n in graph["nodes"]]
+        edges = [dict(e) for e in graph["edges"]]
+
+    by_id = {str(n.get("id")): n for n in nodes}
+    missing = [i for i in ids if i not in by_id]
+    if missing:
+        raise ValueError(f"ноды не найдены на канвасе: {missing}")
+    selected = [by_id[i] for i in ids]
+    id_set = set(ids)
+
+    min_x = min(float((n.get("position") or {}).get("x", 0.0)) for n in selected)
+    avg_y = sum(float((n.get("position") or {}).get("y", 0.0)) for n in selected) / len(
+        selected
+    )
+
+    variants = meta.get("prompt_slot_variants")
+    variants = variants if isinstance(variants, dict) else {}
+    egn = meta.get("excel_gpt_nodes")
+    egn = egn if isinstance(egn, dict) else {}
+
+    specs: list[GroupNodeSpec] = []
+    for n in selected:
+        nid = str(n["id"])
+        data = n.get("data") or {}
+        pos = n.get("position") or {}
+        variant = variants.get(nid)
+        prompt_variant = None
+        if isinstance(variant, dict) and isinstance(variant.get("main"), str):
+            prompt_variant = variant["main"]
+        cfg = egn.get(nid)
+        specs.append(
+            GroupNodeSpec(
+                local_key=nid,
+                node_type=str(n.get("type") or "excel_gpt"),
+                label=str(data.get("label") or nid),
+                description=str(data.get("description") or ""),
+                preferred_id=nid,
+                dx=round(float(pos.get("x", 0.0)) - min_x, 2),
+                dy=round(float(pos.get("y", 0.0)) - avg_y, 2),
+                marker=sd_agent_marker(n),
+                prompt_variant=prompt_variant,
+                slot_overflow=data.get("slotOverflow") is True,
+                operator_config=dict(cfg) if isinstance(cfg, dict) else None,
+            )
+        )
+
+    internal: list[tuple[str, str, str]] = []
+    for e in edges:
+        src, tgt = str(e.get("source")), str(e.get("target"))
+        if src in id_set and tgt in id_set:
+            kind = str((e.get("data") or {}).get("kind") or "after")
+            internal.append((src, tgt, kind if kind in _EDGE_KINDS else "after"))
+
+    # Входы: выделенные ноды с внешними входящими; выход — с внешними исходящими.
+    incoming_ext: dict[str, str] = {}  # node_id → тип внешнего источника
+    outgoing_ext: set[str] = set()
+    for e in edges:
+        src, tgt = str(e.get("source")), str(e.get("target"))
+        if tgt in id_set and src not in id_set and tgt not in incoming_ext:
+            incoming_ext[tgt] = str(by_id.get(src, {}).get("type") or "")
+        if src in id_set and tgt not in id_set:
+            outgoing_ext.add(src)
+
+    by_x = sorted(selected, key=lambda n: float((n.get("position") or {}).get("x", 0)))
+    entry_keys = tuple(
+        str(n["id"]) for n in by_x if str(n["id"]) in incoming_ext
+    ) or (str(by_x[0]["id"]),)
+    exit_key = (
+        str(max(outgoing_ext, key=lambda i: float((by_id[i].get("position") or {}).get("x", 0))))
+        if outgoing_ext
+        else str(by_x[-1]["id"])
+    )
+    default_after_type = next(
+        (t for t in (incoming_ext.get(k) for k in entry_keys) if t), ""
+    )
+
+    gid = unique_group_id(slugify_group_id(group_id or title))
+    raw = {
+        "group_id": gid,
+        "title": title.strip(),
+        "description": description.strip(),
+        "category": category if category in GROUP_CATEGORIES else "planning",
+        "default_after_type": default_after_type,
+        "nodes": [
+            {
+                "local_key": s.local_key,
+                "node_type": s.node_type,
+                "label": s.label,
+                "description": s.description,
+                "preferred_id": s.preferred_id,
+                "dx": s.dx,
+                "dy": s.dy,
+                **({"marker": s.marker} if s.marker else {}),
+                **({"prompt_variant": s.prompt_variant} if s.prompt_variant else {}),
+                **({"slot_overflow": True} if s.slot_overflow else {}),
+                **(
+                    {"operator_config": s.operator_config} if s.operator_config else {}
+                ),
+            }
+            for s in specs
+        ],
+        "internal_edges": [list(e) for e in internal],
+        "entry_keys": list(entry_keys),
+        "exit_key": exit_key,
+        "project_meta": {},
+        "exit_edge_kind": "after",
+    }
+    return save_custom_group(raw)
 
 
 def _side_sink_ids(nodes: list[dict]) -> set[str]:
@@ -259,7 +699,7 @@ async def insert_node_group(
     group = get_node_group(group_id)
     if group is None:
         raise ValueError(
-            f"неизвестная группа {group_id!r}; есть: {sorted(NODE_GROUPS)}"
+            f"неизвестная группа {group_id!r}; есть: {sorted(all_groups())}"
         )
 
     from sqlalchemy import select
@@ -344,6 +784,24 @@ async def insert_node_group(
         raise ValueError(
             f"группа «{group.title}» уже на канвасе (маркеры: {sorted(overlap)})"
         )
+    # Повторная вставка группы без маркеров разрешена — но у каждой копии
+    # свой instance-id (group_id#2, #3…), чтобы рамки копий не сливались.
+    instance_id = group.group_id
+    copies = {
+        str((n.get("data") or {}).get("groupId")).split("#")[0]
+        for n in nodes
+        if isinstance(n.get("data"), dict) and (n.get("data") or {}).get("groupId")
+    }
+    if group.group_id in copies:
+        k = 2
+        while f"{group.group_id}#{k}" in {
+            str((n.get("data") or {}).get("groupId"))
+            for n in nodes
+            if isinstance(n.get("data"), dict)
+            and (n.get("data") or {}).get("groupId")
+        }:
+            k += 1
+        instance_id = f"{group.group_id}#{k}"
 
     # Якорь вставки.
     anchor_id: str | None = None
@@ -388,7 +846,13 @@ async def insert_node_group(
 
     new_nodes: list[dict] = []
     for spec in group.nodes:
-        data: dict[str, Any] = {"label": spec.label, "description": spec.description}
+        data: dict[str, Any] = {
+            "label": spec.label,
+            "description": spec.description,
+            # Принадлежность к импортированной группе — обводка на канвасе.
+            "groupId": instance_id,
+            "groupTitle": group.title,
+        }
         if spec.marker:
             data["sd_agent"] = spec.marker
         if spec.slot_overflow:

@@ -16,11 +16,25 @@ from app.models import (
     WorkflowRun,
     WorkflowRunStatus,
 )
+from app.services import node_groups as ng
 from app.services.node_groups import (
+    delete_custom_group,
     get_node_group,
+    group_from_canvas,
     insert_node_group,
     list_node_groups,
+    save_custom_group,
+    slugify_group_id,
+    update_custom_group,
 )
+
+
+@pytest.fixture(autouse=True)
+def _custom_groups_tmp(monkeypatch, tmp_path):
+    """Пользовательские группы — в tmp, не в репо (изоляция тестов)."""
+    folder = tmp_path / "node_groups"
+    monkeypatch.setattr(ng, "custom_groups_dir", lambda: folder)
+    return folder
 
 
 @pytest.fixture
@@ -308,3 +322,204 @@ async def test_insert_replaces_legacy_scene_design_node(mem_db) -> None:
     assert ("n_split", "n_excel_gpt_sd_camera") in pairs
     assert ("n_excel_gpt_sd_check_asm", "n_hero") in pairs
     assert "n_scene_design" not in project.meta["prompt_slot_variants"]
+
+
+async def test_insert_stamps_group_id(mem_db) -> None:
+    """Вставленные ноды несут штамп группы — обводка на канвасе."""
+    async with mem_db() as session:
+        project = await _mk_project(session)
+        await insert_node_group(session, project, "scene_design_fanout")
+    cg = project.meta["canvas_graph"]
+    stamped = {
+        n["id"]: (n["data"].get("groupId"), n["data"].get("groupTitle"))
+        for n in cg["nodes"]
+        if n["id"].startswith("n_excel_gpt_sd_")
+    }
+    assert stamped
+    assert all(
+        gid == "scene_design_fanout" and title == "Сцены: веер агентов"
+        for gid, title in stamped.values()
+    )
+    # Старые ноды канваса без штампа.
+    by_id = {n["id"]: n for n in cg["nodes"]}
+    assert "groupId" not in by_id["n_split"]["data"]
+
+
+def test_custom_group_crud() -> None:
+    raw = {
+        "group_id": "my_chain",
+        "title": "Моя связка",
+        "description": "две ноды подряд",
+        "category": "enrich",
+        "default_after_type": "split",
+        "nodes": [
+            {"local_key": "a", "node_type": "excel_gpt", "label": "A", "dx": 0, "dy": 0},
+            {
+                "local_key": "b",
+                "node_type": "excel_gpt",
+                "label": "B",
+                "dx": 290,
+                "dy": 0,
+                "prompt_variant": "sd_style",
+            },
+        ],
+        "internal_edges": [["a", "b", "after"]],
+        "entry_keys": ["a"],
+        "exit_key": "b",
+    }
+    g = save_custom_group(raw)
+    assert g.builtin is False
+    assert g.updated_at
+
+    listed = {x["id"]: x for x in list_node_groups()}
+    assert listed["my_chain"]["builtin"] is False
+    assert listed["my_chain"]["node_count"] == 2
+    assert listed["scene_design_fanout"]["builtin"] is True
+
+    g2 = update_custom_group(
+        "my_chain", {"title": "Переименованная", "category": "media"}
+    )
+    assert g2.title == "Переименованная"
+    assert g2.category == "media"
+    assert g2.nodes[1].prompt_variant == "sd_style"  # spec не потёрся
+
+    delete_custom_group("my_chain")
+    assert "my_chain" not in {x["id"] for x in list_node_groups()}
+    with pytest.raises(ValueError, match="неизвестная группа"):
+        delete_custom_group("my_chain")
+
+
+def test_custom_group_validation_and_builtin_guard() -> None:
+    with pytest.raises(ValueError, match="group_id"):
+        save_custom_group({"group_id": "!!", "title": "x", "nodes": [{}]})
+    with pytest.raises(ValueError, match="title"):
+        save_custom_group({"group_id": "ok_id", "nodes": [{"local_key": "a"}]})
+    with pytest.raises(ValueError, match="вне nodes"):
+        save_custom_group(
+            {
+                "group_id": "ok_id",
+                "title": "x",
+                "nodes": [{"local_key": "a"}],
+                "internal_edges": [["a", "b", "after"]],
+            }
+        )
+    # id встроенной группы занят.
+    with pytest.raises(ValueError, match="встроенной"):
+        save_custom_group(
+            {
+                "group_id": "scene_design_fanout",
+                "title": "x",
+                "nodes": [{"local_key": "a"}],
+            }
+        )
+    with pytest.raises(ValueError, match="встроенная"):
+        update_custom_group("scene_design_fanout", {"title": "y"})
+    with pytest.raises(ValueError, match="встроенная"):
+        delete_custom_group("scene_design_fanout")
+
+
+def test_slugify_group_id() -> None:
+    assert slugify_group_id("Моя связка GPT") == "moya_svyazka_gpt"
+    assert slugify_group_id("  ") .startswith("group_")
+    assert slugify_group_id("Chain 2/проверка") == "chain_2_proverka"
+
+
+async def test_group_from_canvas_and_reinsert(mem_db) -> None:
+    """Выделение → группа (промты/конфиги/связи) → вставка в другой проект."""
+    async with mem_db() as session:
+        project = await _mk_project(session)
+        meta = dict(project.meta)
+        cg = dict(meta["canvas_graph"])
+        nodes = [dict(n) for n in cg["nodes"]]
+        edges = [dict(e) for e in cg["edges"]]
+        # split → g1 → g2 → hero: g1/g2 — будущая группа.
+        nodes.append(
+            {
+                "id": "n_g1",
+                "type": "excel_gpt",
+                "position": {"x": 1500.0, "y": 200.0},
+                "data": {"label": "GPT A", "description": "первая"},
+            }
+        )
+        nodes.append(
+            {
+                "id": "n_g2",
+                "type": "excel_gpt",
+                "position": {"x": 1790.0, "y": 220.0},
+                "data": {"label": "GPT B", "slotOverflow": True},
+            }
+        )
+        edges = [e for e in edges if e["id"] != "e_3"]
+        edges.append({"id": "e_3a", "source": "n_split", "target": "n_g1"})
+        edges.append(
+            {
+                "id": "e_3b",
+                "source": "n_g1",
+                "target": "n_g2",
+                "data": {"kind": "pass"},
+            }
+        )
+        edges.append({"id": "e_3c", "source": "n_g2", "target": "n_hero"})
+        cg["nodes"] = nodes
+        cg["edges"] = edges
+        meta["canvas_graph"] = cg
+        meta["prompt_slot_variants"] = {"n_g1": {"main": "sd_world"}}
+        meta["excel_gpt_nodes"] = {"n_g2": {"checkMode": True, "outputMode": "text"}}
+        project.meta = meta
+        await session.commit()
+
+        group = await group_from_canvas(
+            session,
+            project,
+            ["n_g1", "n_g2"],
+            title="Моя связка",
+            description="описание",
+            category="enrich",
+        )
+
+    assert group.group_id == "moya_svyazka"
+    assert group.builtin is False
+    assert group.default_after_type == "split"  # внешний вход от split
+    assert group.entry_keys == ("n_g1",)
+    assert group.exit_key == "n_g2"
+    assert group.internal_edges == (("n_g1", "n_g2", "pass"),)
+    by_key = {s.local_key: s for s in group.nodes}
+    assert by_key["n_g1"].prompt_variant == "sd_world"
+    assert by_key["n_g1"].dx == 0.0
+    assert by_key["n_g2"].dx == 290.0
+    assert by_key["n_g2"].slot_overflow is True
+    assert by_key["n_g2"].operator_config == {"checkMode": True, "outputMode": "text"}
+
+    # Вставка в другой проект: промты/конфиги/штампы на месте.
+    async with mem_db() as session:
+        other = await _mk_project(session)
+        res = await insert_node_group(session, other, "moya_svyazka")
+
+    assert res["after"] == "n_split"
+    cg = other.meta["canvas_graph"]
+    by_id = {n["id"]: n for n in cg["nodes"]}
+    assert by_id["n_g1"]["data"]["groupId"] == "moya_svyazka"
+    assert by_id["n_g1"]["data"]["groupTitle"] == "Моя связка"
+    assert by_id["n_g2"]["data"]["slotOverflow"] is True
+    assert other.meta["prompt_slot_variants"]["n_g1"] == {"main": "sd_world"}
+    assert other.meta["excel_gpt_nodes"]["n_g2"]["checkMode"] is True
+    kinds = {
+        (e["source"], e["target"]): (e.get("data") or {}).get("kind")
+        for e in cg["edges"]
+    }
+    assert kinds[("n_g1", "n_g2")] == "pass"
+    assert ("n_split", "n_g1") in kinds
+    assert ("n_g2", "n_hero") in kinds
+
+    # Повторная вставка — разрешена, копия с instance-id «#2».
+    async with mem_db() as session:
+        project2 = await session.get(type(other), other.id)
+        res2 = await insert_node_group(session, project2, "moya_svyazka")
+    cg2 = project2.meta["canvas_graph"]
+    copies = [
+        n["data"]["groupId"]
+        for n in cg2["nodes"]
+        if (n.get("data") or {}).get("groupId")
+    ]
+    assert sorted(set(copies)) == ["moya_svyazka", "moya_svyazka#2"]
+    assert res2["nodes"] != res["nodes"]  # id с суффиксами
