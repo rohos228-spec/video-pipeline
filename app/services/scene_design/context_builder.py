@@ -28,15 +28,21 @@ def frame_seconds(fr: Frame) -> tuple[float, str]:
 
 
 def full_voiceover(project: Project, frames: list[Frame]) -> str:
-    """Цельный закадр: script_text проекта или склейка кадров по порядку."""
-    vo = (project.script_text or "").strip()
-    if vo:
-        return vo
-    return "\n".join(
+    """Цельный закадр для scene_design.
+
+    После split SoT — ``voiceover_text`` кадров (склейка по порядку, пустые
+    SET-дети пропускаются). ``script_text`` — только fallback, если в кадрах
+    ещё нет закадра. Иначе короткий/устаревший script даёт ложные
+    «start_words не найдены» при валидации сборки (#59).
+    """
+    from_frames = "\n".join(
         (fr.voiceover_text or "").strip()
         for fr in frames
         if (fr.voiceover_text or "").strip()
     ).strip()
+    if from_frames:
+        return from_frames
+    return (project.script_text or "").strip()
 
 
 def project_style(project: Project) -> str:

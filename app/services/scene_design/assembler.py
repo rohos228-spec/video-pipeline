@@ -399,7 +399,8 @@ def validate_payload(
     """
     _ = project
     problems: list[str] = []
-    vo_norm = _norm_words(full_vo)
+    # fold: Алекса́ндр / О́льга vs без ударений в VO.
+    vo_norm = _fold_ru(full_vo)
     scenes = payload.get("scenes") or []
     ops = payload.get("ops") or []
 
@@ -428,12 +429,15 @@ def validate_payload(
         else:
             declared_time[sid] = declared
         for key in ("start_words", "end_words"):
-            quote = _norm_words(str(sc.get(key) or ""))
+            raw_quote = str(sc.get(key) or "")
+            quote = _fold_ru(raw_quote)
             if not quote:
                 problems.append(f"{sid}: пустые {key}")
                 continue
             if quote not in vo_norm:
-                problems.append(f"{sid}: {key} не найдены в закадре: {quote[:60]!r}")
+                problems.append(
+                    f"{sid}: {key} не найдены в закадре: {_norm_words(raw_quote)[:60]!r}"
+                )
             owner = seen_quotes.get(quote)
             if owner is not None and owner != sid:
                 problems.append(f"{sid}: {key} дублируют цитату сцены {owner}")

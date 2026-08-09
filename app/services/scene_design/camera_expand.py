@@ -286,19 +286,25 @@ def _pick_unique_quote(
     *,
     from_end: bool,
 ) -> str:
-    """Цитата из текста кадра: есть в закадре, не совпадает с уже взятыми."""
-    vo_norm = _norm(full_vo)
+    """Цитата из текста кадра: есть в закадре, не совпадает с уже взятыми.
+
+    Сравнение через fold (без combining accents). Не возвращаем цитату,
+    которой нет в ``full_vo`` — иначе validate_payload вечно fail + soft retry.
+    """
+    from app.services.scene_design.assembler import _fold_ru
+
+    vo_norm = _fold_ru(full_vo)
     words = (text or "").strip().split()
     if not words:
         return ""
     for n in range(min(6, len(words)), len(words) + 1):
         chunk = " ".join(words[-n:] if from_end else words[:n])
-        cn = _norm(chunk)
+        cn = _fold_ru(chunk)
         if cn and cn in vo_norm and cn not in used:
             used.add(cn)
             return chunk
     whole = " ".join(words)
-    wn = _norm(whole)
+    wn = _fold_ru(whole)
     if wn and wn in vo_norm and wn not in used:
         used.add(wn)
         return whole
@@ -308,12 +314,24 @@ def _pick_unique_quote(
             chunk = " ".join(vo_words[max(0, len(vo_words) - 8 - extra) :])
         else:
             chunk = " ".join(vo_words[: 8 + extra])
-        cn = _norm(chunk)
+        cn = _fold_ru(chunk)
+        if cn and cn in vo_norm and cn not in used:
+            used.add(cn)
+            return chunk
+    # Последний шанс: уникальный префикс/суффикс из full_vo, не «битая» цитата.
+    for n in range(6, min(20, len(vo_words)) + 1):
+        chunk = " ".join(vo_words[-n:] if from_end else vo_words[:n])
+        cn = _fold_ru(chunk)
         if cn and cn in vo_norm and cn not in used:
             used.add(cn)
             return chunk
     used.add(wn or "scene")
-    return whole or "scene"
+    # Только если whole реально в VO; иначе короткий якорь из full_vo.
+    if wn and wn in vo_norm:
+        return whole
+    fallback = " ".join(vo_words[:6] if not from_end else vo_words[-6:])
+    used.add(_fold_ru(fallback) or "scene")
+    return fallback or whole or "scene"
 
 
 async def renumber_frames_by_sort_key(
