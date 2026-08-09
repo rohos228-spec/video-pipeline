@@ -136,27 +136,49 @@ async def validate_after_videos(
 async def validate_after_images(
     session: AsyncSession, project: Project
 ) -> ValidationResult:
-    expected = await _expected_frame_count(session, project)
-    numbers = await _frame_numbers(session, project)
+    """PNG обязателен только у кадров с реальным ``image_prompt``.
+
+    После camera/SET-expand в БД может быть больше кадров, чем колонок R45
+    в xlsx (65 vs 180). Кадры без промта Outsee не генерит — их не считаем
+    дырками, иначе soft-retry крутится вечно.
+    """
+    from app.generation_options import is_skippable_empty_prompt
+
+    frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project.id)
+            .order_by(Frame.number)
+        )
+    ).scalars().all()
+    numbers = [f.number for f in frames]
     msgs: list[str] = []
-    if expected <= 0:
+    if not numbers:
         return ValidationResult(ok=False, messages=["нет кадров в Excel/БД"])
     dups = _find_duplicate_numbers(numbers)
     if dups:
         msgs.append(f"дубликаты номеров кадров: {dups}")
+
+    need_png = [
+        f.number
+        for f in frames
+        if not is_skippable_empty_prompt(f.image_prompt or "")
+    ]
+    skipped_no_prompt = sorted(set(numbers) - set(need_png))
     scenes = project.data_dir / "scenes"
-    have: set[int] = set()
-    for n in numbers:
-        if disk_has_valid_frame_image(scenes, n):
-            have.add(n)
-    target = numbers if numbers else list(range(1, expected + 1))
-    missing = sorted(set(target) - have)
-    ok = not missing and not dups and len(numbers) == expected
+    have = {n for n in need_png if disk_has_valid_frame_image(scenes, n)}
+    missing = sorted(set(need_png) - have)
+    ok = not missing and not dups
     if missing:
         msgs.append(f"нет картинок для кадров: {missing}")
+    if skipped_no_prompt:
+        msgs.append(
+            f"без промта картинки (пропуск, не блокирует): "
+            f"{len(skipped_no_prompt)} кадров"
+        )
     return ValidationResult(
         ok=ok,
-        expected_frames=expected,
+        expected_frames=len(need_png),
         missing_frame_numbers=missing,
         duplicate_frame_numbers=dups,
         messages=msgs,
