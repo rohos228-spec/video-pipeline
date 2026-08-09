@@ -43,6 +43,7 @@ import {
   type ExcelGptNodeConfig,
 } from "@/lib/excel-gpt-config";
 import { ExcelGptSettingsPanel } from "@/components/studio/excel-gpt-settings-panel";
+import { CheckNodePromptPanel } from "@/components/studio/check-node-prompt-panel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -155,6 +156,16 @@ export function NodeStudio({
   useEffect(() => {
     setExcelConfig(excelGptConfig);
   }, [excelGptConfig]);
+
+  // Тот же queryKey, что у ExcelGptSettingsPanel — общий кэш, лишних запросов нет.
+  const operatorResolve = useQuery({
+    queryKey: ["gpt-operator-resolve", projectId, nodeKey],
+    queryFn: () => api.resolveGptOperator(projectId!, nodeKey!),
+    enabled: open && projectId != null && !!nodeKey && isExcelGptNode(nodeType),
+    staleTime: 5000,
+  });
+  const isCheckNode =
+    isExcelGptNode(nodeType) && operatorResolve.data?.checkMode === true;
 
   const patchExcelNodeData = (patch: Partial<ExcelGptNodeConfig>) => {
     if (!nodeKey) return;
@@ -827,7 +838,7 @@ export function NodeStudio({
                       <span className="font-medium text-foreground">{activeSlot.title}</span>
                     </p>
                   )}
-                  {showFilesPanel && supportsPromptConstructor && (
+                  {showFilesPanel && supportsPromptConstructor && !isCheckNode && (
                     <div className="flex gap-1 rounded-lg border border-white/10 bg-white/[0.02] p-1">
                       <button
                         type="button"
@@ -866,6 +877,11 @@ export function NodeStudio({
                       key={`frame-prompts-${projectId}`}
                       projectId={projectId}
                       field="image_prompt"
+                    />
+                  ) : showFilesPanel && isCheckNode ? (
+                    <CheckNodePromptPanel
+                      resolve={operatorResolve.data}
+                      loading={operatorResolve.isLoading}
                     />
                   ) : showFilesPanel &&
                     promptMode === "constructor" &&
