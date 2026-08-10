@@ -153,7 +153,7 @@ def test_catalog_has_scene_fanout() -> None:
             assert spec.prompt_variant is None
             cfg = spec.operator_config
             assert cfg and cfg["checkMode"] is True
-            assert cfg["checkFix"] is False  # только отчёт, без правок
+            assert cfg["checkFix"] is True
             assert cfg["checkPromptSource"] == "upstream"
             assert spec.slot_overflow is True
     # Топология рёбер: агент → проверка →(Ок)→ сборщик, проверка →(Не ок)→ агент.
@@ -193,7 +193,7 @@ async def test_insert_fanout_after_split(mem_db) -> None:
         assert chk["position"]["y"] == n["position"]["y"]
         cfg = project.meta["excel_gpt_nodes"][f"n_excel_gpt_sd_check_{agent}"]
         assert cfg["checkMode"] is True
-        assert cfg["checkFix"] is False  # только отчёт, без правок
+        assert cfg["checkFix"] is True
         assert cfg["checkPromptSource"] == "upstream"
         # у проверки нет своего промта — правила с промта агента
         assert f"n_excel_gpt_sd_check_{agent}" not in project.meta["prompt_slot_variants"]

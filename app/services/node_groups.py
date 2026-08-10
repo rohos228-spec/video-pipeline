@@ -80,16 +80,21 @@ class NodeGroupDef:
     updated_at: str | None = None
 
 
-# Конфиг ноды проверки веера scene_design: только отчёт (report_only),
-# без правок ответа/xlsx. Правила — промт ноды-источника (upstream).
-# Отчёт уходит в хранилище uploads (emitKinds reply_txt); fail → повтор агента.
+# Конфиг ноды проверки — как в эталонном проекте «nicshe» (#50):
+# тумблер «Проверка» + «Чинить», правила — промт ноды-источника (upstream).
 _CHECK_OPERATOR_CONFIG: dict[str, Any] = {
     "outputMode": "text",
     "emitKinds": ["inputs", "reply_txt"],
     "checkMode": True,
-    "checkFix": False,
+    "checkFix": True,
     "checkPromptSource": "upstream",
     "transport": "api",
+}
+
+# chrono_dyn (#60 и новые вставки этой группы): только отчёт, без правок.
+_CHECK_OPERATOR_CONFIG_REPORT_ONLY: dict[str, Any] = {
+    **_CHECK_OPERATOR_CONFIG,
+    "checkFix": False,
 }
 
 
@@ -241,7 +246,7 @@ def _scene_design_chrono_dyn_group() -> NodeGroupDef:
     edges.append(("check_action", "camera", "pass"))
     edges.append(("check_camera", "assemble", "pass"))
 
-    # Уникальные preferred_id для check-нод chrono_dyn
+    # Уникальные preferred_id для check-нод chrono_dyn (report-only).
     checks = [
         GroupNodeSpec(
             local_key=c.local_key,
@@ -252,7 +257,7 @@ def _scene_design_chrono_dyn_group() -> NodeGroupDef:
             dx=c.dx,
             dy=c.dy,
             slot_overflow=True,
-            operator_config=dict(_CHECK_OPERATOR_CONFIG),
+            operator_config=dict(_CHECK_OPERATOR_CONFIG_REPORT_ONLY),
         )
         for c in checks
     ]
@@ -277,7 +282,7 @@ def _scene_design_chrono_dyn_group() -> NodeGroupDef:
         dx=_STEP_X * 6,
         dy=0.0,
         slot_overflow=True,
-        operator_config=dict(_CHECK_OPERATOR_CONFIG),
+        operator_config=dict(_CHECK_OPERATOR_CONFIG_REPORT_ONLY),
     )
     edges.append(("assemble", "check_asm", "after"))
     return NodeGroupDef(
