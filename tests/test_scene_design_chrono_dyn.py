@@ -21,6 +21,10 @@ def test_chrono_dyn_group_in_palette() -> None:
     assert "sd_camera_chrono_dyn" in variants
     assert "sd_assemble_chrono_dyn" in variants
     assert g.project_meta.get("scene_design_variant") == "chrono_dyn"
+    for spec in g.nodes:
+        if spec.operator_config:
+            assert spec.operator_config.get("checkMode") is True
+            assert spec.operator_config.get("checkFix") is False
     # action → camera на канвасе
     edge_pairs = {(a, b) for a, b, _k in g.internal_edges}
     assert ("check_action", "camera") in edge_pairs

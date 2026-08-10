@@ -80,13 +80,14 @@ class NodeGroupDef:
     updated_at: str | None = None
 
 
-# Конфиг ноды проверки — как в эталонном проекте «nicshe» (#50):
-# тумблер «Проверка» + «Чинить», правила — промт ноды-источника (upstream).
+# Конфиг ноды проверки веера scene_design: только отчёт (report_only),
+# без правок ответа/xlsx. Правила — промт ноды-источника (upstream).
+# Отчёт уходит в хранилище uploads (emitKinds reply_txt); fail → повтор агента.
 _CHECK_OPERATOR_CONFIG: dict[str, Any] = {
     "outputMode": "text",
     "emitKinds": ["inputs", "reply_txt"],
     "checkMode": True,
-    "checkFix": True,
+    "checkFix": False,
     "checkPromptSource": "upstream",
     "transport": "api",
 }
