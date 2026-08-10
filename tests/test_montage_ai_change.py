@@ -44,15 +44,27 @@ def test_strip_ai_change_reply_fences_and_prefix() -> None:
 
 def test_system_video_has_hard_bans() -> None:
     sys = system_for_kind("video")
-    assert "новых объектов" in sys.lower() or "новых объект" in sys
+    assert "новые предметы" in sys or "новые объекты" in sys
+    assert "смена плана" in sys
+    assert "смена изображения" in sys
     assert "музык" in sys.lower()
     assert "silent" in sys.lower() or "речи" in sys
 
 
-def test_system_image_is_image_prompt() -> None:
+def test_system_image_locks_plan_and_objects() -> None:
     sys = system_for_kind("image")
     assert "картинк" in sys.lower()
     assert "VOICEOVER" in sys
+    assert "новые предметы" in sys or "новые объекты" in sys
+    assert "смена плана" in sys
+    assert "смена изображения" in sys
+
+
+def test_user_message_repeats_hard_locks() -> None:
+    msg = build_ai_change_user_message(image_prompt="x", voiceover_text="y")
+    assert "без новых предметов" in msg
+    assert "без смены изображения" in msg
+    assert "без смены плана" in msg
 
 
 def test_order_ops_includes_ai_change_types() -> None:
