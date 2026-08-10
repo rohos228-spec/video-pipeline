@@ -154,5 +154,24 @@ def public_board_meta(board: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def should_accept_queue_save(
+    *,
+    cleaned: list[dict[str, Any]],
+    existing: list[dict[str, Any]],
+    apply_running: bool,
+    force_clear: bool = False,
+) -> tuple[bool, str | None]:
+    """Защита от случайного затирания pending_ops через POST /queue.
+
+    Apply сам ужимает очередь через set_montage_meta — этот guard только для
+    клиентских/диагностических POST.
+    """
+    if apply_running and len(cleaned) < len(existing):
+        return False, "apply_running"
+    if len(cleaned) == 0 and len(existing) > 0 and not force_clear:
+        return False, "refuse_empty_overwrite"
+    return True, None
+
+
 def touch_applied(board: dict[str, Any]) -> None:
     board["applied_at"] = datetime.now(timezone.utc).isoformat()

@@ -1194,8 +1194,15 @@ export function AssembleMontageBoard({
     // остаются на кнопке «Применить правки» при переключении.
   });
 
-  // Сброс локальной очереди при смене проекта (даже если key сменился снаружи).
+  // Сброс локальной очереди при смене проекта — СНАЧАЛА flush старой очереди.
+  const prevProjectIdRef = useRef<number | null>(null);
   useEffect(() => {
+    const prev = prevProjectIdRef.current;
+    prevProjectIdRef.current = projectId;
+    if (prev != null && prev !== projectId && localQueueDirtyRef.current) {
+      const ops = pendingOpsRef.current;
+      void api.saveMontageQueue(prev, { pending_ops: ops }).catch(() => {});
+    }
     setPendingOps([]);
     pendingOpsRef.current = [];
     localQueueDirtyRef.current = false;
@@ -1329,6 +1336,9 @@ export function AssembleMontageBoard({
   const persistQueue = useCallback(
     (ops: MontagePendingOp[]) => {
       if (projectId == null) return;
+      // Во время apply очередь пишет сам apply (_finish_op) — клиентский
+      // debounce с [] или устаревшим списком иначе затирает remaining.
+      if (applyRunning) return;
       if (queueSaveTimerRef.current) clearTimeout(queueSaveTimerRef.current);
       queueSaveTimerRef.current = setTimeout(() => {
         void api
@@ -1341,7 +1351,7 @@ export function AssembleMontageBoard({
           });
       }, 400);
     },
-    [projectId, trims],
+    [projectId, trims, applyRunning],
   );
 
   const queueOp = useCallback(
@@ -1375,6 +1385,10 @@ export function AssembleMontageBoard({
         submittedApplyRef.current = true;
         localQueueDirtyRef.current = false;
         trimsDirtyRef.current = false;
+        if (queueSaveTimerRef.current) {
+          clearTimeout(queueSaveTimerRef.current);
+          queueSaveTimerRef.current = null;
+        }
         setPendingOps([]);
         pendingOpsRef.current = [];
         setFailedHighlights([]);

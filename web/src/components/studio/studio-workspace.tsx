@@ -664,7 +664,6 @@ export function StudioWorkspace({
         )}
       </div>
       <AssembleMontageBoard
-        key={projectId ?? "montage-none"}
         open={montageBoardOpen}
         projectId={projectId}
         montageBusy={montageBusy}

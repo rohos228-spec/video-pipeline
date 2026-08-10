@@ -731,7 +731,13 @@ async def montage_board_save_queue(
 
     Иначе очередь живёт только в React state и слетает при refresh/рестарте.
     """
-    from app.services.montage_board_meta import montage_meta, public_board_meta, set_montage_meta
+    from app.services.montage_board_apply_job import get_apply_job
+    from app.services.montage_board_meta import (
+        montage_meta,
+        public_board_meta,
+        set_montage_meta,
+        should_accept_queue_save,
+    )
 
     p = _project_or_404(await session.get(Project, project_id))
     ops = list(body.get("pending_ops") or [])
@@ -758,6 +764,27 @@ async def montage_board_save_queue(
         cleaned.append(item)
 
     board = montage_meta(p)
+    existing = list(board.get("pending_ops") or [])
+    job = get_apply_job(p)
+    accept, rejected = should_accept_queue_save(
+        cleaned=cleaned,
+        existing=existing,
+        apply_running=job.get("status") == "running",
+        force_clear=bool(body.get("force_clear")),
+    )
+    if not accept:
+        return {
+            "ok": False,
+            "rejected": rejected,
+            "pending_ops": existing,
+            "meta": public_board_meta(board),
+            "message": (
+                "Apply ещё идёт — очередь не перезаписываем более коротким списком"
+                if rejected == "apply_running"
+                else "Пустая очередь не затирает существующую (нужен force_clear)"
+            ),
+        }
+
     board["pending_ops"] = cleaned
     if isinstance(body.get("video_trims"), dict):
         board["video_trims"] = body["video_trims"]
