@@ -26,8 +26,6 @@ from app.services.montage_board_meta import (
     add_failed_highlight,
     add_highlight,
     clear_failed_highlight,
-    clear_failed_highlights,
-    clear_highlights,
     slot_key_from_op,
     montage_meta,
     public_board_meta,
@@ -505,8 +503,13 @@ async def apply_montage_board(
     ops = order_montage_pending_ops(
         list(pending_ops or board.get("pending_ops") or [])
     )
-    clear_highlights(board)
-    clear_failed_highlights(board)
+    # Не стираем прошлые зелёные слоты — иначе после следующего apply
+    # «слетают» все ранее применённые правки в UI. Чистим только failed
+    # у слотов этой очереди (их снова добавят при ошибке).
+    for op in ops:
+        key = slot_key_from_op(op)
+        if key:
+            clear_failed_highlight(board, key)
 
     results: list[dict[str, Any]] = []
     errors: list[str] = []

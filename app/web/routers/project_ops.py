@@ -721,6 +721,51 @@ async def montage_board(
         ) from e
 
 
+@router.post("/{project_id}/montage-board/queue")
+async def montage_board_save_queue(
+    project_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Сохранить очередь pending_ops на сервер (без запуска apply).
+
+    Иначе очередь живёт только в React state и слетает при refresh/рестарте.
+    """
+    from app.services.montage_board_meta import montage_meta, public_board_meta, set_montage_meta
+
+    p = _project_or_404(await session.get(Project, project_id))
+    ops = list(body.get("pending_ops") or [])
+    # Нормализуем: только известные типы + валидный frame.
+    cleaned: list[dict] = []
+    for raw in ops:
+        if not isinstance(raw, dict):
+            continue
+        t = str(raw.get("type") or "")
+        if not t.startswith(("image_", "video_")):
+            continue
+        try:
+            fr = int(raw.get("frame_number"))
+        except (TypeError, ValueError):
+            continue
+        if fr < 1:
+            continue
+        shot = 2 if raw.get("shot") == 2 else 1
+        item: dict = {"type": t, "frame_number": fr, "shot": shot}
+        if isinstance(raw.get("prompt"), str) and raw["prompt"].strip():
+            item["prompt"] = raw["prompt"]
+        if isinstance(raw.get("correction"), str) and raw["correction"].strip():
+            item["correction"] = raw["correction"]
+        cleaned.append(item)
+
+    board = montage_meta(p)
+    board["pending_ops"] = cleaned
+    if isinstance(body.get("video_trims"), dict):
+        board["video_trims"] = body["video_trims"]
+    set_montage_meta(p, board)
+    await session.commit()
+    return {"ok": True, "pending_ops": cleaned, "meta": public_board_meta(board)}
+
+
 @router.post("/{project_id}/montage-board/apply")
 async def montage_board_apply(
     project_id: int,

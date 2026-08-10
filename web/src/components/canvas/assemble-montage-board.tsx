@@ -1311,15 +1311,39 @@ export function AssembleMontageBoard({
     setPreview(p);
   }, []);
 
-  const queueOp = useCallback((op: MontagePendingOp) => {
-    localQueueDirtyRef.current = true;
-    setPendingOps((prev) => {
-      const next = [...prev, op];
-      pendingOpsRef.current = next;
-      return next;
-    });
-    toast.message("Операция в очереди — нажмите «Применить правки»");
-  }, []);
+  const queueSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const persistQueue = useCallback(
+    (ops: MontagePendingOp[]) => {
+      if (projectId == null) return;
+      if (queueSaveTimerRef.current) clearTimeout(queueSaveTimerRef.current);
+      queueSaveTimerRef.current = setTimeout(() => {
+        void api
+          .saveMontageQueue(projectId, {
+            pending_ops: ops,
+            video_trims: trimsDirtyRef.current ? trims : undefined,
+          })
+          .catch(() => {
+            // Не мешаем набору очереди — при следующем add/retry сохранится.
+          });
+      }, 400);
+    },
+    [projectId, trims],
+  );
+
+  const queueOp = useCallback(
+    (op: MontagePendingOp) => {
+      localQueueDirtyRef.current = true;
+      setPendingOps((prev) => {
+        const next = [...prev, op];
+        pendingOpsRef.current = next;
+        persistQueue(next);
+        return next;
+      });
+      toast.message("Операция в очереди — нажмите «Применить правки»");
+    },
+    [persistQueue],
+  );
 
   const applyMutation = useMutation({
     mutationFn: () => {

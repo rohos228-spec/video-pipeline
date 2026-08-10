@@ -919,6 +919,22 @@ export const api = {
       120_000,
     ),
 
+  saveMontageQueue: (
+    projectId: number,
+    body: {
+      pending_ops: MontagePendingOp[];
+      video_trims?: Record<string, { start: number; end: number }>;
+    },
+  ) =>
+    http<{
+      ok: boolean;
+      pending_ops: MontagePendingOp[];
+      meta?: MontageBoardMeta;
+    }>(`/api/projects/${projectId}/montage-board/queue`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   applyMontageBoard: (
     projectId: number,
     body: {
