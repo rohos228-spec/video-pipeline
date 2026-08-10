@@ -358,6 +358,7 @@ const MediaActionBar = memo(function MediaActionBar({
   kind,
   onRegen,
   onEditPrompt,
+  onAiChange,
   onRegenWithCorrection,
   onDelete,
   onUpload,
@@ -368,6 +369,7 @@ const MediaActionBar = memo(function MediaActionBar({
   kind: "image" | "video";
   onRegen: () => void;
   onEditPrompt: () => void;
+  onAiChange: () => void;
   onRegenWithCorrection?: () => void;
   onDelete: () => void;
   onUpload: (file: File) => void;
@@ -380,6 +382,7 @@ const MediaActionBar = memo(function MediaActionBar({
   const imageActions = [
     { label: "Перегенерация без редакции", action: onRegen },
     { label: "Редактировать промт", action: onEditPrompt },
+    { label: "ИИзменение", action: onAiChange },
     ...(onRegenWithCorrection
       ? [{ label: "Перегенерация существующего изображения", action: onRegenWithCorrection }]
       : []),
@@ -387,6 +390,7 @@ const MediaActionBar = memo(function MediaActionBar({
   const videoActions = [
     { label: "Перегенерация без редакции", action: onRegen },
     { label: "Редактировать промт", action: onEditPrompt },
+    { label: "ИИзменение", action: onAiChange },
   ];
   const actions = kind === "image" ? imageActions : videoActions;
 
@@ -502,6 +506,7 @@ const ClickableMedia = memo(function ClickableMedia({
   onPreview,
   onRegen,
   onEditPrompt,
+  onAiChange,
   onRegenWithCorrection,
   onDelete,
   onUpload,
@@ -520,6 +525,7 @@ const ClickableMedia = memo(function ClickableMedia({
   onPreview: (p: MediaPreview) => void;
   onRegen: () => void;
   onEditPrompt: () => void;
+  onAiChange: () => void;
   onRegenWithCorrection?: () => void;
   onDelete: () => void;
   onUpload: (file: File) => void;
@@ -600,6 +606,7 @@ const ClickableMedia = memo(function ClickableMedia({
           kind={kind}
           onRegen={onRegen}
           onEditPrompt={onEditPrompt}
+          onAiChange={onAiChange}
           onRegenWithCorrection={onRegenWithCorrection}
           onDelete={onDelete}
           onUpload={onUpload}
@@ -692,6 +699,7 @@ const ClickableMedia = memo(function ClickableMedia({
         kind={kind}
         onRegen={onRegen}
         onEditPrompt={onEditPrompt}
+        onAiChange={onAiChange}
         onRegenWithCorrection={onRegenWithCorrection}
         onDelete={onDelete}
         onUpload={onUpload}
@@ -877,6 +885,7 @@ const VideoMediaCell = memo(function VideoMediaCell({
   onTrimChange,
   onRegen,
   onEditPrompt,
+  onAiChange,
   onDelete,
   onUpload,
   highlighted,
@@ -894,6 +903,7 @@ const VideoMediaCell = memo(function VideoMediaCell({
   onTrimChange: (next: VideoTrim) => void;
   onRegen: () => void;
   onEditPrompt: () => void;
+  onAiChange: () => void;
   onDelete: () => void;
   onUpload: (file: File) => void;
   highlighted?: boolean;
@@ -923,6 +933,7 @@ const VideoMediaCell = memo(function VideoMediaCell({
         onPreview={onPreview}
         onRegen={onRegen}
         onEditPrompt={onEditPrompt}
+        onAiChange={onAiChange}
         onDelete={onDelete}
         onUpload={onUpload}
         highlighted={highlighted}
@@ -1180,8 +1191,10 @@ export function AssembleMontageBoard({
         t !== "image_regen" &&
         t !== "image_regen_prompt" &&
         t !== "image_regen_correction" &&
+        t !== "image_ai_change" &&
         t !== "video_regen" &&
-        t !== "video_regen_prompt"
+        t !== "video_regen_prompt" &&
+        t !== "video_ai_change"
       ) {
         continue;
       }
@@ -2189,6 +2202,13 @@ export function AssembleMontageBoard({
                                     })
                                   }
                                   onEditPrompt={() => openPromptModal("image", fr.number, 1, "prompt")}
+                                  onAiChange={() =>
+                                    queueOp({
+                                      type: "image_ai_change",
+                                      frame_number: fr.number,
+                                      shot: 1,
+                                    })
+                                  }
                                   onRegenWithCorrection={() =>
                                     openPromptModal("image", fr.number, 1, "correction")
                                   }
@@ -2228,6 +2248,13 @@ export function AssembleMontageBoard({
                                     })
                                   }
                                   onEditPrompt={() => openPromptModal("image", fr.number, 2, "prompt")}
+                                  onAiChange={() =>
+                                    queueOp({
+                                      type: "image_ai_change",
+                                      frame_number: fr.number,
+                                      shot: 2,
+                                    })
+                                  }
                                   onRegenWithCorrection={() =>
                                     openPromptModal("image", fr.number, 2, "correction")
                                   }
@@ -2261,6 +2288,13 @@ export function AssembleMontageBoard({
                                     })
                                   }
                                   onEditPrompt={() => openPromptModal("video", fr.number, 1, "prompt")}
+                                  onAiChange={() =>
+                                    queueOp({
+                                      type: "video_ai_change",
+                                      frame_number: fr.number,
+                                      shot: 1,
+                                    })
+                                  }
                                   onDelete={() => void handleDeleteVideo(fr.number, 1)}
                                   onUpload={(file) => void handleUploadVideo(fr.number, 1, file)}
                                   highlighted={isHighlighted(trimKey(fr.number, 1))}
@@ -2292,6 +2326,13 @@ export function AssembleMontageBoard({
                                     })
                                   }
                                   onEditPrompt={() => openPromptModal("video", fr.number, 2, "prompt")}
+                                  onAiChange={() =>
+                                    queueOp({
+                                      type: "video_ai_change",
+                                      frame_number: fr.number,
+                                      shot: 2,
+                                    })
+                                  }
                                   onDelete={() => void handleDeleteVideo(fr.number, 2)}
                                   onUpload={(file) => void handleUploadVideo(fr.number, 2, file)}
                                   highlighted={isHighlighted(trimKey(fr.number, 2))}

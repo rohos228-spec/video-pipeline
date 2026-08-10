@@ -30,13 +30,16 @@ from app.services.montage_board_meta import (
     set_montage_meta,
     touch_applied,
 )
+from app.services.montage_ai_change import rewrite_prompt_via_gpt
 from app.services.montage_board_regen import (
+    _frame_by_number,
     execute_image_regen,
     execute_video_regen,
     finalize_image_regen,
     finalize_video_regen,
     prepare_image_regen,
     prepare_video_regen,
+    resolve_image_prompt,
 )
 
 
@@ -48,9 +51,16 @@ _READY_IMAGE_BYTES = 200_000
 _READY_VIDEO_BYTES = 80_000
 
 _IMAGE_OP_TYPES = frozenset(
-    {"image_regen", "image_regen_prompt", "image_regen_correction"}
+    {
+        "image_regen",
+        "image_regen_prompt",
+        "image_regen_correction",
+        "image_ai_change",
+    }
 )
-_VIDEO_OP_TYPES = frozenset({"video_regen", "video_regen_prompt"})
+_VIDEO_OP_TYPES = frozenset(
+    {"video_regen", "video_regen_prompt", "video_ai_change"}
+)
 
 
 def _ready_local_asset(path: Path, *, min_bytes: int) -> bool:
@@ -202,17 +212,33 @@ async def _run_op_with_short_sessions(
     op: dict[str, Any],
     board: dict[str, Any],
 ) -> dict[str, Any]:
-    """Чтение БД → Outsee (без сессии) → запись результата."""
+    """Чтение БД → (GPT для ИИзменение вне сессии) → Outsee → запись."""
     op_type = str(op.get("type") or "").strip()
     frame_number = int(op["frame_number"])
     shot = int(op.get("shot") or 1)
+
+    ai_kind: str | None = None
+    ai_image_prompt = ""
+    ai_voiceover = ""
+    prep: Any = None
 
     async with session_scope() as session:
         project = await session.get(Project, project_id)
         if project is None:
             raise RuntimeError(f"проект #{project_id} не найден")
 
-        if op_type in ("image_regen", "image_regen_prompt", "image_regen_correction"):
+        if op_type in ("image_ai_change", "video_ai_change"):
+            fr = await _frame_by_number(session, project.id, frame_number)
+            if fr is None:
+                raise RuntimeError(f"кадр {frame_number} не найден")
+            ai_kind = "image" if op_type == "image_ai_change" else "video"
+            ai_image_prompt = await resolve_image_prompt(session, project, fr, shot)
+            ai_voiceover = fr.voiceover_text or ""
+        elif op_type in (
+            "image_regen",
+            "image_regen_prompt",
+            "image_regen_correction",
+        ):
             mode = "same_prompt"
             if op_type == "image_regen_prompt":
                 mode = "edit_prompt"
@@ -243,6 +269,41 @@ async def _run_op_with_short_sessions(
             )
         else:
             raise RuntimeError(f"неизвестная операция: {op_type}")
+
+    if ai_kind is not None:
+        new_prompt = await rewrite_prompt_via_gpt(
+            image_prompt=ai_image_prompt,
+            voiceover_text=ai_voiceover,
+            kind=ai_kind,  # type: ignore[arg-type]
+            project_id=project_id,
+        )
+        async with session_scope() as session:
+            project = await session.get(Project, project_id)
+            if project is None:
+                raise RuntimeError(f"проект #{project_id} не найден")
+            if ai_kind == "image":
+                prep = await prepare_image_regen(
+                    session,
+                    project,
+                    frame_number,
+                    shot=shot,
+                    mode="edit_prompt",
+                    new_prompt=new_prompt,
+                    correction="",
+                    board=board,
+                )
+            else:
+                prep = await prepare_video_regen(
+                    session,
+                    project,
+                    frame_number,
+                    shot=shot,
+                    mode="edit_prompt",
+                    new_prompt=new_prompt,
+                    board=board,
+                )
+
+    assert prep is not None
 
     # Слот общий с Create/img/video — не долбим Outsee сверх лимита потоков.
     async with acquire_image_slot():

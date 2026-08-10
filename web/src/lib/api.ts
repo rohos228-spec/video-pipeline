@@ -152,8 +152,10 @@ export interface MontagePendingOp {
     | "image_regen"
     | "image_regen_prompt"
     | "image_regen_correction"
+    | "image_ai_change"
     | "video_regen"
-    | "video_regen_prompt";
+    | "video_regen_prompt"
+    | "video_ai_change";
   frame_number: number;
   shot: 1 | 2;
   prompt?: string;
