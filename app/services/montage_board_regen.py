@@ -293,11 +293,29 @@ async def _persist_video_prompt(
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("montage regen: prompt_versions video write failed: {}", e)
+            low = str(e).lower()
+            if "database is locked" in low or "database is busy" in low:
+                try:
+                    await session.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
+                # Parallel apply: даём верхнему retry открыть новую сессию.
+                raise
         try:
             write_plan_animation_prompt(project, frame.number, text)
         except Exception as e:  # noqa: BLE001
             logger.warning("montage regen: Excel R48 write failed: {}", e)
-    await session.flush()
+    try:
+        await session.flush()
+    except Exception as e:  # noqa: BLE001
+        low = str(e).lower()
+        if "database is locked" in low or "database is busy" in low:
+            try:
+                await session.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        raise
 
 
 async def prepare_image_regen(

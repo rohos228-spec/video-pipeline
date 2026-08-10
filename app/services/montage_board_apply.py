@@ -79,6 +79,50 @@ def _is_sqlite_locked(exc: BaseException) -> bool:
     return "database is locked" in msg or "database is busy" in msg
 
 
+def _is_sqlite_transient(exc: BaseException) -> bool:
+    """Locked / poisoned session после параллельного flush — можно retry."""
+    msg = str(exc).lower()
+    return _is_sqlite_locked(exc) or (
+        "rolled back due to a previous exception" in msg
+        or "invalid transaction is rolled back" in msg
+        or "this session's transaction has been rolled back" in msg
+    )
+
+
+async def _call_with_sqlite_retry(
+    factory,
+    *,
+    project_id: int,
+    frame_number: int,
+    label: str,
+    attempts: int = 7,
+):
+    """Повторить короткую DB-операцию при SQLite lock / rollback."""
+    last: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return await factory()
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            if _is_sqlite_transient(exc) and attempt < attempts:
+                wait = min(2.0 * attempt, 10.0)
+                logger.warning(
+                    "montage {} #{} F{} sqlite transient ({}/{}), wait {:.1f}s: {}",
+                    label,
+                    project_id,
+                    frame_number,
+                    attempt,
+                    attempts,
+                    wait,
+                    str(exc)[:160].replace("\n", " "),
+                )
+                await asyncio.sleep(wait)
+                continue
+            raise
+    assert last is not None
+    raise last
+
+
 def _op_frame_shot(op: dict[str, Any]) -> tuple[int, int]:
     try:
         frame = int(op.get("frame_number") or 0)
@@ -281,31 +325,39 @@ async def _run_op_with_short_sessions(
             kind=ai_kind,  # type: ignore[arg-type]
             project_id=project_id,
         )
-        async with session_scope() as session:
-            project = await session.get(Project, project_id)
-            if project is None:
-                raise RuntimeError(f"проект #{project_id} не найден")
-            if ai_kind == "image":
-                prep = await prepare_image_regen(
+
+        async def _prepare_after_gpt():
+            async with session_scope() as session:
+                project = await session.get(Project, project_id)
+                if project is None:
+                    raise RuntimeError(f"проект #{project_id} не найден")
+                if ai_kind == "image":
+                    return await prepare_image_regen(
+                        session,
+                        project,
+                        frame_number,
+                        shot=shot,
+                        mode="edit_prompt",
+                        new_prompt=new_prompt,
+                        correction="",
+                        board=board,
+                    )
+                return await prepare_video_regen(
                     session,
                     project,
                     frame_number,
                     shot=shot,
                     mode="edit_prompt",
                     new_prompt=new_prompt,
-                    correction="",
                     board=board,
                 )
-            else:
-                prep = await prepare_video_regen(
-                    session,
-                    project,
-                    frame_number,
-                    shot=shot,
-                    mode="edit_prompt",
-                    new_prompt=new_prompt,
-                    board=board,
-                )
+
+        prep = await _call_with_sqlite_retry(
+            _prepare_after_gpt,
+            project_id=project_id,
+            frame_number=frame_number,
+            label="prepare ai_change",
+        )
 
     assert prep is not None
 

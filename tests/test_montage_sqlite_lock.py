@@ -20,6 +20,22 @@ def test_finalize_retries_on_sqlite_lock() -> None:
     assert "range(1, 8)" in src
 
 
+def test_prepare_ai_change_retries_sqlite_transient() -> None:
+    assert "_call_with_sqlite_retry" in dir(apply_mod)
+    assert "_is_sqlite_transient" in dir(apply_mod)
+    assert apply_mod._is_sqlite_transient(
+        RuntimeError("database is locked")
+    )
+    assert apply_mod._is_sqlite_transient(
+        RuntimeError(
+            "This Session's transaction has been rolled back due to a previous exception"
+        )
+    )
+    src = inspect.getsource(apply_mod._run_op_with_short_sessions)
+    assert "prepare ai_change" in src
+    assert "_call_with_sqlite_retry" in src
+
+
 def test_db_busy_timeout_at_least_60s() -> None:
     from app import db as db_mod
 
