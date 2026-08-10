@@ -52,3 +52,56 @@ async def test_validate_after_images_skips_frames_without_prompt(
     assert result.ok is True
     assert result.missing_frame_numbers == []
     assert result.expected_frames == 1
+
+
+@pytest.mark.asyncio
+async def test_validate_after_videos_uses_db_anim_prompts_not_xlsx_count(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """DB 180 vs xlsx 65 не валит videos_ready, если клипы есть у кадров с anim_pr."""
+    from app.services import post_step_validate as psv
+
+    data_dir = tmp_path / "p59"
+    vids = data_dir / "videos"
+    vids.mkdir(parents=True)
+    (vids / "clip_001_aaaaaaaa.mp4").write_bytes(b"x" * 5000)
+    (vids / "clip_003_bbbbbbbb.mp4").write_bytes(b"x" * 5000)
+
+    project = SimpleNamespace(id=59, data_dir=data_dir)
+    frames = [
+        Frame(
+            project_id=59,
+            number=1,
+            animation_prompt="pan left",
+            status=FrameStatus.video_generated,
+        ),
+        Frame(
+            project_id=59,
+            number=2,
+            animation_prompt="",
+            status=FrameStatus.planned,
+        ),
+        Frame(
+            project_id=59,
+            number=3,
+            animation_prompt="dolly in",
+            status=FrameStatus.video_generated,
+        ),
+    ]
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=lambda: frames))
+        )
+    )
+    monkeypatch.setattr(
+        psv, "recover_scene_videos_from_disk", AsyncMock(return_value=0)
+    )
+    monkeypatch.setattr(
+        psv, "_frames_with_artifact", AsyncMock(return_value=set())
+    )
+
+    result = await psv.validate_after_videos(session, project)
+    assert result.ok is True
+    assert result.missing_frame_numbers == []
+    assert result.expected_frames == 2
