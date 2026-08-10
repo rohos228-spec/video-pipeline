@@ -30,7 +30,7 @@ import {
 import { toast } from "sonner";
 import { api, subscribeWS, type MontagePendingOp } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
-import type { MontageBoardFrame } from "@/lib/types";
+import type { MontageBoardDTO, MontageBoardFrame } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -94,6 +94,36 @@ function slotKeyFromOp(op: Pick<MontagePendingOp, "type" | "frame_number" | "sho
     return `${op.frame_number}:image${op.shot}`;
   }
   return trimKey(op.frame_number, op.shot);
+}
+
+/** Мгновенный preview URL после regen (без ждать полный refetch доски). */
+function filesUrlFromAbsPath(absPath: string): string {
+  return `/api/files?path=${encodeURIComponent(absPath)}&v=${Date.now()}`;
+}
+
+function patchBoardFrameMedia(
+  data: MontageBoardDTO,
+  frameNumber: number,
+  shot: 1 | 2,
+  absPath: string,
+  highlight: string,
+): MontageBoardDTO {
+  const url = filesUrlFromAbsPath(absPath);
+  const isImage = highlight.includes(":image");
+  let changed = false;
+  const frames = data.frames.map((fr) => {
+    if (fr.number !== frameNumber) return fr;
+    changed = true;
+    if (isImage) {
+      return shot === 2
+        ? { ...fr, image_shot2_url: url }
+        : { ...fr, image_shot1_url: url };
+    }
+    return shot === 2
+      ? { ...fr, video_shot2_url: url }
+      : { ...fr, video_shot1_url: url };
+  });
+  return changed ? { ...data, frames } : data;
 }
 
 type SlotTone = "applied" | "pending" | "failed";
@@ -660,9 +690,10 @@ const ClickableMedia = memo(function ClickableMedia({
         >
           {inView ? (
             <video
+              key={url}
               src={url}
               className="h-full w-full object-cover transition group-hover:brightness-110"
-              preload="none"
+              preload="metadata"
               muted
               playsInline
             />
@@ -702,6 +733,7 @@ const ClickableMedia = memo(function ClickableMedia({
           {inView ? (
             /* eslint-disable-next-line @next/next/no-img-element */
             <img
+              key={url}
               src={url}
               alt={label}
               loading="lazy"
@@ -1193,8 +1225,8 @@ export function AssembleMontageBoard({
       queryFn: () => api.getProject(projectId),
       staleTime: 30_000,
     });
-    // Подтянуть highlights/клипы после apply (staleTime иначе держит пустую подсветку).
-    void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
+    // После regen staleTime/кэш иначе показывает старые клипы и пустую подсветку.
+    void queryClient.resetQueries({ queryKey: ["montage-board", projectId] });
   }, [open, projectId, queryClient]);
 
   const frames = board.data?.frames ?? [];
@@ -1436,10 +1468,13 @@ export function AssembleMontageBoard({
         else if (status === "cancelled") toast.message("Генерация остановлена");
       }
       void queryClient
-        .fetchQuery({
-          queryKey: ["montage-board", projectId],
-          queryFn: () => api.getMontageBoard(projectId!),
-        })
+        .resetQueries({ queryKey: ["montage-board", projectId] })
+        .then(() =>
+          queryClient.fetchQuery({
+            queryKey: ["montage-board", projectId],
+            queryFn: () => api.getMontageBoard(projectId!),
+          }),
+        )
         .then((data) => {
           const hl = data?.meta?.highlights;
           if (Array.isArray(hl)) setHighlights(hl.map(String));
@@ -1514,6 +1549,9 @@ export function AssembleMontageBoard({
           saved_count?: number;
           refresh_board?: boolean;
           highlight?: string;
+          frame_number?: number;
+          shot?: number;
+          path?: string;
         };
       };
       if (evt.payload?.stopped) {
@@ -1554,16 +1592,35 @@ export function AssembleMontageBoard({
               setApplyProgress({ done: doneOps, total: totalOps });
             });
           }
-          // Только когда реально сменился кадр — не на каждый progress-тикт.
-          if (evt.payload.refresh_board) {
-            void queryClient.invalidateQueries({
-              queryKey: ["montage-board", projectId],
-            });
-          }
           const hl = evt.payload.highlight;
           if (typeof hl === "string" && hl) {
             setHighlights((prev) => (prev.includes(hl) ? prev : [...prev, hl]));
             setFailedHighlights((prev) => prev.filter((k) => k !== hl));
+          }
+          // Сразу подменить превью кадра из path — полный refetch доски слишком редкий/тяжёлый.
+          const absPath = evt.payload.path;
+          const frNum = Number(evt.payload.frame_number);
+          const shotRaw = Number(evt.payload.shot);
+          const shot: 1 | 2 = shotRaw === 2 ? 2 : 1;
+          if (
+            typeof absPath === "string" &&
+            absPath &&
+            Number.isFinite(frNum) &&
+            frNum >= 1 &&
+            typeof hl === "string" &&
+            hl
+          ) {
+            queryClient.setQueryData<MontageBoardDTO>(
+              ["montage-board", projectId],
+              (old) =>
+                old
+                  ? patchBoardFrameMedia(old, frNum, shot, absPath, hl)
+                  : old,
+            );
+          } else if (evt.payload.refresh_board) {
+            void queryClient.invalidateQueries({
+              queryKey: ["montage-board", projectId],
+            });
           }
         } else if (status === "done" || status === "error" || status === "cancelled") {
           if (!applySeenRunningRef.current && status !== "cancelled") return;
