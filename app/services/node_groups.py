@@ -180,8 +180,131 @@ def _scene_design_group() -> NodeGroupDef:
     )
 
 
+# chrono_dyn: action → camera (не параллельно); промты sd_*_chrono_dyn.
+_SD_CHRONO_FANOUT: tuple[tuple[str, str, str], ...] = (
+    ("characters", "GPT: персонажи · chrono_dyn", "Паспорта персонажей (вариант chrono_dyn)"),
+    ("world", "GPT: мир · chrono_dyn", "Локации и зоны (вариант chrono_dyn)"),
+    ("style", "GPT: стиль · chrono_dyn", "Световая дуга (вариант chrono_dyn)"),
+    ("action", "GPT: действие · chrono_dyn", "Сцены+фазы — закон хронологии текста"),
+    ("camera", "GPT: камера · chrono_dyn", "1 фаза → 1 shot; обслуживает action"),
+)
+
+
+def _scene_design_chrono_dyn_group() -> NodeGroupDef:
+    """Веер chrono_dyn: динамика и хронология; action перед camera на канвасе."""
+    agents: list[GroupNodeSpec] = []
+    checks: list[GroupNodeSpec] = []
+    edges: list[tuple[str, str, str]] = []
+    # Колонки: chars/world/style (dx=1) | action (dx=2) | camera (dx=3) | checks+asm
+    col = {
+        "characters": (1, -2 * _FAN_DY),
+        "world": (1, -_FAN_DY),
+        "style": (1, 0.0),
+        "action": (2, _FAN_DY),
+        "camera": (3, _FAN_DY),
+    }
+    for agent, label, descr in _SD_CHRONO_FANOUT:
+        dx_mul, dy = col[agent]
+        agents.append(
+            GroupNodeSpec(
+                local_key=agent,
+                node_type="excel_gpt",
+                label=label,
+                description=descr,
+                preferred_id=f"n_excel_gpt_sd_cd_{agent}",
+                dx=_STEP_X * dx_mul,
+                dy=dy,
+                marker=agent,
+                prompt_variant=f"sd_{agent}_chrono_dyn",
+            )
+        )
+        check_key = f"check_{agent}"
+        short = label.removeprefix("GPT: ")
+        checks.append(
+            _check_spec(
+                check_key,
+                f"Проверка: {short}",
+                f"Проверка ответа агента «{short}» (chrono_dyn)",
+                dx=_STEP_X * (dx_mul + 1) if agent != "camera" else _STEP_X * 4,
+                dy=dy,
+            )
+        )
+        # preferred_id для check переопределим ниже через уникальные id —
+        # _check_spec уже даёт n_excel_gpt_sd_check_*; для chrono нужен cd-префикс.
+        edges.append((agent, check_key, "after"))
+        edges.append((check_key, agent, "fail"))
+
+    # Проверки chars/world/style/action → pass к следующим; camera check → assemble.
+    for agent in ("characters", "world", "style"):
+        edges.append((f"check_{agent}", "action", "pass"))
+    edges.append(("check_action", "camera", "pass"))
+    edges.append(("check_camera", "assemble", "pass"))
+
+    # Уникальные preferred_id для check-нод chrono_dyn
+    checks = [
+        GroupNodeSpec(
+            local_key=c.local_key,
+            node_type=c.node_type,
+            label=c.label,
+            description=c.description,
+            preferred_id=f"n_excel_gpt_sd_cd_{c.local_key}",
+            dx=c.dx,
+            dy=c.dy,
+            slot_overflow=True,
+            operator_config=dict(_CHECK_OPERATOR_CONFIG),
+        )
+        for c in checks
+    ]
+
+    asm = GroupNodeSpec(
+        local_key="assemble",
+        node_type="excel_gpt",
+        label="GPT: сборка · chrono_dyn",
+        description="Сборщик chrono_dyn: action>camera, фазы→кадры",
+        preferred_id="n_excel_gpt_sd_cd_asm",
+        dx=_STEP_X * 5,
+        dy=0.0,
+        marker="assemble",
+        prompt_variant="sd_assemble_chrono_dyn",
+    )
+    check_asm = GroupNodeSpec(
+        local_key="check_asm",
+        node_type="excel_gpt",
+        label="Проверка: сборка · chrono_dyn",
+        description="Проверка registry/attrs сборки chrono_dyn",
+        preferred_id="n_excel_gpt_sd_cd_check_asm",
+        dx=_STEP_X * 6,
+        dy=0.0,
+        slot_overflow=True,
+        operator_config=dict(_CHECK_OPERATOR_CONFIG),
+    )
+    edges.append(("assemble", "check_asm", "after"))
+    return NodeGroupDef(
+        group_id="scene_design_fanout_chrono_dyn",
+        title="Сцены: chrono_dyn (фазы+динамика)",
+        description=(
+            "Вариант chrono_dyn: персонажи/мир/стиль → действие (сцены+фазы) → "
+            "камера (1 фаза=1 shot) → сборка. Промты sd_*_chrono_dyn. "
+            "Хронология текста и динамика внутри многокадровых сцен."
+        ),
+        category="planning",
+        default_after_type="split",
+        nodes=(*agents, *checks, asm, check_asm),
+        internal_edges=tuple(edges),
+        entry_keys=("characters", "world", "style"),
+        exit_key="check_asm",
+        project_meta={
+            "scene_design_enabled": True,
+            "scene_design_variant": "chrono_dyn",
+        },
+        replaces_types=("scene_design",),
+        exit_edge_kind="pass",
+    )
+
+
 NODE_GROUPS: dict[str, NodeGroupDef] = {
-    g.group_id: g for g in (_scene_design_group(),)
+    g.group_id: g
+    for g in (_scene_design_group(), _scene_design_chrono_dyn_group())
 }
 
 # Категории, которые понимает палитра (см. NODE_CATEGORY_LABELS на фронте).

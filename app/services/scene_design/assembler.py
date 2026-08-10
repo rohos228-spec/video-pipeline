@@ -38,8 +38,16 @@ def _as_plain_text(value: Any) -> str:
         parts = [_as_plain_text(x) for x in value]
         return " → ".join(p for p in parts if p)
     if isinstance(value, dict):
-        # Частый баг камеры: вложила объект вместо строки.
-        for key in ("текст", "text", "описание", "value", "label", "действие"):
+        # Фаза chrono_dyn / баг камеры: объект вместо строки.
+        for key in (
+            "action",
+            "действие",
+            "текст",
+            "text",
+            "описание",
+            "value",
+            "label",
+        ):
             if key in value:
                 return _as_plain_text(value.get(key))
         import json

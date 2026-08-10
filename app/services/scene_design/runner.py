@@ -182,12 +182,15 @@ async def run_category_agents(
     *,
     timeout: float = 900,
 ) -> dict[str, dict[str, Any]]:
-    """asyncio.gather по категорийным агентам; чекпоинтнутые пропускаются."""
+    """Категорийные агенты: волна1 (characters/world/style/action) → camera.
+
+    Camera всегда после action (нужны фазы). Чекпоинтнутые пропускаются.
+    """
     sem = asyncio.Semaphore(max(1, int(settings.scene_design_max_parallel)))
     results: dict[str, dict[str, Any]] = {}
     errors: dict[str, str] = {}
 
-    async def _one(name: str) -> None:
+    async def _one(name: str, ctx: str) -> None:
         cached = load_checkpoint(project, name)
         if cached is not None:
             logger.info(
@@ -197,7 +200,7 @@ async def run_category_agents(
             return
         async with sem:
             try:
-                data = await _run_one_agent(project, name, context, timeout=timeout)
+                data = await _run_one_agent(project, name, ctx, timeout=timeout)
             except Exception as e:  # noqa: BLE001
                 errors[name] = str(e)
                 logger.warning("[#{}] scene_design/{} failed: {}", project.id, name, e)
@@ -206,7 +209,23 @@ async def run_category_agents(
         results[name] = data
         logger.info("[#{}] scene_design/{}: ok", project.id, name)
 
-    await asyncio.gather(*(_one(n) for n in ag.CATEGORY_AGENTS))
+    await asyncio.gather(*(_one(n, context) for n in ag.WAVE1_AGENTS))
+    if any(a in errors for a in ("action",)):
+        failed = ", ".join(sorted(errors))
+        raise ag.SceneDesignAgentError(
+            f"scene_design: агенты упали ({failed}): "
+            + "; ".join(f"{k}: {v}" for k, v in sorted(errors.items()))[:400]
+        )
+
+    camera_ctx = context
+    action_slice = results.get("action")
+    if isinstance(action_slice, dict) and action_slice.get("scenes"):
+        camera_ctx = (
+            context
+            + "\n\n# ACTION SCENES (JSON) — закон фаз для camera\n"
+            + json.dumps(action_slice, ensure_ascii=False, indent=1)
+        )
+    await asyncio.gather(*(_one(n, camera_ctx) for n in ag.WAVE2_AGENTS))
     if errors:
         failed = ", ".join(sorted(errors))
         raise ag.SceneDesignAgentError(

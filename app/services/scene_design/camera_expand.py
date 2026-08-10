@@ -77,7 +77,16 @@ def required_shots_for_beat(
     set_counts: dict[str, tuple[int, int]],
     *,
     duration_sec: float = 0.0,
+    chrono_dyn: bool = False,
+    action_phases: int = 0,
 ) -> int:
+    """Сколько Frame на VO-бит.
+
+    ``chrono_dyn``: число фаз action (если есть) важнее SET/лестницы; не
+    форсируем VLS→MS→CU на длинный VO.
+    """
+    if chrono_dyn and action_phases > 0:
+        return max(1, int(action_phases))
     ladder = parse_krupnost_ladder(str(shot.get("крупность") or ""))
     n_ladder = len(ladder) if ladder else 1
     nab = str(shot.get("набор") or "").strip().upper()
@@ -85,7 +94,10 @@ def required_shots_for_beat(
         nab = ""
     n_set = set_counts.get(nab, (0, 0))[0] if nab else 0
     need = max(n_ladder, n_set, 1)
-    # Если GPT сдал один план на длинный VO — всё равно дробим (минимум динамики).
+    if chrono_dyn:
+        # Одна крупность на фазу уже в shot_plan — не раздувать.
+        return max(1, n_ladder)
+    # Legacy: длинный VO без лестницы — минимум динамики.
     if duration_sec >= 8.0 and need < 3:
         need = 3
     elif duration_sec >= 4.0 and need < 2:
@@ -373,10 +385,19 @@ async def subdivide_vo_frames_by_camera(
     Полный закадр и аудиометки остаются у родителя (shot_index=1).
     Дочерние Frame — только визуал: пустой закадр, доля duration, ladder step.
     """
+    from app.services.scene_design.agents import uses_chrono_dyn
+    from app.services.scene_design.assembler import _parse_action_chain
+
     set_counts = set_counts if set_counts is not None else load_set_shot_counts()
+    chrono = uses_chrono_dyn(project)
     shots = [
         s
         for s in (assembly_input.get("shot_plan_chrono") or [])
+        if isinstance(s, dict)
+    ]
+    action_scenes = [
+        s
+        for s in (assembly_input.get("scenes_chrono") or [])
         if isinstance(s, dict)
     ]
     report: dict[str, Any] = {
@@ -386,6 +407,7 @@ async def subdivide_vo_frames_by_camera(
         "frames_before": len(frames),
         "frames_after": len(frames),
         "vo_text_untouched": True,
+        "chrono_dyn": chrono,
     }
     if already_subdivided(frames):
         report["skipped"] = True
@@ -405,18 +427,61 @@ async def subdivide_vo_frames_by_camera(
     offsets = frame_offsets(parents, full_vo)
     spans = _beat_vo_spans(shots, full_vo)
 
+    def _phases_for_parent(parent: Frame) -> int:
+        """Сколько shot_plan/фаз попадает в VO-диапазон родителя."""
+        off = offsets.get(parent.uuid or "")
+        vo = (parent.voiceover_text or "").strip()
+        if not vo:
+            return 0
+        vo_n = _norm(vo)
+        # chrono: число camera-битов, чья цитата лежит внутри текста родителя
+        if chrono:
+            n_shots = 0
+            for i, sh in enumerate(shots):
+                q = _norm(str(sh.get("цитата") or ""))
+                if q and q in vo_n:
+                    n_shots += 1
+                    continue
+                if off is not None and i < len(spans):
+                    lo, hi = spans[i]
+                    if lo >= 0 and lo <= off < hi:
+                        n_shots += 1
+            if n_shots > 0:
+                return n_shots
+        best = 0
+        for sc in action_scenes:
+            chain = _parse_action_chain(sc.get("цепь_действия"))
+            if not chain:
+                continue
+            sw = _norm(str(sc.get("start_words") or ""))
+            ew = _norm(str(sc.get("end_words") or ""))
+            if (sw and sw in vo_n) or (ew and ew in vo_n):
+                best = max(best, len(chain))
+        return best
+
     inserted = 0
     for parent in reversed(parents):
         beat = camera_beat_for_frame(parent, shots, spans, offsets) or {}
         sec, _ = frame_seconds(parent)
+        n_phases = _phases_for_parent(parent)
         need = clamp_shots_to_duration(
-            required_shots_for_beat(beat, set_counts, duration_sec=sec), sec
+            required_shots_for_beat(
+                beat,
+                set_counts,
+                duration_sec=sec,
+                chrono_dyn=chrono,
+                action_phases=n_phases,
+            ),
+            sec,
         )
         ladder = parse_krupnost_ladder(str(beat.get("крупность") or ""))
-        if len(ladder) <= 1 and need >= 3:
-            ladder = ["VLS", "MS", "CU"]
-        elif len(ladder) <= 1 and need >= 2:
-            ladder = ["MS", "CU"]
+        if not chrono:
+            if len(ladder) <= 1 and need >= 3:
+                ladder = ["VLS", "MS", "CU"]
+            elif len(ladder) <= 1 and need >= 2:
+                ladder = ["MS", "CU"]
+        elif not ladder:
+            ladder = ["MS"]
         while len(ladder) < need:
             ladder.append(ladder[-1] if ladder else "MS")
         ladder = ladder[:need]

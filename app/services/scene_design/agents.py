@@ -13,6 +13,35 @@ PROMPTS_SUBDIR = Path("prompts") / "scene_design"
 
 ASSEMBLER = "assemble"
 CATEGORY_AGENTS: tuple[str, ...] = ("characters", "world", "style", "camera", "action")
+# Волна 1 (параллельно) → волна 2 camera (нужен срез action).
+WAVE1_AGENTS: tuple[str, ...] = ("characters", "world", "style", "action")
+WAVE2_AGENTS: tuple[str, ...] = ("camera",)
+
+
+def project_scene_design_variant(project: Any | None) -> str:
+    """``meta.scene_design_variant`` или вывод из prompt_slot_variants (*_chrono_dyn)."""
+    if project is None:
+        return ""
+    meta = getattr(project, "meta", None)
+    if not isinstance(meta, dict):
+        return ""
+    raw = str(meta.get("scene_design_variant") or "").strip()
+    if raw:
+        return raw
+    slots = meta.get("prompt_slot_variants")
+    if isinstance(slots, dict):
+        for per in slots.values():
+            if not isinstance(per, dict):
+                continue
+            for v in per.values():
+                name = str(v or "")
+                if name.endswith("_chrono_dyn") or "chrono_dyn" in name:
+                    return "chrono_dyn"
+    return ""
+
+
+def uses_chrono_dyn(project: Any | None) -> bool:
+    return project_scene_design_variant(project) == "chrono_dyn"
 
 # Обязательный ключ-список в JSON-срезе агента (непустой при успехе).
 LIST_KEY: dict[str, str] = {
