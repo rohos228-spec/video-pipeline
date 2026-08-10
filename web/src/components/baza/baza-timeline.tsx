@@ -1,28 +1,29 @@
 "use client";
 
 /**
- * «Хронология» — горизонтальный таймлайн базы проекта: сцены идут слева
- * направо по порядку (sort_key), кадры внутри сцены соединены цепочкой
- * сверху вниз. Закадровый текст показывается один раз на сцену (VO-ячейка
- * живёт на родительском кадре — шоты SET её не дублируют). Данные кадра
- * раскрываются/скрываются: и по одному (шеврон), и слоями глобально
- * (закадр / промты / время).
+ * «Хронология» — таблица в стиле панели монтажа: кадры — колонки слева
+ * направо (хронология), данные — строки. Сцены — объединённые полосы
+ * поверх своих кадров (colspan), закадровый текст — одна объединённая
+ * ячейка на сцену (VO живёт на родительском кадре, шоты не дублируют).
+ * Каждую строку данных можно свернуть/развернуть шевроном в левой
+ * sticky-колонке. Клик по номеру кадра — детали справа.
  */
 
 import { useMemo, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
-  ChevronUp,
   Clock3,
   Layers,
   Mic,
-  MoveRight,
   Plus,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api, type DbFrame, type DbGraph, type DbScene } from "@/lib/api";
 import { cn } from "@/lib/utils";
+
+const LABEL_W = "w-[11rem] min-w-[11rem]";
+const COL_W = "w-[13rem] min-w-[13rem]";
 
 const STATUS_DOT: Record<string, string> = {
   planned: "bg-white/30",
@@ -46,18 +47,33 @@ const STATUS_RU: Record<string, string> = {
   failed: "ошибка",
 };
 
-const ATTR_CHIPS: { key: string; label: string }[] = [
-  { key: "place", label: "место" },
-  { key: "visual_type", label: "тип" },
-  { key: "cluster", label: "кластер" },
-  { key: "edit_type", label: "стык" },
-  { key: "main_action", label: "действие" },
+type RowKey =
+  | "voiceover"
+  | "meaning"
+  | "img_prompt"
+  | "video_prompt"
+  | "characters"
+  | "timing"
+  | "status"
+  | "edges";
+
+const ROWS: { key: RowKey; label: string }[] = [
+  { key: "voiceover", label: "Закадр (1 на сцену)" },
+  { key: "meaning", label: "Смысл кадра" },
+  { key: "img_prompt", label: "Промт картинки" },
+  { key: "video_prompt", label: "Промт видео" },
+  { key: "characters", label: "Персонажи" },
+  { key: "timing", label: "Время / таймкод" },
+  { key: "status", label: "Статус" },
+  { key: "edges", label: "Связи" },
 ];
 
-export interface TimelineLayers {
-  voiceover: boolean;
-  prompts: boolean;
-  timing: boolean;
+interface SceneColumn {
+  key: string;
+  title: string;
+  place: string;
+  scene: DbScene | null;
+  frames: DbFrame[];
 }
 
 function attrStr(attrs: Record<string, unknown> | null | undefined, key: string): string {
@@ -72,15 +88,12 @@ function activePrompt(f: DbFrame, kind: "img" | "video"): string {
   return (kind === "img" ? f.image_prompt : f.animation_prompt) ?? "";
 }
 
-function frameHasImg(f: DbFrame): boolean {
-  return !!activePrompt(f, "img").trim();
+function orderFrames(frames: DbFrame[]): DbFrame[] {
+  return [...frames].sort(
+    (a, b) => (a.sort_key ?? a.number * 10) - (b.sort_key ?? b.number * 10),
+  );
 }
 
-function frameHasVideo(f: DbFrame): boolean {
-  return !!activePrompt(f, "video").trim();
-}
-
-/** Закадр сцены — текст VO-родителя (первый кадр с непустым закадром). */
 function sceneVoiceover(frames: DbFrame[]): { text: string; frame: DbFrame } | null {
   for (const f of frames) {
     if (f.voiceover_text.trim()) return { text: f.voiceover_text, frame: f };
@@ -88,15 +101,8 @@ function sceneVoiceover(frames: DbFrame[]): { text: string; frame: DbFrame } | n
   return null;
 }
 
-function sceneDuration(frames: DbFrame[]): number {
-  return frames.reduce((acc, f) => acc + (f.duration_seconds ?? 0), 0);
-}
-
-function orderFrames(frames: DbFrame[]): DbFrame[] {
-  return [...frames].sort(
-    (a, b) => (a.sort_key ?? a.number * 10) - (b.sort_key ?? b.number * 10),
-  );
-}
+/** Цвет полосы сцены — стабильный по индексу. */
+const SCENE_HUES = [262, 200, 150, 35, 320, 88, 0, 175];
 
 export function BazaTimeline({
   graph,
@@ -111,22 +117,10 @@ export function BazaTimeline({
   projectId: number | null;
   onChanged: () => Promise<void>;
 }) {
-  const [layers, setLayers] = useState<TimelineLayers>({
-    voiceover: true,
-    prompts: true,
-    timing: true,
-  });
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
-  const [collapsedScenes, setCollapsedScenes] = useState<Set<string>>(new Set());
+  const [collapsedRows, setCollapsedRows] = useState<Set<RowKey>>(new Set());
 
-  const columns = useMemo(() => {
-    const cols: {
-      key: string;
-      title: string;
-      place: string;
-      scene: DbScene | null;
-      frames: DbFrame[];
-    }[] = [];
+  const columns = useMemo<SceneColumn[]>(() => {
+    const cols: SceneColumn[] = [];
     const scenes = [...graph.scenes].sort((a, b) => a.sort_key - b.sort_key);
     for (const sc of scenes) {
       const frames = orderFrames(graph.frames.filter((f) => f.scene_id === sc.id));
@@ -149,7 +143,6 @@ export function BazaTimeline({
         frames: orphan.length ? orphan : orderFrames(graph.frames),
       });
     }
-    // Кадры со scene_id на несуществующую сцену — не терять.
     const shown = new Set(cols.flatMap((c) => c.frames.map((f) => f.id)));
     const rest = orderFrames(graph.frames.filter((f) => !shown.has(f.id)));
     if (rest.length) {
@@ -158,39 +151,25 @@ export function BazaTimeline({
     return cols;
   }, [graph]);
 
-  const toggleFrame = (id: number) =>
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  const frames = useMemo(() => columns.flatMap((c) => c.frames), [columns]);
+  /** scene key по frame id — для границы колонки (первая колонка сцены). */
+  const sceneStartByFrame = useMemo(() => {
+    const m = new Map<number, SceneColumn>();
+    for (const c of columns) {
+      if (c.frames[0]) m.set(c.frames[0].id, c);
+    }
+    return m;
+  }, [columns]);
 
-  const toggleScene = (key: string) =>
-    setCollapsedScenes((prev) => {
+  const toggleRow = (key: RowKey) =>
+    setCollapsedRows((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
       return next;
     });
 
-  const layerToggle = (key: keyof TimelineLayers, label: string) => (
-    <button
-      type="button"
-      onClick={() => setLayers((prev) => ({ ...prev, [key]: !prev[key] }))}
-      className={cn(
-        "shrink-0 rounded-md px-2.5 py-1 text-xs transition-colors",
-        layers[key]
-          ? "bg-primary/20 text-primary"
-          : "bg-white/[0.04] text-white/40 hover:bg-white/[0.08]",
-      )}
-      title={`${layers[key] ? "Скрыть" : "Показать"}: ${label}`}
-    >
-      {label}
-    </button>
-  );
-
-  if (graph.frames.length === 0) {
+  if (frames.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center text-sm text-white/30">
         В базе нет кадров
@@ -198,294 +177,317 @@ export function BazaTimeline({
     );
   }
 
+  const tableWidth = 11 * 16 + frames.length * 13 * 16;
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2">
-      <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-        <span className="mr-1 shrink-0 text-[10px] uppercase tracking-[0.18em] text-white/35">
-          Данные
-        </span>
-        {layerToggle("voiceover", "Закадр")}
-        {layerToggle("prompts", "Промты")}
-        {layerToggle("timing", "Время")}
-        <span className="ml-2 text-[10px] text-white/25">
-          сцены идут слева направо · кадры соединены цепочкой · шеврон на кадре —
-          подробности
-        </span>
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden pb-2">
-        <div className="flex h-full items-stretch gap-0">
-          {columns.map((col, ci) => {
-            const vo = sceneVoiceover(col.frames);
-            const extraVo = col.frames.filter(
-              (f) => f.voiceover_text.trim() && vo && f.id !== vo.frame.id,
-            );
-            const collapsed = collapsedScenes.has(col.key);
-            const total = sceneDuration(col.frames);
-            return (
-              <div key={col.key} className="flex items-stretch">
-                {ci > 0 && (
-                  <div className="flex w-8 shrink-0 flex-col items-center justify-center">
-                    <MoveRight className="h-4 w-4 text-white/25" />
+    <div className="min-h-0 flex-1 overflow-auto pr-1">
+      <table
+        className="border-collapse text-[13px]"
+        style={{ width: tableWidth, tableLayout: "fixed" }}
+      >
+        <thead>
+          {/* Полоса сцен: одна объединённая ячейка на сцену поверх её кадров */}
+          <tr>
+            <th
+              className={cn(
+                "sticky left-0 z-10 border-b border-r border-white/10 bg-[#0a0a0a] px-3 py-2 text-left text-xs font-medium text-white/40",
+                LABEL_W,
+              )}
+            >
+              <span className="flex items-center gap-1.5">
+                <Layers className="h-3.5 w-3.5" />
+                Сцены →
+              </span>
+            </th>
+            {columns.map((col, ci) => {
+              const hue = SCENE_HUES[ci % SCENE_HUES.length];
+              const total = col.frames.reduce((a, f) => a + (f.duration_seconds ?? 0), 0);
+              return (
+                <th
+                  key={col.key}
+                  colSpan={col.frames.length}
+                  className="border-b border-l-2 border-white/10 px-2 py-1.5 text-left"
+                  style={{
+                    borderLeftColor: `hsl(${hue} 70% 55% / 0.8)`,
+                    background: `hsl(${hue} 60% 50% / 0.08)`,
+                  }}
+                  title={col.place || col.title}
+                >
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-white/85">
+                    {ci > 0 && <span className="text-white/30">→</span>}
+                    <span className="truncate">{col.title}</span>
                   </div>
-                )}
-                <section className="flex w-[320px] shrink-0 flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-white/[0.02]">
-                  <header className="flex shrink-0 items-center gap-2 border-b border-white/[0.07] bg-white/[0.03] px-3 py-2">
-                    <Layers className="h-3.5 w-3.5 shrink-0 text-primary/70" />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-xs font-semibold">{col.title}</div>
-                      <div className="text-[10px] text-white/40">
-                        {col.frames.length} кадр.
-                        {layers.timing && total > 0 ? ` · Σ ${total.toFixed(1)}с` : ""}
-                        {col.place ? ` · ${col.place}` : ""}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      title={collapsed ? "Развернуть сцену" : "Свернуть сцену"}
-                      onClick={() => toggleScene(col.key)}
-                      className="rounded p-1 text-white/40 hover:bg-white/10 hover:text-white"
-                    >
-                      {collapsed ? (
-                        <ChevronRight className="h-3.5 w-3.5" />
-                      ) : (
-                        <ChevronDown className="h-3.5 w-3.5" />
-                      )}
-                    </button>
-                  </header>
-
-                  {!collapsed && layers.voiceover && (
-                    <div className="shrink-0 border-b border-white/[0.07] bg-black/25 px-3 py-2">
-                      <div className="mb-1 flex items-center gap-1.5 text-[9px] uppercase tracking-[0.16em] text-white/35">
-                        <Mic className="h-3 w-3" />
-                        Закадр сцены
-                        {vo ? (
-                          <span className="text-white/25">· кадр #{vo.frame.number}</span>
-                        ) : null}
-                      </div>
-                      {vo ? (
-                        <div className="whitespace-pre-wrap text-[11px] leading-snug text-white/80">
-                          {vo.text}
-                        </div>
-                      ) : (
-                        <div className="text-[11px] text-white/25">— нет закадра —</div>
-                      )}
-                      {extraVo.length > 0 && (
-                        <div className="mt-1 text-[9px] text-amber-300/70">
-                          + ещё закадр на кадрах:{" "}
-                          {extraVo.map((f) => `#${f.number}`).join(", ")}
-                        </div>
-                      )}
-                    </div>
+                  <div className="mt-0.5 text-[10px] font-normal text-white/40">
+                    {col.frames.length} кадр.
+                    {total > 0 ? ` · Σ ${total.toFixed(1)}с` : ""}
+                    {col.place ? ` · ${col.place}` : ""}
+                  </div>
+                </th>
+              );
+            })}
+          </tr>
+          {/* Номера кадров */}
+          <tr>
+            <th
+              className={cn(
+                "sticky left-0 z-10 border-b border-r border-white/10 bg-[#0a0a0a] px-3 py-2 text-left text-xs font-medium text-white/40",
+                LABEL_W,
+              )}
+            >
+              Кадр
+            </th>
+            {frames.map((f) => {
+              const sceneStart = sceneStartByFrame.get(f.id);
+              const hue = sceneStart
+                ? SCENE_HUES[columns.indexOf(sceneStart) % SCENE_HUES.length]
+                : null;
+              return (
+                <th
+                  key={f.id}
+                  className={cn(
+                    "cursor-pointer border-b border-white/10 px-2 py-2 text-center font-mono text-xs transition-colors hover:bg-white/[0.06]",
+                    COL_W,
+                    f.id === frameId && "bg-primary/15 text-primary",
                   )}
-
-                  {!collapsed && (
-                    <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
-                      {col.frames.map((f, fi) => (
-                        <div key={f.id}>
-                          {fi > 0 && (
-                            <div className="flex justify-center py-0.5">
-                              <div className="h-3 w-px bg-white/15" />
+                  style={hue ? { borderLeft: `2px solid hsl(${hue} 70% 55% / 0.8)` } : undefined}
+                  onClick={() => onSelect(f.id)}
+                  title={`Кадр #${f.number} — открыть детали справа`}
+                >
+                  #{f.number}
+                </th>
+              );
+            })}
+          </tr>
+        </thead>
+        <tbody>
+          {ROWS.map((row) => {
+            const collapsed = collapsedRows.has(row.key);
+            return (
+              <tr key={row.key} className="border-b border-white/5">
+                <td
+                  className={cn(
+                    "sticky left-0 z-10 border-r border-white/10 bg-[#0a0a0a]/95 px-2 py-2 align-top",
+                    LABEL_W,
+                  )}
+                >
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs font-medium text-white/70 transition hover:bg-white/5"
+                    onClick={() => toggleRow(row.key)}
+                    title={collapsed ? "Показать строку" : "Скрыть строку"}
+                  >
+                    {collapsed ? (
+                      <ChevronRight className="h-4 w-4 shrink-0" />
+                    ) : (
+                      <ChevronDown className="h-4 w-4 shrink-0" />
+                    )}
+                    <span>{row.label}</span>
+                  </button>
+                </td>
+                {row.key === "voiceover"
+                  ? /* Закадр — ОДНА объединённая ячейка на сцену. */
+                    columns.map((col, ci) => {
+                      const hue = SCENE_HUES[ci % SCENE_HUES.length];
+                      const vo = sceneVoiceover(col.frames);
+                      const extra = col.frames.filter(
+                        (f) => f.voiceover_text.trim() && vo && f.id !== vo.frame.id,
+                      );
+                      return (
+                        <td
+                          key={col.key}
+                          colSpan={col.frames.length}
+                          className="border-l-2 px-3 py-2 align-top"
+                          style={{
+                            borderLeftColor: `hsl(${hue} 70% 55% / 0.8)`,
+                            background: `hsl(${hue} 60% 50% / 0.05)`,
+                          }}
+                        >
+                          {collapsed ? (
+                            <div className="h-8 rounded-md bg-black/10" />
+                          ) : vo ? (
+                            <div>
+                              <div className="mb-1 flex items-center gap-1 text-[9px] uppercase tracking-[0.16em] text-white/35">
+                                <Mic className="h-3 w-3" />
+                                кадр #{vo.frame.number}
+                              </div>
+                              <p className="whitespace-pre-wrap text-xs leading-snug text-white/85">
+                                {vo.text}
+                              </p>
+                              {extra.length > 0 && (
+                                <div className="mt-1 text-[9px] text-amber-300/70">
+                                  + ещё закадр на кадрах:{" "}
+                                  {extra.map((f) => `#${f.number}`).join(", ")}
+                                </div>
+                              )}
                             </div>
+                          ) : (
+                            <span className="text-xs text-white/25">— нет закадра —</span>
                           )}
-                          <TimelineFrameCard
-                            frame={f}
-                            active={f.id === frameId}
-                            expanded={expanded.has(f.id)}
-                            layers={layers}
-                            allFrames={graph.frames}
-                            onToggle={() => toggleFrame(f.id)}
-                            onSelect={() => onSelect(f.id)}
-                            onInsertAfter={() => {
-                              if (projectId == null) return;
-                              void (async () => {
-                                await api.dbInsertFrame(projectId, f.id, f.scene_id);
-                                toast.success("Кадр добавлен");
-                                void onChanged();
-                              })();
-                            }}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </section>
-              </div>
+                        </td>
+                      );
+                    })
+                  : frames.map((f) => {
+                      const sceneStart = sceneStartByFrame.get(f.id);
+                      const hue = sceneStart
+                        ? SCENE_HUES[columns.indexOf(sceneStart) % SCENE_HUES.length]
+                        : null;
+                      return (
+                        <td
+                          key={`${f.id}-${row.key}`}
+                          className={cn(
+                            "px-3 py-2 align-top",
+                            f.id === frameId && "bg-primary/[0.07]",
+                          )}
+                          style={
+                            hue
+                              ? { borderLeft: `2px solid hsl(${hue} 70% 55% / 0.35)` }
+                              : undefined
+                          }
+                        >
+                          {collapsed ? (
+                            <div className="h-8 rounded-md bg-black/10" />
+                          ) : (
+                            <FrameCell
+                              row={row.key}
+                              frame={f}
+                              graph={graph}
+                              projectId={projectId}
+                              onChanged={onChanged}
+                            />
+                          )}
+                        </td>
+                      );
+                    })}
+              </tr>
             );
           })}
-        </div>
-      </div>
+        </tbody>
+      </table>
     </div>
   );
 }
 
-function TimelineFrameCard({
+function FrameCell({
+  row,
   frame: f,
-  active,
-  expanded,
-  layers,
-  allFrames,
-  onToggle,
-  onSelect,
-  onInsertAfter,
+  graph,
+  projectId,
+  onChanged,
 }: {
+  row: RowKey;
   frame: DbFrame;
-  active: boolean;
-  expanded: boolean;
-  layers: TimelineLayers;
-  allFrames: DbFrame[];
-  onToggle: () => void;
-  onSelect: () => void;
-  onInsertAfter: () => void;
+  graph: DbGraph;
+  projectId: number | null;
+  onChanged: () => Promise<void>;
 }) {
-  const place = attrStr(f.attrs, "place");
-  const sense = attrStr(f.attrs, "scene_sense");
-  const ownVo = f.voiceover_text.trim();
-  const img = activePrompt(f, "img");
-  const vid = activePrompt(f, "video");
-  const chips = ATTR_CHIPS.map((c) => ({ ...c, value: attrStr(f.attrs, c.key) })).filter(
-    (c) => c.value,
-  );
-
+  if (row === "meaning") {
+    return (
+      <p className="whitespace-pre-wrap text-xs leading-snug text-white/75">
+        {f.meaning || "—"}
+      </p>
+    );
+  }
+  if (row === "img_prompt" || row === "video_prompt") {
+    const text = activePrompt(f, row === "img_prompt" ? "img" : "video");
+    return text.trim() ? (
+      <p className="line-clamp-5 whitespace-pre-wrap text-[11px] leading-snug text-white/60">
+        {text}
+      </p>
+    ) : (
+      <span className="text-xs text-white/25">—</span>
+    );
+  }
+  if (row === "characters") {
+    const chars =
+      attrStr(f.attrs, "characters") ||
+      graph.excel_rows?.[String(f.number)]?.persons ||
+      "";
+    return chars.trim() ? (
+      <div className="flex flex-wrap gap-1">
+        {chars
+          .split(/[,\s]+/)
+          .filter(Boolean)
+          .map((c) => (
+            <span
+              key={c}
+              className="rounded-full border border-white/10 bg-black/30 px-1.5 py-0.5 font-mono text-[10px] text-white/60"
+            >
+              {c}
+            </span>
+          ))}
+      </div>
+    ) : (
+      <span className="text-xs text-white/25">—</span>
+    );
+  }
+  if (row === "timing") {
+    const tc = graph.excel_rows?.[String(f.number)]?.r15_timecode;
+    return (
+      <div className="flex flex-col gap-1 text-[11px] text-white/60">
+        <span className="flex items-center gap-1">
+          <Clock3 className="h-3 w-3 text-white/35" />
+          {f.duration_seconds != null ? `${f.duration_seconds}с` : "—"}
+        </span>
+        {tc ? <span className="font-mono text-[10px] text-white/40">{tc}</span> : null}
+      </div>
+    );
+  }
+  if (row === "status") {
+    const hasImg = !!activePrompt(f, "img").trim();
+    const hasVid = !!activePrompt(f, "video").trim();
+    return (
+      <div className="flex flex-col gap-1">
+        <span className="flex items-center gap-1.5 text-[11px] text-white/70">
+          <span
+            className={cn(
+              "h-2 w-2 shrink-0 rounded-full",
+              STATUS_DOT[f.status ?? ""] ?? "bg-white/30",
+            )}
+          />
+          {STATUS_RU[f.status ?? ""] ?? f.status ?? "—"}
+        </span>
+        <span className="flex gap-1.5 text-[9px]">
+          <span className={hasImg ? "text-emerald-400" : "text-white/25"}>
+            img {hasImg ? "✓" : "—"}
+          </span>
+          <span className={hasVid ? "text-emerald-400" : "text-white/25"}>
+            vid {hasVid ? "✓" : "—"}
+          </span>
+        </span>
+      </div>
+    );
+  }
+  // edges
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") onSelect();
-      }}
-      className={cn(
-        "cursor-pointer rounded-lg border p-2 text-left transition",
-        active
-          ? "border-primary/50 bg-primary/10"
-          : "border-white/[0.08] bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]",
+    <div className="flex flex-col gap-1">
+      {f.edges.length > 0 ? (
+        f.edges.map((e) => (
+          <span
+            key={e.id}
+            className="w-fit rounded-full border border-sky-400/20 bg-sky-500/10 px-1.5 py-0.5 text-[9px] text-sky-300/80"
+          >
+            → кадр {graph.frames.find((x) => x.id === e.to_frame_id)?.number ?? e.to_frame_id}
+          </span>
+        ))
+      ) : (
+        <span className="text-xs text-white/25">—</span>
       )}
-    >
-      <div className="flex items-center gap-1.5">
-        <span
-          className={cn("h-2 w-2 shrink-0 rounded-full", STATUS_DOT[f.status ?? ""] ?? "bg-white/30")}
-          title={STATUS_RU[f.status ?? ""] ?? f.status ?? "—"}
-        />
-        <span className="font-mono text-[11px] text-white/75">#{f.number}</span>
-        <span className="truncate text-[10px] text-white/35">
-          {STATUS_RU[f.status ?? ""] ?? "—"}
-        </span>
-        {layers.timing && f.duration_seconds != null && (
-          <span className="flex shrink-0 items-center gap-0.5 rounded bg-black/40 px-1 py-0.5 text-[9px] text-white/50">
-            <Clock3 className="h-2.5 w-2.5" />
-            {f.duration_seconds}с
-          </span>
-        )}
-        <span className="ml-auto flex shrink-0 gap-1 text-[9px]">
-          <span className={frameHasImg(f) ? "text-emerald-400" : "text-white/25"}>
-            img {frameHasImg(f) ? "✓" : "—"}
-          </span>
-          <span className={frameHasVideo(f) ? "text-emerald-400" : "text-white/25"}>
-            vid {frameHasVideo(f) ? "✓" : "—"}
-          </span>
-        </span>
+      {projectId != null && (
         <button
           type="button"
-          title={expanded ? "Скрыть данные" : "Показать данные"}
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggle();
+          title="Вставить кадр после этого"
+          onClick={() => {
+            void (async () => {
+              await api.dbInsertFrame(projectId, f.id, f.scene_id);
+              toast.success("Кадр добавлен");
+              void onChanged();
+            })();
           }}
-          className="shrink-0 rounded p-0.5 text-white/35 hover:bg-white/10 hover:text-white"
+          className="mt-0.5 flex w-fit items-center gap-1 rounded px-1.5 py-0.5 text-[9px] text-white/35 hover:bg-white/10 hover:text-white"
         >
-          {expanded ? (
-            <ChevronUp className="h-3.5 w-3.5" />
-          ) : (
-            <ChevronDown className="h-3.5 w-3.5" />
-          )}
+          <Plus className="h-3 w-3" />
+          кадр после
         </button>
-      </div>
-
-      <div className="mt-1 line-clamp-2 text-[11px] text-white/80">
-        {place || f.meaning || ownVo || "—"}
-      </div>
-
-      {expanded && (
-        <div className="mt-2 flex flex-col gap-1.5 border-t border-white/[0.07] pt-2">
-          {ownVo && layers.voiceover ? (
-            <div className="rounded bg-black/30 p-1.5">
-              <div className="text-[9px] uppercase tracking-wide text-white/35">
-                Закадр кадра (VO-родитель)
-              </div>
-              <div className="whitespace-pre-wrap text-[10.5px] text-white/75">{ownVo}</div>
-            </div>
-          ) : null}
-          {f.meaning ? (
-            <div className="rounded bg-black/30 p-1.5">
-              <div className="text-[9px] uppercase tracking-wide text-white/35">Смысл</div>
-              <div className="whitespace-pre-wrap text-[10.5px] text-white/70">{f.meaning}</div>
-            </div>
-          ) : null}
-          {sense ? (
-            <div className="rounded bg-black/30 p-1.5">
-              <div className="text-[9px] uppercase tracking-wide text-white/35">Смысл сцены</div>
-              <div className="whitespace-pre-wrap text-[10.5px] text-white/60">{sense}</div>
-            </div>
-          ) : null}
-          {layers.prompts && img ? (
-            <div className="rounded bg-black/30 p-1.5">
-              <div className="text-[9px] uppercase tracking-wide text-white/35">
-                Промт картинки
-              </div>
-              <div className="line-clamp-3 whitespace-pre-wrap text-[10.5px] text-white/60">
-                {img}
-              </div>
-            </div>
-          ) : null}
-          {layers.prompts && vid ? (
-            <div className="rounded bg-black/30 p-1.5">
-              <div className="text-[9px] uppercase tracking-wide text-white/35">Промт видео</div>
-              <div className="line-clamp-3 whitespace-pre-wrap text-[10.5px] text-white/60">
-                {vid}
-              </div>
-            </div>
-          ) : null}
-          {chips.length > 0 && (
-            <div className="flex flex-wrap gap-1">
-              {chips.map((c) => (
-                <span
-                  key={c.key}
-                  title={c.value}
-                  className="rounded-full border border-white/10 bg-black/30 px-1.5 py-0.5 text-[9px] text-white/50"
-                >
-                  {c.label}: {c.value.length > 24 ? `${c.value.slice(0, 24)}…` : c.value}
-                </span>
-              ))}
-            </div>
-          )}
-          {f.edges.length > 0 && (
-            <div className="flex flex-wrap gap-1">
-              {f.edges.map((e) => (
-                <span
-                  key={e.id}
-                  className="rounded-full border border-sky-400/20 bg-sky-500/10 px-1.5 py-0.5 text-[9px] text-sky-300/80"
-                >
-                  → кадр {allFrames.find((x) => x.id === e.to_frame_id)?.number ?? e.to_frame_id}
-                </span>
-              ))}
-            </div>
-          )}
-          <div className="flex justify-end">
-            <button
-              type="button"
-              title="Вставить кадр после"
-              onClick={(e) => {
-                e.stopPropagation();
-                onInsertAfter();
-              }}
-              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] text-white/35 hover:bg-white/10 hover:text-white"
-            >
-              <Plus className="h-3 w-3" />
-              кадр после
-            </button>
-          </div>
-        </div>
       )}
     </div>
   );
