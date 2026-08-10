@@ -314,6 +314,8 @@ export interface MontageBoardMeta {
   video_trims: Record<string, { start: number; end: number }>;
   stale_videos: string[];
   highlights: string[];
+  /** Слоты с ошибкой последнего apply (красная подсветка). */
+  failed_highlights?: string[];
   corrections: Record<string, string>;
   pending_ops?: Array<{
     type: string;

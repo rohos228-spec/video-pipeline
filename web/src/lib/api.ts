@@ -946,6 +946,16 @@ export const api = {
         error?: string | null;
         total_ops?: number;
         done_ops?: number;
+        results?: Array<{
+          ok?: boolean;
+          error?: string;
+          highlight?: string;
+          op?: {
+            type?: string;
+            frame_number?: number;
+            shot?: number;
+          };
+        }>;
       };
     }>(`/api/projects/${projectId}/montage-board/apply-status`),
 

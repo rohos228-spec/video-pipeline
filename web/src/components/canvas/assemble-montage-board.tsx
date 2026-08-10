@@ -88,6 +88,23 @@ function trimKey(frameNumber: number, shot: 1 | 2): string {
   return `${frameNumber}:${shot}`;
 }
 
+/** Ключ слота: image → `N:imageS`, video → `N:S`. */
+function slotKeyFromOp(op: Pick<MontagePendingOp, "type" | "frame_number" | "shot">): string {
+  if (String(op.type || "").startsWith("image_")) {
+    return `${op.frame_number}:image${op.shot}`;
+  }
+  return trimKey(op.frame_number, op.shot);
+}
+
+type SlotTone = "applied" | "pending" | "failed";
+
+function slotToneRing(tone: SlotTone | undefined): string | false {
+  if (tone === "failed") return "ring-2 ring-rose-500/80";
+  if (tone === "pending") return "ring-2 ring-amber-400/70";
+  if (tone === "applied") return "ring-2 ring-emerald-400/60";
+  return false;
+}
+
 function voiceoverForFrame(fr: MontageBoardFrame): string {
   return (fr.voiceover_excel || fr.voiceover_text || "").trim();
 }
@@ -510,7 +527,7 @@ const ClickableMedia = memo(function ClickableMedia({
   onRegenWithCorrection,
   onDelete,
   onUpload,
-  highlighted,
+  slotTone,
   stale,
   scrollRootRef,
   imageSlot,
@@ -529,7 +546,8 @@ const ClickableMedia = memo(function ClickableMedia({
   onRegenWithCorrection?: () => void;
   onDelete: () => void;
   onUpload: (file: File) => void;
-  highlighted?: boolean;
+  /** applied=зелёный, pending=янтарь (очередь), failed=красный. */
+  slotTone?: SlotTone;
   stale?: boolean;
   scrollRootRef?: RefObject<HTMLDivElement | null>;
   /** Слот картинки: drag с файла + drop в пустую/занятую ячейку. */
@@ -587,7 +605,7 @@ const ClickableMedia = memo(function ClickableMedia({
       <div
         className={cn(
           "rounded-lg",
-          highlighted && "ring-2 ring-emerald-400/60",
+          slotToneRing(slotTone),
           swapSelected && "ring-2 ring-amber-400/70",
           dragOver && "ring-2 ring-sky-400/70",
         )}
@@ -625,8 +643,9 @@ const ClickableMedia = memo(function ClickableMedia({
       ref={hostRef}
       className={cn(
         "rounded-lg",
-        highlighted && "ring-2 ring-emerald-400/60",
-        stale && "ring-2 ring-amber-500/50",
+        slotToneRing(slotTone),
+        // stale только если нет статуса apply (иначе failed/pending важнее).
+        !slotTone && stale && "ring-2 ring-amber-500/50",
         swapSelected && "ring-2 ring-amber-400/70",
         dragOver && "ring-2 ring-sky-400/70",
       )}
@@ -888,7 +907,7 @@ const VideoMediaCell = memo(function VideoMediaCell({
   onAiChange,
   onDelete,
   onUpload,
-  highlighted,
+  slotTone,
   stale,
   scrollRootRef,
   onSwapPick,
@@ -906,7 +925,7 @@ const VideoMediaCell = memo(function VideoMediaCell({
   onAiChange: () => void;
   onDelete: () => void;
   onUpload: (file: File) => void;
-  highlighted?: boolean;
+  slotTone?: SlotTone;
   stale?: boolean;
   scrollRootRef?: RefObject<HTMLDivElement | null>;
   onSwapPick?: () => void;
@@ -936,7 +955,7 @@ const VideoMediaCell = memo(function VideoMediaCell({
         onAiChange={onAiChange}
         onDelete={onDelete}
         onUpload={onUpload}
-        highlighted={highlighted}
+        slotTone={slotTone}
         stale={stale}
         scrollRootRef={scrollRootRef}
         onSwapPick={onSwapPick}
@@ -1101,6 +1120,7 @@ export function AssembleMontageBoard({
   const [pendingOps, setPendingOps] = useState<MontagePendingOp[]>([]);
   const [promptModal, setPromptModal] = useState<PromptModalState>(null);
   const [highlights, setHighlights] = useState<string[]>([]);
+  const [failedHighlights, setFailedHighlights] = useState<string[]>([]);
   const [staleVideos, setStaleVideos] = useState<string[]>([]);
   const [montageRunning, setMontageRunning] = useState(false);
   const [applyRunning, setApplyRunning] = useState(false);
@@ -1152,6 +1172,7 @@ export function AssembleMontageBoard({
     applySeenRunningRef.current = false;
     setTrims({});
     setHighlights([]);
+    setFailedHighlights([]);
     setStaleVideos([]);
     setApplyRunning(false);
     setApplyProgress(null);
@@ -1218,6 +1239,7 @@ export function AssembleMontageBoard({
     if (board.isFetching) return;
 
     setHighlights(meta?.highlights ?? []);
+    setFailedHighlights(meta?.failed_highlights ?? []);
     setStaleVideos(meta?.stale_videos ?? []);
     if (!trimsDirtyRef.current) {
       setTrims(mergeTrimsFromMeta(frames, meta?.video_trims ?? {}));
@@ -1246,6 +1268,7 @@ export function AssembleMontageBoard({
     frames.length,
     meta?.video_trims,
     meta?.highlights,
+    meta?.failed_highlights,
     meta?.stale_videos,
     pendingOpsKey,
     applyRunning,
@@ -1285,6 +1308,7 @@ export function AssembleMontageBoard({
         trimsDirtyRef.current = false;
         setPendingOps([]);
         pendingOpsRef.current = [];
+        setFailedHighlights([]);
         applySeenRunningRef.current = false;
         setApplyRunning(true);
         lastApplyToastKeyRef.current = "";
@@ -1305,6 +1329,7 @@ export function AssembleMontageBoard({
       pendingOpsRef.current = [];
       if (res.meta) {
         setHighlights(res.meta.highlights ?? []);
+        setFailedHighlights(res.meta.failed_highlights ?? []);
         setStaleVideos(res.meta.stale_videos ?? []);
         if (res.meta.video_trims) {
           setTrims(mergeTrimsFromMeta(frames, res.meta.video_trims));
@@ -1418,6 +1443,8 @@ export function AssembleMontageBoard({
         .then((data) => {
           const hl = data?.meta?.highlights;
           if (Array.isArray(hl)) setHighlights(hl.map(String));
+          const failed = data?.meta?.failed_highlights;
+          if (Array.isArray(failed)) setFailedHighlights(failed.map(String));
           const stale = data?.meta?.stale_videos;
           if (Array.isArray(stale)) setStaleVideos(stale.map(String));
           const restored = parsePendingOps(data?.meta?.pending_ops);
@@ -1536,6 +1563,7 @@ export function AssembleMontageBoard({
           const hl = evt.payload.highlight;
           if (typeof hl === "string" && hl) {
             setHighlights((prev) => (prev.includes(hl) ? prev : [...prev, hl]));
+            setFailedHighlights((prev) => prev.filter((k) => k !== hl));
           }
         } else if (status === "done" || status === "error" || status === "cancelled") {
           if (!applySeenRunningRef.current && status !== "cancelled") return;
@@ -1885,7 +1913,36 @@ export function AssembleMontageBoard({
     queueOp(op);
   };
 
-  const isHighlighted = (key: string) => highlights.includes(key);
+  const pendingSlotKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const op of pendingOps) {
+      keys.add(slotKeyFromOp(op));
+    }
+    return keys;
+  }, [pendingOps]);
+
+  const failedSlotKeys = useMemo(() => new Set(failedHighlights), [failedHighlights]);
+  const appliedSlotKeys = useMemo(() => new Set(highlights), [highlights]);
+
+  const toneForSlot = useCallback(
+    (key: string): SlotTone | undefined => {
+      // failed > pending (доделать) > applied
+      if (failedSlotKeys.has(key)) return "failed";
+      if (pendingSlotKeys.has(key)) return "pending";
+      if (appliedSlotKeys.has(key)) return "applied";
+      return undefined;
+    },
+    [failedSlotKeys, pendingSlotKeys, appliedSlotKeys],
+  );
+
+  const pendingOnlyCount = useMemo(() => {
+    let n = 0;
+    for (const key of pendingSlotKeys) {
+      if (!failedSlotKeys.has(key)) n += 1;
+    }
+    return n;
+  }, [pendingSlotKeys, failedSlotKeys]);
+
   const isStaleVideo = (frameNumber: number, shot: 1 | 2) =>
     staleVideos.includes(trimKey(frameNumber, shot));
 
@@ -1963,6 +2020,30 @@ export function AssembleMontageBoard({
                   ? `Обмен ${swapPick.kind === "image" ? "картинок" : "видео"}: выбран #${swapPick.frameNumber}.${swapPick.shot} — нажмите ↔ на другом слоте (Esc — отмена)`
                   : "Кадры ролика — ↔ на двух слотах меняет местами картинки или видео"}
               </p>
+              {(highlights.length > 0 ||
+                failedHighlights.length > 0 ||
+                pendingOnlyCount > 0) && (
+                <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                  {highlights.length > 0 && (
+                    <span>
+                      <span className="mr-1 inline-block h-2 w-2 rounded-full bg-emerald-400/80" />
+                      применено {highlights.length}
+                    </span>
+                  )}
+                  {pendingOnlyCount > 0 && (
+                    <span>
+                      <span className="mr-1 inline-block h-2 w-2 rounded-full bg-amber-400/80" />
+                      в очереди {pendingOnlyCount}
+                    </span>
+                  )}
+                  {failedHighlights.length > 0 && (
+                    <span>
+                      <span className="mr-1 inline-block h-2 w-2 rounded-full bg-rose-500/80" />
+                      ошибка {failedHighlights.length}
+                    </span>
+                  )}
+                </p>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -2214,7 +2295,7 @@ export function AssembleMontageBoard({
                                   }
                                   onDelete={() => void handleDeleteImage(fr.number, 1)}
                                   onUpload={(file) => void handleUploadImage(fr.number, 1, file)}
-                                  highlighted={isHighlighted(`${fr.number}:image1`)}
+                                  slotTone={toneForSlot(`${fr.number}:image1`)}
                                   onSwapPick={() =>
                                     void handleSwapPick({
                                       kind: "image",
@@ -2260,7 +2341,7 @@ export function AssembleMontageBoard({
                                   }
                                   onDelete={() => void handleDeleteImage(fr.number, 2)}
                                   onUpload={(file) => void handleUploadImage(fr.number, 2, file)}
-                                  highlighted={isHighlighted(`${fr.number}:image2`)}
+                                  slotTone={toneForSlot(`${fr.number}:image2`)}
                                   onSwapPick={() =>
                                     void handleSwapPick({
                                       kind: "image",
@@ -2297,7 +2378,7 @@ export function AssembleMontageBoard({
                                   }
                                   onDelete={() => void handleDeleteVideo(fr.number, 1)}
                                   onUpload={(file) => void handleUploadVideo(fr.number, 1, file)}
-                                  highlighted={isHighlighted(trimKey(fr.number, 1))}
+                                  slotTone={toneForSlot(trimKey(fr.number, 1))}
                                   stale={isStaleVideo(fr.number, 1)}
                                   onSwapPick={() =>
                                     void handleSwapPick({
@@ -2335,7 +2416,7 @@ export function AssembleMontageBoard({
                                   }
                                   onDelete={() => void handleDeleteVideo(fr.number, 2)}
                                   onUpload={(file) => void handleUploadVideo(fr.number, 2, file)}
-                                  highlighted={isHighlighted(trimKey(fr.number, 2))}
+                                  slotTone={toneForSlot(trimKey(fr.number, 2))}
                                   stale={isStaleVideo(fr.number, 2)}
                                   onSwapPick={() =>
                                     void handleSwapPick({

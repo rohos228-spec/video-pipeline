@@ -23,8 +23,12 @@ from app.db import session_scope
 from app.models import Project
 from app.services.img_streams import acquire_image_slot, get_img_streams
 from app.services.montage_board_meta import (
+    add_failed_highlight,
     add_highlight,
+    clear_failed_highlight,
+    clear_failed_highlights,
     clear_highlights,
+    slot_key_from_op,
     montage_meta,
     public_board_meta,
     set_montage_meta,
@@ -391,9 +395,15 @@ async def _run_ops_phase(
                 highlight = result.get("highlight")
                 if highlight:
                     add_highlight(board, str(highlight))
+                    clear_failed_highlight(board, str(highlight))
             else:
                 errors.append(str(result.get("error") or "error"))
                 results.append(result)
+                fail_key = slot_key_from_op(all_ops[idx])
+                if not fail_key and isinstance(result.get("op"), dict):
+                    fail_key = slot_key_from_op(result.get("op"))
+                if fail_key:
+                    add_failed_highlight(board, fail_key)
             board["pending_ops"] = _pending_snapshot()
             async with session_scope() as session:
                 project = await session.get(Project, project_id)
@@ -444,6 +454,7 @@ async def apply_montage_board(
         list(pending_ops or board.get("pending_ops") or [])
     )
     clear_highlights(board)
+    clear_failed_highlights(board)
 
     results: list[dict[str, Any]] = []
     errors: list[str] = []
