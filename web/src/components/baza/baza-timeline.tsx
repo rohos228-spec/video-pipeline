@@ -276,7 +276,7 @@ export function BazaTimeline({
   );
 }
 
-/** Бусина кадра — минимум: статус-точка, номер, время, микро-маркеры img/vid. */
+/** Бусина кадра — фильм-стрип: реальная картинка кадра 9:16 + оверлеи. */
 function FrameBead({
   frame: f,
   active,
@@ -296,35 +296,51 @@ function FrameBead({
       onClick={onClick}
       title={`Кадр #${f.number} — ${STATUS_RU[f.status ?? ""] ?? "—"}. Клик — данные кадра`}
       className={cn(
-        "w-[5.6rem] shrink-0 rounded-xl border px-2 py-1.5 text-left transition-all",
+        "group relative w-[76px] shrink-0 overflow-hidden rounded-xl border text-left transition-all",
         open
-          ? "border-primary/60 bg-primary/15"
+          ? "border-primary/70 ring-2 ring-primary/40"
           : active
-            ? "border-primary/40 bg-primary/[0.08]"
-            : "border-white/10 bg-white/[0.03] hover:border-white/25 hover:bg-white/[0.06]",
+            ? "border-primary/50 ring-1 ring-primary/30"
+            : "border-white/10 hover:border-white/30",
       )}
     >
-      <div className="flex items-center gap-1">
+      <div className="aspect-[9/16] w-full bg-black/40">
+        {f.image_url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={f.image_url}
+            alt={`Кадр #${f.number}`}
+            className="h-full w-full object-cover"
+            loading="lazy"
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-white/15">
+            <span className="font-mono text-sm">#{f.number}</span>
+          </div>
+        )}
+      </div>
+      {/* Оверлеи: номер+статус сверху, время и маркеры снизу */}
+      <div className="absolute inset-x-0 top-0 flex items-center gap-1 bg-gradient-to-b from-black/70 to-transparent px-1.5 pb-2.5 pt-1">
         <span
           className={cn(
             "h-1.5 w-1.5 shrink-0 rounded-full",
             STATUS_DOT[f.status ?? ""] ?? "bg-white/30",
           )}
         />
-        <span className="font-mono text-[11px] font-medium text-white/85">#{f.number}</span>
+        <span className="font-mono text-[10px] font-medium text-white/90">#{f.number}</span>
         <span className="ml-auto flex gap-1">
           <span
-            className={cn("h-1 w-1 rounded-full", hasImg ? "bg-emerald-400" : "bg-white/15")}
+            className={cn("h-1 w-1 rounded-full", hasImg ? "bg-emerald-400" : "bg-white/20")}
             title={hasImg ? "промт картинки есть" : "нет промта картинки"}
           />
           <span
-            className={cn("h-1 w-1 rounded-full", hasVid ? "bg-violet-400" : "bg-white/15")}
+            className={cn("h-1 w-1 rounded-full", hasVid ? "bg-violet-400" : "bg-white/20")}
             title={hasVid ? "промт видео есть" : "нет промта видео"}
           />
         </span>
       </div>
       {f.duration_seconds != null && (
-        <div className="mt-0.5 flex items-center gap-0.5 text-[9px] text-white/35">
+        <div className="absolute inset-x-0 bottom-0 flex items-center gap-0.5 bg-gradient-to-t from-black/70 to-transparent px-1.5 pb-1 pt-2.5 text-[9px] text-white/70">
           <Clock3 className="h-2.5 w-2.5" />
           {f.duration_seconds}с
         </div>

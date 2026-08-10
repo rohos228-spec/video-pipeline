@@ -290,6 +290,8 @@ export interface DbFrame {
   meaning: string | null;
   image_prompt?: string | null;
   animation_prompt?: string | null;
+  /** Превью картинки кадра (scenes/frame_NNN_*.png) — для фильм-стрипа. */
+  image_url?: string | null;
   attrs: Record<string, unknown>;
   texts: DbFrameText[];
   prompts: DbPromptVersion[];
