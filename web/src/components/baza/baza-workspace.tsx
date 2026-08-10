@@ -19,6 +19,7 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { StudioExcelGrid } from "@/components/studio/studio-excel-grid";
+import { BazaTimeline } from "./baza-timeline";
 import {
   api,
   type DbExcelRow,
@@ -161,8 +162,8 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
   const [frameId, setFrameId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState<"frames" | "entities">("frames");
-  /** Основной вид «Базы» — карточки DB; Excel только зеркало (опционально). */
-  const [framesView, setFramesView] = useState<"cards" | "excel">("cards");
+  /** Основной вид «Базы» — хронология (сцены слева направо); карточки/Excel — опционально. */
+  const [framesView, setFramesView] = useState<"timeline" | "cards" | "excel">("timeline");
   /** Вкладки = бывшие листы Excel (кадры: «Общий план», «план»; сущности: «Персонажи»…). */
   const [frameSheets, setFrameSheets] = useState<string[]>([...FRAME_SHEETS_DEFAULT]);
   const [entitySheets, setEntitySheets] = useState<string[]>([...ENTITY_SHEETS_DEFAULT]);
@@ -469,6 +470,17 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
                     </span>
                     <button
                       type="button"
+                      onClick={() => setFramesView("timeline")}
+                      className={`shrink-0 rounded-md px-2.5 py-1 text-xs ${
+                        framesView === "timeline"
+                          ? "bg-primary/20 text-primary"
+                          : "bg-white/[0.04] text-white/55 hover:bg-white/[0.08]"
+                      }`}
+                    >
+                      Хронология
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => setFramesView("cards")}
                       className={`shrink-0 rounded-md px-2.5 py-1 text-xs ${
                         framesView === "cards"
@@ -510,7 +522,17 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
                     ) : null}
                   </div>
 
-                  {framesView === "cards" ? (
+                  {framesView === "timeline" ? (
+                    scopedGraph ? (
+                      <BazaTimeline
+                        graph={scopedGraph}
+                        frameId={frameId}
+                        onSelect={setFrameId}
+                        projectId={projectId}
+                        onChanged={handleChanged}
+                      />
+                    ) : null
+                  ) : framesView === "cards" ? (
                     <FramesCardsPanel
                       graph={scopedGraph}
                       frameId={frameId}
