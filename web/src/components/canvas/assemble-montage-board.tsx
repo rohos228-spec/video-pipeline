@@ -1229,6 +1229,19 @@ export function AssembleMontageBoard({
     void queryClient.resetQueries({ queryKey: ["montage-board", projectId] });
   }, [open, projectId, queryClient]);
 
+  // При закрытии панели — сразу сохранить очередь (не ждать debounce).
+  useEffect(() => {
+    if (open || projectId == null) return;
+    if (!localQueueDirtyRef.current) return;
+    const ops = pendingOpsRef.current;
+    void api
+      .saveMontageQueue(projectId, { pending_ops: ops })
+      .then(() => {
+        localQueueDirtyRef.current = false;
+      })
+      .catch(() => {});
+  }, [open, projectId]);
+
   const frames = board.data?.frames ?? [];
   const meta = board.data?.meta;
   const pendingOpsKey = JSON.stringify(meta?.pending_ops ?? []);
@@ -1283,15 +1296,15 @@ export function AssembleMontageBoard({
     if (board.data == null) return;
 
     const restored = parsePendingOps(meta?.pending_ops);
-    if (localQueueDirtyRef.current && restored.length === 0) {
-      // Локальная очередь пользователя важнее пустого meta.
+    // Пока пользователь набирает очередь (dirty) — НИКОГДА не затирать её
+    // серверным meta. Иначе: локально 40+, на сервере старые 8 → «стало 8».
+    if (localQueueDirtyRef.current) {
       return;
     }
     const nextKey = JSON.stringify(restored);
     if (nextKey === JSON.stringify(pendingOpsRef.current)) return;
     pendingOpsRef.current = restored;
     setPendingOps(restored);
-    localQueueDirtyRef.current = false;
   }, [
     projectId,
     board.data,
