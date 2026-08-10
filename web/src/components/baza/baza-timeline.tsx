@@ -1,12 +1,12 @@
 "use client";
 
 /**
- * «Хронология» — лёгкая структура проекта: сцены и кадры на одной
- * горизонтальной оси слева направо. Кадры — компактные бусины, соединённые
- * линией цепочки; сцены — лёгкие тонированные группы со стрелкой между ними.
- * Никакого всегда видимого текста: закадр сцены открывается шевроном в
- * шапке сцены (1 на сцену), данные кадра — кликом по бусине (раскрытие
- * внутри группы). Всё сворачивается.
+ * «Хронология» — фильм-стрип проекта: сцены и кадры на одной горизонтальной
+ * оси слева направо. Кадры — превью-тумбы 9:16 с реальными картинками на
+ * общем рельсе-линии; сцены — стеклянные группы с цветовым акцентом.
+ * Никакого всегда видимого текста: закадр сцены — за тумблером в шапке
+ * (1 на сцену), данные кадра — по клику на тумб (карточка внутри группы).
+ * Всё сворачивается, раскрытие — с плавной анимацией.
  */
 
 import { useMemo, useState } from "react";
@@ -14,6 +14,7 @@ import {
   ChevronDown,
   ChevronRight,
   Clock3,
+  ImageOff,
   Mic,
   MoveRight,
   Plus,
@@ -24,7 +25,7 @@ import { api, type DbFrame, type DbGraph, type DbScene } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const STATUS_DOT: Record<string, string> = {
-  planned: "bg-white/30",
+  planned: "bg-white/40",
   image_prompt_ready: "bg-sky-400",
   image_generated: "bg-emerald-400",
   image_approved: "bg-emerald-500",
@@ -88,6 +89,14 @@ function sceneVoiceover(frames: DbFrame[]): { text: string; frame: DbFrame } | n
   return null;
 }
 
+function sceneProgress(frames: DbFrame[]): number {
+  if (!frames.length) return 0;
+  const done = frames.filter((f) =>
+    ["video_generated", "video_approved"].includes(f.status ?? ""),
+  ).length;
+  return done / frames.length;
+}
+
 export function BazaTimeline({
   graph,
   frameId,
@@ -101,11 +110,8 @@ export function BazaTimeline({
   projectId: number | null;
   onChanged: () => Promise<void>;
 }) {
-  /** Раскрытый кадр (данные внутри группы) — один глобально. */
   const [openFrame, setOpenFrame] = useState<number | null>(null);
-  /** Сцены с раскрытым закадром. */
   const [voScenes, setVoScenes] = useState<Set<string>>(new Set());
-  /** Сцены со скрытой цепочкой кадров. */
   const [collapsedScenes, setCollapsedScenes] = useState<Set<string>>(new Set());
 
   const columns = useMemo<SceneColumn[]>(() => {
@@ -156,14 +162,15 @@ export function BazaTimeline({
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-x-auto overflow-y-auto pb-2">
-      <div className="flex min-w-max items-start gap-1 px-1 py-1">
+    <div className="min-h-0 flex-1 overflow-auto px-1 py-2">
+      <div className="flex min-w-max items-start gap-2">
         {columns.map((col, ci) => {
           const hue = SCENE_HUES[ci % SCENE_HUES.length];
           const vo = sceneVoiceover(col.frames);
           const voOpen = voScenes.has(col.key);
           const collapsed = collapsedScenes.has(col.key);
           const total = col.frames.reduce((a, f) => a + (f.duration_seconds ?? 0), 0);
+          const progress = sceneProgress(col.frames);
           const openInScene =
             openFrame != null && col.frames.some((f) => f.id === openFrame)
               ? openFrame
@@ -171,80 +178,123 @@ export function BazaTimeline({
           return (
             <div key={col.key} className="flex items-start">
               {ci > 0 && (
-                <div className="flex h-[52px] w-6 shrink-0 items-center justify-center">
-                  <MoveRight className="h-3.5 w-3.5 text-white/20" />
+                <div className="flex h-[120px] w-7 shrink-0 items-center justify-center">
+                  <div className="flex items-center">
+                    <div className="h-px w-3 bg-gradient-to-r from-white/5 to-white/25" />
+                    <MoveRight className="h-3.5 w-3.5 text-white/25" />
+                  </div>
                 </div>
               )}
               <section
-                className="shrink-0 rounded-2xl border p-2"
-                style={{
-                  borderColor: `hsl(${hue} 60% 55% / 0.25)`,
-                  background: `hsl(${hue} 60% 50% / 0.045)`,
-                }}
+                className="shrink-0 rounded-2xl border border-white/[0.07] bg-white/[0.02] shadow-[0_12px_40px_rgba(0,0,0,0.35)] backdrop-blur-sm"
+                style={{ boxShadow: `0 12px 40px rgba(0,0,0,0.35), 0 0 0 1px hsl(${hue} 60% 55% / 0.06), 0 0 32px hsl(${hue} 60% 50% / 0.05)` }}
               >
-                {/* Шапка сцены: название + мета, закадр скрыт за шевроном */}
-                <header className="flex items-center gap-1.5 px-1 pb-1.5">
+                {/* Цветовая кромка сцены */}
+                <div
+                  className="h-[3px] rounded-t-2xl"
+                  style={{
+                    background: `linear-gradient(90deg, hsl(${hue} 75% 60% / 0.9), hsl(${hue} 75% 60% / 0.15))`,
+                  }}
+                />
+                <header className="flex items-center gap-2 px-3 pb-1.5 pt-2.5">
                   <span
-                    className="h-2 w-2 shrink-0 rounded-full"
-                    style={{ background: `hsl(${hue} 75% 60%)` }}
-                  />
-                  <span className="max-w-[16rem] truncate text-xs font-semibold text-white/85">
-                    {col.title}
-                  </span>
-                  <span className="shrink-0 text-[10px] text-white/35">
-                    {col.frames.length} кадр.{total > 0 ? ` · Σ ${total.toFixed(1)}с` : ""}
-                  </span>
-                  <button
-                    type="button"
-                    title={voOpen ? "Скрыть закадр сцены" : "Показать закадр сцены"}
-                    onClick={() => setVoScenes((s) => toggleSet(s, col.key))}
-                    className={cn(
-                      "ml-auto flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[9px] transition-colors",
-                      voOpen
-                        ? "bg-white/10 text-white/70"
-                        : "text-white/35 hover:bg-white/5 hover:text-white/60",
-                    )}
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-[10px] font-bold text-white/90"
+                    style={{
+                      background: `linear-gradient(145deg, hsl(${hue} 70% 55% / 0.9), hsl(${hue} 70% 40% / 0.7))`,
+                    }}
                   >
-                    <Mic className="h-3 w-3" />
-                    {voOpen ? "скрыть" : "закадр"}
-                  </button>
-                  <button
-                    type="button"
-                    title={collapsed ? "Развернуть кадры" : "Свернуть кадры"}
-                    onClick={() => setCollapsedScenes((s) => toggleSet(s, col.key))}
-                    className="shrink-0 rounded p-0.5 text-white/35 hover:bg-white/10 hover:text-white"
-                  >
-                    {collapsed ? (
-                      <ChevronRight className="h-3.5 w-3.5" />
-                    ) : (
-                      <ChevronDown className="h-3.5 w-3.5" />
-                    )}
-                  </button>
+                    {ci + 1}
+                  </span>
+                  <div className="min-w-0">
+                    <div className="max-w-[15rem] truncate text-xs font-semibold tracking-tight text-white/90">
+                      {col.title}
+                    </div>
+                    <div className="mt-px text-[10px] text-white/35">
+                      {col.frames.length} кадр.
+                      {total > 0 ? ` · Σ ${total.toFixed(1)}с` : ""}
+                      {col.place ? ` · ${col.place}` : ""}
+                    </div>
+                  </div>
+                  <div className="ml-auto flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      title={voOpen ? "Скрыть закадр сцены" : "Показать закадр сцены"}
+                      onClick={() => setVoScenes((s) => toggleSet(s, col.key))}
+                      className={cn(
+                        "flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-medium transition-all",
+                        voOpen
+                          ? "border-white/20 bg-white/10 text-white/80"
+                          : "border-white/10 text-white/35 hover:border-white/20 hover:text-white/60",
+                      )}
+                    >
+                      <Mic className="h-3 w-3" />
+                      закадр
+                      {vo && !voOpen && (
+                        <span
+                          className="h-1 w-1 rounded-full"
+                          style={{ background: `hsl(${hue} 80% 65%)` }}
+                        />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      title={collapsed ? "Развернуть кадры" : "Свернуть кадры"}
+                      onClick={() => setCollapsedScenes((s) => toggleSet(s, col.key))}
+                      className="rounded-full p-1 text-white/35 transition-colors hover:bg-white/10 hover:text-white"
+                    >
+                      {collapsed ? (
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      ) : (
+                        <ChevronDown className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  </div>
                 </header>
 
+                {/* Прогресс сцены: доля кадров с готовым видео */}
+                {!collapsed && col.frames.length > 1 && (
+                  <div className="mx-3 mb-1 h-[2px] overflow-hidden rounded-full bg-white/[0.06]">
+                    <div
+                      className="h-full rounded-full transition-all duration-500"
+                      style={{
+                        width: `${Math.round(progress * 100)}%`,
+                        background: `hsl(${hue} 75% 58% / 0.8)`,
+                      }}
+                    />
+                  </div>
+                )}
+
                 {voOpen && (
-                  <div className="mb-2 max-w-[26rem] rounded-lg bg-black/25 px-2.5 py-2">
-                    {vo ? (
-                      <>
-                        <div className="mb-0.5 text-[9px] uppercase tracking-[0.16em] text-white/35">
-                          Закадр сцены · кадр #{vo.frame.number}
-                        </div>
-                        <p className="whitespace-pre-wrap text-[11px] leading-snug text-white/80">
-                          {vo.text}
-                        </p>
-                      </>
-                    ) : (
-                      <span className="text-[11px] text-white/25">— нет закадра —</span>
-                    )}
+                  <div className="animate-in fade-in slide-in-from-top-1 mx-3 mb-2 duration-200">
+                    <div
+                      className="max-w-[26rem] rounded-xl border-l-2 bg-black/30 px-3 py-2"
+                      style={{ borderLeftColor: `hsl(${hue} 75% 60% / 0.7)` }}
+                    >
+                      {vo ? (
+                        <>
+                          <div className="mb-0.5 flex items-center gap-1 text-[9px] uppercase tracking-[0.16em] text-white/35">
+                            <Mic className="h-3 w-3" />
+                            Закадр сцены · кадр #{vo.frame.number}
+                          </div>
+                          <p className="whitespace-pre-wrap text-[11px] italic leading-snug text-white/80">
+                            {vo.text}
+                          </p>
+                        </>
+                      ) : (
+                        <span className="text-[11px] text-white/25">— нет закадра —</span>
+                      )}
+                    </div>
                   </div>
                 )}
 
                 {!collapsed && (
-                  <div className="flex items-center">
-                    {col.frames.map((f, fi) => (
-                      <div key={f.id} className="flex items-center">
-                        {fi > 0 && <div className="h-px w-3 shrink-0 bg-white/15" />}
+                  <div className="relative px-3 pb-3">
+                    {/* Рельс хронологии за тумбами */}
+                    <div className="pointer-events-none absolute inset-x-3 top-[60px] h-px bg-gradient-to-r from-white/[0.04] via-white/[0.14] to-white/[0.04]" />
+                    <div className="relative flex items-center gap-1.5">
+                      {col.frames.map((f) => (
                         <FrameBead
+                          key={f.id}
                           frame={f}
                           active={f.id === frameId}
                           open={openFrame === f.id}
@@ -253,8 +303,8 @@ export function BazaTimeline({
                             onSelect(f.id);
                           }}
                         />
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
                 )}
 
@@ -276,7 +326,7 @@ export function BazaTimeline({
   );
 }
 
-/** Бусина кадра — фильм-стрип: реальная картинка кадра 9:16 + оверлеи. */
+/** Тумб кадра на рельсе: картинка 9:16, scrim-оверлеи, hover-подъём. */
 function FrameBead({
   frame: f,
   active,
@@ -296,7 +346,7 @@ function FrameBead({
       onClick={onClick}
       title={`Кадр #${f.number} — ${STATUS_RU[f.status ?? ""] ?? "—"}. Клик — данные кадра`}
       className={cn(
-        "group relative w-[76px] shrink-0 overflow-hidden rounded-xl border text-left transition-all",
+        "group relative w-[76px] shrink-0 overflow-hidden rounded-xl border text-left shadow-lg shadow-black/40 transition-all duration-200 hover:-translate-y-1 hover:shadow-xl",
         open
           ? "border-primary/70 ring-2 ring-primary/40"
           : active
@@ -304,43 +354,45 @@ function FrameBead({
             : "border-white/10 hover:border-white/30",
       )}
     >
-      <div className="aspect-[9/16] w-full bg-black/40">
+      <div className="aspect-[9/16] w-full overflow-hidden bg-black/50">
         {f.image_url ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={f.image_url}
             alt={`Кадр #${f.number}`}
-            className="h-full w-full object-cover"
+            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.06]"
             loading="lazy"
           />
         ) : (
-          <div className="flex h-full w-full items-center justify-center text-white/15">
-            <span className="font-mono text-sm">#{f.number}</span>
+          <div className="flex h-full w-full flex-col items-center justify-center gap-1 text-white/15">
+            <ImageOff className="h-4 w-4" />
+            <span className="font-mono text-[10px]">#{f.number}</span>
           </div>
         )}
       </div>
-      {/* Оверлеи: номер+статус сверху, время и маркеры снизу */}
-      <div className="absolute inset-x-0 top-0 flex items-center gap-1 bg-gradient-to-b from-black/70 to-transparent px-1.5 pb-2.5 pt-1">
+      <div className="absolute inset-x-0 top-0 flex items-center gap-1 bg-gradient-to-b from-black/75 via-black/30 to-transparent px-1.5 pb-3 pt-1">
         <span
           className={cn(
-            "h-1.5 w-1.5 shrink-0 rounded-full",
-            STATUS_DOT[f.status ?? ""] ?? "bg-white/30",
+            "h-1.5 w-1.5 shrink-0 rounded-full ring-1 ring-black/40",
+            STATUS_DOT[f.status ?? ""] ?? "bg-white/40",
           )}
         />
-        <span className="font-mono text-[10px] font-medium text-white/90">#{f.number}</span>
+        <span className="font-mono text-[10px] font-semibold text-white/95 drop-shadow">
+          #{f.number}
+        </span>
         <span className="ml-auto flex gap-1">
           <span
-            className={cn("h-1 w-1 rounded-full", hasImg ? "bg-emerald-400" : "bg-white/20")}
+            className={cn("h-1 w-1 rounded-full", hasImg ? "bg-emerald-400" : "bg-white/25")}
             title={hasImg ? "промт картинки есть" : "нет промта картинки"}
           />
           <span
-            className={cn("h-1 w-1 rounded-full", hasVid ? "bg-violet-400" : "bg-white/20")}
+            className={cn("h-1 w-1 rounded-full", hasVid ? "bg-violet-400" : "bg-white/25")}
             title={hasVid ? "промт видео есть" : "нет промта видео"}
           />
         </span>
       </div>
       {f.duration_seconds != null && (
-        <div className="absolute inset-x-0 bottom-0 flex items-center gap-0.5 bg-gradient-to-t from-black/70 to-transparent px-1.5 pb-1 pt-2.5 text-[9px] text-white/70">
+        <div className="absolute bottom-1 right-1 flex items-center gap-0.5 rounded-full bg-black/55 px-1.5 py-0.5 text-[9px] font-medium text-white/80 backdrop-blur-sm">
           <Clock3 className="h-2.5 w-2.5" />
           {f.duration_seconds}с
         </div>
@@ -349,7 +401,7 @@ function FrameBead({
   );
 }
 
-/** Раскрытые данные кадра — внутри группы сцены, под цепочкой. */
+/** Раскрытые данные кадра — стеклянная карточка внутри группы сцены. */
 function FrameInlineCard({
   frame: f,
   graph,
@@ -372,18 +424,26 @@ function FrameInlineCard({
   const tc = graph.excel_rows?.[String(f.number)]?.r15_timecode;
 
   return (
-    <div className="mt-2 w-[26rem] max-w-[80vw] rounded-xl border border-white/10 bg-black/30 p-2.5">
-      <div className="mb-1.5 flex items-center gap-1.5">
-        <span className="font-mono text-[11px] text-white/70">#{f.number}</span>
-        <span className="text-[10px] text-white/40">
+    <div className="animate-in fade-in slide-in-from-top-1 mx-3 mb-3 mt-1 w-[26rem] max-w-[80vw] rounded-2xl border border-white/10 bg-black/40 p-3 shadow-xl shadow-black/40 backdrop-blur-md duration-200">
+      <div className="mb-2 flex items-center gap-2">
+        <span className="font-mono text-xs font-semibold text-white/85">#{f.number}</span>
+        <span className="flex items-center gap-1 rounded-full bg-white/[0.06] px-2 py-0.5 text-[9px] text-white/55">
+          <span
+            className={cn(
+              "h-1.5 w-1.5 rounded-full",
+              STATUS_DOT[f.status ?? ""] ?? "bg-white/40",
+            )}
+          />
           {STATUS_RU[f.status ?? ""] ?? "—"}
         </span>
-        {tc ? <span className="font-mono text-[9px] text-white/30">{tc}</span> : null}
+        {tc ? (
+          <span className="font-mono text-[9px] text-white/30">{tc}</span>
+        ) : null}
         <button
           type="button"
           title="Свернуть"
           onClick={onClose}
-          className="ml-auto rounded p-0.5 text-white/35 hover:bg-white/10 hover:text-white"
+          className="ml-auto rounded-full p-1 text-white/35 transition-colors hover:bg-white/10 hover:text-white"
         >
           <X className="h-3.5 w-3.5" />
         </button>
@@ -392,22 +452,30 @@ function FrameInlineCard({
       <div className="flex max-h-64 flex-col gap-1.5 overflow-y-auto pr-0.5">
         {ownVo && (
           <Section label="Закадр кадра (VO-родитель)">
-            <p className="whitespace-pre-wrap text-[11px] text-white/80">{ownVo}</p>
+            <p className="whitespace-pre-wrap text-[11px] italic leading-snug text-white/80">
+              {ownVo}
+            </p>
           </Section>
         )}
         {f.meaning ? (
           <Section label="Смысл">
-            <p className="whitespace-pre-wrap text-[11px] text-white/70">{f.meaning}</p>
+            <p className="whitespace-pre-wrap text-[11px] leading-snug text-white/70">
+              {f.meaning}
+            </p>
           </Section>
         ) : null}
         {img.trim() ? (
           <Section label="Промт картинки">
-            <p className="line-clamp-4 whitespace-pre-wrap text-[10.5px] text-white/60">{img}</p>
+            <p className="line-clamp-4 whitespace-pre-wrap text-[10.5px] leading-snug text-white/60">
+              {img}
+            </p>
           </Section>
         ) : null}
         {vid.trim() ? (
           <Section label="Промт видео">
-            <p className="line-clamp-4 whitespace-pre-wrap text-[10.5px] text-white/60">{vid}</p>
+            <p className="line-clamp-4 whitespace-pre-wrap text-[10.5px] leading-snug text-white/60">
+              {vid}
+            </p>
           </Section>
         ) : null}
         {chips.length > 0 && (
@@ -416,7 +484,7 @@ function FrameInlineCard({
               <span
                 key={c.key}
                 title={c.value}
-                className="rounded-full border border-white/10 bg-black/30 px-1.5 py-0.5 text-[9px] text-white/50"
+                className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[9px] text-white/50"
               >
                 {c.label}: {c.value.length > 26 ? `${c.value.slice(0, 26)}…` : c.value}
               </span>
@@ -428,7 +496,7 @@ function FrameInlineCard({
             {f.edges.map((e) => (
               <span
                 key={e.id}
-                className="rounded-full border border-sky-400/20 bg-sky-500/10 px-1.5 py-0.5 text-[9px] text-sky-300/80"
+                className="rounded-full border border-sky-400/20 bg-sky-500/10 px-2 py-0.5 text-[9px] text-sky-300/80"
               >
                 → кадр {graph.frames.find((x) => x.id === e.to_frame_id)?.number ?? e.to_frame_id}
               </span>
@@ -438,7 +506,7 @@ function FrameInlineCard({
       </div>
 
       {projectId != null && (
-        <div className="mt-1.5 flex justify-end border-t border-white/[0.06] pt-1.5">
+        <div className="mt-2 flex justify-end border-t border-white/[0.06] pt-2">
           <button
             type="button"
             title="Вставить кадр после этого"
@@ -449,7 +517,7 @@ function FrameInlineCard({
                 void onChanged();
               })();
             }}
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] text-white/35 hover:bg-white/10 hover:text-white"
+            className="flex items-center gap-1 rounded-full border border-white/10 px-2.5 py-1 text-[9px] text-white/45 transition-colors hover:border-white/25 hover:text-white"
           >
             <Plus className="h-3 w-3" />
             кадр после
@@ -462,8 +530,10 @@ function FrameInlineCard({
 
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg bg-white/[0.03] p-1.5">
-      <div className="mb-0.5 text-[9px] uppercase tracking-wide text-white/35">{label}</div>
+    <div className="rounded-xl bg-white/[0.03] px-2.5 py-1.5">
+      <div className="mb-0.5 text-[9px] font-medium uppercase tracking-[0.14em] text-white/35">
+        {label}
+      </div>
       {children}
     </div>
   );
