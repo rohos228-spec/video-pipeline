@@ -596,24 +596,26 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
           )}
         </section>
 
-        {/* Детали кадра */}
-        <aside className="w-[420px] shrink-0 overflow-y-auto border-l border-white/[0.06] p-3">
-          {frame && scopedGraph ? (
-            <FrameDetails
-              frame={frame}
-              excelRow={scopedGraph.excel_rows?.[String(frame.number)] ?? null}
-              sceneRegistry={scopedGraph.scene_registry ?? []}
-              allFrames={scopedGraph.frames}
-              onChanged={handleChanged}
-            />
-          ) : (
-            <div className="flex h-full items-center justify-center text-center text-xs text-white/30">
-              Выбери карточку кадра слева —
-              <br />
-              справа правятся поля из DB
-            </div>
-          )}
-        </aside>
+        {/* Детали кадра (в «Хронологии» данные — внизу под сценами, панель не нужна) */}
+        {framesView !== "timeline" && (
+          <aside className="w-[420px] shrink-0 overflow-y-auto border-l border-white/[0.06] p-3">
+            {frame && scopedGraph ? (
+              <FrameDetails
+                frame={frame}
+                excelRow={scopedGraph.excel_rows?.[String(frame.number)] ?? null}
+                sceneRegistry={scopedGraph.scene_registry ?? []}
+                allFrames={scopedGraph.frames}
+                onChanged={handleChanged}
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center text-center text-xs text-white/30">
+                Выбери карточку кадра слева —
+                <br />
+                справа правятся поля из DB
+              </div>
+            )}
+          </aside>
+        )}
       </div>
     </div>
   );
