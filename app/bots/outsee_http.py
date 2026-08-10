@@ -495,6 +495,8 @@ async def _accept_hosted_url(
 
 def _host_name_from_url(url: str) -> str | None:
     low = (url or "").lower()
+    if "storage.yandexcloud.net" in low or "yandexcloud.net" in low:
+        return "yandex"
     if "litter.catbox" in low or "litterbox" in low:
         return "litterbox"
     if "catbox.moe" in low:
@@ -506,6 +508,17 @@ def _host_name_from_url(url: str) -> str | None:
     if "uguu.se" in low:
         return "uguu"
     return None
+
+
+async def _host_via_yandex(
+    client: httpx.AsyncClient, raw: bytes, mime: str, filename: str
+) -> str:
+    from app.bots.yandex_storage import upload_public_bytes, yandex_storage_configured
+
+    if not yandex_storage_configured():
+        raise OutseeApiError("yandex storage: не настроен")
+    url = await upload_public_bytes(client, raw, mime, filename)
+    return await _accept_hosted_url(client, url, host="yandex", raw_len=len(raw))
 
 
 async def _host_via_uguu(client: httpx.AsyncClient, raw: bytes, mime: str, filename: str) -> str:
@@ -634,13 +647,21 @@ async def ensure_public_image_url(
             return None
         raw, mime = decoded
     errors: list[str] = []
-    # litterbox часто 500; catbox заливается, но Outsee не качает — в хвосте.
-    hosts = (
-        ("litterbox", _host_via_litterbox),
-        ("tmpfiles", _host_via_tmpfiles),
-        ("0x0", _host_via_0x0),
-        ("uguu", _host_via_uguu),
-        ("catbox", _host_via_catbox),
+    # Yandex Object Storage первым (если настроен); litterbox часто 500;
+    # catbox заливается, но Outsee не качает — в хвосте.
+    from app.bots.yandex_storage import yandex_storage_configured
+
+    hosts: list[tuple[str, Any]] = []
+    if yandex_storage_configured():
+        hosts.append(("yandex", _host_via_yandex))
+    hosts.extend(
+        (
+            ("litterbox", _host_via_litterbox),
+            ("tmpfiles", _host_via_tmpfiles),
+            ("0x0", _host_via_0x0),
+            ("uguu", _host_via_uguu),
+            ("catbox", _host_via_catbox),
+        )
     )
     variants = _upload_payload_variants(raw, mime)
     async with httpx.AsyncClient(

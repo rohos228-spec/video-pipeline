@@ -100,6 +100,14 @@ class Settings(BaseSettings):
     # Kie Market (Kling 2.6 video fallback). Пусто → GPT_API_KEY + api.kie.ai.
     kie_api_key: str = Field("", alias="KIE_API_KEY")
     kie_api_base_url: str = Field("https://api.kie.ai", alias="KIE_API_BASE_URL")
+    # Yandex Object Storage — публичный хост реф-кадров для Outsee/Kling.
+    yandex_storage_bucket: str = Field("", alias="YANDEX_STORAGE_BUCKET")
+    yandex_storage_access_key: str = Field("", alias="YANDEX_STORAGE_ACCESS_KEY")
+    yandex_storage_secret_key: str = Field("", alias="YANDEX_STORAGE_SECRET_KEY")
+    yandex_storage_endpoint: str = Field(
+        "https://storage.yandexcloud.net", alias="YANDEX_STORAGE_ENDPOINT"
+    )
+    yandex_storage_region: str = Field("ru-central1", alias="YANDEX_STORAGE_REGION")
     # Шаблон пути chat-эндпоинта. grsai/OpenAI: /v1/chat/completions;
     # kie.ai: путь зависит от модели → /{model}/v1/chat/completions.
     # Плейсхолдер {model} подставляется слагом модели.
