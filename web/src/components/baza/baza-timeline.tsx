@@ -284,61 +284,261 @@ export function BazaTimeline({
         })}
       </div>
 
-      {/* Все данные — внизу, сгруппированы по своим сценам */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-        <div className="mx-auto flex max-w-[1100px] flex-col gap-4">
-          {columns.map((col, ci) => {
-            const hue = SCENE_HUES[ci % SCENE_HUES.length];
-            const vo = sceneVoiceover(col.frames);
-            if (collapsed.has(col.key)) return null;
-            return (
-              <section
-                key={col.key}
-                className="rounded-xl border-l-2 pl-3"
-                style={{ borderLeftColor: `hsl(${hue} 75% 60% / 0.55)` }}
-              >
-                <div className="mb-1.5 flex items-baseline gap-2">
-                  <span className="text-xs font-semibold text-white/85">{col.title}</span>
-                  {col.place && (
-                    <span className="text-[10px] text-white/35">{col.place}</span>
-                  )}
-                </div>
-
-                {fields.has("voiceover") && (
-                  <div className="mb-2 max-w-[46rem]">
-                    {vo ? (
-                      <p className="whitespace-pre-wrap text-[11.5px] italic leading-snug text-white/70">
-                        <Mic className="mr-1 inline h-3 w-3 text-white/30" />
-                        {vo.text}
-                        <span className="ml-1 not-italic text-[9px] text-white/30">
-                          (кадр #{vo.frame.number})
-                        </span>
-                      </p>
-                    ) : (
-                      <span className="text-[11px] text-white/25">— нет закадра —</span>
-                    )}
-                  </div>
-                )}
-
-                <div className="flex flex-col gap-1.5">
-                  {col.frames.map((f) => (
-                    <FrameDataRow
-                      key={f.id}
-                      frame={f}
-                      graph={graph}
-                      fields={fields}
-                      active={f.id === frameId}
-                      onClick={() => onSelect(f.id)}
-                    />
-                  ))}
-                </div>
-              </section>
-            );
-          })}
-        </div>
+      {/* Все данные — внизу таблицей как Excel: горизонтальные линии,
+          строки = кадры, колонки = характеристики, закадр — merged-ячейка
+          на сцену, сцены — полосы-заголовки */}
+      <div className="min-h-0 flex-1 overflow-auto px-2 pb-3">
+        <table className="w-full min-w-[900px] border-collapse text-xs">
+          <thead className="sticky top-0 z-10">
+            <tr className="border-b border-white/10 bg-[#0a0a0a]">
+              <th className="w-[4.5rem] px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.14em] text-white/35">
+                Кадр
+              </th>
+              {FIELD_DEFS.filter((fd) => fields.has(fd.key)).map((fd) => (
+                <th
+                  key={fd.key}
+                  className="px-2 py-1.5 text-left text-[10px] font-medium uppercase tracking-[0.14em] text-white/35"
+                >
+                  {fd.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {columns.map((col, ci) => {
+              if (collapsed.has(col.key)) return null;
+              const hue = SCENE_HUES[ci % SCENE_HUES.length];
+              const vo = sceneVoiceover(col.frames);
+              const visibleFields = FIELD_DEFS.filter((fd) => fields.has(fd.key));
+              const colCount = 1 + visibleFields.length;
+              return (
+                <SceneRows
+                  key={col.key}
+                  col={col}
+                  hue={hue}
+                  vo={vo}
+                  visibleFields={visibleFields}
+                  colCount={colCount}
+                  graph={graph}
+                  frameId={frameId}
+                  onSelect={onSelect}
+                />
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
+}
+
+function SceneRows({
+  col,
+  hue,
+  vo,
+  visibleFields,
+  colCount,
+  graph,
+  frameId,
+  onSelect,
+}: {
+  col: SceneColumn;
+  hue: number;
+  vo: { text: string; frame: DbFrame } | null;
+  visibleFields: readonly { key: FieldKey; label: string }[];
+  colCount: number;
+  graph: DbGraph;
+  frameId: number | null;
+  onSelect: (id: number) => void;
+}) {
+  return (
+    <>
+      {/* Полоса сцены */}
+      <tr>
+        <td
+          colSpan={colCount}
+          className="border-b border-white/10 px-2 py-1.5"
+          style={{ background: `hsl(${hue} 60% 50% / 0.07)` }}
+        >
+          <div className="flex items-center gap-2">
+            <span
+              className="h-[3px] w-5 rounded-full"
+              style={{ background: `hsl(${hue} 75% 60%)` }}
+            />
+            <span className="text-[11px] font-semibold text-white/85">{col.title}</span>
+            {col.place && <span className="text-[10px] text-white/35">{col.place}</span>}
+          </div>
+        </td>
+      </tr>
+      {col.frames.map((f, fi) => (
+        <tr
+          key={f.id}
+          onClick={() => onSelect(f.id)}
+          className={cn(
+            "cursor-pointer border-b border-white/[0.07] transition-colors",
+            f.id === frameId ? "bg-primary/[0.08]" : "hover:bg-white/[0.03]",
+          )}
+        >
+          {/* Кадр: мини-тумб + номер */}
+          <td className="px-2 py-1.5 align-top">
+            <div className="flex items-center gap-1.5">
+              <div className="w-7 shrink-0 overflow-hidden rounded border border-white/10">
+                <div className="aspect-[9/16] w-full bg-black/50">
+                  {f.image_url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={f.image_url}
+                      alt={`#${f.number}`}
+                      className="h-full w-full object-cover"
+                      loading="lazy"
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-white/15">
+                      <span className="font-mono text-[8px]">#{f.number}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <span className="font-mono text-[10px] text-white/60">#{f.number}</span>
+            </div>
+          </td>
+          {visibleFields.map((fd) => {
+            if (fd.key === "voiceover") {
+              /* Закадр — одна объединённая ячейка на сцену (rowspan). */
+              if (fi > 0) return null;
+              return (
+                <td
+                  key={fd.key}
+                  rowSpan={col.frames.length}
+                  className="border-l border-white/[0.06] px-2 py-1.5 align-top"
+                  style={{ background: `hsl(${hue} 60% 50% / 0.04)` }}
+                >
+                  {vo ? (
+                    <p className="whitespace-pre-wrap text-[11px] italic leading-snug text-white/70">
+                      <Mic className="mr-1 inline h-3 w-3 text-white/30" />
+                      {vo.text}
+                      <span className="ml-1 not-italic text-[9px] text-white/30">
+                        (кадр #{vo.frame.number})
+                      </span>
+                    </p>
+                  ) : (
+                    <span className="text-white/25">—</span>
+                  )}
+                </td>
+              );
+            }
+            return (
+              <td key={fd.key} className="px-2 py-1.5 align-top">
+                <FieldCell field={fd.key} frame={f} graph={graph} />
+              </td>
+            );
+          })}
+        </tr>
+      ))}
+    </>
+  );
+}
+
+function FieldCell({
+  field,
+  frame: f,
+  graph,
+}: {
+  field: FieldKey;
+  frame: DbFrame;
+  graph: DbGraph;
+}) {
+  switch (field) {
+    case "meaning":
+      return (
+        <span className="whitespace-pre-wrap text-[11px] text-white/70">
+          {f.meaning || "—"}
+        </span>
+      );
+    case "img_prompt":
+    case "video_prompt": {
+      const text = activePrompt(f, field === "img_prompt" ? "img" : "video");
+      return text.trim() ? (
+        <span className="line-clamp-3 whitespace-pre-wrap text-[10.5px] leading-snug text-white/55">
+          {text}
+        </span>
+      ) : (
+        <span className="text-white/25">—</span>
+      );
+    }
+    case "characters": {
+      const chars =
+        attrStr(f.attrs, "characters") ||
+        graph.excel_rows?.[String(f.number)]?.persons ||
+        "";
+      return chars.trim() ? (
+        <span className="font-mono text-[11px] text-white/70">{chars}</span>
+      ) : (
+        <span className="text-white/25">—</span>
+      );
+    }
+    case "attrs": {
+      const chips = ATTR_CHIPS.map((c) => ({
+        ...c,
+        value: attrStr(f.attrs, c.key),
+      })).filter((c) => c.value);
+      return chips.length ? (
+        <span className="flex flex-wrap gap-1">
+          {chips.map((c) => (
+            <span
+              key={c.key}
+              title={c.value}
+              className="rounded-full border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-white/50"
+            >
+              {c.label}: {c.value.length > 26 ? `${c.value.slice(0, 26)}…` : c.value}
+            </span>
+          ))}
+        </span>
+      ) : (
+        <span className="text-white/25">—</span>
+      );
+    }
+    case "timing": {
+      const tc = graph.excel_rows?.[String(f.number)]?.r15_timecode;
+      return (
+        <span className="text-[11px] text-white/70">
+          {f.duration_seconds != null ? `${f.duration_seconds}с` : "—"}
+          {tc ? (
+            <span className="ml-1 block font-mono text-[9px] text-white/35">{tc}</span>
+          ) : null}
+        </span>
+      );
+    }
+    case "status":
+      return (
+        <span className="flex items-center gap-1 text-[11px] text-white/70">
+          <span
+            className={cn(
+              "h-1.5 w-1.5 shrink-0 rounded-full",
+              STATUS_DOT[f.status ?? ""] ?? "bg-white/40",
+            )}
+          />
+          {STATUS_RU[f.status ?? ""] ?? "—"}
+        </span>
+      );
+    case "edges":
+      return f.edges.length ? (
+        <span className="flex flex-wrap gap-1">
+          {f.edges.map((e) => (
+            <span
+              key={e.id}
+              className="rounded-full border border-sky-400/20 bg-sky-500/10 px-1.5 py-0.5 text-[9px] text-sky-300/80"
+            >
+              → #{graph.frames.find((x) => x.id === e.to_frame_id)?.number ?? e.to_frame_id}
+            </span>
+          ))}
+        </span>
+      ) : (
+        <span className="text-white/25">—</span>
+      );
+    default:
+      return null;
+  }
 }
 
 /** Тумб кадра на ленте: картинка 9:16, номер/статус на scrim, время пилюлей. */
@@ -395,165 +595,5 @@ function FrameThumb({
         </div>
       )}
     </button>
-  );
-}
-
-/** Строка данных кадра в блоке его сцены — только включённые характеристики. */
-function FrameDataRow({
-  frame: f,
-  graph,
-  fields,
-  active,
-  onClick,
-}: {
-  frame: DbFrame;
-  graph: DbGraph;
-  fields: Set<FieldKey>;
-  active: boolean;
-  onClick: () => void;
-}) {
-  const chips = ATTR_CHIPS.map((c) => ({ ...c, value: attrStr(f.attrs, c.key) })).filter(
-    (c) => c.value,
-  );
-  const chars =
-    attrStr(f.attrs, "characters") ||
-    graph.excel_rows?.[String(f.number)]?.persons ||
-    "";
-  const tc = graph.excel_rows?.[String(f.number)]?.r15_timecode;
-  const img = activePrompt(f, "img");
-  const vid = activePrompt(f, "video");
-
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onClick}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") onClick();
-      }}
-      className={cn(
-        "flex cursor-pointer items-start gap-2.5 rounded-lg border px-2 py-1.5 transition-colors",
-        active
-          ? "border-primary/40 bg-primary/[0.07]"
-          : "border-white/[0.06] bg-white/[0.015] hover:border-white/15",
-      )}
-    >
-      <div className="flex w-10 shrink-0 flex-col items-center gap-1">
-        <div className="w-8 overflow-hidden rounded-md border border-white/10">
-          <div className="aspect-[9/16] w-full bg-black/50">
-            {f.image_url ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={f.image_url}
-                alt={`#${f.number}`}
-                className="h-full w-full object-cover"
-                loading="lazy"
-              />
-            ) : (
-              <div className="flex h-full w-full items-center justify-center text-white/15">
-                <span className="font-mono text-[8px]">#{f.number}</span>
-              </div>
-            )}
-          </div>
-        </div>
-        <span className="font-mono text-[9px] text-white/50">#{f.number}</span>
-      </div>
-
-      <div className="flex min-w-0 flex-1 flex-wrap items-start gap-x-4 gap-y-1.5">
-        {fields.has("status") && (
-          <DataBit label="Статус">
-            <span className="flex items-center gap-1 text-[11px] text-white/70">
-              <span
-                className={cn(
-                  "h-1.5 w-1.5 rounded-full",
-                  STATUS_DOT[f.status ?? ""] ?? "bg-white/40",
-                )}
-              />
-              {STATUS_RU[f.status ?? ""] ?? "—"}
-            </span>
-          </DataBit>
-        )}
-        {fields.has("timing") && (
-          <DataBit label="Время">
-            <span className="text-[11px] text-white/70">
-              {f.duration_seconds != null ? `${f.duration_seconds}с` : "—"}
-              {tc ? <span className="ml-1 font-mono text-[9px] text-white/35">{tc}</span> : null}
-            </span>
-          </DataBit>
-        )}
-        {fields.has("characters") && chars.trim() && (
-          <DataBit label="Персонажи">
-            <span className="font-mono text-[11px] text-white/70">{chars}</span>
-          </DataBit>
-        )}
-        {fields.has("meaning") && f.meaning ? (
-          <DataBit label="Смысл" wide>
-            <span className="whitespace-pre-wrap text-[11px] text-white/70">{f.meaning}</span>
-          </DataBit>
-        ) : null}
-        {fields.has("img_prompt") && img.trim() ? (
-          <DataBit label="Промт картинки" wide>
-            <span className="line-clamp-2 whitespace-pre-wrap text-[10.5px] text-white/55">
-              {img}
-            </span>
-          </DataBit>
-        ) : null}
-        {fields.has("video_prompt") && vid.trim() ? (
-          <DataBit label="Промт видео" wide>
-            <span className="line-clamp-2 whitespace-pre-wrap text-[10.5px] text-white/55">
-              {vid}
-            </span>
-          </DataBit>
-        ) : null}
-        {fields.has("attrs") && chips.length > 0 && (
-          <DataBit label="Характеристики" wide>
-            <span className="flex flex-wrap gap-1">
-              {chips.map((c) => (
-                <span
-                  key={c.key}
-                  title={c.value}
-                  className="rounded-full border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-white/50"
-                >
-                  {c.label}: {c.value.length > 26 ? `${c.value.slice(0, 26)}…` : c.value}
-                </span>
-              ))}
-            </span>
-          </DataBit>
-        )}
-        {fields.has("edges") && f.edges.length > 0 && (
-          <DataBit label="Связи">
-            <span className="flex flex-wrap gap-1">
-              {f.edges.map((e) => (
-                <span
-                  key={e.id}
-                  className="rounded-full border border-sky-400/20 bg-sky-500/10 px-1.5 py-0.5 text-[9px] text-sky-300/80"
-                >
-                  → #{graph.frames.find((x) => x.id === e.to_frame_id)?.number ?? e.to_frame_id}
-                </span>
-              ))}
-            </span>
-          </DataBit>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function DataBit({
-  label,
-  wide,
-  children,
-}: {
-  label: string;
-  wide?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className={cn("min-w-0", wide ? "w-full" : "shrink-0")}>
-      <div className="text-[8.5px] font-medium uppercase tracking-[0.14em] text-white/30">
-        {label}
-      </div>
-      <div className="mt-0.5">{children}</div>
-    </div>
   );
 }
