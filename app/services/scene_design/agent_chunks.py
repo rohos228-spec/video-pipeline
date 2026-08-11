@@ -68,6 +68,15 @@ def split_frames_half(frames: list[Any]) -> tuple[list[Any], list[Any]]:
     return ordered[:mid], ordered[mid:]
 
 
+def split_frames_batches(frames: list[Any], *, max_frames: int) -> list[list[Any]]:
+    """Пачки кадров ≤ max_frames (проактивный чанк до 524)."""
+    ordered = [f for f in frames if getattr(f, "uuid", None)]
+    n = max(1, int(max_frames))
+    if not ordered:
+        return []
+    return [ordered[i : i + n] for i in range(0, len(ordered), n)]
+
+
 def chunk_instruction(*, label: str, depth: int) -> str:
     return (
         f"# ЧАНК ЗАКАДРА (часть «{label}», split_depth={depth})\n"

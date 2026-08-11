@@ -63,6 +63,12 @@ def test_split_frames_half() -> None:
     assert [f.number for f in right] == [3, 4]
 
 
+def test_split_frames_batches() -> None:
+    frames = [_fr(i, f"u{i}", f"текст {i}") for i in range(1, 6)]
+    batches = ach.split_frames_batches(frames, max_frames=2)
+    assert [[f.number for f in b] for b in batches] == [[1, 2], [3, 4], [5]]
+
+
 def test_merge_action_renumbers() -> None:
     merged = ach.merge_agent_slices(
         "action",
@@ -101,6 +107,7 @@ async def test_action_splits_twice_then_errors() -> None:
         patch.object(ag, "load_prompt", return_value="PROMPT"),
         patch.object(runner, "_run_one_agent", side_effect=fake_one),
         patch("asyncio.sleep", new_callable=AsyncMock),
+        patch.object(runner.settings, "scene_design_agent_chunk_frames", 0),
     ):
         with pytest.raises(ach.CapacitySplitExhausted, match="после 2 дроблений"):
             await runner._run_one_agent_adaptive(
@@ -145,6 +152,7 @@ async def test_action_split_once_then_merge() -> None:
         patch.object(ag, "load_prompt", return_value="PROMPT"),
         patch.object(runner, "_run_one_agent", side_effect=fake_one),
         patch("asyncio.sleep", new_callable=AsyncMock),
+        patch.object(runner.settings, "scene_design_agent_chunk_frames", 0),
     ):
         data = await runner._run_one_agent_adaptive(
             project,
@@ -157,3 +165,53 @@ async def test_action_split_once_then_merge() -> None:
         )
     assert n["calls"] == 3  # full fail + 2 halves
     assert [s["id_scene"] for s in data["scenes"]] == ["scene_01", "scene_02"]
+
+
+@pytest.mark.asyncio
+async def test_proactive_chunks_skip_full_payload() -> None:
+    """≤N кадров сразу — без попытки full на 65 кадров (не жечь 5 мин)."""
+    frames = [_fr(i, f"u{i}", f"кусок {i} старт. кусок {i} финиш.") for i in range(1, 6)]
+    project = SimpleNamespace(
+        id=60,
+        meta={"scene_design_variant": "chrono_dyn"},
+        script_text="",
+        general_plan="",
+    )
+    labels: list[str] = []
+
+    async def fake_one(project, name, context, *, timeout, validate=True, max_retries=None):
+        assert "split_depth=" in context  # всегда чанк, не full
+        assert timeout <= 240  # attempt abort
+        if "часть «p1»" in context:
+            labels.append("p1")
+            return {"scenes": [_scene(1)]}
+        if "часть «p2»" in context:
+            labels.append("p2")
+            return {"scenes": [_scene(2)]}
+        if "часть «p3»" in context:
+            labels.append("p3")
+            return {"scenes": [_scene(3)]}
+        raise AssertionError(f"unexpected chunk context: {context[:200]}")
+
+    with (
+        patch.object(ag, "load_prompt", return_value="PROMPT"),
+        patch.object(runner, "_run_one_agent", side_effect=fake_one),
+        patch.object(runner.settings, "scene_design_agent_chunk_frames", 2),
+        patch.object(runner.settings, "scene_design_agent_chunk_parallel", 2),
+        patch.object(runner.settings, "scene_design_agent_attempt_timeout_s", 240.0),
+    ):
+        data = await runner._run_one_agent_adaptive(
+            project,
+            "action",
+            frames=frames,
+            full_frames=frames,
+            slice_extras=[],
+            action_scenes=None,
+            timeout=900,
+        )
+    assert sorted(labels) == ["p1", "p2", "p3"]
+    assert [s["id_scene"] for s in data["scenes"]] == [
+        "scene_01",
+        "scene_02",
+        "scene_03",
+    ]

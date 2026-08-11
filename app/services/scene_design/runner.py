@@ -195,7 +195,7 @@ def _append_slice_context(
     return (
         base
         + f"\n\n# {title}\n"
-        + json.dumps(payload, ensure_ascii=False, indent=1)
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     )
 
 
@@ -211,12 +211,58 @@ async def _run_one_agent_adaptive(
     depth: int = 0,
     label: str = "full",
 ) -> dict[str, Any]:
-    """action/camera: при 524/timeout дробим кадры /2, ещё /2, потом ошибка."""
+    """action/camera: сразу куски ≤N кадров (параллель), иначе 524→/2→/4."""
     from app.services.scene_design import agent_chunks as ach
     from app.services.scene_design import context_builder
+    from app.settings import settings
 
     frame_list = [f for f in frames if getattr(f, "uuid", None)]
     full_list = [f for f in full_frames if getattr(f, "uuid", None)]
+    max_chunk = int(settings.scene_design_agent_chunk_frames)
+    parallel = max(1, int(settings.scene_design_agent_chunk_parallel))
+
+    async def _run_parts(
+        batches: list[list[Any]], *, child_depth: int, prefix: str
+    ) -> dict[str, Any]:
+        sem = asyncio.Semaphore(parallel)
+
+        async def _one(i: int, batch: list[Any]) -> dict[str, Any]:
+            async with sem:
+                return await _run_one_agent_adaptive(
+                    project,
+                    name,
+                    frames=batch,
+                    full_frames=full_list,
+                    slice_extras=slice_extras,
+                    action_scenes=action_scenes,
+                    timeout=timeout,
+                    depth=child_depth,
+                    label=f"{prefix}{i}",
+                )
+
+        parts = await asyncio.gather(
+            *(_one(i, b) for i, b in enumerate(batches, start=1))
+        )
+        return ach.merge_agent_slices(name, list(parts))
+
+    # Проактивно: не слать 65 кадров целиком (5 мин → 524 впустую).
+    if (
+        depth == 0
+        and max_chunk > 1
+        and len(frame_list) > max_chunk
+        and name in ach.SPLITTABLE_AGENTS
+    ):
+        batches = ach.split_frames_batches(frame_list, max_frames=max_chunk)
+        logger.info(
+            "[#{}] scene_design/{}: proactive {} chunks ×≤{} frames (parallel={})",
+            project.id,
+            name,
+            len(batches),
+            max_chunk,
+            parallel,
+        )
+        return await _run_parts(batches, child_depth=1, prefix="p")
+
     ctx = context_builder.build_shared_context(project, frame_list)
     for title, payload in slice_extras:
         # camera: полный ACTION в extras не тащим — ниже фильтр по чанку.
@@ -237,12 +283,17 @@ async def _run_one_agent_adaptive(
         ctx = ctx + "\n\n" + ach.chunk_instruction(label=label, depth=depth)
 
     try:
-        # max_retries=0: первый 524 сразу в /2 split, не жечь 5×полный payload.
+        # max_retries=0: первый 524 сразу в /2 split, не жечь GPT_MAX_RETRIES.
+        # Abort < Cloudflare ~300s — не ждать HTML 524 впустую.
+        attempt_to = float(settings.scene_design_agent_attempt_timeout_s)
+        call_timeout = (
+            min(float(timeout), attempt_to) if attempt_to > 0 else float(timeout)
+        )
         return await _run_one_agent(
             project,
             name,
             ctx,
-            timeout=timeout,
+            timeout=call_timeout,
             validate=(depth == 0),
             max_retries=0,
         )
@@ -266,7 +317,7 @@ async def _run_one_agent_adaptive(
             raise
         left, right = ach.split_frames_half(frame_list)
         logger.warning(
-            "[#{}] scene_design/{}: {} — split depth {}→{} frames {}+{}",
+            "[#{}] scene_design/{}: {} — split depth {}→{} frames {}+{} (parallel)",
             project.id,
             name,
             e,
@@ -275,31 +326,11 @@ async def _run_one_agent_adaptive(
             len(left),
             len(right),
         )
-        await asyncio.sleep(1.5)
-        left_data = await _run_one_agent_adaptive(
-            project,
-            name,
-            frames=left,
-            full_frames=full_list,
-            slice_extras=slice_extras,
-            action_scenes=action_scenes,
-            timeout=timeout,
-            depth=depth + 1,
-            label=f"{label}·a" if depth else "a",
+        return await _run_parts(
+            [left, right],
+            child_depth=depth + 1,
+            prefix=(f"{label}·" if depth else ""),
         )
-        await asyncio.sleep(1.5)
-        right_data = await _run_one_agent_adaptive(
-            project,
-            name,
-            frames=right,
-            full_frames=full_list,
-            slice_extras=slice_extras,
-            action_scenes=action_scenes,
-            timeout=timeout,
-            depth=depth + 1,
-            label=f"{label}·b" if depth else "b",
-        )
-        return ach.merge_agent_slices(name, [left_data, right_data])
 
 
 async def run_category_agents(

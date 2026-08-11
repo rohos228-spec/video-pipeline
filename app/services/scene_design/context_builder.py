@@ -96,6 +96,6 @@ def build_shared_context(project: Project, frames: list[Frame]) -> str:
         "в таблице (точное), «оценка» = примерно по длине закадра "
         f"(~{settings.subtitle_chars_per_second:g} сим/сек). "
         f"ИТОГО по всем кадрам: {round(total_sec, 1)} сек.\n"
-        + json.dumps(frames_payload, ensure_ascii=False, indent=1)
+        + json.dumps(frames_payload, ensure_ascii=False, separators=(",", ":"))
     )
     return "\n\n".join(parts)
