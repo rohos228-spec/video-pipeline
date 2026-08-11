@@ -197,8 +197,33 @@ def _chain_phases(scene: dict[str, Any]) -> list[Any]:
 _BEAT_OK = frozenset({"setup", "develop", "turn", "payoff"})
 
 
+_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+_PLACE_BUCKETS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("hospital", re.compile(r"больниц|стационар|палат|психиатр|отделени", re.I)),
+    ("police", re.compile(r"милиц|участков|следовател|кабинет милиц", re.I)),
+    ("court", re.compile(r"суд\b|заседани|приговор", re.I)),
+    ("home", re.compile(r"квартир|подъезд|кухн|лифт|дверь\s*357", re.I)),
+    ("street", re.compile(r"пустыр|улиц|окраин|новокузнецк", re.I)),
+)
+
+
+def _phase_action_text(ph: dict[str, Any]) -> str:
+    return " ".join(
+        str(ph.get(k) or "")
+        for k in ("action", "действие", "info_change", "продолжает")
+    )
+
+
+def _place_buckets_in_text(text: str) -> set[str]:
+    found: set[str] = set()
+    for name, pat in _PLACE_BUCKETS:
+        if pat.search(text or ""):
+            found.add(name)
+    return found
+
+
 def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
-    """Брак: плоские 2 фазы / нет арки / нет связей сцен / мало cNN."""
+    """Брак: коллаж мест/лет, плоские 2 фазы, нет арки/связей, мало cNN."""
     if not scenes:
         return
     phase_counts: list[int] = []
@@ -209,6 +234,8 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
     missing_links = 0
     missing_hooks = 0
     missing_payoff = 0
+    teleport_scenes = 0
+    year_jump_scenes = 0
     dict_scenes = 0
     for i, sc in enumerate(scenes):
         if not isinstance(sc, dict):
@@ -221,6 +248,8 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
         if not str(sc.get("крючок_в_следующую") or "").strip():
             missing_hooks += 1
         beats: list[str] = []
+        scene_years: set[str] = set()
+        scene_places: set[str] = set()
         for ph in chain:
             if not isinstance(ph, dict):
                 continue
@@ -234,8 +263,17 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
                 beats.append(beat)
             if str(ph.get("переход_к_следующей") or "").strip():
                 with_transitions += 1
+            txt = _phase_action_text(ph)
+            scene_years.update(_YEAR_RE.findall(txt))
+            scene_places |= _place_buckets_in_text(txt)
         if object_phases and beats and "payoff" not in beats:
             missing_payoff += 1
+        # ≥2 разных календарных года в одной цепи = телепорт по времени
+        if len(scene_years) >= 2:
+            year_jump_scenes += 1
+        # ≥3 разных типа мест в одной сцене = коллаж локаций
+        if len(scene_places) >= 3:
+            teleport_scenes += 1
     if not phase_counts or object_phases == 0:
         # legacy строки в цепи — не chrono_dyn контракт
         return
@@ -282,6 +320,18 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
         raise SceneDesignAgentError(
             f"scene_design/action: {missing_payoff} сцен без payoff — "
             f"у каждой сцены должен быть видимый итог бита."
+        )
+    if year_jump_scenes > 0:
+        raise SceneDesignAgentError(
+            f"scene_design/action: {year_jump_scenes} сцен прыгают по годам "
+            f"внутри одной цепи — смена года = новая сцена, не фаза. "
+            f"Нужна непрерывная цепочка в одном месте (вход→жест→стол→итог)."
+        )
+    if teleport_scenes > 0:
+        raise SceneDesignAgentError(
+            f"scene_design/action: {teleport_scenes} сцен — коллаж локаций "
+            f"(больница/милиция/дом в одной цепи). Одна сцена = одно пространство "
+            f"и непрерывный blocking, не набор кадров из разных мест."
         )
 
 

@@ -111,6 +111,88 @@ def test_validate_chrono_dyn_action_rejects_unlinked_scenes() -> None:
         ag.validate_chrono_dyn_action_scenes(scenes)
 
 
+def test_validate_chrono_dyn_rejects_year_jumps_inside_scene() -> None:
+    scenes = [
+        {
+            "id_scene": "scene_01",
+            "связь_с_прошлой": "",
+            "крючок_в_следующую": "дальше",
+            "цепь_действия": [
+                {
+                    "phase_index": 1,
+                    "beat": "setup",
+                    "action": "В 1992 году Александр входит в отделение",
+                    "subject": "c01",
+                    "orientation": "side",
+                    "info_change": "a",
+                    "переход_к_следующей": "cut_on_action",
+                },
+                {
+                    "phase_index": 2,
+                    "beat": "develop",
+                    "action": "В 1995 году он выходит с сумкой",
+                    "subject": "c01",
+                    "orientation": "side",
+                    "info_change": "b",
+                    "переход_к_следующей": "cut_on_action",
+                },
+                {
+                    "phase_index": 3,
+                    "beat": "payoff",
+                    "action": "Папка закрыта на столе",
+                    "subject": "c01",
+                    "orientation": "object",
+                    "info_change": "c",
+                    "переход_к_следующей": "sound_bridge",
+                },
+            ],
+        }
+    ]
+    with pytest.raises(ag.SceneDesignAgentError, match="год"):
+        ag.validate_chrono_dyn_action_scenes(scenes)
+
+
+def test_validate_chrono_dyn_rejects_location_collage() -> None:
+    scenes = [
+        {
+            "id_scene": "scene_01",
+            "связь_с_прошлой": "",
+            "крючок_в_следующую": "дальше",
+            "цепь_действия": [
+                {
+                    "phase_index": 1,
+                    "beat": "setup",
+                    "action": "Врач в больнице ставит диагноз",
+                    "subject": "c01",
+                    "orientation": "side",
+                    "info_change": "a",
+                    "переход_к_следующей": "cut_on_action",
+                },
+                {
+                    "phase_index": 2,
+                    "beat": "develop",
+                    "action": "На кухне квартиры раскладывают справки",
+                    "subject": "c02",
+                    "orientation": "object",
+                    "info_change": "b",
+                    "переход_к_следующей": "cut_on_action",
+                },
+                {
+                    "phase_index": 3,
+                    "beat": "payoff",
+                    "action": "В милиции ставят штамп на карточку",
+                    "subject": "c08",
+                    "orientation": "object",
+                    "info_change": "c",
+                    "переход_к_следующей": "sound_bridge",
+                },
+            ],
+        }
+    ]
+    with pytest.raises(ag.SceneDesignAgentError, match="локац"):
+        ag.validate_chrono_dyn_action_scenes(scenes)
+
+
 def test_required_shots_chrono_dyn_uses_phases() -> None:
     n = required_shots_for_beat(
         {"крупность": "MS", "набор": "SET_01"},
