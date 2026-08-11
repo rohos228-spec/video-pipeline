@@ -572,6 +572,44 @@ def _group_frames_into_scenes(
     chrono_dyn без дроби: склеиваем кадры с одним ``id_scene`` из shot_plan
     (многокадровая нарративная сцена action/camera).
     """
+    groups: list[tuple[list[Frame], dict[str, Any], int]] = []
+
+    def _sort_key(f: Frame) -> tuple:
+        return (f.sort_key is None, f.sort_key or 0.0, f.number or 0)
+
+    offsets = frame_offsets(frames, full_vo)
+    spans = _beat_vo_spans(shots, full_vo) if shots else []
+
+    # chrono_dyn: сцена = id_scene из shot_plan (не parent_uuid после «1 шота»).
+    # Кадры и шоты уже в хронологии VO; цитаты часто rejected → zip по индексу.
+    if chrono_dyn and any(str(s.get("id_scene") or "").strip() for s in shots):
+        frames_sorted = [f for f in sorted(frames, key=_sort_key) if f.uuid]
+        by_scene: dict[str, list[Frame]] = {}
+        scene_order: list[str] = []
+        scene_beat: dict[str, dict[str, Any]] = {}
+        for i, fr in enumerate(frames_sorted):
+            beat: dict[str, Any] = {}
+            if i < len(shots) and str(shots[i].get("id_scene") or "").strip():
+                beat = shots[i]
+            else:
+                beat = camera_beat_for_frame(fr, shots, spans, offsets) or {}
+            sid = str(beat.get("id_scene") or "").strip() or f"_frame_{fr.uuid}"
+            if sid not in by_scene:
+                scene_order.append(sid)
+                by_scene[sid] = []
+                for sh in shots:
+                    if str(sh.get("id_scene") or "").strip() == sid:
+                        scene_beat[sid] = sh
+                        break
+                else:
+                    scene_beat[sid] = beat
+            by_scene[sid].append(fr)
+        for sid in scene_order:
+            frs = by_scene[sid]
+            beat = scene_beat.get(sid) or {}
+            groups.append((frs, beat, max(1, len(frs))))
+        return groups
+
     by_parent: dict[str, list[Frame]] = {}
     singles: list[Frame] = []
     for fr in frames:
@@ -583,14 +621,6 @@ def _group_frames_into_scenes(
             by_parent.setdefault(parent_u, []).append(fr)
         else:
             singles.append(fr)
-
-    offsets = frame_offsets(frames, full_vo)
-    spans = _beat_vo_spans(shots, full_vo) if shots else []
-
-    groups: list[tuple[list[Frame], dict[str, Any], int]] = []
-
-    def _sort_key(f: Frame) -> tuple:
-        return (f.sort_key is None, f.sort_key or 0.0, f.number or 0)
 
     # Родители в порядке появления.
     parent_order: list[str] = []
@@ -616,37 +646,6 @@ def _group_frames_into_scenes(
         if not req:
             req = required_shots_for_beat(beat, set_counts)
         groups.append((frs, beat, req))
-
-    # chrono_dyn: без parent_uuid склейка по id_scene из camera shot_plan.
-    if (
-        chrono_dyn
-        and singles
-        and any(str(s.get("id_scene") or "").strip() for s in shots)
-    ):
-        by_scene: dict[str, list[Frame]] = {}
-        scene_order: list[str] = []
-        scene_beat: dict[str, dict[str, Any]] = {}
-        for fr in sorted(singles, key=_sort_key):
-            beat = camera_beat_for_frame(fr, shots, spans, offsets) or {}
-            sid = str(beat.get("id_scene") or "").strip()
-            if not sid:
-                sid = f"_frame_{fr.uuid}"
-            if sid not in by_scene:
-                scene_order.append(sid)
-                by_scene[sid] = []
-                # Первый shot сцены — представитель (setup); id_scene сохраняем.
-                for sh in shots:
-                    if str(sh.get("id_scene") or "").strip() == sid:
-                        scene_beat[sid] = sh
-                        break
-                else:
-                    scene_beat[sid] = beat
-            by_scene[sid].append(fr)
-        for sid in scene_order:
-            frs = by_scene[sid]
-            beat = scene_beat.get(sid) or {}
-            groups.append((frs, beat, max(1, len(frs))))
-        singles = []
 
     for fr in sorted(singles, key=_sort_key):
         beat = camera_beat_for_frame(fr, shots, spans, offsets) or {}
@@ -707,8 +706,8 @@ def rebuild_scenes_from_camera(
         meta0 = _subdivide_attr(frs[0])
         parent_u = str(meta0.get("parent_uuid") or frs[0].uuid or "").strip()
         parent_vo = vo_by_uuid.get(parent_u, "")
-        if not parent_vo or (chrono_dyn and len(frs) > 1 and not meta0.get("parent_uuid")):
-            # chrono без дроби: VO размазан по кадрам сцены — склеиваем.
+        if not parent_vo or (chrono_dyn and len(frs) > 1):
+            # chrono: VO размазан по кадрам сцены (в т.ч. vo_parent ×1) — склеиваем.
             joined = " ".join(
                 (f.voiceover_text or "").strip()
                 for f in frs

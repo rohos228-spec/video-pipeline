@@ -221,11 +221,60 @@ def test_rebuild_does_not_merge_neighbor_vo_into_one_scene():
 def test_rebuild_chrono_dyn_groups_by_id_scene():
     """chrono_dyn: кадры с одним id_scene → одна многокадровая сцена."""
     vo = "Альфа один тут слово. Бета два тут слово. Гамма три тут слово. Дельта четыре тут слово."
+    # Как после subdivide inserted=0: каждый кадр = vo_parent с shots_in_beat=1.
     frames = [
-        _fr(1, "a", "Альфа один тут слово."),
-        _fr(2, "b", "Бета два тут слово."),
-        _fr(3, "c", "Гамма три тут слово."),
-        _fr(4, "d", "Дельта четыре тут слово."),
+        _fr(
+            1,
+            "a",
+            "Альфа один тут слово.",
+            attrs={
+                "camera_subdivide": {
+                    "role": "vo_parent",
+                    "parent_uuid": "a",
+                    "shot_index": 1,
+                    "shots_in_beat": 1,
+                }
+            },
+        ),
+        _fr(
+            2,
+            "b",
+            "Бета два тут слово.",
+            attrs={
+                "camera_subdivide": {
+                    "role": "vo_parent",
+                    "parent_uuid": "b",
+                    "shot_index": 1,
+                    "shots_in_beat": 1,
+                }
+            },
+        ),
+        _fr(
+            3,
+            "c",
+            "Гамма три тут слово.",
+            attrs={
+                "camera_subdivide": {
+                    "role": "vo_parent",
+                    "parent_uuid": "c",
+                    "shot_index": 1,
+                    "shots_in_beat": 1,
+                }
+            },
+        ),
+        _fr(
+            4,
+            "d",
+            "Дельта четыре тут слово.",
+            attrs={
+                "camera_subdivide": {
+                    "role": "vo_parent",
+                    "parent_uuid": "d",
+                    "shot_index": 1,
+                    "shots_in_beat": 1,
+                }
+            },
+        ),
     ]
     assembly = {
         "scenes_chrono": [],
