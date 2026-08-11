@@ -238,7 +238,31 @@ def _is_compound_action(action: str) -> bool:
 # «Стоит у двери» / «замирает» / «дышит» — дыра в blocking (V7/V9).
 _PASSIVE_ACTION_RE = re.compile(
     r"^(?:[^\s,]+\s+){0,3}"
-    r"(?:стоит|сидит|смотрит|ждёт|ждет|замирает|дышит|удерживает)\b",
+    r"(?:стоит|сидит|смотрит|глядит|наблюдает|ждёт|ждет|замирает|дышит|"
+    r"удерживает|молчит)\b",
+    re.IGNORECASE,
+)
+
+# Соевое передвижение без удара (V10): «проходит мимо / лестница / лифт».
+_SOY_LOCOMOTION_RE = re.compile(
+    r"(?:"
+    r"проходит\s+(?:мимо|через|вдоль)|"
+    r"\bбродит\b|\bходит\s+по\b|"
+    r"(?:идёт|идет)\s+(?:к|по|мимо|вдоль)\b|"
+    r"подходит\s+к\b|"
+    r"поднимается\s+по\s+лестниц|"
+    r"спускается\s+(?:по\s+лестниц|со\s+ступен)|"
+    r"выходит\s+из\s+(?:лифта|автобуса)\b|"
+    r"входит\s+в\s+(?:прихожую|зал)\b|"
+    r"отводит\s+взгляд|"
+    r"\bкивает\b|"
+    r"указывает\s+рукой|"
+    r"поднимает\s+глаза|"
+    r"задаёт\s+вопрос|задает\s+вопрос|"
+    r"отступает\s+от\b|"
+    r"поднимается\s+(?:со\s+скамь|из-?за\s+стола|после\b)|"
+    r"\bудаляется\b|\bпоявляется\s+в\b"
+    r")",
     re.IGNORECASE,
 )
 
@@ -255,8 +279,13 @@ _METAPHOR_VERB_RE = re.compile(
 
 
 def _is_passive_action(action: str) -> bool:
+    """Пассив + соевое передвижение без столкновения (V10)."""
     t = re.sub(r"\s+", " ", (action or "").strip())
-    return bool(t and _PASSIVE_ACTION_RE.match(t))
+    if not t:
+        return False
+    if _PASSIVE_ACTION_RE.match(t):
+        return True
+    return bool(_SOY_LOCOMOTION_RE.search(t))
 
 
 def _is_metaphor_slop(action: str) -> bool:
@@ -576,11 +605,13 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
             f"scene_design/action: {compound_phases}/{object_phases} фаз склеивают "
             f"несколько действий («…, … и …»). 1 кадр = 1 действие — разбей фазы."
         )
-    if object_phases >= 10 and passive_phases / object_phases >= 0.12:
+    # V10: соя (ходит/проходит мимо/лестница) считается пассивом; порог жёстче.
+    if object_phases >= 10 and passive_phases / object_phases >= 0.08:
         raise SceneDesignAgentError(
-            f"scene_design/action: {passive_phases}/{object_phases} фаз пассивны "
-            f"(«стоит/сидит/смотрит/ждёт/замирает» без намерения). Нужна логика: "
-            f"звонок/стук/вход → потом замок; у двери — сигнал, не стояние."
+            f"scene_design/action: {passive_phases}/{object_phases} фаз — соя/"
+            f"пассив («проходит мимо/лестница/лифт/отводит взгляд/смотрит»). "
+            f"Каждый кадр — столкновение: хват, удар дверью, улика, отказ, "
+            f"давление. Не начинай сцену с дороги к месту."
         )
     if object_phases >= 8 and metaphor_phases / object_phases >= 0.12:
         raise SceneDesignAgentError(

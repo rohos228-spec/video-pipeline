@@ -219,6 +219,48 @@ def test_validate_chrono_dyn_rejects_metaphor_folder_slop() -> None:
         ag.validate_chrono_dyn_action_scenes(scenes)
 
 
+def test_validate_chrono_dyn_rejects_soy_locomotion() -> None:
+    """V10: «проходит мимо / лестница / отводит взгляд» — брак."""
+    scenes = [
+        {
+            "id_scene": f"scene_{i:02d}",
+            "время_сек": 9.0,
+            "связь_с_прошлой": "продолжение" if i > 1 else "",
+            "крючок_в_следующую": "дальше",
+            "цепь_действия": [
+                {
+                    "phase_index": 1,
+                    "beat": "setup",
+                    "action": "Лидия проходит мимо двери квартиры № 357 с сумкой",
+                    "subject": "c01",
+                    "orientation": "side",
+                    "переход_к_следующей": "cut_on_action",
+                },
+                {
+                    "phase_index": 2,
+                    "beat": "develop",
+                    "action": "Лидия поднимается по лестнице к квартире",
+                    "subject": "c01",
+                    "orientation": "back",
+                    "переход_к_следующей": "cut_on_action",
+                },
+                {
+                    "phase_index": 3,
+                    "beat": "payoff",
+                    "action": "Лидия отводит взгляд от двери, когда открывается лифт",
+                    "subject": "c01",
+                    "orientation": "side",
+                    "переход_к_следующей": "sound_bridge",
+                },
+            ],
+        }
+        for i in range(1, 5)
+    ]
+    # 4×3 = 12 soy / 12 phases = 100% ≥ 8%
+    with pytest.raises(ag.SceneDesignAgentError, match="соя|проходит мимо|лестница"):
+        ag.validate_chrono_dyn_action_scenes(scenes)
+
+
 def test_validate_chrono_dyn_rejects_passive_standing() -> None:
     scenes = [
         {
@@ -247,8 +289,8 @@ def test_validate_chrono_dyn_rejects_passive_standing() -> None:
         }
         for i in range(1, 4)
     ]
-    # 3 scenes × 2 passive = 6/15 = 40% ≥ 12%
-    with pytest.raises(ag.SceneDesignAgentError, match="пассивн|звонок|стоит"):
+    # 3 scenes × 2 passive = 6/15 = 40% ≥ 8%
+    with pytest.raises(ag.SceneDesignAgentError, match="соя|пассив|стоит|смотрит"):
         ag.validate_chrono_dyn_action_scenes(scenes)
 
 
