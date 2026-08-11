@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from pathlib import Path
@@ -279,6 +280,79 @@ def _near_duplicate_actions(a: str, b: str) -> bool:
     return overlap >= 0.55
 
 
+def _phase_year(ph: dict[str, Any]) -> str | None:
+    years = _YEAR_RE.findall(_phase_action_text(ph))
+    return years[0] if years else None
+
+
+def repair_chrono_dyn_year_jumps(scenes: list[Any]) -> list[Any]:
+    """Разрезать сцены, где в одной цепи ≥2 календарных года.
+
+    GPT иногда пишет «1987…» и «1991…» в фазах одной сцены; валидатор это
+    бракует. Режем цепь на непрерывные группы с одним годом (фазы без года
+    наследуют текущий), пропорционально делим ``время_сек``.
+    """
+    out: list[Any] = []
+    for sc in scenes:
+        if not isinstance(sc, dict):
+            out.append(sc)
+            continue
+        chain = [ph for ph in _chain_phases(sc) if isinstance(ph, dict)]
+        if not chain:
+            out.append(sc)
+            continue
+        years_seq: list[str | None] = []
+        cur: str | None = None
+        for ph in chain:
+            y = _phase_year(ph)
+            if y is not None:
+                cur = y
+            years_seq.append(cur)
+        distinct = {y for y in years_seq if y}
+        if len(distinct) < 2:
+            out.append(sc)
+            continue
+        try:
+            total_sec = float(sc.get("время_сек") or 0.0)
+        except (TypeError, ValueError):
+            total_sec = 0.0
+        groups: list[list[dict[str, Any]]] = []
+        buf: list[dict[str, Any]] = []
+        buf_year: str | None = years_seq[0]
+        for ph, y in zip(chain, years_seq):
+            if buf and y != buf_year and y is not None and buf_year is not None:
+                groups.append(buf)
+                buf = [ph]
+                buf_year = y
+            else:
+                buf.append(ph)
+                if y is not None:
+                    buf_year = y
+        if buf:
+            groups.append(buf)
+        if len(groups) < 2:
+            out.append(sc)
+            continue
+        n_ph = len(chain)
+        for gi, gchain in enumerate(groups):
+            part = copy.deepcopy(sc)
+            for j, ph in enumerate(gchain, start=1):
+                ph["phase_index"] = j
+            part["цепь_действия"] = gchain
+            if total_sec > 0 and n_ph > 0:
+                part["время_сек"] = round(total_sec * len(gchain) / n_ph, 2)
+            if gi > 0:
+                part["связь_с_прошлой"] = part.get("связь_с_прошлой") or (
+                    "продолжение после смены года"
+                )
+            if gi < len(groups) - 1:
+                part["крючок_в_следующую"] = part.get("крючок_в_следующую") or (
+                    "время сдвигается — новая сцена"
+                )
+            out.append(part)
+    return out
+
+
 def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
     """Брак: склейка действий, коллаж мест/лет, нет арки/связей, мало cNN."""
     if not scenes:
@@ -293,6 +367,7 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
     missing_payoff = 0
     teleport_scenes = 0
     year_jump_scenes = 0
+    year_jump_ids: list[str] = []
     compound_phases = 0
     passive_phases = 0
     metaphor_phases = 0
@@ -313,6 +388,7 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
         scene_years: set[str] = set()
         scene_places: set[str] = set()
         prev_act = ""
+        scene_object_before = object_phases
         for ph in chain:
             if not isinstance(ph, dict):
                 continue
@@ -339,11 +415,13 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
             txt = _phase_action_text(ph)
             scene_years.update(_YEAR_RE.findall(txt))
             scene_places |= _place_buckets_in_text(txt)
-        if object_phases and beats and "payoff" not in beats:
+        scene_had_phases = object_phases > scene_object_before
+        if scene_had_phases and beats and "payoff" not in beats:
             missing_payoff += 1
         # ≥2 разных календарных года в одной цепи = телепорт по времени
         if len(scene_years) >= 2:
             year_jump_scenes += 1
+            year_jump_ids.append(str(sc.get("id_scene") or f"#{i+1}"))
         # ≥3 разных типа мест в одной сцене = коллаж локаций
         if len(scene_places) >= 3:
             teleport_scenes += 1
@@ -432,9 +510,10 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
             f"у каждой сцены должен быть видимый итог бита."
         )
     if year_jump_scenes > 0:
+        ids = ", ".join(year_jump_ids[:8])
         raise SceneDesignAgentError(
             f"scene_design/action: {year_jump_scenes} сцен прыгают по годам "
-            f"внутри одной цепи — смена года = новая сцена, не фаза. "
+            f"внутри одной цепи ({ids}) — смена года = новая сцена, не фаза. "
             f"Нужна непрерывная цепочка в одном месте (вход→жест→стол→итог)."
         )
     if teleport_scenes > 0:
@@ -494,6 +573,12 @@ def parse_agent_slice(
         raise SceneDesignAgentError(
             f"scene_design/{agent}: пустой «{list_key}» — срез не принят"
         )
+    if agent == "action":
+        items = repair_chrono_dyn_year_jumps(items)
+        data[list_key] = items
+        for i, sc in enumerate(items, start=1):
+            if isinstance(sc, dict):
+                sc["id_scene"] = f"scene_{i:02d}"
     if validate and agent == "action":
         validate_chrono_dyn_action_scenes(items)
     return data

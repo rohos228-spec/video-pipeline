@@ -293,6 +293,48 @@ def test_validate_chrono_dyn_rejects_year_jumps_inside_scene() -> None:
         ag.validate_chrono_dyn_action_scenes(scenes)
 
 
+def test_repair_chrono_dyn_year_jumps_splits_scene() -> None:
+    scenes = [
+        {
+            "id_scene": "scene_01",
+            "время_сек": 9.0,
+            "связь_с_прошлой": "",
+            "крючок_в_следующую": "дальше",
+            "цепь_действия": [
+                {
+                    "phase_index": 1,
+                    "beat": "setup",
+                    "action": "В 1992 году Александр входит в отделение",
+                    "subject": "c01",
+                    "orientation": "side",
+                    "переход_к_следующей": "cut_on_action",
+                },
+                {
+                    "phase_index": 2,
+                    "beat": "develop",
+                    "action": "В 1995 году он выходит с сумкой",
+                    "subject": "c01",
+                    "orientation": "side",
+                    "переход_к_следующей": "cut_on_action",
+                },
+                {
+                    "phase_index": 3,
+                    "beat": "payoff",
+                    "action": "Закрывает дверь подъезда",
+                    "subject": "c01",
+                    "orientation": "side",
+                    "переход_к_следующей": "sound_bridge",
+                },
+            ],
+        }
+    ]
+    fixed = ag.repair_chrono_dyn_year_jumps(scenes)
+    assert len(fixed) == 2
+    assert len(fixed[0]["цепь_действия"]) == 1
+    assert len(fixed[1]["цепь_действия"]) == 2
+    ag.validate_chrono_dyn_action_scenes(fixed)
+
+
 def test_validate_chrono_dyn_rejects_location_collage() -> None:
     scenes = [
         {

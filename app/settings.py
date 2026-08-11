@@ -277,15 +277,16 @@ class Settings(BaseSettings):
     # action/camera: сразу режем на куски ≤N кадров (не жечь 5 мин на 524).
     # 0 = старое: сначала полный запрос, дробим только после 524.
     scene_design_agent_chunk_frames: int = Field(
-        16, alias="SCENE_DESIGN_AGENT_CHUNK_FRAMES"
+        10, alias="SCENE_DESIGN_AGENT_CHUNK_FRAMES"
     )
     # Сколько кусков action/camera одновременно (kie).
     scene_design_agent_chunk_parallel: int = Field(
         2, alias="SCENE_DESIGN_AGENT_CHUNK_PARALLEL"
     )
     # Один GPT-вызов action/camera: abort раньше Cloudflare ~300s → сразу /2.
+    # V9 плотнее — 240с часто режет живые куски; 280 даёт запас до CF.
     scene_design_agent_attempt_timeout_s: float = Field(
-        240.0, alias="SCENE_DESIGN_AGENT_ATTEMPT_TIMEOUT_S"
+        280.0, alias="SCENE_DESIGN_AGENT_ATTEMPT_TIMEOUT_S"
     )
 
     # Logic

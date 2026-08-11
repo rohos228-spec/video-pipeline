@@ -144,6 +144,7 @@ def merge_agent_slices(agent: str, parts: list[dict[str, Any]]) -> dict[str, Any
             f"scene_design/{agent}: после склейки чанков пустой «{list_key}»"
         )
     if agent == "action":
+        merged = ag.repair_chrono_dyn_year_jumps(merged)
         for i, sc in enumerate(merged, start=1):
             if isinstance(sc, dict):
                 sc["id_scene"] = f"scene_{i:02d}"
