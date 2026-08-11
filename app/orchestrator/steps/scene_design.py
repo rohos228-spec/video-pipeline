@@ -227,8 +227,13 @@ async def run_assemble(
         await session.flush()
         logger.info("[#{}] camera_subdivide report: {}", project.id, subdiv_report)
         # shot_plan в assembly_input ещё от исходных VO — rebuild сцен после дроби.
+        from app.services.scene_design.agents import uses_chrono_dyn
+
         assembly_input = sd_camera_expand.rebuild_scenes_from_camera(
-            frames, assembly_input, full_vo
+            frames,
+            assembly_input,
+            full_vo,
+            chrono_dyn=uses_chrono_dyn(project),
         )
         assembly_input["scenes_chrono"] = sd_assembler.attach_action_chains_to_scenes(
             list(assembly_input.get("scenes_chrono") or []),

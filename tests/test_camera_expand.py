@@ -218,6 +218,65 @@ def test_rebuild_does_not_merge_neighbor_vo_into_one_scene():
     assert out["camera_expand_report"]["scenes"] >= 2
 
 
+def test_rebuild_chrono_dyn_groups_by_id_scene():
+    """chrono_dyn: кадры с одним id_scene → одна многокадровая сцена."""
+    vo = "Альфа один тут слово. Бета два тут слово. Гамма три тут слово. Дельта четыре тут слово."
+    frames = [
+        _fr(1, "a", "Альфа один тут слово."),
+        _fr(2, "b", "Бета два тут слово."),
+        _fr(3, "c", "Гамма три тут слово."),
+        _fr(4, "d", "Дельта четыре тут слово."),
+    ]
+    assembly = {
+        "scenes_chrono": [],
+        "shot_plan_chrono": [
+            {
+                "id_scene": "scene_01",
+                "phase_index": 1,
+                "цитата": "Альфа один",
+                "крупность": "WS",
+                "переход": "eyeline",
+            },
+            {
+                "id_scene": "scene_01",
+                "phase_index": 2,
+                "цитата": "Бета два",
+                "крупность": "MS",
+                "переход": "cut_on_action",
+            },
+            {
+                "id_scene": "scene_02",
+                "phase_index": 1,
+                "цитата": "Гамма три",
+                "крупность": "CU",
+                "переход": "match_cut",
+            },
+            {
+                "id_scene": "scene_02",
+                "phase_index": 2,
+                "цитата": "Дельта четыре",
+                "крупность": "Insert",
+                "переход": "sound_bridge",
+            },
+        ],
+    }
+    out = rebuild_scenes_from_camera(
+        frames,
+        assembly,
+        vo,
+        set_counts={},
+        chrono_dyn=True,
+    )
+    scenes = out["scenes_chrono"]
+    assert len(scenes) == 2, scenes
+    assert scenes[0]["id_scene"] == "scene_01"
+    assert scenes[0]["кадров"] == 2
+    assert scenes[1]["id_scene"] == "scene_02"
+    assert scenes[1]["кадров"] == 2
+    assert out["camera_expand_report"]["multi_frame_scenes"] == 2
+    assert out["camera_expand_report"]["single_frame_scenes"] == 0
+
+
 def test_stamp_actions_from_chain():
     from app.services.scene_design.assembler import stamp_actions_onto_ops
 

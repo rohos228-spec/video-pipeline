@@ -120,6 +120,18 @@ def attach_action_chains_to_scenes(
                 row["смысл_сцены"] = best.get("смысл_сцены") or ""
             if not row.get("структура_сцены"):
                 row["структура_сцены"] = best.get("структура_сцены") or "continuity"
+            # V3 narrative glue from action — даже если camera_expand обнулил.
+            for key in (
+                "связь_с_прошлой",
+                "крючок_в_следующую",
+                "переход_в_сцену",
+                "тип_стыка",
+                "мотив",
+            ):
+                if best.get(key) and not row.get(key):
+                    row[key] = best.get(key)
+            if best_score >= 2 and best.get("id_scene"):
+                row["id_scene"] = best.get("id_scene")
         out.append(row)
     _ = vo_norm
     return out
