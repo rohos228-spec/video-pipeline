@@ -40,13 +40,47 @@ SHOT_FEATURES: frozenset[str] = frozenset({
     "Архитектурный акцент",
 })
 SCENE_STRUCTURES: frozenset[str] = frozenset(
-    {"continuity", "associative", "parallel", "developing"}
+    {
+        "continuity",
+        "associative",
+        "parallel",
+        "developing",
+        "opening",
+        "closing",
+        "climax",
+    }
 )
 JOINT_TYPES: frozenset[str] = frozenset(
-    {"action", "screen_position", "form", "concept", "combined", "none"}
+    {
+        "action",
+        "screen_position",
+        "form",
+        "concept",
+        "combined",
+        "none",
+        "object",
+        "sound",
+        "eyeline",
+        "match",
+    }
 )
 TRANSITIONS: frozenset[str] = frozenset(
-    {"cut", "dissolve", "fade", "wipe", "smash", "exit_frame", "j_cut", "l_cut"}
+    {
+        "cut",
+        "dissolve",
+        "fade",
+        "wipe",
+        "smash",
+        "exit_frame",
+        "j_cut",
+        "l_cut",
+        # chrono_dyn / cinematic glue
+        "match_cut",
+        "cut_on_action",
+        "eyeline",
+        "insert_bridge",
+        "sound_bridge",
+    }
 )
 
 _ID_RE = {
@@ -201,7 +235,8 @@ def slice_to_cells(
                 project, agent, "scene", key, item,
                 ("start_words", "end_words", "время_сек", "структура_сцены",
                  "тип_стыка", "переход_в_сцену", "цепь_действия", "смысл_сцены",
-                 "мотив"),
+                 "мотив", "связь_с_прошлой", "крючок_в_следующую", "location",
+                 "кто_в_кадре"),
                 quote_field="start_words", full_vo_norm=vo_norm,
             )
             for c in part:
@@ -228,8 +263,9 @@ def slice_to_cells(
             key = f"shot_{idx:02d}"
             part = _item_fields(
                 project, agent, "shot", key, item,
-                ("цитата", "крупность", "особенность_сцены", "композиция",
-                 "угол", "движение", "переход", "тип_стыка", "набор", "мотив"),
+                ("id_scene", "phase_index", "beat", "цитата", "крупность",
+                 "особенность_сцены", "композиция", "угол", "движение",
+                 "переход", "тип_стыка", "набор", "мотив", "кто_в_кадре"),
                 quote_field="цитата", full_vo_norm=vo_norm,
             )
             for c in part:

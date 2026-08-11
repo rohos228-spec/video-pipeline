@@ -151,6 +151,32 @@ def test_camera_feature_dictionary() -> None:
     assert q.vo_offset is not None
 
 
+def test_camera_keeps_id_scene_phase_beat() -> None:
+    p = _project()
+    slice_data = {
+        "shot_plan": [
+            {
+                "id_scene": "scene_01",
+                "phase_index": 2,
+                "beat": "develop",
+                "цитата": "Бета середина",
+                "крупность": "MS",
+                "кто_в_кадре": "c01",
+                "переход": "eyeline",
+                "особенность_сцены": "Крупный план лица",
+                "тип_стыка": "action",
+            }
+        ]
+    }
+    cells = sd_cells.slice_to_cells(p, "camera", slice_data, _VO)
+    fields = {c.field: c.value for c in cells if c.status == "ok"}
+    assert fields.get("id_scene") == "scene_01"
+    assert fields.get("phase_index") == "2"
+    assert fields.get("beat") == "develop"
+    assert fields.get("кто_в_кадре") == "c01"
+    assert fields.get("переход") == "eyeline"
+
+
 def test_style_hint_offset() -> None:
     p = _project()
     slice_data = {
