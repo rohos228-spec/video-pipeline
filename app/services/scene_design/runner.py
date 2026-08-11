@@ -176,19 +176,35 @@ async def _run_one_agent(
     return ag.parse_agent_slice(name, reply)
 
 
+def _append_slice_context(
+    base: str, *, title: str, payload: dict[str, Any] | None
+) -> str:
+    if not isinstance(payload, dict) or not payload:
+        return base
+    return (
+        base
+        + f"\n\n# {title}\n"
+        + json.dumps(payload, ensure_ascii=False, indent=1)
+    )
+
+
 async def run_category_agents(
     project: Project,
     context: str,
     *,
     timeout: float = 900,
 ) -> dict[str, dict[str, Any]]:
-    """Категорийные агенты: волна1 (characters/world/style/action) → camera.
+    """Категорийные агенты волнами.
 
-    Camera всегда после action (нужны фазы). Чекпоинтнутые пропускаются.
+    Legacy: chars/world/style/action → camera.
+    chrono_dyn: chars/world/style → action → camera (как на канвасе).
+    Чекпоинтнутые пропускаются.
     """
     sem = asyncio.Semaphore(max(1, int(settings.scene_design_max_parallel)))
     results: dict[str, dict[str, Any]] = {}
     errors: dict[str, str] = {}
+    waves = ag.agent_waves(project)
+    chrono = ag.uses_chrono_dyn(project)
 
     async def _one(name: str, ctx: str) -> None:
         cached = load_checkpoint(project, name)
@@ -209,23 +225,41 @@ async def run_category_agents(
         results[name] = data
         logger.info("[#{}] scene_design/{}: ok", project.id, name)
 
-    await asyncio.gather(*(_one(n, context) for n in ag.WAVE1_AGENTS))
-    if any(a in errors for a in ("action",)):
-        failed = ", ".join(sorted(errors))
-        raise ag.SceneDesignAgentError(
-            f"scene_design: агенты упали ({failed}): "
-            + "; ".join(f"{k}: {v}" for k, v in sorted(errors.items()))[:400]
+    for wave_i, wave in enumerate(waves):
+        ctx = context
+        if chrono and wave_i == 1:
+            # action видит паспорта верхних трёх
+            for name in ag.CHRONO_WAVE1_AGENTS:
+                slice_data = results.get(name)
+                if isinstance(slice_data, dict):
+                    ctx = _append_slice_context(
+                        ctx,
+                        title=f"{name.upper()} SLICE (JSON)",
+                        payload=slice_data,
+                    )
+        if wave == ag.WAVE2_AGENTS or wave == ag.CHRONO_WAVE3_AGENTS:
+            action_slice = results.get("action")
+            if isinstance(action_slice, dict) and action_slice.get("scenes"):
+                ctx = _append_slice_context(
+                    ctx,
+                    title="ACTION SCENES (JSON) — закон фаз для camera",
+                    payload=action_slice,
+                )
+        logger.info(
+            "[#{}] scene_design wave {}: {}",
+            project.id,
+            wave_i + 1,
+            ",".join(wave),
         )
+        await asyncio.gather(*(_one(n, ctx) for n in wave))
+        # Жёсткий стоп: упала текущая волна — дальше не идём.
+        if any(n in errors for n in wave):
+            failed = ", ".join(sorted(errors))
+            raise ag.SceneDesignAgentError(
+                f"scene_design: агенты упали ({failed}): "
+                + "; ".join(f"{k}: {v}" for k, v in sorted(errors.items()))[:400]
+            )
 
-    camera_ctx = context
-    action_slice = results.get("action")
-    if isinstance(action_slice, dict) and action_slice.get("scenes"):
-        camera_ctx = (
-            context
-            + "\n\n# ACTION SCENES (JSON) — закон фаз для camera\n"
-            + json.dumps(action_slice, ensure_ascii=False, indent=1)
-        )
-    await asyncio.gather(*(_one(n, camera_ctx) for n in ag.WAVE2_AGENTS))
     if errors:
         failed = ", ".join(sorted(errors))
         raise ag.SceneDesignAgentError(

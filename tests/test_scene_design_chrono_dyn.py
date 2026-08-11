@@ -67,6 +67,7 @@ async def test_run_category_agents_camera_after_action() -> None:
     async def fake_one(project, name, context, *, timeout):
         order.append(name)
         if name == "action":
+            assert "CHARACTERS SLICE" in context
             return {"scenes": [{"id_scene": "scene_01", "цепь_действия": ["a", "b"]}]}
         if name == "camera":
             assert "ACTION SCENES" in context
@@ -82,5 +83,12 @@ async def test_run_category_agents_camera_after_action() -> None:
     ):
         await runner.run_category_agents(project, "CTX", timeout=10)
 
+    # chrono_dyn: верхние 3 → action → camera
+    for top in ("characters", "world", "style"):
+        assert order.index(top) < order.index("action")
     assert order.index("action") < order.index("camera")
-    assert "characters" in order
+    assert ag.agent_waves(project) == (
+        ag.CHRONO_WAVE1_AGENTS,
+        ag.CHRONO_WAVE2_AGENTS,
+        ag.CHRONO_WAVE3_AGENTS,
+    )

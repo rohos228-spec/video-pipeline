@@ -13,9 +13,13 @@ PROMPTS_SUBDIR = Path("prompts") / "scene_design"
 
 ASSEMBLER = "assemble"
 CATEGORY_AGENTS: tuple[str, ...] = ("characters", "world", "style", "camera", "action")
-# Волна 1 (параллельно) → волна 2 camera (нужен срез action).
+# Legacy: chars/world/style/action параллельно → camera.
 WAVE1_AGENTS: tuple[str, ...] = ("characters", "world", "style", "action")
 WAVE2_AGENTS: tuple[str, ...] = ("camera",)
+# chrono_dyn: верхние 3 → action → camera (как на канвасе).
+CHRONO_WAVE1_AGENTS: tuple[str, ...] = ("characters", "world", "style")
+CHRONO_WAVE2_AGENTS: tuple[str, ...] = ("action",)
+CHRONO_WAVE3_AGENTS: tuple[str, ...] = ("camera",)
 
 
 def project_scene_design_variant(project: Any | None) -> str:
@@ -42,6 +46,13 @@ def project_scene_design_variant(project: Any | None) -> str:
 
 def uses_chrono_dyn(project: Any | None) -> bool:
     return project_scene_design_variant(project) == "chrono_dyn"
+
+
+def agent_waves(project: Any | None) -> tuple[tuple[str, ...], ...]:
+    """Порядок волн GPT для категорийных агентов."""
+    if uses_chrono_dyn(project):
+        return (CHRONO_WAVE1_AGENTS, CHRONO_WAVE2_AGENTS, CHRONO_WAVE3_AGENTS)
+    return (WAVE1_AGENTS, WAVE2_AGENTS)
 
 # Обязательный ключ-список в JSON-срезе агента (непустой при успехе).
 LIST_KEY: dict[str, str] = {
