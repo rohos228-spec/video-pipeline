@@ -64,16 +64,21 @@ def test_validate_chrono_dyn_action_rejects_flat_two_phases() -> None:
 
 
 def test_validate_chrono_dyn_action_accepts_dense_cnn() -> None:
+    beats = ("setup", "develop", "turn", "payoff")
     scenes = [
         {
             "id_scene": f"scene_{i:02d}",
+            "связь_с_прошлой": "продолжение прошлого бита" if i > 1 else "",
+            "крючок_в_следующую": "открытый жест в следующую сцену",
             "цепь_действия": [
                 {
                     "phase_index": p,
+                    "beat": beats[p - 1],
                     "action": f"beat {p}",
                     "subject": f"c0{(p % 3) + 1}",
                     "orientation": "face",
                     "info_change": f"info {p}",
+                    "переход_к_следующей": "cut_on_action",
                 }
                 for p in range(1, 5)
             ],
@@ -81,6 +86,29 @@ def test_validate_chrono_dyn_action_accepts_dense_cnn() -> None:
         for i in range(1, 6)
     ]
     ag.validate_chrono_dyn_action_scenes(scenes)
+
+
+def test_validate_chrono_dyn_action_rejects_unlinked_scenes() -> None:
+    scenes = [
+        {
+            "id_scene": f"scene_{i:02d}",
+            "цепь_действия": [
+                {
+                    "phase_index": p,
+                    "beat": "setup" if p == 1 else ("payoff" if p == 3 else "develop"),
+                    "action": f"a{p}",
+                    "subject": "c01",
+                    "orientation": "face",
+                    "info_change": "x",
+                    "переход_к_следующей": "cut",
+                }
+                for p in range(1, 4)
+            ],
+        }
+        for i in range(1, 5)
+    ]
+    with pytest.raises(ag.SceneDesignAgentError, match="связь_с_прошлой|крючок"):
+        ag.validate_chrono_dyn_action_scenes(scenes)
 
 
 def test_required_shots_chrono_dyn_uses_phases() -> None:

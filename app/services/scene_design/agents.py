@@ -194,18 +194,33 @@ def _chain_phases(scene: dict[str, Any]) -> list[Any]:
     return raw if isinstance(raw, list) else []
 
 
+_BEAT_OK = frozenset({"setup", "develop", "turn", "payoff"})
+
+
 def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
-    """Брак: почти все сцены по 2 фазы / нет персонажей cNN / пустые фазы."""
+    """Брак: плоские 2 фазы / нет арки / нет связей сцен / мало cNN."""
     if not scenes:
         return
     phase_counts: list[int] = []
     object_phases = 0
     cnn_phases = 0
-    for sc in scenes:
+    with_beats = 0
+    with_transitions = 0
+    missing_links = 0
+    missing_hooks = 0
+    missing_payoff = 0
+    dict_scenes = 0
+    for i, sc in enumerate(scenes):
         if not isinstance(sc, dict):
             continue
+        dict_scenes += 1
         chain = _chain_phases(sc)
         phase_counts.append(len(chain))
+        if i > 0 and not str(sc.get("связь_с_прошлой") or "").strip():
+            missing_links += 1
+        if not str(sc.get("крючок_в_следующую") or "").strip():
+            missing_hooks += 1
+        beats: list[str] = []
         for ph in chain:
             if not isinstance(ph, dict):
                 continue
@@ -213,6 +228,14 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
             sub = str(ph.get("subject") or "").strip().lower()
             if re.match(r"^c\d+$", sub):
                 cnn_phases += 1
+            beat = str(ph.get("beat") or "").strip().lower()
+            if beat in _BEAT_OK:
+                with_beats += 1
+                beats.append(beat)
+            if str(ph.get("переход_к_следующей") or "").strip():
+                with_transitions += 1
+        if object_phases and beats and "payoff" not in beats:
+            missing_payoff += 1
     if not phase_counts or object_phases == 0:
         # legacy строки в цепи — не chrono_dyn контракт
         return
@@ -225,15 +248,40 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
             f"фазами (avg={avg:.1f}). Нужно >=3 фазы на типичную сцену; "
             f"число кадров задаёт action, не SET camera."
         )
-    if avg < 2.8 and n >= 5:
+    if avg < 3.0 and n >= 5:
         raise SceneDesignAgentError(
-            f"scene_design/action: avg фаз {avg:.1f} < 2.8 — слишком плоско; "
-            f"добавь развитие бита (жест/субъект/зона) между фазами."
+            f"scene_design/action: avg фаз {avg:.1f} < 3.0 — нет арки "
+            f"начало/середина/конец; добавь develop/turn/payoff."
         )
     if object_phases >= 10 and cnn_phases / object_phases < 0.35:
         raise SceneDesignAgentError(
             f"scene_design/action: персонажи cNN только в {cnn_phases}/"
             f"{object_phases} фазах — задействуй героев текста, не crowd/prop."
+        )
+    # Арочные поля — обязательны, когда модель уже пишет объекты-фазы.
+    if object_phases >= 8 and with_beats / object_phases < 0.7:
+        raise SceneDesignAgentError(
+            "scene_design/action: у фаз нет beat setup|develop|turn|payoff — "
+            "сцена должна иметь начало/середину/конец."
+        )
+    if object_phases >= 8 and with_transitions < max(1, object_phases - dict_scenes):
+        raise SceneDesignAgentError(
+            "scene_design/action: нет переход_к_следующей между фазами — "
+            "нужна монтажная последовательность, не набор кадров."
+        )
+    if dict_scenes >= 3 and missing_links / max(1, dict_scenes - 1) > 0.4:
+        raise SceneDesignAgentError(
+            "scene_design/action: сцены не связаны (нет связь_с_прошлой) — "
+            "нужна сквозная последовательность сюжета."
+        )
+    if dict_scenes >= 3 and missing_hooks / dict_scenes > 0.4:
+        raise SceneDesignAgentError(
+            "scene_design/action: нет крючок_в_следующую — сцены не ведут сюжет дальше."
+        )
+    if missing_payoff > max(1, dict_scenes // 3):
+        raise SceneDesignAgentError(
+            f"scene_design/action: {missing_payoff} сцен без payoff — "
+            f"у каждой сцены должен быть видимый итог бита."
         )
 
 
