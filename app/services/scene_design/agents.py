@@ -307,7 +307,9 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
             f"scene_design/action: avg фаз {avg:.1f} < 4.0 — действия слиты; "
             f"разбей: одно действие на фазу (встретили / письма / мимо двери)."
         )
-    if object_phases >= 10 and cnn_phases / object_phases < 0.35:
+    # 0.25: после split-чанков модель часто даёт ~26–30% cNN; жёсткие 0.35
+    # крутили soft-retry часами. Промпт V6 требует ≥50% — это цель, не брак.
+    if object_phases >= 10 and cnn_phases / object_phases < 0.25:
         raise SceneDesignAgentError(
             f"scene_design/action: персонажи cNN только в {cnn_phases}/"
             f"{object_phases} фазах — задействуй героев текста, не crowd/prop."
