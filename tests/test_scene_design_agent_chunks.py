@@ -54,6 +54,28 @@ def test_is_capacity_failure_524() -> None:
     assert not ach.is_capacity_failure(
         GptApiError("bad request", context={"status_code": 400, "retryable": False})
     )
+    # 500 больше не capacity-split (только same-chunk retry).
+    assert not ach.is_capacity_failure(
+        GptApiError("GPT HTTP 500: x", context={"status_code": 500, "retryable": True})
+    )
+    assert ach.is_transient_server_failure(
+        GptApiError("GPT HTTP 500: x", context={"status_code": 500, "retryable": True})
+    )
+
+
+def test_is_credits_failure_402() -> None:
+    assert ach.is_credits_failure(
+        GptApiError(
+            "GPT провайдер code=402: Credits insufficient",
+            context={"provider_code": 402, "retryable": False},
+        )
+    )
+    assert not ach.is_capacity_failure(
+        GptApiError(
+            "GPT провайдер code=402: Credits insufficient",
+            context={"provider_code": 402, "retryable": False},
+        )
+    )
 
 
 def test_split_frames_half() -> None:
@@ -168,7 +190,124 @@ async def test_action_split_once_then_merge() -> None:
 
 
 @pytest.mark.asyncio
-async def test_proactive_chunks_skip_full_payload() -> None:
+async def test_500_same_chunk_retry_no_split() -> None:
+    frames = [_fr(1, "a", "Альфа. Бета.")]
+    project = SimpleNamespace(
+        id=60,
+        meta={"scene_design_variant": "chrono_dyn"},
+        script_text="",
+        general_plan="",
+        data_dir=SimpleNamespace(),  # unused
+    )
+    boom = GptApiError(
+        "GPT HTTP 500: Server exception",
+        context={"status_code": 500, "retryable": True},
+    )
+    n = {"calls": 0}
+
+    async def fake_one(project, name, context, *, timeout, validate=True, max_retries=None):
+        n["calls"] += 1
+        if n["calls"] == 1:
+            raise boom
+        return {"scenes": [_scene(1)]}
+
+    with (
+        patch.object(ag, "load_prompt", return_value="PROMPT"),
+        patch.object(runner, "_run_one_agent", side_effect=fake_one),
+        patch("asyncio.sleep", new_callable=AsyncMock),
+        patch.object(runner.settings, "scene_design_agent_chunk_frames", 0),
+    ):
+        data = await runner._run_one_agent_adaptive(
+            project,
+            "action",
+            frames=frames,
+            full_frames=frames,
+            slice_extras=[],
+            action_scenes=None,
+            timeout=10,
+        )
+    assert n["calls"] == 2
+    assert data["scenes"][0]["id_scene"] == "scene_01"
+
+
+@pytest.mark.asyncio
+async def test_402_raises_credits_exhausted() -> None:
+    frames = [_fr(1, "a", "Альфа. Бета.")]
+    project = SimpleNamespace(
+        id=60,
+        meta={"scene_design_variant": "chrono_dyn"},
+        script_text="",
+        general_plan="",
+    )
+    boom = GptApiError(
+        "GPT провайдер code=402: Credits insufficient",
+        context={"provider_code": 402, "retryable": False},
+    )
+
+    async def fake_one(*a, **k):
+        raise boom
+
+    with (
+        patch.object(ag, "load_prompt", return_value="PROMPT"),
+        patch.object(runner, "_run_one_agent", side_effect=fake_one),
+        patch.object(runner.settings, "scene_design_agent_chunk_frames", 0),
+    ):
+        with pytest.raises(ach.CreditsExhausted, match="402|кредит"):
+            await runner._run_one_agent_adaptive(
+                project,
+                "action",
+                frames=frames,
+                full_frames=frames,
+                slice_extras=[],
+                action_scenes=None,
+                timeout=10,
+            )
+
+
+@pytest.mark.asyncio
+async def test_proactive_chunk_checkpoint_skips_gpt(tmp_path) -> None:
+    frames = [_fr(i, f"u{i}", f"кусок {i} старт. кусок {i} финиш.") for i in range(1, 5)]
+    project = SimpleNamespace(
+        id=60,
+        meta={"scene_design_variant": "chrono_dyn"},
+        script_text="",
+        general_plan="",
+        data_dir=tmp_path,
+    )
+    runner.save_chunk_checkpoint(project, "action", "p1", {"scenes": [_scene(1)]})
+    calls: list[str] = []
+
+    async def fake_one(project, name, context, *, timeout, validate=True, max_retries=None):
+        if "часть «p1»" in context:
+            calls.append("p1")
+            raise AssertionError("p1 must come from checkpoint")
+        if "часть «p2»" in context:
+            calls.append("p2")
+            return {"scenes": [_scene(2)]}
+        raise AssertionError(context[:120])
+
+    with (
+        patch.object(ag, "load_prompt", return_value="PROMPT"),
+        patch.object(runner, "_run_one_agent", side_effect=fake_one),
+        patch.object(runner.settings, "scene_design_agent_chunk_frames", 2),
+        patch.object(runner.settings, "scene_design_agent_chunk_parallel", 2),
+        patch.object(runner.settings, "scene_design_agent_attempt_timeout_s", 240.0),
+    ):
+        data = await runner._run_one_agent_adaptive(
+            project,
+            "action",
+            frames=frames,
+            full_frames=frames,
+            slice_extras=[],
+            action_scenes=None,
+            timeout=900,
+        )
+    assert calls == ["p2"]
+    assert [s["id_scene"] for s in data["scenes"]] == ["scene_01", "scene_02"]
+
+
+@pytest.mark.asyncio
+async def test_proactive_chunks_skip_full_payload(tmp_path) -> None:
     """≤N кадров сразу — без попытки full на 65 кадров (не жечь 5 мин)."""
     frames = [_fr(i, f"u{i}", f"кусок {i} старт. кусок {i} финиш.") for i in range(1, 6)]
     project = SimpleNamespace(
@@ -176,6 +315,7 @@ async def test_proactive_chunks_skip_full_payload() -> None:
         meta={"scene_design_variant": "chrono_dyn"},
         script_text="",
         general_plan="",
+        data_dir=tmp_path,
     )
     labels: list[str] = []
 

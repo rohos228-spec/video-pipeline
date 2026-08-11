@@ -43,6 +43,62 @@ def _agent_file(project: Project, name: str) -> Path:
     return _state_dir(project) / f"{name}.json"
 
 
+def _chunks_dir(project: Project, name: str) -> Path:
+    return _state_dir(project) / "chunks" / name
+
+
+def _chunk_file(project: Project, name: str, label: str) -> Path:
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in label)
+    return _chunks_dir(project, name) / f"{safe}.json"
+
+
+def load_chunk_checkpoint(
+    project: Project, name: str, label: str
+) -> dict[str, Any] | None:
+    """Готовый JSON одного proactive-чанка (не дёргать GPT повторно)."""
+    path = _chunk_file(project, name, label)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    list_key = ag.LIST_KEY.get(name)
+    if (
+        not list_key
+        or not isinstance(data, dict)
+        or not isinstance(data.get(list_key), list)
+        or not data[list_key]
+    ):
+        return None
+    return data
+
+
+def save_chunk_checkpoint(
+    project: Project, name: str, label: str, data: dict[str, Any]
+) -> None:
+    d = _chunks_dir(project, name)
+    d.mkdir(parents=True, exist_ok=True)
+    _chunk_file(project, name, label).write_text(
+        json.dumps(data, ensure_ascii=False, indent=0), encoding="utf-8"
+    )
+
+
+def clear_chunk_checkpoints(project: Project, name: str) -> None:
+    d = _chunks_dir(project, name)
+    if not d.is_dir():
+        return
+    for p in d.glob("*.json"):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    try:
+        d.rmdir()
+    except OSError:
+        pass
+
+
 def _meta_state(project: Project) -> dict[str, Any]:
     meta = project.meta if isinstance(project.meta, dict) else {}
     sd = meta.get("scene_design")
@@ -84,6 +140,8 @@ def save_checkpoint(project: Project, name: str, data: dict[str, Any]) -> None:
     _agent_file(project, name).write_text(
         json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8"
     )
+    # Полный агент готов — промежуточные чанки больше не нужны.
+    clear_chunk_checkpoints(project, name)
     sd = _meta_state(project)
     agents_meta = dict(sd.get("agents") or {})
     agents_meta[name] = {
@@ -157,6 +215,7 @@ def invalidate_agent(project: Project, name: str) -> bool:
     path = _agent_file(project, name)
     if path.is_file():
         path.unlink()
+    clear_chunk_checkpoints(project, name)
     return True
 
 
@@ -227,8 +286,20 @@ async def _run_one_agent_adaptive(
         sem = asyncio.Semaphore(parallel)
 
         async def _one(i: int, batch: list[Any]) -> dict[str, Any]:
+            part_label = f"{prefix}{i}"
+            # Proactive-чанки: переживают soft-retry / 500 / рестарт.
+            if prefix == "p":
+                cached = load_chunk_checkpoint(project, name, part_label)
+                if cached is not None:
+                    logger.info(
+                        "[#{}] scene_design/{}: chunk {} — checkpoint, skip GPT",
+                        project.id,
+                        name,
+                        part_label,
+                    )
+                    return cached
             async with sem:
-                return await _run_one_agent_adaptive(
+                data = await _run_one_agent_adaptive(
                     project,
                     name,
                     frames=batch,
@@ -237,8 +308,20 @@ async def _run_one_agent_adaptive(
                     action_scenes=action_scenes,
                     timeout=timeout,
                     depth=child_depth,
-                    label=f"{prefix}{i}",
+                    label=part_label,
                 )
+            if prefix == "p":
+                try:
+                    save_chunk_checkpoint(project, name, part_label, data)
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "[#{}] scene_design/{}: chunk ckpt save failed {}",
+                        project.id,
+                        name,
+                        part_label,
+                        exc_info=True,
+                    )
+            return data
 
         parts = await asyncio.gather(
             *(_one(i, b) for i, b in enumerate(batches, start=1))
@@ -263,12 +346,20 @@ async def _run_one_agent_adaptive(
         )
         return await _run_parts(batches, child_depth=1, prefix="p")
 
-    ctx = context_builder.build_shared_context(project, frame_list)
+    slim = depth > 0
+    ctx = context_builder.build_shared_context(
+        project, frame_list, mode="chunk" if slim else "full"
+    )
     for title, payload in slice_extras:
         # camera: полный ACTION в extras не тащим — ниже фильтр по чанку.
         if name == "camera" and title.startswith("ACTION SCENES"):
             continue
-        ctx = _append_slice_context(ctx, title=title, payload=payload)
+        use_payload = (
+            context_builder.compact_slice_payload(title, payload)
+            if slim and isinstance(payload, dict)
+            else payload
+        )
+        ctx = _append_slice_context(ctx, title=title, payload=use_payload)
     if name == "camera" and action_scenes is not None:
         full_vo = context_builder.full_voiceover(project, full_list)
         filtered = ach.filter_action_scenes_for_frames(
@@ -282,13 +373,13 @@ async def _run_one_agent_adaptive(
     if depth > 0:
         ctx = ctx + "\n\n" + ach.chunk_instruction(label=label, depth=depth)
 
-    try:
+    attempt_to = float(settings.scene_design_agent_attempt_timeout_s)
+    call_timeout = (
+        min(float(timeout), attempt_to) if attempt_to > 0 else float(timeout)
+    )
+
+    async def _call_once() -> dict[str, Any]:
         # max_retries=0: первый 524 сразу в /2 split, не жечь GPT_MAX_RETRIES.
-        # Abort < Cloudflare ~300s — не ждать HTML 524 впустую.
-        attempt_to = float(settings.scene_design_agent_attempt_timeout_s)
-        call_timeout = (
-            min(float(timeout), attempt_to) if attempt_to > 0 else float(timeout)
-        )
         return await _run_one_agent(
             project,
             name,
@@ -297,7 +388,33 @@ async def _run_one_agent_adaptive(
             validate=(depth == 0),
             max_retries=0,
         )
+
+    try:
+        return await _call_once()
     except Exception as e:  # noqa: BLE001
+        if ach.is_credits_failure(e):
+            raise ach.CreditsExhausted(
+                f"scene_design/{name}: нет кредитов GPT (402) — "
+                f"пополни баланс; retry/split отключены. {e}"
+            ) from e
+        # 500/502/503: один повтор того же чанка (без /2), потом raise.
+        if ach.is_transient_server_failure(e):
+            logger.warning(
+                "[#{}] scene_design/{}: {} — same-chunk retry (no split)",
+                project.id,
+                name,
+                e,
+            )
+            await asyncio.sleep(2.0)
+            try:
+                return await _call_once()
+            except Exception as e2:  # noqa: BLE001
+                if ach.is_credits_failure(e2):
+                    raise ach.CreditsExhausted(
+                        f"scene_design/{name}: нет кредитов GPT (402) — "
+                        f"пополни баланс; retry/split отключены. {e2}"
+                    ) from e2
+                e = e2
         can_split = (
             name in ach.SPLITTABLE_AGENTS
             and ach.is_capacity_failure(e)

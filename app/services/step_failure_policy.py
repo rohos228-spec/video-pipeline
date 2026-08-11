@@ -236,6 +236,45 @@ async def record_step_failure(
 
     # SQLite busy / PendingRollback при parallel projects — не копить к 30-мин sleep.
     err_code_early, err_msg_early = describe_error(error)
+    # 402 / нет кредитов — не soft-retry и не sleep 30 мин (только жечь баланс).
+    try:
+        from app.services.scene_design.agent_chunks import is_credits_failure
+    except Exception:  # noqa: BLE001
+        is_credits_failure = lambda _e: False  # noqa: E731
+    if is_credits_failure(error) or "credits insufficient" in (err_msg_early or "").lower():
+        from app.services.project_control import pause_project as pause_project_svc
+        from app.services.run_sync import mark_running_node_failed
+
+        running = project.status
+        step = step_by_running_status(running)
+        fs = _failure_state(project)
+        fs["last_error"] = err_msg_early
+        fs["last_error_code"] = err_code_early or "gpt_credits"
+        fs["last_running"] = running.value
+        fs.pop("sleep_until", None)
+        _save_failure_state(project, fs)
+        await mark_running_node_failed(
+            session,
+            project,
+            error,
+            initiator="worker",
+            error_code=err_code_early or "gpt_credits",
+        )
+        try:
+            from app.services.scene_design import runner as sd_runner
+
+            sd_runner.mark_failed(project, err_msg_early)
+        except Exception:  # noqa: BLE001
+            pass
+        await pause_project_svc(session, project)
+        await session.flush()
+        logger.error(
+            "[#{}] GPT credits exhausted (402) — pause, no soft-retry: {}",
+            project.id,
+            err_msg_early[:200],
+        )
+        return "pause_infra"
+
     if err_code_early == "infra_db_locked":
         running = project.status
         step = step_by_running_status(running)

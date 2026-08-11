@@ -67,19 +67,102 @@ def general_plan_excerpt(project: Project) -> str:
     return plan[:_GENERAL_PLAN_LIMIT]
 
 
-def build_shared_context(project: Project, frames: list[Frame]) -> str:
-    """ПОЛНЫЙ ЗАКАДР + КАДРЫ + ОБЩИЙ ПЛАН + СТИЛЬ — общий блок всех агентов."""
+def compact_characters_slice(payload: dict) -> dict:
+    """Короткий индекс cNN для чанков (без длинных био)."""
+    items = payload.get("characters") or payload.get("персонажи") or []
+    out = []
+    for c in items if isinstance(items, list) else []:
+        if not isinstance(c, dict):
+            continue
+        out.append(
+            {
+                "id": c.get("id") or c.get("id_char"),
+                "name": c.get("name") or c.get("имя") or "",
+                "role": (c.get("role") or c.get("роль") or "")[:80],
+            }
+        )
+    return {"characters": out}
+
+
+def compact_world_slice(payload: dict) -> dict:
+    """locNN + имя/зоны — без простыней описаний."""
+    items = payload.get("locations") or payload.get("локации") or []
+    out = []
+    for loc in items if isinstance(items, list) else []:
+        if not isinstance(loc, dict):
+            continue
+        zones = loc.get("zones") or loc.get("зоны") or []
+        if isinstance(zones, list):
+            ztxt = "; ".join(str(z)[:40] for z in zones[:4])
+        else:
+            ztxt = str(zones)[:120]
+        out.append(
+            {
+                "id": loc.get("id") or loc.get("id_loc"),
+                "name": loc.get("name") or loc.get("название") or "",
+                "zones": ztxt,
+            }
+        )
+    return {"locations": out}
+
+
+def compact_style_slice(payload: dict) -> dict:
+    """Стиль: только якоря, без длинных arc-текстов."""
+    arc = payload.get("style_arc") or payload.get("дуга") or []
+    short = []
+    for st in (arc if isinstance(arc, list) else [])[:8]:
+        if not isinstance(st, dict):
+            continue
+        short.append(
+            {
+                "scene_hint": st.get("scene_hint") or st.get("id_scene") or "",
+                "tone": (st.get("tone") or st.get("тон") or "")[:60],
+            }
+        )
+    return {
+        "style_summary": str(payload.get("report") or payload.get("summary") or "")[:200],
+        "style_arc": short,
+    }
+
+
+def compact_slice_payload(title: str, payload: dict) -> dict:
+    """Сжать extras для чанка action/camera."""
+    t = (title or "").upper()
+    if "CHARACTER" in t or "ПЕРСОНАЖ" in t:
+        return compact_characters_slice(payload)
+    if "WORLD" in t or "МИР" in t or "LOCATION" in t:
+        return compact_world_slice(payload)
+    if "STYLE" in t or "СТИЛЬ" in t:
+        return compact_style_slice(payload)
+    return payload
+
+
+def build_shared_context(
+    project: Project, frames: list[Frame], *, mode: str = "full"
+) -> str:
+    """ПОЛНЫЙ ЗАКАДР + КАДРЫ + ОБЩИЙ ПЛАН + СТИЛЬ — общий блок всех агентов.
+
+    ``mode="chunk"`` — тощий контекст: короткий план, VO только кадров чанка
+    (уже в ``frames``), без простыни general_plan.
+    """
     parts: list[str] = []
+    slim = mode == "chunk"
     plan = general_plan_excerpt(project)
     if plan:
-        parts.append(f"# ОБЩИЙ ПЛАН (выдержка)\n{plan}")
+        parts.append(
+            f"# ОБЩИЙ ПЛАН (выдержка)\n{plan[:200 if slim else _GENERAL_PLAN_LIMIT]}"
+        )
     style = project_style(project)
     if style:
-        parts.append(f"# СТИЛЬ ПРОЕКТА (задан извне, не менять)\n{style}")
+        parts.append(
+            f"# СТИЛЬ ПРОЕКТА (задан извне, не менять)\n"
+            f"{style[:120] if slim else style}"
+        )
     full_vo = full_voiceover(project, frames)
     if not full_vo:
         raise RuntimeError("scene_design: нет закадра — нечего разбирать")
-    parts.append(f"# ПОЛНЫЙ ЗАКАДР\n{full_vo}")
+    vo_title = "# ЗАКАДР ЧАНКА" if slim else "# ПОЛНЫЙ ЗАКАДР"
+    parts.append(f"{vo_title}\n{full_vo}")
     frames_payload = []
     total_sec = 0.0
     cps = max(float(settings.subtitle_chars_per_second), 1.0)

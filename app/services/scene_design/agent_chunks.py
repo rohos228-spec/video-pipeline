@@ -28,33 +28,71 @@ class CapacitySplitExhausted(ag.SceneDesignAgentError):
     """Уже дробили /2 и /4 — дальше только hard-fail, без повторного split."""
 
 
-def is_capacity_failure(exc: BaseException) -> bool:
-    """524 / 5xx / timeout / network — имеет смысл дробить payload."""
-    if isinstance(exc, CapacitySplitExhausted):
-        return False
+class CreditsExhausted(ag.SceneDesignAgentError):
+    """402 / нет кредитов — стоп без retry и без split (не жечь баланс)."""
+
+
+def _gpt_codes(exc: BaseException) -> tuple[str, int]:
     try:
         from app.services.gpt_api import GptApiError
     except Exception:  # noqa: BLE001
-        GptApiError = ()  # type: ignore[misc, assignment]
+        return "", 0
+    if not isinstance(exc, GptApiError):
+        return "", 0
+    kind = str(exc.context.get("error_kind") or "")
+    code = int(
+        exc.context.get("provider_code") or exc.context.get("status_code") or 0
+    )
+    return kind, code
 
-    if GptApiError and isinstance(exc, GptApiError):
-        kind = str(exc.context.get("error_kind") or "")
-        code = int(
-            exc.context.get("provider_code") or exc.context.get("status_code") or 0
-        )
-        if kind in ("timeout", "network") or code >= 500:
-            return True
+
+def is_credits_failure(exc: BaseException) -> bool:
+    """402 / credits insufficient — не дробить и не soft-retry пачками."""
+    if isinstance(exc, CreditsExhausted):
+        return True
+    kind, code = _gpt_codes(exc)
+    if code == 402:
+        return True
+    msg = str(exc).lower()
+    return "credits insufficient" in msg or "code=402" in msg or "http 402" in msg
+
+
+def is_transient_server_failure(exc: BaseException) -> bool:
+    """500/502/503 — один повтор того же чанка, без capacity-split."""
+    if is_credits_failure(exc):
+        return False
+    kind, code = _gpt_codes(exc)
+    if code in (500, 502, 503):
+        return True
+    msg = str(exc).lower()
+    return any(
+        x in msg
+        for x in ("http 500", "http 502", "http 503", "server exception")
+    )
+
+
+def is_capacity_failure(exc: BaseException) -> bool:
+    """Timeout / 524 / Cloudflare — имеет смысл дробить payload.
+
+    HTTP 500 сюда больше не входит: split на 500 только умножал пустые
+    платежи. 402 — отдельно (``is_credits_failure``).
+    """
+    if isinstance(exc, (CapacitySplitExhausted, CreditsExhausted)):
+        return False
+    if is_credits_failure(exc):
+        return False
+    kind, code = _gpt_codes(exc)
+    if kind in ("timeout", "network") or code == 524:
+        return True
     msg = str(exc).lower()
     return any(
         x in msg
         for x in (
             "http 524",
-            "http 502",
-            "http 503",
-            "http 500",
             "timeout",
             "cloudflare",
-            "server exception",
+            "504 gateway",
+            "http 504",
         )
     )
 
