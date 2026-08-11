@@ -52,6 +52,7 @@ class ApiGptClient:
         *,
         timeout: float = 600,
         project_id: int | None = None,
+        max_retries: int | None = None,
     ) -> str:
         return await self.ask_with_files(
             text,
@@ -59,6 +60,7 @@ class ApiGptClient:
             timeout=timeout,
             project_id=project_id,
             expect_file_download=False,
+            max_retries=max_retries,
         )
 
     async def ask_with_files(
@@ -376,9 +378,12 @@ async def gpt_ask_fresh(
     *,
     timeout: float = 600,
     project_id: int | None = None,
+    max_retries: int | None = None,
 ) -> str:
     client = get_gpt_client()
-    return await client.ask_fresh(text, timeout=timeout, project_id=project_id)
+    return await client.ask_fresh(
+        text, timeout=timeout, project_id=project_id, max_retries=max_retries
+    )
 
 
 async def gpt_ask_with_files(

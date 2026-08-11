@@ -87,7 +87,7 @@ async def test_action_splits_twice_then_errors() -> None:
     )
     depths_seen: list[int] = []
 
-    async def fake_one(project, name, context, *, timeout, validate=True):
+    async def fake_one(project, name, context, *, timeout, validate=True, max_retries=None):
         # depth inferred from chunk marker
         depth = 0
         if "split_depth=2" in context:
@@ -133,7 +133,7 @@ async def test_action_split_once_then_merge() -> None:
     )
     n = {"calls": 0}
 
-    async def fake_one(project, name, context, *, timeout, validate=True):
+    async def fake_one(project, name, context, *, timeout, validate=True, max_retries=None):
         n["calls"] += 1
         if "split_depth=" not in context:
             raise boom

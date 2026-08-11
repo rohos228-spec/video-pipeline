@@ -172,12 +172,18 @@ async def _run_one_agent(
     *,
     timeout: float,
     validate: bool = True,
+    max_retries: int | None = None,
 ) -> dict[str, Any]:
     from app.services import gpt_client
 
     prompt = ag.load_prompt(name, project)
     text = f"{prompt}\n\n---\n\n{context}"
-    reply = await gpt_client.gpt_ask_fresh(text, timeout=timeout, project_id=project.id)
+    reply = await gpt_client.gpt_ask_fresh(
+        text,
+        timeout=timeout,
+        project_id=project.id,
+        max_retries=max_retries,
+    )
     return ag.parse_agent_slice(name, reply, validate=validate)
 
 
@@ -231,12 +237,14 @@ async def _run_one_agent_adaptive(
         ctx = ctx + "\n\n" + ach.chunk_instruction(label=label, depth=depth)
 
     try:
+        # max_retries=0: первый 524 сразу в /2 split, не жечь 5×полный payload.
         return await _run_one_agent(
             project,
             name,
             ctx,
             timeout=timeout,
             validate=(depth == 0),
+            max_retries=0,
         )
     except Exception as e:  # noqa: BLE001
         can_split = (
@@ -409,6 +417,7 @@ async def run_assembler(
     *,
     feedback: str | None = None,
     timeout: float = 1200,
+    max_retries: int | None = None,
 ) -> dict[str, Any]:
     """Финальный агент-сборщик: упорядоченные ячейки + кадры → {characters, scenes, ops}.
 
@@ -429,7 +438,10 @@ async def run_assembler(
     if feedback:
         parts.append(f"# ОШИБКИ ПРОШЛОЙ СБОРКИ (исправь)\n{feedback}")
     reply = await gpt_client.gpt_ask_fresh(
-        "\n\n".join(parts), timeout=timeout, project_id=project.id
+        "\n\n".join(parts),
+        timeout=timeout,
+        project_id=project.id,
+        max_retries=max_retries,
     )
     return ag.parse_assembler_payload(reply)
 
@@ -507,8 +519,14 @@ async def run_assembler_chunked(
                 + ach.chunk_instruction(label=label or str(chunk_index), depth=depth)
             )
         try:
+            # На adaptive-path: 1×524 → сразу half-split, без GPT_MAX_RETRIES кругов.
             return await run_assembler(
-                project, chunk_ctx, chunk_input, feedback=fb, timeout=timeout
+                project,
+                chunk_ctx,
+                chunk_input,
+                feedback=fb,
+                timeout=timeout,
+                max_retries=0,
             )
         except Exception as e:  # noqa: BLE001
             if (
