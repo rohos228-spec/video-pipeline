@@ -97,10 +97,6 @@ def main() -> None:
                                 or "",
                                 60,
                             ),
-                            "info_change": clip(
-                                ph.get("info_change") or ph.get("изменение") or "",
-                                140,
-                            ),
                         }
                     )
                 else:
@@ -234,7 +230,6 @@ def main() -> None:
                         "scene_transition": sc.get("scene_transition") or "",
                         "action_subject": ph.get("subject"),
                         "action_text": ph.get("action"),
-                        "info_change": ph.get("info_change") or "",
                         "camera_size": (cam or {}).get("size", ""),
                         "camera_move": (cam or {}).get("move", ""),
                         "camera_who": (cam or {}).get("who", ""),
@@ -256,7 +251,6 @@ def main() -> None:
                     "scene_transition": sc.get("scene_transition") or "",
                     "action_subject": "",
                     "action_text": "",
-                    "info_change": "",
                     "camera_size": "",
                     "camera_move": "",
                     "camera_who": "",

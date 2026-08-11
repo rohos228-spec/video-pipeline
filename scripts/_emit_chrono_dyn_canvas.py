@@ -29,7 +29,6 @@ def main() -> None:
                 "vo": (r.get("vo") or "")[:140],
                 "action_subject": (r.get("action_subject") or "")[:80],
                 "action_text": (r.get("action_text") or "")[:180],
-                "info_change": (r.get("info_change") or "")[:120],
                 "camera_size": r.get("camera_size") or "",
                 "camera_move": (r.get("camera_move") or "")[:80],
                 "camera_who": (r.get("camera_who") or "")[:100],
@@ -97,7 +96,6 @@ export default function ChronoDynSceneNodeReport() {{
     r.transition,
     r.action_subject,
     r.action_text,
-    r.info_change,
     r.camera_size,
     r.camera_move,
     r.camera_who,
@@ -124,10 +122,10 @@ export default function ChronoDynSceneNodeReport() {{
         <Stat value={{String(DATA.counts.style_beats)}} label="Style beats" />
       </Grid>
 
-      <Callout tone="info" title="Как читать V3">
-        У каждой сцены есть связь с прошлой и крючок в следующую. Фазы идут по
-        beat: setup → develop → turn → payoff. Между фазами — переход
-        (match_cut / eyeline / sound_bridge…). Camera = 1 shot на фазу.
+      <Callout tone="info" title="Как читать V5">
+        1 фаза = 1 действие (не «встречаются, забирают и проходят»). Крупность
+        по-русски: общий / средний / крупный / деталь. Связь сцен — колонки
+        справа.
       </Callout>
 
       <H2>Персонажи (нода characters)</H2>
@@ -171,8 +169,7 @@ export default function ChronoDynSceneNodeReport() {{
           "Beat",
           "Переход",
           "Кто (action)",
-          "Действие",
-          "Что меняется",
+          "Действие (одно!)",
           "Крупность",
           "Движение",
           "Кто в кадре",

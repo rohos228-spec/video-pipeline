@@ -64,7 +64,7 @@ def test_validate_chrono_dyn_action_rejects_flat_two_phases() -> None:
 
 
 def test_validate_chrono_dyn_action_accepts_dense_cnn() -> None:
-    beats = ("setup", "develop", "turn", "payoff")
+    beats = ("setup", "develop", "develop", "turn", "payoff")
     scenes = [
         {
             "id_scene": f"scene_{i:02d}",
@@ -74,13 +74,12 @@ def test_validate_chrono_dyn_action_accepts_dense_cnn() -> None:
                 {
                     "phase_index": p,
                     "beat": beats[p - 1],
-                    "action": f"beat {p}",
+                    "action": f"одно действие номер {p}",
                     "subject": f"c0{(p % 3) + 1}",
                     "orientation": "face",
-                    "info_change": f"info {p}",
                     "переход_к_следующей": "cut_on_action",
                 }
-                for p in range(1, 5)
+                for p in range(1, 6)
             ],
         }
         for i in range(1, 6)
@@ -95,19 +94,80 @@ def test_validate_chrono_dyn_action_rejects_unlinked_scenes() -> None:
             "цепь_действия": [
                 {
                     "phase_index": p,
-                    "beat": "setup" if p == 1 else ("payoff" if p == 3 else "develop"),
-                    "action": f"a{p}",
+                    "beat": (
+                        "setup"
+                        if p == 1
+                        else ("payoff" if p == 5 else "develop")
+                    ),
+                    "action": f"одно действие {p}",
                     "subject": "c01",
                     "orientation": "face",
-                    "info_change": "x",
                     "переход_к_следующей": "cut",
                 }
-                for p in range(1, 4)
+                for p in range(1, 6)
             ],
         }
-        for i in range(1, 5)
+        for i in range(1, 6)
     ]
     with pytest.raises(ag.SceneDesignAgentError, match="связь_с_прошлой|крючок"):
+        ag.validate_chrono_dyn_action_scenes(scenes)
+
+
+def test_validate_chrono_dyn_rejects_compound_actions() -> None:
+    scenes = [
+        {
+            "id_scene": f"scene_{i:02d}",
+            "связь_с_прошлой": "было" if i > 1 else "",
+            "крючок_в_следующую": "дальше",
+            "цепь_действия": [
+                {
+                    "phase_index": 1,
+                    "beat": "setup",
+                    "action": (
+                        "Соседи встречаются у лифта, забирают письма "
+                        "из ящиков и проходят мимо двери 357"
+                    ),
+                    "subject": "c01",
+                    "orientation": "side",
+                    "переход_к_следующей": "cut_on_action",
+                },
+                {
+                    "phase_index": 2,
+                    "beat": "develop",
+                    "action": "Александр морщится от запаха",
+                    "subject": "c01",
+                    "orientation": "face",
+                    "переход_к_следующей": "cut_on_action",
+                },
+                {
+                    "phase_index": 3,
+                    "beat": "develop",
+                    "action": "Он стоит у двери",
+                    "subject": "c01",
+                    "orientation": "side",
+                    "переход_к_следующей": "cut_on_action",
+                },
+                {
+                    "phase_index": 4,
+                    "beat": "turn",
+                    "action": "Людмила смотрит на дверь",
+                    "subject": "c02",
+                    "orientation": "face",
+                    "переход_к_следующей": "cut_on_action",
+                },
+                {
+                    "phase_index": 5,
+                    "beat": "payoff",
+                    "action": "Александр оборачивается",
+                    "subject": "c01",
+                    "orientation": "face",
+                    "переход_к_следующей": "sound_bridge",
+                },
+            ],
+        }
+        for i in range(1, 6)
+    ]
+    with pytest.raises(ag.SceneDesignAgentError, match="нескольк|действи"):
         ag.validate_chrono_dyn_action_scenes(scenes)
 
 

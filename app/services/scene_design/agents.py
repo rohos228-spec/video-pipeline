@@ -209,8 +209,7 @@ _PLACE_BUCKETS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 def _phase_action_text(ph: dict[str, Any]) -> str:
     return " ".join(
-        str(ph.get(k) or "")
-        for k in ("action", "действие", "info_change", "продолжает")
+        str(ph.get(k) or "") for k in ("action", "действие", "продолжает")
     )
 
 
@@ -222,8 +221,21 @@ def _place_buckets_in_text(text: str) -> set[str]:
     return found
 
 
+def _is_compound_action(action: str) -> bool:
+    """Несколько жестов в одной фазе: «X, Y и Z» / два « и »."""
+    t = re.sub(r"\s+", " ", (action or "").strip())
+    if not t:
+        return False
+    if t.count(" и ") >= 2:
+        return True
+    # «встречаются у лифта, забирают письма и проходят»
+    if "," in t and " и " in t:
+        return True
+    return False
+
+
 def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
-    """Брак: коллаж мест/лет, плоские 2 фазы, нет арки/связей, мало cNN."""
+    """Брак: склейка действий, коллаж мест/лет, нет арки/связей, мало cNN."""
     if not scenes:
         return
     phase_counts: list[int] = []
@@ -236,6 +248,7 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
     missing_payoff = 0
     teleport_scenes = 0
     year_jump_scenes = 0
+    compound_phases = 0
     dict_scenes = 0
     for i, sc in enumerate(scenes):
         if not isinstance(sc, dict):
@@ -263,6 +276,9 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
                 beats.append(beat)
             if str(ph.get("переход_к_следующей") or "").strip():
                 with_transitions += 1
+            act = str(ph.get("action") or ph.get("действие") or "")
+            if _is_compound_action(act):
+                compound_phases += 1
             txt = _phase_action_text(ph)
             scene_years.update(_YEAR_RE.findall(txt))
             scene_places |= _place_buckets_in_text(txt)
@@ -283,13 +299,13 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
     if two_or_less / n > 0.35 and n >= 5:
         raise SceneDesignAgentError(
             f"scene_design/action: брак плотности — {two_or_less}/{n} сцен с <=2 "
-            f"фазами (avg={avg:.1f}). Нужно >=3 фазы на типичную сцену; "
-            f"число кадров задаёт action, не SET camera."
+            f"фазами (avg={avg:.1f}). Нужно >=4 фазы на типичную сцену "
+            f"(1 кадр = 1 действие)."
         )
-    if avg < 3.0 and n >= 5:
+    if avg < 4.0 and n >= 5:
         raise SceneDesignAgentError(
-            f"scene_design/action: avg фаз {avg:.1f} < 3.0 — нет арки "
-            f"начало/середина/конец; добавь develop/turn/payoff."
+            f"scene_design/action: avg фаз {avg:.1f} < 4.0 — действия слиты; "
+            f"разбей: одно действие на фазу (встретили / письма / мимо двери)."
         )
     if object_phases >= 10 and cnn_phases / object_phases < 0.35:
         raise SceneDesignAgentError(
@@ -332,6 +348,11 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
             f"scene_design/action: {teleport_scenes} сцен — коллаж локаций "
             f"(больница/милиция/дом в одной цепи). Одна сцена = одно пространство "
             f"и непрерывный blocking, не набор кадров из разных мест."
+        )
+    if object_phases >= 8 and compound_phases / object_phases >= 0.2:
+        raise SceneDesignAgentError(
+            f"scene_design/action: {compound_phases}/{object_phases} фаз склеивают "
+            f"несколько действий («…, … и …»). 1 кадр = 1 действие — разбей фазы."
         )
 
 
