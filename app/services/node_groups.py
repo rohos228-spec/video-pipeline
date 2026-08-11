@@ -91,13 +91,6 @@ _CHECK_OPERATOR_CONFIG: dict[str, Any] = {
     "transport": "api",
 }
 
-# chrono_dyn (#60 и новые вставки этой группы): только отчёт, без правок.
-_CHECK_OPERATOR_CONFIG_REPORT_ONLY: dict[str, Any] = {
-    **_CHECK_OPERATOR_CONFIG,
-    "checkFix": False,
-}
-
-
 def _check_spec(local_key: str, label: str, descr: str, dx: float, dy: float) -> GroupNodeSpec:
     return GroupNodeSpec(
         local_key=local_key,
@@ -197,11 +190,9 @@ _SD_CHRONO_FANOUT: tuple[tuple[str, str, str], ...] = (
 
 
 def _scene_design_chrono_dyn_group() -> NodeGroupDef:
-    """Веер chrono_dyn: динамика и хронология; action перед camera на канвасе."""
+    """Веер chrono_dyn без нод проверки: chars/world/style → action → camera → assemble."""
     agents: list[GroupNodeSpec] = []
-    checks: list[GroupNodeSpec] = []
     edges: list[tuple[str, str, str]] = []
-    # Колонки: chars/world/style (dx=1) | action (dx=2) | camera (dx=3) | checks+asm
     col = {
         "characters": (1, -2 * _FAN_DY),
         "world": (1, -_FAN_DY),
@@ -224,43 +215,10 @@ def _scene_design_chrono_dyn_group() -> NodeGroupDef:
                 prompt_variant=f"sd_{agent}_chrono_dyn",
             )
         )
-        check_key = f"check_{agent}"
-        short = label.removeprefix("GPT: ")
-        checks.append(
-            _check_spec(
-                check_key,
-                f"Проверка: {short}",
-                f"Проверка ответа агента «{short}» (chrono_dyn)",
-                dx=_STEP_X * (dx_mul + 1) if agent != "camera" else _STEP_X * 4,
-                dy=dy,
-            )
-        )
-        # preferred_id для check переопределим ниже через уникальные id —
-        # _check_spec уже даёт n_excel_gpt_sd_check_*; для chrono нужен cd-префикс.
-        edges.append((agent, check_key, "after"))
-        edges.append((check_key, agent, "fail"))
-
-    # Проверки chars/world/style/action → pass к следующим; camera check → assemble.
     for agent in ("characters", "world", "style"):
-        edges.append((f"check_{agent}", "action", "pass"))
-    edges.append(("check_action", "camera", "pass"))
-    edges.append(("check_camera", "assemble", "pass"))
-
-    # Уникальные preferred_id для check-нод chrono_dyn (report-only).
-    checks = [
-        GroupNodeSpec(
-            local_key=c.local_key,
-            node_type=c.node_type,
-            label=c.label,
-            description=c.description,
-            preferred_id=f"n_excel_gpt_sd_cd_{c.local_key}",
-            dx=c.dx,
-            dy=c.dy,
-            slot_overflow=True,
-            operator_config=dict(_CHECK_OPERATOR_CONFIG_REPORT_ONLY),
-        )
-        for c in checks
-    ]
+        edges.append((agent, "action", "after"))
+    edges.append(("action", "camera", "after"))
+    edges.append(("camera", "assemble", "after"))
 
     asm = GroupNodeSpec(
         local_key="assemble",
@@ -268,43 +226,30 @@ def _scene_design_chrono_dyn_group() -> NodeGroupDef:
         label="GPT: сборка · chrono_dyn",
         description="Сборщик chrono_dyn: action>camera, фазы→кадры",
         preferred_id="n_excel_gpt_sd_cd_asm",
-        dx=_STEP_X * 5,
+        dx=_STEP_X * 4,
         dy=0.0,
         marker="assemble",
         prompt_variant="sd_assemble_chrono_dyn",
     )
-    check_asm = GroupNodeSpec(
-        local_key="check_asm",
-        node_type="excel_gpt",
-        label="Проверка: сборка · chrono_dyn",
-        description="Проверка registry/attrs сборки chrono_dyn",
-        preferred_id="n_excel_gpt_sd_cd_check_asm",
-        dx=_STEP_X * 6,
-        dy=0.0,
-        slot_overflow=True,
-        operator_config=dict(_CHECK_OPERATOR_CONFIG_REPORT_ONLY),
-    )
-    edges.append(("assemble", "check_asm", "after"))
     return NodeGroupDef(
         group_id="scene_design_fanout_chrono_dyn",
         title="Сцены: chrono_dyn (фазы+динамика)",
         description=(
-            "Вариант chrono_dyn: персонажи/мир/стиль → действие (сцены+фазы) → "
-            "камера (1 фаза=1 shot) → сборка. Промты sd_*_chrono_dyn. "
-            "Хронология текста и динамика внутри многокадровых сцен."
+            "Вариант chrono_dyn без проверок: персонажи/мир/стиль → действие "
+            "(сцены+фазы) → камера (1 фаза=1 shot) → сборка. Промты sd_*_chrono_dyn."
         ),
         category="planning",
         default_after_type="split",
-        nodes=(*agents, *checks, asm, check_asm),
+        nodes=(*agents, asm),
         internal_edges=tuple(edges),
         entry_keys=("characters", "world", "style"),
-        exit_key="check_asm",
+        exit_key="assemble",
         project_meta={
             "scene_design_enabled": True,
             "scene_design_variant": "chrono_dyn",
         },
         replaces_types=("scene_design",),
-        exit_edge_kind="pass",
+        exit_edge_kind="after",
     )
 
 
