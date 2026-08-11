@@ -293,6 +293,39 @@ def test_validate_chrono_dyn_rejects_year_jumps_inside_scene() -> None:
         ag.validate_chrono_dyn_action_scenes(scenes)
 
 
+def test_normalize_chrono_dyn_phase_budget_merges_thin_phases() -> None:
+    scenes = [
+        {
+            "id_scene": "scene_01",
+            "время_сек": 3.9,
+            "связь_с_прошлой": "",
+            "крючок_в_следующую": "дальше",
+            "цепь_действия": [
+                {
+                    "phase_index": 1,
+                    "beat": "setup",
+                    "action": "Судья поднимает взгляд от папки дела",
+                    "subject": "c01",
+                    "orientation": "side",
+                    "переход_к_следующей": "cut_on_action",
+                },
+                {
+                    "phase_index": 2,
+                    "beat": "payoff",
+                    "action": "Прокурор закрывает блокнот хлопком",
+                    "subject": "c02",
+                    "orientation": "side",
+                    "переход_к_следующей": "sound_bridge",
+                },
+            ],
+        }
+    ]
+    fixed = ag.normalize_chrono_dyn_phase_budget(scenes)
+    assert len(fixed) == 1
+    assert len(fixed[0]["цепь_действия"]) == 1
+    assert fixed[0]["цепь_действия"][0]["beat"] == "payoff"
+
+
 def test_repair_chrono_dyn_year_jumps_splits_scene() -> None:
     scenes = [
         {

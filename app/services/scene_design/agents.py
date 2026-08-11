@@ -340,7 +340,12 @@ def repair_chrono_dyn_year_jumps(scenes: list[Any]) -> list[Any]:
                 ph["phase_index"] = j
             part["цепь_действия"] = gchain
             if total_sec > 0 and n_ph > 0:
-                part["время_сек"] = round(total_sec * len(gchain) / n_ph, 2)
+                part["время_сек"] = max(
+                    0.1, round(total_sec * len(gchain) / n_ph, 2)
+                )
+            else:
+                # Не оставляем 0.0 — camera-агент бракует нулевой бюджет.
+                part["время_сек"] = round(2.0 * max(1, len(gchain)), 2)
             if gi > 0:
                 part["связь_с_прошлой"] = part.get("связь_с_прошлой") or (
                     "продолжение после смены года"
@@ -350,6 +355,50 @@ def repair_chrono_dyn_year_jumps(scenes: list[Any]) -> list[Any]:
                     "время сдвигается — новая сцена"
                 )
             out.append(part)
+    return out
+
+
+def normalize_chrono_dyn_phase_budget(
+    scenes: list[Any], *, min_sec_per_phase: float = 2.0
+) -> list[Any]:
+    """Слить фазы, если ``время_сек / n < min`` — иначе camera GPT шлёт error.
+
+    VO-бюджет (14 сим = 1 сек) священен: время не накручиваем, а уменьшаем
+    число фаз (1 фаза = 1 shot, минимум ~2 сек на шот).
+    """
+    out: list[Any] = []
+    for sc in scenes:
+        if not isinstance(sc, dict):
+            out.append(sc)
+            continue
+        sc = copy.deepcopy(sc)
+        chain = [ph for ph in _chain_phases(sc) if isinstance(ph, dict)]
+        try:
+            sec = float(sc.get("время_сек") or 0.0)
+        except (TypeError, ValueError):
+            sec = 0.0
+        if not chain:
+            out.append(sc)
+            continue
+        if sec <= 0.05:
+            vo = " ".join(
+                str(sc.get(k) or "") for k in ("start_words", "end_words", "цитата")
+            )
+            vo_len = len(" ".join(vo.split()))
+            sec = max(min_sec_per_phase, vo_len / 14.0) if vo_len else min_sec_per_phase
+            sc["время_сек"] = round(sec, 2)
+        while len(chain) >= 2 and (sec / len(chain)) + 1e-9 < min_sec_per_phase:
+            prev, last = chain[-2], chain[-1]
+            if str(last.get("beat") or "").strip().lower() == "payoff":
+                prev["beat"] = "payoff"
+            tr = str(last.get("переход_к_следующей") or "").strip()
+            if tr:
+                prev["переход_к_следующей"] = tr
+            chain = chain[:-1]
+        for j, ph in enumerate(chain, start=1):
+            ph["phase_index"] = j
+        sc["цепь_действия"] = chain
+        out.append(sc)
     return out
 
 
@@ -575,6 +624,7 @@ def parse_agent_slice(
         )
     if agent == "action":
         items = repair_chrono_dyn_year_jumps(items)
+        items = normalize_chrono_dyn_phase_budget(items)
         data[list_key] = items
         for i, sc in enumerate(items, start=1):
             if isinstance(sc, dict):
