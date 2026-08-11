@@ -65,16 +65,24 @@ def test_validate_chrono_dyn_action_rejects_flat_two_phases() -> None:
 
 def test_validate_chrono_dyn_action_accepts_dense_cnn() -> None:
     beats = ("setup", "develop", "develop", "turn", "payoff")
+    acts = (
+        "Санитар усаживает Александра на кушетку",
+        "Врач щёлкает фонариком у его глаз",
+        "Людмила перехватывает запястье сына",
+        "Участковый захлопывает блокнот",
+        "Александр вырывает руку и отступает к двери",
+    )
     scenes = [
         {
             "id_scene": f"scene_{i:02d}",
+            "время_сек": 12.0,
             "связь_с_прошлой": "продолжение прошлого бита" if i > 1 else "",
             "крючок_в_следующую": "открытый жест в следующую сцену",
             "цепь_действия": [
                 {
                     "phase_index": p,
                     "beat": beats[p - 1],
-                    "action": f"одно действие номер {p}",
+                    "action": acts[p - 1],
                     "subject": f"c0{(p % 3) + 1}",
                     "orientation": "face",
                     "переход_к_следующей": "cut_on_action",
@@ -168,6 +176,46 @@ def test_validate_chrono_dyn_rejects_compound_actions() -> None:
         for i in range(1, 6)
     ]
     with pytest.raises(ag.SceneDesignAgentError, match="нескольк|действи"):
+        ag.validate_chrono_dyn_action_scenes(scenes)
+
+
+def test_validate_chrono_dyn_rejects_metaphor_folder_slop() -> None:
+    scenes = [
+        {
+            "id_scene": f"scene_{i:02d}",
+            "время_сек": 8.0,
+            "связь_с_прошлой": "продолжение" if i > 1 else "",
+            "крючок_в_следующую": "дальше",
+            "цепь_действия": [
+                {
+                    "phase_index": 1,
+                    "beat": "setup",
+                    "action": "Александр вытягивает руки к трём папкам на столе",
+                    "subject": "c01",
+                    "orientation": "object",
+                    "переход_к_следующей": "cut_on_action",
+                },
+                {
+                    "phase_index": 2,
+                    "beat": "develop",
+                    "action": "Александр роняет руки между медицинской картой и папкой",
+                    "subject": "c01",
+                    "orientation": "object",
+                    "переход_к_следующей": "cut_on_action",
+                },
+                {
+                    "phase_index": 3,
+                    "beat": "payoff",
+                    "action": "Александр прижимает карточку к груди больничной пижамы",
+                    "subject": "c01",
+                    "orientation": "object",
+                    "переход_к_следующей": "cut_on_action",
+                },
+            ],
+        }
+        for i in range(1, 5)
+    ]
+    with pytest.raises(ag.SceneDesignAgentError, match="метафор|нейрослоп|папк"):
         ag.validate_chrono_dyn_action_scenes(scenes)
 
 

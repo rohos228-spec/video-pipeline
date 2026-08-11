@@ -234,9 +234,21 @@ def _is_compound_action(action: str) -> bool:
     return False
 
 
-# «Стоит у двери» / «Александр смотрит» — дыра в blocking-логике (V7).
+# «Стоит у двери» / «замирает» / «дышит» — дыра в blocking (V7/V9).
 _PASSIVE_ACTION_RE = re.compile(
-    r"^(?:[^\s,]+\s+){0,3}(?:стоит|сидит|смотрит|ждёт|ждет)\b",
+    r"^(?:[^\s,]+\s+){0,3}"
+    r"(?:стоит|сидит|смотрит|ждёт|ждет|замирает|дышит|удерживает)\b",
+    re.IGNORECASE,
+)
+
+# Метафорический нейрослоп: папки/карточки «как символ» ведомств (V9).
+_METAPHOR_SLOP_RE = re.compile(
+    r"(папк|карточк|конверт|мед\.?\s*карт|медицинск\w+\s+карт)",
+    re.IGNORECASE,
+)
+_METAPHOR_VERB_RE = re.compile(
+    r"(прижима\w+|роняет\w+\s+рук|вытягивает\w+\s+рук|разводит\w+\s+карто|"
+    r"закрывает\w+\s+лицо|подстраивает\w+\s+дыхан)",
     re.IGNORECASE,
 )
 
@@ -244,6 +256,27 @@ _PASSIVE_ACTION_RE = re.compile(
 def _is_passive_action(action: str) -> bool:
     t = re.sub(r"\s+", " ", (action or "").strip())
     return bool(t and _PASSIVE_ACTION_RE.match(t))
+
+
+def _is_metaphor_slop(action: str) -> bool:
+    """Папка/карточка + жест «символа» — не живое событие."""
+    t = re.sub(r"\s+", " ", (action or "").strip())
+    if not t:
+        return False
+    return bool(_METAPHOR_SLOP_RE.search(t) and _METAPHOR_VERB_RE.search(t))
+
+
+def _near_duplicate_actions(a: str, b: str) -> bool:
+    """Соседние фазы почти одинаковые (одни корни глагола/предмета)."""
+    def toks(s: str) -> set[str]:
+        words = re.findall(r"[а-яёa-z0-9]{4,}", (s or "").lower())
+        return set(words)
+
+    ta, tb = toks(a), toks(b)
+    if not ta or not tb:
+        return False
+    overlap = len(ta & tb) / max(1, min(len(ta), len(tb)))
+    return overlap >= 0.55
 
 
 def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
@@ -262,6 +295,9 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
     year_jump_scenes = 0
     compound_phases = 0
     passive_phases = 0
+    metaphor_phases = 0
+    near_dupe_pairs = 0
+    thin_long_vo = 0
     dict_scenes = 0
     for i, sc in enumerate(scenes):
         if not isinstance(sc, dict):
@@ -276,6 +312,7 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
         beats: list[str] = []
         scene_years: set[str] = set()
         scene_places: set[str] = set()
+        prev_act = ""
         for ph in chain:
             if not isinstance(ph, dict):
                 continue
@@ -294,6 +331,11 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
                 compound_phases += 1
             if _is_passive_action(act):
                 passive_phases += 1
+            if _is_metaphor_slop(act):
+                metaphor_phases += 1
+            if prev_act and _near_duplicate_actions(prev_act, act):
+                near_dupe_pairs += 1
+            prev_act = act
             txt = _phase_action_text(ph)
             scene_years.update(_YEAR_RE.findall(txt))
             scene_places |= _place_buckets_in_text(txt)
@@ -305,6 +347,13 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
         # ≥3 разных типа мест в одной сцене = коллаж локаций
         if len(scene_places) >= 3:
             teleport_scenes += 1
+        try:
+            sec = float(sc.get("время_сек") or 0.0)
+        except (TypeError, ValueError):
+            sec = 0.0
+        # Длинный VO (≥6с) с ≤2 фазами — пресный setup/payoff на большой текст.
+        if sec >= 6.0 and len(chain) <= 2:
+            thin_long_vo += 1
     if not phase_counts or object_phases == 0:
         # legacy строки в цепи — не chrono_dyn контракт
         return
@@ -402,8 +451,25 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
     if object_phases >= 10 and passive_phases / object_phases >= 0.12:
         raise SceneDesignAgentError(
             f"scene_design/action: {passive_phases}/{object_phases} фаз пассивны "
-            f"(«стоит/сидит/смотрит/ждёт» без намерения). Нужна логика: "
+            f"(«стоит/сидит/смотрит/ждёт/замирает» без намерения). Нужна логика: "
             f"звонок/стук/вход → потом замок; у двери — сигнал, не стояние."
+        )
+    if object_phases >= 8 and metaphor_phases / object_phases >= 0.12:
+        raise SceneDesignAgentError(
+            f"scene_design/action: {metaphor_phases}/{object_phases} фаз — "
+            f"метафорический нейрослоп (папки/карточки «как символ»). "
+            f"Покажи живые столкновения: осмотр, ссора, допрос — не аллегорию."
+        )
+    if object_phases >= 8 and near_dupe_pairs >= max(2, object_phases // 8):
+        raise SceneDesignAgentError(
+            f"scene_design/action: {near_dupe_pairs} пар соседних фаз почти "
+            f"одинаковы. Каждый кадр — новый шаг, не пересказ предыдущего."
+        )
+    if thin_long_vo >= max(2, dict_scenes // 5):
+        raise SceneDesignAgentError(
+            f"scene_design/action: {thin_long_vo} сцен с VO≥6с и ≤2 фазами — "
+            f"мало кадров на длинный текст. Нужно ≥3 разных действия "
+            f"(~2–4 сек на кадр при 14 сим/сек)."
         )
 
 
