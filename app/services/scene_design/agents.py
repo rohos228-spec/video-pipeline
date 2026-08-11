@@ -645,20 +645,21 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
             f"Каждый кадр — столкновение людей: хват, отказ, улика, эмоция. "
             f"Не начинай сцену с дороги к месту."
         )
-    # V11: дверной конвейер / одна локация на весь ролик.
-    if object_phases >= 20 and door_phases / object_phases > 0.18:
+    # V11: дверной конвейер / одна локация — только на полном (или крупном)
+    # срезе. На чанках из 8–12 сцен один loc03 на 4 сцены — нормальный кластер.
+    if object_phases >= 40 and door_phases / object_phases > 0.18:
         raise SceneDesignAgentError(
             f"scene_design/action: {door_phases}/{object_phases} фаз про "
             f"дверь/звонок/засов — дверной конвейер. Чередуй больницу, суд, "
             f"милицию, улицу, пустырь, комнату; ≤15% фаз про дверь."
         )
-    if object_phases >= 20 and door_slam_phases / object_phases > 0.12:
+    if object_phases >= 40 and door_slam_phases / object_phases > 0.12:
         raise SceneDesignAgentError(
             f"scene_design/action: {door_slam_phases}/{object_phases} фаз — "
             f"повтор «захлопывает дверь/засов». Придумай разные конфликты и "
             f"эмоции людей, не один и тот же хлопок двери."
         )
-    if dict_scenes >= 12 and loc_counts:
+    if dict_scenes >= 28 and loc_counts:
         top_loc, top_n = max(loc_counts.items(), key=lambda kv: kv[1])
         if top_n / dict_scenes > 0.32 and len(loc_counts) >= 3:
             raise SceneDesignAgentError(

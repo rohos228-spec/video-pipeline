@@ -233,9 +233,9 @@ def _juicy_phase(p: int, *, action: str, beat: str = "develop") -> dict:
 
 
 def test_validate_chrono_dyn_rejects_door_conveyor() -> None:
-    """V11: слишком много фаз про дверь/засов."""
+    """V11: слишком много фаз про дверь/засов (полный срез ≥40 фаз)."""
     scenes = []
-    for i in range(1, 8):
+    for i in range(1, 16):
         scenes.append(
             {
                 "id_scene": f"scene_{i:02d}",
