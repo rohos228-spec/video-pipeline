@@ -166,14 +166,19 @@ def agents_all_done(project: Project) -> bool:
 
 
 async def _run_one_agent(
-    project: Project, name: str, context: str, *, timeout: float
+    project: Project,
+    name: str,
+    context: str,
+    *,
+    timeout: float,
+    validate: bool = True,
 ) -> dict[str, Any]:
     from app.services import gpt_client
 
     prompt = ag.load_prompt(name, project)
     text = f"{prompt}\n\n---\n\n{context}"
     reply = await gpt_client.gpt_ask_fresh(text, timeout=timeout, project_id=project.id)
-    return ag.parse_agent_slice(name, reply)
+    return ag.parse_agent_slice(name, reply, validate=validate)
 
 
 def _append_slice_context(
@@ -188,10 +193,112 @@ def _append_slice_context(
     )
 
 
+async def _run_one_agent_adaptive(
+    project: Project,
+    name: str,
+    *,
+    frames: list[Any],
+    full_frames: list[Any],
+    slice_extras: list[tuple[str, dict[str, Any]]],
+    action_scenes: list[Any] | None,
+    timeout: float,
+    depth: int = 0,
+    label: str = "full",
+) -> dict[str, Any]:
+    """action/camera: при 524/timeout дробим кадры /2, ещё /2, потом ошибка."""
+    from app.services.scene_design import agent_chunks as ach
+    from app.services.scene_design import context_builder
+
+    frame_list = [f for f in frames if getattr(f, "uuid", None)]
+    full_list = [f for f in full_frames if getattr(f, "uuid", None)]
+    ctx = context_builder.build_shared_context(project, frame_list)
+    for title, payload in slice_extras:
+        # camera: полный ACTION в extras не тащим — ниже фильтр по чанку.
+        if name == "camera" and title.startswith("ACTION SCENES"):
+            continue
+        ctx = _append_slice_context(ctx, title=title, payload=payload)
+    if name == "camera" and action_scenes is not None:
+        full_vo = context_builder.full_voiceover(project, full_list)
+        filtered = ach.filter_action_scenes_for_frames(
+            list(action_scenes), frame_list, full_list, full_vo
+        )
+        ctx = _append_slice_context(
+            ctx,
+            title="ACTION SCENES (JSON) — закон фаз для camera",
+            payload={"scenes": filtered},
+        )
+    if depth > 0:
+        ctx = ctx + "\n\n" + ach.chunk_instruction(label=label, depth=depth)
+
+    try:
+        return await _run_one_agent(
+            project,
+            name,
+            ctx,
+            timeout=timeout,
+            validate=(depth == 0),
+        )
+    except Exception as e:  # noqa: BLE001
+        can_split = (
+            name in ach.SPLITTABLE_AGENTS
+            and ach.is_capacity_failure(e)
+            and depth < ach.MAX_SPLIT_DEPTH
+            and len(frame_list) >= 2
+        )
+        if not can_split:
+            if (
+                name in ach.SPLITTABLE_AGENTS
+                and ach.is_capacity_failure(e)
+                and depth >= ach.MAX_SPLIT_DEPTH
+            ):
+                raise ach.CapacitySplitExhausted(
+                    f"scene_design/{name}: capacity-failure после "
+                    f"{ach.MAX_SPLIT_DEPTH} дроблений (/4) — {e}"
+                ) from e
+            raise
+        left, right = ach.split_frames_half(frame_list)
+        logger.warning(
+            "[#{}] scene_design/{}: {} — split depth {}→{} frames {}+{}",
+            project.id,
+            name,
+            e,
+            depth,
+            depth + 1,
+            len(left),
+            len(right),
+        )
+        await asyncio.sleep(1.5)
+        left_data = await _run_one_agent_adaptive(
+            project,
+            name,
+            frames=left,
+            full_frames=full_list,
+            slice_extras=slice_extras,
+            action_scenes=action_scenes,
+            timeout=timeout,
+            depth=depth + 1,
+            label=f"{label}·a" if depth else "a",
+        )
+        await asyncio.sleep(1.5)
+        right_data = await _run_one_agent_adaptive(
+            project,
+            name,
+            frames=right,
+            full_frames=full_list,
+            slice_extras=slice_extras,
+            action_scenes=action_scenes,
+            timeout=timeout,
+            depth=depth + 1,
+            label=f"{label}·b" if depth else "b",
+        )
+        return ach.merge_agent_slices(name, [left_data, right_data])
+
+
 async def run_category_agents(
     project: Project,
     context: str,
     *,
+    frames: list[Any] | None = None,
     timeout: float = 900,
 ) -> dict[str, dict[str, Any]]:
     """Категорийные агенты волнами.
@@ -199,14 +306,25 @@ async def run_category_agents(
     Legacy: chars/world/style/action → camera.
     chrono_dyn: chars/world/style → action → camera (как на канвасе).
     Чекпоинтнутые пропускаются.
+
+    ``frames`` — для adaptive-split action/camera при 524 (дробим закадр /2,/4).
     """
+    from app.services.scene_design import agent_chunks as ach
+
     sem = asyncio.Semaphore(max(1, int(settings.scene_design_max_parallel)))
     results: dict[str, dict[str, Any]] = {}
     errors: dict[str, str] = {}
     waves = ag.agent_waves(project)
     chrono = ag.uses_chrono_dyn(project)
+    frame_list = [f for f in (frames or []) if getattr(f, "uuid", None)]
 
-    async def _one(name: str, ctx: str) -> None:
+    async def _one(
+        name: str,
+        ctx: str,
+        *,
+        slice_extras: list[tuple[str, dict[str, Any]]] | None = None,
+        action_scenes: list[Any] | None = None,
+    ) -> None:
         cached = load_checkpoint(project, name)
         if cached is not None:
             logger.info(
@@ -216,7 +334,18 @@ async def run_category_agents(
             return
         async with sem:
             try:
-                data = await _run_one_agent(project, name, ctx, timeout=timeout)
+                if name in ach.SPLITTABLE_AGENTS and frame_list:
+                    data = await _run_one_agent_adaptive(
+                        project,
+                        name,
+                        frames=frame_list,
+                        full_frames=frame_list,
+                        slice_extras=list(slice_extras or []),
+                        action_scenes=action_scenes,
+                        timeout=timeout,
+                    )
+                else:
+                    data = await _run_one_agent(project, name, ctx, timeout=timeout)
             except Exception as e:  # noqa: BLE001
                 errors[name] = str(e)
                 logger.warning("[#{}] scene_design/{} failed: {}", project.id, name, e)
@@ -227,31 +356,35 @@ async def run_category_agents(
 
     for wave_i, wave in enumerate(waves):
         ctx = context
+        extras: list[tuple[str, dict[str, Any]]] = []
+        action_scenes: list[Any] | None = None
         if chrono and wave_i == 1:
             # action видит паспорта верхних трёх
             for name in ag.CHRONO_WAVE1_AGENTS:
                 slice_data = results.get(name)
                 if isinstance(slice_data, dict):
-                    ctx = _append_slice_context(
-                        ctx,
-                        title=f"{name.upper()} SLICE (JSON)",
-                        payload=slice_data,
-                    )
+                    title = f"{name.upper()} SLICE (JSON)"
+                    extras.append((title, slice_data))
+                    ctx = _append_slice_context(ctx, title=title, payload=slice_data)
         if wave == ag.WAVE2_AGENTS or wave == ag.CHRONO_WAVE3_AGENTS:
             action_slice = results.get("action")
             if isinstance(action_slice, dict) and action_slice.get("scenes"):
-                ctx = _append_slice_context(
-                    ctx,
-                    title="ACTION SCENES (JSON) — закон фаз для camera",
-                    payload=action_slice,
-                )
+                title = "ACTION SCENES (JSON) — закон фаз для camera"
+                extras.append((title, action_slice))
+                action_scenes = list(action_slice.get("scenes") or [])
+                ctx = _append_slice_context(ctx, title=title, payload=action_slice)
         logger.info(
             "[#{}] scene_design wave {}: {}",
             project.id,
             wave_i + 1,
             ",".join(wave),
         )
-        await asyncio.gather(*(_one(n, ctx) for n in wave))
+        await asyncio.gather(
+            *(
+                _one(n, ctx, slice_extras=extras, action_scenes=action_scenes)
+                for n in wave
+            )
+        )
         # Жёсткий стоп: упала текущая волна — дальше не идём.
         if any(n in errors for n in wave):
             failed = ", ".join(sorted(errors))
@@ -335,6 +468,8 @@ async def run_assembler_chunked(
             project, context, assembly_input, feedback=feedback, timeout=timeout
         )
 
+    from app.services.scene_design import agent_chunks as ach
+
     batches = chunks.split_frame_batches(frame_list, max_frames=n)
     logger.info(
         "[#{}] scene_design assemble chunked: {} chunks ×≤{} frames (total {})",
@@ -345,19 +480,78 @@ async def run_assembler_chunked(
     )
     parts: list[dict[str, Any]] = []
     total = len(batches)
-    for i, batch in enumerate(batches, start=1):
+
+    async def _assemble_batch(
+        batch: list[Any],
+        *,
+        chunk_index: int,
+        include_characters: bool,
+        fb: str | None,
+        depth: int = 0,
+        label: str = "",
+    ) -> dict[str, Any]:
         chunk_input = chunks.filter_assembly_input_for_frames(
             assembly_input,
             batch,
             frame_list,
             full_vo,
-            include_characters=(i == 1),
+            include_characters=include_characters,
         )
         chunk_ctx = chunks.build_chunk_context(
-            full_vo, batch, chunk_index=i, chunk_total=total
+            full_vo, batch, chunk_index=chunk_index, chunk_total=total
         )
-        # Feedback только на первый чанк — иначе раздувает все запросы.
-        fb = feedback if i == 1 else None
+        if depth > 0:
+            chunk_ctx = (
+                chunk_ctx
+                + "\n\n"
+                + ach.chunk_instruction(label=label or str(chunk_index), depth=depth)
+            )
+        try:
+            return await run_assembler(
+                project, chunk_ctx, chunk_input, feedback=fb, timeout=timeout
+            )
+        except Exception as e:  # noqa: BLE001
+            if (
+                ach.is_capacity_failure(e)
+                and depth < ach.MAX_SPLIT_DEPTH
+                and len(batch) >= 2
+            ):
+                left, right = ach.split_frames_half(batch)
+                logger.warning(
+                    "[#{}] scene_design assemble chunk {}: {} — split depth {}→{}",
+                    project.id,
+                    chunk_index,
+                    e,
+                    depth,
+                    depth + 1,
+                )
+                await asyncio.sleep(1.5)
+                left_part = await _assemble_batch(
+                    left,
+                    chunk_index=chunk_index,
+                    include_characters=include_characters,
+                    fb=fb,
+                    depth=depth + 1,
+                    label=f"{label or chunk_index}·a",
+                )
+                await asyncio.sleep(1.5)
+                right_part = await _assemble_batch(
+                    right,
+                    chunk_index=chunk_index,
+                    include_characters=False,
+                    fb=None,
+                    depth=depth + 1,
+                    label=f"{label or chunk_index}·b",
+                )
+                return chunks.merge_assembler_payloads([left_part, right_part])
+            if ach.is_capacity_failure(e) and depth >= ach.MAX_SPLIT_DEPTH:
+                raise ach.CapacitySplitExhausted(
+                    f"scene_design/assemble: capacity-failure после "
+                    f"{ach.MAX_SPLIT_DEPTH} дроблений чанка {chunk_index} — {e}"
+                ) from e
+            raise
+
+    for i, batch in enumerate(batches, start=1):
         logger.info(
             "[#{}] scene_design assemble chunk {}/{} frames={}",
             project.id,
@@ -365,8 +559,11 @@ async def run_assembler_chunked(
             total,
             [f.number for f in batch],
         )
-        part = await run_assembler(
-            project, chunk_ctx, chunk_input, feedback=fb, timeout=timeout
+        part = await _assemble_batch(
+            batch,
+            chunk_index=i,
+            include_characters=(i == 1),
+            fb=(feedback if i == 1 else None),
         )
         parts.append(part)
 

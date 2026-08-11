@@ -116,7 +116,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
 
     try:
         context = context_builder.build_shared_context(project, frames)
-        slices = await runner.run_category_agents(project, context)
+        slices = await runner.run_category_agents(project, context, frames=frames)
         # Чекпоинты агентов уже в meta — зафиксировать до записи ячеек.
         await session.commit()
 

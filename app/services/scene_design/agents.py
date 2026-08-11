@@ -356,8 +356,13 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
         )
 
 
-def parse_agent_slice(agent: str, text: str) -> dict[str, Any]:
-    """Распарсить и провалидировать JSON-срез категорийного агента."""
+def parse_agent_slice(
+    agent: str, text: str, *, validate: bool = True
+) -> dict[str, Any]:
+    """Распарсить и провалидировать JSON-срез категорийного агента.
+
+    ``validate=False`` — для частичных чанков после 524 (полная проверка на merge).
+    """
     list_key = LIST_KEY[agent]
     data = extract_json_object(text, marker_keys=(list_key, "error"))
     if data is None:
@@ -372,7 +377,7 @@ def parse_agent_slice(agent: str, text: str) -> dict[str, Any]:
         raise SceneDesignAgentError(
             f"scene_design/{agent}: пустой «{list_key}» — срез не принят"
         )
-    if agent == "action":
+    if validate and agent == "action":
         validate_chrono_dyn_action_scenes(items)
     return data
 
