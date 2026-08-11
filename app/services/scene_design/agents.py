@@ -309,19 +309,47 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
         # legacy строки в цепи — не chrono_dyn контракт
         return
     n = len(phase_counts)
-    two_or_less = sum(1 for c in phase_counts if c <= 2)
     avg = sum(phase_counts) / n
-    if two_or_less / n > 0.35 and n >= 5:
-        raise SceneDesignAgentError(
-            f"scene_design/action: брак плотности — {two_or_less}/{n} сцен с <=2 "
-            f"фазами (avg={avg:.1f}). Нужно >=4 фазы на типичную сцену "
-            f"(1 кадр = 1 действие)."
-        )
-    if avg < 4.0 and n >= 5:
-        raise SceneDesignAgentError(
-            f"scene_design/action: avg фаз {avg:.1f} < 4.0 — действия слиты; "
-            f"разбей: одно действие на фазу (встретили / письма / мимо двери)."
-        )
+    # V8: бюджет кадра 2–4 сек (14 сим VO = 1 сек). Если есть время_сек —
+    # проверяем сек/фазу; иначе старый гейт плотности.
+    timed_sec_per_phase: list[float] = []
+    for sc in scenes:
+        if not isinstance(sc, dict):
+            continue
+        chain = _chain_phases(sc)
+        if not chain:
+            continue
+        try:
+            sec = float(sc.get("время_сек") or 0.0)
+        except (TypeError, ValueError):
+            sec = 0.0
+        if sec > 0:
+            timed_sec_per_phase.append(sec / len(chain))
+    if len(timed_sec_per_phase) >= max(3, n // 2):
+        too_fast = sum(1 for sp in timed_sec_per_phase if sp < 1.4)
+        too_slow = sum(1 for sp in timed_sec_per_phase if sp > 5.5)
+        bad = too_fast + too_slow
+        if bad / len(timed_sec_per_phase) > 0.4:
+            raise SceneDesignAgentError(
+                f"scene_design/action: брак тайминга анимации — "
+                f"{too_fast} сцен слишком мелко (<1.4с/кадр), "
+                f"{too_slow} слишком тянут (>5.5с/кадр). "
+                f"Оптимум 2–4 сек/кадр при 14 сим VO = 1 сек; "
+                f"фаз ≈ время_сек/3."
+            )
+    else:
+        two_or_less = sum(1 for c in phase_counts if c <= 2)
+        if two_or_less / n > 0.35 and n >= 5:
+            raise SceneDesignAgentError(
+                f"scene_design/action: брак плотности — {two_or_less}/{n} сцен с <=2 "
+                f"фазами (avg={avg:.1f}). Нужно больше фаз на длинный VO "
+                f"(1 кадр ≈ 2–4 сек, 14 сим = 1 сек)."
+            )
+        if avg < 3.2 and n >= 5:
+            raise SceneDesignAgentError(
+                f"scene_design/action: avg фаз {avg:.1f} < 3.2 — действия слиты; "
+                f"разбей под тайминг VO (2–4 сек на кадр)."
+            )
     # 0.25: после split-чанков модель часто даёт ~26–30% cNN; жёсткие 0.35
     # крутили soft-retry часами. Промпт V6 требует ≥50% — это цель, не брак.
     if object_phases >= 10 and cnn_phases / object_phases < 0.25:
