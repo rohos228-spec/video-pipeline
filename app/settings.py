@@ -277,7 +277,7 @@ class Settings(BaseSettings):
     # action/camera: сразу режем на куски ≤N кадров (не жечь 5 мин на 524).
     # 0 = старое: сначала полный запрос, дробим только после 524.
     scene_design_agent_chunk_frames: int = Field(
-        10, alias="SCENE_DESIGN_AGENT_CHUNK_FRAMES"
+        8, alias="SCENE_DESIGN_AGENT_CHUNK_FRAMES"
     )
     # Сколько кусков action/camera одновременно (kie).
     scene_design_agent_chunk_parallel: int = Field(
