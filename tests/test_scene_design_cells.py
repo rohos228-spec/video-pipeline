@@ -293,15 +293,16 @@ def test_action_scene_time_cell_passes() -> None:
 # ── хронометраж кадров (context_builder.frame_seconds) ──────────────
 
 
-def test_frame_seconds_db_duration_wins() -> None:
-    fr = SimpleNamespace(duration_seconds=4.2, voiceover_text="короткий")
-    assert sd_context.frame_seconds(fr) == (4.2, "бд")
+def test_frame_seconds_vo_beats_stale_db() -> None:
+    # БД часто врёт (~2с); SoT — len(VO)/14
+    fr = SimpleNamespace(duration_seconds=2.0, voiceover_text="x" * 140)
+    assert sd_context.frame_seconds(fr) == (10.0, "vo_14cps")
 
 
 def test_frame_seconds_estimate_from_voiceover() -> None:
     fr = SimpleNamespace(duration_seconds=None, voiceover_text="а" * 28)
     sec, source = sd_context.frame_seconds(fr)
-    assert source == "оценка"
+    assert source == "vo_14cps"
     assert sec == 2.0  # 28 символов / 14 сим/сек
 
 
@@ -310,15 +311,14 @@ def test_shared_context_has_frame_times_and_total() -> None:
         script_text="", general_plan="", meta={},
     )
     frames = [
-        _frame("u1", 1, "Альфа начало истории."),
+        _frame("u1", 1, "Альфа начало истории."),  # 21 сим → 1.5с
         SimpleNamespace(uuid="u2", number=2, voiceover_text="а" * 28,
-                        duration_seconds=None),
+                        duration_seconds=2.0),  # БД игнор → 2.0 vo
     ]
     ctx = sd_context.build_shared_context(p, frames)
-    assert '"время_сек": 3.0' in ctx
-    assert '"время_источник": "бд"' in ctx
-    assert '"время_источник": "оценка"' in ctx
-    assert "ИТОГО по всем кадрам: 5.0 сек" in ctx
+    assert '"время_источник":"vo_14cps"' in ctx
+    assert "время_бд_сек" not in ctx
+    assert "ИТОГО: 3.5 сек" in ctx
 
 
 def test_build_assembly_input_unassigned_frames_kept() -> None:

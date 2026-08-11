@@ -13,18 +13,22 @@ _STYLE_META_KEYS = ("image_style", "visual_style", "img_style", "style")
 
 
 def frame_seconds(fr: Frame) -> tuple[float, str]:
-    """Хронометраж кадра: (секунды, источник).
+    """Хронометраж кадра для scene_design: (секунды, источник).
 
-    Источник «бд» — строка «время кадра» (``duration_seconds``, заполняется
-    вручную в таблице или шагом озвучки). Если в БД пусто — оценка по длине
-    закадра кадра (``SUBTITLE_CHARS_PER_SECOND``, по умолчанию 14 сим/сек).
+    SoT — длина закадра / ``SUBTITLE_CHARS_PER_SECOND`` (14 сим/сек).
+    ``duration_seconds`` из БД часто занижен (2с при 100+ символах) и
+    ломал action-агента («невозможно совместить 14 сим/сек с временем БД»).
+    БД показываем только как справку в JSON, если она есть.
     """
+    text = (getattr(fr, "voiceover_text", None) or "").strip()
+    cps = max(float(settings.subtitle_chars_per_second), 1.0)
+    by_vo = round(len(text) / cps, 1) if text else 0.0
+    if by_vo > 0:
+        return by_vo, "vo_14cps"
     dur = getattr(fr, "duration_seconds", None)
     if dur is not None and dur > 0:
         return round(float(dur), 1), "бд"
-    text = (getattr(fr, "voiceover_text", None) or "").strip()
-    cps = max(float(settings.subtitle_chars_per_second), 1.0)
-    return round(len(text) / cps, 1), "оценка"
+    return 0.0, "пусто"
 
 
 def full_voiceover(project: Project, frames: list[Frame]) -> str:
@@ -78,9 +82,12 @@ def build_shared_context(project: Project, frames: list[Frame]) -> str:
     parts.append(f"# ПОЛНЫЙ ЗАКАДР\n{full_vo}")
     frames_payload = []
     total_sec = 0.0
+    cps = max(float(settings.subtitle_chars_per_second), 1.0)
     for fr in frames:
         sec, source = frame_seconds(fr)
         total_sec += sec
+        # Не тащим duration_seconds из БД — часто мусор (~2с при 100+ сим) и
+        # модель возвращает error «не совпадает с 14 сим/сек». SoT = VO/cps.
         frames_payload.append(
             {
                 "uuid": fr.uuid,
@@ -92,10 +99,8 @@ def build_shared_context(project: Project, frames: list[Frame]) -> str:
         )
     parts.append(
         "# КАДРЫ (JSON)\n"
-        "время_сек — хронометраж кадра: источник «бд» = строка «время кадра» "
-        "в таблице (точное), «оценка» = примерно по длине закадра "
-        f"(~{settings.subtitle_chars_per_second:g} сим/сек). "
-        f"ИТОГО по всем кадрам: {round(total_sec, 1)} сек.\n"
+        f"время_сек — единственный SoT: len(закадр)/{cps:g} сим/сек "
+        f"(vo_14cps). Метки БД/ASR игнорировать. ИТОГО: {round(total_sec, 1)} сек.\n"
         + json.dumps(frames_payload, ensure_ascii=False, separators=(",", ":"))
     )
     return "\n\n".join(parts)
