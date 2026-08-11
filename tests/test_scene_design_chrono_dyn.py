@@ -171,6 +171,39 @@ def test_validate_chrono_dyn_rejects_compound_actions() -> None:
         ag.validate_chrono_dyn_action_scenes(scenes)
 
 
+def test_validate_chrono_dyn_rejects_passive_standing() -> None:
+    scenes = [
+        {
+            "id_scene": f"scene_{i:02d}",
+            "связь_с_прошлой": "продолжение" if i > 1 else "",
+            "крючок_в_следующую": "дальше",
+            "цепь_действия": [
+                {
+                    "phase_index": p,
+                    "beat": (
+                        "setup"
+                        if p == 1
+                        else ("payoff" if p == 5 else "develop")
+                    ),
+                    "action": (
+                        "стоит у двери"
+                        if p <= 2
+                        else f"Александр делает жест {p}"
+                    ),
+                    "subject": "c01",
+                    "orientation": "face",
+                    "переход_к_следующей": "cut_on_action",
+                }
+                for p in range(1, 6)
+            ],
+        }
+        for i in range(1, 4)
+    ]
+    # 3 scenes × 2 passive = 6/15 = 40% ≥ 12%
+    with pytest.raises(ag.SceneDesignAgentError, match="пассивн|звонок|стоит"):
+        ag.validate_chrono_dyn_action_scenes(scenes)
+
+
 def test_validate_chrono_dyn_rejects_year_jumps_inside_scene() -> None:
     scenes = [
         {

@@ -121,6 +121,7 @@ def main() -> None:
                     "who": clip(first_str(sh, "кто_в_кадре", "who", "subject"), 120),
                     "quote": clip(first_str(sh, "цитата", "quote", "vo"), 120),
                     "set": first_str(sh, "набор", "set"),
+                    "motive": clip(first_str(sh, "мотив", "motive", "why"), 140),
                 }
             )
 
@@ -234,6 +235,7 @@ def main() -> None:
                         "camera_move": (cam or {}).get("move", ""),
                         "camera_who": (cam or {}).get("who", ""),
                         "camera_comp": (cam or {}).get("comp", ""),
+                        "camera_motive": (cam or {}).get("motive", ""),
                         "location": sc["location"],
                     }
                 )
@@ -255,6 +257,7 @@ def main() -> None:
                     "camera_move": "",
                     "camera_who": "",
                     "camera_comp": "",
+                    "camera_motive": "",
                     "location": sc["location"],
                 }
             )

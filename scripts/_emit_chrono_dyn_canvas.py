@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 
 TABLE = Path(
@@ -32,6 +33,7 @@ def main() -> None:
                 "camera_size": r.get("camera_size") or "",
                 "camera_move": (r.get("camera_move") or "")[:80],
                 "camera_who": (r.get("camera_who") or "")[:100],
+                "camera_motive": (r.get("camera_motive") or "")[:140],
                 "location": (r.get("location") or "")[:100],
             }
         )
@@ -52,6 +54,10 @@ def main() -> None:
         for c in table["locations"]
     ]
     scenes = sorted({r["scene"] for r in rows if r["scene"]})
+    size_counts = Counter(r["camera_size"] for r in rows if r["camera_size"])
+    move_counts = Counter(r["camera_move"] for r in rows if r["camera_move"])
+    cam_size = [{"label": k, "value": v} for k, v in size_counts.most_common()]
+    cam_move = [{"label": k, "value": v} for k, v in move_counts.most_common()]
     payload = json.dumps(
         {
             "counts": table["counts"],
@@ -59,11 +65,14 @@ def main() -> None:
             "chars": chars,
             "locs": locs,
             "rows": rows,
+            "cam_size": cam_size,
+            "cam_move": cam_move,
         },
         ensure_ascii=False,
     )
 
     tsx = f"""import {{
+  BarChart,
   Callout,
   Divider,
   Grid,
@@ -93,11 +102,11 @@ export default function ChronoDynSceneNodeReport() {{
     r.scene,
     String(r.phase),
     r.beat,
-    r.transition,
     r.action_subject,
     r.action_text,
     r.camera_size,
     r.camera_move,
+    r.camera_motive,
     r.camera_who,
     r.link_prev,
     r.hook_next,
@@ -109,7 +118,7 @@ export default function ChronoDynSceneNodeReport() {{
       <Stack gap={{6}}>
         <H1>Отчёт chrono_dyn · сцена × нода</H1>
         <Text tone="secondary">
-          Проект #60 spesivcevy-chrono-dyn · source: scene_design/*.json ·
+          Проект #60 spesivcevy-chrono-dyn · V7 логика жеста + V6 камера ·
           строка = фаза action + shot camera
         </Text>
       </Stack>
@@ -122,11 +131,45 @@ export default function ChronoDynSceneNodeReport() {{
         <Stat value={{String(DATA.counts.style_beats)}} label="Style beats" />
       </Grid>
 
-      <Callout tone="info" title="Как читать V5">
-        1 фаза = 1 действие (не «встречаются, забирают и проходят»). Крупность
-        по-русски: общий / средний / крупный / деталь. Связь сцен — колонки
-        справа.
+      <Callout tone="info" title="Как читать V7">
+        У двери — звонок/стук/ключ, не «стоит». Замок — только после входа/ухода.
+        1 фаза = 1 действие. Камера: крупность+движение+мотив под жест.
       </Callout>
+
+      <H2>Камера: что используется</H2>
+      <Grid columns={{2}} gap={{16}}>
+        <Stack gap={{8}}>
+          <Text weight="semibold">Крупность (сколько шотов)</Text>
+          <BarChart
+            categories={{DATA.cam_size.map((x) => x.label)}}
+            series={{[{{ name: "шотов", data: DATA.cam_size.map((x) => x.value) }}]}}
+            height={{220}}
+          />
+        </Stack>
+        <Stack gap={{8}}>
+          <Text weight="semibold">Движение камеры</Text>
+          <BarChart
+            categories={{DATA.cam_move.map((x) => x.label)}}
+            series={{[{{ name: "шотов", data: DATA.cam_move.map((x) => x.value) }}]}}
+            height={{220}}
+          />
+        </Stack>
+      </Grid>
+      <Table
+        headers={{["Крупность", "N", "Движение", "N"]}}
+        rows={{Array.from(
+          {{
+            length: Math.max(DATA.cam_size.length, DATA.cam_move.length),
+          }},
+          (_, i) => [
+            DATA.cam_size[i]?.label ?? "",
+            DATA.cam_size[i] ? String(DATA.cam_size[i].value) : "",
+            DATA.cam_move[i]?.label ?? "",
+            DATA.cam_move[i] ? String(DATA.cam_move[i].value) : "",
+          ],
+        )}}
+        striped
+      />
 
       <H2>Персонажи (нода characters)</H2>
       <Table
@@ -167,11 +210,11 @@ export default function ChronoDynSceneNodeReport() {{
           "Сцена",
           "Фаза",
           "Beat",
-          "Переход",
           "Кто (action)",
-          "Действие (одно!)",
+          "Действие (логика!)",
           "Крупность",
           "Движение",
+          "Мотив камеры",
           "Кто в кадре",
           "Связь с прошлой",
           "Крючок в следующую",

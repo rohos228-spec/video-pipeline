@@ -234,6 +234,18 @@ def _is_compound_action(action: str) -> bool:
     return False
 
 
+# «Стоит у двери» / «Александр смотрит» — дыра в blocking-логике (V7).
+_PASSIVE_ACTION_RE = re.compile(
+    r"^(?:[^\s,]+\s+){0,3}(?:стоит|сидит|смотрит|ждёт|ждет)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_passive_action(action: str) -> bool:
+    t = re.sub(r"\s+", " ", (action or "").strip())
+    return bool(t and _PASSIVE_ACTION_RE.match(t))
+
+
 def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
     """Брак: склейка действий, коллаж мест/лет, нет арки/связей, мало cNN."""
     if not scenes:
@@ -249,6 +261,7 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
     teleport_scenes = 0
     year_jump_scenes = 0
     compound_phases = 0
+    passive_phases = 0
     dict_scenes = 0
     for i, sc in enumerate(scenes):
         if not isinstance(sc, dict):
@@ -279,6 +292,8 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
             act = str(ph.get("action") or ph.get("действие") or "")
             if _is_compound_action(act):
                 compound_phases += 1
+            if _is_passive_action(act):
+                passive_phases += 1
             txt = _phase_action_text(ph)
             scene_years.update(_YEAR_RE.findall(txt))
             scene_places |= _place_buckets_in_text(txt)
@@ -355,6 +370,12 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
         raise SceneDesignAgentError(
             f"scene_design/action: {compound_phases}/{object_phases} фаз склеивают "
             f"несколько действий («…, … и …»). 1 кадр = 1 действие — разбей фазы."
+        )
+    if object_phases >= 10 and passive_phases / object_phases >= 0.12:
+        raise SceneDesignAgentError(
+            f"scene_design/action: {passive_phases}/{object_phases} фаз пассивны "
+            f"(«стоит/сидит/смотрит/ждёт» без намерения). Нужна логика: "
+            f"звонок/стук/вход → потом замок; у двери — сигнал, не стояние."
         )
 
 
