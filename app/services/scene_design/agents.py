@@ -243,6 +243,20 @@ _PASSIVE_ACTION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Дверной конвейер (V11): засов/звонок/глазок как единственный сюжет.
+_DOOR_PROP_RE = re.compile(
+    r"(?:двер(?:ь|и|ью|ной|ного|ную|ные|ным)|звонк|засов|глазок|цепочк|"
+    r"щель\s+под\s+двер|дверн\w+\s+проём|дверн\w+\s+проем|порог\s+\d)",
+    re.IGNORECASE,
+)
+_DOOR_SLAM_RE = re.compile(
+    r"(?:захлопывает\s+двер|задвигает\s+(?:засов|щеколд)|"
+    r"набрасывает\s+дверную\s+цепоч|прищемляет\s+лист|"
+    r"проталкивает\w*\s+(?:жалоб|заявл|лист).*двер|"
+    r"суёт\w*\s+.*в\s+щель|вдавливает\w*\s+.*в\s+щель)",
+    re.IGNORECASE,
+)
+
 # Соевое передвижение без удара (V10): «проходит мимо / лестница / лифт».
 _SOY_LOCOMOTION_RE = re.compile(
     r"(?:"
@@ -286,6 +300,14 @@ def _is_passive_action(action: str) -> bool:
     if _PASSIVE_ACTION_RE.match(t):
         return True
     return bool(_SOY_LOCOMOTION_RE.search(t))
+
+
+def _is_door_prop_action(action: str) -> bool:
+    return bool(_DOOR_PROP_RE.search(action or ""))
+
+
+def _is_door_slam_action(action: str) -> bool:
+    return bool(_DOOR_SLAM_RE.search(action or ""))
 
 
 def _is_metaphor_slop(action: str) -> bool:
@@ -451,11 +473,17 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
     metaphor_phases = 0
     near_dupe_pairs = 0
     thin_long_vo = 0
+    door_phases = 0
+    door_slam_phases = 0
+    loc_counts: dict[str, int] = {}
     dict_scenes = 0
     for i, sc in enumerate(scenes):
         if not isinstance(sc, dict):
             continue
         dict_scenes += 1
+        loc = str(sc.get("location") or sc.get("локация") or "").strip().lower()
+        if loc:
+            loc_counts[loc] = loc_counts.get(loc, 0) + 1
         chain = _chain_phases(sc)
         phase_counts.append(len(chain))
         if i > 0 and not str(sc.get("связь_с_прошлой") or "").strip():
@@ -487,6 +515,10 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
                 passive_phases += 1
             if _is_metaphor_slop(act):
                 metaphor_phases += 1
+            if _is_door_prop_action(act):
+                door_phases += 1
+            if _is_door_slam_action(act):
+                door_slam_phases += 1
             if prev_act and _near_duplicate_actions(prev_act, act):
                 near_dupe_pairs += 1
             prev_act = act
@@ -610,9 +642,30 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
         raise SceneDesignAgentError(
             f"scene_design/action: {passive_phases}/{object_phases} фаз — соя/"
             f"пассив («проходит мимо/лестница/лифт/отводит взгляд/смотрит»). "
-            f"Каждый кадр — столкновение: хват, удар дверью, улика, отказ, "
-            f"давление. Не начинай сцену с дороги к месту."
+            f"Каждый кадр — столкновение людей: хват, отказ, улика, эмоция. "
+            f"Не начинай сцену с дороги к месту."
         )
+    # V11: дверной конвейер / одна локация на весь ролик.
+    if object_phases >= 20 and door_phases / object_phases > 0.18:
+        raise SceneDesignAgentError(
+            f"scene_design/action: {door_phases}/{object_phases} фаз про "
+            f"дверь/звонок/засов — дверной конвейер. Чередуй больницу, суд, "
+            f"милицию, улицу, пустырь, комнату; ≤15% фаз про дверь."
+        )
+    if object_phases >= 20 and door_slam_phases / object_phases > 0.12:
+        raise SceneDesignAgentError(
+            f"scene_design/action: {door_slam_phases}/{object_phases} фаз — "
+            f"повтор «захлопывает дверь/засов». Придумай разные конфликты и "
+            f"эмоции людей, не один и тот же хлопок двери."
+        )
+    if dict_scenes >= 12 and loc_counts:
+        top_loc, top_n = max(loc_counts.items(), key=lambda kv: kv[1])
+        if top_n / dict_scenes > 0.32 and len(loc_counts) >= 3:
+            raise SceneDesignAgentError(
+                f"scene_design/action: локация {top_loc} в {top_n}/{dict_scenes} "
+                f"сцен — слишком однообразно. Разнеси события по разным locNN "
+                f"из world; абстрактный VO → выдумай яркую сцену в другом месте."
+            )
     if object_phases >= 8 and metaphor_phases / object_phases >= 0.12:
         raise SceneDesignAgentError(
             f"scene_design/action: {metaphor_phases}/{object_phases} фаз — "
@@ -629,6 +682,46 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
             f"scene_design/action: {thin_long_vo} сцен с VO≥6с и ≤2 фазами — "
             f"мало кадров на длинный текст. Нужно ≥3 разных действия "
             f"(~2–4 сек на кадр при 14 сим/сек)."
+        )
+
+
+_CAMERA_MOVE_OK = frozenset(
+    {
+        "static",
+        "push-in",
+        "pull-out",
+        "follow",
+        "pan",
+        "tilt",
+        "handheld",
+        "whip-pan",
+    }
+)
+
+
+def validate_chrono_dyn_camera_shots(shots: list[Any]) -> None:
+    """V11: static не должен забивать почти весь shot_plan."""
+    if not shots:
+        return
+    moves: list[str] = []
+    for sh in shots:
+        if not isinstance(sh, dict):
+            continue
+        m = str(sh.get("движение") or sh.get("move") or "static").strip().lower()
+        # «push-in / handheld» → берём первый токен
+        m = re.split(r"[\s,/|]+", m)[0] if m else "static"
+        if m not in _CAMERA_MOVE_OK:
+            m = "static"
+        moves.append(m)
+    n = len(moves)
+    if n < 16:
+        return
+    static_n = sum(1 for m in moves if m == "static")
+    if static_n / n > 0.55:
+        raise SceneDesignAgentError(
+            f"scene_design/camera: {static_n}/{n} шотов static — камера мёртвая. "
+            f"Нужно static≤45%: push-in/pull-out/follow/pan/tilt/handheld на "
+            f"turn/payoff и эмоциях лиц."
         )
 
 
@@ -662,6 +755,8 @@ def parse_agent_slice(
                 sc["id_scene"] = f"scene_{i:02d}"
     if validate and agent == "action":
         validate_chrono_dyn_action_scenes(items)
+    if validate and agent == "camera":
+        validate_chrono_dyn_camera_shots(items)
     return data
 
 

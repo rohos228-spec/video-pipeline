@@ -154,6 +154,7 @@ def merge_agent_slices(agent: str, parts: list[dict[str, Any]]) -> dict[str, Any
         for i, sh in enumerate(merged, start=1):
             if isinstance(sh, dict) and sh.get("id_shot") is not None:
                 sh["id_shot"] = f"shot_{i:02d}"
+        ag.validate_chrono_dyn_camera_shots(merged)
     logger.info(
         "scene_design/{}: merged {} chunks → {} {}",
         agent,

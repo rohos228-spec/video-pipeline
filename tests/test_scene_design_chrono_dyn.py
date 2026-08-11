@@ -70,11 +70,13 @@ def test_validate_chrono_dyn_action_accepts_dense_cnn() -> None:
         "Врач щёлкает фонариком у его глаз",
         "Людмила перехватывает запястье сына",
         "Участковый захлопывает блокнот",
-        "Александр вырывает руку и отступает к двери",
+        "Александр вырывает руку и прячет лицо в ладони",
     )
+    locs = ("loc03", "loc06", "loc07", "loc04", "loc02")
     scenes = [
         {
             "id_scene": f"scene_{i:02d}",
+            "location": locs[i - 1],
             "время_сек": 12.0,
             "связь_с_прошлой": "продолжение прошлого бита" if i > 1 else "",
             "крючок_в_следующую": "открытый жест в следующую сцену",
@@ -217,6 +219,54 @@ def test_validate_chrono_dyn_rejects_metaphor_folder_slop() -> None:
     ]
     with pytest.raises(ag.SceneDesignAgentError, match="метафор|нейрослоп|папк"):
         ag.validate_chrono_dyn_action_scenes(scenes)
+
+
+def _juicy_phase(p: int, *, action: str, beat: str = "develop") -> dict:
+    return {
+        "phase_index": p,
+        "beat": beat,
+        "action": action,
+        "subject": "c01",
+        "orientation": "side",
+        "переход_к_следующей": "cut_on_action",
+    }
+
+
+def test_validate_chrono_dyn_rejects_door_conveyor() -> None:
+    """V11: слишком много фаз про дверь/засов."""
+    scenes = []
+    for i in range(1, 8):
+        scenes.append(
+            {
+                "id_scene": f"scene_{i:02d}",
+                "location": "loc01",
+                "время_сек": 9.0,
+                "связь_с_прошлой": "продолжение" if i > 1 else "",
+                "крючок_в_следующую": "дальше",
+                "цепь_действия": [
+                    _juicy_phase(1, action="Людмила захлопывает дверь квартиры № 357", beat="setup"),
+                    _juicy_phase(2, action="Людмила задвигает второй дверной засов", beat="develop"),
+                    _juicy_phase(3, action="Соседка суёт заявление в щель под дверью", beat="payoff"),
+                ],
+            }
+        )
+    with pytest.raises(ag.SceneDesignAgentError, match="двер|засов|конвейер"):
+        ag.validate_chrono_dyn_action_scenes(scenes)
+
+
+def test_validate_chrono_dyn_rejects_all_static_camera() -> None:
+    shots = [
+        {
+            "id_scene": "scene_01",
+            "phase_index": i,
+            "крупность": "средний план",
+            "движение": "static",
+            "мотив": "просто так",
+        }
+        for i in range(1, 21)
+    ]
+    with pytest.raises(ag.SceneDesignAgentError, match="static|камер"):
+        ag.validate_chrono_dyn_camera_shots(shots)
 
 
 def test_validate_chrono_dyn_rejects_soy_locomotion() -> None:
