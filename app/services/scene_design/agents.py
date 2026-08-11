@@ -189,6 +189,54 @@ def extract_json_object(
     return None
 
 
+def _chain_phases(scene: dict[str, Any]) -> list[Any]:
+    raw = scene.get("цепь_действия") or scene.get("chain") or []
+    return raw if isinstance(raw, list) else []
+
+
+def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
+    """Брак: почти все сцены по 2 фазы / нет персонажей cNN / пустые фазы."""
+    if not scenes:
+        return
+    phase_counts: list[int] = []
+    object_phases = 0
+    cnn_phases = 0
+    for sc in scenes:
+        if not isinstance(sc, dict):
+            continue
+        chain = _chain_phases(sc)
+        phase_counts.append(len(chain))
+        for ph in chain:
+            if not isinstance(ph, dict):
+                continue
+            object_phases += 1
+            sub = str(ph.get("subject") or "").strip().lower()
+            if re.match(r"^c\d+$", sub):
+                cnn_phases += 1
+    if not phase_counts or object_phases == 0:
+        # legacy строки в цепи — не chrono_dyn контракт
+        return
+    n = len(phase_counts)
+    two_or_less = sum(1 for c in phase_counts if c <= 2)
+    avg = sum(phase_counts) / n
+    if two_or_less / n > 0.35 and n >= 5:
+        raise SceneDesignAgentError(
+            f"scene_design/action: брак плотности — {two_or_less}/{n} сцен с <=2 "
+            f"фазами (avg={avg:.1f}). Нужно >=3 фазы на типичную сцену; "
+            f"число кадров задаёт action, не SET camera."
+        )
+    if avg < 2.8 and n >= 5:
+        raise SceneDesignAgentError(
+            f"scene_design/action: avg фаз {avg:.1f} < 2.8 — слишком плоско; "
+            f"добавь развитие бита (жест/субъект/зона) между фазами."
+        )
+    if object_phases >= 10 and cnn_phases / object_phases < 0.35:
+        raise SceneDesignAgentError(
+            f"scene_design/action: персонажи cNN только в {cnn_phases}/"
+            f"{object_phases} фазах — задействуй героев текста, не crowd/prop."
+        )
+
+
 def parse_agent_slice(agent: str, text: str) -> dict[str, Any]:
     """Распарсить и провалидировать JSON-срез категорийного агента."""
     list_key = LIST_KEY[agent]
@@ -205,6 +253,8 @@ def parse_agent_slice(agent: str, text: str) -> dict[str, Any]:
         raise SceneDesignAgentError(
             f"scene_design/{agent}: пустой «{list_key}» — срез не принят"
         )
+    if agent == "action":
+        validate_chrono_dyn_action_scenes(items)
     return data
 
 

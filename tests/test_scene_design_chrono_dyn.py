@@ -36,6 +36,53 @@ def test_uses_chrono_dyn_from_meta() -> None:
     assert ag.uses_chrono_dyn(SimpleNamespace(meta={})) is False
 
 
+def test_validate_chrono_dyn_action_rejects_flat_two_phases() -> None:
+    scenes = [
+        {
+            "id_scene": f"scene_{i:02d}",
+            "цепь_действия": [
+                {
+                    "phase_index": 1,
+                    "action": "crowd goes",
+                    "subject": "crowd",
+                    "orientation": "side",
+                    "info_change": "a",
+                },
+                {
+                    "phase_index": 2,
+                    "action": "door stays",
+                    "subject": "prop",
+                    "orientation": "object",
+                    "info_change": "b",
+                },
+            ],
+        }
+        for i in range(1, 8)
+    ]
+    with pytest.raises(ag.SceneDesignAgentError, match="плотности"):
+        ag.validate_chrono_dyn_action_scenes(scenes)
+
+
+def test_validate_chrono_dyn_action_accepts_dense_cnn() -> None:
+    scenes = [
+        {
+            "id_scene": f"scene_{i:02d}",
+            "цепь_действия": [
+                {
+                    "phase_index": p,
+                    "action": f"beat {p}",
+                    "subject": f"c0{(p % 3) + 1}",
+                    "orientation": "face",
+                    "info_change": f"info {p}",
+                }
+                for p in range(1, 5)
+            ],
+        }
+        for i in range(1, 6)
+    ]
+    ag.validate_chrono_dyn_action_scenes(scenes)
+
+
 def test_required_shots_chrono_dyn_uses_phases() -> None:
     n = required_shots_for_beat(
         {"крупность": "MS", "набор": "SET_01"},
