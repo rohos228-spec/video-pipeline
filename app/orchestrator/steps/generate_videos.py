@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 from aiogram import Bot
 from loguru import logger
@@ -14,6 +15,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
 from app.bots.outsee import OutseeBot
+
+
+def _video_http_primary() -> bool:
+    """Outsee/Grsai HTTP video — без Chrome CDP."""
+    from app.bots.grsai import grsai_video_enabled
+    from app.bots.outsee_http import outsee_api_configured, outsee_api_enabled_for_video
+
+    return bool(
+        grsai_video_enabled()
+        or outsee_api_enabled_for_video()
+        or outsee_api_configured()
+    )
+
+
+@asynccontextmanager
+async def _optional_browser_session(need_cdp: bool) -> AsyncIterator[Any]:
+    if not need_cdp:
+        yield None
+        return
+    async with browser_session() as bs:
+        yield bs
 from app.generation_options import (
     ASPECT_RATIOS_BY_ID,
     DEFAULTS,
@@ -332,7 +354,7 @@ async def _claim_shot2_video_batch(
 async def _generate_shot1_one(
     *,
     session: AsyncSession,
-    outsee: OutseeBot,
+    outsee: OutseeBot | None,
     gpt: Any,
     project: Project,
     fr: Frame,
@@ -399,7 +421,7 @@ async def _generate_shot1_one(
 async def _generate_shot2_one(
     *,
     session: AsyncSession,
-    outsee: OutseeBot,
+    outsee: OutseeBot | None,
     gpt: Any,
     project: Project,
     fr: Frame,
@@ -504,7 +526,7 @@ async def _shot1_job(
     frame_id: int,
     out_dir: Path,
     scenes_dir: Path,
-    outsee: OutseeBot,
+    outsee: OutseeBot | None,
     gpt: Any,
     session_clip_paths: list[Path],
     clips_lock: asyncio.Lock,
@@ -615,7 +637,7 @@ async def _shot2_job(
     prompt2: str,
     s2_img: Path,
     out_dir: Path,
-    outsee: OutseeBot,
+    outsee: OutseeBot | None,
     gpt: Any,
     session_clip_paths: list[Path],
     clips_lock: asyncio.Lock,
@@ -771,8 +793,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         session_clip_paths: list[Path] = []
         clips_lock = asyncio.Lock()
 
-        async with browser_session() as bs:
-            outsee = OutseeBot(bs)
+        http_primary = _video_http_primary()
+        async with _optional_browser_session(need_cdp=not http_primary) as bs:
+            outsee = OutseeBot(bs) if bs is not None else None
+            if http_primary:
+                logger.info(
+                    "[#{}] generate_videos: HTTP video API (без CDP)",
+                    project.id,
+                )
             gpt = get_gpt_client()
             try:
                 while True:

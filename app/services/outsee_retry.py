@@ -1110,7 +1110,7 @@ async def generate_image_with_retries(
 
 
 async def generate_video_with_retries(
-    outsee: OutseeBot,
+    outsee: OutseeBot | None,
     gpt: Any | None,
     *,
     prompt: str,
