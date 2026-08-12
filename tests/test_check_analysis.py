@@ -243,3 +243,32 @@ def test_prompts_declare_stable_check_ids() -> None:
         assert body is not None, step
         for cid in ids:
             assert cid in body, f"{step}: нет check-id {cid}"
+
+
+def test_parse_ignores_db_check_json_and_reads_txt() -> None:
+    """Эхо db_check.json без verdict не должно затирать TXT-отчёт кино-проверки."""
+    raw = (
+        '{"frames":[{"number":1,"place":""}],"entities":[]}\n\n'
+        "# ОТЧЁТ ПРОВЕРКИ\n"
+        "verdict: fail\n"
+        "mode: report_only\n"
+        "source_prompts: n_excel_gpt_1\n"
+        "\n## summary\n"
+        "пустое место, нет Entity\n"
+        "\n## analysis\n"
+        "стиль ок, логика нет\n"
+        "\n## findings\n"
+        "- [error] нет c01\n"
+        "\n## related\n"
+        "- characters → промт:characters\n"
+        "\n## logic\n"
+        "VO цел\n"
+        "\n## actions\n"
+        "перезапустить characters\n"
+        "\n## forward\n"
+        "file: original\n"
+        "path: —\n"
+    )
+    a = parse_check_analysis(raw)
+    assert a.verdict == "fail"
+    assert "Entity" in (a.summary or "") or "c01" in str(a.checks)

@@ -1112,6 +1112,20 @@ def looks_like_check_report_txt(text: str) -> bool:
     return False
 
 
+def _json_looks_like_check(obj: dict[str, Any]) -> bool:
+    """JSON — контракт проверки, а не db_check/apply-ops/кадры."""
+    if str(obj.get("schema") or "").strip() == SCHEMA_ID:
+        return True
+    if "verdict" in obj and ("checks" in obj or "fix" in obj or "forward" in obj):
+        return True
+    decision = str(obj.get("decision") or "").strip()
+    if decision and (
+        "criteria" in obj or "issues" in obj or "red_flags" in obj or "checks" in obj
+    ):
+        return True
+    return False
+
+
 def looks_like_check_payload(text: str) -> bool:
     """True, если текст — отчёт проверки (TXT/JSON), а не закадровый текст.
 
@@ -1126,16 +1140,7 @@ def looks_like_check_payload(text: str) -> bool:
     obj = extract_json_object(raw)
     if not isinstance(obj, dict):
         return False
-    if str(obj.get("schema") or "").strip() == SCHEMA_ID:
-        return True
-    if "verdict" in obj and ("checks" in obj or "fix" in obj or "forward" in obj):
-        return True
-    decision = str(obj.get("decision") or "").strip()
-    if decision and (
-        "criteria" in obj or "issues" in obj or "red_flags" in obj or "checks" in obj
-    ):
-        return True
-    return False
+    return _json_looks_like_check(obj)
 
 
 def split_check_reply_and_writeback(text: str) -> tuple[str, str]:
@@ -1319,6 +1324,9 @@ def parse_check_analysis(text: str, *, require_schema: bool = False) -> CheckAna
     report_text, _wb = split_check_reply_and_writeback(text or "")
     probe = report_text or (text or "")
     obj = extract_json_object(probe)
+    if obj is not None and not _json_looks_like_check(obj):
+        # Модель эхом вернула db_check.json / apply-ops — это не отчёт проверки.
+        obj = None
     if obj is not None:
         if require_schema:
             sid = str(obj.get("schema") or "").strip()
