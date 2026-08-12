@@ -287,6 +287,9 @@ async def run_assemble(
             list(assembly_input.get("scenes_chrono") or []),
             action_scenes,
         )
+        assembly_input = sd_assembler.merge_world_style_checkpoints(
+            project, assembly_input
+        )
         logger.info(
             "[#{}] camera_expand report: {}",
             project.id,

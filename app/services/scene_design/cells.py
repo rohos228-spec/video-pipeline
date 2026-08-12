@@ -286,7 +286,8 @@ def slice_to_cells(
             key = f"stage_{idx:02d}"
             part = _item_fields(
                 project, agent, "style_stage", key, item,
-                ("scene_hint", "тип_сцены", "освещение", "палитра", "тон", "сдвиг"),
+                ("scene_hint", "тип_сцены", "освещение", "палитра", "тон", "сдвиг",
+                 "сцены"),
                 quote_field="scene_hint", full_vo_norm=vo_norm,
             )
             cells.extend(part)

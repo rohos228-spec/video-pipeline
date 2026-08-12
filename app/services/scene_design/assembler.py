@@ -56,6 +56,152 @@ def _as_plain_text(value: Any) -> str:
     return str(value).strip()
 
 
+def merge_world_style_checkpoints(
+    project: Project, assembly_input: dict[str, Any]
+) -> dict[str, Any]:
+    """locations/style_arc: ячейки часто без списка сцен — взять JSON чекпоинта."""
+    from app.services.scene_design.runner import load_checkpoint
+
+    out = dict(assembly_input)
+    world = load_checkpoint(project, "world")
+    if isinstance(world, dict) and world.get("locations"):
+        out["locations"] = list(world.get("locations") or [])
+    style = load_checkpoint(project, "style")
+    if isinstance(style, dict) and style.get("style_arc"):
+        out["style_arc"] = list(style.get("style_arc") or [])
+    return out
+
+
+def _loc_label(lid: str, locations: list[Any]) -> str:
+    lid = str(lid or "").strip()
+    if not lid:
+        return ""
+    for loc in locations:
+        if not isinstance(loc, dict):
+            continue
+        if str(loc.get("id") or "").strip() == lid:
+            name = str(loc.get("name") or loc.get("имя") or "").strip()
+            return f"{lid}, {name}" if name else lid
+    return lid
+
+
+def _style_for_scene(sid: str, style_arc: list[Any]) -> dict[str, Any]:
+    sid = str(sid or "").strip()
+    for st in style_arc or []:
+        if not isinstance(st, dict):
+            continue
+        scenes = st.get("сцены") or st.get("scenes") or []
+        ids = [str(x).strip() for x in scenes] if isinstance(scenes, list) else []
+        if sid and sid in ids:
+            return st
+    return {}
+
+
+def _lighting_line(style: dict[str, Any]) -> str:
+    light = _as_plain_text(style.get("освещение") or "")
+    pal = style.get("палитра")
+    pal_s = _as_plain_text(pal)
+    if pal_s and pal_s not in light:
+        return f"{light}; палитра: {pal_s}".strip("; ")
+    return light
+
+
+def _char_name_index(char_rows: list[dict[str, Any]]) -> dict[str, str]:
+    name_to_id: dict[str, str] = {}
+    for c in char_rows:
+        cid = str(c.get("id") or "").strip()
+        if not re.fullmatch(r"c\d{2}", cid):
+            continue
+        name = str(c.get("имя") or c.get("name") or "").strip()
+        if not name:
+            continue
+        name_to_id[_fold_ru(name)] = cid
+        for part in re.split(r"[\s,]+", name):
+            p = _fold_ru(part)
+            if len(p) >= 4:
+                name_to_id.setdefault(p, cid)
+        folded = _fold_ru(name)
+        if "отец" in folded:
+            name_to_id.setdefault("отец александра", cid)
+            name_to_id.setdefault("отец", cid)
+        if "людмил" in folded or "мать" in folded:
+            name_to_id.setdefault("мать", cid)
+        if "надежд" in folded:
+            name_to_id.setdefault("сестра", cid)
+    return name_to_id
+
+
+def _who_to_cnn(
+    text: str,
+    name_to_id: dict[str, str],
+    extras: dict[str, str],
+) -> list[str]:
+    """Имена/роли → cNN. Титул без лица → c01. Толпа/соседка — отдельные extras."""
+    raw = _as_plain_text(text)
+    folded = _fold_ru(raw)
+    found: list[str] = []
+    for m in re.findall(r"c\d{2}", raw, flags=re.I):
+        cid = m.lower()
+        if cid not in found:
+            found.append(cid)
+    if any(x in folded for x in ("титульн", "надпись", "фамилия")) and "c01" not in found:
+        found.append("c01")
+    for name, cid in sorted(name_to_id.items(), key=lambda x: -len(x[0])):
+        if name and name in folded and cid not in found:
+            found.append(cid)
+    extra_needles = (
+        ("соседк", "соседка"),
+        ("жильц", "жильцы дома"),
+        ("жител", "жильцы дома"),
+    )
+    for needle, label in extra_needles:
+        if needle in folded:
+            cid = extras.get(label)
+            if cid and cid not in found:
+                found.append(cid)
+    return found
+
+
+def _ensure_extra_ids(
+    characters: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    extras_wanted = {
+        "соседка": "эпизодический сосед у двери/ящиков, лицо в бите, не спина",
+        "жильцы дома": "жители подъезда как фон; лица, не толпа спинами",
+    }
+    have = {str(c.get("id") or "").strip() for c in characters if isinstance(c, dict)}
+    nums = [int(i[1:]) for i in have if re.fullmatch(r"c\d{2}", i)]
+    n = max(nums, default=0)
+    extras: dict[str, str] = {}
+    out = list(characters)
+    for label, rules in extras_wanted.items():
+        existing = next(
+            (
+                str(c.get("id") or "")
+                for c in out
+                if isinstance(c, dict) and _fold_ru(str(c.get("имя") or "")) == _fold_ru(label)
+            ),
+            "",
+        )
+        if existing:
+            extras[label] = existing
+            continue
+        n += 1
+        cid = f"c{n:02d}"
+        extras[label] = cid
+        out.append(
+            {
+                "id": cid,
+                "имя": label,
+                "внешность": "обычный житель дома, конкретное лицо",
+                "одежда": "бытовая одежда 1990-х",
+                "характер": "настороженный",
+                "правила": rules,
+            }
+        )
+    return out, extras
+
+
 def _parse_action_chain(raw: Any) -> list[str]:
     if isinstance(raw, list):
         return [_as_plain_text(x) for x in raw if _as_plain_text(x)]
@@ -127,6 +273,7 @@ def attach_action_chains_to_scenes(
                 "переход_в_сцену",
                 "тип_стыка",
                 "мотив",
+                "location",
             ):
                 if best.get(key) and not row.get(key):
                     row[key] = best.get(key)
@@ -152,19 +299,10 @@ def stamp_characters_onto_ops(
         for c in (payload.get("characters") or assembly_input.get("characters") or [])
         if isinstance(c, dict)
     ]
-    name_to_id: dict[str, str] = {}
-    for c in char_rows:
-        cid = str(c.get("id") or "").strip()
-        if not re.fullmatch(r"c\d{2}", cid):
-            continue
-        name = str(c.get("имя") or c.get("name") or "").strip()
-        if not name:
-            continue
-        name_to_id[_fold_ru(name)] = cid
-        for part in re.split(r"[\s,]+", name):
-            p = _fold_ru(part)
-            if len(p) >= 4:
-                name_to_id.setdefault(p, cid)
+    char_rows, extras = _ensure_extra_ids(char_rows)
+    payload = dict(payload)
+    payload["characters"] = char_rows
+    name_to_id = _char_name_index(char_rows)
 
     scene_persons: dict[str, str] = {}
     for sc in payload.get("scenes") or []:
@@ -207,30 +345,25 @@ def stamp_characters_onto_ops(
             or fields.get("persons")
             or ""
         )
-        if current:
-            fields["персонажи"] = current
-            fields["characters"] = current
-            op2["fields"] = fields
-            ops_out.append(op2)
-            continue
-
+        ids = _who_to_cnn(current, name_to_id, extras)
         sid = str(fields.get("id_scene") or "").strip()
-        picked = scene_persons.get(sid, "").strip()
-        if not picked:
+        if not ids:
+            picked = scene_persons.get(sid, "").strip()
+            ids = _who_to_cnn(picked, name_to_id, extras)
+        if not ids:
             vo = uuid_vo.get(str(op2.get("frame_uuid") or "").strip(), "")
-            ids: list[str] = []
-            for name, cid in name_to_id.items():
-                if name and name in vo and cid not in ids:
-                    ids.append(cid)
-            # стабильный порядок c01, c02…
-            ids.sort()
-            picked = ", ".join(ids)
+            ids = _who_to_cnn(vo, name_to_id, extras)
+        ids = sorted(set(ids), key=lambda x: (len(x) != 3, x))
+        # стабильный порядок c01, c02…
+        ids.sort()
+        picked = ", ".join(ids)
         if picked:
             fields["персонажи"] = picked
             fields["characters"] = picked
         op2["fields"] = fields
         ops_out.append(op2)
     out["ops"] = ops_out
+    out["characters"] = char_rows
     return out
 
 
@@ -302,9 +435,13 @@ def stamp_actions_onto_ops(
                 seen_actions.add(key)
                 fields["действие"] = action
                 fields["shot01_action"] = action
-            sense = _as_plain_text(sc.get("смысл_сцены") or "")
-            if sense:
-                fields["смысл_сцены"] = sense
+                # Фаза несёт новую информацию — не копировать общий смысл сцены
+                # во все кадры (иначе акцент=смысл=особенность).
+                fields["смысл_сцены"] = action
+            elif not fields.get("смысл_сцены"):
+                sense = _as_plain_text(sc.get("смысл_сцены") or "")
+                if sense:
+                    fields["смысл_сцены"] = sense
         op2["fields"] = fields
         ops_out.append(op2)
     out["ops"] = ops_out
@@ -358,6 +495,10 @@ def build_local_assembler_payload(
         composition = _as_plain_text(
             sh.get("композиция") or sh.get("действие") or sh.get("action") or ""
         )
+        if re.search(r"со спины|спин[аыуе]", composition, flags=re.I):
+            composition = re.sub(r"со спины\s*", "", composition, flags=re.I).strip(" ,")
+            if "лиц" not in composition.casefold():
+                composition = f"{composition}, лицо в три четверти"
         motive = _as_plain_text(sh.get("мотив") or sh.get("camera_motive") or "")
         who = _as_plain_text(sh.get("кто_в_кадре") or sh.get("персонажи") or "")
         # Только ключи из db_apply FIELD_MAP — крупность/угол/движение туда не входят.
@@ -378,7 +519,7 @@ def build_local_assembler_payload(
             "описание_shot01": desc or composition or motive,
             "место": _as_plain_text(sh.get("набор") or sh.get("место") or ""),
             "персонажи": who,
-            "особенность_сцены": motive or cam_line,
+            "особенность_сцены": composition or cam_line,
             "акцент": motive or cam_line,
             "заметки_по_консистенции": cam_line,
         }
@@ -422,8 +563,12 @@ def force_scenes_from_chrono(
     if not chrono:
         return stamp_characters_onto_ops(payload, assembly_input, frames)
 
+    locations = [x for x in (assembly_input.get("locations") or []) if isinstance(x, dict)]
+    style_arc = [x for x in (assembly_input.get("style_arc") or []) if isinstance(x, dict)]
     uuid_to_scene: dict[str, str] = {}
     scenes_out: list[dict[str, Any]] = []
+    scene_place: dict[str, str] = {}
+    scene_light: dict[str, str] = {}
     for sc in chrono:
         sid = str(sc.get("id_scene") or "").strip()
         kids = [k for k in (sc.get("кадры") or []) if isinstance(k, dict)]
@@ -439,6 +584,14 @@ def force_scenes_from_chrono(
                 kid_sec = float(sc.get("время_сек") or 0.0)
             except (TypeError, ValueError):
                 kid_sec = 0.0
+        loc_id = str(sc.get("location") or sc.get("место_id") or "").strip()
+        place = _loc_label(loc_id, locations) or _as_plain_text(
+            sc.get("место") or sc.get("набор") or ""
+        )
+        st = _style_for_scene(sid, style_arc)
+        lighting = _lighting_line(st)
+        scene_place[sid] = place
+        scene_light[sid] = lighting
         scenes_out.append(
             {
                 "id_scene": sid,
@@ -451,6 +604,9 @@ def force_scenes_from_chrono(
                 "смысл_сцены": sc.get("смысл_сцены") or sc.get("мотив") or "",
                 "цепь_действия": _parse_action_chain(sc.get("цепь_действия")),
                 "набор": sc.get("набор"),
+                "место": place,
+                "освещение": lighting,
+                "тип_сцены": _as_plain_text(st.get("тип_сцены") or ""),
                 "camera_ladder": sc.get("camera_ladder") or [],
                 "camera_shots_required": sc.get("camera_shots_required"),
                 "персонажи_сцены": gpt_scene_persons.get(sid, ""),
@@ -493,6 +649,11 @@ def force_scenes_from_chrono(
         uid = str(op2.get("frame_uuid") or "").strip()
         if uid in uuid_to_scene:
             fields["id_scene"] = uuid_to_scene[uid]
+            sid = uuid_to_scene[uid]
+            if not fields.get("место") and scene_place.get(sid):
+                fields["место"] = scene_place[sid]
+            if not fields.get("освещение") and scene_light.get(sid):
+                fields["освещение"] = scene_light[sid]
         # Почистить object-поля до stamp_actions.
         for k, v in list(fields.items()):
             if isinstance(v, (dict, list)):
@@ -504,6 +665,27 @@ def force_scenes_from_chrono(
     out["ops"] = ops_out
     out = stamp_actions_onto_ops(out, {**assembly_input, "scenes_chrono": chrono})
     out = stamp_characters_onto_ops(out, assembly_input, frames)
+    by_sid_chars: dict[str, list[str]] = {}
+    for op in out.get("ops") or []:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields") if isinstance(op.get("fields"), dict) else {}
+        sid = str(fields.get("id_scene") or "").strip()
+        raw = str(fields.get("персонажи") or "")
+        if not sid or not raw:
+            continue
+        bucket = by_sid_chars.setdefault(sid, [])
+        for tok in re.findall(r"c\d{2}", raw, flags=re.I):
+            cid = tok.lower()
+            if cid not in bucket:
+                bucket.append(cid)
+    for sc in out.get("scenes") or []:
+        if not isinstance(sc, dict):
+            continue
+        sid = str(sc.get("id_scene") or "").strip()
+        ids = by_sid_chars.get(sid) or []
+        if ids:
+            sc["персонажи_сцены"] = ", ".join(ids)
     report = str(out.get("report") or "")
     stamp = (
         f"camera_scenes:{len(scenes_out)}; "
