@@ -45,6 +45,8 @@ GEN_QUEUE_BUSY_STATUSES = [
     ProjectStatus.generating_videos,
     ProjectStatus.generating_music,
     ProjectStatus.generating_audio,
+    ProjectStatus.sfx_planning,
+    ProjectStatus.generating_sfx,
     ProjectStatus.assembling,
     ProjectStatus.publishing,
 ]

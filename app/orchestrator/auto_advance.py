@@ -180,9 +180,19 @@ def _build_transitions() -> dict[ProjectStatus, StepTransition]:
         ProjectStatus.generating_music,
         HITLKind.approve_videos,
     )
-    # music_ready → assembling
+    # music_ready → sfx_planning (план звуков) → sfx_gen → assembling
     transitions[ProjectStatus.music_ready] = StepTransition(
         ProjectStatus.music_ready,
+        ProjectStatus.sfx_planning,
+        HITLKind.approve_videos,
+    )
+    transitions[ProjectStatus.sfx_plan_ready] = StepTransition(
+        ProjectStatus.sfx_plan_ready,
+        ProjectStatus.generating_sfx,
+        HITLKind.approve_videos,
+    )
+    transitions[ProjectStatus.sfx_ready] = StepTransition(
+        ProjectStatus.sfx_ready,
         ProjectStatus.assembling,
         HITLKind.approve_videos,
     )

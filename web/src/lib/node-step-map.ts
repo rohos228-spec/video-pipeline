@@ -16,6 +16,8 @@ export const NODE_TO_STEP: Record<string, string> = {
   videos: "video",
   music: "music",
   audio: "audio",
+  sfx_plan: "sfx_plan",
+  sfx_gen: "sfx_gen",
   assemble: "assemble",
   publish: "publish",
 };

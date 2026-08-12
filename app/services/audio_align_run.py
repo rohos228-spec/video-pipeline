@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -381,6 +382,52 @@ async def run_audio_align_for_project(
         if _is_sqlite_locked(exc):
             summary["db_frames_error"] = (
                 "database is locked — R15 записана, кадры в БД обновятся при следующем sync"
+            )
+
+    # Точные метки слов (сопоставление ASR ↔ текст кадров) → word_marks.json.
+    # Чистая функция на уже полученных словах — повторный ASR не нужен.
+    if result.words:
+        try:
+            from app.services.audio_marks import build_marks_from_words
+
+            async with session_scope() as session:
+                project = await session.get(Project, project_id)
+                if project is not None:
+                    frames = (
+                        (
+                            await session.execute(
+                                select(Frame)
+                                .where(Frame.project_id == project_id)
+                                .order_by(Frame.sort_key, Frame.number)
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    marks, _spans, wm_report = build_marks_from_words(
+                        list(frames), list(result.words), audio_duration=master
+                    )
+                    wm_path = project.data_dir / "word_marks.json"
+                    wm_path.write_text(
+                        json.dumps(
+                            {
+                                "audio": voice_path.name,
+                                "audio_duration": master,
+                                "method": method_id,
+                                "report": wm_report.to_dict(),
+                                "marks": [vars(m) for m in marks],
+                            },
+                            ensure_ascii=False,
+                            indent=1,
+                        ),
+                        encoding="utf-8",
+                    )
+                    summary["word_marks"] = wm_report.to_dict()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[#{}] audio_align: word_marks не записаны (non-fatal): {}",
+                project_id,
+                exc,
             )
 
     raise_if_cancelled(project_id)

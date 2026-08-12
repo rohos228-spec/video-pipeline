@@ -703,6 +703,34 @@ async def _wipe_music(session: AsyncSession, project: Project) -> dict[str, Any]
     )
 
 
+async def _wipe_sfx_plan(session: AsyncSession, project: Project) -> dict[str, Any]:
+    """Сброс «План звуков»: чекпоинт ai_jobs.sfx_plan + sfx_plan.json."""
+    from app.services.ai_result_io import drop_ai_job_checkpoint
+
+    drop_ai_job_checkpoint(project, "sfx_plan")
+    plan_path = project.data_dir / "sfx_plan.json"
+    deleted = False
+    if plan_path.is_file():
+        plan_path.unlink()
+        deleted = True
+    return {"checkpoint_reset": True, "plan_file_deleted": deleted}
+
+
+async def _wipe_sfx_gen(session: AsyncSession, project: Project) -> dict[str, Any]:
+    """Сброс «Звуки (SFX)»: чекпоинт ai_jobs.sfx_files + файлы sfx/."""
+    import shutil
+
+    from app.services.ai_result_io import drop_ai_job_checkpoint
+
+    drop_ai_job_checkpoint(project, "sfx_files")
+    sfx_dir = project.data_dir / "sfx"
+    removed = 0
+    if sfx_dir.is_dir():
+        removed = sum(1 for p in sfx_dir.iterdir() if p.is_file())
+        shutil.rmtree(sfx_dir, ignore_errors=True)
+    return {"checkpoint_reset": True, "files_deleted": removed}
+
+
 async def _preserve_user_media_on_rerun(
     session: AsyncSession, project: Project
 ) -> dict[str, Any]:
@@ -767,6 +795,8 @@ _PIPELINE_RESET_LEVELS: list[tuple[str, Any]] = [
     ("video",     _wipe_videos),
     ("audio",     _wipe_audio),
     ("music",     _wipe_music),
+    ("sfx_plan",  _wipe_sfx_plan),
+    ("sfx_gen",   _wipe_sfx_gen),
     ("assemble",  _wipe_assemble),
 ]
 
@@ -819,7 +849,8 @@ RESET_SUPPORTED_STEP_CODES: frozenset[str] = frozenset({
     "enrich",
     "enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5",
     "excel_gpt",
-    "img_pr", "img", "anim_pr", "video", "audio", "music", "assemble",
+    "img_pr", "img", "anim_pr", "video", "audio", "music",
+    "sfx_plan", "sfx_gen", "assemble",
 })
 
 
