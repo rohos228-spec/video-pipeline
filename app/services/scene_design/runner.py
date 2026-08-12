@@ -708,6 +708,17 @@ async def run_category_agents(
                 )
             except ag.SceneDesignAgentError as e:
                 errors["action"] = str(e)
+                # Не оставлять бракованный checkpoint — иначе soft-retry
+                # грузит тот же JSON и падает без нового GPT.
+                try:
+                    invalidate_agent(project, "action")
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "[#{}] invalidate action after bit-cover fail",
+                        project.id,
+                        exc_info=True,
+                    )
+                results.pop("action", None)
         # Жёсткий стоп: упала текущая волна — дальше не идём.
         # В only_agent режиме смотрим только целевого агента.
         wave_failed = [

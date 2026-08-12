@@ -671,47 +671,92 @@ def merge_by_id(draft: dict[str, Any], editor: dict[str, Any]) -> dict[str, Any]
     return out
 
 
+def _action_phases(scene: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = (
+        scene.get("цепь_действия")
+        or scene.get("phases")
+        or scene.get("фазы")
+        or []
+    )
+    return [ph for ph in raw if isinstance(ph, dict)]
+
+
+def _phase_blob(scene: dict[str, Any]) -> str:
+    return _norm_cf(
+        " ".join(
+            str(
+                ph.get("action")
+                or ph.get("действие")
+                or ph.get("subject")
+                or ph.get("изменение")
+                or ""
+            )
+            for ph in _action_phases(scene)
+        )
+    )
+
+
 def validate_action_covers_skeleton_bits(
     action_scenes: list[Any],
     skeleton: dict[str, Any] | None,
 ) -> None:
-    """Каждый бит скелета должен иметь фазу action (якорь/глагол в тексте фазы)."""
+    """Биты скелета покрыты кинематографическими фазами action.
+
+    Не требуем дословный якорь VO в тексте фазы (action пишет видимое действие).
+    На сцену скелета с N битами нужно ≥N фаз; плюс мягкое пересечение токенов
+    глагол/изменение с фазами сцены (если токены есть).
+    """
     if not isinstance(skeleton, dict):
         return
-    bits: list[tuple[str, str, str]] = []
-    for sc in skeleton.get("scenes") or []:
+    acts = [s for s in action_scenes if isinstance(s, dict)]
+    if not acts:
+        return
+    by_id = {
+        str(s.get("id_scene") or "").strip(): s
+        for s in acts
+        if str(s.get("id_scene") or "").strip()
+    }
+    missing: list[str] = []
+    for i, sc in enumerate(skeleton.get("scenes") or []):
         if not isinstance(sc, dict):
             continue
-        sid = str(sc.get("id_scene") or "").strip()
-        for bi, bit in enumerate(sc.get("биты") or []):
-            if not isinstance(bit, dict):
-                continue
-            ank = str(bit.get("якорь") or "").strip()
-            verb = str(bit.get("глагол") or "").strip()
-            needle = ank or verb
-            if needle:
-                bits.append((sid, needle, f"{sid}.бит[{bi}]"))
-    if not bits:
-        return
-    phase_blob = _norm_cf(
-        " ".join(
-            str(ph.get("action") or ph.get("действие") or ph.get("subject") or "")
-            for sc in action_scenes
-            if isinstance(sc, dict)
-            for ph in (
-                sc.get("цепь_действия")
-                or sc.get("phases")
-                or sc.get("фазы")
-                or []
+        sid = str(sc.get("id_scene") or "").strip() or f"scene_{i+1:02d}"
+        bits = [b for b in (sc.get("биты") or []) if isinstance(b, dict)]
+        if not bits:
+            continue
+        act = by_id.get(sid)
+        if act is None and i < len(acts):
+            act = acts[i]
+        if act is None:
+            missing.append(f"{sid}: нет сцены action")
+            continue
+        phases = _action_phases(act)
+        if len(phases) < len(bits):
+            missing.append(
+                f"{sid}: фаз {len(phases)} < битов {len(bits)}"
             )
-            if isinstance(ph, dict)
-        )
-    )
-    missing = [
-        addr
-        for _sid, needle, addr in bits
-        if _norm_cf(needle) not in phase_blob
-    ]
+            continue
+        blob = _phase_blob(act)
+        for bi, bit in enumerate(bits):
+            toks = _significant_tokens(
+                " ".join(
+                    str(bit.get(k) or "")
+                    for k in ("глагол", "изменение", "якорь")
+                )
+            )
+            # Короткие/служебные биты без значимых токенов — хватает бюджета фаз.
+            if len(toks) < 2:
+                continue
+            if not (toks & set(re.findall(r"[a-zа-яё0-9]{3,}", blob))):
+                # Не валим весь прогон: кино-фаза может перефразировать VO.
+                # Жёстко только бюджет фаз выше; токены — warning в лог.
+                logger.warning(
+                    "skeleton/action: {} бит[{}] без токен-пересечения "
+                    "(toks={}) — допускаем при фазах≥битов",
+                    sid,
+                    bi,
+                    sorted(toks)[:8],
+                )
     if missing:
         raise ag.SceneDesignAgentError(
             "scene_design/action: биты скелета без фазы: " + ", ".join(missing[:12])
