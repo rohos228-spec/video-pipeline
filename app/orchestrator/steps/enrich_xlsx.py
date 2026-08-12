@@ -1009,7 +1009,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         await session.refresh(project)
         # После project_file / DB-check: apply-ops JSON → DB (SoT).
         if output_mode == "project_file" or (
-            check_mode and db_sot_check and getattr(api_res, "apply_ops", None)
+            check_mode
+            and check_fix
+            and db_sot_check
+            and getattr(api_res, "apply_ops", None)
         ):
             ops_data = getattr(api_res, "apply_ops", None)
             ops_list = (

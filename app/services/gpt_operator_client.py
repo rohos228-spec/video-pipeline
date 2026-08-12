@@ -313,7 +313,7 @@ async def _run_operator_api_real(
     # DB SoT: project_file / check DB → apply-ops JSON.
     apply_ops: dict | None = None
     if (effective_output == "project_file" and not is_check) or (
-        check_mode and db_sot_check
+        check_mode and check_fix and db_sot_check
     ):
         from app.services.db_apply import extract_apply_ops_json
 
@@ -382,6 +382,14 @@ async def _run_operator_api_real(
             output_paths.append(got)
         except Exception as e:  # noqa: BLE001
             logger.warning("gpt_operator/api: не скачал {}: {}", url, e)
+
+    reply_text = result.text
+    try:
+        (out_dir / "gpt_reply_raw.txt").write_text(
+            reply_text or "", encoding="utf-8"
+        )
+    except OSError:
+        logger.warning("gpt_operator/api: не записал gpt_reply_raw.txt")
 
     if is_check:
         report_part, wb_part = split_check_reply_and_writeback(result.text)
