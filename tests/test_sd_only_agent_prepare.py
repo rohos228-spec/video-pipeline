@@ -150,3 +150,45 @@ async def test_prepare_with_only_agent_does_not_fanout(mem_db) -> None:
         assert by_key["n_excel_gpt_sd_cd_skeleton"] == NodeRunStatus.running
         for agent in ("characters", "world", "style", "action", "camera"):
             assert by_key[f"n_excel_gpt_sd_cd_{agent}"] == NodeRunStatus.pending, agent
+
+
+@pytest.mark.asyncio
+async def test_scene_d_wipe_must_not_drop_only_agent_before_prepare(mem_db) -> None:
+    """Регресс: clear_step_outputs(_wipe_scene_design) убивал only_agent."""
+    from app.services.reset_step import clear_step_outputs_for_rerun
+
+    async with mem_db() as session:
+        nodes = _fanout_nodes()
+        wf = Workflow(
+            name=f"wf-{uuid.uuid4().hex[:8]}",
+            is_default=True,
+            nodes=nodes,
+            edges=[],
+        )
+        session.add(wf)
+        await session.flush()
+        project = Project(
+            slug=f"oa-wipe-{uuid.uuid4().hex[:8]}",
+            topic="t",
+            status=ProjectStatus.frames_ready,
+            meta={
+                "scene_design_enabled": True,
+                "scene_design_skeleton": True,
+                "scene_design": {"status": "agents_done", "only_agent": "skeleton"},
+                "canvas_graph": {
+                    "workflow_id": wf.id,
+                    "nodes": nodes,
+                    "edges": [],
+                },
+            },
+        )
+        session.add(project)
+        await session.flush()
+
+        sd_runner.set_only_agent(project, "skeleton")
+        assert sd_runner.get_only_agent(project) == "skeleton"
+
+        await clear_step_outputs_for_rerun(
+            session, project, "scene_d", force_wipe=False
+        )
+        assert sd_runner.get_only_agent(project) == "skeleton"

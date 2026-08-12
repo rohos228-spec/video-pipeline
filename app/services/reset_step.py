@@ -244,10 +244,19 @@ async def _wipe_scene_design(session: AsyncSession, project: Project) -> dict[st
     from app.services.db_apply import _ATTR_EXCEL_ROWS
 
     meta = dict(project.meta or {})
+    # only_agent — точечный ▶ с ноды; иначе worker prepare без флага
+    # зажигает весь веер sd_agent в running.
+    preserved_only: str | None = None
+    sd_prev = meta.get("scene_design")
+    if isinstance(sd_prev, dict):
+        raw_only = str(sd_prev.get("only_agent") or "").strip()
+        preserved_only = raw_only or None
     meta_cleared = [
         k for k in ("scene_design", "scene_registry") if meta.pop(k, None) is not None
     ]
     if meta_cleared:
+        if preserved_only:
+            meta["scene_design"] = {"only_agent": preserved_only}
         project.meta = meta
 
     sd_dir = project.data_dir / "scene_design"

@@ -373,9 +373,20 @@ async def start_step(
         # Soft ▶ anim_pr: не wipe R48 (как img_pr) — иначе рестарт backend /
         # повторный ▶ сжигает уже сгенерированные пачки. Полный wipe — reset_step.
         force_wipe = False
-        wiped = await clear_step_outputs_for_rerun(
-            session, project, step_code, force_wipe=force_wipe
-        )
+        # ▶ одной sd_agent-ноды: invalidate_agent уже сбросил чекпоинт.
+        # Полный wipe scene_d удаляет meta.scene_design целиком — вместе с
+        # only_agent → worker prepare без only_agent зажигает весь веер.
+        if sd_agent_name and step_code == "scene_d":
+            wiped = {}
+            logger.info(
+                "[#{}] start_step scene_d: skip full wipe (only_agent={})",
+                project.id,
+                sd_agent_name,
+            )
+        else:
+            wiped = await clear_step_outputs_for_rerun(
+                session, project, step_code, force_wipe=force_wipe
+            )
         if wiped:
             logger.info(
                 "[#{}] start_step {}: очищены выходы шага перед запуском: {} "
@@ -392,6 +403,11 @@ async def start_step(
             step_code,
             e,
         )
+    # only_agent обязан пережить clear_step_outputs (wipe scene_d).
+    if sd_agent_name:
+        from app.services.scene_design import runner as sd_runner
+
+        sd_runner.set_only_agent(project, sd_agent_name)
     if step_code == "img" and proj_xlsx.exists():
         from app.services.xlsx_v8_import import bootstrap_frames_for_image_step
 
