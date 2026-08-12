@@ -66,7 +66,7 @@ async def test_outsee_http_generate_image_hosts_and_sends_refs(
     out = tmp_path / "out.png"
     posted: list[dict] = []
 
-    async def fake_host(url: str | None):
+    async def fake_host(url: str | None, **_kwargs):
         assert url and url.startswith("data:")
         return "https://example.test/ref.png"
 

@@ -381,6 +381,29 @@ _FRAME_UPLOAD_UA = (
 _FRAME_HOST_SOFT_MAX_BYTES = 1_800_000
 
 
+def _looks_like_image_bytes(raw: bytes, content_type: str | None = None) -> bool:
+    """Отсекаем HTML-лендинги (tmpfiles /dl/ часто отдаёт text/html, не JPEG)."""
+    if not raw or len(raw) < 16:
+        return False
+    head = raw[:32].lstrip()
+    if head[:1] == b"<" or head[:9].lower() == b"<!doctype" or head[:5].lower() == b"<html":
+        return False
+    ctype = (content_type or "").split(";")[0].strip().lower()
+    if ctype.startswith("text/html") or ctype in {"text/plain", "application/json"}:
+        return False
+    if raw[:3] == b"\xff\xd8\xff":
+        return True  # JPEG
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return True
+    if raw[:6] in (b"GIF87a", b"GIF89a"):
+        return True
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return True
+    if ctype.startswith("image/"):
+        return True
+    return False
+
+
 async def _verify_hosted_image(
     client: httpx.AsyncClient,
     url: str,
@@ -394,12 +417,33 @@ async def _verify_hosted_image(
         try:
             # HEAD часто режет ботов — пробуем GET с Range, потом полный GET.
             r = await client.get(url, headers={"Range": "bytes=0-2047"})
-            if r.status_code in (200, 206) and len(r.content or b"") >= min(min_bytes, 16):
+            body = r.content or b""
+            if (
+                r.status_code in (200, 206)
+                and len(body) >= min(min_bytes, 16)
+                and _looks_like_image_bytes(body, r.headers.get("content-type"))
+            ):
                 return True
-            r = await client.get(url)
-            if r.status_code < 400 and len(r.content or b"") >= min_bytes:
-                return True
-            last_err = f"HTTP {r.status_code} bytes={len(r.content or b'')}"
+            if r.status_code in (200, 206) and body and not _looks_like_image_bytes(
+                body, r.headers.get("content-type")
+            ):
+                last_err = (
+                    f"HTTP {r.status_code} not-image "
+                    f"ctype={r.headers.get('content-type')!r} head={body[:12]!r}"
+                )
+            else:
+                r = await client.get(url)
+                body = r.content or b""
+                if (
+                    r.status_code < 400
+                    and len(body) >= min_bytes
+                    and _looks_like_image_bytes(body, r.headers.get("content-type"))
+                ):
+                    return True
+                last_err = (
+                    f"HTTP {r.status_code} bytes={len(body)} "
+                    f"ctype={r.headers.get('content-type')!r}"
+                )
         except Exception as exc:  # noqa: BLE001
             last_err = str(exc)[:120]
         if i + 1 < attempts:
@@ -648,7 +692,8 @@ async def ensure_public_image_url(
         raw, mime = decoded
     errors: list[str] = []
     # Yandex Object Storage первым (если настроен); litterbox часто 500;
-    # catbox заливается, но Outsee не качает — в хвосте.
+    # tmpfiles /dl/ отдаёт HTML → Outsee «не изображение» — в хвосте после verify;
+    # 0x0 сейчас 503; catbox заливается, но Outsee часто не качает — почти в хвосте.
     from app.bots.yandex_storage import yandex_storage_configured
 
     hosts: list[tuple[str, Any]] = []
@@ -657,10 +702,10 @@ async def ensure_public_image_url(
     hosts.extend(
         (
             ("litterbox", _host_via_litterbox),
-            ("tmpfiles", _host_via_tmpfiles),
-            ("0x0", _host_via_0x0),
             ("uguu", _host_via_uguu),
             ("catbox", _host_via_catbox),
+            ("0x0", _host_via_0x0),
+            ("tmpfiles", _host_via_tmpfiles),
         )
     )
     variants = _upload_payload_variants(raw, mime)
@@ -713,10 +758,14 @@ def _is_outsee_image_fetch_error(err: BaseException) -> bool:
         for m in (
             "не удалось скачать изображение",
             "скачать изображение по ссылке",
+            "по ссылке находится не изображение",
+            "не изображение",
             "failed to download the image",
             "failed to download image",
             "could not download image",
             "unable to download image",
+            "not an image",
+            "is not an image",
         )
     )
 
@@ -878,38 +927,70 @@ async def generate_image(
         }
         body["detail_level"] = mapping.get(dl, dl)
     refs = _normalize_refs(reference_images)
-    if refs:
-        hosted: list[str] = []
-        for u in refs:
-            pub = await ensure_public_image_url(u)
-            if pub:
-                hosted.append(pub)
-        if not hosted:
-            raise OutseeApiError(
-                "outsee_api.image: рефы не удалось залить "
-                "(uguu/litterbox/catbox) — генерация без рефа запрещена",
-                context={"raw_refs": len(refs), "model": model, "project_id": project_id},
+    skip_hosts: set[str] = set()
+    submitted: dict[str, Any] | None = None
+    last_submit_err: BaseException | None = None
+    for host_try in range(1, 4):
+        if refs:
+            hosted: list[str] = []
+            for u in refs:
+                pub = await ensure_public_image_url(u, skip_hosts=skip_hosts)
+                if pub:
+                    hosted.append(pub)
+            if not hosted:
+                raise OutseeApiError(
+                    "outsee_api.image: рефы не удалось залить "
+                    "(uguu/litterbox/catbox) — генерация без рефа запрещена",
+                    context={
+                        "raw_refs": len(refs),
+                        "model": model,
+                        "project_id": project_id,
+                        "skip_hosts": sorted(skip_hosts),
+                    },
+                )
+            # Живой probe 2026-08-03: field `reference_images` Outsee МОЛЧА
+            # игнорит (результат без identity). Рабочее поле — `image_urls`
+            # (как video: `image_url`, не first_frame_url).
+            body["image_urls"] = hosted
+            logger.info(
+                "outsee_api.image refs ready model={} n={} image_urls={}",
+                model,
+                len(hosted),
+                [u[:80] for u in hosted],
             )
-        # Живой probe 2026-08-03: field `reference_images` Outsee МОЛЧА
-        # игнорит (результат без identity). Рабочее поле — `image_urls`
-        # (как video: `image_url`, не first_frame_url).
-        body["image_urls"] = hosted
-        logger.info(
-            "outsee_api.image refs ready model={} n={} image_urls={}",
-            model,
-            len(hosted),
-            [u[:80] for u in hosted],
-        )
 
-    logger.info(
-        "outsee_api.image model={} aspect={} res={} refs={} project={}",
-        model,
-        body.get("aspect_ratio"),
-        body.get("resolution"),
-        len(body.get("image_urls") or []),
-        project_id,
-    )
-    submitted = await _post_generate("/api/v1/images/generate", body)
+        logger.info(
+            "outsee_api.image model={} aspect={} res={} refs={} project={} try={}/3",
+            model,
+            body.get("aspect_ratio"),
+            body.get("resolution"),
+            len(body.get("image_urls") or []),
+            project_id,
+            host_try,
+        )
+        try:
+            submitted = await _post_generate("/api/v1/images/generate", body)
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_submit_err = exc
+            if (
+                not _is_outsee_image_fetch_error(exc)
+                or not refs
+                or host_try >= 3
+            ):
+                raise
+            for u in body.get("image_urls") or []:
+                bad = _host_name_from_url(str(u))
+                if bad:
+                    skip_hosts.add(bad)
+            logger.warning(
+                "outsee_api.image: Outsee отверг image_urls (skip={}) try {}/3",
+                sorted(skip_hosts),
+                host_try,
+                3,
+            )
+    if submitted is None:
+        raise last_submit_err or OutseeApiError("image generate: no submit")
     task_id = submitted["id"]
     done = await _poll_generation(task_id, timeout=timeout)
     url = _pick_result_url(done)

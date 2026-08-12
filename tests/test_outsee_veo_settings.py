@@ -52,18 +52,28 @@ async def test_ensure_public_falls_back_when_litterbox_fails() -> None:
     async def boom(*_a, **_k):
         raise oh.OutseeApiError("litterbox down")
 
-    async def tmp(_client, _raw, _mime, _filename):
-        return "https://tmpfiles.org/dl/1/ok.png"
+    async def uguu(_client, _raw, _mime, _filename):
+        return "https://d.uguu.se/ok.png"
 
     with (
         patch.object(oh, "_host_via_litterbox", side_effect=boom),
-        patch.object(oh, "_host_via_tmpfiles", side_effect=tmp),
+        patch.object(oh, "_host_via_uguu", side_effect=uguu),
+        patch.object(oh, "_host_via_tmpfiles", side_effect=AssertionError("no tmp")),
         patch.object(oh, "_host_via_catbox", side_effect=AssertionError("no catbox")),
-        patch.object(oh, "_host_via_uguu", side_effect=AssertionError("no uguu")),
         patch.object(oh, "_host_via_0x0", side_effect=AssertionError("no 0x0")),
     ):
         out = await oh.ensure_public_image_url(data)
-    assert out == "https://tmpfiles.org/dl/1/ok.png"
+    assert out == "https://d.uguu.se/ok.png"
+
+
+def test_looks_like_image_bytes_rejects_html_landing() -> None:
+    from app.bots.outsee_http import _looks_like_image_bytes
+
+    assert _looks_like_image_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 20)
+    assert not _looks_like_image_bytes(
+        b"<!DOCTYPE html><html>", "text/html; charset=utf-8"
+    )
+    assert not _looks_like_image_bytes(b"<html>not an image</html>")
 
 
 @pytest.mark.asyncio
