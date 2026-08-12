@@ -752,7 +752,7 @@ def _uniquify_prompt_id(base: str | None, round_idx: int, attempt: int) -> str |
 
 
 async def generate_image_with_retries(
-    outsee: OutseeBot,
+    outsee: OutseeBot | None,
     gpt: Any | None,
     *,
     prompt: str,

@@ -24,8 +24,9 @@ from __future__ import annotations
 import asyncio
 import re
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 from aiogram import Bot
 from loguru import logger
@@ -91,6 +92,27 @@ from app.services.step_cancel import (
 )
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
+
+def _img_http_primary() -> bool:
+    """Outsee/Grsai HTTP — без Chrome CDP (как excel_hero)."""
+    from app.bots.grsai import grsai_enabled
+    from app.bots.outsee_http import outsee_api_configured, outsee_api_enabled_for_image
+
+    return bool(
+        grsai_enabled() or outsee_api_enabled_for_image() or outsee_api_configured()
+    )
+
+
+@asynccontextmanager
+async def _optional_browser_session(
+    need_cdp: bool,
+) -> AsyncIterator[Any]:
+    if not need_cdp:
+        yield None
+        return
+    async with browser_session() as bs:
+        yield bs
+
 
 # Лист «план» v8 — какие строки в столбце кадра используются для рефов.
 _XLSX_SHEET_PLAN = "план"
@@ -775,8 +797,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             project.id,
         )
     else:
-        async with browser_session() as bs:
-            outsee = OutseeBot(bs)
+        http_primary = _img_http_primary()
+        async with _optional_browser_session(need_cdp=not http_primary) as bs:
+            outsee = OutseeBot(bs) if bs is not None else None
+            if http_primary:
+                logger.info(
+                    "[#{}] generate_images: HTTP image API (без CDP)",
+                    project.id,
+                )
             # `gpt` нужен для GPT-rewrite внутри generate_image_with_retries —
             # после 3 неудачных попыток в outsee он попросит ChatGPT переписать
             # промт без триггеров модерации, потом ещё 3 попытки.
@@ -1178,7 +1206,7 @@ async def _generate_frame_job(
     shot: int,
     shot1_reference: Path | None,
     bot: Bot,
-    outsee: OutseeBot,
+    outsee: OutseeBot | None,
     gpt: Any,
 ) -> None:
     """Один кадр в отдельной DB-сессии + слот провайдера (для streams>1)."""
@@ -1219,7 +1247,7 @@ async def _run_claimed_batch(
     *,
     session: AsyncSession,
     bot: Bot,
-    outsee: OutseeBot,
+    outsee: OutseeBot | None,
     gpt: Any,
     project: Project,
     out_dir: Path,
@@ -1499,7 +1527,7 @@ async def _apply_pending_regens(session: AsyncSession, project_id: int) -> None:
 async def _generate_and_send(
     session: AsyncSession,
     bot: Bot,
-    outsee: OutseeBot,
+    outsee: OutseeBot | None,
     gpt,  # ApiGptClient | duck-typed ask_fresh
     project: Project,
     frame: Frame,
@@ -1629,7 +1657,8 @@ async def _generate_and_send(
         )
 
     try:
-        if use_regen_button:
+        # regenerate_image — только CDP UI; при HTTP (outsee is None) — fresh generate.
+        if use_regen_button and outsee is not None:
             try:
                 await session.commit()
                 result = await outsee.regenerate_image(
