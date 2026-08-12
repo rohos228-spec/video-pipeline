@@ -616,13 +616,18 @@ def validate_payload(
             continue
         frames_per_scene[sid] = frames_per_scene.get(sid, 0) + 1
     if len(scenes) > 1:
-        # Сцен должно быть много (≈ VO-диапазонов), не 20 из склейки.
-        if len(scenes) < max(3, int(0.5 * len(frame_uuids))):
-            # После дроби frames >> scenes; сравниваем с числом сцен из payload.
-            # Если сцен мало относительно ops — скорее всего опять склеили VO.
-            if len(scenes) * 3 < len(ops):
+        # Сравниваем с VO-ячейками, не с SET после camera_expand.
+        # Иначе 6 сцен × 5–7 шотов (40 кадров) ложно валится как «склейка VO».
+        vo_n = sum(
+            1 for fr in frames if (getattr(fr, "voiceover_text", None) or "").strip()
+        )
+        vo_basis = vo_n if vo_n > 0 else len(frame_uuids)
+        if len(scenes) < max(3, int(0.5 * vo_basis)):
+            # Мало сцен относительно VO-ячеек — склеили закадр, а не SET внутри сцены.
+            if len(scenes) * 3 < vo_basis:
                 problems.append(
-                    f"слишком мало сцен ({len(scenes)} на {len(ops)} кадров): "
+                    f"слишком мало сцен ({len(scenes)} на {vo_basis} VO-ячеек / "
+                    f"{len(ops)} кадров с SET): "
                     f"один VO-диапазон = сцена (или две), кадры SET — внутри неё; "
                     f"не склеивай соседние VO в одну сцену"
                 )
