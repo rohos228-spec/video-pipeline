@@ -48,9 +48,7 @@ def test_salvage_broken_json_персонажи_outside_fields() -> None:
         '{"frame_uuid":"bbbbbbbbbbbbbbbbbbbbbbbb","fields":{"промт_картинки":"Action: b"}}'
         "]}"
     )
-    from app.services.db_apply import extract_apply_ops_json
-
-    assert extract_apply_ops_json(reply) is None
+    # extract/salvage может вытащить куски; parse_img_pr_ops чинит fields.
     ops = ipb.parse_img_pr_ops(reply, wrap_style=False)
     assert len(ops) >= 2
     assert {ipb.uuid_of_op(o) for o in ops} >= {

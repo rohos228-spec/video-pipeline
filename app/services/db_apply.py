@@ -260,10 +260,121 @@ def normalize_fields(raw: dict, aliases: dict[str, str], *, scope: str) -> dict:
 
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+_HEX_UUID_RE = re.compile(r"^[0-9a-fA-F]+$")
+
+
+def _hamming_distance(a: str, b: str) -> int:
+    if len(a) != len(b):
+        return 10**9
+    return sum(1 for x, y in zip(a, b, strict=True) if x != y)
+
+
+def repair_near_miss_frame_uuids(
+    ops: list[dict[str, Any]],
+    known_uuids: list[str] | set[str],
+    *,
+    max_distance: int = 1,
+) -> list[tuple[str, str]]:
+    """Починить опечатки hex в ``frame_uuid`` (…4d… → …4b…).
+
+    Fail-closed: чиним только если ровно один known uuid на расстоянии
+    ``max_distance`` (по умолчанию 1 символ). Возвращает список
+    ``(было, стало)``; мутирует ``ops`` in-place.
+    """
+    known = [str(u).strip() for u in known_uuids if str(u).strip()]
+    known_set = set(known)
+    remaps: list[tuple[str, str]] = []
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        if op.get("target", "frame") not in (None, "frame"):
+            continue
+        raw = str(op.get("frame_uuid") or "").strip()
+        if not raw or raw in known_set:
+            continue
+        if not _HEX_UUID_RE.fullmatch(raw):
+            continue
+        hits = [
+            k
+            for k in known
+            if len(k) == len(raw)
+            and _HEX_UUID_RE.fullmatch(k)
+            and _hamming_distance(raw.lower(), k.lower()) <= max_distance
+        ]
+        # уникальный near-miss
+        uniq = list(dict.fromkeys(hits))
+        if len(uniq) != 1:
+            continue
+        fixed = uniq[0]
+        op["frame_uuid"] = fixed
+        remaps.append((raw, fixed))
+    return remaps
+
+
+def salvage_ops_from_partial_json(text: str) -> list[dict[str, Any]]:
+    """Достать целые объекты из обрезанного ``{"ops":[…`` (без закрытия)."""
+    if not text:
+        return []
+    m = re.search(r'"ops"\s*:\s*\[', text)
+    if not m:
+        m = re.search(r'"actions"\s*:\s*\[', text)
+    if not m:
+        return []
+    i = m.end()
+    ops: list[dict[str, Any]] = []
+    n = len(text)
+    while i < n:
+        while i < n and text[i] in " \t\r\n,":
+            i += 1
+        if i >= n or text[i] == "]":
+            break
+        if text[i] != "{":
+            break
+        depth = 0
+        start = i
+        in_str = False
+        esc = False
+        ended = False
+        for j in range(i, n):
+            ch = text[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    chunk = text[start : j + 1]
+                    try:
+                        obj = json.loads(chunk)
+                    except Exception:  # noqa: BLE001
+                        obj = None
+                    if isinstance(obj, dict) and (
+                        obj.get("frame_uuid") or obj.get("target")
+                    ):
+                        ops.append(obj)
+                    i = j + 1
+                    ended = True
+                    break
+        if not ended:
+            break
+    return ops
 
 
 def extract_apply_ops_json(text: str) -> dict[str, Any] | None:
-    """Достать JSON с ``ops`` / ``characters`` / ``scenes`` из ответа модели."""
+    """Достать JSON с ``ops`` / ``characters`` / ``scenes`` из ответа модели.
+
+    Если целый объект обрезан Cloudflare/моделью — salvage целых ops из
+    хвоста ``"ops":[…``.
+    """
     if not text:
         return None
     candidates: list[str] = [m.group(1) for m in _JSON_FENCE_RE.finditer(text)]
@@ -282,9 +393,21 @@ def extract_apply_ops_json(text: str) -> dict[str, Any] | None:
         start = text.rfind("{", 0, idx)
         if start != -1:
             depth = 0
+            in_str = False
+            esc = False
             for i in range(start, len(text)):
                 ch = text[i]
-                if ch == "{":
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif ch == "\\":
+                        esc = True
+                    elif ch == '"':
+                        in_str = False
+                    continue
+                if ch == '"':
+                    in_str = True
+                elif ch == "{":
                     depth += 1
                 elif ch == "}":
                     depth -= 1
@@ -303,6 +426,10 @@ def extract_apply_ops_json(text: str) -> dict[str, Any] | None:
             or isinstance(data.get("scenes"), list)
         ):
             return data
+    # Обрезанный JSON: ops частично целые — лучше, чем JSON-retry с нуля.
+    partial_ops = salvage_ops_from_partial_json(text)
+    if partial_ops:
+        return {"ops": partial_ops, "_salvaged_partial": True}
     return None
 
 
@@ -971,20 +1098,30 @@ async def apply_ops(
         }
 
     by_uuid: dict[str, Frame] = {}
+    uuid_repairs: list[tuple[str, str]] = []
     if frame_ops:
         uuids = [str(op.get("frame_uuid") or "") for op in frame_ops]
         if any(not u for u in uuids):
             raise ApplyOpsError("для target=frame нужен frame_uuid")
+        # Все кадры проекта — иначе near-miss не к чему привязать.
         frames = list(
             (
                 await session.execute(
-                    select(Frame).where(
-                        Frame.project_id == project.id, Frame.uuid.in_(uuids)
-                    )
+                    select(Frame).where(Frame.project_id == project.id)
                 )
             ).scalars()
         )
         by_uuid = {f.uuid: f for f in frames}
+        uuid_repairs = repair_near_miss_frame_uuids(frame_ops, list(by_uuid.keys()))
+        if uuid_repairs:
+            from loguru import logger
+
+            logger.warning(
+                "db_apply: near-miss frame_uuid repaired n={} samples={}",
+                len(uuid_repairs),
+                uuid_repairs[:5],
+            )
+        uuids = [str(op.get("frame_uuid") or "") for op in frame_ops]
         missing = [u for u in uuids if u not in by_uuid]
         if missing:
             raise ApplyOpsError(f"неизвестные frame_uuid: {missing}")
@@ -1127,4 +1264,7 @@ async def apply_ops(
         "scenes": scenes_n,
         "expanded_frames": expanded,
         "exported": exported,
+        "uuid_repairs": [
+            {"from": a, "to": b} for a, b in uuid_repairs
+        ],
     }

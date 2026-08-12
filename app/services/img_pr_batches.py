@@ -213,8 +213,13 @@ def parse_img_pr_ops(reply: str, *, wrap_style: bool = True) -> list[dict]:
     data = extract_apply_ops_json(reply or "")
     ops = list((data or {}).get("ops") or []) if isinstance(data, dict) else []
     clean = filter_prompt_ops(ops)
+    salvaged = filter_prompt_ops(salvage_img_pr_ops(reply or ""))
+    partial = bool(isinstance(data, dict) and data.get("_salvaged_partial"))
+    # Битый/обрезанный JSON: extract взял мало ops — regex достаёт все uuid.
     if not clean:
-        clean = filter_prompt_ops(salvage_img_pr_ops(reply or ""))
+        clean = salvaged
+    elif (partial or len(clean) <= 1) and len(salvaged) > len(clean):
+        clean = salvaged
     if wrap_style:
         return wrap_ops_styles(clean)
     return clean

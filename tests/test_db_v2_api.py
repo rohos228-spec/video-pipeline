@@ -99,6 +99,47 @@ async def test_apply_ops_unknown_uuid_fail_closed(api_client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_ops_near_miss_uuid_repaired(api_client) -> None:
+    """Опечатка одного hex в uuid — чиним и пишем (не валим весь батч)."""
+    client, project_id, factory = api_client
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        real = fr.uuid
+    assert len(real) >= 2
+    # один символ hex → другой
+    chars = list(real)
+    for i, ch in enumerate(chars):
+        if ch.lower() in "0123456789abcdef":
+            chars[i] = "d" if ch.lower() != "d" else "b"
+            break
+    typo = "".join(chars)
+    assert typo != real
+    r = await client.post(
+        f"/api/db/projects/{project_id}/apply-ops",
+        json={
+            "ops": [
+                {"frame_uuid": typo, "fields": {"voiceover_text": "после repair"}},
+            ]
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["updated"] == 1
+    assert body.get("uuid_repairs")
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        assert fr.voiceover_text == "после repair"
+
+
+@pytest.mark.asyncio
 async def test_apply_ops_empty_and_empty_fields_rejected(api_client) -> None:
     client, project_id, factory = api_client
     async with factory() as session:

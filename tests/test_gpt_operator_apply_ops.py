@@ -85,6 +85,10 @@ async def test_project_file_tsv_rejected_retries_apply_ops(tmp_path, monkeypatch
     assert "apply-ops" in calls[1].lower() or "JSON" in calls[1]
     assert res.apply_ops is not None
     assert res.apply_ops["ops"][0]["fields"]["закадр"] == "из retry"
+    pre_paths = [p for p in res.output_paths if p.name == "gpt_reply_pre_retry.txt"]
+    assert pre_paths, res.output_paths
+    assert pre_paths[0].is_file()
+    assert "Лист: план" in pre_paths[0].read_text(encoding="utf-8")
     wb2 = load_workbook(tmp_path / "project.xlsx")
     try:
         # TSV не должен был переписать книгу.

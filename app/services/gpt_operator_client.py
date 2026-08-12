@@ -428,10 +428,30 @@ async def _run_operator_api_real(
 
         from app.services.db_apply import extract_apply_ops_json
 
-        logger.warning(
-            "gpt_operator/api: project_file без apply-ops node={} — JSON retry",
-            node_key,
-        )
+        # Первый ответ часто почти верный, но extract не взял (обрезанный JSON).
+        # Сохраняем до overwrite — иначе диагностика «модель же ответила» теряется.
+        pre_retry_text = reply_text or ""
+        pre_retry_path = out_dir / "gpt_reply_pre_retry.txt"
+        try:
+            pre_retry_path.write_text(pre_retry_text, encoding="utf-8")
+            output_paths.append(pre_retry_path)
+            logger.warning(
+                "gpt_operator/api: project_file без apply-ops node={} — "
+                "JSON retry; pre-retry reply chars={} → {}",
+                node_key,
+                len(pre_retry_text),
+                pre_retry_path.name,
+            )
+        except OSError as e:
+            logger.warning(
+                "gpt_operator/api: не сохранил pre-retry reply node={}: {}",
+                node_key,
+                e,
+            )
+            logger.warning(
+                "gpt_operator/api: project_file без apply-ops node={} — JSON retry",
+                node_key,
+            )
         retry_prompt = (
             f"{prompt_for_model}\n\n"
             "# КОНТРАКТ ЗАПИСИ В БАЗУ (повтор, обязателен)\n"
@@ -468,6 +488,25 @@ async def _run_operator_api_real(
         apply_ops = extract_apply_ops_json(reply_text or "")
         if apply_ops is not None and not _apply_ops_has_payload(apply_ops):
             apply_ops = None
+        # Retry тоже пуст — последний шанс: salvage из pre-retry (частичные ops).
+        if apply_ops is None and pre_retry_text:
+            apply_ops = extract_apply_ops_json(pre_retry_text)
+            if apply_ops is not None and not _apply_ops_has_payload(apply_ops):
+                apply_ops = None
+            elif apply_ops is not None:
+                logger.warning(
+                    "gpt_operator/api: node={} — apply-ops из pre-retry salvage "
+                    "(ops={})",
+                    node_key,
+                    len(apply_ops.get("ops") or []),
+                )
+                reply_text = pre_retry_text
+                try:
+                    result = replace(result, text=reply_text)
+                except TypeError:
+                    from types import SimpleNamespace
+
+                    result = SimpleNamespace(text=reply_text)
         if apply_ops is None:
             logger.warning(
                 "gpt_operator/api: project_file всё ещё без apply-ops node={}",
