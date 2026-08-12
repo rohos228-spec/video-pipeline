@@ -1400,6 +1400,39 @@ async def _reconcile_stale_node_runs(
                 continue
             live = is_generation_active(run.project_id)
             for nr in run.node_runs:
+                # Ложный failed после only_agent ▶ (complete промахнулся в split).
+                # Узко: только веер sd_*, не все failed при assembled.
+                if (
+                    nr.status == NodeRunStatus.failed
+                    and _effective_type_from_nr(nr) in ("sd_agent", "sd_assemble")
+                    and _node_already_succeeded_for_project(project, nr)
+                ):
+                    if heal_failed_node_done(nr, project_id=run.project_id):
+                        healed += 1
+                        if (
+                            project.status == ProjectStatus.frames_ready
+                            and _effective_type_from_nr(nr) == "sd_agent"
+                        ):
+                            try:
+                                from app.services.scene_design import (
+                                    runner as sd_runner,
+                                )
+
+                                sd_runner.clear_only_agent(project)
+                            except Exception:  # noqa: BLE001
+                                logger.debug(
+                                    "[#{}] heal clear only_agent failed",
+                                    run.project_id,
+                                    exc_info=True,
+                                )
+                        logger.info(
+                            "[#{}] NodeRun {}/{}: failed → done (heal after success, {})",
+                            run.project_id,
+                            nr.node_type,
+                            nr.node_key,
+                            initiator,
+                        )
+                    continue
                 if nr.status not in (NodeRunStatus.running, NodeRunStatus.queued):
                     continue
                 if require_no_live_task:

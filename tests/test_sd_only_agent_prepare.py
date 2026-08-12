@@ -367,3 +367,78 @@ async def test_reconcile_heals_skeleton_running_after_frames_ready(
         project = await session.get(Project, pid)
         assert project is not None
         assert sd_runner.get_only_agent(project) is None
+
+
+@pytest.mark.asyncio
+async def test_reconcile_heals_skeleton_false_failed_after_frames_ready(
+    mem_db, monkeypatch
+) -> None:
+    """Ложный failed (background_reconcile) при agent done → heal done."""
+    from app.services import step_cancel as sc
+
+    async with mem_db() as session:
+        nodes = _fanout_nodes()
+        wf = Workflow(
+            name=f"wf-{uuid.uuid4().hex[:8]}",
+            is_default=True,
+            nodes=nodes,
+            edges=[],
+        )
+        session.add(wf)
+        await session.flush()
+        project = Project(
+            slug=f"oa-failheal-{uuid.uuid4().hex[:8]}",
+            topic="t",
+            status=ProjectStatus.frames_ready,
+            meta={
+                "scene_design_enabled": True,
+                "scene_design_skeleton": True,
+                "scene_design": {
+                    "status": "running",
+                    "only_agent": "skeleton",
+                    "agents": {"skeleton": {"status": "done"}},
+                },
+                "canvas_graph": {
+                    "workflow_id": wf.id,
+                    "nodes": nodes,
+                    "edges": [],
+                },
+            },
+        )
+        session.add(project)
+        await session.flush()
+        run = WorkflowRun(
+            project_id=project.id,
+            workflow_id=wf.id,
+            status=WorkflowRunStatus.running,
+            nodes_snapshot=nodes,
+            edges_snapshot=[],
+        )
+        session.add(run)
+        await session.flush()
+        sk = NodeRun(
+            workflow_run_id=run.id,
+            node_key="n_excel_gpt_sd_cd_skeleton",
+            node_type="sd_agent",
+            status=NodeRunStatus.failed,
+            error="прервано: рабочий процесс не активен",
+        )
+        session.add(sk)
+        await session.flush()
+        sk_id = sk.id
+        pid = project.id
+
+    monkeypatch.setattr(sc, "is_generation_active", lambda _pid: False)
+    fixed = await _reconcile_stale_node_runs(
+        initiator="background_reconcile",
+        require_no_live_task=True,
+        grace_sec=0,
+    )
+    assert fixed >= 1
+
+    async with mem_db() as session:
+        row = await session.get(NodeRun, sk_id)
+        assert row is not None
+        assert row.status == NodeRunStatus.done
+        project = await session.get(Project, pid)
+        assert sd_runner.get_only_agent(project) is None
