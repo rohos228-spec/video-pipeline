@@ -2,12 +2,54 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections import defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 D = ROOT / "data" / "videos" / "spesivcevy-chrono-dyn" / "scene_design"
 OUT = ROOT / "data" / "videos" / "spesivcevy-chrono-dyn" / "ops" / "chrono_dyn_agent_scene_report.json"
+DB = ROOT / "data" / "state.db"
+PROJECT_ID = 60
+
+
+def load_vo_rows() -> list[dict]:
+    """Строки закадра из БД (то, что пользователь видит как отрывки/кадры split)."""
+    if not DB.is_file():
+        return []
+    con = sqlite3.connect(str(DB))
+    con.row_factory = sqlite3.Row
+    rows = con.execute(
+        "SELECT number, uuid, voiceover_text FROM frames "
+        "WHERE project_id=? ORDER BY number",
+        (PROJECT_ID,),
+    ).fetchall()
+    con.close()
+    return [
+        {
+            "number": int(r["number"]),
+            "uuid": r["uuid"],
+            "text": (r["voiceover_text"] or "").strip(),
+        }
+        for r in rows
+        if (r["voiceover_text"] or "").strip()
+    ]
+
+
+def map_scene_to_vo_row(start_words: str, vo_rows: list[dict]) -> dict | None:
+    """Привязка action-сцены к VO-строке по start_words (цитата закадра)."""
+    q = " ".join((start_words or "").split())
+    if not q or not vo_rows:
+        return None
+    for fr in vo_rows:
+        t = fr["text"]
+        if q[:40] in t or t[:40] in q:
+            return fr
+    q25 = q[:25]
+    for fr in vo_rows:
+        if q25 and q25 in fr["text"]:
+            return fr
+    return None
 
 
 def first_str(obj: dict, *keys: str, default: str = "") -> str:
@@ -44,6 +86,7 @@ def main() -> None:
     chars = json.loads((D / "characters.json").read_text(encoding="utf-8"))
     world = json.loads((D / "world.json").read_text(encoding="utf-8"))
     style = json.loads((D / "style.json").read_text(encoding="utf-8"))
+    vo_rows = load_vo_rows()
 
     shots_by: dict[str, list] = defaultdict(list)
     for sh in camera.get("shot_plan") or []:
@@ -125,13 +168,20 @@ def main() -> None:
                 }
             )
 
+        vo_hit = map_scene_to_vo_row(str(sc.get("start_words") or ""), vo_rows)
+        vo_preview = clip(
+            first_str(sc, "start_words")
+            or first_str(sc, "цитата_закадра", "vo", "voiceover", "текст"),
+            180,
+        )
         rows.append(
             {
                 "id_scene": sid,
-                "vo": clip(
-                    first_str(sc, "цитата_закадра", "vo", "voiceover", "текст"),
-                    180,
-                ),
+                "vo_row": vo_hit["number"] if vo_hit else None,
+                "vo_uuid": vo_hit["uuid"] if vo_hit else None,
+                "vo_text": clip(vo_hit["text"], 160) if vo_hit else "",
+                "время_сек": sc.get("время_сек"),
+                "vo": vo_preview,
                 "start_words": sc.get("start_words"),
                 "end_words": sc.get("end_words"),
                 "location": clip(
@@ -191,6 +241,7 @@ def main() -> None:
         "counts": {
             "scenes_action": len(rows),
             "shots_camera": len(camera.get("shot_plan") or []),
+            "vo_rows_db": len(vo_rows),
             "characters": len(chars_sum),
             "locations": len(locs_sum),
             "style_beats": len(style.get("style_arc") or []),
@@ -221,6 +272,9 @@ def main() -> None:
                 table_rows.append(
                     {
                         "scene": sc["id_scene"],
+                        "vo_row": sc.get("vo_row"),
+                        "vo_text": sc.get("vo_text") or "",
+                        "scene_sec": sc.get("время_сек"),
                         "vo": sc["vo"],
                         "phase": ph.get("phase"),
                         "beat": ph.get("beat") or "",
@@ -243,6 +297,9 @@ def main() -> None:
             table_rows.append(
                 {
                     "scene": sc["id_scene"],
+                    "vo_row": sc.get("vo_row"),
+                    "vo_text": sc.get("vo_text") or "",
+                    "scene_sec": sc.get("время_сек"),
                     "vo": sc["vo"],
                     "phase": "",
                     "beat": "",

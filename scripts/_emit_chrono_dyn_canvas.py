@@ -20,6 +20,9 @@ def main() -> None:
         rows.append(
             {
                 "scene": r.get("scene") or "",
+                "vo_row": r.get("vo_row") if r.get("vo_row") is not None else "",
+                "vo_text": (r.get("vo_text") or "")[:120],
+                "scene_sec": r.get("scene_sec") if r.get("scene_sec") is not None else "",
                 "phase": r.get("phase") if r.get("phase") is not None else "",
                 "beat": r.get("beat") or "",
                 "transition": r.get("transition") or "",
@@ -100,6 +103,9 @@ export default function ChronoDynSceneNodeReport() {{
 
   const tableRows = filtered.map((r) => [
     r.scene,
+    r.vo_row === "" ? "" : String(r.vo_row),
+    String(r.scene_sec),
+    r.vo_text,
     String(r.phase),
     r.beat,
     r.action_subject,
@@ -107,9 +113,6 @@ export default function ChronoDynSceneNodeReport() {{
     r.camera_size,
     r.camera_move,
     r.camera_motive,
-    r.camera_who,
-    r.link_prev,
-    r.hook_next,
     r.location,
   ]);
 
@@ -118,12 +121,13 @@ export default function ChronoDynSceneNodeReport() {{
       <Stack gap={{6}}>
         <H1>Отчёт chrono_dyn · сцена × нода</H1>
         <Text tone="secondary">
-          Проект #60 spesivcevy-chrono-dyn · V7 логика жеста + V6 камера ·
+          Проект #60 spesivcevy-chrono-dyn · V11 разные миры + живая камера ·
           строка = фаза action + shot camera
         </Text>
       </Stack>
 
-      <Grid columns={{5}} gap={{12}}>
+      <Grid columns={{6}} gap={{12}}>
+        <Stat value={{String(DATA.counts.vo_rows_db ?? "?")}} label="VO-строк в БД" />
         <Stat value={{String(DATA.counts.scenes_action)}} label="Сцен (action)" />
         <Stat value={{String(DATA.counts.shots_camera)}} label="Шотов (camera)" />
         <Stat value={{String(DATA.counts.characters)}} label="Персонажи" />
@@ -131,9 +135,10 @@ export default function ChronoDynSceneNodeReport() {{
         <Stat value={{String(DATA.counts.style_beats)}} label="Style beats" />
       </Grid>
 
-      <Callout tone="info" title="Как читать V7">
-        У двери — звонок/стук/ключ, не «стоит». Замок — только после входа/ухода.
-        1 фаза = 1 действие. Камера: крупность+движение+мотив под жест.
+      <Callout tone="info" title="Сцена ≠ VO-строка · V11">
+        VO# — отрывок закадра в БД. Сцена — драматургия (может дробить строку).
+        Запрет: папки/карточки «как символ», похожие соседние кадры.
+        Нужны живые события и эмоции; 14 сим = 1 сек; 1 фаза = 1 жест.
       </Callout>
 
       <H2>Камера: что используется</H2>
@@ -208,16 +213,16 @@ export default function ChronoDynSceneNodeReport() {{
       <Table
         headers={{[
           "Сцена",
+          "VO#",
+          "сек",
+          "Отрывок закадра",
           "Фаза",
           "Beat",
-          "Кто (action)",
-          "Действие (логика!)",
+          "Кто",
+          "Действие",
           "Крупность",
           "Движение",
           "Мотив камеры",
-          "Кто в кадре",
-          "Связь с прошлой",
-          "Крючок в следующую",
           "Локация",
         ]}}
         rows={{tableRows}}
