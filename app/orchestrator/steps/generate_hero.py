@@ -27,11 +27,14 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any, AsyncIterator
 
 from aiogram import Bot
 from loguru import logger
 from sqlalchemy import desc, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
@@ -75,6 +78,27 @@ from app.storage import for_project as _sheet_for_project
 # влезает в 16:9, а Relax при этом дёшевле и идёт без очереди.
 HERO_ASPECT_RATIO = "16:9"
 HERO_RELAX = True
+
+
+def _excel_hero_http_primary() -> bool:
+    """Outsee/Grsai HTTP — без Chrome CDP (параллельные волны не валятся)."""
+    from app.bots.grsai import grsai_enabled
+    from app.bots.outsee_http import outsee_api_configured, outsee_api_enabled_for_image
+
+    return bool(
+        grsai_enabled() or outsee_api_enabled_for_image() or outsee_api_configured()
+    )
+
+
+@asynccontextmanager
+async def _optional_browser_session(
+    need_cdp: bool,
+) -> AsyncIterator[Any]:
+    if not need_cdp:
+        yield None
+        return
+    async with browser_session() as bs:
+        yield bs
 
 
 def _read_hero_style(project: Project) -> str | None:
@@ -1063,7 +1087,15 @@ async def _run_excel(
                     approved=set(),
                     batch_auto=True,
                 )
-                await s.commit()
+                # SQLite: параллельные commit 4× иногда ловят database is locked.
+                for attempt in range(1, 8):
+                    try:
+                        await s.commit()
+                        break
+                    except OperationalError as e:
+                        if "locked" not in str(e).lower() or attempt >= 7:
+                            raise
+                        await asyncio.sleep(0.15 * attempt)
                 return ch.id
 
         results = await asyncio.gather(
@@ -1175,9 +1207,16 @@ async def _generate_one_excel_character(
     short_uuid = uuid.uuid4().hex[:8]
     prompt_id_prefix = f"[ID: P{project.id}-EXCEL-{ch.id}-{short_uuid}]"
 
-    async with browser_session() as bs:
+    http_primary = _excel_hero_http_primary()
+    async with _optional_browser_session(need_cdp=not http_primary) as bs:
         gpt = get_gpt_client()
-        outsee = OutseeBot(bs)
+        outsee = OutseeBot(bs) if bs is not None else None
+        if http_primary:
+            logger.info(
+                "[#{}] excel_hero {}: HTTP image API (без CDP)",
+                project.id,
+                ch.id,
+            )
 
         # Сборка промта.
         from app.services.excel_characters import is_polluted_character_field
@@ -1269,7 +1308,8 @@ async def _generate_one_excel_character(
         from app.services.img_streams import acquire_image_slot
 
         result = None
-        if not used_refs and is_regen:
+        # regenerate_image — только CDP UI; при HTTP делаем свежий generate.
+        if not used_refs and is_regen and outsee is not None:
             try:
                 async with acquire_image_slot():
                     result = await outsee.regenerate_image(out_path)
