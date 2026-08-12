@@ -302,18 +302,23 @@ async def run_assemble(
             problems = sd_assembler.validate_payload(
                 project, frames, local, full_vo
             )
-            if not problems:
-                payload = local
+            payload = local
+            if problems:
+                # Качество сценария судит n_excel_gpt_1 (check), не GPT-сборщик.
+                logger.warning(
+                    "[#{}] scene_design assemble: local chrono_dyn warnings "
+                    "(пишу как есть, проверка кино отфильтрует): {}",
+                    project.id,
+                    problems[:12],
+                )
+                extra = "; ".join(problems[:8])
+                local["report"] = (
+                    f"{local.get('report') or 'local_assemble'}; warnings:{extra}"
+                )[:800]
+            else:
                 logger.info(
                     "[#{}] scene_design assemble: local chrono_dyn ok (no GPT)",
                     project.id,
-                )
-            else:
-                logger.warning(
-                    "[#{}] scene_design assemble: local chrono_dyn failed, "
-                    "fallback GPT: {}",
-                    project.id,
-                    problems[:12],
                 )
         if payload is None:
             for attempt in range(1, _MAX_ASSEMBLE_ATTEMPTS + 1):
