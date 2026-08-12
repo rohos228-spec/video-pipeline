@@ -143,8 +143,8 @@ def _who_to_cnn(
         cid = m.lower()
         if cid not in found:
             found.append(cid)
-    if any(x in folded for x in ("титульн", "надпись", "фамилия")) and "c01" not in found:
-        found.append("c01")
+    if any(x in folded for x in ("титульн", "надпись", "фамилия")):
+        return found
     for name, cid in sorted(name_to_id.items(), key=lambda x: -len(x[0])):
         if name and name in folded and cid not in found:
             found.append(cid)
@@ -496,10 +496,14 @@ def build_local_assembler_payload(
         motive = _as_plain_text(sh.get("мотив") or sh.get("camera_motive") or "")
         who = _as_plain_text(sh.get("кто_в_кадре") or sh.get("персонажи") or "")
         # Только ключи из db_apply FIELD_MAP — крупность/угол/движение туда не входят.
+        angle = _as_plain_text(sh.get("угол") or "")
+        if re.search(r"спин|back", angle, flags=re.I):
+            angle = "eye-level, три четверти"
+        move = _as_plain_text(sh.get("движение") or "")
         cam_bits = [
             _as_plain_text(sh.get("крупность") or ""),
-            _as_plain_text(sh.get("угол") or ""),
-            _as_plain_text(sh.get("движение") or ""),
+            angle,
+            move,
         ]
         cam_line = ", ".join(b for b in cam_bits if b)
         desc = composition
