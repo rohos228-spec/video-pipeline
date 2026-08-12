@@ -66,8 +66,9 @@ SUPPORTED_STEPS: tuple[str, ...] = (
 # самом воркере (см. `app/orchestrator/steps/enrich_xlsx.py`,
 # `_get_accompanying_text` через `get_effective_text`).
 ENRICH_DEFAULT_ACCOMPANYING_TEXT = (
-    "Внеси изменения в приложенный xlsx согласно инструкциям выше.\n"
-    "ВАЖНО: в ответ ОБЯЗАТЕЛЬНО приложи обновлённый xlsx файлом."
+    "Внеси изменения в данные проекта согласно инструкциям выше.\n"
+    "ВАЖНО: ответ — только JSON apply-ops "
+    '({"ops":[{"frame_uuid":"…","fields":{…}}]}), без xlsx и без TSV # Лист:.'
 )
 
 # Плейсхолдеры в шаблоне «сопр. сообщения» шага `hero`. Подставляются

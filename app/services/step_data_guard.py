@@ -310,6 +310,25 @@ async def can_enter_running(
                 f"картинок {imgs}/{need_frames}",
                 ProjectStatus.image_prompts_ready,
             )
+        # Видео требует animation prompts (R48/DB) — иначе sidecar/skip прыгает в video.
+        frames = (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.number)
+            )
+        ).scalars().all()
+        from app.services.animation_prompt_gpt import scan_missing_animation_prompts
+
+        missing_anim = scan_missing_animation_prompts(project, list(frames))
+        if missing_anim:
+            return (
+                False,
+                f"нет video prompts у кадров {missing_anim[:8]}"
+                + ("…" if len(missing_anim) > 8 else "")
+                + " (сначала anim_pr)",
+                ProjectStatus.generating_animation_prompts,
+            )
         return True, "", None
 
     if target is ProjectStatus.generating_audio:

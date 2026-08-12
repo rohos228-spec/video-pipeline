@@ -18,6 +18,7 @@
 | [`.cursor/rules/video-pipeline-map.mdc`](../.cursor/rules/video-pipeline-map.mdc) | Это правило: сначала карта |
 | [`NODE_SYSTEM.md`](NODE_SYSTEM.md) | Система нод оркестратора: доноры, контракты, harness-гейты, каталог нод/действий |
 | [`DB_V2.md`](DB_V2.md) | DB v2 = SoT: apply-ops контракт, алиасы, экспорт в Excel, руководство оператора |
+| [`PROMPT_CONTRACT.md`](PROMPT_CONTRACT.md) | Контракт промптов GPT↔DB: apply-ops / artifact / staging; стоп-лист Excel/TSV |
 
 ---
 
@@ -120,6 +121,7 @@ Series workbook — отдельный трек: `docs/SERIES_XLSX_WORKBOOK.md`.
 
 **Не переписывать — читать:**
 
+- [`docs/PROMPT_CONTRACT.md`](PROMPT_CONTRACT.md) — GPT↔DB IO (apply-ops); Excel/TSV стоп-лист
 - [`docs/PROMPTS_BLOCKS.md`](PROMPTS_BLOCKS.md) — контракт blocks/steps/vars/weights
 - [`app/services/prompt_composer.py`](../app/services/prompt_composer.py)
 - Диск: `prompts/blocks/`, `prompts/steps/`, `prompts/step-presets/`, legacy `prompts/0*_*/`
@@ -229,6 +231,7 @@ SoT по тексту GPT: `AGENTS.md` + этот map §8.
 | Монтаж regen img/video | `montage_board_regen.py` (API = ноды img/video; промты из БД) |
 | step_code / status | `node_registry.py` |
 | R48 anim | `plan_sheet_v8.py`, ops rule |
+| Prompt contract (GPT↔DB) | `PROMPT_CONTRACT.md` |
 | Prompt blocks | `PROMPTS_BLOCKS.md` |
 | Free GPT chat files | `gpt_workspace.py` |
 | Create settings | `outsee_create.py` + Create UI |

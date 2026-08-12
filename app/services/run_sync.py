@@ -1400,11 +1400,22 @@ async def _reconcile_stale_node_runs(
                 continue
             live = is_generation_active(run.project_id)
             for nr in run.node_runs:
-                # Ложный failed после only_agent ▶ (complete промахнулся в split).
-                # Узко: только веер sd_*, не все failed при assembled.
+                # Ложный failed после успеха: sd_* веер + линейные media-ноды
+                # (img/anim_pr/video…), когда Project уже доказывает ready/дальше.
+                _heal_types = (
+                    "sd_agent",
+                    "sd_assemble",
+                    "image_prompts",
+                    "images",
+                    "animation_prompts",
+                    "videos",
+                    "audio",
+                    "music",
+                    "assemble",
+                )
                 if (
                     nr.status == NodeRunStatus.failed
-                    and _effective_type_from_nr(nr) in ("sd_agent", "sd_assemble")
+                    and _effective_type_from_nr(nr) in _heal_types
                     and _node_already_succeeded_for_project(project, nr)
                 ):
                     if heal_failed_node_done(nr, project_id=run.project_id):

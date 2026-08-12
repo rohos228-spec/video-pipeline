@@ -314,17 +314,19 @@ export function FlowCanvas({
     });
   }, [project.data?.meta, nodes.length, setNodes]);
 
-  // Статусы run — только NodeRun (SSoT). Project.status не вмешивается.
+  // Статусы run — NodeRun + лёгкий sync Project для линейных media
+  // (не рисовать «прервано», пока Project.generating_* того же шага).
   useEffect(() => {
     if (nodes.length === 0) return;
     // Не сбрасываем в pending при кратковременном отсутствии run.data (refetch/invalidate).
     if (!run.data) return;
+    const projectStatus = project.data?.status;
     const nodeRunByKey = new Map(run.data.node_runs.map((nr) => [nr.node_key, nr]));
     setNodes((prev) =>
       prev.map((n) => {
         const nr = nodeRunByKey.get(n.id);
         if (!nr) {
-          const status = inferNodeStatusFromProject(n.data.type);
+          const status = inferNodeStatusFromProject(n.data.type, projectStatus);
           return {
             ...n,
             data: {
@@ -339,6 +341,7 @@ export function FlowCanvas({
         const status = reconcileNodeRunStatus(
           n.data.type,
           nr.status as PipelineNodeData["status"],
+          projectStatus,
         );
         const progress = status === "running" ? (nr.progress ?? 0) : 0;
         const progressText = status === "running" ? (nr.progress_text ?? null) : null;
@@ -355,7 +358,7 @@ export function FlowCanvas({
         };
       }),
     );
-  }, [run.data, setNodes, nodes.length, projectId]);
+  }, [run.data, project.data?.status, setNodes, nodes.length, projectId]);
 
   // Выделение на канвасе ← selectedNodeKey (кнопка V без клика по телу ноды).
   useEffect(() => {
@@ -388,6 +391,7 @@ export function FlowCanvas({
           const to = reconcileNodeRunStatus(
             n.data.type,
             e.to as PipelineNodeData["status"],
+            project.data?.status,
           );
           return {
             ...n,

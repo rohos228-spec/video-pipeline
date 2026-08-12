@@ -619,14 +619,43 @@ async def _pin_excel_gpt_key_after_ready(
     return next_key
 
 
+# Media-ready: линейный TRANSITIONS.next важнее graph BFS (иначе images→videos).
+_LINEAR_MEDIA_READY: frozenset[ProjectStatus] = frozenset(
+    {
+        ProjectStatus.image_prompts_ready,
+        ProjectStatus.images_ready,
+        ProjectStatus.animation_prompts_ready,
+        ProjectStatus.videos_ready,
+        ProjectStatus.audio_ready,
+    }
+)
+
+# Media-running: prepare NodeRun обязателен — иначе Project.status не двигаем.
+_LINEAR_MEDIA_RUNNING: frozenset[ProjectStatus] = frozenset(
+    {
+        ProjectStatus.generating_image_prompts,
+        ProjectStatus.generating_images,
+        ProjectStatus.generating_animation_prompts,
+        ProjectStatus.generating_videos,
+        ProjectStatus.generating_audio,
+        ProjectStatus.generating_music,
+        ProjectStatus.assembling,
+    }
+)
+
+
 async def _prepare_node_run_for_status(
     session: AsyncSession,
     project: Project,
     running_status: ProjectStatus,
     *,
     allow_restart: bool = False,
-) -> None:
-    """Синхронизировать NodeRun с Project.status при auto_advance (SSoT)."""
+) -> bool:
+    """Синхронизировать NodeRun с Project.status при auto_advance (SSoT).
+
+    True — можно ставить Project.status; False — prepare упал / media-нода
+    не подготовилась (Project не двигаем).
+    """
     from app.orchestrator.node_registry import (
         NODE_TYPE_TO_STEP_CODE,
         RUNNING_TO_NODE_TYPE,
@@ -682,9 +711,9 @@ async def _prepare_node_run_for_status(
         if node_type is not None:
             step_code = NODE_TYPE_TO_STEP_CODE.get(node_type)
     if not step_code:
-        return
+        return True
     try:
-        await prepare_node_for_step_start(
+        ok = await prepare_node_for_step_start(
             session,
             project,
             step_code,
@@ -694,12 +723,51 @@ async def _prepare_node_run_for_status(
             explicit_ui_start=allow_restart,
         )
     except Exception:  # noqa: BLE001
-        logger.debug(
-            "auto_advance: #{} prepare_node for {} failed",
+        logger.exception(
+            "auto_advance: #{} prepare_node for {} failed — Project.status не двигаем",
             project.id,
             running_status.value,
-            exc_info=True,
         )
+        return False
+    if running_status in _LINEAR_MEDIA_RUNNING and not ok:
+        # Без WorkflowRun (тесты / до первого Run) — Project всё ещё двигаем.
+        from app.models import WorkflowRun
+
+        has_run = (
+            await session.execute(
+                select(WorkflowRun.id)
+                .where(WorkflowRun.project_id == project.id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if has_run is not None:
+            logger.warning(
+                "auto_advance: #{} prepare_node for {} soft-fail — "
+                "Project.status не двигаем",
+                project.id,
+                running_status.value,
+            )
+            return False
+    return True
+
+
+async def _commit_running_after_prepare(
+    session: AsyncSession,
+    project: Project,
+    ready_status: ProjectStatus,
+    nxt: ProjectStatus,
+    *,
+    allow_restart: bool = True,
+) -> bool:
+    """Pin excel_gpt → prepare NodeRun → только потом Project.status."""
+    await _pin_excel_gpt_key_after_ready(session, project, ready_status, nxt)
+    prepared = await _prepare_node_run_for_status(
+        session, project, nxt, allow_restart=allow_restart
+    )
+    if not prepared:
+        return False
+    project.status = nxt
+    return True
 
 
 async def _apply_approve(
@@ -788,17 +856,12 @@ async def _apply_approve(
         nxt = await _apply_running_if_data_ok(session, project, skipped or nxt)
         if nxt is None:
             return
-        # Как в else-ветке: pin конкретной excel_gpt по стрелке канваса.
-        # Иначе resolve(slot=5) берёт leftmost n_excel_gpt_1 ДО hero.
-        await _pin_excel_gpt_key_after_ready(
-            session, project, ProjectStatus.hero_ready, nxt
-        )
         # allow_restart: после перезапуска plan нода script часто ещё done —
         # без этого UI не показывает «в работе», хотя Project.status=scripting.
-        await _prepare_node_run_for_status(
-            session, project, nxt, allow_restart=True
-        )
-        project.status = nxt
+        if not await _commit_running_after_prepare(
+            session, project, ProjectStatus.hero_ready, nxt, allow_restart=True
+        ):
+            return
     elif transition.ready_status is ProjectStatus.images_ready:
         # Цикл check(scenes)→regen→check; иначе обычный else ниже.
         check_nxt = None
@@ -829,32 +892,40 @@ async def _apply_approve(
             if enrich_nxt is not None:
                 nxt = enrich_nxt
             else:
-                graph_nxt = await _graph_next_running(
-                    session, project, transition.ready_status
-                )
-                if graph_nxt is None:
-                    logger.warning(
-                        "graph: #{} no next step after images_ready — check canvas edges",
+                # Линейный media: TRANSITIONS → anim_pr, не graph BFS → videos.
+                linear = transition.next_running
+                if linear is not None:
+                    nxt = linear
+                    logger.info(
+                        "auto_advance: #{} images_ready → {} (linear media)",
                         project.id,
+                        linear.value,
                     )
-                    return
-                nxt = graph_nxt
+                else:
+                    graph_nxt = await _graph_next_running(
+                        session, project, transition.ready_status
+                    )
+                    if graph_nxt is None:
+                        logger.warning(
+                            "graph: #{} no next step after images_ready — check canvas edges",
+                            project.id,
+                        )
+                        return
+                    nxt = graph_nxt
         skipped = await skip_disabled_running_async(session, project, nxt)
         if skipped is None:
             return
         nxt = await _apply_running_if_data_ok(session, project, skipped or nxt)
         if nxt is None:
             return
-        await _pin_excel_gpt_key_after_ready(
-            session, project, ProjectStatus.images_ready, nxt
-        )
-        await _prepare_node_run_for_status(
-            session, project, nxt, allow_restart=True
-        )
-        project.status = nxt
+        if not await _commit_running_after_prepare(
+            session, project, ProjectStatus.images_ready, nxt, allow_restart=True
+        ):
+            return
     else:
         # enrich_N_ready: следующий excel_gpt только если так ведут стрелки.
         # Иначе graph BFS (script / hero / …).
+        # Media-ready: сначала TRANSITIONS.next (не прыгать images→videos).
         from app.services.excel_gpt_node import prepare_enrich_chain_for_auto_advance
 
         enrich_nxt = prepare_enrich_chain_for_auto_advance(
@@ -867,6 +938,17 @@ async def _apply_approve(
                 project.id,
                 transition.ready_status.value,
                 enrich_nxt.value,
+            )
+        elif (
+            transition.ready_status in _LINEAR_MEDIA_READY
+            and transition.next_running is not None
+        ):
+            graph_nxt = transition.next_running
+            logger.info(
+                "auto_advance: #{} {} → {} (linear media)",
+                project.id,
+                transition.ready_status.value,
+                graph_nxt.value,
             )
         else:
             graph_nxt = await _graph_next_running(
@@ -947,13 +1029,10 @@ async def _apply_approve(
         nxt = await _apply_running_if_data_ok(session, project, skipped or graph_nxt)
         if nxt is None:
             return
-        await _pin_excel_gpt_key_after_ready(
-            session, project, transition.ready_status, nxt
-        )
-        await _prepare_node_run_for_status(
-            session, project, nxt, allow_restart=True
-        )
-        project.status = nxt
+        if not await _commit_running_after_prepare(
+            session, project, transition.ready_status, nxt, allow_restart=True
+        ):
+            return
     _reset_retry_count(project, transition.ready_status)
     await session.flush()
     logger.info(

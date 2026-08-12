@@ -1,7 +1,8 @@
 """Фоновый anim_pr рядом с generating_images.
 
 Пишет промт_видео из image_prompt, не меняя Project.status
-(чтобы img продолжал лить PNG).
+(чтобы img продолжал лить PNG). При пустой очереди синхронизирует
+NodeRun animation_prompts → done (canvas), без animation_prompts_ready.
 """
 
 from __future__ import annotations
@@ -11,8 +12,11 @@ from typing import Any
 
 from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.models import Frame, Project, ProjectStatus
+from app.models import Frame, NodeRunStatus, Project, ProjectStatus, WorkflowRun
+
 
 _LOCKS: dict[int, asyncio.Lock] = {}
 _TASKS: dict[int, asyncio.Task[Any]] = {}
@@ -24,6 +28,68 @@ def _lock_for(project_id: int) -> asyncio.Lock:
         lock = asyncio.Lock()
         _LOCKS[project_id] = lock
     return lock
+
+
+async def sync_anim_pr_noderun_done(
+    session: AsyncSession, project: Project
+) -> bool:
+    """Пометить NodeRun animation_prompts = done, если очередь пуста.
+
+    Project.status не трогаем — его двигает только официальный шаг /
+    auto_advance после data-guard.
+    """
+    from app.services.event_bus import publish_node_event
+    from app.services.node_status_machine import sync_node_done_from_data
+
+    run = (
+        await session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == project.id)
+            .options(selectinload(WorkflowRun.node_runs))
+            .order_by(WorkflowRun.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if run is None:
+        return False
+
+    changed = False
+    for nr in run.node_runs:
+        if nr.node_type != "animation_prompts":
+            continue
+        if nr.status in (NodeRunStatus.done, NodeRunStatus.skipped):
+            continue
+        old = nr.status
+        if sync_node_done_from_data(
+            nr, project_id=project.id, initiator="sidecar"
+        ):
+            changed = True
+            logger.info(
+                "[#{}] anim_pr_sidecar: NodeRun {}/{} {} → done (queue empty)",
+                project.id,
+                nr.node_type,
+                nr.node_key,
+                old.value,
+            )
+            try:
+                await publish_node_event(
+                    run.id,
+                    event_type="node_status_changed",
+                    node_key=nr.node_key,
+                    payload={
+                        "node_type": nr.node_type,
+                        "from": old.value,
+                        "to": nr.status.value,
+                        "project_id": project.id,
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "[#{}] anim_pr_sidecar: publish node event failed",
+                    project.id,
+                    exc_info=True,
+                )
+    return changed
 
 
 async def drain_anim_pr_from_image_prompts(
@@ -50,6 +116,8 @@ async def drain_anim_pr_from_image_prompts(
             ).scalars().all()
             pending = apg.collect_batch_items(project, list(frames))
             if not pending:
+                await sync_anim_pr_noderun_done(session, project)
+                await session.commit()
                 return {"batches": 0, "pending": 0}
             logger.info(
                 "[#{}] anim_pr_sidecar: drain pending={} (status={})",
@@ -63,8 +131,10 @@ async def drain_anim_pr_from_image_prompts(
                 finalize_status=False,
                 max_batches=max_batches,
             )
-            await session.commit()
             left = len(apg.collect_batch_items(project, list(frames)))
+            if left == 0:
+                await sync_anim_pr_noderun_done(session, project)
+            await session.commit()
             return {"batches": int(stats.get("batches") or 0), "pending": left}
 
 
@@ -95,6 +165,9 @@ async def _sidecar_loop(project_id: int) -> None:
             async with SessionLocal() as session:
                 project = await session.get(Project, project_id)
                 status = project.status if project is not None else None
+                if project is not None and pending == 0:
+                    if await sync_anim_pr_noderun_done(session, project):
+                        await session.commit()
 
             # Пока img льёт картинки — ждём новые image_prompt/пропуски и крутимся.
             if status is ProjectStatus.generating_images:
