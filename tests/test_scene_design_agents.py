@@ -137,6 +137,37 @@ def test_parse_skeleton_scenes_after_nested_map_frames() -> None:
     assert data["scenes"][0]["id_scene"] == "scene_01"
 
 
+def test_skeleton_rejects_merged_vo_cells() -> None:
+    """1 VO-ячейка = 1 сцена: склейка [1,2,3] отклоняется."""
+    raw = _fence(
+        {
+            "scenes": [
+                {"id_scene": "scene_01", "кадры": [1, 2, 3], "суть": "merge"},
+            ]
+        }
+    )
+    with pytest.raises(ag.SceneDesignAgentError, match="VO-ячейк"):
+        ag.parse_agent_slice(
+            "skeleton", raw, expected_frame_numbers=[1, 2, 3]
+        )
+
+
+def test_skeleton_accepts_one_scene_per_vo_cell() -> None:
+    raw = _fence(
+        {
+            "scenes": [
+                {"id_scene": "scene_01", "кадры": [1], "суть": "a"},
+                {"id_scene": "scene_02", "кадры": [2], "суть": "b"},
+                {"id_scene": "scene_03", "кадры": [3], "суть": "c"},
+            ]
+        }
+    )
+    data = ag.parse_agent_slice(
+        "skeleton", raw, expected_frame_numbers=[1, 2, 3]
+    )
+    assert [sc["кадры"] for sc in data["scenes"]] == [[1], [2], [3]]
+
+
 # ── parse_assembler_payload ──────────────────────────────────────────
 
 

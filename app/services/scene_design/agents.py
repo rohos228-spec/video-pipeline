@@ -823,8 +823,51 @@ def validate_chrono_dyn_camera_shots(shots: list[Any]) -> None:
         )
 
 
+def validate_skeleton_one_vo_per_scene(
+    scenes: list[Any], expected_frame_numbers: list[int]
+) -> None:
+    """1 ячейка закадра (входной кадр с VO) = 1 сцена; без склейки VO."""
+    if not expected_frame_numbers:
+        return
+    expect = [int(n) for n in expected_frame_numbers]
+    if len(scenes) != len(expect):
+        raise SceneDesignAgentError(
+            f"scene_design/skeleton: нужно {len(expect)} сцен "
+            f"(по одной на VO-ячейку), а пришло {len(scenes)}. "
+            f"Нельзя склеивать несколько закадровых ячеек в одну сцену."
+        )
+    seen: list[int] = []
+    for i, sc in enumerate(scenes):
+        if not isinstance(sc, dict):
+            raise SceneDesignAgentError(
+                f"scene_design/skeleton: scenes[{i}] не объект"
+            )
+        raw = sc.get("кадры")
+        if not isinstance(raw, list) or len(raw) != 1:
+            raise SceneDesignAgentError(
+                f"scene_design/skeleton: scenes[{i}].кадры должен быть "
+                f"ровно [N] (одна VO-ячейка), а не {raw!r}"
+            )
+        try:
+            num = int(raw[0])
+        except (TypeError, ValueError) as e:
+            raise SceneDesignAgentError(
+                f"scene_design/skeleton: scenes[{i}].кадры[0] не номер: {raw[0]!r}"
+            ) from e
+        seen.append(num)
+    if sorted(seen) != sorted(expect):
+        raise SceneDesignAgentError(
+            f"scene_design/skeleton: номера кадров {seen} ≠ ожидаемым {expect}. "
+            f"Каждая VO-ячейка — своя сцена, без пропусков и склеек."
+        )
+
+
 def parse_agent_slice(
-    agent: str, text: str, *, validate: bool = True
+    agent: str,
+    text: str,
+    *,
+    validate: bool = True,
+    expected_frame_numbers: list[int] | None = None,
 ) -> dict[str, Any]:
     """Распарсить и провалидировать JSON-срез категорийного агента.
 
@@ -865,6 +908,8 @@ def parse_agent_slice(
         validate_chrono_dyn_action_scenes(items)
     if validate and agent == "camera":
         validate_chrono_dyn_camera_shots(items)
+    if validate and agent == SKELETON and expected_frame_numbers is not None:
+        validate_skeleton_one_vo_per_scene(items, expected_frame_numbers)
     return data
 
 

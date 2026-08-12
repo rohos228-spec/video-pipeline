@@ -304,6 +304,7 @@ async def _run_one_agent(
     timeout: float,
     validate: bool = True,
     max_retries: int | None = None,
+    expected_frame_numbers: list[int] | None = None,
 ) -> dict[str, Any]:
     from app.services import gpt_client
 
@@ -316,15 +317,22 @@ async def _run_one_agent(
         max_retries=max_retries,
     )
     try:
-        return ag.parse_agent_slice(name, reply, validate=validate)
+        return ag.parse_agent_slice(
+            name,
+            reply,
+            validate=validate,
+            expected_frame_numbers=expected_frame_numbers,
+        )
     except ag.SceneDesignAgentError as e:
         _dump_agent_fail(project, name, reply, e)
         # Скелет: один repair-pass — модель часто копирует stub scenes: [].
         if name != ag.SKELETON:
             raise
+        n_vo = len(expected_frame_numbers or [])
         repair_prompt = (
             "Исправь JSON скелета scene_design. Нужен ОДИН валидный JSON-объект "
-            "с НЕПУСТЫМ массивом \"scenes\" (карточки с id_scene, кадры, суть). "
+            f"с ровно {n_vo or 'N'} сценами: 1 ячейка закадра = 1 сцена, "
+            "у каждой scenes[i].кадры = ровно [один number], без склейки VO. "
             "Без markdown, без комментариев /* */. Только JSON.\n\n"
             f"Ошибка парсера: {e}\n\nБыло:\n{(reply or '')[:14000]}"
         )
@@ -339,7 +347,12 @@ async def _run_one_agent(
             max_retries=2,
         )
         try:
-            return ag.parse_agent_slice(name, repaired, validate=validate)
+            return ag.parse_agent_slice(
+                name,
+                repaired,
+                validate=validate,
+                expected_frame_numbers=expected_frame_numbers,
+            )
         except ag.SceneDesignAgentError as e2:
             _dump_agent_fail(project, name, repaired, e2)
             raise
@@ -477,6 +490,13 @@ async def _run_one_agent_adaptive(
         min(float(timeout), attempt_to) if attempt_to > 0 else float(timeout)
     )
 
+    vo_nums = [
+        int(f.number)
+        for f in frame_list
+        if (getattr(f, "voiceover_text", None) or "").strip()
+        and getattr(f, "number", None) is not None
+    ]
+
     async def _call_once() -> dict[str, Any]:
         # max_retries=0: первый 524 сразу в /2 split, не жечь GPT_MAX_RETRIES.
         return await _run_one_agent(
@@ -486,6 +506,7 @@ async def _run_one_agent_adaptive(
             timeout=call_timeout,
             validate=(depth == 0),
             max_retries=0,
+            expected_frame_numbers=vo_nums if name == ag.SKELETON else None,
         )
 
     try:
