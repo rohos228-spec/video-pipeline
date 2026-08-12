@@ -24,7 +24,12 @@ def test_clean_animation_text_strips_label() -> None:
 
 
 def test_build_batch_message_has_id_and_voiceover() -> None:
-    fr = SimpleNamespace(number=3, voiceover_text="Hello", uuid="P9-F3-deadbeef")
+    fr = SimpleNamespace(
+        number=3,
+        voiceover_text="Hello",
+        uuid="P9-F3-deadbeef",
+        image_prompt="Noir archive still: man at desk, Action: turns page.",
+    )
     item = FrameImageBatchItem(
         frame=fr,
         image_path=Path("/x.png"),
@@ -35,10 +40,32 @@ def test_build_batch_message_has_id_and_voiceover() -> None:
     assert "ID изображения: [ID: P9-F3-deadbeef]" in msg
     assert "frame_uuid: P9-F3-deadbeef" in msg
     assert "Закадровый текст: Hello" in msg
+    assert "Промт картинки:" in msg
+    assert "turns page" in msg
     assert "apply-ops" in msg
     assert "промт_видео" in msg
     assert "лента" in msg
     assert "Позиция 1" in msg
+
+
+def test_build_batch_message_text_from_image_prompt_without_png() -> None:
+    fr = SimpleNamespace(
+        number=1,
+        voiceover_text="VO",
+        uuid="u1",
+        image_prompt="Background: rain street. Action: coat flutters.",
+    )
+    item = FrameImageBatchItem(
+        frame=fr,
+        image_path=None,
+        image_id="[ID: u1]",
+        voiceover="VO",
+    )
+    msg = build_batch_message([item])
+    assert "Промт картинки:" in msg
+    assert "coat flutters" in msg
+    assert "Картинок/ленты нет" in msg
+    assert "Прикреплено изображение-лента" not in msg
 
 
 def test_parse_animation_reply_no_positional_zip_mixup() -> None:

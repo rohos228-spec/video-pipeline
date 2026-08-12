@@ -281,12 +281,24 @@ async def can_enter_running(
         )
 
     if target is ProjectStatus.generating_animation_prompts:
+        # Видеопромт строится из image_prompt; PNG больше не обязателен на входе.
+        with_img_pr = (
+            await session.execute(
+                select(func.count(Frame.id)).where(
+                    Frame.project_id == project.id,
+                    Frame.image_prompt.isnot(None),
+                    Frame.image_prompt != "",
+                )
+            )
+        ).scalar_one()
+        if with_img_pr > 0:
+            return True, "", None
         imgs = await _count_kind(session, project.id, ArtifactKind.scene_image)
         if imgs == 0:
             return (
                 False,
-                "нет картинок сцен (сначала img)",
-                ProjectStatus.image_prompts_ready,
+                "нет image_prompt / картинок сцен (сначала img_pr или img)",
+                ProjectStatus.generating_image_prompts,
             )
         return True, "", None
 

@@ -55,20 +55,21 @@ def _provider_outage(exc: BaseException) -> bool:
 async def _ask_batch_until_ok(
     gpt,
     batch_msg: str,
-    strip_path: Path,
+    strip_path: Path | None,
     *,
     project_id: int,
     system: str | None,
     label: str,
 ) -> str:
-    """Пачка vision: при outage kie — backoff; после лимита → local fallback."""
+    """Пачка (vision или text-only): при outage kie — backoff; после лимита → local."""
     attempt = 0
+    images = [strip_path] if strip_path is not None else []
     while True:
         raise_if_cancelled(project_id)
         try:
             return await gpt.ask_anim_pr_batch(
                 batch_msg,
-                [strip_path],
+                images,
                 timeout=600,
                 project_id=project_id,
                 system=system,
@@ -130,7 +131,26 @@ async def _fill_remaining_local(
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_animation_prompts:
         return
-    logger.info("[#{}] make_animation_prompts starting (batch GPT flow, DB SoT)", project.id)
+    await fill_animation_prompts(session, project, finalize_status=True)
+
+
+async def fill_animation_prompts(
+    session: AsyncSession,
+    project: Project,
+    *,
+    finalize_status: bool = True,
+    max_batches: int | None = None,
+) -> dict[str, int]:
+    """Ядро anim_pr: видеопромты из image_prompt (+ PNG-лента, если есть).
+
+    finalize_status=False — для sidecar рядом с generating_images (статус не трогаем).
+    """
+    logger.info(
+        "[#{}] make_animation_prompts starting (from image_prompt, finalize={})",
+        project.id,
+        finalize_status,
+    )
+    stats = {"batches": 0, "saved_ops": 0}
 
     # Не синкаем из R48 в DB — Excel только экспорт после apply-ops.
     await db_v2.backfill_project_v2(session, project)
@@ -187,14 +207,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
 
     pending = apg.collect_batch_items(project, frames)
-    pending_shot2 = apg.collect_shot2_batch_items(project, frames)
+    pending_shot2 = (
+        apg.collect_shot2_batch_items(project, frames) if finalize_status else []
+    )
     already_done, xlsx_filled, with_image = apg.count_animation_prompt_stats(
         project, frames
     )
     if not pending and not pending_shot2:
         # Не compute_actual_status: при готовых клипах уходит в videos_ready →
         # auto_advance стартует video, хотя юзер ждал anim_pr.
-        project.status = ProjectStatus.animation_prompts_ready
+        if finalize_status:
+            project.status = ProjectStatus.animation_prompts_ready
         logger.info(
             "[#{}] make_animation_prompts: nothing to do "
             "(db_ready={}, png={}) → status={}",
@@ -204,10 +227,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             project.status.value,
         )
         await session.flush()
-        return
+        return stats
 
     logger.info(
-        "[#{}] anim_pr: очередь shot_01={} shot_02={} (db_ready={}, png={})",
+        "[#{}] anim_pr: очередь shot_01={} shot_02={} (db_ready={}, png={}, "
+        "from_image_prompt=1)",
         project.id,
         len(pending),
         len(pending_shot2),
@@ -294,18 +318,23 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             pending = apg.collect_batch_items(project, frames)
             if not pending:
                 break
+            if max_batches is not None and stats["batches"] >= max_batches:
+                break
 
             batch = pending[: apg.BATCH_SIZE]
-            strip_path = await asyncio.to_thread(
-                apg.build_batch_strip_path, batch, tmp_dir
-            )
+            use_strip = apg.batch_has_full_strip(batch)
+            strip_path: Path | None = None
+            if use_strip:
+                strip_path = await asyncio.to_thread(
+                    apg.build_batch_strip_path, batch, tmp_dir
+                )
             batch_msg = apg.build_batch_message(batch)
             logger.info(
-                "[#{}] anim_pr: ФАЗА 2 shot_01 batch {} кадров {} — лента {} ({} симв.)",
+                "[#{}] anim_pr: ФАЗА 2 shot_01 batch {} кадров {} — {} ({} симв.)",
                 project.id,
                 len(batch),
                 [it.frame.number for it in batch],
-                strip_path.name,
+                f"лента {strip_path.name}" if strip_path else "text←image_prompt",
                 len(batch_msg),
             )
             try:
@@ -334,24 +363,28 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 sheet,
                 shot=1,
             )
+            stats["batches"] += 1
 
-        while True:
+        while finalize_status:
             raise_if_cancelled(project.id)
             pending2 = apg.collect_shot2_batch_items(project, frames)
             if not pending2:
                 break
 
             batch2 = pending2[: apg.BATCH_SIZE]
-            strip2 = await asyncio.to_thread(
-                apg.build_batch_strip_path, batch2, tmp_dir
-            )
+            use_strip2 = apg.batch_has_full_strip(batch2)
+            strip2: Path | None = None
+            if use_strip2:
+                strip2 = await asyncio.to_thread(
+                    apg.build_batch_strip_path, batch2, tmp_dir
+                )
             batch_msg2 = apg.build_batch_message_shot2(batch2)
             logger.info(
-                "[#{}] anim_pr: ФАЗА 2 shot_02 batch {} кадров {} — лента {} ({} симв.)",
+                "[#{}] anim_pr: ФАЗА 2 shot_02 batch {} кадров {} — {} ({} симв.)",
                 project.id,
                 len(batch2),
                 [it.frame.number for it in batch2],
-                strip2.name,
+                f"лента {strip2.name}" if strip2 else "text-only",
                 len(batch_msg2),
             )
             try:
@@ -379,6 +412,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 sheet,
                 shot=2,
             )
+            stats["batches"] += 1
 
     except StepCancelledError as e:
         consume_stop(project.id)
@@ -391,7 +425,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             await session.refresh(project)
         except Exception:  # noqa: BLE001
             logger.warning("[#{}] не смог refresh project после ⏹", project.id)
-        return
+        return stats
+
+    if not finalize_status:
+        await session.flush()
+        return stats
 
     project.status = ProjectStatus.animation_prompts_ready
     await session.flush()
@@ -406,6 +444,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     await harness_gate_or_raise(session, project, step="anim_pr")
     await session.commit()  # ops-телеметрия в project.meta
+    return stats
 
 
 async def _save_anim_pr_batch(

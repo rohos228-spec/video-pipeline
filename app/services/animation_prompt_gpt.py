@@ -71,9 +71,28 @@ _REPLY_BLOCK_RE = re.compile(
 @dataclass(frozen=True)
 class FrameImageBatchItem:
     frame: Frame
-    image_path: Path
+    image_path: Path | None
     image_id: str
     voiceover: str
+
+
+def frame_has_usable_image_prompt(frame: Frame) -> bool:
+    """Есть ли у кадра реальный промт картинки (вход для видеопромта)."""
+    from app.generation_options import is_skippable_empty_prompt
+
+    return not is_skippable_empty_prompt(frame.image_prompt or "")
+
+
+def batch_has_full_strip(items: list[FrameImageBatchItem]) -> bool:
+    """Все кадры пачки имеют PNG — можно слать vision-ленту."""
+    return bool(items) and all(it.image_path is not None for it in items)
+
+
+def _clip_image_prompt_for_batch(text: str, *, max_chars: int = 1400) -> str:
+    t = re.sub(r"\s+", " ", (text or "").strip())
+    if len(t) <= max_chars:
+        return t
+    return t[: max_chars - 1].rstrip() + "…"
 
 
 def _normalize_ws(s: str) -> str:
@@ -194,26 +213,51 @@ def panel_label_for_item(it: FrameImageBatchItem) -> str:
 
 
 def build_batch_message(items: list[FrameImageBatchItem]) -> str:
-    """Текст к пачке: одна PNG-лента + uuid/закадровый; ответ — JSON apply-ops."""
+    """Текст к пачке: промт картинки (+ опционально PNG-лента); ответ — JSON apply-ops.
+
+    Главный вход — ``image_prompt`` кадра. PNG-лента вспомогательна, если есть.
+    """
     n = len(items)
+    use_strip = batch_has_full_strip(items)
     parts: list[str] = [
-        "Прикреплено одно изображение-лента: кадры идут слева направо, "
-        "между ними тонкие белые вертикальные разделители.",
-        "На каждой панели снизу чёрная метка FNNN (номер кадра) — "
-        "привязывай промт ТОЛЬКО по frame_uuid из списка, не по догадке о порядке.",
-        "Порядок слева → направо совпадает со списком ниже.",
-        "",
-        f"Верни ТОЛЬКО JSON apply-ops на все {n} кадров (без markdown, без прозы):",
-        '{"ops":[{"frame_uuid":"…","fields":{"промт_видео":"…"}}, …]}',
-        f"Ровно {n} объектов в ops — по одному на каждый frame_uuid ниже.",
-        "Нельзя писать весь JSON в одно поле промта — только короткий текст анимации.",
-        "",
+        "Источник №1 для промт_видео — ПРОМТ КАРТИНКИ каждого кадра ниже.",
+        "Сделай видеопромт (Veo): анимация ЭТОГО кадра, смысл/действие/место "
+        "из промта картинки. NO VOICE, single continuous take, без новых props.",
     ]
+    if use_strip:
+        parts.extend(
+            [
+                "Прикреплено изображение-лента (доп. реф): кадры слева направо, "
+                "между ними тонкие белые вертикальные разделители.",
+                "На каждой панели снизу чёрная метка FNNN — "
+                "привязывай промт ТОЛЬКО по frame_uuid из списка.",
+                "Порядок слева → направо совпадает со списком ниже.",
+            ]
+        )
+    else:
+        parts.append(
+            "Картинок/ленты нет — пиши промт_видео строго по тексту "
+            "«Промт картинки» (и закадру как визуальный beat, без речи/lip-sync)."
+        )
+    parts.extend(
+        [
+            "",
+            f"Верни ТОЛЬКО JSON apply-ops на все {n} кадров (без markdown, без прозы):",
+            '{"ops":[{"frame_uuid":"…","fields":{"промт_видео":"…"}}, …]}',
+            f"Ровно {n} объектов в ops — по одному на каждый frame_uuid ниже.",
+            "Нельзя писать весь JSON в одно поле промта — только короткий текст анимации.",
+            "",
+        ]
+    )
     for pos, it in enumerate(items, start=1):
         uuid = (getattr(it.frame, "uuid", None) or "").strip() or it.image_id
-        parts.append(f"Позиция {pos} (слева→направо) метка={panel_label_for_item(it)}")
+        img_pr = _clip_image_prompt_for_batch(
+            getattr(it.frame, "image_prompt", None) or ""
+        )
+        parts.append(f"Позиция {pos} метка={panel_label_for_item(it)}")
         parts.append(f"frame_uuid: {uuid}")
         parts.append(f"ID изображения: {it.image_id}")
+        parts.append(f"Промт картинки: {img_pr or '—'}")
         parts.append(f"Закадровый текст: {it.voiceover}")
         parts.append("")
     return "\n".join(parts).strip()
@@ -228,11 +272,13 @@ def build_batch_strip_path(items: list[FrameImageBatchItem], out_dir: Path) -> P
 
     if not items:
         raise ValueError("build_batch_strip_path: items пустой")
+    if not batch_has_full_strip(items):
+        raise ValueError("build_batch_strip_path: не у всех кадров есть PNG")
     numbers = "_".join(f"{it.frame.number:03d}" for it in items)
     out_path = out_dir / f"anim_pr_strip_{numbers}.png"
     # compose_horizontal_strip может вернуть .jpg вместо запрошенного .png
     return compose_horizontal_strip(
-        [it.image_path for it in items],
+        [it.image_path for it in items if it.image_path is not None],
         out_path,
         gutter_px=STRIP_GUTTER_PX,
         max_height=STRIP_MAX_HEIGHT_PX,
@@ -350,12 +396,16 @@ def scan_missing_animation_prompts_shot2(
 def scan_missing_animation_prompts(
     project: Project, frames: list[Frame]
 ) -> list[int]:
-    """Кадры с картинкой shot_01 на диске, но без animation_prompt в plan R48 / БД."""
+    """Кадры с промтом картинки, но без animation_prompt в БД/R48.
+
+    PNG на диске больше не обязателен: видеопромт строится из image_prompt.
+    """
+    _ = project
     missing: list[int] = []
     for fr in frames:
         if has_animation_prompt_for_frame(project, fr):
             continue
-        if scene_image_path(project, fr.number) is None:
+        if not frame_has_usable_image_prompt(fr):
             continue
         missing.append(fr.number)
     return missing
@@ -504,15 +554,15 @@ def collect_batch_items(
     project: Project,
     frames: list[Frame],
 ) -> list[FrameImageBatchItem]:
-    """Кадры с картинкой на диске и без animation_prompt (plan R48)."""
+    """Кадры с image_prompt и без animation_prompt (PNG опционален)."""
     img_index = index_scene_image_paths(project)
     out: list[FrameImageBatchItem] = []
     for fr in frames:
         if has_animation_prompt_for_frame(project, fr):
             continue
-        img = img_index.get(fr.number)
-        if img is None:
+        if not frame_has_usable_image_prompt(fr):
             continue
+        img = img_index.get(fr.number)
         vo = (fr.voiceover_text or "").strip() or voiceover_for_frame(project, fr)
         out.append(
             FrameImageBatchItem(

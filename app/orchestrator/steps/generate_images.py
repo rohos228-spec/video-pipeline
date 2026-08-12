@@ -467,6 +467,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_images:
         return
     logger.info("[#{}] generate_images starting", project.id)
+    # Параллельно: видеопромты из image_prompt, не останавливая img.
+    try:
+        from app.services.anim_pr_sidecar import ensure_anim_pr_sidecar
+
+        ensure_anim_pr_sidecar(project.id)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[#{}] anim_pr_sidecar: не стартовал", project.id, exc_info=True
+        )
 
     # PNG на диске без Artifact (после partial wipe / restore) → подтянуть в БД,
     # иначе шаг «всё есть» по диску, а compute_actual_status видит дыры.
