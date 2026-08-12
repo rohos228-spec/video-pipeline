@@ -15,6 +15,7 @@ from app.services.gpt_api import (
     chat,
     collect_result_urls,
     download_content,
+    parse_responses_sse_lines,
     xlsx_to_text,
 )
 
@@ -154,28 +155,54 @@ async def test_chat_responses_mode(monkeypatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         captured["path"] = request.url.path
         captured["body"] = json.loads(request.content)
+        # Responses mode must request SSE — иначе CF рвёт длинный JSON.
+        assert captured["body"].get("stream") is True
+        sse = (
+            'event: response.created\n'
+            'data: {"type":"response.created","response":{"id":"resp_test123","status":"in_progress"}}\n'
+            "\n"
+            'event: response.output_text.delta\n'
+            'data: {"type":"response.output_text.delta","delta":"работает"}\n'
+            "\n"
+            'event: response.completed\n'
+            'data: {"type":"response.completed","response":{"id":"resp_test123","status":"completed",'
+            '"output":[{"type":"message","role":"assistant","content":'
+            '[{"type":"output_text","text":"работает"}]}],'
+            '"usage":{"total_tokens":9}}}\n'
+            "\n"
+            "data: [DONE]\n"
+        )
         return httpx.Response(
             200,
-            json={
-                "status": "completed",
-                "output": [
-                    {
-                        "role": "assistant",
-                        "type": "message",
-                        "content": [{"type": "output_text", "text": "работает"}],
-                        "status": "completed",
-                    }
-                ],
-            },
+            content=sse.encode("utf-8"),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_httpx(monkeypatch, handler)
     res = await chat(prompt="скажи", model="gpt-5-6-sol")
     assert res.text == "работает"
     assert res.finish_reason == "completed"
+    assert res.response_id == "resp_test123"
     assert captured["path"] == "/codex/v1/responses"
     assert "input" in captured["body"]  # responses-формат
     assert "messages" not in captured["body"]
+
+
+def test_parse_responses_sse_lines_prefers_completed_payload() -> None:
+    lines = [
+        'data: {"type":"response.created","response":{"id":"resp_abc","status":"in_progress"}}',
+        'data: {"type":"response.output_text.delta","delta":"hel"}',
+        'data: {"type":"response.output_text.delta","delta":"lo"}',
+        (
+            'data: {"type":"response.completed","response":{"id":"resp_abc","status":"completed",'
+            '"output":[{"type":"message","content":[{"type":"output_text","text":"hello world"}]}]}}'
+        ),
+    ]
+    text, status, payload, rid = parse_responses_sse_lines(lines)
+    assert text == "hello world"
+    assert status == "completed"
+    assert rid == "resp_abc"
+    assert payload.get("id") == "resp_abc"
 
 
 @pytest.mark.asyncio

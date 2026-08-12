@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -99,6 +100,8 @@ class GptChatResult:
     finish_reason: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
+    # kie Codex / OpenAI Responses: id вида resp_… (в UI kie = Task ID)
+    response_id: str = ""
 
 
 def gpt_api_enabled() -> bool:
@@ -917,6 +920,174 @@ def _parse_responses(payload: dict[str, Any]) -> tuple[str, str]:
     return text, status
 
 
+def _http_timeout(total_s: float) -> httpx.Timeout:
+    """Общий таймаут + короткий connect (не ждать connect = GPT_TIMEOUT)."""
+    total = max(1.0, float(total_s))
+    return httpx.Timeout(total, connect=min(30.0, total))
+
+
+def _raise_http_status(
+    status: int,
+    body_text: str,
+    *,
+    use_model: str,
+) -> None:
+    """Общая обработка HTTP-кодов GPT (fatal / retryable)."""
+    if status in _FATAL_STATUS:
+        low = body_text.lower()
+        hint = ""
+        if "apikey error" in low:
+            hint = (
+                f" — ключ не авторизован на модель {use_model!r} "
+                "(добавь модель в whitelist ключа grsai)"
+            )
+        elif "model not register" in low or "not register" in low:
+            hint = f" — модель {use_model!r} не существует у провайдера (проверь GPT_MODEL)"
+        raise GptApiError(
+            f"GPT HTTP {status}: {body_text[:400]}{hint}",
+            context={"status_code": status, "retryable": False, "model": use_model},
+        )
+    if status in _RETRY_STATUS or status >= 500:
+        raise GptApiError(
+            f"GPT HTTP {status}: {body_text[:300]}",
+            context={"status_code": status, "retryable": True, "model": use_model},
+        )
+    if status >= 400:
+        raise GptApiError(
+            f"GPT HTTP {status}: {body_text[:400]}",
+            context={"status_code": status, "retryable": False, "model": use_model},
+        )
+
+
+def parse_responses_sse_lines(
+    lines: list[str],
+) -> tuple[str, str, dict[str, Any], str]:
+    """Собрать (text, status, final_payload, response_id) из SSE lines kie Codex.
+
+    Важно: при ``stream:false`` Cloudflare/прокси рвёт длинный ответ
+    (у kie задача уже success). SSE держит соединение дельтами.
+    """
+    delta_parts: list[str] = []
+    response_id = ""
+    final_response: dict[str, Any] | None = None
+    status = ""
+
+    for raw in lines:
+        line = (raw or "").strip()
+        if not line or line.startswith("event:"):
+            continue
+        if not line.startswith("data:"):
+            continue
+        data_str = line[5:].strip()
+        if not data_str or data_str == "[DONE]":
+            continue
+        try:
+            event = json.loads(data_str)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        etype = str(event.get("type") or "")
+        if etype in {"response.created", "response.in_progress"}:
+            resp = event.get("response")
+            if isinstance(resp, dict) and resp.get("id"):
+                response_id = str(resp["id"])
+        elif etype == "response.output_text.delta":
+            delta = event.get("delta")
+            if delta:
+                delta_parts.append(str(delta))
+        elif etype == "response.completed":
+            resp = event.get("response")
+            if isinstance(resp, dict):
+                final_response = resp
+                if resp.get("id"):
+                    response_id = str(resp["id"])
+                status = str(resp.get("status") or "completed")
+
+    text = ""
+    if final_response is not None:
+        try:
+            text, status = _parse_responses(final_response)
+        except GptApiError:
+            text = "".join(delta_parts).strip()
+            status = status or str(final_response.get("status") or "")
+    else:
+        text = "".join(delta_parts).strip()
+
+    if not text:
+        raise GptApiError(
+            "GPT(responses/stream): пустой output",
+            context={
+                "retryable": True,
+                "response_id": response_id,
+                "error_kind": "empty_stream",
+            },
+        )
+    return text, status or "completed", final_response or {}, response_id
+
+
+async def _chat_responses_stream(
+    *,
+    url: str,
+    headers: dict[str, str],
+    body: dict[str, Any],
+    timeout: float,
+    use_model: str,
+) -> GptChatResult:
+    """POST Responses API с stream=true и сборкой текста из SSE."""
+    stream_body = {**body, "stream": True}
+    lines: list[str] = []
+    cf_ray = ""
+    logged_task_id = False
+    async with httpx.AsyncClient(timeout=_http_timeout(timeout)) as client:
+        async with client.stream(
+            "POST", url, headers=headers, json=stream_body
+        ) as resp:
+            cf_ray = resp.headers.get("cf-ray") or ""
+            if resp.status_code >= 400:
+                err_body = (await resp.aread()).decode("utf-8", errors="replace")
+                _raise_http_status(resp.status_code, err_body, use_model=use_model)
+            async for line in resp.aiter_lines():
+                lines.append(line)
+                if logged_task_id or not line.startswith("data:") or "resp_" not in line:
+                    continue
+                try:
+                    ev = json.loads(line[5:].strip())
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(ev, dict):
+                    continue
+                resp_obj = ev.get("response")
+                if isinstance(resp_obj, dict) and resp_obj.get("id"):
+                    logger.info(
+                        "gpt_api.chat task_id={} cf_ray={} model={}",
+                        resp_obj["id"],
+                        cf_ray or "-",
+                        use_model,
+                    )
+                    logged_task_id = True
+
+    text, finish, final_payload, response_id = parse_responses_sse_lines(lines)
+    usage = (
+        final_payload.get("usage")
+        if isinstance(final_payload.get("usage"), dict)
+        else {}
+    )
+    raw = dict(final_payload) if final_payload else {"stream_lines": len(lines)}
+    if response_id:
+        raw.setdefault("id", response_id)
+    if cf_ray:
+        raw["cf_ray"] = cf_ray
+    return GptChatResult(
+        text=text,
+        model=use_model,
+        finish_reason=finish,
+        usage=usage,
+        raw=raw,
+        response_id=response_id,
+    )
+
+
 def _parse_choice(payload: dict[str, Any]) -> tuple[str, str]:
     """(text, finish_reason) из ответа chat/completions."""
     _check_provider_envelope(payload)
@@ -973,6 +1144,8 @@ async def chat(
 
     responses_mode = is_responses_mode()
     if responses_mode:
+        # stream=true: иначе Cloudflare рвёт длинный non-stream JSON, а у kie
+        # задача уже success (см. kie.ai/logs Task ID = resp_…).
         body: dict[str, Any] = {
             "model": use_model,
             "input": build_input(
@@ -983,7 +1156,7 @@ async def chat(
                 history=history,
                 xlsx_write_contract=xlsx_write_contract,
             ),
-            "stream": False,
+            "stream": True,
         }
     else:
         body = {
@@ -1005,33 +1178,30 @@ async def chat(
     while attempt <= retries:
         attempt += 1
         try:
-            async with httpx.AsyncClient(timeout=use_timeout) as client:
+            if responses_mode:
+                result = await _chat_responses_stream(
+                    url=url,
+                    headers=headers,
+                    body=body,
+                    timeout=use_timeout,
+                    use_model=use_model,
+                )
+                logger.info(
+                    "gpt_api.chat OK provider={} model={} attempt={} "
+                    "finish={} chars={} task_id={}",
+                    provider_label,
+                    use_model,
+                    attempt,
+                    result.finish_reason,
+                    len(result.text),
+                    result.response_id or result.raw.get("id") or "-",
+                )
+                return result
+
+            async with httpx.AsyncClient(timeout=_http_timeout(use_timeout)) as client:
                 resp = await client.post(url, headers=headers, json=body)
             status = resp.status_code
-            if status in _FATAL_STATUS:
-                low = resp.text.lower()
-                hint = ""
-                if "apikey error" in low:
-                    hint = (
-                        f" — ключ не авторизован на модель {use_model!r} "
-                        "(добавь модель в whitelist ключа grsai)"
-                    )
-                elif "model not register" in low or "not register" in low:
-                    hint = f" — модель {use_model!r} не существует у провайдера (проверь GPT_MODEL)"
-                raise GptApiError(
-                    f"GPT HTTP {status}: {resp.text[:400]}{hint}",
-                    context={"status_code": status, "retryable": False, "model": use_model},
-                )
-            if status in _RETRY_STATUS or status >= 500:
-                raise GptApiError(
-                    f"GPT HTTP {status}: {resp.text[:300]}",
-                    context={"status_code": status, "retryable": True, "model": use_model},
-                )
-            if status >= 400:
-                raise GptApiError(
-                    f"GPT HTTP {status}: {resp.text[:400]}",
-                    context={"status_code": status, "retryable": False, "model": use_model},
-                )
+            _raise_http_status(status, resp.text, use_model=use_model)
             try:
                 payload = resp.json()
             except Exception as e:  # noqa: BLE001
@@ -1039,9 +1209,7 @@ async def chat(
                     f"GPT: ответ не JSON: {resp.text[:300]}",
                     context={"retryable": True, "model": use_model},
                 ) from e
-            text, finish = (
-                _parse_responses(payload) if responses_mode else _parse_choice(payload)
-            )
+            text, finish = _parse_choice(payload)
             usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
             logger.info(
                 "gpt_api.chat OK provider={} model={} attempt={} finish={} chars={}",
