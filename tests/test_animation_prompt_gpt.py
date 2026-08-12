@@ -270,7 +270,10 @@ async def test_start_step_anim_pr_skips_when_no_missing_on_disk(
 async def test_start_step_anim_pr_explicit_reruns_even_if_ready(
     anim_pr_session, tmp_path: Path, monkeypatch
 ) -> None:
-    """Ручной ▶ всегда regenerates: wipe → generating_animation_prompts."""
+    """Ручной ▶ при готовых промтах: status → generating_*; soft clear без wipe R48/DB.
+
+    Полный wipe animation_prompt — только reset_step / force_wipe=True.
+    """
     from app.settings import settings
     from sqlalchemy import select
 
@@ -283,12 +286,19 @@ async def test_start_step_anim_pr_explicit_reruns_even_if_ready(
     scenes.mkdir(parents=True)
     (scenes / "frame_001_abcd1234.png").write_bytes(b"x" * 250_000)
 
+    before = (
+        await session.execute(select(Frame).where(Frame.project_id == project.id))
+    ).scalar_one()
+    kept = (before.animation_prompt or "").strip()
+    assert kept  # fixture даёт готовый промт
+
     status = await start_step(session, project, "anim_pr", explicit_ui_start=True)
     assert status is ProjectStatus.generating_animation_prompts
     fr = (
         await session.execute(select(Frame).where(Frame.project_id == project.id))
     ).scalar_one()
-    assert not (fr.animation_prompt or "").strip()
+    # Soft ▶ сохраняет уже сгенерированные промты (не сжигает пачки).
+    assert (fr.animation_prompt or "").strip() == kept
 
 
 @pytest.mark.asyncio

@@ -30,11 +30,15 @@
 | `03_config/` | `env.example` (без секретов), pyproject |
 | `MANIFEST.txt` | git HEAD и список файлов на момент сборки |
 
-## Обновить копии из репо
+## Обновить и проверить правдивость
 
 ```text
 python scripts/build_ai_pack.py
+python scripts/verify_ai_pack.py
 ```
+
+`verify` сверяет копии с источниками, ссылки START_HERE, отсутствие секретов  
+и ключевые факты (DB SoT, media gates, Studio меню).
 
 Оригиналы живут в `docs/`, `AGENTS.md`, `.cursor/rules/`.  
 Этот каталог — удобная **выгрузка для чата**, не второй SoT.

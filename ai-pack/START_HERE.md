@@ -5,6 +5,13 @@
 
 Эта папка `ai-pack/` — **пакет знаний**. Прикрепи её (или хотя бы этот файл + нужные подпапки) к чату.
 
+Проверка правдивости копий (из корня репо):
+
+```text
+python scripts/build_ai_pack.py
+python scripts/verify_ai_pack.py
+```
+
 ---
 
 ## 1. Прочитай по порядку (обязательно)
@@ -27,16 +34,19 @@
 ## 2. Железобетонные правила
 
 1. **Данные:** источник правды = **DB** (`frames`, `prompt_versions`, apply-ops).  
-   Excel (`project.xlsx`) = **экспорт / вид**, не ответ GPT.
+   Excel (`project.xlsx`) = **экспорт / вид**, не ответ GPT.  
+   Для anim_pr skip/ready смотри `Frame.animation_prompt` (R48 — зеркало).
 2. **Ответ GPT для правок кадров:** JSON apply-ops  
    `{"ops":[{"frame_uuid":"…","fields":{…}}]}`  
-   Не учить модель «приложи xlsx» / `# Лист:` (это legacy).
+   Не учить модель «приложи xlsx» / `# Лист:` как основной ответ (`project_file`).
 3. **Статусы:** sidebar = `Project.status`, canvas = `NodeRun`.  
-   Не путать; sidecar anim_pr пишет промты, но **не** двигает Project.status на ready.
+   Sidecar anim_pr пишет промты в DB/R48 и может пометить NodeRun `animation_prompts=done`,  
+   но **не** ставит `Project.status=animation_prompts_ready`.
 4. **Порядок media:** images → **animation_prompts** → videos.  
-   Не прыгать в video без video prompts.
-5. **Git:** ветка из `.env` → `ORCHESTRATOR_GIT_BRANCH` (`housepc` / `tompc` / … / `main`).  
-   После фикса: commit + **push в эту ветку**, в ответе: `git HEAD: <sha> уже в <ветка>`.
+   `can_enter_running(generating_videos)` требует video prompts (не только PNG).
+5. **Git:** ветка = `ORCHESTRATOR_GIT_BRANCH` из `.env`  
+   (`housepc` / `tompc` / `strangepc` / `workpc` / `main`). Не угадывай ПК — читай `.env`.  
+   После фикса: commit + push в **эту** ветку; в ответе `git HEAD: <sha> уже в <ветка>`.
 6. **Секреты:** никогда не просить и не выдумывать ключи из `.env`.  
    В паке только `03_config/env.example` (пустые плейсхолдеры).
 
@@ -49,8 +59,13 @@
 3. Логи: `data/backend.log`, `data/backend-*.log`.
 4. Типовые тесты:  
    `pytest tests/test_status_sequencing_gates.py tests/test_animation_prompt_gpt.py tests/test_chatgpt_attachment_guard.py -q`
-5. Studio: `STUDIO.cmd` → `[1]` → http://127.0.0.1:8765  
-   Починка: `[6]`, диагностика: `[7]`.
+5. Studio (`STUDIO.cmd` / `scripts/studio.ps1`):  
+   **[1]** запуск → http://127.0.0.1:8765  
+   **[2]** остановить бэкенд  
+   **[4]** обновить с `origin/<ветка>` и запустить  
+   **[5]** сменить ветку ПК  
+   **[6]** починить установку  
+   **[7]** диагностика  
 
 ---
 
@@ -59,7 +74,7 @@
 - Контракт IO → `01_data_prompts/PROMPT_CONTRACT.md`
 - Blocks / steps / vars → `01_data_prompts/PROMPTS_BLOCKS.md`
 - Локальные тексты промптов лежат в `prompts/` **в репо** (часто не в git) — не дублируются сюда.
-- Code footers (что код дописывает к GPT): `gpt_text_builder.py`, `chatgpt_xlsx.py` — только apply-ops / текст плана.
+- Code footers: `app/services/gpt_text_builder.py`, `app/services/chatgpt_xlsx.py` — apply-ops / текст плана, не «приложи xlsx».
 
 ---
 
@@ -76,10 +91,9 @@
 
 ## 6. Обновить пакет после правок в репо
 
-Из корня video-pipeline:
-
 ```text
 python scripts/build_ai_pack.py
+python scripts/verify_ai_pack.py
 ```
 
 Перезапишет копии в `00_*`…`03_*` и `MANIFEST.txt`.  

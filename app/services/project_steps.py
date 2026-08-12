@@ -290,7 +290,8 @@ async def start_step(
                 project.id,
             )
 
-        # Ручной ▶ из UI: всегда полный переген с заменой (даже если R48 готов).
+        # Ручной ▶: идём в generating_* (даже если промты уже есть); wipe — soft
+        # (force_wipe=False ниже). Полный сброс промтов — reset_step.
         # Авто/очередь без missing — skip на ready (не прыгаем в video/images).
         if not explicit_ui_start:
             synced = await sync_animation_prompts_from_xlsx(session, project)

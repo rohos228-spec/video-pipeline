@@ -7,16 +7,16 @@
 
 ### Git: push to this PC's branch (mandatory)
 
-PC branches: **`housepc`**, **`tompc`**, **`strangepc`**, **`workpc`**.
-Local target = `ORCHESTRATOR_GIT_BRANCH` in `.env` (this machine: **`housepc`**).
+PC branches: **`housepc`**, **`tompc`**, **`strangepc`**, **`workpc`**, plus **`main`**.
+Local target = `ORCHESTRATOR_GIT_BRANCH` in `.env` (read it — do not assume `housepc`).
 
 Agent workflow after any code change:
 
-1. `git checkout <ORCHESTRATOR_GIT_BRANCH>` (here: `housepc`) and pull.
+1. `git checkout <ORCHESTRATOR_GIT_BRANCH>` and pull.
 2. Commit + **`git push origin <branch>`**.
 3. Tell the user **`git HEAD: <sha>` уже в `<branch>`**.
 
-Do **not** push to `main` from a PC branch unless the user explicitly asks to merge into `main`.
+Do **not** push to a different branch than `ORCHESTRATOR_GIT_BRANCH` unless the user explicitly asks.
 
 ### Overview
 

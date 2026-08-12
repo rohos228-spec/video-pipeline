@@ -7,8 +7,9 @@ alwaysApply: true
 
 ## Git: ветка ПК (обязательно)
 
-Рабочие ветки машин: **`housepc`**, **`tompc`**, **`strangepc`**, **`workpc`**.
-Целевая ветка задаётся локально: `ORCHESTRATOR_GIT_BRANCH` в `.env` (этот ПК = `housepc`).
+Рабочие ветки машин: **`housepc`**, **`tompc`**, **`strangepc`**, **`workpc`**, плюс **`main`**.
+Целевая ветка задаётся локально: `ORCHESTRATOR_GIT_BRANCH` в `.env`
+(и `data/studio-pc-branch`). **Не хардкодить ПК** — смотри `.env` на этой машине.
 
 После **любого** исправления кода (баг, монтаж, UI, backend):
 
@@ -20,11 +21,11 @@ alwaysApply: true
 
 Запрещено:
 
-- пушить с housepc в `main` / чужую ПК-ветку (если пользователь не сказал явно)
+- пушить в чужую ПК-ветку / не в `ORCHESTRATOR_GIT_BRANCH` (если пользователь не сказал явно)
 - оставлять фикс только в `cursor/…` и говорить «PR готов, подтяни когда смержим»
 - считать задачу выполненной, если на Windows у пользователя всё ещё старый `git HEAD`
 
-Слияние ПК-веток в `main` — отдельной командой пользователя.
+Слияние ПК-веток в `main` — отдельной командой пользователя (если целевая ветка не `main`).
 
 ## Запуск и обновление
 - Studio: `STUDIO.cmd` → пункт [1] → http://127.0.0.1:8765
@@ -34,7 +35,7 @@ alwaysApply: true
 - **[6]** Починить; **[7]** Диагностика; [1][2][3] как раньше
 - Локальный код без git reset: правки вручную, затем `stop-backend.cmd` + `STUDIO.cmd` [1]
 - **НЕ** использовать скрипты из `scripts/legacy/` (старые FORCE-UPDATE / VideoPipelineStudio)
-- Ветка этого ПК: `housepc` (`ORCHESTRATOR_GIT_BRANCH=housepc`)
+- Ветка этой машины: значение `ORCHESTRATOR_GIT_BRANCH` в `.env` (сейчас часто `main` или имя ПК)
 
 ## ChatGPT attach (`app/bots/chatgpt.py`)
 - Счёт вложений — **inline** `page.evaluate` в `_count_attachment_previews` / `_attachments_upload_state`
@@ -44,9 +45,11 @@ alwaysApply: true
 - Успех attach в логе: `ChatGPT: drag-drop batch — [...]` и `все файлы видны`
 
 ## anim_pr
-- Источник правды для пропуска/генерации: **колонка R48 в project.xlsx**, не stale DB
-- `animation_prompt_gpt.py`: `sync_animation_prompts_from_xlsx`, `scan_missing_animation_prompts`
-- Soft retry без wipe: `step_failure_policy._SOFT_RETRY_STEP_CODES` включает `anim_pr`, `img`, `video`
+- Источник правды для пропуска/генерации: **DB** (`Frame.animation_prompt` / apply-ops).
+  Excel R48 — зеркало (sync write-through / `sync_animation_prompts_from_xlsx`), не SoT для skip.
+- `animation_prompt_gpt.py`: `has_animation_prompt_for_frame`, `scan_missing_animation_prompts`, sync R48↔DB
+- Soft ▶ / soft retry без wipe готовых промтов: `clear_step_outputs_for_rerun(force_wipe=False)`;
+  полный wipe — `reset_step` / `force_wipe=True`. Soft retry steps: `anim_pr`, `img`, `video`
 - Пауза после ошибок (30 мин): снимается ручным `POST /api/projects/{id}/steps/anim_pr/run` или кнопкой в Studio
 
 ## Сбои шагов
