@@ -194,6 +194,24 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
     accent: "300 55% 62%",
     iconKey: "music",
   },
+  sfx_plan: {
+    type: "sfx_plan",
+    label: "План звуков",
+    description:
+      "GPT-агент: метки звуков сопровождения по таймлайну (время, вид, промт, громкость).",
+    category: "audio",
+    accent: "340 60% 60%",
+    iconKey: "audio-waveform",
+  },
+  sfx_gen: {
+    type: "sfx_gen",
+    label: "Звуки (SFX)",
+    description:
+      "Создание звуков сопровождения по плану: 11Labs SFX API или локальный синтез; микс в сборке.",
+    category: "audio",
+    accent: "340 60% 60%",
+    iconKey: "audio-waveform",
+  },
   audio: {
     type: "audio",
     label: "Озвучка",

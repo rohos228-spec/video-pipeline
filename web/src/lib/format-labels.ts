@@ -103,6 +103,8 @@ export function formatStepCode(code: string): string {
     anim_pr: "промты анимации",
     videos: "видео",
     audio: "озвучка",
+    sfx_plan: "план звуков",
+    sfx_gen: "звуки (sfx)",
     assemble: "сборка",
     publish: "публикация",
   };
