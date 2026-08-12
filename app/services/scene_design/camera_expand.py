@@ -389,30 +389,12 @@ def _pick_unique_quote(
     if wn and wn in vo_norm and wn not in used:
         used.add(wn)
         return whole
-    vo_words = full_vo.split()
-    for extra in range(1, 12):
-        if from_end:
-            chunk = " ".join(vo_words[max(0, len(vo_words) - 8 - extra) :])
-        else:
-            chunk = " ".join(vo_words[: 8 + extra])
-        cn = _fold_ru(chunk)
-        if cn and cn in vo_norm and cn not in used:
-            used.add(cn)
-            return chunk
-    # Последний шанс: уникальный префикс/суффикс из full_vo, не «битая» цитата.
-    for n in range(6, min(20, len(vo_words)) + 1):
-        chunk = " ".join(vo_words[-n:] if from_end else vo_words[:n])
-        cn = _fold_ru(chunk)
-        if cn and cn in vo_norm and cn not in used:
-            used.add(cn)
-            return chunk
-    used.add(wn or "scene")
-    # Только если whole реально в VO; иначе короткий якорь из full_vo.
+    # Не расширять цитату чужим текстом полного закадра: иначе у короткой
+    # ячейки (титр «Спесивцевы.») end_words становится финалом ролика.
     if wn and wn in vo_norm:
         return whole
-    fallback = " ".join(vo_words[:6] if not from_end else vo_words[-6:])
-    used.add(_fold_ru(fallback) or "scene")
-    return fallback or whole or "scene"
+    used.add(wn or "scene")
+    return whole or "scene"
 
 
 async def renumber_frames_by_sort_key(

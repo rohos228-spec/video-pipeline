@@ -405,3 +405,15 @@ def test_force_scenes_from_chrono_overrides_gpt_quotes():
     assert out["scenes"][0]["start_words"] == "Альфа один тут"
     assert out["ops"][0]["fields"]["id_scene"] == "scene_01"
     assert out["ops"][1]["fields"]["id_scene"] == "scene_01"
+
+
+def test_pick_unique_quote_does_not_steal_film_ending():
+    from app.services.scene_design.camera_expand import _pick_unique_quote
+
+    full = "Спесивцевы. Обычный подъезд. Финальная ответственность в документах."
+    used: set[str] = set()
+    start = _pick_unique_quote("Спесивцевы.", full, used, from_end=False)
+    end = _pick_unique_quote("Спесивцевы.", full, used, from_end=True)
+    assert "Спесивцевы" in start
+    assert "документах" not in end
+    assert "Финальная" not in end

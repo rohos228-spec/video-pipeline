@@ -116,15 +116,14 @@ def _char_name_index(char_rows: list[dict[str, Any]]) -> dict[str, str]:
         if not name:
             continue
         name_to_id[_fold_ru(name)] = cid
-        for part in re.split(r"[\s,]+", name):
-            p = _fold_ru(part)
-            if len(p) >= 4:
-                name_to_id.setdefault(p, cid)
         folded = _fold_ru(name)
+        first = folded.split()[0] if folded.split() else ""
+        if len(first) >= 4:
+            name_to_id.setdefault(first, cid)
         if "отец" in folded:
             name_to_id.setdefault("отец александра", cid)
             name_to_id.setdefault("отец", cid)
-        if "людмил" in folded or "мать" in folded:
+        if "людмил" in folded:
             name_to_id.setdefault("мать", cid)
         if "надежд" in folded:
             name_to_id.setdefault("сестра", cid)
@@ -350,12 +349,7 @@ def stamp_characters_onto_ops(
         if not ids:
             picked = scene_persons.get(sid, "").strip()
             ids = _who_to_cnn(picked, name_to_id, extras)
-        if not ids:
-            vo = uuid_vo.get(str(op2.get("frame_uuid") or "").strip(), "")
-            ids = _who_to_cnn(vo, name_to_id, extras)
-        ids = sorted(set(ids), key=lambda x: (len(x) != 3, x))
-        # стабильный порядок c01, c02…
-        ids.sort()
+        ids = sorted(set(ids))
         picked = ", ".join(ids)
         if picked:
             fields["персонажи"] = picked
