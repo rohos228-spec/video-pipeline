@@ -645,6 +645,18 @@ async def run_category_agents(
             except Exception as e:  # noqa: BLE001
                 errors[name] = str(e)
                 logger.warning("[#{}] scene_design/{} failed: {}", project.id, name, e)
+                # action/camera дробит чанки: бракованный merge не должен
+                # залипать в chunk-checkpoint → soft-retry без нового GPT.
+                if name in ("action", "camera"):
+                    try:
+                        invalidate_agent(project, name)
+                    except Exception:  # noqa: BLE001
+                        logger.debug(
+                            "[#{}] invalidate {} after agent fail",
+                            project.id,
+                            name,
+                            exc_info=True,
+                        )
                 return
         save_checkpoint(project, name, data)
         results[name] = data

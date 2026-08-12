@@ -734,8 +734,10 @@ def validate_chrono_dyn_action_scenes(scenes: list[Any]) -> None:
             f"scene_design/action: {compound_phases}/{object_phases} фаз склеивают "
             f"несколько действий («…, … и …»). 1 кадр = 1 действие — разбей фазы."
         )
-    # V10: соя (ходит/проходит мимо/лестница) считается пассивом; порог жёстче.
-    if object_phases >= 10 and passive_phases / object_phases >= 0.08:
+    # V10: соя (ходит/проходит мимо/лестница) = пассив.
+    # 0.08 резал валидные chrono_dyn срезы (3/32≈9% при лифте/взгляде в VO).
+    # 0.15 — ещё режет «проходит мимо»-простыни, но допускает 2–4 B-roll фазы.
+    if object_phases >= 10 and passive_phases / object_phases >= 0.15:
         raise SceneDesignAgentError(
             f"scene_design/action: {passive_phases}/{object_phases} фаз — соя/"
             f"пассив («проходит мимо/лестница/лифт/отводит взгляд/смотрит»). "
