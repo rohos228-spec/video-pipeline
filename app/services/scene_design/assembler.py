@@ -146,11 +146,14 @@ def _who_to_cnn(
     if any(x in folded for x in ("титульн", "надпись", "фамилия")):
         return found
     for name, cid in sorted(name_to_id.items(), key=lambda x: -len(x[0])):
-        if name and name in folded and cid not in found:
+        if name and re.search(
+            rf"(?<![0-9a-zа-яё]){re.escape(name)}(?![0-9a-zа-яё])", folded
+        ) and cid not in found:
             found.append(cid)
     extra_needles = (
         ("соседк", "соседка"),
         ("жильц", "жильцы дома"),
+        ("жилец", "жильцы дома"),
         ("жител", "жильцы дома"),
     )
     for needle, label in extra_needles:

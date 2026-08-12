@@ -140,3 +140,13 @@ def test_local_assemble_fills_place_lighting_cnn_and_splits_fields():
     assert op0.get("акцент") != op0.get("особенность_сцены")
     assert op0.get("смысл_сцены") != op0.get("особенность_сцены")
     assert "c01" in (sc.get("персонажи_сцены") or "")
+
+
+def test_who_to_cnn_father_is_not_alexander():
+    chars = [{"id": "c01", "имя": "Александр Спесивцев"}, {"id": "c03", "имя": "отец Александра"}]
+    idx = sa._char_name_index(chars)
+    extras = {"соседка": "c05", "жильцы дома": "c06"}
+    ids = sa._who_to_cnn("отец Александра, жилец дома", idx, extras)
+    assert "c03" in ids
+    assert "c06" in ids
+    assert "c01" not in ids
