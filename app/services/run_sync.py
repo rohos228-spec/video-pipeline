@@ -568,6 +568,27 @@ async def prepare_node_for_step_start(
     resolved_key = (node_key or "").strip() or None
     if step_code == "excel_gpt" and not resolved_key and enrich_slot is not None:
         resolved_key = resolve_excel_gpt_node_key_for_slot(project, enrich_slot)
+    # advance_project готовит NodeRun без node_key — подтянуть only_agent с ▶ ноды.
+    if step_code == "scene_d" and not resolved_key:
+        try:
+            from app.services.scene_design import runner as sd_runner
+
+            only = sd_runner.get_only_agent(project)
+            if only:
+                resolved_key = sd_runner.resolve_sd_node_key(project, only)
+                if resolved_key:
+                    logger.info(
+                        "[#{}] prepare_node: scene_d only_agent={} → {}",
+                        project.id,
+                        only,
+                        resolved_key,
+                    )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[#{}] prepare_node: only_agent resolve failed",
+                project.id,
+                exc_info=True,
+            )
     nr = await resolve_node_run_for_step(
         session,
         project,
@@ -647,9 +668,41 @@ async def prepare_node_for_step_start(
                 f"(текущий статус: {nr.status.value})"
             )
         return False
-    # Веер scene_design: общий шаг scene_d гоняет все 5 нод sd_agent разом —
-    # поднять queued→running и для остальных (не только первой найденной).
-    if (
+
+    # Точечный ▶ (meta.scene_design.only_agent): НЕ поднимать весь веер.
+    # advance_project зовёт prepare повторно без node_key — иначе UI снова
+    # зажигает все sd_agent как running, хотя GPT идёт только у одной ноды.
+    only_agent: str | None = None
+    if step_code == "scene_d":
+        try:
+            from app.services.scene_design import runner as sd_runner
+
+            only_agent = sd_runner.get_only_agent(project)
+        except Exception:  # noqa: BLE001
+            only_agent = None
+
+    if only_agent and step_code == "scene_d":
+        run_scope = await _workflow_run_with_nodes(session, project.id)
+        if run_scope is not None:
+            for other in run_scope.node_runs:
+                if (
+                    _nr_effective_type(run_scope, other) != "sd_agent"
+                    or other.node_key == nr.node_key
+                ):
+                    continue
+                if other.status in (
+                    NodeRunStatus.running,
+                    NodeRunStatus.queued,
+                    NodeRunStatus.waiting_hitl,
+                ):
+                    reset_node_to_pending(
+                        other,
+                        project_id=project.id,
+                        initiator="only_agent_scope",
+                    )
+        await session.flush()
+    # Веер scene_design: полный scene_d (без only_agent) гоняет все sd_agent.
+    elif (
         step_code == "scene_d"
         and not resolved_key
         and _effective_type_from_nr(nr) == "sd_agent"
@@ -1336,6 +1389,41 @@ async def _reconcile_stale_node_runs(
                 running_type = _canvas_node_type_for_running(project.status)
                 status_val = getattr(project.status, "value", str(project.status))
                 eff = _effective_type_from_nr(nr)
+                # Точечный ▶ скелета: чужие sd_agent в running — сбросить, не keep.
+                if (
+                    status_val == "scene_designing"
+                    and eff == "sd_agent"
+                ):
+                    try:
+                        from app.services.scene_design import runner as sd_runner
+
+                        only = sd_runner.get_only_agent(project)
+                        only_key = (
+                            sd_runner.resolve_sd_node_key(project, only)
+                            if only
+                            else None
+                        )
+                    except Exception:  # noqa: BLE001
+                        only = None
+                        only_key = None
+                    if only_key and nr.node_key != only_key:
+                        if reset_node_to_pending(
+                            nr,
+                            project_id=run.project_id,
+                            initiator="only_agent_reconcile",
+                        ):
+                            fixed += 1
+                            logger.info(
+                                "[#{}] NodeRun {}/{}: {} → pending "
+                                "(only_agent={}, {})",
+                                run.project_id,
+                                nr.node_type,
+                                nr.node_key,
+                                old.value,
+                                only,
+                                initiator,
+                            )
+                        continue
                 if (
                     running_type is not None
                     and running_type == eff

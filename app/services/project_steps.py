@@ -243,6 +243,8 @@ async def start_step(
         from app.services.scene_design import runner as sd_runner
 
         sd_runner.clear_only_agent(project)
+
+    if sd_agent_name or step_code in ("scene_d", "scene_asm"):
         # Нода сборщика на канвасе → pending (сборка устарела).
         try:
             from app.services.run_sync import _workflow_run_with_nodes
