@@ -191,6 +191,20 @@ def load_prompt(agent: str, project: Any | None = None) -> str:
 
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+_JSON_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+_JSON_TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
+
+
+def loads_json_loose(raw: str) -> Any:
+    """json.loads + снятие /* */ и висячих запятых (модели часто копируют stub)."""
+    if not isinstance(raw, str) or not raw.strip():
+        raise json.JSONDecodeError("empty", raw or "", 0)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        cleaned = _JSON_BLOCK_COMMENT_RE.sub("", raw)
+        cleaned = _JSON_TRAILING_COMMA_RE.sub(r"\1", cleaned)
+        return json.loads(cleaned)
 
 
 def extract_json_object(
@@ -234,7 +248,7 @@ def extract_json_object(
     parsed: list[dict[str, Any]] = []
     for cand in candidates:
         try:
-            data = json.loads(cand)
+            data = loads_json_loose(cand)
         except Exception:  # noqa: BLE001
             continue
         if isinstance(data, dict):
@@ -249,7 +263,7 @@ def extract_json_object(
         for k in marker_keys:
             v = d.get(k)
             if isinstance(v, list) and v:
-                score += 2
+                score += 10  # непустой список — главный критерий
             elif isinstance(v, list):
                 score += 1
             elif k in d:
@@ -804,18 +818,28 @@ def parse_agent_slice(
     ``validate=False`` — для частичных чанков после 524 (полная проверка на merge).
     """
     list_key = LIST_KEY[agent]
-    data = extract_json_object(text, marker_keys=(list_key, "error"))
+    markers: tuple[str, ...] = (list_key, "error")
+    if agent == SKELETON:
+        # Модель иногда пишет «сцены» вместо scenes.
+        markers = (list_key, "сцены", "error")
+    data = extract_json_object(text, marker_keys=markers)
     if data is None:
         raise SceneDesignAgentError(
             f"scene_design/{agent}: в ответе нет JSON (len={len(text or '')})"
         )
+    if agent == SKELETON and not isinstance(data.get(list_key), list):
+        alt = data.get("сцены")
+        if isinstance(alt, list):
+            data[list_key] = alt
     err = str(data.get("error") or "").strip()
     if err:
         raise SceneDesignAgentError(f"scene_design/{agent}: агент вернул error: {err}")
     items = data.get(list_key)
     if not isinstance(items, list) or not items:
+        keys = sorted(str(k) for k in data.keys())
         raise SceneDesignAgentError(
-            f"scene_design/{agent}: пустой «{list_key}» — срез не принят"
+            f"scene_design/{agent}: пустой «{list_key}» — срез не принят "
+            f"(keys={keys})"
         )
     if agent == "action":
         items = repair_chrono_dyn_year_jumps(items)

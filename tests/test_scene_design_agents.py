@@ -62,6 +62,43 @@ def test_parse_slice_no_json() -> None:
         ag.parse_agent_slice("action", "просто текст без данных")
 
 
+def test_loads_json_loose_strips_block_comments() -> None:
+    raw = '{"scenes": [ /* stub */ {"id_scene": "scene_01"} ], "x": 1,}'
+    data = ag.loads_json_loose(raw)
+    assert data["scenes"][0]["id_scene"] == "scene_01"
+
+
+def test_parse_skeleton_accepts_commented_stub_and_full() -> None:
+    # Stub с пустым scenes + рабочий объект — берём непустой.
+    text = (
+        '```json\n{"scenes": [ /* карточки */ ], "map": {}}\n```\n'
+        + _fence(
+            {
+                "scenes": [
+                    {
+                        "id_scene": "scene_01",
+                        "кадры": [1],
+                        "суть": "тест",
+                    }
+                ],
+                "characters_seed": [],
+            }
+        )
+    )
+    # Первый fence с комментарием: loose парсит scenes как [] после strip?
+    # Главное — непустой scenes из второго объекта.
+    data = ag.parse_agent_slice("skeleton", text)
+    assert data["scenes"][0]["id_scene"] == "scene_01"
+
+
+def test_parse_skeleton_scenes_alias() -> None:
+    data = ag.parse_agent_slice(
+        "skeleton",
+        _fence({"сцены": [{"id_scene": "scene_01", "кадры": [1], "суть": "x"}]}),
+    )
+    assert data["scenes"][0]["id_scene"] == "scene_01"
+
+
 # ── parse_assembler_payload ──────────────────────────────────────────
 
 

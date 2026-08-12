@@ -271,6 +271,31 @@ def agents_all_done(project: Project) -> bool:
     return all(load_checkpoint(project, name) is not None for name in needed)
 
 
+def _dump_agent_fail(project: Project, name: str, reply: str, err: BaseException) -> None:
+    """Сохранить сырой ответ при ошибке парса — иначе «пустой scenes» не диагностировать."""
+    try:
+        d = _state_dir(project)
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / f"{name}_last_fail.txt"
+        path.write_text(
+            f"error: {err}\n\n--- reply ---\n{reply or ''}",
+            encoding="utf-8",
+        )
+        logger.warning(
+            "[#{}] scene_design/{}: fail dump → {}",
+            project.id,
+            name,
+            path,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "[#{}] scene_design/{}: fail dump skipped",
+            project.id,
+            name,
+            exc_info=True,
+        )
+
+
 async def _run_one_agent(
     project: Project,
     name: str,
@@ -290,7 +315,34 @@ async def _run_one_agent(
         project_id=project.id,
         max_retries=max_retries,
     )
-    return ag.parse_agent_slice(name, reply, validate=validate)
+    try:
+        return ag.parse_agent_slice(name, reply, validate=validate)
+    except ag.SceneDesignAgentError as e:
+        _dump_agent_fail(project, name, reply, e)
+        # Скелет: один repair-pass — модель часто копирует stub scenes: [].
+        if name != ag.SKELETON:
+            raise
+        repair_prompt = (
+            "Исправь JSON скелета scene_design. Нужен ОДИН валидный JSON-объект "
+            "с НЕПУСТЫМ массивом \"scenes\" (карточки с id_scene, кадры, суть). "
+            "Без markdown, без комментариев /* */. Только JSON.\n\n"
+            f"Ошибка парсера: {e}\n\nБыло:\n{(reply or '')[:14000]}"
+        )
+        logger.info(
+            "[#{}] scene_design/skeleton: repair-pass после parse fail",
+            project.id,
+        )
+        repaired = await gpt_client.gpt_ask_fresh(
+            repair_prompt,
+            timeout=min(float(timeout), 300.0),
+            project_id=project.id,
+            max_retries=2,
+        )
+        try:
+            return ag.parse_agent_slice(name, repaired, validate=validate)
+        except ag.SceneDesignAgentError as e2:
+            _dump_agent_fail(project, name, repaired, e2)
+            raise
 
 
 def _append_slice_context(
