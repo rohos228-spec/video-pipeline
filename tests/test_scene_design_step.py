@@ -106,7 +106,7 @@ async def sd_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def _mock_gpt(monkeypatch: pytest.MonkeyPatch, calls: list[str]) -> None:
     from app.services import gpt_client
 
-    async def fake_ask(text: str, *, timeout: float = 600, project_id=None) -> str:
+    async def fake_ask(text: str, *, timeout: float = 600, project_id=None, **_kw) -> str:
         for marker, payload in _AGENT_MARKERS.items():
             if marker in text:
                 calls.append(marker)
@@ -267,6 +267,30 @@ async def test_scene_design_per_agent_rerun(sd_session, monkeypatch) -> None:
 
     assert project.status is ProjectStatus.scene_agents_ready
     assert calls == ["CAMERA V1"]
+
+
+@pytest.mark.asyncio
+async def test_scene_design_only_agent_skips_rest(sd_session, monkeypatch) -> None:
+    """▶ одной ноды (only_agent) не поднимает GPT для всего веера."""
+    session, project = sd_session
+    calls: list[str] = []
+    _mock_gpt(monkeypatch, calls)
+    _mock_harness(monkeypatch)
+
+    from app.orchestrator.steps import scene_design
+    from app.services.scene_design import runner as sd_runner
+
+    # Первый ▶ «как скелет»: only_agent=action, остальных чекпоинтов нет.
+    sd_runner.set_only_agent(project, "action")
+    project.status = ProjectStatus.scene_designing
+    await session.commit()
+    await scene_design.run(session, project)
+
+    assert calls == ["ACTION V1"]
+    assert project.status is ProjectStatus.frames_ready
+    assert sd_runner.get_only_agent(project) == "action"
+    assert sd_runner.load_checkpoint(project, "action") is not None
+    assert sd_runner.load_checkpoint(project, "camera") is None
 
 
 @pytest.mark.asyncio

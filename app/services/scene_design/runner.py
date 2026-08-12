@@ -121,6 +121,42 @@ def _save_state(project: Project, sd: dict[str, Any]) -> None:
     project.meta = meta
 
 
+def get_only_agent(project: Project) -> str | None:
+    """Точечный ▶ с ноды веера: имя агента или None (полный прогон)."""
+    sd = _meta_state(project)
+    name = str(sd.get("only_agent") or "").strip()
+    return name or None
+
+
+def set_only_agent(project: Project, name: str | None) -> None:
+    """Запомнить / сбросить only_agent для per-node ▶."""
+    sd = _meta_state(project)
+    if name:
+        sd["only_agent"] = str(name).strip()
+    else:
+        sd.pop("only_agent", None)
+    _save_state(project, sd)
+
+
+def clear_only_agent(project: Project) -> None:
+    set_only_agent(project, None)
+
+
+def resolve_sd_node_key(project: Project, agent: str) -> str | None:
+    """node_key канваса с data.sd_agent == agent."""
+    from app.services.canvas_graph import canvas_graph_from_meta
+    from app.services.excel_gpt_node import sd_agent_marker
+
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    cg = canvas_graph_from_meta(meta) or {}
+    for n in cg.get("nodes") or []:
+        if sd_agent_marker(n) == agent:
+            key = str(n.get("id") or "").strip()
+            if key:
+                return key
+    return None
+
+
 def load_checkpoint(project: Project, name: str) -> dict[str, Any] | None:
     """Готовый срез агента с прошлого прогона (soft retry без повторного GPT)."""
     sd = _meta_state(project)
@@ -210,7 +246,7 @@ def invalidate_agent(project: Project, name: str) -> bool:
     перезапишет ``store_cells`` при следующем прогоне. Возвращает True,
     если агент известен.
     """
-    if name not in ag.CATEGORY_AGENTS:
+    if name not in ag.ALL_AGENTS:
         return False
     sd = _meta_state(project)
     agents_meta = dict(sd.get("agents") or {})
@@ -230,8 +266,9 @@ def invalidate_agent(project: Project, name: str) -> bool:
 
 
 def agents_all_done(project: Project) -> bool:
-    """Все 5 категорийных агентов имеют валидные чекпоинты."""
-    return all(load_checkpoint(project, name) is not None for name in ag.CATEGORY_AGENTS)
+    """Все агенты текущих волн (скелет + категории) имеют валидные чекпоинты."""
+    needed = [a for wave in ag.agent_waves(project) for a in wave]
+    return all(load_checkpoint(project, name) is not None for name in needed)
 
 
 async def _run_one_agent(
@@ -466,12 +503,17 @@ async def run_category_agents(
     *,
     frames: list[Any] | None = None,
     timeout: float = 900,
+    only_agent: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Категорийные агенты волнами.
 
     Legacy: chars/world/style/action → camera.
     chrono_dyn: chars/world/style → action → camera (как на канвасе).
     Чекпоинтнутые пропускаются.
+
+    ``only_agent`` / meta.scene_design.only_agent — точечный ▶ с ноды:
+    GPT только для этого агента; остальные из чекпоинта или пропуск
+    (без вызова GPT). Нужно, чтобы ▶ скелета не поднимал весь веер.
 
     ``frames`` — для adaptive-split action/camera при 524 (дробим закадр /2,/4).
     """
@@ -483,6 +525,13 @@ async def run_category_agents(
     waves = ag.agent_waves(project)
     chrono = ag.uses_chrono_dyn(project)
     frame_list = [f for f in (frames or []) if getattr(f, "uuid", None)]
+    target = (only_agent or get_only_agent(project) or "").strip() or None
+    if target:
+        logger.info(
+            "[#{}] scene_design: only_agent={} — GPT только для этой ноды",
+            project.id,
+            target,
+        )
 
     async def _one(
         name: str,
@@ -497,6 +546,14 @@ async def run_category_agents(
                 "[#{}] scene_design/{}: checkpoint — пропуск GPT", project.id, name
             )
             results[name] = cached
+            return
+        if target and name != target:
+            logger.info(
+                "[#{}] scene_design/{}: skip GPT (only_agent={})",
+                project.id,
+                name,
+                target,
+            )
             return
         async with sem:
             try:
@@ -520,11 +577,20 @@ async def run_category_agents(
         results[name] = data
         logger.info("[#{}] scene_design/{}: ok", project.id, name)
 
+    skeleton_on = ag.uses_skeleton(project)
     for wave_i, wave in enumerate(waves):
         ctx = context
         extras: list[tuple[str, dict[str, Any]]] = []
         action_scenes: list[Any] | None = None
-        if chrono and wave_i == 1:
+        # Скелет (волна 0) — во все последующие волны.
+        if skeleton_on and wave != ag.SKELETON_WAVE:
+            sk = results.get(ag.SKELETON)
+            if isinstance(sk, dict):
+                title = "SKELETON (JSON) — закон сцен/нитей"
+                extras.append((title, sk))
+                ctx = _append_slice_context(ctx, title=title, payload=sk)
+        chrono_wave1_i = 1 if skeleton_on else 0
+        if chrono and wave_i == chrono_wave1_i + 1:
             # action видит паспорта верхних трёх
             for name in ag.CHRONO_WAVE1_AGENTS:
                 slice_data = results.get(name)
@@ -552,19 +618,29 @@ async def run_category_agents(
             )
         )
         # Жёсткий стоп: упала текущая волна — дальше не идём.
-        if any(n in errors for n in wave):
+        # В only_agent режиме смотрим только целевого агента.
+        wave_failed = [
+            n for n in wave if n in errors and (not target or n == target)
+        ]
+        if wave_failed:
             failed = ", ".join(sorted(errors))
             raise ag.SceneDesignAgentError(
                 f"scene_design: агенты упали ({failed}): "
                 + "; ".join(f"{k}: {v}" for k, v in sorted(errors.items()))[:400]
             )
+        # Точечный ▶: после волны с целевым агентом дальше не идём.
+        if target and target in wave:
+            break
 
     if errors:
-        failed = ", ".join(sorted(errors))
-        raise ag.SceneDesignAgentError(
-            f"scene_design: агенты упали ({failed}): "
-            + "; ".join(f"{k}: {v}" for k, v in sorted(errors.items()))[:400]
-        )
+        if target:
+            errors = {k: v for k, v in errors.items() if k == target}
+        if errors:
+            failed = ", ".join(sorted(errors))
+            raise ag.SceneDesignAgentError(
+                f"scene_design: агенты упали ({failed}): "
+                + "; ".join(f"{k}: {v}" for k, v in sorted(errors.items()))[:400]
+            )
     return results
 
 

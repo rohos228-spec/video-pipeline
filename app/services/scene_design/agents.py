@@ -13,7 +13,10 @@ from app.project_root import find_project_root
 PROMPTS_SUBDIR = Path("prompts") / "scene_design"
 
 ASSEMBLER = "assemble"
+SKELETON = "skeleton"
 CATEGORY_AGENTS: tuple[str, ...] = ("characters", "world", "style", "camera", "action")
+# Все GPT-агенты веера, включая волну 0 (скелет).
+ALL_AGENTS: tuple[str, ...] = (SKELETON, *CATEGORY_AGENTS)
 # Legacy: chars/world/style/action параллельно → camera.
 WAVE1_AGENTS: tuple[str, ...] = ("characters", "world", "style", "action")
 WAVE2_AGENTS: tuple[str, ...] = ("camera",)
@@ -21,6 +24,7 @@ WAVE2_AGENTS: tuple[str, ...] = ("camera",)
 CHRONO_WAVE1_AGENTS: tuple[str, ...] = ("characters", "world", "style")
 CHRONO_WAVE2_AGENTS: tuple[str, ...] = ("action",)
 CHRONO_WAVE3_AGENTS: tuple[str, ...] = ("camera",)
+SKELETON_WAVE: tuple[str, ...] = (SKELETON,)
 
 
 def project_scene_design_variant(project: Any | None) -> str:
@@ -49,14 +53,45 @@ def uses_chrono_dyn(project: Any | None) -> bool:
     return project_scene_design_variant(project) == "chrono_dyn"
 
 
+def uses_skeleton(project: Any | None) -> bool:
+    """Волна 0 скелета: meta.scene_design_skeleton или нода marker=skeleton."""
+    if project is None:
+        return False
+    meta = getattr(project, "meta", None)
+    if not isinstance(meta, dict):
+        return False
+    if meta.get("scene_design_skeleton") is True:
+        return True
+    raw = meta.get("scene_design_skeleton")
+    if isinstance(raw, str) and raw.strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    cg = meta.get("canvas_graph")
+    if isinstance(cg, dict):
+        from app.services.excel_gpt_node import sd_agent_marker
+
+        for n in cg.get("nodes") or []:
+            if sd_agent_marker(n) == SKELETON:
+                return True
+    return False
+
+
 def agent_waves(project: Any | None) -> tuple[tuple[str, ...], ...]:
-    """Порядок волн GPT для категорийных агентов."""
+    """Порядок волн GPT: опционально skeleton → категорийные."""
     if uses_chrono_dyn(project):
-        return (CHRONO_WAVE1_AGENTS, CHRONO_WAVE2_AGENTS, CHRONO_WAVE3_AGENTS)
-    return (WAVE1_AGENTS, WAVE2_AGENTS)
+        waves: tuple[tuple[str, ...], ...] = (
+            CHRONO_WAVE1_AGENTS,
+            CHRONO_WAVE2_AGENTS,
+            CHRONO_WAVE3_AGENTS,
+        )
+    else:
+        waves = (WAVE1_AGENTS, WAVE2_AGENTS)
+    if uses_skeleton(project):
+        return (SKELETON_WAVE, *waves)
+    return waves
 
 # Обязательный ключ-список в JSON-срезе агента (непустой при успехе).
 LIST_KEY: dict[str, str] = {
+    SKELETON: "scenes",
     "characters": "characters",
     "world": "locations",
     "style": "style_arc",

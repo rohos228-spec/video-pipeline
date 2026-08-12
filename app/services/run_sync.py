@@ -805,14 +805,30 @@ async def complete_active_node_for_step(
     ):
         node_type = "scene_design"
 
-    # Веер scene_design: фаза агентов завершает все 5 нод sd_agent разом.
-    complete_all = node_type == "sd_agent"
+    # Веер scene_design: полный scene_d закрывает все sd_agent разом.
+    # Точечный ▶ (meta.scene_design.only_agent) — только одну ноду.
+    only_agent: str | None = None
+    if node_type == "sd_agent":
+        try:
+            from app.services.scene_design import runner as sd_runner
+
+            only_agent = sd_runner.get_only_agent(project)
+        except Exception:  # noqa: BLE001
+            only_agent = None
+    complete_all = node_type == "sd_agent" and not only_agent
 
     # excel_gpt auto-chain УЖЕ ставит active_excel_gpt_node_key на СЛЕДУЮЩУЮ
     # ноду до вызова complete (enriching_N → enriching_N+1). Брать active_key
     # первым = пометить next done и оставить prev running — UI врёт, xlsx
     # следующего слота «применён» без работы. Всегда слот из prev_status.
     finished_key: str | None = None
+    if only_agent and node_type == "sd_agent":
+        try:
+            from app.services.scene_design import runner as sd_runner
+
+            finished_key = sd_runner.resolve_sd_node_key(project, only_agent)
+        except Exception:  # noqa: BLE001
+            finished_key = None
     if node_type == EXCEL_GPT_NODE_TYPE:
         slot = slot_from_running_status(prev_status)
         if slot is None:
@@ -849,6 +865,31 @@ async def complete_active_node_for_step(
         )
         return
 
+    def _clear_sd_only_agent() -> None:
+        if not only_agent:
+            return
+        try:
+            from app.services.scene_design import runner as sd_runner
+
+            sd_runner.clear_only_agent(project)
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[#{}] clear only_agent failed", project.id, exc_info=True
+            )
+
+    # Точечный ▶: чужие sd_agent, ошибочно поднятые в running, вернуть в pending.
+    if only_agent and finished_key and node_type == "sd_agent":
+        for other in run.node_runs:
+            if _nr_effective_type(run, other) != "sd_agent":
+                continue
+            if other.node_key == finished_key:
+                continue
+            if other.status in (NodeRunStatus.running, NodeRunStatus.queued):
+                reset_node_to_pending(
+                    other, project_id=project.id, initiator="only_agent_scope"
+                )
+        await session.flush()
+
     for nr in run.node_runs:
         if _nr_effective_type(run, nr) != node_type:
             continue
@@ -880,6 +921,7 @@ async def complete_active_node_for_step(
                     new_status.value,
                 )
             if not complete_all:
+                _clear_sd_only_agent()
                 return
             continue
         # Recovery: шаг успешен, но prepare не нашёл ноду (осталась pending /
@@ -911,6 +953,7 @@ async def complete_active_node_for_step(
                     prev_status.value,
                 )
             if not complete_all:
+                _clear_sd_only_agent()
                 return
             continue
         queue_node_for_start(nr, project_id=project.id, initiator="worker")
@@ -935,7 +978,9 @@ async def complete_active_node_for_step(
                 prev_status.value,
             )
         if not complete_all:
+            _clear_sd_only_agent()
             return
+    _clear_sd_only_agent()
 
 
 async def mark_running_node_failed(
@@ -974,10 +1019,26 @@ async def mark_running_node_failed(
     ):
         node_type = "scene_design"
     # Веер scene_design: фейлим все running-ноды агентов, не только первую.
-    fail_all = node_type == "sd_agent"
+    # Точечный ▶ — только целевую ноду.
+    only_agent_fail: str | None = None
+    if node_type == "sd_agent":
+        try:
+            from app.services.scene_design import runner as sd_runner
+
+            only_agent_fail = sd_runner.get_only_agent(project)
+        except Exception:  # noqa: BLE001
+            only_agent_fail = None
+    fail_all = node_type == "sd_agent" and not only_agent_fail
     active_key = (
         active_excel_gpt_node_key(project) if node_type == EXCEL_GPT_NODE_TYPE else None
     )
+    if only_agent_fail and node_type == "sd_agent":
+        try:
+            from app.services.scene_design import runner as sd_runner
+
+            active_key = sd_runner.resolve_sd_node_key(project, only_agent_fail)
+        except Exception:  # noqa: BLE001
+            pass
     if node_type == EXCEL_GPT_NODE_TYPE and not active_key:
         slot = slot_from_running_status(project.status)
         if slot is not None:

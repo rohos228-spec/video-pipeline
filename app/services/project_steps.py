@@ -228,14 +228,21 @@ async def start_step(
             )
     if sd_agent_name:
         from app.services.scene_design import invalidate_agent
+        from app.services.scene_design import runner as sd_runner
 
         invalidate_agent(project, sd_agent_name)
+        # ▶ на одной ноде веера — GPT только для неё (не поднимать весь веер).
+        sd_runner.set_only_agent(project, sd_agent_name)
         logger.info(
             "[#{}] start_step {}: чекпоинт агента {} сброшен (per-agent rerun)",
             project.id,
             step_code,
             sd_agent_name,
         )
+    elif step_code in ("scene_d", "scene_asm"):
+        from app.services.scene_design import runner as sd_runner
+
+        sd_runner.clear_only_agent(project)
         # Нода сборщика на канвасе → pending (сборка устарела).
         try:
             from app.services.run_sync import _workflow_run_with_nodes

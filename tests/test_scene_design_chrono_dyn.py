@@ -42,6 +42,17 @@ def test_uses_chrono_dyn_from_meta() -> None:
     assert ag.uses_chrono_dyn(SimpleNamespace(meta={})) is False
 
 
+def test_skeleton_wave0_when_flag() -> None:
+    p = SimpleNamespace(
+        meta={"scene_design_variant": "chrono_dyn", "scene_design_skeleton": True}
+    )
+    assert ag.uses_skeleton(p) is True
+    waves = ag.agent_waves(p)
+    assert waves[0] == ("skeleton",)
+    assert "action" in waves[2]
+    assert waves[-1] == ("camera",)
+
+
 def test_validate_chrono_dyn_action_rejects_flat_two_phases() -> None:
     scenes = [
         {

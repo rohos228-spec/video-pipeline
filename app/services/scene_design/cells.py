@@ -177,7 +177,74 @@ def slice_to_cells(
     vo_norm = _norm(full_vo)
     cells: list[SceneDesignCell] = []
 
-    if agent == "characters":
+    if agent == "skeleton":
+        for item in slice_data.get("scenes") or []:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("id_scene") or "").strip()
+            if not key:
+                continue
+            part = _item_fields(
+                project,
+                agent,
+                "sk_scene",
+                key,
+                item,
+                (
+                    "кадры",
+                    "нити",
+                    "связь_с_прошлой",
+                    "суть",
+                    "главное",
+                    "биты",
+                    "персонажи",
+                    "место_id",
+                    "время",
+                    "длительность_сек",
+                    "фон_разовый",
+                ),
+                quote_field=None,
+                full_vo_norm=vo_norm,
+            )
+            cells.extend(part)
+        for item in slice_data.get("characters_seed") or []:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("id") or "").strip()
+            if not key:
+                continue
+            cells.extend(
+                _item_fields(
+                    project,
+                    agent,
+                    "sk_character",
+                    key,
+                    item,
+                    ("якорь", "роль", "вне_кадра"),
+                    quote_field="якорь",
+                    full_vo_norm=vo_norm,
+                )
+            )
+        for item in slice_data.get("locations_seed") or []:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("id") or "").strip()
+            if not key:
+                continue
+            cells.extend(
+                _item_fields(
+                    project,
+                    agent,
+                    "sk_location",
+                    key,
+                    item,
+                    ("якорь", "фон_разовый"),
+                    quote_field="якорь",
+                    full_vo_norm=vo_norm,
+                )
+            )
+
+    elif agent == "characters":
         for item in slice_data.get("characters") or []:
             if not isinstance(item, dict):
                 continue

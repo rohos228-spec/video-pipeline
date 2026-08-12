@@ -114,16 +114,25 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     # Отпустить SQLite write-lock на время параллельных GPT-вызовов.
     await session.commit()
 
+    only_agent = runner.get_only_agent(project)
     try:
         context = context_builder.build_shared_context(project, frames)
-        slices = await runner.run_category_agents(project, context, frames=frames)
+        slices = await runner.run_category_agents(
+            project, context, frames=frames, only_agent=only_agent
+        )
         # Чекпоинты агентов уже в meta — зафиксировать до записи ячеек.
         await session.commit()
 
         # Срезы → staging-ячейки (валидация при записи, коммит частями).
+        # В only_agent режиме пишем только целевого (остальные — старые чекпоинты).
         full_vo = context_builder.full_voiceover(project, frames)
         cell_stats: dict[str, dict[str, int]] = {}
-        for agent_name, slice_data in slices.items():
+        to_store = (
+            {only_agent: slices[only_agent]}
+            if only_agent and only_agent in slices
+            else slices
+        )
+        for agent_name, slice_data in to_store.items():
             converted = sd_cells.slice_to_cells(project, agent_name, slice_data, full_vo)
             cell_stats[agent_name] = await sd_cells.store_cells(
                 session, project, agent_name, converted
@@ -132,8 +141,19 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
             _write_sd_reply_file(project, agent_name, slice_data)
         logger.info("[#{}] scene_design cells: {}", project.id, cell_stats)
 
-        runner.mark_agents_done(project)
-        project.status = ProjectStatus.scene_agents_ready
+        if runner.agents_all_done(project):
+            runner.mark_agents_done(project)
+            project.status = ProjectStatus.scene_agents_ready
+        else:
+            # Точечный ▶: веер ещё не полный — назад на frames_ready,
+            # чтобы можно было запустить следующую ноду. only_agent держим
+            # до complete_active_node (пометит только эту ноду done).
+            project.status = ProjectStatus.frames_ready
+            logger.info(
+                "[#{}] scene_design: only_agent={} готов, веер неполный → frames_ready",
+                project.id,
+                only_agent,
+            )
         await session.flush()
         await session.commit()
     except Exception as e:
@@ -145,9 +165,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         raise
 
     logger.info(
-        "[#{}] scene_design agents done: cells={}",
+        "[#{}] scene_design agents done: cells={} status={}",
         project.id,
         {k: v.get("stored") for k, v in cell_stats.items()},
+        project.status.value,
     )
 
     try:

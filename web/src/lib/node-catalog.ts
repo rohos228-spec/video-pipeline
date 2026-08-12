@@ -272,6 +272,7 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
 
 /** Имена категорийных агентов scene_design (data.sd_agent → по-русски). */
 export const SD_AGENT_LABELS: Record<string, string> = {
+  skeleton: "скелет",
   characters: "персонажи",
   world: "мир",
   style: "стиль",
