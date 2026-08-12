@@ -161,6 +161,21 @@ def _canvas_node_type_for_ready(status: ProjectStatus) -> str | None:
     return READY_TO_NODE_TYPE.get(status)
 
 
+def _sd_agent_name_from_node_key(node_key: str) -> str | None:
+    """Имя агента из ключа ``n_excel_gpt_sd_cd_skeleton`` / ``…_sd_asm``."""
+    from app.services.scene_design.agents import ALL_AGENTS, ASSEMBLER
+
+    key = (node_key or "").strip().lower()
+    if not key:
+        return None
+    if key.endswith("_sd_asm") or key.endswith("sd_asm"):
+        return ASSEMBLER
+    for name in ALL_AGENTS:
+        if key.endswith("_" + name) or key.endswith(name):
+            return name
+    return None
+
+
 def _effective_type_from_nr(nr: NodeRun) -> str:
     """Оркестраторный тип без snapshot: excel_gpt + ключ sd_* → sd_agent/sd_assemble.
 
@@ -831,9 +846,20 @@ async def complete_active_node_for_step(
     """
     from app.services.canvas_graph import sync_run_snapshot_from_canvas_graph
 
-    node_type = _canvas_node_type_for_ready(new_status)
-    if node_type is None:
+    # Точечный ▶ scene_d (only_agent) откатывает Project в frames_ready —
+    # READY_TO_NODE_TYPE[frames_ready]=split. Нельзя брать ready-маппинг:
+    # иначе скелет остаётся running, only_agent не чистится, reconcile → failed.
+    if prev_status in (
+        ProjectStatus.scene_designing,
+        ProjectStatus.scene_assembling,
+    ):
         node_type = _canvas_node_type_for_running(prev_status)
+        if node_type is None:
+            node_type = _canvas_node_type_for_ready(new_status)
+    else:
+        node_type = _canvas_node_type_for_ready(new_status)
+        if node_type is None:
+            node_type = _canvas_node_type_for_running(prev_status)
     if node_type is None:
         return
     try:
@@ -1318,6 +1344,18 @@ def _node_already_succeeded_for_project(project: Project, nr: NodeRun) -> bool:
         ProjectStatus.scene_design_ready,
     ):
         return True
+    # only_agent ▶ → frames_ready: агент в meta уже done, NodeRun мог застрять.
+    if eff == "sd_agent" and project.status == ProjectStatus.frames_ready:
+        agent = _sd_agent_name_from_node_key(nr.node_key or "")
+        sd = (project.meta or {}).get("scene_design")
+        agents = sd.get("agents") if isinstance(sd, dict) else None
+        if (
+            agent
+            and isinstance(agents, dict)
+            and isinstance(agents.get(agent), dict)
+            and str(agents[agent].get("status") or "") == "done"
+        ):
+            return True
     if READY_TO_NODE_TYPE.get(project.status) == eff:
         return True
     if eff not in LINEAR_NODE_TYPES:
@@ -1375,6 +1413,24 @@ async def _reconcile_stale_node_runs(
                     # complete_node принимает только initiator=worker
                     if complete_node(nr, project_id=run.project_id, initiator="worker"):
                         healed += 1
+                        # only_agent ▶ → frames_ready: complete_active мог
+                        # промахнуться в split и не снять маркер.
+                        if (
+                            project.status == ProjectStatus.frames_ready
+                            and _effective_type_from_nr(nr) == "sd_agent"
+                        ):
+                            try:
+                                from app.services.scene_design import (
+                                    runner as sd_runner,
+                                )
+
+                                sd_runner.clear_only_agent(project)
+                            except Exception:  # noqa: BLE001
+                                logger.debug(
+                                    "[#{}] heal clear only_agent failed",
+                                    run.project_id,
+                                    exc_info=True,
+                                )
                         logger.info(
                             "[#{}] NodeRun {}/{}: {} → done (heal after success, {})",
                             run.project_id,

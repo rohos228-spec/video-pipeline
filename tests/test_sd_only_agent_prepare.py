@@ -18,8 +18,13 @@ from app.models import (
     WorkflowRun,
     WorkflowRunStatus,
 )
-from app.services.run_sync import prepare_node_for_step_start
+from app.services.run_sync import (
+    _reconcile_stale_node_runs,
+    complete_active_node_for_step,
+    prepare_node_for_step_start,
+)
 from app.services.scene_design import runner as sd_runner
+from datetime import datetime, timedelta
 
 
 @pytest.fixture
@@ -192,3 +197,173 @@ async def test_scene_d_wipe_must_not_drop_only_agent_before_prepare(mem_db) -> N
             session, project, "scene_d", force_wipe=False
         )
         assert sd_runner.get_only_agent(project) == "skeleton"
+
+
+@pytest.mark.asyncio
+async def test_complete_only_agent_to_frames_ready_marks_skeleton_done(
+    mem_db,
+) -> None:
+    """Регресс: scene_designing→frames_ready не должен закрывать split."""
+    async with mem_db() as session:
+        nodes = _fanout_nodes()
+        wf = Workflow(
+            name=f"wf-{uuid.uuid4().hex[:8]}",
+            is_default=True,
+            nodes=nodes,
+            edges=[],
+        )
+        session.add(wf)
+        await session.flush()
+        project = Project(
+            slug=f"oa-done-{uuid.uuid4().hex[:8]}",
+            topic="t",
+            status=ProjectStatus.scene_designing,
+            meta={
+                "scene_design_enabled": True,
+                "scene_design_skeleton": True,
+                "canvas_graph": {
+                    "workflow_id": wf.id,
+                    "nodes": nodes,
+                    "edges": [],
+                },
+            },
+        )
+        session.add(project)
+        await session.flush()
+        run = WorkflowRun(
+            project_id=project.id,
+            workflow_id=wf.id,
+            status=WorkflowRunStatus.running,
+            nodes_snapshot=nodes,
+            edges_snapshot=[],
+        )
+        session.add(run)
+        await session.flush()
+        for n in nodes:
+            from app.services.excel_gpt_node import effective_node_type
+
+            st = (
+                NodeRunStatus.running
+                if n["id"] == "n_excel_gpt_sd_cd_skeleton"
+                else NodeRunStatus.pending
+            )
+            session.add(
+                NodeRun(
+                    workflow_run_id=run.id,
+                    node_key=n["id"],
+                    node_type=effective_node_type(n),
+                    status=st,
+                )
+            )
+        await session.flush()
+        sd_runner.set_only_agent(project, "skeleton")
+        meta = dict(project.meta or {})
+        sd = dict(meta.get("scene_design") or {})
+        sd["agents"] = {
+            "skeleton": {"status": "done", "path": "scene_design/skeleton.json"}
+        }
+        meta["scene_design"] = sd
+        project.meta = meta
+        project.status = ProjectStatus.frames_ready
+        await session.flush()
+
+        await complete_active_node_for_step(
+            session,
+            project,
+            prev_status=ProjectStatus.scene_designing,
+            new_status=ProjectStatus.frames_ready,
+        )
+
+        from sqlalchemy import select
+
+        sk = (
+            await session.execute(
+                select(NodeRun).where(
+                    NodeRun.workflow_run_id == run.id,
+                    NodeRun.node_key == "n_excel_gpt_sd_cd_skeleton",
+                )
+            )
+        ).scalar_one()
+        assert sk.status == NodeRunStatus.done
+        assert sd_runner.get_only_agent(project) is None
+
+
+@pytest.mark.asyncio
+async def test_reconcile_heals_skeleton_running_after_frames_ready(
+    mem_db, monkeypatch
+) -> None:
+    """Застрявший running скелет при frames_ready+agent done → heal done."""
+    from app.services import step_cancel as sc
+
+    async with mem_db() as session:
+        nodes = _fanout_nodes()
+        wf = Workflow(
+            name=f"wf-{uuid.uuid4().hex[:8]}",
+            is_default=True,
+            nodes=nodes,
+            edges=[],
+        )
+        session.add(wf)
+        await session.flush()
+        project = Project(
+            slug=f"oa-heal-{uuid.uuid4().hex[:8]}",
+            topic="t",
+            status=ProjectStatus.frames_ready,
+            meta={
+                "scene_design_enabled": True,
+                "scene_design_skeleton": True,
+                "scene_design": {
+                    "status": "running",
+                    "only_agent": "skeleton",
+                    "agents": {
+                        "skeleton": {
+                            "status": "done",
+                            "at": "2026-08-12T13:30:05+00:00",
+                        }
+                    },
+                },
+                "canvas_graph": {
+                    "workflow_id": wf.id,
+                    "nodes": nodes,
+                    "edges": [],
+                },
+            },
+        )
+        session.add(project)
+        await session.flush()
+        run = WorkflowRun(
+            project_id=project.id,
+            workflow_id=wf.id,
+            status=WorkflowRunStatus.running,
+            nodes_snapshot=nodes,
+            edges_snapshot=[],
+        )
+        session.add(run)
+        await session.flush()
+        sk = NodeRun(
+            workflow_run_id=run.id,
+            node_key="n_excel_gpt_sd_cd_skeleton",
+            node_type="sd_agent",
+            status=NodeRunStatus.running,
+            started_at=datetime.utcnow() - timedelta(seconds=120),
+        )
+        session.add(sk)
+        await session.flush()
+        sk_id = sk.id
+        pid = project.id
+
+    monkeypatch.setattr(sc, "is_generation_active", lambda _pid: False)
+    fixed = await _reconcile_stale_node_runs(
+        initiator="background_reconcile",
+        require_no_live_task=True,
+        grace_sec=0,
+    )
+    assert fixed >= 1
+
+    async with mem_db() as session:
+        row = await session.get(NodeRun, sk_id)
+        assert row is not None
+        assert row.status == NodeRunStatus.done
+        project = await session.get(Project, pid)
+        assert project is not None
+        assert sd_runner.get_only_agent(project) is None
