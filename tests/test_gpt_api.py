@@ -205,6 +205,90 @@ def test_parse_responses_sse_lines_prefers_completed_payload() -> None:
     assert payload.get("id") == "resp_abc"
 
 
+def test_parse_responses_sse_lines_salvages_deltas_without_completed() -> None:
+    """CF рвёт на огромном completed — дельты уже есть, нельзя вернуть пусто."""
+    lines = [
+        'data: {"type":"response.created","response":{"id":"resp_x","status":"in_progress"}}',
+        'data: {"type":"response.output_text.delta","delta":"часть "}',
+        'data: {"type":"response.output_text.delta","delta":"ответа"}',
+        'data: {"type":"response.output_text.done","text":"часть ответа"}',
+        # битая/обрезанная строка completed — как при обрыве
+        'data: {"type":"response.completed","response":{"id":"resp_x","status":"comp',
+    ]
+    text, status, _payload, rid = parse_responses_sse_lines(lines)
+    assert text == "часть ответа"
+    assert rid == "resp_x"
+    assert status in {"completed", "stream_partial"}
+
+
+def test_parse_responses_sse_lines_prefers_longer_deltas_over_stub_completed() -> None:
+    lines = [
+        'data: {"type":"response.created","response":{"id":"resp_y","status":"in_progress"}}',
+        'data: {"type":"response.output_text.delta","delta":"полный длинный текст файла"}',
+        (
+            'data: {"type":"response.completed","response":{"id":"resp_y","status":"completed",'
+            '"output":[{"type":"message","content":[{"type":"output_text","text":"ок"}]}]}}'
+        ),
+    ]
+    text, status, _payload, rid = parse_responses_sse_lines(lines)
+    assert text == "полный длинный текст файла"
+    assert rid == "resp_y"
+    assert status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_chat_responses_salvages_after_stream_disconnect(monkeypatch) -> None:
+    """RemoteProtocolError после дельт → текст salvage, не новая пустая ошибка."""
+    _enable(monkeypatch)
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_chat_path", "/codex/v1/responses")
+    monkeypatch.setattr(settings, "gpt_api_mode", "auto")
+
+    class _BoomStream:
+        def __init__(self) -> None:
+            self.headers = {"cf-ray": "test-ray"}
+            self.status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def aiter_lines(self):
+            yield 'data: {"type":"response.created","response":{"id":"resp_salv","status":"in_progress"}}'
+            yield 'data: {"type":"response.output_text.delta","delta":"живой "}'
+            yield 'data: {"type":"response.output_text.delta","delta":"текст"}'
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+
+    class _BoomClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def stream(self, *a, **k):
+            return _BoomStream()
+
+    monkeypatch.setattr(gpt_api.httpx, "AsyncClient", _BoomClient)
+
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(gpt_api.asyncio, "sleep", _no_sleep)
+
+    res = await chat(prompt="длинный", model="gpt-5-6-sol", max_retries=0)
+    assert res.text == "живой текст"
+    assert res.response_id == "resp_salv"
+    assert res.finish_reason == "stream_salvaged"
+    assert res.raw.get("sse_salvaged") is True
+
+
 @pytest.mark.asyncio
 async def test_chat_provider_envelope_error(monkeypatch) -> None:
     """kie.ai отдаёт ошибку как HTTP 200 {code,msg} — ловим её понятно."""

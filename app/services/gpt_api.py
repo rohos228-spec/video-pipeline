@@ -926,6 +926,17 @@ def _http_timeout(total_s: float) -> httpx.Timeout:
     return httpx.Timeout(total, connect=min(30.0, total))
 
 
+def _stream_timeout(total_s: float) -> httpx.Timeout:
+    """Таймаут для SSE: без ``total`` (он рвёт длинный stream целиком).
+
+    Cloudflare/прокси иногда рвёт соединение на огромном ``response.completed``;
+    тогда мы уже имеем дельты — их нужно salvage, а не терять на Timeout.
+    ``read`` = простой idle между чанками (модель может долго «думать»).
+    """
+    read = max(120.0, float(total_s))
+    return httpx.Timeout(None, connect=30.0, read=read, write=60.0, pool=30.0)
+
+
 def _raise_http_status(
     status: int,
     body_text: str,
@@ -966,11 +977,17 @@ def parse_responses_sse_lines(
 
     Важно: при ``stream:false`` Cloudflare/прокси рвёт длинный ответ
     (у kie задача уже success). SSE держит соединение дельтами.
+
+    Если stream оборвался после дельт / ``output_text.done``, но до
+    целого ``response.completed`` — берём уже накопленный текст (salvage).
     """
     delta_parts: list[str] = []
+    done_text = ""
     response_id = ""
     final_response: dict[str, Any] | None = None
     status = ""
+    event_counts: dict[str, int] = {}
+    bad_json_n = 0
 
     for raw in lines:
         line = (raw or "").strip()
@@ -984,10 +1001,13 @@ def parse_responses_sse_lines(
         try:
             event = json.loads(data_str)
         except json.JSONDecodeError:
+            bad_json_n += 1
             continue
         if not isinstance(event, dict):
             continue
         etype = str(event.get("type") or "")
+        if etype:
+            event_counts[etype] = event_counts.get(etype, 0) + 1
         if etype in {"response.created", "response.in_progress"}:
             resp = event.get("response")
             if isinstance(resp, dict) and resp.get("id"):
@@ -996,6 +1016,11 @@ def parse_responses_sse_lines(
             delta = event.get("delta")
             if delta:
                 delta_parts.append(str(delta))
+        elif etype == "response.output_text.done":
+            # Полный текст куска — страховка, если completed обрезан CF.
+            t = event.get("text")
+            if isinstance(t, str) and t.strip():
+                done_text = t
         elif etype == "response.completed":
             resp = event.get("response")
             if isinstance(resp, dict):
@@ -1004,15 +1029,18 @@ def parse_responses_sse_lines(
                     response_id = str(resp["id"])
                 status = str(resp.get("status") or "completed")
 
-    text = ""
+    deltas_joined = "".join(delta_parts).strip()
+    completed_text = ""
     if final_response is not None:
         try:
-            text, status = _parse_responses(final_response)
+            completed_text, status = _parse_responses(final_response)
         except GptApiError:
-            text = "".join(delta_parts).strip()
             status = status or str(final_response.get("status") or "")
-    else:
-        text = "".join(delta_parts).strip()
+
+    # Берём самый полный источник: completed часто рвётся на длинных файлах,
+    # а дельты / done уже целые.
+    candidates = [completed_text, done_text.strip(), deltas_joined]
+    text = max(candidates, key=lambda s: len(s or "")).strip()
 
     if not text:
         raise GptApiError(
@@ -1021,9 +1049,15 @@ def parse_responses_sse_lines(
                 "retryable": True,
                 "response_id": response_id,
                 "error_kind": "empty_stream",
+                "sse_lines": len(lines),
+                "sse_bad_json": bad_json_n,
+                "sse_events": event_counts,
+                "delta_chars": len(deltas_joined),
             },
         )
-    return text, status or "completed", final_response or {}, response_id
+    if not status:
+        status = "completed" if final_response is not None else "stream_partial"
+    return text, status, final_response or {}, response_id
 
 
 async def _chat_responses_stream(
@@ -1034,40 +1068,82 @@ async def _chat_responses_stream(
     timeout: float,
     use_model: str,
 ) -> GptChatResult:
-    """POST Responses API с stream=true и сборкой текста из SSE."""
+    """POST Responses API с stream=true и сборкой текста из SSE.
+
+    При обрыве соединения после дельт — salvage текста (kie UI уже success,
+    GET /responses/{id} у провайдера нет).
+    """
     stream_body = {**body, "stream": True}
     lines: list[str] = []
     cf_ray = ""
     logged_task_id = False
-    async with httpx.AsyncClient(timeout=_http_timeout(timeout)) as client:
-        async with client.stream(
-            "POST", url, headers=headers, json=stream_body
-        ) as resp:
-            cf_ray = resp.headers.get("cf-ray") or ""
-            if resp.status_code >= 400:
-                err_body = (await resp.aread()).decode("utf-8", errors="replace")
-                _raise_http_status(resp.status_code, err_body, use_model=use_model)
-            async for line in resp.aiter_lines():
-                lines.append(line)
-                if logged_task_id or not line.startswith("data:") or "resp_" not in line:
-                    continue
-                try:
-                    ev = json.loads(line[5:].strip())
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(ev, dict):
-                    continue
-                resp_obj = ev.get("response")
-                if isinstance(resp_obj, dict) and resp_obj.get("id"):
-                    logger.info(
-                        "gpt_api.chat task_id={} cf_ray={} model={}",
-                        resp_obj["id"],
-                        cf_ray or "-",
-                        use_model,
-                    )
-                    logged_task_id = True
+    stream_err: BaseException | None = None
+    async with httpx.AsyncClient(timeout=_stream_timeout(timeout)) as client:
+        try:
+            async with client.stream(
+                "POST", url, headers=headers, json=stream_body
+            ) as resp:
+                cf_ray = resp.headers.get("cf-ray") or ""
+                if resp.status_code >= 400:
+                    err_body = (await resp.aread()).decode("utf-8", errors="replace")
+                    _raise_http_status(resp.status_code, err_body, use_model=use_model)
+                async for line in resp.aiter_lines():
+                    lines.append(line)
+                    if (
+                        logged_task_id
+                        or not line.startswith("data:")
+                        or "resp_" not in line
+                    ):
+                        continue
+                    try:
+                        ev = json.loads(line[5:].strip())
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(ev, dict):
+                        continue
+                    resp_obj = ev.get("response")
+                    if isinstance(resp_obj, dict) and resp_obj.get("id"):
+                        logger.info(
+                            "gpt_api.chat task_id={} cf_ray={} model={}",
+                            resp_obj["id"],
+                            cf_ray or "-",
+                            use_model,
+                        )
+                        logged_task_id = True
+        except (httpx.TimeoutException, httpx.HTTPError) as e:
+            stream_err = e
+            logger.warning(
+                "gpt_api.chat SSE interrupted lines={} err={}: {} — try salvage",
+                len(lines),
+                type(e).__name__,
+                e,
+            )
 
-    text, finish, final_payload, response_id = parse_responses_sse_lines(lines)
+    try:
+        text, finish, final_payload, response_id = parse_responses_sse_lines(lines)
+    except GptApiError:
+        if stream_err is not None:
+            raise GptApiError(
+                f"GPT сетевая ошибка: {type(stream_err).__name__}: {stream_err}",
+                context={
+                    "error_kind": "network",
+                    "retryable": True,
+                    "model": use_model,
+                    "sse_lines": len(lines),
+                    "cf_ray": cf_ray,
+                },
+            ) from stream_err
+        raise
+
+    if stream_err is not None:
+        logger.warning(
+            "gpt_api.chat SSE salvaged chars={} task_id={} after {}",
+            len(text),
+            response_id or "-",
+            type(stream_err).__name__,
+        )
+        finish = "stream_salvaged"
+
     usage = (
         final_payload.get("usage")
         if isinstance(final_payload.get("usage"), dict)
@@ -1078,6 +1154,9 @@ async def _chat_responses_stream(
         raw.setdefault("id", response_id)
     if cf_ray:
         raw["cf_ray"] = cf_ray
+    if stream_err is not None:
+        raw["sse_salvaged"] = True
+        raw["sse_interrupt"] = type(stream_err).__name__
     return GptChatResult(
         text=text,
         model=use_model,
