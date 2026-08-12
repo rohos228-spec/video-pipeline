@@ -163,3 +163,66 @@ async def test_project_file_without_apply_ops_fails(tmp_path, monkeypatch) -> No
             accompanying="",
             input_paths=[tmp_path / "project.xlsx"],
         )
+
+
+@pytest.mark.asyncio
+async def test_report_only_db_sot_does_not_ask_apply_ops(tmp_path, monkeypatch) -> None:
+    contracts: list[str] = []
+    monkeypatch.setattr("app.services.gpt_api.gpt_api_enabled", lambda: True)
+
+    async def fake_chat(**kw):
+        contracts.append(str(kw.get("xlsx_write_contract") or ""))
+        return SimpleNamespace(text="# ОТЧЁТ ПРОВЕРКИ\nverdict: fail\n")
+
+    monkeypatch.setattr("app.services.gpt_api.chat", fake_chat)
+    monkeypatch.setattr("app.services.gpt_api.collect_result_urls", lambda text: [])
+
+    res = await goc.run_operator_api(
+        project_dir=tmp_path,
+        node_key="n_excel_gpt_1",
+        role="review",
+        output_mode="text",
+        prompt="проверь кино",
+        accompanying="",
+        input_paths=[],
+        check_mode=True,
+        check_fix=False,
+        db_sot_check=True,
+    )
+    assert contracts == ["tsv"]
+    assert "verdict: fail" in (res.reply_text or "")
+    assert res.apply_ops is None
+
+
+@pytest.mark.asyncio
+async def test_report_only_retries_when_model_returns_ops(tmp_path, monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr("app.services.gpt_api.gpt_api_enabled", lambda: True)
+
+    async def fake_chat(**kw):
+        calls.append(kw.get("prompt") or "")
+        if len(calls) == 1:
+            return SimpleNamespace(
+                text='{"ops":[{"frame_uuid":"u1","fields":{"смысл_сцены":"x"}}]}'
+            )
+        return SimpleNamespace(text="# ОТЧЁТ ПРОВЕРКИ\nverdict: fail\n")
+
+    monkeypatch.setattr("app.services.gpt_api.chat", fake_chat)
+    monkeypatch.setattr("app.services.gpt_api.collect_result_urls", lambda text: [])
+
+    res = await goc.run_operator_api(
+        project_dir=tmp_path,
+        node_key="n_excel_gpt_1",
+        role="review",
+        output_mode="text",
+        prompt="проверь кино",
+        accompanying="",
+        input_paths=[],
+        check_mode=True,
+        check_fix=False,
+        db_sot_check=True,
+    )
+    assert len(calls) == 2
+    assert "ЗАПРЕЩЕНО" in calls[1]
+    assert "verdict: fail" in (res.reply_text or "")
+    assert res.apply_ops is None

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -289,11 +290,11 @@ async def _run_operator_api_real(
     if check_mode and check_fix and not db_sot_check:
         accomp = build_api_accompany(accomp, expect_xlsx_writeback=True)
 
-    xlsx_contract = (
-        "apply_ops"
-        if (effective_output == "project_file" and not is_check) or db_sot_check
-        else "tsv"
-    )
+    xlsx_contract = "tsv"
+    if (effective_output == "project_file" and not is_check) or (
+        check_mode and check_fix and db_sot_check
+    ):
+        xlsx_contract = "apply_ops"
     chat_paths = list(input_paths)
     if db_sot_check:
         chat_paths = [
@@ -309,6 +310,39 @@ async def _run_operator_api_real(
         xlsx_write_contract=xlsx_contract,
     )
     reply_text = result.text
+
+    # report_only: модель иногда копирует assemble JSON. Один повтор — TXT-отчёт.
+    if check_mode and not check_fix:
+        from app.services.db_apply import extract_apply_ops_json as _extract_ops
+
+        leaked = _extract_ops(reply_text or "")
+        has_verdict = bool(
+            re.search(r"verdict\s*:\s*(pass|fail)", reply_text or "", re.I)
+        )
+        if leaked and _apply_ops_has_payload(leaked) and not has_verdict:
+            logger.warning(
+                "gpt_operator/api: node={} report_only вернул apply-ops — TXT retry",
+                node_key,
+            )
+            retry_prompt = (
+                f"{prompt_for_model}\n\n"
+                "# ПОВТОР (обязателен)\n"
+                "Предыдущий ответ — JSON apply-ops. Это ЗАПРЕЩЕНО.\n"
+                "Верни ТОЛЬКО текстовый отчёт. Первая строка после заголовка:\n"
+                "verdict: pass   ИЛИ   verdict: fail\n"
+                "Без JSON, без ops, без apply-ops."
+            )
+            retry = await chat(
+                prompt=retry_prompt,
+                accompanying=accomp,
+                input_paths=chat_paths,
+                temperature=0.0,
+                xlsx_write_contract="tsv",
+            )
+            reply_text = retry.text or reply_text
+            from types import SimpleNamespace
+
+            result = SimpleNamespace(text=reply_text)
 
     # DB SoT: project_file / check DB → apply-ops JSON.
     apply_ops: dict | None = None
