@@ -247,31 +247,54 @@ async def run_assemble(
 
         payload = None
         feedback: str | None = None
-        for attempt in range(1, _MAX_ASSEMBLE_ATTEMPTS + 1):
-            # Чанки по Frame-строкам — один жирный GPT-запрос ломает kie (524).
-            candidate = await runner.run_assembler_chunked(
-                project,
-                frames,
-                full_vo,
-                assembly_input,
-                feedback=feedback,
+        # chrono_dyn: границы уже из camera_expand; GPT-assemble только жжёт 19 чанков.
+        # Локальная склейка из shot_plan/action — без повторных GPT.
+        if uses_chrono_dyn(project):
+            local = sd_assembler.build_local_assembler_payload(assembly_input, frames)
+            problems = sd_assembler.validate_payload(
+                project, frames, local, full_vo
             )
-            # Границы сцен — из camera_expand, не из GPT (ломает цитаты в чанках).
-            candidate = sd_assembler.force_scenes_from_chrono(
-                candidate, assembly_input, frames=frames
-            )
-            problems = sd_assembler.validate_payload(project, frames, candidate, full_vo)
             if not problems:
-                payload = candidate
-                break
-            feedback = "\n".join(problems)
-            logger.warning(
-                "[#{}] scene_design assemble attempt {}/{} problems: {}",
-                project.id,
-                attempt,
-                _MAX_ASSEMBLE_ATTEMPTS,
-                problems,
-            )
+                payload = local
+                logger.info(
+                    "[#{}] scene_design assemble: local chrono_dyn ok (no GPT)",
+                    project.id,
+                )
+            else:
+                logger.warning(
+                    "[#{}] scene_design assemble: local chrono_dyn failed, "
+                    "fallback GPT: {}",
+                    project.id,
+                    problems[:12],
+                )
+        if payload is None:
+            for attempt in range(1, _MAX_ASSEMBLE_ATTEMPTS + 1):
+                # Чанки по Frame-строкам — один жирный GPT-запрос ломает kie (524).
+                candidate = await runner.run_assembler_chunked(
+                    project,
+                    frames,
+                    full_vo,
+                    assembly_input,
+                    feedback=feedback,
+                )
+                # Границы сцен — из camera_expand, не из GPT (ломает цитаты в чанках).
+                candidate = sd_assembler.force_scenes_from_chrono(
+                    candidate, assembly_input, frames=frames
+                )
+                problems = sd_assembler.validate_payload(
+                    project, frames, candidate, full_vo
+                )
+                if not problems:
+                    payload = candidate
+                    break
+                feedback = "\n".join(problems)
+                logger.warning(
+                    "[#{}] scene_design assemble attempt {}/{} problems: {}",
+                    project.id,
+                    attempt,
+                    _MAX_ASSEMBLE_ATTEMPTS,
+                    problems,
+                )
         if payload is None:
             raise RuntimeError(
                 f"scene_design: сборка не прошла валидацию: {feedback}"

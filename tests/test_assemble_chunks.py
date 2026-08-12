@@ -110,3 +110,17 @@ def test_merge_remaps_scene_ids_and_dedups_ops():
     by_u = {op["frame_uuid"]: op["fields"]["id_scene"] for op in merged["ops"]}
     assert by_u["u1"] == "scene_01"
     assert by_u["u3"] == "scene_02"
+
+
+def test_merge_normalizes_uuid_aliases():
+    p1 = {
+        "characters": [],
+        "scenes": [{"id_scene": "s1"}],
+        "ops": [
+            {"uuid": "a", "fields": {"id_scene": "s1"}},
+            {"fields": {"frame_uuid": "b", "id_scene": "s1"}},
+        ],
+    }
+    merged = ac.merge_assembler_payloads([p1])
+    assert {op["frame_uuid"] for op in merged["ops"]} == {"a", "b"}
+    assert "dropped_no_uuid:0" in merged["report"]

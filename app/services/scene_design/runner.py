@@ -63,10 +63,20 @@ def load_chunk_checkpoint(
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return None
+    if not isinstance(data, dict):
+        return None
+    # assemble: нужны и scenes[], и ops[] (не один LIST_KEY).
+    if name == ag.ASSEMBLER:
+        scenes = data.get("scenes")
+        ops = data.get("ops")
+        if not isinstance(scenes, list) or not scenes:
+            return None
+        if not isinstance(ops, list) or not ops:
+            return None
+        return data
     list_key = ag.LIST_KEY.get(name)
     if (
         not list_key
-        or not isinstance(data, dict)
         or not isinstance(data.get(list_key), list)
         or not data[list_key]
     ):
@@ -718,6 +728,18 @@ async def run_assembler_chunked(
             raise
 
     for i, batch in enumerate(batches, start=1):
+        label = f"p{i}"
+        cached = load_chunk_checkpoint(project, ag.ASSEMBLER, label)
+        if cached is not None:
+            logger.info(
+                "[#{}] scene_design assemble chunk {}/{} frames={} — checkpoint",
+                project.id,
+                i,
+                total,
+                [f.number for f in batch],
+            )
+            parts.append(cached)
+            continue
         logger.info(
             "[#{}] scene_design assemble chunk {}/{} frames={}",
             project.id,
@@ -731,11 +753,31 @@ async def run_assembler_chunked(
             include_characters=(i == 1),
             fb=(feedback if i == 1 else None),
         )
+        save_chunk_checkpoint(project, ag.ASSEMBLER, label, part)
+        logger.info(
+            "[#{}] scene_design assemble chunk {}/{} ok: scenes={} ops={}",
+            project.id,
+            i,
+            total,
+            len(part.get("scenes") or []),
+            len(part.get("ops") or []),
+        )
         parts.append(part)
 
     merged = chunks.merge_assembler_payloads(parts)
+    logger.info(
+        "[#{}] scene_design assemble merge: parts={} scenes={} ops={}",
+        project.id,
+        len(parts),
+        len(merged.get("scenes") or []),
+        len(merged.get("ops") or []),
+    )
     if not merged.get("scenes") or not merged.get("ops"):
         raise ag.SceneDesignAgentError(
-            "scene_design/assemble: после склейки чанков пустой scenes/ops"
+            "scene_design/assemble: после склейки чанков пустой scenes/ops "
+            f"(parts={len(parts)}; "
+            f"scenes={[len(p.get('scenes') or []) for p in parts if isinstance(p, dict)]}; "
+            f"ops={[len(p.get('ops') or []) for p in parts if isinstance(p, dict)]})"
         )
+    clear_chunk_checkpoints(project, ag.ASSEMBLER)
     return merged

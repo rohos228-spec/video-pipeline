@@ -161,33 +161,68 @@ _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 def extract_json_object(
     text: str, *, marker_keys: tuple[str, ...]
 ) -> dict[str, Any] | None:
-    """Достать JSON-объект из ответа модели (fence или голый JSON с маркером)."""
+    """Достать JSON-объект из ответа модели (fence или голый JSON с маркером).
+
+    Если в ответе несколько JSON (пример в fence + рабочий объект), берём
+    объект с наибольшим числом *непустых* списков по ``marker_keys`` —
+    иначе первый fence-stub обнуляет склейку assemble.
+    """
     if not text:
         return None
     candidates: list[str] = [m.group(1) for m in _JSON_FENCE_RE.finditer(text)]
-    idxs = [i for i in (text.find(f'"{k}"') for k in marker_keys) if i != -1]
-    idx = min(idxs) if idxs else -1
-    if idx != -1:
-        start = text.rfind("{", 0, idx)
-        if start != -1:
-            depth = 0
-            for i in range(start, len(text)):
-                ch = text[i]
-                if ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        candidates.append(text[start : i + 1])
-                        break
+    # Все вхождения маркеров (не только первое) — иначе stub-fence раньше
+    # рабочего JSON блокирует склейку assemble.
+    seen_spans: set[tuple[int, int]] = set()
+    for k in marker_keys:
+        needle = f'"{k}"'
+        start_search = 0
+        while True:
+            idx = text.find(needle, start_search)
+            if idx == -1:
+                break
+            start = text.rfind("{", 0, idx)
+            if start != -1:
+                depth = 0
+                for i in range(start, len(text)):
+                    ch = text[i]
+                    if ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            span = (start, i + 1)
+                            if span not in seen_spans:
+                                seen_spans.add(span)
+                                candidates.append(text[start : i + 1])
+                            break
+            start_search = idx + 1
+    parsed: list[dict[str, Any]] = []
     for cand in candidates:
         try:
             data = json.loads(cand)
         except Exception:  # noqa: BLE001
             continue
         if isinstance(data, dict):
-            return data
-    return None
+            parsed.append(data)
+    if not parsed:
+        return None
+    if not marker_keys:
+        return parsed[0]
+
+    def _score(d: dict[str, Any]) -> int:
+        score = 0
+        for k in marker_keys:
+            v = d.get(k)
+            if isinstance(v, list) and v:
+                score += 2
+            elif isinstance(v, list):
+                score += 1
+            elif k in d:
+                score += 1
+        return score
+
+    parsed.sort(key=_score, reverse=True)
+    return parsed[0]
 
 
 def _chain_phases(scene: dict[str, Any]) -> list[Any]:

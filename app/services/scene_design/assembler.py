@@ -311,6 +311,78 @@ def stamp_actions_onto_ops(
     return out
 
 
+def build_local_assembler_payload(
+    assembly_input: dict[str, Any],
+    frames: list[Frame],
+) -> dict[str, Any]:
+    """Сборка без GPT: ops на каждый кадр из camera shot_plan + scenes_chrono.
+
+    Для chrono_dyn границы сцен всё равно переписывает ``force_scenes_from_chrono``;
+    GPT-assemble только жжёт чанки. Локальный путь восстанавливает запись
+    из уже готовых агентов (characters/action/camera) без повторных вызовов.
+    """
+    characters = [
+        c for c in (assembly_input.get("characters") or []) if isinstance(c, dict)
+    ]
+    shots = [
+        s for s in (assembly_input.get("shot_plan_chrono") or []) if isinstance(s, dict)
+    ]
+    chrono = [
+        sc for sc in (assembly_input.get("scenes_chrono") or []) if isinstance(sc, dict)
+    ]
+    uuid_to_sid: dict[str, str] = {}
+    for sc in chrono:
+        sid = str(sc.get("id_scene") or "").strip()
+        for kid in sc.get("кадры") or []:
+            if not isinstance(kid, dict):
+                continue
+            uid = str(kid.get("uuid") or "").strip()
+            if uid and sid:
+                uuid_to_sid[uid] = sid
+
+    # shot_plan в хронологии ≈ 1:1 с кадрами после camera_subdivide.
+    ops: list[dict[str, Any]] = []
+    for i, fr in enumerate(frames):
+        uid = str(getattr(fr, "uuid", "") or "").strip()
+        if not uid:
+            continue
+        sh = shots[i] if i < len(shots) else {}
+        if not sh:
+            # fallback: цитата шота пересекается с закадром кадра
+            vo = _fold_ru(getattr(fr, "voiceover_text", None) or "")
+            for cand in shots:
+                q = _fold_ru(str(cand.get("цитата") or cand.get("quote") or ""))
+                if q and vo and (q[:24] in vo or vo[:24] in q):
+                    sh = cand
+                    break
+        composition = _as_plain_text(
+            sh.get("композиция") or sh.get("действие") or sh.get("action") or ""
+        )
+        motive = _as_plain_text(sh.get("мотив") or sh.get("camera_motive") or "")
+        who = _as_plain_text(sh.get("кто_в_кадре") or sh.get("персонажи") or "")
+        fields: dict[str, Any] = {
+            "id_scene": uuid_to_sid.get(uid, ""),
+            "действие": composition,
+            "описание_shot01": composition or motive,
+            "место": _as_plain_text(sh.get("набор") or sh.get("место") or ""),
+            "крупность": _as_plain_text(sh.get("крупность") or ""),
+            "угол": _as_plain_text(sh.get("угол") or ""),
+            "движение": _as_plain_text(sh.get("движение") or ""),
+            "персонажи": who,
+            "особенность_сцены": motive,
+            "акцент": motive,
+        }
+        ops.append({"frame_uuid": uid, "fields": fields})
+
+    payload: dict[str, Any] = {
+        "characters": characters,
+        "scenes": [],
+        "ops": ops,
+        "report": f"local_assemble:no_gpt; ops:{len(ops)}; shots:{len(shots)}",
+    }
+    return force_scenes_from_chrono(payload, assembly_input, frames)
+
+
 def force_scenes_from_chrono(
     payload: dict[str, Any],
     assembly_input: dict[str, Any],
@@ -344,12 +416,25 @@ def force_scenes_from_chrono(
     scenes_out: list[dict[str, Any]] = []
     for sc in chrono:
         sid = str(sc.get("id_scene") or "").strip()
+        kids = [k for k in (sc.get("кадры") or []) if isinstance(k, dict)]
+        # SoT времени — сумма кадров после camera_subdivide, не stale action.время_сек.
+        kid_sec = 0.0
+        for kid in kids:
+            try:
+                kid_sec += float(kid.get("время_сек") or 0.0)
+            except (TypeError, ValueError):
+                pass
+        if kid_sec <= 0:
+            try:
+                kid_sec = float(sc.get("время_сек") or 0.0)
+            except (TypeError, ValueError):
+                kid_sec = 0.0
         scenes_out.append(
             {
                 "id_scene": sid,
                 "start_words": sc.get("start_words") or "",
                 "end_words": sc.get("end_words") or "",
-                "время_сек": sc.get("время_сек") or 0,
+                "время_сек": round(kid_sec, 1),
                 "структура_сцены": sc.get("структура_сцены") or "continuity",
                 "тип_стыка": sc.get("тип_стыка") or "action",
                 "переход_в_сцену": sc.get("переход_в_сцену") or "cut",
@@ -361,12 +446,27 @@ def force_scenes_from_chrono(
                 "персонажи_сцены": gpt_scene_persons.get(sid, ""),
             }
         )
-        for kid in sc.get("кадры") or []:
-            if not isinstance(kid, dict):
-                continue
+        for kid in kids:
             uid = str(kid.get("uuid") or "").strip()
             if uid:
                 uuid_to_scene[uid] = sid
+
+    # Пересчёт время_сек по реальным Frame — kids в chrono иногда stale.
+    if frames:
+        from collections import defaultdict
+
+        acc: dict[str, float] = defaultdict(float)
+        for fr in frames:
+            uid = str(getattr(fr, "uuid", "") or "").strip()
+            sid = uuid_to_scene.get(uid)
+            if not sid:
+                continue
+            sec, _src = frame_seconds(fr)
+            acc[sid] += sec
+        for sc in scenes_out:
+            sid = str(sc.get("id_scene") or "").strip()
+            if sid in acc and acc[sid] > 0:
+                sc["время_сек"] = round(acc[sid], 1)
 
     out = dict(payload)
     out["scenes"] = scenes_out

@@ -182,6 +182,20 @@ def build_chunk_context(
     )
 
 
+def normalize_op_frame_uuid(op: dict[str, Any]) -> str:
+    """frame_uuid из корня или fields (модели часто пишут uuid/frame)."""
+    for key in ("frame_uuid", "uuid", "frame"):
+        u = str(op.get(key) or "").strip()
+        if u:
+            return u
+    fields = op.get("fields") if isinstance(op.get("fields"), dict) else {}
+    for key in ("frame_uuid", "uuid", "frame"):
+        u = str(fields.get(key) or "").strip()
+        if u:
+            return u
+    return ""
+
+
 def merge_assembler_payloads(
     parts: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -192,6 +206,7 @@ def merge_assembler_payloads(
     reports: list[str] = []
     id_map: dict[str, str] = {}
     scene_i = 0
+    dropped_no_uuid = 0
 
     for part in parts:
         if not isinstance(part, dict):
@@ -215,6 +230,11 @@ def merge_assembler_payloads(
                 continue
             op2 = dict(op)
             fields = dict(op2.get("fields") or {}) if isinstance(op2.get("fields"), dict) else {}
+            uid = normalize_op_frame_uuid(op2)
+            if uid:
+                op2["frame_uuid"] = uid
+            else:
+                dropped_no_uuid += 1
             sid = str(fields.get("id_scene") or fields.get("shot01_id_scene") or "").strip()
             if sid and sid in id_map:
                 fields["id_scene"] = id_map[sid]
@@ -238,6 +258,7 @@ def merge_assembler_payloads(
         "ops": ops,
         "report": (
             f"chunks:{len(parts)}; scenes:{len(scenes)}; ops:{len(ops)}; "
+            f"dropped_no_uuid:{dropped_no_uuid}; "
             + " | ".join(reports)[:1500]
         ),
     }
