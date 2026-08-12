@@ -72,3 +72,5 @@ def test_build_local_assembler_payload_covers_frames():
     assert {op["frame_uuid"] for op in payload["ops"]} == {"u1", "u2"}
     assert payload["ops"][0]["fields"]["id_scene"] == "scene_01"
     assert "встаёт" in (payload["ops"][0]["fields"].get("действие") or "")
+    assert "крупность" not in payload["ops"][0]["fields"]
+    assert "push-in" in (payload["ops"][0]["fields"].get("описание_shot01") or "")

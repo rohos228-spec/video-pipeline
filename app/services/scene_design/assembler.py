@@ -360,19 +360,29 @@ def build_local_assembler_payload(
         )
         motive = _as_plain_text(sh.get("мотив") or sh.get("camera_motive") or "")
         who = _as_plain_text(sh.get("кто_в_кадре") or sh.get("персонажи") or "")
+        # Только ключи из db_apply FIELD_MAP — крупность/угол/движение туда не входят.
+        cam_bits = [
+            _as_plain_text(sh.get("крупность") or ""),
+            _as_plain_text(sh.get("угол") or ""),
+            _as_plain_text(sh.get("движение") or ""),
+        ]
+        cam_line = ", ".join(b for b in cam_bits if b)
+        desc = composition
+        if cam_line:
+            desc = f"{composition} ({cam_line})".strip() if composition else cam_line
+        if motive and motive not in desc:
+            desc = f"{desc}. {motive}".strip(". ")
         fields: dict[str, Any] = {
             "id_scene": uuid_to_sid.get(uid, ""),
-            "действие": composition,
-            "описание_shot01": composition or motive,
+            "действие": composition or motive,
+            "описание_shot01": desc or composition or motive,
             "место": _as_plain_text(sh.get("набор") or sh.get("место") or ""),
-            "крупность": _as_plain_text(sh.get("крупность") or ""),
-            "угол": _as_plain_text(sh.get("угол") or ""),
-            "движение": _as_plain_text(sh.get("движение") or ""),
             "персонажи": who,
-            "особенность_сцены": motive,
-            "акцент": motive,
+            "особенность_сцены": motive or cam_line,
+            "акцент": motive or cam_line,
+            "заметки_по_консистенции": cam_line,
         }
-        ops.append({"frame_uuid": uid, "fields": fields})
+        ops.append({"frame_uuid": uid, "fields": {k: v for k, v in fields.items() if v}})
 
     payload: dict[str, Any] = {
         "characters": characters,
