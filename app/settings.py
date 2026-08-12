@@ -191,6 +191,11 @@ class Settings(BaseSettings):
     elevenlabs_web_url: str = Field(
         "https://elevenlabs.io/app/speech-synthesis", alias="ELEVENLABS_WEB_URL"
     )
+    # Опциональный API-ключ 11Labs — SFX-генерация звуков сопровождения
+    # (POST /v1/sound-effects). Без ключа — локальный синтез (wave, офлайн).
+    elevenlabs_api_key: str = Field("", alias="ELEVENLABS_API_KEY")
+    # Звуки сопровождения в пайплайне (sfx_plan → sfx_gen → микс в сборке).
+    sfx_enabled: bool = Field(True, alias="SFX_ENABLED")
 
     # MoreLogin / социалки
     morelogin_profile_id: str | None = Field(None, alias="MORELOGIN_PROFILE_ID")

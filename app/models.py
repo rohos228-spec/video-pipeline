@@ -41,6 +41,9 @@ class ProjectStatus(str, enum.Enum):
     generating_videos = "generating_videos"
     generating_music = "generating_music"
     generating_audio = "generating_audio"
+    # Звуки сопровождения (SFX): план по таймлайну → генерация → микс в сборке
+    sfx_planning = "sfx_planning"  # агент-планировщик звуков по меткам
+    generating_sfx = "generating_sfx"  # создание звуков (11Labs API / синтез)
     assembling = "assembling"
     publishing = "publishing"
     # «ready» статусы — воркер их игнорирует, ждём действия пользователя из бота.
@@ -62,6 +65,8 @@ class ProjectStatus(str, enum.Enum):
     videos_ready = "videos_ready"
     music_ready = "music_ready"
     audio_ready = "audio_ready"
+    sfx_plan_ready = "sfx_plan_ready"  # план звуков готов
+    sfx_ready = "sfx_ready"  # звуки сгенерированы
     assembled = "assembled"
     published = "published"
     paused = "paused"

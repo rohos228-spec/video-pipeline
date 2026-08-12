@@ -165,6 +165,14 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
             from app.orchestrator.steps import generate_music
 
             await generate_music.run(session, project, bot)
+        elif status is ProjectStatus.sfx_planning:
+            from app.orchestrator.steps import plan_sfx
+
+            await plan_sfx.run(session, project, bot)
+        elif status is ProjectStatus.generating_sfx:
+            from app.orchestrator.steps import generate_sfx
+
+            await generate_sfx.run(session, project, bot)
         elif status is ProjectStatus.generating_audio:
             await generate_audio.run(session, project, bot)
         elif status is ProjectStatus.assembling:

@@ -105,6 +105,12 @@ WORK_NODES: dict[str, WorkNodeSpec] = {
     "music": WorkNodeSpec(
         "music", "music", ProjectStatus.generating_music, ProjectStatus.music_ready
     ),
+    "sfx_plan": WorkNodeSpec(
+        "sfx_plan", "sfx_plan", ProjectStatus.sfx_planning, ProjectStatus.sfx_plan_ready
+    ),
+    "sfx_gen": WorkNodeSpec(
+        "sfx_gen", "sfx_gen", ProjectStatus.generating_sfx, ProjectStatus.sfx_ready
+    ),
     "assemble": WorkNodeSpec(
         "assemble", "assemble", ProjectStatus.assembling, ProjectStatus.assembled
     ),

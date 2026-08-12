@@ -57,6 +57,8 @@ _RUNNING_STATUSES = {
     ProjectStatus.generating_videos,
     ProjectStatus.generating_audio,
     ProjectStatus.generating_music,
+    ProjectStatus.sfx_planning,
+    ProjectStatus.generating_sfx,
     ProjectStatus.assembling,
     ProjectStatus.publishing,
 }

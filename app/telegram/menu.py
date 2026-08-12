@@ -134,7 +134,11 @@ _STATUS_ORDER: dict[ProjectStatus, int] = {
     ProjectStatus.audio_ready: 34,
     ProjectStatus.generating_music: 35,
     ProjectStatus.music_ready: 36,
-    ProjectStatus.assembling: 37,
+    ProjectStatus.sfx_planning: 36,
+    ProjectStatus.sfx_plan_ready: 37,
+    ProjectStatus.generating_sfx: 37,
+    ProjectStatus.sfx_ready: 38,
+    ProjectStatus.assembling: 38,
     ProjectStatus.assembled: 38,
     ProjectStatus.publishing: 39,
     ProjectStatus.published: 40,
@@ -344,6 +348,18 @@ _STEP_BY_CODE["audio"] = StepDef(
     -1, "audio", "Озвучка",
     ProjectStatus.generating_audio, ProjectStatus.audio_ready,
     ProjectStatus.videos_ready,
+)
+# Sub-steps «Звуки сопровождения»: план по таймлайну → генерация. На канвасе
+# — ноды sfx_plan/sfx_gen между «Музыка» и «Сборка»; в главном меню TG нет.
+_STEP_BY_CODE["sfx_plan"] = StepDef(
+    -1, "sfx_plan", "План звуков",
+    ProjectStatus.sfx_planning, ProjectStatus.sfx_plan_ready,
+    ProjectStatus.music_ready,
+)
+_STEP_BY_CODE["sfx_gen"] = StepDef(
+    -1, "sfx_gen", "Звуки (SFX)",
+    ProjectStatus.generating_sfx, ProjectStatus.sfx_ready,
+    ProjectStatus.sfx_plan_ready,
 )
 # requires=hero_ready.
 _STEP_BY_CODE["items"] = StepDef(

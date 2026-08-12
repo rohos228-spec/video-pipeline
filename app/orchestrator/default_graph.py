@@ -36,6 +36,8 @@ def default_graph() -> tuple[list[dict], list[dict]]:
         ("videos", "Видео", "Генерация 8-сек клипов"),
         ("audio", "Озвучка", "ElevenLabs TTS + Whisper"),
         ("music", "Музыка", "GPT + Suno (Outsee)"),
+        ("sfx_plan", "План звуков", "GPT: метки звуков сопровождения по таймлайну"),
+        ("sfx_gen", "Звуки", "Создание SFX (11Labs API / локальный синтез)"),
         ("assemble", "Сборка", "FFmpeg финальный mp4"),
         ("publish", "Публикация", "Публикация на 5 площадок"),
     ]
