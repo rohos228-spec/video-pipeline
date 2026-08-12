@@ -137,6 +137,28 @@ def compact_slice_payload(title: str, payload: dict) -> dict:
     return payload
 
 
+def _skeleton_block_from_checkpoint(project: Project) -> str:
+    """Блок # СКЕЛЕТ (JSON) из чекпоинта волны 0 — для волны 1."""
+    try:
+        from app.services.scene_design import runner as sd_runner
+        from app.services.scene_design.agents import SKELETON
+
+        data = sd_runner.load_checkpoint(project, SKELETON)
+    except Exception:  # noqa: BLE001
+        return ""
+    if not isinstance(data, dict) or not data.get("scenes"):
+        return ""
+    slim = {
+        "scenes": data.get("scenes") or [],
+        "characters_seed": data.get("characters_seed") or [],
+        "locations_seed": data.get("locations_seed") or [],
+    }
+    return (
+        "# СКЕЛЕТ (JSON)\n"
+        + json.dumps(slim, ensure_ascii=False, separators=(",", ":"))
+    )
+
+
 def build_shared_context(
     project: Project, frames: list[Frame], *, mode: str = "full"
 ) -> str:
@@ -186,4 +208,8 @@ def build_shared_context(
         f"(vo_14cps). Метки БД/ASR игнорировать. ИТОГО: {round(total_sec, 1)} сек.\n"
         + json.dumps(frames_payload, ensure_ascii=False, separators=(",", ":"))
     )
+    if not slim:
+        sk = _skeleton_block_from_checkpoint(project)
+        if sk:
+            parts.append(sk)
     return "\n\n".join(parts)

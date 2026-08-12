@@ -293,6 +293,15 @@ class Settings(BaseSettings):
     scene_design_agent_attempt_timeout_s: float = Field(
         280.0, alias="SCENE_DESIGN_AGENT_ATTEMPT_TIMEOUT_S"
     )
+    # Волна 0: черновик→редактор скелета (sd_skeleton / sd_skeleton_editor).
+    # Per-project: meta.scene_design_skeleton + нода marker=skeleton на канвасе.
+    scene_design_skeleton_enabled: bool = Field(
+        True, alias="SCENE_DESIGN_SKELETON_ENABLED"
+    )
+    # Тайминг скелета: len(закадр)/RATE vs сумма время_сек кадров (допуск 15%).
+    scene_design_vo_chars_per_sec: float = Field(
+        14.0, alias="SCENE_DESIGN_VO_CHARS_PER_SEC"
+    )
 
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")

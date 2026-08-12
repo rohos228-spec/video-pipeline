@@ -826,40 +826,14 @@ def validate_chrono_dyn_camera_shots(shots: list[Any]) -> None:
 def validate_skeleton_one_vo_per_scene(
     scenes: list[Any], expected_frame_numbers: list[int]
 ) -> None:
-    """1 ячейка закадра (входной кадр с VO) = 1 сцена; без склейки VO."""
-    if not expected_frame_numbers:
-        return
-    expect = [int(n) for n in expected_frame_numbers]
-    if len(scenes) != len(expect):
-        raise SceneDesignAgentError(
-            f"scene_design/skeleton: нужно {len(expect)} сцен "
-            f"(по одной на VO-ячейку), а пришло {len(scenes)}. "
-            f"Нельзя склеивать несколько закадровых ячеек в одну сцену."
-        )
-    seen: list[int] = []
-    for i, sc in enumerate(scenes):
-        if not isinstance(sc, dict):
-            raise SceneDesignAgentError(
-                f"scene_design/skeleton: scenes[{i}] не объект"
-            )
-        raw = sc.get("кадры")
-        if not isinstance(raw, list) or len(raw) != 1:
-            raise SceneDesignAgentError(
-                f"scene_design/skeleton: scenes[{i}].кадры должен быть "
-                f"ровно [N] (одна VO-ячейка), а не {raw!r}"
-            )
-        try:
-            num = int(raw[0])
-        except (TypeError, ValueError) as e:
-            raise SceneDesignAgentError(
-                f"scene_design/skeleton: scenes[{i}].кадры[0] не номер: {raw[0]!r}"
-            ) from e
-        seen.append(num)
-    if sorted(seen) != sorted(expect):
-        raise SceneDesignAgentError(
-            f"scene_design/skeleton: номера кадров {seen} ≠ ожидаемым {expect}. "
-            f"Каждая VO-ячейка — своя сцена, без пропусков и склеек."
-        )
+    """Deprecated alias: покрытие кадров (скелет группирует соседние VO).
+
+    Раньше требовал 1 VO = 1 сцену. Теперь — каждый кадр ровно в одной сцене,
+    соседние номера, порядок сцен. См. ``skeleton.validate_skeleton_coverage``.
+    """
+    from app.services.scene_design.skeleton import validate_skeleton_coverage
+
+    validate_skeleton_coverage(scenes, expected_frame_numbers)
 
 
 def parse_agent_slice(

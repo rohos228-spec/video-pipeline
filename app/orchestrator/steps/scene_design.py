@@ -116,6 +116,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
 
     only_agent = runner.get_only_agent(project)
     try:
+        # Волна 0: черновик→редактор скелета (до параллельных категорийных).
+        from app.services.scene_design import skeleton as sd_skeleton
+
+        if (
+            sd_skeleton.skeleton_pipeline_enabled(project)
+            and (not only_agent or only_agent == "skeleton")
+        ):
+            await sd_skeleton.run_skeleton(session, project, frames)
+            await session.commit()
+
         context = context_builder.build_shared_context(project, frames)
         slices = await runner.run_category_agents(
             project, context, frames=frames, only_agent=only_agent

@@ -162,8 +162,16 @@ async def test_scene_design_step_end_to_end(sd_session, monkeypatch) -> None:
     assert sd.get("status") == "done"
     registry = meta.get("scene_registry")
     assert isinstance(registry, list) and registry[0]["id_scene"] == "sc01"
-    # Хронометраж сцены доехал до реестра (3 кадра × 3.0 сек из БД).
-    assert registry[0]["время_сек"] == 9.0
+    # Хронометраж сцены = Σ len(закадр)/14 (SoT), не duration_seconds из БД.
+    from app.services.scene_design.context_builder import frame_seconds
+
+    frames_for_sec = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
+        )
+    ).scalars().all()
+    expected_sec = round(sum(frame_seconds(fr)[0] for fr in frames_for_sec), 1)
+    assert registry[0]["время_сек"] == expected_sec
 
     frames = (
         await session.execute(

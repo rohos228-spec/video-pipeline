@@ -690,6 +690,24 @@ async def run_category_agents(
                 for n in wave
             )
         )
+        # Action обязан покрыть биты скелета (если волна 0 была).
+        if (
+            skeleton_on
+            and "action" in wave
+            and "action" in results
+            and (not target or target == "action")
+        ):
+            try:
+                from app.services.scene_design.skeleton import (
+                    validate_action_covers_skeleton_bits,
+                )
+
+                validate_action_covers_skeleton_bits(
+                    list(results["action"].get("scenes") or []),
+                    results.get(ag.SKELETON),
+                )
+            except ag.SceneDesignAgentError as e:
+                errors["action"] = str(e)
         # Жёсткий стоп: упала текущая волна — дальше не идём.
         # В only_agent режиме смотрим только целевого агента.
         wave_failed = [

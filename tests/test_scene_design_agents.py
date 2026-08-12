@@ -137,16 +137,30 @@ def test_parse_skeleton_scenes_after_nested_map_frames() -> None:
     assert data["scenes"][0]["id_scene"] == "scene_01"
 
 
-def test_skeleton_rejects_merged_vo_cells() -> None:
-    """1 VO-ячейка = 1 сцена: склейка [1,2,3] отклоняется."""
+def test_skeleton_accepts_grouped_adjacent_frames() -> None:
+    """Скелет группирует соседние кадры — [1,2,3] при полном покрытии ок."""
     raw = _fence(
         {
             "scenes": [
-                {"id_scene": "scene_01", "кадры": [1, 2, 3], "суть": "merge"},
+                {"id_scene": "scene_01", "кадры": [1, 2, 3], "суть": "group"},
             ]
         }
     )
-    with pytest.raises(ag.SceneDesignAgentError, match="VO-ячейк"):
+    data = ag.parse_agent_slice(
+        "skeleton", raw, expected_frame_numbers=[1, 2, 3]
+    )
+    assert data["scenes"][0]["кадры"] == [1, 2, 3]
+
+
+def test_skeleton_rejects_non_adjacent_or_gap() -> None:
+    raw = _fence(
+        {
+            "scenes": [
+                {"id_scene": "scene_01", "кадры": [1, 3], "суть": "gap"},
+            ]
+        }
+    )
+    with pytest.raises(ag.SceneDesignAgentError, match="покрытие|сосед"):
         ag.parse_agent_slice(
             "skeleton", raw, expected_frame_numbers=[1, 2, 3]
         )
@@ -202,10 +216,17 @@ def test_parse_assembler_error_field() -> None:
 
 # ── validate_payload ─────────────────────────────────────────────────
 
-_VO = "Альфа начало истории. Бета середина пути. Гамма финал рассказа."
+_VO_PARTS = [
+    "Альфа начало истории.",
+    "Бета середина пути.",
+    "Гамма финал рассказа.",
+]
+_VO = " ".join(_VO_PARTS)
+# SoT времени сцены = Σ len(закадр)/subtitle_chars_per_second (не duration_seconds БД).
+_SCENE_SEC = round(sum(len(p) for p in _VO_PARTS) / 14.0, 1)
 _FRAMES = [
-    SimpleNamespace(uuid=f"u{i}", duration_seconds=3.0, voiceover_text=f"кадр {i}")
-    for i in range(1, 4)
+    SimpleNamespace(uuid=f"u{i}", duration_seconds=3.0, voiceover_text=part)
+    for i, part in enumerate(_VO_PARTS, start=1)
 ]
 _PROJECT = SimpleNamespace(id=1)
 
@@ -218,7 +239,7 @@ def _valid_payload() -> dict:
                 "id_scene": "sc01",
                 "start_words": "Альфа начало",
                 "end_words": "финал рассказа",
-                "время_сек": 9.0,
+                "время_сек": _SCENE_SEC,
             }
         ],
         "ops": [
@@ -241,14 +262,15 @@ def test_validate_scene_time_required() -> None:
 
 def test_validate_scene_time_mismatch() -> None:
     p = _valid_payload()
-    p["scenes"][0]["время_сек"] = 25.0  # кадры дают 9.0
+    p["scenes"][0]["время_сек"] = 25.0  # далеко от Σ VO/14
     problems = validate_payload(_PROJECT, _FRAMES, p, _VO)
     assert any("не бьётся с суммой кадров" in x for x in problems)
 
 
 def test_validate_scene_time_within_tolerance() -> None:
     p = _valid_payload()
-    p["scenes"][0]["время_сек"] = 10.0  # diff 1.0 < tolerance max(1.5, 3.15)
+    # diff 1.0 < tolerance max(1.5, 0.35*_SCENE_SEC)
+    p["scenes"][0]["время_сек"] = round(_SCENE_SEC + 1.0, 1)
     assert validate_payload(_PROJECT, _FRAMES, p, _VO) == []
 
 
