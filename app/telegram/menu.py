@@ -333,6 +333,7 @@ _STEP_BY_CODE["scene_asm"] = StepDef(
 # берутся из чекпоинтов. После — статус scene_agents_ready, сборку
 # перезапускать отдельно (scene_asm).
 for _code, _title in (
+    ("sd_skel", "Агент: скелет"),
     ("sd_char", "Агент: персонажи"),
     ("sd_world", "Агент: мир"),
     ("sd_style", "Агент: стиль"),

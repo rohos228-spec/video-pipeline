@@ -560,6 +560,68 @@ def validate_skeleton(
     return gaps
 
 
+def heal_open_threads(draft: dict[str, Any]) -> int:
+    """Нить, открытая в середине, автоматически продолжается в последней сцене.
+
+    Документалка часто держит семейную/следственную нить до титров — это не
+    разрыв. GPT-редактор два круга не закрывает такие нити и валит скелет.
+    """
+    scenes = [s for s in (draft.get("scenes") or []) if isinstance(s, dict)]
+    if len(scenes) < 2:
+        return 0
+    open_names: dict[str, str] = {}
+    display: dict[str, str] = {}
+    for sc in scenes:
+        sid = str(sc.get("id_scene") or "").strip()
+        for nt in sc.get("нити") or []:
+            if isinstance(nt, str) and nt.strip():
+                key = nt.strip().casefold()
+                open_names[key] = sid
+                display[key] = nt.strip()
+            elif isinstance(nt, dict):
+                name = str(nt.get("имя") or nt.get("нить") or nt.get("name") or "").strip()
+                if not name:
+                    continue
+                key = name.casefold()
+                state = str(nt.get("статус") or nt.get("state") or "").strip().casefold()
+                if state in ("закрыта", "closed", "исполнена", "done"):
+                    open_names.pop(key, None)
+                else:
+                    open_names[key] = sid
+                    display[key] = name
+        glav = sc.get("главное")
+        if isinstance(glav, dict):
+            th = str(glav.get("нить") or "").strip()
+            if th:
+                key = th.casefold()
+                change = _norm_cf(str(glav.get("изменение") or ""))
+                if any(x in change for x in ("исполн", "закры", "решил", "сделал", "→ есть")):
+                    open_names.pop(key, None)
+                else:
+                    open_names[key] = sid
+                    display.setdefault(key, th)
+    last = scenes[-1]
+    last_sid = str(last.get("id_scene") or "").strip()
+    niti = list(last.get("нити") or [])
+    have: set[str] = set()
+    for nt in niti:
+        if isinstance(nt, str) and nt.strip():
+            have.add(nt.strip().casefold())
+        elif isinstance(nt, dict):
+            have.add(str(nt.get("имя") or nt.get("нить") or "").strip().casefold())
+    added = 0
+    for key, where in open_names.items():
+        if where == last_sid or key in have:
+            continue
+        niti.append({"имя": display.get(key, key), "статус": "продолжена"})
+        have.add(key)
+        added += 1
+    if added:
+        last["нити"] = niti
+        logger.info("skeleton: heal_open_threads +{} → {}", added, last_sid)
+    return added
+
+
 def validate_skeleton_coverage(
     scenes: list[Any], expected_frame_numbers: list[int]
 ) -> None:
@@ -912,6 +974,7 @@ async def run_skeleton(
     logger.info("[#{}] skeleton: draft GPT…", project.id)
     draft_raw = await _gpt(draft_prompt, context, project=project, timeout=timeout)
     draft = ag.parse_agent_slice(ag.SKELETON, draft_raw, validate=False)
+    heal_open_threads(draft)
     # coverage soft — полная матрица в validate_skeleton
     gaps = validate_skeleton(draft, frames, full_vo)
     if not gaps:
@@ -935,6 +998,7 @@ async def run_skeleton(
             )
             edited = _parse_editor_reply(reply)
             draft = merge_by_id(draft, edited)
+            heal_open_threads(draft)
             gaps = validate_skeleton(draft, frames, full_vo)
             if not gaps:
                 logger.info(

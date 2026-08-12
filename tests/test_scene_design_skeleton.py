@@ -128,6 +128,44 @@ def test_coverage_missing_frame() -> None:
     assert any("не покрыты" in g["проблема"] for g in gaps)
 
 
+def test_heal_open_threads_continues_in_last_scene() -> None:
+    frames = [_fr(1, "семья в квартире"), _fr(2, "суд вынес приговор")]
+    draft = {
+        "scenes": [
+            {
+                "id_scene": "scene_01",
+                "кадры": [1],
+                "связь_с_прошлой": {"тип": "начало"},
+                "главное": {"нить": "семья спесивцевых", "изменение": "показали"},
+                "нити": [{"имя": "семья спесивцевых", "статус": "открыта"}],
+                "биты": [],
+                "персонажи": [],
+                "место_id": "loc01",
+            },
+            {
+                "id_scene": "scene_02",
+                "кадры": [2],
+                "связь_с_прошлой": {"тип": "новое_место"},
+                "главное": {},
+                "нити": [],
+                "биты": [],
+                "персонажи": [],
+                "место_id": "loc02",
+            },
+        ],
+        "characters_seed": [],
+        "locations_seed": [
+            {"id": "loc01", "name": "квартира", "якорь": "квартире"},
+            {"id": "loc02", "name": "суд", "якорь": "суд"},
+        ],
+    }
+    before = sk.validate_skeleton(draft, frames, "семья в квартире суд вынес приговор")
+    assert any("не закрыта" in g["проблема"] for g in before)
+    assert sk.heal_open_threads(draft) == 1
+    after = sk.validate_skeleton(draft, frames, "семья в квартире суд вынес приговор")
+    assert not any("не закрыта" in g["проблема"] for g in after)
+
+
 def test_coverage_non_adjacent() -> None:
     frames = [_fr(1, "а"), _fr(2, "б"), _fr(3, "в")]
     draft = {
