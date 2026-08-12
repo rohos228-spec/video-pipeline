@@ -198,6 +198,75 @@ def already_subdivided(frames: list[Frame]) -> bool:
     return any(_is_shot_child(f) for f in frames)
 
 
+async def collapse_shot_children(
+    session: AsyncSession, project: Project
+) -> dict[str, Any]:
+    """Удалить SET-детей, оставить VO-родителей. Закадр не трогаем.
+
+    Нужно перед повторным scene_design: иначе camera_subdivide skip
+    («already has shot children») и кадры размножаются.
+    """
+    from sqlalchemy import delete, or_
+
+    from app.models import Artifact, FrameEdge, FrameText, PromptVersion
+
+    frames = list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        ).scalars()
+    )
+    child_ids = [fr.id for fr in frames if _is_shot_child(fr)]
+    parents_cleared = 0
+    for fr in frames:
+        if _is_shot_child(fr):
+            continue
+        attrs = dict(fr.attrs or {})
+        if _ATTR_KEY not in attrs:
+            continue
+        attrs.pop(_ATTR_KEY, None)
+        fr.attrs = attrs
+        if fr.start_ts is not None and fr.end_ts is not None:
+            fr.duration_seconds = round(float(fr.end_ts) - float(fr.start_ts), 2)
+        parents_cleared += 1
+    if child_ids:
+        await session.execute(
+            delete(FrameText).where(FrameText.frame_id.in_(child_ids))
+        )
+        await session.execute(
+            delete(PromptVersion).where(PromptVersion.frame_id.in_(child_ids))
+        )
+        await session.execute(
+            delete(Artifact).where(Artifact.frame_id.in_(child_ids))
+        )
+        await session.execute(
+            delete(FrameEdge).where(
+                FrameEdge.project_id == project.id,
+                or_(
+                    FrameEdge.from_frame_id.in_(child_ids),
+                    FrameEdge.to_frame_id.in_(child_ids),
+                ),
+            )
+        )
+        await session.execute(delete(Frame).where(Frame.id.in_(child_ids)))
+        await session.flush()
+        await renumber_frames_by_sort_key(session, project)
+    logger.info(
+        "[#{}] camera_subdivide collapse: deleted={} parents_cleared={}",
+        project.id,
+        len(child_ids),
+        parents_cleared,
+    )
+    return {
+        "deleted_shots": len(child_ids),
+        "parents_cleared": parents_cleared,
+        "voiceover_untouched": True,
+    }
+
+
 def _beat_vo_spans(
     shots: list[dict[str, Any]], full_vo: str
 ) -> list[tuple[int, int]]:

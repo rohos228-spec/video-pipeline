@@ -238,7 +238,8 @@ async def _wipe_split(session: AsyncSession, project: Project) -> dict[str, Any]
 
 async def _wipe_scene_design(session: AsyncSession, project: Project) -> dict[str, Any]:
     """Сброс scene_design: чекпоинты агентов (meta + файлы), scene_registry,
-    scene-attrs на кадрах. Кадры и закадр НЕ трогаем."""
+    scene-attrs на кадрах, SET-дети camera_subdivide. Кадры-родители и
+    закадр НЕ трогаем."""
     import shutil
 
     from app.services.db_apply import _ATTR_EXCEL_ROWS
@@ -266,8 +267,10 @@ async def _wipe_scene_design(session: AsyncSession, project: Project) -> dict[st
         shutil.rmtree(sd_dir, ignore_errors=True)
 
     from app.services.scene_design import cells as sd_cells
+    from app.services.scene_design.camera_expand import collapse_shot_children
 
     cells_deleted = await sd_cells.wipe_cells(session, project)
+    collapse = await collapse_shot_children(session, project)
 
     frames = (
         await session.execute(
@@ -288,6 +291,7 @@ async def _wipe_scene_design(session: AsyncSession, project: Project) -> dict[st
         "meta_cleared": meta_cleared,
         "checkpoint_files": files_deleted,
         "staging_cells_deleted": cells_deleted,
+        "shot_children_collapsed": collapse,
         "frames_attrs_cleared": frames_cleared,
     }
 

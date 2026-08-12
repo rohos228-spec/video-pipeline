@@ -239,10 +239,27 @@ async def run_assemble(
             await session.flush()
 
         # Ячейки → camera SET дробит VO-диапазон на кадры → сцены (≥VO).
+        backfill = await sd_cells.backfill_from_checkpoints(
+            session, project, full_vo
+        )
+        if backfill:
+            logger.info(
+                "[#{}] scene_asm: cells backfill from checkpoints {}",
+                project.id,
+                {k: v.get("stored") for k, v in backfill.items()},
+            )
         all_cells = await sd_cells.load_cells(session, project)
         assembly_input = sd_chronology.build_assembly_input(
             project, frames, all_cells, full_vo
         )
+        if not assembly_input.get("characters"):
+            from app.services.scene_design.apply import (
+                characters_from_payload_or_checkpoint,
+            )
+
+            assembly_input["characters"] = characters_from_payload_or_checkpoint(
+                project, {}
+            )
         from app.services.scene_design import camera_expand as sd_camera_expand
 
         # Action-цепи ДО rebuild (rebuild перезапишет scenes_chrono).

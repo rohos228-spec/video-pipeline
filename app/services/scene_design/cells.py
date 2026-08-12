@@ -345,6 +345,48 @@ def slice_to_cells(
     return cells
 
 
+async def backfill_from_checkpoints(
+    session: AsyncSession,
+    project: Project,
+    full_vo: str,
+) -> dict[str, dict[str, int]]:
+    """Если ячеек characters/world/style нет — взять срез из checkpoint.
+
+    only_agent=assemble не вызывает store_cells для паспортов, хотя JSON
+    на диске уже есть. Без этого сборка пишет 0 Entity.
+    """
+    from app.services.scene_design.runner import load_checkpoint
+
+    stats: dict[str, dict[str, int]] = {}
+    for agent in ("characters", "world", "style"):
+        existing = list(
+            (
+                await session.execute(
+                    select(SceneDesignCell.id).where(
+                        SceneDesignCell.project_id == project.id,
+                        SceneDesignCell.agent == agent,
+                    )
+                )
+            ).scalars()
+        )
+        if existing:
+            continue
+        ckpt = load_checkpoint(project, agent)
+        if not isinstance(ckpt, dict):
+            continue
+        converted = slice_to_cells(project, agent, ckpt, full_vo)
+        if not converted:
+            continue
+        stats[agent] = await store_cells(session, project, agent, converted)
+        logger.info(
+            "[#{}] scene_design: backfill {} cells from checkpoint: {}",
+            project.id,
+            agent,
+            stats[agent],
+        )
+    return stats
+
+
 async def store_cells(
     session: AsyncSession,
     project: Project,
