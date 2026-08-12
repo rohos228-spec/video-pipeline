@@ -327,10 +327,17 @@ async def sync_project_xlsx(
     project: Project,
     xlsx_path: Path,
     *,
-    keep_fields: bool = False,
+    keep_fields: bool = True,
     update_frames_voiceover: bool = False,
 ) -> dict | None:
-    """Импортирует project.xlsx в БД (v8 + fallback v7)."""
+    """Импортирует project.xlsx в БД (v8 + fallback v7).
+
+    По умолчанию ``keep_fields=True``: не перезаписывать непустые
+    ``general_plan`` / ``script_text`` склейкой R49 из xlsx. Иначе ручной
+    ▶ split/enrich подтягивает урезанный закадр из ячеек плана и выглядит
+    как «запустился шаг сценария». Для намеренной записи после xlsx-flow
+    передавайте ``keep_fields=False``.
+    """
     validation_err = validate_xlsx(xlsx_path)
     if validation_err is not None:
         raise RuntimeError(validation_err)

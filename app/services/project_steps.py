@@ -236,7 +236,11 @@ async def start_step(
     proj_xlsx = project.data_dir / "project.xlsx"
     if proj_xlsx.exists():
         try:
-            info = await sync_project_xlsx(session, project, proj_xlsx)
+            # keep_fields=True: ▶ любого шага не должен перетирать готовый
+            # script_text/general_plan склейкой R49 из project.xlsx.
+            info = await sync_project_xlsx(
+                session, project, proj_xlsx, keep_fields=True
+            )
             logger.info(
                 "[#{}] start_step {}: synced project.xlsx into DB: {}",
                 project.id,
