@@ -27,28 +27,32 @@ def _fr(n: int, text: str) -> Frame:
 
 
 def _draft_ok(frames_text: list[tuple[int, str]]) -> dict:
-    nums = [n for n, _ in frames_text]
-    vo_len = sum(len(t) for _, t in frames_text)
-    return {
-        "scenes": [
+    scenes = []
+    for i, (n, t) in enumerate(frames_text, 1):
+        scenes.append(
             {
-                "id_scene": "scene_01",
-                "кадры": nums,
-                "связь_с_прошлой": {"тип": "начало", "что_связывает": ""},
-                "суть": "Павел в мастерской принимает часы",
+                "id_scene": f"scene_{i:02d}",
+                "кадры": [n],
+                "связь_с_прошлой": {
+                    "тип": "начало" if i == 1 else "продолжение",
+                    "что_связывает": "мастерская",
+                },
+                "суть": t,
                 "главное": {
                     "тип": "предмет",
                     "что": "часы",
-                    "якорь_в_кадрах": "Павел открыл мастерскую",
+                    "якорь_в_кадрах": t[:48],
                     "нить": "",
                 },
                 "биты": [],
                 "персонажи": [{"id": "c01", "как": "действует"}],
                 "место_id": "loc01",
                 "время": "утро",
-                "длительность_сек": round(vo_len / 14.0, 1),
+                "длительность_сек": round(len(t) / 14.0, 1),
             }
-        ],
+        )
+    return {
+        "scenes": scenes,
         "characters_seed": [
             {"id": "c01", "имя": "Павел", "якорь": "Павел", "вне_кадра": False}
         ],
@@ -106,6 +110,56 @@ async def sk_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 # ── unit validate_skeleton ───────────────────────────────────────────
+
+
+def test_glue_vo_cells_is_gap() -> None:
+    frames = [_fr(1, "один"), _fr(2, "два")]
+    draft = {
+        "scenes": [
+            {
+                "id_scene": "scene_01",
+                "кадры": [1, 2],
+                "связь_с_прошлой": {"тип": "начало"},
+                "главное": {},
+                "биты": [],
+                "персонажи": [],
+            }
+        ],
+        "characters_seed": [],
+        "locations_seed": [],
+    }
+    gaps = sk.validate_skeleton(draft, frames, "один два")
+    assert any("склейка" in g["проблема"] for g in gaps)
+
+
+def test_explode_glued_vo_scenes() -> None:
+    frames = [_fr(1, "Павел открыл мастерскую у моста"), _fr(2, "взял сломанные часы")]
+    draft = {
+        "scenes": [
+            {
+                "id_scene": "scene_01",
+                "кадры": [1, 2],
+                "связь_с_прошлой": {"тип": "начало", "что_связывает": ""},
+                "суть": "склейка",
+                "главное": {"тип": "предмет", "что": "часы", "якорь_в_кадрах": "мастерскую"},
+                "биты": [],
+                "персонажи": [{"id": "c01", "как": "действует"}],
+                "место_id": "loc01",
+                "время": "утро",
+                "длительность_сек": 9.0,
+            }
+        ],
+        "characters_seed": [{"id": "c01", "имя": "Павел", "якорь": "Павел"}],
+        "locations_seed": [{"id": "loc01", "name": "мастерская", "якорь": "мастерскую"}],
+    }
+    n = sk.explode_glued_vo_scenes(draft, frames)
+    assert n == 1
+    assert [s["кадры"] for s in draft["scenes"]] == [[1], [2]]
+    assert draft["scenes"][0]["id_scene"] == "scene_01"
+    assert draft["scenes"][1]["id_scene"] == "scene_02"
+    assert draft["scenes"][1]["связь_с_прошлой"]["тип"] != "начало"
+    glue = [g for g in sk.validate_skeleton(draft, frames, "Павел открыл мастерскую у моста взял сломанные часы") if "склейка" in g["проблема"]]
+    assert glue == []
 
 
 def test_coverage_missing_frame() -> None:

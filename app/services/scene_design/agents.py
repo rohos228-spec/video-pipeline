@@ -828,11 +828,7 @@ def validate_chrono_dyn_camera_shots(shots: list[Any]) -> None:
 def validate_skeleton_one_vo_per_scene(
     scenes: list[Any], expected_frame_numbers: list[int]
 ) -> None:
-    """Deprecated alias: покрытие кадров (скелет группирует соседние VO).
-
-    Раньше требовал 1 VO = 1 сцену. Теперь — каждый кадр ровно в одной сцене,
-    соседние номера, порядок сцен. См. ``skeleton.validate_skeleton_coverage``.
-    """
+    """1 VO-ячейка = 1 сцена + полное покрытие без дыр. См. ``skeleton.validate_skeleton_coverage``."""
     from app.services.scene_design.skeleton import validate_skeleton_coverage
 
     validate_skeleton_coverage(scenes, expected_frame_numbers)

@@ -218,6 +218,15 @@ def validate_skeleton(
         if not nums:
             gaps.append(_gap(sid, "пустые кадры", "укажи соседние номера кадров сцены"))
             continue
+        if len(nums) != 1:
+            gaps.append(
+                _gap(
+                    sid,
+                    f"кадры {nums}: склейка VO-ячеек запрещена",
+                    "1 ячейка закадра = 1 сцена, кадры:[N] ровно один номер; "
+                    "разбей на отдельные scene_XX",
+                )
+            )
         if nums != sorted(nums):
             gaps.append(_gap(sid, f"кадры не по порядку: {nums}", "отсортируй кадры по возрастанию"))
         for a, b in zip(nums, nums[1:], strict=False):
@@ -622,10 +631,67 @@ def heal_open_threads(draft: dict[str, Any]) -> int:
     return added
 
 
+def explode_glued_vo_scenes(
+    draft: dict[str, Any],
+    frames: list[Frame] | None = None,
+) -> int:
+    """1 ячейка закадра = 1 сцена: разрезать ``кадры:[N,N+1,…]`` на карточки.
+
+    GPT-черновик часто склеивает соседние VO. Камера потом добавит SET-шоты;
+    на скелете склейка запрещена. Код режет сам — редактор это не закрывает.
+    """
+    scenes = [s for s in (draft.get("scenes") or []) if isinstance(s, dict)]
+    if not scenes:
+        return 0
+    vo_map = _vo_by_frame(frames) if frames else {}
+    sec_map = _sec_by_frame(frames) if frames else {}
+    exploded: list[dict[str, Any]] = []
+    glued = 0
+    for sc in scenes:
+        nums = _scene_frames(sc)
+        if len(nums) <= 1:
+            exploded.append(sc)
+            continue
+        glued += 1
+        for n in nums:
+            child = json.loads(json.dumps(sc, ensure_ascii=False))
+            child["кадры"] = [n]
+            vo = (vo_map.get(n) or "").strip()
+            if vo:
+                child["суть"] = vo[:280]
+                glav = child.get("главное") if isinstance(child.get("главное"), dict) else {}
+                glav = dict(glav)
+                glav["якорь_в_кадрах"] = vo[:80]
+                child["главное"] = glav
+            if n in sec_map:
+                child["длительность_сек"] = round(float(sec_map[n]), 1)
+            exploded.append(child)
+    exploded.sort(key=lambda s: (_scene_frames(s) or [10**9])[0])
+    for i, sc in enumerate(exploded, 1):
+        sc["id_scene"] = f"scene_{i:02d}"
+        link = sc.get("связь_с_прошлой") if isinstance(sc.get("связь_с_прошлой"), dict) else {}
+        bind = str(link.get("что_связывает") or sc.get("место_id") or "").strip()
+        if i == 1:
+            sc["связь_с_прошлой"] = {"тип": "начало", "что_связывает": bind}
+        elif str(link.get("тип") or "") == "начало":
+            sc["связь_с_прошлой"] = {
+                "тип": "продолжение",
+                "что_связывает": bind or str(exploded[i - 2].get("место_id") or ""),
+            }
+    draft["scenes"] = exploded
+    if glued:
+        logger.info(
+            "skeleton: explode_glued_vo_scenes {} glued → {} scenes",
+            glued,
+            len(exploded),
+        )
+    return glued
+
+
 def validate_skeleton_coverage(
     scenes: list[Any], expected_frame_numbers: list[int]
 ) -> None:
-    """Жёсткая проверка покрытия для parse_agent_slice (вместо 1 VO = 1 сцена)."""
+    """Жёсткая проверка покрытия: 1 VO-ячейка = 1 сцена, без дыр и двойников."""
     if not expected_frame_numbers:
         return
     expect = sorted(int(n) for n in expected_frame_numbers)
@@ -641,6 +707,14 @@ def validate_skeleton_coverage(
         if not nums:
             gaps.append(_gap(sid, "пустые кадры", "укажи кадры"))
             continue
+        if len(nums) != 1:
+            gaps.append(
+                _gap(
+                    sid,
+                    f"кадры {nums}: склейка VO запрещена",
+                    "кадры:[N] ровно один номер на сцену",
+                )
+            )
         if any(b != a + 1 for a, b in zip(nums, nums[1:], strict=False)):
             gaps.append(_gap(sid, f"не соседние кадры: {nums}", "только непрерывный диапазон"))
         if prev_max and nums[0] != prev_max + 1:
@@ -678,6 +752,9 @@ def merge_by_id(draft: dict[str, Any], editor: dict[str, Any]) -> dict[str, Any]
         sid = str(sc.get("id_scene") or "").strip()
         if sid in by_id:
             scenes[by_id[sid]] = sc
+        elif sid:
+            scenes.append(sc)
+            by_id[sid] = len(scenes) - 1
     out["scenes"] = scenes
 
     def _merge_seed(key: str, fixed_key: str, id_field: str = "id") -> None:
@@ -974,6 +1051,7 @@ async def run_skeleton(
     logger.info("[#{}] skeleton: draft GPT…", project.id)
     draft_raw = await _gpt(draft_prompt, context, project=project, timeout=timeout)
     draft = ag.parse_agent_slice(ag.SKELETON, draft_raw, validate=False)
+    explode_glued_vo_scenes(draft, frames)
     heal_open_threads(draft)
     # coverage soft — полная матрица в validate_skeleton
     gaps = validate_skeleton(draft, frames, full_vo)
@@ -998,6 +1076,7 @@ async def run_skeleton(
             )
             edited = _parse_editor_reply(reply)
             draft = merge_by_id(draft, edited)
+            explode_glued_vo_scenes(draft, frames)
             heal_open_threads(draft)
             gaps = validate_skeleton(draft, frames, full_vo)
             if not gaps:

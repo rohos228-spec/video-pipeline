@@ -137,8 +137,8 @@ def test_parse_skeleton_scenes_after_nested_map_frames() -> None:
     assert data["scenes"][0]["id_scene"] == "scene_01"
 
 
-def test_skeleton_accepts_grouped_adjacent_frames() -> None:
-    """Скелет группирует соседние кадры — [1,2,3] при полном покрытии ок."""
+def test_skeleton_rejects_glued_vo_cells() -> None:
+    """1 ячейка закадра = 1 сцена: [1,2,3] — разрыв покрытия."""
     raw = _fence(
         {
             "scenes": [
@@ -146,10 +146,10 @@ def test_skeleton_accepts_grouped_adjacent_frames() -> None:
             ]
         }
     )
-    data = ag.parse_agent_slice(
-        "skeleton", raw, expected_frame_numbers=[1, 2, 3]
-    )
-    assert data["scenes"][0]["кадры"] == [1, 2, 3]
+    with pytest.raises(ag.SceneDesignAgentError, match="склейка|покрытие"):
+        ag.parse_agent_slice(
+            "skeleton", raw, expected_frame_numbers=[1, 2, 3]
+        )
 
 
 def test_skeleton_rejects_non_adjacent_or_gap() -> None:
