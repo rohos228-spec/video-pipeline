@@ -229,7 +229,20 @@ def extract_json_object(
             idx = text.find(needle, start_search)
             if idx == -1:
                 break
-            start = text.rfind("{", 0, idx)
+            # НЕ rfind("{") — иначе ключ "scenes" цепляет вложенный объект
+            # из map.кадры[...] прямо перед корневым "scenes".
+            # Идём влево с балансом скобок → охватывающий объект.
+            depth = 0
+            start = -1
+            for i in range(idx - 1, -1, -1):
+                ch = text[i]
+                if ch == "}":
+                    depth += 1
+                elif ch == "{":
+                    if depth == 0:
+                        start = i
+                        break
+                    depth -= 1
             if start != -1:
                 depth = 0
                 for i in range(start, len(text)):

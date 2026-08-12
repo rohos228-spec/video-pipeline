@@ -99,6 +99,44 @@ def test_parse_skeleton_scenes_alias() -> None:
     assert data["scenes"][0]["id_scene"] == "scene_01"
 
 
+def test_parse_skeleton_scenes_after_nested_map_frames() -> None:
+    """Регресс: rfind('{{') перед \"scenes\" брал кадр из map.кадры."""
+    payload = {
+        "map": {
+            "кадры": [
+                {
+                    "number": 1,
+                    "места": ["x"],
+                    "время": [],
+                    "персонажи": [],
+                    "предметы": ["y"],
+                },
+                {
+                    "number": 2,
+                    "места": ["z"],
+                    "время": [],
+                    "персонажи": ["A"],
+                    "предметы": [],
+                },
+            ]
+        },
+        "scenes": [
+            {
+                "id_scene": "scene_01",
+                "кадры": [1, 2],
+                "суть": "ok",
+                "нити": [],
+            }
+        ],
+        "characters_seed": [],
+        "locations_seed": [],
+    }
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    data = ag.parse_agent_slice("skeleton", raw)
+    assert len(data["scenes"]) == 1
+    assert data["scenes"][0]["id_scene"] == "scene_01"
+
+
 # ── parse_assembler_payload ──────────────────────────────────────────
 
 
