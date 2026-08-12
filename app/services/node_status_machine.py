@@ -42,7 +42,16 @@ _FORWARD_TRANSITIONS: dict[NodeRunStatus, frozenset[NodeRunStatus]] = {
 }
 
 _RESET_INITIATORS = frozenset(
-    {"ui_reset", "api_reset", "api_stop", "ui_restart", "auto_unstick"}
+    {
+        "ui_reset",
+        "api_reset",
+        "api_stop",
+        "ui_restart",
+        "auto_unstick",
+        # Точечный ▶ scene_design: чужие sd_agent, ошибочно в running/queued,
+        # вернуть в pending (иначе залипают → background_reconcile → failed).
+        "only_agent_scope",
+    }
 )
 
 # Contextvar: True только внутри transition_node_status / _apply_side_effects.

@@ -99,6 +99,14 @@ def test_stop_allows_running_to_pending() -> None:
     assert nr.status == NodeRunStatus.pending
 
 
+def test_only_agent_scope_allows_running_to_pending() -> None:
+    """Точечный ▶ scene_design должен сбрасывать чужие sd_agent из running."""
+    nr = _nr(NodeRunStatus.running)
+    assert reset_node_to_pending(nr, project_id=1, initiator="only_agent_scope")
+    assert nr.status == NodeRunStatus.pending
+    assert nr.started_at is None
+
+
 def test_forbidden_done_to_running() -> None:
     nr = _nr(NodeRunStatus.done)
     assert not transition_node_status(
