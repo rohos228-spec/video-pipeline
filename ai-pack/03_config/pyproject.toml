@@ -1,0 +1,70 @@
+[project]
+name = "video-pipeline"
+version = "0.1.0"
+description = "Автоматический конвейер генерации коротких вертикальных роликов (60-75 сек)"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "aiogram>=3.10,<4",
+  "aiohttp>=3.10,<4",
+  "aiohttp-socks>=0.10,<1",
+  "aiosqlite>=0.20,<1",
+  "alembic>=1.13,<2",
+  "fastapi>=0.115,<1",
+  "ffmpeg-python>=0.2,<1",
+  "greenlet>=3.0,<4",
+  "httpx>=0.27,<1",
+  "jinja2>=3.1,<4",
+  "loguru>=0.7,<1",
+  "openpyxl>=3.1,<4",
+  "pillow>=10.0,<12",
+  "pypdf>=5,<7",
+  "playwright>=1.48,<2",
+  "pydantic>=2.9,<3",
+  "pydantic-settings>=2.6,<3",
+  "python-dateutil>=2.9,<3",
+  "pyyaml>=6.0,<7",
+  "python-multipart>=0.0.9,<1",
+  "sqlalchemy>=2.0,<3",
+  "sse-starlette>=2.1,<3",
+  "tenacity>=9.0,<10",
+  "uvicorn[standard]>=0.32,<1",
+]
+
+[project.optional-dependencies]
+# Heavy (~100MB+). Studio UI works without it; install when you need audio/word timestamps:
+#   pip install -e ".[whisper]"
+whisper = [
+  "faster-whisper>=1.0,<2",
+]
+# NVIDIA NeMo Parakeet (ASR_BACKEND=nvidia) — ПК монтажа с CUDA:
+#   pip install -e ".[nvidia]"
+nvidia = [
+  "nemo_toolkit[asr]>=2.3,<3",
+  "torch>=2.1,<3",
+  "huggingface_hub>=0.23,<1",
+]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.24",
+  "ruff>=0.7",
+  "mypy>=1.12",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

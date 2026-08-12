@@ -22,9 +22,17 @@
 - **HITL-гейты** по умолчанию: концепт/план, сценарий, референс ГГ (если нужен), все сцены перед анимацией, все видео перед сборкой, финальный ролик перед публикацией.
 - **Площадки:** TikTok, YouTube Shorts, Instagram Reels, VK Клипы, Likee (через MoreLogin, 1 профиль).
 
+## Пакет для ИИ
+
+Папка **[`ai-pack/`](ai-pack/)** в корне — готовый контекст, чтобы кинуть модели  
+(баги, промпты, статусы, git). Начни с [`ai-pack/START_HERE.md`](ai-pack/START_HERE.md).  
+На рабочем столе Windows: ярлык **«AI-PACK video-pipeline»**.  
+Обновить копии: `python scripts/build_ai_pack.py`.
+
 ## Структура репо
 
 ```
+ai-pack/              # пакет знаний для ИИ (START_HERE.md)
 app/
   orchestrator/       # пайплайн + шаги
   models.py           # SQLAlchemy

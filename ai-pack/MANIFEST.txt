@@ -1,0 +1,19 @@
+ai-pack build
+git_head: 3c8e38ee
+built_at: 2026-08-12 17:02 UTC
+repo: C:\Users\Admin\Desktop\video-pipeline
+
+copied:
+  00_core/AGENTS.md
+  00_core/AGENT_MAP.md
+  00_core/video-pipeline-ops.md
+  00_core/video-pipeline-map.md
+  00_core/scene-design-model.md
+  01_data_prompts/PROMPT_CONTRACT.md
+  01_data_prompts/DB_V2.md
+  01_data_prompts/PROMPTS_BLOCKS.md
+  01_data_prompts/NODE_SYSTEM.md
+  02_ops/OPERATOR_BIBLE.md
+  02_ops/MASS_CREATION.md
+  03_config/env.example
+  03_config/pyproject.toml
