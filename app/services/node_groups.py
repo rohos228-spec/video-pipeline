@@ -179,26 +179,40 @@ def _scene_design_group() -> NodeGroupDef:
     )
 
 
-# chrono_dyn: action → camera (не параллельно); промты sd_*_chrono_dyn.
+# chrono_dyn: скелет → chars/world/style → action → camera → assemble.
 _SD_CHRONO_FANOUT: tuple[tuple[str, str, str], ...] = (
     ("characters", "GPT: персонажи · chrono_dyn", "Паспорта персонажей (вариант chrono_dyn)"),
     ("world", "GPT: мир · chrono_dyn", "Локации и зоны (вариант chrono_dyn)"),
     ("style", "GPT: стиль · chrono_dyn", "Световая дуга (вариант chrono_dyn)"),
-    ("action", "GPT: действие · chrono_dyn", "Сцены+фазы — закон хронологии текста"),
+    ("action", "GPT: действие · chrono_dyn", "Сцены+фазы — обслуживает скелет"),
     ("camera", "GPT: камера · chrono_dyn", "1 фаза → 1 shot; обслуживает action"),
 )
 
 
 def _scene_design_chrono_dyn_group() -> NodeGroupDef:
-    """Веер chrono_dyn без нод проверки: chars/world/style → action → camera → assemble."""
+    """Веер chrono_dyn: скелет → chars/world/style → action → camera → assemble."""
     agents: list[GroupNodeSpec] = []
     edges: list[tuple[str, str, str]] = []
+    skeleton = GroupNodeSpec(
+        local_key="skeleton",
+        node_type="excel_gpt",
+        label="GPT: скелет · нити",
+        description=(
+            "Волна 0: карта текста → сцены с нитями/наследием → критик стыков; "
+            "один агент, дальше отдаёт детализаторам"
+        ),
+        preferred_id="n_excel_gpt_sd_cd_skeleton",
+        dx=_STEP_X,
+        dy=0.0,
+        marker="skeleton",
+        prompt_variant="sd_skeleton",
+    )
     col = {
-        "characters": (1, -2 * _FAN_DY),
-        "world": (1, -_FAN_DY),
-        "style": (1, 0.0),
-        "action": (2, _FAN_DY),
-        "camera": (3, _FAN_DY),
+        "characters": (2, -2 * _FAN_DY),
+        "world": (2, -_FAN_DY),
+        "style": (2, 0.0),
+        "action": (3, _FAN_DY),
+        "camera": (4, _FAN_DY),
     }
     for agent, label, descr in _SD_CHRONO_FANOUT:
         dx_mul, dy = col[agent]
@@ -216,6 +230,7 @@ def _scene_design_chrono_dyn_group() -> NodeGroupDef:
             )
         )
     for agent in ("characters", "world", "style"):
+        edges.append(("skeleton", agent, "after"))
         edges.append((agent, "action", "after"))
     edges.append(("action", "camera", "after"))
     edges.append(("camera", "assemble", "after"))
@@ -226,27 +241,29 @@ def _scene_design_chrono_dyn_group() -> NodeGroupDef:
         label="GPT: сборка · chrono_dyn",
         description="Сборщик chrono_dyn: action>camera, фазы→кадры",
         preferred_id="n_excel_gpt_sd_cd_asm",
-        dx=_STEP_X * 4,
+        dx=_STEP_X * 5,
         dy=0.0,
         marker="assemble",
         prompt_variant="sd_assemble_chrono_dyn",
     )
     return NodeGroupDef(
         group_id="scene_design_fanout_chrono_dyn",
-        title="Сцены: chrono_dyn (фазы+динамика)",
+        title="Сцены: скелет + chrono_dyn",
         description=(
-            "Вариант chrono_dyn без проверок: персонажи/мир/стиль → действие "
-            "(сцены+фазы) → камера (1 фаза=1 shot) → сборка. Промты sd_*_chrono_dyn."
+            "Скелет (нити/наследие) → персонажи/мир/стиль → действие "
+            "(сцены+фазы) → камера (1 фаза=1 shot) → сборка. "
+            "Промты sd_skeleton + sd_*_chrono_dyn."
         ),
         category="planning",
         default_after_type="split",
-        nodes=(*agents, asm),
+        nodes=(skeleton, *agents, asm),
         internal_edges=tuple(edges),
-        entry_keys=("characters", "world", "style"),
+        entry_keys=("skeleton",),
         exit_key="assemble",
         project_meta={
             "scene_design_enabled": True,
             "scene_design_variant": "chrono_dyn",
+            "scene_design_skeleton": True,
         },
         replaces_types=("scene_design",),
         exit_edge_kind="after",

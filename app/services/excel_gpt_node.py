@@ -58,7 +58,7 @@ def is_excel_gpt_node_type(node_type: str) -> bool:
 
 
 # Маркер scene-агента на ноде «Работа с GPT»: data.sd_agent =
-# characters/world/style/camera/action (агенты веера) или "assemble" (сборщик).
+# skeleton/characters/world/style/camera/action (агенты веера) или "assemble".
 # Такие ноды — обычные excel_gpt в UI (пульт, промты 05_excel_gpt), но
 # оркестратор гоняет их шагами scene_d/scene_asm, а не enrich-слотами.
 SCENE_AGENT_DATA_KEY = "sd_agent"

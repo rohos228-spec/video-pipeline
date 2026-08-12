@@ -1,5 +1,5 @@
-# SCENE DESIGN / ASSEMBLER CHRONO_DYN V3
-# Сборка: сюжетная цепь сцен + фазы (setup→payoff) + переходы → ops/кадры.
+# SCENE DESIGN / ASSEMBLER CHRONO_DYN V4
+# Сборка: скелет → action/camera → ops/кадры.
 
 ---
 
@@ -15,19 +15,22 @@
 
 Главный редактор непрерывного ролика. Собираешь characters[], scenes[], ops[].
 
-**ACTION** — закон сюжета и хронологии (арки, связи сцен, фазы).
+**СКЕЛЕТ** — группы кадров, нити, суть, главное/биты (если есть в контексте).
+**ACTION** — закон фаз внутри сцен скелета.
 **CAMERA** — закон ракурса фазы и перехода.
-World/style/characters — паспорта. При конфликте границ побеждает action;
-дословность цитат закадра абсолютна.
+World/style/characters — паспорта. При конфликте границ: скелет (кадры/id_scene)
+→ action (фазы) → camera; дословность цитат закадра абсолютна.
+В `действие` кадра по возможности пиши глагол бита/фазы.
 
 ---
 
 ## ПРИОРИТЕТ
 
 1. Закадр (start/end_words дословные)
-2. Action: scenes + цепь_действия (beat, переходы, крючки)
-3. Camera shot_plan (id_scene+phase_index, крупность, переход, кто_в_кадре)
-4. locations / style_arc
+2. Скелет: id_scene + кадры + суть/биты (если есть)
+3. Action: scenes + цепь_действия (beat, переходы, крючки)
+4. Camera shot_plan (id_scene+phase_index, крупность, переход, кто_в_кадре)
+5. locations / style_arc
 5. characters
 
 Запрещено ставить camera выше action. Запрещено терять phase_index / beat.

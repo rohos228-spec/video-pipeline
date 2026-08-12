@@ -17,14 +17,20 @@ def test_chrono_dyn_group_in_palette() -> None:
     assert g is not None
     assert g.group_id in NODE_GROUPS
     variants = {n.prompt_variant for n in g.nodes if n.prompt_variant}
+    assert "sd_skeleton" in variants
     assert "sd_action_chrono_dyn" in variants
     assert "sd_camera_chrono_dyn" in variants
     assert "sd_assemble_chrono_dyn" in variants
     assert g.project_meta.get("scene_design_variant") == "chrono_dyn"
+    assert g.project_meta.get("scene_design_skeleton") is True
+    assert g.entry_keys == ("skeleton",)
     assert g.exit_key == "assemble"
     assert all(n.operator_config is None for n in g.nodes)
-    assert len(g.nodes) == 6
+    assert len(g.nodes) == 7
     edge_pairs = {(a, b) for a, b, _k in g.internal_edges}
+    assert ("skeleton", "characters") in edge_pairs
+    assert ("skeleton", "world") in edge_pairs
+    assert ("skeleton", "style") in edge_pairs
     assert ("action", "camera") in edge_pairs
     assert ("camera", "assemble") in edge_pairs
     assert not any(a.startswith("check_") or b.startswith("check_") for a, b in edge_pairs)

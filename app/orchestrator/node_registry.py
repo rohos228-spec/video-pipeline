@@ -121,6 +121,7 @@ NODE_TYPE_TO_STEP_CODE[EXCEL_GPT_NODE_TYPE] = EXCEL_GPT_STEP_CODE
 # Per-agent ручной перезапуск (canvas node ▶ / API). Все ведут на тип sd_agent;
 # конкретный агент — из step code.
 SD_AGENT_STEP_CODES: dict[str, str] = {
+    "sd_skel": "skeleton",
     "sd_char": "characters",
     "sd_world": "world",
     "sd_style": "style",
