@@ -25,6 +25,7 @@ from app.services.animation_prompt_local import build_local_ops_for_missing
 from app.services.gpt_api import GptApiError
 from app.services.gpt_client import get_gpt_client
 from app.services.step_cancel import StepCancelledError, consume_stop, raise_if_cancelled
+from app.services.volume_batches import inferred_batch_size
 from app.storage import for_project as _sheet_for_project
 
 # kie maintenance / 5xx: не валим шаг — ждём провайдера и повторяем пачку.
@@ -313,6 +314,9 @@ async def fill_animation_prompts(
                 already_done,
             )
 
+        # Частичный ответ = объём превышен: добор остатка или пачки ≈80%.
+        shot1_cap: int | None = None
+        shot1_force: int | None = None
         while True:
             raise_if_cancelled(project.id)
             pending = apg.collect_batch_items(project, frames)
@@ -321,7 +325,9 @@ async def fill_animation_prompts(
             if max_batches is not None and stats["batches"] >= max_batches:
                 break
 
-            batch = pending[: apg.BATCH_SIZE]
+            take = shot1_force or shot1_cap or apg.BATCH_SIZE
+            shot1_force = None
+            batch = pending[: max(1, take)]
             use_strip = apg.batch_has_full_strip(batch)
             strip_path: Path | None = None
             if use_strip:
@@ -354,7 +360,7 @@ async def fill_animation_prompts(
                 )
                 await _fill_remaining_local(session, project, list(frames), sheet)
                 break
-            await _save_anim_pr_batch(
+            delivered = await _save_anim_pr_batch(
                 session,
                 project,
                 frames,
@@ -363,15 +369,34 @@ async def fill_animation_prompts(
                 sheet,
                 shot=1,
             )
+            asked = len(batch)
+            if 0 < delivered < asked:
+                rem = asked - delivered
+                shot1_cap = inferred_batch_size(delivered)
+                if rem <= delivered:
+                    shot1_force = rem
+                logger.warning(
+                    "[#{}] anim_pr: volume partial shot_01 got={}/{} → "
+                    "cap={} force_next={}",
+                    project.id,
+                    delivered,
+                    asked,
+                    shot1_cap,
+                    shot1_force,
+                )
             stats["batches"] += 1
 
+        shot2_cap: int | None = None
+        shot2_force: int | None = None
         while finalize_status:
             raise_if_cancelled(project.id)
             pending2 = apg.collect_shot2_batch_items(project, frames)
             if not pending2:
                 break
 
-            batch2 = pending2[: apg.BATCH_SIZE]
+            take2 = shot2_force or shot2_cap or apg.BATCH_SIZE
+            shot2_force = None
+            batch2 = pending2[: max(1, take2)]
             use_strip2 = apg.batch_has_full_strip(batch2)
             strip2: Path | None = None
             if use_strip2:
@@ -403,7 +428,7 @@ async def fill_animation_prompts(
                     e,
                 )
                 break
-            await _save_anim_pr_batch(
+            delivered2 = await _save_anim_pr_batch(
                 session,
                 project,
                 frames,
@@ -412,6 +437,21 @@ async def fill_animation_prompts(
                 sheet,
                 shot=2,
             )
+            asked2 = len(batch2)
+            if 0 < delivered2 < asked2:
+                rem2 = asked2 - delivered2
+                shot2_cap = inferred_batch_size(delivered2)
+                if rem2 <= delivered2:
+                    shot2_force = rem2
+                logger.warning(
+                    "[#{}] anim_pr: volume partial shot_02 got={}/{} → "
+                    "cap={} force_next={}",
+                    project.id,
+                    delivered2,
+                    asked2,
+                    shot2_cap,
+                    shot2_force,
+                )
             stats["batches"] += 1
 
     except StepCancelledError as e:
@@ -456,7 +496,7 @@ async def _save_anim_pr_batch(
     sheet,
     *,
     shot: int,
-) -> None:
+) -> int:
     # Целый JSON-blob в reply не должен попасть в R48 одним куском.
     if apg.is_apply_ops_blob(reply) and not apg.parse_apply_ops_animation_reply(
         reply, frames
@@ -559,3 +599,4 @@ async def _save_anim_pr_batch(
             sorted(filled_from_batch),
             still_missing,
         )
+    return len(filled_from_batch)
