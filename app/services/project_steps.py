@@ -371,9 +371,9 @@ async def start_step(
             ", ".join(cleared),
         )
     try:
-        # Soft ▶ anim_pr: не wipe R48 (как img_pr) — иначе рестарт backend /
-        # повторный ▶ сжигает уже сгенерированные пачки. Полный wipe — reset_step.
-        force_wipe = False
+        # Soft ▶ anim_pr / img / video: не wipe готовые пачки.
+        # Явный ▶ img_pr — всегда пересобрать промты (иначе skip «already in DB»).
+        force_wipe = bool(explicit_ui_start and step_code == "img_pr")
         # ▶ одной sd_agent-ноды: invalidate_agent уже сбросил чекпоинт.
         # Полный wipe scene_d удаляет meta.scene_design целиком — вместе с
         # only_agent → worker prepare без only_agent зажигает весь веер.

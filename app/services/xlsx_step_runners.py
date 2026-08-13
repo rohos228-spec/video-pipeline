@@ -544,6 +544,18 @@ _IMG_PR_DB_HINT = (
     "(пайплайн допишет). characters[] Entity. Не копируй voiceover_text.\n"
 )
 
+_PLASTILIN_IMG_PR_HINT = (
+    "\n\n# ПЛАСТИЛИН — ЗАПИСЬ В БАЗУ (НЕ Excel)\n"
+    "Верни ТОЛЬКО JSON apply-ops. Без TSV, без `# Лист:`, без `@row=`, "
+    "без скачивания .xlsx:\n"
+    '{"ops":[{"frame_uuid":"<uuid>","fields":{"промт_картинки":"…","персонажи":"c01"}}]}\n'
+    "Адрес кадра — ТОЛЬКО frame_uuid из db_frames.json ЭТОГО батча.\n"
+    "Одна операция = один кадр. Пройди все кадры из текущего файла.\n"
+    "В `промт_картинки` пиши ПОЛНЫЙ промт: стиль пластилина ТРИ раза + сцена "
+    "+ Negative. Пайплайн НЕ допишет watercolor/noir — не копируй Archival Noir. "
+    "Не копируй voiceover_text. Без ASCII двойных кавычек в тексте промта.\n"
+)
+
 
 async def _load_img_pr_context(
     project: Project,
@@ -689,6 +701,17 @@ async def run_img_pr_xlsx(
     proj_xlsx = _ensure_project_xlsx(project)
     tmp_dir = cx.tmp_gpt_dir(project)
     prompt_file = cx.write_img_pr_prompt_file(project, tmp_dir, ts=_ts())
+    from app.services.img_pr_style import is_plastilin_master
+
+    master_head = ""
+    try:
+        master_head = prompt_file.read_text(encoding="utf-8")[:2000]
+    except OSError:
+        master_head = ""
+    plastilin = is_plastilin_master(prompt_file.name, master_head)
+    img_pr_hint = _PLASTILIN_IMG_PR_HINT if plastilin else _IMG_PR_DB_HINT
+    if plastilin:
+        logger.info("img_pr_db: plastilin master — keep clay style in prompt, no watercolor wrap")
 
     ckpt = ipb.load_checkpoint(project.data_dir)
     done_uuids = list(ckpt.get("done_uuids") or [])
@@ -779,13 +802,13 @@ async def run_img_pr_xlsx(
                 cards,
                 general_plan,
                 batch_tag=batch_tag,
-                include_characters=first_attach,
+                include_characters=True,
             )
             uuid_lines = "\n".join(
                 f"кадр {fr.number} = {fr.uuid}" for fr in batch if fr.uuid
             )
             footer = ipb.batch_footer(
-                batch_i=bi, batch_n=batch_n, n=len(batch)
+                batch_i=bi, batch_n=batch_n, n=len(batch), plastilin=plastilin
             )
             if first_attach:
                 chat_msg = cx.chat_message(
@@ -795,7 +818,7 @@ async def run_img_pr_xlsx(
                     n_frames=len(batch),
                 )
                 chat_msg = (
-                    f"{chat_msg}{_IMG_PR_DB_HINT}\n{footer}\n"
+                    f"{chat_msg}{img_pr_hint}\n{footer}\n"
                     f"Адресация:\n{uuid_lines}\n"
                 )
                 if uuid_map_text.strip():
@@ -803,20 +826,28 @@ async def run_img_pr_xlsx(
                         f"{chat_msg}\n# uuid map (справочно)\n"
                         f"{uuid_map_text.strip()[:2000]}\n"
                     )
-                attach = [prompt_file, db_path]
-                if vo is not None:
-                    attach.append(vo)
+                attach = ipb.batch_attach_files(
+                    batch_i=1,
+                    prompt_file=prompt_file,
+                    db_path=db_path,
+                    voiceover=vo,
+                )
                 treat_txt = True
                 use_history: list[dict[str, str]] | None = None
             else:
                 chat_msg = (
-                    f"{ipb.followup_message(batch_i=bi, batch_n=batch_n, n=len(batch))}\n"
+                    f"{ipb.followup_message(batch_i=bi, batch_n=batch_n, n=len(batch), plastilin=plastilin)}\n"
                     f"Адресация:\n{uuid_lines}\n"
                     "Файл db_frames полный — не отказывайся из‑за «обрезки». "
                     "Верни JSON ops на ВСЕ uuid из файла.\n"
                 )
-                attach = [db_path]
-                treat_txt = False
+                attach = ipb.batch_attach_files(
+                    batch_i=bi,
+                    prompt_file=prompt_file,
+                    db_path=db_path,
+                    voiceover=vo,
+                )
+                treat_txt = True
                 use_history = history or None
 
             batch_ops: list[dict] = []
@@ -829,11 +860,21 @@ async def run_img_pr_xlsx(
                     history.clear()
                     use_history = None
                     treat_txt = True
-                    attach = [prompt_file, db_path]
+                    attach = ipb.batch_attach_files(
+                        batch_i=bi,
+                        prompt_file=prompt_file,
+                        db_path=db_path,
+                        voiceover=None,
+                    )
                     chat_msg = (
-                        f"{_IMG_PR_DB_HINT}\n{footer}\n"
+                        f"{img_pr_hint}\n{footer}\n"
                         f"Адресация:\n{uuid_lines}\n"
-                        "Только JSON apply-ops. STYLE LOCK не пиши.\n"
+                        "Только JSON apply-ops. "
+                        + (
+                            "Стиль пластилина оставь в промт_картинки.\n"
+                            if plastilin
+                            else "STYLE LOCK не пиши.\n"
+                        )
                     )
                     logger.info(
                         "img_pr_db: batch {}/{} fresh session retry",
@@ -860,7 +901,9 @@ async def run_img_pr_xlsx(
                     treat_txt_as_prompt=treat_txt,
                 )
                 replies.append(last_reply or "")
-                batch_ops = ipb.parse_img_pr_ops(last_reply or "")
+                batch_ops = ipb.parse_img_pr_ops(
+                    last_reply or "", wrap_style=not plastilin
+                )
                 if batch_ops:
                     break
                 rej = ipb.write_rejected_reply(

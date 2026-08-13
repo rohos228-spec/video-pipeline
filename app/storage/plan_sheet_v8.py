@@ -643,6 +643,51 @@ def merge_gpt_image_prompt_rows_into_project(
     return n45, n46
 
 
+def clear_plan_image_prompts(project: Project, frame_numbers: list[int]) -> int:
+    """Обнулить R45/R46, чтобы xlsx→DB sync не вернул старые промты после wipe."""
+    if not frame_numbers:
+        return 0
+    path = project.data_dir / "project.xlsx"
+    if not path.exists():
+        return 0
+    from app.services.plan_shot2 import ROW_IMAGE_PROMPT_2_V8
+
+    cleared = 0
+    try:
+        with _file_lock(path):
+            wb = load_workbook(path)
+            ws = _resolve_plan_sheet(wb)
+            if ws is None:
+                wb.close()
+                return 0
+            for n in frame_numbers:
+                col = plan_frame_column(n)
+                for row in (ROW_IMAGE_PROMPT_V8, ROW_IMAGE_PROMPT_2_V8):
+                    cell = ws.cell(row=row, column=col)
+                    if cell.value not in (None, ""):
+                        cell.value = None
+                        cleared += 1
+            if cleared:
+                wb.save(path)
+            wb.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] clear_plan_image_prompts failed: {}",
+            project.id,
+            e,
+        )
+        return 0
+    if cleared:
+        logger.info(
+            "[#{}] plan R{}/R{}: очищено {} ячеек image_prompt",
+            project.id,
+            ROW_IMAGE_PROMPT_V8,
+            ROW_IMAGE_PROMPT_2_V8,
+            cleared,
+        )
+    return cleared
+
+
 def write_plan_image_prompts_bulk(
     project: Project,
     prompts_by_frame: dict[int, str],
