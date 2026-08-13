@@ -46,7 +46,7 @@ Do **not** push to a different branch than `ORCHESTRATOR_GIT_BRANCH` unless the 
 - Studio Create: provider **outsee** → `POST /api/outsee/generate`; provider **grsai** → `/api/grsai/generate`.
 - **Pre-existing lint/type issues**: `ruff check .` reports ~50 warnings and `mypy` reports ~178 errors — these are pre-existing in the codebase.
 - Tests use in-memory SQLite and don't require external services or a `.env` file.
-- **Parallel projects**: `WORKER_MAX_PARALLEL` (default `1`) — top-N window in `app/services/gen_queue.py` + concurrent advances in `_run_worker_loop`. `1` keeps legacy serial behavior; `paused`/`user_stop` on an earlier slot still hard-blocks the rest of the queue.
+- **Parallel projects**: `WORKER_MAX_PARALLEL` (default `1`) — top-N window in `app/services/gen_queue.py` + concurrent advances in `_run_worker_loop`. `1` keeps legacy serial behavior; `paused`/`user_stop` slots are **skipped** (they do not occupy the window), so later queue entries can fill free parallel slots.
 - **API xlsx write-back**: `outputMode=project_file` → `app/services/xlsx_text_writeback.py` (downloaded `.xlsx` or TSV `# Лист:` blocks) writes `project.xlsx`, then `sync_project_xlsx`.
 - **Vision checks**: image inputs (`png/jpg/webp/gif`) go to the model as multimodal parts in `app/services/gpt_api.py` (chat `image_url` / Responses `input_image`), up to 8 images / 4MB each.
 - **Browser ChatGPT retired for text**: all text/xlsx/check/verdict/anim_pr/hero-prompt/music-prompt go through `app/services/gpt_client.py` → `gpt_api`. CDP remains only for Outsee (image/video/music gen) and ElevenLabs TTS. Need `GPT_API_KEY` + `GPT_BASE_URL` (kie: `https://api.kie.ai`, path `/codex/v1/responses`, model `gpt-5-6-sol`).

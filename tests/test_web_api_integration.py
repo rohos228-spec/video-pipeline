@@ -87,7 +87,14 @@ async def test_list_workflows(client) -> None:
 
 @pytest.mark.asyncio
 async def test_get_project_recompute_no_hero(client) -> None:
-    """no_hero + frame with prompts → не застревает на frames_ready."""
+    """no_hero + кадр с промтами + scene_image.
+
+    Данные опережают статус: compute_actual_status = animation_prompts_ready
+    (hero-гейт не срабатывает — hero_mode=no_hero). Но recompute(web_get)
+    из *_ready ВПЕРЁД не прыгает (d939106c: вперёд двигает только шаг /
+    auto_advance по связям канваса) — API возвращает frames_ready. Это не
+    «застревание»: hero-ноду при advance пропускает хук в _apply_approve.
+    """
     c, pid, factory = client
     async with factory() as session:
         from app.models import Artifact, ArtifactKind
@@ -110,11 +117,18 @@ async def test_get_project_recompute_no_hero(client) -> None:
         )
         await session.commit()
 
+        # Data-driven вычисление: no_hero не застревает на hero-гейте.
+        from app.services.project_state import compute_actual_status
+
+        computed = await compute_actual_status(session, p)
+        assert computed is ProjectStatus.animation_prompts_ready
+
     r = await c.get(f"/api/projects/{pid}")
     assert r.status_code == 200
     body = r.json()
     assert body["hero_mode"] == "no_hero"
-    assert body["status"] != "frames_ready"
+    # recompute не перескакивает из *_ready вперёд по опережающим данным
+    assert body["status"] == "frames_ready"
 
 
 @pytest.mark.asyncio

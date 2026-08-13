@@ -1,4 +1,8 @@
-"""Gen queue: strict serial order — later projects wait for earlier."""
+"""Gen queue: порядок очереди — поздние ждут ранних runnable-слотов.
+
+paused/user_stop слоты окном пропускаются (не блокируют хвост) — см.
+tests/test_gen_queue_parallel.py::test_parallel_paused_skipped_frees_window.
+"""
 
 from __future__ import annotations
 
@@ -90,22 +94,24 @@ async def test_allows_later_when_earlier_queue_run_complete(
 async def test_blocks_later_not_blocked_by_paused_earlier(
     session: AsyncSession,
 ) -> None:
+    """paused #7 пропускается окном — #8 никого не ждёт."""
     await _add(session, 7, status=ProjectStatus.paused, until="script")
     await _add(session, 8, status=ProjectStatus.plan_ready, until="script")
-    assert await gen_queue_blocks_project(session, 8) == 7
+    assert await gen_queue_blocks_project(session, 8) is None
 
 
 @pytest.mark.asyncio
-async def test_user_stop_blocks_later_in_queue(
+async def test_user_stop_does_not_block_later_in_queue(
     session: AsyncSession,
 ) -> None:
+    """user_stop #7 пропускается окном — #8 никого не ждёт."""
     await _add(session, 7, status=ProjectStatus.plan_ready, until="script")
     p7 = await session.get(Project, 7)
     assert p7 is not None
     p7.meta = {**(p7.meta or {}), "user_stop": True}
     await session.flush()
     await _add(session, 8, status=ProjectStatus.plan_ready, until="script")
-    assert await gen_queue_blocks_project(session, 8) == 7
+    assert await gen_queue_blocks_project(session, 8) is None
 
 
 @pytest.mark.asyncio
@@ -127,10 +133,11 @@ async def test_gen_queue_normalize_preserves_insertion_order(
 
 
 @pytest.mark.asyncio
-async def test_reconcile_rolls_back_out_of_turn_planning(
+async def test_reconcile_keeps_running_when_paused_earlier_frees_window(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """paused #2 не занимает окно — planning #3 внутри top-1, не откатываем."""
     from app.services.gen_queue import gen_queue_reconcile
 
     monkeypatch.setattr(
@@ -141,14 +148,15 @@ async def test_reconcile_rolls_back_out_of_turn_planning(
     p3 = await _add(session, 3, status=ProjectStatus.planning, until="script")
     rolled = await gen_queue_reconcile(session)
     await session.refresh(p3)
-    assert rolled == 1
-    assert p3.status is ProjectStatus.new
+    assert rolled == 0
+    assert p3.status is ProjectStatus.planning
 
 
 @pytest.mark.asyncio
-async def test_gen_queue_tick_waits_on_paused_does_not_skip(
+async def test_gen_queue_tick_does_not_autostart_new_after_paused_slot(
     session: AsyncSession,
 ) -> None:
+    """paused #7 пропущен, но #8 (new) не автостартует — нужен ручной ▶."""
     await _add(session, 7, status=ProjectStatus.paused, until="script")
     await _add(session, 8, status=ProjectStatus.new, until="script")
     started = await gen_queue_tick(session)
@@ -361,9 +369,31 @@ async def test_gen_queue_tick_advances_ready_project(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """tick продвигает plan_ready → scripting (auto_mode).
+
+    auto_advance plan_ready запускает GPT «Вердикт» — ему нужны локальные
+    prompts/check_plan/*.md (в git не хранятся) и живой GPT-клиент. В тесте
+    вердикт подменяем одобрением; сам переход идёт настоящий.
+    """
+    from unittest.mock import AsyncMock
+
+    from app.models import HITLDecision
+    from app.orchestrator import auto_advance as aa
+    from app.services.auto_review import ReviewResult
+
     monkeypatch.setattr(
         "app.services.gen_queue.get_gen_queue",
         lambda: [7],
+    )
+    monkeypatch.setattr(
+        aa,
+        "_run_verdict_review_for_step",
+        AsyncMock(
+            return_value=ReviewResult(
+                decision=HITLDecision.approved,
+                confidence=1.0,
+            )
+        ),
     )
     p7 = await _add(session, 7, status=ProjectStatus.plan_ready, until="script")
     p7.general_plan = "x" * 500

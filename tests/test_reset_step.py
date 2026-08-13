@@ -261,7 +261,15 @@ async def test_reset_img_pr_cascades_to_img_and_below(
 @pytest.mark.asyncio
 async def test_reset_split_deletes_all_frames(session, tmp_path: Path):
     """Сброс split удаляет все Frame'ы (cascade удалит и Artifact'ы
-    с frame_id)."""
+    с frame_id).
+
+    Стартовый статус — frames_ready: это семантически корректная точка
+    «split пройден, downstream пуст». NB: при сбросе split из статуса
+    >= enriching_1 (напр. images_ready) anti-rewind guard в
+    compute_actual_status (2fedf393, канвас excel_gpt до split) не откатывает
+    *_ready назад — статус останется images_ready. Это побочный эффект
+    гварда, а не контракт reset_step.
+    """
     p = await _mkproject(session)
     fr1 = await _mkframe(
         session, p, 1, image_prompt="p1", status=FrameStatus.image_approved,
@@ -272,7 +280,7 @@ async def test_reset_split_deletes_all_frames(session, tmp_path: Path):
         session, p, ArtifactKind.scene_image,
         path=str(img_p), frame_id=fr1.id,
     )
-    p.status = ProjectStatus.images_ready
+    p.status = ProjectStatus.frames_ready
     await session.flush()
 
     await reset_step(session, p, "split")

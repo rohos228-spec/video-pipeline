@@ -1,4 +1,8 @@
-"""STOP (user_stop): железная блокировка auto_advance и очереди."""
+"""STOP (user_stop): железная блокировка auto_advance самого проекта.
+
+В очереди (top-N окно) слот с user_stop/paused ПРОПУСКАЕТСЯ — хвост
+очереди продолжает работу, см. tests/test_gen_queue_parallel.py.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.models import Base, Project, ProjectStatus
 from app.orchestrator.auto_advance import maybe_auto_advance
-from app.services.gen_queue import gen_queue_blocks_project, gen_queue_tick
+from app.services.gen_queue import (
+    gen_queue_blocks_project,
+    gen_queue_tick,
+    gen_queue_window_projects,
+)
 from app.services.gen_queue_run import is_user_stopped
 from app.services.project_control import stop_project_running
 from app.services.step_data_guard import clamp_status_to_data
@@ -155,10 +163,16 @@ async def test_clamp_status_skips_user_stopped(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_user_stop_blocks_later_in_gen_queue(
+async def test_user_stop_slot_skipped_in_gen_queue_window(
     session: AsyncSession,
     monkeypatch,
 ) -> None:
+    """⏹ на #2 не блокирует #4: слот пропускается, окно достаётся хвосту.
+
+    Железный gate user_stop действует на сам проект (его auto_advance
+    заблокирован — см. test_maybe_auto_advance_blocked_after_stop_on_ready),
+    но очередь дальше не стопорится.
+    """
     monkeypatch.setattr(
         "app.services.gen_queue.get_gen_queue",
         lambda: [2, 4],
@@ -183,7 +197,9 @@ async def test_user_stop_blocks_later_in_gen_queue(
     session.add_all([p2, p4])
     await session.flush()
 
-    assert await gen_queue_blocks_project(session, 4) == 2
+    assert await gen_queue_blocks_project(session, 4) is None
+    window = await gen_queue_window_projects(session)
+    assert [p.id for p in window] == [4]
 
 
 @pytest.mark.asyncio

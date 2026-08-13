@@ -157,8 +157,15 @@ async def test_await_with_cancel_interrupted() -> None:
         await await_with_cancel(slow(), 88, poll_s=0.05)
 
 
-def test_stop_flag_visible_across_fresh_import() -> None:
-    """Симуляция другого процесса: stop-файл виден без in-memory флага."""
+def test_stop_flag_visible_across_fresh_import(tmp_path, monkeypatch) -> None:
+    """Симуляция другого процесса: stop-файл виден без in-memory флага.
+
+    data_dir изолируем в tmp_path — иначе тест пишет/чистит реальный
+    data/.stop/ и оставляет stale-флаги при обрыве прогона.
+    """
+    import app.settings as app_settings
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path / "data")
     from app.services import step_cancel as sc1
 
     sc1.request_stop(501)
