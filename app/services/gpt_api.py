@@ -1060,6 +1060,54 @@ def parse_responses_sse_lines(
     return text, status, final_response or {}, response_id
 
 
+def looks_truncated_llm_text(text: str) -> bool:
+    """True если ответ похож на обрезанный CF/прокси (незакрытый JSON/строка)."""
+    t = (text or "").rstrip()
+    if not t:
+        return True
+    if t.count("```") % 2 == 1:
+        return True
+    depth = 0
+    in_str = False
+    esc = False
+    for ch in t:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+    if in_str or depth > 0:
+        return True
+    return t.endswith((",", ":", "\\"))
+
+
+def stitch_llm_continuation(base: str, cont: str) -> str:
+    """Склеить base + continuation; убрать повтор хвоста, если модель пересказала."""
+    a = base or ""
+    b = (cont or "").lstrip()
+    if not b:
+        return a
+    if not a:
+        return b
+    # Ищем максимальный overlap хвоста a с началом b (до 2k).
+    # Порог ≥8: короче — ложные склейки; длиннее — CF-continue часто
+    # повторяет только `"]}` / пару слов и тогда дублируется.
+    max_ov = min(len(a), len(b), 2000)
+    for ov in range(max_ov, 7, -1):
+        if a.endswith(b[:ov]):
+            return a + b[ov:]
+    return a + b
+
+
 async def _chat_responses_stream(
     *,
     url: str,
@@ -1265,6 +1313,62 @@ async def chat(
                     timeout=use_timeout,
                     use_model=use_model,
                 )
+                # Cloudflare/kie рвёт длинный SSE: дельты уже есть, но JSON
+                # незакрыт — добираем хвост коротким continue (без тяжёлых файлов).
+                cont_round = 0
+                while cont_round < 2 and looks_truncated_llm_text(result.text):
+                    cont_round += 1
+                    tail = (result.text or "")[-4000:]
+                    cont_prompt = (
+                        "Предыдущий ответ оборван сетью (прокси/Cloudflare). "
+                        "Продолжи СТРОГО с места обрыва: не повторяй уже "
+                        "написанное, без пояснений — только продолжение текста.\n\n"
+                        f"--- хвост уже полученного ---\n{tail}\n"
+                        "--- конец хвоста ---"
+                    )
+                    cont_body: dict[str, Any] = {
+                        "model": use_model,
+                        "input": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "input_text", "text": cont_prompt}
+                                ],
+                            }
+                        ],
+                        "stream": True,
+                    }
+                    if temperature is not None:
+                        cont_body["temperature"] = temperature
+                    logger.warning(
+                        "gpt_api.chat CF-continue round={} chars_so_far={} task_id={}",
+                        cont_round,
+                        len(result.text or ""),
+                        result.response_id or "-",
+                    )
+                    cont = await _chat_responses_stream(
+                        url=url,
+                        headers=headers,
+                        body=cont_body,
+                        timeout=min(use_timeout, 300.0),
+                        use_model=use_model,
+                    )
+                    merged = stitch_llm_continuation(result.text, cont.text)
+                    if len(merged) <= len(result.text or ""):
+                        break
+                    result = GptChatResult(
+                        text=merged,
+                        model=use_model,
+                        finish_reason="stream_continued",
+                        usage=result.usage,
+                        raw={
+                            **(result.raw or {}),
+                            "cf_continued": True,
+                            "cf_continue_rounds": cont_round,
+                            "continue_task_id": cont.response_id or "",
+                        },
+                        response_id=result.response_id or cont.response_id,
+                    )
                 logger.info(
                     "gpt_api.chat OK provider={} model={} attempt={} "
                     "finish={} chars={} task_id={}",
