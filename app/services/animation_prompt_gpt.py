@@ -36,8 +36,7 @@ from app.storage.plan_sheet_v8 import (
 
 MIN_ANIM_PROMPT_LEN = 10
 
-# Меньше кадров в пачке → короче JSON через kie/CF.
-BATCH_SIZE = 4
+BATCH_SIZE = 6
 STRIP_GUTTER_PX = 6
 STRIP_MAX_HEIGHT_PX = 512
 STRIP_MAX_BYTES = 3_500_000

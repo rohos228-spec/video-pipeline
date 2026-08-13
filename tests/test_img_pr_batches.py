@@ -56,10 +56,11 @@ def test_wrap_does_not_add_watercolor_over_clay() -> None:
     assert "Archival Noir" not in wrapped
 
 
-def test_199_frames_batch_respects_size() -> None:
+def test_199_frames_batch_count_under_ten() -> None:
     chunks = ipb.chunk_frames(list(range(199)))
-    assert all(len(c) <= ipb._FRAMES_PER_BATCH for c in chunks)
-    assert len(chunks) == (199 + ipb._FRAMES_PER_BATCH - 1) // ipb._FRAMES_PER_BATCH
+    assert len(chunks) == 8  # 25/batch
+    assert all(len(c) <= 25 for c in chunks)
+    assert len(chunks) < 12
 
 
 def test_salvage_broken_json_персонажи_outside_fields() -> None:

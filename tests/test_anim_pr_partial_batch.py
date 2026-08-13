@@ -29,4 +29,4 @@ def test_zero_overlap_is_empty_fail() -> None:
 def test_batch_size_is_six() -> None:
     from app.services.animation_prompt_gpt import BATCH_SIZE
 
-    assert BATCH_SIZE == 4
+    assert BATCH_SIZE == 6
