@@ -24,6 +24,10 @@ _FRAMES_PER_BATCH = 25
 _T = TypeVar("_T")
 _CHECKPOINT_NAME = "img_pr_checkpoint.json"
 _GPT_ATTEMPTS = 3
+# Сколько continue-итераций (доборов сверх стартового плана батчей)
+# разрешено в run_img_pr_xlsx, прежде чем шаг падает RuntimeError —
+# иначе хронический недобор GPT крутит цикл бесконечно.
+MAX_CONTINUE_ROUNDS = 6
 
 _BATCH_FOOTER = """
 # BATCH {batch_i}/{batch_n} — только эти {n} кадров из db_frames.json
@@ -294,7 +298,15 @@ def salvage_img_pr_ops(reply: str) -> list[dict]:
     return ops
 
 
-def parse_img_pr_ops(reply: str, *, wrap_style: bool = True) -> list[dict]:
+def parse_img_pr_ops(
+    reply: str,
+    *,
+    wrap_style: bool = True,
+    style_id: str | None = None,
+    style_block: str | None = None,
+) -> list[dict]:
+    """Ops из ответа GPT. STYLE-lock: style_block → style_id → без обёртки
+    (warning). Явный ``style_id="noir"`` — легаси Archival Noir."""
     data = extract_apply_ops_json(reply or "")
     ops = list((data or {}).get("ops") or []) if isinstance(data, dict) else []
     clean = filter_prompt_ops(ops)
@@ -306,7 +318,7 @@ def parse_img_pr_ops(reply: str, *, wrap_style: bool = True) -> list[dict]:
     elif (partial or len(clean) <= 1) and len(salvaged) > len(clean):
         clean = salvaged
     if wrap_style:
-        return wrap_ops_styles(clean)
+        return wrap_ops_styles(clean, style_id=style_id, style_block=style_block)
     return clean
 
 

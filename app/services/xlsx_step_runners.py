@@ -701,7 +701,10 @@ async def run_img_pr_xlsx(
     proj_xlsx = _ensure_project_xlsx(project)
     tmp_dir = cx.tmp_gpt_dir(project)
     prompt_file = cx.write_img_pr_prompt_file(project, tmp_dir, ts=_ts())
-    from app.services.img_pr_style import is_plastilin_master
+    from app.services.img_pr_style import (
+        is_plastilin_master,
+        resolve_project_style_id,
+    )
 
     master_head = ""
     try:
@@ -712,6 +715,14 @@ async def run_img_pr_xlsx(
     img_pr_hint = _PLASTILIN_IMG_PR_HINT if plastilin else _IMG_PR_DB_HINT
     if plastilin:
         logger.info("img_pr_db: plastilin master — keep clay style in prompt, no watercolor wrap")
+    # STYLE-lock из проекта (meta.img_pr_style_id → image_style/visual_style/…),
+    # НЕ hardcoded noir. Не задан → wrap_ops_styles пропустит сцену + warning.
+    style_id = resolve_project_style_id(getattr(project, "meta", None))
+    logger.info(
+        "img_pr_db: style lock = {} (plastilin={})",
+        style_id or "—",
+        plastilin,
+    )
 
     ckpt = ipb.load_checkpoint(project.data_dir)
     done_uuids = list(ckpt.get("done_uuids") or [])
@@ -763,6 +774,12 @@ async def run_img_pr_xlsx(
 
     batch_size = ipb.plan_batch_size(len(frames))
     work: deque[list] = deque(ipb.chunk_frames(frames, size=batch_size))
+    # Стартовый план: всё сверх него — continue-итерации (добор), они
+    # ограничены MAX_CONTINUE_ROUNDS, иначе недобор GPT = бесконечный цикл.
+    initial_batches = len(work)
+    expected_uuids = {
+        (fr.uuid or "").strip() for fr in frames if (fr.uuid or "").strip()
+    } | done_set
     logger.info(
         "img_pr_db: ONE session + ~{} batches×~{} (frames={} checkpoint_done={})",
         len(work),
@@ -785,6 +802,7 @@ async def run_img_pr_xlsx(
         await gpt.new_conversation()
         history: list[dict[str, str]] = []
         bi = 0
+        continue_rounds = 0
         first_attach = True
 
         while work:
@@ -793,6 +811,19 @@ async def run_img_pr_xlsx(
             if not batch:
                 continue
             bi += 1
+            if bi > initial_batches:
+                continue_rounds += 1
+                if continue_rounds > ipb.MAX_CONTINUE_ROUNDS:
+                    missing = sorted(expected_uuids - done_set)
+                    raise RuntimeError(
+                        f"img_pr: превышен лимит continue-раундов "
+                        f"({ipb.MAX_CONTINUE_ROUNDS}) — GPT хронически "
+                        f"недобирает кадры. Без промтов осталось "
+                        f"{len(missing)} из {len(expected_uuids)} "
+                        f"(checkpoint ops={len(all_ops)} — retry продолжит "
+                        f"с tmp_gpt/{ipb._CHECKPOINT_NAME}). "
+                        f"Первые missing uuid: {missing[:5]}"
+                    )
             batch_n = bi + len(work)
             batch_tag = f"b{bi:02d}"
             db_path = _write_img_pr_db_frames_for(
@@ -902,7 +933,9 @@ async def run_img_pr_xlsx(
                 )
                 replies.append(last_reply or "")
                 batch_ops = ipb.parse_img_pr_ops(
-                    last_reply or "", wrap_style=not plastilin
+                    last_reply or "",
+                    wrap_style=not plastilin,
+                    style_id=style_id,
                 )
                 if batch_ops:
                     break
@@ -923,18 +956,17 @@ async def run_img_pr_xlsx(
                 )
 
             if not batch_ops:
-                if all_ops:
-                    logger.error(
-                        "img_pr_db: batch {}/{} failed — возвращаю partial "
-                        "ops={} (чекпоинт есть, soft retry добьёт)",
-                        bi,
-                        batch_n,
-                        len(all_ops),
-                    )
-                    return
+                # Никогда не возвращаем молчаливый partial: checkpoint с
+                # частичными ops остаётся на диске (retry продолжит с него),
+                # а шаг падает явно, чтобы caller не пометил ready с дырами.
+                missing = sorted(expected_uuids - done_set)
                 raise RuntimeError(
                     f"img_pr batch {bi}/{batch_n}: нет apply-ops "
-                    f"(reply_len={len(last_reply or '')}). "
+                    f"(reply_len={len(last_reply or '')}); покрыто "
+                    f"{len(expected_uuids) - len(missing)}/{len(expected_uuids)} "
+                    f"кадров, без промтов осталось {len(missing)} "
+                    f"(checkpoint ops={len(all_ops)} — retry продолжит с "
+                    f"tmp_gpt/{ipb._CHECKPOINT_NAME}). "
                     f"Смотри tmp_gpt/img_pr_rejected_b{bi}_*.txt"
                 )
 
@@ -960,10 +992,17 @@ async def run_img_pr_xlsx(
                 if u and u not in done_set:
                     done_uuids.append(u)
                     done_set.add(u)
-            # Только ops по uuid этого батча (лишние uuid модели отбрасываем).
-            kept_ops = [
-                op for op in batch_ops if ipb.uuid_of_op(op) in got_uuids
-            ]
+            # Только ops по uuid этого батча (лишние uuid модели отбрасываем),
+            # по одному op на uuid — дубли в ответе модели не должны писать
+            # кадр дважды (двойные prompt_versions).
+            kept_ops = []
+            _kept_seen: set[str] = set()
+            for op in batch_ops:
+                u = ipb.uuid_of_op(op)
+                if u not in got_uuids or u in _kept_seen:
+                    continue
+                _kept_seen.add(u)
+                kept_ops.append(op)
             all_ops.extend(kept_ops)
             ipb.save_checkpoint(
                 project.data_dir, done_uuids=done_uuids, ops=all_ops
@@ -1019,6 +1058,21 @@ async def run_img_pr_xlsx(
         raise RuntimeError(
             "GPT не вернул apply-ops с промт_картинки по frame_uuid. "
             'Нужен {"ops":[{"frame_uuid":"…","fields":{"промт_картинки":"…"}}]}'
+        )
+
+    # Гарантия покрытия: успех только когда delivered ⊇ expected (все кадры,
+    # ждавшие промтов на старте + checkpoint done). Дыры → RuntimeError,
+    # checkpoint с частичными ops остаётся для retry.
+    delivered_uuids = {
+        ipb.uuid_of_op(op) for op in all_ops if ipb.uuid_of_op(op)
+    }
+    missing_final = sorted(expected_uuids - delivered_uuids)
+    if missing_final:
+        raise RuntimeError(
+            f"img_pr: неполное покрытие — без промтов {len(missing_final)} "
+            f"кадров из {len(expected_uuids)} (ops={len(all_ops)}, "
+            f"checkpoint: tmp_gpt/{ipb._CHECKPOINT_NAME} — retry продолжит "
+            f"с него). Первые missing uuid: {missing_final[:5]}"
         )
 
     logger.info(

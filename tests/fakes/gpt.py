@@ -189,7 +189,7 @@ class FakeGptClient:
         self._img_pr_batch_no += 1
         if self._img_pr_batch_no <= self.chaos.img_pr_empty_batches:
             return "не могу обработать файл"  # нет ops → rejected reply path
-        pairs = _UUID_LINE_RE.findall(text)
+        pairs = list(dict.fromkeys(_UUID_LINE_RE.findall(text)))
         if self.chaos.img_pr_partial and pairs:
             pairs = pairs[:1]
         ops = [
