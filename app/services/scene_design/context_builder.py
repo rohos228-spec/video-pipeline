@@ -146,12 +146,17 @@ def _skeleton_block_from_checkpoint(project: Project) -> str:
         data = sd_runner.load_checkpoint(project, SKELETON)
     except Exception:  # noqa: BLE001
         return ""
-    if not isinstance(data, dict) or not data.get("scenes"):
+    if not isinstance(data, dict):
         return ""
+    if not (data.get("scenes") or data.get("cells")):
+        return ""
+    # scenes = мост 1 VO→1 id_scene + биты; items_seed — предметы скелета V3.
     slim = {
         "scenes": data.get("scenes") or [],
+        "cells": data.get("cells") or [],
         "characters_seed": data.get("characters_seed") or [],
         "locations_seed": data.get("locations_seed") or [],
+        "items_seed": data.get("items_seed") or [],
     }
     return (
         "# СКЕЛЕТ (JSON)\n"
