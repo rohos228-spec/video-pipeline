@@ -1242,6 +1242,66 @@ def _parse_choice(payload: dict[str, Any]) -> tuple[str, str]:
     return text, finish
 
 
+async def _maybe_volume_complete_chat_result(
+    result: GptChatResult,
+    *,
+    prompt: str,
+    accompanying: str,
+    input_paths: list[Path] | None,
+    system: str | None,
+    history: list[dict[str, Any]] | None,
+    model: str,
+    temperature: float | None,
+    timeout: float,
+    xlsx_write_contract: str,
+    volume_complete: bool | None,
+) -> GptChatResult:
+    """Если apply-ops/db_frames покрыты частично — добор батчами (~80%)."""
+    if volume_complete is False:
+        return result
+    try:
+        from app.services.volume_batches import (
+            is_db_frames_path,
+            volume_complete_apply_ops_reply,
+        )
+    except Exception:  # noqa: BLE001
+        return result
+    paths = list(input_paths or [])
+    has_db_frames = any(is_db_frames_path(p) for p in paths)
+    if volume_complete is None:
+        if xlsx_write_contract != "apply_ops" and not has_db_frames:
+            return result
+    try:
+        new_text, did = await volume_complete_apply_ops_reply(
+            result.text or "",
+            input_paths=paths,
+            prompt=prompt,
+            accompanying=accompanying,
+            system=system,
+            history=history,
+            model=model,
+            temperature=temperature,
+            timeout=timeout,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("gpt_api.chat volume_complete failed: {}", e)
+        return result
+    if not did:
+        return result
+    return GptChatResult(
+        text=new_text,
+        model=result.model or model,
+        finish_reason="volume_continued",
+        usage=result.usage,
+        raw={
+            **(result.raw or {}),
+            "volume_continued": True,
+            "volume_chars": len(new_text or ""),
+        },
+        response_id=result.response_id,
+    )
+
+
 async def chat(
     *,
     prompt: str,
@@ -1254,8 +1314,13 @@ async def chat(
     timeout: float | None = None,
     max_retries: int | None = None,
     xlsx_write_contract: str = "tsv",
+    volume_complete: bool | None = None,
 ) -> GptChatResult:
-    """Вызвать текстовый LLM (kie GPT / TokenRouter Kimi) с ретраями."""
+    """Вызвать текстовый LLM (kie GPT / TokenRouter Kimi) с ретраями.
+
+    ``volume_complete``: после частичного apply-ops добрать остаток
+    (None = авто: apply_ops contract или db_frames*.json во вложениях).
+    """
     headers = _headers()
     use_model = (model or settings.gpt_model_effective or "gpt-5.5").strip()
     url = _chat_url(use_model)
@@ -1369,6 +1434,19 @@ async def chat(
                         },
                         response_id=result.response_id or cont.response_id,
                     )
+                result = await _maybe_volume_complete_chat_result(
+                    result,
+                    prompt=prompt,
+                    accompanying=accompanying,
+                    input_paths=input_paths,
+                    system=system,
+                    history=history,
+                    model=use_model,
+                    temperature=temperature,
+                    timeout=use_timeout,
+                    xlsx_write_contract=xlsx_write_contract,
+                    volume_complete=volume_complete,
+                )
                 logger.info(
                     "gpt_api.chat OK provider={} model={} attempt={} "
                     "finish={} chars={} task_id={}",
@@ -1394,17 +1472,31 @@ async def chat(
                 ) from e
             text, finish = _parse_choice(payload)
             usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+            result = GptChatResult(
+                text=text, model=use_model, finish_reason=finish, usage=usage, raw=payload
+            )
+            result = await _maybe_volume_complete_chat_result(
+                result,
+                prompt=prompt,
+                accompanying=accompanying,
+                input_paths=input_paths,
+                system=system,
+                history=history,
+                model=use_model,
+                temperature=temperature,
+                timeout=use_timeout,
+                xlsx_write_contract=xlsx_write_contract,
+                volume_complete=volume_complete,
+            )
             logger.info(
                 "gpt_api.chat OK provider={} model={} attempt={} finish={} chars={}",
                 provider_label,
                 use_model,
                 attempt,
-                finish,
-                len(text),
+                result.finish_reason,
+                len(result.text),
             )
-            return GptChatResult(
-                text=text, model=use_model, finish_reason=finish, usage=usage, raw=payload
-            )
+            return result
         except httpx.TimeoutException:
             hint = ""
             if settings.text_llm_is_tokenrouter:

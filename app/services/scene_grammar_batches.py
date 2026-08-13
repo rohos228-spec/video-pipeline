@@ -367,13 +367,27 @@ async def run_scene_grammar_batched(
             node_key,
         )
     else:
-        batches: list[list[dict[str, Any]]] = []
-        for i in range(0, len(need), max(1, scenes_per_batch)):
-            batches.append(need[i : i + max(1, scenes_per_batch)])
-        batch_n = max(1, len(batches))
-        for batch_i, batch in enumerate(batches, start=1):
+        from collections import deque
+
+        from app.services.volume_batches import (
+            inferred_batch_size,
+            plan_remainder_batches,
+            rechunk_tail,
+        )
+
+        chunk = max(1, int(scenes_per_batch))
+        work: deque[list[dict[str, Any]]] = deque(
+            need[i : i + chunk] for i in range(0, len(need), chunk)
+        )
+        bi = 0
+        while work:
             if project_id is not None:
                 raise_if_cancelled(project_id)
+            batch = work.popleft()
+            if not batch:
+                continue
+            bi += 1
+            batch_n = bi + len(work)
             ids = [str(s.get("id_scene") or "") for s in batch]
             ids = [x for x in ids if x]
             stub = {
@@ -381,7 +395,7 @@ async def run_scene_grammar_batched(
                 "scenes": batch,
             }
             footer = _SHOTS_FOOTER.format(
-                batch_i=batch_i,
+                batch_i=bi,
                 batch_n=batch_n,
                 scene_ids=", ".join(ids),
             )
@@ -393,7 +407,7 @@ async def run_scene_grammar_batched(
             logger.info(
                 "scene_grammar batch: node={} phase=shots {}/{} ids={}",
                 node_key,
-                batch_i,
+                bi,
                 batch_n,
                 ids,
             )
@@ -410,6 +424,42 @@ async def run_scene_grammar_batched(
                 raise
             parts.append(part)
             save_scene_grammar_checkpoint(out_dir, parts)
+
+            # Частичный shots[] = объём превышен → добор / ~80%.
+            got_ids = {
+                str(sc.get("id_scene") or "").strip()
+                for sc in (part.get("scenes") or [])
+                if isinstance(sc, dict)
+                and isinstance(sc.get("shots"), list)
+                and len(sc.get("shots") or []) > 0
+            }
+            got_ids.discard("")
+            asked = [s for s in batch if str(s.get("id_scene") or "").strip()]
+            missing_scenes = [
+                s
+                for s in asked
+                if str(s.get("id_scene") or "").strip() not in got_ids
+            ]
+            delivered_n = len(asked) - len(missing_scenes)
+            if missing_scenes and delivered_n > 0:
+                extras = plan_remainder_batches(
+                    missing_scenes, delivered=delivered_n
+                )
+                new_size = inferred_batch_size(delivered_n)
+                tail: list[dict[str, Any]] = []
+                while work:
+                    tail.extend(work.popleft())
+                requeued = extras + rechunk_tail(tail, size=new_size)
+                work.extend(requeued)
+                logger.warning(
+                    "scene_grammar batch: volume partial shots got={}/{} → "
+                    "remainder_batches={} new_size={} queue={}",
+                    delivered_n,
+                    len(asked),
+                    len(extras),
+                    new_size,
+                    len(work),
+                )
 
     merged = merge_scene_grammar_payloads(parts)
     return _finalize_batched(out_dir, node_key, parts, merged)
