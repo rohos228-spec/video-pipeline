@@ -46,11 +46,14 @@ def _env_worker() -> int:
 
 
 def _env_outsee() -> int:
+    raw = getattr(settings, "img_max_streams", None)
+    if raw is None:
+        return _clamp(2, OUTSEE_MIN, OUTSEE_MAX, 2)
     try:
-        n = int(getattr(settings, "img_max_streams", 1) or 1)
+        n = int(raw)
     except (TypeError, ValueError):
-        n = 1
-    return _clamp(n, OUTSEE_MIN, OUTSEE_MAX, 1)
+        n = 2
+    return _clamp(n, OUTSEE_MIN, OUTSEE_MAX, 2)
 
 
 def _env_check() -> int:

@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     create_max_parallel_outsee: int = Field(4, alias="CREATE_MAX_PARALLEL_OUTSEE")
     create_max_parallel_grsai: int = Field(10, alias="CREATE_MAX_PARALLEL_GRSAI")
     # Пайплайн img: параллельные кадры 0..4 (0=не генерить; дефолт для проектов).
-    img_max_streams: int = Field(1, alias="IMG_MAX_STREAMS")
+    img_max_streams: int = Field(2, alias="IMG_MAX_STREAMS")
     # Vision checkMode: параллельные GPT-батчи 0..10 (каждый батч ≤8 PNG).
     check_max_streams: int = Field(2, alias="CHECK_MAX_STREAMS")
 

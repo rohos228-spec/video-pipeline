@@ -21,6 +21,30 @@ from app.services.scan_frames import disk_has_valid_frame_image
 from app.services.xlsx_v8_import import read_v8_active_frame_count
 
 
+def glob_delete_frame_video_clips(videos_dir: Path, frame_number: int) -> int:
+    """Удалить clip_{NNN}_*.mp4 shot1 (не _s2_) и clip_{NNN}_s2_* shot2."""
+    if not videos_dir.is_dir():
+        return 0
+    removed = 0
+    shot1 = [
+        p
+        for p in videos_dir.glob(f"clip_{frame_number:03d}_*.mp4")
+        if p.is_file() and "_s2_" not in p.name
+    ]
+    shot2 = [
+        p
+        for p in videos_dir.glob(f"clip_{frame_number:03d}_s2_*.mp4")
+        if p.is_file()
+    ]
+    for p in shot1 + shot2:
+        try:
+            p.unlink(missing_ok=True)
+            removed += 1
+        except OSError:
+            logger.warning("post_validate: cannot delete video {}", p)
+    return removed
+
+
 @dataclass
 class ValidationResult:
     ok: bool
@@ -346,6 +370,7 @@ async def mark_frames_for_video_regen(
                 except OSError:
                     pass
             await session.delete(a)
+        glob_delete_frame_video_clips(project.data_dir / "videos", fr.number)
         # Снимаем ladder-skip, иначе claim снова пропустит кадр и soft-retry
         # будет крутиться с gen=0.
         attrs = dict(fr.attrs or {})

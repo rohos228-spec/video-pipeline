@@ -54,6 +54,8 @@ from app.models import (
 )
 from app.services.animation_prompt_gpt import animation_prompt_shot2_in_plan_xlsx
 from app.services.artifact_recovery import (
+    archive_older_frame_clips,
+    newest_disk_video,
     recover_scene_images_from_disk,
     recover_scene_videos_from_disk,
 )
@@ -73,7 +75,7 @@ from app.services.plan_shot2 import (    MIN_SHOT2_VIDEO_PROMPT_LEN,
     find_shot2_image,
     read_shot2_columns,
 )
-from app.services.scan_frames import is_valid_scene_image
+from app.services.scan_frames import _disk_has_frame_video_shot1, is_valid_scene_image
 from app.services.step_cancel import StepCancelledError, consume_stop, raise_if_cancelled
 
 
@@ -259,6 +261,8 @@ async def _claim_shot1_video_batch(
 ) -> list[Frame]:
     if limit < 1:
         return []
+    project = await session.get(Project, project_id)
+    videos_dir = project.data_dir / "videos" if project is not None else None
     # populate_existing: после parallel SessionLocal() attrs.inflight иначе stale
     # в identity map родителя → кадры навсегда пропускаются.
     frames = (
@@ -270,6 +274,7 @@ async def _claim_shot1_video_batch(
         )
     ).scalars().all()
     claimed: list[Frame] = []
+    dirty = False
     for fr in frames:
         attrs = dict(fr.attrs or {})
         if attrs.get(VIDEO_INFLIGHT_ATTR):
@@ -278,22 +283,31 @@ async def _claim_shot1_video_batch(
             # ≥5 ошибок подряд — кадр пропущен (ручной reset снимет).
             continue
         clip = await _scene_video_file_on_disk(session, project_id, fr.id, shot=1)
-        if _skip_frame_video_generation(fr, clip is not None):
-            if clip is not None and fr.status not in (
+        has_disk = bool(
+            videos_dir is not None
+            and (
+                newest_disk_video(videos_dir, fr.number, 1) is not None
+                or _disk_has_frame_video_shot1(videos_dir, fr.number)
+            )
+        )
+        if _skip_frame_video_generation(fr, clip is not None or has_disk):
+            if (clip is not None or has_disk) and fr.status not in (
                 FrameStatus.video_generated,
                 FrameStatus.video_approved,
                 FrameStatus.done,
             ):
                 fr.status = FrameStatus.video_generated
+                dirty = True
             continue
         if not (fr.animation_prompt or "").strip():
             continue
         attrs[VIDEO_INFLIGHT_ATTR] = True
         fr.attrs = attrs
         claimed.append(fr)
+        dirty = True
         if len(claimed) >= limit:
             break
-    if claimed:
+    if dirty:
         await session.flush()
     return claimed
 
@@ -402,6 +416,7 @@ async def _generate_shot1_one(
     fr.status = FrameStatus.video_generated
     await session.flush()
     out = Path(result.file_path)
+    archive_older_frame_clips(out_dir, fr.number, shot=1, keep=out)
     async with clips_lock:
         session_clip_paths.append(out)
     logger.info("[#{}] frame {} video: {}", project.id, fr.number, result.file_path)
@@ -467,6 +482,7 @@ async def _generate_shot2_one(
     )
     await session.flush()
     out = Path(result.file_path)
+    archive_older_frame_clips(out_dir, fr.number, shot=2, keep=out)
     async with clips_lock:
         session_clip_paths.append(out)
     logger.info(
@@ -612,6 +628,7 @@ async def _shot1_job(
             await session.commit()
         await _reset_video_fail_db(project_id, frame_id)
         out = Path(result.file_path)
+        archive_older_frame_clips(out_dir, frame_number, shot=1, keep=out)
         async with clips_lock:
             session_clip_paths.append(out)
         logger.info(
@@ -714,6 +731,7 @@ async def _shot2_job(
             await session.commit()
         await _reset_video_fail_db(project_id, frame_id)
         out = Path(result.file_path)
+        archive_older_frame_clips(out_dir, frame_number, shot=2, keep=out)
         async with clips_lock:
             session_clip_paths.append(out)
         logger.info(

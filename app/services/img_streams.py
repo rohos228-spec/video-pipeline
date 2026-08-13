@@ -38,7 +38,7 @@ def default_img_streams() -> int:
 
 
 def get_img_streams(project: Project | None) -> int:
-    """Потоки Outsee для img+video: meta → env IMG_MAX_STREAMS → 1."""
+    """Потоки Outsee для img+video: meta → env IMG_MAX_STREAMS → 2."""
     if project is not None:
         meta = project.meta if isinstance(project.meta, dict) else {}
         if META_KEY_ALIAS in meta and meta.get(META_KEY_ALIAS) is not None:

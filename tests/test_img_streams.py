@@ -49,6 +49,35 @@ def test_get_img_streams_from_meta(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert get_img_streams(p) == 4
 
 
+def test_get_img_streams_defaults_to_2_when_meta_and_env_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Code fallback is 2 when project meta has neither key and env is unset."""
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path)
+    monkeypatch.setattr(app_settings.settings, "img_max_streams", None)
+    p = Project(slug="s", topic="t", status=ProjectStatus.generating_images, meta={})
+    assert "img_streams" not in (p.meta or {})
+    assert "outsee_streams" not in (p.meta or {})
+    assert not (tmp_path / "runtime_streams.json").exists()
+    assert get_img_streams(p) == 2
+    assert not (tmp_path / "runtime_streams.json").exists()
+
+
+def test_get_img_streams_keeps_existing_runtime_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Не перетирать runtime_streams.json, если default_outsee_streams уже задан."""
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path)
+    monkeypatch.setattr(app_settings.settings, "img_max_streams", None)
+    from app.services.runtime_streams import save_runtime_streams
+
+    save_runtime_streams({"default_outsee_streams": 3})
+    before = (tmp_path / "runtime_streams.json").read_text(encoding="utf-8")
+    p = Project(slug="s", topic="t", status=ProjectStatus.generating_images, meta={})
+    assert get_img_streams(p) == 3
+    assert (tmp_path / "runtime_streams.json").read_text(encoding="utf-8") == before
+
+
 def test_claim_shot1_batch_marks_inflight(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from unittest.mock import MagicMock
 
