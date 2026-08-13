@@ -73,6 +73,28 @@ _VIDEOS_REQUIRED_STATUSES = {
     "published",
 }
 
+# N/N покрытие промтов: img_pr — на/после image_prompts_ready,
+# anim_pr — на/после animation_prompts_ready (раньше проверялось только
+# на assembled — дыра «нода done с дырами в данных»).
+_IMG_PR_COVERAGE_STATUSES = {
+    "image_prompts_ready",
+    "generating_images",
+    *_SCENES_REQUIRED_STATUSES,
+}
+_ANIM_PR_COVERAGE_STATUSES = {
+    "animation_prompts_ready",
+    "generating_videos",
+    "videos_ready",
+    "generating_music",
+    "music_ready",
+    "generating_audio",
+    "audio_ready",
+    "assembling",
+    "assembled",
+    "publishing",
+    "published",
+}
+
 
 @dataclass
 class HarnessCheck:
@@ -626,6 +648,77 @@ def verify_project_http(
     return checks
 
 
+_COVERAGE_REPAIR_STEP = {
+    "img_pr_db_coverage": "img_pr",
+    "anim_pr_db_coverage": "anim_pr",
+}
+
+
+async def _prompt_coverage_checks(
+    session: Any, project: Any, status: str
+) -> list[HarnessCheck]:
+    """N/N покрытие промтов по живой сессии (не raw sqlite — нужны
+    канонические предикаты usable/skip из animation_prompt_gpt).
+
+    Раньше parity N/N проверялся только на status=assembled — нода могла
+    стать ready с дырами, и узнавали об этом в монтаже.
+    """
+    out: list[HarnessCheck] = []
+    want_img = status in _IMG_PR_COVERAGE_STATUSES
+    want_anim = status in _ANIM_PR_COVERAGE_STATUSES
+    if not (want_img or want_anim):
+        return out
+    try:
+        from sqlalchemy import select
+
+        from app.models import Frame
+
+        frames = list(
+            (
+                await session.execute(
+                    select(Frame)
+                    .where(Frame.project_id == project.id)
+                    .order_by(Frame.number)
+                )
+            ).scalars()
+        )
+    except Exception as e:  # noqa: BLE001
+        return [HarnessCheck("prompt_coverage", False, f"query: {e}")]
+
+    if want_img:
+        vo_frames = [f for f in frames if (f.voiceover_text or "").strip()]
+        missing = [
+            f.number for f in vo_frames if not (f.image_prompt or "").strip()
+        ]
+        out.append(
+            HarnessCheck(
+                "img_pr_db_coverage",
+                not missing,
+                f"vo={len(vo_frames)} missing_img_prompt={missing[:10]}",
+            )
+        )
+    if want_anim:
+        from app.services.animation_prompt_gpt import (
+            frame_has_usable_image_prompt,
+            has_animation_prompt_for_frame,
+        )
+
+        need = [f for f in frames if frame_has_usable_image_prompt(f)]
+        missing = [
+            f.number
+            for f in need
+            if not has_animation_prompt_for_frame(project, f)
+        ]
+        out.append(
+            HarnessCheck(
+                "anim_pr_db_coverage",
+                not missing,
+                f"need={len(need)} missing_anim_prompt={missing[:10]}",
+            )
+        )
+    return out
+
+
 _GATE_OBSERVABILITY = frozenset({"project_log_clean", "node_runs_failed"})
 
 
@@ -681,6 +774,30 @@ async def run_harness_verify(
         report.ok = all(c.ok for c in report.checks)
         if not report.ok and report.next_action == "none":
             report.next_action = "investigate:http"
+
+    coverage_checks = await _prompt_coverage_checks(session, project, status)
+    if coverage_checks:
+        report.checks.extend(coverage_checks)
+        for c in coverage_checks:
+            if c.ok:
+                continue
+            step = _COVERAGE_REPAIR_STEP.get(c.name)
+            if (
+                step
+                and step not in HARNESS_FORBIDDEN_STEPS
+                and step not in report.repair_steps
+            ):
+                report.repair_steps.append(step)
+        report.ok = all(c.ok for c in report.checks)
+        report.next_action = (
+            "none"
+            if report.ok
+            else (
+                "repair:" + ",".join(report.repair_steps)
+                if report.repair_steps
+                else "investigate"
+            )
+        )
 
     meta = dict(project.meta) if isinstance(project.meta, dict) else {}
     project.meta = write_ops_telemetry(meta, report)

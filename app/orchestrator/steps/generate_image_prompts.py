@@ -63,7 +63,14 @@ async def _finish_success(
 
     from app.services.agent_harness import harness_gate_or_raise
 
-    await harness_gate_or_raise(session, project, step="img_pr")
+    try:
+        await harness_gate_or_raise(session, project, step="img_pr")
+    except Exception:
+        # Гейт упал — статус ready уже закоммичен; откатываем, иначе
+        # auto_advance увидит «ready» при фактически плохих данных.
+        project.status = ProjectStatus.generating_image_prompts
+        await session.commit()
+        raise
     await session.commit()
 
     from app.services import img_pr_batches as ipb

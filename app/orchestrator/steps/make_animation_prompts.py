@@ -234,6 +234,19 @@ async def fill_animation_prompts(
             project.status.value,
         )
         await session.flush()
+        if finalize_status:
+            # Early-exit тоже проходит гейт (commit нужен: harness читает БД
+            # отдельным соединением). При провале — статус назад, не ready.
+            await session.commit()
+            from app.services.agent_harness import harness_gate_or_raise
+
+            try:
+                await harness_gate_or_raise(session, project, step="anim_pr")
+            except Exception:
+                project.status = ProjectStatus.generating_animation_prompts
+                await session.commit()
+                raise
+            await session.commit()
         return stats
 
     logger.info(
@@ -488,7 +501,13 @@ async def fill_animation_prompts(
     await session.commit()
     from app.services.agent_harness import harness_gate_or_raise
 
-    await harness_gate_or_raise(session, project, step="anim_pr")
+    try:
+        await harness_gate_or_raise(session, project, step="anim_pr")
+    except Exception:
+        # Не оставляем animation_prompts_ready при провале гейта.
+        project.status = ProjectStatus.generating_animation_prompts
+        await session.commit()
+        raise
     await session.commit()  # ops-телеметрия в project.meta
     return stats
 
