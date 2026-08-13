@@ -328,6 +328,55 @@ def test_anchor_not_in_vo() -> None:
     assert any("якорь" in g["проблема"] for g in gaps)
 
 
+def test_skeleton_vo_frames_skips_empty() -> None:
+    frames = [
+        _fr(1, "есть текст"),
+        _fr(2, ""),
+        _fr(3, "   "),
+        _fr(4, "ещё текст"),
+    ]
+    vos = sk.skeleton_vo_frames(frames)
+    assert [int(f.number) for f in vos] == [1, 4]
+
+
+def test_timing_gap_skipped_for_empty_vo() -> None:
+    """Пустой закадр + duration из БД не должен давать тайминг-разрыв."""
+    frames = [_fr(1, "Павел открыл мастерскую"), _fr(2, "")]
+    frames[1].duration_seconds = 2.5
+    draft = {
+        "scenes": [
+            {
+                "id_scene": "scene_01",
+                "кадры": [1],
+                "связь_с_прошлой": {"тип": "начало"},
+                "суть": "открыл",
+                "главное": {
+                    "тип": "действие",
+                    "глагол": "открыл",
+                    "якорь_в_кадрах": "открыл мастерскую",
+                },
+                "биты": [],
+                "персонажи": [],
+                "длительность_сек": round(len("Павел открыл мастерскую") / 14.0, 1),
+            },
+            {
+                "id_scene": "scene_02",
+                "кадры": [2],
+                "связь_с_прошлой": {"тип": "продолжение"},
+                "суть": "",
+                "главное": {},
+                "биты": [],
+                "персонажи": [],
+                "длительность_сек": 2.5,
+            },
+        ],
+        "characters_seed": [],
+        "locations_seed": [],
+    }
+    gaps = sk.validate_skeleton(draft, frames, "Павел открыл мастерскую")
+    assert not any("тайминг" in g["проблема"] for g in gaps)
+
+
 def test_normalize_cells_to_scenes() -> None:
     draft = {
         "cells": [

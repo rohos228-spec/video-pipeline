@@ -330,6 +330,21 @@ def _significant_tokens(text: str) -> set[str]:
     return {t for t in toks if t not in _STOP_TOKENS}
 
 
+def skeleton_vo_frames(frames: list[Frame]) -> list[Frame]:
+    """Только ячейки с непустым закадром — закон покрытия скелета V3.
+
+    После split/camera_expand в таблице часто лежат пустые SET-слоты с
+    ``duration_seconds`` из БД; их нельзя требовать как карточки скелета
+    (тайминг vo≈0 vs кадры≈2.5с → вечные 15 gaps).
+    """
+    out = [
+        fr
+        for fr in frames
+        if (getattr(fr, "voiceover_text", None) or "").strip()
+    ]
+    return out or list(frames)
+
+
 def _vo_by_frame(frames: list[Frame]) -> dict[int, str]:
     out: dict[int, str] = {}
     for fr in frames:
@@ -683,6 +698,9 @@ def validate_skeleton(
         except (TypeError, ValueError):
             claimed_sec = 0.0
         frame_sec = sum(sec_map.get(n, 0.0) for n in nums)
+        # Пустой закадр (SET-слот) — не тайминг-разрыв; скелет их не размечает.
+        if vo_len <= 0:
+            continue
         # Сравниваем сумму длительностей кадров (SoT) с vo/rate; заявленное поле — справка
         base = frame_sec if frame_sec > 0 else vo_sec
         if base <= 0:
@@ -1376,8 +1394,18 @@ async def run_skeleton(
         logger.info("[#{}] skeleton: checkpoint hit — GPT skip", project.id)
         return cached
 
-    context = context_builder.build_shared_context(project, frames)
-    full_vo = context_builder.full_voiceover(project, frames)
+    # Контекст и покрытие — только непустые VO-ячейки (не SET-пустышки).
+    vo_frames = skeleton_vo_frames(frames)
+    if len(vo_frames) != len(frames):
+        logger.info(
+            "[#{}] skeleton: VO-ячейки {}/{} (пустые слоты вне покрытия)",
+            project.id,
+            len(vo_frames),
+            len(frames),
+        )
+
+    context = context_builder.build_shared_context(project, vo_frames)
+    full_vo = context_builder.full_voiceover(project, vo_frames)
     timeout = float(getattr(settings, "scene_design_agent_attempt_timeout_s", 280.0) or 280.0)
 
     draft_prompt = ag.load_prompt(ag.SKELETON, project)
@@ -1385,10 +1413,10 @@ async def run_skeleton(
     draft_raw = await _gpt(draft_prompt, context, project=project, timeout=timeout)
     draft = ag.parse_agent_slice(ag.SKELETON, draft_raw, validate=False)
     normalize_skeleton_draft(draft)
-    explode_glued_vo_scenes(draft, frames)
+    explode_glued_vo_scenes(draft, vo_frames)
     heal_open_threads(draft)
     # coverage soft — полная матрица в validate_skeleton
-    gaps = validate_skeleton(draft, frames, full_vo)
+    gaps = validate_skeleton(draft, vo_frames, full_vo)
     if not gaps:
         logger.info("[#{}] skeleton: draft ok (gaps=0)", project.id)
     else:
@@ -1410,9 +1438,9 @@ async def run_skeleton(
             )
             edited = _parse_editor_reply(reply)
             draft = merge_by_id(draft, edited)
-            explode_glued_vo_scenes(draft, frames)
+            explode_glued_vo_scenes(draft, vo_frames)
             heal_open_threads(draft)
-            gaps = validate_skeleton(draft, frames, full_vo)
+            gaps = validate_skeleton(draft, vo_frames, full_vo)
             if not gaps:
                 logger.info(
                     "[#{}] skeleton: editor round {} fixed all",
@@ -1430,7 +1458,7 @@ async def run_skeleton(
             raise RuntimeError(format_gaps_error(gaps))
 
     # финальная coverage на всякий случай
-    expect = [int(fr.number) for fr in frames if fr.number is not None]
+    expect = [int(fr.number) for fr in vo_frames if fr.number is not None]
     validate_skeleton_coverage(draft.get("scenes") or [], expect)
 
     stats = await store_skeleton_cells(session, project, draft, full_vo)
