@@ -101,6 +101,17 @@ ERROR_CATALOG: dict[str, ErrorSpec] = {
     "file_missing": ErrorSpec("file_missing", "Нет входного файла", "Проверь входы ноды/стрелки."),
     "xlsx_invalid": ErrorSpec("xlsx_invalid", "Некорректный xlsx", "Структура листов не совпадает."),
     "xlsx_corrupt": ErrorSpec("xlsx_corrupt", "Битый xlsx", "Файл не открывается — восстанови."),
+    # ── apply-ops (запись ответа модели в БД: enrich_xlsx / anim_pr / scene) ──
+    "apply_ops_unknown_uuid": ErrorSpec(
+        "apply_ops_unknown_uuid",
+        "Apply-ops: неизвестные frame_uuid",
+        "Модель вернула uuid кадров, которых нет в проекте — проверь промт/реестр кадров.",
+    ),
+    "apply_ops_rejected": ErrorSpec(
+        "apply_ops_rejected",
+        "Apply-ops отклонён",
+        "Ответ модели не прошёл валидацию apply-ops — см. детали в ошибке.",
+    ),
     "download_failed": ErrorSpec("download_failed", "Ошибка скачивания", "Контент по ссылке недоступен."),
     "copy_failed": ErrorSpec("copy_failed", "Ошибка копирования", "Источник не найден."),
     # ── Проверочные ноды (vp.check.v1) ──
@@ -175,6 +186,16 @@ def _match_code(exc: Exception) -> str:  # noqa: C901
         return "infra_db_locked"
     if name in ("FileNotFoundError",) or "нет файл" in low or "не найден" in low:
         return "file_missing"
+    # apply-ops сбои (enrich_xlsx / anim_pr / scene apply) — строго ДО catch-all
+    # "xlsx" ниже: «enrich_xlsx … apply-ops отклонён: неизвестные frame_uuid»
+    # содержит "xlsx" и раньше ошибочно метился xlsx_invalid.
+    if (
+        "неизвестные frame_uuid" in low
+        or (("apply-ops" in low or "apply_ops" in low) and "frame_uuid" in low)
+    ):
+        return "apply_ops_unknown_uuid"
+    if "apply-ops отклонён" in low or "apply_ops отклонён" in low:
+        return "apply_ops_rejected"
     if "xlsx-sync" in low or "xlsx" in low:
         if "corrupt" in low or "не открыв" in low:
             return "xlsx_corrupt"

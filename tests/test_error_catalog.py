@@ -50,3 +50,40 @@ def test_message_format_prefixed() -> None:
 def test_all_codes_listed() -> None:
     codes = all_error_codes()
     assert "gpt_timeout" in codes and "media_download" in codes and "unknown" in codes
+
+
+def test_apply_ops_unknown_uuid_not_xlsx_invalid() -> None:
+    """Прод-инцидент: enrich_xlsx + «неизвестные frame_uuid» — это НЕ xlsx_invalid."""
+    exc = RuntimeError(
+        "enrich_xlsx node=n_excel_gpt_2: apply-ops отклонён: "
+        "неизвестные frame_uuid: ['140c5a40-1111-2222-3333-444455556666']"
+    )
+    code, msg = describe_error(exc)
+    assert code == "apply_ops_unknown_uuid"
+    assert code != "xlsx_invalid"
+    assert "frame_uuid" in msg
+
+
+def test_apply_ops_unknown_uuid_direct_error() -> None:
+    """Голый ApplyOpsError из db_apply (без обёртки enrich_xlsx) → тот же код."""
+    assert describe_error(ValueError("неизвестные frame_uuid: ['abc']"))[0] == (
+        "apply_ops_unknown_uuid"
+    )
+    assert describe_error(RuntimeError("anim_pr apply_ops отклонён: bad frame_uuid x1"))[0] == (
+        "apply_ops_unknown_uuid"
+    )
+
+
+def test_apply_ops_rejected_generic() -> None:
+    """Прочие apply-ops отказы не должны проваливаться в xlsx_invalid."""
+    exc = RuntimeError("enrich_xlsx node=n1: apply-ops отклонён: scenes: нужен id_scene")
+    assert describe_error(exc)[0] == "apply_ops_rejected"
+
+
+def test_plain_xlsx_errors_unchanged() -> None:
+    assert describe_error(RuntimeError("project.xlsx: неверная структура листов"))[0] == (
+        "xlsx_invalid"
+    )
+    assert describe_error(RuntimeError("xlsx corrupt: не открывается архив"))[0] == (
+        "xlsx_corrupt"
+    )

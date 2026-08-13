@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -425,6 +425,184 @@ PROMPT_SOURCE_LABELS: dict[str, str] = {
 }
 
 
+# ── Guard «промт ↔ проект» ─────────────────────────────────────
+# Серийный тег: буквы+цифры слитно (PSYCO5459, 25PSYCO, psyco5459 в slug).
+# Инцидент: excel_gpt на проекте PSYCO5459 подхватил legacy-промт
+# «1-25PSYCO_29.07» (чужая серия) вместо «PSYCO5459_29.07_db».
+_SERIES_TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё]{2,}\d+|\d+[A-Za-zА-Яа-яЁё]{2,}\d*")
+_UPPERCASE_RE = re.compile(r"[A-ZА-ЯЁ]")
+_PROJECT_TOKEN_META_KEYS = ("series", "series_tag", "project_tag", "project_token", "tag")
+# Сколько последних предупреждений хранить в project.meta.
+_PROMPT_BINDING_WARNINGS_LIMIT = 50
+
+
+def _extract_series_tokens(text: str | None, *, require_upper: bool) -> list[str]:
+    """Нормализованные (UPPER) серийные теги из строки, в порядке появления.
+
+    ``require_upper=True`` — для имён вариантов: серийный тег пишут капсом,
+    строчные слова с цифрами (agent_54_59, v2) тегами не считаются.
+    """
+    if not text:
+        return []
+    out: list[str] = []
+    for m in _SERIES_TOKEN_RE.finditer(str(text)):
+        raw = m.group(0)
+        if require_upper and not _UPPERCASE_RE.search(raw):
+            continue
+        tok = raw.upper()
+        if tok not in out:
+            out.append(tok)
+    return out
+
+
+def _project_series_token(project) -> str | None:
+    """Серийный тег проекта из title/name/slug/meta (самый длинный из найденных)."""
+    candidates: list[str] = []
+    for attr in ("title", "name", "slug"):
+        value = getattr(project, attr, None)
+        if isinstance(value, str) and value.strip():
+            candidates.append(value)
+    meta = getattr(project, "meta", None)
+    if isinstance(meta, dict):
+        for key in _PROJECT_TOKEN_META_KEYS:
+            value = meta.get(key)
+            if isinstance(value, str) and value.strip():
+                candidates.append(value)
+    tokens: list[str] = []
+    for text in candidates:
+        tokens.extend(_extract_series_tokens(text, require_upper=False))
+    if not tokens:
+        return None
+    return max(tokens, key=len)
+
+
+def _series_alpha_base(token: str) -> str:
+    return re.sub(r"\d+", "", token)
+
+
+def _series_digit_run(token: str) -> str:
+    return "".join(re.findall(r"\d+", token))
+
+
+def _series_tokens_similar(a: str, b: str) -> bool:
+    """Похожие, но РАЗНЫЕ теги: та же буквенная база (25PSYCO vs PSYCO5459)
+    или тот же числовой ряд при другой базе (TREVOR5459 vs PSYCO5459)."""
+    if _series_alpha_base(a) == _series_alpha_base(b):
+        return True
+    da, db = _series_digit_run(a), _series_digit_run(b)
+    return bool(da) and da == db
+
+
+def validate_prompt_project_binding(project, variant_name: str, *, node_key: str | None = None) -> str | None:
+    """Предупреждение, если вариант промта похож на чужой проект; иначе None.
+
+    Эвристика (не блокирует резолв): у проекта извлекается серийный тег
+    (title/slug/meta, напр. PSYCO5459). Если в имени варианта есть ДРУГОЙ
+    похожий тег (25PSYCO, PSYCO1 — та же база, другое число; TREVOR5459 —
+    то же число, другая база) — вариант, скорее всего, от соседнего проекта
+    серии. Тег проекта не извлекается → None (нет мнения).
+    """
+    token = _project_series_token(project)
+    if not token:
+        return None
+    for vt in _extract_series_tokens(variant_name, require_upper=True):
+        if vt == token:
+            continue
+        if _series_tokens_similar(vt, token):
+            node_part = f" node={node_key}" if node_key else ""
+            return (
+                f"variant {variant_name!r}{node_part} несёт чужой серийный "
+                f"тег {vt!r} (тег проекта {token!r})"
+            )
+    return None
+
+
+def _has_explicit_slot_binding(meta: dict | None, node_key: str | None, variant_name: str) -> bool:
+    """meta.prompt_slot_variants[node_key] явно привязывает ноду к variant_name.
+
+    Явная привязка всегда побеждает молча — оператор сам выбрал этот промт.
+    """
+    if not node_key or not isinstance(meta, dict):
+        return False
+    slot_variants = meta.get("prompt_slot_variants")
+    if not isinstance(slot_variants, dict):
+        return False
+    node_slots = slot_variants.get(node_key)
+    if not isinstance(node_slots, dict):
+        return False
+    target = _clean_variant_name(str(variant_name or ""))
+    if not target:
+        return False
+    return any(
+        _clean_variant_name(str(raw or "")) == target for raw in node_slots.values()
+    )
+
+
+def _record_prompt_binding_warning(project, entry: dict) -> None:
+    """Дописать запись в meta['prompt_binding_warnings'] (dedupe по step/node/variant).
+
+    Перезапись project.meta новым dict — чтобы SQLAlchemy пометил поле dirty
+    (in-place мутация JSON-колонки без MutableDict не отслеживается).
+    """
+    meta = getattr(project, "meta", None)
+    if not isinstance(meta, dict):
+        return
+    raw = meta.get("prompt_binding_warnings")
+    warnings = [w for w in raw if isinstance(w, dict)] if isinstance(raw, list) else []
+    key = (entry.get("step"), entry.get("node_key"), entry.get("variant"))
+    for i, w in enumerate(warnings):
+        if (w.get("step"), w.get("node_key"), w.get("variant")) == key:
+            warnings[i] = entry
+            break
+    else:
+        warnings.append(entry)
+    meta["prompt_binding_warnings"] = warnings[-_PROMPT_BINDING_WARNINGS_LIMIT:]
+    project.meta = dict(meta)
+
+
+def _guard_prompt_project_binding(
+    project,
+    step_code: str,
+    variant_name: str,
+    source: str,
+    *,
+    meta: dict | None = None,
+    node_key: str | None = None,
+) -> str | None:
+    """Лог + запись в meta при подозрении на чужой промт. Никогда не ломает резолв."""
+    try:
+        if _has_explicit_slot_binding(meta, node_key, variant_name):
+            return None
+        warning = validate_prompt_project_binding(project, variant_name, node_key=node_key)
+        if not warning:
+            return None
+        logger.warning(
+            "PROMPT_BINDING_MISMATCH [#{}] step={} source={} variant={!r}: {}",
+            getattr(project, "id", None) or "?",
+            step_code,
+            source,
+            variant_name,
+            warning,
+        )
+        _record_prompt_binding_warning(
+            project,
+            {
+                "at": datetime.now(UTC).isoformat(),
+                "kind": "prompt_binding_mismatch",
+                "step": step_code,
+                "node_key": node_key,
+                "variant": variant_name,
+                "source": source,
+                "project_token": _project_series_token(project),
+                "warning": warning,
+            },
+        )
+        return warning
+    except Exception:  # noqa: BLE001 — guard не имеет права ронять шаг
+        logger.opt(exception=True).debug("prompt binding guard failed")
+        return None
+
+
 def resolve_project_prompt_with_source(
     overrides: dict | None,
     step_code: str,
@@ -523,6 +701,9 @@ def read_resolved_project_prompt(
     meta = getattr(project, "meta", None) or {}
     name, source = resolve_project_prompt_with_source(
         overrides, step_code, meta=meta, node_key=node_key, slot_id=slot_id
+    )
+    _guard_prompt_project_binding(
+        project, step_code, name, source, meta=meta, node_key=node_key
     )
     path = prompt_path(step_code, name)
     text = read_prompt(step_code, name)
