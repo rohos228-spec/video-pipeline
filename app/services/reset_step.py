@@ -358,6 +358,8 @@ async def _wipe_hero(session: AsyncSession, project: Project) -> dict[str, Any]:
     их юзер вводил руками; повторный запуск шага сгенерит ИЗ ЭТИХ ЖЕ
     описаний. HITL approve_hero сбрасываем — иначе после wipe batch
     считает персонажей «одобренными» без файлов и крутит missing-ref цикл.
+    PromptVersion kind=hero деактивируем (строки-история остаются) — иначе
+    База-workspace продолжит показывать протухший hero-промт без файлов.
     """
     from app.models import HITLDecision, HITLKind, HITLRequest
 
@@ -378,6 +380,11 @@ async def _wipe_hero(session: AsyncSession, project: Project) -> dict[str, Any]:
             r.decision = HITLDecision.pending
             cleared += 1
     details["hitl_hero_reset"] = cleared
+    from app.services.db_v2 import deactivate_prompt_versions
+
+    details["prompt_versions_deactivated"] = await deactivate_prompt_versions(
+        session, project.id, kind="hero"
+    )
     return details
 
 
@@ -484,13 +491,13 @@ async def _wipe_img_pr(session: AsyncSession, project: Project) -> dict[str, Any
         if fr.status is FrameStatus.image_prompt_ready:
             fr.status = FrameStatus.planned
             status_reset += 1
-    xlsx_cleared = 0
-    try:
-        from app.storage.plan_sheet_v8 import clear_plan_image_prompts
+    # Excel-зеркало чистим строго: сбой = wipe отменяется целиком (raise),
+    # иначе stale R45/R46 воскресят промты на следующем sync (13.08, #14).
+    from app.storage.plan_sheet_v8 import clear_plan_image_prompts
 
-        xlsx_cleared = clear_plan_image_prompts(project, frame_numbers)
-    except Exception:  # noqa: BLE001
-        pass
+    xlsx_cleared = clear_plan_image_prompts(
+        project, frame_numbers, raise_on_error=True
+    )
     try:
         from app.services.img_pr_batches import clear_checkpoint
 
@@ -684,13 +691,12 @@ async def _wipe_anim_pr(session: AsyncSession, project: Project) -> dict[str, An
         if fr.status is FrameStatus.animation_prompt_ready:
             fr.status = FrameStatus.image_approved
             status_reset += 1
-    xlsx_cleared = 0
-    try:
-        from app.storage.plan_sheet_v8 import clear_plan_animation_prompts
+    # Как и в _wipe_img_pr: сбой очистки Excel-зеркала валит весь wipe.
+    from app.storage.plan_sheet_v8 import clear_plan_animation_prompts
 
-        xlsx_cleared = clear_plan_animation_prompts(project, frame_numbers)
-    except Exception:  # noqa: BLE001
-        pass
+    xlsx_cleared = clear_plan_animation_prompts(
+        project, frame_numbers, raise_on_error=True
+    )
     from app.services.db_v2 import deactivate_prompt_versions
 
     pv_deactivated = await deactivate_prompt_versions(session, project.id, kind="video")

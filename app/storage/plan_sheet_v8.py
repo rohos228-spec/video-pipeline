@@ -643,8 +643,17 @@ def merge_gpt_image_prompt_rows_into_project(
     return n45, n46
 
 
-def clear_plan_image_prompts(project: Project, frame_numbers: list[int]) -> int:
-    """Обнулить R45/R46, чтобы xlsx→DB sync не вернул старые промты после wipe."""
+def clear_plan_image_prompts(
+    project: Project,
+    frame_numbers: list[int],
+    *,
+    raise_on_error: bool = False,
+) -> int:
+    """Обнулить R45/R46, чтобы xlsx→DB sync не вернул старые промты после wipe.
+
+    ``raise_on_error=True`` — для wipe: залоченный/битый xlsx обязан
+    завалить wipe целиком, иначе stale-ячейки воскресят промты обратно.
+    """
     if not frame_numbers:
         return 0
     path = project.data_dir / "project.xlsx"
@@ -676,6 +685,11 @@ def clear_plan_image_prompts(project: Project, frame_numbers: list[int]) -> int:
             project.id,
             e,
         )
+        if raise_on_error:
+            raise RuntimeError(
+                f"не удалось очистить R45/R46 в project.xlsx: {e}. "
+                "Wipe отменён — иначе stale Excel воскресит промты."
+            ) from e
         return 0
     if cleared:
         logger.info(
@@ -864,8 +878,17 @@ def write_plan_animation_prompt(
         return False
 
 
-def clear_plan_animation_prompts(project: Project, frame_numbers: list[int]) -> int:
-    """Очистить R48 (и R64 shot2) для кадров — ручной ▶ anim_pr с заменой."""
+def clear_plan_animation_prompts(
+    project: Project,
+    frame_numbers: list[int],
+    *,
+    raise_on_error: bool = False,
+) -> int:
+    """Очистить R48 (и R64 shot2) для кадров — ручной ▶ anim_pr с заменой.
+
+    ``raise_on_error=True`` — для wipe: сбой записи xlsx валит wipe,
+    иначе stale R48/R64 воскресят animation_prompt обратно.
+    """
     path = project.data_dir / "project.xlsx"
     if not path.exists() or not frame_numbers:
         return 0
@@ -892,6 +915,11 @@ def clear_plan_animation_prompts(project: Project, frame_numbers: list[int]) -> 
             project.id,
             e,
         )
+        if raise_on_error:
+            raise RuntimeError(
+                f"не удалось очистить R48/R64 в project.xlsx: {e}. "
+                "Wipe отменён — иначе stale Excel воскресит промты."
+            ) from e
         return 0
     if cleared:
         logger.info(

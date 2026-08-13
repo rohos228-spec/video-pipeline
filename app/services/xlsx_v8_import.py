@@ -821,19 +821,27 @@ async def import_v8_xlsx(
                 if update_frames_voiceover and fr.voiceover_text != cell:
                     fr.voiceover_text = cell
                     changed = True
-                # ROOT FIX: подтягиваем image_prompt / animation_prompt из v8.
-                # Перезаписываем только когда в xlsx есть непустое значение и
-                # оно отличается от текущего — чтобы случайно очищенная ячейка
-                # не стёрла GPT-промт в БД.
+                # DB — SoT, xlsx — зеркало: промты подтягиваем ТОЛЬКО в
+                # пустые поля (bootstrap легаси). Непустая ячейка больше
+                # не перетирает непустую БД — иначе stale-зеркало воскрешало
+                # старые промты поверх свежих (13.08, #14). Осознанный
+                # возврат из Excel — wipe шага + sync, не молчаливый импорт.
+                prompt_conflicts: list[int] = summary.setdefault(
+                    "prompt_conflicts", []
+                )
                 new_imgp = fields.get("image_prompt")
-                if new_imgp and new_imgp != fr.image_prompt:
+                if new_imgp and not (fr.image_prompt or "").strip():
                     fr.image_prompt = new_imgp
                     changed = True
                     prompts_synced.append(i)
+                elif new_imgp and new_imgp != fr.image_prompt:
+                    prompt_conflicts.append(i)
                 new_animp = fields.get("animation_prompt")
-                if new_animp and new_animp != fr.animation_prompt:
+                if new_animp and not (fr.animation_prompt or "").strip():
                     fr.animation_prompt = new_animp
                     changed = True
+                elif new_animp and new_animp != fr.animation_prompt:
+                    prompt_conflicts.append(i)
                 new_dur = fields.get("duration_seconds")
                 if new_dur is not None and abs((fr.duration_seconds or 0.0) - new_dur) > 0.01:
                     fr.duration_seconds = new_dur
@@ -857,6 +865,12 @@ async def import_v8_xlsx(
             logger.info(
                 "[#{}] xlsx-v8→DB: обновлено {} Frame'ов (v8-поля)",
                 project.id, len(summary["frames_updated"]),
+            )
+        if summary.get("prompt_conflicts"):
+            logger.warning(
+                "[#{}] xlsx-v8→DB: Excel расходится с БД по промтам кадров {} "
+                "— БД (SoT) оставлена, зеркало не перетирает",
+                project.id, summary["prompt_conflicts"],
             )
 
     await session.flush()
