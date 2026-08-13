@@ -1364,6 +1364,13 @@ async def chat(
         }
     if temperature is not None:
         body["temperature"] = temperature
+    # Короче ответ → меньше шанс, что Cloudflare оборвёт SSE на kie.
+    max_out = int(getattr(settings, "gpt_max_output_tokens", 0) or 0)
+    if max_out > 0:
+        if responses_mode:
+            body["max_output_tokens"] = max_out
+        else:
+            body["max_tokens"] = max_out
 
     attempt = 0
     last_exc: Exception | None = None
@@ -1403,6 +1410,8 @@ async def chat(
                         ],
                         "stream": True,
                     }
+                    if max_out > 0:
+                        cont_body["max_output_tokens"] = max_out
                     if temperature is not None:
                         cont_body["temperature"] = temperature
                     logger.warning(

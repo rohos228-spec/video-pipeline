@@ -118,6 +118,9 @@ class Settings(BaseSettings):
     gpt_api_mode: str = Field("auto", alias="GPT_API_MODE")
     gpt_timeout_s: float = Field(600.0, alias="GPT_TIMEOUT_S")
     gpt_max_retries: int = Field(4, alias="GPT_MAX_RETRIES")
+    # Потолок ответа (Responses: max_output_tokens). 0 = не слать (полный 128k —
+    # на kie/CF длинный SSE часто рвётся). 8–12k → короткие ответы + батчи/добор.
+    gpt_max_output_tokens: int = Field(8192, alias="GPT_MAX_OUTPUT_TOKENS")
 
     def resolved_text_llm_provider(self) -> str:
         """Активный текстовый провайдер: kie (GPT) | tokenrouter (Kimi).
@@ -277,12 +280,12 @@ class Settings(BaseSettings):
     # Сборка: сколько Frame-строк пайплайна в одном GPT-запросе (чанк).
     # 0 / 1 = один запрос на весь ролик (старое поведение, легко ловит 524).
     scene_design_assemble_chunk_frames: int = Field(
-        10, alias="SCENE_DESIGN_ASSEMBLE_CHUNK_FRAMES"
+        8, alias="SCENE_DESIGN_ASSEMBLE_CHUNK_FRAMES"
     )
     # action/camera: сразу режем на куски ≤N кадров (не жечь 5 мин на 524).
     # 0 = старое: сначала полный запрос, дробим только после 524.
     scene_design_agent_chunk_frames: int = Field(
-        10, alias="SCENE_DESIGN_AGENT_CHUNK_FRAMES"
+        8, alias="SCENE_DESIGN_AGENT_CHUNK_FRAMES"
     )
     # Сколько кусков action/camera одновременно (kie).
     scene_design_agent_chunk_parallel: int = Field(

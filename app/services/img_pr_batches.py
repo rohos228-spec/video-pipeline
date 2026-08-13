@@ -14,8 +14,9 @@ from typing import Any
 from app.services.db_apply import extract_apply_ops_json
 from app.services.img_pr_style import wrap_ops_styles
 
-# Меньше кадров → меньше битого JSON (лишние } / персонажи вне fields).
-_FRAMES_PER_BATCH = 25
+# Меньше кадров → ответ короче → реже рвёт Cloudflare на kie.
+# 25 давало огромный JSON и обрывы; 12 стабильнее (добор/volume добьёт).
+_FRAMES_PER_BATCH = 12
 _CHECKPOINT_NAME = "img_pr_checkpoint.json"
 _GPT_ATTEMPTS = 3
 
