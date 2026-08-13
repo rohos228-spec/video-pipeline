@@ -22,8 +22,21 @@ from app.services.volume_batches import (
 def test_inferred_batch_size_80pct() -> None:
     assert inferred_batch_size(10) == 8
     assert inferred_batch_size(25) == 20
-    assert inferred_batch_size(1) == 1
-    assert inferred_batch_size(0) == 1
+    assert inferred_batch_size(1) == 8
+    assert inferred_batch_size(0) == 8
+
+
+def test_tiny_delivery_does_not_become_onesie() -> None:
+    # delivered=1 must not be trusted as capacity → floor 8, not 24 onesies.
+    parts = plan_remainder_batches(list(range(24)), delivered=1)
+    assert all(len(p) >= 8 for p in parts)
+    assert len(parts) <= 3
+    assert [x for p in parts for x in p] == list(range(24))
+
+
+def test_last_remainder_chunk_may_be_short() -> None:
+    parts = plan_remainder_batches(list(range(11)), delivered=1)
+    assert [len(p) for p in parts] == [8, 3]
 
 
 def test_plan_remainder_smaller_than_delivered_one_batch() -> None:

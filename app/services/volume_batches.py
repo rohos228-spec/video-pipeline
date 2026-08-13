@@ -5,7 +5,9 @@
 
 - остаток ≤ delivered → один доборный запрос на весь остаток;
 - остаток > delivered → нарезать пачками ≈ ``ratio`` (по умолчанию 80%)
-  от ``delivered``.
+  от ``delivered``, но не меньше ``MIN_CONTINUE_SIZE`` (8). Tiny
+  delivered (0/1) is not capacity — continue never becomes onesie.
+  Last remainder slice may be shorter than 8.
 
 Общий добор apply-ops (все ноды через ``gpt_api.chat``):
 ``volume_complete_apply_ops_reply``.
@@ -23,17 +25,27 @@ from loguru import logger
 T = TypeVar("T")
 
 DEFAULT_VOLUME_RATIO = 0.8
+MIN_CONTINUE_SIZE = 8
 _DB_FRAMES_NAME_RE = re.compile(r"^db_frames", re.IGNORECASE)
 
 
 def inferred_batch_size(
-    delivered: int, *, ratio: float = DEFAULT_VOLUME_RATIO
+    delivered: int,
+    *,
+    ratio: float = DEFAULT_VOLUME_RATIO,
+    min_size: int = MIN_CONTINUE_SIZE,
 ) -> int:
-    """Размер следующих пачек ≈ ratio от того, что реально доехало."""
-    if delivered < 1:
-        return 1
+    """Размер следующих пачек ≈ ratio от того, что реально доехало.
+
+    Tiny ``delivered`` (0, 1, … < min_size) is not capacity — floor at
+    ``min_size`` so continue never becomes onesie GPT calls.
+    """
+    floor = max(1, int(min_size))
+    got = int(delivered)
+    if got < floor:
+        return floor
     r = float(ratio) if ratio and ratio > 0 else DEFAULT_VOLUME_RATIO
-    return max(1, int(delivered * r))
+    return max(floor, int(got * r))
 
 
 def plan_remainder_batches(
@@ -41,21 +53,33 @@ def plan_remainder_batches(
     *,
     delivered: int,
     ratio: float = DEFAULT_VOLUME_RATIO,
+    min_size: int = MIN_CONTINUE_SIZE,
 ) -> list[list[T]]:
     """План добора после частичного ответа ноды.
 
     ``remaining`` — единицы, которые ещё не покрыты этим запросом.
+    Last slice may be shorter than ``min_size`` (do not pad a tail of 3 to 8).
     """
     items = list(remaining)
     if not items:
         return []
-    if delivered < 1:
-        # Нет сигнала по ёмкости — один повтор всего остатка (решает caller).
-        return [items]
     if len(items) <= delivered:
         return [items]
-    size = inferred_batch_size(delivered, ratio=ratio)
+    size = inferred_batch_size(delivered, ratio=ratio, min_size=min_size)
     return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def repartition_remaining(
+    remaining: Sequence[T],
+    delivered: int,
+    *,
+    min_size: int = MIN_CONTINUE_SIZE,
+    ratio: float = DEFAULT_VOLUME_RATIO,
+) -> list[list[T]]:
+    """Alias for continue-queue rechunk after a tiny partial delivery."""
+    return plan_remainder_batches(
+        remaining, delivered=delivered, ratio=ratio, min_size=min_size
+    )
 
 
 def rechunk_tail(

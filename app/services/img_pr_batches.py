@@ -7,15 +7,21 @@ STYLE LOCK вшивает пайплайн (`img_pr_style`) — GPT пишет �
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence, TypeVar
 
 from app.services.db_apply import extract_apply_ops_json
 from app.services.img_pr_style import wrap_ops_styles
+from app.services.volume_batches import (
+    MIN_CONTINUE_SIZE,
+    plan_remainder_batches,
+)
 
-# Меньше кадров → меньше битого JSON (лишние } / персонажи вне fields).
+# Fallback only when caller omits size (xlsx uses plan_batch_size).
 _FRAMES_PER_BATCH = 25
+_T = TypeVar("_T")
 _CHECKPOINT_NAME = "img_pr_checkpoint.json"
 _GPT_ATTEMPTS = 3
 
@@ -137,10 +143,51 @@ def batch_attach_files(
     return files
 
 
+def plan_batch_size(
+    n_frames: int,
+    *,
+    target_batches: int = 3,
+    min_size: int = MIN_CONTINUE_SIZE,
+    max_size: int = 40,
+) -> int:
+    """Initial img_pr chunk size: aim for ``target_batches`` (110 → 37 → 3).
+
+    ``n_frames <= min_size`` → one batch (return n, not a split below floor).
+    ``max_size`` is a soft cap: exceeded when needed to keep ~target batches
+    (199 → ~67 × 3, not 40 × 5).
+    """
+    n = int(n_frames)
+    tb = max(1, int(target_batches))
+    mn = max(1, int(min_size))
+    mx = max(mn, int(max_size))
+    if n <= 0:
+        return mn
+    if n <= mn:
+        return n
+    size = max(mn, math.ceil(n / tb))
+    capped = min(size, mx)
+    # Clamp to max_size only when that still yields <= target_batches.
+    if math.ceil(n / capped) <= tb:
+        return max(mn, capped)
+    return size
+
+
 def chunk_frames(frames: list[Any], *, size: int = _FRAMES_PER_BATCH) -> list[list[Any]]:
     if size < 1:
         size = _FRAMES_PER_BATCH
     return [frames[i : i + size] for i in range(0, len(frames), size)]
+
+
+def repartition_remaining(
+    remaining: Sequence[_T],
+    delivered: int,
+    *,
+    min_size: int = MIN_CONTINUE_SIZE,
+) -> list[list[_T]]:
+    """Rechunk leftover frames after a partial batch; never continue by onesie."""
+    return plan_remainder_batches(
+        remaining, delivered=delivered, min_size=min_size
+    )
 
 
 _PROMPT_FIELD_KEYS = (

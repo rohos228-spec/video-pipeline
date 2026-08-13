@@ -761,7 +761,7 @@ async def run_img_pr_xlsx(
         rechunk_tail,
     )
 
-    batch_size = ipb._FRAMES_PER_BATCH
+    batch_size = ipb.plan_batch_size(len(frames))
     work: deque[list] = deque(ipb.chunk_frames(frames, size=batch_size))
     logger.info(
         "img_pr_db: ONE session + ~{} batches×~{} (frames={} checkpoint_done={})",

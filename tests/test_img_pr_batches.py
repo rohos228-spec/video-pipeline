@@ -56,11 +56,32 @@ def test_wrap_does_not_add_watercolor_over_clay() -> None:
     assert "Archival Noir" not in wrapped
 
 
-def test_199_frames_batch_count_under_ten() -> None:
-    chunks = ipb.chunk_frames(list(range(199)))
-    assert len(chunks) == 8  # 25/batch
-    assert all(len(c) <= 25 for c in chunks)
-    assert len(chunks) < 12
+def test_plan_batch_size_110_is_three() -> None:
+    size = ipb.plan_batch_size(110)
+    chunks = ipb.chunk_frames(list(range(110)), size=size)
+    assert len(chunks) == 3
+    assert all(len(c) >= 36 for c in chunks)
+
+
+def test_tiny_delivery_does_not_become_onesie() -> None:
+    rest = list(range(24))
+    chunks = ipb.repartition_remaining(rest, delivered=1, min_size=8)
+    assert all(len(c) >= 8 for c in chunks)
+    assert len(chunks) <= 3
+
+
+def test_199_frames_three_batches() -> None:
+    size = ipb.plan_batch_size(199)
+    chunks = ipb.chunk_frames(list(range(199)), size=size)
+    assert len(chunks) == 3
+    assert sum(len(c) for c in chunks) == 199
+
+
+def test_plan_batch_size_small_is_one_batch() -> None:
+    size = ipb.plan_batch_size(5)
+    chunks = ipb.chunk_frames(list(range(5)), size=size)
+    assert len(chunks) == 1
+    assert len(chunks[0]) == 5
 
 
 def test_salvage_broken_json_персонажи_outside_fields() -> None:
