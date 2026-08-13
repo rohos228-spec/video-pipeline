@@ -102,6 +102,8 @@ def clear_failure_backoff_for_manual_start(project: Project, *, running_key: str
     changed = False
     if fs.pop("sleep_until", None) is not None:
         changed = True
+    if fs.pop("sleep_paused", None) is not None:
+        changed = True
     totals: dict[str, int] = dict(fs.get("total_fails") or {})
     if totals.pop(running_key, None) is not None:
         changed = True
@@ -387,6 +389,9 @@ async def record_step_failure(
         until = datetime.now(timezone.utc) + timedelta(minutes=sleep_min)
         fs["sleep_until"] = until.isoformat()
         fs["recovery_cycles"] = total // FAILS_PER_CYCLE
+        # Пометка «paused — наш, от сна»: maybe_resume_after_sleep по ней
+        # отличает sleep-паузу от ручной паузы пользователя.
+        fs["sleep_paused"] = True
         _save_failure_state(project, fs)
         from app.services.run_sync import mark_running_node_failed
 
@@ -451,6 +456,7 @@ def clear_failure_on_success(project: Project, running: ProjectStatus) -> None:
     totals.pop(running.value, None)
     fs["total_fails"] = totals
     fs.pop("sleep_until", None)
+    fs.pop("sleep_paused", None)
     fs.pop("recovery_cycles", None)
     fs.pop("last_error", None)
     _save_failure_state(project, fs)
@@ -460,16 +466,26 @@ async def maybe_resume_after_sleep(
     session: AsyncSession,
     project: Project,
 ) -> bool:
-    """После сна — снова запустить тот же шаг (auto retry)."""
+    """После сна — снова запустить тот же шаг (auto retry).
+
+    Сон ставит status=paused — поэтому paused НЕ повод выйти, если это
+    наша sleep-пауза (fs.sleep_paused) и пользователь не жал паузу сам
+    (meta.paused_from_status / user_stop).
+    """
     if not clear_sleep_if_expired(project):
         return False
     from app.services.gen_queue_run import is_user_stopped
 
     if is_user_stopped(project):
         return False
-    if not project.auto_mode or project.status is ProjectStatus.paused:
+    if not project.auto_mode:
         return False
     fs = _failure_state(project)
+    if project.status is ProjectStatus.paused:
+        meta = _meta(project)
+        user_paused = "paused_from_status" in meta
+        if user_paused or not fs.get("sleep_paused"):
+            return False
     step_key = fs.get("last_running")
     if not step_key:
         return False
@@ -480,6 +496,8 @@ async def maybe_resume_after_sleep(
     step = step_by_running_status(running)
     if step is None:
         return False
+    fs.pop("sleep_paused", None)
+    _save_failure_state(project, fs)
     await _soft_retry_without_wipe(session, project, step.code)
     project.status = step.running_status
     await session.flush()

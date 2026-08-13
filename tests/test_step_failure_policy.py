@@ -202,6 +202,11 @@ async def test_record_step_failure_user_stop_does_not_revive(
 async def test_record_step_failure_sleep_leaves_running_status(
     session: AsyncSession,
 ) -> None:
+    """Сон по ошибкам: status=paused + маркер sleep_paused (не «running»).
+
+    paused — чтобы auto_advance не утащил проект назад и UI не крутил
+    «выполняется» все 30 минут. Маркер отличает sleep-паузу от ручной.
+    """
     p = Project(
         slug="sleep-plan",
         topic="t",
@@ -223,11 +228,74 @@ async def test_record_step_failure_sleep_leaves_running_status(
         )
 
     assert action == "sleep"
-    assert p.status is ProjectStatus.new
+    assert p.status is ProjectStatus.paused
     assert is_sleeping(p)
     fs = (p.meta or {}).get("step_failure") or {}
     assert fs["total_fails"]["planning"] == 3
     assert fs.get("last_running") == "planning"
+    assert fs.get("sleep_paused") is True
+
+
+@pytest.mark.asyncio
+async def test_maybe_resume_after_sleep_resumes_sleep_paused(
+    session: AsyncSession,
+) -> None:
+    """T16: истёкший сон на paused-проекте авто-резюмит шаг (раньше было мёртво)."""
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    p = Project(
+        slug="resume-auto",
+        topic="t",
+        status=ProjectStatus.paused,
+        auto_mode=True,
+        meta={
+            "step_failure": {
+                "sleep_until": past,
+                "sleep_paused": True,
+                "last_running": "planning",
+                "total_fails": {"planning": 3},
+            },
+        },
+    )
+    session.add(p)
+    await session.flush()
+
+    with patch(
+        "app.services.step_failure_policy._soft_retry_without_wipe",
+        new_callable=AsyncMock,
+    ):
+        assert await maybe_resume_after_sleep(session, p) is True
+    assert p.status is ProjectStatus.planning
+    fs = (p.meta or {}).get("step_failure") or {}
+    assert "sleep_until" not in fs
+    assert "sleep_paused" not in fs
+
+
+@pytest.mark.asyncio
+async def test_maybe_resume_after_sleep_respects_manual_pause(
+    session: AsyncSession,
+) -> None:
+    """Пользователь нажал паузу во время сна — авто-резюм не срабатывает."""
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    p = Project(
+        slug="resume-manual-pause",
+        topic="t",
+        status=ProjectStatus.paused,
+        auto_mode=True,
+        meta={
+            "paused_from_status": "planning",
+            "step_failure": {
+                "sleep_until": past,
+                "sleep_paused": True,
+                "last_running": "planning",
+                "total_fails": {"planning": 3},
+            },
+        },
+    )
+    session.add(p)
+    await session.flush()
+
+    assert await maybe_resume_after_sleep(session, p) is False
+    assert p.status is ProjectStatus.paused
 
 
 @pytest.mark.asyncio

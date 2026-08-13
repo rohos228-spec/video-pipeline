@@ -603,6 +603,40 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                     to_start.append((p.id, p.status.value))
                     slots_free -= 1
 
+                # Спящие по ошибкам проекты имеют status=paused и не попадают
+                # в active-выборку выше — без этого прохода 30-мин пауза
+                # снималась только ручным ▶ (13.08: «видео стоят»).
+                paused_after_errors = (
+                    (
+                        await s.execute(
+                            select(Project).where(
+                                Project.status == ProjectStatus.paused
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                for p in paused_after_errors:
+                    if not failure_sleep_until(p):
+                        continue
+                    if is_user_stopped(p):
+                        continue
+                    try:
+                        if await maybe_resume_after_sleep(s, p):
+                            await s.commit()
+                            logger.info(
+                                "worker: #{} — авто-резюм после паузы ошибок "
+                                "(статус {})",
+                                p.id,
+                                p.status.value,
+                            )
+                            await sync_run_for_project(p.id)
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "worker: resume-after-sleep failed для #{}", p.id
+                        )
+
                 if to_start:
                     logger.info(
                         "worker: старт {} project(s) (max_parallel={}): {}",
