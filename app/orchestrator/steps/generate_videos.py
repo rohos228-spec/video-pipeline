@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots.browser import browser_session
-from app.bots.outsee import OutseeBot
+from app.bots.outsee import OutseeBot, OutseeDuplicateVideoError
 
 
 def _video_http_primary() -> bool:
@@ -54,6 +54,8 @@ from app.models import (
 )
 from app.services.animation_prompt_gpt import animation_prompt_shot2_in_plan_xlsx
 from app.services.artifact_recovery import (
+    move_frame_videos_to_old,
+    newest_disk_video,
     recover_scene_images_from_disk,
     recover_scene_videos_from_disk,
 )
@@ -125,13 +127,39 @@ def resolve_scene_image_path(
 
 
 def _skip_frame_video_generation(fr: Frame, has_video_file: bool) -> bool:
-    """Не гонять outsee, если клип уже есть на диске."""
+    """Не гонять outsee, если клип уже есть на диске или видео утверждено.
+
+    Утверждённый/готовый кадр не перегенерим даже при пропавшем файле:
+    дыру поймает validate_after_videos → mark_frames_for_video_regen
+    (сброс статуса) → следующий прогон сгенерит осознанно.
+    """
+    if fr.status in (FrameStatus.video_approved, FrameStatus.done):
+        return True
     return bool(has_video_file)
 
 
 VIDEO_FAIL_ATTR = "video_gen_fail_count"
 VIDEO_SKIP_ATTR = "video_gen_skip"
 VIDEO_FAIL_SKIP_AFTER = 5
+
+# Стабильный short_uuid на (frame_id, shot) внутри одного прогона шага:
+# retry того же кадра пишет в ТОТ ЖЕ путь clip_NNN_<id>.mp4 (а не новый
+# sibling-дубликат) и шлёт тот же [ID: …] провайдеру — дедуп на стороне
+# Outsee и трассировка в логах. Сброс — в run() на старте шага.
+_RUN_CLIP_IDS: dict[tuple[int, int], str] = {}
+
+
+def _stable_clip_uuid(frame_id: int, shot: int) -> str:
+    key = (frame_id, shot)
+    val = _RUN_CLIP_IDS.get(key)
+    if val is None:
+        val = uuid.uuid4().hex[:8]
+        _RUN_CLIP_IDS[key] = val
+    return val
+
+
+def _reset_run_clip_ids() -> None:
+    _RUN_CLIP_IDS.clear()
 
 
 def _clear_video_inflight(frame: Frame) -> None:
@@ -256,6 +284,7 @@ async def _claim_shot1_video_batch(
     project_id: int,
     *,
     limit: int,
+    out_dir: Path | None = None,
 ) -> list[Frame]:
     if limit < 1:
         return []
@@ -278,6 +307,11 @@ async def _claim_shot1_video_batch(
             # ≥5 ошибок подряд — кадр пропущен (ручной reset снимет).
             continue
         clip = await _scene_video_file_on_disk(session, project_id, fr.id, shot=1)
+        if clip is None and out_dir is not None:
+            # Сирота: clip_NNN_*.mp4 на диске есть, а Artifact нет (откат БД /
+            # прошлый сбой). Повторно НЕ генерим — Artifact привяжет
+            # recover_scene_videos_from_disk (старт шага / validate_after_videos).
+            clip = newest_disk_video(out_dir, fr.number, 1)
         if _skip_frame_video_generation(fr, clip is not None):
             if clip is not None and fr.status not in (
                 FrameStatus.video_generated,
@@ -340,6 +374,9 @@ async def _claim_shot2_video_batch(
             continue
         shot1 = await _scene_video_file_on_disk(session, project.id, fr.id, shot=1)
         if shot1 is None:
+            # Клип shot_01 может лежать на диске без Artifact (см. claim shot1).
+            shot1 = newest_disk_video(out_dir, fr.number, 1)
+        if shot1 is None:
             continue
         attrs[VIDEO_INFLIGHT_ATTR] = True
         fr.attrs = attrs
@@ -366,29 +403,50 @@ async def _generate_shot1_one(
     if not fr.animation_prompt:
         raise RuntimeError(f"у кадра {fr.number} нет animation_prompt")
     start = await _shot1_start_frame(session, project, fr, scenes_dir)
-    short_uuid = uuid.uuid4().hex[:8]
+    short_uuid = _stable_clip_uuid(fr.id, 1)
     file_path = out_dir / f"clip_{fr.number:03d}_{short_uuid}.mp4"
     async with clips_lock:
         dups = _dup_paths(out_dir, fr.number, list(session_clip_paths))
     model_slug, res_slug, aspect, relax = _video_opts(project)
-    result = await generate_video_with_retries(
-        outsee,
-        gpt,
-        prompt=fr.animation_prompt,
-        out_path=file_path,
-        max_attempts_per_prompt=3,
-        gpt_rewrite=True,
-        project_id=project.id,
-        start_frame=start,
-        aspect_ratio=aspect,
-        timeout=1200,
-        model_slug=model_slug,
-        resolution=res_slug,
-        relax=relax,
-        generate_audio=False,
-        prompt_id_prefix=build_gen_id_prefix(project.id, fr.number, short_uuid),
-        duplicate_check_paths=dups,
-    )
+    try:
+        result = await generate_video_with_retries(
+            outsee,
+            gpt,
+            prompt=fr.animation_prompt,
+            out_path=file_path,
+            max_attempts_per_prompt=3,
+            gpt_rewrite=True,
+            project_id=project.id,
+            start_frame=start,
+            aspect_ratio=aspect,
+            timeout=1200,
+            model_slug=model_slug,
+            resolution=res_slug,
+            relax=relax,
+            generate_audio=False,
+            prompt_id_prefix=build_gen_id_prefix(project.id, fr.number, short_uuid),
+            duplicate_check_paths=dups,
+        )
+    except OutseeDuplicateVideoError as e:
+        # HTTP-дедуп: свежий файл удалён в retry-слое — привязать имеющийся.
+        dup_path = _duplicate_artifact_path(e)
+        if dup_path is None:
+            raise
+        session.add(
+            Artifact(
+                project_id=project.id,
+                frame_id=fr.id,
+                kind=ArtifactKind.scene_video,
+                uuid=uuid.uuid4().hex,
+                path=str(dup_path),
+                meta={"shot": 1, "dedup_linked": True},
+            )
+        )
+        fr.status = FrameStatus.video_generated
+        await session.flush()
+        async with clips_lock:
+            session_clip_paths.append(dup_path)
+        return dup_path
     session.add(
         Artifact(
             project_id=project.id,
@@ -402,6 +460,7 @@ async def _generate_shot1_one(
     fr.status = FrameStatus.video_generated
     await session.flush()
     out = Path(result.file_path)
+    move_frame_videos_to_old(project.data_dir, fr.number, keep=out, shot=1)
     async with clips_lock:
         session_clip_paths.append(out)
     logger.info("[#{}] frame {} video: {}", project.id, fr.number, result.file_path)
@@ -431,30 +490,49 @@ async def _generate_shot2_one(
     session_clip_paths: list[Path],
     clips_lock: asyncio.Lock,
 ) -> Path:
-    short_uuid = uuid.uuid4().hex[:8]
+    short_uuid = _stable_clip_uuid(fr.id, 2)
     file_path = out_dir / f"clip_{fr.number:03d}_s2_{short_uuid}.mp4"
     async with clips_lock:
         dups = list(session_clip_paths)
     model_slug, res_slug, aspect, relax = _video_opts(project)
-    result = await generate_video_with_retries(
-        outsee,
-        gpt,
-        prompt=prompt2,
-        out_path=file_path,
-        max_attempts_per_prompt=3,
-        gpt_rewrite=True,
-        project_id=project.id,
-        start_frame=s2_img,
-        aspect_ratio=aspect,
-        timeout=1200,
-        model_slug=model_slug,
-        resolution=res_slug,
-        relax=relax,
-        generate_audio=False,
-        prompt_id_prefix=build_gen_id_prefix(project.id, fr.number, short_uuid)
-        + "-S2",
-        duplicate_check_paths=dups,
-    )
+    try:
+        result = await generate_video_with_retries(
+            outsee,
+            gpt,
+            prompt=prompt2,
+            out_path=file_path,
+            max_attempts_per_prompt=3,
+            gpt_rewrite=True,
+            project_id=project.id,
+            start_frame=s2_img,
+            aspect_ratio=aspect,
+            timeout=1200,
+            model_slug=model_slug,
+            resolution=res_slug,
+            relax=relax,
+            generate_audio=False,
+            prompt_id_prefix=build_gen_id_prefix(project.id, fr.number, short_uuid)
+            + "-S2",
+            duplicate_check_paths=dups,
+        )
+    except OutseeDuplicateVideoError as e:
+        dup_path = _duplicate_artifact_path(e)
+        if dup_path is None:
+            raise
+        session.add(
+            Artifact(
+                project_id=project.id,
+                frame_id=fr.id,
+                kind=ArtifactKind.scene_video,
+                uuid=uuid.uuid4().hex,
+                path=str(dup_path),
+                meta={"shot": 2, "dedup_linked": True},
+            )
+        )
+        await session.flush()
+        async with clips_lock:
+            session_clip_paths.append(dup_path)
+        return dup_path
     session.add(
         Artifact(
             project_id=project.id,
@@ -467,6 +545,7 @@ async def _generate_shot2_one(
     )
     await session.flush()
     out = Path(result.file_path)
+    move_frame_videos_to_old(project.data_dir, fr.number, keep=out, shot=2)
     async with clips_lock:
         session_clip_paths.append(out)
     logger.info(
@@ -476,6 +555,27 @@ async def _generate_shot2_one(
         result.file_path,
     )
     return out
+
+
+def _duplicate_artifact_path(err: OutseeDuplicateVideoError) -> Path | None:
+    """HTTP-дедуп: путь уже имеющегося клипа из контекста ошибки.
+
+    Retry-слой удалил свежескачанный дубликат; вместо нового артефакта
+    привязываем существующий файл («link existing, done»).
+    """
+    ctx = getattr(err, "context", None) or {}
+    raw = ctx.get("duplicate_of")
+    if not raw:
+        return None
+    path = Path(str(raw))
+    if not path.is_file():
+        return None
+    logger.warning(
+        "generate_videos: дубликат — привязываю имеющийся клип {} "
+        "вместо новой генерации",
+        path.name,
+    )
+    return path
 
 
 async def _note_video_fail_db(
@@ -551,7 +651,7 @@ async def _shot1_job(
             model_slug, res_slug, aspect, relax = _video_opts(project)
             # session закрывается здесь — до Outsee
 
-        short_uuid = uuid.uuid4().hex[:8]
+        short_uuid = _stable_clip_uuid(frame_id, 1)
         file_path = out_dir / f"clip_{frame_number:03d}_{short_uuid}.mp4"
         async with clips_lock:
             dups = _dup_paths(out_dir, frame_number, list(session_clip_paths))
@@ -576,6 +676,38 @@ async def _shot1_job(
                 ),
                 duplicate_check_paths=dups,
             )
+        except OutseeDuplicateVideoError as e:
+            # HTTP-дедуп: свежий файл удалён в retry-слое — линкуем имеющийся.
+            dup_path = _duplicate_artifact_path(e)
+            if dup_path is not None:
+                async with SessionLocal() as session:
+                    fr = await session.get(Frame, frame_id)
+                    if fr is None:
+                        return False
+                    session.add(
+                        Artifact(
+                            project_id=project_id,
+                            frame_id=fr.id,
+                            kind=ArtifactKind.scene_video,
+                            uuid=uuid.uuid4().hex,
+                            path=str(dup_path),
+                            meta={"shot": 1, "dedup_linked": True},
+                        )
+                    )
+                    fr.status = FrameStatus.video_generated
+                    _clear_video_inflight(fr)
+                    await session.commit()
+                await _reset_video_fail_db(project_id, frame_id)
+                async with clips_lock:
+                    session_clip_paths.append(dup_path)
+                return True
+            await _note_video_fail_db(project_id, frame_id, e)
+            async with SessionLocal() as session:
+                fr = await session.get(Frame, frame_id)
+                if fr is not None:
+                    _clear_video_inflight(fr)
+                    await session.commit()
+            return False
         except Exception as e:
             if isinstance(e, (StepCancelledError, asyncio.CancelledError)):
                 async with SessionLocal() as session:
@@ -612,6 +744,7 @@ async def _shot1_job(
             await session.commit()
         await _reset_video_fail_db(project_id, frame_id)
         out = Path(result.file_path)
+        move_frame_videos_to_old(out_dir.parent, frame_number, keep=out, shot=1)
         async with clips_lock:
             session_clip_paths.append(out)
         logger.info(
@@ -654,7 +787,7 @@ async def _shot2_job(
             frame_number = fr.number
             model_slug, res_slug, aspect, relax = _video_opts(project)
 
-        short_uuid = uuid.uuid4().hex[:8]
+        short_uuid = _stable_clip_uuid(frame_id, 2)
         file_path = out_dir / f"clip_{frame_number:03d}_s2_{short_uuid}.mp4"
         async with clips_lock:
             dups = list(session_clip_paths)
@@ -680,6 +813,36 @@ async def _shot2_job(
                 + "-S2",
                 duplicate_check_paths=dups,
             )
+        except OutseeDuplicateVideoError as e:
+            dup_path = _duplicate_artifact_path(e)
+            if dup_path is not None:
+                async with SessionLocal() as session:
+                    fr = await session.get(Frame, frame_id)
+                    if fr is None:
+                        return False
+                    session.add(
+                        Artifact(
+                            project_id=project_id,
+                            frame_id=fr.id,
+                            kind=ArtifactKind.scene_video,
+                            uuid=uuid.uuid4().hex,
+                            path=str(dup_path),
+                            meta={"shot": 2, "dedup_linked": True},
+                        )
+                    )
+                    _clear_video_inflight(fr)
+                    await session.commit()
+                await _reset_video_fail_db(project_id, frame_id)
+                async with clips_lock:
+                    session_clip_paths.append(dup_path)
+                return True
+            await _note_video_fail_db(project_id, frame_id, e)
+            async with SessionLocal() as session:
+                fr = await session.get(Frame, frame_id)
+                if fr is not None:
+                    _clear_video_inflight(fr)
+                    await session.commit()
+            return False
         except Exception as e:
             if isinstance(e, (StepCancelledError, asyncio.CancelledError)):
                 async with SessionLocal() as session:
@@ -714,6 +877,7 @@ async def _shot2_job(
             await session.commit()
         await _reset_video_fail_db(project_id, frame_id)
         out = Path(result.file_path)
+        move_frame_videos_to_old(out_dir.parent, frame_number, keep=out, shot=2)
         async with clips_lock:
             session_clip_paths.append(out)
         logger.info(
@@ -730,6 +894,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
     project_id = project.id
     logger.info("[#{}] generate_videos starting", project_id)
+    # Новый прогон — новые short_uuid; внутри прогона они стабильны на кадр.
+    _reset_run_clip_ids()
 
     img_recovered = await recover_scene_images_from_disk(session, project)
     if img_recovered:
@@ -806,7 +972,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 while True:
                     raise_if_cancelled(project.id)
                     batch = await _claim_shot1_video_batch(
-                        session, project.id, limit=streams
+                        session, project.id, limit=streams, out_dir=out_dir
                     )
                     if not batch:
                         break

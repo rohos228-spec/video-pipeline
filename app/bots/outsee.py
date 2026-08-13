@@ -4913,6 +4913,43 @@ class OutseeBot:
             reference_image=start_frame,
         )
         if http_res is not None:
+            # HTTP early-return раньше пропускал дедуп-чек (он ниже, только для
+            # CDP). Проверяем здесь: дубликат → удалить новый файл, оставить
+            # имеющийся, кинуть OutseeDuplicateVideoError (link existing, done).
+            http_dup_refs = [
+                p
+                for p in (duplicate_check_paths or [])
+                if isinstance(p, Path) and p.is_file()
+            ]
+            if http_dup_refs:
+                http_dup_of: Path | None = None
+                try:
+                    from app.services.video_duplicate import (
+                        find_duplicate_reference,
+                    )
+
+                    http_dup_of = await find_duplicate_reference(
+                        Path(http_res.file_path), http_dup_refs
+                    )
+                except Exception:  # noqa: BLE001 — best-effort, не блокируем
+                    http_dup_of = None
+                if http_dup_of is not None:
+                    with contextlib.suppress(OSError):
+                        Path(http_res.file_path).unlink(missing_ok=True)
+                    logger.warning(
+                        "outsee.generate_video: HTTP-ролик — дубликат {} "
+                        "(gen_id={}), новый файл удалён",
+                        http_dup_of.name,
+                        gen_id[:8],
+                    )
+                    raise OutseeDuplicateVideoError(
+                        "outsee video: скачан дубликат имеющегося ролика",
+                        context={
+                            "gen_id": gen_id,
+                            "duplicate_of": str(http_dup_of),
+                            "provider": "outsee-http",
+                        },
+                    )
             return http_res
 
         dup_refs = [

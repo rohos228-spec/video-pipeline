@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import shutil
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 from loguru import logger
@@ -45,6 +46,101 @@ def newest_disk_video(videos_dir: Path, frame_number: int, shot: int) -> Path | 
     if not candidates:
         return None
     return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def move_frame_videos_to_old(
+    data_dir: Path,
+    frame_number: int,
+    *,
+    keep: Path | None = None,
+    shot: int | None = 1,
+    extra: list[Path] | None = None,
+) -> list[Path]:
+    """GC дублей клипов кадра: старые clip_NNN_*.mp4 → ``old/videos/<ts>/``.
+
+    shot=1 — только shot_01 (имена без ``_s2_``); shot=2 — только ``_s2_``;
+    shot=None — все клипы кадра (regen в mark_frames_for_video_regen).
+    ``keep`` (свежий/привязанный клип) и файлы другого шота не трогаем.
+    Файлы перемещаются (не удаляются) — конвенция ``old/scenes/<ts>/``
+    из reset_step._backup_scenes_before_wipe, только для videos/.
+    """
+    videos_dir = data_dir / "videos"
+    if not videos_dir.is_dir():
+        return []
+    if shot == 2:
+        candidates = [
+            p
+            for p in videos_dir.glob(f"clip_{frame_number:03d}_s2_*.mp4")
+            if p.is_file()
+        ]
+    elif shot == 1:
+        candidates = [
+            p
+            for p in videos_dir.glob(f"clip_{frame_number:03d}_*.mp4")
+            if p.is_file() and "_s2_" not in p.name
+        ]
+    else:
+        candidates = [
+            p
+            for p in videos_dir.glob(f"clip_{frame_number:03d}_*.mp4")
+            if p.is_file()
+        ]
+    for p in extra or []:
+        try:
+            if p.is_file() and p not in candidates:
+                candidates.append(p)
+        except OSError:
+            continue
+    keep_resolved: Path | None = None
+    if keep is not None:
+        try:
+            keep_resolved = keep.resolve()
+        except OSError:
+            keep_resolved = keep
+    todo: list[Path] = []
+    for p in candidates:
+        if keep_resolved is not None:
+            try:
+                if p.resolve() == keep_resolved:
+                    continue
+            except OSError:
+                pass
+        todo.append(p)
+    if not todo:
+        return []
+    ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    dest_dir = data_dir / "old" / "videos" / ts
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.warning(
+            "artifact_recovery: GC видео кадра {} — mkdir {} failed: {}",
+            frame_number,
+            dest_dir,
+            e,
+        )
+        return []
+    moved: list[Path] = []
+    for src in todo:
+        dest = dest_dir / src.name
+        if dest.exists():
+            dest = dest_dir / f"{src.stem}_{uuid.uuid4().hex[:6]}{src.suffix}"
+        try:
+            shutil.move(str(src), str(dest))
+            moved.append(dest)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "artifact_recovery: GC видео {} → old failed: {}", src.name, e
+            )
+    if moved:
+        logger.info(
+            "artifact_recovery: GC кадр {} shot={}: {} старых клипов → {}",
+            frame_number,
+            shot if shot is not None else "all",
+            len(moved),
+            dest_dir,
+        )
+    return moved
 
 
 async def recover_scene_videos_from_disk(
@@ -104,12 +200,17 @@ async def recover_scene_videos_from_disk(
                         FrameStatus.done,
                     ):
                         fr.status = FrameStatus.video_generated
+                    # Канонический клип известен — старые sibling'и этого шота
+                    # в old/videos/ (дубли от ретраев не копятся в videos/).
+                    move_frame_videos_to_old(
+                        project.data_dir, fr.number, keep=cur_path, shot=shot
+                    )
                     continue
                 for a in shot_arts:
-                    session.delete(a)
+                    await session.delete(a)
             elif shot_arts:
                 for a in shot_arts:
-                    session.delete(a)
+                    await session.delete(a)
 
             session.add(
                 Artifact(
@@ -127,6 +228,9 @@ async def recover_scene_videos_from_disk(
                 FrameStatus.done,
             ):
                 fr.status = FrameStatus.video_generated
+            move_frame_videos_to_old(
+                project.data_dir, fr.number, keep=newest, shot=shot
+            )
             recovered.append(fr.number)
     if recovered:
         await session.flush()
@@ -200,10 +304,10 @@ async def recover_scene_images_from_disk(
                         fr.status = FrameStatus.image_generated
                     continue
                 for a in shot_arts:
-                    session.delete(a)
+                    await session.delete(a)
             elif shot_arts:
                 for a in shot_arts:
-                    session.delete(a)
+                    await session.delete(a)
 
             session.add(
                 Artifact(

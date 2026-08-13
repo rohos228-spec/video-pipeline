@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Artifact, ArtifactKind, Frame, FrameStatus, Project
 from app.services.artifact_recovery import (
+    move_frame_videos_to_old,
     recover_audio_from_disk,
     recover_scene_videos_from_disk,
 )
@@ -339,12 +340,14 @@ async def mark_frames_for_video_regen(
                 )
             )
         ).scalars().all()
+        # Все clip_NNN_* кадра (оба шота + сироты uuid-sibling'ов) → old/videos/,
+        # не только путь из Artifact: иначе claim подхватит сироту с диска
+        # и regen не случится. Файлы не удаляются — move (можно вернуть).
+        art_paths = [Path(a.path) for a in arts if a.path]
+        move_frame_videos_to_old(
+            project.data_dir, fr.number, shot=None, extra=art_paths
+        )
         for a in arts:
-            if a.path:
-                try:
-                    Path(a.path).unlink(missing_ok=True)
-                except OSError:
-                    pass
             await session.delete(a)
         # Снимаем ladder-skip, иначе claim снова пропустит кадр и soft-retry
         # будет крутиться с gen=0.

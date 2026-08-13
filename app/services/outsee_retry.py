@@ -46,6 +46,7 @@ Caller'ы:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 
 # Должен быть ≥ timeout в gpt.ask_fresh, иначе сжатие обрывается раньше ответа.
@@ -67,6 +68,7 @@ from app.bots.outsee import (
     OutseeBot,
     OutseeContentRejectedError,
     OutseeDownloadError,
+    OutseeDuplicateVideoError,
     OutseeImageError,
     OutseePromptTooLongError,
     outsee_error_is_moderation,
@@ -1109,6 +1111,62 @@ async def generate_image_with_retries(
     raise last_err
 
 
+async def _raise_if_duplicate_video(
+    result: GenerationResult,
+    refs: Any,
+    *,
+    where: str,
+    project_id: int | None = None,
+) -> None:
+    """HTTP-видео: свежескачанный файл == уже имеющемуся клипу → дедуп.
+
+    CDP-ветка делает этот чек внутри `_generate_video_on_page`; HTTP-провайдеры
+    (outsee-api / grsai / kie-kling) его пропускали — отсюда дубли клипов.
+    При совпадении: удаляем новый файл, оставляем существующий и кидаем
+    `OutseeDuplicateVideoError` (context.duplicate_of) — caller шага привяжет
+    имеющийся клип вместо создания второго артефакта.
+
+    Best-effort: ошибка самого чека генерацию не блокирует.
+    """
+    paths = [p for p in (refs or []) if isinstance(p, Path) and p.is_file()]
+    if not paths:
+        return
+    fp = Path(result.file_path)
+    if not fp.is_file():
+        return
+    try:
+        from app.services.video_duplicate import find_duplicate_reference
+
+        dup_of = await find_duplicate_reference(fp, paths)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "outsee_retry: dup-check [{}] упал ({}: {}) — продолжаю как раньше",
+            where,
+            type(e).__name__,
+            e,
+        )
+        return
+    if dup_of is None:
+        return
+    with contextlib.suppress(OSError):
+        fp.unlink(missing_ok=True)
+    logger.warning(
+        "outsee_retry: video [{}] — скачан дубликат имеющегося клипа {} "
+        "(новый файл удалён, project_id={})",
+        where,
+        dup_of.name,
+        project_id,
+    )
+    raise OutseeDuplicateVideoError(
+        "outsee video: скачан дубликат имеющегося ролика",
+        context={
+            "gen_id": result.gen_id,
+            "duplicate_of": str(dup_of),
+            "provider": where,
+        },
+    )
+
+
 async def generate_video_with_retries(
     outsee: OutseeBot | None,
     gpt: Any | None,
@@ -1433,8 +1491,20 @@ async def generate_video_with_retries(
             send_prompt = await _prepare_send(
                 current_prompt, attempt_kwargs, kling=use_kling
             )
-            return await _dispatch(send_prompt, attempt_kwargs, kling=use_kling)
+            result = await _dispatch(send_prompt, attempt_kwargs, kling=use_kling)
+            # Дедуп по содержимому для HTTP-провайдеров (CDP чекает внутри —
+            # повторная проверка по кэшу fingerprint практически бесплатна).
+            await _raise_if_duplicate_video(
+                result,
+                attempt_kwargs.get("duplicate_check_paths"),
+                where=provider_label,
+                project_id=project_id,
+            )
+            return result
         except StepCancelledError:
+            raise
+        except OutseeDuplicateVideoError:
+            # Не жжём лестницу и не rewrite'им: caller привяжет имеющийся клип.
             raise
         except OutseeDownloadError as e:
             last_err = e
