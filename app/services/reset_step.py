@@ -497,11 +497,15 @@ async def _wipe_img_pr(session: AsyncSession, project: Project) -> dict[str, Any
         clear_checkpoint(project.data_dir)
     except Exception:  # noqa: BLE001
         pass
+    from app.services.db_v2 import deactivate_prompt_versions
+
+    pv_deactivated = await deactivate_prompt_versions(session, project.id, kind="img")
     return {
         "frames_cleared": cleared,
         "frames_status_reset": status_reset,
         "shot2_cleared": shot2_cleared,
         "xlsx_r45_cleared": xlsx_cleared,
+        "prompt_versions_deactivated": pv_deactivated,
     }
 
 
@@ -651,7 +655,12 @@ async def _resume_anim_pr_from_xlsx(session: AsyncSession, project: Project) -> 
 
 
 async def _wipe_anim_pr(session: AsyncSession, project: Project) -> dict[str, Any]:
-    """Сброс шага 8 «Промты анимации»: animation_prompt + статус кадра."""
+    """Сброс шага 8 «Промты анимации»: animation_prompt + статус кадра.
+
+    Также R48/R64 в xlsx и shot2 video attr — иначе sync/UI вернут stale.
+    """
+    from app.services.plan_shot2 import SHOT2_VIDEO_PROMPT_ATTR
+
     frames = (
         await session.execute(
             select(Frame).where(Frame.project_id == project.id)
@@ -659,15 +668,39 @@ async def _wipe_anim_pr(session: AsyncSession, project: Project) -> dict[str, An
     ).scalars().all()
     cleared = 0
     status_reset = 0
+    shot2_cleared = 0
+    frame_numbers: list[int] = []
     for fr in frames:
+        frame_numbers.append(fr.number)
         had_prompt = bool((fr.animation_prompt or "").strip())
         if had_prompt:
             fr.animation_prompt = None
             cleared += 1
+        attrs = dict(fr.attrs or {})
+        if (attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or "").strip():
+            attrs.pop(SHOT2_VIDEO_PROMPT_ATTR, None)
+            fr.attrs = attrs
+            shot2_cleared += 1
         if fr.status is FrameStatus.animation_prompt_ready:
             fr.status = FrameStatus.image_approved
             status_reset += 1
-    return {"frames_cleared": cleared, "frames_status_reset": status_reset}
+    xlsx_cleared = 0
+    try:
+        from app.storage.plan_sheet_v8 import clear_plan_animation_prompts
+
+        xlsx_cleared = clear_plan_animation_prompts(project, frame_numbers)
+    except Exception:  # noqa: BLE001
+        pass
+    from app.services.db_v2 import deactivate_prompt_versions
+
+    pv_deactivated = await deactivate_prompt_versions(session, project.id, kind="video")
+    return {
+        "frames_cleared": cleared,
+        "frames_status_reset": status_reset,
+        "shot2_cleared": shot2_cleared,
+        "xlsx_r48_cleared": xlsx_cleared,
+        "prompt_versions_deactivated": pv_deactivated,
+    }
 
 
 async def _resume_videos(session: AsyncSession, project: Project) -> dict[str, Any]:

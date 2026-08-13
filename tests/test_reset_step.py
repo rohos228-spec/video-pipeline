@@ -23,6 +23,7 @@ from app.models import (
     FrameStatus,
     Project,
     ProjectStatus,
+    PromptVersion,
 )
 from app.services.reset_step import (
     RESET_SUPPORTED_STEP_CODES,
@@ -539,3 +540,151 @@ async def test_reset_video_resets_frame_status(session, tmp_path: Path):
     # downstream audio тоже должен быть очищен (его нет, проверим что не
     # упало)
     assert "video" in summary
+
+
+async def _mk_active_pv(
+    session, project: Project, frame: Frame, *, kind: str, text: str
+) -> PromptVersion:
+    pv = PromptVersion(
+        project_id=project.id,
+        frame_id=frame.id,
+        kind=kind,
+        version=1,
+        text=text,
+        is_active=True,
+    )
+    session.add(pv)
+    await session.flush()
+    return pv
+
+
+@pytest.mark.asyncio
+async def test_wipe_img_pr_deactivates_prompt_versions(session):
+    """reset_step(img_pr) clears Frame.image_prompt and deactivates img PVs.
+
+    Rows stay (history). Montage overlay only copies is_active=True, so
+    inactive PVs cannot resurrect stale text into the UI.
+    """
+    from app.services.montage_board import _overlay_active_prompt_versions
+
+    p = await _mkproject(session)
+    fr = await _mkframe(
+        session, p, 1,
+        image_prompt="stale img prompt",
+        status=FrameStatus.image_prompt_ready,
+    )
+    pv = await _mk_active_pv(session, p, fr, kind="img", text="stale img prompt")
+    p.status = ProjectStatus.image_prompts_ready
+    await session.flush()
+
+    await reset_step(session, p, "img_pr")
+
+    await session.refresh(fr)
+    await session.refresh(pv)
+    assert fr.image_prompt is None
+    assert pv.is_active is False
+    still = (
+        await session.execute(
+            select(PromptVersion).where(
+                PromptVersion.project_id == p.id,
+                PromptVersion.kind == "img",
+            )
+        )
+    ).scalars().all()
+    assert len(still) == 1
+    assert still[0].id == pv.id
+    assert not any(x.is_active for x in still)
+
+    await _overlay_active_prompt_versions(session, [fr])
+    assert fr.image_prompt is None
+
+
+@pytest.mark.asyncio
+async def test_wipe_anim_pr_deactivates_video_prompt_versions(session):
+    """reset_step(anim_pr) clears Frame.animation_prompt, shot2 video attr,
+    and deactivates video PVs. Img PVs stay active (upstream).
+    """
+    from app.services.plan_shot2 import SHOT2_VIDEO_PROMPT_ATTR
+    from app.services.montage_board import _overlay_active_prompt_versions
+
+    p = await _mkproject(session)
+    fr = await _mkframe(
+        session, p, 1,
+        image_prompt="keep img",
+        animation_prompt="stale video prompt",
+        status=FrameStatus.animation_prompt_ready,
+        attrs={SHOT2_VIDEO_PROMPT_ATTR: "stale shot2 video"},
+    )
+    img_pv = await _mk_active_pv(session, p, fr, kind="img", text="keep img")
+    vid_pv = await _mk_active_pv(
+        session, p, fr, kind="video", text="stale video prompt"
+    )
+    p.status = ProjectStatus.animation_prompts_ready
+    await session.flush()
+
+    await reset_step(session, p, "anim_pr")
+
+    await session.refresh(fr)
+    await session.refresh(img_pv)
+    await session.refresh(vid_pv)
+    assert fr.animation_prompt is None
+    assert not (fr.attrs or {}).get(SHOT2_VIDEO_PROMPT_ATTR)
+    assert vid_pv.is_active is False
+    assert img_pv.is_active is True
+    video_pvs = (
+        await session.execute(
+            select(PromptVersion).where(
+                PromptVersion.project_id == p.id,
+                PromptVersion.kind == "video",
+            )
+        )
+    ).scalars().all()
+    assert len(video_pvs) == 1
+    assert not any(x.is_active for x in video_pvs)
+
+    await _overlay_active_prompt_versions(session, [fr])
+    assert fr.animation_prompt is None
+    assert fr.image_prompt == "keep img"
+
+
+@pytest.mark.asyncio
+async def test_soft_resume_img_pr_does_not_deactivate_prompt_versions(session):
+    """Soft ▶ img_pr (force_wipe=False) must not deactivate PromptVersion."""
+    p = await _mkproject(session)
+    fr = await _mkframe(
+        session, p, 1,
+        image_prompt="keep me",
+        status=FrameStatus.image_prompt_ready,
+    )
+    pv = await _mk_active_pv(session, p, fr, kind="img", text="keep me")
+    p.status = ProjectStatus.image_prompts_ready
+    await session.flush()
+
+    await clear_step_outputs_for_rerun(session, p, "img_pr", force_wipe=False)
+
+    await session.refresh(fr)
+    await session.refresh(pv)
+    assert fr.image_prompt == "keep me"
+    assert pv.is_active is True
+
+
+@pytest.mark.asyncio
+async def test_soft_resume_anim_pr_does_not_deactivate_prompt_versions(session):
+    """Soft ▶ anim_pr must not deactivate video PromptVersion."""
+    p = await _mkproject(session)
+    fr = await _mkframe(
+        session, p, 1,
+        image_prompt="ip",
+        animation_prompt="keep anim",
+        status=FrameStatus.animation_prompt_ready,
+    )
+    pv = await _mk_active_pv(session, p, fr, kind="video", text="keep anim")
+    p.status = ProjectStatus.animation_prompts_ready
+    await session.flush()
+
+    await clear_step_outputs_for_rerun(session, p, "anim_pr", force_wipe=False)
+
+    await session.refresh(fr)
+    await session.refresh(pv)
+    assert fr.animation_prompt == "keep anim"
+    assert pv.is_active is True

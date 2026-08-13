@@ -432,6 +432,30 @@ async def add_prompt_version(
     return pv
 
 
+async def deactivate_prompt_versions(
+    session: AsyncSession,
+    project_id: int,
+    *,
+    kind: str,
+) -> int:
+    """Set is_active=False on all matching PromptVersion rows. Do not delete."""
+    rows = (
+        await session.execute(
+            select(PromptVersion).where(
+                PromptVersion.project_id == project_id,
+                PromptVersion.kind == kind,
+                PromptVersion.is_active.is_(True),
+            )
+        )
+    ).scalars().all()
+    for pv in rows:
+        pv.is_active = False
+    n = len(rows)
+    if n:
+        await session.flush()
+    return n
+
+
 async def project_graph(session: AsyncSession, project: Project) -> dict[str, Any]:
     """Полный граф проекта для визуализации: сцены → кадры → тексты/промты/связи."""
     scenes = list(
