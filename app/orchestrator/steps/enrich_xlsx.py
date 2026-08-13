@@ -174,6 +174,17 @@ def _apply_enrich_ready_status(
     return False
 
 
+async def _harness_before_enrich_ready(
+    session: AsyncSession, project: Project, *, check_mode: bool
+) -> None:
+    """NODE_SYSTEM: excel_gpt gate before enrich_N_ready / node done. Skip checkMode."""
+    if check_mode:
+        return
+    from app.services.agent_harness import harness_gate_or_raise
+
+    await harness_gate_or_raise(session, project, step="excel_gpt")
+
+
 async def _after_excel_gpt_done(
     session: AsyncSession,
     project: Project,
@@ -1192,6 +1203,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         meta.pop("active_excel_gpt_node_key", None)
         project.meta = meta
         flag_modified(project, "meta")
+        await _harness_before_enrich_ready(session, project, check_mode=check_mode)
         _apply_enrich_ready_status(
             project,
             running_status=running_status,
@@ -1516,6 +1528,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
     project.meta = meta
 
+    await _harness_before_enrich_ready(session, project, check_mode=check_mode)
     _apply_enrich_ready_status(
         project,
         running_status=running_status,

@@ -55,15 +55,14 @@ async def _finish_success(
     if not filled:
         raise RuntimeError("GPT не заполнил ни одного image_prompt")
 
+    from app.services.agent_harness import harness_gate_or_raise
+
+    await harness_gate_or_raise(session, project, step="img_pr")
+
     for fr in filled:
         fr.status = FrameStatus.image_prompt_ready
     project.status = ProjectStatus.image_prompts_ready
     await session.flush()
-    await session.commit()
-
-    from app.services.agent_harness import harness_gate_or_raise
-
-    await harness_gate_or_raise(session, project, step="img_pr")
     await session.commit()
 
     from app.services import img_pr_batches as ipb

@@ -39,6 +39,14 @@ class _LocalFallbackNeeded(RuntimeError):
     """kie outage слишком долгий — добиваем локальным composer."""
 
 
+async def _gate_then_mark_anim_ready(session: AsyncSession, project: Project) -> None:
+    """Harness N/N first; animation_prompts_ready only if the gate passes."""
+    from app.services.agent_harness import harness_gate_or_raise
+
+    await harness_gate_or_raise(session, project, step="anim_pr")
+    project.status = ProjectStatus.animation_prompts_ready
+
+
 def _provider_outage(exc: BaseException) -> bool:
     if isinstance(exc, GptApiError) and exc.retryable:
         return True
@@ -224,7 +232,7 @@ async def fill_animation_prompts(
         # Не compute_actual_status: при готовых клипах уходит в videos_ready →
         # auto_advance стартует video, хотя юзер ждал anim_pr.
         if finalize_status:
-            project.status = ProjectStatus.animation_prompts_ready
+            await _gate_then_mark_anim_ready(session, project)
         logger.info(
             "[#{}] make_animation_prompts: nothing to do "
             "(db_ready={}, png={}) → status={}",
@@ -477,19 +485,14 @@ async def fill_animation_prompts(
         await session.flush()
         return stats
 
-    project.status = ProjectStatus.animation_prompts_ready
+    await _gate_then_mark_anim_ready(session, project)
     await session.flush()
     try:
         sheet.write_general(status=project.status.value)
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] xlsx write_general(status) failed: {}", project.id, e)
 
-    # Harness-гейт (обязателен по NODE_SYSTEM): шаг не done, пока проверки не ok.
-    await session.commit()
-    from app.services.agent_harness import harness_gate_or_raise
-
-    await harness_gate_or_raise(session, project, step="anim_pr")
-    await session.commit()  # ops-телеметрия в project.meta
+    await session.commit()  # status + ops-телеметрия в project.meta
     return stats
 
 

@@ -45,6 +45,13 @@ HARNESS_REPAIRABLE_STEPS = frozenset(
     }
 )
 
+# Шаговые N/N-гейты (harness_gate_or_raise step=), не путать со status assembled.
+_IMG_PR_STEPS = frozenset({"img_pr", "image_prompts"})
+_ANIM_PR_STEPS = frozenset({"anim_pr", "animation_prompts"})
+_EXCEL_GPT_STEPS = frozenset(
+    {"excel_gpt", "enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5"}
+)
+
 # Артефакты поздних шагов нельзя требовать на ранних статусах (plan/script/frames).
 _SCENES_REQUIRED_STATUSES = {
     "images_ready",
@@ -225,7 +232,98 @@ def _count_project_log_errors(project_id: int, slug: str) -> tuple[int, str]:
     return len(hits), log.name
 
 
-def verify_project_disk(project_id: int, data_dir: Path, status: str) -> HarnessReport:
+def _load_frame_prompt_rows(
+    project_id: int,
+) -> tuple[list[tuple[int, str, str, str]], str]:
+    """Кадры: (number, voiceover, image_prompt, animation_prompt) + ошибка или ''."""
+    db_file = _db_path()
+    if not db_file.is_file():
+        return [], ""
+    try:
+        db = sqlite3.connect(str(db_file))
+        raw = db.execute(
+            "SELECT number, "
+            "COALESCE(voiceover_text, ''), "
+            "COALESCE(image_prompt, ''), "
+            "COALESCE(animation_prompt, '') "
+            "FROM frames WHERE project_id=? ORDER BY number",
+            (project_id,),
+        ).fetchall()
+        db.close()
+    except Exception as e:  # noqa: BLE001
+        return [], str(e)
+    rows: list[tuple[int, str, str, str]] = []
+    for r in raw:
+        rows.append(
+            (int(r[0] or 0), str(r[1] or ""), str(r[2] or ""), str(r[3] or ""))
+        )
+    return rows, ""
+
+
+def _append_prompt_nn_checks(
+    checks: list[HarnessCheck],
+    repair: list[str],
+    frame_rows: list[tuple[int, str, str, str]],
+    *,
+    status: str,
+    step: str | None,
+) -> None:
+    """N/N по БД: img_pr — все VO с image_prompt; anim_pr — usable img → anim.
+
+    Срабатывает по ``step`` (гейт до *_ready) и по уже выставленному status
+    (второй рубеж auto_advance). excel_gpt не требует image_prompt.
+    """
+    step_key = (step or "").strip().lower()
+    want_img = step_key in _IMG_PR_STEPS or status == "image_prompts_ready"
+    want_anim = step_key in _ANIM_PR_STEPS or status == "animation_prompts_ready"
+    if want_img:
+        missing = [n for n, vo, img, _ in frame_rows if vo.strip() and not img.strip()]
+        vo_n = sum(1 for _, vo, _, _ in frame_rows if vo.strip())
+        img_n = vo_n - len(missing)
+        ok = not missing
+        checks.append(
+            HarnessCheck(
+                "img_pr_vo_coverage",
+                ok,
+                f"img_pr={img_n}/{vo_n} missing={missing[:20]}",
+            )
+        )
+        if not ok:
+            repair.append("img_pr")
+    if want_anim:
+        from app.generation_options import is_skippable_empty_prompt
+
+        missing = [
+            n
+            for n, _, img, anim in frame_rows
+            if (not is_skippable_empty_prompt(img)) and is_skippable_empty_prompt(anim)
+        ]
+        usable = sum(
+            1 for _, _, img, _ in frame_rows if not is_skippable_empty_prompt(img)
+        )
+        ok = not missing
+        checks.append(
+            HarnessCheck(
+                "anim_pr_coverage",
+                ok,
+                f"anim={usable - len(missing)}/{usable} missing={missing[:20]}",
+            )
+        )
+        if not ok:
+            repair.append("anim_pr")
+    if step_key in _EXCEL_GPT_STEPS:
+        checks.append(
+            HarnessCheck(
+                "excel_gpt_gate",
+                True,
+                "disk checks N/A; node coverage already applied",
+            )
+        )
+
+
+def verify_project_disk(
+    project_id: int, data_dir: Path, status: str, *, step: str | None = None
+) -> HarnessReport:
     """Синхронная проверка диска/БД без HTTP (для CLI и сервиса)."""
     run_id = uuid.uuid4().hex[:12]
     checks: list[HarnessCheck] = []
@@ -441,6 +539,28 @@ def verify_project_disk(project_id: int, data_dir: Path, status: str) -> Harness
             )
         )
 
+    nn_rows, nn_err = _load_frame_prompt_rows(project_id)
+    if nn_err:
+        step_key = (step or "").strip().lower()
+        if step_key in _IMG_PR_STEPS or status == "image_prompts_ready":
+            checks.append(HarnessCheck("img_pr_vo_coverage", False, nn_err))
+            repair.append("img_pr")
+        elif step_key in _ANIM_PR_STEPS or status == "animation_prompts_ready":
+            checks.append(HarnessCheck("anim_pr_coverage", False, nn_err))
+            repair.append("anim_pr")
+        if step_key in _EXCEL_GPT_STEPS:
+            checks.append(
+                HarnessCheck(
+                    "excel_gpt_gate",
+                    True,
+                    "disk checks N/A; node coverage already applied",
+                )
+            )
+    else:
+        _append_prompt_nn_checks(
+            checks, repair, nn_rows, status=status, step=step
+        )
+
     # node_runs failed
     failed_n = 0
     try:
@@ -637,9 +757,10 @@ async def harness_gate_or_raise(
     Наблюдаемость (лог/старые failed-записи) в гейт не входит — иначе ошибка
     шага в логе блокировала бы повтор навсегда. Используется нодами после
     записи (anim_pr/img_pr/split/plan…); центральный гейт — в auto_advance.
+    Вызывать ДО смены статуса на *_ready: N/N смотрит ``step``, не status.
     """
     report = await run_harness_verify(
-        session, project, allow_repair=False, include_http=False
+        session, project, allow_repair=False, include_http=False, step=step
     )
     bad = [
         f"{c.name}({c.detail})"
@@ -661,11 +782,12 @@ async def run_harness_verify(
     allow_repair: bool = False,
     include_http: bool = False,
     http_base_url: str = HARNESS_HTTP_BASE,
+    step: str | None = None,
 ) -> HarnessReport:
     """Verify + optional soft repair (POST step run via project_steps)."""
     data_dir = Path(project.data_dir)
     status = str(getattr(project.status, "value", project.status) or "")
-    report = verify_project_disk(int(project.id), data_dir, status)
+    report = verify_project_disk(int(project.id), data_dir, status, step=step)
     if include_http:
         try:
             import anyio
