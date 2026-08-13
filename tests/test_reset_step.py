@@ -647,6 +647,118 @@ async def test_wipe_anim_pr_deactivates_video_prompt_versions(session):
     assert fr.image_prompt == "keep img"
 
 
+def _write_plan_xlsx(path: Path, cells: dict[int, str]) -> None:
+    """Минимальный v8-xlsx: лист «план», кадр 1 в колонке 3 (row → text)."""
+    from openpyxl import Workbook
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "план"
+    for row, text in cells.items():
+        ws.cell(row=row, column=3, value=text)
+    wb.save(path)
+
+
+@pytest.mark.asyncio
+async def test_wipe_img_pr_clears_xlsx_r45_r46(session, tmp_path: Path, monkeypatch):
+    """reset_step(img_pr) чистит R45/R46 листа «план» — иначе xlsx→DB sync
+    вернёт старые image-промты после wipe."""
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    p = await _mkproject(session, slug="p1")
+    _write_plan_xlsx(
+        p.data_dir / "project.xlsx",
+        {45: "img shot1 stale", 46: "img shot2 stale"},
+    )
+    fr = await _mkframe(
+        session, p, 1,
+        image_prompt="img shot1 stale",
+        status=FrameStatus.image_prompt_ready,
+    )
+    p.status = ProjectStatus.image_prompts_ready
+    await session.flush()
+
+    summary = await reset_step(session, p, "img_pr")
+
+    await session.refresh(fr)
+    assert fr.image_prompt is None
+    assert summary["img_pr"]["xlsx_r45_cleared"] == 2
+    from app.storage.plan_sheet_v8 import read_plan_image_prompt_cells
+
+    assert read_plan_image_prompt_cells(p, [1], shot=1) == [(1, "")]
+    assert read_plan_image_prompt_cells(p, [1], shot=2) == [(1, "")]
+
+
+@pytest.mark.asyncio
+async def test_wipe_anim_pr_clears_xlsx_r48_r64(session, tmp_path: Path, monkeypatch):
+    """reset_step(anim_pr) чистит R48/R64 листа «план», но не трогает
+    R45 (image-промты — upstream шаг)."""
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    p = await _mkproject(session, slug="p1")
+    _write_plan_xlsx(
+        p.data_dir / "project.xlsx",
+        {45: "img prompt keep", 48: "video prompt stale", 64: "video2 prompt stale"},
+    )
+    fr = await _mkframe(
+        session, p, 1,
+        image_prompt="img prompt keep",
+        animation_prompt="video prompt stale",
+        status=FrameStatus.animation_prompt_ready,
+    )
+    p.status = ProjectStatus.animation_prompts_ready
+    await session.flush()
+
+    summary = await reset_step(session, p, "anim_pr")
+
+    await session.refresh(fr)
+    assert fr.animation_prompt is None
+    assert summary["anim_pr"]["xlsx_r48_cleared"] == 2
+    from app.storage.plan_sheet_v8 import (
+        read_plan_animation_prompt_cells,
+        read_plan_animation_prompt_shot2_cells,
+        read_plan_image_prompt_cells,
+    )
+
+    assert read_plan_animation_prompt_cells(p, [1]) == [(1, "")]
+    assert read_plan_animation_prompt_shot2_cells(p, [1]) == [(1, "")]
+    # upstream R45 не тронут
+    assert read_plan_image_prompt_cells(p, [1], shot=1) == [(1, "img prompt keep")]
+
+
+@pytest.mark.asyncio
+async def test_reset_hero_deactivates_hero_prompt_versions(session, tmp_path: Path):
+    """reset_step(hero) деактивирует PromptVersion kind=hero (строки-история
+    остаются) — иначе База-workspace покажет stale hero-промт без файлов."""
+    p = await _mkproject(session)
+    fr = await _mkframe(session, p, 1)
+    hero_pv = await _mk_active_pv(session, p, fr, kind="hero", text="hero look v1")
+    h_p = tmp_path / "hero.png"
+    h_p.write_bytes(b"x")
+    await _mkart(session, p, ArtifactKind.hero_reference, path=str(h_p))
+    p.status = ProjectStatus.items_ready
+    await session.flush()
+
+    summary = await reset_step(session, p, "hero")
+
+    await session.refresh(hero_pv)
+    assert hero_pv.is_active is False
+    assert summary["hero"]["prompt_versions_deactivated"] == 1
+    hero_pvs = (
+        await session.execute(
+            select(PromptVersion).where(
+                PromptVersion.project_id == p.id,
+                PromptVersion.kind == "hero",
+            )
+        )
+    ).scalars().all()
+    assert len(hero_pvs) == 1  # история не удаляется
+    assert not any(x.is_active for x in hero_pvs)
+
+
 @pytest.mark.asyncio
 async def test_soft_resume_img_pr_does_not_deactivate_prompt_versions(session):
     """Soft ▶ img_pr (force_wipe=False) must not deactivate PromptVersion."""
