@@ -293,7 +293,7 @@ async def test_wipe_after_img_pr_leaves_no_resurrection(env) -> None:
 
     async with factory() as s:
         p = await s.get(Project, pid)
-        from app.services import db_apply, db_v2
+        from app.services import db_apply
 
         await db_apply.apply_ops(
             s,

@@ -225,7 +225,6 @@ def make_fake_operator_api(
     """
     from types import SimpleNamespace
 
-    sc = scenario or FakeScenario()
     ch = chaos or FakeChaos()
 
     async def _fake(
