@@ -141,6 +141,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 uuid_map_text=uuid_map,
             )
             ops = list(result.apply_ops or [])
+            if ops:
+                from app.services.node_write_contract import filter_ops_for_node
+
+                ops = filter_ops_for_node(ops, node_kind="img_pr")
             if not ops and not result.ops_applied_inline:
                 raise RuntimeError("пустой apply-ops после GPT")
             # Один apply в конце (не по батчам) — отдельная короткая сессия.
@@ -157,7 +161,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                                     "project gone during img_pr apply"
                                 )
                             await db_apply.apply_ops(
-                                apply_session, proj, ops, export_xlsx=True
+                                apply_session,
+                                proj,
+                                ops,
+                                export_xlsx=True,
+                                node_kind="img_pr",
                             )
                             await apply_session.commit()
                         last_apply_err = None

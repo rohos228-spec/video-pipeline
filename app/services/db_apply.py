@@ -1037,6 +1037,7 @@ async def apply_ops(
     characters: list[Any] | None = None,
     scenes: list[Any] | None = None,
     export_xlsx: bool = True,
+    node_kind: str | None = None,
 ) -> dict:
     """Применить JSON-операции к проекту (fail-closed, одна транзакция).
 
@@ -1044,6 +1045,8 @@ async def apply_ops(
     ``characters`` — реестр персонажей ``[{id, имя, внешность, …}]`` → Entity.
     ``scenes`` — реестр сцен с ``start_words``/``end_words`` → meta.scene_registry.
     ``replace_frames``: ``{"target":"replace_frames","frames":[{"закадр":"…"},…]}``.
+    ``node_kind`` — опциональный фильтр полей (img_pr / anim_pr / excel_gpt*);
+    ``None`` = не трогать ops (поведение остальных вызывающих без изменений).
     После записи по умолчанию экспортируем в project.xlsx.
     """
     from app.models import Entity
@@ -1054,6 +1057,10 @@ async def apply_ops(
     )
 
     ops = list(ops or [])
+    if node_kind:
+        from app.services.node_write_contract import filter_ops_for_node
+
+        ops = filter_ops_for_node(ops, node_kind=str(node_kind))
     chars_n = 0
     scenes_n = 0
     if characters:

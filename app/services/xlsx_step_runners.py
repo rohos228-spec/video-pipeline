@@ -677,7 +677,7 @@ async def _apply_img_pr_ops_now(
         if proj is None:
             raise RuntimeError(f"project #{project.id} gone during img_pr apply")
         await db_apply.apply_ops(
-            session, proj, ops, export_xlsx=export_xlsx
+            session, proj, ops, export_xlsx=export_xlsx, node_kind="img_pr"
         )
         await session.commit()
     logger.info(

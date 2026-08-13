@@ -113,7 +113,9 @@ async def _fill_remaining_local(
     saved = 0
     for i in range(0, len(ops), 40):
         part = ops[i : i + 40]
-        result = await db_apply.apply_ops(session, project, part, export_xlsx=True)
+        result = await db_apply.apply_ops(
+            session, project, part, export_xlsx=True, node_kind="anim_pr"
+        )
         saved += int(result.get("updated") or 0)
         await session.commit()
     for fr in frames:
@@ -192,7 +194,11 @@ async def fill_animation_prompts(
         if repair_ops:
             try:
                 await db_apply.apply_ops(
-                    session, project, repair_ops, export_xlsx=True
+                    session,
+                    project,
+                    repair_ops,
+                    export_xlsx=True,
+                    node_kind="anim_pr",
                 )
             except db_apply.ApplyOpsError as e:
                 logger.warning(
@@ -533,7 +539,9 @@ async def _save_anim_pr_batch(
             f"{[it.frame.number for it in batch]} (shot_0{shot}) — uuid/длина?"
         )
     try:
-        result = await db_apply.apply_ops(session, project, ops, export_xlsx=True)
+        result = await db_apply.apply_ops(
+            session, project, ops, export_xlsx=True, node_kind="anim_pr"
+        )
     except db_apply.ApplyOpsError as e:
         raise RuntimeError(f"anim_pr apply_ops отклонён: {e}") from None
     saved = int(result.get("updated") or 0)

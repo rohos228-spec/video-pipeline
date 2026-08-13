@@ -62,6 +62,37 @@ def _apply_ops_has_payload(data: dict | None) -> bool:
     )
 
 
+def _log_apply_ops_coverage(
+    node_key: str,
+    apply_ops: dict | None,
+    input_paths: list[Path],
+) -> None:
+    """Дешёвый лог покрытия uuid из db_frames*. Не raise — гейт в enrich_xlsx."""
+    if not isinstance(apply_ops, dict):
+        return
+    ops = [o for o in (apply_ops.get("ops") or []) if isinstance(o, dict)]
+    if not ops and (apply_ops.get("characters") or apply_ops.get("scenes")):
+        return
+    try:
+        from app.services.node_write_contract import coverage_report
+        from app.services.volume_batches import load_expected_frame_uuids
+    except Exception:  # noqa: BLE001
+        return
+    expected = load_expected_frame_uuids(input_paths)
+    if not expected:
+        return
+    cov = coverage_report(ops, expected)
+    if cov.ok:
+        return
+    logger.warning(
+        "gpt_operator/api: node={} coverage {}/{} missing={}",
+        node_key,
+        len(cov.matched),
+        len(expected),
+        cov.missing[:8],
+    )
+
+
 def _stub_analysis(*, role: str, prompt: str, accompanying: str) -> CheckAnalysis:
     """Детерминированный stub-вердикт в формате vp.check.v1."""
     probe = f"{prompt}\n{accompanying}\n".lower()
@@ -568,6 +599,9 @@ async def _run_operator_api_real(
         reply_path = out_dir / "gpt_reply.txt"
         reply_path.write_text(reply_text, encoding="utf-8")
         output_paths.append(reply_path)
+
+    if apply_ops is not None and effective_output == "project_file" and not is_check:
+        _log_apply_ops_coverage(node_key, apply_ops, list(input_paths or []))
 
     return OperatorApiResult(
         reply_text=reply_text,

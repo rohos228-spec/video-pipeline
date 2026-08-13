@@ -809,6 +809,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             [p.name for p in data_paths],
         )
         raise_if_cancelled(project.id)
+        expected_frame_uuids: list[str] = []
         # DB SoT: для project_file просим apply-ops JSON вместо TSV (+ uuid-мап).
         if output_mode == "project_file" and not check_mode:
             import json as _json
@@ -882,6 +883,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 _json.dumps(db_ctx, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+            expected_frame_uuids = [
+                str(row.get("uuid") or "").strip()
+                for row in (db_ctx.get("frames") or [])
+                if str(row.get("uuid") or "").strip()
+            ]
             # Только DB-снимок. Никакого project.xlsx / check_report / мусора
             # со стрелок — иначе модель снова думает про Excel.
             data_paths = [ctx_path]
@@ -1027,8 +1033,38 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 if isinstance(ops_data, dict)
                 else []
             )
+            # check/report_only не пишут (или пишут DB-check без стрипа).
+            # excel_gpt на графе с img_pr/anim_pr не пишет чужие промты.
+            apply_node_kind: str | None = None
+            if ops_list and not check_mode:
+                from app.services.node_write_contract import filter_ops_for_node
+
+                n_fields_before = sum(
+                    len(op.get("fields") or {})
+                    for op in ops_list
+                    if isinstance(op, dict)
+                )
+                ops_list = filter_ops_for_node(
+                    ops_list, node_kind="excel_gpt_no_prompts"
+                )
+                apply_node_kind = "excel_gpt_no_prompts"
+                n_fields_after = sum(
+                    len(op.get("fields") or {})
+                    for op in ops_list
+                    if isinstance(op, dict)
+                )
+                dropped = n_fields_before - n_fields_after
+                if dropped:
+                    logger.info(
+                        "[#{}] enrich_xlsx node={}: stripped {} prompt "
+                        "fields (excel_gpt_no_prompts)",
+                        project.id,
+                        node_key,
+                        dropped,
+                    )
             if ops_data and (ops_list or chars_list or scenes_list):
                 from app.services import db_apply
+                from app.services.node_write_contract import coverage_report
 
                 try:
                     applied = await db_apply.apply_ops(
@@ -1038,6 +1074,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         characters=chars_list or None,
                         scenes=scenes_list or None,
                         export_xlsx=bool(ops_data.get("export_xlsx", True)),
+                        node_kind=apply_node_kind,
                     )
                     await session.commit()
                     logger.info(
@@ -1049,6 +1086,35 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         applied.get("characters"),
                         applied.get("scenes"),
                     )
+                    skip_coverage = bool(
+                        scene_grammar
+                        and (chars_list or scenes_list)
+                        and not ops_list
+                    )
+                    if expected_frame_uuids and not check_mode and not skip_coverage:
+                        cov = coverage_report(
+                            ops_list, expected_uuids=expected_frame_uuids
+                        )
+                        if cov.extra:
+                            logger.warning(
+                                "[#{}] enrich_xlsx node={}: extra frame_uuid {}",
+                                project.id,
+                                node_key,
+                                cov.extra[:8],
+                            )
+                        if not cov.ok:
+                            _persist_excel_gpt_reply_for_ui(
+                                project,
+                                node_key,
+                                data_paths=data_paths,
+                                api_res=api_res,
+                            )
+                            raise RuntimeError(
+                                f"enrich_xlsx node={node_key}: покрытие "
+                                f"{len(cov.matched)}/{len(expected_frame_uuids)} "
+                                f"не N/N, missing={cov.missing}. "
+                                "Нода не done."
+                            )
                 except db_apply.ApplyOpsError as e:
                     # Ответ модели уже на диске — сохраняем в meta, иначе UI
                     # показывает «нет результата» при отклонённых полях.
