@@ -62,6 +62,51 @@ def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, str]:
     return out
 
 
+_EXCEL_GPT_VO_MAX = 400
+_ATTR_MAX = 500
+
+
+def _clip(text: str, n: int) -> str:
+    t = text.strip()
+    return t if len(t) <= n else t[: n - 1] + "…"
+
+
+def slim_attrs_for_excel_gpt(attrs: dict[str, Any] | None) -> dict[str, str]:
+    picked = _pick_attrs(attrs)
+    return {k: _clip(v, _ATTR_MAX) for k, v in picked.items()}
+
+
+def build_excel_gpt_db_context(
+    *,
+    project_id: int,
+    slug: str,
+    frames: list[Any],
+    characters: list[dict[str, str]],
+) -> dict[str, Any]:
+    """Снимок для excel_gpt: whitelist attrs + короткий закадр, без сырого attrs."""
+    rows: list[dict[str, Any]] = []
+    for fr in frames:
+        uuid = str(getattr(fr, "uuid", None) or "").strip()
+        if not uuid:
+            continue
+        row: dict[str, Any] = {"number": getattr(fr, "number", None), "uuid": uuid}
+        vo = str(getattr(fr, "voiceover_text", None) or "")
+        if vo.strip():
+            row["voiceover_text"] = _clip(vo, _EXCEL_GPT_VO_MAX)
+        meaning = str(getattr(fr, "meaning", None) or "").strip()
+        if meaning:
+            row["meaning"] = _clip(meaning, _ATTR_MAX)
+        row.update(slim_attrs_for_excel_gpt(getattr(fr, "attrs", None)))
+        rows.append(row)
+    return {
+        "source": "db_v2",
+        "project_id": project_id,
+        "slug": slug,
+        "frames": rows,
+        "characters": list(characters or []),
+    }
+
+
 def build_img_pr_db_context(
     *,
     project_id: int,

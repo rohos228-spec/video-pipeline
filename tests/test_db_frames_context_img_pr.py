@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from app.services.db_frames_context import build_img_pr_db_context
@@ -62,3 +63,19 @@ def test_img_pr_db_context_skips_frames_without_uuid() -> None:
         characters=[],
     )
     assert ctx["frames"] == []
+
+
+def test_excel_gpt_context_is_slim_and_keeps_vo_snippet() -> None:
+    fr = SimpleNamespace(
+        number=1, uuid="ab" * 12, voiceover_text="слово " * 200,
+        meaning="m", attrs={"place": "кухня", "noise": "X" * 5000, "shot01_bg": "стол"},
+    )
+    from app.services.db_frames_context import build_excel_gpt_db_context
+    ctx = build_excel_gpt_db_context(project_id=14, slug="x", frames=[fr], characters=[])
+    row = ctx["frames"][0]
+    assert "noise" not in row
+    assert "attrs" not in row
+    assert row["place"] == "кухня"
+    assert len(row["voiceover_text"]) <= 400
+    blob = json.dumps(ctx)
+    assert len(blob) < 20_000

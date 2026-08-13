@@ -826,6 +826,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
             from app.models import Entity
             from app.services import db_apply, db_v2
+            from app.services.db_frames_context import build_excel_gpt_db_context
             from app.services.excel_characters import entity_cards_for_gpt
 
             await db_v2.backfill_project_v2(session, project)
@@ -848,36 +849,41 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             # Компактный снимок DB (SoT). Excel в GPT не отдаём вообще.
             # scene_grammar: attrs не тащим — пишем с нуля.
             # character_registry: voiceover + текущие персонажи кадра + Entity.
-            frame_rows: list[dict] = []
-            for fr in frames_for_map:
-                if not fr.uuid:
-                    continue
-                row: dict = {
-                    "number": fr.number,
-                    "uuid": fr.uuid,
-                    "voiceover_text": fr.voiceover_text or "",
-                    "meaning": fr.meaning or "",
+            # excel_gpt else: slim whitelist + короткий VO, без сырого attrs.
+            if scene_grammar or character_registry:
+                frame_rows: list[dict] = []
+                for fr in frames_for_map:
+                    if not fr.uuid:
+                        continue
+                    row: dict = {
+                        "number": fr.number,
+                        "uuid": fr.uuid,
+                        "voiceover_text": fr.voiceover_text or "",
+                        "meaning": fr.meaning or "",
+                    }
+                    if character_registry:
+                        attrs = fr.attrs or {}
+                        row["персонажи"] = str(
+                            attrs.get("characters")
+                            or attrs.get("персонажи")
+                            or attrs.get("persons")
+                            or ""
+                        )
+                    frame_rows.append(row)
+                db_ctx: dict = {
+                    "source": "db_v2",
+                    "project_id": project.id,
+                    "slug": project.slug,
+                    "frames": frame_rows,
+                    "characters": entity_cards_for_gpt(ents),
                 }
-                if scene_grammar:
-                    pass
-                elif character_registry:
-                    attrs = fr.attrs or {}
-                    row["персонажи"] = str(
-                        attrs.get("characters")
-                        or attrs.get("персонажи")
-                        or attrs.get("persons")
-                        or ""
-                    )
-                else:
-                    row["attrs"] = fr.attrs or {}
-                frame_rows.append(row)
-            db_ctx: dict = {
-                "source": "db_v2",
-                "project_id": project.id,
-                "slug": project.slug,
-                "frames": frame_rows,
-                "characters": entity_cards_for_gpt(ents),
-            }
+            else:
+                db_ctx = build_excel_gpt_db_context(
+                    project_id=project.id,
+                    slug=project.slug,
+                    frames=frames_for_map,
+                    characters=entity_cards_for_gpt(ents),
+                )
             ctx_dir = project.data_dir / "excel_gpt_uploads" / str(node_key)
             ctx_dir.mkdir(parents=True, exist_ok=True)
             ctx_path = ctx_dir / "db_frames.json"
