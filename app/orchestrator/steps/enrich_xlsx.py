@@ -46,9 +46,10 @@ _APPLY_OPS_HINT = (
     "# ЗАПИСЬ В ПРОЕКТ (предпочтительный формат)\n"
     "Верни ТОЛЬКО JSON apply-ops (без TSV, без `# Лист:`, без `@row=`):\n"
     '{"ops":[{"frame_uuid":"<uuid кадра>","fields":{...}}]}\n'
-    "Поля по-человечески: закадр, промт_картинки, промт_видео, смысл, "
-    "длительность, промт_картинки_2, промт_видео_2, персонажи; общий план: "
+    "Поля по-человечески: закадр, смысл, длительность, персонажи; общий план: "
     '{"target":"project","fields":{"общий_план":"…"}}.\n'
+    "ЗАПРЕЩЕНО: промт_картинки, промт_видео, промт_картинки_2, "
+    "промт_видео_2 — их пишут отдельные ноды, такие поля будут отброшены.\n"
     "Реестр персонажей (опционально в том же JSON): "
     '{"characters":[{"id":"c01","имя":"…","внешность":"…","одежда":"…",'
     '"характер":"…","правила":""}],'
@@ -96,6 +97,27 @@ def _is_scene_grammar_prompt(variant: str | None, master: str | None) -> bool:
 def _is_character_registry_prompt(variant: str | None, master: str | None) -> bool:
     blob = f"{variant or ''}\n{(master or '')[:800]}".casefold()
     return any(m in blob for m in _CHARACTER_REGISTRY_PROMPT_MARKERS)
+
+
+def _node_kind_for_check_fix(project: Project, node_key: str | None) -> str:
+    """Права записи для checkFix: как у проверяемой (upstream) ноды.
+
+    Check на промтах картинок может чинить image_prompt, на промтах видео —
+    animation_prompt; всё остальное пишет без prompt-полей.
+    """
+    up: str | None = None
+    if node_key:
+        try:
+            from app.services.gpt_operator import upstream_node_type_for_check
+
+            up = upstream_node_type_for_check(project, node_key)
+        except Exception:  # noqa: BLE001
+            up = None
+    if up in ("image_prompts",):
+        return "img_pr"
+    if up in ("animation_prompts",):
+        return "anim_pr"
+    return "excel_gpt_no_prompts"
 
 # Маппинг slot_idx (1..5) → (running_status, ready_status, step_code).
 _SLOT_MAP: dict[int, tuple[ProjectStatus, ProjectStatus, str]] = {
@@ -843,6 +865,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             # character_registry: voiceover + текущие персонажи кадра + Entity.
             # excel_gpt else: slim whitelist + короткий VO, без сырого attrs.
             if scene_grammar or character_registry:
+                from app.services.db_frames_context import (
+                    ATTR_TEXT_MAX,
+                    ENTITY_VO_MAX,
+                    clip_text,
+                )
+
                 frame_rows: list[dict] = []
                 for fr in frames_for_map:
                     if not fr.uuid:
@@ -850,8 +878,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     row: dict = {
                         "number": fr.number,
                         "uuid": fr.uuid,
-                        "voiceover_text": fr.voiceover_text or "",
-                        "meaning": fr.meaning or "",
+                        "voiceover_text": clip_text(
+                            fr.voiceover_text or "", ENTITY_VO_MAX
+                        ),
+                        "meaning": clip_text(fr.meaning or "", ATTR_TEXT_MAX),
                     }
                     if character_registry:
                         attrs = fr.attrs or {}
@@ -1033,21 +1063,25 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 if isinstance(ops_data, dict)
                 else []
             )
-            # check/report_only не пишут (или пишут DB-check без стрипа).
-            # excel_gpt на графе с img_pr/anim_pr не пишет чужие промты.
+            # check/report_only не пишут; checkFix пишет с правами
+            # проверяемой ноды. excel_gpt на графе с img_pr/anim_pr не пишет
+            # чужие промты.
             apply_node_kind: str | None = None
-            if ops_list and not check_mode:
+            if ops_list:
                 from app.services.node_write_contract import filter_ops_for_node
 
+                if check_mode:
+                    apply_node_kind = _node_kind_for_check_fix(project, node_key)
+                else:
+                    apply_node_kind = "excel_gpt_no_prompts"
                 n_fields_before = sum(
                     len(op.get("fields") or {})
                     for op in ops_list
                     if isinstance(op, dict)
                 )
                 ops_list = filter_ops_for_node(
-                    ops_list, node_kind="excel_gpt_no_prompts"
+                    ops_list, node_kind=apply_node_kind
                 )
-                apply_node_kind = "excel_gpt_no_prompts"
                 n_fields_after = sum(
                     len(op.get("fields") or {})
                     for op in ops_list
@@ -1056,19 +1090,54 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 dropped = n_fields_before - n_fields_after
                 if dropped:
                     logger.info(
-                        "[#{}] enrich_xlsx node={}: stripped {} prompt "
-                        "fields (excel_gpt_no_prompts)",
+                        "[#{}] enrich_xlsx node={}: stripped {} foreign "
+                        "fields (node_kind={})",
                         project.id,
                         node_key,
                         dropped,
+                        apply_node_kind,
                     )
             if ops_data and (ops_list or chars_list or scenes_list):
                 from app.services import db_apply
                 from app.services.node_write_contract import (
-                    coverage_report,
+                    precheck_coverage,
                     skip_frame_coverage,
                 )
 
+                skip_coverage = skip_frame_coverage(
+                    scene_grammar=scene_grammar,
+                    character_registry=character_registry,
+                    ops_list=ops_list,
+                    chars_list=chars_list,
+                    scenes_list=scenes_list,
+                )
+                # Покрытие проверяем ДО записи: частичный apply не должен
+                # попадать в БД, иначе soft-retry стартует на мусоре.
+                if expected_frame_uuids and not check_mode and not skip_coverage:
+                    cov = precheck_coverage(
+                        ops_list, expected_frame_uuids
+                    )
+                    if cov.extra:
+                        logger.warning(
+                            "[#{}] enrich_xlsx node={}: extra frame_uuid {}",
+                            project.id,
+                            node_key,
+                            cov.extra[:8],
+                        )
+                    if not cov.ok:
+                        _persist_excel_gpt_reply_for_ui(
+                            project,
+                            node_key,
+                            data_paths=data_paths,
+                            api_res=api_res,
+                        )
+                        raise RuntimeError(
+                            f"enrich_xlsx node={node_key}: покрытие "
+                            f"{len(cov.matched)}/{len(expected_frame_uuids)} "
+                            f"не N/N, missing={cov.missing}. "
+                            "БД не изменена. Нода не done."
+                        )
+                wants_xlsx_export = bool(ops_data.get("export_xlsx", True))
                 try:
                     applied = await db_apply.apply_ops(
                         session,
@@ -1076,51 +1145,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         ops_list,
                         characters=chars_list or None,
                         scenes=scenes_list or None,
-                        export_xlsx=bool(ops_data.get("export_xlsx", True)),
+                        export_xlsx=False,
                         node_kind=apply_node_kind,
                     )
                     await session.commit()
-                    logger.info(
-                        "[#{}] enrich_xlsx node={}: apply-ops записано "
-                        "ops={} characters={} scenes={} (DB→xlsx)",
-                        project.id,
-                        node_key,
-                        applied.get("updated"),
-                        applied.get("characters"),
-                        applied.get("scenes"),
-                    )
-                    skip_coverage = skip_frame_coverage(
-                        scene_grammar=scene_grammar,
-                        character_registry=character_registry,
-                        ops_list=ops_list,
-                        chars_list=chars_list,
-                        scenes_list=scenes_list,
-                    )
-                    if expected_frame_uuids and not check_mode and not skip_coverage:
-                        cov = coverage_report(
-                            ops_list, expected_uuids=expected_frame_uuids
-                        )
-                        if cov.extra:
-                            logger.warning(
-                                "[#{}] enrich_xlsx node={}: extra frame_uuid {}",
-                                project.id,
-                                node_key,
-                                cov.extra[:8],
-                            )
-                        if not cov.ok:
-                            _persist_excel_gpt_reply_for_ui(
-                                project,
-                                node_key,
-                                data_paths=data_paths,
-                                api_res=api_res,
-                            )
-                            raise RuntimeError(
-                                f"enrich_xlsx node={node_key}: покрытие "
-                                f"{len(cov.matched)}/{len(expected_frame_uuids)} "
-                                f"не N/N, missing={cov.missing}. "
-                                "Нода не done."
-                            )
                 except db_apply.ApplyOpsError as e:
+                    await session.rollback()
                     # Ответ модели уже на диске — сохраняем в meta, иначе UI
                     # показывает «нет результата» при отклонённых полях.
                     _persist_excel_gpt_reply_for_ui(
@@ -1132,6 +1162,33 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     raise RuntimeError(
                         f"enrich_xlsx node={node_key}: apply-ops отклонён: {e}"
                     ) from None
+                if wants_xlsx_export:
+                    # Excel — зеркало: экспортируем только после commit,
+                    # чтобы файл не уезжал вперёд БД.
+                    try:
+                        applied["exported"] = (
+                            await db_apply.export_project_xlsx_snapshot(
+                                session, project
+                            )
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "[#{}] enrich_xlsx node={}: export xlsx после "
+                            "commit failed (БД — SoT, зеркало обновится "
+                            "на следующем sync): {}",
+                            project.id,
+                            node_key,
+                            e,
+                        )
+                logger.info(
+                    "[#{}] enrich_xlsx node={}: apply-ops записано "
+                    "ops={} characters={} scenes={} (DB→xlsx)",
+                    project.id,
+                    node_key,
+                    applied.get("updated"),
+                    applied.get("characters"),
+                    applied.get("scenes"),
+                )
             elif ops_data:
                 detail = (
                     str(ops_data.get("error") or ops_data.get("report") or "")

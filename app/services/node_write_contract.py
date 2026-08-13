@@ -69,6 +69,22 @@ def _keep_field(key: str, node_kind: str) -> bool:
     return True
 
 
+def count_prompt_fields(ops: list[dict[str, Any]] | None) -> int:
+    """Сколько prompt-полей несут ops (для аудита обходов контракта)."""
+    n = 0
+    for op in ops or []:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        for key in fields:
+            canon = _canon_field(str(key))
+            if canon in PROMPT_FIELDS or _norm_key(str(key)) in _PROMPT_KEYS:
+                n += 1
+    return n
+
+
 def filter_ops_for_node(
     ops: list[dict[str, Any]] | None,
     *,
@@ -147,3 +163,26 @@ def skip_frame_coverage(
         and (chars_list or scenes_list or character_registry)
         and (not ops_list or character_registry)
     )
+
+
+def precheck_coverage(
+    ops: list[dict[str, Any]] | None,
+    expected_uuids: list[str],
+    *,
+    repair_near_miss: bool = True,
+) -> Coverage:
+    """Гейт ДО ``apply_ops``: near-miss repair (in-place) + покрытие N/N.
+
+    Вызывается до любой записи в БД — частичный apply не должен
+    фиксироваться, иначе retry стартует на уже испорченных данных.
+    """
+    from app.services.db_apply import repair_near_miss_frame_uuids
+
+    frame_ops = [
+        op
+        for op in (ops or [])
+        if isinstance(op, dict) and op.get("target", "frame") == "frame"
+    ]
+    if repair_near_miss and expected_uuids:
+        repair_near_miss_frame_uuids(frame_ops, expected_uuids)
+    return coverage_report(ops, expected_uuids=expected_uuids)

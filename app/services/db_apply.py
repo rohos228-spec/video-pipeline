@@ -1029,6 +1029,37 @@ def export_project_xlsx(
     }
 
 
+async def export_project_xlsx_snapshot(
+    session: AsyncSession,
+    project: Project,
+) -> dict:
+    """Экспортировать текущее состояние БД в project.xlsx.
+
+    Отдельно от ``apply_ops``: вызывающий сначала коммитит проверенную
+    запись (coverage N/N), потом зеркалит её в Excel — файл не должен
+    уезжать вперёд БД при отклонённом apply.
+    """
+    from app.models import Entity
+
+    frames = list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.number)
+            )
+        ).scalars()
+    )
+    ents = list(
+        (
+            await session.execute(
+                select(Entity).where(Entity.project_id == project.id)
+            )
+        ).scalars()
+    )
+    return export_project_xlsx(project, frames, entities=ents)
+
+
 async def apply_ops(
     session: AsyncSession,
     project: Project,
@@ -1256,14 +1287,7 @@ async def apply_ops(
 
     exported = None
     if export_xlsx:
-        ents = list(
-            (
-                await session.execute(
-                    select(Entity).where(Entity.project_id == project.id)
-                )
-            ).scalars()
-        )
-        exported = export_project_xlsx(project, all_frames, entities=ents)
+        exported = await export_project_xlsx_snapshot(session, project)
     return {
         "ok": True,
         "updated": updated,

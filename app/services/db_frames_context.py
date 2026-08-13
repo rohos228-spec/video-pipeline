@@ -64,11 +64,18 @@ def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, str]:
 
 _EXCEL_GPT_VO_MAX = 400
 _ATTR_MAX = 500
+# Entity-ноды (scene_grammar/character_registry): VO нужен как якорь границ,
+# поэтому лимит мягче, чем для excel_gpt, но безлимитный текст запрещён.
+ENTITY_VO_MAX = 2000
+ATTR_TEXT_MAX = _ATTR_MAX
 
 
-def _clip(text: str, n: int) -> str:
+def clip_text(text: str, n: int) -> str:
     t = text.strip()
     return t if len(t) <= n else t[: n - 1] + "…"
+
+
+_clip = clip_text
 
 
 def slim_attrs_for_excel_gpt(attrs: dict[str, Any] | None) -> dict[str, str]:

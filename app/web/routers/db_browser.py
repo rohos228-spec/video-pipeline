@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -298,6 +299,16 @@ async def apply_ops(
         if op.кадры is not None:
             item["кадры"] = op.кадры
         ops.append(item)
+    from app.services.node_write_contract import count_prompt_fields
+
+    n_prompt = count_prompt_fields(ops)
+    if n_prompt:
+        logger.warning(
+            "[#{}] REST apply-ops: {} prompt-полей мимо node_write_contract "
+            "(операторский инструмент — разрешено, но видно в аудите)",
+            project.id,
+            n_prompt,
+        )
     try:
         result = await db_apply.apply_ops(
             session,
@@ -2260,6 +2271,17 @@ async def orchestrator_chat(
         chars = ops_data.get("characters") or []
         scenes = ops_data.get("scenes") or []
         if ops or chars or scenes:
+            from app.services.node_write_contract import count_prompt_fields
+
+            n_prompt = count_prompt_fields(ops)
+            if n_prompt:
+                logger.warning(
+                    "[#{}] orchestrator chat apply-ops: {} prompt-полей "
+                    "мимо node_write_contract (ручная правка — ок, "
+                    "но видно в аудите)",
+                    project.id,
+                    n_prompt,
+                )
             try:
                 applied = await db_apply.apply_ops(
                     session,
