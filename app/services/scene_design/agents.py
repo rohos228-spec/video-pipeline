@@ -848,21 +848,31 @@ def parse_agent_slice(
     list_key = LIST_KEY[agent]
     markers: tuple[str, ...] = (list_key, "error")
     if agent == SKELETON:
-        # Модель иногда пишет «сцены» вместо scenes.
-        markers = (list_key, "сцены", "error")
+        # V3: cells; legacy: scenes / «сцены».
+        markers = ("cells", list_key, "сцены", "error")
     data = extract_json_object(text, marker_keys=markers)
     if data is None:
         raise SceneDesignAgentError(
             f"scene_design/{agent}: в ответе нет JSON (len={len(text or '')})"
         )
-    if agent == SKELETON and not isinstance(data.get(list_key), list):
-        alt = data.get("сцены")
-        if isinstance(alt, list):
-            data[list_key] = alt
+    if agent == SKELETON:
+        if not isinstance(data.get(list_key), list):
+            alt = data.get("сцены")
+            if isinstance(alt, list):
+                data[list_key] = alt
+        # Нормализация cells→scenes без циклического import на уровне модуля.
+        from app.services.scene_design.skeleton import normalize_skeleton_draft
+
+        normalize_skeleton_draft(data)
     err = str(data.get("error") or "").strip()
     if err:
         raise SceneDesignAgentError(f"scene_design/{agent}: агент вернул error: {err}")
     items = data.get(list_key)
+    if agent == SKELETON and (not isinstance(items, list) or not items):
+        # После normalize scenes обязателен; cells тоже годится как сигнал успеха.
+        cells = data.get("cells")
+        if isinstance(cells, list) and cells:
+            items = data.get(list_key) or []
     if not isinstance(items, list) or not items:
         keys = sorted(str(k) for k in data.keys())
         raise SceneDesignAgentError(
