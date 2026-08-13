@@ -195,18 +195,40 @@ def slice_to_cells(
                     "нити",
                     "связь_с_прошлой",
                     "суть",
+                    "фокус",
                     "главное",
                     "биты",
+                    "смысловые_части",
+                    "предметы",
                     "персонажи",
                     "место_id",
                     "время",
                     "длительность_сек",
                     "фон_разовый",
+                    "id_cell",
                 ),
                 quote_field=None,
                 full_vo_norm=vo_norm,
             )
             cells.extend(part)
+        for item in slice_data.get("items_seed") or []:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("id") or "").strip()
+            if not key:
+                continue
+            cells.extend(
+                _item_fields(
+                    project,
+                    agent,
+                    "sk_item",
+                    key,
+                    item,
+                    ("имя", "name", "якорь"),
+                    quote_field="якорь",
+                    full_vo_norm=vo_norm,
+                )
+            )
         for item in slice_data.get("characters_seed") or []:
             if not isinstance(item, dict):
                 continue

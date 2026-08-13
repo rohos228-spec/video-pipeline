@@ -58,10 +58,34 @@ _PROMPT_FIELD_KEYS = (
     "промпт_картинки",
 )
 
+PLASTILIN_MASTER_MARKERS = (
+    "plastilin_prompt_minimalist_db",
+    "plastilin_prompt_minimalist",
+    "minimalist claymation plasticine",
+    "минималистичная пластилиновая анимация",
+)
+
+_CLAY_STYLE_MARKERS = (
+    "minimalist claymation plasticine",
+    "claymation plasticine 2d-look",
+    "минималистичная пластилиновая анимация",
+    "handmade claymation",
+)
+
+
+def is_plastilin_master(
+    variant: str | None = None, master: str | None = None
+) -> bool:
+    blob = f"{variant or ''}\n{(master or '')[:1200]}".casefold()
+    return any(m in blob for m in PLASTILIN_MASTER_MARKERS)
+
 
 def already_has_style(text: str) -> bool:
     t = text or ""
-    return _STYLE_MARKER in t and ("Final style lock" in t or "STYLE:" in t)
+    if _STYLE_MARKER in t and ("Final style lock" in t or "STYLE:" in t):
+        return True
+    low = t.casefold()
+    return any(m in low for m in _CLAY_STYLE_MARKERS)
 
 
 def wrap_scene_with_style(scene_body: str) -> str:

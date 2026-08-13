@@ -1,6 +1,7 @@
-"""img_pr: крупные батчи + одна GPT-сессия (промт один раз).
+"""img_pr: крупные батчи + одна GPT-сессия (мастер во вложении на каждый батч).
 
-STYLE LOCK вшивает пайплайн (`img_pr_style`) — GPT пишет только сцену.
+STYLE LOCK вшивает пайплайн (`img_pr_style`) — GPT пишет только сцену,
+кроме пластилина: стиль трижды внутри промт_картинки.
 """
 
 from __future__ import annotations
@@ -50,7 +51,30 @@ _BATCH_FOOTER = """
 _FOLLOWUP_MSG = """
 Следующий батч. Те же правила. STYLE/Negative не пиши — только сцена на русском.
 Фон и план священны; ≤4000; 1 cXX = 1 тело; mid-motion; анти-twin.
-db_frames.json во вложении — только кадры этого батча.
+Мастер-промт и db_frames.json во вложении — только кадры этого батча.
+{footer}
+""".strip()
+
+_PLASTILIN_BATCH_FOOTER = """
+# BATCH {batch_i}/{batch_n} — только эти {n} кадров из db_frames.json
+Верни ТОЛЬКО валидный JSON (без markdown, без прозы):
+{{"ops":[{{"frame_uuid":"<uuid>","fields":{{"промт_картинки":"…","персонажи":"c01"}}}}]}}
+
+ЖЁСТКО:
+- `персонажи` ТОЛЬКО внутри `fields`, не рядом с frame_uuid;
+- в тексте промта НЕ используй символ ASCII двойной кавычки \"; пиши «ёлочки»;
+- ровно одна закрывающая скобка на конец каждого op;
+- один op на каждый uuid батча.
+
+В `промт_картинки` пиши ПОЛНЫЙ промт: стиль пластилина ТРИ раза + сцена + Negative.
+Пайплайн НЕ допишет watercolor/noir. Не копируй Archival Noir.
+Тело ≤ 5000 символов. Без текста на картинке. Либо люди, либо крупный план предмета без рук.
+""".strip()
+
+_PLASTILIN_FOLLOWUP_MSG = """
+Следующий батч. Те же правила. Стиль пластилина оставь в промт_картинки (три раза).
+Watercolor/noir не пиши. ≤5000; 1 cXX = 1 тело; без текста на картинке.
+Мастер-промт и db_frames.json во вложении — только кадры этого батча.
 {footer}
 """.strip()
 
@@ -97,6 +121,20 @@ def clear_checkpoint(project_dir: Path) -> None:
             path.unlink()
         except OSError:
             pass
+
+
+def batch_attach_files(
+    *,
+    batch_i: int,
+    prompt_file: Path,
+    db_path: Path,
+    voiceover: Path | None = None,
+) -> list[Path]:
+    """Мастер-промт на каждый батч; voiceover — только на первом."""
+    files = [prompt_file, db_path]
+    if batch_i == 1 and voiceover is not None:
+        files.append(voiceover)
+    return files
 
 
 def chunk_frames(frames: list[Any], *, size: int = _FRAMES_PER_BATCH) -> list[list[Any]]:
@@ -225,13 +263,17 @@ def parse_img_pr_ops(reply: str, *, wrap_style: bool = True) -> list[dict]:
     return clean
 
 
-def batch_footer(*, batch_i: int, batch_n: int, n: int) -> str:
-    return _BATCH_FOOTER.format(batch_i=batch_i, batch_n=batch_n, n=n)
+def batch_footer(*, batch_i: int, batch_n: int, n: int, plastilin: bool = False) -> str:
+    tmpl = _PLASTILIN_BATCH_FOOTER if plastilin else _BATCH_FOOTER
+    return tmpl.format(batch_i=batch_i, batch_n=batch_n, n=n)
 
 
-def followup_message(*, batch_i: int, batch_n: int, n: int) -> str:
-    return _FOLLOWUP_MSG.format(
-        footer=batch_footer(batch_i=batch_i, batch_n=batch_n, n=n)
+def followup_message(*, batch_i: int, batch_n: int, n: int, plastilin: bool = False) -> str:
+    tmpl = _PLASTILIN_FOLLOWUP_MSG if plastilin else _FOLLOWUP_MSG
+    return tmpl.format(
+        footer=batch_footer(
+            batch_i=batch_i, batch_n=batch_n, n=n, plastilin=plastilin
+        )
     )
 
 

@@ -33,7 +33,7 @@ from app.storage import for_project as _sheet_for_project
 
 # Должен совпадать со строкой 4 в web/STUDIO_VERSION. Если в логе make_plan
 # нет «xlsx_step_runners» — на диске старый make_plan.py (текст 30k в ask).
-XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v81-img-pr-apply-once"
+XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v82-img-pr-volume-batches"
 
 
 def _plan_empty_error(xlsx_path: Path, *, plan_len: int) -> RuntimeError:
@@ -544,6 +544,18 @@ _IMG_PR_DB_HINT = (
     "(пайплайн допишет). characters[] Entity. Не копируй voiceover_text.\n"
 )
 
+_PLASTILIN_IMG_PR_HINT = (
+    "\n\n# ПЛАСТИЛИН — ЗАПИСЬ В БАЗУ (НЕ Excel)\n"
+    "Верни ТОЛЬКО JSON apply-ops. Без TSV, без `# Лист:`, без `@row=`, "
+    "без скачивания .xlsx:\n"
+    '{"ops":[{"frame_uuid":"<uuid>","fields":{"промт_картинки":"…","персонажи":"c01"}}]}\n'
+    "Адрес кадра — ТОЛЬКО frame_uuid из db_frames.json ЭТОГО батча.\n"
+    "Одна операция = один кадр. Пройди все кадры из текущего файла.\n"
+    "В `промт_картинки` пиши ПОЛНЫЙ промт: стиль пластилина ТРИ раза + сцена "
+    "+ Negative. Пайплайн НЕ допишет watercolor/noir — не копируй Archival Noir. "
+    "Не копируй voiceover_text. Без ASCII двойных кавычек в тексте промта.\n"
+)
+
 
 async def _load_img_pr_context(
     project: Project,
@@ -689,6 +701,17 @@ async def run_img_pr_xlsx(
     proj_xlsx = _ensure_project_xlsx(project)
     tmp_dir = cx.tmp_gpt_dir(project)
     prompt_file = cx.write_img_pr_prompt_file(project, tmp_dir, ts=_ts())
+    from app.services.img_pr_style import is_plastilin_master
+
+    master_head = ""
+    try:
+        master_head = prompt_file.read_text(encoding="utf-8")[:2000]
+    except OSError:
+        master_head = ""
+    plastilin = is_plastilin_master(prompt_file.name, master_head)
+    img_pr_hint = _PLASTILIN_IMG_PR_HINT if plastilin else _IMG_PR_DB_HINT
+    if plastilin:
+        logger.info("img_pr_db: plastilin master — keep clay style in prompt, no watercolor wrap")
 
     ckpt = ipb.load_checkpoint(project.data_dir)
     done_uuids = list(ckpt.get("done_uuids") or [])
@@ -730,18 +753,27 @@ async def run_img_pr_xlsx(
             f"(done_checkpoint={len(done_set)})"
         )
 
-    batches = ipb.chunk_frames(frames)
-    batch_n = len(batches)
+    from collections import deque
+
+    from app.services.volume_batches import (
+        inferred_batch_size,
+        plan_remainder_batches,
+        rechunk_tail,
+    )
+
+    batch_size = ipb._FRAMES_PER_BATCH
+    work: deque[list] = deque(ipb.chunk_frames(frames, size=batch_size))
     logger.info(
-        "img_pr_db: ONE session + {} batches×~{} (frames={} checkpoint_done={})",
-        batch_n,
-        ipb._FRAMES_PER_BATCH,
+        "img_pr_db: ONE session + ~{} batches×~{} (frames={} checkpoint_done={})",
+        len(work),
+        batch_size,
         len(frames),
         len(done_set),
     )
 
     vo = cx.ensure_current_voiceover(project)
     replies: list[str] = []
+    api_batches = 0
 
     from app.services.gpt_client import get_gpt_client
     from app.services.step_cancel import raise_if_cancelled
@@ -749,12 +781,19 @@ async def run_img_pr_xlsx(
     gpt = get_gpt_client()
 
     async def _run_batches() -> None:
-        nonlocal done_uuids, all_ops, done_set
+        nonlocal done_uuids, all_ops, done_set, batch_size, api_batches
         await gpt.new_conversation()
         history: list[dict[str, str]] = []
+        bi = 0
+        first_attach = True
 
-        for bi, batch in enumerate(batches, start=1):
+        while work:
             raise_if_cancelled(project.id)
+            batch = work.popleft()
+            if not batch:
+                continue
+            bi += 1
+            batch_n = bi + len(work)
             batch_tag = f"b{bi:02d}"
             db_path = _write_img_pr_db_frames_for(
                 project,
@@ -763,15 +802,15 @@ async def run_img_pr_xlsx(
                 cards,
                 general_plan,
                 batch_tag=batch_tag,
-                include_characters=(bi == 1),
+                include_characters=True,
             )
             uuid_lines = "\n".join(
                 f"кадр {fr.number} = {fr.uuid}" for fr in batch if fr.uuid
             )
             footer = ipb.batch_footer(
-                batch_i=bi, batch_n=batch_n, n=len(batch)
+                batch_i=bi, batch_n=batch_n, n=len(batch), plastilin=plastilin
             )
-            if bi == 1:
+            if first_attach:
                 chat_msg = cx.chat_message(
                     project,
                     "img_pr",
@@ -779,7 +818,7 @@ async def run_img_pr_xlsx(
                     n_frames=len(batch),
                 )
                 chat_msg = (
-                    f"{chat_msg}{_IMG_PR_DB_HINT}\n{footer}\n"
+                    f"{chat_msg}{img_pr_hint}\n{footer}\n"
                     f"Адресация:\n{uuid_lines}\n"
                 )
                 if uuid_map_text.strip():
@@ -787,20 +826,28 @@ async def run_img_pr_xlsx(
                         f"{chat_msg}\n# uuid map (справочно)\n"
                         f"{uuid_map_text.strip()[:2000]}\n"
                     )
-                attach = [prompt_file, db_path]
-                if vo is not None:
-                    attach.append(vo)
+                attach = ipb.batch_attach_files(
+                    batch_i=1,
+                    prompt_file=prompt_file,
+                    db_path=db_path,
+                    voiceover=vo,
+                )
                 treat_txt = True
                 use_history: list[dict[str, str]] | None = None
             else:
                 chat_msg = (
-                    f"{ipb.followup_message(batch_i=bi, batch_n=batch_n, n=len(batch))}\n"
+                    f"{ipb.followup_message(batch_i=bi, batch_n=batch_n, n=len(batch), plastilin=plastilin)}\n"
                     f"Адресация:\n{uuid_lines}\n"
                     "Файл db_frames полный — не отказывайся из‑за «обрезки». "
                     "Верни JSON ops на ВСЕ uuid из файла.\n"
                 )
-                attach = [db_path]
-                treat_txt = False
+                attach = ipb.batch_attach_files(
+                    batch_i=bi,
+                    prompt_file=prompt_file,
+                    db_path=db_path,
+                    voiceover=vo,
+                )
+                treat_txt = True
                 use_history = history or None
 
             batch_ops: list[dict] = []
@@ -808,16 +855,26 @@ async def run_img_pr_xlsx(
             for attempt in range(1, ipb._GPT_ATTEMPTS + 1):
                 # После фейла follow-up — свежая сессия + короткий master,
                 # чтобы JSON не резался в хвосте длинной history.
-                if attempt > 1 and bi > 1:
+                if attempt > 1 and not first_attach:
                     await gpt.new_conversation()
                     history.clear()
                     use_history = None
                     treat_txt = True
-                    attach = [prompt_file, db_path]
+                    attach = ipb.batch_attach_files(
+                        batch_i=bi,
+                        prompt_file=prompt_file,
+                        db_path=db_path,
+                        voiceover=None,
+                    )
                     chat_msg = (
-                        f"{_IMG_PR_DB_HINT}\n{footer}\n"
+                        f"{img_pr_hint}\n{footer}\n"
                         f"Адресация:\n{uuid_lines}\n"
-                        "Только JSON apply-ops. STYLE LOCK не пиши.\n"
+                        "Только JSON apply-ops. "
+                        + (
+                            "Стиль пластилина оставь в промт_картинки.\n"
+                            if plastilin
+                            else "STYLE LOCK не пиши.\n"
+                        )
                     )
                     logger.info(
                         "img_pr_db: batch {}/{} fresh session retry",
@@ -844,7 +901,9 @@ async def run_img_pr_xlsx(
                     treat_txt_as_prompt=treat_txt,
                 )
                 replies.append(last_reply or "")
-                batch_ops = ipb.parse_img_pr_ops(last_reply or "")
+                batch_ops = ipb.parse_img_pr_ops(
+                    last_reply or "", wrap_style=not plastilin
+                )
                 if batch_ops:
                     break
                 rej = ipb.write_rejected_reply(
@@ -879,6 +938,9 @@ async def run_img_pr_xlsx(
                     f"Смотри tmp_gpt/img_pr_rejected_b{bi}_*.txt"
                 )
 
+            first_attach = False
+            api_batches += 1
+
             # В историю — коротко, без гигантского JSON ops.
             history.append({"role": "user", "content": chat_msg[:2000]})
             history.append(
@@ -893,25 +955,63 @@ async def run_img_pr_xlsx(
             }
             got_uuids = {
                 ipb.uuid_of_op(op) for op in batch_ops if ipb.uuid_of_op(op)
-            }
+            } & expected
             for u in sorted(got_uuids):
                 if u and u not in done_set:
                     done_uuids.append(u)
                     done_set.add(u)
-            all_ops.extend(batch_ops)
+            # Только ops по uuid этого батча (лишние uuid модели отбрасываем).
+            kept_ops = [
+                op for op in batch_ops if ipb.uuid_of_op(op) in got_uuids
+            ]
+            all_ops.extend(kept_ops)
             ipb.save_checkpoint(
                 project.data_dir, done_uuids=done_uuids, ops=all_ops
             )
-            missing = expected - got_uuids
+            missing_uuids = expected - got_uuids
             logger.info(
                 "img_pr_db: batch {}/{} ops=+{} total={} missing={} "
                 "(checkpoint only, DB apply once at end)",
                 bi,
                 batch_n,
-                len(batch_ops),
+                len(kept_ops),
                 len(all_ops),
-                len(missing),
+                len(missing_uuids),
             )
+
+            # Частичный ответ = объём превышен → добор / нарезка ~80%.
+            if missing_uuids and got_uuids:
+                missing_frames = [
+                    fr
+                    for fr in batch
+                    if (fr.uuid or "").strip() in missing_uuids
+                ]
+                delivered = len(got_uuids)
+                extras = plan_remainder_batches(
+                    missing_frames, delivered=delivered
+                )
+                new_size = inferred_batch_size(delivered)
+                tail: list = []
+                while work:
+                    tail.extend(work.popleft())
+                requeued = extras + rechunk_tail(tail, size=new_size)
+                work.extend(requeued)
+                batch_size = new_size
+                logger.warning(
+                    "img_pr_db: volume partial got={}/{} → remainder_batches={} "
+                    "new_batch_size={} (queue_left={})",
+                    delivered,
+                    len(expected),
+                    len(extras),
+                    new_size,
+                    len(work),
+                )
+            elif missing_uuids and not got_uuids:
+                logger.warning(
+                    "img_pr_db: batch {} — ops без uuid батча, missing={}",
+                    bi,
+                    len(missing_uuids),
+                )
 
     await xgf.run_under_xlsx_lock(project.id, "img_pr", _run_batches)
 
@@ -924,7 +1024,7 @@ async def run_img_pr_xlsx(
     logger.info(
         "img_pr_db: complete ops={} api_batches={} — single DB apply next",
         len(all_ops),
-        batch_n,
+        api_batches,
     )
     return XlsxRoundtripResult(
         reply_text="\n\n---\n\n".join(replies) if replies else "",

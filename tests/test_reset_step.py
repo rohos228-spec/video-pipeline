@@ -393,6 +393,46 @@ async def test_clear_step_outputs_for_rerun_video_preserves_mp4(
 
 
 @pytest.mark.asyncio
+async def test_clear_step_outputs_for_rerun_img_pr_preserves(session):
+    """Авто/очередь img_pr: не стираем image_prompt (догонка / skip)."""
+    p = await _mkproject(session)
+    fr = await _mkframe(
+        session,
+        p,
+        1,
+        image_prompt="clay prompt already done",
+        status=FrameStatus.image_prompt_ready,
+    )
+    p.status = ProjectStatus.image_prompts_ready
+    await session.flush()
+
+    summary = await clear_step_outputs_for_rerun(session, p, "img_pr", force_wipe=False)
+    assert "img_pr" in summary
+    await session.refresh(fr)
+    assert fr.image_prompt == "clay prompt already done"
+
+
+@pytest.mark.asyncio
+async def test_clear_step_outputs_for_rerun_img_pr_force_wipe_clears(session):
+    """force_wipe=True (явный ▶) стирает image_prompt, чтобы GPT пересобрал."""
+    p = await _mkproject(session)
+    fr = await _mkframe(
+        session,
+        p,
+        1,
+        image_prompt="old watercolor prompt",
+        status=FrameStatus.image_prompt_ready,
+    )
+    p.status = ProjectStatus.image_prompts_ready
+    await session.flush()
+
+    summary = await clear_step_outputs_for_rerun(session, p, "img_pr", force_wipe=True)
+    assert "img_pr" in summary
+    await session.refresh(fr)
+    assert not (fr.image_prompt or "").strip()
+
+
+@pytest.mark.asyncio
 async def test_clear_step_outputs_for_rerun_anim_pr_preserves(session, tmp_path: Path):
     """Повторный запуск anim_pr: не стираем animation_prompt (догонка с xlsx)."""
     p = await _mkproject(session)
