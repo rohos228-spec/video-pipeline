@@ -1,6 +1,6 @@
 ai-pack build
-git_head: 3710aa13
-built_at: 2026-08-13 20:11 UTC
+git_head: ad5feebd
+built_at: 2026-08-13 20:19 UTC
 repo: /workspace
 
 copied:
