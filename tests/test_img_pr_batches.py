@@ -23,13 +23,25 @@ def test_parse_img_pr_ops_wraps_style() -> None:
       {"frame_uuid":"ccc","fields":{"image_prompt":"Action: reading"}}
     ]}
     """
-    ops = ipb.parse_img_pr_ops(reply)
+    ops = ipb.parse_img_pr_ops(reply, style_id="noir")
     assert len(ops) == 2
     assert {ipb.uuid_of_op(o) for o in ops} == {"aaa", "ccc"}
     body = ops[0]["fields"]["промт_картинки"]
     assert "Archival Noir Watercolor" in body
     assert "Background: metro car" in body
     assert "Final style lock" in body
+
+
+def test_parse_img_pr_ops_no_style_does_not_inject_noir() -> None:
+    reply = """
+    {"ops":[
+      {"frame_uuid":"aaa","fields":{"промт_картинки":"Background: metro car"}}
+    ]}
+    """
+    ops = ipb.parse_img_pr_ops(reply)
+    body = ops[0]["fields"]["промт_картинки"]
+    assert "Archival Noir" not in body
+    assert "Background: metro car" in body
 
 
 def test_parse_img_pr_ops_skips_wrap_for_plastilin() -> None:

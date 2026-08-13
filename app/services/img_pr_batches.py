@@ -1,7 +1,8 @@
 """img_pr: крупные батчи + одна GPT-сессия (мастер во вложении на каждый батч).
 
-STYLE LOCK вшивает пайплайн (`img_pr_style`) — GPT пишет только сцену,
-кроме пластилина: стиль трижды внутри промт_картинки.
+STYLE LOCK вшивает пайплайн (`img_pr_style`) из стиля проекта — GPT пишет
+только сцену. Без стиля — сцену не оборачиваем Archival Noir.
+Пластилин: стиль трижды внутри промт_картинки, wrap не нужен.
 """
 
 from __future__ import annotations
@@ -294,7 +295,13 @@ def salvage_img_pr_ops(reply: str) -> list[dict]:
     return ops
 
 
-def parse_img_pr_ops(reply: str, *, wrap_style: bool = True) -> list[dict]:
+def parse_img_pr_ops(
+    reply: str,
+    *,
+    wrap_style: bool = True,
+    style_id: str | None = None,
+    style_block: str | None = None,
+) -> list[dict]:
     data = extract_apply_ops_json(reply or "")
     ops = list((data or {}).get("ops") or []) if isinstance(data, dict) else []
     clean = filter_prompt_ops(ops)
@@ -306,7 +313,7 @@ def parse_img_pr_ops(reply: str, *, wrap_style: bool = True) -> list[dict]:
     elif (partial or len(clean) <= 1) and len(salvaged) > len(clean):
         clean = salvaged
     if wrap_style:
-        return wrap_ops_styles(clean)
+        return wrap_ops_styles(clean, style_id=style_id, style_block=style_block)
     return clean
 
 

@@ -701,7 +701,7 @@ async def run_img_pr_xlsx(
     proj_xlsx = _ensure_project_xlsx(project)
     tmp_dir = cx.tmp_gpt_dir(project)
     prompt_file = cx.write_img_pr_prompt_file(project, tmp_dir, ts=_ts())
-    from app.services.img_pr_style import is_plastilin_master
+    from app.services.img_pr_style import is_plastilin_master, resolve_project_img_style
 
     master_head = ""
     try:
@@ -709,6 +709,10 @@ async def run_img_pr_xlsx(
     except OSError:
         master_head = ""
     plastilin = is_plastilin_master(prompt_file.name, master_head)
+    style_id = resolve_project_img_style(
+        project, variant=prompt_file.name, master=master_head
+    )
+    logger.info("img_pr_db: style_id={!r} plastilin={}", style_id, plastilin)
     img_pr_hint = _PLASTILIN_IMG_PR_HINT if plastilin else _IMG_PR_DB_HINT
     if plastilin:
         logger.info("img_pr_db: plastilin master — keep clay style in prompt, no watercolor wrap")
@@ -902,7 +906,9 @@ async def run_img_pr_xlsx(
                 )
                 replies.append(last_reply or "")
                 batch_ops = ipb.parse_img_pr_ops(
-                    last_reply or "", wrap_style=not plastilin
+                    last_reply or "",
+                    wrap_style=not plastilin,
+                    style_id=style_id,
                 )
                 if batch_ops:
                     break

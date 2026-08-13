@@ -1,10 +1,17 @@
-"""Trash-polka STYLE LOCK — вшивается пайплайном, не GPT.
+"""STYLE LOCK — вшивается пайплайном из стиля проекта, не GPT.
 
 GPT пишет только сцену (фон/действие/свет/accent/…). Полный style-блок
 для Outsee добавляем здесь → меньше токенов на ответ → крупные батчи.
+
+Стиль берётся из проекта (meta.img_style / variant). Без стиля — сцена
+как есть, без молчаливого Archival Noir.
 """
 
 from __future__ import annotations
+
+from typing import Any
+
+from loguru import logger
 
 _STYLE_MARKER = "Archival Noir Watercolor Grunge Dossier Poster Illustration"
 
@@ -52,6 +59,23 @@ STYLE_TAIL = (
     "grunge dossier poster."
 )
 
+KNITTED_STYLE_HEAD = (
+    "STYLE: knitted textile children's book illustration. "
+    "handmade textile / cut-paper / felt, fibrous surfaces, "
+    "soft stylized forms, warm autumnal palette "
+    "(deep crimson, burnt orange, mustard, olive, forest green, warm peach). "
+    "One unified frame. Improve only inside this style, never change medium."
+)
+
+KNITTED_STYLE_TAIL = (
+    "Final style lock: children's book illustration, handmade textile texture, "
+    "cut-paper and felt layering, fibrous surfaces, stylized simple faces, "
+    "warm autumnal palette, poetic emotional warmth. "
+    "Negative: photorealistic humans, 3D plastic, glossy skin, anime, "
+    "realistic facial details, hard outlines, cold colors, scary mood, "
+    "text, watermark, logo."
+)
+
 _PROMPT_FIELD_KEYS = (
     "промт_картинки",
     "image_prompt",
@@ -72,6 +96,38 @@ _CLAY_STYLE_MARKERS = (
     "handmade claymation",
 )
 
+_KNITTED_MARKERS = (
+    "knitted",
+    "textile",
+    "вязан",
+    "войлок",
+)
+
+_NOIR_MARKERS = (
+    "noir",
+    "archival",
+    "trash polka",
+    "trash_polka",
+    "watercolor grunge",
+)
+
+_KNITTED_BODY_MARKERS = (
+    "handmade textile",
+    "knitted textile",
+    "вязаный",
+    "cut-paper and felt",
+)
+
+_STYLE_META_KEYS = (
+    "img_pr_style_id",
+    "img_style",
+    "image_style",
+    "visual_style",
+    "style",
+)
+
+_NO_STYLE_WARNED = False
+
 
 def is_plastilin_master(
     variant: str | None = None, master: str | None = None
@@ -80,25 +136,130 @@ def is_plastilin_master(
     return any(m in blob for m in PLASTILIN_MASTER_MARKERS)
 
 
+def looks_knitted(text: str | None) -> bool:
+    blob = (text or "").casefold()
+    return any(m in blob for m in _KNITTED_MARKERS)
+
+
+def looks_noir(text: str | None) -> bool:
+    blob = (text or "").casefold()
+    return any(m in blob for m in _NOIR_MARKERS)
+
+
 def already_has_style(text: str) -> bool:
     t = text or ""
     if _STYLE_MARKER in t and ("Final style lock" in t or "STYLE:" in t):
         return True
     low = t.casefold()
-    return any(m in low for m in _CLAY_STYLE_MARKERS)
+    if any(m in low for m in _CLAY_STYLE_MARKERS):
+        return True
+    return any(m in low for m in _KNITTED_BODY_MARKERS) and (
+        "Final style lock" in t or "STYLE:" in t
+    )
 
 
-def wrap_scene_with_style(scene_body: str) -> str:
-    """Сцена от GPT + STYLE LOCK → готовый промт Outsee."""
+def _local_variant_name(project: Any | None, meta: dict | None) -> str:
+    """Project-chosen img_pr variant names — not the global default prompt."""
+    parts: list[str] = []
+    if project is None:
+        return ""
+    overrides = getattr(project, "prompt_overrides", None) or {}
+    if isinstance(overrides, dict):
+        chosen = overrides.get("img_pr")
+        if isinstance(chosen, str) and chosen.strip():
+            parts.append(chosen.strip())
+        nested = overrides.get("prompt_variants")
+        if isinstance(nested, dict):
+            chosen = nested.get("img_pr")
+            if isinstance(chosen, str) and chosen.strip():
+                parts.append(chosen.strip())
+    if isinstance(meta, dict):
+        slots = meta.get("prompt_slot_variants")
+        if isinstance(slots, dict):
+            for node_slots in slots.values():
+                if not isinstance(node_slots, dict):
+                    continue
+                for val in node_slots.values():
+                    if isinstance(val, str) and val.strip():
+                        parts.append(val.strip())
+    return "\n".join(parts)
+
+
+def resolve_project_img_style(
+    project: Any | None = None,
+    *,
+    variant: str | None = None,
+    master: str | None = None,
+) -> str | None:
+    """Cheap style id: meta.img_style (etc.) or knitted/noir in variant/master."""
+    meta = getattr(project, "meta", None) if project is not None else None
+    if isinstance(meta, dict):
+        for key in _STYLE_META_KEYS:
+            val = meta.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    local = _local_variant_name(project, meta if isinstance(meta, dict) else None)
+    names = f"{variant or ''}\n{local}"
+    blob = f"{names}\n{(master or '')[:1200]}"
+    if looks_knitted(blob):
+        return "knitted"
+    if looks_noir(names):
+        return "noir"
+    return None
+
+
+def _warn_no_style_once() -> None:
+    global _NO_STYLE_WARNED
+    if _NO_STYLE_WARNED:
+        return
+    _NO_STYLE_WARNED = True
+    logger.warning(
+        "img_pr_style: no project style configured — leaving scene unwrapped "
+        "(not injecting Archival Noir)"
+    )
+
+
+def _wrap_with_block(body: str, block: str) -> str:
+    if "Final style lock" in block and "STYLE:" in block:
+        idx = block.find("Final style lock")
+        head = block[:idx].strip()
+        tail = block[idx:].strip()
+        if head and tail:
+            return f"{head}\n\n{body}\n\n{tail}"
+    return f"{block}\n\n{body}"
+
+
+def wrap_scene_with_style(
+    scene_body: str,
+    *,
+    style_id: str | None = None,
+    style_block: str | None = None,
+) -> str:
+    """Сцена от GPT + STYLE LOCK проекта → готовый промт Outsee."""
     body = (scene_body or "").strip()
     if not body:
         return body
     if already_has_style(body):
         return body
-    return f"{STYLE_HEAD}\n\n{body}\n\n{STYLE_TAIL}"
+    block = (style_block or "").strip() or None
+    sid = (style_id or "").strip() or None
+    if block:
+        return _wrap_with_block(body, block)
+    if looks_knitted(sid):
+        return f"{KNITTED_STYLE_HEAD}\n\n{body}\n\n{KNITTED_STYLE_TAIL}"
+    if looks_noir(sid):
+        return f"{STYLE_HEAD}\n\n{body}\n\n{STYLE_TAIL}"
+    if not sid:
+        _warn_no_style_once()
+    return body
 
 
-def wrap_ops_styles(ops: list[dict]) -> list[dict]:
+def wrap_ops_styles(
+    ops: list[dict],
+    *,
+    style_id: str | None = None,
+    style_block: str | None = None,
+) -> list[dict]:
     """Вшить STYLE в промт_картинки каждого op (shot2 не трогаем — короткий)."""
     out: list[dict] = []
     for op in ops:
@@ -111,7 +272,11 @@ def wrap_ops_styles(ops: list[dict]) -> list[dict]:
         new_fields = dict(fields)
         for key in _PROMPT_FIELD_KEYS:
             if key in new_fields and isinstance(new_fields[key], str):
-                new_fields[key] = wrap_scene_with_style(new_fields[key])
+                new_fields[key] = wrap_scene_with_style(
+                    new_fields[key],
+                    style_id=style_id,
+                    style_block=style_block,
+                )
                 break
         cloned = dict(op)
         cloned["fields"] = new_fields
