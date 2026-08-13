@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from app.services.node_write_contract import coverage_report, filter_ops_for_node
+from app.services.node_write_contract import (
+    coverage_report,
+    filter_ops_for_node,
+    skip_frame_coverage,
+)
 
 
 def test_excel_gpt_strips_prompt_fields():
@@ -75,6 +79,70 @@ def test_img_pr_keeps_image_prompt_and_characters():
     assert out[0]["fields"]["персонажи"] == "c01"
     assert "промт_видео" not in out[0]["fields"]
     assert "место" not in out[0]["fields"]
+
+
+def test_skip_frame_coverage_scene_grammar_chars_no_ops():
+    assert skip_frame_coverage(
+        scene_grammar=True,
+        character_registry=False,
+        ops_list=[],
+        chars_list=[{"id": "c01"}],
+        scenes_list=[],
+    )
+
+
+def test_skip_frame_coverage_scene_grammar_scenes_no_ops():
+    assert skip_frame_coverage(
+        scene_grammar=True,
+        character_registry=False,
+        ops_list=[],
+        chars_list=[],
+        scenes_list=[{"id": "s01"}],
+    )
+
+
+def test_skip_frame_coverage_scene_grammar_with_ops_requires_coverage():
+    assert not skip_frame_coverage(
+        scene_grammar=True,
+        character_registry=False,
+        ops_list=[{"frame_uuid": "a", "fields": {"x": "1"}}],
+        chars_list=[{"id": "c01"}],
+        scenes_list=[],
+    )
+
+
+def test_skip_frame_coverage_character_registry_always():
+    assert skip_frame_coverage(
+        scene_grammar=False,
+        character_registry=True,
+        ops_list=[],
+        chars_list=[{"id": "c01"}],
+        scenes_list=[],
+    )
+    assert skip_frame_coverage(
+        scene_grammar=False,
+        character_registry=True,
+        ops_list=[{"frame_uuid": "a", "fields": {"персонажи": "c01"}}],
+        chars_list=[],
+        scenes_list=[],
+    )
+
+
+def test_skip_frame_coverage_normal_excel_gpt_never():
+    assert not skip_frame_coverage(
+        scene_grammar=False,
+        character_registry=False,
+        ops_list=[{"frame_uuid": "a", "fields": {"x": "1"}}],
+        chars_list=[],
+        scenes_list=[],
+    )
+    assert not skip_frame_coverage(
+        scene_grammar=False,
+        character_registry=False,
+        ops_list=[],
+        chars_list=[{"id": "c01"}],
+        scenes_list=[],
+    )
 
 
 def test_anim_pr_keeps_only_animation_prompt():

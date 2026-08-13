@@ -1064,7 +1064,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     )
             if ops_data and (ops_list or chars_list or scenes_list):
                 from app.services import db_apply
-                from app.services.node_write_contract import coverage_report
+                from app.services.node_write_contract import (
+                    coverage_report,
+                    skip_frame_coverage,
+                )
 
                 try:
                     applied = await db_apply.apply_ops(
@@ -1086,10 +1089,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         applied.get("characters"),
                         applied.get("scenes"),
                     )
-                    skip_coverage = bool(
-                        scene_grammar
-                        and (chars_list or scenes_list)
-                        and not ops_list
+                    skip_coverage = skip_frame_coverage(
+                        scene_grammar=scene_grammar,
+                        character_registry=character_registry,
+                        ops_list=ops_list,
+                        chars_list=chars_list,
+                        scenes_list=scenes_list,
                     )
                     if expected_frame_uuids and not check_mode and not skip_coverage:
                         cov = coverage_report(

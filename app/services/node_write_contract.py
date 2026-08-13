@@ -131,3 +131,19 @@ def coverage_report(
     extra = [u for u in got if u not in expected_set]
     ok = bool(expected) and not missing
     return Coverage(matched=matched, missing=missing, extra=extra, ok=ok)
+
+
+def skip_frame_coverage(
+    *,
+    scene_grammar: bool,
+    character_registry: bool,
+    ops_list,
+    chars_list,
+    scenes_list,
+) -> bool:
+    """Skip N/N frame_uuid gate for entity-card nodes (scene_grammar, character_registry)."""
+    return bool(
+        (scene_grammar or character_registry)
+        and (chars_list or scenes_list or character_registry)
+        and (not ops_list or character_registry)
+    )
