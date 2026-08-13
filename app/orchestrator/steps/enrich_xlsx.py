@@ -662,12 +662,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 ).scalars().all()
             )
             meta = project.meta if isinstance(project.meta, dict) else {}
-            db_check = {
-                "source": "db_v2",
-                "project_id": project.id,
-                "slug": project.slug,
-                "scene_registry": meta.get("scene_registry") or [],
-                "characters": [
+            from app.services.db_frames_context import build_excel_gpt_check_context
+
+            db_check = build_excel_gpt_check_context(
+                project_id=project.id,
+                slug=project.slug,
+                frames=frames_chk,
+                characters=[
                     {
                         "id": e.code or e.name,
                         "имя": e.name,
@@ -676,18 +677,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     }
                     for e in ents
                 ],
-                "frames": [
-                    {
-                        "number": fr.number,
-                        "uuid": fr.uuid,
-                        "voiceover_text": fr.voiceover_text or "",
-                        "meaning": fr.meaning or "",
-                        "attrs": fr.attrs or {},
-                    }
-                    for fr in frames_chk
-                    if fr.uuid
-                ],
-            }
+                scene_registry=meta.get("scene_registry") or [],
+            )
             ctx_dir = project.data_dir / "excel_gpt_uploads" / str(node_key)
             ctx_dir.mkdir(parents=True, exist_ok=True)
             db_check_path = ctx_dir / "db_check.json"

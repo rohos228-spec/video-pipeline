@@ -79,3 +79,34 @@ def test_excel_gpt_context_is_slim_and_keeps_vo_snippet() -> None:
     assert len(row["voiceover_text"]) <= 400
     blob = json.dumps(ctx)
     assert len(blob) < 20_000
+
+
+def test_excel_gpt_check_context_is_slim_with_scene_registry() -> None:
+    fr = SimpleNamespace(
+        number=2,
+        uuid="cd" * 12,
+        voiceover_text="закадр " * 200,
+        meaning="смысл " * 200,
+        attrs={"place": "коридор", "noise": "Y" * 5000, "shot01_bg": "лампа"},
+    )
+    from app.services.db_frames_context import build_excel_gpt_check_context
+
+    ctx = build_excel_gpt_check_context(
+        project_id=61,
+        slug="cinema",
+        frames=[fr],
+        characters=[{"id": "c01", "имя": "Hero", "type": "character", "attrs": {}}],
+        scene_registry=[{"id": "scene_01", "loc": "loc01"}],
+    )
+    assert ctx["source"] == "db_v2"
+    assert ctx["scene_registry"] == [{"id": "scene_01", "loc": "loc01"}]
+    assert ctx["characters"][0]["id"] == "c01"
+    row = ctx["frames"][0]
+    assert row["uuid"] == "cd" * 12
+    assert "attrs" not in row
+    assert "noise" not in row
+    assert row["place"] == "коридор"
+    assert row["shot01_bg"] == "лампа"
+    assert len(row["voiceover_text"]) <= 400
+    assert len(row["meaning"]) <= 500
+    assert len(json.dumps(ctx)) < 20_000

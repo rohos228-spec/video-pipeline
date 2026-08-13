@@ -107,6 +107,25 @@ def build_excel_gpt_db_context(
     }
 
 
+def build_excel_gpt_check_context(
+    *,
+    project_id: int,
+    slug: str,
+    frames: list[Any],
+    characters: list[dict[str, Any]],
+    scene_registry: list[Any] | None = None,
+) -> dict[str, Any]:
+    """Снимок для checkMode db_check.json: slim attrs + scene_registry."""
+    ctx = build_excel_gpt_db_context(
+        project_id=project_id,
+        slug=slug,
+        frames=frames,
+        characters=characters,
+    )
+    ctx["scene_registry"] = list(scene_registry or [])
+    return ctx
+
+
 def build_img_pr_db_context(
     *,
     project_id: int,
