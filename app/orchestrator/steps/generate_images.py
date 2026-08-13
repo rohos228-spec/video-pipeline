@@ -114,6 +114,12 @@ async def _optional_browser_session(
         yield bs
 
 
+# Watchdog shot1-wait: после N одинаковых «без прогресса» раундов (3с каждый)
+# сначала лечим stale inflight/сессию (как у shot2), после M — падаем явно,
+# вместо бесконечного «жду».
+_WAIT_ESCALATE_ROUNDS = 3
+_WAIT_FAIL_ROUNDS = 40
+
 # Лист «план» v8 — какие строки в столбце кадра используются для рефов.
 _XLSX_SHEET_PLAN = "план"
 # v8-шаблон «план» дублирует лейблы «персонажи» / «предметы» в нескольких
@@ -820,6 +826,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             gpt = get_gpt_client()
             phase = "shot1"
             shot2_queued = 0
+            # Watchdog «нет прогресса» для shot1-wait: пустые claim при
+            # живых pending = залипший inflight / stale сессия / мёртвый
+            # джоб. Раньше цикл крутился бесконечно («картинки висят»).
+            shot1_no_progress = 0
+            shot1_last_pending: tuple[int, ...] = ()
             try:
                 while True:
                     raise_if_cancelled(project.id)
@@ -834,6 +845,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             limit=streams,
                         )
                         if batch:
+                            shot1_no_progress = 0
+                            shot1_last_pending = ()
                             logger.info(
                                 "[#{}] generate_images: shot1 batch n={} frames={}",
                                 project.id,
@@ -907,14 +920,46 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             session, project.id, out_dir, project=project
                         )
                         if pending:
+                            sig = tuple(pending)
+                            if sig == shot1_last_pending:
+                                shot1_no_progress += 1
+                            else:
+                                shot1_no_progress = 0
+                            shot1_last_pending = sig
                             logger.warning(
                                 "[#{}] generate_images: нет image_prompt_ready, "
-                                "но {} кадров без PNG — жду: {}{}",
+                                "но {} кадров без PNG — жду: {}{} "
+                                "(no_progress={})",
                                 project.id,
                                 len(pending),
                                 pending[:8],
                                 "…" if len(pending) > 8 else "",
+                                shot1_no_progress,
                             )
+                            if shot1_no_progress == _WAIT_ESCALATE_ROUNDS:
+                                # Как у shot2: снять залипший inflight и
+                                # перечитать БД — иначе вечный sleep 3с.
+                                cleared = await _clear_stale_inflight(
+                                    session, project.id
+                                )
+                                try:
+                                    await session.commit()
+                                except Exception:  # noqa: BLE001
+                                    await session.rollback()
+                                session.expire_all()
+                                logger.warning(
+                                    "[#{}] generate_images: shot1 нет прогресса "
+                                    "— inflight_cleared={}, БД перечитана",
+                                    project.id,
+                                    cleared,
+                                )
+                            if shot1_no_progress >= _WAIT_FAIL_ROUNDS:
+                                raise RuntimeError(
+                                    "generate_images: нет прогресса "
+                                    f"{shot1_no_progress}×3с — кадры "
+                                    f"{pending[:8]} без PNG и не клеймятся. "
+                                    "Явный фейл вместо бесконечного ожидания."
+                                )
                         await sleep_cancellable(3.0, project.id)
                         continue
 

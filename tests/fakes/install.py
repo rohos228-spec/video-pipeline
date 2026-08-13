@@ -58,9 +58,26 @@ def _iter_attrs(module_path: str, name: str):
         yield mod, name
 
 
+def _make_session_scope(session_factory: Any):
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _scope():
+        async with session_factory() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+
+    return _scope
+
+
 def collect_patches(
     fake_gpt: FakeGptClient,
     fake_operator: Any,
+    session_factory: Any | None = None,
 ) -> list[tuple[Any, str, Any]]:
     patches: list[tuple[Any, str, Any]] = []
     for mod_path in _GPT_CLIENT_TARGETS:
@@ -75,6 +92,16 @@ def collect_patches(
     for mod_path in _OPERATOR_TARGETS:
         for mod, name in _iter_attrs(mod_path, "run_operator_api"):
             patches.append((mod, name, fake_operator))
+    if session_factory is not None:
+        # app.db.engine биндится к settings.sqlite_path на импорте — шаги,
+        # открывающие SessionLocal посреди run() (parallel img и пр.), иначе
+        # пишут в РЕАЛЬНУЮ dev-базу. Подменяем фабрику на тестовую.
+        import app.db as _app_db
+
+        patches.append((_app_db, "SessionLocal", session_factory))
+        patches.append(
+            (_app_db, "session_scope", _make_session_scope(session_factory))
+        )
     return patches
 
 
@@ -82,11 +109,12 @@ def collect_patches(
 def fakes_installed(
     scenario: FakeScenario | None = None,
     chaos: FakeChaos | None = None,
+    session_factory: Any | None = None,
 ) -> Iterator[FakeGptClient]:
     """Standalone-вариант (скрипты): ставим setattr, откатываем на выходе."""
     fake_gpt = FakeGptClient(scenario=scenario, chaos=chaos)
     fake_operator = make_fake_operator_api(scenario=scenario, chaos=chaos)
-    patches = collect_patches(fake_gpt, fake_operator)
+    patches = collect_patches(fake_gpt, fake_operator, session_factory)
     saved: list[tuple[Any, str, Any]] = [(obj, name, getattr(obj, name)) for obj, name, _ in patches]
     for obj, name, value in patches:
         setattr(obj, name, value)
@@ -101,10 +129,11 @@ def install_fakes_monkeypatch(
     monkeypatch: Any,
     scenario: FakeScenario | None = None,
     chaos: FakeChaos | None = None,
+    session_factory: Any | None = None,
 ) -> FakeGptClient:
     """Pytest-вариант: через monkeypatch.setattr (авто-откат)."""
     fake_gpt = FakeGptClient(scenario=scenario, chaos=chaos)
     fake_operator = make_fake_operator_api(scenario=scenario, chaos=chaos)
-    for obj, name, value in collect_patches(fake_gpt, fake_operator):
+    for obj, name, value in collect_patches(fake_gpt, fake_operator, session_factory):
         monkeypatch.setattr(obj, name, value)
     return fake_gpt

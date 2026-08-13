@@ -1,0 +1,23 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Pytest + regression gate
+        run: |
+          python3 -m pytest tests/ -q 2>&1 | tee pytest.out || true
+          tail -5 pytest.out
+          python3 scripts/check_test_regressions.py < pytest.out
+      - name: E2E pipeline emulation (fake GPT/media)
+        run: python3 -m pytest tests/test_e2e_pipeline_emulation.py tests/test_fakes_smoke.py -q

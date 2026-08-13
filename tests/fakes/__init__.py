@@ -7,3 +7,11 @@ fake_run_operator_api — excel_gpt/operator boundary: читает db_frames.js
 fake media — generate_image/video_with_retries, пишущие реальные tiny
 PNG/MP4 в out_path.
 """
+
+from tests.fakes.gpt import (  # noqa: F401
+    FakeChaos,
+    FakeGptClient,
+    FakeScenario,
+    make_fake_operator_api,
+)
+

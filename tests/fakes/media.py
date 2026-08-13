@@ -15,6 +15,7 @@ _TINY_MP4 = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 64
 
 
 def write_tiny_png(path: Path, *, seed: int = 0) -> Path:
+    """Валидный scene PNG: ≥200_000 байт (порог is_valid_scene_image)."""
     from PIL import Image
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -23,7 +24,9 @@ def write_tiny_png(path: Path, *, seed: int = 0) -> Path:
         (120 + seed * 30) % 220,
         (180 + seed * 20) % 220,
     )
-    Image.new("RGB", (96, 128), color).save(path)
+    # Без сжатия, чтобы размер гарантированно перевалил за 200 KB
+    # (scan_frames._MIN_SCENE_IMAGE_BYTES), иначе кадр «без PNG» навсегда.
+    Image.new("RGB", (320, 568), color).save(path, compress_level=0)
     return path
 
 
