@@ -335,23 +335,10 @@ async def start_step(
             step_code,
         )
 
+    # NB: sync_project_xlsx — ПОСЛЕ clear_step_outputs_for_rerun (ниже).
+    # Синк до очистки воскрешал stale R45/R48 в Frame прямо перед wipe/
+    # soft-resume — политика очистки ломалась (13.08, #14).
     proj_xlsx = project.data_dir / "project.xlsx"
-    if proj_xlsx.exists():
-        try:
-            info = await sync_project_xlsx(session, project, proj_xlsx)
-            logger.info(
-                "[#{}] start_step {}: synced project.xlsx into DB: {}",
-                project.id,
-                step_code,
-                info,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[#{}] start_step {}: sync_project_xlsx failed: {}",
-                project.id,
-                step_code,
-                e,
-            )
 
     for code in _WRAPPER_TO_CODES.get(step_code, [step_code]):
         purge_tmp_gpt_for_step(project, code)
@@ -370,10 +357,11 @@ async def start_step(
             step_code,
             ", ".join(cleared),
         )
+    # Soft ▶ img / video: не wipe готовые пачки.
+    # Явный ▶ img_pr / anim_pr — всегда пересобрать промты с нуля
+    # (иначе skip «already in DB» и/или воскрешение stale R45/R48/PV).
+    force_wipe = bool(explicit_ui_start and step_code in ("img_pr", "anim_pr"))
     try:
-        # Soft ▶ anim_pr / img / video: не wipe готовые пачки.
-        # Явный ▶ img_pr — всегда пересобрать промты (иначе skip «already in DB»).
-        force_wipe = bool(explicit_ui_start and step_code == "img_pr")
         # ▶ одной sd_agent-ноды: invalidate_agent уже сбросил чекпоинт.
         # Полный wipe scene_d удаляет meta.scene_design целиком — вместе с
         # only_agent → worker prepare без only_agent зажигает весь веер.
@@ -404,6 +392,24 @@ async def start_step(
             step_code,
             e,
         )
+    # Синк xlsx→DB после очистки; при force_wipe не синкаем — wipe только
+    # что вычистил R45/R48, подтягивать их обратно нельзя.
+    if proj_xlsx.exists() and not force_wipe:
+        try:
+            info = await sync_project_xlsx(session, project, proj_xlsx)
+            logger.info(
+                "[#{}] start_step {}: synced project.xlsx into DB: {}",
+                project.id,
+                step_code,
+                info,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[#{}] start_step {}: sync_project_xlsx failed: {}",
+                project.id,
+                step_code,
+                e,
+            )
     # only_agent обязан пережить clear_step_outputs (wipe scene_d).
     if sd_agent_name:
         from app.services.scene_design import runner as sd_runner

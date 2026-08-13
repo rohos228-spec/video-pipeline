@@ -270,9 +270,11 @@ async def test_start_step_anim_pr_skips_when_no_missing_on_disk(
 async def test_start_step_anim_pr_explicit_reruns_even_if_ready(
     anim_pr_session, tmp_path: Path, monkeypatch
 ) -> None:
-    """Ручной ▶ при готовых промтах: status → generating_*; soft clear без wipe R48/DB.
+    """Ручной ▶ при готовых промтах: status → generating_* + force_wipe.
 
-    Полный wipe animation_prompt — только reset_step / force_wipe=True.
+    T10 (13.08, #14): явный ▶ anim_pr пересобирает промты с нуля — иначе
+    stale R48/PV воскрешали старые тексты после «чистого» перезапуска.
+    Soft retry (неявный) промты сохраняет — см. test_reset_step.
     """
     from app.settings import settings
     from sqlalchemy import select
@@ -297,8 +299,8 @@ async def test_start_step_anim_pr_explicit_reruns_even_if_ready(
     fr = (
         await session.execute(select(Frame).where(Frame.project_id == project.id))
     ).scalar_one()
-    # Soft ▶ сохраняет уже сгенерированные промты (не сжигает пачки).
-    assert (fr.animation_prompt or "").strip() == kept
+    # Явный ▶ = force_wipe: старые промты сожжены, генерация пойдёт с нуля.
+    assert (fr.animation_prompt or "").strip() == ""
 
 
 @pytest.mark.asyncio
