@@ -342,6 +342,7 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
         maybe_resume_after_sleep,
         record_step_failure,
         failure_sleep_until,
+        resume_expired_error_sleeps,
     )
 
     async def _handle_one_advance(
@@ -524,6 +525,14 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                 )
                 from app.services.project_control import stop_project_running
                 from app.services.run_sync import sync_run_for_project
+
+                woke = await resume_expired_error_sleeps(s)
+                if woke:
+                    await s.commit()
+                    logger.info(
+                        "worker: авто-резюм после паузы ошибок: {}",
+                        woke,
+                    )
 
                 projects = (
                     await s.execute(select(Project).where(Project.status.in_(active)))

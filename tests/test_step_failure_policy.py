@@ -199,7 +199,7 @@ async def test_record_step_failure_user_stop_does_not_revive(
 
 
 @pytest.mark.asyncio
-async def test_record_step_failure_sleep_leaves_running_status(
+async def test_record_step_failure_sleep_parks_paused(
     session: AsyncSession,
 ) -> None:
     p = Project(
@@ -223,7 +223,7 @@ async def test_record_step_failure_sleep_leaves_running_status(
         )
 
     assert action == "sleep"
-    assert p.status is ProjectStatus.new
+    assert p.status is ProjectStatus.paused
     assert is_sleeping(p)
     fs = (p.meta or {}).get("step_failure") or {}
     assert fs["total_fails"]["planning"] == 3
@@ -254,3 +254,122 @@ async def test_maybe_resume_after_sleep_skips_user_stop(
 
     assert await maybe_resume_after_sleep(session, p) is False
     assert p.status is ProjectStatus.new
+
+
+@pytest.mark.asyncio
+async def test_maybe_resume_after_sleep_from_paused_parking(
+    session: AsyncSession,
+) -> None:
+    """Error-sleep parks as paused; after sleep_until the worker must resume."""
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    p = Project(
+        slug="resume-paused",
+        topic="t",
+        status=ProjectStatus.paused,
+        auto_mode=True,
+        meta={
+            "step_failure": {
+                "sleep_until": past,
+                "last_running": "generating_image_prompts",
+                "total_fails": {"generating_image_prompts": 3},
+            }
+        },
+    )
+    session.add(p)
+    await session.flush()
+
+    with patch(
+        "app.services.step_failure_policy._soft_retry_without_wipe",
+        new_callable=AsyncMock,
+    ):
+        assert await maybe_resume_after_sleep(session, p) is True
+    assert p.status is ProjectStatus.generating_image_prompts
+    assert not is_sleeping(p)
+    fs = (p.meta or {}).get("step_failure") or {}
+    assert "sleep_until" not in fs
+
+
+@pytest.mark.asyncio
+async def test_user_pause_without_sleep_does_not_auto_resume(
+    session: AsyncSession,
+) -> None:
+    p = Project(
+        slug="user-pause",
+        topic="t",
+        status=ProjectStatus.paused,
+        auto_mode=True,
+        meta={"paused_from_status": "generating_images"},
+    )
+    session.add(p)
+    await session.flush()
+    assert await maybe_resume_after_sleep(session, p) is False
+    assert p.status is ProjectStatus.paused
+
+
+@pytest.mark.asyncio
+async def test_resume_expired_error_sleeps_picks_paused(
+    session: AsyncSession,
+) -> None:
+    from app.services.step_failure_policy import resume_expired_error_sleeps
+
+    past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    sleeper = Project(
+        slug="sleeper",
+        topic="t",
+        status=ProjectStatus.paused,
+        auto_mode=False,
+        meta={
+            "step_failure": {
+                "sleep_until": past,
+                "last_running": "generating_image_prompts",
+                "total_fails": {"generating_image_prompts": 3},
+            }
+        },
+    )
+    user = Project(
+        slug="user-paused",
+        topic="t",
+        status=ProjectStatus.paused,
+        auto_mode=True,
+        meta={"paused_from_status": "generating_videos"},
+    )
+    session.add_all([sleeper, user])
+    await session.flush()
+
+    with patch(
+        "app.services.step_failure_policy._soft_retry_without_wipe",
+        new_callable=AsyncMock,
+    ):
+        ids = await resume_expired_error_sleeps(session)
+    assert sleeper.id in ids
+    assert user.id not in ids
+    assert sleeper.status is ProjectStatus.generating_image_prompts
+    assert user.status is ProjectStatus.paused
+
+
+@pytest.mark.asyncio
+async def test_maybe_resume_when_last_running_is_paused_uses_total_fails(
+    session: AsyncSession,
+) -> None:
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    p = Project(
+        slug="resume-last-paused",
+        topic="t",
+        status=ProjectStatus.paused,
+        auto_mode=True,
+        meta={
+            "step_failure": {
+                "sleep_until": past,
+                "last_running": "paused",
+                "total_fails": {"generating_image_prompts": 3, "paused": 1},
+            }
+        },
+    )
+    session.add(p)
+    await session.flush()
+    with patch(
+        "app.services.step_failure_policy._soft_retry_without_wipe",
+        new_callable=AsyncMock,
+    ):
+        assert await maybe_resume_after_sleep(session, p) is True
+    assert p.status is ProjectStatus.generating_image_prompts

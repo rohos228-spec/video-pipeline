@@ -456,6 +456,34 @@ def clear_failure_on_success(project: Project, running: ProjectStatus) -> None:
     _save_failure_state(project, fs)
 
 
+def _running_status_to_resume(fs: dict[str, Any]) -> ProjectStatus | None:
+    """Pick a real running status: last_running, or total_fails keys (not paused)."""
+    candidates: list[str] = []
+    last = fs.get("last_running")
+    if last:
+        candidates.append(str(last))
+    totals = fs.get("total_fails") or {}
+    if isinstance(totals, dict):
+        for key in sorted(totals, key=lambda k: int(totals.get(k) or 0), reverse=True):
+            if key not in candidates:
+                candidates.append(str(key))
+    skip = {
+        ProjectStatus.paused,
+        ProjectStatus.failed,
+        ProjectStatus.new,
+    }
+    for key in candidates:
+        try:
+            running = ProjectStatus(key)
+        except ValueError:
+            continue
+        if running in skip:
+            continue
+        if step_by_running_status(running) is not None:
+            return running
+    return None
+
+
 async def maybe_resume_after_sleep(
     session: AsyncSession,
     project: Project,
@@ -467,15 +495,11 @@ async def maybe_resume_after_sleep(
 
     if is_user_stopped(project):
         return False
-    if not project.auto_mode or project.status is ProjectStatus.paused:
-        return False
+    # Error-sleep parks as paused (not generating_*). Skipping paused here
+    # left projects stuck after sleep_until with the worker never seeing them.
     fs = _failure_state(project)
-    step_key = fs.get("last_running")
-    if not step_key:
-        return False
-    try:
-        running = ProjectStatus(step_key)
-    except ValueError:
+    running = _running_status_to_resume(fs)
+    if running is None:
         return False
     step = step_by_running_status(running)
     if step is None:
@@ -483,5 +507,25 @@ async def maybe_resume_after_sleep(
     await _soft_retry_without_wipe(session, project, step.code)
     project.status = step.running_status
     await session.flush()
-    logger.info("[#{}] resumed after sleep → {} (без wipe)", project.id, step.code)
+    logger.info(
+        "[#{}] авто-резюм после паузы ошибок → {} (без wipe)",
+        project.id,
+        step.code,
+    )
     return True
+
+
+async def resume_expired_error_sleeps(session: AsyncSession) -> list[int]:
+    """paused + expired sleep_until → restore last_running (worker tick)."""
+    from sqlalchemy import select
+
+    rows = (
+        await session.execute(
+            select(Project).where(Project.status == ProjectStatus.paused)
+        )
+    ).scalars().all()
+    ids: list[int] = []
+    for p in rows:
+        if await maybe_resume_after_sleep(session, p):
+            ids.append(p.id)
+    return ids
