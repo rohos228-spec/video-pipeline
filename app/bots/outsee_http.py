@@ -308,27 +308,19 @@ async def _download(url: str, out_path: Path) -> Path:
 
 
 def _assert_video_not_mush(path: Path, *, duration_sec: int) -> None:
-    """Отбраковать «мыло» Veo: 720p 8с при ~1.5Mbps выглядит как 360p.
+    """Проверить, что клип скачался. Порог битрейта не ставим:
 
-    Порог ≈ 2.4 Mbps (300 KB/s). Soften-кадры CONTENT_POLICY раньше давали
-    такие лёгкие ролики — retry подхватит с более мягким soften.
+    clay/lite 720p 8с часто 0.7–2.0 MB — отбраковка «мыла» гнала на Kling 401
+    и блокировала очередь.
     """
+    del duration_sec
     if not path.is_file():
         raise OutseeApiError(f"видео не скачано: {path.name}")
     size = path.stat().st_size
-    dur = max(1, int(duration_sec or 8))
-    min_bytes = max(1_500_000, dur * 300_000)
-    if size < min_bytes:
+    if size < 1024:
         raise OutseeApiError(
-            f"видео слишком лёгкое ({size} bytes < {min_bytes}, ~{dur}s) — "
-            "низкое качество, нужен retry",
-            context={
-                "path": str(path),
-                "bytes": size,
-                "min_bytes": min_bytes,
-                "duration_sec": dur,
-                "low_quality": True,
-            },
+            f"видео пустое или обрезано ({size} bytes)",
+            context={"path": str(path), "bytes": size},
         )
 
 
@@ -647,14 +639,16 @@ async def ensure_public_image_url(
 ) -> str | None:
     """Outsee image_url принимает только http(s); data: молча игнорит.
 
-    data: → публичный URL (JPEG-сжатие + litterbox/tmpfiles/0x0/uguu/catbox).
+    data: → публичный URL только через Yandex Object Storage.
     http(s) → как есть (кроме localhost), либо force_rehost=True → скачать и
-    перезалить, пропуская skip_hosts.
+    залить в Yandex. Публичные хосты (litterbox/catbox/uguu) отключены.
+    ``yandex`` в skip_hosts игнорируется: новый PUT = новый URL.
     """
     if not url or not str(url).strip():
         return None
     u = str(url).strip()
     skip = {str(x).lower() for x in (skip_hosts or ())}
+    skip.discard("yandex")  # новый PUT = новый URL, yandex не банить
     if u.startswith(("http://", "https://")) and not force_rehost:
         # Outsee не скачает localhost / 127.0.0.1 — молча получится чужое видео
         low = u.lower()
@@ -682,7 +676,7 @@ async def ensure_public_image_url(
             ctype = (r.headers.get("content-type") or "").split(";")[0].strip().lower()
             mime = ctype if ctype.startswith("image/") else "image/jpeg"
             known = _host_name_from_url(u)
-            if known:
+            if known and known != "yandex":
                 skip.add(known)
     else:
         decoded = _decode_data_url(u)
@@ -691,31 +685,17 @@ async def ensure_public_image_url(
             return None
         raw, mime = decoded
     errors: list[str] = []
-    # Yandex Object Storage — единственный хост, если настроен в .env.
-    # Fallback litterbox/catbox/uguu часто 500/SSL/timeout и раньше «съедал»
-    # минуты после skip_hosts=['yandex'] (Outsee один раз не скачал URL).
     from app.bots.yandex_storage import yandex_storage_configured
 
-    yandex_on = yandex_storage_configured()
-    hosts: list[tuple[str, Any]] = []
-    if yandex_on:
-        hosts.append(("yandex", _host_via_yandex))
-        # Не уважаем skip_hosts для yandex: новый PUT = новый URL в том же бакете.
-        skip = {h for h in skip if h != "yandex"}
-    else:
-        logger.warning(
-            "outsee_api.frame: Yandex Object Storage НЕ настроен "
-            "(YANDEX_STORAGE_BUCKET/ACCESS_KEY/SECRET_KEY) — fallback litterbox/…"
+    if not yandex_storage_configured():
+        raise OutseeApiError(
+            "Yandex Object Storage не настроен "
+            "(YANDEX_STORAGE_BUCKET / ACCESS_KEY / SECRET_KEY). "
+            "Заливка кадра только через Yandex — litterbox/catbox отключены.",
+            context={"bytes": len(raw), "mime": mime},
         )
-        hosts.extend(
-            (
-                ("litterbox", _host_via_litterbox),
-                ("uguu", _host_via_uguu),
-                ("catbox", _host_via_catbox),
-                ("0x0", _host_via_0x0),
-                ("tmpfiles", _host_via_tmpfiles),
-            )
-        )
+    hosts: list[tuple[str, Any]] = [("yandex", _host_via_yandex)]
+    logger.info("outsee_api.frame: upload host=yandex only ({} bytes)", len(raw))
     variants = _upload_payload_variants(raw, mime)
     async with httpx.AsyncClient(
         timeout=90.0,
@@ -752,18 +732,14 @@ async def ensure_public_image_url(
                         label,
                         msg,
                     )
-    hint = (
-        "yandex only — проверь бакет/ключи/публичный read"
-        if yandex_on
-        else "public hosts"
-    )
     raise OutseeApiError(
-        f"frame upload failed ({hint}): " + " | ".join(errors)[:500],
+        "frame upload failed (yandex only — проверь бакет/ключи/публичный read): "
+        + " | ".join(errors)[:500],
         context={
             "mime": mime,
             "bytes": len(raw),
             "variants": [v[2] for v in variants],
-            "yandex_configured": yandex_on,
+            "yandex_configured": True,
         },
     )
 
@@ -958,7 +934,7 @@ async def generate_image(
             if not hosted:
                 raise OutseeApiError(
                     "outsee_api.image: рефы не удалось залить "
-                    "(uguu/litterbox/catbox) — генерация без рефа запрещена",
+                    "(Yandex Object Storage) — генерация без рефа запрещена",
                     context={
                         "raw_refs": len(refs),
                         "model": model,

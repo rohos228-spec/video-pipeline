@@ -10,6 +10,48 @@ import pytest
 
 
 @pytest.mark.asyncio
+async def test_ensure_public_yandex_only_when_configured() -> None:
+    from app.bots import outsee_http as oh
+
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64).decode("ascii")
+    data = f"data:image/png;base64,{png}"
+
+    async def fake_yandex(_client, _raw, _mime, _filename):
+        return "https://storage.yandexcloud.net/b/vp-frames/ok.jpg"
+
+    with (
+        patch("app.bots.yandex_storage.yandex_storage_configured", return_value=True),
+        patch.object(oh, "_host_via_yandex", side_effect=fake_yandex),
+        patch.object(oh, "_host_via_litterbox", side_effect=AssertionError("no litter")),
+        patch.object(oh, "_host_via_uguu", side_effect=AssertionError("no uguu")),
+        patch.object(oh, "_host_via_catbox", side_effect=AssertionError("no catbox")),
+        patch.object(oh, "_host_via_0x0", side_effect=AssertionError("no 0x0")),
+        patch.object(oh, "_host_via_tmpfiles", side_effect=AssertionError("no tmp")),
+    ):
+        out = await oh.ensure_public_image_url(data, skip_hosts={"yandex"})
+    assert out == "https://storage.yandexcloud.net/b/vp-frames/ok.jpg"
+
+
+@pytest.mark.asyncio
+async def test_ensure_public_yandex_does_not_fallback() -> None:
+    from app.bots import outsee_http as oh
+
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64).decode("ascii")
+    data = f"data:image/png;base64,{png}"
+
+    async def boom(*_a, **_k):
+        raise oh.OutseeApiError("yandex down")
+
+    with (
+        patch("app.bots.yandex_storage.yandex_storage_configured", return_value=True),
+        patch.object(oh, "_host_via_yandex", side_effect=boom),
+        patch.object(oh, "_host_via_litterbox", side_effect=AssertionError("no litter")),
+    ):
+        with pytest.raises(oh.OutseeApiError, match="frame upload failed"):
+            await oh.ensure_public_image_url(data)
+
+
+@pytest.mark.asyncio
 async def test_ensure_public_keeps_http() -> None:
     from app.bots.outsee_http import ensure_public_image_url
 
@@ -18,91 +60,23 @@ async def test_ensure_public_keeps_http() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ensure_public_hosts_data_url_via_litterbox_first(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_ensure_public_requires_yandex_no_public_hosts() -> None:
     from app.bots import outsee_http as oh
-
-    monkeypatch.setattr(
-        "app.bots.yandex_storage.yandex_storage_configured", lambda: False
-    )
 
     png = base64.b64encode(
         b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
     ).decode("ascii")
     data = f"data:image/png;base64,{png}"
 
-    async def fake_litter(_client, _raw, _mime, _filename):
-        return "https://litter.catbox.moe/hosted.png"
-
     with (
-        patch.object(oh, "_host_via_litterbox", side_effect=fake_litter),
-        patch.object(oh, "_host_via_uguu", side_effect=AssertionError("no uguu")),
-        patch.object(oh, "_host_via_catbox", side_effect=AssertionError("no catbox")),
-        patch.object(oh, "_host_via_0x0", side_effect=AssertionError("no 0x0")),
-        patch.object(oh, "_host_via_tmpfiles", side_effect=AssertionError("no tmp")),
-    ):
-        out = await oh.ensure_public_image_url(data)
-    assert out == "https://litter.catbox.moe/hosted.png"
-
-
-@pytest.mark.asyncio
-async def test_ensure_public_falls_back_when_litterbox_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.bots import outsee_http as oh
-
-    monkeypatch.setattr(
-        "app.bots.yandex_storage.yandex_storage_configured", lambda: False
-    )
-
-    png = base64.b64encode(
-        b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
-    ).decode("ascii")
-    data = f"data:image/png;base64,{png}"
-
-    async def boom(*_a, **_k):
-        raise oh.OutseeApiError("litterbox down")
-
-    async def uguu(_client, _raw, _mime, _filename):
-        return "https://d.uguu.se/ok.png"
-
-    with (
-        patch.object(oh, "_host_via_litterbox", side_effect=boom),
-        patch.object(oh, "_host_via_uguu", side_effect=uguu),
-        patch.object(oh, "_host_via_tmpfiles", side_effect=AssertionError("no tmp")),
-        patch.object(oh, "_host_via_catbox", side_effect=AssertionError("no catbox")),
-        patch.object(oh, "_host_via_0x0", side_effect=AssertionError("no 0x0")),
-    ):
-        out = await oh.ensure_public_image_url(data)
-    assert out == "https://d.uguu.se/ok.png"
-
-
-@pytest.mark.asyncio
-async def test_ensure_public_yandex_only_when_configured(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.bots import outsee_http as oh
-
-    monkeypatch.setattr(
-        "app.bots.yandex_storage.yandex_storage_configured", lambda: True
-    )
-    png = base64.b64encode(
-        b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
-    ).decode("ascii")
-    data = f"data:image/png;base64,{png}"
-
-    async def fake_yandex(_client, _raw, _mime, _filename):
-        return "https://storage.yandexcloud.net/bucket/vp-frames/x.jpg"
-
-    with (
-        patch.object(oh, "_host_via_yandex", side_effect=fake_yandex),
+        patch("app.bots.yandex_storage.yandex_storage_configured", return_value=False),
         patch.object(oh, "_host_via_litterbox", side_effect=AssertionError("no litter")),
         patch.object(oh, "_host_via_uguu", side_effect=AssertionError("no uguu")),
+        patch.object(oh, "_host_via_catbox", side_effect=AssertionError("no catbox")),
+        patch.object(oh, "_host_via_yandex", side_effect=AssertionError("no yandex")),
     ):
-        # skip_hosts=yandex must NOT divert to litterbox
-        out = await oh.ensure_public_image_url(data, skip_hosts={"yandex"})
-    assert out.startswith("https://storage.yandexcloud.net/")
+        with pytest.raises(oh.OutseeApiError, match="только через Yandex"):
+            await oh.ensure_public_image_url(data)
 
 
 def test_looks_like_image_bytes_rejects_html_landing() -> None:
@@ -377,10 +351,13 @@ async def test_veo_generate_video_defaults_to_silent(tmp_path: Path, monkeypatch
 def test_assert_video_not_mush_rejects_tiny_file(tmp_path: Path) -> None:
     from app.bots import outsee_http as oh
 
-    tiny = tmp_path / "soft.mp4"
-    tiny.write_bytes(b"\x00" * 800_000)
-    with pytest.raises(oh.OutseeApiError, match="слишком лёгкое"):
-        oh._assert_video_not_mush(tiny, duration_sec=8)
-    ok = tmp_path / "ok.mp4"
-    ok.write_bytes(b"\x00" * 2_500_000)
-    oh._assert_video_not_mush(ok, duration_sec=8)
+    empty = tmp_path / "empty.mp4"
+    empty.write_bytes(b"\x00" * 100)
+    with pytest.raises(oh.OutseeApiError, match="пустое"):
+        oh._assert_video_not_mush(empty, duration_sec=8)
+    clay = tmp_path / "clay_720p.mp4"
+    clay.write_bytes(b"\x00" * 700_000)
+    oh._assert_video_not_mush(clay, duration_sec=8)
+    typical = tmp_path / "ok.mp4"
+    typical.write_bytes(b"\x00" * 1_600_000)
+    oh._assert_video_not_mush(typical, duration_sec=8)
