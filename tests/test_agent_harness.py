@@ -130,6 +130,52 @@ async def test_img_pr_gate_does_not_require_png(harness_db) -> None:
     assert "img_pr" not in (rep.repair_steps or [])
 
 
+@pytest.mark.asyncio
+async def test_anim_pr_gate_does_not_require_png(harness_db) -> None:
+    """anim_pr пишет текст из image_prompt; PNG появляются на шаге img."""
+    session, tmp_path = harness_db
+    _write_plan_xlsx(tmp_path / "project.xlsx")
+    session.add(
+        Project(
+            id=506,
+            slug="anim-pr-no-png",
+            topic="t",
+            status=ProjectStatus.generating_animation_prompts,
+        )
+    )
+    session.add(
+        Frame(
+            project_id=506,
+            number=1,
+            voiceover_text="vo one",
+            image_prompt="a usable image prompt here",
+            animation_prompt="slow push in, hold 2s",
+        )
+    )
+    await session.commit()
+    assert not (tmp_path / "scenes").exists()
+
+    p = SimpleNamespace(
+        id=506,
+        data_dir=tmp_path,
+        status="generating_animation_prompts",
+        meta={},
+    )
+    rep = await harness_gate_or_raise(session, p, step="anim_pr")
+    by_name = {c.name: c for c in rep.checks}
+    assert by_name["scenes_png"].ok is True
+    assert "img" not in (rep.repair_steps or [])
+    assert "anim_pr" not in (rep.repair_steps or [])
+
+
+def test_verify_generating_animation_prompts_does_not_require_png(tmp_path: Path) -> None:
+    _write_plan_xlsx(tmp_path / "project.xlsx")
+    report = verify_project_disk(507, tmp_path, "generating_animation_prompts")
+    by_name = {c.name: c for c in report.checks}
+    assert by_name["scenes_png"].ok is True
+    assert "img" not in report.repair_steps
+
+
 def test_verify_image_prompts_ready_does_not_require_png(tmp_path: Path) -> None:
     _write_plan_xlsx(tmp_path / "project.xlsx")
     report = verify_project_disk(503, tmp_path, "image_prompts_ready")

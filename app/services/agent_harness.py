@@ -52,11 +52,9 @@ _EXCEL_GPT_STEPS = frozenset(
     {"excel_gpt", "enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5"}
 )
 
-# Артефакты поздних шагов нельзя требовать на ранних статусах (plan/script/frames).
+# PNG сцены — после шага img. anim_pr пишет текст из image_prompt, картинок ещё нет.
 _SCENES_REQUIRED_STATUSES = {
     "images_ready",
-    "generating_animation_prompts",
-    "animation_prompts_ready",
     "generating_videos",
     "videos_ready",
     "generating_music",
