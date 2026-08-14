@@ -15,7 +15,7 @@ def test_chunk_frames_size() -> None:
     assert [len(c) for c in chunks] == [40, 40, 10]
 
 
-def test_parse_img_pr_ops_wraps_style() -> None:
+def test_parse_img_pr_ops_does_not_wrap_style() -> None:
     reply = """
     {"ops":[
       {"frame_uuid":"aaa","fields":{"промт_картинки":"Background: metro car"}},
@@ -27,9 +27,9 @@ def test_parse_img_pr_ops_wraps_style() -> None:
     assert len(ops) == 2
     assert {ipb.uuid_of_op(o) for o in ops} == {"aaa", "ccc"}
     body = ops[0]["fields"]["промт_картинки"]
-    assert "Archival Noir Watercolor" in body
-    assert "Background: metro car" in body
-    assert "Final style lock" in body
+    assert body == "Background: metro car"
+    assert "Archival Noir" not in body
+    assert "Final style lock" not in body
 
 
 def test_parse_img_pr_ops_no_style_does_not_inject_noir() -> None:

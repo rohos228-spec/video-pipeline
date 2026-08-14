@@ -1,8 +1,6 @@
 """img_pr: крупные батчи + одна GPT-сессия (мастер во вложении на каждый батч).
 
-STYLE LOCK вшивает пайплайн (`img_pr_style`) из стиля проекта — GPT пишет
-только сцену. Без стиля — сцену не оборачиваем Archival Noir.
-Пластилин: стиль трижды внутри промт_картинки, wrap не нужен.
+Промт картинки — как вернул GPT (без пайплайн-обёртки STYLE_HEAD/TAIL).
 """
 
 from __future__ import annotations
@@ -14,7 +12,6 @@ from pathlib import Path
 from typing import Any, Sequence, TypeVar
 
 from app.services.db_apply import extract_apply_ops_json
-from app.services.img_pr_style import wrap_ops_styles
 from app.services.volume_batches import (
     MIN_CONTINUE_SIZE,
     plan_remainder_batches,
@@ -298,10 +295,11 @@ def salvage_img_pr_ops(reply: str) -> list[dict]:
 def parse_img_pr_ops(
     reply: str,
     *,
-    wrap_style: bool = True,
+    wrap_style: bool = False,
     style_id: str | None = None,
     style_block: str | None = None,
 ) -> list[dict]:
+    _ = wrap_style, style_id, style_block  # legacy kwargs, wrap отключён
     data = extract_apply_ops_json(reply or "")
     ops = list((data or {}).get("ops") or []) if isinstance(data, dict) else []
     clean = filter_prompt_ops(ops)
@@ -312,8 +310,6 @@ def parse_img_pr_ops(
         clean = salvaged
     elif (partial or len(clean) <= 1) and len(salvaged) > len(clean):
         clean = salvaged
-    if wrap_style:
-        return wrap_ops_styles(clean, style_id=style_id, style_block=style_block)
     return clean
 
 

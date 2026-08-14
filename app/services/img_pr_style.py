@@ -1,10 +1,7 @@
-"""STYLE LOCK — вшивается пайплайном из стиля проекта, не GPT.
+"""Стиль проекта для img_pr (resolve / markers).
 
-GPT пишет только сцену (фон/действие/свет/accent/…). Полный style-блок
-для Outsee добавляем здесь → меньше токенов на ответ → крупные батчи.
-
-Стиль берётся из проекта (meta.img_style / variant). Без стиля — сцена
-как есть, без молчаливого Archival Noir.
+Обёртка STYLE_HEAD/TAIL отключена: в `промт_картинки` уходит текст GPT
+как есть. Хелперы `wrap_*` оставлены no-op для совместимости импортов.
 """
 
 from __future__ import annotations
@@ -235,23 +232,9 @@ def wrap_scene_with_style(
     style_id: str | None = None,
     style_block: str | None = None,
 ) -> str:
-    """Сцена от GPT + STYLE LOCK проекта → готовый промт Outsee."""
-    body = (scene_body or "").strip()
-    if not body:
-        return body
-    if already_has_style(body):
-        return body
-    block = (style_block or "").strip() or None
-    sid = (style_id or "").strip() or None
-    if block:
-        return _wrap_with_block(body, block)
-    if looks_knitted(sid):
-        return f"{KNITTED_STYLE_HEAD}\n\n{body}\n\n{KNITTED_STYLE_TAIL}"
-    if looks_noir(sid):
-        return f"{STYLE_HEAD}\n\n{body}\n\n{STYLE_TAIL}"
-    if not sid:
-        _warn_no_style_once()
-    return body
+    """No-op: стиль больше не вшиваем — возвращаем сцену как есть."""
+    _ = style_id, style_block
+    return (scene_body or "").strip()
 
 
 def wrap_ops_styles(
@@ -260,25 +243,6 @@ def wrap_ops_styles(
     style_id: str | None = None,
     style_block: str | None = None,
 ) -> list[dict]:
-    """Вшить STYLE в промт_картинки каждого op (shot2 не трогаем — короткий)."""
-    out: list[dict] = []
-    for op in ops:
-        if not isinstance(op, dict):
-            continue
-        fields = op.get("fields")
-        if not isinstance(fields, dict):
-            out.append(op)
-            continue
-        new_fields = dict(fields)
-        for key in _PROMPT_FIELD_KEYS:
-            if key in new_fields and isinstance(new_fields[key], str):
-                new_fields[key] = wrap_scene_with_style(
-                    new_fields[key],
-                    style_id=style_id,
-                    style_block=style_block,
-                )
-                break
-        cloned = dict(op)
-        cloned["fields"] = new_fields
-        out.append(cloned)
-    return out
+    """No-op: ops без STYLE-обёртки."""
+    _ = style_id, style_block
+    return list(ops)
