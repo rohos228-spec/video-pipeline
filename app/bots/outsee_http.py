@@ -691,23 +691,31 @@ async def ensure_public_image_url(
             return None
         raw, mime = decoded
     errors: list[str] = []
-    # Yandex Object Storage первым (если настроен); litterbox часто 500;
-    # tmpfiles /dl/ отдаёт HTML → Outsee «не изображение» — в хвосте после verify;
-    # 0x0 сейчас 503; catbox заливается, но Outsee часто не качает — почти в хвосте.
+    # Yandex Object Storage — единственный хост, если настроен в .env.
+    # Fallback litterbox/catbox/uguu часто 500/SSL/timeout и раньше «съедал»
+    # минуты после skip_hosts=['yandex'] (Outsee один раз не скачал URL).
     from app.bots.yandex_storage import yandex_storage_configured
 
+    yandex_on = yandex_storage_configured()
     hosts: list[tuple[str, Any]] = []
-    if yandex_storage_configured():
+    if yandex_on:
         hosts.append(("yandex", _host_via_yandex))
-    hosts.extend(
-        (
-            ("litterbox", _host_via_litterbox),
-            ("uguu", _host_via_uguu),
-            ("catbox", _host_via_catbox),
-            ("0x0", _host_via_0x0),
-            ("tmpfiles", _host_via_tmpfiles),
+        # Не уважаем skip_hosts для yandex: новый PUT = новый URL в том же бакете.
+        skip = {h for h in skip if h != "yandex"}
+    else:
+        logger.warning(
+            "outsee_api.frame: Yandex Object Storage НЕ настроен "
+            "(YANDEX_STORAGE_BUCKET/ACCESS_KEY/SECRET_KEY) — fallback litterbox/…"
         )
-    )
+        hosts.extend(
+            (
+                ("litterbox", _host_via_litterbox),
+                ("uguu", _host_via_uguu),
+                ("catbox", _host_via_catbox),
+                ("0x0", _host_via_0x0),
+                ("tmpfiles", _host_via_tmpfiles),
+            )
+        )
     variants = _upload_payload_variants(raw, mime)
     async with httpx.AsyncClient(
         timeout=90.0,
@@ -744,9 +752,19 @@ async def ensure_public_image_url(
                         label,
                         msg,
                     )
+    hint = (
+        "yandex only — проверь бакет/ключи/публичный read"
+        if yandex_on
+        else "public hosts"
+    )
     raise OutseeApiError(
-        "frame upload failed: " + " | ".join(errors)[:500],
-        context={"mime": mime, "bytes": len(raw), "variants": [v[2] for v in variants]},
+        f"frame upload failed ({hint}): " + " | ".join(errors)[:500],
+        context={
+            "mime": mime,
+            "bytes": len(raw),
+            "variants": [v[2] for v in variants],
+            "yandex_configured": yandex_on,
+        },
     )
 
 
@@ -981,7 +999,8 @@ async def generate_image(
                 raise
             for u in body.get("image_urls") or []:
                 bad = _host_name_from_url(str(u))
-                if bad:
+                # yandex не баним — следующий try = новый объект в бакете.
+                if bad and bad != "yandex":
                     skip_hosts.add(bad)
             logger.warning(
                 "outsee_api.image: Outsee отверг image_urls (skip={}) try {}/3",
@@ -1172,7 +1191,8 @@ async def generate_video(
             ):
                 raise
             bad = _host_name_from_url(str(body.get("image_url") or ""))
-            if bad:
+            # yandex не баним: следующий try зальёт новый объект в бакет.
+            if bad and bad != "yandex":
                 skip_hosts.add(bad)
             logger.warning(
                 "outsee_api.video: Outsee не скачал image_url (host={}) — "

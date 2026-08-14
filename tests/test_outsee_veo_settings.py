@@ -18,8 +18,14 @@ async def test_ensure_public_keeps_http() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ensure_public_hosts_data_url_via_litterbox_first() -> None:
+async def test_ensure_public_hosts_data_url_via_litterbox_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app.bots import outsee_http as oh
+
+    monkeypatch.setattr(
+        "app.bots.yandex_storage.yandex_storage_configured", lambda: False
+    )
 
     png = base64.b64encode(
         b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
@@ -41,8 +47,14 @@ async def test_ensure_public_hosts_data_url_via_litterbox_first() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ensure_public_falls_back_when_litterbox_fails() -> None:
+async def test_ensure_public_falls_back_when_litterbox_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app.bots import outsee_http as oh
+
+    monkeypatch.setattr(
+        "app.bots.yandex_storage.yandex_storage_configured", lambda: False
+    )
 
     png = base64.b64encode(
         b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
@@ -64,6 +76,33 @@ async def test_ensure_public_falls_back_when_litterbox_fails() -> None:
     ):
         out = await oh.ensure_public_image_url(data)
     assert out == "https://d.uguu.se/ok.png"
+
+
+@pytest.mark.asyncio
+async def test_ensure_public_yandex_only_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.bots import outsee_http as oh
+
+    monkeypatch.setattr(
+        "app.bots.yandex_storage.yandex_storage_configured", lambda: True
+    )
+    png = base64.b64encode(
+        b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+    ).decode("ascii")
+    data = f"data:image/png;base64,{png}"
+
+    async def fake_yandex(_client, _raw, _mime, _filename):
+        return "https://storage.yandexcloud.net/bucket/vp-frames/x.jpg"
+
+    with (
+        patch.object(oh, "_host_via_yandex", side_effect=fake_yandex),
+        patch.object(oh, "_host_via_litterbox", side_effect=AssertionError("no litter")),
+        patch.object(oh, "_host_via_uguu", side_effect=AssertionError("no uguu")),
+    ):
+        # skip_hosts=yandex must NOT divert to litterbox
+        out = await oh.ensure_public_image_url(data, skip_hosts={"yandex"})
+    assert out.startswith("https://storage.yandexcloud.net/")
 
 
 def test_looks_like_image_bytes_rejects_html_landing() -> None:
