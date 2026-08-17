@@ -271,22 +271,37 @@ def agents_all_done(project: Project) -> bool:
     return all(load_checkpoint(project, name) is not None for name in needed)
 
 
-def _dump_agent_fail(project: Project, name: str, reply: str, err: BaseException) -> None:
-    """Сохранить сырой ответ при ошибке парса — иначе «пустой scenes» не диагностировать."""
+def _dump_agent_fail(
+    project: Project, name: str, reply: str, err: BaseException
+) -> Path | None:
+    """Сохранить сырой ответ при ошибке парса — иначе «нет JSON» не диагностировать.
+
+    Пишет:
+      data/videos/<slug>/scene_design/<name>_last_fail.txt
+      data/videos/<slug>/tmp_gpt/sd_<name>_fail_<ts>.txt
+    """
+    path: Path | None = None
     try:
+        from datetime import datetime
+
         d = _state_dir(project)
         d.mkdir(parents=True, exist_ok=True)
         path = d / f"{name}_last_fail.txt"
-        path.write_text(
-            f"error: {err}\n\n--- reply ---\n{reply or ''}",
-            encoding="utf-8",
-        )
+        body = f"error: {err}\n\n--- reply ---\n{reply or ''}"
+        path.write_text(body, encoding="utf-8")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        tmp = project.data_dir / "tmp_gpt"
+        tmp.mkdir(parents=True, exist_ok=True)
+        stamped = tmp / f"sd_{name}_fail_{ts}.txt"
+        stamped.write_text(body, encoding="utf-8")
         logger.warning(
-            "[#{}] scene_design/{}: fail dump → {}",
+            "[#{}] scene_design/{}: fail dump → {} (copy {})",
             project.id,
             name,
             path,
+            stamped.name,
         )
+        return path
     except Exception:  # noqa: BLE001
         logger.debug(
             "[#{}] scene_design/{}: fail dump skipped",
@@ -294,6 +309,7 @@ def _dump_agent_fail(project: Project, name: str, reply: str, err: BaseException
             name,
             exc_info=True,
         )
+        return path
 
 
 async def _run_one_agent(
@@ -324,9 +340,11 @@ async def _run_one_agent(
             expected_frame_numbers=expected_frame_numbers,
         )
     except ag.SceneDesignAgentError as e:
-        _dump_agent_fail(project, name, reply, e)
+        dump = _dump_agent_fail(project, name, reply, e)
         # Скелет: один repair-pass — модель часто копирует stub scenes: [].
         if name != ag.SKELETON:
+            if dump is not None:
+                raise ag.SceneDesignAgentError(f"{e} | dump={dump}") from e
             raise
         n_vo = len(expected_frame_numbers or [])
         repair_prompt = (
@@ -337,8 +355,9 @@ async def _run_one_agent(
             f"Ошибка парсера: {e}\n\nБыло:\n{(reply or '')[:14000]}"
         )
         logger.info(
-            "[#{}] scene_design/skeleton: repair-pass после parse fail",
+            "[#{}] scene_design/skeleton: repair-pass после parse fail (dump={})",
             project.id,
+            dump,
         )
         repaired = await gpt_client.gpt_ask_fresh(
             repair_prompt,
@@ -354,8 +373,10 @@ async def _run_one_agent(
                 expected_frame_numbers=expected_frame_numbers,
             )
         except ag.SceneDesignAgentError as e2:
-            _dump_agent_fail(project, name, repaired, e2)
-            raise
+            dump2 = _dump_agent_fail(project, name, repaired, e2)
+            raise ag.SceneDesignAgentError(
+                f"{e2} | dump={dump2}" if dump2 else str(e2)
+            ) from e2
 
 
 def _append_slice_context(

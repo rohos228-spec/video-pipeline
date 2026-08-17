@@ -1549,7 +1549,15 @@ async def run_skeleton(
     draft_prompt = ag.load_prompt(ag.SKELETON, project)
     logger.info("[#{}] skeleton: draft GPT…", project.id)
     draft_raw = await _gpt(draft_prompt, context, project=project, timeout=timeout)
-    draft = ag.parse_agent_slice(ag.SKELETON, draft_raw, validate=False)
+    try:
+        draft = ag.parse_agent_slice(ag.SKELETON, draft_raw, validate=False)
+    except ag.SceneDesignAgentError as e:
+        from app.services.scene_design.runner import _dump_agent_fail
+
+        dump = _dump_agent_fail(project, ag.SKELETON, draft_raw, e)
+        raise ag.SceneDesignAgentError(
+            f"{e} | dump={dump}" if dump else str(e)
+        ) from e
     normalize_skeleton_draft(draft)
     explode_glued_vo_scenes(draft, vo_frames)
     heal_open_threads(draft)
@@ -1574,7 +1582,15 @@ async def run_skeleton(
             reply = await _gpt(
                 editor_prompt, editor_ctx, project=project, timeout=timeout
             )
-            edited = _parse_editor_reply(reply)
+            try:
+                edited = _parse_editor_reply(reply)
+            except Exception as e:  # noqa: BLE001
+                from app.services.scene_design.runner import _dump_agent_fail
+
+                dump = _dump_agent_fail(project, "skeleton_editor", reply, e)
+                raise RuntimeError(
+                    f"{e} | dump={dump}" if dump else str(e)
+                ) from e
             draft = merge_by_id(draft, edited)
             explode_glued_vo_scenes(draft, vo_frames)
             heal_open_threads(draft)
