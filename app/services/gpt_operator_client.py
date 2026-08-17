@@ -36,6 +36,7 @@ class OperatorApiResult:
     # Ответ — JSON apply-ops (DB SoT): TSV-writeback в xlsx пропущен,
     # применяет вызывающий (enrich_xlsx) через db_apply.
     apply_ops: dict | None = None
+    applied_in_runner: bool = False
 
 
 def _needs_check_writeback_retry(reply_text: str) -> bool:

@@ -821,6 +821,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
         raise_if_cancelled(project.id)
         expected_frame_uuids: list[str] = []
+        db_ctx: dict | None = None
+        ctx_path = None
         # DB SoT: для project_file просим apply-ops JSON вместо TSV (+ uuid-мап).
         if output_mode == "project_file" and not check_mode:
             import json as _json
@@ -1005,6 +1007,78 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 input_paths=data_paths,
                 project_id=project.id,
             )
+        elif (
+            output_mode == "project_file"
+            and not check_mode
+            and not character_registry
+            and isinstance(db_ctx, dict)
+            and ctx_path is not None
+        ):
+            from app.services.apply_ops_batches import (
+                run_apply_ops_batched,
+                should_batch_apply_ops,
+            )
+            from app.services import db_apply as _db_apply
+            from app.services.node_write_contract import filter_ops_for_node
+
+            pending_n = len(db_ctx.get("frames") or [])
+            raw_n = ctx_path.stat().st_size if ctx_path.exists() else 0
+            if should_batch_apply_ops(
+                n_frames=pending_n,
+                json_bytes=raw_n,
+                dense=True,
+                target_batches=5,
+            ):
+                async def _apply_batch(payload: dict) -> None:
+                    ops = filter_ops_for_node(
+                        list(payload.get("ops") or []),
+                        node_kind="excel_gpt_no_prompts",
+                    )
+                    await _db_apply.apply_ops(
+                        session,
+                        project,
+                        ops,
+                        export_xlsx=bool(payload.get("export_xlsx", False)),
+                        node_kind="excel_gpt_no_prompts",
+                    )
+                    await session.commit()
+                    await session.refresh(project)
+
+                logger.info(
+                    "[#{}] enrich_xlsx node={!r}: apply-ops 5 sequential "
+                    "batches (dense shot fill)",
+                    project.id,
+                    node_key,
+                )
+                api_res = await run_apply_ops_batched(
+                    project_dir=project.data_dir,
+                    node_key=node_key,
+                    role=role,
+                    output_mode=output_mode,
+                    prompt=master or "",
+                    accompanying=accompanying,
+                    db_ctx=db_ctx,
+                    ctx_path=ctx_path,
+                    project_id=project.id,
+                    dense=True,
+                    apply_fn=_apply_batch,
+                    target_batches=5,
+                )
+            else:
+                api_res = await run_operator_api(
+                    project_dir=project.data_dir,
+                    node_key=node_key,
+                    role=role,
+                    output_mode=output_mode,
+                    prompt=master or "",
+                    accompanying=accompanying,
+                    input_paths=data_paths,
+                    check_mode=check_mode,
+                    check_fix=check_fix,
+                    source_prompt_keys=source_prompt_keys,
+                    check_streams=check_streams_n,
+                    db_sot_check=db_sot_check,
+                )
         else:
             api_res = await run_operator_api(
                 project_dir=project.data_dir,
@@ -1073,7 +1147,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         node_key,
                         dropped,
                     )
-            if ops_data and (ops_list or chars_list or scenes_list):
+            if getattr(api_res, "applied_in_runner", False):
+                logger.info(
+                    "[#{}] enrich_xlsx node={}: apply-ops уже записан "
+                    "по батчам ({} ops)",
+                    project.id,
+                    node_key,
+                    len(ops_list),
+                )
+            elif ops_data and (ops_list or chars_list or scenes_list):
                 from app.services import db_apply
                 from app.services.node_write_contract import (
                     coverage_report,
