@@ -110,6 +110,55 @@ def _cell_frame_number(cell: dict[str, Any]) -> int | None:
         return None
 
 
+def _slot_duration_weights(parts: list[dict[str, Any]], total: Any) -> list[Any]:
+    """Длительности слотов ∝ длине якоря бита; сумма = длительности ячейки.
+
+    Без валидной длительности ячейки — None у всех (не угадываем).
+    """
+    n = len(parts)
+    try:
+        total_f = float(total)
+    except (TypeError, ValueError):
+        total_f = 0.0
+    if n < 1 or total_f <= 0:
+        return [None] * n
+    weights = [max(len(str(p.get("якорь") or "").strip()), 1) for p in parts]
+    s = sum(weights)
+    out = [round(total_f * w / s, 1) for w in weights]
+    drift = round(total_f - sum(out), 1)
+    if out:
+        out[-1] = round(out[-1] + drift, 1)
+    return out
+
+
+def _slots_from_parts(
+    parts: list[dict[str, Any]], total: Any
+) -> list[dict[str, Any]]:
+    """Синтез слотов из битов: 1 бит = 1 слот (модель слоты не прислала)."""
+    durations = _slot_duration_weights(parts, total)
+    slots: list[dict[str, Any]] = []
+    for si, part in enumerate(parts):
+        slot: dict[str, Any] = {
+            "слот": si + 1,
+            "бит": int(part.get("порядок") or si + 1)
+            if str(part.get("порядок") or "").strip() or isinstance(part.get("порядок"), int)
+            else si + 1,
+            "якорь": str(part.get("якорь") or "").strip(),
+            "изменение": str(part.get("изменение") or "").strip(),
+            "главный": bool(
+                part.get("главный") is True or part.get("главный") == "true"
+            ),
+        }
+        if part.get("тип"):
+            slot["тип"] = str(part.get("тип")).strip()
+        if part.get("нить") not in (None, ""):
+            slot["нить"] = str(part.get("нить")).strip()
+        if durations[si] is not None:
+            slot["длительность_сек"] = durations[si]
+        slots.append(slot)
+    return slots
+
+
 def normalize_skeleton_draft(draft: dict[str, Any]) -> dict[str, Any]:
     """V3 ``cells`` → внутренний мост ``scenes`` (1 VO = 1 карточка).
 
@@ -215,6 +264,16 @@ def normalize_skeleton_draft(draft: dict[str, Any]) -> dict[str, Any]:
                 "время": str(cell.get("время") or "").strip(),
                 "длительность_сек": cell.get("длительность_сек"),
             }
+            # Слоты: 1 бит = 1 слот. Модельные слоты переносим как есть,
+            # иначе синтезируем из битов (длительность ∝ длине якоря).
+            slots = [
+                s for s in (cell.get("слоты") or []) if isinstance(s, dict)
+            ]
+            if not slots and parts:
+                slots = _slots_from_parts(parts, cell.get("длительность_сек"))
+            if slots:
+                scene["слоты"] = slots
+                cell["слоты"] = slots
             mid = str(cell.get("место_id") or "").strip()
             if mid:
                 scene["место_id"] = mid
@@ -291,6 +350,15 @@ def normalize_skeleton_draft(draft: dict[str, Any]) -> dict[str, Any]:
                 cell_out["место_id"] = sc.get("место_id")
             if sc.get("фон_разовый"):
                 cell_out["фон_разовый"] = sc.get("фон_разовый")
+            # Слоты: переносим из legacy-сцены или синтезируем из битов.
+            legacy_slots = [
+                s for s in (sc.get("слоты") or []) if isinstance(s, dict)
+            ]
+            if not legacy_slots and parts:
+                legacy_slots = _slots_from_parts(parts, sc.get("длительность_сек"))
+            if legacy_slots:
+                cell_out["слоты"] = legacy_slots
+                sc["слоты"] = legacy_slots
             synth.append(cell_out)
         if synth and not draft.get("cells"):
             draft["cells"] = synth
@@ -1018,6 +1086,59 @@ def validate_skeleton_coverage(
         raise ag.SceneDesignAgentError(f"scene_design/skeleton: покрытие — {msg}")
 
 
+def validate_skeleton_slots(scenes: list[Any]) -> None:
+    """Слоты скелета: 1 бит = 1 слот, ровно один главный, сумма сек = ячейке.
+
+    Ячейки-тезисы без битов слот не обязаны иметь. Вызывать ПОСЛЕ
+    ``normalize_skeleton_draft`` (он синтезирует слоты из битов).
+    """
+    problems: list[str] = []
+    for sc in scenes or []:
+        if not isinstance(sc, dict):
+            continue
+        sid = str(sc.get("id_scene") or sc.get("id_cell") or "?")
+        bits = [
+            b
+            for b in (sc.get("биты") or sc.get("смысловые_части") or [])
+            if isinstance(b, dict)
+        ]
+        slots = [s for s in (sc.get("слоты") or []) if isinstance(s, dict)]
+        if not bits and not slots:
+            continue
+        if bits and not slots:
+            problems.append(f"{sid}: {len(bits)} бит(ов) без слотов")
+            continue
+        if bits and len(slots) != len(bits):
+            problems.append(f"{sid}: слотов {len(slots)} != битов {len(bits)}")
+        main = sum(
+            1 for s in slots if s.get("главный") is True or s.get("главный") == "true"
+        )
+        if bits and main != 1:
+            problems.append(f"{sid}: главных слотов {main} (нужен ровно 1)")
+        for i, s in enumerate(slots, start=1):
+            if not str(s.get("якорь") or "").strip():
+                problems.append(f"{sid} слот {s.get('слот') or i}: пустой якорь")
+        try:
+            total = float(sc.get("длительность_сек") or 0)
+        except (TypeError, ValueError):
+            total = 0.0
+        durs: list[float] = []
+        for s in slots:
+            try:
+                durs.append(float(s.get("длительность_сек") or 0))
+            except (TypeError, ValueError):
+                durs.append(0.0)
+        if total > 0 and slots and any(d > 0 for d in durs):
+            if abs(sum(durs) - total) > 0.6:
+                problems.append(
+                    f"{sid}: сумма слотов {sum(durs):.1f}с != ячейка {total:.1f}с"
+                )
+    if problems:
+        raise ag.SceneDesignAgentError(
+            "scene_design/skeleton: слоты — " + "; ".join(problems[:8])
+        )
+
+
 def merge_by_id(draft: dict[str, Any], editor: dict[str, Any]) -> dict[str, Any]:
     """Заменить карточки/сущности по id из ответа редактора."""
     out = json.loads(json.dumps(draft, ensure_ascii=False))  # deep copy via json
@@ -1343,6 +1464,23 @@ async def store_skeleton_cells(
                         project, ag.SKELETON, "sk_bit", key, field, val, seq=order
                     )
                 )
+        for slot in sc.get("слоты") or []:
+            if not isinstance(slot, dict):
+                continue
+            try:
+                sorder = int(slot.get("слот") or 0)
+            except (TypeError, ValueError):
+                sorder = 0
+            skey = f"{sid}.slot{sorder}"
+            for field in ("бит", "якорь", "изменение", "длительность_сек", "главный"):
+                val = slot.get(field)
+                if val is None or (isinstance(val, str) and not str(val).strip()):
+                    continue
+                extra.append(
+                    sd_cells._cell(
+                        project, ag.SKELETON, "sk_slot", skey, field, val, seq=sorder
+                    )
+                )
         glav = sc.get("главное")
         if isinstance(glav, dict):
             th = str(glav.get("нить") or "").strip()
@@ -1460,6 +1598,7 @@ async def run_skeleton(
     # финальная coverage на всякий случай
     expect = [int(fr.number) for fr in vo_frames if fr.number is not None]
     validate_skeleton_coverage(draft.get("scenes") or [], expect)
+    validate_skeleton_slots(draft.get("scenes") or [])
 
     stats = await store_skeleton_cells(session, project, draft, full_vo)
     runner.save_checkpoint(project, ag.SKELETON, draft)

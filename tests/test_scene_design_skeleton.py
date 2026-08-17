@@ -561,3 +561,126 @@ async def test_run_skeleton_checkpoint_skips_gpt(sk_session, monkeypatch):
     p = await session.get(Project, project.id)
     out = await sk.run_skeleton(session, p, list(frames))
     assert out["scenes"][0]["id_scene"] == "scene_01"
+
+
+# ── слоты: 1 бит = 1 слот ────────────────────────────────────────────
+
+
+def _cell_with_bits() -> dict:
+    return {
+        "id_cell": "cell_01",
+        "кадр": 1,
+        "связь_с_прошлой": {"тип": "начало", "что_связывает": ""},
+        "фокус": "Уилер входит без маски",
+        "смысловые_части": [
+            {
+                "порядок": 1,
+                "тип": "действие",
+                "глагол_или_суть": "вошёл",
+                "изменение": "снаружи → внутри",
+                "якорь": "вошёл в два банка",
+                "главный": False,
+            },
+            {
+                "порядок": 2,
+                "тип": "состояние",
+                "глагол_или_суть": "верит в сок",
+                "изменение": "сок для чернил → сок скроет лицо",
+                "якорь": "лимонный сок способен скрыть лицо от камер наблюдения",
+                "главный": True,
+            },
+        ],
+        "длительность_сек": 12.0,
+    }
+
+
+def test_slots_synthesized_one_per_bit() -> None:
+    draft = {"cells": [_cell_with_bits()]}
+    sk.normalize_skeleton_draft(draft)
+    sc = draft["scenes"][0]
+    slots = sc["слоты"]
+    assert len(slots) == 2
+    assert [s["бит"] for s in slots] == [1, 2]
+    assert slots[0]["главный"] is False and slots[1]["главный"] is True
+    assert abs(sum(s["длительность_сек"] for s in slots) - 12.0) < 0.01
+    # длительность ∝ длине якоря: второй якорь длиннее → слот длиннее
+    assert slots[1]["длительность_сек"] > slots[0]["длительность_сек"]
+    # слоты видны и в карточке cells
+    assert draft["cells"][0]["слоты"] == slots
+    sk.validate_skeleton_slots(draft["scenes"])  # не падает
+
+
+def test_slots_from_model_carried_asis() -> None:
+    cell = _cell_with_bits()
+    cell["слоты"] = [
+        {"слот": 1, "бит": 1, "якорь": "вошёл в два банка",
+         "фокус_слота": "вход", "длительность_сек": 5.0, "главный": False},
+        {"слот": 2, "бит": 2, "якорь": "лимонный сок",
+         "фокус_слота": "вера", "длительность_сек": 7.0, "главный": True},
+    ]
+    draft = {"cells": [cell]}
+    sk.normalize_skeleton_draft(draft)
+    sc = draft["scenes"][0]
+    assert sc["слоты"][1]["фокус_слота"] == "вера"
+    sk.validate_skeleton_slots(draft["scenes"])
+
+
+def test_validate_slots_count_mismatch() -> None:
+    sc = {
+        "id_scene": "scene_01",
+        "биты": [{"порядок": 1}, {"порядок": 2}],
+        "слоты": [{"слот": 1, "якорь": "x", "главный": True}],
+        "длительность_сек": 5.0,
+    }
+    with pytest.raises(Exception, match="слотов 1 != битов 2"):
+        sk.validate_skeleton_slots([sc])
+
+
+def test_validate_slots_two_main() -> None:
+    sc = {
+        "id_scene": "scene_01",
+        "биты": [{"порядок": 1}, {"порядок": 2}],
+        "слоты": [
+            {"слот": 1, "якорь": "a", "главный": True},
+            {"слот": 2, "якорь": "b", "главный": True},
+        ],
+    }
+    with pytest.raises(Exception, match="главных слотов 2"):
+        sk.validate_skeleton_slots([sc])
+
+
+def test_validate_slots_duration_mismatch() -> None:
+    sc = {
+        "id_scene": "scene_01",
+        "биты": [{"порядок": 1}],
+        "слоты": [{"слот": 1, "якорь": "a", "главный": True, "длительность_сек": 2.0}],
+        "длительность_сек": 10.0,
+    }
+    with pytest.raises(Exception, match="сумма слотов"):
+        sk.validate_skeleton_slots([sc])
+
+
+def test_validate_slots_thesis_cell_without_bits_ok() -> None:
+    sk.validate_skeleton_slots([{"id_scene": "scene_01", "биты": [], "слоты": []}])
+
+
+@pytest.mark.asyncio
+async def test_slots_stored_as_sk_slot_cells(sk_session) -> None:
+    session, project, texts = sk_session
+    draft = {"cells": [_cell_with_bits()]}
+    await sk.store_skeleton_cells(
+        session, project, draft, " ".join(t for _, t in texts)
+    )
+    from app.models import SceneDesignCell
+
+    rows = list(
+        (
+            await session.execute(
+                select(SceneDesignCell).where(SceneDesignCell.kind == "sk_slot")
+            )
+        ).scalars()
+    )
+    assert rows, "sk_slot ячейки не записаны"
+    keys = {(r.target_key, r.field) for r in rows}
+    assert ("scene_01.slot1", "якорь") in keys
+    assert ("scene_01.slot2", "главный") in keys
