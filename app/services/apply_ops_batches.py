@@ -113,7 +113,11 @@ def _frame_complete(
         return False
     if not dense:
         return False
-    return all(str(attrs.get(k) or "").strip() for k in _COMPLETE_ATTRS_DENSE)
+    # db_frames.json кладёт whitelist на верхний уровень, не в attrs.
+    return all(
+        str(frame.get(k) or attrs.get(k) or "").strip()
+        for k in _COMPLETE_ATTRS_DENSE
+    )
 
 
 def _pending_frames(

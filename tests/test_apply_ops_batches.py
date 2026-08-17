@@ -51,6 +51,24 @@ def test_light_analytics_keeps_116_in_one_call() -> None:
     assert not should_batch_apply_ops(n_frames=n, json_bytes=raw, dense=False)
 
 
+def test_pending_skips_top_level_shot_fields() -> None:
+    frames = [
+        {
+            "uuid": "a" * 24,
+            "voiceover_text": "one",
+            "main_action": "x",
+            "shot01_description": "y",
+        },
+        {
+            "uuid": "b" * 24,
+            "voiceover_text": "two",
+        },
+    ]
+    assert _frame_complete(frames[0], dense=True)
+    pending = _pending_frames(frames, dense=True)
+    assert [f["uuid"] for f in pending] == ["b" * 24]
+
+
 def test_pending_skips_filled_shot01() -> None:
     frames = [
         {
