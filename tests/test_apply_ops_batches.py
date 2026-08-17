@@ -7,6 +7,17 @@ from app.services.apply_ops_batches import (
 )
 
 
+def test_dense_32_pending_stays_one_batch() -> None:
+    n, raw = 32, 24_000
+    size = frames_per_batch(
+        n_frames=n, json_bytes=raw, dense=True, target_batches=5
+    )
+    assert size == 32
+    assert not should_batch_apply_ops(
+        n_frames=n, json_bytes=raw, dense=True, target_batches=5
+    )
+
+
 def test_dense_160_is_five_batches() -> None:
     n, raw = 160, 120_000
     size = frames_per_batch(

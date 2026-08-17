@@ -49,6 +49,9 @@ def frames_per_batch(
     if target_batches and int(target_batches) > 0:
         from math import ceil
 
+        # Добор хвоста (≤32 кадра) — один вызов, не 5 крошечных пачек.
+        if dense and n <= _DENSE_FRAMES_PER_BATCH:
+            return n
         return max(1, int(ceil(n / int(target_batches))))
     avg = max(int(json_bytes), 0) / n if n else 0
     if skip_if_field:

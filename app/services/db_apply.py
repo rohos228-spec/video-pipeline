@@ -36,6 +36,24 @@ from app.services.xlsx_v8_import import (
     _resolve_plan_sheet,
 )
 
+
+def coerce_duration_seconds(value: Any) -> float | None:
+    """Число или строка «3» / «3.5». «3 сек» → None (не стопать apply)."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(",", ".")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
 # Аналитика / shot → Excel (лист «план»), хранится в Frame.attrs.
 ROW_MAIN_ACTION_V8 = 52
 ROW_PLACE_V8 = 54
@@ -1145,16 +1163,21 @@ async def apply_ops(
         if "meaning" in fields:
             fr.meaning = None if fields["meaning"] is None else str(fields["meaning"])
         if "duration_seconds" in fields:
-            try:
-                fr.duration_seconds = (
-                    None
-                    if fields["duration_seconds"] is None
-                    else float(fields["duration_seconds"])
-                )
-            except (TypeError, ValueError):
-                raise ApplyOpsError(
-                    f"кадр {uuid}: длительность должна быть числом"
-                ) from None
+            raw_dur = fields["duration_seconds"]
+            if raw_dur is None or str(raw_dur).strip() == "":
+                fr.duration_seconds = None
+            else:
+                parsed_dur = coerce_duration_seconds(raw_dur)
+                if parsed_dur is None:
+                    from loguru import logger
+
+                    logger.warning(
+                        "db_apply: кадр {}: skip non-numeric duration {!r}",
+                        uuid,
+                        raw_dur,
+                    )
+                else:
+                    fr.duration_seconds = parsed_dur
         if "image_prompt" in fields:
             fr.image_prompt = (
                 None if fields["image_prompt"] is None else str(fields["image_prompt"])

@@ -1030,10 +1030,36 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 target_batches=5,
             ):
                 async def _apply_batch(payload: dict) -> None:
+                    from app.services.db_apply import FIELD_ALIASES
+
                     ops = filter_ops_for_node(
                         list(payload.get("ops") or []),
                         node_kind="excel_gpt_no_prompts",
                     )
+                    # Shot-fill не должен затирать закадр/смысл, если
+                    # volume-continue подмешал чужую схему полей.
+                    _drop = {"voiceover_text", "meaning"}
+                    cleaned: list[dict] = []
+                    for op in ops:
+                        fields = op.get("fields")
+                        if not isinstance(fields, dict):
+                            cleaned.append(op)
+                            continue
+                        kept = {}
+                        for k, v in fields.items():
+                            canon = FIELD_ALIASES.get(
+                                str(k).strip().lower().replace(" ", "_"),
+                                str(k),
+                            )
+                            if canon in _drop:
+                                continue
+                            kept[k] = v
+                        if not kept:
+                            continue
+                        new_op = dict(op)
+                        new_op["fields"] = kept
+                        cleaned.append(new_op)
+                    ops = cleaned
                     await _db_apply.apply_ops(
                         session,
                         project,

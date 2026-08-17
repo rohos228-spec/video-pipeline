@@ -3,6 +3,17 @@
 from __future__ import annotations
 
 from app.services import db_apply
+from app.services.db_apply import coerce_duration_seconds
+
+
+def test_coerce_duration_seconds_numeric_and_human() -> None:
+    assert coerce_duration_seconds(3) == 3.0
+    assert coerce_duration_seconds("3.5") == 3.5
+    assert coerce_duration_seconds("3,5") == 3.5
+    assert coerce_duration_seconds(None) is None
+    assert coerce_duration_seconds("3 сек") is None
+    assert coerce_duration_seconds("5 секунд") is None
+    assert coerce_duration_seconds("5 сек.") is None
 
 
 def test_repair_near_miss_frame_uuids_one_hex_typo() -> None:
