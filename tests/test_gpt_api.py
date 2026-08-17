@@ -36,13 +36,18 @@ def _enable(monkeypatch) -> None:
     monkeypatch.setattr(settings, "gpt_chat_path", "/v1/chat/completions")
     monkeypatch.setattr(settings, "gpt_api_mode", "chat")
     monkeypatch.setattr(settings, "gpt_max_retries", 3)
+    # Локальный GPT_PROXY_URL из .env не должен ломать MockTransport.
+    monkeypatch.setattr(settings, "gpt_proxy_url", None)
+    monkeypatch.setattr(gpt_api, "_PROXY_LOGGED", False)
 
 
 def _mock_httpx(monkeypatch, handler) -> None:
     real_client = httpx.AsyncClient
 
     def factory(*args, **kwargs):
+        kwargs.pop("proxy", None)
         kwargs["transport"] = httpx.MockTransport(handler)
+        kwargs["trust_env"] = False
         return real_client(*args, **kwargs)
 
     monkeypatch.setattr(gpt_api.httpx, "AsyncClient", factory)
@@ -1068,6 +1073,27 @@ def test_is_pdf_provider_failure() -> None:
         GptApiError("GPT timeout 90s", context={"error_kind": "timeout", "retryable": True})
     )
     assert not is_pdf_provider_failure(GptApiError("bad key", context={"status_code": 401}))
+
+
+def test_async_client_passes_proxy(monkeypatch) -> None:
+    from app.settings import settings
+
+    captured: dict = {}
+    real = httpx.AsyncClient
+
+    def factory(*args, **kwargs):
+        captured.update(kwargs)
+        kwargs["transport"] = httpx.MockTransport(lambda r: httpx.Response(200))
+        kwargs.pop("proxy", None)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(settings, "gpt_proxy_url", "socks5://u:p@1.2.3.4:1080")
+    monkeypatch.setattr(gpt_api, "_PROXY_LOGGED", False)
+    monkeypatch.setattr(gpt_api.httpx, "AsyncClient", factory)
+    gpt_api._async_client(timeout=1.0)
+    assert captured.get("proxy") == "socks5://u:p@1.2.3.4:1080"
+    assert captured.get("trust_env") is False
+
 
 @pytest.mark.asyncio
 async def test_download_content_html_renamed_off_xlsx(monkeypatch, tmp_path: Path) -> None:

@@ -108,6 +108,51 @@ def gpt_api_enabled() -> bool:
     return bool(settings.gpt_api_enabled)
 
 
+_PROXY_LOGGED = False
+
+
+def _mask_proxy_url(url: str) -> str:
+    """user:pass@host → user:***@host (для логов)."""
+    try:
+        if "://" not in url:
+            return url
+        scheme, rest = url.split("://", 1)
+        if "@" not in rest:
+            return f"{scheme}://{rest}"
+        creds, host = rest.rsplit("@", 1)
+        user = creds.split(":", 1)[0] if creds else ""
+        return f"{scheme}://{user}:***@{host}"
+    except Exception:  # noqa: BLE001
+        return "<proxy>"
+
+
+def _gpt_proxy_url() -> str | None:
+    raw = (getattr(settings, "gpt_proxy_url", None) or "").strip()
+    return raw or None
+
+
+def _async_client(**kwargs: Any) -> httpx.AsyncClient:
+    """httpx-клиент; при GPT_PROXY_URL — весь трафик GPT/kie через прокси."""
+    global _PROXY_LOGGED
+    proxy = _gpt_proxy_url()
+    if proxy:
+        if proxy.lower().startswith(("socks4://", "socks5://", "socks5h://")):
+            try:
+                import socksio  # noqa: F401
+            except ImportError as e:
+                raise GptApiError(
+                    "GPT_PROXY_URL=socks… нужен пакет: pip install 'httpx[socks]'",
+                    context={"error_kind": "proxy_socks_missing", "retryable": False},
+                ) from e
+        kwargs.setdefault("proxy", proxy)
+        # Явный прокси — не подмешивать системные HTTP(S)_PROXY.
+        kwargs.setdefault("trust_env", False)
+        if not _PROXY_LOGGED:
+            logger.info("GPT API: using proxy {}", _mask_proxy_url(proxy))
+            _PROXY_LOGGED = True
+    return httpx.AsyncClient(**kwargs)
+
+
 def _headers() -> dict[str, str]:
     key = settings.gpt_api_effective_key
     if not key:
@@ -1203,7 +1248,7 @@ async def fetch_completed_response(
     last_raw: dict[str, Any] = {}
     sto = httpx.Timeout(max(10.0, float(timeout)), connect=15.0)
     try:
-        async with httpx.AsyncClient(timeout=sto) as client:
+        async with _async_client(timeout=sto) as client:
             if not hasattr(client, "get"):
                 return "", "", {}
             for url in urls:
@@ -1288,7 +1333,7 @@ async def _chat_responses_stream(
         use_model,
         sto.read,
     )
-    async with httpx.AsyncClient(timeout=sto) as client:
+    async with _async_client(timeout=sto) as client:
         try:
             async with client.stream(
                 "POST", url, headers=headers, json=stream_body
@@ -1697,7 +1742,7 @@ async def chat(
                 )
                 return result
 
-            async with httpx.AsyncClient(timeout=_http_timeout(use_timeout)) as client:
+            async with _async_client(timeout=_http_timeout(use_timeout)) as client:
                 resp = await client.post(url, headers=headers, json=body)
             status = resp.status_code
             _raise_http_status(status, resp.text, use_model=use_model)
@@ -2649,7 +2694,7 @@ async def search_web_image_urls(query: str, *, limit: int = 4) -> list[str]:
         seen.add(u)
         found.append(u)
 
-    async with httpx.AsyncClient(
+    async with _async_client(
         timeout=25.0, follow_redirects=True, headers=headers
     ) as client:
         for q in queries:
@@ -2748,7 +2793,7 @@ async def download_content(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     content_type: str | None = None
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async with _async_client(timeout=timeout, follow_redirects=True) as client:
             r = await client.get(url)
             if r.status_code >= 400:
                 raise GptApiError(

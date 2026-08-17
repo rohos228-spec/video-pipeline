@@ -118,6 +118,9 @@ class Settings(BaseSettings):
     gpt_api_mode: str = Field("auto", alias="GPT_API_MODE")
     gpt_timeout_s: float = Field(600.0, alias="GPT_TIMEOUT_S")
     gpt_max_retries: int = Field(4, alias="GPT_MAX_RETRIES")
+    # HTTP/HTTPS прокси для GPT/kie (SSE через Cloudflare из РФ часто рвётся).
+    # Примеры: http://user:pass@host:port ; socks5://… нужен pip install "httpx[socks]"
+    gpt_proxy_url: str | None = Field(None, alias="GPT_PROXY_URL")
 
     def resolved_text_llm_provider(self) -> str:
         """Активный текстовый провайдер: kie (GPT) | tokenrouter (Kimi).
