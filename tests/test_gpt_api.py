@@ -18,6 +18,8 @@ from app.services.gpt_api import (
     download_content,
     looks_truncated_llm_text,
     parse_responses_sse_lines,
+    parse_retrieved_response_payload,
+    responses_retrieve_urls,
     stitch_llm_continuation,
     xlsx_to_text,
 )
@@ -311,6 +313,40 @@ def test_stream_timeout_does_not_use_call_timeout_as_read(monkeypatch) -> None:
     assert sto2.read == 900.0
 
 
+def test_responses_retrieve_urls_include_post_path_and_jobs() -> None:
+    urls = responses_retrieve_urls(
+        "https://api.kie.ai/codex/v1/responses", "resp_abc"
+    )
+    assert urls[0] == "https://api.kie.ai/codex/v1/responses/resp_abc"
+    assert any("recordInfo" in u and "resp_abc" in u for u in urls)
+
+
+def test_parse_retrieved_jobs_result_json() -> None:
+    text, status = parse_retrieved_response_payload(
+        {
+            "code": 200,
+            "data": {
+                "state": "success",
+                "resultJson": json.dumps(
+                    {
+                        "status": "completed",
+                        "output": [
+                            {
+                                "type": "message",
+                                "content": [
+                                    {"type": "output_text", "text": '{"ops":[]}'}
+                                ],
+                            }
+                        ],
+                    }
+                ),
+            },
+        }
+    )
+    assert text == '{"ops":[]}'
+    assert status in ("completed", "success")
+
+
 def test_stitch_llm_continuation_dedupes_overlap() -> None:
     assert stitch_llm_continuation('{"ops":[{"a":1', "}]}") == '{"ops":[{"a":1}]}'
     assert stitch_llm_continuation("hello world end", "world end!!!") == "hello world end!!!"
@@ -459,6 +495,89 @@ async def test_chat_keeps_salvage_when_cf_continue_empty(monkeypatch) -> None:
     )
     assert "frame_uuid" in res.text
     assert len(res.text) > 20
+
+
+@pytest.mark.asyncio
+async def test_chat_fetches_completed_response_after_sse_cut(monkeypatch) -> None:
+    """CF оборвал SSE — забрать готовый JSON по resp_ id, не второй чат."""
+    _enable(monkeypatch)
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_chat_path", "/codex/v1/responses")
+    monkeypatch.setattr(settings, "gpt_api_mode", "auto")
+    monkeypatch.setattr(settings, "gpt_base_url", "https://api.kie.ai")
+    state = {"stream": 0, "gets": []}
+    full = '{"ops":[{"frame_uuid":"aa","fields":{"x":"1"}},{"frame_uuid":"bb","fields":{"x":"2"}}]}'
+
+    class _Stream:
+        def __init__(self) -> None:
+            self.headers = {"cf-ray": "cut-ray"}
+            self.status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def aiter_lines(self):
+            yield 'data: {"type":"response.created","response":{"id":"resp_full","status":"in_progress"}}'
+            yield 'data: {"type":"response.output_text.delta","delta":"{\\"ops\\":[{\\"frame_uuid\\":\\"aa\\""}'
+            raise httpx.RemoteProtocolError("Server disconnected")
+
+    class _GetResp:
+        def __init__(self) -> None:
+            self.status_code = 200
+
+        def json(self):
+            return {
+                "id": "resp_full",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": full}],
+                    }
+                ],
+            }
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def stream(self, *a, **k):
+            state["stream"] += 1
+            return _Stream()
+
+        async def get(self, url, **k):
+            state["gets"].append(str(url))
+            return _GetResp()
+
+    monkeypatch.setattr(gpt_api.httpx, "AsyncClient", _Client)
+
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(gpt_api.asyncio, "sleep", _no_sleep)
+
+    res = await chat(
+        prompt="json",
+        model="gpt-5-6-sol",
+        max_retries=0,
+        volume_complete=False,
+    )
+    assert state["stream"] == 1
+    assert any("resp_full" in u for u in state["gets"])
+    assert res.text == full
+    assert res.finish_reason == "completed"
+    assert looks_truncated_llm_text(res.text) is False
 
 
 @pytest.mark.asyncio

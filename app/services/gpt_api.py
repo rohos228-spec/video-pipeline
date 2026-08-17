@@ -1118,6 +1118,150 @@ def stitch_llm_continuation(base: str, cont: str) -> str:
     return a + b
 
 
+def responses_retrieve_urls(post_url: str, response_id: str) -> list[str]:
+    """URL для готового ответа kie по Task ID (resp_…)."""
+    rid = (response_id or "").strip()
+    if not rid:
+        return []
+    post = (post_url or "").rstrip("/")
+    origin = ""
+    try:
+        parsed = httpx.URL(post)
+        origin = f"{parsed.scheme}://{parsed.host}"
+        if parsed.port:
+            origin = f"{origin}:{parsed.port}"
+    except Exception:  # noqa: BLE001
+        origin = ""
+    urls = [f"{post}/{rid}"]
+    if origin:
+        urls.append(f"{origin}/api/v1/jobs/recordInfo?taskId={rid}")
+        urls.append(f"{origin}/v1/responses/{rid}")
+    # без дублей, порядок: тот же path что POST, потом jobs, потом /v1/responses
+    seen: set[str] = set()
+    out: list[str] = []
+    for u in urls:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+def parse_retrieved_response_payload(payload: dict[str, Any]) -> tuple[str, str]:
+    """Текст и status из GET Responses / jobs.recordInfo."""
+    if not isinstance(payload, dict):
+        return "", ""
+    data = payload.get("data")
+    if isinstance(data, dict):
+        raw_json = data.get("resultJson")
+        if isinstance(raw_json, str) and raw_json.strip():
+            try:
+                inner = json.loads(raw_json)
+            except json.JSONDecodeError:
+                inner = None
+            if isinstance(inner, dict):
+                text, status = parse_retrieved_response_payload(inner)
+                if text:
+                    return text, status or str(data.get("state") or "")
+            if raw_json.strip().startswith("{") or raw_json.strip().startswith("["):
+                pass
+            else:
+                return raw_json.strip(), str(data.get("state") or "success")
+        nested = data.get("response") if isinstance(data.get("response"), dict) else data
+        if nested is not payload:
+            text, status = parse_retrieved_response_payload(nested)
+            if text:
+                return text, status
+    try:
+        text, status = _parse_responses(payload)
+        return text, status
+    except GptApiError:
+        pass
+    ot = payload.get("output_text")
+    if isinstance(ot, str) and ot.strip():
+        return ot.strip(), str(payload.get("status") or "completed")
+    return "", str(payload.get("status") or payload.get("state") or "")
+
+
+async def fetch_completed_response(
+    *,
+    post_url: str,
+    headers: dict[str, str],
+    response_id: str,
+    timeout: float = 60.0,
+    polls: int = 6,
+    poll_s: float = 2.0,
+) -> tuple[str, str, dict[str, Any]]:
+    """GET готового ответа kie по resp_… после обрыва SSE.
+
+    Returns:
+        (text, status, raw_payload). Пустой text — забрать не удалось.
+    """
+    urls = responses_retrieve_urls(post_url, response_id)
+    if not urls:
+        return "", "", {}
+    last_status = ""
+    last_raw: dict[str, Any] = {}
+    sto = httpx.Timeout(max(10.0, float(timeout)), connect=15.0)
+    try:
+        async with httpx.AsyncClient(timeout=sto) as client:
+            if not hasattr(client, "get"):
+                return "", "", {}
+            for url in urls:
+                for attempt in range(max(1, int(polls))):
+                    try:
+                        resp = await client.get(url, headers=headers)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "gpt_api.retrieve {} failed: {}: {}",
+                            url,
+                            type(e).__name__,
+                            e,
+                        )
+                        break
+                    if resp.status_code == 404:
+                        break
+                    if resp.status_code >= 400:
+                        logger.warning(
+                            "gpt_api.retrieve HTTP {} url={}",
+                            resp.status_code,
+                            url,
+                        )
+                        break
+                    try:
+                        payload = resp.json()
+                    except Exception:  # noqa: BLE001
+                        break
+                    if not isinstance(payload, dict):
+                        break
+                    last_raw = payload
+                    text, status = parse_retrieved_response_payload(payload)
+                    last_status = status
+                    st = (status or "").lower()
+                    if text and st in ("", "completed", "success", "complete"):
+                        logger.info(
+                            "gpt_api.retrieve OK id={} chars={} url={}",
+                            response_id,
+                            len(text),
+                            url,
+                        )
+                        return text, status or "completed", payload
+                    if st in ("in_progress", "queued", "pending", "generating", "waiting"):
+                        await asyncio.sleep(poll_s)
+                        continue
+                    if text:
+                        return text, status or "completed", payload
+                    break
+    except Exception as e:  # noqa: BLE001
+        logger.warning("gpt_api.retrieve client failed: {}: {}", type(e).__name__, e)
+    if last_status:
+        logger.warning(
+            "gpt_api.retrieve no text id={} last_status={}",
+            response_id,
+            last_status,
+        )
+    return "", last_status, last_raw
+
+
 async def _chat_responses_stream(
     *,
     url: str,
@@ -1128,8 +1272,8 @@ async def _chat_responses_stream(
 ) -> GptChatResult:
     """POST Responses API с stream=true и сборкой текста из SSE.
 
-    При обрыве соединения после дельт — salvage текста (kie UI уже success,
-    GET /responses/{id} у провайдера нет).
+    При обрыве после дельт: salvage, затем GET готового ответа по resp_ id
+    (kie UI уже success, стрим Cloudflare оборвал).
     """
     stream_body = {**body, "stream": True}
     lines: list[str] = []
@@ -1203,21 +1347,27 @@ async def _chat_responses_stream(
                 e,
             )
 
+    text = ""
+    finish = ""
+    final_payload: dict[str, Any] = {}
+    response_id = ""
     try:
         text, finish, final_payload, response_id = parse_responses_sse_lines(lines)
-    except GptApiError:
-        if stream_err is not None:
-            raise GptApiError(
-                f"GPT сетевая ошибка: {type(stream_err).__name__}: {stream_err}",
-                context={
-                    "error_kind": "network",
-                    "retryable": True,
-                    "model": use_model,
-                    "sse_lines": len(lines),
-                    "cf_ray": cf_ray,
-                },
-            ) from stream_err
-        raise
+    except GptApiError as e:
+        response_id = str((e.context or {}).get("response_id") or "")
+        if not response_id:
+            if stream_err is not None:
+                raise GptApiError(
+                    f"GPT сетевая ошибка: {type(stream_err).__name__}: {stream_err}",
+                    context={
+                        "error_kind": "network",
+                        "retryable": True,
+                        "model": use_model,
+                        "sse_lines": len(lines),
+                        "cf_ray": cf_ray,
+                    },
+                ) from stream_err
+            raise
 
     if stream_err is not None:
         logger.warning(
@@ -1227,6 +1377,40 @@ async def _chat_responses_stream(
             type(stream_err).__name__,
         )
         finish = "stream_salvaged"
+
+    fetched = False
+    need_fetch = bool(response_id) and (
+        stream_err is not None
+        or not saw_completed
+        or looks_truncated_llm_text(text)
+        or not (text or "").strip()
+    )
+    if need_fetch:
+        got, got_status, got_raw = await fetch_completed_response(
+            post_url=url,
+            headers=headers,
+            response_id=response_id,
+            timeout=min(float(timeout), 90.0),
+        )
+        if got and len(got) > len(text or ""):
+            text = got
+            finish = got_status or "completed"
+            if got_raw:
+                final_payload = got_raw
+            fetched = True
+            stream_err = None
+
+    if not (text or "").strip():
+        raise GptApiError(
+            "GPT(responses/stream): пустой output",
+            context={
+                "retryable": True,
+                "response_id": response_id,
+                "error_kind": "empty_stream",
+                "sse_lines": len(lines),
+                "cf_ray": cf_ray,
+            },
+        )
 
     usage = (
         final_payload.get("usage")
@@ -1238,7 +1422,9 @@ async def _chat_responses_stream(
         raw.setdefault("id", response_id)
     if cf_ray:
         raw["cf_ray"] = cf_ray
-    if stream_err is not None:
+    if fetched:
+        raw["retrieved_by_id"] = True
+    elif stream_err is not None:
         raw["sse_salvaged"] = True
         raw["sse_interrupt"] = type(stream_err).__name__
     return GptChatResult(
