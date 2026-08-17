@@ -663,10 +663,10 @@ async def _apply_img_pr_ops_now(
     project: Project,
     ops: list[dict],
     *,
-    export_xlsx: bool = True,
+    export_xlsx: bool = False,
     label: str = "",
 ) -> None:
-    """Сразу записать apply-ops батча в DB (+ опционально Excel)."""
+    """Сразу записать apply-ops батча в DB (Excel — только явный Export)."""
     if not ops:
         return
     from app.db import SessionLocal

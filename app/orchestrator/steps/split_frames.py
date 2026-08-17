@@ -44,7 +44,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
 
     from app.services import db_apply
 
-    applied = await db_apply.apply_ops(session, project, ops, export_xlsx=True)
+    applied = await db_apply.apply_ops(session, project, ops, export_xlsx=False)
     logger.info(
         "[#{}] split_frames: replace_frames → {} кадров",
         project.id,

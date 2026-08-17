@@ -1054,7 +1054,7 @@ async def apply_ops(
     *,
     characters: list[Any] | None = None,
     scenes: list[Any] | None = None,
-    export_xlsx: bool = True,
+    export_xlsx: bool = False,
     node_kind: str | None = None,
 ) -> dict:
     """Применить JSON-операции к проекту (fail-closed, одна транзакция).
@@ -1065,7 +1065,8 @@ async def apply_ops(
     ``replace_frames``: ``{"target":"replace_frames","frames":[{"закадр":"…"},…]}``.
     ``node_kind`` — опциональный фильтр полей (img_pr / anim_pr / excel_gpt*);
     ``None`` = не трогать ops (поведение остальных вызывающих без изменений).
-    После записи по умолчанию экспортируем в project.xlsx.
+    Excel не трогаем по умолчанию — только явный Export
+    (``export_project_xlsx`` / кнопка). ``export_xlsx=True`` — legacy opt-in.
     """
     from app.models import Entity
     from app.services.plan_shot2 import (

@@ -314,7 +314,7 @@ async def run_apply_ops_batched(
         if apply_fn is not None:
             payload = dict(res.apply_ops or {})
             payload["ops"] = ops
-            payload["export_xlsx"] = i == batch_n
+            payload["export_xlsx"] = False
             await apply_fn(payload)
         merged_ops.extend(ops)
         got_uuids = {

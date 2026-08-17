@@ -647,11 +647,9 @@ async def _wipe_images(session: AsyncSession, project: Project) -> dict[str, Any
 
 
 async def _resume_anim_pr_from_xlsx(session: AsyncSession, project: Project) -> dict[str, Any]:
-    """Повторный запуск anim_pr: подтянуть R48 из xlsx, не стирать готовые кадры."""
-    from app.services.animation_prompt_gpt import sync_animation_prompts_from_xlsx
-
-    synced = await sync_animation_prompts_from_xlsx(session, project)
-    return {"synced_from_xlsx": synced}
+    """Повторный запуск anim_pr: без Excel sync (DB SoT)."""
+    del session, project
+    return {"synced_from_xlsx": 0}
 
 
 async def _wipe_anim_pr(session: AsyncSession, project: Project) -> dict[str, Any]:

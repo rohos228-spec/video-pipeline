@@ -255,7 +255,7 @@ async def _apply_db_patch(
             list(ops or []),
             characters=list(chars) if chars else None,
             scenes=list(scenes) if scenes else None,
-            export_xlsx=True,
+            export_xlsx=False,
         )
         await session.flush()
         logger.info(

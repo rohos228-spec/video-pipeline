@@ -12,7 +12,7 @@ override (через `Project.gpt_text_overrides["enrich_<i>"]`).
   4. Ждём ответ. Скачиваем приложенный к ответу обновлённый xlsx и
      сохраняем поверх исходного `project.xlsx`.
   5. Если ChatGPT не приложил файл — повторяем (новый чат) до 3 раз.
-  6. После успеха — `sync_project_xlsx()` → данные в БД,
+  6. Данные в БД пишет apply-ops; Excel → DB только явный Import.
      `recompute_status()` поднимет статус. И принудительно ставим
      статус `enrich_<i>_ready`.
 """
@@ -1195,13 +1195,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         ops_list,
                         characters=chars_list or None,
                         scenes=scenes_list or None,
-                        export_xlsx=bool(ops_data.get("export_xlsx", True)),
+                        export_xlsx=bool(ops_data.get("export_xlsx", False)),
                         node_kind=apply_node_kind,
                     )
                     await session.commit()
                     logger.info(
                         "[#{}] enrich_xlsx node={}: apply-ops записано "
-                        "ops={} characters={} scenes={} (DB→xlsx)",
+                        "ops={} characters={} scenes={} (DB only)",
                         project.id,
                         node_key,
                         applied.get("updated"),
@@ -1574,36 +1574,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 project.id,
             )
 
-    # 4. Единый импорт xlsx → БД (только если ждали обновлённый Excel).
+    # 4. Excel → DB только через явный Import (не auto после enrich).
     if want_xlsx:
-        from app.services.chatgpt_xlsx import sync_project_xlsx
-
-        try:
-            sync_target = (
-                download_path
-                if download_path.suffix.lower() in {".xlsx", ".xls"}
-                else xlsx_path
-            )
-            sync_info = await sync_project_xlsx(
-                session,
-                project,
-                sync_target,
-                keep_fields=False,
-                update_frames_voiceover=True,
-            )
-            logger.info(
-                "[#{}] enrich_xlsx slot={} sync_project_xlsx: {}",
-                project.id,
-                slot_idx,
-                sync_info,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[#{}] enrich_xlsx slot={} sync_project_xlsx failed: {}",
-                project.id,
-                slot_idx,
-                e,
-            )
+        logger.info(
+            "[#{}] enrich_xlsx slot={}: skip auto Excel import "
+            "(DB SoT; use Import button if needed)",
+            project.id,
+            slot_idx,
+        )
     else:
         from sqlalchemy.orm.attributes import flag_modified
 

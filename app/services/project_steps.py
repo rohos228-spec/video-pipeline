@@ -12,7 +12,6 @@ from app.models import Project, ProjectStatus
 from app.services.mass_factory import assert_not_factory_template_for_generation
 from app.services.reset_step import clear_step_outputs_for_rerun, _WRAPPER_TO_CODES
 from app.services.chatgpt_xlsx import purge_tmp_gpt_for_step
-from app.services.chatgpt_xlsx import sync_project_xlsx
 from app.services.step_cancel import clear_stop
 from app.services.project_state import is_running_status
 from app.telegram.menu import step_by_code, step_by_running_status
@@ -274,7 +273,6 @@ async def start_step(
         from app.services.animation_prompt_gpt import (
             count_animation_prompt_stats,
             scan_missing_animation_prompts_all,
-            sync_animation_prompts_from_xlsx,
         )
         from app.services.vision_check_loop import (
             clear_vision_check_meta,
@@ -294,7 +292,6 @@ async def start_step(
         # (force_wipe=False ниже). Полный сброс промтов — reset_step.
         # Авто/очередь без missing — skip на ready (не прыгаем в video/images).
         if not explicit_ui_start:
-            synced = await sync_animation_prompts_from_xlsx(session, project)
             frames = (
                 await session.execute(
                     select(Frame)
@@ -314,9 +311,8 @@ async def start_step(
                 await session.flush()
                 logger.info(
                     "[#{}] start_step anim_pr: авто-пропуск — нечего генерировать "
-                    "(synced={}, plan R48={}, картинок={}, status={})",
+                    "(plan R48 mirror={}, картинок={}, status={})",
                     project.id,
-                    synced,
                     xlsx_filled,
                     with_image,
                     project.status.value,
@@ -335,23 +331,7 @@ async def start_step(
             step_code,
         )
 
-    proj_xlsx = project.data_dir / "project.xlsx"
-    if proj_xlsx.exists():
-        try:
-            info = await sync_project_xlsx(session, project, proj_xlsx)
-            logger.info(
-                "[#{}] start_step {}: synced project.xlsx into DB: {}",
-                project.id,
-                step_code,
-                info,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[#{}] start_step {}: sync_project_xlsx failed: {}",
-                project.id,
-                step_code,
-                e,
-            )
+    # Excel → DB только через явный Import (excel_io), не на старте шага.
 
     for code in _WRAPPER_TO_CODES.get(step_code, [step_code]):
         purge_tmp_gpt_for_step(project, code)
@@ -409,21 +389,6 @@ async def start_step(
         from app.services.scene_design import runner as sd_runner
 
         sd_runner.set_only_agent(project, sd_agent_name)
-    if step_code == "img" and proj_xlsx.exists():
-        from app.services.xlsx_v8_import import bootstrap_frames_for_image_step
-
-        boot = await bootstrap_frames_for_image_step(session, project, proj_xlsx)
-        logger.info(
-            "[#{}] start_step img: xlsx bootstrap R45={} R46={} created={} "
-            "shot1={} shot2={} reset={}",
-            project.id,
-            boot.prompts_in_xlsx,
-            boot.shot2_in_xlsx,
-            boot.frames_created,
-            boot.frames_prompt_updated,
-            boot.frames_shot2_updated,
-            boot.frames_status_reset,
-        )
     running_status = step.running_status
     if step_code == "excel_gpt":
         from app.orchestrator.graph.planner import load_graph_for_project

@@ -495,142 +495,28 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             project.id,
         )
 
-    xlsx_path = project.data_dir / "project.xlsx"
-    from app.services.xlsx_v8_import import bootstrap_frames_for_image_step
-
-    if not xlsx_path.is_file():
-        logger.error(
-            "[#{}] generate_images: project.xlsx не найден: {}",
-            project.id,
-            xlsx_path,
-        )
-    else:
-        boot = await bootstrap_frames_for_image_step(session, project, xlsx_path)
-        logger.info(
-            "[#{}] generate_images: bootstrap R45={} R46={} created={} "
-            "shot1={} shot2={}",
-            project.id,
-            boot.prompts_in_xlsx,
-            boot.shot2_in_xlsx,
-            boot.frames_created,
-            boot.frames_prompt_updated,
-            boot.frames_shot2_updated,
-        )
-
+    # Excel не bootstrap'им: кадры/промты только из БД (явный Import отдельно).
     frames = (
         await session.execute(
             select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
         )
     ).scalars().all()
-    if not frames and xlsx_path.exists():
-        await bootstrap_frames_for_image_step(session, project, xlsx_path)
-        frames = (
-            await session.execute(
-                select(Frame)
-                .where(Frame.project_id == project.id)
-                .order_by(Frame.number)
-            )
-        ).scalars().all()
 
     if not frames:
-        from app.services.xlsx_v8_import import (
-            describe_image_prompts_xlsx_scan,
-            read_image_prompts_from_project_xlsx,
-        )
-
-        scan = (
-            describe_image_prompts_xlsx_scan(xlsx_path)
-            if xlsx_path.exists()
-            else "project.xlsx не найден"
-        )
-        n_xlsx = (
-            len(read_image_prompts_from_project_xlsx(xlsx_path))
-            if xlsx_path.exists()
-            else 0
-        )
-        if n_xlsx:
-            raise RuntimeError(
-                f"в project.xlsx {n_xlsx} промтов, но кадры в БД не созданы. "
-                f"Диагностика: {scan}"
-            )
         raise RuntimeError(
-            f"нет кадров и нет промтов в project.xlsx. Диагностика: {scan}"
+            "нет кадров в БД. Сделай split или явный Импорт Excel "
+            "(кнопка Import / excel_io.import_project_xlsx)."
         )
 
-    # Промты с диска → БД (до проверки missing / failed).
-    if xlsx_path.is_file():
-        from app.services.xlsx_v8_import import (
-            apply_image_prompts_from_xlsx_to_frames,
-            read_image_prompts_from_project_xlsx,
-        )
-
-        n = apply_image_prompts_from_xlsx_to_frames(frames, xlsx_path)
-        if n:
-            logger.info(
-                "[#{}] generate_images: image_prompt с диска xlsx → {} кадров",
-                project.id,
-                n,
-            )
-            await session.flush()
-            frames = (
-                await session.execute(
-                    select(Frame)
-                    .where(Frame.project_id == project.id)
-                    .order_by(Frame.number)
-                )
-            ).scalars().all()
-
-    xlsx_prompts: dict[int, str] = (
-        read_image_prompts_from_project_xlsx(xlsx_path)
-        if xlsx_path.is_file()
-        else {}
-    )
-
-    # Доп. sync v7/v8 (voiceover, animation) — после bootstrap по R45.
     missing_prompts = [
         fr.number
         for fr in frames
-        if fr.number in xlsx_prompts
-        and is_skippable_empty_prompt(xlsx_prompts.get(fr.number) or "")
+        if is_skippable_empty_prompt(fr.image_prompt or "")
     ]
-    if missing_prompts and xlsx_path.exists():
-        try:
-            from app.services.chatgpt_xlsx import sync_project_xlsx
-
-            logger.info(
-                "[#{}] generate_images: у {} кадров нет image_prompt после "
-                "bootstrap — sync_project_xlsx",
-                project.id,
-                len(missing_prompts),
-            )
-            await sync_project_xlsx(session, project, xlsx_path, keep_fields=False)
-            await bootstrap_frames_for_image_step(session, project, xlsx_path)
-            apply_image_prompts_from_xlsx_to_frames(frames, xlsx_path)
-            await session.flush()
-            frames = (
-                await session.execute(
-                    select(Frame)
-                    .where(Frame.project_id == project.id)
-                    .order_by(Frame.number)
-                )
-            ).scalars().all()
-            xlsx_prompts = read_image_prompts_from_project_xlsx(xlsx_path)
-            missing_prompts = [
-                fr.number
-                for fr in frames
-                if fr.number in xlsx_prompts
-                and is_skippable_empty_prompt(xlsx_prompts.get(fr.number) or "")
-            ]
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[#{}] generate_images: доп. sync xlsx failed: {}",
-                project.id,
-                e,
-            )
 
     if missing_prompts:
         logger.warning(
-            "[#{}] generate_images: у {} кадров в xlsx R45 заглушка/пусто — "
+            "[#{}] generate_images: у {} кадров пустой image_prompt в БД — "
             "пропускаю (failed): {}",
             project.id,
             len(missing_prompts),
@@ -680,19 +566,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 bad.stat().st_size,
             )
         if not frame_needs_shot1_image(fr, out_dir):
-            if (
-                fr.number in xlsx_prompts
-                and (xlsx_prompts[fr.number] or "").strip()
-                and not is_skippable_empty_prompt(xlsx_prompts[fr.number])
-                and not disk_has_valid_frame_image(out_dir, fr.number)
-            ):
-                fr.image_prompt = xlsx_prompts[fr.number]
-                fr.status = FrameStatus.image_prompt_ready
-                attrs = dict(fr.attrs or {})
-                if attrs.pop("fail_reason", None) is not None:
-                    fr.attrs = attrs
-            else:
-                continue
+            continue
         fr.status = FrameStatus.image_prompt_ready
         queued += 1
     await session.flush()
@@ -717,7 +591,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         logger.warning(
             "[#{}] generate_images: очередь пуста — кадров в БД={}, "
             "с image_prompt={}, валидных PNG на диске={}, без PNG но с промтом={}. "
-            "Проверь project.xlsx R45 и «Перечитать xlsx».",
+            "Нужны промты в БД (img_pr / Импорт Excel).",
             project.id,
             len(frames),
             with_prompt,
@@ -725,46 +599,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             missing,
         )
         if with_prompt == 0:
-            from app.services.xlsx_v8_import import describe_image_prompts_xlsx_scan
-
-            scan = describe_image_prompts_xlsx_scan(xlsx_path)
-            in_xlsx = len(xlsx_prompts)
-            skippable = sum(
-                1 for p in xlsx_prompts.values() if is_skippable_empty_prompt(p or "")
-            )
             raise RuntimeError(
-                f"в project.xlsx {in_xlsx} ячеек R45, из них заглушек {skippable}, "
-                f"в БД с промтом 0. Диагностика: {scan}"
+                "в БД нет image_prompt. Сделай img_pr или явный Импорт Excel."
             )
-        if missing and xlsx_path.exists():
-            await bootstrap_frames_for_image_step(session, project, xlsx_path)
-            await session.flush()
-            frames = (
-                await session.execute(
-                    select(Frame)
-                    .where(Frame.project_id == project.id)
-                    .order_by(Frame.number)
-                )
-            ).scalars().all()
-            queued = 0
-            for fr in frames:
-                if disk_has_valid_frame_image(out_dir, fr.number):
-                    continue
-                if not frame_needs_shot1_image(fr, out_dir):
-                    continue
-                fr.status = FrameStatus.image_prompt_ready
-                queued += 1
-            await session.flush()
-            logger.info(
-                "[#{}] generate_images: повторная очередь после bootstrap — {}",
-                project.id,
-                queued,
+        if missing:
+            raise RuntimeError(
+                f"в БД есть промты, на диске нет картинок, но очередь outsee=0 "
+                f"(без PNG: {missing}). Проверь scenes/ и статусы кадров"
             )
-            if queued == 0:
-                raise RuntimeError(
-                    f"в xlsx есть промты, на диске нет картинок, но в outsee "
-                    f"0 кадров (без PNG: {missing}). Проверь scenes/ и статусы кадров"
-                )
         if not missing and on_disk >= with_prompt:
             logger.info(
                 "[#{}] generate_images: все {} кадров с промтом уже на диске — "

@@ -267,7 +267,7 @@ class ApplyOpsBody(BaseModel):
     ops: list[ApplyOp] = Field(default_factory=list)
     characters: list[dict] = Field(default_factory=list)
     scenes: list[dict] = Field(default_factory=list)
-    export_xlsx: bool = True
+    export_xlsx: bool = False
 
 
 @router.post("/projects/{project_id}/apply-ops")
@@ -2267,7 +2267,7 @@ async def orchestrator_chat(
                     ops,
                     characters=chars or None,
                     scenes=scenes or None,
-                    export_xlsx=bool(ops_data.get("export_xlsx", True)),
+                    export_xlsx=bool(ops_data.get("export_xlsx", False)),
                 )
                 await session.commit()
             except db_apply.ApplyOpsError as e:

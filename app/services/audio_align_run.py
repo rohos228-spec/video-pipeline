@@ -334,21 +334,8 @@ async def run_audio_align_for_project(
     crumbs = sum(1 for c in clips if c.duration <= 0.1 + 1e-9)
     summary["crumbs"] = crumbs
     summary["clips_n"] = len(clips)
-
-    # Excel R15 — источник правды для доски; пишем ДО DB, чтобы lock не съел результат.
-    from app.services.plan_timestamps import write_asr_timestamps_to_r15
-
-    # Нужен Project только для data_dir/xlsx — лёгкий stub через session.
-    async with session_scope() as session:
-        project = await session.get(Project, project_id)
-        if project is None:
-            summary["error"] = "проект не найден"
-            return summary
-        written = write_asr_timestamps_to_r15(project, clips, allow_crumbs=True)
-    summary["r15_written"] = written
-    if written <= 0:
-        summary["error"] = "не удалось записать R15 (закрой Excel?)"
-        return summary
+    # Excel R15 больше не пишем — таймкоды только в Frame (Export выгрузит).
+    summary["r15_written"] = 0
 
     words_path: Path | None = None
     if result.words and result.speech_source != "cache":

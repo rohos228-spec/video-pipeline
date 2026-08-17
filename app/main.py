@@ -165,25 +165,12 @@ async def _backfill_from_disk() -> None:
                     )
                 ).scalar_one() or 0
 
-                if proj_xlsx.exists() and not _xlsx_backfill_skip(p, proj_xlsx, frame_count):
-                    try:
-                        info = await sync_project_xlsx(
-                            s, p, proj_xlsx, keep_fields=True
-                        )
-                        meta = dict(p.meta or {})
-                        meta["backfill_xlsx_mtime"] = proj_xlsx.stat().st_mtime
-                        p.meta = meta
-                        flag_modified(p, "meta")
-                        if _sync_had_changes(info):
-                            logger.info(
-                                "backfill[#{}]: xlsx → DB: {}", p.id, info
-                            )
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning(
-                            "backfill[#{}]: sync_project_xlsx failed: {}",
-                            p.id,
-                            e,
-                        )
+                # Excel → DB только явный Import (excel_io). Startup auto-sync выключен.
+                if proj_xlsx.exists() and frame_count <= 0:
+                    logger.debug(
+                        "backfill[#{}]: skip auto xlsx import (file present, use Import)",
+                        p.id,
+                    )
 
                 if voiceover_txt.exists() and not p.script_text:
                     try:

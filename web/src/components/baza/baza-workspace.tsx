@@ -305,11 +305,11 @@ export function BazaWorkspace({ open, onOpenChange, projectId }: Props) {
 
   const handleChanged = useCallback(async () => {
     if (projectId == null) return;
-    await exportXlsx();
+    // DB SoT: после правок Базы Excel не трогаем — только кнопка «Экспорт».
     const gen = loadGenRef.current;
     await loadGraph(projectId, gen);
     setSheetTick((t) => t + 1);
-  }, [projectId, exportXlsx, loadGraph]);
+  }, [projectId, loadGraph]);
 
   const frame: DbFrame | null = useMemo(
     () => scopedGraph?.frames.find((f) => f.id === frameId) ?? null,

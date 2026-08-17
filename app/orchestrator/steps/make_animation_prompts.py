@@ -122,19 +122,13 @@ async def _fill_remaining_local(
     for i in range(0, len(ops), 40):
         part = ops[i : i + 40]
         result = await db_apply.apply_ops(
-            session, project, part, export_xlsx=True, node_kind="anim_pr"
+            session, project, part, export_xlsx=False, node_kind="anim_pr"
         )
         saved += int(result.get("updated") or 0)
         await session.commit()
     for fr in frames:
         if (fr.animation_prompt or "").strip():
             fr.status = FrameStatus.animation_prompt_ready
-            try:
-                sheet.write_frame(fr.number, frame_status=fr.status.value)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "[#{}] xlsx write_frame(status) failed: {}", project.id, e
-                )
     await session.flush()
     return saved
 
@@ -171,15 +165,7 @@ async def fill_animation_prompts(
         )
     ).scalars().all()
 
-    # Один проход R49 — НЕ voiceover_for_frame() на каждый кадр (openpyxl×N).
-    hydrated = apg.hydrate_voiceovers_from_plan(project, list(frames))
-    if hydrated:
-        logger.info(
-            "[#{}] anim_pr: voiceover из R49 → {} кадров",
-            project.id,
-            hydrated,
-        )
-        await session.flush()
+    # VO только из БД — Excel hydrate отключён.
 
     # Старый парсер клал весь JSON apply-ops в первый кадр пачки — распакуем
     # уже оплаченные ответы GPT, иначе has_* считает их «пустыми» и шлёт заново.
@@ -205,7 +191,7 @@ async def fill_animation_prompts(
                     session,
                     project,
                     repair_ops,
-                    export_xlsx=True,
+                    export_xlsx=False,
                     node_kind="anim_pr",
                 )
             except db_apply.ApplyOpsError as e:
@@ -487,10 +473,6 @@ async def fill_animation_prompts(
 
     await _gate_then_mark_anim_ready(session, project)
     await session.flush()
-    try:
-        sheet.write_general(status=project.status.value)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("[#{}] xlsx write_general(status) failed: {}", project.id, e)
 
     await session.commit()  # status + ops-телеметрия в project.meta
     return stats
@@ -543,7 +525,7 @@ async def _save_anim_pr_batch(
         )
     try:
         result = await db_apply.apply_ops(
-            session, project, ops, export_xlsx=True, node_kind="anim_pr"
+            session, project, ops, export_xlsx=False, node_kind="anim_pr"
         )
     except db_apply.ApplyOpsError as e:
         raise RuntimeError(f"anim_pr apply_ops отклонён: {e}") from None
@@ -563,19 +545,12 @@ async def _save_anim_pr_batch(
             fr.status = FrameStatus.animation_prompt_ready
         elif shot == 2:
             apg.save_animation_prompt_shot2(fr, project, text)
-        try:
-            sheet.write_frame(fr.number, frame_status=fr.status.value)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[#{}] xlsx write_frame(status) failed: {}", project.id, e
-            )
         logger.info(
-            "[#{}] anim_pr: frame {} shot_0{} prompt len={} (apply-ops, plan R{})",
+            "[#{}] anim_pr: frame {} shot_0{} prompt len={} (apply-ops, DB)",
             project.id,
             fr.number,
             shot,
             len(text),
-            plan_row,
         )
 
     await session.flush()

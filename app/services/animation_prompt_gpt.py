@@ -31,7 +31,6 @@ from app.storage.plan_sheet_v8 import (
     read_plan_animation_prompt_shot2_cells,
     read_plan_voiceover,
     read_plan_voiceover_cells,
-    write_plan_animation_prompt_shot2,
 )
 
 MIN_ANIM_PROMPT_LEN = 10
@@ -540,14 +539,15 @@ def save_animation_prompt_shot2(
     project: Project,
     text: str,
 ) -> bool:
-    """R64 + attrs после ответа GPT для shot_02."""
+    """attrs после ответа GPT для shot_02 (Excel — только Export)."""
+    del project
     text = text.strip()
     if len(text) < MIN_SHOT2_VIDEO_PROMPT_LEN:
         return False
     attrs = dict(frame.attrs or {})
     attrs[SHOT2_VIDEO_PROMPT_ATTR] = text
     frame.attrs = attrs
-    return write_plan_animation_prompt_shot2(project, frame.number, text)
+    return True
 
 
 def collect_batch_items(

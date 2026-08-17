@@ -163,7 +163,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                                 apply_session,
                                 proj,
                                 ops,
-                                export_xlsx=True,
+                                export_xlsx=False,
                                 node_kind="img_pr",
                             )
                             await apply_session.commit()

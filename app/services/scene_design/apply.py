@@ -72,5 +72,5 @@ async def apply_scene_design(
         list(payload.get("ops") or []),
         characters=characters or None,
         scenes=list(payload.get("scenes") or []) or None,
-        export_xlsx=True,
+        export_xlsx=False,
     )

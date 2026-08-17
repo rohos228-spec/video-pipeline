@@ -417,7 +417,7 @@ export const api = {
   dbApplyOps: (
     projectId: number,
     ops: { frame_uuid: string; fields: Record<string, string | number | null> }[],
-    exportXlsx = true,
+    exportXlsx = false,
   ) =>
     http<{ ok: boolean; updated: number; exported: { frames: number; cells: number } | null }>(
       `/api/db/projects/${projectId}/apply-ops`,

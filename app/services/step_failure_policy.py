@@ -169,22 +169,11 @@ async def _soft_retry_without_wipe(
             project.id,
         )
     elif step_code == "anim_pr":
-        from app.services.animation_prompt_gpt import sync_animation_prompts_from_xlsx
-
-        try:
-            synced = await sync_animation_prompts_from_xlsx(session, project)
-            logger.info(
-                "[#{}] soft retry {}: synced {} animation_prompt из xlsx (без reset)",
-                project.id,
-                step_code,
-                synced,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[#{}] sync_animation_prompts_from_xlsx on fail: {}",
-                project.id,
-                e,
-            )
+        logger.info(
+            "[#{}] soft retry {}: без wipe, без Excel sync (DB SoT)",
+            project.id,
+            step_code,
+        )
     elif step_code == "img":
         from app.services.scan_frames import sync_frames_with_disk_images
 

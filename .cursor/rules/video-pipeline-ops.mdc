@@ -45,12 +45,15 @@ alwaysApply: true
 - Успех attach в логе: `ChatGPT: drag-drop batch — [...]` и `все файлы видны`
 
 ## anim_pr
-- Источник правды для пропуска/генерации: **DB** (`Frame.animation_prompt` / apply-ops).
-  Excel R48 — зеркало (sync write-through / `sync_animation_prompts_from_xlsx`), не SoT для skip.
-- `animation_prompt_gpt.py`: `has_animation_prompt_for_frame`, `scan_missing_animation_prompts`, sync R48↔DB
+- Источник правды: **DB** (`Frame.animation_prompt` / apply-ops).
+  Excel R48 — только после явного Export (`excel_io` / кнопка); auto sync R48→DB отключён.
 - Soft ▶ / soft retry без wipe готовых промтов: `clear_step_outputs_for_rerun(force_wipe=False)`;
   полный wipe — `reset_step` / `force_wipe=True`. Soft retry steps: `anim_pr`, `img`, `video`
 - Пауза после ошибок (30 мин): снимается ручным `POST /api/projects/{id}/steps/anim_pr/run` или кнопкой в Studio
+
+## Excel I/O
+- Runtime: только `app/services/excel_io.py` (`import_project_xlsx` / `export_project_xlsx`).
+- `apply_ops` по умолчанию **не** пишет xlsx; База не auto-export.
 
 ## Сбои шагов
 - `reset_step` для `img` раньше удалял все PNG — теперь backup в `old/scenes/<timestamp>/`

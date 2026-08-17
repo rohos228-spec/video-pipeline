@@ -1,4 +1,4 @@
-"""Шаг 10: озвучка plan R49 — вариант B (один mp3 на ячейку / кадр).
+"""Шаг 10: озвучка — VO из БД (Frame.voiceover_text).
 
 Готовый mp3 на диске → только Whisper (без 11Labs).
 Иначе: TTS по ячейкам → voice_full → Whisper внутри synthesize_per_frame_audio.
@@ -40,7 +40,6 @@ from app.services.media_probe import probe_duration
 from app.services.asr import active_asr_backend
 from app.services.whisper import WordTS, dump_words_json
 from app.settings import settings
-from app.storage.plan_sheet_v8 import read_plan_voiceover_cells
 
 
 async def _latest_artifact(
@@ -158,10 +157,6 @@ async def _persist_audio_results(
         frame_segments=frame_segments,
     )
 
-    from app.services.plan_timestamps import write_asr_timestamps_to_r15
-
-    write_asr_timestamps_to_r15(project, clips)
-
     logger.info(
         "[#{}] generate_audio done: {} frames, {:.2f}s total, {} whisper words ({})",
         project.id,
@@ -201,7 +196,7 @@ async def run(
 ) -> None:
     if project.status is not ProjectStatus.generating_audio:
         return
-    logger.info("[#{}] generate_audio starting (per-frame TTS, plan R49)", project.id)
+    logger.info("[#{}] generate_audio starting (per-frame TTS, VO from DB)", project.id)
 
     await recover_scene_videos_from_disk(session, project)
     await recover_audio_from_disk(session, project)
@@ -246,13 +241,13 @@ async def run(
             "11Labs" if settings.audio_use_elevenlabs_fallback else "ошибка (11Labs выкл.)",
         )
 
-    cells = read_plan_voiceover_cells(project, [fr.number for fr in frames])
     from app.services.frame_timeline_sync import timeline_frames_and_cells
 
     timeline_frames, cells = timeline_frames_and_cells(project, frames)
     if not timeline_frames:
         raise RuntimeError(
-            "нет закадрового текста на листе «план» (R49) — заполните project.xlsx"
+            "нет закадрового текста в БД (Frame.voiceover_text) — "
+            "сделай split/Импорт Excel или заполни Базу"
         )
 
     if voice_path is not None and voice_path.is_file():

@@ -11,7 +11,20 @@ from app.services.xlsx_text_writeback import (
     extract_sheet_blocks,
     merge_xlsx_nonempty_overlay,
     writeback_project_xlsx,
+    _writeback_project_xlsx_legacy_disabled,
 )
+
+
+def test_writeback_project_xlsx_public_api_disabled(tmp_path: Path) -> None:
+    target = tmp_path / "project.xlsx"
+    wb = Workbook()
+    wb.save(target)
+    wb.close()
+    try:
+        writeback_project_xlsx(project_xlsx=target, reply_text="# Лист: план\nA\n1\n")
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as e:
+        assert "отключён" in str(e).lower() or "disabled" in str(e).lower() or "Excel writeback" in str(e)
 
 
 def test_extract_sheet_blocks_tsv() -> None:
@@ -102,7 +115,7 @@ def test_unmarked_junk_not_sequential_overwrite(tmp_path: Path) -> None:
         "мусор без таба\n"
         "@row=10\tфон\tNEW\n"
     )
-    out = writeback_project_xlsx(
+    out = _writeback_project_xlsx_legacy_disabled(
         project_xlsx=src, reply_text=reply, downloaded_paths=[]
     )
     assert out == src
@@ -139,7 +152,7 @@ def test_row_marked_continue_cannot_shift_plan_labels(tmp_path: Path) -> None:
         "@row=4\tномер кадра\t1\t2\n"
         "@row=10\tфон\tOK\n"
     )
-    out = writeback_project_xlsx(
+    out = _writeback_project_xlsx_legacy_disabled(
         project_xlsx=src, reply_text=reply, downloaded_paths=[]
     )
     assert out == src
@@ -193,7 +206,7 @@ def test_writeback_creates_pre_write_backup(tmp_path: Path) -> None:
     wb.save(src)
     wb.close()
 
-    out = writeback_project_xlsx(
+    out = _writeback_project_xlsx_legacy_disabled(
         project_xlsx=src,
         reply_text="# Лист: план\n@row=10\tфон\tAFTER\n",
         downloaded_paths=[],
@@ -241,7 +254,7 @@ def test_continue_marker_not_written_into_cells(tmp_path: Path) -> None:
     wb.save(src)
     wb.close()
 
-    out = writeback_project_xlsx(
+    out = _writeback_project_xlsx_legacy_disabled(
         project_xlsx=src,
         reply_text=text,
         downloaded_paths=[],
@@ -306,7 +319,7 @@ def test_writeback_remaps_dannye_and_keeps_plan_labels(tmp_path: Path) -> None:
         "# Лист: Данные\n"
         "@row=5\tЛОМАЙ ПОДПИСЬ\tновое значение\n"
     )
-    out = writeback_project_xlsx(
+    out = _writeback_project_xlsx_legacy_disabled(
         project_xlsx=src,
         reply_text=reply,
         downloaded_paths=[],
@@ -345,7 +358,7 @@ def test_apply_and_writeback(tmp_path: Path) -> None:
         "@row=1\tid\n"
         "@row=2\t1\n"
     )
-    out = writeback_project_xlsx(
+    out = _writeback_project_xlsx_legacy_disabled(
         project_xlsx=src,
         reply_text=reply,
         downloaded_paths=[],
@@ -459,7 +472,7 @@ def test_binary_writeback_overlays_not_wipes(tmp_path: Path) -> None:
     wb2.save(dl)
     wb2.close()
 
-    out = writeback_project_xlsx(
+    out = _writeback_project_xlsx_legacy_disabled(
         project_xlsx=project,
         reply_text="",
         downloaded_paths=[dl],
@@ -541,7 +554,7 @@ def test_writeback_prefers_downloaded_xlsx(tmp_path: Path) -> None:
     # Нет v8-листов → полный copy как раньше
     Workbook().save(project)
 
-    out = writeback_project_xlsx(
+    out = _writeback_project_xlsx_legacy_disabled(
         project_xlsx=project,
         reply_text="# Лист: X\na\tb\n",
         downloaded_paths=[dl],
@@ -569,7 +582,7 @@ def test_writeback_prose_fallback_into_general_plan(tmp_path: Path) -> None:
     wb.close()
 
     prose = "А" * 250 + "\n\nРим был велик: армия, право, дороги."
-    out = writeback_project_xlsx(
+    out = _writeback_project_xlsx_legacy_disabled(
         project_xlsx=src,
         reply_text=prose,
         downloaded_paths=[],
@@ -602,7 +615,7 @@ def test_writeback_refuses_prose_on_frame_plan_workbook(tmp_path: Path) -> None:
     wb.close()
 
     prose = "А" * 250 + "\n\nМодель ответила болтовнёй без TSV."
-    out = writeback_project_xlsx(
+    out = _writeback_project_xlsx_legacy_disabled(
         project_xlsx=src,
         reply_text=prose,
         downloaded_paths=[],
@@ -630,7 +643,7 @@ def test_writeback_skips_check_report_json(tmp_path: Path) -> None:
         '"criteria":{"flow_continuity":{"verdict":"pass"}},'
         '"fix_hints":["убери мета"],"issues":["x"]}'
     )
-    out = writeback_project_xlsx(
+    out = _writeback_project_xlsx_legacy_disabled(
         project_xlsx=src,
         reply_text=report,
         downloaded_paths=[],
@@ -668,7 +681,7 @@ def test_writeback_skips_html_named_xlsx_uses_tsv(tmp_path: Path) -> None:
     fake.write_bytes(b"<!DOCTYPE html><html><body>login</body></html>")
 
     reply = "# Лист: план\n@row=10\tфон\tFROM_TSV\n"
-    out = writeback_project_xlsx(
+    out = _writeback_project_xlsx_legacy_disabled(
         project_xlsx=src, reply_text=reply, downloaded_paths=[fake]
     )
     assert out == src

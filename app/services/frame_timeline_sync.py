@@ -45,10 +45,9 @@ def timeline_frames_and_cells(
     project: Project,
     frames: list[Frame],
 ) -> tuple[list[Frame], list[tuple[int, str]]]:
-    """Кадры и ячейки R49 для таймлайна — без заглушек «Кадр N» с диска."""
-    numbers = [fr.number for fr in frames]
-    raw_cells = read_plan_voiceover_cells(project, numbers)
-    cells = _voiceover_cells_for_frames(project, frames, raw_cells)
+    """Кадры и VO для таймлайна — только из БД (Frame.voiceover_text)."""
+    del project  # Excel больше не SoT
+    cells = [(fr.number, (fr.voiceover_text or "").strip()) for fr in frames]
     filtered_cells: list[tuple[int, str]] = []
     allowed: set[int] = set()
     for frame_number, text in cells:

@@ -461,20 +461,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             descriptions = [project.hero_description]
             n_total = 1
         else:
-            # xlsx мог обновиться после split/enrich — подтянуть «Описание героя».
-            xlsx_path = project.data_dir / "project.xlsx"
-            if xlsx_path.is_file():
-                from app.services.chatgpt_xlsx import sync_project_xlsx
-
-                try:
-                    await sync_project_xlsx(session, project, xlsx_path)
-                    await session.refresh(project)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "[#{}] hero: reload_from_xlsx перед генерацией: {}",
-                        project.id,
-                        e,
-                    )
             if (project.hero_description or "").strip():
                 descriptions = [project.hero_description.strip()]
                 n_total = 1
