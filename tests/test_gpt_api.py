@@ -11,6 +11,7 @@ import pytest
 from app.services import gpt_api
 from app.services.gpt_api import (
     GptApiError,
+    _stream_timeout,
     build_messages,
     chat,
     collect_result_urls,
@@ -297,6 +298,19 @@ def test_looks_truncated_llm_text_json() -> None:
     assert looks_truncated_llm_text("просто текст") is False
 
 
+def test_stream_timeout_does_not_use_call_timeout_as_read(monkeypatch) -> None:
+    """SSE не должен сам рваться по GPT_TIMEOUT/280s — ждём EOF сервера."""
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_stream_read_timeout_s", 0.0)
+    sto = _stream_timeout(280.0)
+    assert sto.read is None
+    assert sto.write is None
+    monkeypatch.setattr(settings, "gpt_stream_read_timeout_s", 900.0)
+    sto2 = _stream_timeout(280.0)
+    assert sto2.read == 900.0
+
+
 def test_stitch_llm_continuation_dedupes_overlap() -> None:
     assert stitch_llm_continuation('{"ops":[{"a":1', "}]}") == '{"ops":[{"a":1}]}'
     assert stitch_llm_continuation("hello world end", "world end!!!") == "hello world end!!!"
@@ -372,6 +386,79 @@ async def test_chat_cf_continue_after_truncated_salvage(monkeypatch) -> None:
     assert res.finish_reason == "stream_continued"
     assert '{"ops"' in res.text
     assert looks_truncated_llm_text(res.text) is False
+
+
+@pytest.mark.asyncio
+async def test_chat_keeps_salvage_when_cf_continue_empty(monkeypatch) -> None:
+    """Цельный длинный ответ обрезан — continue пустой. Не терять salvage."""
+    _enable(monkeypatch)
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_chat_path", "/codex/v1/responses")
+    monkeypatch.setattr(settings, "gpt_api_mode", "auto")
+    state = {"n": 0}
+
+    class _Stream:
+        def __init__(self, lines: list[str], boom: bool = False) -> None:
+            self.headers = {"cf-ray": "empty-cont"}
+            self.status_code = 200
+            self._lines = lines
+            self._boom = boom
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def aiter_lines(self):
+            for line in self._lines:
+                yield line
+            if self._boom:
+                raise httpx.RemoteProtocolError("Server disconnected")
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def stream(self, *a, **k):
+            state["n"] += 1
+            if state["n"] == 1:
+                return _Stream(
+                    [
+                        'data: {"type":"response.created","response":{"id":"resp_big","status":"in_progress"}}',
+                        'data: {"type":"response.output_text.delta","delta":"{\\"ops\\":[{\\"frame_uuid\\":\\"aa\\",\\"fields\\":{\\"x\\":\\"1\\"}}"}',
+                    ],
+                    boom=True,
+                )
+            return _Stream(
+                [
+                    'data: {"type":"response.created","response":{"id":"resp_empty","status":"in_progress"}}',
+                    'data: {"type":"response.completed","response":{"id":"resp_empty","status":"completed","output":[]}}',
+                ]
+            )
+
+    monkeypatch.setattr(gpt_api.httpx, "AsyncClient", _Client)
+
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(gpt_api.asyncio, "sleep", _no_sleep)
+
+    res = await chat(
+        prompt="json",
+        model="gpt-5-6-sol",
+        max_retries=0,
+        volume_complete=False,
+    )
+    assert "frame_uuid" in res.text
+    assert len(res.text) > 20
 
 
 @pytest.mark.asyncio

@@ -927,14 +927,24 @@ def _http_timeout(total_s: float) -> httpx.Timeout:
 
 
 def _stream_timeout(total_s: float) -> httpx.Timeout:
-    """Таймаут для SSE: без ``total`` (он рвёт длинный stream целиком).
+    """Таймаут для SSE: без ``total`` (он рвал бы весь длинный ответ целиком).
 
-    Cloudflare/прокси иногда рвёт соединение на огромном ``response.completed``;
-    тогда мы уже имеем дельты — их нужно salvage, а не терять на Timeout.
-    ``read`` = простой idle между чанками (модель может долго «думать»).
+    Важно: ``read`` НЕ берём из GPT_TIMEOUT / scene_design 280s.
+    Иначе httpx ReadTimeout сам закрывает сокет, пока модель ещё
+    reasoning'ит без дельт — на kie задача потом success, у нас обрывок.
+
+    По умолчанию ``GPT_STREAM_READ_TIMEOUT_S=0`` → read=None: ждём, пока
+    сервер сам закроет SSE (completed / EOF). >0 — только аварийный idle.
     """
-    read = max(120.0, float(total_s))
-    return httpx.Timeout(None, connect=30.0, read=read, write=60.0, pool=30.0)
+    configured = float(getattr(settings, "gpt_stream_read_timeout_s", 0.0) or 0.0)
+    if configured > 0:
+        read: float | None = max(configured, 120.0)
+    else:
+        read = None
+    # upload большого input (xlsx/db_frames) тоже не режем 60с.
+    write: float | None = None
+    _ = total_s  # оставлен для совместимости вызова; на SSE idle не влияет
+    return httpx.Timeout(None, connect=30.0, read=read, write=write, pool=30.0)
 
 
 def _raise_http_status(
@@ -1125,8 +1135,16 @@ async def _chat_responses_stream(
     lines: list[str] = []
     cf_ray = ""
     logged_task_id = False
+    saw_text_done = False
+    saw_completed = False
     stream_err: BaseException | None = None
-    async with httpx.AsyncClient(timeout=_stream_timeout(timeout)) as client:
+    sto = _stream_timeout(timeout)
+    logger.info(
+        "gpt_api.chat SSE start model={} read_timeout={} (None=wait server EOF)",
+        use_model,
+        sto.read,
+    )
+    async with httpx.AsyncClient(timeout=sto) as client:
         try:
             async with client.stream(
                 "POST", url, headers=headers, json=stream_body
@@ -1135,19 +1153,26 @@ async def _chat_responses_stream(
                 if resp.status_code >= 400:
                     err_body = (await resp.aread()).decode("utf-8", errors="replace")
                     _raise_http_status(resp.status_code, err_body, use_model=use_model)
+                # Читаем до EOF сервера — сами цикл не прерываем.
                 async for line in resp.aiter_lines():
                     lines.append(line)
-                    if (
-                        logged_task_id
-                        or not line.startswith("data:")
-                        or "resp_" not in line
-                    ):
+                    if not line.startswith("data:") or "response." not in line:
                         continue
                     try:
                         ev = json.loads(line[5:].strip())
                     except json.JSONDecodeError:
                         continue
                     if not isinstance(ev, dict):
+                        continue
+                    et = str(ev.get("type") or "")
+                    if et == "response.output_text.done":
+                        saw_text_done = True
+                    elif et == "response.completed":
+                        saw_completed = True
+                    if (
+                        logged_task_id
+                        or "resp_" not in line
+                    ):
                         continue
                     resp_obj = ev.get("response")
                     if isinstance(resp_obj, dict) and resp_obj.get("id"):
@@ -1158,11 +1183,22 @@ async def _chat_responses_stream(
                             use_model,
                         )
                         logged_task_id = True
+                logger.info(
+                    "gpt_api.chat SSE EOF lines={} text_done={} completed={} "
+                    "cf_ray={}",
+                    len(lines),
+                    saw_text_done,
+                    saw_completed,
+                    cf_ray or "-",
+                )
         except (httpx.TimeoutException, httpx.HTTPError) as e:
             stream_err = e
             logger.warning(
-                "gpt_api.chat SSE interrupted lines={} err={}: {} — try salvage",
+                "gpt_api.chat SSE interrupted lines={} text_done={} completed={} "
+                "err={}: {} — try salvage",
                 len(lines),
+                saw_text_done,
+                saw_completed,
                 type(e).__name__,
                 e,
             )
@@ -1411,13 +1447,29 @@ async def chat(
                         len(result.text or ""),
                         result.response_id or "-",
                     )
-                    cont = await _chat_responses_stream(
-                        url=url,
-                        headers=headers,
-                        body=cont_body,
-                        timeout=min(use_timeout, 300.0),
-                        use_model=use_model,
-                    )
+                    try:
+                        cont = await _chat_responses_stream(
+                            url=url,
+                            headers=headers,
+                            body=cont_body,
+                            timeout=min(use_timeout, 300.0),
+                            use_model=use_model,
+                        )
+                    except GptApiError as e:
+                        # Continue без исходного файла часто → пустой output.
+                        # Уже полученный текст цельного ответа нельзя выбрасывать.
+                        if (result.text or "").strip() and (
+                            e.context.get("error_kind") == "empty_stream"
+                            or "пустой output" in str(e)
+                        ):
+                            logger.warning(
+                                "gpt_api.chat CF-continue empty — keep salvage "
+                                "chars={} ({})",
+                                len(result.text or ""),
+                                e,
+                            )
+                            break
+                        raise
                     merged = stitch_llm_continuation(result.text, cont.text)
                     if len(merged) <= len(result.text or ""):
                         break
