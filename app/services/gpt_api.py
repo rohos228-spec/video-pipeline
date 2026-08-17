@@ -128,7 +128,11 @@ def _mask_proxy_url(url: str) -> str:
 
 def _gpt_proxy_url() -> str | None:
     raw = (getattr(settings, "gpt_proxy_url", None) or "").strip()
-    return raw or None
+    if not raw:
+        return None
+    if raw.startswith("socks5h://"):
+        return "socks5://" + raw[len("socks5h://") :]
+    return raw
 
 
 def _async_client(**kwargs: Any) -> httpx.AsyncClient:
@@ -1594,11 +1598,13 @@ async def chat(
     use_timeout = float(timeout if timeout is not None else settings.gpt_timeout_s)
     retries = int(max_retries if max_retries is not None else settings.gpt_max_retries)
     provider_label = settings.text_llm_label
+    proxy = _gpt_proxy_url()
     logger.info(
-        "text_llm.chat → {} model={} url={}",
+        "text_llm.chat → {} model={} url={} proxy={}",
         provider_label,
         use_model,
         url,
+        _mask_proxy_url(proxy) if proxy else "direct",
     )
 
     responses_mode = is_responses_mode()

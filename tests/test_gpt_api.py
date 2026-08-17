@@ -1095,6 +1095,20 @@ def test_async_client_passes_proxy(monkeypatch) -> None:
     assert captured.get("trust_env") is False
 
 
+def test_gpt_proxy_url_normalizes_socks5h(monkeypatch) -> None:
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_proxy_url", "socks5h://u:p@10.1.2.3:9050")
+    assert gpt_api._gpt_proxy_url() == "socks5://u:p@10.1.2.3:9050"
+
+
+def test_gpt_proxy_url_empty(monkeypatch) -> None:
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_proxy_url", None)
+    assert gpt_api._gpt_proxy_url() is None
+    monkeypatch.setattr(settings, "gpt_proxy_url", "  ")
+    assert gpt_api._gpt_proxy_url() is None
 @pytest.mark.asyncio
 async def test_download_content_html_renamed_off_xlsx(monkeypatch, tmp_path: Path) -> None:
     """Страница HTML, сохранённая как .xlsx, переименовывается в .html."""
