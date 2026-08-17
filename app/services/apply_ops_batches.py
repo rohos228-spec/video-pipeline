@@ -120,6 +120,14 @@ def _frame_complete(
     )
 
 
+def _has_uuid(frame: dict[str, Any]) -> bool:
+    return bool(str(frame.get("uuid") or "").strip())
+
+
+def _has_voiceover(frame: dict[str, Any]) -> bool:
+    return bool(str(frame.get("voiceover_text") or "").strip())
+
+
 def _pending_frames(
     frames: list[dict[str, Any]],
     *,
@@ -128,14 +136,28 @@ def _pending_frames(
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for fr in frames:
-        if not str(fr.get("uuid") or "").strip():
+        if not _has_uuid(fr):
             continue
-        if not str(fr.get("voiceover_text") or "").strip() and not skip_if_field:
+        if not _has_voiceover(fr) and not skip_if_field:
             continue
         if _frame_complete(fr, dense=dense, skip_if_field=skip_if_field):
             continue
         out.append(fr)
     return out
+
+
+def select_frames_for_batches(
+    frames: list[dict[str, Any]],
+    *,
+    dense: bool,
+    skip_if_field: str | None = None,
+    target_batches: int | None = None,
+) -> list[dict[str, Any]]:
+    """Кадры в GPT-пачки: уже заполненные shot-поля пропускаем."""
+    del target_batches
+    return _pending_frames(
+        frames, dense=dense, skip_if_field=skip_if_field
+    )
 
 
 def _batch_footer(batch_i: int, batch_n: int, n: int) -> str:
@@ -165,8 +187,13 @@ async def run_apply_ops_batched(
 ) -> OperatorApiResult:
     """Несколько GPT-вызовов по кускам db_frames.json → один merge ops."""
     all_frames = list(db_ctx.get("frames") or [])
-    pending = _pending_frames(
-        all_frames, dense=dense, skip_if_field=skip_if_field
+    pending = select_frames_for_batches(
+        all_frames,
+        dense=dense,
+        skip_if_field=skip_if_field,
+        target_batches=target_batches
+        if target_batches is not None
+        else (_DENSE_TARGET_BATCHES if dense else None),
     )
     json_bytes = len(
         json.dumps({"frames": pending}, ensure_ascii=False).encode("utf-8")

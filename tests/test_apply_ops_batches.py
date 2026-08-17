@@ -2,6 +2,7 @@ from app.services.apply_ops_batches import (
     frames_per_batch,
     should_batch_apply_ops,
     split_frames,
+    select_frames_for_batches,
     _frame_complete,
     _pending_frames,
 )
@@ -67,6 +68,29 @@ def test_pending_skips_top_level_shot_fields() -> None:
     assert _frame_complete(frames[0], dense=True)
     pending = _pending_frames(frames, dense=True)
     assert [f["uuid"] for f in pending] == ["b" * 24]
+
+
+def test_dense_retry_skips_filled_and_keeps_one_tail_batch() -> None:
+    frames = []
+    for i in range(160):
+        row = {
+            "uuid": f"{i:024d}",
+            "voiceover_text": f"vo {i}",
+        }
+        if i < 129:
+            row["main_action"] = "x"
+            row["shot01_description"] = "y"
+        frames.append(row)
+    selected = select_frames_for_batches(
+        frames, dense=True, target_batches=5
+    )
+    assert len(selected) == 31
+    size = frames_per_batch(
+        n_frames=len(selected), json_bytes=24_000, dense=True, target_batches=5
+    )
+    assert size == 31
+    chunks = split_frames(selected, size)
+    assert [len(c) for c in chunks] == [31]
 
 
 def test_pending_skips_filled_shot01() -> None:
