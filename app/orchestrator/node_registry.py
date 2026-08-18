@@ -130,9 +130,9 @@ SD_AGENT_STEP_CODES: dict[str, str] = {
     "sd_skel": "skeleton",
     "sd_char": "characters",
     "sd_world": "world",
-    "sd_style": "style",
     "sd_cam": "camera",
     "sd_act": "action",
+    # sd_style снят с волн; wipe старых нод — reset_step("_sd_agent_wiper")
 }
 for _code in SD_AGENT_STEP_CODES:
     STEP_CODE_TO_NODE_TYPE[_code] = "sd_agent"

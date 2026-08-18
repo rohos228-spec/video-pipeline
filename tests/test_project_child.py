@@ -127,7 +127,7 @@ async def test_child_noderun_uses_effective_sd_types(
             "type": "excel_gpt",
             "data": {"sd_agent": a},
         }
-        for a in ("characters", "world", "style", "camera", "action")
+        for a in ("characters", "world", "camera", "action")
     ]
     sd_nodes.append(
         {

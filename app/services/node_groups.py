@@ -163,9 +163,9 @@ def _scene_design_group() -> NodeGroupDef:
         group_id="scene_design_fanout",
         title="Сцены: веер агентов",
         description=(
-            "5 GPT-агентов (персонажи/мир/стиль/камера/действие) параллельно "
+            "4 GPT-агента (персонажи/мир/камера/действие) параллельно "
             "+ сборщик сцен; после каждой ноды — её проверка (Ок/Не ок). "
-            "Промты sd_* из 05_excel_gpt выставляются сразу."
+            "Промты sd_* из 05_excel_gpt выставляются сразу. Нода стиль удалена."
         ),
         category="planning",
         default_after_type="split",
@@ -179,18 +179,17 @@ def _scene_design_group() -> NodeGroupDef:
     )
 
 
-# chrono_dyn: скелет → chars/world/style → action → camera → assemble.
+# chrono_dyn: скелет → chars/world → action → camera → assemble.
 _SD_CHRONO_FANOUT: tuple[tuple[str, str, str], ...] = (
     ("characters", "GPT: персонажи · chrono_dyn", "Паспорта персонажей (вариант chrono_dyn)"),
-    ("world", "GPT: мир · chrono_dyn", "Локации и зоны (вариант chrono_dyn)"),
-    ("style", "GPT: стиль · chrono_dyn", "Световая дуга (вариант chrono_dyn)"),
+    ("world", "GPT: мир · chrono_dyn", "Локации из locations_seed (вариант chrono_dyn)"),
     ("action", "GPT: действие · chrono_dyn", "Сцены+фазы — обслуживает скелет"),
     ("camera", "GPT: камера · chrono_dyn", "1 фаза → 1 shot; обслуживает action"),
 )
 
 
 def _scene_design_chrono_dyn_group() -> NodeGroupDef:
-    """Веер chrono_dyn: скелет → chars/world/style → action → camera → assemble."""
+    """Веер chrono_dyn: скелет → chars/world → action → camera → assemble."""
     agents: list[GroupNodeSpec] = []
     edges: list[tuple[str, str, str]] = []
     skeleton = GroupNodeSpec(
@@ -208,11 +207,10 @@ def _scene_design_chrono_dyn_group() -> NodeGroupDef:
         prompt_variant="sd_skeleton",
     )
     col = {
-        "characters": (2, -2 * _FAN_DY),
-        "world": (2, -_FAN_DY),
-        "style": (2, 0.0),
-        "action": (3, _FAN_DY),
-        "camera": (4, _FAN_DY),
+        "characters": (2, -_FAN_DY),
+        "world": (2, _FAN_DY),
+        "action": (3, 0.0),
+        "camera": (4, 0.0),
     }
     for agent, label, descr in _SD_CHRONO_FANOUT:
         dx_mul, dy = col[agent]
@@ -229,7 +227,7 @@ def _scene_design_chrono_dyn_group() -> NodeGroupDef:
                 prompt_variant=f"sd_{agent}_chrono_dyn",
             )
         )
-    for agent in ("characters", "world", "style"):
+    for agent in ("characters", "world"):
         edges.append(("skeleton", agent, "after"))
         edges.append((agent, "action", "after"))
     edges.append(("action", "camera", "after"))
@@ -250,9 +248,9 @@ def _scene_design_chrono_dyn_group() -> NodeGroupDef:
         group_id="scene_design_fanout_chrono_dyn",
         title="Сцены: скелет + chrono_dyn",
         description=(
-            "Скелет (нити/наследие) → персонажи/мир/стиль → действие "
+            "Скелет (нити/наследие) → персонажи/мир → действие "
             "(сцены+фазы) → камера (1 фаза=1 shot) → сборка. "
-            "Промты sd_skeleton + sd_*_chrono_dyn."
+            "Промты sd_skeleton + sd_*_chrono_dyn. Нода стиль удалена."
         ),
         category="planning",
         default_after_type="split",

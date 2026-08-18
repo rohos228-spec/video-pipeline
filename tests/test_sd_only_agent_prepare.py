@@ -63,7 +63,7 @@ def _fanout_nodes() -> list[dict]:
             "data": {"sd_agent": "skeleton", "label": "скелет"},
         },
     ]
-    for agent in ("characters", "world", "style", "action", "camera"):
+    for agent in ("characters", "world", "action", "camera"):
         nodes.append(
             {
                 "id": f"n_excel_gpt_sd_cd_{agent}",
@@ -153,7 +153,7 @@ async def test_prepare_with_only_agent_does_not_fanout(mem_db) -> None:
         ).all()
         by_key = {nr.node_key: nr.status for nr in rows}
         assert by_key["n_excel_gpt_sd_cd_skeleton"] == NodeRunStatus.running
-        for agent in ("characters", "world", "style", "action", "camera"):
+        for agent in ("characters", "world", "action", "camera"):
             assert by_key[f"n_excel_gpt_sd_cd_{agent}"] == NodeRunStatus.pending, agent
 
 

@@ -26,11 +26,11 @@ def test_chrono_dyn_group_in_palette() -> None:
     assert g.entry_keys == ("skeleton",)
     assert g.exit_key == "assemble"
     assert all(n.operator_config is None for n in g.nodes)
-    assert len(g.nodes) == 7
+    assert len(g.nodes) == 6
     edge_pairs = {(a, b) for a, b, _k in g.internal_edges}
     assert ("skeleton", "characters") in edge_pairs
     assert ("skeleton", "world") in edge_pairs
-    assert ("skeleton", "style") in edge_pairs
+    assert ("skeleton", "style") not in edge_pairs
     assert ("action", "camera") in edge_pairs
     assert ("camera", "assemble") in edge_pairs
     assert not any(a.startswith("check_") or b.startswith("check_") for a, b in edge_pairs)
@@ -565,10 +565,11 @@ async def test_run_category_agents_camera_after_action() -> None:
     ):
         await runner.run_category_agents(project, "CTX", timeout=10)
 
-    # chrono_dyn: верхние 3 → action → camera
-    for top in ("characters", "world", "style"):
+    # chrono_dyn: chars/world → action → camera
+    for top in ("characters", "world"):
         assert order.index(top) < order.index("action")
     assert order.index("action") < order.index("camera")
+    assert "style" not in order
     assert ag.agent_waves(project) == (
         ag.CHRONO_WAVE1_AGENTS,
         ag.CHRONO_WAVE2_AGENTS,

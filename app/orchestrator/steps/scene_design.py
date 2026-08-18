@@ -1,7 +1,7 @@
 """Ноды scene_design: мульти-агентная режиссура сцен (между split и hero).
 
-Фаза 1 — ``run`` (статус scene_designing, ноды sd_agent ×5 на канвасе):
-5 категорийных GPT-агентов параллельно (characters/world/style/camera/action)
+Фаза 1 — ``run`` (статус scene_designing, ноды sd_agent на канвасе):
+категорийные GPT-агенты (characters/world/camera/action; style удалён)
 → срезы конвертируются в staging-ячейки (``scene_design_cells``, валидация
 при записи, коммит частями) → статус scene_agents_ready.
 
@@ -219,7 +219,7 @@ async def run_assemble(
     if not runner.agents_all_done(project):
         missing = [
             name
-            for name in ("characters", "world", "style", "camera", "action")
+            for name in ("characters", "world", "camera", "action")
             if runner.load_checkpoint(project, name) is None
         ]
         raise RuntimeError(

@@ -14,17 +14,19 @@ PROMPTS_SUBDIR = Path("prompts") / "scene_design"
 
 ASSEMBLER = "assemble"
 SKELETON = "skeleton"
-CATEGORY_AGENTS: tuple[str, ...] = ("characters", "world", "style", "camera", "action")
+CATEGORY_AGENTS: tuple[str, ...] = ("characters", "world", "camera", "action")
 # Все GPT-агенты веера, включая волну 0 (скелет).
 ALL_AGENTS: tuple[str, ...] = (SKELETON, *CATEGORY_AGENTS)
-# Legacy: chars/world/style/action параллельно → camera.
-WAVE1_AGENTS: tuple[str, ...] = ("characters", "world", "style", "action")
+# Legacy: chars/world/action параллельно → camera. (style удалён)
+WAVE1_AGENTS: tuple[str, ...] = ("characters", "world", "action")
 WAVE2_AGENTS: tuple[str, ...] = ("camera",)
-# chrono_dyn: верхние 3 → action → camera (как на канвасе).
-CHRONO_WAVE1_AGENTS: tuple[str, ...] = ("characters", "world", "style")
+# chrono_dyn: chars/world → action → camera.
+CHRONO_WAVE1_AGENTS: tuple[str, ...] = ("characters", "world")
 CHRONO_WAVE2_AGENTS: tuple[str, ...] = ("action",)
 CHRONO_WAVE3_AGENTS: tuple[str, ...] = ("camera",)
 SKELETON_WAVE: tuple[str, ...] = (SKELETON,)
+# Устаревшая нода: не в волнах; ▶/wipe игнорируем.
+DEPRECATED_AGENTS: frozenset[str] = frozenset({"style"})
 
 
 def project_scene_design_variant(project: Any | None) -> str:
@@ -94,11 +96,95 @@ LIST_KEY: dict[str, str] = {
     SKELETON: "scenes",
     "characters": "characters",
     "world": "locations",
-    "style": "style_arc",
     "camera": "shot_plan",
     "action": "scenes",
     ASSEMBLER: "scenes",
 }
+
+# Поля паспорта локации, которые world больше не пишет.
+_WORLD_DROP_KEYS: frozenset[str] = frozenset(
+    {
+        "освещение",
+        "свет",
+        "время",
+        "триггеры_закадра",
+        "предметы",
+        "lighting",
+        "light",
+        "time",
+        "items",
+        "triggers",
+        "vo_triggers",
+    }
+)
+_WORLD_KEEP_KEYS: frozenset[str] = frozenset(
+    {"id", "name", "имя", "описание", "zones", "зоны", "якорь", "anchor"}
+)
+
+
+def normalize_world_locations(
+    data: dict[str, Any],
+    *,
+    seed_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    """Убрать свет/время/триггеры/предметы; id только из locations_seed (если задан)."""
+    raw = data.get("locations")
+    if not isinstance(raw, list):
+        raw = []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for loc in raw:
+        if not isinstance(loc, dict):
+            continue
+        lid = str(loc.get("id") or "").strip()
+        if not lid:
+            continue
+        if seed_ids is not None and lid not in seed_ids:
+            continue
+        if lid in seen:
+            continue
+        seen.add(lid)
+        cleaned = {
+            k: v
+            for k, v in loc.items()
+            if k not in _WORLD_DROP_KEYS and k in _WORLD_KEEP_KEYS
+        }
+        cleaned["id"] = lid
+        out.append(cleaned)
+    if seed_ids is not None and not seed_ids:
+        out = []
+    data["locations"] = out
+    if seed_ids:
+        missing = sorted(seed_ids - seen)
+        if missing:
+            raise SceneDesignAgentError(
+                f"scene_design/world: нет паспортов для locations_seed {missing} "
+                f"(нельзя выдумывать другие id вместо seed)"
+            )
+    return data
+
+
+def skeleton_location_seed_ids(project: Any | None) -> set[str] | None:
+    """Id из skeleton.locations_seed; None — скелета нет / не читать seed-фильтр."""
+    if project is None:
+        return None
+    try:
+        from app.services.scene_design import runner as sd_runner
+
+        if not uses_skeleton(project):
+            return None
+        data = sd_runner.load_checkpoint(project, SKELETON)
+    except Exception:  # noqa: BLE001
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    ids: set[str] = set()
+    for loc in data.get("locations_seed") or []:
+        if isinstance(loc, dict):
+            lid = str(loc.get("id") or "").strip()
+            if lid:
+                ids.add(lid)
+    return ids
 
 
 class SceneDesignAgentError(RuntimeError):
@@ -867,13 +953,23 @@ def parse_agent_slice(
     err = str(data.get("error") or "").strip()
     if err:
         raise SceneDesignAgentError(f"scene_design/{agent}: агент вернул error: {err}")
+    if agent == "world":
+        data = normalize_world_locations(data)
     items = data.get(list_key)
     if agent == SKELETON and (not isinstance(items, list) or not items):
         # После normalize scenes обязателен; cells тоже годится как сигнал успеха.
         cells = data.get("cells")
         if isinstance(cells, list) and cells:
             items = data.get(list_key) or []
-    if not isinstance(items, list) or not items:
+    # world: пустой locations OK (нет повторяемых мест / пустой seed).
+    if agent == "world":
+        if not isinstance(items, list):
+            keys = sorted(str(k) for k in data.keys())
+            raise SceneDesignAgentError(
+                f"scene_design/{agent}: нет списка «{list_key}» "
+                f"(keys={keys})"
+            )
+    elif not isinstance(items, list) or not items:
         keys = sorted(str(k) for k in data.keys())
         raise SceneDesignAgentError(
             f"scene_design/{agent}: пустой «{list_key}» — срез не принят "

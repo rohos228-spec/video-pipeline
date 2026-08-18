@@ -18,7 +18,6 @@ _VO = "Альфа начало истории. Бета середина пут�
 _AGENT_MARKERS = {
     "CHARACTERS V2": {"characters": [{"id": "c01", "имя": "Альфа", "внешность": "высокий"}]},
     "WORLD V1": {"locations": [{"id": "loc01", "name": "лес"}]},
-    "STYLE V1": {"style_arc": [{"scene_hint": "мрачно"}]},
     "CAMERA V1": {"shot_plan": [{"hint": "крупный план"}]},
     "ACTION V1": {"scenes": [{"hint": "три части"}]},
 }
@@ -146,7 +145,7 @@ async def test_scene_design_step_end_to_end(sd_session, monkeypatch) -> None:
     sd = meta.get("scene_design") or {}
     assert sd.get("status") == "agents_done"
     assert set((sd.get("agents") or {}).keys()) == {
-        "characters", "world", "style", "camera", "action",
+        "characters", "world", "camera", "action",
     }
 
     # Фаза 2 — сборщик.
@@ -186,7 +185,7 @@ async def test_scene_design_step_end_to_end(sd_session, monkeypatch) -> None:
 
     # Чекпоинты агентов на диске.
     sd_dir = project.data_dir / "scene_design"
-    for name in ("characters", "world", "style", "camera", "action"):
+    for name in ("characters", "world", "camera", "action"):
         assert (sd_dir / f"{name}.json").is_file(), name
 
 
@@ -222,7 +221,6 @@ async def test_scene_design_checkpoints_skip_gpt_on_retry(sd_session, monkeypatc
     for name, payload in (
         ("characters", {"characters": [{"id": "c01"}]}),
         ("world", {"locations": [{"id": "loc01"}]}),
-        ("style", {"style_arc": [{"x": 1}]}),
         ("camera", {"shot_plan": [{"x": 1}]}),
         ("action", {"scenes": [{"x": 1}]}),
     ):
@@ -261,7 +259,7 @@ async def test_scene_design_per_agent_rerun(sd_session, monkeypatch) -> None:
 
     await scene_design.run(session, project)
     assert project.status is ProjectStatus.scene_agents_ready
-    assert len(calls) == 5
+    assert len(calls) == 4
 
     # Перезапуск одного агента (камера): сборка стала stale.
     calls.clear()
@@ -333,15 +331,15 @@ async def test_reset_scene_asm_keeps_agent_checkpoints(sd_session, monkeypatch) 
 
     await scene_design.run(session, project)
     assert project.status is ProjectStatus.scene_agents_ready
-    for name in ("characters", "world", "style", "camera", "action"):
+    for name in ("characters", "world", "camera", "action"):
         assert _agent_file(project, name).is_file(), name
 
-    # Сброс сборщика: все 5 чекпоинтов агентов на месте.
+    # Сброс сборщика: чекпоинты агентов на месте.
     summary = await reset_step(session, project, "scene_asm")
     wiped = summary.get("__steps_wiped") or []
     assert "scene_asm" in wiped
     assert not (set(wiped) & {"sd_char", "sd_world", "sd_style", "sd_cam", "sd_act"})
-    for name in ("characters", "world", "style", "camera", "action"):
+    for name in ("characters", "world", "camera", "action"):
         assert _agent_file(project, name).is_file(), name
 
     # Сброс одного агента (камера): только его чекпоинт удалён.
@@ -350,5 +348,5 @@ async def test_reset_scene_asm_keeps_agent_checkpoints(sd_session, monkeypatch) 
     assert "sd_cam" in wiped
     assert not (set(wiped) & {"sd_char", "sd_world", "sd_style", "sd_act"})
     assert not _agent_file(project, "camera").is_file()
-    for name in ("characters", "world", "style", "action"):
+    for name in ("characters", "world", "action"):
         assert _agent_file(project, name).is_file(), name

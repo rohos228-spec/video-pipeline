@@ -122,7 +122,7 @@ async def _mk_project(session: AsyncSession, *, with_canvas: bool = True) -> Pro
     return project
 
 
-_AGENTS = ("characters", "world", "style", "camera", "action")
+_AGENTS = ("characters", "world", "camera", "action")
 
 
 def test_catalog_has_scene_fanout() -> None:

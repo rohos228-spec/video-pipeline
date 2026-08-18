@@ -312,6 +312,17 @@ def _dump_agent_fail(
         return path
 
 
+def _finalize_agent_slice(
+    project: Project, name: str, data: dict[str, Any]
+) -> dict[str, Any]:
+    """Пост-обработка среза: world id только из locations_seed."""
+    if name == "world":
+        seed_ids = ag.skeleton_location_seed_ids(project)
+        if seed_ids is not None:
+            return ag.normalize_world_locations(data, seed_ids=seed_ids)
+    return data
+
+
 async def _run_one_agent(
     project: Project,
     name: str,
@@ -333,12 +344,13 @@ async def _run_one_agent(
         max_retries=max_retries,
     )
     try:
-        return ag.parse_agent_slice(
+        data = ag.parse_agent_slice(
             name,
             reply,
             validate=validate,
             expected_frame_numbers=expected_frame_numbers,
         )
+        return _finalize_agent_slice(project, name, data)
     except ag.SceneDesignAgentError as e:
         dump = _dump_agent_fail(project, name, reply, e)
         # Скелет: один repair-pass — модель часто копирует stub scenes: [].
@@ -366,12 +378,13 @@ async def _run_one_agent(
             max_retries=2,
         )
         try:
-            return ag.parse_agent_slice(
+            data = ag.parse_agent_slice(
                 name,
                 repaired,
                 validate=validate,
                 expected_frame_numbers=expected_frame_numbers,
             )
+            return _finalize_agent_slice(project, name, data)
         except ag.SceneDesignAgentError as e2:
             dump2 = _dump_agent_fail(project, name, repaired, e2)
             raise ag.SceneDesignAgentError(
@@ -601,9 +614,9 @@ async def run_category_agents(
 ) -> dict[str, dict[str, Any]]:
     """Категорийные агенты волнами.
 
-    Legacy: chars/world/style/action → camera.
-    chrono_dyn: chars/world/style → action → camera (как на канвасе).
-    Чекпоинтнутые пропускаются.
+    Legacy: chars/world/action → camera.
+    chrono_dyn: chars/world → action → camera (как на канвасе).
+    Чекпоинтнутые пропускаются. Нода style удалена.
 
     ``only_agent`` / meta.scene_design.only_agent — точечный ▶ с ноды:
     GPT только для этого агента; остальные из чекпоинта или пропуск
@@ -620,6 +633,14 @@ async def run_category_agents(
     chrono = ag.uses_chrono_dyn(project)
     frame_list = [f for f in (frames or []) if getattr(f, "uuid", None)]
     target = (only_agent or get_only_agent(project) or "").strip() or None
+    if target in ag.DEPRECATED_AGENTS:
+        logger.info(
+            "[#{}] scene_design: only_agent={} снят (нода удалена)",
+            project.id,
+            target,
+        )
+        clear_only_agent(project)
+        return results
     if target:
         logger.info(
             "[#{}] scene_design: only_agent={} — GPT только для этой ноды",

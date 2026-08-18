@@ -116,7 +116,7 @@ def test_registry_status_maps() -> None:
     for code, agent in SD_AGENT_STEP_CODES.items():
         assert STEP_CODE_TO_NODE_TYPE[code] == "sd_agent"
         assert spec_for_step_code(code) is not None
-        assert agent in ("characters", "world", "style", "camera", "action")
+        assert agent in ("skeleton", "characters", "world", "camera", "action")
 
 
 def test_planner_frames_ready_starts_agents() -> None:

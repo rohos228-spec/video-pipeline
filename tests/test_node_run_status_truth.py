@@ -415,7 +415,7 @@ async def test_scene_assembling_heals_false_failed_excel_gpt_sd_agents(mem_db) -
     sd_asm → running.
     """
     slug = f"sd-fan-{uuid.uuid4().hex[:8]}"
-    agents = ("characters", "world", "style", "camera", "action")
+    agents = ("characters", "world", "camera", "action")
     async with mem_db() as session:
         wf = Workflow(name=f"wf-{uuid.uuid4().hex[:8]}", is_default=False, nodes=[], edges=[])
         session.add(wf)

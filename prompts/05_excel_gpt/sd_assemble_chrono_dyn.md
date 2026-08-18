@@ -18,7 +18,7 @@
 **СКЕЛЕТ** — карточки VO-ячеек: фокус, биты/смысловые_части, предметы (если есть).
 **ACTION** — закон фаз; 1 ячейка скелета → 1 id_scene.
 **CAMERA** — закон ракурса фазы и перехода.
-World/style/characters — паспорта. При конфликте границ: скелет (кадры/id_scene)
+World/characters — паспорта. При конфликте границ: скелет (кадры/id_scene)
 → action (фазы) → camera; дословность цитат закадра абсолютна.
 В `действие` кадра по возможности пиши глагол бита/фазы.
 
@@ -30,7 +30,7 @@ World/style/characters — паспорта. При конфликте гран�
 2. Скелет: id_scene + кадры + суть/биты (если есть)
 3. Action: scenes + цепь_действия (beat, переходы, крючки)
 4. Camera shot_plan (id_scene+phase_index, крупность, переход, кто_в_кадре)
-5. locations / style_arc
+5. locations (из world / locations_seed)
 5. characters
 
 Запрещено ставить camera выше action. Запрещено терять phase_index / beat.

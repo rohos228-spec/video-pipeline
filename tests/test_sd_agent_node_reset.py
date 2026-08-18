@@ -54,7 +54,7 @@ def _fanout_nodes() -> list[dict]:
         {"id": "n_sd_assemble", "type": "sd_assemble", "data": {}},
         {"id": "n_hero", "type": "hero", "data": {}},
     ]
-    for agent in ("characters", "world", "style", "camera", "action"):
+    for agent in ("characters", "world", "camera", "action"):
         nodes.append({
             "id": f"n_sd_agent_{agent}",
             "type": "sd_agent",
@@ -126,7 +126,7 @@ async def test_reset_sd_cam_only_camera_and_downstream(mem_db) -> None:
     assert st["n_sd_agent_camera"] == NodeRunStatus.pending
     assert st["n_sd_assemble"] == NodeRunStatus.pending
     assert st["n_hero"] == NodeRunStatus.pending
-    for agent in ("characters", "world", "style", "action"):
+    for agent in ("characters", "world", "action"):
         assert st[f"n_sd_agent_{agent}"] == NodeRunStatus.done, agent
     assert st["n_split"] == NodeRunStatus.done
 
@@ -140,7 +140,7 @@ async def test_reset_scene_asm_keeps_agent_nodes(mem_db) -> None:
 
     assert st["n_sd_assemble"] == NodeRunStatus.pending
     assert st["n_hero"] == NodeRunStatus.pending
-    for agent in ("characters", "world", "style", "camera", "action"):
+    for agent in ("characters", "world", "camera", "action"):
         assert st[f"n_sd_agent_{agent}"] == NodeRunStatus.done, agent
 
 
@@ -151,7 +151,7 @@ async def test_reset_scene_d_resets_whole_fanout(mem_db) -> None:
         await reset_nodes_from_step(session, project.id, "scene_d")
         st = await _statuses(session, project)
 
-    for agent in ("characters", "world", "style", "camera", "action"):
+    for agent in ("characters", "world", "camera", "action"):
         assert st[f"n_sd_agent_{agent}"] == NodeRunStatus.pending, agent
     assert st["n_sd_assemble"] == NodeRunStatus.pending
     assert st["n_hero"] == NodeRunStatus.pending
