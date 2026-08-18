@@ -241,4 +241,5 @@ SoT по тексту GPT: `AGENTS.md` + этот map §8.
 | Soft retry steps | `step_failure_policy.py` |
 | Image style Cursor skills | `.cursor/skills/README.md` (opt-in, не пайплайн) |
 | Knowledge search | `scripts/build_knowledge_index.py`, `/api/knowledge/search` |
+| **GPT VPS-relay (только прокладка)** | [`../deploy/gpt-relay/README.md`](../deploy/gpt-relay/README.md) |
 | **Группы нод («+ Группа»)** | `app/services/node_groups.py` (каталог+вставка), `app/web/routers/node_groups.py`, веер scene_design = группа `scene_design_fanout` |

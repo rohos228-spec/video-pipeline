@@ -109,6 +109,7 @@ def gpt_api_enabled() -> bool:
 
 
 _PROXY_LOGGED = False
+_RELAY_BASE_LOGGED = False
 
 
 def _mask_proxy_url(url: str) -> str:
@@ -169,16 +170,30 @@ def _headers() -> dict[str, str]:
             "GPT_API_KEY пуст (и GRSAI_API_KEY тоже) — задай ключ в .env",
             context={"error_kind": "no_key", "provider": "kie"},
         )
-    return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+    relay = (getattr(settings, "gpt_relay_token", None) or "").strip()
+    if relay:
+        headers["X-VP-Relay-Token"] = relay
+    return headers
 
 
 def _chat_url(model: str) -> str:
+    global _RELAY_BASE_LOGGED
     base = settings.gpt_api_effective_base_url
     if not base:
         raise GptApiError(
             "База текстового LLM пуста — задай TOKENROUTER_BASE_URL или GPT_BASE_URL",
             context={"error_kind": "no_base"},
         )
+    if not _RELAY_BASE_LOGGED and "kie.ai" not in base.lower():
+        logger.info(
+            "GPT API: base_url={} (VPS-relay / non-kie host)",
+            base,
+        )
+        _RELAY_BASE_LOGGED = True
     path = (settings.gpt_chat_path_effective or "/v1/chat/completions").strip()
     if not path.startswith("/"):
         path = "/" + path

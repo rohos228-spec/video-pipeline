@@ -120,6 +120,9 @@ class Settings(BaseSettings):
     gpt_max_retries: int = Field(4, alias="GPT_MAX_RETRIES")
     # HTTP/SOCKS5 для GPT/kie. Пусто = напрямую. Не путать с TELEGRAM_PROXY_URL.
     gpt_proxy_url: str | None = Field(None, alias="GPT_PROXY_URL")
+    # Свой VPS-relay (deploy/gpt-relay): GPT_BASE_URL=https://gpt.example.com
+    # + этот токен → заголовок X-VP-Relay-Token. Прокси на ПК не нужен.
+    gpt_relay_token: str = Field("", alias="GPT_RELAY_TOKEN")
 
     def resolved_text_llm_provider(self) -> str:
         """Активный текстовый провайдер: kie (GPT) | tokenrouter (Kimi).

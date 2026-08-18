@@ -1095,6 +1095,18 @@ def test_async_client_passes_proxy(monkeypatch) -> None:
     assert captured.get("trust_env") is False
 
 
+def test_headers_include_relay_token(monkeypatch) -> None:
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "text_llm_provider", "kie")
+    monkeypatch.setattr(settings, "tokenrouter_api_key", "")
+    monkeypatch.setattr(settings, "gpt_api_key", "test-key")
+    monkeypatch.setattr(settings, "gpt_relay_token", "relay-secret")
+    h = gpt_api._headers()
+    assert h["Authorization"] == "Bearer test-key"
+    assert h["X-VP-Relay-Token"] == "relay-secret"
+
+
 def test_gpt_proxy_url_normalizes_socks5h(monkeypatch) -> None:
     from app.settings import settings
 
