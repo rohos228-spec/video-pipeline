@@ -765,14 +765,25 @@ async def run_img_pr_xlsx(
         rechunk_tail,
     )
 
-    batch_size = ipb.plan_batch_size(len(frames))
-    # Одна GPT-сессия со всеми кадрами: нарезку и параллель делает gpt_api.chat.
+    from app.services.output_batch_plan import (
+        IMG_PR_BATCH_CHAR_BUDGET,
+        IMG_PR_CHARS_PER_FRAME,
+        pack_frames_img_pr,
+    )
+
+    # img_pr: батчи = ceil(n_frames * 4000 / 228000). Параллель — gpt_api.chat.
+    planned = pack_frames_img_pr(frames)
+    batch_size = max((len(b) for b in planned), default=ipb.plan_batch_size(len(frames)))
+    # Один attach со всеми кадрами: gpt_api.auto_pack режет по той же формуле.
     work: deque[list] = deque([frames])
     logger.info(
-        "img_pr_db: one attach frames={} (llm auto_pack, plan_batch_size={}) "
-        "checkpoint_done={}",
+        "img_pr_db: frames={} plan_batches={} sizes={} "
+        "(chars/frame={} budget={}) checkpoint_done={}",
         len(frames),
-        batch_size,
+        len(planned),
+        [len(b) for b in planned],
+        IMG_PR_CHARS_PER_FRAME,
+        IMG_PR_BATCH_CHAR_BUDGET,
         len(done_set),
     )
 

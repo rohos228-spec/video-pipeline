@@ -1,20 +1,209 @@
-"""Оценка выхода GPT до запроса и нарезка независимых пачек.
+# -*- coding: utf-8 -*-
+"""Нарезка db_frames на батчи по символам (без пустых JSON-оценок).
 
-Бюджет — полезный JSON в одном ответе (ниже 128k output tokens).
+img_pr:
+  на каждый кадр планируем 4000 символов ответа;
+  число батчей = ceil(n_frames * 4000 / 228000)
+  (228000 = 57×4000 → на 171 кадр ровно 3 параллельных батча).
+
+Прочие ноды с db_frames:
+  число батчей = ceil(len(закадр) / 2500).
 """
 
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
-from typing import Any, Callable, Sequence, TypeVar
+from typing import Any, Sequence, TypeVar
 
 from loguru import logger
 
 T = TypeVar("T")
 
-# 128k потолок Sol × 0.65 reasoning × 0.85 запас JSON/CF.
-OUTPUT_TOKEN_BUDGET = 70_000
+# img_pr: ожидаемый объём ответа на кадр (символы) и бюджет одного ответа.
+# 228_000 = 57 кадров × 4000 → на 171 кадр ровно 3 параллельных батча.
+IMG_PR_CHARS_PER_FRAME = 4_000
+IMG_PR_BATCH_CHAR_BUDGET = 228_000
+
+# Прочие ноды: один батч на каждые 2500 символов закадра.
+VO_CHARS_PER_BATCH = 2_500
+
+# Старый имя — оставляем для тестов/импортов; теперь это символьный бюджет img_pr.
+OUTPUT_TOKEN_BUDGET = IMG_PR_BATCH_CHAR_BUDGET
+
+
+def batch_count_img_pr(n_frames: int) -> int:
+    """ceil(n_frames * 4000 / 228000), минимум 1."""
+    n = max(0, int(n_frames))
+    if n <= 0:
+        return 1
+    return max(
+        1,
+        math.ceil(n * IMG_PR_CHARS_PER_FRAME / IMG_PR_BATCH_CHAR_BUDGET),
+    )
+
+
+def batch_count_by_voiceover(vo_chars: int) -> int:
+    """ceil(vo_chars / 2500), минимум 1."""
+    c = max(0, int(vo_chars))
+    if c <= 0:
+        return 1
+    return max(1, math.ceil(c / VO_CHARS_PER_BATCH))
+
+
+def split_into_n_batches(frames: Sequence[T], n_batches: int) -> list[list[T]]:
+    """Делит список кадров на n почти равных батчей (порядок сохраняется)."""
+    items = list(frames)
+    if not items:
+        return []
+    n = max(1, min(int(n_batches), len(items)))
+    if n == 1:
+        return [items]
+    size = len(items)
+    out: list[list[T]] = []
+    start = 0
+    for i in range(n):
+        # Равномерное деление: первые (size % n) батчей на 1 длиннее.
+        chunk = size // n + (1 if i < (size % n) else 0)
+        end = start + chunk
+        out.append(items[start:end])
+        start = end
+    return [b for b in out if b]
+
+
+def pack_frames_img_pr(frames: Sequence[T]) -> list[list[T]]:
+    n = batch_count_img_pr(len(frames))
+    batches = split_into_n_batches(frames, n)
+    logger.info(
+        "output_batch_plan img_pr: frames={} chars/frame={} budget={} "
+        "batches={} sizes={}",
+        len(frames),
+        IMG_PR_CHARS_PER_FRAME,
+        IMG_PR_BATCH_CHAR_BUDGET,
+        len(batches),
+        [len(b) for b in batches],
+    )
+    return batches
+
+
+def pack_frames_by_voiceover(
+    frames: Sequence[T], vo_text: str | None
+) -> list[list[T]]:
+    vo = vo_text or ""
+    n = batch_count_by_voiceover(len(vo))
+    batches = split_into_n_batches(frames, n)
+    logger.info(
+        "output_batch_plan vo: frames={} vo_chars={} per_batch={} "
+        "batches={} sizes={}",
+        len(frames),
+        len(vo),
+        VO_CHARS_PER_BATCH,
+        len(batches),
+        [len(b) for b in batches],
+    )
+    return batches
+
+
+def detect_pack_kind(paths: Sequence[Path] | None) -> str:
+    """img_pr | vo — по именам вложений."""
+    for raw in paths or []:
+        name = Path(raw).name.lower()
+        if name.startswith("prompt_img_pr") or "img_pr" in name:
+            return "img_pr"
+    return "vo"
+
+
+def read_voiceover_chars(paths: Sequence[Path] | None) -> int:
+    for raw in paths or []:
+        p = Path(raw)
+        if p.name.lower() in {"voiceover.txt", "закадр.txt"} and p.is_file():
+            try:
+                return len(p.read_text(encoding="utf-8"))
+            except OSError:
+                return 0
+    return 0
+
+
+def load_db_frames_payload(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    frames = data.get("frames")
+    if not isinstance(frames, list) or not frames:
+        return None
+    return data
+
+
+def write_db_frames_slice(
+    src: Path,
+    payload: dict[str, Any],
+    frames: list[dict[str, Any]],
+    *,
+    tag: str,
+) -> Path:
+    out = src.with_name(f"{src.stem}_{tag}{src.suffix}")
+    blob = dict(payload)
+    blob["frames"] = frames
+    out.write_text(
+        json.dumps(blob, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    return out
+
+
+def plan_db_frames_slices(
+    paths: Sequence[Path] | None,
+    *,
+    pack_kind: str | None = None,
+    vo_text: str | None = None,
+) -> list[Path] | None:
+    """Нарезать db_frames на файлы-батчи. None = одна пачка, резать нечего."""
+    from app.services.volume_batches import is_db_frames_path
+
+    src: Path | None = None
+    for raw in paths or []:
+        p = Path(raw)
+        if is_db_frames_path(p) and p.is_file():
+            src = p
+            break
+    if src is None:
+        return None
+    payload = load_db_frames_payload(src)
+    if payload is None:
+        return None
+    frames = [fr for fr in (payload.get("frames") or []) if isinstance(fr, dict)]
+    kind = (pack_kind or detect_pack_kind(paths)).strip().lower()
+    if kind == "img_pr":
+        batches = pack_frames_img_pr(frames)
+    else:
+        vo = vo_text
+        if vo is None:
+            # сначала файл закадра во вложениях, иначе поле в payload
+            n_chars = read_voiceover_chars(paths)
+            if n_chars <= 0:
+                for key in ("voiceover", "закадр", "vo_text", "full_vo"):
+                    raw_vo = payload.get(key)
+                    if isinstance(raw_vo, str) and raw_vo.strip():
+                        vo = raw_vo
+                        break
+            else:
+                vo = "x" * n_chars  # только длина нужна
+        batches = pack_frames_by_voiceover(frames, vo)
+
+    if len(batches) <= 1:
+        return None
+    return [
+        write_db_frames_slice(src, payload, list(batch), tag=f"p{i:02d}")
+        for i, batch in enumerate(batches, start=1)
+    ]
+
+
+# --- совместимость со старыми тестами/вызовами (deprecated path) -------------
+
 _ATTR_KEYS = (
     "shot01_bg",
     "shot01_action",
@@ -56,7 +245,6 @@ def _attrs_map(frame: Any) -> dict[str, str]:
 
 
 def proxy_prompt_body(frame: Any, *, body_cap: int = _BODY_CAP) -> str:
-    """Текст, который кладём в оценку, пока реального ответа нет."""
     if isinstance(frame, dict):
         existing = str(
             frame.get("промт_картинки")
@@ -85,10 +273,10 @@ def proxy_prompt_body(frame: Any, *, body_cap: int = _BODY_CAP) -> str:
 def estimate_frame_output_tokens(
     frame: Any,
     *,
-    count_tokens: Callable[[str], int] | None = None,
+    count_tokens: Any = None,
     body_cap: int = _BODY_CAP,
 ) -> int:
-    """Токены одного apply-op (прокси тела + JSON-обёртка)."""
+    """Deprecated: для img_pr больше не используется (см. pack_frames_img_pr)."""
     count = count_tokens or _default_count_tokens
     uuid = _frame_uuid(frame) or "x"
     body = proxy_prompt_body(frame, body_cap=body_cap)
@@ -101,96 +289,15 @@ def pack_frames_for_output(
     frames: Sequence[T],
     *,
     budget: int = OUTPUT_TOKEN_BUDGET,
-    count_tokens: Callable[[str], int] | None = None,
+    count_tokens: Any = None,
+    pack_kind: str = "img_pr",
+    vo_text: str | None = None,
 ) -> list[list[T]]:
-    """Жадная нарезка по сумме оценок. Кадр больше бюджета — один в пачке."""
-    cap = max(1, int(budget))
-    items = list(frames)
-    if not items:
-        return []
-    batches: list[list[T]] = []
-    cur: list[T] = []
-    acc = _WRAP_OVERHEAD
-    for fr in items:
-        est = estimate_frame_output_tokens(fr, count_tokens=count_tokens)
-        if cur and acc + est > cap:
-            batches.append(cur)
-            cur = []
-            acc = _WRAP_OVERHEAD
-        cur.append(fr)
-        acc += est
-    if cur:
-        batches.append(cur)
-    logger.info(
-        "output_batch_plan: frames={} batches={} sizes={} budget={}",
-        len(items),
-        len(batches),
-        [len(b) for b in batches],
-        cap,
-    )
-    return batches
+    """Новый SoT: img_pr по 4000 симв/кадр; иначе по длине закадра/2500.
 
-
-def load_db_frames_payload(path: Path) -> dict[str, Any] | None:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    frames = data.get("frames")
-    if not isinstance(frames, list) or not frames:
-        return None
-    return data
-
-
-def write_db_frames_slice(
-    src: Path,
-    payload: dict[str, Any],
-    frames: list[dict[str, Any]],
-    *,
-    tag: str,
-) -> Path:
-    out = src.with_name(f"{src.stem}_{tag}{src.suffix}")
-    blob = dict(payload)
-    blob["frames"] = frames
-    out.write_text(
-        json.dumps(blob, ensure_ascii=False, separators=(",", ":")),
-        encoding="utf-8",
-    )
-    return out
-
-
-def plan_db_frames_slices(
-    paths: Sequence[Path] | None,
-    *,
-    budget: int = OUTPUT_TOKEN_BUDGET,
-    count_tokens: Callable[[str], int] | None = None,
-) -> list[Path] | None:
-    """Если во вложениях db_frames слишком жирный для одного ответа — нарезать файлы.
-
-    None = нечего резать (нет файла / одна пачка).
+    ``budget`` / ``count_tokens`` игнорируются (совместимость сигнатуры).
     """
-    from app.services.volume_batches import is_db_frames_path
-
-    src: Path | None = None
-    for raw in paths or []:
-        p = Path(raw)
-        if is_db_frames_path(p) and p.is_file():
-            src = p
-            break
-    if src is None:
-        return None
-    payload = load_db_frames_payload(src)
-    if payload is None:
-        return None
-    frames = [fr for fr in (payload.get("frames") or []) if isinstance(fr, dict)]
-    batches = pack_frames_for_output(
-        frames, budget=budget, count_tokens=count_tokens
-    )
-    if len(batches) <= 1:
-        return None
-    return [
-        write_db_frames_slice(src, payload, list(batch), tag=f"p{i:02d}")
-        for i, batch in enumerate(batches, start=1)
-    ]
+    del budget, count_tokens
+    if (pack_kind or "img_pr").strip().lower() == "img_pr":
+        return pack_frames_img_pr(frames)
+    return pack_frames_by_voiceover(frames, vo_text)

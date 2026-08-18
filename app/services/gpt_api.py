@@ -1689,8 +1689,8 @@ async def chat(
 
     ``volume_complete``: после частичного apply-ops добрать остаток
     (None = авто: apply_ops contract или db_frames*.json во вложениях).
-    ``auto_pack``: на старте оценить выход по db_frames и уйти в параллельные
-    пачки, если один ответ не влезет в 128k.
+    ``auto_pack``: нарезать db_frames на батчи
+    (img_pr: n*4000/228000; иначе len(закадр)/2500) и гнать пачки параллельно.
     """
     if auto_pack:
         from app.services.output_batch_plan import plan_db_frames_slices

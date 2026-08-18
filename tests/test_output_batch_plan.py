@@ -1,78 +1,88 @@
-"""Pack GPT work by estimated output tokens before the first request."""
+# -*- coding: utf-8 -*-
+"""Character-based batch planning for img_pr and VO steps."""
 
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 from app.services.output_batch_plan import (
-    OUTPUT_TOKEN_BUDGET,
-    estimate_frame_output_tokens,
-    pack_frames_for_output,
+    IMG_PR_BATCH_CHAR_BUDGET,
+    IMG_PR_CHARS_PER_FRAME,
+    VO_CHARS_PER_BATCH,
+    batch_count_by_voiceover,
+    batch_count_img_pr,
+    pack_frames_by_voiceover,
+    pack_frames_img_pr,
+    plan_db_frames_slices,
+    split_into_n_batches,
 )
 
 
-def _fr(n: int, *, prompt: str = "", **attrs) -> SimpleNamespace:
-    return SimpleNamespace(
-        number=n,
-        uuid=f"u{n:03d}",
-        image_prompt=prompt,
-        attrs=attrs,
-    )
+def test_img_pr_batch_count_formula() -> None:
+    # ceil(171 * 4000 / 228000) = ceil(3.0) = 3
+    assert IMG_PR_CHARS_PER_FRAME == 4_000
+    assert IMG_PR_BATCH_CHAR_BUDGET == 228_000
+    assert batch_count_img_pr(171) == 3
+    assert batch_count_img_pr(1) == 1
+    assert batch_count_img_pr(57) == 1  # 57*4000 = 228000
+    assert batch_count_img_pr(58) == 2
 
 
-def test_pack_splits_when_token_sum_exceeds_budget() -> None:
-    frames = [_fr(i, prompt="а" * 800) for i in range(1, 21)]
-    batches = pack_frames_for_output(
-        frames, budget=4_000, count_tokens=lambda text: len(text)
-    )
-    assert len(batches) >= 2
-    assert [fr.uuid for b in batches for fr in b] == [fr.uuid for fr in frames]
-    for b in batches[:-1]:
-        est = sum(estimate_frame_output_tokens(fr, count_tokens=lambda t: len(t)) for fr in b)
-        assert est <= 4_000
+def test_vo_batch_count_formula() -> None:
+    assert VO_CHARS_PER_BATCH == 2_500
+    assert batch_count_by_voiceover(0) == 1
+    assert batch_count_by_voiceover(2500) == 1
+    assert batch_count_by_voiceover(2501) == 2
+    assert batch_count_by_voiceover(10_000) == 4
 
 
-def test_fat_frame_does_not_share_batch_with_another_fat() -> None:
-    fat = "б" * 3_500
-    frames = [_fr(1, prompt=fat), _fr(2, prompt=fat)]
-    batches = pack_frames_for_output(
-        frames, budget=4_000, count_tokens=lambda text: len(text)
-    )
-    assert [len(b) for b in batches] == [1, 1]
+def test_img_pr_pack_splits_171() -> None:
+    frames = [{"uuid": f"u{i:03d}", "number": i} for i in range(1, 172)]
+    batches = pack_frames_img_pr(frames)
+    assert len(batches) == 3
+    assert [len(b) for b in batches] == [57, 57, 57]
+    assert sum(len(b) for b in batches) == 171
+    assert [fr["uuid"] for b in batches for fr in b] == [fr["uuid"] for fr in frames]
 
 
-def test_existing_prompt_used_over_empty_attrs() -> None:
-    fr = _fr(1, prompt="готовый промт " * 40, shot01_bg="короткий фон")
-    a = estimate_frame_output_tokens(fr, count_tokens=lambda t: len(t))
-    fr2 = _fr(2, prompt="", shot01_bg="короткий фон")
-    b = estimate_frame_output_tokens(fr2, count_tokens=lambda t: len(t))
-    assert a > b
+def test_vo_pack_splits_by_voiceover_len() -> None:
+    frames = [{"uuid": f"u{i:03d}"} for i in range(1, 21)]
+    vo = "а" * 7_500  # 7500/2500 = 3 batches
+    batches = pack_frames_by_voiceover(frames, vo)
+    assert len(batches) == 3
+    assert sum(len(b) for b in batches) == 20
 
 
-def test_default_budget_is_under_128k() -> None:
-    assert 50_000 <= OUTPUT_TOKEN_BUDGET <= 90_000
+def test_split_into_n_preserves_order() -> None:
+    items = list(range(10))
+    batches = split_into_n_batches(items, 3)
+    assert [x for b in batches for x in b] == items
+    assert len(batches) == 3
 
 
-def test_plan_db_frames_slices_splits_fat_file(tmp_path) -> None:
-    from app.services.output_batch_plan import plan_db_frames_slices
-
-    frames = [
-        {"uuid": f"u{i:03d}", "number": i, "промт_картинки": "я" * 800}
-        for i in range(1, 21)
-    ]
+def test_plan_db_frames_slices_img_pr(tmp_path) -> None:
+    frames = [{"uuid": f"u{i:03d}", "number": i} for i in range(1, 40)]
     path = tmp_path / "db_frames.json"
     path.write_text(
         json.dumps({"source": "db_v2", "frames": frames}, ensure_ascii=False),
         encoding="utf-8",
     )
-    slices = plan_db_frames_slices(
-        [path], budget=4_000, count_tokens=lambda text: len(text)
+    prompt = tmp_path / "prompt_img_pr_x.txt"
+    prompt.write_text("img", encoding="utf-8")
+    slices = plan_db_frames_slices([prompt, path])
+    # 39*4000/228000 = ceil(0.68) = 1 → не режем
+    assert slices is None
+
+
+def test_plan_db_frames_slices_by_vo_file(tmp_path) -> None:
+    frames = [{"uuid": f"u{i:03d}", "number": i} for i in range(1, 11)]
+    path = tmp_path / "db_frames.json"
+    path.write_text(
+        json.dumps({"frames": frames}, ensure_ascii=False),
+        encoding="utf-8",
     )
+    vo = tmp_path / "voiceover.txt"
+    vo.write_text("б" * 5_000, encoding="utf-8")  # 2 batches
+    slices = plan_db_frames_slices([path, vo])
     assert slices is not None
-    assert len(slices) >= 2
-    total = 0
-    for p in slices:
-        data = json.loads(p.read_text(encoding="utf-8"))
-        total += len(data["frames"])
-    assert total == 20
+    assert len(slices) == 2
