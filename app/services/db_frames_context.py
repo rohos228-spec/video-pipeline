@@ -136,9 +136,10 @@ def build_img_pr_db_context(
     include_characters: bool = True,
     include_field_map: bool = False,
 ) -> dict[str, Any]:
-    """Снимок для агента промтов картинок (DB SoT после scene_grammar).
+    """Полный снимок кадра из DB для агента промтов картинок.
 
-    Без voiceover_text — он раздувает JSON и режется лимитом API (60k).
+    SoT = База: uuid + закадр + meaning + scene_grammar attrs + animation_prompt
+    (если уже есть). Батчинг режет по числу кадров — VO не выкидываем.
     """
     frame_rows: list[dict[str, Any]] = []
     for fr in frames:
@@ -149,9 +150,15 @@ def build_img_pr_db_context(
             "number": getattr(fr, "number", None),
             "uuid": str(uuid),
         }
+        vo = str(getattr(fr, "voiceover_text", None) or "").strip()
+        if vo:
+            row["voiceover_text"] = vo
         meaning = (getattr(fr, "meaning", None) or "") or ""
         if meaning.strip():
             row["meaning"] = meaning.strip()
+        anim = str(getattr(fr, "animation_prompt", None) or "").strip()
+        if anim:
+            row["animation_prompt"] = anim
         picked = _pick_attrs(getattr(fr, "attrs", None))
         row.update(picked)
         frame_rows.append(row)

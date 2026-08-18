@@ -12,8 +12,9 @@ def test_img_pr_db_context_picks_scene_grammar_keys() -> None:
     fr = SimpleNamespace(
         number=1,
         uuid="abc123",
-        voiceover_text="закадр кусок — не должен попасть в JSON",
+        voiceover_text="закадр кусок — в JSON как SoT, в промт не копировать",
         meaning="",
+        animation_prompt="камера неподвижна, стол редакции",
         attrs={
             "place": "метро вагон",
             "lighting": "fluorescent overhead",
@@ -43,7 +44,8 @@ def test_img_pr_db_context_picks_scene_grammar_keys() -> None:
     assert len(ctx["frames"]) == 1
     row = ctx["frames"][0]
     assert row["uuid"] == "abc123"
-    assert "voiceover_text" not in row
+    assert row["voiceover_text"].startswith("закадр")
+    assert "камера неподвижна" in row["animation_prompt"]
     assert row["place"] == "метро вагон"
     assert row["shot01_bg"].startswith("серый")
     assert row["lighting"] == "fluorescent overhead"

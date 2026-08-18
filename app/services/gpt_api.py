@@ -1236,12 +1236,13 @@ async def fetch_completed_response(
     post_url: str,
     headers: dict[str, str],
     response_id: str,
-    timeout: float = 60.0,
-    polls: int = 6,
-    poll_s: float = 2.0,
+    timeout: float = 90.0,
+    polls: int = 12,
+    poll_s: float = 3.0,
 ) -> tuple[str, str, dict[str, Any]]:
     """GET готового ответа kie по resp_… после обрыва SSE.
 
+    ConnectTimeout / сеть — retry на том же URL (раньше сразу break).
     Returns:
         (text, status, raw_payload). Пустой text — забрать не удалось.
     """
@@ -1250,7 +1251,11 @@ async def fetch_completed_response(
         return "", "", {}
     last_status = ""
     last_raw: dict[str, Any] = {}
-    sto = httpx.Timeout(max(10.0, float(timeout)), connect=15.0)
+    # connect отдельно длиннее: CF/kie часто рвут SSE, а GET потом долго открывается
+    sto = httpx.Timeout(
+        max(30.0, float(timeout)),
+        connect=max(30.0, min(60.0, float(timeout))),
+    )
     try:
         async with _async_client(timeout=sto) as client:
             if not hasattr(client, "get"):
@@ -1261,27 +1266,35 @@ async def fetch_completed_response(
                         resp = await client.get(url, headers=headers)
                     except Exception as e:  # noqa: BLE001
                         logger.warning(
-                            "gpt_api.retrieve {} failed: {}: {}",
+                            "gpt_api.retrieve {} failed attempt={}/{}: {}: {}",
                             url,
+                            attempt + 1,
+                            polls,
                             type(e).__name__,
                             e,
                         )
-                        break
+                        # таймаут/обрыв — ждём и пробуем снова, не бросаем URL
+                        await asyncio.sleep(poll_s * (1 + attempt // 3))
+                        continue
                     if resp.status_code == 404:
                         break
                     if resp.status_code >= 400:
                         logger.warning(
-                            "gpt_api.retrieve HTTP {} url={}",
+                            "gpt_api.retrieve HTTP {} url={} attempt={}",
                             resp.status_code,
                             url,
+                            attempt + 1,
                         )
-                        break
+                        await asyncio.sleep(poll_s)
+                        continue
                     try:
                         payload = resp.json()
                     except Exception:  # noqa: BLE001
-                        break
+                        await asyncio.sleep(poll_s)
+                        continue
                     if not isinstance(payload, dict):
-                        break
+                        await asyncio.sleep(poll_s)
+                        continue
                     last_raw = payload
                     text, status = parse_retrieved_response_payload(payload)
                     last_status = status
@@ -1299,6 +1312,10 @@ async def fetch_completed_response(
                         continue
                     if text:
                         return text, status or "completed", payload
+                    # success без текста (resultJson null) — ещё poll, вдруг допишется
+                    if st in ("", "completed", "success", "complete"):
+                        await asyncio.sleep(poll_s)
+                        continue
                     break
     except Exception as e:  # noqa: BLE001
         logger.warning("gpt_api.retrieve client failed: {}: {}", type(e).__name__, e)
@@ -1439,7 +1456,9 @@ async def _chat_responses_stream(
             post_url=url,
             headers=headers,
             response_id=response_id,
-            timeout=min(float(timeout), 90.0),
+            timeout=max(90.0, min(float(timeout), 180.0)),
+            polls=12,
+            poll_s=3.0,
         )
         if got and len(got) > len(text or ""):
             text = got
