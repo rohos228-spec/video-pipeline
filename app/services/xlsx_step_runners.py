@@ -766,12 +766,13 @@ async def run_img_pr_xlsx(
     )
 
     batch_size = ipb.plan_batch_size(len(frames))
-    work: deque[list] = deque(ipb.chunk_frames(frames, size=batch_size))
+    # Одна GPT-сессия со всеми кадрами: нарезку и параллель делает gpt_api.chat.
+    work: deque[list] = deque([frames])
     logger.info(
-        "img_pr_db: ONE session + ~{} batches×~{} (frames={} checkpoint_done={})",
-        len(work),
-        batch_size,
+        "img_pr_db: one attach frames={} (llm auto_pack, plan_batch_size={}) "
+        "checkpoint_done={}",
         len(frames),
+        batch_size,
         len(done_set),
     )
 

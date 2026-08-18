@@ -599,7 +599,7 @@ def file_to_context(
         if suffix in (".xlsx", ".xlsm", ".xls")
         else max(max_chars, _PDF_CONTEXT_MAX_CHARS)
         if suffix == ".pdf"
-        else max(max_chars, 200_000)
+        else max(max_chars, 900_000)
         if suffix == ".json"
         else max_chars
     )
@@ -1573,6 +1573,103 @@ async def _maybe_volume_complete_chat_result(
     )
 
 
+_LLM_PACK_PARALLEL = 3
+
+
+def _merge_packed_apply_ops(texts: list[str]) -> str:
+    from app.services.db_apply import extract_apply_ops_json
+
+    ops: list[dict[str, Any]] = []
+    extra: dict[str, Any] = {}
+    for text in texts:
+        data = extract_apply_ops_json(text or "")
+        if not isinstance(data, dict):
+            continue
+        for op in data.get("ops") or []:
+            if isinstance(op, dict):
+                ops.append(op)
+        for key in ("characters", "scenes"):
+            val = data.get(key)
+            if val and key not in extra:
+                extra[key] = val
+    if not ops:
+        return "\n\n---\n\n".join(t for t in texts if (t or "").strip())
+    payload = {"ops": ops, **extra}
+    return json.dumps(payload, ensure_ascii=False)
+
+
+async def _chat_packed_parallel(
+    *,
+    slice_paths: list[Path],
+    prompt: str,
+    accompanying: str,
+    input_paths: list[Path],
+    system: str | None,
+    history: list[dict[str, Any]] | None,
+    model: str | None,
+    temperature: float | None,
+    timeout: float | None,
+    max_retries: int | None,
+    xlsx_write_contract: str,
+) -> GptChatResult:
+    """Несколько независимых chat() по нарезанным db_frames, потом склейка ops."""
+    import asyncio
+
+    from app.services.volume_batches import is_db_frames_path
+
+    sem = asyncio.Semaphore(_LLM_PACK_PARALLEL)
+
+    async def _one(slice_path: Path, idx: int) -> GptChatResult:
+        async with sem:
+            new_paths = [
+                slice_path if is_db_frames_path(p) else p for p in input_paths
+            ]
+            acc = (
+                f"{accompanying}\n\n"
+                f"# PACK {idx}/{len(slice_paths)} — только uuid из {slice_path.name}. "
+                "Верни JSON ops на ВСЕ кадры ЭТОГО файла. Без продолжений.\n"
+            )
+            logger.info(
+                "gpt_api.chat pack {}/{} file={} bytes={}",
+                idx,
+                len(slice_paths),
+                slice_path.name,
+                slice_path.stat().st_size,
+            )
+            return await chat(
+                prompt=prompt,
+                accompanying=acc,
+                input_paths=new_paths,
+                system=system,
+                history=None,
+                model=model,
+                temperature=temperature,
+                timeout=timeout,
+                max_retries=max_retries,
+                xlsx_write_contract=xlsx_write_contract,
+                volume_complete=False,
+                auto_pack=False,
+            )
+
+    parts = await asyncio.gather(
+        *[_one(p, i) for i, p in enumerate(slice_paths, start=1)]
+    )
+    merged = _merge_packed_apply_ops([p.text for p in parts])
+    first = parts[0]
+    return GptChatResult(
+        text=merged,
+        model=first.model,
+        finish_reason="packed",
+        usage=first.usage,
+        raw={
+            **(first.raw or {}),
+            "packed_slices": len(parts),
+            "packed_chars": len(merged),
+        },
+        response_id=first.response_id,
+    )
+
+
 async def chat(
     *,
     prompt: str,
@@ -1586,12 +1683,39 @@ async def chat(
     max_retries: int | None = None,
     xlsx_write_contract: str = "tsv",
     volume_complete: bool | None = None,
+    auto_pack: bool = True,
 ) -> GptChatResult:
     """Вызвать текстовый LLM (kie GPT / TokenRouter Kimi) с ретраями.
 
     ``volume_complete``: после частичного apply-ops добрать остаток
     (None = авто: apply_ops contract или db_frames*.json во вложениях).
+    ``auto_pack``: на старте оценить выход по db_frames и уйти в параллельные
+    пачки, если один ответ не влезет в 128k.
     """
+    if auto_pack:
+        from app.services.output_batch_plan import plan_db_frames_slices
+
+        slices = plan_db_frames_slices(input_paths)
+        if slices:
+            logger.info(
+                "gpt_api.chat auto_pack slices={} files={}",
+                len(slices),
+                [p.name for p in slices],
+            )
+            return await _chat_packed_parallel(
+                slice_paths=slices,
+                prompt=prompt,
+                accompanying=accompanying,
+                input_paths=list(input_paths or []),
+                system=system,
+                history=history,
+                model=model,
+                temperature=temperature,
+                timeout=timeout,
+                max_retries=max_retries,
+                xlsx_write_contract=xlsx_write_contract,
+            )
+
     headers = _headers()
     use_model = (model or settings.gpt_model_effective or "gpt-5.5").strip()
     url = _chat_url(use_model)
