@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -79,6 +80,41 @@ _XLSX_PRIORITY_SHEET_RE = re.compile(
 # Критичные строки листа «план» — всегда в context pack до остального бюджета.
 _XLSX_PINNED_PLAN_ROWS: tuple[int, ...] = (15, 45, 46, 48, 49, 50, 64)
 
+# CF/kie рвут SSE: CF-continue только если уже есть хвост для склейки.
+# Иначе continue с 100–200 символами → мусор + лишние запросы.
+_CF_CONTINUE_MIN_CHARS = 2000
+# При падении continue (500/сеть) не выбрасывать уже накопленный salvage.
+_CF_CONTINUE_KEEP_MIN_CHARS = 1500
+# После обрыва SSE — дольше poll retrieve (kie UI часто уже success).
+_SSE_BREAK_RETRIEVE_POLLS = 36
+_SSE_BREAK_RETRIEVE_POLL_S = 5.0
+# Неполные/битые SSE data-line: вытащить delta/text без целого JSON
+# (закрывающая кавычка опциональна — обрыв mid-string).
+_SSE_DELTA_FRAG_RE = re.compile(r'"delta"\s*:\s*"((?:\\.|[^"\\])*)')
+_SSE_TEXT_FRAG_RE = re.compile(r'"text"\s*:\s*"((?:\\.|[^"\\])*)')
+_SSE_TEXT_EVENT_TYPES = frozenset(
+    {
+        "response.output_text.delta",
+        "response.reasoning_summary_text.delta",
+        "response.content_part.delta",
+    }
+)
+_REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
+
+
+def _responses_reasoning_block() -> dict[str, str] | None:
+    """``reasoning.effort`` для Codex/Responses (kie gpt-5-6-sol)."""
+    raw = str(getattr(settings, "gpt_reasoning_effort", "") or "").strip().lower()
+    if not raw or raw in {"off", "none", "0", "false"}:
+        return None
+    # алиасы из RU-доки
+    aliases = {"середина": "medium", "mid": "medium", "низкий": "low", "высокий": "high"}
+    effort = aliases.get(raw, raw)
+    if effort not in _REASONING_EFFORTS:
+        logger.warning("gpt_api: unknown GPT_REASONING_EFFORT={!r} — skip", raw)
+        return None
+    return {"effort": effort}
+
 
 class GptApiError(Exception):
     """Ошибка GPT API с контекстом для логов/повторов."""
@@ -99,10 +135,62 @@ class GptChatResult:
     finish_reason: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
+    # kie Codex / OpenAI Responses: id вида resp_… (в UI kie = Task ID)
+    response_id: str = ""
 
 
 def gpt_api_enabled() -> bool:
     return bool(settings.gpt_api_enabled)
+
+
+_PROXY_LOGGED = False
+_RELAY_BASE_LOGGED = False
+
+
+def _mask_proxy_url(url: str) -> str:
+    """user:pass@host → user:***@host (для логов)."""
+    try:
+        if "://" not in url:
+            return url
+        scheme, rest = url.split("://", 1)
+        if "@" not in rest:
+            return f"{scheme}://{rest}"
+        creds, host = rest.rsplit("@", 1)
+        user = creds.split(":", 1)[0] if creds else ""
+        return f"{scheme}://{user}:***@{host}"
+    except Exception:  # noqa: BLE001
+        return "<proxy>"
+
+
+def _gpt_proxy_url() -> str | None:
+    raw = (getattr(settings, "gpt_proxy_url", None) or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("socks5h://"):
+        return "socks5://" + raw[len("socks5h://") :]
+    return raw
+
+
+def _async_client(**kwargs: Any) -> httpx.AsyncClient:
+    """httpx-клиент; при GPT_PROXY_URL — весь трафик GPT/kie через прокси."""
+    global _PROXY_LOGGED
+    proxy = _gpt_proxy_url()
+    if proxy:
+        if proxy.lower().startswith(("socks4://", "socks5://", "socks5h://")):
+            try:
+                import socksio  # noqa: F401
+            except ImportError as e:
+                raise GptApiError(
+                    "GPT_PROXY_URL=socks… нужен пакет: pip install 'httpx[socks]'",
+                    context={"error_kind": "proxy_socks_missing", "retryable": False},
+                ) from e
+        kwargs.setdefault("proxy", proxy)
+        # Явный прокси — не подмешивать системные HTTP(S)_PROXY.
+        kwargs.setdefault("trust_env", False)
+        if not _PROXY_LOGGED:
+            logger.info("GPT API: using proxy {}", _mask_proxy_url(proxy))
+            _PROXY_LOGGED = True
+    return httpx.AsyncClient(**kwargs)
 
 
 def _headers() -> dict[str, str]:
@@ -117,16 +205,30 @@ def _headers() -> dict[str, str]:
             "GPT_API_KEY пуст (и GRSAI_API_KEY тоже) — задай ключ в .env",
             context={"error_kind": "no_key", "provider": "kie"},
         )
-    return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+    relay = (getattr(settings, "gpt_relay_token", None) or "").strip()
+    if relay:
+        headers["X-VP-Relay-Token"] = relay
+    return headers
 
 
 def _chat_url(model: str) -> str:
+    global _RELAY_BASE_LOGGED
     base = settings.gpt_api_effective_base_url
     if not base:
         raise GptApiError(
             "База текстового LLM пуста — задай TOKENROUTER_BASE_URL или GPT_BASE_URL",
             context={"error_kind": "no_base"},
         )
+    if not _RELAY_BASE_LOGGED and "kie.ai" not in base.lower():
+        logger.info(
+            "GPT API: base_url={} (VPS-relay / non-kie host)",
+            base,
+        )
+        _RELAY_BASE_LOGGED = True
     path = (settings.gpt_chat_path_effective or "/v1/chat/completions").strip()
     if not path.startswith("/"):
         path = "/" + path
@@ -167,12 +269,15 @@ def xlsx_to_text(
     max_rows: int = _XLSX_DEFAULT_MAX_ROWS,
     max_cols: int = _XLSX_DEFAULT_MAX_COLS,
     max_chars: int | None = None,
+    write_contract: str = "tsv",
 ) -> str:
     """Свернуть xlsx в читаемый TSV-контекст (непустые строки листов).
 
     Приоритетные листы («Общий план») идут первыми.
     На листе «план» сначала пинятся R15/R45–50/R48/R64, затем остаток бюджета.
-    Обрезка ≠ «нет файла» — баннер ниже обязан это сказать модели.
+    ``write_contract``:
+      - ``tsv`` — check/fix: правки через `# Лист:` (legacy);
+      - ``apply_ops`` — DB SoT: запрет TSV, ответ только JSON apply-ops.
     """
     budget = _XLSX_CONTEXT_MAX_CHARS if max_chars is None else max(4_000, int(max_chars))
     try:
@@ -184,21 +289,43 @@ def xlsx_to_text(
     except Exception as e:  # noqa: BLE001
         return f"[xlsx: не удалось открыть {path.name}: {e}]"
     sheets = sorted(list(wb.worksheets), key=lambda ws: (_xlsx_sheet_priority(ws.title), ws.title))
-    out: list[str] = [
-        "[xlsx text-export: это текстовый снимок книги для API; "
-        "бинарный .xlsx в песочнице модели недоступен — это норма. "
-        "Обрезка по лимиту контекста ≠ отсутствие файла. "
-        "Проверяй и правь по TSV ниже; для записи верни `# Лист:` блоки. "
-        "Каждая строка начинается с `@row=<номер Excel>` — сохрани префикс, "
-        "чтобы запись попала в ту же строку шаблона (не уплотняй пустые ряды).]",
-    ]
+    apply_ops_mode = str(write_contract or "").strip().lower() == "apply_ops"
+    if apply_ops_mode:
+        # Не писать «бинарный / недоступен / нет файла» — модель копирует это в отказ.
+        banner = (
+            "[DB SoT READ SNAPSHOT] Ниже текстовый снимок зеркала Excel. "
+            "Источник правды для записи — frame_uuid + attrs (см. db_frames.json). "
+            "Ответ = ТОЛЬКО JSON apply-ops "
+            '{"ops":[...],"characters":[...],"scenes":[...]} без markdown. '
+            "Не возвращай TSV и не требуй вложений: пайплайн сам запишет JSON в DB.]"
+        )
+    else:
+        banner = (
+            "[xlsx text-export: это текстовый снимок книги для API; "
+            "бинарный .xlsx в песочнице модели недоступен — это норма. "
+            "Обрезка по лимиту контекста ≠ отсутствие файла. "
+            "Проверяй и правь по TSV ниже; для записи верни `# Лист:` блоки. "
+            "Каждая строка начинается с `@row=<номер Excel>` — сохрани префикс, "
+            "чтобы запись попала в ту же строку шаблона (не уплотняй пустые ряды).]"
+        )
+    out: list[str] = [banner]
     used = len(out[0])
     truncated_sheets: list[str] = []
     for ws in sheets:
-        header = f"# Лист: {ws.title}"
+        # apply_ops: не использовать `# Лист:` — иначе модель уходит в TSV/отказ.
+        header = (
+            f"[SHEET: {ws.title}]"
+            if apply_ops_mode
+            else f"# Лист: {ws.title}"
+        )
         if used + len(header) + 32 > budget:
             truncated_sheets.append(ws.title)
-            out.append(f"# Лист: {ws.title}\n… (лист пропущен: лимит контекста)")
+            skip = (
+                f"[SHEET: {ws.title}]\n… (лист пропущен: лимит контекста)"
+                if apply_ops_mode
+                else f"# Лист: {ws.title}\n… (лист пропущен: лимит контекста)"
+            )
+            out.append(skip)
             continue
         sheet_lines = [header]
         sheet_used = len(header)
@@ -270,12 +397,19 @@ def xlsx_to_text(
     with contextlib.suppress(Exception):
         wb.close()
     if truncated_sheets:
-        out.append(
-            "[xlsx text-export: частично обрезаны листы (это НЕ «нет project.xlsx»): "
-            + ", ".join(truncated_sheets)
-            + " — ЗАПРЕЩЕНО считать книгу полной; запроси продолжение экспорта "
-            "или заполни только видимые @row, пометив remaining: truncated]"
-        )
+        if apply_ops_mode:
+            out.append(
+                "[DB SoT READ SNAPSHOT: частично обрезаны листы: "
+                + ", ".join(truncated_sheets)
+                + " — пиши JSON apply-ops по видимым кадрам/db_frames.json]"
+            )
+        else:
+            out.append(
+                "[xlsx text-export: частично обрезаны листы (это НЕ «нет project.xlsx»): "
+                + ", ".join(truncated_sheets)
+                + " — ЗАПРЕЩЕНО считать книгу полной; запроси продолжение экспорта "
+                "или заполни только видимые @row, пометив remaining: truncated]"
+            )
         logger.warning(
             "xlsx_to_text: обрезаны листы {} path={} chars~{}",
             truncated_sheets,
@@ -428,7 +562,12 @@ def pdf_to_input_file_part(path: Path) -> dict[str, Any] | None:
     }
 
 
-def file_to_context(path: Path, *, max_chars: int = 60_000) -> str:
+def file_to_context(
+    path: Path,
+    *,
+    max_chars: int = 60_000,
+    xlsx_write_contract: str = "tsv",
+) -> str:
     """Текстовое представление файла для вложения в prompt (как attach в ChatGPT)."""
     import base64
 
@@ -436,7 +575,9 @@ def file_to_context(path: Path, *, max_chars: int = 60_000) -> str:
     if suffix in (".xlsx", ".xlsm", ".xls"):
         # Для книг — отдельный большой бюджет; max_chars не режем до 60k.
         xlsx_budget = max(max_chars, _XLSX_CONTEXT_MAX_CHARS)
-        body = xlsx_to_text(path, max_chars=xlsx_budget)
+        body = xlsx_to_text(
+            path, max_chars=xlsx_budget, write_contract=xlsx_write_contract
+        )
     elif suffix in _TEXT_SUFFIXES:
         try:
             body = path.read_text(encoding="utf-8", errors="replace")
@@ -501,11 +642,15 @@ def file_to_context(path: Path, *, max_chars: int = 60_000) -> str:
                 f"только имя; скачай исходник кнопкой ↓ в Studio]"
             )
     # XLSX уже укладывается в свой бюджет внутри xlsx_to_text — не резать до 60k.
+    # JSON батчи img_pr (db_frames_*.json) тоже не должны молча обрезаться:
+    # модель тогда отказывается («файл обрезан после кадра N»).
     soft_cap = (
         max(max_chars, _XLSX_CONTEXT_MAX_CHARS)
         if suffix in (".xlsx", ".xlsm", ".xls")
         else max(max_chars, _PDF_CONTEXT_MAX_CHARS)
         if suffix == ".pdf"
+        else max(max_chars, 900_000)
+        if suffix == ".json"
         else max_chars
     )
     if len(body) > soft_cap and "base64," not in body:
@@ -603,6 +748,7 @@ def _compose_user_text(
     accompanying: str = "",
     text_paths: list[Path] | None = None,
     image_names: list[str] | None = None,
+    xlsx_write_contract: str = "tsv",
 ) -> str:
     parts: list[str] = []
     if (prompt or "").strip():
@@ -613,7 +759,9 @@ def _compose_user_text(
     if files:
         parts.append("## Приложенные файлы")
         for p in files:
-            parts.append(file_to_context(p))
+            parts.append(
+                file_to_context(p, xlsx_write_contract=xlsx_write_contract)
+            )
     if image_names:
         parts.append(
             "## Изображения (vision)\n"
@@ -674,6 +822,7 @@ def build_input(
     input_paths: list[Path] | None = None,
     system: str | None = None,
     history: list[dict[str, Any]] | None = None,
+    xlsx_write_contract: str = "tsv",
 ) -> list[dict[str, Any]]:
     """Ввод для Responses API: всегда input[] (kie.ai codex падает на голой строке).
 
@@ -691,6 +840,7 @@ def build_input(
         accompanying=accompanying,
         text_paths=text_paths,
         image_names=[p.name for p in images],
+        xlsx_write_contract=xlsx_write_contract,
     )
     if system:
         text = f"[Инструкция]\n{system}\n\n{text}"
@@ -764,6 +914,7 @@ def build_messages(
     input_paths: list[Path] | None = None,
     system: str | None = None,
     history: list[dict[str, Any]] | None = None,
+    xlsx_write_contract: str = "tsv",
 ) -> list[dict[str, Any]]:
     """Собрать messages для chat/completions (текст + optional vision + история)."""
     messages: list[dict[str, Any]] = []
@@ -778,6 +929,7 @@ def build_messages(
         accompanying=accompanying,
         text_paths=others,
         image_names=[p.name for p in images],
+        xlsx_write_contract=xlsx_write_contract,
     )
     if not images:
         messages.append({"role": "user", "content": text})
@@ -867,6 +1019,625 @@ def _parse_responses(payload: dict[str, Any]) -> tuple[str, str]:
     return text, status
 
 
+def _http_timeout(total_s: float) -> httpx.Timeout:
+    """Общий таймаут + короткий connect (не ждать connect = GPT_TIMEOUT)."""
+    total = max(1.0, float(total_s))
+    return httpx.Timeout(total, connect=min(30.0, total))
+
+
+def _stream_timeout(total_s: float) -> httpx.Timeout:
+    """Таймаут для SSE: без ``total`` (он рвал бы весь длинный ответ целиком).
+
+    Важно: ``read`` НЕ берём из GPT_TIMEOUT / scene_design 280s.
+    Иначе httpx ReadTimeout сам закрывает сокет, пока модель ещё
+    reasoning'ит без дельт — на kie задача потом success, у нас обрывок.
+
+    По умолчанию ``GPT_STREAM_READ_TIMEOUT_S=0`` → read=None: ждём, пока
+    сервер сам закроет SSE (completed / EOF). >0 — только аварийный idle.
+    """
+    configured = float(getattr(settings, "gpt_stream_read_timeout_s", 0.0) or 0.0)
+    if configured > 0:
+        read: float | None = max(configured, 120.0)
+    else:
+        read = None
+    # upload большого input (xlsx/db_frames) тоже не режем 60с.
+    write: float | None = None
+    _ = total_s  # оставлен для совместимости вызова; на SSE idle не влияет
+    return httpx.Timeout(None, connect=30.0, read=read, write=write, pool=30.0)
+
+
+def _raise_http_status(
+    status: int,
+    body_text: str,
+    *,
+    use_model: str,
+) -> None:
+    """Общая обработка HTTP-кодов GPT (fatal / retryable)."""
+    if status in _FATAL_STATUS:
+        low = body_text.lower()
+        hint = ""
+        if "apikey error" in low:
+            hint = (
+                f" — ключ не авторизован на модель {use_model!r} "
+                "(добавь модель в whitelist ключа grsai)"
+            )
+        elif "model not register" in low or "not register" in low:
+            hint = f" — модель {use_model!r} не существует у провайдера (проверь GPT_MODEL)"
+        raise GptApiError(
+            f"GPT HTTP {status}: {body_text[:400]}{hint}",
+            context={"status_code": status, "retryable": False, "model": use_model},
+        )
+    if status in _RETRY_STATUS or status >= 500:
+        raise GptApiError(
+            f"GPT HTTP {status}: {body_text[:300]}",
+            context={"status_code": status, "retryable": True, "model": use_model},
+        )
+    if status >= 400:
+        raise GptApiError(
+            f"GPT HTTP {status}: {body_text[:400]}",
+            context={"status_code": status, "retryable": False, "model": use_model},
+        )
+
+
+def _unescape_sse_json_string(raw: str) -> str:
+    """Разэскейпить фрагмент JSON-строки из битой SSE data-line."""
+    try:
+        return json.loads(f'"{raw}"')
+    except json.JSONDecodeError:
+        return (
+            raw.replace("\\n", "\n")
+            .replace("\\r", "\r")
+            .replace("\\t", "\t")
+            .replace('\\"', '"')
+            .replace("\\\\", "\\")
+        )
+
+
+def extract_text_fragments_from_sse_buffer(buf: str) -> str:
+    """Вытащить delta/text из неполного хвоста SSE (обрыв mid-line)."""
+    if not (buf or "").strip():
+        return ""
+    parts: list[str] = []
+    for rx in (_SSE_DELTA_FRAG_RE, _SSE_TEXT_FRAG_RE):
+        for m in rx.finditer(buf):
+            frag = _unescape_sse_json_string(m.group(1))
+            if frag:
+                parts.append(frag)
+    if not parts:
+        return ""
+    # Дельты обычно короче и их больше; text — полный кусок. Берём max.
+    return max(parts, key=len)
+
+
+def parse_responses_sse_lines(
+    lines: list[str],
+) -> tuple[str, str, dict[str, Any], str]:
+    """Собрать (text, status, final_payload, response_id) из SSE lines kie Codex.
+
+    Важно: при ``stream:false`` Cloudflare/прокси рвёт длинный ответ
+    (у kie задача уже success). SSE держит соединение дельтами.
+
+    Если stream оборвался после дельт / ``output_text.done``, но до
+    целого ``response.completed`` — берём уже накопленный текст (salvage).
+    """
+    delta_parts: list[str] = []
+    done_text = ""
+    frag_text = ""
+    response_id = ""
+    final_response: dict[str, Any] | None = None
+    status = ""
+    event_counts: dict[str, int] = {}
+    bad_json_n = 0
+
+    for raw in lines:
+        line = (raw or "").strip()
+        if not line or line.startswith("event:"):
+            continue
+        if not line.startswith("data:"):
+            # Хвост без префикса data: после incomplete chunked — тоже копаем.
+            frag = extract_text_fragments_from_sse_buffer(line)
+            if frag and len(frag) > len(frag_text):
+                frag_text = frag
+            continue
+        data_str = line[5:].strip()
+        if not data_str or data_str == "[DONE]":
+            continue
+        try:
+            event = json.loads(data_str)
+        except json.JSONDecodeError:
+            bad_json_n += 1
+            frag = extract_text_fragments_from_sse_buffer(data_str)
+            if frag:
+                delta_parts.append(frag)
+            continue
+        if not isinstance(event, dict):
+            continue
+        etype = str(event.get("type") or "")
+        if etype:
+            event_counts[etype] = event_counts.get(etype, 0) + 1
+        if etype in {"response.created", "response.in_progress"}:
+            resp = event.get("response")
+            if isinstance(resp, dict) and resp.get("id"):
+                response_id = str(resp["id"])
+        elif etype in _SSE_TEXT_EVENT_TYPES:
+            delta = event.get("delta")
+            if delta:
+                delta_parts.append(str(delta))
+        elif etype == "response.output_text.done":
+            # Полный текст куска — страховка, если completed обрезан CF.
+            t = event.get("text")
+            if isinstance(t, str) and t.strip():
+                done_text = t
+        elif etype == "response.completed":
+            resp = event.get("response")
+            if isinstance(resp, dict):
+                final_response = resp
+                if resp.get("id"):
+                    response_id = str(resp["id"])
+                status = str(resp.get("status") or "completed")
+
+    deltas_joined = "".join(delta_parts).strip()
+    completed_text = ""
+    if final_response is not None:
+        try:
+            completed_text, status = _parse_responses(final_response)
+        except GptApiError:
+            status = status or str(final_response.get("status") or "")
+
+    # Берём самый полный источник: completed часто рвётся на длинных файлах,
+    # а дельты / done / фрагменты хвоста уже целые.
+    candidates = [completed_text, done_text.strip(), deltas_joined, frag_text]
+    text = max(candidates, key=lambda s: len(s or "")).strip()
+
+    if not text:
+        raise GptApiError(
+            "GPT(responses/stream): пустой output",
+            context={
+                "retryable": True,
+                "response_id": response_id,
+                "error_kind": "empty_stream",
+                "sse_lines": len(lines),
+                "sse_bad_json": bad_json_n,
+                "sse_events": event_counts,
+                "delta_chars": len(deltas_joined),
+            },
+        )
+    if not status:
+        status = "completed" if final_response is not None else "stream_partial"
+    return text, status, final_response or {}, response_id
+
+
+def looks_truncated_llm_text(text: str) -> bool:
+    """True если ответ похож на обрезанный CF/прокси (незакрытый JSON/строка)."""
+    t = (text or "").rstrip()
+    if not t:
+        return True
+    if t.count("```") % 2 == 1:
+        return True
+    depth = 0
+    in_str = False
+    esc = False
+    for ch in t:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+    if in_str or depth > 0:
+        return True
+    return t.endswith((",", ":", "\\"))
+
+
+def stitch_llm_continuation(base: str, cont: str) -> str:
+    """Склеить base + continuation; убрать повтор хвоста, если модель пересказала."""
+    a = base or ""
+    b = (cont or "").lstrip()
+    if not b:
+        return a
+    if not a:
+        return b
+    # Ищем максимальный overlap хвоста a с началом b (до 2k).
+    # Порог ≥8: короче — ложные склейки; длиннее — CF-continue часто
+    # повторяет только `"]}` / пару слов и тогда дублируется.
+    max_ov = min(len(a), len(b), 2000)
+    for ov in range(max_ov, 7, -1):
+        if a.endswith(b[:ov]):
+            return a + b[ov:]
+    return a + b
+
+
+def responses_retrieve_urls(post_url: str, response_id: str) -> list[str]:
+    """URL для готового ответа kie по Task ID (resp_…)."""
+    rid = (response_id or "").strip()
+    if not rid:
+        return []
+    post = (post_url or "").rstrip("/")
+    origin = ""
+    try:
+        parsed = httpx.URL(post)
+        origin = f"{parsed.scheme}://{parsed.host}"
+        if parsed.port:
+            origin = f"{origin}:{parsed.port}"
+    except Exception:  # noqa: BLE001
+        origin = ""
+    urls = [f"{post}/{rid}"]
+    if origin:
+        urls.append(f"{origin}/api/v1/jobs/recordInfo?taskId={rid}")
+        urls.append(f"{origin}/v1/responses/{rid}")
+    # без дублей, порядок: тот же path что POST, потом jobs, потом /v1/responses
+    seen: set[str] = set()
+    out: list[str] = []
+    for u in urls:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+def parse_retrieved_response_payload(payload: dict[str, Any]) -> tuple[str, str]:
+    """Текст и status из GET Responses / jobs.recordInfo."""
+    if not isinstance(payload, dict):
+        return "", ""
+    data = payload.get("data")
+    if isinstance(data, dict):
+        raw_json = data.get("resultJson")
+        if isinstance(raw_json, str) and raw_json.strip():
+            try:
+                inner = json.loads(raw_json)
+            except json.JSONDecodeError:
+                inner = None
+            if isinstance(inner, dict):
+                text, status = parse_retrieved_response_payload(inner)
+                if text:
+                    return text, status or str(data.get("state") or "")
+            if raw_json.strip().startswith("{") or raw_json.strip().startswith("["):
+                pass
+            else:
+                return raw_json.strip(), str(data.get("state") or "success")
+        nested = data.get("response") if isinstance(data.get("response"), dict) else data
+        if nested is not payload:
+            text, status = parse_retrieved_response_payload(nested)
+            if text:
+                return text, status
+    try:
+        text, status = _parse_responses(payload)
+        return text, status
+    except GptApiError:
+        pass
+    ot = payload.get("output_text")
+    if isinstance(ot, str) and ot.strip():
+        return ot.strip(), str(payload.get("status") or "completed")
+    return "", str(payload.get("status") or payload.get("state") or "")
+
+
+async def fetch_completed_response(
+    *,
+    post_url: str,
+    headers: dict[str, str],
+    response_id: str,
+    timeout: float = 90.0,
+    polls: int = 12,
+    poll_s: float = 3.0,
+) -> tuple[str, str, dict[str, Any]]:
+    """GET готового ответа kie по resp_… после обрыва SSE.
+
+    ConnectTimeout / сеть — retry на том же URL (раньше сразу break).
+    Returns:
+        (text, status, raw_payload). Пустой text — забрать не удалось.
+    """
+    urls = responses_retrieve_urls(post_url, response_id)
+    if not urls:
+        return "", "", {}
+    last_status = ""
+    last_raw: dict[str, Any] = {}
+    # connect отдельно длиннее: CF/kie часто рвут SSE, а GET потом долго открывается
+    sto = httpx.Timeout(
+        max(30.0, float(timeout)),
+        connect=max(30.0, min(60.0, float(timeout))),
+    )
+    try:
+        async with _async_client(timeout=sto) as client:
+            if not hasattr(client, "get"):
+                return "", "", {}
+            for url in urls:
+                for attempt in range(max(1, int(polls))):
+                    try:
+                        resp = await client.get(url, headers=headers)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "gpt_api.retrieve {} failed attempt={}/{}: {}: {}",
+                            url,
+                            attempt + 1,
+                            polls,
+                            type(e).__name__,
+                            e,
+                        )
+                        # таймаут/обрыв — ждём и пробуем снова, не бросаем URL
+                        await asyncio.sleep(poll_s * (1 + attempt // 3))
+                        continue
+                    if resp.status_code == 404:
+                        break
+                    if resp.status_code >= 400:
+                        logger.warning(
+                            "gpt_api.retrieve HTTP {} url={} attempt={}",
+                            resp.status_code,
+                            url,
+                            attempt + 1,
+                        )
+                        await asyncio.sleep(poll_s)
+                        continue
+                    try:
+                        payload = resp.json()
+                    except Exception:  # noqa: BLE001
+                        await asyncio.sleep(poll_s)
+                        continue
+                    if not isinstance(payload, dict):
+                        await asyncio.sleep(poll_s)
+                        continue
+                    last_raw = payload
+                    text, status = parse_retrieved_response_payload(payload)
+                    last_status = status
+                    st = (status or "").lower()
+                    if text and st in ("", "completed", "success", "complete"):
+                        logger.info(
+                            "gpt_api.retrieve OK id={} chars={} url={}",
+                            response_id,
+                            len(text),
+                            url,
+                        )
+                        return text, status or "completed", payload
+                    if st in ("in_progress", "queued", "pending", "generating", "waiting"):
+                        await asyncio.sleep(poll_s)
+                        continue
+                    if text:
+                        return text, status or "completed", payload
+                    # success без текста (resultJson null) — ещё poll, вдруг допишется
+                    if st in ("", "completed", "success", "complete"):
+                        await asyncio.sleep(poll_s)
+                        continue
+                    break
+    except Exception as e:  # noqa: BLE001
+        logger.warning("gpt_api.retrieve client failed: {}: {}", type(e).__name__, e)
+    if last_status:
+        logger.warning(
+            "gpt_api.retrieve no text id={} last_status={}",
+            response_id,
+            last_status,
+        )
+    return "", last_status, last_raw
+
+
+async def _chat_responses_stream(
+    *,
+    url: str,
+    headers: dict[str, str],
+    body: dict[str, Any],
+    timeout: float,
+    use_model: str,
+) -> GptChatResult:
+    """POST Responses API с stream=true и сборкой текста из SSE.
+
+    При обрыве после дельт: salvage (в т.ч. неполный хвост mid-line), затем
+    длинный GET готового ответа по resp_ id (kie UI уже success, стрим CF оборвал).
+    """
+    stream_body = {**body, "stream": True}
+    lines: list[str] = []
+    cf_ray = ""
+    logged_task_id = False
+    saw_text_done = False
+    saw_completed = False
+    stream_err: BaseException | None = None
+    incomplete_tail = ""
+    buf = ""
+    sto = _stream_timeout(timeout)
+    logger.info(
+        "gpt_api.chat SSE start model={} read_timeout={} reasoning={} store={} "
+        "(None=wait server EOF)",
+        use_model,
+        sto.read,
+        (stream_body.get("reasoning") or {}).get("effort") or "-",
+        stream_body.get("store"),
+    )
+    async with _async_client(timeout=sto) as client:
+        try:
+            async with client.stream(
+                "POST", url, headers=headers, json=stream_body
+            ) as resp:
+                cf_ray = resp.headers.get("cf-ray") or ""
+                if resp.status_code >= 400:
+                    err_body = (await resp.aread()).decode("utf-8", errors="replace")
+                    _raise_http_status(resp.status_code, err_body, use_model=use_model)
+                # Буфер строк: aiter_lines теряет неполный хвост при chunked cut.
+                async for chunk in resp.aiter_text():
+                    if not chunk:
+                        continue
+                    buf += chunk
+                    while True:
+                        nl = buf.find("\n")
+                        if nl < 0:
+                            break
+                        line = buf[:nl].rstrip("\r")
+                        buf = buf[nl + 1 :]
+                        lines.append(line)
+                        if not line.startswith("data:") or "response." not in line:
+                            continue
+                        try:
+                            ev = json.loads(line[5:].strip())
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(ev, dict):
+                            continue
+                        et = str(ev.get("type") or "")
+                        if et == "response.output_text.done":
+                            saw_text_done = True
+                        elif et == "response.completed":
+                            saw_completed = True
+                        if logged_task_id or "resp_" not in line:
+                            continue
+                        resp_obj = ev.get("response")
+                        if isinstance(resp_obj, dict) and resp_obj.get("id"):
+                            logger.info(
+                                "gpt_api.chat task_id={} cf_ray={} model={}",
+                                resp_obj["id"],
+                                cf_ray or "-",
+                                use_model,
+                            )
+                            logged_task_id = True
+                if buf.strip():
+                    # Нормальный EOF иногда без финального \n — добираем.
+                    lines.append(buf.rstrip("\r"))
+                    buf = ""
+                logger.info(
+                    "gpt_api.chat SSE EOF lines={} text_done={} completed={} "
+                    "cf_ray={}",
+                    len(lines),
+                    saw_text_done,
+                    saw_completed,
+                    cf_ray or "-",
+                )
+        except (httpx.TimeoutException, httpx.HTTPError) as e:
+            stream_err = e
+            # Неполный хвост chunked read — главный источник «133 chars».
+            if buf.strip():
+                incomplete_tail = buf
+                lines.append(buf)
+            logger.warning(
+                "gpt_api.chat SSE interrupted lines={} text_done={} completed={} "
+                "tail_chars={} err={}: {} — try salvage",
+                len(lines),
+                saw_text_done,
+                saw_completed,
+                len(incomplete_tail),
+                type(e).__name__,
+                e,
+            )
+
+    text = ""
+    finish = ""
+    final_payload: dict[str, Any] = {}
+    response_id = ""
+    try:
+        text, finish, final_payload, response_id = parse_responses_sse_lines(lines)
+    except GptApiError as e:
+        response_id = str((e.context or {}).get("response_id") or "")
+        # Хвост mid-line без валидных data: — всё равно попробуем фрагменты.
+        if incomplete_tail and not response_id:
+            frag = extract_text_fragments_from_sse_buffer(incomplete_tail)
+            if frag:
+                text = frag
+                finish = "stream_partial"
+        if not (text or "").strip():
+            if not response_id:
+                if stream_err is not None:
+                    raise GptApiError(
+                        f"GPT сетевая ошибка: {type(stream_err).__name__}: {stream_err}",
+                        context={
+                            "error_kind": "network",
+                            "retryable": True,
+                            "model": use_model,
+                            "sse_lines": len(lines),
+                            "cf_ray": cf_ray,
+                        },
+                    ) from stream_err
+                raise
+
+    if stream_err is not None:
+        if incomplete_tail:
+            frag = extract_text_fragments_from_sse_buffer(incomplete_tail)
+            if frag and len(frag) > len(text or ""):
+                text = frag
+                finish = "stream_partial"
+        logger.warning(
+            "gpt_api.chat SSE salvaged chars={} task_id={} after {}",
+            len(text or ""),
+            response_id or "-",
+            type(stream_err).__name__,
+        )
+        finish = "stream_salvaged"
+
+    fetched = False
+    need_fetch = bool(response_id) and (
+        stream_err is not None
+        or not saw_completed
+        or looks_truncated_llm_text(text)
+        or not (text or "").strip()
+    )
+    if need_fetch:
+        # После обрыва — дольше ждём, пока kie допишет result (UI уже success).
+        polls = (
+            _SSE_BREAK_RETRIEVE_POLLS
+            if stream_err is not None
+            else 12
+        )
+        poll_s = (
+            _SSE_BREAK_RETRIEVE_POLL_S
+            if stream_err is not None
+            else 3.0
+        )
+        got, got_status, got_raw = await fetch_completed_response(
+            post_url=url,
+            headers=headers,
+            response_id=response_id,
+            timeout=max(90.0, min(float(timeout), 180.0)),
+            polls=polls,
+            poll_s=poll_s,
+        )
+        if got and len(got) > len(text or ""):
+            text = got
+            finish = got_status or "completed"
+            if got_raw:
+                final_payload = got_raw
+            fetched = True
+            stream_err = None
+
+    if not (text or "").strip():
+        raise GptApiError(
+            "GPT(responses/stream): пустой output",
+            context={
+                "retryable": True,
+                "response_id": response_id,
+                "error_kind": "empty_stream",
+                "sse_lines": len(lines),
+                "cf_ray": cf_ray,
+            },
+        )
+
+    usage = (
+        final_payload.get("usage")
+        if isinstance(final_payload.get("usage"), dict)
+        else {}
+    )
+    raw = dict(final_payload) if final_payload else {"stream_lines": len(lines)}
+    if response_id:
+        raw.setdefault("id", response_id)
+    if cf_ray:
+        raw["cf_ray"] = cf_ray
+    if fetched:
+        raw["retrieved_by_id"] = True
+    elif stream_err is not None:
+        raw["sse_salvaged"] = True
+        raw["sse_interrupt"] = type(stream_err).__name__
+        if incomplete_tail:
+            raw["sse_incomplete_tail_chars"] = len(incomplete_tail)
+    return GptChatResult(
+        text=text,
+        model=use_model,
+        finish_reason=finish,
+        usage=usage,
+        raw=raw,
+        response_id=response_id,
+    )
+
+
 def _parse_choice(payload: dict[str, Any]) -> tuple[str, str]:
     """(text, finish_reason) из ответа chat/completions."""
     _check_provider_envelope(payload)
@@ -894,6 +1665,163 @@ def _parse_choice(payload: dict[str, Any]) -> tuple[str, str]:
     return text, finish
 
 
+async def _maybe_volume_complete_chat_result(
+    result: GptChatResult,
+    *,
+    prompt: str,
+    accompanying: str,
+    input_paths: list[Path] | None,
+    system: str | None,
+    history: list[dict[str, Any]] | None,
+    model: str,
+    temperature: float | None,
+    timeout: float,
+    xlsx_write_contract: str,
+    volume_complete: bool | None,
+) -> GptChatResult:
+    """Если apply-ops/db_frames покрыты частично — добор батчами (~80%)."""
+    if volume_complete is False:
+        return result
+    try:
+        from app.services.volume_batches import (
+            is_db_frames_path,
+            volume_complete_apply_ops_reply,
+        )
+    except Exception:  # noqa: BLE001
+        return result
+    paths = list(input_paths or [])
+    has_db_frames = any(is_db_frames_path(p) for p in paths)
+    if volume_complete is None:
+        if xlsx_write_contract != "apply_ops" and not has_db_frames:
+            return result
+    try:
+        new_text, did = await volume_complete_apply_ops_reply(
+            result.text or "",
+            input_paths=paths,
+            prompt=prompt,
+            accompanying=accompanying,
+            system=system,
+            history=history,
+            model=model,
+            temperature=temperature,
+            timeout=timeout,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("gpt_api.chat volume_complete failed: {}", e)
+        return result
+    if not did:
+        return result
+    return GptChatResult(
+        text=new_text,
+        model=result.model or model,
+        finish_reason="volume_continued",
+        usage=result.usage,
+        raw={
+            **(result.raw or {}),
+            "volume_continued": True,
+            "volume_chars": len(new_text or ""),
+        },
+        response_id=result.response_id,
+    )
+
+
+_LLM_PACK_PARALLEL = 3
+
+
+def _merge_packed_apply_ops(texts: list[str]) -> str:
+    from app.services.db_apply import extract_apply_ops_json
+
+    ops: list[dict[str, Any]] = []
+    extra: dict[str, Any] = {}
+    for text in texts:
+        data = extract_apply_ops_json(text or "")
+        if not isinstance(data, dict):
+            continue
+        for op in data.get("ops") or []:
+            if isinstance(op, dict):
+                ops.append(op)
+        for key in ("characters", "scenes"):
+            val = data.get(key)
+            if val and key not in extra:
+                extra[key] = val
+    if not ops:
+        return "\n\n---\n\n".join(t for t in texts if (t or "").strip())
+    payload = {"ops": ops, **extra}
+    return json.dumps(payload, ensure_ascii=False)
+
+
+async def _chat_packed_parallel(
+    *,
+    slice_paths: list[Path],
+    prompt: str,
+    accompanying: str,
+    input_paths: list[Path],
+    system: str | None,
+    history: list[dict[str, Any]] | None,
+    model: str | None,
+    temperature: float | None,
+    timeout: float | None,
+    max_retries: int | None,
+    xlsx_write_contract: str,
+) -> GptChatResult:
+    """Несколько независимых chat() по нарезанным db_frames, потом склейка ops."""
+    import asyncio
+
+    from app.services.volume_batches import is_db_frames_path
+
+    sem = asyncio.Semaphore(_LLM_PACK_PARALLEL)
+
+    async def _one(slice_path: Path, idx: int) -> GptChatResult:
+        async with sem:
+            new_paths = [
+                slice_path if is_db_frames_path(p) else p for p in input_paths
+            ]
+            acc = (
+                f"{accompanying}\n\n"
+                f"# PACK {idx}/{len(slice_paths)} — только uuid из {slice_path.name}. "
+                "Верни JSON ops на ВСЕ кадры ЭТОГО файла. Без продолжений.\n"
+            )
+            logger.info(
+                "gpt_api.chat pack {}/{} file={} bytes={}",
+                idx,
+                len(slice_paths),
+                slice_path.name,
+                slice_path.stat().st_size,
+            )
+            return await chat(
+                prompt=prompt,
+                accompanying=acc,
+                input_paths=new_paths,
+                system=system,
+                history=None,
+                model=model,
+                temperature=temperature,
+                timeout=timeout,
+                max_retries=max_retries,
+                xlsx_write_contract=xlsx_write_contract,
+                volume_complete=False,
+                auto_pack=False,
+            )
+
+    parts = await asyncio.gather(
+        *[_one(p, i) for i, p in enumerate(slice_paths, start=1)]
+    )
+    merged = _merge_packed_apply_ops([p.text for p in parts])
+    first = parts[0]
+    return GptChatResult(
+        text=merged,
+        model=first.model,
+        finish_reason="packed",
+        usage=first.usage,
+        raw={
+            **(first.raw or {}),
+            "packed_slices": len(parts),
+            "packed_chars": len(merged),
+        },
+        response_id=first.response_id,
+    )
+
+
 async def chat(
     *,
     prompt: str,
@@ -905,23 +1833,68 @@ async def chat(
     temperature: float | None = None,
     timeout: float | None = None,
     max_retries: int | None = None,
+    xlsx_write_contract: str = "tsv",
+    volume_complete: bool | None = None,
+    auto_pack: bool = True,
+    pack_kind: str | None = None,
 ) -> GptChatResult:
-    """Вызвать текстовый LLM (kie GPT / TokenRouter Kimi) с ретраями."""
+    """Вызвать текстовый LLM (kie GPT / TokenRouter Kimi) с ретраями.
+
+    ``volume_complete``: после частичного apply-ops добрать остаток
+    (None = авто: apply_ops contract или db_frames*.json во вложениях).
+    ``auto_pack``: нарезать db_frames на батчи
+    (img_pr: n*4000/228000; иначе len(закадр)/3500) и гнать пачки параллельно.
+    ``pack_kind``: явный ``img_pr`` | ``vo`` (img_pr всегда важнее VO-файла).
+    """
+    if auto_pack:
+        from app.services.output_batch_plan import plan_db_frames_slices
+
+        slices = plan_db_frames_slices(
+            input_paths,
+            pack_kind=pack_kind,
+            prompt=prompt,
+            accompanying=accompanying,
+        )
+        if slices:
+            logger.info(
+                "gpt_api.chat auto_pack kind={} slices={} files={}",
+                pack_kind or "auto",
+                len(slices),
+                [p.name for p in slices],
+            )
+            return await _chat_packed_parallel(
+                slice_paths=slices,
+                prompt=prompt,
+                accompanying=accompanying,
+                input_paths=list(input_paths or []),
+                system=system,
+                history=history,
+                model=model,
+                temperature=temperature,
+                timeout=timeout,
+                max_retries=max_retries,
+                xlsx_write_contract=xlsx_write_contract,
+            )
+
     headers = _headers()
     use_model = (model or settings.gpt_model_effective or "gpt-5.5").strip()
     url = _chat_url(use_model)
     use_timeout = float(timeout if timeout is not None else settings.gpt_timeout_s)
     retries = int(max_retries if max_retries is not None else settings.gpt_max_retries)
     provider_label = settings.text_llm_label
+    proxy = _gpt_proxy_url()
     logger.info(
-        "text_llm.chat → {} model={} url={}",
+        "text_llm.chat → {} model={} url={} proxy={}",
         provider_label,
         use_model,
         url,
+        _mask_proxy_url(proxy) if proxy else "direct",
     )
 
     responses_mode = is_responses_mode()
     if responses_mode:
+        # stream=true: иначе Cloudflare рвёт длинный non-stream JSON, а у kie
+        # задача уже success (см. kie.ai/logs Task ID = resp_…).
         body: dict[str, Any] = {
             "model": use_model,
             "input": build_input(
@@ -930,9 +1903,15 @@ async def chat(
                 input_paths=input_paths,
                 system=system,
                 history=history,
+                xlsx_write_contract=xlsx_write_contract,
             ),
-            "stream": False,
+            "stream": True,
+            # kie: store=true → market job / CF-долгое хранение; dev советует false.
+            "store": False,
         }
+        reasoning = _responses_reasoning_block()
+        if reasoning is not None:
+            body["reasoning"] = reasoning
     else:
         body = {
             "model": use_model,
@@ -942,6 +1921,7 @@ async def chat(
                 input_paths=input_paths,
                 system=system,
                 history=history,
+                xlsx_write_contract=xlsx_write_contract,
             ),
         }
     if temperature is not None:
@@ -952,33 +1932,151 @@ async def chat(
     while attempt <= retries:
         attempt += 1
         try:
-            async with httpx.AsyncClient(timeout=use_timeout) as client:
+            if responses_mode:
+                result = await _chat_responses_stream(
+                    url=url,
+                    headers=headers,
+                    body=body,
+                    timeout=use_timeout,
+                    use_model=use_model,
+                )
+                # Cloudflare/kie рвёт длинный SSE: дельты уже есть, но JSON
+                # незакрыт — добираем хвост коротким continue (без тяжёлых файлов).
+                # Continue с крошечным salvage бессмысленен → полный chat-retry.
+                cont_round = 0
+                while cont_round < 2 and looks_truncated_llm_text(result.text):
+                    salvage_n = len(result.text or "")
+                    if salvage_n < _CF_CONTINUE_MIN_CHARS:
+                        logger.warning(
+                            "gpt_api.chat CF-continue skip — salvage too small "
+                            "chars={} min={} task_id={}",
+                            salvage_n,
+                            _CF_CONTINUE_MIN_CHARS,
+                            result.response_id or "-",
+                        )
+                        if result.raw.get("retrieved_by_id"):
+                            break
+                        raise GptApiError(
+                            "GPT: SSE обрыв, salvage слишком короткий для continue "
+                            f"({salvage_n} chars)",
+                            context={
+                                "retryable": True,
+                                "error_kind": "stream_scarce_salvage",
+                                "response_id": result.response_id or "",
+                                "salvage_chars": salvage_n,
+                                "model": use_model,
+                            },
+                        )
+                    cont_round += 1
+                    tail = (result.text or "")[-4000:]
+                    cont_prompt = (
+                        "Предыдущий ответ оборван сетью (прокси/Cloudflare). "
+                        "Продолжи СТРОГО с места обрыва: не повторяй уже "
+                        "написанное, без пояснений — только продолжение текста.\n\n"
+                        f"--- хвост уже полученного ---\n{tail}\n"
+                        "--- конец хвоста ---"
+                    )
+                    cont_body: dict[str, Any] = {
+                        "model": use_model,
+                        "input": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "input_text", "text": cont_prompt}
+                                ],
+                            }
+                        ],
+                        "stream": True,
+                        "store": False,
+                    }
+                    cont_reasoning = _responses_reasoning_block()
+                    if cont_reasoning is not None:
+                        cont_body["reasoning"] = cont_reasoning
+                    if temperature is not None:
+                        cont_body["temperature"] = temperature
+                    logger.warning(
+                        "gpt_api.chat CF-continue round={} chars_so_far={} task_id={}",
+                        cont_round,
+                        salvage_n,
+                        result.response_id or "-",
+                    )
+                    try:
+                        cont = await _chat_responses_stream(
+                            url=url,
+                            headers=headers,
+                            body=cont_body,
+                            timeout=min(use_timeout, 300.0),
+                            use_model=use_model,
+                        )
+                    except GptApiError as e:
+                        # Continue упал (500/сеть/пусто) — не терять salvage
+                        # и не уходить в soft-retry полного skeleton зря.
+                        if salvage_n >= _CF_CONTINUE_KEEP_MIN_CHARS:
+                            logger.warning(
+                                "gpt_api.chat CF-continue failed — keep salvage "
+                                "chars={} ({})",
+                                salvage_n,
+                                e,
+                            )
+                            raw_keep = dict(result.raw or {})
+                            raw_keep["cf_continue_failed"] = True
+                            raw_keep["cf_continue_error"] = str(e)[:300]
+                            result = GptChatResult(
+                                text=result.text,
+                                model=use_model,
+                                finish_reason=result.finish_reason
+                                or "stream_salvaged",
+                                usage=result.usage,
+                                raw=raw_keep,
+                                response_id=result.response_id,
+                            )
+                            break
+                        raise
+                    merged = stitch_llm_continuation(result.text, cont.text)
+                    if len(merged) <= len(result.text or ""):
+                        break
+                    result = GptChatResult(
+                        text=merged,
+                        model=use_model,
+                        finish_reason="stream_continued",
+                        usage=result.usage,
+                        raw={
+                            **(result.raw or {}),
+                            "cf_continued": True,
+                            "cf_continue_rounds": cont_round,
+                            "continue_task_id": cont.response_id or "",
+                        },
+                        response_id=result.response_id or cont.response_id,
+                    )
+                result = await _maybe_volume_complete_chat_result(
+                    result,
+                    prompt=prompt,
+                    accompanying=accompanying,
+                    input_paths=input_paths,
+                    system=system,
+                    history=history,
+                    model=use_model,
+                    temperature=temperature,
+                    timeout=use_timeout,
+                    xlsx_write_contract=xlsx_write_contract,
+                    volume_complete=volume_complete,
+                )
+                logger.info(
+                    "gpt_api.chat OK provider={} model={} attempt={} "
+                    "finish={} chars={} task_id={}",
+                    provider_label,
+                    use_model,
+                    attempt,
+                    result.finish_reason,
+                    len(result.text),
+                    result.response_id or result.raw.get("id") or "-",
+                )
+                return result
+
+            async with _async_client(timeout=_http_timeout(use_timeout)) as client:
                 resp = await client.post(url, headers=headers, json=body)
             status = resp.status_code
-            if status in _FATAL_STATUS:
-                low = resp.text.lower()
-                hint = ""
-                if "apikey error" in low:
-                    hint = (
-                        f" — ключ не авторизован на модель {use_model!r} "
-                        "(добавь модель в whitelist ключа grsai)"
-                    )
-                elif "model not register" in low or "not register" in low:
-                    hint = f" — модель {use_model!r} не существует у провайдера (проверь GPT_MODEL)"
-                raise GptApiError(
-                    f"GPT HTTP {status}: {resp.text[:400]}{hint}",
-                    context={"status_code": status, "retryable": False, "model": use_model},
-                )
-            if status in _RETRY_STATUS or status >= 500:
-                raise GptApiError(
-                    f"GPT HTTP {status}: {resp.text[:300]}",
-                    context={"status_code": status, "retryable": True, "model": use_model},
-                )
-            if status >= 400:
-                raise GptApiError(
-                    f"GPT HTTP {status}: {resp.text[:400]}",
-                    context={"status_code": status, "retryable": False, "model": use_model},
-                )
+            _raise_http_status(status, resp.text, use_model=use_model)
             try:
                 payload = resp.json()
             except Exception as e:  # noqa: BLE001
@@ -986,21 +2084,33 @@ async def chat(
                     f"GPT: ответ не JSON: {resp.text[:300]}",
                     context={"retryable": True, "model": use_model},
                 ) from e
-            text, finish = (
-                _parse_responses(payload) if responses_mode else _parse_choice(payload)
-            )
+            text, finish = _parse_choice(payload)
             usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+            result = GptChatResult(
+                text=text, model=use_model, finish_reason=finish, usage=usage, raw=payload
+            )
+            result = await _maybe_volume_complete_chat_result(
+                result,
+                prompt=prompt,
+                accompanying=accompanying,
+                input_paths=input_paths,
+                system=system,
+                history=history,
+                model=use_model,
+                temperature=temperature,
+                timeout=use_timeout,
+                xlsx_write_contract=xlsx_write_contract,
+                volume_complete=volume_complete,
+            )
             logger.info(
                 "gpt_api.chat OK provider={} model={} attempt={} finish={} chars={}",
                 provider_label,
                 use_model,
                 attempt,
-                finish,
-                len(text),
+                result.finish_reason,
+                len(result.text),
             )
-            return GptChatResult(
-                text=text, model=use_model, finish_reason=finish, usage=usage, raw=payload
-            )
+            return result
         except httpx.TimeoutException:
             hint = ""
             if settings.text_llm_is_tokenrouter:
@@ -1915,7 +3025,7 @@ async def search_web_image_urls(query: str, *, limit: int = 4) -> list[str]:
         seen.add(u)
         found.append(u)
 
-    async with httpx.AsyncClient(
+    async with _async_client(
         timeout=25.0, follow_redirects=True, headers=headers
     ) as client:
         for q in queries:
@@ -2014,7 +3124,7 @@ async def download_content(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     content_type: str | None = None
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async with _async_client(timeout=timeout, follow_redirects=True) as client:
             r = await client.get(url)
             if r.status_code >= 400:
                 raise GptApiError(

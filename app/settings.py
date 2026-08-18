@@ -107,6 +107,14 @@ class Settings(BaseSettings):
     gpt_api_mode: str = Field("auto", alias="GPT_API_MODE")
     gpt_timeout_s: float = Field(600.0, alias="GPT_TIMEOUT_S")
     gpt_max_retries: int = Field(4, alias="GPT_MAX_RETRIES")
+    # kie gpt-5-6-sol: low|medium|high|xhigh (дока: default low).
+    # Явно шлём low — меньше silent reasoning до первых output_text.delta.
+    gpt_reasoning_effort: str = Field("low", alias="GPT_REASONING_EFFORT")
+    # HTTP/SOCKS5 для GPT/kie. Пусто = напрямую. Не путать с TELEGRAM_PROXY_URL.
+    gpt_proxy_url: str | None = Field(None, alias="GPT_PROXY_URL")
+    # VPS-relay (deploy/gpt-relay): GPT_BASE_URL=https://gpt.example.com
+    # + токен → заголовок X-VP-Relay-Token.
+    gpt_relay_token: str = Field("", alias="GPT_RELAY_TOKEN")
 
     def resolved_text_llm_provider(self) -> str:
         """Активный текстовый провайдер: kie (GPT) | tokenrouter (Kimi).

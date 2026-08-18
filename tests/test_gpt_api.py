@@ -11,10 +11,18 @@ import pytest
 from app.services import gpt_api
 from app.services.gpt_api import (
     GptApiError,
+    _responses_reasoning_block,
+    _stream_timeout,
     build_messages,
     chat,
     collect_result_urls,
     download_content,
+    extract_text_fragments_from_sse_buffer,
+    looks_truncated_llm_text,
+    parse_responses_sse_lines,
+    parse_retrieved_response_payload,
+    responses_retrieve_urls,
+    stitch_llm_continuation,
     xlsx_to_text,
 )
 
@@ -30,13 +38,18 @@ def _enable(monkeypatch) -> None:
     monkeypatch.setattr(settings, "gpt_chat_path", "/v1/chat/completions")
     monkeypatch.setattr(settings, "gpt_api_mode", "chat")
     monkeypatch.setattr(settings, "gpt_max_retries", 3)
+    # Локальный GPT_PROXY_URL из .env не должен ломать MockTransport.
+    monkeypatch.setattr(settings, "gpt_proxy_url", None)
+    monkeypatch.setattr(gpt_api, "_PROXY_LOGGED", False)
 
 
 def _mock_httpx(monkeypatch, handler) -> None:
     real_client = httpx.AsyncClient
 
     def factory(*args, **kwargs):
+        kwargs.pop("proxy", None)
         kwargs["transport"] = httpx.MockTransport(handler)
+        kwargs["trust_env"] = False
         return real_client(*args, **kwargs)
 
     monkeypatch.setattr(gpt_api.httpx, "AsyncClient", factory)
@@ -154,28 +167,623 @@ async def test_chat_responses_mode(monkeypatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         captured["path"] = request.url.path
         captured["body"] = json.loads(request.content)
+        # Responses mode must request SSE — иначе CF рвёт длинный JSON.
+        assert captured["body"].get("stream") is True
+        sse = (
+            'event: response.created\n'
+            'data: {"type":"response.created","response":{"id":"resp_test123","status":"in_progress"}}\n'
+            "\n"
+            'event: response.output_text.delta\n'
+            'data: {"type":"response.output_text.delta","delta":"работает"}\n'
+            "\n"
+            'event: response.completed\n'
+            'data: {"type":"response.completed","response":{"id":"resp_test123","status":"completed",'
+            '"output":[{"type":"message","role":"assistant","content":'
+            '[{"type":"output_text","text":"работает"}]}],'
+            '"usage":{"total_tokens":9}}}\n'
+            "\n"
+            "data: [DONE]\n"
+        )
         return httpx.Response(
             200,
-            json={
-                "status": "completed",
-                "output": [
-                    {
-                        "role": "assistant",
-                        "type": "message",
-                        "content": [{"type": "output_text", "text": "работает"}],
-                        "status": "completed",
-                    }
-                ],
-            },
+            content=sse.encode("utf-8"),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_httpx(monkeypatch, handler)
     res = await chat(prompt="скажи", model="gpt-5-6-sol")
     assert res.text == "работает"
     assert res.finish_reason == "completed"
+    assert res.response_id == "resp_test123"
     assert captured["path"] == "/codex/v1/responses"
     assert "input" in captured["body"]  # responses-формат
     assert "messages" not in captured["body"]
+    assert captured["body"].get("reasoning") == {"effort": "low"}
+    assert captured["body"].get("store") is False
+
+
+def test_parse_responses_sse_lines_prefers_completed_payload() -> None:
+    lines = [
+        'data: {"type":"response.created","response":{"id":"resp_abc","status":"in_progress"}}',
+        'data: {"type":"response.output_text.delta","delta":"hel"}',
+        'data: {"type":"response.output_text.delta","delta":"lo"}',
+        (
+            'data: {"type":"response.completed","response":{"id":"resp_abc","status":"completed",'
+            '"output":[{"type":"message","content":[{"type":"output_text","text":"hello world"}]}]}}'
+        ),
+    ]
+    text, status, payload, rid = parse_responses_sse_lines(lines)
+    assert text == "hello world"
+    assert status == "completed"
+    assert rid == "resp_abc"
+    assert payload.get("id") == "resp_abc"
+
+
+def test_parse_responses_sse_lines_salvages_deltas_without_completed() -> None:
+    """CF рвёт на огромном completed — дельты уже есть, нельзя вернуть пусто."""
+    lines = [
+        'data: {"type":"response.created","response":{"id":"resp_x","status":"in_progress"}}',
+        'data: {"type":"response.output_text.delta","delta":"часть "}',
+        'data: {"type":"response.output_text.delta","delta":"ответа"}',
+        'data: {"type":"response.output_text.done","text":"часть ответа"}',
+        # битая/обрезанная строка completed — как при обрыве
+        'data: {"type":"response.completed","response":{"id":"resp_x","status":"comp',
+    ]
+    text, status, _payload, rid = parse_responses_sse_lines(lines)
+    assert text == "часть ответа"
+    assert rid == "resp_x"
+    assert status in {"completed", "stream_partial"}
+
+
+def test_parse_responses_sse_lines_prefers_longer_deltas_over_stub_completed() -> None:
+    lines = [
+        'data: {"type":"response.created","response":{"id":"resp_y","status":"in_progress"}}',
+        'data: {"type":"response.output_text.delta","delta":"полный длинный текст файла"}',
+        (
+            'data: {"type":"response.completed","response":{"id":"resp_y","status":"completed",'
+            '"output":[{"type":"message","content":[{"type":"output_text","text":"ок"}]}]}}'
+        ),
+    ]
+    text, status, _payload, rid = parse_responses_sse_lines(lines)
+    assert text == "полный длинный текст файла"
+    assert rid == "resp_y"
+    assert status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_chat_responses_salvages_after_stream_disconnect(monkeypatch) -> None:
+    """RemoteProtocolError после дельт → текст salvage, не новая пустая ошибка."""
+    _enable(monkeypatch)
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_chat_path", "/codex/v1/responses")
+    monkeypatch.setattr(settings, "gpt_api_mode", "auto")
+    # Короткий salvage не должен уходить в CF-continue в этом тесте.
+    monkeypatch.setattr(gpt_api, "_CF_CONTINUE_MIN_CHARS", 10_000)
+
+    class _BoomStream:
+        def __init__(self) -> None:
+            self.headers = {"cf-ray": "test-ray"}
+            self.status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def aiter_text(self):
+            yield (
+                'data: {"type":"response.created","response":'
+                '{"id":"resp_salv","status":"in_progress"}}\n'
+            )
+            yield 'data: {"type":"response.output_text.delta","delta":"живой "}\n'
+            yield 'data: {"type":"response.output_text.delta","delta":"текст"}\n'
+            raise httpx.RemoteProtocolError(
+                "Server disconnected without sending a response."
+            )
+
+    class _BoomClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def stream(self, *a, **k):
+            return _BoomStream()
+
+        async def get(self, *a, **k):
+            raise httpx.ConnectError("no retrieve in unit test")
+
+    monkeypatch.setattr(gpt_api.httpx, "AsyncClient", _BoomClient)
+
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(gpt_api.asyncio, "sleep", _no_sleep)
+
+    res = await chat(prompt="длинный", model="gpt-5-6-sol", max_retries=0)
+    assert res.text == "живой текст"
+    assert res.response_id == "resp_salv"
+    assert res.finish_reason == "stream_salvaged"
+    assert res.raw.get("sse_salvaged") is True
+
+
+def test_responses_reasoning_block_effort(monkeypatch) -> None:
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_reasoning_effort", "low")
+    assert _responses_reasoning_block() == {"effort": "low"}
+    monkeypatch.setattr(settings, "gpt_reasoning_effort", "MEDIUM")
+    assert _responses_reasoning_block() == {"effort": "medium"}
+    monkeypatch.setattr(settings, "gpt_reasoning_effort", "off")
+    assert _responses_reasoning_block() is None
+
+
+def test_extract_text_fragments_from_incomplete_sse_tail() -> None:
+    tail = (
+        'data: {"type":"response.output_text.delta","delta":"hello \\"world\\" '
+        "partial"
+    )
+    frag = extract_text_fragments_from_sse_buffer(tail)
+    assert "hello" in frag
+    assert "world" in frag
+
+
+def test_parse_responses_sse_lines_salvages_broken_json_delta() -> None:
+    lines = [
+        'data: {"type":"response.created","response":{"id":"resp_z","status":"in_progress"}}',
+        'data: {"type":"response.output_text.delta","delta":"часть "',  # обрезано
+    ]
+    text, status, _payload, rid = parse_responses_sse_lines(lines)
+    assert "часть" in text
+    assert rid == "resp_z"
+    assert status == "stream_partial"
+
+
+def test_looks_truncated_llm_text_json() -> None:
+    assert looks_truncated_llm_text('{"ops":[{"frame_uuid":"a"') is True
+    assert looks_truncated_llm_text('{"ops":[{"frame_uuid":"a","fields":{}}]}') is False
+    assert looks_truncated_llm_text("просто текст") is False
+
+
+def test_stream_timeout_does_not_use_call_timeout_as_read(monkeypatch) -> None:
+    """SSE не должен сам рваться по GPT_TIMEOUT/280s — ждём EOF сервера."""
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_stream_read_timeout_s", 0.0)
+    sto = _stream_timeout(280.0)
+    assert sto.read is None
+    assert sto.write is None
+    monkeypatch.setattr(settings, "gpt_stream_read_timeout_s", 900.0)
+    sto2 = _stream_timeout(280.0)
+    assert sto2.read == 900.0
+
+
+def test_responses_retrieve_urls_include_post_path_and_jobs() -> None:
+    urls = responses_retrieve_urls(
+        "https://api.kie.ai/codex/v1/responses", "resp_abc"
+    )
+    assert urls[0] == "https://api.kie.ai/codex/v1/responses/resp_abc"
+    assert any("recordInfo" in u and "resp_abc" in u for u in urls)
+
+
+def test_parse_retrieved_jobs_result_json() -> None:
+    text, status = parse_retrieved_response_payload(
+        {
+            "code": 200,
+            "data": {
+                "state": "success",
+                "resultJson": json.dumps(
+                    {
+                        "status": "completed",
+                        "output": [
+                            {
+                                "type": "message",
+                                "content": [
+                                    {"type": "output_text", "text": '{"ops":[]}'}
+                                ],
+                            }
+                        ],
+                    }
+                ),
+            },
+        }
+    )
+    assert text == '{"ops":[]}'
+    assert status in ("completed", "success")
+
+
+def test_stitch_llm_continuation_dedupes_overlap() -> None:
+    assert stitch_llm_continuation('{"ops":[{"a":1', "}]}") == '{"ops":[{"a":1}]}'
+    assert stitch_llm_continuation("hello world end", "world end!!!") == "hello world end!!!"
+    assert stitch_llm_continuation("abc", "def") == "abcdef"
+
+
+@pytest.mark.asyncio
+async def test_chat_cf_continue_after_truncated_salvage(monkeypatch) -> None:
+    """Обрезанный JSON после CF → continue-запрос доклеивает хвост."""
+    _enable(monkeypatch)
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_chat_path", "/codex/v1/responses")
+    monkeypatch.setattr(settings, "gpt_api_mode", "auto")
+    monkeypatch.setattr(gpt_api, "_CF_CONTINUE_MIN_CHARS", 10)
+    state = {"n": 0}
+
+    class _Stream:
+        def __init__(self, lines: list[str], boom: bool = False) -> None:
+            self.headers = {"cf-ray": "cont-ray"}
+            self.status_code = 200
+            self._lines = lines
+            self._boom = boom
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def aiter_text(self):
+            for line in self._lines:
+                yield line + "\n"
+            if self._boom:
+                raise httpx.RemoteProtocolError("Server disconnected")
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def stream(self, *a, **k):
+            state["n"] += 1
+            if state["n"] == 1:
+                return _Stream(
+                    [
+                        'data: {"type":"response.created","response":{"id":"resp_cut","status":"in_progress"}}',
+                        'data: {"type":"response.output_text.delta","delta":"{\\"ops\\":[{\\"a\\":1"}',
+                    ],
+                    boom=True,
+                )
+            return _Stream(
+                [
+                    'data: {"type":"response.created","response":{"id":"resp_cont","status":"in_progress"}}',
+                    'data: {"type":"response.output_text.delta","delta":"}]}"}',
+                    'data: {"type":"response.output_text.done","text":"}]}"}',
+                ]
+            )
+
+        async def get(self, *a, **k):
+            raise httpx.ConnectError("no retrieve")
+
+    monkeypatch.setattr(gpt_api.httpx, "AsyncClient", _Client)
+
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(gpt_api.asyncio, "sleep", _no_sleep)
+
+    res = await chat(prompt="json", model="gpt-5-6-sol", max_retries=0)
+    assert state["n"] >= 2
+    assert res.finish_reason == "stream_continued"
+    assert '{"ops"' in res.text
+    assert looks_truncated_llm_text(res.text) is False
+
+
+@pytest.mark.asyncio
+async def test_chat_skips_cf_continue_when_salvage_too_small(monkeypatch) -> None:
+    """133 chars salvage → не продолжать, а retryable full chat."""
+    _enable(monkeypatch)
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_chat_path", "/codex/v1/responses")
+    monkeypatch.setattr(settings, "gpt_api_mode", "auto")
+    monkeypatch.setattr(gpt_api, "_CF_CONTINUE_MIN_CHARS", 2000)
+    state = {"n": 0}
+
+    class _Stream:
+        def __init__(self) -> None:
+            self.headers = {"cf-ray": "tiny"}
+            self.status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def aiter_text(self):
+            yield (
+                'data: {"type":"response.created","response":'
+                '{"id":"resp_tiny","status":"in_progress"}}\n'
+            )
+            yield 'data: {"type":"response.output_text.delta","delta":"{\\"a\\":"}\n'
+            raise httpx.RemoteProtocolError("cut")
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def stream(self, *a, **k):
+            state["n"] += 1
+            return _Stream()
+
+        async def get(self, *a, **k):
+            raise httpx.ConnectError("no retrieve")
+
+    monkeypatch.setattr(gpt_api.httpx, "AsyncClient", _Client)
+
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(gpt_api.asyncio, "sleep", _no_sleep)
+
+    with pytest.raises(GptApiError) as ei:
+        await chat(prompt="x", model="gpt-5-6-sol", max_retries=0)
+    assert ei.value.context.get("error_kind") == "stream_scarce_salvage"
+    assert state["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_chat_keeps_salvage_when_cf_continue_http500(monkeypatch) -> None:
+    """Большой salvage + continue 500 → вернуть salvage, не raise."""
+    _enable(monkeypatch)
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_chat_path", "/codex/v1/responses")
+    monkeypatch.setattr(settings, "gpt_api_mode", "auto")
+    monkeypatch.setattr(gpt_api, "_CF_CONTINUE_MIN_CHARS", 50)
+    monkeypatch.setattr(gpt_api, "_CF_CONTINUE_KEEP_MIN_CHARS", 50)
+    big = '{"ops":[' + (",".join(f'{{"i":{i}' for i in range(40)))
+    assert looks_truncated_llm_text(big)
+    assert len(big) >= 50
+    state = {"n": 0}
+
+    class _Stream:
+        def __init__(self, lines: list[str], boom: bool = False, http500: bool = False) -> None:
+            self.headers = {"cf-ray": "keep"}
+            self.status_code = 500 if http500 else 200
+            self._lines = lines
+            self._boom = boom
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def aread(self):
+            return b'{"error":{"message":"being maintained"}}'
+
+        async def aiter_text(self):
+            if self.status_code >= 400:
+                return
+                yield  # pragma: no cover
+            for line in self._lines:
+                yield line + "\n"
+            if self._boom:
+                raise httpx.RemoteProtocolError("cut")
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def stream(self, *a, **k):
+            state["n"] += 1
+            if state["n"] == 1:
+                delta = json.dumps(big)
+                return _Stream(
+                    [
+                        'data: {"type":"response.created","response":{"id":"resp_big","status":"in_progress"}}',
+                        f'data: {{"type":"response.output_text.delta","delta":{delta}}}',
+                    ],
+                    boom=True,
+                )
+            return _Stream([], http500=True)
+
+        async def get(self, *a, **k):
+            raise httpx.ConnectError("no retrieve")
+
+    monkeypatch.setattr(gpt_api.httpx, "AsyncClient", _Client)
+
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(gpt_api.asyncio, "sleep", _no_sleep)
+
+    res = await chat(prompt="json", model="gpt-5-6-sol", max_retries=0)
+    assert res.text == big
+    assert res.raw.get("cf_continue_failed") is True
+    assert state["n"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_chat_keeps_salvage_when_cf_continue_empty(monkeypatch) -> None:
+    """Цельный длинный ответ обрезан — continue пустой. Не терять salvage."""
+    _enable(monkeypatch)
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_chat_path", "/codex/v1/responses")
+    monkeypatch.setattr(settings, "gpt_api_mode", "auto")
+    monkeypatch.setattr(gpt_api, "_CF_CONTINUE_MIN_CHARS", 10)
+    monkeypatch.setattr(gpt_api, "_CF_CONTINUE_KEEP_MIN_CHARS", 10)
+    state = {"n": 0}
+
+    class _Stream:
+        def __init__(self, lines: list[str], boom: bool = False) -> None:
+            self.headers = {"cf-ray": "empty-cont"}
+            self.status_code = 200
+            self._lines = lines
+            self._boom = boom
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def aiter_text(self):
+            for line in self._lines:
+                yield line + "\n"
+            if self._boom:
+                raise httpx.RemoteProtocolError("Server disconnected")
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def stream(self, *a, **k):
+            state["n"] += 1
+            if state["n"] == 1:
+                return _Stream(
+                    [
+                        'data: {"type":"response.created","response":{"id":"resp_big","status":"in_progress"}}',
+                        'data: {"type":"response.output_text.delta","delta":"{\\"ops\\":[{\\"frame_uuid\\":\\"aa\\",\\"fields\\":{\\"x\\":\\"1\\"}}"}',
+                    ],
+                    boom=True,
+                )
+            return _Stream(
+                [
+                    'data: {"type":"response.created","response":{"id":"resp_empty","status":"in_progress"}}',
+                    'data: {"type":"response.completed","response":{"id":"resp_empty","status":"completed","output":[]}}',
+                ]
+            )
+
+        async def get(self, *a, **k):
+            raise httpx.ConnectError("no retrieve")
+
+    monkeypatch.setattr(gpt_api.httpx, "AsyncClient", _Client)
+
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(gpt_api.asyncio, "sleep", _no_sleep)
+
+    res = await chat(
+        prompt="json",
+        model="gpt-5-6-sol",
+        max_retries=0,
+        volume_complete=False,
+    )
+    assert "frame_uuid" in res.text
+    assert len(res.text) > 20
+
+
+@pytest.mark.asyncio
+async def test_chat_fetches_completed_response_after_sse_cut(monkeypatch) -> None:
+    """CF оборвал SSE — забрать готовый JSON по resp_ id, не второй чат."""
+    _enable(monkeypatch)
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_chat_path", "/codex/v1/responses")
+    monkeypatch.setattr(settings, "gpt_api_mode", "auto")
+    monkeypatch.setattr(settings, "gpt_base_url", "https://api.kie.ai")
+    monkeypatch.setattr(gpt_api, "_CF_CONTINUE_MIN_CHARS", 10_000)
+    state = {"stream": 0, "gets": []}
+    full = '{"ops":[{"frame_uuid":"aa","fields":{"x":"1"}},{"frame_uuid":"bb","fields":{"x":"2"}}]}'
+
+    class _Stream:
+        def __init__(self) -> None:
+            self.headers = {"cf-ray": "cut-ray"}
+            self.status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def aiter_text(self):
+            yield (
+                'data: {"type":"response.created","response":'
+                '{"id":"resp_full","status":"in_progress"}}\n'
+            )
+            yield (
+                'data: {"type":"response.output_text.delta",'
+                '"delta":"{\\"ops\\":[{\\"frame_uuid\\":\\"aa\\""}\n'
+            )
+            raise httpx.RemoteProtocolError("Server disconnected")
+
+    class _GetResp:
+        def __init__(self) -> None:
+            self.status_code = 200
+
+        def json(self):
+            return {
+                "id": "resp_full",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": full}],
+                    }
+                ],
+            }
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def stream(self, *a, **k):
+            state["stream"] += 1
+            return _Stream()
+
+        async def get(self, url, **k):
+            state["gets"].append(str(url))
+            return _GetResp()
+
+    monkeypatch.setattr(gpt_api.httpx, "AsyncClient", _Client)
+
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(gpt_api.asyncio, "sleep", _no_sleep)
+
+    res = await chat(
+        prompt="json",
+        model="gpt-5-6-sol",
+        max_retries=0,
+        volume_complete=False,
+    )
+    assert state["stream"] == 1
+    assert any("resp_full" in u for u in state["gets"])
+    assert res.text == full
+    assert res.finish_reason == "completed"
+    assert looks_truncated_llm_text(res.text) is False
 
 
 @pytest.mark.asyncio
@@ -252,6 +860,27 @@ def test_xlsx_to_text(tmp_path: Path) -> None:
     assert "xlsx text-export" in text
     assert "@row=1" in text
     assert "@row=2" in text
+    assert "# Лист:" in text or "для записи верни" in text
+
+
+def test_xlsx_to_text_apply_ops_contract_forbids_tsv_refusal(tmp_path: Path) -> None:
+    """project_file/DB SoT: баннер не толкает модель в отказ «нет xlsx» / TSV."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "план"
+    ws["C49"] = "закадр"
+    p = tmp_path / "project.xlsx"
+    wb.save(p)
+    text = xlsx_to_text(p, write_contract="apply_ops")
+    assert "DB SoT" in text
+    assert "apply-ops" in text.lower() or "JSON" in text
+    assert "[SHEET: план]" in text
+    assert "# Лист:" not in text
+    assert "верни `# Лист:`" not in text
+    # Не провоцировать parrot-отказ модели.
+    assert "недоступен" not in text.casefold()
 
 
 def test_xlsx_to_text_sparse_rows_keep_excel_numbers(tmp_path: Path) -> None:
@@ -646,6 +1275,53 @@ def test_is_pdf_provider_failure() -> None:
     )
     assert not is_pdf_provider_failure(GptApiError("bad key", context={"status_code": 401}))
 
+
+def test_async_client_passes_proxy(monkeypatch) -> None:
+    from app.settings import settings
+
+    captured: dict = {}
+    real = httpx.AsyncClient
+
+    def factory(*args, **kwargs):
+        captured.update(kwargs)
+        kwargs["transport"] = httpx.MockTransport(lambda r: httpx.Response(200))
+        kwargs.pop("proxy", None)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(settings, "gpt_proxy_url", "socks5://u:p@1.2.3.4:1080")
+    monkeypatch.setattr(gpt_api, "_PROXY_LOGGED", False)
+    monkeypatch.setattr(gpt_api.httpx, "AsyncClient", factory)
+    gpt_api._async_client(timeout=1.0)
+    assert captured.get("proxy") == "socks5://u:p@1.2.3.4:1080"
+    assert captured.get("trust_env") is False
+
+
+def test_headers_include_relay_token(monkeypatch) -> None:
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "text_llm_provider", "kie")
+    monkeypatch.setattr(settings, "tokenrouter_api_key", "")
+    monkeypatch.setattr(settings, "gpt_api_key", "test-key")
+    monkeypatch.setattr(settings, "gpt_relay_token", "relay-secret")
+    h = gpt_api._headers()
+    assert h["Authorization"] == "Bearer test-key"
+    assert h["X-VP-Relay-Token"] == "relay-secret"
+
+
+def test_gpt_proxy_url_normalizes_socks5h(monkeypatch) -> None:
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_proxy_url", "socks5h://u:p@10.1.2.3:9050")
+    assert gpt_api._gpt_proxy_url() == "socks5://u:p@10.1.2.3:9050"
+
+
+def test_gpt_proxy_url_empty(monkeypatch) -> None:
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_proxy_url", None)
+    assert gpt_api._gpt_proxy_url() is None
+    monkeypatch.setattr(settings, "gpt_proxy_url", "  ")
+    assert gpt_api._gpt_proxy_url() is None
 @pytest.mark.asyncio
 async def test_download_content_html_renamed_off_xlsx(monkeypatch, tmp_path: Path) -> None:
     """Страница HTML, сохранённая как .xlsx, переименовывается в .html."""
