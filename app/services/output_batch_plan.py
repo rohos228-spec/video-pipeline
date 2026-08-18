@@ -7,7 +7,9 @@ img_pr:
   (228000 = 57×4000 → на 171 кадр ровно 3 параллельных батча).
 
 Прочие ноды с db_frames:
-  число батчей = ceil(len(закадр) / 2500).
+  число батчей = ceil(len(закадр) / 3500).
+
+img_pr всегда важнее VO-формулы (даже если во вложениях есть voiceover.txt).
 """
 
 from __future__ import annotations
@@ -26,8 +28,8 @@ T = TypeVar("T")
 IMG_PR_CHARS_PER_FRAME = 4_000
 IMG_PR_BATCH_CHAR_BUDGET = 228_000
 
-# Прочие ноды: один батч на каждые 2500 символов закадра.
-VO_CHARS_PER_BATCH = 2_500
+# Прочие ноды: один батч на каждые 3500 символов закадра.
+VO_CHARS_PER_BATCH = 3_500
 
 # Старый имя — оставляем для тестов/импортов; теперь это символьный бюджет img_pr.
 OUTPUT_TOKEN_BUDGET = IMG_PR_BATCH_CHAR_BUDGET
@@ -45,7 +47,7 @@ def batch_count_img_pr(n_frames: int) -> int:
 
 
 def batch_count_by_voiceover(vo_chars: int) -> int:
-    """ceil(vo_chars / 2500), минимум 1."""
+    """ceil(vo_chars / 3500), минимум 1."""
     c = max(0, int(vo_chars))
     if c <= 0:
         return 1
@@ -105,12 +107,29 @@ def pack_frames_by_voiceover(
     return batches
 
 
-def detect_pack_kind(paths: Sequence[Path] | None) -> str:
-    """img_pr | vo — по именам вложений."""
+def detect_pack_kind(
+    paths: Sequence[Path] | None,
+    *,
+    prompt: str | None = None,
+    accompanying: str | None = None,
+    pack_kind: str | None = None,
+) -> str:
+    """img_pr имеет приоритет над VO (voiceover.txt не перебивает)."""
+    explicit = (pack_kind or "").strip().lower()
+    if explicit in {"img_pr", "vo"}:
+        return explicit
     for raw in paths or []:
         name = Path(raw).name.lower()
-        if name.startswith("prompt_img_pr") or "img_pr" in name:
+        if "img_pr" in name:
             return "img_pr"
+    blob = f"{prompt or ''}\n{accompanying or ''}".casefold()
+    if (
+        "img_pr" in blob
+        or "промт_картинки" in blob
+        or "промты картинок" in blob
+        or "image_prompt" in blob
+    ):
+        return "img_pr"
     return "vo"
 
 
@@ -160,8 +179,14 @@ def plan_db_frames_slices(
     *,
     pack_kind: str | None = None,
     vo_text: str | None = None,
+    prompt: str | None = None,
+    accompanying: str | None = None,
 ) -> list[Path] | None:
-    """Нарезать db_frames на файлы-батчи. None = одна пачка, резать нечего."""
+    """Нарезать db_frames на файлы-батчи. None = одна пачка, резать нечего.
+
+    img_pr-формула главнее VO: если шаг img_pr — voiceover.txt игнорируется
+    для числа батчей.
+    """
     from app.services.volume_batches import is_db_frames_path
 
     src: Path | None = None
@@ -176,13 +201,17 @@ def plan_db_frames_slices(
     if payload is None:
         return None
     frames = [fr for fr in (payload.get("frames") or []) if isinstance(fr, dict)]
-    kind = (pack_kind or detect_pack_kind(paths)).strip().lower()
+    kind = detect_pack_kind(
+        paths,
+        prompt=prompt,
+        accompanying=accompanying,
+        pack_kind=pack_kind,
+    )
     if kind == "img_pr":
         batches = pack_frames_img_pr(frames)
     else:
         vo = vo_text
         if vo is None:
-            # сначала файл закадра во вложениях, иначе поле в payload
             n_chars = read_voiceover_chars(paths)
             if n_chars <= 0:
                 for key in ("voiceover", "закадр", "vo_text", "full_vo"):
@@ -191,7 +220,7 @@ def plan_db_frames_slices(
                         vo = raw_vo
                         break
             else:
-                vo = "x" * n_chars  # только длина нужна
+                vo = "x" * n_chars
         batches = pack_frames_by_voiceover(frames, vo)
 
     if len(batches) <= 1:
@@ -293,7 +322,7 @@ def pack_frames_for_output(
     pack_kind: str = "img_pr",
     vo_text: str | None = None,
 ) -> list[list[T]]:
-    """Новый SoT: img_pr по 4000 симв/кадр; иначе по длине закадра/2500.
+    """Новый SoT: img_pr по 4000 симв/кадр; иначе по длине закадра/3500.
 
     ``budget`` / ``count_tokens`` игнорируются (совместимость сигнатуры).
     """

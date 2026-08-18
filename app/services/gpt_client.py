@@ -172,6 +172,9 @@ class ApiGptClient:
                 max_retries=None,
             )
         else:
+            pack_kind = None
+            if prompt_file is not None and "img_pr" in prompt_file.name.lower():
+                pack_kind = "img_pr"
             try:
                 result = await chat(
                     prompt=master or accompanying,
@@ -181,6 +184,7 @@ class ApiGptClient:
                     history=hist or None,
                     system=system,
                     max_retries=max_retries,
+                    pack_kind=pack_kind,
                 )
             except Exception as e:  # noqa: BLE001
                 if pdfs and is_pdf_provider_failure(e):

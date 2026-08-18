@@ -1684,21 +1684,29 @@ async def chat(
     xlsx_write_contract: str = "tsv",
     volume_complete: bool | None = None,
     auto_pack: bool = True,
+    pack_kind: str | None = None,
 ) -> GptChatResult:
     """Вызвать текстовый LLM (kie GPT / TokenRouter Kimi) с ретраями.
 
     ``volume_complete``: после частичного apply-ops добрать остаток
     (None = авто: apply_ops contract или db_frames*.json во вложениях).
     ``auto_pack``: нарезать db_frames на батчи
-    (img_pr: n*4000/228000; иначе len(закадр)/2500) и гнать пачки параллельно.
+    (img_pr: n*4000/228000; иначе len(закадр)/3500) и гнать пачки параллельно.
+    ``pack_kind``: явный ``img_pr`` | ``vo`` (img_pr всегда важнее VO-файла).
     """
     if auto_pack:
         from app.services.output_batch_plan import plan_db_frames_slices
 
-        slices = plan_db_frames_slices(input_paths)
+        slices = plan_db_frames_slices(
+            input_paths,
+            pack_kind=pack_kind,
+            prompt=prompt,
+            accompanying=accompanying,
+        )
         if slices:
             logger.info(
-                "gpt_api.chat auto_pack slices={} files={}",
+                "gpt_api.chat auto_pack kind={} slices={} files={}",
+                pack_kind or "auto",
                 len(slices),
                 [p.name for p in slices],
             )
