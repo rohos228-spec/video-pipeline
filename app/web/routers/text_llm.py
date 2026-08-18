@@ -13,7 +13,7 @@ router = APIRouter(prefix="/text-llm", tags=["text-llm"])
 
 
 class TextLlmSelectBody(BaseModel):
-    provider: str = Field(..., description="kie | tokenrouter")
+    provider: str = Field(..., description="kie | vibecode | tokenrouter")
     model_id: str | None = None
 
 

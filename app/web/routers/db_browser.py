@@ -370,7 +370,7 @@ _ORCHESTRATOR_SYSTEM = (
     "{\"actions\":[{\"set_prompt\":{\"step\":\"<шаг>\",\"variant\":\"<имя>\"}}]} — "
     "варианты в разделе ПРОМТЫ контекста.\n"
     "6) ТЕКСТОВАЯ LLM → "
-    "{\"actions\":[{\"set_text_llm\":{\"provider\":\"kie|tokenrouter\"}}]}.\n"
+    "{\"actions\":[{\"set_text_llm\":{\"provider\":\"kie|vibecode|tokenrouter\"}}]}.\n"
     "7) ОТКРЫТЬ окна программы → {\"actions\":[{\"open_ui\":{...}}]} — kinds: "
     "step_prompts (плюс step; ОБЯЗАТЕЛЬНО при выборе/сравнении вариантов "
     "промтов — человек выбирает в окне), node_studio/prompt_builder/hitl "

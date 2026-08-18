@@ -93,6 +93,12 @@ class Settings(BaseSettings):
         "moonshotai/kimi-k3-free", alias="TOKENROUTER_MODEL"
     )
 
+    # vibecode.moe — OpenAI-совместимый chat/completions (GPT 5.5 / 5.6 Sol).
+    vibecode_api_key: str = Field("", alias="VIBECODE_API_KEY")
+    vibecode_base_url: str = Field(
+        "https://vibecode.moe/v1", alias="VIBECODE_BASE_URL"
+    )
+
     # GPT / kie.ai — основной текстовый стек (не удалять при добавлении Kimi)
     gpt_api_key: str = Field("", alias="GPT_API_KEY")
     gpt_base_url: str = Field("", alias="GPT_BASE_URL")
@@ -125,9 +131,9 @@ class Settings(BaseSettings):
     gpt_relay_token: str = Field("", alias="GPT_RELAY_TOKEN")
 
     def resolved_text_llm_provider(self) -> str:
-        """Активный текстовый провайдер: kie (GPT) | tokenrouter (Kimi).
+        """Активный текстовый провайдер: kie | vibecode | tokenrouter.
 
-        Default — kie. Kimi только по явному выбору (UI / choice.json / env).
+        Default — kie. vibecode/Kimi только по явному выбору (UI / choice.json / env).
         """
         from app.services.text_llm_catalog import resolve_active_provider
 
@@ -138,12 +144,26 @@ class Settings(BaseSettings):
         return self.resolved_text_llm_provider() == "tokenrouter"
 
     @property
+    def text_llm_is_vibecode(self) -> bool:
+        return self.resolved_text_llm_provider() == "vibecode"
+
+    @property
     def text_llm_label(self) -> str:
         """Человекочитаемая метка для UI/логов (не «GPT», если это Kimi)."""
         if self.text_llm_is_tokenrouter:
             model = (self.tokenrouter_model or "moonshotai/kimi-k3-free").strip()
             short = model.split("/")[-1] if "/" in model else model
             return f"Kimi K3 · TokenRouter ({short})"
+        if self.text_llm_is_vibecode:
+            from app.services.text_llm_catalog import (
+                catalog_item,
+                resolve_active_model_id,
+            )
+
+            item = catalog_item(resolve_active_model_id(self))
+            api_model = (item or {}).get("api_model") or "gpt-5.6-sol"
+            pretty = (item or {}).get("label") or "GPT"
+            return f"{pretty} · vibecode.moe ({api_model})"
         model = (self.gpt_model or "gpt").strip()
         base = (self.gpt_base_url or "").strip().lower()
         host = "kie.ai" if "kie.ai" in base else ("grsai" if "grsai" in base else "API")
@@ -157,6 +177,8 @@ class Settings(BaseSettings):
                 (self.tokenrouter_api_key or "").strip()
                 or (self.gpt_api_key or "").strip()
             )
+        if self.text_llm_is_vibecode:
+            return (self.vibecode_api_key or "").strip()
         return (self.gpt_api_key or "").strip() or (self.grsai_api_key or "").strip()
 
     @property
@@ -165,6 +187,14 @@ class Settings(BaseSettings):
         if self.text_llm_is_tokenrouter:
             base = (self.tokenrouter_base_url or "https://api.tokenrouter.com/v1").strip()
             return base.rstrip("/")
+        if self.text_llm_is_vibecode:
+            relay = (self.gpt_relay_token or "").strip()
+            gbase = (self.gpt_base_url or "").strip().rstrip("/")
+            low = gbase.lower()
+            if relay and gbase and "kie.ai" not in low and "vibecode.moe" not in low:
+                # VPS gpt-relay: Studio → https://gpt.example.com/v1/chat/completions
+                return gbase
+            return (self.vibecode_base_url or "https://vibecode.moe/v1").strip().rstrip("/")
         base = (self.gpt_base_url or "").strip() or (self.grsai_base_url or "").strip()
         return base.rstrip("/")
 
@@ -172,6 +202,13 @@ class Settings(BaseSettings):
     def gpt_model_effective(self) -> str:
         if self.text_llm_is_tokenrouter:
             return (self.tokenrouter_model or "moonshotai/kimi-k3-free").strip()
+        if self.text_llm_is_vibecode:
+            from app.services.text_llm_catalog import (
+                catalog_api_model,
+                resolve_active_model_id,
+            )
+
+            return catalog_api_model(resolve_active_model_id(self))
         return (self.gpt_model or "gpt-5-6-sol").strip()
 
     @property
@@ -180,11 +217,16 @@ class Settings(BaseSettings):
         if self.text_llm_is_tokenrouter:
             # base уже …/v1 → финальный URL …/v1/chat/completions
             return "/chat/completions"
+        if self.text_llm_is_vibecode:
+            base = self.gpt_api_effective_base_url.lower()
+            if base.endswith("/v1"):
+                return "/chat/completions"
+            return "/v1/chat/completions"
         return (self.gpt_chat_path or "/v1/chat/completions").strip()
 
     @property
     def gpt_api_mode_effective(self) -> str:
-        if self.text_llm_is_tokenrouter:
+        if self.text_llm_is_tokenrouter or self.text_llm_is_vibecode:
             return "chat"
         return (self.gpt_api_mode or "auto").strip().lower() or "auto"
 

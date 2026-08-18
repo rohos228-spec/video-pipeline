@@ -166,6 +166,11 @@ def _headers() -> dict[str, str]:
                 "TOKENROUTER_API_KEY пуст — задай ключ TokenRouter (Kimi K3) в .env",
                 context={"error_kind": "no_key", "provider": "tokenrouter"},
             )
+        if settings.text_llm_is_vibecode:
+            raise GptApiError(
+                "VIBECODE_API_KEY пуст — задай ключ vibecode.moe (vk-…) в .env",
+                context={"error_kind": "no_key", "provider": "vibecode"},
+            )
         raise GptApiError(
             "GPT_API_KEY пуст (и GRSAI_API_KEY тоже) — задай ключ в .env",
             context={"error_kind": "no_key", "provider": "kie"},
@@ -185,7 +190,7 @@ def _chat_url(model: str) -> str:
     base = settings.gpt_api_effective_base_url
     if not base:
         raise GptApiError(
-            "База текстового LLM пуста — задай TOKENROUTER_BASE_URL или GPT_BASE_URL",
+            "База текстового LLM пуста — задай TOKENROUTER_BASE_URL, VIBECODE_BASE_URL или GPT_BASE_URL",
             context={"error_kind": "no_base"},
         )
     if not _RELAY_BASE_LOGGED and "kie.ai" not in base.lower():
@@ -1520,6 +1525,117 @@ async def _chat_responses_stream(
     )
 
 
+def parse_chat_completions_sse_lines(lines: list[str]) -> tuple[str, str, dict[str, Any]]:
+    """Собрать текст из OpenAI-совместимого SSE ``chat/completions``."""
+    chunks: list[str] = []
+    finish = ""
+    last: dict[str, Any] = {}
+    for raw in lines:
+        line = (raw or "").strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            obj = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        last = obj
+        choices = obj.get("choices")
+        if not isinstance(choices, list) or not choices:
+            continue
+        first = choices[0] if isinstance(choices[0], dict) else {}
+        fr = first.get("finish_reason")
+        if isinstance(fr, str) and fr:
+            finish = fr
+        delta = first.get("delta") if isinstance(first.get("delta"), dict) else {}
+        piece = delta.get("content")
+        if isinstance(piece, str) and piece:
+            chunks.append(piece)
+        elif isinstance(piece, list):
+            chunks.append(
+                "".join(
+                    str(p.get("text") or "")
+                    for p in piece
+                    if isinstance(p, dict)
+                )
+            )
+        msg = first.get("message") if isinstance(first.get("message"), dict) else {}
+        mc = msg.get("content")
+        if isinstance(mc, str) and mc and not delta:
+            chunks.append(mc)
+    return "".join(chunks), finish or "stop", last
+
+
+async def _chat_completions_stream(
+    *,
+    url: str,
+    headers: dict[str, str],
+    body: dict[str, Any],
+    timeout: float,
+    use_model: str,
+) -> GptChatResult:
+    """POST chat/completions с stream=true (длинные ответы vibecode / OpenAI)."""
+    stream_body = {**body, "stream": True}
+    sto = _stream_timeout(timeout)
+    lines: list[str] = []
+    stream_err: BaseException | None = None
+    async with _async_client(timeout=sto) as client:
+        try:
+            async with client.stream(
+                "POST", url, headers=headers, json=stream_body
+            ) as resp:
+                if resp.status_code >= 400:
+                    err_txt = (await resp.aread()).decode("utf-8", errors="replace")
+                    _raise_http_status(
+                        resp.status_code, err_txt, use_model=use_model
+                    )
+                async for raw in resp.aiter_lines():
+                    if raw:
+                        lines.append(raw)
+        except GptApiError:
+            raise
+        except BaseException as e:
+            stream_err = e
+            logger.warning(
+                "GPT(chat/stream) interrupt after {} lines: {}: {}",
+                len(lines),
+                type(e).__name__,
+                e,
+            )
+    text, finish, last = parse_chat_completions_sse_lines(lines)
+    if not (text or "").strip():
+        if stream_err is not None:
+            raise GptApiError(
+                f"GPT(chat/stream) пустой output после {type(stream_err).__name__}: {stream_err}",
+                context={
+                    "retryable": True,
+                    "error_kind": "empty_stream",
+                    "sse_lines": len(lines),
+                },
+            ) from stream_err
+        raise GptApiError(
+            "GPT(chat/stream): пустой output",
+            context={"retryable": True, "error_kind": "empty_stream", "sse_lines": len(lines)},
+        )
+    usage = last.get("usage") if isinstance(last.get("usage"), dict) else {}
+    raw = dict(last) if last else {"stream_lines": len(lines)}
+    if stream_err is not None:
+        raw["sse_salvaged"] = True
+        raw["sse_interrupt"] = type(stream_err).__name__
+    return GptChatResult(
+        text=text,
+        model=use_model,
+        finish_reason=finish,
+        usage=usage,
+        raw=raw,
+        response_id=str(last.get("id") or ""),
+    )
+
+
 def _parse_choice(payload: dict[str, Any]) -> tuple[str, str]:
     """(text, finish_reason) из ответа chat/completions."""
     _check_provider_envelope(payload)
@@ -1886,6 +2002,92 @@ async def chat(
                             "cf_continued": True,
                             "cf_continue_rounds": cont_round,
                             "continue_task_id": cont.response_id or "",
+                        },
+                        response_id=result.response_id or cont.response_id,
+                    )
+                result = await _maybe_volume_complete_chat_result(
+                    result,
+                    prompt=prompt,
+                    accompanying=accompanying,
+                    input_paths=input_paths,
+                    system=system,
+                    history=history,
+                    model=use_model,
+                    temperature=temperature,
+                    timeout=use_timeout,
+                    xlsx_write_contract=xlsx_write_contract,
+                    volume_complete=volume_complete,
+                )
+                logger.info(
+                    "gpt_api.chat OK provider={} model={} attempt={} "
+                    "finish={} chars={} task_id={}",
+                    provider_label,
+                    use_model,
+                    attempt,
+                    result.finish_reason,
+                    len(result.text),
+                    result.response_id or result.raw.get("id") or "-",
+                )
+                return result
+
+            if settings.text_llm_is_vibecode:
+                result = await _chat_completions_stream(
+                    url=url,
+                    headers=headers,
+                    body=body,
+                    timeout=use_timeout,
+                    use_model=use_model,
+                )
+                cont_round = 0
+                while cont_round < 2 and looks_truncated_llm_text(result.text):
+                    cont_round += 1
+                    tail = (result.text or "")[-4000:]
+                    cont_prompt = (
+                        "Предыдущий ответ оборван сетью. Продолжи СТРОГО с места "
+                        "обрыва: не повторяй уже написанное, без пояснений — "
+                        "только продолжение текста.\n\n"
+                        f"--- хвост уже полученного ---\n{tail}\n"
+                        "--- конец хвоста ---"
+                    )
+                    cont_body = {
+                        "model": use_model,
+                        "messages": [
+                            {"role": "user", "content": cont_prompt},
+                        ],
+                    }
+                    try:
+                        cont = await _chat_completions_stream(
+                            url=url,
+                            headers=headers,
+                            body=cont_body,
+                            timeout=min(use_timeout, 180.0),
+                            use_model=use_model,
+                        )
+                    except GptApiError as e:
+                        if (result.text or "").strip() and (
+                            e.context.get("error_kind") == "empty_stream"
+                            or "пустой output" in str(e)
+                        ):
+                            logger.warning(
+                                "gpt_api.chat vibecode-continue empty — keep salvage "
+                                "chars={} ({})",
+                                len(result.text or ""),
+                                e,
+                            )
+                            break
+                        raise
+                    merged = stitch_llm_continuation(result.text, cont.text)
+                    if len(merged) <= len(result.text or ""):
+                        break
+                    result = GptChatResult(
+                        text=merged,
+                        model=use_model,
+                        finish_reason="stream_continued",
+                        usage=result.usage,
+                        raw={
+                            **(result.raw or {}),
+                            "cf_continued": True,
+                            "cf_continue_rounds": cont_round,
                         },
                         response_id=result.response_id or cont.response_id,
                     )

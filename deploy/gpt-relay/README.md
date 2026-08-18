@@ -39,10 +39,17 @@ curl -sS -H "X-VP-Relay-Token: $RELAY_TOKEN" https://gpt.example.com/__relay_hea
 
 ## Что форвардится
 
-Весь path на upstream `https://api.kie.ai` (Host: `api.kie.ai`):
-- `/codex/v1/responses` (POST + SSE)
-- `/api/v1/jobs/recordInfo` (retrieve после обрыва)
-- прочие kie-пути
+Весь path на upstream:
+- `/v1/*` → `https://vibecode.moe` (chat/completions, GPT 5.5 / 5.6 Sol)
+- всё остальное (`/codex/v1/responses`, `/api/v1/jobs/recordInfo`, …) → `https://api.kie.ai`
+
+На ПК для vibecode через тот же VPS:
+
+```env
+VIBECODE_API_KEY=vk-…
+# GPT_BASE_URL и GPT_RELAY_TOKEN — как выше (домен VPS)
+# путь /v1/chat/completions собирается сам при выборе GPT 5.5 / 5.6 Sol в Studio
+```
 
 Буферизация SSE отключена (`flush_interval -1`).
 
