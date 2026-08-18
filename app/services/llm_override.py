@@ -1,0 +1,83 @@
+"""Per-node LLM override for vibecode models (contextvar on a running step)."""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
+from dataclasses import dataclass
+from typing import Any
+
+from loguru import logger
+
+
+@dataclass(frozen=True)
+class NodeLlmOverride:
+    model_id: str
+    channel: str
+    kind: str  # text | image
+    provider: str
+    label: str
+
+
+_current: ContextVar[NodeLlmOverride | None] = ContextVar(
+    "node_llm_override", default=None
+)
+
+
+def current_override() -> NodeLlmOverride | None:
+    return _current.get()
+
+
+def current_text_model_id() -> str | None:
+    ov = current_override()
+    if ov and ov.kind == "text" and ov.model_id:
+        return ov.model_id
+    return None
+
+
+@contextmanager
+def use_override(choice: NodeLlmOverride | None) -> Iterator[NodeLlmOverride | None]:
+    token: Token[NodeLlmOverride | None] = _current.set(choice)
+    try:
+        yield choice
+    finally:
+        _current.reset(token)
+
+
+@contextmanager
+def bind_project_llm(project: Any, status: Any | None = None) -> Iterator[NodeLlmOverride | None]:
+    """Поставить модель с канвас-ноды текущего running-статуса."""
+    from app.orchestrator.node_registry import RUNNING_TO_NODE_TYPE
+    from app.services.excel_gpt_node import slot_from_running_status
+    from app.services.vibecode_catalog import resolve_node_choice
+
+    meta = getattr(project, "meta", None) if project is not None else None
+    node_key: str | None = None
+    node_type: str | None = None
+    if status is not None and slot_from_running_status(status) is not None:
+        node_type = "excel_gpt"
+        if isinstance(meta, dict):
+            node_key = str(meta.get("active_excel_gpt_node_key") or "").strip() or None
+    elif status is not None:
+        node_type = RUNNING_TO_NODE_TYPE.get(status)
+
+    choice_raw = resolve_node_choice(meta, node_key=node_key, node_type=node_type)
+    ov: NodeLlmOverride | None = None
+    if choice_raw and choice_raw.get("kind") == "text":
+        ov = NodeLlmOverride(
+            model_id=str(choice_raw["id"]),
+            channel=str(choice_raw.get("channel") or "cheap"),
+            kind="text",
+            provider=str(choice_raw.get("provider") or "vibecode"),
+            label=str(choice_raw.get("label") or choice_raw["id"]),
+        )
+        logger.info(
+            "node_llm: #{} {} → {} ({})",
+            getattr(project, "id", "?"),
+            node_key or node_type or "?",
+            ov.label,
+            ov.model_id,
+        )
+    with use_override(ov) as bound:
+        yield bound

@@ -61,6 +61,10 @@ export function workflowNodeFromCanvas(n: Node): WorkflowNode {
   // Принадлежность к импортированной группе — обводка на канвасе, не терять.
   if (typeof d.groupId === "string") data.groupId = d.groupId;
   if (typeof d.groupTitle === "string") data.groupTitle = d.groupTitle;
+  if (typeof d.modelId === "string" && d.modelId.trim()) data.modelId = d.modelId.trim();
+  if (typeof d.modelChannel === "string" && d.modelChannel.trim()) {
+    data.modelChannel = d.modelChannel.trim();
+  }
   return {
     id: n.id,
     type,

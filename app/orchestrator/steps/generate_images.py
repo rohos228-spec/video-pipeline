@@ -1456,25 +1456,21 @@ async def _generate_and_send(
             OUTSEE_PROMPT_MAX_CHARS,
         )
 
-    # Настройки картинки из проекта (с дефолтами).
+    # Настройки картинки: модель с ноды «Картинки», иначе проект.
     from app.generation_options import clamp_image_resolution_id
+    from app.services.vibecode_catalog import effective_image_generator_id
 
-    img_gen = IMAGE_GENERATORS_BY_ID.get(
-        project.image_generator or DEFAULTS["image_generator"]
-    )
+    img_gid = effective_image_generator_id(project, node_type="images")
+    img_gen = IMAGE_GENERATORS_BY_ID.get(img_gid)
     ar = ASPECT_RATIOS_BY_ID.get(
         project.aspect_ratio or DEFAULTS["aspect_ratio"]
     )
-    res_id = clamp_image_resolution_id(
-        project.image_generator, project.image_resolution
-    )
+    res_id = clamp_image_resolution_id(img_gid, project.image_resolution)
     ir = IMAGE_RESOLUTIONS_BY_ID.get(res_id)
     aspect_slug = ar.outsee_slug if ar else "9:16"
     model_slug = img_gen.outsee_slug if img_gen else None
     res_slug = ir.outsee_slug if ir else None
-    quality_slug = resolve_image_quality_slug(
-        project.image_generator, project.image_quality
-    )
+    quality_slug = resolve_image_quality_slug(img_gid, project.image_quality)
     logger.info(
         "[#{}] frame {} shot_{} attempt {} gen_id={}: outsee {}",
         project.id,

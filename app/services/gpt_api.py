@@ -158,18 +158,40 @@ def _async_client(**kwargs: Any) -> httpx.AsyncClient:
     return httpx.AsyncClient(**kwargs)
 
 
+def _node_vibecode_override() -> bool:
+    try:
+        from app.services.llm_override import current_override
+    except Exception:  # noqa: BLE001
+        return False
+    ov = current_override()
+    return bool(ov and ov.kind == "text" and ov.provider == "vibecode")
+
+
+def _override_vibecode_base_url() -> str:
+    relay = (getattr(settings, "gpt_relay_token", None) or "").strip()
+    gbase = (settings.gpt_base_url or "").strip().rstrip("/")
+    low = gbase.lower()
+    if relay and gbase and "kie.ai" not in low and "vibecode.moe" not in low:
+        return gbase
+    return (settings.vibecode_base_url or "https://vibecode.moe/v1").strip().rstrip("/")
+
+
 def _headers() -> dict[str, str]:
-    key = settings.gpt_api_effective_key
+    vibe_ov = _node_vibecode_override()
+    if vibe_ov:
+        key = (settings.vibecode_api_key or "").strip() or settings.gpt_api_effective_key
+    else:
+        key = settings.gpt_api_effective_key
     if not key:
+        if vibe_ov or settings.text_llm_is_vibecode:
+            raise GptApiError(
+                "VIBECODE_API_KEY пуст — задай ключ vibecode.moe (vk-…) в .env",
+                context={"error_kind": "no_key", "provider": "vibecode"},
+            )
         if settings.text_llm_is_tokenrouter:
             raise GptApiError(
                 "TOKENROUTER_API_KEY пуст — задай ключ TokenRouter (Kimi K3) в .env",
                 context={"error_kind": "no_key", "provider": "tokenrouter"},
-            )
-        if settings.text_llm_is_vibecode:
-            raise GptApiError(
-                "VIBECODE_API_KEY пуст — задай ключ vibecode.moe (vk-…) в .env",
-                context={"error_kind": "no_key", "provider": "vibecode"},
             )
         raise GptApiError(
             "GPT_API_KEY пуст (и GRSAI_API_KEY тоже) — задай ключ в .env",
@@ -187,7 +209,11 @@ def _headers() -> dict[str, str]:
 
 def _chat_url(model: str) -> str:
     global _RELAY_BASE_LOGGED
-    base = settings.gpt_api_effective_base_url
+    base = (
+        _override_vibecode_base_url()
+        if _node_vibecode_override()
+        else settings.gpt_api_effective_base_url
+    )
     if not base:
         raise GptApiError(
             "База текстового LLM пуста — задай TOKENROUTER_BASE_URL, VIBECODE_BASE_URL или GPT_BASE_URL",
@@ -199,7 +225,10 @@ def _chat_url(model: str) -> str:
             base,
         )
         _RELAY_BASE_LOGGED = True
-    path = (settings.gpt_chat_path_effective or "/v1/chat/completions").strip()
+    if _node_vibecode_override():
+        path = "/chat/completions" if base.lower().endswith("/v1") else "/v1/chat/completions"
+    else:
+        path = (settings.gpt_chat_path_effective or "/v1/chat/completions").strip()
     if not path.startswith("/"):
         path = "/" + path
     # kie.ai: путь зависит от модели (/{model}/v1/chat/completions).
@@ -704,6 +733,8 @@ def split_input_paths(
 
 def is_responses_mode() -> bool:
     """API формата Responses (input/output) вместо chat/completions?"""
+    if _node_vibecode_override():
+        return False
     mode = (settings.gpt_api_mode_effective or "auto").strip().lower()
     if mode == "responses":
         return True
@@ -1875,11 +1906,18 @@ async def chat(
             )
 
     headers = _headers()
-    use_model = (model or settings.gpt_model_effective or "gpt-5.5").strip()
+    from app.services.llm_override import current_text_model_id
+
+    use_model = (
+        model or current_text_model_id() or settings.gpt_model_effective or "gpt-5.5"
+    ).strip()
     url = _chat_url(use_model)
     use_timeout = float(timeout if timeout is not None else settings.gpt_timeout_s)
     retries = int(max_retries if max_retries is not None else settings.gpt_max_retries)
-    provider_label = settings.text_llm_label
+    ov_model = current_text_model_id()
+    provider_label = (
+        f"vibecode.moe ({ov_model})" if _node_vibecode_override() else settings.text_llm_label
+    )
     proxy = _gpt_proxy_url()
     logger.info(
         "text_llm.chat → {} model={} url={} proxy={}",

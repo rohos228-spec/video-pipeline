@@ -79,6 +79,7 @@ import {
   readCanvasGraph,
 } from "@/lib/canvas-graph-storage";
 import { mergeGraphNodesWithRuntime } from "@/lib/canvas-node-merge";
+import { defaultModelIdForNodeType } from "@/lib/node-model-catalog";
 import { EdgeKindControls } from "./edge-kind-controls";
 import { SoftThreadEdge } from "./soft-thread-edge";
 import { edgeKindLabel } from "@/lib/gpt-operator";
@@ -612,10 +613,13 @@ export function FlowCanvas({
           };
         }),
       );
+      if (detail.patch.modelId != null || detail.patch.modelChannel != null) {
+        scheduleSaveWorkflow();
+      }
     };
     window.addEventListener("canvas-patch-node-data", onPatch);
     return () => window.removeEventListener("canvas-patch-node-data", onPatch);
-  }, [setNodes]);
+  }, [setNodes, scheduleSaveWorkflow]);
 
   useEffect(() => {
     const onDetach = (ev: Event) => {
@@ -786,6 +790,14 @@ export function FlowCanvas({
           workMode:
             (srcData.workMode as PipelineNodeData["workMode"]) ??
             (n.data?.workMode as PipelineNodeData["workMode"]),
+          modelId:
+            (srcData.modelId as string | undefined) ??
+            (n.data?.modelId as string | undefined) ??
+            defaultModelIdForNodeType(n.type),
+          modelChannel:
+            (srcData.modelChannel as PipelineNodeData["modelChannel"]) ??
+            (n.data?.modelChannel as PipelineNodeData["modelChannel"]) ??
+            "cheap",
           status: "pending",
           progress: 0,
           progressText: null,
@@ -915,6 +927,8 @@ export function FlowCanvas({
           ...(type === "excel_gpt"
             ? { slotIndex: Math.min(excelCount + 1, 5) }
             : {}),
+          modelId: defaultModelIdForNodeType(type),
+          modelChannel: "cheap",
           status: "pending",
           progress: 0,
           progressText: null,
@@ -1125,6 +1139,8 @@ export function FlowCanvas({
               data: {
                 nodeKey: id,
                 type: "excel_feed",
+                modelId: defaultModelIdForNodeType("excel_feed"),
+                modelChannel: "cheap",
                 status: "pending",
                 progress: 0,
                 progressText: null,
@@ -1703,6 +1719,12 @@ function workflowToReactFlowNodes(
         sdAgent: (data.sd_agent ?? data.agent) as string | undefined,
         groupId: data.groupId as string | undefined,
         groupTitle: data.groupTitle as string | undefined,
+        modelId: (typeof data.modelId === "string" && data.modelId.trim())
+          ? data.modelId.trim()
+          : defaultModelIdForNodeType(n.type),
+        modelChannel: (data.modelChannel === "stable" ? "stable" : "cheap") as
+          | "cheap"
+          | "stable",
         status: (nr?.status ?? "pending") as PipelineNodeData["status"],
         progress: nr?.progress ?? 0,
         progressText: nr?.progress_text ?? null,

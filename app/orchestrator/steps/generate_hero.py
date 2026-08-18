@@ -708,19 +708,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         # 4) Генерация в outsee.
         outsee = OutseeBot(bs)
         out_dir = project.data_dir / "characters"
-        img_gen = IMAGE_GENERATORS_BY_ID.get(
-            project.image_generator or DEFAULTS["image_generator"]
-        )
+        from app.services.vibecode_catalog import effective_image_generator_id
+
+        img_gid = effective_image_generator_id(project, node_type="hero")
+        img_gen = IMAGE_GENERATORS_BY_ID.get(img_gid)
         # Aspect ratio и Relax для hero жёстко захардкожены: 16:9 + Relax=ON.
         # См. HERO_ASPECT_RATIO / HERO_RELAX в верху файла.
         ir = IMAGE_RESOLUTIONS_BY_ID.get(
-            clamp_image_resolution_id(
-                project.image_generator, project.image_resolution
-            )
+            clamp_image_resolution_id(img_gid, project.image_resolution)
         )
-        quality_slug = resolve_image_quality_slug(
-            project.image_generator, project.image_quality
-        )
+        quality_slug = resolve_image_quality_slug(img_gid, project.image_quality)
 
         short_uuid = uuid.uuid4().hex[:8]
         file_name = f"hero_{hero_idx}_v{v_idx}_{short_uuid}.png"
@@ -1279,17 +1276,14 @@ async def _generate_one_excel_character(
 
         # Генератор / разрешение / aspect_ratio — те же дефолты что в
         # обычном hero (16:9, Relax=ON).
-        img_gen = IMAGE_GENERATORS_BY_ID.get(
-            project.image_generator or DEFAULTS["image_generator"]
-        )
+        from app.services.vibecode_catalog import effective_image_generator_id
+
+        img_gid = effective_image_generator_id(project, node_type="hero")
+        img_gen = IMAGE_GENERATORS_BY_ID.get(img_gid)
         ir = IMAGE_RESOLUTIONS_BY_ID.get(
-            clamp_image_resolution_id(
-                project.image_generator, project.image_resolution
-            )
+            clamp_image_resolution_id(img_gid, project.image_resolution)
         )
-        quality_slug = resolve_image_quality_slug(
-            project.image_generator, project.image_quality
-        )
+        quality_slug = resolve_image_quality_slug(img_gid, project.image_quality)
 
         from app.services.img_streams import acquire_image_slot
 

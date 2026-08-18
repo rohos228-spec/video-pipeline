@@ -29,6 +29,7 @@ import { StoragePanel } from "./storage-panel";
 import { HeroConfigPanel } from "./hero-config-panel";
 import { AssembleMontageTrigger } from "./assemble-montage-board";
 import { GptOperatorCardPanel } from "./gpt-operator-card-panel";
+import { NodeModelPicker } from "./node-model-picker";
 
 import {
   excelGptAttachmentChipTitle,
@@ -59,6 +60,10 @@ export interface PipelineNodeData extends Record<string, unknown> {
   /** Импортированная группа (штамп при вставке группы) — рамка на канвасе. */
   groupId?: string;
   groupTitle?: string;
+  /** Выбранная модель vibecode (id каталога). */
+  modelId?: string;
+  /** cheap | stable — канал цен. */
+  modelChannel?: "cheap" | "stable" | string;
   status: NodeRunStatus;
   progress: number;
   progressText: string | null;
@@ -250,15 +255,12 @@ export function PipelineNode({ data, selected }: NodeProps) {
                     {statusConfig.label}
                   </span>
                 </div>
-                <span className="mt-0.5 line-clamp-2 text-[10.5px] leading-snug text-muted-foreground">
-                  {isExcelGpt
-                    ? isBranchingRole(d.role || d.workMode)
-                      ? "Две исходящие: «Ок» и «Не ок». Вход от прошлых — в пульте."
-                      : "Вход от прошлых нод и роли — в пульте. На стрелке: связь / ок / не ок."
-                    : isStorage
-                      ? "Хранилище всех входящих файлов. Имя: номерНоды_время_файл."
-                      : spec.description}
-                </span>
+                <NodeModelPicker
+                  nodeKey={d.nodeKey}
+                  nodeType={d.type}
+                  modelId={d.modelId}
+                  modelChannel={d.modelChannel}
+                />
                 {isSdAgent ? (
                   <div className="mt-1.5 flex flex-wrap gap-1">
                     <span className="rounded-full border border-violet-400/25 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-medium text-violet-100/90">

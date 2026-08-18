@@ -32,7 +32,6 @@ from app.bots.outsee import (
     OutseeImageError,
 )
 from app.generation_options import (
-    DEFAULTS,
     IMAGE_GENERATORS_BY_ID,
     IMAGE_RESOLUTIONS_BY_ID,
     clamp_image_resolution_id,
@@ -103,17 +102,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
 
     style = _items_style_prompt(project)
-    img_gen = IMAGE_GENERATORS_BY_ID.get(
-        project.image_generator or DEFAULTS["image_generator"]
-    )
+    from app.services.vibecode_catalog import effective_image_generator_id
+
+    img_gid = effective_image_generator_id(project, node_type="items")
+    img_gen = IMAGE_GENERATORS_BY_ID.get(img_gid)
     ir = IMAGE_RESOLUTIONS_BY_ID.get(
-        clamp_image_resolution_id(
-            project.image_generator, project.image_resolution
-        )
+        clamp_image_resolution_id(img_gid, project.image_resolution)
     )
-    quality_slug = resolve_image_quality_slug(
-        project.image_generator, project.image_quality
-    )
+    quality_slug = resolve_image_quality_slug(img_gid, project.image_quality)
 
     already_done = await _existing_item_indices(session, project)
     out_dir = project.data_dir / "items"
