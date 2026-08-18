@@ -61,7 +61,7 @@ def test_split_into_n_preserves_order() -> None:
 
 
 def test_plan_db_frames_slices_img_pr(tmp_path) -> None:
-    frames = [{"uuid": f"u{i:03d}", "number": i} for i in range(1, 40)]
+    frames = [{"uuid": f"u{i:03d}", "number": i} for i in range(1, 172)]
     path = tmp_path / "db_frames.json"
     path.write_text(
         json.dumps({"source": "db_v2", "frames": frames}, ensure_ascii=False),
@@ -70,8 +70,13 @@ def test_plan_db_frames_slices_img_pr(tmp_path) -> None:
     prompt = tmp_path / "prompt_img_pr_x.txt"
     prompt.write_text("img", encoding="utf-8")
     slices = plan_db_frames_slices([prompt, path])
-    # 39*4000/228000 = ceil(0.68) = 1 → не режем
-    assert slices is None
+    assert slices is not None
+    assert len(slices) == 3
+    total = 0
+    for p in slices:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        total += len(data["frames"])
+    assert total == 171
 
 
 def test_plan_db_frames_slices_by_vo_file(tmp_path) -> None:
