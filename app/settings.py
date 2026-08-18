@@ -124,6 +124,8 @@ class Settings(BaseSettings):
     gpt_api_mode: str = Field("auto", alias="GPT_API_MODE")
     gpt_timeout_s: float = Field(600.0, alias="GPT_TIMEOUT_S")
     gpt_max_retries: int = Field(4, alias="GPT_MAX_RETRIES")
+    # 0 = ждать EOF SSE (не рвать по GPT_TIMEOUT). >0 = httpx read timeout.
+    gpt_stream_read_timeout_s: float = Field(0.0, alias="GPT_STREAM_READ_TIMEOUT_S")
     # HTTP/SOCKS5 для GPT/kie. Пусто = напрямую. Не путать с TELEGRAM_PROXY_URL.
     gpt_proxy_url: str | None = Field(None, alias="GPT_PROXY_URL")
     # Свой VPS-relay (deploy/gpt-relay): GPT_BASE_URL=https://gpt.example.com
