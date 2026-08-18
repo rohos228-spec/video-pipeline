@@ -298,6 +298,18 @@ async def patch_project(
     p = await session.get(Project, project_id)
     if p is None:
         raise HTTPException(status_code=404, detail="project not found")
+    from app.generation_options import (
+        IMAGE_GENERATORS_BY_ID,
+        VIDEO_GENERATORS_BY_ID,
+        clamp_image_resolution_id,
+    )
+
+    img_gid = payload.get("image_generator")
+    if "image_generator" in payload and img_gid and img_gid not in IMAGE_GENERATORS_BY_ID:
+        raise HTTPException(status_code=400, detail=f"unknown image_generator: {img_gid}")
+    vid_gid = payload.get("video_generator")
+    if "video_generator" in payload and vid_gid and vid_gid not in VIDEO_GENERATORS_BY_ID:
+        raise HTTPException(status_code=400, detail=f"unknown video_generator: {vid_gid}")
     ALLOWED = {
         "title", "topic", "hero_mode", "general_plan", "hero_description", "script_text",
         "image_generator", "aspect_ratio", "image_resolution", "image_quality", "image_relax",
@@ -329,6 +341,10 @@ async def patch_project(
             setattr(p, k, v)
             if k in ("prompt_overrides", "gpt_text_overrides"):
                 flag_modified(p, k)
+    if "image_generator" in payload:
+        p.image_resolution = clamp_image_resolution_id(
+            p.image_generator, p.image_resolution
+        )
     # Контроль только ИИ — ручной режим убран.
     meta_now = dict(p.meta or {}) if isinstance(p.meta, dict) else {}
     if meta_now.get("ai_control") is not True:

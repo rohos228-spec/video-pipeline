@@ -1828,7 +1828,10 @@ export const api = {
   wizardCatalog: () =>
     http<{
       questions: { field: string; title: string; choices: { id: string; label: string }[]; cols: number }[];
+      image_generators?: { id: string; label: string; description?: string }[];
+      video_generators?: { id: string; label: string; description?: string }[];
       image_resolutions_by_generator?: Record<string, string[]>;
+      defaults?: { image_generator?: string; video_generator?: string };
     }>(`/api/generation-options/wizard`),
   listGenerationConfigPresets: () =>
     http<{
