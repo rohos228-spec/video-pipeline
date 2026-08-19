@@ -44,13 +44,18 @@ def test_launcher_ps1_no_unicode_dashes() -> None:
         assert ELLIPSIS_UTF8 not in data, f"{rel} contains U+2026 ellipsis"
 
 
-def test_preflight_python_uses_here_string() -> None:
-    """`; from` inside a double-quoted python -c is a PS parser error if the string breaks."""
+def test_preflight_python_avoids_ps51_quote_trap() -> None:
+    """Win/PS 5.1 mangles multiline python -c with print(\"...\") into SyntaxError."""
     root = Path(__file__).resolve().parents[1]
     for rel in ("scripts/studio.ps1", "scripts/run-backend.ps1"):
         text = (root / rel).read_text(encoding="utf-8-sig")
-        assert "$preflightPy = @'" in text, f"{rel} must pass create_app preflight as a here-string"
         assert "from app.web.api import create_app" in text
+        assert "print('create_app OK')" in text, (
+            f"{rel} must use single-quoted print in python -c (not print(\"...\"))"
+        )
+        assert 'print("create_app OK")' not in text, (
+            f"{rel} still has print(\"create_app OK\") which breaks under python -c on Windows"
+        )
         assert not re.search(
             r'-c\s+"[^"]*from\s+app\.web',
             text,

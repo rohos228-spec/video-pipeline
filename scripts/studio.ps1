@@ -379,13 +379,9 @@ function Start-StudioBackendWindow {
     Set-StudioNvidiaEnv
     # Не глотать stderr и не pipe в Out-Null: в PS 5.1 $LASTEXITCODE после pipe
     # часто null, а ($null -ne 0) = $true -> ложный FAIL create_app.
-    # Here-string: PS 5.1 must not see `; from` inside a double-quoted -c string.
-    $preflightPy = @'
-import app.bootstrap_env
-from app.web.api import create_app
-create_app()
-print("create_app OK")
-'@
+    # Одна строка + одинарные кавычки: multiline here-string в `python -c`
+    # на Win/PS 5.1 ломает print("...") → SyntaxError: '(' was never closed.
+    $preflightPy = "import app.bootstrap_env; from app.web.api import create_app; create_app(); print('create_app OK')"
     $preflightOut = @(& $py -c $preflightPy 2>&1)
     $preflightCode = if ($null -eq $LASTEXITCODE) { 1 } else { [int]$LASTEXITCODE }
     $preflightOk = ($preflightCode -eq 0) -and ($preflightOut -match "create_app OK")
