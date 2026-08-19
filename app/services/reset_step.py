@@ -45,32 +45,50 @@ from app.services.project_state import compute_actual_status
 # Внутренние «wipe»-функции — каждая чистит выход одного логического шага.
 
 _BACKUP_ON_WIPE_KINDS = frozenset(
-    {ArtifactKind.hero_reference, ArtifactKind.item_reference}
+    {
+        ArtifactKind.hero_reference,
+        ArtifactKind.item_reference,
+        ArtifactKind.scene_image,
+        ArtifactKind.scene_video,
+    }
 )
 
 
 def _backup_artifact_file_before_wipe(project: Project, path: Path) -> Path | None:
-    """Копия рефа в data/.../old/characters|items/ перед удалением."""
+    """Копия артефакта в data/.../old/characters|items|scenes|videos/ перед удалением."""
     if not path.is_file():
         return None
     if "characters" in path.parts:
         sub = "characters"
     elif "items" in path.parts:
         sub = "items"
+    elif "scenes" in path.parts:
+        sub = "scenes"
+    elif "videos" in path.parts:
+        sub = "videos"
     else:
         sub = "refs"
     dest_dir = project.data_dir / "old" / sub
     dest_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     dest = dest_dir / f"{ts}_{path.name}"
-    shutil.copy2(path, dest)
-    logger.info(
-        "[#{}] reset_step: backup {} -> {}",
-        project.id,
-        path.name,
-        dest,
-    )
-    return dest
+    try:
+        shutil.copy2(path, dest)
+        logger.info(
+            "[#{}] reset_step: backup {} -> {}",
+            project.id,
+            path.name,
+            dest,
+        )
+        return dest
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] reset_step: backup {} failed: {}",
+            project.id,
+            path.name,
+            e,
+        )
+        return None
 
 
 async def _wipe_artifacts_db_only(
@@ -202,6 +220,8 @@ async def _wipe_split(session: AsyncSession, project: Project) -> dict[str, Any]
             p = Path(a.path)
             if p.exists():
                 try:
+                    if a.kind in _BACKUP_ON_WIPE_KINDS:
+                        _backup_artifact_file_before_wipe(project, p)
                     p.unlink()
                     files_deleted += 1
                 except Exception:  # noqa: BLE001
