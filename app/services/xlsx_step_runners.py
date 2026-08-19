@@ -759,31 +759,13 @@ async def run_img_pr_xlsx(
 
     from collections import deque
 
-    from app.services.volume_batches import (
-        inferred_batch_size,
-        plan_remainder_batches,
-        rechunk_tail,
-    )
+    from app.services.adaptive_llm_batches import next_split_level, split_in_half
 
-    from app.services.output_batch_plan import (
-        IMG_PR_BATCH_CHAR_BUDGET,
-        IMG_PR_CHARS_PER_FRAME,
-        pack_frames_img_pr,
-    )
-
-    # img_pr: батчи = ceil(n_frames * 4000 / 228000). Параллель — gpt_api.chat.
-    planned = pack_frames_img_pr(frames)
-    batch_size = max((len(b) for b in planned), default=ipb.plan_batch_size(len(frames)))
-    # Один attach со всеми кадрами: gpt_api.auto_pack режет по той же формуле.
-    work: deque[list] = deque([frames])
+    # Сначала один батч на все кадры. Ошибка → 2, снова → 4.
+    work: deque[tuple[list, int]] = deque([(frames, 1)])
     logger.info(
-        "img_pr_db: frames={} plan_batches={} sizes={} "
-        "(chars/frame={} budget={}) checkpoint_done={}",
+        "img_pr_db: frames={} adaptive 1→2→4 checkpoint_done={}",
         len(frames),
-        len(planned),
-        [len(b) for b in planned],
-        IMG_PR_CHARS_PER_FRAME,
-        IMG_PR_BATCH_CHAR_BUDGET,
         len(done_set),
     )
 
@@ -797,7 +779,7 @@ async def run_img_pr_xlsx(
     gpt = get_gpt_client()
 
     async def _run_batches() -> None:
-        nonlocal done_uuids, all_ops, done_set, batch_size, api_batches
+        nonlocal done_uuids, all_ops, done_set, api_batches
         await gpt.new_conversation()
         history: list[dict[str, str]] = []
         bi = 0
@@ -805,7 +787,7 @@ async def run_img_pr_xlsx(
 
         while work:
             raise_if_cancelled(project.id)
-            batch = work.popleft()
+            batch, level = work.popleft()
             if not batch:
                 continue
             bi += 1
@@ -915,6 +897,7 @@ async def run_img_pr_xlsx(
                     expect_file_download=False,
                     history=use_history,
                     treat_txt_as_prompt=treat_txt,
+                    auto_pack=False,
                 )
                 replies.append(last_reply or "")
                 batch_ops = ipb.parse_img_pr_ops(
@@ -941,17 +924,31 @@ async def run_img_pr_xlsx(
                 )
 
             if not batch_ops:
+                nxt = next_split_level(level)
+                if nxt is not None and len(batch) >= 2:
+                    parts = split_in_half(batch)
+                    for half in reversed(parts):
+                        work.appendleft((half, nxt))
+                    logger.warning(
+                        "img_pr_db: no ops L{} frames={} → split {} "
+                        "(queue={})",
+                        level,
+                        len(batch),
+                        nxt,
+                        len(work),
+                    )
+                    continue
                 if all_ops:
                     logger.error(
-                        "img_pr_db: batch {}/{} failed — возвращаю partial "
+                        "img_pr_db: batch {} L{} failed — возвращаю partial "
                         "ops={} (чекпоинт есть, soft retry добьёт)",
                         bi,
-                        batch_n,
+                        level,
                         len(all_ops),
                     )
                     return
                 raise RuntimeError(
-                    f"img_pr batch {bi}/{batch_n}: нет apply-ops "
+                    f"img_pr batch {bi} L{level}: нет apply-ops "
                     f"(reply_len={len(last_reply or '')}). "
                     f"Смотри tmp_gpt/img_pr_rejected_b{bi}_*.txt"
                 )
@@ -964,7 +961,7 @@ async def run_img_pr_xlsx(
             history.append(
                 {
                     "role": "assistant",
-                    "content": f"OK batch {bi}/{batch_n}: {len(batch_ops)} ops.",
+                    "content": f"OK batch {bi} L{level}: {len(batch_ops)} ops.",
                 }
             )
 
@@ -988,48 +985,38 @@ async def run_img_pr_xlsx(
             )
             missing_uuids = expected - got_uuids
             logger.info(
-                "img_pr_db: batch {}/{} ops=+{} total={} missing={} "
+                "img_pr_db: batch {} L{} ops=+{} total={} missing={} "
                 "(checkpoint only, DB apply once at end)",
                 bi,
-                batch_n,
+                level,
                 len(kept_ops),
                 len(all_ops),
                 len(missing_uuids),
             )
 
-            # Частичный ответ = объём превышен → добор / нарезка ~80%.
-            if missing_uuids and got_uuids:
+            if missing_uuids:
                 missing_frames = [
                     fr
                     for fr in batch
                     if (fr.uuid or "").strip() in missing_uuids
                 ]
-                delivered = len(got_uuids)
-                extras = plan_remainder_batches(
-                    missing_frames, delivered=delivered
-                )
-                new_size = inferred_batch_size(delivered)
-                tail: list = []
-                while work:
-                    tail.extend(work.popleft())
-                requeued = extras + rechunk_tail(tail, size=new_size)
-                work.extend(requeued)
-                batch_size = new_size
-                logger.warning(
-                    "img_pr_db: volume partial got={}/{} → remainder_batches={} "
-                    "new_batch_size={} (queue_left={})",
-                    delivered,
-                    len(expected),
-                    len(extras),
-                    new_size,
-                    len(work),
-                )
-            elif missing_uuids and not got_uuids:
-                logger.warning(
-                    "img_pr_db: batch {} — ops без uuid батча, missing={}",
-                    bi,
-                    len(missing_uuids),
-                )
+                nxt = next_split_level(level)
+                if nxt is not None and len(missing_frames) >= 2:
+                    for half in reversed(split_in_half(missing_frames)):
+                        work.appendleft((half, nxt))
+                    logger.warning(
+                        "img_pr_db: incomplete {}/{} → split L{} (queue={})",
+                        len(got_uuids),
+                        len(expected),
+                        nxt,
+                        len(work),
+                    )
+                else:
+                    logger.warning(
+                        "img_pr_db: still missing {} uuid L{} — stop split",
+                        len(missing_uuids),
+                        level,
+                    )
 
     await xgf.run_under_xlsx_lock(project.id, "img_pr", _run_batches)
 

@@ -1016,95 +1016,70 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         ):
             from app.services.apply_ops_batches import (
                 run_apply_ops_batched,
-                should_batch_apply_ops,
             )
             from app.services import db_apply as _db_apply
             from app.services.node_write_contract import filter_ops_for_node
 
-            pending_n = len(db_ctx.get("frames") or [])
-            raw_n = ctx_path.stat().st_size if ctx_path.exists() else 0
-            if should_batch_apply_ops(
-                n_frames=pending_n,
-                json_bytes=raw_n,
+            async def _apply_batch(payload: dict) -> None:
+                from app.services.db_apply import FIELD_ALIASES
+
+                ops = filter_ops_for_node(
+                    list(payload.get("ops") or []),
+                    node_kind="excel_gpt_no_prompts",
+                )
+                # Shot-fill не должен затирать закадр/смысл, если
+                # volume-continue подмешал чужую схему полей.
+                _drop = {"voiceover_text", "meaning"}
+                cleaned: list[dict] = []
+                for op in ops:
+                    fields = op.get("fields")
+                    if not isinstance(fields, dict):
+                        cleaned.append(op)
+                        continue
+                    kept = {}
+                    for k, v in fields.items():
+                        canon = FIELD_ALIASES.get(
+                            str(k).strip().lower().replace(" ", "_"),
+                            str(k),
+                        )
+                        if canon in _drop:
+                            continue
+                        kept[k] = v
+                    if not kept:
+                        continue
+                    new_op = dict(op)
+                    new_op["fields"] = kept
+                    cleaned.append(new_op)
+                ops = cleaned
+                await _db_apply.apply_ops(
+                    session,
+                    project,
+                    ops,
+                    export_xlsx=bool(payload.get("export_xlsx", False)),
+                    node_kind="excel_gpt_no_prompts",
+                )
+                await session.commit()
+                await session.refresh(project)
+
+            logger.info(
+                "[#{}] enrich_xlsx node={!r}: apply-ops adaptive "
+                "1→2→4 (dense shot fill)",
+                project.id,
+                node_key,
+            )
+            api_res = await run_apply_ops_batched(
+                project_dir=project.data_dir,
+                node_key=node_key,
+                role=role,
+                output_mode=output_mode,
+                prompt=master or "",
+                accompanying=accompanying,
+                db_ctx=db_ctx,
+                ctx_path=ctx_path,
+                project_id=project.id,
                 dense=True,
-                target_batches=5,
-            ):
-                async def _apply_batch(payload: dict) -> None:
-                    from app.services.db_apply import FIELD_ALIASES
-
-                    ops = filter_ops_for_node(
-                        list(payload.get("ops") or []),
-                        node_kind="excel_gpt_no_prompts",
-                    )
-                    # Shot-fill не должен затирать закадр/смысл, если
-                    # volume-continue подмешал чужую схему полей.
-                    _drop = {"voiceover_text", "meaning"}
-                    cleaned: list[dict] = []
-                    for op in ops:
-                        fields = op.get("fields")
-                        if not isinstance(fields, dict):
-                            cleaned.append(op)
-                            continue
-                        kept = {}
-                        for k, v in fields.items():
-                            canon = FIELD_ALIASES.get(
-                                str(k).strip().lower().replace(" ", "_"),
-                                str(k),
-                            )
-                            if canon in _drop:
-                                continue
-                            kept[k] = v
-                        if not kept:
-                            continue
-                        new_op = dict(op)
-                        new_op["fields"] = kept
-                        cleaned.append(new_op)
-                    ops = cleaned
-                    await _db_apply.apply_ops(
-                        session,
-                        project,
-                        ops,
-                        export_xlsx=bool(payload.get("export_xlsx", False)),
-                        node_kind="excel_gpt_no_prompts",
-                    )
-                    await session.commit()
-                    await session.refresh(project)
-
-                logger.info(
-                    "[#{}] enrich_xlsx node={!r}: apply-ops 5 sequential "
-                    "batches (dense shot fill)",
-                    project.id,
-                    node_key,
-                )
-                api_res = await run_apply_ops_batched(
-                    project_dir=project.data_dir,
-                    node_key=node_key,
-                    role=role,
-                    output_mode=output_mode,
-                    prompt=master or "",
-                    accompanying=accompanying,
-                    db_ctx=db_ctx,
-                    ctx_path=ctx_path,
-                    project_id=project.id,
-                    dense=True,
-                    apply_fn=_apply_batch,
-                    target_batches=5,
-                )
-            else:
-                api_res = await run_operator_api(
-                    project_dir=project.data_dir,
-                    node_key=node_key,
-                    role=role,
-                    output_mode=output_mode,
-                    prompt=master or "",
-                    accompanying=accompanying,
-                    input_paths=data_paths,
-                    check_mode=check_mode,
-                    check_fix=check_fix,
-                    source_prompt_keys=source_prompt_keys,
-                    check_streams=check_streams_n,
-                    db_sot_check=db_sot_check,
-                )
+                apply_fn=_apply_batch,
+            )
         else:
             api_res = await run_operator_api(
                 project_dir=project.data_dir,
