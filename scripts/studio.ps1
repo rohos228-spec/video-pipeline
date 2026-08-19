@@ -1,4 +1,4 @@
-# Единый лаунчер Video Pipeline Studio (меню на русском)
+﻿# Единый лаунчер Video Pipeline Studio (меню на русском)
 # Вызывается из STUDIO.cmd в корне репозитория.
 
 param(
@@ -68,6 +68,49 @@ function Sync-StudioPcBranchToEnv {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
     Set-Content -LiteralPath $EnvFile -Value $lines -Encoding UTF8
+    return $true
+}
+
+function Get-StudioEnvValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Key
+    )
+    if (-not (Test-Path -LiteralPath $Path)) { return "" }
+    $rx = "^\s*$([regex]::Escape($Key))\s*=\s*(.*)\s*$"
+    foreach ($line in Get-Content -LiteralPath $Path -Encoding UTF8 -ErrorAction SilentlyContinue) {
+        if ($line -match $rx) {
+            return $Matches[1].Trim().Trim('"').Trim("'")
+        }
+    }
+    return ""
+}
+
+function Sync-VibecodeApiKeyToEnv {
+    # Существующий .env на ПК не перезаписывается из example при git pull.
+    # Если ключ пустой — взять из .env.example.
+    $example = Join-Path $Root ".env.example"
+    $want = Get-StudioEnvValue -Path $example -Key "VIBECODE_API_KEY"
+    if (-not $want) { return $false }
+    $have = Get-StudioEnvValue -Path $EnvFile -Key "VIBECODE_API_KEY"
+    if ($have) { return $false }
+    $lines = @()
+    $found = $false
+    if (Test-Path -LiteralPath $EnvFile) {
+        $lines = @(Get-Content -LiteralPath $EnvFile -Encoding UTF8 -ErrorAction SilentlyContinue)
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '^\s*VIBECODE_API_KEY\s*=') {
+                $lines[$i] = "VIBECODE_API_KEY=$want"
+                $found = $true
+                break
+            }
+        }
+    }
+    if (-not $found) {
+        $lines += "VIBECODE_API_KEY=$want"
+    }
+    Set-Content -LiteralPath $EnvFile -Value $lines -Encoding UTF8
+    Write-StudioMsg "OK: в .env записан VIBECODE_API_KEY (из .env.example)" "Green"
     return $true
 }
 
@@ -447,6 +490,7 @@ function Invoke-StudioRecoverPromptsFromAllStashes {
 
 function Invoke-StudioStart {
     Write-StudioMsg "=== [1] Запуск студии ===" "Cyan"
+    Sync-VibecodeApiKeyToEnv | Out-Null
     if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
         Write-StudioMsg "ВНИМАНИЕ: web/out отсутствует. Сначала [6] Починить установку." "Yellow"
     }
