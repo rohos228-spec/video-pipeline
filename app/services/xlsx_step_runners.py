@@ -518,59 +518,6 @@ async def run_split_xlsx(
             '{"ops":[{"target":"replace_frames","frames":[...]}]}'
         )
 
-    from app.services.node_step_params import split_cell_limits_from_project
-    from app.services.voiceover_split_local import (
-        enforce_split_cell_limits,
-        frames_spec_cell_stats,
-    )
-
-    mn, mx, amn, amx = split_cell_limits_from_project(project)
-    if mn is not None or mx is not None:
-        before = frames_spec_cell_stats(frames_spec)
-        texts = [
-            str(
-                item.get("закадр")
-                or item.get("voiceover_text")
-                or item.get("voiceover")
-                or ""
-            ).strip()
-            for item in frames_spec
-            if isinstance(item, dict)
-        ]
-        enforced = enforce_split_cell_limits(
-            texts, min_chars=mn, max_chars=mx, avg_min=amn, avg_max=amx
-        )
-        if len(enforced) >= 2:
-            frames_spec = [{"закадр": t} for t in enforced]
-            after = frames_spec_cell_stats(frames_spec)
-            logger.info(
-                "split_db: enforce cell limits {}-{} → frames {}→{} "
-                "len min/avg/max {}/{}/{} → {}/{}/{}",
-                mn,
-                mx,
-                before.get("n"),
-                after.get("n"),
-                before.get("min"),
-                before.get("avg"),
-                before.get("max"),
-                after.get("min"),
-                after.get("avg"),
-                after.get("max"),
-            )
-            lo = mn if mn is not None else 1
-            hi = mx if mx is not None else 10_000
-            bad = [
-                len(str(it.get("закадр") or ""))
-                for it in frames_spec
-                if not (lo <= len(str(it.get("закадр") or "")) <= hi)
-            ]
-            if bad:
-                raise RuntimeError(
-                    "split_db: после enforce лимиты "
-                    f"{lo}-{hi} всё ещё нарушены "
-                    f"(outside={len(bad)}, sample_lens={bad[:8]})"
-                )
-
     logger.info("split_db: кадров из GPT/fallback={}", len(frames_spec))
     return XlsxRoundtripResult(
         reply_text=reply,

@@ -1,18 +1,14 @@
-"""Жёсткое применение лимитов символов после GPT-разбивки."""
+"""Регрессии split: reconcile + params в промпте (без post-GPT enforce)."""
 
 from __future__ import annotations
 
-from app.models import Project
+from app.models import NodeRun, NodeRunStatus, Project, ProjectStatus
 from app.services.node_step_params import (
+    build_split_params_block,
     split_cell_limits_from_project,
     split_params_fingerprint,
 )
 from app.services.run_sync import _node_already_succeeded_for_project
-from app.models import NodeRun, NodeRunStatus, ProjectStatus
-from app.services.voiceover_split_local import (
-    enforce_split_cell_limits,
-    frames_spec_cell_stats,
-)
 
 
 def test_split_cell_limits_from_project() -> None:
@@ -30,75 +26,14 @@ def test_split_cell_limits_from_project() -> None:
     lim = split_cell_limits_from_project(p)
     assert lim == (27, 54, 27, 52)
     assert split_params_fingerprint(p) == "27:54:27:52"
-
-
-def test_enforce_merges_short_and_splits_long() -> None:
-    blocks = [
-        "короткий раз.",
-        "ещё кусок.",
-        "А" * 90,
-    ]
-    out = enforce_split_cell_limits(
-        blocks, min_chars=20, max_chars=40, avg_min=25, avg_max=35
-    )
-    assert len(out) >= 2
-    lens = [len(b) for b in out]
-    assert min(lens) >= 20
-    assert max(lens) <= 40
-    assert "".join(out).replace(" ", "") == "".join(blocks).replace(" ", "")
-
-
-def test_enforce_keeps_ok_blocks() -> None:
-    blocks = ["x" * 30, "y" * 35, "z" * 28]
-    out = enforce_split_cell_limits(
-        blocks, min_chars=27, max_chars=54, avg_min=27, avg_max=52
-    )
-    assert out == blocks
-
-
-def test_enforce_no_short_tails_between_full_neighbors() -> None:
-    """Регресс #33: хвосты 8–20 между соседями ~54 не должны выживать."""
-
-    def fill_near(n: int, token: str = "слово") -> str:
-        parts: list[str] = []
-        while len(" ".join(parts + [token])) <= n:
-            parts.append(token)
-        return " ".join(parts) if parts else token[:n]
-
-    blocks = [
-        fill_near(53),
-        "хвост мал",
-        fill_near(52),
-        "ещё хвост!",
-        fill_near(50),
-        "коротыш тут",
-        fill_near(49),
-    ]
-    out = enforce_split_cell_limits(
-        blocks, min_chars=27, max_chars=54, avg_min=27, avg_max=52
-    )
-    assert len(out) >= 2
-    lens = [len(b) for b in out]
-    assert min(lens) >= 27, lens
-    assert max(lens) <= 54, lens
-    assert "".join(out).replace(" ", "") == "".join(blocks).replace(" ", "")
-
-
-def test_frames_spec_stats() -> None:
-    spec = [{"закадр": "a" * 10}, {"закадр": "b" * 40}]
-    st = frames_spec_cell_stats(spec)
-    assert st["n"] == 2
-    assert st["min"] == 10
-    assert st["max"] == 40
+    block = build_split_params_block(p)
+    assert "27" in block and "54" in block
 
 
 def test_split_not_succeeded_without_split_completed() -> None:
-    """Reconcile не должен красить n_split в done, если split_completed нет.
-
-    Иначе после ▶ разбивки поверх живого enrich нода становится ✅ без GPT.
-    """
+    """Reconcile не красит n_split в done без split_completed."""
     p = Project(topic="t", status=ProjectStatus.enrich_1_ready)
-    p.meta = {}  # split_completed отсутствует
+    p.meta = {}
     nr = NodeRun(
         workflow_run_id=1,
         node_key="n_split",
@@ -109,3 +44,14 @@ def test_split_not_succeeded_without_split_completed() -> None:
 
     p.meta = {"split_completed": True}
     assert _node_already_succeeded_for_project(p, nr) is True
+
+
+def test_split_pipeline_has_no_post_gpt_enforce() -> None:
+    """Split пишет GPT frames as-is — без enforce_split_cell_limits."""
+    from pathlib import Path
+
+    runners = Path("app/services/xlsx_step_runners.py").read_text(encoding="utf-8")
+    frames = Path("app/orchestrator/steps/split_frames.py").read_text(encoding="utf-8")
+    assert "enforce_split_cell_limits" not in runners
+    assert "enforce_split_cell_limits" not in frames
+    assert "после enforce" not in runners

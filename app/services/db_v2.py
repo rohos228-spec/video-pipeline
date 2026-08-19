@@ -69,8 +69,10 @@ async def replace_all_frames(
 ) -> list[Frame]:
     """Полная замена кадров проекта (шаг split, DB SoT).
 
-    ``specs`` — список ``{"voiceover_text"|"закадр": str, "duration_seconds"|"длительность"?: float}``.
+    ``specs`` — список ``{"voiceover_text"|"закадр": str,
+    "duration_seconds"|"длительность"?: float, "uuid"?: str, "meaning"|"смысл"?: str}``.
     Артефакты отвязываются (frame_id=NULL), не удаляются с диска.
+    Если в spec есть ``uuid`` — сохраняем его (restore / import), иначе генерируем.
     """
     from sqlalchemy import delete, update
 
@@ -113,6 +115,7 @@ async def replace_all_frames(
         await session.flush()
 
     created: list[Frame] = []
+    seen_uuids: set[str] = set()
     for i, raw in enumerate(specs, start=1):
         if not isinstance(raw, dict):
             raise ValueError(f"replace_all_frames: кадр {i} не объект")
@@ -130,12 +133,32 @@ async def replace_all_frames(
             dur = float(dur_raw) if dur_raw is not None and dur_raw != "" else None
         except (TypeError, ValueError) as e:
             raise ValueError(f"replace_all_frames: кадр {i} длительность не число") from e
+        meaning_raw = raw.get("meaning", raw.get("смысл"))
+        meaning = (
+            str(meaning_raw).strip()
+            if meaning_raw is not None and str(meaning_raw).strip()
+            else None
+        )
+        raw_uuid = str(raw.get("uuid") or raw.get("frame_uuid") or "").strip()
+        if raw_uuid:
+            if raw_uuid in seen_uuids:
+                raise ValueError(
+                    f"replace_all_frames: дубликат uuid {raw_uuid!r} на кадре {i}"
+                )
+            seen_uuids.add(raw_uuid)
+            frame_uuid = raw_uuid
+        else:
+            frame_uuid = new_frame_uuid()
+            while frame_uuid in seen_uuids:
+                frame_uuid = new_frame_uuid()
+            seen_uuids.add(frame_uuid)
         fr = Frame(
             project_id=project.id,
             number=i,
             voiceover_text=vo,
+            meaning=meaning,
             duration_seconds=dur,
-            uuid=new_frame_uuid(),
+            uuid=frame_uuid,
             sort_key=float(i) * _SORT_STEP,
             scene_id=scene.id,
             status=FrameStatus.planned,
