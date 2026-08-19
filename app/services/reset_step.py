@@ -221,6 +221,7 @@ async def _wipe_split(session: AsyncSession, project: Project) -> dict[str, Any]
         "excel_gpt_completed_keys",
         "active_excel_gpt_node_key",
         "split_completed",
+        "split_params_applied",
         "scene_design",
         "scene_registry",
     ):
@@ -232,6 +233,50 @@ async def _wipe_split(session: AsyncSession, project: Project) -> dict[str, Any]
     return {
         "frames_deleted": len(frames),
         "frame_artifact_files": files_deleted,
+        "meta_cleared": meta_cleared,
+    }
+
+
+async def _preserve_split_on_rerun(
+    session: AsyncSession, project: Project
+) -> dict[str, Any]:
+    """Soft ▶ разбивки: НЕ удалять кадры до успешного replace_frames.
+
+    Иначе при фейле GPT / ⏹ / kill остаются 0 кадров (#33). Старые кадры
+    живут до apply_ops(replace_frames); meta.split_completed сбрасываем,
+    чтобы GPT реально пошёл.
+    """
+    from sqlalchemy import func
+
+    meta = dict(project.meta or {})
+    meta_cleared: list[str] = []
+    for key in (
+        "enrich_completed_slots",
+        "excel_gpt_completed_keys",
+        "active_excel_gpt_node_key",
+        "split_completed",
+        "split_params_applied",
+        "scene_design",
+        "scene_registry",
+    ):
+        if key in meta:
+            meta.pop(key, None)
+            meta_cleared.append(key)
+    if meta_cleared:
+        project.meta = meta
+    n_frames = int(
+        (
+            await session.execute(
+                select(func.count()).select_from(Frame).where(
+                    Frame.project_id == project.id
+                )
+            )
+        ).scalar_one()
+        or 0
+    )
+    return {
+        "frames_preserved": True,
+        "frames_count": n_frames,
         "meta_cleared": meta_cleared,
     }
 
@@ -930,6 +975,7 @@ _STEP_WIPE_BY_CODE: dict[str, Any] = dict(_PIPELINE_RESET_LEVELS)
 # «Запустить шаг» / retry — не обнулять, а догонять с xlsx.
 _STEP_RERUN_BY_CODE: dict[str, Any] = {
     "script": _preserve_script_source_on_rerun,
+    "split": _preserve_split_on_rerun,
     "img_pr": _resume_img_pr,
     "img": _resume_images,
     "anim_pr": _resume_anim_pr_from_xlsx,

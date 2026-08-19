@@ -95,7 +95,9 @@ def build_split_params_block(project: Project) -> str:
         f"Минимальное количество символов в ячейке {_fmt_num(float(mn) if mn else None)}\n"
         f"Максимальное количество символов в ячейке {_fmt_num(float(mx) if mx else None)}\n"
         f"Средние значения от {_fmt_num(float(amn) if amn else None)} "
-        f"до {_fmt_num(float(amx) if amx else None)}"
+        f"до {_fmt_num(float(amx) if amx else None)}\n"
+        "ЖЁСТКО: каждая ячейка закадра ДОЛЖНА быть в [min, max]. "
+        "Ячейки короче min или длиннее max — ответ отклонят, шаг упадёт."
     )
 
 

@@ -94,6 +94,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     ):
         meta.pop(key, None)
     meta["split_completed"] = True
+    from app.services.node_step_params import split_params_fingerprint
+
+    meta["split_params_applied"] = split_params_fingerprint(project)
     project.meta = meta
     project.status = ProjectStatus.frames_ready
     await session.flush()

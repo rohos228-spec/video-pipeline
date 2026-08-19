@@ -343,6 +343,46 @@ async def test_clear_step_outputs_for_rerun_script_preserves_voiceover(
 
 
 @pytest.mark.asyncio
+async def test_clear_step_outputs_split_soft_preserves_frames(session) -> None:
+    """Soft ▶ split не должен обнулять кадры до GPT (#33 → 0 frames)."""
+    p = await _mkproject(session)
+    p.meta = {"split_completed": True, "split_params_applied": "27:54:27:52"}
+    await _mkframe(session, p, 1)
+    await _mkframe(session, p, 2)
+    await session.flush()
+
+    summary = await clear_step_outputs_for_rerun(
+        session, p, "split", force_wipe=False
+    )
+
+    frames = (
+        await session.execute(select(Frame).where(Frame.project_id == p.id))
+    ).scalars().all()
+    assert len(frames) == 2
+    assert summary["split"]["frames_preserved"] is True
+    assert (p.meta or {}).get("split_completed") is None
+
+
+@pytest.mark.asyncio
+async def test_clear_step_outputs_split_force_wipe_deletes_frames(session) -> None:
+    p = await _mkproject(session)
+    p.meta = {"split_completed": True}
+    await _mkframe(session, p, 1)
+    await _mkframe(session, p, 2)
+    await session.flush()
+
+    summary = await clear_step_outputs_for_rerun(
+        session, p, "split", force_wipe=True
+    )
+
+    frames = (
+        await session.execute(select(Frame).where(Frame.project_id == p.id))
+    ).scalars().all()
+    assert len(frames) == 0
+    assert summary["split"]["frames_deleted"] == 2
+
+
+@pytest.mark.asyncio
 async def test_clear_step_outputs_for_rerun_video_preserves_mp4(
     session, tmp_path: Path, monkeypatch,
 ):
