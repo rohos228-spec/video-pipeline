@@ -518,30 +518,7 @@ async def run_split_xlsx(
             '{"ops":[{"target":"replace_frames","frames":[...]}]}'
         )
 
-    from app.services.node_step_params import split_cell_limits_from_project
-    from app.services.voiceover_split_local import (
-        assert_frames_spec_within_limits,
-        frames_spec_cell_stats,
-    )
-
-    mn, mx, _amn, _amx = split_cell_limits_from_project(project)
-    if mn is not None or mx is not None:
-        st = frames_spec_cell_stats(frames_spec)
-        logger.info(
-            "split_db: check limits {}-{} on {} frames "
-            "len min/avg/max {}/{}/{}",
-            mn,
-            mx,
-            st.get("n"),
-            st.get("min"),
-            st.get("avg"),
-            st.get("max"),
-        )
-        # Только проверка — без rewrite (auto-enforce ломал #33: 80→168/189).
-        assert_frames_spec_within_limits(
-            frames_spec, min_chars=mn, max_chars=mx
-        )
-
+    # GPT as-is → DB (≥2 кадров). Лимиты символов — только в prompt settings.
     logger.info("split_db: кадров из GPT/fallback={}", len(frames_spec))
     return XlsxRoundtripResult(
         reply_text=reply,
