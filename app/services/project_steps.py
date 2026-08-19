@@ -44,11 +44,11 @@ async def _preempt_running_for_manual_start(
         return
     from app.services.project_control import clear_user_stop_gate
     from app.services.run_sync import stop_active_running_node
-    from app.services.step_cancel import clear_stop, request_stop
+    from app.services.step_cancel import clear_stop, kill_active_generation
     from app.services.xlsx_flow_locks import clear_xlsx_flow_locks
 
     prev = project.status
-    request_stop(project.id)
+    kill_active_generation(project.id, reason="preempt_other_step")
     clear_xlsx_flow_locks(project.id)
     await stop_active_running_node(session, project)
     clear_stop(project.id)
@@ -156,13 +156,13 @@ async def start_step(
     # Ручной ▶: убить хвост предыдущего GPT/xlsx (иначе worker видит
     # is_generation_active и не стартует split, а stale enrich дописывает
     # enrich_1_ready → reconcile ложно красит n_split в done).
+    # НЕ request_stop: stop-файл → worker ложный ⏹ / user_stop mid-run.
     if explicit_ui_start:
-        from app.services.step_cancel import clear_stop, request_stop
+        from app.services.step_cancel import kill_active_generation
         from app.services.xlsx_flow_locks import clear_xlsx_flow_locks
 
-        request_stop(project.id)
+        kill_active_generation(project.id, reason="explicit_ui_start")
         clear_xlsx_flow_locks(project.id)
-        clear_stop(project.id)
 
     if is_running_status(project.status) and project.status is not step.running_status:
         cur_step = step_by_running_status(project.status)

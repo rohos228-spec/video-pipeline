@@ -402,9 +402,16 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                     logger.exception(
                         "notify_step_done({}) failed", project_id
                     )
-        except (StepCancelledError, asyncio.CancelledError):
+        except StepCancelledError:
             logger.info(
-                "[#{}] advance_project cancelled by user (⏹)",
+                "[#{}] advance_project cancelled by stop-flag (⏹)",
+                project_id,
+            )
+            fail_counts.pop(key, None)
+        except asyncio.CancelledError:
+            # task.cancel() от preempt/▶ kill_active_generation — НЕ user ⏹
+            logger.info(
+                "[#{}] advance_project CancelledError (preempt/kill, not user ⏹)",
                 project_id,
             )
             fail_counts.pop(key, None)
@@ -551,6 +558,16 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         )
                         continue
                     if is_stop_requested(p.id):
+                        from app.services.step_cancel import stop_flag_path
+
+                        stop_path = stop_flag_path(p.id)
+                        logger.warning(
+                            "worker: #{} is_stop_requested "
+                            "(file_exists={}, path={}) — stop_project_running",
+                            p.id,
+                            stop_path.exists(),
+                            stop_path,
+                        )
                         info = await stop_project_running(s, p)
                         if info["ok"]:
                             await s.commit()

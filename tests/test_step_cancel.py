@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import pytest
 
@@ -42,6 +43,53 @@ def _isolate_flags():
 def test_is_stop_requested_false_by_default() -> None:
     assert is_stop_requested(1) is False
     assert is_stop_requested(999) is False
+
+
+def test_kill_active_generation_no_stop_file() -> None:
+    """▶/preempt не должен оставлять stop-файл — иначе worker ложный ⏹."""
+    from app.services.step_cancel import (
+        is_stop_requested,
+        kill_active_generation,
+        stop_flag_path,
+    )
+
+    kill_active_generation(33, reason="explicit_ui_start")
+    assert is_stop_requested(33) is False
+    assert stop_flag_path(33).exists() is False
+
+
+@pytest.mark.asyncio
+async def test_kill_active_generation_cancels_advance_without_stop_flag() -> None:
+    from app.services.step_cancel import (
+        is_stop_requested,
+        kill_active_generation,
+        register_advance_task,
+        stop_flag_path,
+        unregister_advance_task,
+    )
+
+    started = asyncio.Event()
+
+    async def long_advance() -> None:
+        started.set()
+        await asyncio.sleep(3600)
+
+    task = asyncio.create_task(long_advance())
+    register_advance_task(44, task)
+    await started.wait()
+    try:
+        adv, _xlsx = kill_active_generation(44, reason="test")
+        assert adv is True
+        assert is_stop_requested(44) is False
+        assert stop_flag_path(44).exists() is False
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        unregister_advance_task(44)
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 def test_request_stop_marks_pid() -> None:
