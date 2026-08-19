@@ -10,10 +10,13 @@
 
 ## Два контура (не путать ключи)
 
-| Что выбрал на ноде | Куда реально идёт запрос | Ключ в `.env` | Relay |
-|---|---|---|---|
-| Любая **текстовая** модель (GPT / Claude / Gemini / Grok / Kimi) | `POST {GPT_BASE_URL}/v1/chat/completions` → VPS → **vibecode.moe** | **`VIBECODE_API_KEY`** (`vk-…`) | **`GPT_RELAY_TOKEN`** + `GPT_BASE_URL` |
-| Любая **картинка** (GPT Image / Nano Banana) | Outsee или Grsai, как `IMAGE_PROVIDER` | **`GRSAI_API_KEY`** или **`OUTSEE_API_KEY`** | не vibecode |
+| Что выбрал на ноде | Куда реально идёт запрос | Ключ в `.env` |
+|---|---|---|
+| Любая **текстовая** модель (GPT / Claude / Gemini / Grok / Kimi) | VPS `/v1/chat/completions` → **vibecode.moe** | **`VIBECODE_API_KEY`** (`vk-…`) + `GPT_RELAY_TOKEN` |
+| **GPT Image 2**, **Nano Banana 2** (+ Lite) | Outsee Developer API | **`OUTSEE_API_KEY`** |
+| **Veo 3.1 Lite** (нода Видео) | Outsee Developer API | **`OUTSEE_API_KEY`** |
+| **Kling 2.6** (нода Видео) | kie.ai Market | **`KIE_API_KEY`** |
+| Прочие картинки (Nano Banana / Pro, Seedream, …) | как `IMAGE_PROVIDER` | `GRSAI_API_KEY` или `OUTSEE_API_KEY` |
 
 `GPT_API_KEY` (kie.ai, `/codex/v1/responses`) **не** используется пикером ноды.
 Он нужен только шапке «GPT (kie.ai)» и шагам, где на ноде нет текстовой модели
@@ -26,8 +29,7 @@
 через **`VIBECODE_API_KEY`**, не kie.
 
 Картинку на текстовой ноде (plan/script/…) оркестратор **игнорирует** для LLM.
-Текст на ноде Картинки/Hero/Items **игнорирует** для PNG — рисует
-`IMAGE_PROVIDER` + выбранный image-id (или дефолт проекта).
+Текст на ноде Картинки/Hero/Items **игнорирует** для PNG.
 
 ---
 
@@ -91,26 +93,28 @@ Kimi с ноды ≠ Kimi в шапке. Нода: vibecode `kimi-k3` + `VIBECOD
 
 ## Картинки на нодах Hero / Items / Картинки
 
-Пикер берёт **цены** с vibecode, генерация идёт в **`IMAGE_PROVIDER`**.
+Дефолт: **GPT Image 2** (`gpt-image-2-vip`, бывший Fast; Slow убран). Цены UI — $ / фото, уже ×3.
 
-Дефолт этих нод: `gpt-image-2`. Цены UI — $ / фото, уже ×3.
-
-| В UI | id в пикере | id генератора Studio | Ключ |
+| В UI | id в пикере | id генератора | Ключ |
 |---|---|---|---|
-| GPT Image 2 SLOW | `gpt-image-2` | `gpt_image_2` | `GRSAI_API_KEY` если `IMAGE_PROVIDER=grsai`, иначе `OUTSEE_API_KEY` |
-| GPT Image 2 FAST | `gpt-image-2-vip` | `gpt_image_2_vip` | то же |
-| Nano Banana | `nano-banana` | `nano_banana` | то же |
-| Nano Banana 2 (1K/2K/4K) | `nano-banana-2` | `nano_banana_2` | то же |
-| Nano Banana Pro (1K/2K/4K) | `nano-banana-pro` | `nano_banana_pro` | то же |
-| Nano Banana 2 Lite | `nano-banana-2-lite` | `nano_banana_2_lite` | то же |
+| GPT Image 2 | `gpt-image-2-vip` | `gpt_image_2_vip` | **`OUTSEE_API_KEY`** |
+| Nano Banana | `nano-banana` | `nano_banana` | `IMAGE_PROVIDER` |
+| Nano Banana 2 (1K/2K/4K) | `nano-banana-2` | `nano_banana_2` | **`OUTSEE_API_KEY`** |
+| Nano Banana Pro (1K/2K/4K) | `nano-banana-pro` | `nano_banana_pro` | `IMAGE_PROVIDER` |
+| Nano Banana 2 Lite | `nano-banana-2-lite` | `nano_banana_2_lite` | **`OUTSEE_API_KEY`** |
 
-`VIBECODE_API_KEY` для PNG **не** списывается.
+Старый id `gpt-image-2` (Slow) с ноды мапится на `gpt-image-2-vip`.
 
-В пикере ноды нет Seedream / GPT Image 1.5 / Nano Banana Fast — они только
-в старых generation-options / Create.
+## Видео на ноде Videos
 
-Видео (Sora / Veo / Kling) пикер ноды не показывает:
-`VIDEO_PROVIDER` + `GRSAI_API_KEY` / `OUTSEE_API_KEY`, Kling fallback — `KIE_API_KEY`.
+| В UI | id | генератор | Ключ |
+|---|---|---|---|
+| Veo 3.1 Lite | `veo-3-1-lite` | `veo_3_1_lite` | **`OUTSEE_API_KEY`** |
+| Kling 2.6 | `kling-2-6` | `kling_2_6` | **`KIE_API_KEY`** |
+
+Прочий Sora/Kling 3 / Seedance — как `VIDEO_PROVIDER` (обычно Grsai).
+
+`VIBECODE_API_KEY` для PNG/видео **не** списывается.
 
 ---
 
@@ -135,12 +139,12 @@ GPT_BASE_URL=https://<твой-VPS>
 GPT_RELAY_TOKEN=<тот же, что на VPS>
 GPT_API_KEY=<kie>          # шапка kie / редкий fallback
 VIBECODE_API_KEY=vk-…      # все текстовые модели на нодах
-IMAGE_PROVIDER=grsai       # или outsee
-GRSAI_API_KEY=…            # PNG с нод, если grsai
-OUTSEE_API_KEY=…           # PNG с нод, если outsee
+OUTSEE_API_KEY=…           # GPT Image 2, Nano Banana 2, Veo 3.1 Lite
+KIE_API_KEY=…              # Kling 2.6
+IMAGE_PROVIDER=grsai       # прочие картинки
+GRSAI_API_KEY=…            # прочие PNG/видео, если не Outsee/Kie
 ```
 
-Код: `app/services/vibecode_catalog.py`, снимок `app/services/vibecode_models_snapshot.json`,
-роут LLM `app/services/llm_override.py` + `app/services/gpt_api.py`,
-картинки `effective_image_generator_id` → `IMAGE_PROVIDER`.
+Код: `app/services/media_route.py`, `app/services/vibecode_catalog.py`,
+роут LLM `app/services/llm_override.py` + `app/services/gpt_api.py`.
 Relay: `deploy/gpt-relay/README.md`.

@@ -34,9 +34,9 @@ async def test_generate_with_reference_uses_http_api_refs(
         return body
 
     monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
-    monkeypatch.setattr("app.bots.grsai.grsai_enabled", lambda: False)
+    monkeypatch.setattr("app.bots.grsai.grsai_key_configured", lambda: False)
     monkeypatch.setattr(
-        "app.bots.outsee_http.outsee_api_enabled_for_image", lambda: True
+        "app.bots.outsee_http.outsee_api_configured", lambda: True
     )
     monkeypatch.setattr("app.bots.outsee_http.generate_image", fake_api)
 
@@ -49,6 +49,7 @@ async def test_generate_with_reference_uses_http_api_refs(
         gpt_rewrite=False,
         reference_image=[ref],
         project_id=1,
+        model_slug="gpt-image-2-vip",
     )
     assert result.file_path == out
     assert len(api_calls) == 1

@@ -23,7 +23,7 @@ from app.generation_options import (
 def test_outsee_image_model_slugs_match_live_ui() -> None:
     """Slug'и из outsee JS (июль 2026), не «интуитивные» с дефисами."""
     expected = {
-        "gpt_image_2": "gpt-image-2",
+        "gpt_image_2_vip": "gpt-image-2-vip",
         "gpt_image_1_5": "gpt-image-1.5",
         "nano_banana_2": "nano-banana-2",
         "nano_banana_pro": "nano-banana-pro",
@@ -34,6 +34,7 @@ def test_outsee_image_model_slugs_match_live_ui() -> None:
     }
     for gid, slug in expected.items():
         assert IMAGE_GENERATORS_BY_ID[gid].outsee_slug == slug
+    assert IMAGE_GENERATORS_BY_ID["gpt_image_2"].outsee_slug == "gpt-image-2-vip"
 
 
 def test_gpt_image_2_resolutions() -> None:

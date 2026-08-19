@@ -22,10 +22,7 @@ from app.services.video_error_policy import VideoLadderExhaustedError
 @pytest.fixture(autouse=True)
 def _force_cdp_video_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """Primary бьёт FakeOutsee; fallback — мок kie_kling."""
-    monkeypatch.setattr("app.bots.grsai.grsai_video_enabled", lambda: False)
-    monkeypatch.setattr(
-        "app.bots.outsee_http.outsee_api_enabled_for_video", lambda: False
-    )
+    monkeypatch.setattr("app.bots.grsai.grsai_key_configured", lambda: False)
     monkeypatch.setattr(
         "app.bots.outsee_http.outsee_api_configured", lambda: False
     )
@@ -153,7 +150,7 @@ async def test_ladder_exhausted_after_kling_three_fails(
             prompt="animate",
             out_path=Path("/tmp/clip_ex.mp4"),
             gpt_rewrite=False,
-            model_slug="veo-3-1-lite",
+            model_slug="veo-3-fast",
             resolution="720p",
             aspect_ratio="9:16",
         )

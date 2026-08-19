@@ -28,7 +28,8 @@ def test_snapshot_has_screenshot_tabs() -> None:
     assert "gemini-3.6-flash" in ids
     assert "grok-4-5" in ids
     assert "kimi-k3" in ids
-    assert "gpt-image-2" in ids
+    assert "gpt-image-2-vip" in ids
+    assert "gpt-image-2" not in ids
     assert "nano-banana-pro" in ids
     assert len(ids) >= 26
 
@@ -52,7 +53,7 @@ def test_legacy_cheap_channel_arg_is_ignored() -> None:
 
 
 def test_image_price_marked_up() -> None:
-    raw = next(m for m in load_snapshot() if m["id"] == "gpt-image-2")
+    raw = next(m for m in load_snapshot() if m["id"] == "gpt-image-2-vip")
     priced = apply_markup(raw["pricing"])
     assert priced["usd_per_image"] == round(raw["pricing"]["usd_per_image"] * 3, 6)
 
@@ -68,7 +69,8 @@ def test_grouped_vendors_match_ui_tabs() -> None:
     assert counts["gemini"] == 4
     assert counts["xai"] == 2
     assert counts["moonshot"] == 1
-    assert counts["images"] == 6
+    assert counts["images"] == 5
+    assert counts["video"] == 2
     assert counts["openai"] >= 5
     sonnet = find_model("claude-sonnet-5")
     assert sonnet is not None
@@ -84,6 +86,12 @@ def test_grouped_vendors_match_ui_tabs() -> None:
 def test_default_model_by_node_type() -> None:
     assert default_model_id_for_node_type("plan") == DEFAULT_TEXT_MODEL_ID
     assert default_model_id_for_node_type("images") == DEFAULT_IMAGE_MODEL_ID
+    assert default_model_id_for_node_type("videos") == "veo-3-1-lite"
+    gpt2 = find_model("gpt-image-2")
+    assert gpt2 is not None
+    assert gpt2["id"] == "gpt-image-2-vip"
+    assert gpt2["label"] == "GPT Image 2"
+    assert gpt2["image_generator"] == "gpt_image_2_vip"
     assert default_model_id_for_node_type("hero") == DEFAULT_IMAGE_MODEL_ID
 
 
@@ -154,6 +162,17 @@ def test_frontend_picker_wired() -> None:
     assert "data.modelId" in serialize
     catalog_ts = Path("web/src/lib/node-model-catalog.ts").read_text(encoding="utf-8")
     assert "PRICE_MARKUP = 3" in catalog_ts
+    assert "PRICE_MARKUP_CHEAP" not in catalog_ts
+    snap = Path("web/src/lib/vibecode-models-snapshot.ts").read_text(encoding="utf-8")
+    assert "GPT Image 2 SLOW" not in snap
+    assert "GPT Image 2 FAST" not in snap
+    assert '"gpt-image-2-vip"' in snap
+    streams = Path("web/src/components/inspector/streams-panel.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert "Картинки + Видео" in streams
+    assert "текстовые модели" in streams
+    assert "Outsee (img + video)" not in streams
     assert "PRICE_MARKUP_CHEAP" not in catalog_ts
     pipeline = Path("app/orchestrator/pipeline.py").read_text(encoding="utf-8")
     assert "bind_project_llm" in pipeline

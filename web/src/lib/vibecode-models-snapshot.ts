@@ -324,18 +324,7 @@ export const VIBECODE_MODELS_SNAPSHOT: VibecodeSnapshotModel[] = [
     }
   },
   {
-    "display_name": "GPT Image 2 SLOW",
-    "id": "gpt-image-2",
-    "is_image": true,
-    "object": "model",
-    "owned_by": "vibecode",
-    "pricing": {
-      "currency": "usd",
-      "usd_per_image": 0.013122
-    }
-  },
-  {
-    "display_name": "GPT Image 2 FAST",
+    "display_name": "GPT Image 2",
     "id": "gpt-image-2-vip",
     "is_image": true,
     "object": "model",

@@ -14,6 +14,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
   DEFAULT_TEXT_MODEL_ID,
+  catalogForNodeType,
   defaultModelIdForNodeType,
   findCatalogModel,
   formatUsdPrice,
@@ -86,7 +87,7 @@ export function NodeModelPicker({
     staleTime: 60_000,
   });
 
-  const catalog = catalogQuery.data?.catalog ?? localCatalog();
+  const catalog = catalogForNodeType(catalogQuery.data?.catalog ?? localCatalog(), nodeType);
   const selected = findCatalogModel(catalog, selectedId) ?? findCatalogModel(localCatalog(), selectedId);
 
   return (
@@ -282,7 +283,7 @@ function ModelCard({
       <div className="mt-3 rounded-xl border border-white/[0.04] bg-black/30 px-3 py-2.5">
         <div className="flex items-center justify-between text-[9px] font-semibold uppercase tracking-[0.14em] text-white/35">
           <span>Цена</span>
-          <span>{isImage ? "$ / фото" : "$ / 1M токенов"}</span>
+          <span>{isImage ? "$ / фото" : model.kind === "video" ? "провайдер" : "$ / 1M токенов"}</span>
         </div>
         {isImage ? (
           <div className="mt-2">
@@ -290,6 +291,15 @@ function ModelCard({
               {formatUsdPrice(model.pricing.usd_per_image)}
             </div>
             <div className="mt-1 text-[9px] uppercase tracking-wider text-white/35">за изображение</div>
+          </div>
+        ) : model.kind === "video" ? (
+          <div className="mt-2">
+            <div className="text-[16px] font-semibold leading-none text-[#c4b2ff]">
+              {model.provider === "kie" ? "Kie" : "Outsee"}
+            </div>
+            <div className="mt-1 text-[9px] uppercase tracking-wider text-white/35">
+              {model.provider === "kie" ? "KIE_API_KEY" : "OUTSEE_API_KEY"}
+            </div>
           </div>
         ) : (
           <div className="mt-2 flex items-end justify-between gap-2">

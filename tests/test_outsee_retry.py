@@ -100,10 +100,7 @@ async def test_video_content_policy_keeps_start_frame(
 
     monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
     monkeypatch.setattr(mod, "sleep_cancellable", no_sleep)
-    monkeypatch.setattr("app.bots.grsai.grsai_video_enabled", lambda: False)
-    monkeypatch.setattr(
-        "app.bots.outsee_http.outsee_api_enabled_for_video", lambda: False
-    )
+    monkeypatch.setattr("app.bots.grsai.grsai_key_configured", lambda: False)
     monkeypatch.setattr(
         "app.bots.outsee_http.outsee_api_configured", lambda: False
     )
@@ -239,7 +236,7 @@ async def test_generate_image_rewrite_after_moderation_stops_duplicate_retries(
         return body
 
     monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
-    monkeypatch.setattr("app.bots.grsai.grsai_enabled", lambda: False)
+    monkeypatch.setattr("app.bots.grsai.grsai_key_configured", lambda: False)
 
     with pytest.raises(OutseeContentRejectedError):
         await mod.generate_image_with_retries(
@@ -250,6 +247,7 @@ async def test_generate_image_rewrite_after_moderation_stops_duplicate_retries(
             max_attempts_per_prompt=3,
             gpt_rewrite=True,
             project_id=1,
+            model_slug="nano-banana",
         )
 
     # 2× original (второй без лишних retry) + 1× rewritten
@@ -288,7 +286,7 @@ async def test_plain_image_error_moderation_banner_failfast(monkeypatch) -> None
         return body
 
     monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
-    monkeypatch.setattr("app.bots.grsai.grsai_enabled", lambda: False)
+    monkeypatch.setattr("app.bots.grsai.grsai_key_configured", lambda: False)
 
     with pytest.raises(OutseeImageError):
         await mod.generate_image_with_retries(
@@ -299,6 +297,7 @@ async def test_plain_image_error_moderation_banner_failfast(monkeypatch) -> None
             max_attempts_per_prompt=3,
             gpt_rewrite=True,
             project_id=1,
+            model_slug="nano-banana",
         )
 
     # Не 3× original: rewrite после 1-й модерации, затем ещё попытки с новым текстом.
@@ -376,7 +375,7 @@ async def test_image_download_error_retries_download_only(monkeypatch, tmp_path:
         return body
 
     monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
-    monkeypatch.setattr("app.bots.grsai.grsai_enabled", lambda: False)
+    monkeypatch.setattr("app.bots.grsai.grsai_key_configured", lambda: False)
 
     result = await mod.generate_image_with_retries(
         FakeOutsee(),
@@ -386,6 +385,7 @@ async def test_image_download_error_retries_download_only(monkeypatch, tmp_path:
         max_attempts_per_prompt=3,
         gpt_rewrite=False,
         project_id=1,
+        model_slug="nano-banana",
     )
     assert result.file_path == out
     assert len(gen_calls) == 1
@@ -423,7 +423,7 @@ async def test_image_download_exhaustion_does_not_regenerate(
         return body
 
     monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
-    monkeypatch.setattr("app.bots.grsai.grsai_enabled", lambda: False)
+    monkeypatch.setattr("app.bots.grsai.grsai_key_configured", lambda: False)
 
     with pytest.raises(OutseeDownloadError):
         await mod.generate_image_with_retries(
@@ -434,6 +434,7 @@ async def test_image_download_exhaustion_does_not_regenerate(
             max_attempts_per_prompt=3,
             gpt_rewrite=False,
             project_id=1,
+            model_slug="nano-banana",
         )
     assert len(gen_calls) == 1
     assert dl_calls == 2

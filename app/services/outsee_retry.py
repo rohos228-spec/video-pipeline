@@ -769,21 +769,28 @@ async def generate_image_with_retries(
     `prompt_id_prefix` один на весь кадр (все retry и GPT-rewrite) —
     формат `[ID: P12-F3-a7f2b01c]`, где `a7f2b01c` = gen_id этой генерации.
     """
-    from app.bots.grsai import grsai_enabled, generate_image as grsai_generate_image
-    from app.bots.grsai import studio_id_to_grsai_slug
+    from app.bots.grsai import generate_image as grsai_generate_image
+    from app.bots.grsai import studio_id_to_grsai_slug, grsai_key_configured
     from app.bots.outsee_http import (
         generate_image as outsee_api_generate_image,
         outsee_api_configured,
-        outsee_api_enabled_for_image,
         studio_id_to_outsee_image_slug,
     )
+    from app.services.media_route import image_provider_for
     from app.settings import settings as _settings
 
-    use_grsai = grsai_enabled()
-    # Ключ Outsee без CDP — даже если IMAGE_PROVIDER чуть разъехался со settings.
-    use_outsee_api = (not use_grsai) and (
-        outsee_api_enabled_for_image() or outsee_api_configured()
+    raw_slug = kwargs.get("model_slug") or getattr(
+        _settings, "outsee_default_image_model", None
     )
+    backend = image_provider_for(str(raw_slug) if raw_slug else None)
+    use_grsai = backend == "grsai" and grsai_key_configured()
+    use_outsee_api = backend == "outsee" and outsee_api_configured()
+    if backend == "outsee" and not outsee_api_configured():
+        raise OutseeImageError(
+            "OUTSEE_API_KEY пуст — GPT Image 2 / Nano Banana 2 / Veo 3.1 Lite "
+            "идут через ключ Outsee",
+            context={"error_kind": "no_key", "provider": "outsee"},
+        )
     last_err: OutseeImageError | None = None
     current_prompt = prompt
     base_prompt_id = kwargs.get("prompt_id_prefix")
@@ -1134,7 +1141,7 @@ async def generate_video_with_retries(
     primary_slug = str(primary_kwargs.get("model_slug") or "veo")
 
     from app.bots.grsai import grsai_video_enabled, generate_video as grsai_generate_video
-    from app.bots.grsai import studio_id_to_grsai_video_slug
+    from app.bots.grsai import studio_id_to_grsai_video_slug, grsai_key_configured
     from app.bots.kie_kling import (
         generate_video as kie_kling_generate_video,
         kie_api_configured,
@@ -1143,15 +1150,20 @@ async def generate_video_with_retries(
     from app.bots.outsee_http import (
         generate_video as outsee_api_generate_video,
         outsee_api_configured,
-        outsee_api_enabled_for_video,
         studio_id_to_outsee_video_slug,
     )
+    from app.services.media_route import video_provider_for
     from app.settings import settings as _settings
 
-    use_grsai_video = grsai_video_enabled()
-    use_outsee_api_video = (not use_grsai_video) and (
-        outsee_api_enabled_for_video() or outsee_api_configured()
-    )
+    primary_backend = video_provider_for(primary_slug)
+    use_grsai_video = primary_backend == "grsai" and grsai_key_configured()
+    use_outsee_api_video = primary_backend == "outsee" and outsee_api_configured()
+    primary_is_kling = primary_backend == "kie"
+    if primary_backend == "outsee" and not outsee_api_configured():
+        raise OutseeImageError(
+            "OUTSEE_API_KEY пуст — Veo 3.1 Lite идёт через ключ Outsee",
+            context={"error_kind": "no_key", "provider": "outsee"},
+        )
 
     _DOWNLOAD_ONLY_RETRIES = 2
     primary_burns = 0
@@ -1161,7 +1173,10 @@ async def generate_video_with_retries(
     concurrency_waits = 0
     transient_streak = 0
     fallback_started = False
-    phase = "primary"
+    phase = "fallback" if primary_is_kling else "primary"
+    if primary_is_kling:
+        fallback_started = True
+        logger.info("outsee_retry: video primary Kling 2.6 via kie (KIE_API_KEY)")
 
     async def _prepare_send(prompt_body: str, attempt_kwargs: dict[str, Any], *, kling: bool) -> str:
         prefix = (

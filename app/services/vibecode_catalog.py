@@ -18,19 +18,27 @@ PRICE_MARKUP_STABLE = PRICE_MARKUP
 _SNAPSHOT_PATH = Path(__file__).resolve().parent / "vibecode_models_snapshot.json"
 
 IMAGE_NODE_TYPES = frozenset({"images", "hero", "items", "hitl_images"})
+VIDEO_NODE_TYPES = frozenset({"videos", "hitl_videos"})
 DEFAULT_TEXT_MODEL_ID = "gpt-5.6-sol"
-DEFAULT_IMAGE_MODEL_ID = "gpt-image-2"
+DEFAULT_IMAGE_MODEL_ID = "gpt-image-2-vip"
+DEFAULT_VIDEO_MODEL_ID = "veo-3-1-lite"
+HIDDEN_IMAGE_IDS = frozenset({"gpt-image-2"})
+IMAGE_MODEL_ALIASES = {"gpt-image-2": "gpt-image-2-vip"}
 
 IMAGE_MODEL_TO_GENERATOR: dict[str, str] = {
-    "gpt-image-2": "gpt_image_2",
+    "gpt-image-2": "gpt_image_2_vip",
     "gpt-image-2-vip": "gpt_image_2_vip",
     "nano-banana": "nano_banana",
     "nano-banana-2": "nano_banana_2",
     "nano-banana-pro": "nano_banana_pro",
     "nano-banana-2-lite": "nano_banana_2_lite",
 }
+VIDEO_MODEL_TO_GENERATOR: dict[str, str] = {
+    "veo-3-1-lite": "veo_3_1_lite",
+    "kling-2-6": "kling_2_6",
+}
 
-VENDOR_ORDER = ("anthropic", "openai", "gemini", "xai", "moonshot", "images")
+VENDOR_ORDER = ("anthropic", "openai", "gemini", "xai", "moonshot", "images", "video")
 VENDOR_META: dict[str, dict[str, str]] = {
     "anthropic": {"id": "anthropic", "label": "Anthropic", "icon": "A"},
     "openai": {"id": "openai", "label": "OpenAI", "icon": "hex"},
@@ -38,10 +46,32 @@ VENDOR_META: dict[str, dict[str, str]] = {
     "xai": {"id": "xai", "label": "xAI", "icon": "X"},
     "moonshot": {"id": "moonshot", "label": "Moonshot", "icon": "moon"},
     "images": {"id": "images", "label": "Изображения", "icon": "image"},
+    "video": {"id": "video", "label": "Видео", "icon": "image"},
 }
 
+VIDEO_CATALOG_RAW: list[dict[str, Any]] = [
+    {
+        "id": "veo-3-1-lite",
+        "display_name": "Veo 3.1 Lite",
+        "is_image": False,
+        "is_video": True,
+        "owned_by": "outsee",
+        "pricing": {"currency": "usd"},
+    },
+    {
+        "id": "kling-2-6",
+        "display_name": "Kling 2.6",
+        "is_image": False,
+        "is_video": True,
+        "owned_by": "kie",
+        "pricing": {"currency": "usd"},
+    },
+]
 
-def _vendor_of(model_id: str, is_image: bool) -> str:
+
+def _vendor_of(model_id: str, is_image: bool, is_video: bool = False) -> str:
+    if is_video:
+        return "video"
     if is_image:
         return "images"
     mid = (model_id or "").strip().lower()
@@ -119,20 +149,37 @@ def apply_markup(
 def normalize_model(raw: dict[str, Any], *, channel: str | None = None) -> dict[str, Any]:
     mid = str(raw.get("id") or "").strip()
     is_image = bool(raw.get("is_image"))
+    is_video = bool(raw.get("is_video")) or mid in VIDEO_MODEL_TO_GENERATOR
     display = str(raw.get("display_name") or mid)
-    vendor = _vendor_of(mid, is_image)
+    if mid == "gpt-image-2-vip":
+        display = "GPT Image 2"
+    vendor = _vendor_of(mid, is_image, is_video)
+    if is_video:
+        kind = "video"
+    elif is_image:
+        kind = "image"
+    else:
+        kind = "text"
     pricing = apply_markup(raw.get("pricing") if isinstance(raw.get("pricing"), dict) else {}, channel=channel)
+    provider = "vibecode"
+    if is_video:
+        provider = "kie" if mid in {"kling-2-6"} else "outsee"
+    elif is_image:
+        from app.services.media_route import image_provider_for
+
+        provider = image_provider_for(mid)
     return {
         "id": mid,
         "label": display,
         "vendor": vendor,
-        "kind": "image" if is_image else "text",
+        "kind": kind,
         "online": True,
         "resolution": _resolution_badge(display, mid),
         "pricing": pricing,
         "api_model": mid,
-        "provider": "vibecode",
+        "provider": provider,
         "image_generator": IMAGE_MODEL_TO_GENERATOR.get(mid),
+        "video_generator": VIDEO_MODEL_TO_GENERATOR.get(mid),
     }
 
 
@@ -141,14 +188,15 @@ def models_for_channel(
     *,
     channel: str | None = None,
 ) -> list[dict[str, Any]]:
-    src = raw_models if raw_models is not None else load_snapshot()
+    src = list(raw_models if raw_models is not None else load_snapshot())
+    src.extend(VIDEO_CATALOG_RAW)
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in src:
         if not isinstance(item, dict):
             continue
         mid = str(item.get("id") or "").strip()
-        if not mid or mid in seen:
+        if not mid or mid in seen or mid in HIDDEN_IMAGE_IDS:
             continue
         seen.add(mid)
         out.append(normalize_model(item, channel=channel))
@@ -192,6 +240,7 @@ def find_model(model_id: str | None, *, channel: str | None = None) -> dict[str,
     want = (model_id or "").strip()
     if not want:
         return None
+    want = IMAGE_MODEL_ALIASES.get(want, want)
     for item in models_for_channel(channel=channel):
         if item["id"] == want:
             return item
@@ -199,8 +248,11 @@ def find_model(model_id: str | None, *, channel: str | None = None) -> dict[str,
 
 
 def default_model_id_for_node_type(node_type: str | None) -> str:
-    if (node_type or "").strip() in IMAGE_NODE_TYPES:
+    nt = (node_type or "").strip()
+    if nt in IMAGE_NODE_TYPES:
         return DEFAULT_IMAGE_MODEL_ID
+    if nt in VIDEO_NODE_TYPES:
+        return DEFAULT_VIDEO_MODEL_ID
     return DEFAULT_TEXT_MODEL_ID
 
 
@@ -285,7 +337,41 @@ def effective_image_generator_id(
 ) -> str:
     from app.generation_options import DEFAULTS
 
-    return (
+    gid = (
         resolve_image_generator_id(project, node_key=node_key, node_type=node_type)
         or DEFAULTS["image_generator"]
+    )
+    if gid == "gpt_image_2":
+        return "gpt_image_2_vip"
+    return gid
+
+
+def resolve_video_generator_id(
+    project: Any,
+    *,
+    node_key: str | None = None,
+    node_type: str = "videos",
+) -> str | None:
+    meta = getattr(project, "meta", None)
+    node = find_canvas_node(meta, node_key=node_key, node_type=node_type)
+    mid, _channel = read_node_model_fields(node)
+    if mid:
+        found = find_model(mid)
+        if found and found.get("video_generator"):
+            return str(found["video_generator"])
+    gid = getattr(project, "video_generator", None)
+    return str(gid).strip() if gid else None
+
+
+def effective_video_generator_id(
+    project: Any,
+    *,
+    node_key: str | None = None,
+    node_type: str = "videos",
+) -> str:
+    from app.generation_options import DEFAULTS
+
+    return (
+        resolve_video_generator_id(project, node_key=node_key, node_type=node_type)
+        or DEFAULTS["video_generator"]
     )

@@ -161,7 +161,7 @@ export function StreamsPanel({ project }: { project: ProjectDetail | null }) {
         {pending ? <Loader2 className="h-3 w-3 animate-spin opacity-70" /> : null}
       </div>
       <p className="text-[10px] leading-snug text-muted-foreground">
-        Параллель проектов — глобально. Outsee/check ниже — для текущего проекта
+        Параллель проектов — глобально. Картинки/видео и проверка GPT ниже — для текущего проекта
         (Create делит Outsee-пул ≤{cfg.create_max_parallel_outsee ?? 4}).
       </p>
 
@@ -190,7 +190,7 @@ export function StreamsPanel({ project }: { project: ProjectDetail | null }) {
       {project ? (
         <>
           <div className="rounded-lg border border-border/50 bg-card/40 px-2.5 py-2">
-            <div className="mb-1.5 text-xs font-medium">Outsee (img + video) · проект</div>
+            <div className="mb-1.5 text-xs font-medium">Картинки + Видео</div>
             <p className="mb-2 text-[10px] leading-snug text-muted-foreground">
               0 — не звать API; 1 — по одному; 2–4 — параллельно внутри шага.
             </p>
@@ -210,7 +210,7 @@ export function StreamsPanel({ project }: { project: ProjectDetail | null }) {
           <div className="rounded-lg border border-border/50 bg-card/40 px-2.5 py-2">
             <div className="mb-1.5 text-xs font-medium">Проверка GPT · проект</div>
             <p className="mb-2 text-[10px] leading-snug text-muted-foreground">
-              Параллельные vision-батчи (0–10), каждый до 8 PNG.
+              текстовые модели — параллельные vision-батчи (0–10), каждый до 8 PNG.
             </p>
             <StreamButtons
               values={[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]}
@@ -225,7 +225,7 @@ export function StreamsPanel({ project }: { project: ProjectDetail | null }) {
         </>
       ) : (
         <p className="text-[10px] text-muted-foreground">
-          Выбери проект — появятся потоки Outsee и check для него.
+          Выбери проект — появятся потоки картинок/видео и проверки GPT.
         </p>
       )}
     </div>

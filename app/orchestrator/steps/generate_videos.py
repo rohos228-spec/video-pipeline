@@ -188,8 +188,10 @@ def _video_skipped(frame: Frame) -> bool:
 
 
 def _video_opts(project: Project) -> tuple[str | None, str | None, str, bool]:
+    from app.services.vibecode_catalog import effective_video_generator_id
+
     vg = VIDEO_GENERATORS_BY_ID.get(
-        project.video_generator or DEFAULTS["video_generator"]
+        effective_video_generator_id(project, node_type="videos")
     )
     vr_o = VIDEO_RESOLUTIONS_BY_ID.get(
         project.video_resolution or DEFAULTS["video_resolution"]
