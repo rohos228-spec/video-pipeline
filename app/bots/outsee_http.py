@@ -687,15 +687,24 @@ async def ensure_public_image_url(
     errors: list[str] = []
     from app.bots.yandex_storage import yandex_storage_configured
 
-    if not yandex_storage_configured():
-        raise OutseeApiError(
-            "Yandex Object Storage не настроен "
-            "(YANDEX_STORAGE_BUCKET / ACCESS_KEY / SECRET_KEY). "
-            "Заливка кадра только через Yandex — litterbox/catbox отключены.",
-            context={"bytes": len(raw), "mime": mime},
-        )
-    hosts: list[tuple[str, Any]] = [("yandex", _host_via_yandex)]
-    logger.info("outsee_api.frame: upload host=yandex only ({} bytes)", len(raw))
+    hosts: list[tuple[str, Any]] = []
+    if yandex_storage_configured():
+        hosts.append(("yandex", _host_via_yandex))
+        # Резервные хосты на случай временного сбоя S3
+        hosts.extend([
+            ("litterbox", _host_via_litterbox),
+            ("catbox", _host_via_catbox),
+        ])
+        logger.info("outsee_api.frame: upload host=yandex (с fallback на litterbox/catbox, {} bytes)", len(raw))
+    else:
+        logger.info("outsee_api.frame: Yandex S3 не настроен, использую fallback (litterbox/catbox/uguu/0x0, {} bytes)", len(raw))
+        hosts.extend([
+            ("litterbox", _host_via_litterbox),
+            ("catbox", _host_via_catbox),
+            ("uguu", _host_via_uguu),
+            ("0x0", _host_via_0x0),
+        ])
+
     variants = _upload_payload_variants(raw, mime)
     async with httpx.AsyncClient(
         timeout=90.0,
@@ -733,13 +742,13 @@ async def ensure_public_image_url(
                         msg,
                     )
     raise OutseeApiError(
-        "frame upload failed (yandex only — проверь бакет/ключи/публичный read): "
+        "frame upload failed (проверь доступность хостов/Yandex S3): "
         + " | ".join(errors)[:500],
         context={
             "mime": mime,
             "bytes": len(raw),
             "variants": [v[2] for v in variants],
-            "yandex_configured": True,
+            "yandex_configured": yandex_storage_configured(),
         },
     )
 
