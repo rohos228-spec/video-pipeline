@@ -61,6 +61,16 @@ def bind_project_llm(project: Any, status: Any | None = None) -> Iterator[NodeLl
             node_key = str(meta.get("active_excel_gpt_node_key") or "").strip() or None
     elif status is not None:
         node_type = RUNNING_TO_NODE_TYPE.get(status)
+        if node_type == "sd_agent":
+            from app.services.scene_design import runner as sd_runner
+
+            agent = sd_runner.get_only_agent(project)
+            if agent:
+                node_key = sd_runner.resolve_sd_node_key(project, agent)
+        elif node_type == "sd_assemble":
+            from app.services.scene_design import runner as sd_runner
+
+            node_key = sd_runner.resolve_sd_node_key(project, "assemble")
 
     choice_raw = resolve_node_choice(meta, node_key=node_key, node_type=node_type)
     ov: NodeLlmOverride | None = None

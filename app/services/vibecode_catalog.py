@@ -238,8 +238,13 @@ def find_canvas_node(
                 return n
     if node_type:
         want_t = str(node_type).strip()
+        from app.services.excel_gpt_node import effective_node_type
+
         for n in nodes:
-            if isinstance(n, dict) and str(n.get("type") or "").strip() == want_t:
+            if not isinstance(n, dict):
+                continue
+            typ = str(n.get("type") or "").strip()
+            if typ == want_t or effective_node_type(n) == want_t:
                 return n
     return None
 
