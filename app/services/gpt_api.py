@@ -2077,7 +2077,7 @@ async def chat(
                 )
                 return result
 
-            if settings.text_llm_is_vibecode:
+            if settings.text_llm_is_vibecode or _node_vibecode_override():
                 result = await _chat_completions_stream(
                     url=url,
                     headers=headers,

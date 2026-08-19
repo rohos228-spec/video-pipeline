@@ -290,6 +290,78 @@ def test_node_override_empty_vibecode_key_does_not_steal_kie_key(
 
 
 @pytest.mark.asyncio
+async def test_node_gpt55_uses_completions_stream_when_header_is_kie(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Шапка kie, на ноде GPT 5.5 — stream chat/completions, не Responses и не non-stream."""
+    import app.services.gpt_api as gpt_api
+    import app.settings as settings_mod
+    from app.services.gpt_api import GptChatResult
+    from app.services.llm_override import NodeLlmOverride, use_override
+    from app.settings import Settings
+
+    monkeypatch.setenv("TEXT_LLM_PROVIDER", "kie")
+    monkeypatch.setenv("GPT_API_KEY", "kie-key")
+    monkeypatch.setenv("GPT_BASE_URL", "https://api.kie.ai")
+    monkeypatch.setenv("GPT_CHAT_PATH", "/codex/v1/responses")
+    monkeypatch.setenv("VIBECODE_API_KEY", "vk-test")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    s = Settings()
+    monkeypatch.setattr(settings_mod, "settings", s)
+    monkeypatch.setattr(gpt_api, "settings", s)
+
+    called: dict[str, str] = {}
+
+    async def fake_stream(**kwargs):
+        called["path"] = "completions_stream"
+        called["model"] = str(kwargs.get("use_model") or "")
+        called["url"] = str(kwargs.get("url") or "")
+        body = kwargs.get("body") or {}
+        called["has_messages"] = "messages" in body
+        return GptChatResult(
+            text="ok-from-stream",
+            model=called["model"],
+            finish_reason="stop",
+            usage={},
+            raw={},
+        )
+
+    async def fake_responses(**kwargs):
+        raise AssertionError("node GPT 5.5 must not call kie Responses API")
+
+    class _BoomClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, *args, **kwargs):
+            raise AssertionError("node GPT 5.5 must not use non-stream POST")
+
+    monkeypatch.setattr(gpt_api, "_chat_completions_stream", fake_stream)
+    monkeypatch.setattr(gpt_api, "_chat_responses_stream", fake_responses)
+    monkeypatch.setattr(gpt_api, "_async_client", lambda **kwargs: _BoomClient())
+
+    ov = NodeLlmOverride(
+        model_id="gpt-5.5",
+        channel="stable",
+        kind="text",
+        provider="vibecode",
+        label="GPT 5.5",
+    )
+    with use_override(ov):
+        result = await gpt_api.chat(
+            prompt="ping", timeout=5, max_retries=0, auto_pack=False
+        )
+    assert called.get("path") == "completions_stream"
+    assert called.get("model") == "gpt-5.5"
+    assert "/v1/chat/completions" in (called.get("url") or "")
+    assert called.get("has_messages") is True
+    assert result.text == "ok-from-stream"
+
+
+@pytest.mark.asyncio
 async def test_catalog_api_returns_marked_up_prices() -> None:
     from httpx import ASGITransport, AsyncClient
 
