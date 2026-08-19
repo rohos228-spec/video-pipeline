@@ -146,13 +146,19 @@ function ModelCatalogDialog({
   const selectedModel = findCatalogModel(catalog, selectedId);
   const [vendor, setVendor] = useState<string>(selectedModel?.vendor || "anthropic");
 
+  // Только при открытии / смене выбранной модели. Нельзя зависеть от `catalog`:
+  // родитель каждый рендер отдаёт новый объект → клик по вкладке сразу сбрасывался.
   useEffect(() => {
     if (!open) return;
     const next = findCatalogModel(catalog, selectedId)?.vendor;
     if (next) setVendor(next);
-  }, [open, selectedId, catalog]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- catalog identity churns every render
+  }, [open, selectedId]);
 
-  const activeVendor = catalog.vendors.find((v) => v.id === vendor) ?? catalog.vendors[0];
+  const activeVendor =
+    catalog.vendors.find((v) => v.id === vendor) ??
+    catalog.vendors.find((v) => v.models.some((m) => m.id === selectedId)) ??
+    catalog.vendors[0];
   const models = activeVendor?.models ?? [];
 
   return (

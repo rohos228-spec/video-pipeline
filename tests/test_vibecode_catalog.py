@@ -152,6 +152,9 @@ def test_frontend_picker_wired() -> None:
     assert "catalog_channels" not in picker
     assert "вход" in picker
     assert "выход" in picker
+    # Вкладки вендоров: не сбрасывать setVendor из‑за нового catalog каждый рендер
+    assert "[open, selectedId]" in picker
+    assert "[open, selectedId, catalog]" not in picker
     settings = Path("web/src/components/inspector/project-settings.tsx").read_text(
         encoding="utf-8"
     )
