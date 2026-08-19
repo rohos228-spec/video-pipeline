@@ -1286,6 +1286,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         meta.pop("active_excel_gpt_node_key", None)
         project.meta = meta
         flag_modified(project, "meta")
+        await session.refresh(project)
+        # Юзер мог ▶ другой шаг (split) пока GPT enrich ещё отвечал.
+        if project.status is not running_status:
+            logger.warning(
+                "[#{}] enrich_xlsx slot={}: статус уже {} (ждали {}) — "
+                "не пишем enrich ready (stale GPT)",
+                project.id,
+                slot_idx,
+                project.status.value,
+                running_status.value,
+            )
+            return
         await _harness_before_enrich_ready(session, project, check_mode=check_mode)
         _apply_enrich_ready_status(
             project,

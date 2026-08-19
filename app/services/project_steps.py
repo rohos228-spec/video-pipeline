@@ -153,6 +153,17 @@ async def start_step(
         raise ValueError(f"unknown step code: {step_code}")
     assert_not_factory_template_for_generation(project)
 
+    # Ручной ▶: убить хвост предыдущего GPT/xlsx (иначе worker видит
+    # is_generation_active и не стартует split, а stale enrich дописывает
+    # enrich_1_ready → reconcile ложно красит n_split в done).
+    if explicit_ui_start:
+        from app.services.step_cancel import clear_stop, request_stop
+        from app.services.xlsx_flow_locks import clear_xlsx_flow_locks
+
+        request_stop(project.id)
+        clear_xlsx_flow_locks(project.id)
+        clear_stop(project.id)
+
     if is_running_status(project.status) and project.status is not step.running_status:
         cur_step = step_by_running_status(project.status)
         same_family = cur_step is not None and cur_step.code == step_code

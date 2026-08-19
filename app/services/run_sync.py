@@ -1356,6 +1356,12 @@ def _node_already_succeeded_for_project(project: Project, nr: NodeRun) -> bool:
             and str(agents[agent].get("status") or "") == "done"
         ):
             return True
+    # split: «проект дальше / frames_ready» НЕ значит разбивка готова.
+    # Иначе после ▶ split поверх живого enrich reconcile красит n_split
+    # в done без GPT (split_completed=false).
+    if eff == "split":
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        return bool(meta.get("split_completed"))
     if READY_TO_NODE_TYPE.get(project.status) == eff:
         return True
     if eff not in LINEAR_NODE_TYPES:

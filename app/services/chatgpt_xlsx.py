@@ -245,17 +245,23 @@ def write_script_prompt_file(
 def write_split_prompt_file(
     project: Project, tmp_dir: Path, *, ts: str | None = None
 ) -> Path:
+    from app.services.node_step_params import build_split_params_block
+
     topic = (project.topic or "").strip()
     prompt_text = _get_master_or_fallback(
         project,
         "split",
         "Мастер-промт для шага «Разбивка на блоки» ещё не настроен.",
     )
+    params_block = build_split_params_block(project).strip()
+    body = f"{prompt_text}\n"
+    if params_block:
+        body = f"{prompt_text}\n\n---\n{params_block}\n"
     prompt_file = tmp_dir / f"prompt_split_{ts or _timestamp()}.txt"
     prompt_file.write_text(
         f"# Инструкция для GPT (шаг 3 «Разбивка на блоки»)\n"
         f"# Тема ролика: «{topic}»\n\n"
-        f"{prompt_text}\n",
+        f"{body}",
         encoding="utf-8",
     )
     return prompt_file

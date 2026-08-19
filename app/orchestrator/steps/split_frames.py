@@ -26,14 +26,27 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     ).scalars().all()
     meta = dict(project.meta or {})
     if len(existing_frames) >= 2 and meta.get("split_completed"):
+        from app.services.node_step_params import split_params_fingerprint
+
+        applied_fp = str(meta.get("split_params_applied") or "")
+        current_fp = split_params_fingerprint(project)
+        if applied_fp and applied_fp == current_fp:
+            logger.info(
+                "[#{}] split_frames: split_completed + {} кадров + "
+                "params={} — пропуск GPT",
+                project.id,
+                len(existing_frames),
+                current_fp,
+            )
+            project.status = ProjectStatus.frames_ready
+            await session.flush()
+            return
         logger.info(
-            "[#{}] split_frames: split_completed + {} кадров — пропуск GPT",
+            "[#{}] split_frames: settings changed ({} → {}) — re-run GPT",
             project.id,
-            len(existing_frames),
+            applied_fp or "—",
+            current_fp,
         )
-        project.status = ProjectStatus.frames_ready
-        await session.flush()
-        return
 
     result = await xsr.run_split_xlsx(project)
     ops = list(result.apply_ops or [])
@@ -94,6 +107,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     ):
         meta.pop(key, None)
     meta["split_completed"] = True
+    from app.services.node_step_params import split_params_fingerprint
+
+    meta["split_params_applied"] = split_params_fingerprint(project)
     project.meta = meta
     project.status = ProjectStatus.frames_ready
     await session.flush()

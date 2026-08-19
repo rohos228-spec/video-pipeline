@@ -518,6 +518,46 @@ async def run_split_xlsx(
             '{"ops":[{"target":"replace_frames","frames":[...]}]}'
         )
 
+    from app.services.node_step_params import split_cell_limits_from_project
+    from app.services.voiceover_split_local import (
+        enforce_split_cell_limits,
+        frames_spec_cell_stats,
+    )
+
+    mn, mx, amn, amx = split_cell_limits_from_project(project)
+    if mn is not None or mx is not None:
+        before = frames_spec_cell_stats(frames_spec)
+        texts = [
+            str(
+                item.get("закадр")
+                or item.get("voiceover_text")
+                or item.get("voiceover")
+                or ""
+            ).strip()
+            for item in frames_spec
+            if isinstance(item, dict)
+        ]
+        enforced = enforce_split_cell_limits(
+            texts, min_chars=mn, max_chars=mx, avg_min=amn, avg_max=amx
+        )
+        if len(enforced) >= 2:
+            frames_spec = [{"закадр": t} for t in enforced]
+            after = frames_spec_cell_stats(frames_spec)
+            logger.info(
+                "split_db: enforce cell limits {}-{} → frames {}→{} "
+                "len min/avg/max {}/{}/{} → {}/{}/{}",
+                mn,
+                mx,
+                before.get("n"),
+                after.get("n"),
+                before.get("min"),
+                before.get("avg"),
+                before.get("max"),
+                after.get("min"),
+                after.get("avg"),
+                after.get("max"),
+            )
+
     logger.info("split_db: кадров из GPT/fallback={}", len(frames_spec))
     return XlsxRoundtripResult(
         reply_text=reply,
