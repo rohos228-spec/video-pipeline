@@ -172,6 +172,7 @@ def test_frontend_picker_wired() -> None:
     )
     assert "Картинки + Видео" in streams
     assert "текстовые модели" in streams
+    assert "Проверка GPT · проект" not in streams
     assert "Outsee (img + video)" not in streams
     assert "PRICE_MARKUP_CHEAP" not in catalog_ts
     pipeline = Path("app/orchestrator/pipeline.py").read_text(encoding="utf-8")

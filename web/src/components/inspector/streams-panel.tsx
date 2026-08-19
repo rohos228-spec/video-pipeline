@@ -208,9 +208,9 @@ export function StreamsPanel({ project }: { project: ProjectDetail | null }) {
           </div>
 
           <div className="rounded-lg border border-border/50 bg-card/40 px-2.5 py-2">
-            <div className="mb-1.5 text-xs font-medium">Проверка GPT · проект</div>
+            <div className="mb-1.5 text-xs font-medium">текстовые модели</div>
             <p className="mb-2 text-[10px] leading-snug text-muted-foreground">
-              текстовые модели — параллельные vision-батчи (0–10), каждый до 8 PNG.
+              Параллельные vision-батчи (0–10), каждый до 8 PNG.
             </p>
             <StreamButtons
               values={[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]}
