@@ -20,6 +20,7 @@
 | [`NODE_SYSTEM.md`](NODE_SYSTEM.md) | Система нод оркестратора: доноры, контракты, harness-гейты, каталог нод/действий |
 | [`DB_V2.md`](DB_V2.md) | DB v2 = SoT: apply-ops контракт, алиасы, экспорт в Excel, руководство оператора |
 | [`PROMPT_CONTRACT.md`](PROMPT_CONTRACT.md) | Контракт промптов GPT↔DB: apply-ops / artifact / staging; стоп-лист Excel/TSV |
+| [`NODE_MODELS.md`](NODE_MODELS.md) | Пикер модели на ноде: vibecode vs kie vs Grsai/Outsee, какие ключи |
 
 ---
 
