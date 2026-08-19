@@ -68,7 +68,7 @@ try {
 } catch { }
 
 if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
-    Write-Host "ВНИМАНИЕ: web/out/index.html отсутствует — STUDIO.cmd -> [3] Починить установку" -ForegroundColor Yellow
+    Write-Host "ВНИМАНИЕ: web/out/index.html отсутствует - STUDIO.cmd -> [3] Починить установку" -ForegroundColor Yellow
 }
 
 $env:TELEGRAM_ENABLED = "false"
@@ -77,7 +77,7 @@ $env:WEB_PORT = "8765"
 $env:HF_HUB_DISABLE_SYMLINKS = "1"
 $env:HF_HUB_DISABLE_SYMLINKS_WARNING = "0"
 
-# NeMo/HF: до любого python — иначе WinError 32 в %TEMP% (AppData\Local\Temp)
+# NeMo/HF: до любого python - иначе WinError 32 в %TEMP% (AppData\Local\Temp)
 $cacheRoot = Join-Path $Root "data\.cache"
 $cacheTemp = Join-Path $cacheRoot "temp"
 $cacheHf = Join-Path $cacheRoot "huggingface"
@@ -108,11 +108,18 @@ Write-BackendLogLine "=== backend start PID=$PID ==="
 & $py -c "import app.bootstrap_env" 2>$null | Out-Null
 
 Write-Host "Проверка create_app() ..." -ForegroundColor Gray
-$preflightOut = @(& $py -c "import app.bootstrap_env; from app.web.api import create_app; create_app(); print('create_app OK')" 2>&1)
+# Here-string: PS 5.1 must not see `; from` inside a double-quoted -c string.
+$preflightPy = @'
+import app.bootstrap_env
+from app.web.api import create_app
+create_app()
+print("create_app OK")
+'@
+$preflightOut = @(& $py -c $preflightPy 2>&1)
 $preflightOk = ($LASTEXITCODE -eq 0) -and ($preflightOut -match "create_app OK")
 if (-not $preflightOk) {
     Write-Host ""
-    Write-Host "ПРОВЕРКА НЕ ПРОШЛА — бэкенд не поднимется на :8765" -ForegroundColor Red
+    Write-Host "ПРОВЕРКА НЕ ПРОШЛА - бэкенд не поднимется на :8765" -ForegroundColor Red
     $preflightOut | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
     Write-Host ""
     Write-Host "Обычно помогает: STUDIO.cmd -> [2] Обновить и запустить" -ForegroundColor Yellow

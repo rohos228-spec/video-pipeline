@@ -16,7 +16,7 @@ if ($env:VP_REPO_ROOT) {
 }
 Set-Location -LiteralPath $Root
 
-# Ветки (выбор при первом запуске / [5] → data/studio-pc-branch + .env)
+# Ветки (выбор при первом запуске / [5] -> data/studio-pc-branch + .env)
 # [4] всегда тянет origin/<сохранённая>, не хардкод main.
 $script:PcBranches = @("housepc", "tompc", "strangepc", "workpc", "main")
 $script:PcBranchFile = Join-Path $Root "data\studio-pc-branch"
@@ -88,7 +88,7 @@ function Get-StudioEnvValue {
 
 function Sync-VibecodeApiKeyToEnv {
     # Существующий .env на ПК не перезаписывается из example при git pull.
-    # Если ключ пустой — взять из .env.example.
+    # Если ключ пустой - взять из .env.example.
     $example = Join-Path $Root ".env.example"
     $want = Get-StudioEnvValue -Path $example -Key "VIBECODE_API_KEY"
     if (-not $want) { return $false }
@@ -137,7 +137,7 @@ function Get-StudioPcBranch {
     }
     $fromEnv = Read-StudioPcBranchFromEnv
     if ($fromEnv) {
-        # Миграция: .env уже задан — зафиксировать в data/studio-pc-branch
+        # Миграция: .env уже задан - зафиксировать в data/studio-pc-branch
         Save-StudioPcBranch -Branch $fromEnv | Out-Null
         return $fromEnv
     }
@@ -149,7 +149,7 @@ function Show-StudioBranchPicker {
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host "  Выберите ветку этого ПК" -ForegroundColor Cyan
-    Write-Host "  (сохранится; смена ветки — [5], обновление кода — [4])" -ForegroundColor DarkGray
+    Write-Host "  (сохранится; смена ветки - [5], обновление кода - [4])" -ForegroundColor DarkGray
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
     for ($i = 0; $i -lt $script:PcBranches.Count; $i++) {
@@ -167,11 +167,11 @@ function Show-StudioBranchPicker {
             $idx = [int]$choice - 1
             $br = $script:PcBranches[$idx]
             if (Save-StudioPcBranch -Branch $br) {
-                Write-StudioMsg "OK: ветка сохранена — $br ([4] будет тянуть origin/$br)" "Green"
+                Write-StudioMsg "OK: ветка сохранена - $br ([4] будет тянуть origin/$br)" "Green"
                 return $br
             }
         }
-        Write-StudioMsg "Выберите 1–5 (housepc / tompc / strangepc / workpc / main)." "Yellow"
+        Write-StudioMsg "Выберите 1-5 (housepc / tompc / strangepc / workpc / main)." "Yellow"
     }
 }
 
@@ -183,7 +183,7 @@ function Ensure-StudioPcBranchSelected {
         return $true
     }
     if (-not $InteractiveRequired) {
-        Write-StudioMsg "ОШИБКА: ветка ПК не выбрана. Запустите STUDIO.cmd без аргументов и выберите ветку (1–4)." "Red"
+        Write-StudioMsg "ОШИБКА: ветка ПК не выбрана. Запустите STUDIO.cmd без аргументов и выберите ветку (1-4)." "Red"
         return $false
     }
     $picked = Show-StudioBranchPicker
@@ -198,7 +198,7 @@ function Invoke-StudioBranchHub {
     $br = $script:StudioBranch
     Write-Host ""
     Write-Host "  Текущая ветка: $br" -ForegroundColor Green
-    Write-Host "  Обновление кода — пункт [4] (origin/$br)" -ForegroundColor DarkGray
+    Write-Host "  Обновление кода - пункт [4] (origin/$br)" -ForegroundColor DarkGray
     Write-Host "  [1] Сменить ветку ПК"
     Write-Host "  [0] Назад"
     Write-Host ""
@@ -288,7 +288,7 @@ function Open-VpAiTabs {
 
 function Ensure-StudioChromeCdp {
     if (-not (Get-Command Test-VpChromeCdp -ErrorAction SilentlyContinue)) {
-        Write-StudioMsg "VpBrowserProfile.ps1 не загружен — Chrome CDP пропущен." "Yellow"
+        Write-StudioMsg "VpBrowserProfile.ps1 не загружен - Chrome CDP пропущен." "Yellow"
         return $false
     }
     if (Test-VpChromeCdp -Port 29229) {
@@ -298,7 +298,7 @@ function Ensure-StudioChromeCdp {
         Start-VpChromeCdp -Port 29229 -SkipCloseCheck
         return $true
     } catch {
-        Write-StudioMsg "Chrome CDP :29229 не запустился — $($_.Exception.Message)" "Yellow"
+        Write-StudioMsg "Chrome CDP :29229 не запустился - $($_.Exception.Message)" "Yellow"
         return $false
     }
 }
@@ -312,7 +312,7 @@ function Invoke-StudioBrowserAi {
     $profile = Get-VpBrowserUserDataDir
     Write-StudioMsg "Профиль Chrome: $profile" "DarkGray"
     if (Test-VpChromeCdp -Port 29229) {
-        Write-StudioMsg "Браузер с ИИ уже запущен (CDP :29229) — второе окно не открываю." "Green"
+        Write-StudioMsg "Браузер с ИИ уже запущен (CDP :29229) - второе окно не открываю." "Green"
         Open-VpAiTabs
         return $true
     }
@@ -378,8 +378,15 @@ function Start-StudioBackendWindow {
     }
     Set-StudioNvidiaEnv
     # Не глотать stderr и не pipe в Out-Null: в PS 5.1 $LASTEXITCODE после pipe
-    # часто null, а ($null -ne 0) = $true → ложный FAIL create_app.
-    $preflightOut = @(& $py -c "import app.bootstrap_env; from app.web.api import create_app; create_app(); print('create_app OK')" 2>&1)
+    # часто null, а ($null -ne 0) = $true -> ложный FAIL create_app.
+    # Here-string: PS 5.1 must not see `; from` inside a double-quoted -c string.
+    $preflightPy = @'
+import app.bootstrap_env
+from app.web.api import create_app
+create_app()
+print("create_app OK")
+'@
+    $preflightOut = @(& $py -c $preflightPy 2>&1)
     $preflightCode = if ($null -eq $LASTEXITCODE) { 1 } else { [int]$LASTEXITCODE }
     $preflightOk = ($preflightCode -eq 0) -and ($preflightOut -match "create_app OK")
     if (-not $preflightOk) {
@@ -408,7 +415,7 @@ function Start-StudioBackendWindow {
             Write-StudioMsg "Ждём :8765 ... ${waitSec}с (см. окно бэкенда)" "DarkGray"
         }
     }
-    Write-StudioMsg "Таймаут ожидания :8765 — откройте http://127.0.0.1:8765 вручную" "Yellow"
+    Write-StudioMsg "Таймаут ожидания :8765 - откройте http://127.0.0.1:8765 вручную" "Yellow"
     return $false
 }
 
@@ -442,7 +449,7 @@ function Invoke-StudioPythonHelper {
     )
     $pyArgs = @(Get-StudioPython)
     if (-not $pyArgs -or $pyArgs.Count -lt 1) {
-        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: Python не найден — не могу защитить/вернуть prompts/." "Yellow"
+        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: Python не найден - не могу защитить/вернуть prompts/." "Yellow"
         return $false
     }
     $helperPy = Join-Path $Root "scripts\return_prompts_from_stash.py"
@@ -494,7 +501,7 @@ function Invoke-StudioStart {
     if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
         Write-StudioMsg "ВНИМАНИЕ: web/out отсутствует. Сначала [6] Починить установку." "Yellow"
     }
-    # Если прошлый [4] оставил кастомные промты в stash — вернуть до старта бэкенда.
+    # Если прошлый [4] оставил кастомные промты в stash - вернуть до старта бэкенда.
     Invoke-StudioRecoverPromptsFromAllStashes
     Stop-StudioBackend
     Set-StudioNvidiaEnv
@@ -524,13 +531,13 @@ function Invoke-StudioGitStash {
     }
     $status = git -C $Root status --porcelain 2>&1
     if (-not $status) {
-        Write-StudioMsg "Локальных изменений нет — stash не нужен." "Gray"
+        Write-StudioMsg "Локальных изменений нет - stash не нужен." "Gray"
         return $null
     }
     $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $msg = "studio: автосохранение перед обновлением $stamp"
     Write-StudioMsg "==> Сохраняю локальные изменения в git stash..." "Cyan"
-    Write-StudioMsg "    (data/, logs/, .env, prompts/ в .gitignore — не затрагиваются reset)" "DarkGray"
+    Write-StudioMsg "    (data/, logs/, .env, prompts/ в .gitignore - не затрагиваются reset)" "DarkGray"
     git -C $Root stash push -u -m $msg 2>&1 | ForEach-Object { Write-StudioMsg $_ }
     if ($LASTEXITCODE -ne 0) {
         Write-StudioMsg "ОШИБКА: git stash не удался." "Red"
@@ -541,11 +548,11 @@ function Invoke-StudioGitStash {
 }
 
 function Invoke-StudioReturnPromptEditsFromStash {
-    # После reset --hard код с origin; локальные правки prompts/ — из stash.
+    # После reset --hard код с origin; локальные правки prompts/ - из stash.
     param([string]$StashRef)
     if ([string]::IsNullOrWhiteSpace($StashRef) -or $StashRef -eq "FAILED") { return }
 
-    # Важно: stash@{0} всегда в кавычках — иначе PowerShell ест @{0} как splat.
+    # Важно: stash@{0} всегда в кавычках - иначе PowerShell ест @{0} как splat.
     Write-StudioMsg "==> Возвращаю локальные правки prompts/ из '$StashRef' ..." "Cyan"
     $ok = Invoke-StudioPythonHelper -HelperArgs @("--repo", $Root, "--stash", "$StashRef", "--json")
     if ($ok) { return }
@@ -558,12 +565,12 @@ function Invoke-StudioReturnPromptEditsFromStash {
 }
 
 function Invoke-StudioGitUpdate {
-    # Всегда перечитать сохранённую ветку (data/studio-pc-branch / .env) — не main по умолчанию
+    # Всегда перечитать сохранённую ветку (data/studio-pc-branch / .env) - не main по умолчанию
     $saved = Get-StudioPcBranch
     if ($saved) { $script:StudioBranch = $saved }
     $StudioBranch = $script:StudioBranch
     if (-not (Test-StudioPcBranchName $StudioBranch)) {
-        Write-StudioMsg "ОШИБКА: ветка не задана. Пункт [5] — выберите housepc/tompc/strangepc/workpc/main." "Red"
+        Write-StudioMsg "ОШИБКА: ветка не задана. Пункт [5] - выберите housepc/tompc/strangepc/workpc/main." "Red"
         return $false
     }
     Write-StudioMsg "==> обновление с сохранённой ветки: origin/$StudioBranch" "Cyan"
@@ -654,19 +661,19 @@ function Invoke-StudioPredownloadNemo {
     }
     $url = "https://huggingface.co/$model/resolve/main/$fileName"
     if (-not (Test-Path $nemoDir)) { New-Item -ItemType Directory -Force -Path $nemoDir | Out-Null }
-    Write-StudioMsg "==> Скачивание $fileName (~2.5 GB) через curl, без Python/HF temp…" "Cyan"
+    Write-StudioMsg "==> Скачивание $fileName (~2.5 GB) через curl, без Python/HF temp..." "Cyan"
     $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
     if (-not $curl) {
-        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: curl.exe не найден — скачает Python при старте." "Yellow"
+        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: curl.exe не найден - скачает Python при старте." "Yellow"
         return $true
     }
     & curl.exe -L -C - -o $part $url
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $part)) {
-        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: curl не докачал модель — повторит Python." "Yellow"
+        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: curl не докачал модель - повторит Python." "Yellow"
         return $true
     }
     if ((Get-Item $part).Length -lt 50000000) {
-        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: файл слишком мал — повторит Python." "Yellow"
+        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: файл слишком мал - повторит Python." "Yellow"
         return $true
     }
     Move-Item -Force -Path $part -Destination $dest
@@ -676,7 +683,7 @@ function Invoke-StudioPredownloadNemo {
 
 function Invoke-StudioNvidiaDeps {
     if (-not (Test-StudioAsrBackendNvidia)) {
-        Write-StudioMsg "ASR_BACKEND не nvidia — пропуск NeMo." "DarkGray"
+        Write-StudioMsg "ASR_BACKEND не nvidia - пропуск NeMo." "DarkGray"
         return $true
     }
     Set-StudioNvidiaEnv
@@ -688,7 +695,7 @@ function Invoke-StudioNvidiaDeps {
         Write-StudioMsg "OK: NVIDIA NeMo ASR (Parakeet) установлен." "Green"
         return $true
     }
-    Write-StudioMsg "==> pip install -e .[nvidia] (Parakeet ASR для таймкодов)…" "Cyan"
+    Write-StudioMsg "==> pip install -e .[nvidia] (Parakeet ASR для таймкодов)..." "Cyan"
     $spec = (Resolve-Path -LiteralPath $Root).Path
     $env:PIP_DEFAULT_TIMEOUT = "600"
     Push-Location -LiteralPath $Root
@@ -696,7 +703,7 @@ function Invoke-StudioNvidiaDeps {
     $code = $LASTEXITCODE
     Pop-Location
     if ($code -ne 0) {
-        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: pip [nvidia] не удался — ASR fallback на whisper." "Yellow"
+        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: pip [nvidia] не удался - ASR fallback на whisper." "Yellow"
         return $true
     }
     Write-StudioMsg "OK: NVIDIA NeMo ASR установлен." "Green"
@@ -732,16 +739,16 @@ function Invoke-StudioUpdateAndStart {
     if (-not $StudioBranch) { $StudioBranch = $script:StudioBranch }
     $script:StudioBranch = $StudioBranch
     Write-StudioMsg "=== [4] Обновить и запустить (origin/$StudioBranch) ===" "Cyan"
-    # 1) Снимок prompts/ ВНЕ репо — главный предохранитель (stash может сдохнуть).
+    # 1) Снимок prompts/ ВНЕ репо - главный предохранитель (stash может сдохнуть).
     Invoke-StudioBackupPromptsAside | Out-Null
     $promptsDirty = Test-StudioPromptsDirty
     $stashRef = Invoke-StudioGitStash
     if ($stashRef -eq "FAILED") {
         if ($promptsDirty) {
-            Write-StudioMsg "СТОП: есть локальные правки в prompts/, stash не удался — обновление отменено, промты не трогаю." "Red"
+            Write-StudioMsg "СТОП: есть локальные правки в prompts/, stash не удался - обновление отменено, промты не трогаю." "Red"
             return $false
         }
-        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: stash не удался, локальных правок prompts/ нет — продолжаю." "Yellow"
+        Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: stash не удался, локальных правок prompts/ нет - продолжаю." "Yellow"
         $stashRef = $null
     }
     if (-not (Invoke-StudioGitUpdate)) {
@@ -768,7 +775,7 @@ function Invoke-StudioUpdateAndStart {
     if (-not (Invoke-StudioNvidiaDeps)) { return $false }
     Invoke-StudioPredownloadNemo | Out-Null
     if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
-        Write-StudioMsg "ВНИМАНИЕ: web/out отсутствует после обновления — запускаю сборку UI..." "Yellow"
+        Write-StudioMsg "ВНИМАНИЕ: web/out отсутствует после обновления - запускаю сборку UI..." "Yellow"
         if (-not (Invoke-StudioRepairWeb)) { return $false }
     }
     Stop-StudioBackend
@@ -833,7 +840,7 @@ function Invoke-StudioRepair {
     if (-not (Invoke-StudioRepairWeb)) { return $false }
     if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
         $ff = (ffmpeg -version 2>&1 | Select-Object -First 1)
-        Write-StudioMsg "OK: FFmpeg — $ff" "Green"
+        Write-StudioMsg "OK: FFmpeg - $ff" "Green"
     } else {
         Write-StudioMsg "ПРЕДУПРЕЖДЕНИЕ: ffmpeg не в PATH. Установите через install.ps1 / winget." "Yellow"
     }
@@ -862,7 +869,7 @@ function Invoke-StudioDoctor {
     $logPath = Join-Path $logDir "doctor.log"
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
-    Write-DoctorLine "=== Video Pipeline Studio — диагностика $ts ===" $lines
+    Write-DoctorLine "=== Video Pipeline Studio - диагностика $ts ===" $lines
     Write-DoctorLine "Папка: $Root" $lines
     Write-DoctorLine "" $lines
 
