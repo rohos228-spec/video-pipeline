@@ -143,6 +143,7 @@ async def run_operator_api(
     source_prompt_keys: list[str] | None = None,
     check_streams: int | None = None,
     db_sot_check: bool = False,
+    auto_pack: bool = True,
 ) -> OperatorApiResult:
     """Вызов API-оператора GPT.
 
@@ -195,6 +196,7 @@ async def run_operator_api(
             check_fix=vision_check_fix if check_mode else check_fix,
             source_prompt_keys=source_prompt_keys,
             db_sot_check=db_sot_check,
+            auto_pack=auto_pack,
         )
 
     out_dir = project_dir / "excel_gpt_uploads" / node_key
@@ -293,6 +295,7 @@ async def _run_operator_api_real(
     check_fix: bool = True,
     source_prompt_keys: list[str] | None = None,
     db_sot_check: bool = False,
+    auto_pack: bool = True,
 ) -> OperatorApiResult:
     """Реальный вызов GPT через OpenAI-совместимый API (без браузера/CDP)."""
     from app.services.gpt_api import chat, collect_result_urls, download_content
@@ -340,6 +343,7 @@ async def _run_operator_api_real(
         input_paths=chat_paths,
         temperature=0.0 if is_check else None,
         xlsx_write_contract=xlsx_contract,
+        auto_pack=auto_pack,
     )
     reply_text = result.text
 
@@ -370,6 +374,7 @@ async def _run_operator_api_real(
                 input_paths=chat_paths,
                 temperature=0.0,
                 xlsx_write_contract="tsv",
+                auto_pack=auto_pack,
             )
             reply_text = retry.text or reply_text
             from types import SimpleNamespace
@@ -430,6 +435,7 @@ async def _run_operator_api_real(
             input_paths=chat_paths,
             temperature=0.0,
             xlsx_write_contract="tsv",
+            auto_pack=auto_pack,
         )
         reply_text = result.text
 
@@ -550,6 +556,7 @@ async def _run_operator_api_real(
             input_paths=retry_paths or list(input_paths),
             temperature=0.0,
             xlsx_write_contract="apply_ops",
+            auto_pack=auto_pack,
         )
         reply_text = retry.text or ""
         try:

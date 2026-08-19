@@ -76,6 +76,7 @@ class ApiGptClient:
         treat_txt_as_prompt: bool = True,
         system: str | None = None,
         max_retries: int | None = None,
+        auto_pack: bool = True,
     ) -> str:
         require_gpt_api()
         from app.services.gpt_api import (
@@ -186,6 +187,7 @@ class ApiGptClient:
                     system=system,
                     max_retries=max_retries,
                     pack_kind=pack_kind,
+                    auto_pack=auto_pack,
                 )
             except Exception as e:  # noqa: BLE001
                 if pdfs and is_pdf_provider_failure(e):

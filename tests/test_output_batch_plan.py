@@ -115,6 +115,27 @@ def test_img_pr_beats_voiceover_when_pack_kind_set(tmp_path) -> None:
     assert sizes == [57, 57, 57]
 
 
+def test_force_batches_2_and_4_ignore_vo_formula(tmp_path) -> None:
+    frames = [{"uuid": f"u{i:03d}"} for i in range(1, 21)]
+    path = tmp_path / "db_frames.json"
+    path.write_text(
+        json.dumps({"frames": frames}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    vo = tmp_path / "voiceover.txt"
+    vo.write_text("д" * 20_000, encoding="utf-8")  # VO-формула дала бы 6
+    two = plan_db_frames_slices([path, vo], force_batches=2)
+    assert two is not None and len(two) == 2
+    assert [
+        len(json.loads(p.read_text(encoding="utf-8"))["frames"]) for p in two
+    ] == [10, 10]
+    four = plan_db_frames_slices([path, vo], force_batches=4)
+    assert four is not None and len(four) == 4
+    assert [
+        len(json.loads(p.read_text(encoding="utf-8"))["frames"]) for p in four
+    ] == [5, 5, 5, 5]
+
+
 def test_img_pr_detected_from_prompt_text_even_with_voiceover(tmp_path) -> None:
     frames = [{"uuid": f"u{i:03d}", "number": i} for i in range(1, 172)]
     path = tmp_path / "db_frames.json"

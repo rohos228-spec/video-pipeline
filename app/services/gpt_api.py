@@ -1732,7 +1732,7 @@ async def _maybe_volume_complete_chat_result(
     volume_complete: bool | None,
 ) -> GptChatResult:
     """Если apply-ops/db_frames покрыты частично — добор батчами (~80%)."""
-    if volume_complete is False:
+    if volume_complete is not True:
         return result
     try:
         from app.services.volume_batches import (
@@ -1874,6 +1874,120 @@ async def _chat_packed_parallel(
     )
 
 
+async def _chat_adaptive_1_2_4(
+    *,
+    prompt: str,
+    accompanying: str,
+    input_paths: list[Path] | None,
+    system: str | None,
+    history: list[dict[str, Any]] | None,
+    model: str | None,
+    temperature: float | None,
+    timeout: float | None,
+    max_retries: int | None,
+    xlsx_write_contract: str,
+    pack_kind: str | None,
+    level: int = 1,
+) -> GptChatResult:
+    """Сначала один вызов. Ошибка/обрез → этот кусок пополам (2). Снова → 4."""
+    from app.services.adaptive_llm_batches import next_split_level
+    from app.services.output_batch_plan import plan_db_frames_slices
+    from app.services.volume_batches import is_db_frames_path
+
+    kwargs = dict(
+        prompt=prompt,
+        accompanying=accompanying,
+        input_paths=input_paths,
+        system=system,
+        history=history,
+        model=model,
+        temperature=temperature,
+        timeout=timeout,
+        max_retries=max_retries,
+        xlsx_write_contract=xlsx_write_contract,
+        volume_complete=False,
+        auto_pack=False,
+        pack_kind=pack_kind,
+    )
+    try:
+        result = await chat(**kwargs)
+        if not looks_truncated_llm_text(result.text or ""):
+            return result
+        nxt = next_split_level(level)
+        slices = plan_db_frames_slices(
+            input_paths,
+            pack_kind=pack_kind,
+            prompt=prompt,
+            accompanying=accompanying,
+            force_batches=2,
+        )
+        if nxt is None or not slices:
+            return result
+        raise GptApiError(
+            f"GPT: ответ обрезан — дроблю батч L{level}",
+            context={"retryable": True, "error_kind": "truncated"},
+        )
+    except GptApiError as err:
+        nxt = next_split_level(level)
+        slices = plan_db_frames_slices(
+            input_paths,
+            pack_kind=pack_kind,
+            prompt=prompt,
+            accompanying=accompanying,
+            force_batches=2,
+        )
+        if nxt is None or not slices:
+            raise
+        logger.warning(
+            "gpt_api.chat adaptive L{}→{} after {} slices={}",
+            level,
+            nxt,
+            err,
+            len(slices),
+        )
+        parts: list[GptChatResult] = []
+        for i, slice_path in enumerate(slices, start=1):
+            new_paths = [
+                slice_path if is_db_frames_path(p) else p
+                for p in list(input_paths or [])
+            ]
+            acc = (
+                f"{accompanying}\n\n"
+                f"# SPLIT L{nxt} {i}/{len(slices)} — только uuid из "
+                f"{slice_path.name}. JSON ops на ВСЕ кадры ЭТОГО файла.\n"
+            )
+            part = await _chat_adaptive_1_2_4(
+                prompt=prompt,
+                accompanying=acc,
+                input_paths=new_paths,
+                system=system,
+                history=None,
+                model=model,
+                temperature=temperature,
+                timeout=timeout,
+                max_retries=max_retries,
+                xlsx_write_contract=xlsx_write_contract,
+                pack_kind=pack_kind,
+                level=nxt,
+            )
+            parts.append(part)
+        merged = _merge_packed_apply_ops([p.text for p in parts])
+        first = parts[0]
+        return GptChatResult(
+            text=merged,
+            model=first.model,
+            finish_reason="packed",
+            usage=first.usage,
+            raw={
+                **(first.raw or {}),
+                "packed_slices": len(parts),
+                "packed_chars": len(merged),
+                "adaptive_level": nxt,
+            },
+            response_id=first.response_id,
+        )
+
+
 async def chat(
     *,
     prompt: str,
@@ -1892,41 +2006,26 @@ async def chat(
 ) -> GptChatResult:
     """Вызвать текстовый LLM (kie GPT / TokenRouter Kimi) с ретраями.
 
-    ``volume_complete``: после частичного apply-ops добрать остаток
-    (None = авто: apply_ops contract или db_frames*.json во вложениях).
-    ``auto_pack``: нарезать db_frames на батчи
-    (img_pr: n*4000/228000; иначе len(закадр)/3500) и гнать пачки параллельно.
-    ``pack_kind``: явный ``img_pr`` | ``vo`` (img_pr всегда важнее VO-файла).
+    ``volume_complete``: True — после частичного apply-ops добрать остаток.
+    По умолчанию выключено (None/False), чтобы не плодить десятки вызовов.
+    ``auto_pack``: схема 1→2→4: сначала один вызов на все кадры;
+    ошибка/обрез → этот кусок пополам; снова ошибка → ещё раз пополам (4).
+    ``pack_kind``: явный ``img_pr`` | ``vo`` при force-split db_frames.
     """
     if auto_pack:
-        from app.services.output_batch_plan import plan_db_frames_slices
-
-        slices = plan_db_frames_slices(
-            input_paths,
-            pack_kind=pack_kind,
+        return await _chat_adaptive_1_2_4(
             prompt=prompt,
             accompanying=accompanying,
+            input_paths=input_paths,
+            system=system,
+            history=history,
+            model=model,
+            temperature=temperature,
+            timeout=timeout,
+            max_retries=max_retries,
+            xlsx_write_contract=xlsx_write_contract,
+            pack_kind=pack_kind,
         )
-        if slices:
-            logger.info(
-                "gpt_api.chat auto_pack kind={} slices={} files={}",
-                pack_kind or "auto",
-                len(slices),
-                [p.name for p in slices],
-            )
-            return await _chat_packed_parallel(
-                slice_paths=slices,
-                prompt=prompt,
-                accompanying=accompanying,
-                input_paths=list(input_paths or []),
-                system=system,
-                history=history,
-                model=model,
-                temperature=temperature,
-                timeout=timeout,
-                max_retries=max_retries,
-                xlsx_write_contract=xlsx_write_contract,
-            )
 
     headers = _headers()
     from app.services.llm_override import current_text_model_id
