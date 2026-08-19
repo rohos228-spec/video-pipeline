@@ -168,11 +168,9 @@ export function OrchestratorPanel({ projectId }: Props) {
             notes.push(`открыл студию ноды «${u.node_type}»`);
           } else if (u.kind === "prompt_builder" && nodeKey) {
             window.dispatchEvent(
-              new CustomEvent("studio-open-prompt-builder", {
-                detail: { nodeKey, nodeType: u.node_type },
-              }),
+              new CustomEvent("studio-open-node-prompts", { detail: { nodeKey } }),
             );
-            notes.push(`открыл конструктор промтов «${u.node_type}»`);
+            notes.push(`открыл промпты ноды «${u.node_type}»`);
           } else if (u.kind === "hitl" && u.hitl_id != null) {
             window.dispatchEvent(
               new CustomEvent("canvas-open-hitl-modal", { detail: { hitlId: u.hitl_id } }),

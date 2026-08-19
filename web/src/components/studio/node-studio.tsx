@@ -69,12 +69,9 @@ import { FramePromptsPanel } from "@/components/studio/frame-prompts-panel";
 import { NodeStepParamsPanel } from "@/components/studio/node-step-params-panel";
 import { PromptFilesPanel } from "@/components/studio/prompt-files-panel";
 import { GptTextPanel } from "@/components/studio/gpt-text-panel";
-import { PromptBuilderStudio } from "@/components/prompt-builder/prompt-builder-studio";
-import { nodeSupportsBlocksV2 } from "@/lib/prompt-builder/step-compose-map";
 import { shouldShowStopBar } from "@/lib/project-running";
 
 type StudioTab = "settings" | "prompts" | "results" | "excel";
-type PromptEditMode = "classic" | "constructor";
 
 function slotStepCode(slot: NodePromptSlot | null, nodeStepCode: string | undefined): string | undefined {
   return slot?.stepCode ?? nodeStepCode;
@@ -106,7 +103,6 @@ export function NodeStudio({
 
   const [tab, setTab] = useState<StudioTab>(initialTab);
   const [activeSlotId, setActiveSlotId] = useState<string | null>(null);
-  const [promptMode, setPromptMode] = useState<PromptEditMode>("classic");
   const [xlsxSheet, setXlsxSheet] = useState<string>("");
   /** false = весь лист (дефолт); true = узкий ключевой фрагмент по типу ноды */
   const [xlsxFocusKeyRows, setXlsxFocusKeyRows] = useState(false);
@@ -468,23 +464,6 @@ export function NodeStudio({
     activeSlot?.kind === "gpt" &&
     Boolean(promptStepCode) &&
     stepHasPromptVariants(promptStepCode);
-  const supportsPromptConstructor =
-    projectId != null &&
-    Boolean(promptStepCode) &&
-    nodeSupportsBlocksV2(
-      nodeType,
-      promptStepCode,
-      nodeKey,
-      isExcelGptNode(nodeType) ? excelConfig.slotIndex : undefined,
-    );
-  const builderNodeType = isExcelGptNode(nodeType)
-    ? (promptStepCode ?? EXCEL_GPT_STEP_CODE)
-    : nodeType;
-
-  useEffect(() => {
-    if (open) setPromptMode("classic");
-  }, [open, activeSlotId, nodeKey]);
-
   const [mounted, setMounted] = useState(false);
   const backdropGuardUntil = useRef(0);
   useEffect(() => setMounted(true), []);
@@ -840,34 +819,6 @@ export function NodeStudio({
                       <span className="font-medium text-foreground">{activeSlot.title}</span>
                     </p>
                   )}
-                  {showFilesPanel && supportsPromptConstructor && !isCheckNode && (
-                    <div className="flex gap-1 rounded-lg border border-white/10 bg-white/[0.02] p-1">
-                      <button
-                        type="button"
-                        onClick={() => setPromptMode("classic")}
-                        className={cn(
-                          "flex-1 rounded-md px-3 py-2 text-xs font-medium transition",
-                          promptMode === "classic"
-                            ? "bg-primary/15 text-foreground"
-                            : "text-muted-foreground hover:bg-white/[0.04]",
-                        )}
-                      >
-                        Классический промт
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPromptMode("constructor")}
-                        className={cn(
-                          "flex-1 rounded-md px-3 py-2 text-xs font-medium transition",
-                          promptMode === "constructor"
-                            ? "bg-primary/15 text-foreground"
-                            : "text-muted-foreground hover:bg-white/[0.04]",
-                        )}
-                      >
-                        Конструктор промтов
-                      </button>
-                    </div>
-                  )}
                   {showGptTextPanel ? (
                     <GptTextPanel
                       key={`gpt-${activeSlot?.id}-${activeStepCode}`}
@@ -887,20 +838,6 @@ export function NodeStudio({
                       resolve={operatorResolve.data}
                       loading={operatorResolve.isLoading}
                     />
-                  ) : showFilesPanel &&
-                    promptMode === "constructor" &&
-                    supportsPromptConstructor &&
-                    projectId &&
-                    promptStepCode ? (
-                    <div className="min-h-[min(70vh,720px)] overflow-hidden rounded-xl border border-white/10">
-                      <PromptBuilderStudio
-                        key={`builder-${nodeKey}-${promptStepCode}`}
-                        projectId={projectId}
-                        nodeType={builderNodeType}
-                        stepCode={promptStepCode}
-                        fullscreen={false}
-                      />
-                    </div>
                   ) : showFilesPanel && promptStepCode ? (
                     <PromptFilesPanel
                       key={`files-${nodeKey}-${activeSlot?.id}-${promptStepCode}`}

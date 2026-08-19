@@ -1239,7 +1239,7 @@ export const api = {
       `/api/prompt-studio/steps/${stepId}/meta`,
     ),
   promptStudioStepPresets: (stepCode: string) =>
-    http<import("@/lib/prompt-builder/prompt-presets").StepPresetsFile>(
+    http<Record<string, unknown>>(
       `/api/prompt-studio/step-presets/${encodeURIComponent(stepCode)}`,
     ),
   patchStepPreset: (
@@ -1247,7 +1247,7 @@ export const api = {
     presetId: string,
     body: { label?: string; description?: string; blocks?: Record<string, string | null> },
   ) =>
-    http<import("@/lib/prompt-builder/prompt-presets").PromptStepPreset>(
+    http<Record<string, unknown>>(
       `/api/prompt-studio/step-presets/${encodeURIComponent(stepCode)}/presets/${encodeURIComponent(presetId)}`,
       { method: "PATCH", body: JSON.stringify(body) },
     ),
@@ -1256,7 +1256,7 @@ export const api = {
     presetId: string,
     body: { label?: string; description?: string; blocks?: Record<string, string | null> },
   ) =>
-    http<import("@/lib/prompt-builder/prompt-presets").PromptStepPreset>(
+    http<Record<string, unknown>>(
       `/api/prompt-studio/step-presets/${encodeURIComponent(stepCode)}/presets/${encodeURIComponent(presetId)}`,
       { method: "POST", body: JSON.stringify(body) },
     ),
