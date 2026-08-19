@@ -339,6 +339,28 @@ def test_skeleton_vo_frames_skips_empty() -> None:
     assert [int(f.number) for f in vos] == [1, 4]
 
 
+def test_sparse_vo_numbers_are_not_consecutive_holes() -> None:
+    """SET-слоты 3,4,6… не VO: карточки на 1,2,5 — полное покрытие, не «дыры»."""
+    vo = [
+        _fr(1, "Павел открыл мастерскую у моста"),
+        _fr(2, "Взял сломанные часы с боем"),
+        _fr(5, "и решил их починить во что бы то ни стало"),
+    ]
+    draft = _draft_ok([(1, vo[0].voiceover_text), (2, vo[1].voiceover_text), (5, vo[2].voiceover_text)])
+    full = " ".join(f.voiceover_text for f in vo)
+    gaps = sk.validate_skeleton(draft, vo, full)
+    assert not any("ожидался" in g["проблема"] for g in gaps)
+    assert not any("не покрыты" in g["проблема"] for g in gaps)
+    sk.validate_skeleton_coverage(draft["scenes"], [1, 2, 5])
+
+
+def test_sparse_vo_still_flags_real_missing_cell() -> None:
+    vo = [_fr(1, "один два три слова тут"), _fr(2, "четыре пять шесть слов"), _fr(5, "семь восемь девять")]
+    draft = _draft_ok([(1, vo[0].voiceover_text), (5, vo[2].voiceover_text)])
+    gaps = sk.validate_skeleton(draft, vo, "один два три слова тут четыре пять шесть слов семь восемь девять")
+    assert any("не покрыты" in g["проблема"] and "2" in g["проблема"] for g in gaps)
+
+
 def test_timing_gap_skipped_for_empty_vo() -> None:
     """Пустой закадр + duration из БД не должен давать тайминг-разрыв."""
     frames = [_fr(1, "Павел открыл мастерскую"), _fr(2, "")]

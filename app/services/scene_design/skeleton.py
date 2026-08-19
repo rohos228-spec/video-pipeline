@@ -475,6 +475,32 @@ def _scene_frames(scene: dict[str, Any]) -> list[int]:
     return out
 
 
+def _scene_sequence_gap(
+    sid: str, prev_max: int, nums: list[int], expect: list[int]
+) -> dict[str, str] | None:
+    """Порядок карточек = порядок VO-номеров.
+
+    После camera_expand VO часто 1,2,5,9… — пустые SET между ними не дыры.
+    Арифметика N, N+1 ломает валидный черновик и гоняет редактор вхолостую.
+    """
+    if not prev_max or not nums:
+        return None
+    if nums[0] <= prev_max:
+        return _gap(
+            sid,
+            f"сцена начинается с {nums[0]}, предыдущий кадр {prev_max}",
+            "карточки в порядке номеров VO-ячеек, без перестановки",
+        )
+    skipped = [n for n in expect if prev_max < n < nums[0]]
+    if skipped:
+        return _gap(
+            sid,
+            f"сцена начинается с {nums[0]}, пропущены VO {skipped}",
+            "добавь карточки на пропущенные VO; пустые SET между ними не размечай",
+        )
+    return None
+
+
 def _link_type(scene: dict[str, Any]) -> str:
     link = scene.get("связь_с_прошлой")
     if isinstance(link, dict):
@@ -539,14 +565,9 @@ def validate_skeleton(
                     )
                 )
                 break
-        if prev_max and nums and nums[0] != prev_max + 1:
-            gaps.append(
-                _gap(
-                    sid,
-                    f"сцена начинается с {nums[0]}, ожидался {prev_max + 1}",
-                    "сцены должны идти подряд по кадрам без дыр и перестановок",
-                )
-            )
+        seq = _scene_sequence_gap(sid, prev_max, nums, expect)
+        if seq:
+            gaps.append(seq)
         if nums:
             prev_max = nums[-1]
         for n in nums:
@@ -1066,10 +1087,9 @@ def validate_skeleton_coverage(
             )
         if any(b != a + 1 for a, b in zip(nums, nums[1:], strict=False)):
             gaps.append(_gap(sid, f"не соседние кадры: {nums}", "только непрерывный диапазон"))
-        if prev_max and nums[0] != prev_max + 1:
-            gaps.append(
-                _gap(sid, f"разрыв порядка после кадра {prev_max}", "сцены по порядку кадров")
-            )
+        seq = _scene_sequence_gap(sid, prev_max, nums, expect)
+        if seq:
+            gaps.append(seq)
         prev_max = nums[-1]
         for n in nums:
             if n in covered:
