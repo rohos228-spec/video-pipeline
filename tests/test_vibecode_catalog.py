@@ -212,9 +212,10 @@ def test_node_override_routes_chat_to_vibecode(monkeypatch, tmp_path: Path) -> N
     assert gpt_api.is_responses_mode() is True
 
 
-def test_node_override_uses_vps_relay_not_direct_vibecode(
+def test_node_override_vibecode_bypasses_vps_relay(
     monkeypatch, tmp_path: Path
 ) -> None:
+    """Node vibecode must not use GPT VPS (stale Caddy = kie 401 envelope)."""
     import app.services.gpt_api as gpt_api
     import app.settings as settings_mod
     from app.services.llm_override import NodeLlmOverride, use_override
@@ -248,11 +249,10 @@ def test_node_override_uses_vps_relay_not_direct_vibecode(
     )
     with use_override(ov):
         assert gpt_api._chat_url("claude-sonnet-5") == (
-            "https://gpt.example.com/v1/chat/completions"
+            "https://vibecode.moe/v1/chat/completions"
         )
-        assert gpt_api._headers()["X-VP-Relay-Token"] == "relay-secret"
         assert gpt_api._headers()["Authorization"] == "Bearer vk-test"
-        assert "vibecode.moe" not in gpt_api._chat_url("claude-sonnet-5")
+        assert "gpt.example.com" not in gpt_api._chat_url("claude-sonnet-5")
 
 
 def test_node_override_empty_vibecode_key_does_not_steal_kie_key(

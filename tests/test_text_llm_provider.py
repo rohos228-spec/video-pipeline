@@ -94,9 +94,10 @@ def test_vibecode_models_switch_url_and_key(monkeypatch, tmp_path: Path) -> None
     assert s.gpt_api_effective_base_url == "https://api.kie.ai"
 
 
-def test_vibecode_uses_vps_relay_host_when_token_set(
+def test_vibecode_stays_direct_even_when_vps_relay_set(
     monkeypatch, tmp_path: Path
 ) -> None:
+    """VPS relay is for kie; vibecode must hit vibecode.moe (stale relay = 401 envelope)."""
     from app.services import text_llm_catalog as cat
     import app.settings as settings_mod
     import app.services.gpt_api as gpt_api
@@ -111,9 +112,8 @@ def test_vibecode_uses_vps_relay_host_when_token_set(
     monkeypatch.setattr(settings_mod, "settings", s)
     monkeypatch.setattr(gpt_api, "settings", s)
     cat.write_choice(provider="vibecode", model_id="gpt-5.5-vibecode", cfg=s)
-    assert s.gpt_api_effective_base_url == "https://gpt.example.com"
-    assert gpt_api._chat_url("gpt-5.5") == "https://gpt.example.com/v1/chat/completions"
-    assert gpt_api._headers()["X-VP-Relay-Token"] == "relay-secret"
+    assert s.gpt_api_effective_base_url == "https://vibecode.moe/v1"
+    assert gpt_api._chat_url("gpt-5.5") == "https://vibecode.moe/v1/chat/completions"
     assert gpt_api._headers()["Authorization"] == "Bearer vk-test"
     cat.write_choice(provider="kie", model_id="gpt-kie", cfg=s)
     assert s.gpt_api_effective_base_url == "https://gpt.example.com"

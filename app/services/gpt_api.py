@@ -176,9 +176,9 @@ def _node_vibecode_override() -> bool:
 
 
 def _override_vibecode_base_url() -> str:
-    vps = _vps_relay_base()
-    if vps:
-        return vps
+    # Не гонять vibecode через GPT_BASE_URL/VPS: старый relay часто проксирует
+    # только api.kie.ai. Тогда vibecode-ключ даёт HTTP 200 + {"code":401}
+    # без choices → «пустой output» в chat/stream.
     return (settings.vibecode_base_url or "https://vibecode.moe/v1").strip().rstrip("/")
 
 
@@ -208,9 +208,11 @@ def _headers() -> dict[str, str]:
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
     }
-    relay = (getattr(settings, "gpt_relay_token", None) or "").strip()
-    if relay:
-        headers["X-VP-Relay-Token"] = relay
+    # Relay-токен только когда реально бьём в VPS (kie). На vibecode.moe не нужен.
+    if not vibe_ov and not settings.text_llm_is_vibecode:
+        relay = (getattr(settings, "gpt_relay_token", None) or "").strip()
+        if relay:
+            headers["X-VP-Relay-Token"] = relay
     return headers
 
 
@@ -1647,6 +1649,19 @@ async def _chat_completions_stream(
             )
     text, finish, last = parse_chat_completions_sse_lines(lines)
     if not (text or "").strip():
+        # HTTP 200 + JSON envelope (kie/relay) без SSE — не маскировать под empty.
+        for raw in lines[:3]:
+            s = (raw or "").strip()
+            if s.startswith("data:"):
+                s = s[5:].strip()
+            if not s.startswith("{"):
+                continue
+            try:
+                payload = json.loads(s)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                _check_provider_envelope(payload)
         if stream_err is not None:
             raise GptApiError(
                 f"GPT(chat/stream) пустой output после {type(stream_err).__name__}: {stream_err}",

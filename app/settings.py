@@ -198,15 +198,19 @@ class Settings(BaseSettings):
 
     @property
     def gpt_api_effective_base_url(self) -> str:
-        """База активного текстового LLM. kie/vibecode — через VPS, если он задан."""
+        """База активного текстового LLM.
+
+        kie — через VPS-relay, если задан. vibecode — всегда прямиком на
+        vibecode.moe (VPS часто ещё только на api.kie.ai; иначе 401-envelope).
+        """
         if self.text_llm_is_tokenrouter:
             base = (self.tokenrouter_base_url or "https://api.tokenrouter.com/v1").strip()
             return base.rstrip("/")
+        if self.text_llm_is_vibecode:
+            return (self.vibecode_base_url or "https://vibecode.moe/v1").strip().rstrip("/")
         vps = self.vps_relay_base_url
         if vps:
             return vps
-        if self.text_llm_is_vibecode:
-            return (self.vibecode_base_url or "https://vibecode.moe/v1").strip().rstrip("/")
         base = (self.gpt_base_url or "").strip() or (self.grsai_base_url or "").strip()
         return base.rstrip("/")
 
