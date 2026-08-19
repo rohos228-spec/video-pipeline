@@ -188,7 +188,10 @@ def _video_skipped(frame: Frame) -> bool:
 
 
 def _video_opts(project: Project) -> tuple[str | None, str | None, str, bool]:
-    from app.services.vibecode_catalog import effective_video_generator_id
+    from app.services.vibecode_catalog import (
+        effective_video_generator_id,
+        resolve_node_media_settings,
+    )
 
     vg = VIDEO_GENERATORS_BY_ID.get(
         effective_video_generator_id(project, node_type="videos")
@@ -196,11 +199,12 @@ def _video_opts(project: Project) -> tuple[str | None, str | None, str, bool]:
     vr_o = VIDEO_RESOLUTIONS_BY_ID.get(
         project.video_resolution or DEFAULTS["video_resolution"]
     )
-    ar = ASPECT_RATIOS_BY_ID.get(project.aspect_ratio or DEFAULTS["aspect_ratio"])
+    media = resolve_node_media_settings(project, node_type="videos")
+    aspect = media["aspect_slug"] or "9:16"
     return (
         vg.outsee_slug if vg else None,
         vr_o.outsee_slug if vr_o else None,
-        ar.outsee_slug if ar else "9:16",
+        aspect,
         project.video_relax is not False,
     )
 

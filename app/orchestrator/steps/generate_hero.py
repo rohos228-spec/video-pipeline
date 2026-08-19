@@ -49,8 +49,6 @@ from app.generation_options import (
     IMAGE_GENERATORS_BY_ID,
     IMAGE_RESOLUTIONS_BY_ID,
     OUTSEE_PROMPT_MAX_CHARS,
-    clamp_image_resolution_id,
-    resolve_image_quality_slug,
 )
 from app.models import (
     Artifact,
@@ -708,16 +706,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         # 4) Генерация в outsee.
         outsee = OutseeBot(bs)
         out_dir = project.data_dir / "characters"
-        from app.services.vibecode_catalog import effective_image_generator_id
+        from app.services.vibecode_catalog import resolve_node_media_settings
 
-        img_gid = effective_image_generator_id(project, node_type="hero")
+        media = resolve_node_media_settings(project, node_type="hero")
+        img_gid = media["image_generator_id"]
         img_gen = IMAGE_GENERATORS_BY_ID.get(img_gid)
         # Aspect ratio и Relax для hero жёстко захардкожены: 16:9 + Relax=ON.
         # См. HERO_ASPECT_RATIO / HERO_RELAX в верху файла.
-        ir = IMAGE_RESOLUTIONS_BY_ID.get(
-            clamp_image_resolution_id(img_gid, project.image_resolution)
-        )
-        quality_slug = resolve_image_quality_slug(img_gid, project.image_quality)
+        ir = IMAGE_RESOLUTIONS_BY_ID.get(media["resolution_id"])
+        quality_slug = media["quality_slug"]
 
         short_uuid = uuid.uuid4().hex[:8]
         file_name = f"hero_{hero_idx}_v{v_idx}_{short_uuid}.png"
@@ -1274,16 +1271,14 @@ async def _generate_one_excel_character(
                     f"персонажа {ch.id} после 3 попыток"
                 )
 
-        # Генератор / разрешение / aspect_ratio — те же дефолты что в
-        # обычном hero (16:9, Relax=ON).
-        from app.services.vibecode_catalog import effective_image_generator_id
+        # Генератор / разрешение — с ноды hero; aspect/Relax как в обычном hero.
+        from app.services.vibecode_catalog import resolve_node_media_settings
 
-        img_gid = effective_image_generator_id(project, node_type="hero")
+        media = resolve_node_media_settings(project, node_type="hero")
+        img_gid = media["image_generator_id"]
         img_gen = IMAGE_GENERATORS_BY_ID.get(img_gid)
-        ir = IMAGE_RESOLUTIONS_BY_ID.get(
-            clamp_image_resolution_id(img_gid, project.image_resolution)
-        )
-        quality_slug = resolve_image_quality_slug(img_gid, project.image_quality)
+        ir = IMAGE_RESOLUTIONS_BY_ID.get(media["resolution_id"])
+        quality_slug = media["quality_slug"]
 
         from app.services.img_streams import acquire_image_slot
 

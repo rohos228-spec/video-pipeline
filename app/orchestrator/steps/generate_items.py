@@ -34,8 +34,6 @@ from app.bots.outsee import (
 from app.generation_options import (
     IMAGE_GENERATORS_BY_ID,
     IMAGE_RESOLUTIONS_BY_ID,
-    clamp_image_resolution_id,
-    resolve_image_quality_slug,
 )
 from app.models import Artifact, ArtifactKind, Project, ProjectStatus
 from app.services.outsee_retry import generate_image_with_retries
@@ -102,14 +100,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
 
     style = _items_style_prompt(project)
-    from app.services.vibecode_catalog import effective_image_generator_id
+    from app.services.vibecode_catalog import resolve_node_media_settings
 
-    img_gid = effective_image_generator_id(project, node_type="items")
+    media = resolve_node_media_settings(project, node_type="items")
+    img_gid = media["image_generator_id"]
     img_gen = IMAGE_GENERATORS_BY_ID.get(img_gid)
-    ir = IMAGE_RESOLUTIONS_BY_ID.get(
-        clamp_image_resolution_id(img_gid, project.image_resolution)
-    )
-    quality_slug = resolve_image_quality_slug(img_gid, project.image_quality)
+    ir = IMAGE_RESOLUTIONS_BY_ID.get(media["resolution_id"])
+    quality_slug = media["quality_slug"]
+    # items historically force square; нода может задать своё соотношение.
+    item_aspect = media["aspect_slug"] or ITEM_ASPECT_RATIO
 
     already_done = await _existing_item_indices(session, project)
     out_dir = project.data_dir / "items"
@@ -152,7 +151,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     out_path=out_path,
                     max_attempts_per_prompt=3,
                     gpt_rewrite=True,
-                    aspect_ratio=ITEM_ASPECT_RATIO,
+                    aspect_ratio=item_aspect,
                     model_slug=img_gen.outsee_slug if img_gen else None,
                     resolution=ir.outsee_slug if ir else None,
                     quality=quality_slug,

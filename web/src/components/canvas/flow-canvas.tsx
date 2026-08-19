@@ -613,7 +613,13 @@ export function FlowCanvas({
           };
         }),
       );
-      if (detail.patch.modelId != null || detail.patch.modelChannel != null) {
+      if (
+        detail.patch.modelId != null ||
+        detail.patch.modelChannel != null ||
+        detail.patch.imageResolution != null ||
+        detail.patch.imageQuality != null ||
+        detail.patch.aspectRatio != null
+      ) {
         scheduleSaveWorkflow();
       }
     };
@@ -1720,6 +1726,18 @@ function workflowToReactFlowNodes(
           ? data.modelId.trim()
           : defaultModelIdForNodeType(n.type),
         modelChannel: "stable",
+        imageResolution:
+          typeof data.imageResolution === "string" && data.imageResolution.trim()
+            ? data.imageResolution.trim()
+            : undefined,
+        imageQuality:
+          typeof data.imageQuality === "string" && data.imageQuality.trim()
+            ? data.imageQuality.trim()
+            : undefined,
+        aspectRatio:
+          typeof data.aspectRatio === "string" && data.aspectRatio.trim()
+            ? data.aspectRatio.trim()
+            : undefined,
         status: (nr?.status ?? "pending") as PipelineNodeData["status"],
         progress: nr?.progress ?? 0,
         progressText: nr?.progress_text ?? null,

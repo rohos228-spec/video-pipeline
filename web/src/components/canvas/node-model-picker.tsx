@@ -23,6 +23,12 @@ import {
   type ModelCatalogPayload,
 } from "@/lib/node-model-catalog";
 import {
+  clampMediaOption,
+  mediaOptionsForModel,
+  qualityLabel,
+  type MediaQualityId,
+} from "@/lib/node-media-options";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -32,6 +38,14 @@ import {
 
 type CatalogResponse = {
   catalog?: ModelCatalogPayload;
+};
+
+export type NodeMediaPatch = {
+  modelId: string;
+  modelChannel: "stable";
+  imageResolution?: string;
+  imageQuality?: MediaQualityId;
+  aspectRatio?: string;
 };
 
 function HexIcon({ className }: { className?: string }) {
@@ -55,23 +69,65 @@ function VendorGlyph({ icon, className }: { icon: string; className?: string }) 
   return <span className={cn("font-semibold leading-none", className)}>{icon}</span>;
 }
 
-function patchNodeModel(nodeKey: string, modelId: string) {
+function patchNodeModel(nodeKey: string, patch: NodeMediaPatch) {
   window.dispatchEvent(
     new CustomEvent("canvas-patch-node-data", {
-      detail: { nodeKey, patch: { modelId, modelChannel: "stable" } },
+      detail: { nodeKey, patch },
     }),
   );
   window.dispatchEvent(new CustomEvent("canvas-save-workflow"));
+}
+
+function buildMediaPatch(
+  modelId: string,
+  opts: {
+    imageResolution?: string | null;
+    imageQuality?: string | null;
+    aspectRatio?: string | null;
+  },
+): NodeMediaPatch {
+  const media = mediaOptionsForModel(modelId);
+  const patch: NodeMediaPatch = { modelId, modelChannel: "stable" };
+  if (!media) return patch;
+  if (media.resolutions.length) {
+    patch.imageResolution = clampMediaOption(
+      opts.imageResolution,
+      media.resolutions,
+      media.defaultResolution,
+    );
+  }
+  if (media.qualities.length) {
+    const q = clampMediaOption(
+      opts.imageQuality,
+      media.qualities.map((x) => x.id),
+      media.defaultQuality,
+    ) as MediaQualityId;
+    patch.imageQuality = q;
+  }
+  if (media.aspects.length) {
+    patch.aspectRatio = clampMediaOption(
+      opts.aspectRatio,
+      media.aspects,
+      media.defaultAspect,
+    );
+  }
+  return patch;
 }
 
 export function NodeModelPicker({
   nodeKey,
   nodeType,
   modelId,
+  imageResolution,
+  imageQuality,
+  aspectRatio,
 }: {
   nodeKey: string;
   nodeType: string;
   modelId?: string | null;
+  imageResolution?: string | null;
+  imageQuality?: string | null;
+  aspectRatio?: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const fallbackId = defaultModelIdForNodeType(nodeType);
@@ -89,6 +145,25 @@ export function NodeModelPicker({
 
   const catalog = catalogForNodeType(catalogQuery.data?.catalog ?? localCatalog(), nodeType);
   const selected = findCatalogModel(catalog, selectedId) ?? findCatalogModel(localCatalog(), selectedId);
+  const media = mediaOptionsForModel(selectedId);
+  const summaryBits = [
+    selected?.label || selectedId,
+    media?.resolutions.length
+      ? clampMediaOption(imageResolution, media.resolutions, media.defaultResolution)
+      : null,
+    media?.qualities.length
+      ? qualityLabel(
+          clampMediaOption(
+            imageQuality,
+            media.qualities.map((q) => q.id),
+            media.defaultQuality,
+          ),
+        )
+      : null,
+    media?.aspects.length
+      ? clampMediaOption(aspectRatio, media.aspects, media.defaultAspect)
+      : null,
+  ].filter(Boolean);
 
   return (
     <>
@@ -110,7 +185,7 @@ export function NodeModelPicker({
         }}
       >
         <span className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-tight text-foreground/95">
-          {selected?.label || selectedId}
+          {summaryBits.join(" · ")}
         </span>
         <ChevronDown
           className={cn(
@@ -125,6 +200,9 @@ export function NodeModelPicker({
         nodeKey={nodeKey}
         selectedId={selectedId}
         catalog={catalog}
+        imageResolution={imageResolution}
+        imageQuality={imageQuality}
+        aspectRatio={aspectRatio}
       />
     </>
   );
@@ -136,18 +214,22 @@ function ModelCatalogDialog({
   nodeKey,
   selectedId,
   catalog,
+  imageResolution,
+  imageQuality,
+  aspectRatio,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   nodeKey: string;
   selectedId: string;
   catalog: ModelCatalogPayload;
+  imageResolution?: string | null;
+  imageQuality?: string | null;
+  aspectRatio?: string | null;
 }) {
   const selectedModel = findCatalogModel(catalog, selectedId);
   const [vendor, setVendor] = useState<string>(selectedModel?.vendor || "anthropic");
 
-  // Только при открытии / смене выбранной модели. Нельзя зависеть от `catalog`:
-  // родитель каждый рендер отдаёт новый объект → клик по вкладке сразу сбрасывался.
   useEffect(() => {
     if (!open) return;
     const next = findCatalogModel(catalog, selectedId)?.vendor;
@@ -174,7 +256,7 @@ function ModelCatalogDialog({
       >
         <DialogHeader className="sr-only">
           <DialogTitle>Выбор модели</DialogTitle>
-          <DialogDescription>Каталог моделей vibecode с ценами входа и выхода</DialogDescription>
+          <DialogDescription>Каталог моделей с ценами и параметрами генерации</DialogDescription>
         </DialogHeader>
         <div className="flex items-center justify-between gap-3 border-b border-white/8 px-4 py-3 pr-12">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -208,9 +290,7 @@ function ModelCatalogDialog({
               "grid gap-3",
               models.length <= 2
                 ? "grid-cols-1 sm:grid-cols-2"
-                : models.length <= 4
-                  ? "grid-cols-1 sm:grid-cols-2 lg:grid-cols-4"
-                  : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-4",
+                : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4",
             )}
           >
             {models.map((m, idx) => (
@@ -219,8 +299,11 @@ function ModelCatalogDialog({
                 model={m}
                 selected={m.id === selectedId}
                 delay={idx * 30}
-                onPick={() => {
-                  patchNodeModel(nodeKey, m.id);
+                imageResolution={m.id === selectedId ? imageResolution : null}
+                imageQuality={m.id === selectedId ? imageQuality : null}
+                aspectRatio={m.id === selectedId ? aspectRatio : null}
+                onApply={(patch) => {
+                  patchNodeModel(nodeKey, patch);
                   onOpenChange(false);
                   toast.success(`Модель: ${m.label}`);
                 }}
@@ -233,28 +316,120 @@ function ModelCatalogDialog({
   );
 }
 
+function MiniMenu({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: { id: string; label: string }[];
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!options.length) return null;
+  return (
+    <div className="relative min-w-0 flex-1">
+      <button
+        type="button"
+        title={label}
+        className="flex w-full items-center justify-between gap-1 rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-left text-[10px] text-white/80 hover:border-[#b49bff]/40"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+      >
+        <span className="truncate">
+          <span className="text-white/35">{label}: </span>
+          {options.find((o) => o.id === value)?.label ?? value}
+        </span>
+        <ChevronDown className={cn("h-3 w-3 shrink-0 text-white/40", open && "rotate-180")} />
+      </button>
+      {open ? (
+        <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-40 overflow-y-auto rounded-lg border border-white/12 bg-[#151515] p-1 shadow-xl">
+          {options.map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              className={cn(
+                "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-[11px]",
+                o.id === value ? "bg-[#b49bff]/15 text-[#d9ccff]" : "text-white/75 hover:bg-white/[0.05]",
+              )}
+              onClick={(e) => {
+                e.stopPropagation();
+                onChange(o.id);
+                setOpen(false);
+              }}
+            >
+              {o.label}
+              {o.id === value ? <Check className="h-3 w-3" /> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ModelCard({
   model,
   selected,
-  onPick,
+  onApply,
   delay,
+  imageResolution,
+  imageQuality,
+  aspectRatio,
 }: {
   model: CatalogModel;
   selected: boolean;
-  onPick: () => void;
+  onApply: (patch: NodeMediaPatch) => void;
   delay: number;
+  imageResolution?: string | null;
+  imageQuality?: string | null;
+  aspectRatio?: string | null;
 }) {
   const [copied, setCopied] = useState(false);
   const [cacheOpen, setCacheOpen] = useState(false);
+  const media = mediaOptionsForModel(model.id);
+  const [resolution, setResolution] = useState(() =>
+    clampMediaOption(imageResolution, media?.resolutions ?? [], media?.defaultResolution ?? "2K"),
+  );
+  const [quality, setQuality] = useState<MediaQualityId>(() =>
+    clampMediaOption(
+      imageQuality,
+      (media?.qualities ?? []).map((q) => q.id),
+      media?.defaultQuality ?? "medium",
+    ) as MediaQualityId,
+  );
+  const [aspect, setAspect] = useState(() =>
+    clampMediaOption(aspectRatio, media?.aspects ?? [], media?.defaultAspect ?? "16:9"),
+  );
+
+  useEffect(() => {
+    const next = mediaOptionsForModel(model.id);
+    if (!next) return;
+    setResolution(clampMediaOption(imageResolution, next.resolutions, next.defaultResolution));
+    setQuality(
+      clampMediaOption(
+        imageQuality,
+        next.qualities.map((q) => q.id),
+        next.defaultQuality,
+      ) as MediaQualityId,
+    );
+    setAspect(clampMediaOption(aspectRatio, next.aspects, next.defaultAspect));
+  }, [model.id, imageResolution, imageQuality, aspectRatio]);
+
   const hasCache =
     typeof model.pricing.cache_read_usd_per_m === "number" ||
     typeof model.pricing.cache_create_usd_per_m === "number";
   const isImage = model.kind === "image";
+  const hasMediaMenus = Boolean(
+    media && (media.resolutions.length || media.qualities.length || media.aspects.length),
+  );
 
   return (
-    <button
-      type="button"
-      onClick={onPick}
+    <div
       style={{ animationDelay: `${delay}ms` }}
       className={cn(
         "node-model-card group relative flex flex-col rounded-2xl border bg-[#171717] p-3.5 text-left transition-all duration-200",
@@ -269,22 +444,29 @@ function ModelCard({
           <Check className="h-3 w-3" strokeWidth={3} />
         </span>
       )}
-      <div className="flex items-start justify-between gap-2 pr-6">
-        <div className="min-w-0">
+      <button
+        type="button"
+        className="min-w-0 pr-6 text-left"
+        onClick={() =>
+          onApply(
+            buildMediaPatch(model.id, {
+              imageResolution: resolution,
+              imageQuality: quality,
+              aspectRatio: aspect,
+            }),
+          )
+        }
+      >
+        <div className="flex items-start justify-between gap-2">
           <div className="truncate text-[13px] font-semibold tracking-tight text-white">
             {model.label.replace(/\s*\(1K\/2K\/4K\)\s*$/i, "")}
           </div>
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-emerald-400/25 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.9)]" />
+            онлайн
+          </span>
         </div>
-        <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-emerald-400/25 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300">
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.9)]" />
-          онлайн
-        </span>
-      </div>
-      {model.resolution ? (
-        <span className="mt-1 w-fit rounded-md border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[9px] font-medium text-white/45">
-          {model.resolution}
-        </span>
-      ) : null}
+      </button>
 
       <div className="mt-3 rounded-xl border border-white/[0.04] bg-black/30 px-3 py-2.5">
         <div className="flex items-center justify-between text-[9px] font-semibold uppercase tracking-[0.14em] text-white/35">
@@ -329,7 +511,9 @@ function ModelCard({
             className={cn(
               "grid transition-all duration-300",
               cacheOpen || "group-hover:grid",
-              cacheOpen ? "mt-2 grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-80 group-hover:mt-2 group-hover:grid-rows-[1fr] group-hover:opacity-100",
+              cacheOpen
+                ? "mt-2 grid-rows-[1fr] opacity-100"
+                : "grid-rows-[0fr] opacity-80 group-hover:mt-2 group-hover:grid-rows-[1fr] group-hover:opacity-100",
             )}
           >
             <div className="overflow-hidden">
@@ -363,6 +547,60 @@ function ModelCard({
         ) : null}
       </div>
 
+      {hasMediaMenus && media ? (
+        <div className="mt-3 space-y-1.5" onClick={(e) => e.stopPropagation()}>
+          <div className="flex gap-1.5">
+            {media.resolutions.length ? (
+              <MiniMenu
+                label="Качество"
+                value={resolution}
+                options={media.resolutions.map((r) => ({ id: r, label: r }))}
+                onChange={setResolution}
+              />
+            ) : null}
+            {media.qualities.length ? (
+              <MiniMenu
+                label="Детализация"
+                value={quality}
+                options={media.qualities}
+                onChange={(id) => setQuality(id as MediaQualityId)}
+              />
+            ) : null}
+          </div>
+          {media.aspects.length ? (
+            <MiniMenu
+              label="Соотношение"
+              value={aspect}
+              options={media.aspects.map((a) => ({ id: a, label: a }))}
+              onChange={setAspect}
+            />
+          ) : null}
+          <button
+            type="button"
+            className="w-full rounded-lg border border-[#b49bff]/40 bg-[#b49bff]/10 px-2 py-1.5 text-[11px] font-semibold text-[#d9ccff] hover:bg-[#b49bff]/18"
+            onClick={() =>
+              onApply(
+                buildMediaPatch(model.id, {
+                  imageResolution: resolution,
+                  imageQuality: quality,
+                  aspectRatio: aspect,
+                }),
+              )
+            }
+          >
+            Выбрать
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="mt-3 w-full rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1.5 text-[11px] font-medium text-white/70 hover:border-[#b49bff]/40 hover:text-[#d9ccff]"
+          onClick={() => onApply(buildMediaPatch(model.id, {}))}
+        >
+          Выбрать
+        </button>
+      )}
+
       <div className="mt-3 flex items-center justify-between gap-2">
         <code className="truncate font-mono text-[10px] text-white/35">{model.id}</code>
         <span
@@ -382,7 +620,7 @@ function ModelCard({
           {copied ? <Check className="h-3.5 w-3.5 text-emerald-300" /> : <Copy className="h-3.5 w-3.5" />}
         </span>
       </div>
-    </button>
+    </div>
   );
 }
 

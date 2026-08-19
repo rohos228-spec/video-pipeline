@@ -65,6 +65,15 @@ export function workflowNodeFromCanvas(n: Node): WorkflowNode {
   if (typeof d.modelChannel === "string" && d.modelChannel.trim()) {
     data.modelChannel = d.modelChannel.trim();
   }
+  if (typeof d.imageResolution === "string" && d.imageResolution.trim()) {
+    data.imageResolution = d.imageResolution.trim();
+  }
+  if (typeof d.imageQuality === "string" && d.imageQuality.trim()) {
+    data.imageQuality = d.imageQuality.trim();
+  }
+  if (typeof d.aspectRatio === "string" && d.aspectRatio.trim()) {
+    data.aspectRatio = d.aspectRatio.trim();
+  }
   return {
     id: n.id,
     type,

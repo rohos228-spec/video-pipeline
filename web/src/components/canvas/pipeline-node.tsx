@@ -64,6 +64,10 @@ export interface PipelineNodeData extends Record<string, unknown> {
   modelId?: string;
   /** Канал цен (всегда дорогой / stable). */
   modelChannel?: "stable" | string;
+  /** Параметры media-ноды (картинка/видео) из пикера. */
+  imageResolution?: string;
+  imageQuality?: string;
+  aspectRatio?: string;
   status: NodeRunStatus;
   progress: number;
   progressText: string | null;
@@ -259,6 +263,9 @@ export function PipelineNode({ data, selected }: NodeProps) {
                   nodeKey={d.nodeKey}
                   nodeType={d.type}
                   modelId={d.modelId}
+                  imageResolution={d.imageResolution}
+                  imageQuality={d.imageQuality}
+                  aspectRatio={d.aspectRatio}
                 />
                 {isSdAgent ? (
                   <div className="mt-1.5 flex flex-wrap gap-1">

@@ -266,6 +266,85 @@ def read_node_model_fields(node: dict[str, Any] | None) -> tuple[str | None, str
     return mid, "stable"
 
 
+def _node_data_dict(node: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(node, dict):
+        return {}
+    data = node.get("data") if isinstance(node.get("data"), dict) else node
+    return data if isinstance(data, dict) else {}
+
+
+def read_node_media_fields(node: dict[str, Any] | None) -> dict[str, str | None]:
+    """Параметры media-пикера с ноды: resolution / quality / aspect."""
+    data = _node_data_dict(node)
+    res = str(data.get("imageResolution") or data.get("image_resolution") or "").strip() or None
+    quality = str(data.get("imageQuality") or data.get("image_quality") or "").strip() or None
+    aspect = str(data.get("aspectRatio") or data.get("aspect_ratio") or "").strip() or None
+    if aspect and ":" in aspect:
+        aspect_id = aspect.replace(":", "_")
+    elif aspect:
+        aspect_id = aspect
+    else:
+        aspect_id = None
+    return {
+        "image_resolution": res.lower() if res else None,
+        "image_quality": quality.lower() if quality else None,
+        "aspect_ratio": aspect_id,
+        "aspect_slug": aspect.replace("_", ":") if aspect else None,
+    }
+
+
+def resolve_node_media_settings(
+    project: Any,
+    *,
+    node_key: str | None = None,
+    node_type: str = "images",
+) -> dict[str, Any]:
+    """Настройки картинки: нода перекрывает проект."""
+    from app.generation_options import (
+        ASPECT_RATIOS_BY_ID,
+        DEFAULTS,
+        IMAGE_RESOLUTIONS_BY_ID,
+        clamp_image_resolution_id,
+        resolve_image_quality_slug,
+    )
+
+    meta = getattr(project, "meta", None)
+    node = find_canvas_node(meta, node_key=node_key, node_type=node_type)
+    fields = read_node_media_fields(node)
+    img_gid = effective_image_generator_id(project, node_key=node_key, node_type=node_type)
+
+    res_raw = fields["image_resolution"] or getattr(project, "image_resolution", None)
+    res_id = clamp_image_resolution_id(img_gid, res_raw)
+    ir = IMAGE_RESOLUTIONS_BY_ID.get(res_id)
+
+    aspect_id = fields["aspect_ratio"] or getattr(project, "aspect_ratio", None) or DEFAULTS["aspect_ratio"]
+    ar = ASPECT_RATIOS_BY_ID.get(aspect_id)
+    aspect_slug = (
+        fields["aspect_slug"]
+        or (ar.outsee_slug if ar else None)
+        or "9:16"
+    )
+
+    quality_raw = fields["image_quality"] or getattr(project, "image_quality", None)
+    quality_slug = resolve_image_quality_slug(img_gid, quality_raw)
+    # Nano Banana и прочие: если на ноде явно выбрали детализацию — всё равно отдаём slug.
+    if quality_slug is None and fields["image_quality"]:
+        from app.generation_options import IMAGE_QUALITIES_BY_ID
+
+        choice = IMAGE_QUALITIES_BY_ID.get(fields["image_quality"])
+        quality_slug = choice.outsee_slug if choice else None
+
+    return {
+        "image_generator_id": img_gid,
+        "resolution_id": res_id,
+        "resolution_slug": ir.outsee_slug if ir else None,
+        "aspect_id": aspect_id,
+        "aspect_slug": aspect_slug,
+        "quality_id": quality_raw,
+        "quality_slug": quality_slug,
+    }
+
+
 def find_canvas_node(
     meta: dict[str, Any] | None,
     *,

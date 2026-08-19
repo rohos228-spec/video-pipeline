@@ -141,6 +141,44 @@ def test_resolve_image_generator_from_images_node() -> None:
     assert resolve_image_generator_id(p, node_type="images") == "nano_banana_2"
 
 
+def test_resolve_node_media_settings_from_images_node() -> None:
+    from app.services.vibecode_catalog import resolve_node_media_settings
+
+    meta = {
+        "canvas_graph": {
+            "workflow_id": 1,
+            "nodes": [
+                {
+                    "id": "n_images_1",
+                    "type": "images",
+                    "data": {
+                        "modelId": "gpt-image-2-vip",
+                        "imageResolution": "4K",
+                        "imageQuality": "high",
+                        "aspectRatio": "9:16",
+                    },
+                }
+            ],
+            "edges": [],
+        }
+    }
+
+    class _Proj:
+        def __init__(self) -> None:
+            self.meta = meta
+            self.image_generator = "nano_banana"
+            self.image_resolution = "1k"
+            self.image_quality = "low"
+            self.aspect_ratio = "16_9"
+
+    media = resolve_node_media_settings(_Proj(), node_type="images")
+    assert media["image_generator_id"] == "gpt_image_2_vip"
+    assert media["resolution_id"] == "4k"
+    assert media["resolution_slug"] == "4K"
+    assert media["aspect_slug"] == "9:16"
+    assert media["quality_slug"] == "Высокое"
+
+
 def test_frontend_picker_wired() -> None:
     node = Path("web/src/components/canvas/pipeline-node.tsx").read_text(encoding="utf-8")
     assert "NodeModelPicker" in node
@@ -155,14 +193,24 @@ def test_frontend_picker_wired() -> None:
     # Вкладки вендоров: не сбрасывать setVendor из‑за нового catalog каждый рендер
     assert "[open, selectedId]" in picker
     assert "[open, selectedId, catalog]" not in picker
+    assert "Соотношение" in picker
+    assert "MiniMenu" in picker
+    media_opts = Path("web/src/lib/node-media-options.ts").read_text(encoding="utf-8")
+    assert "mediaOptionsForModel" in media_opts
+    assert "мало" in media_opts
+    assert "максимум" in media_opts
+    assert "1:1" in media_opts and "21:9" in media_opts and "5:4" in media_opts
+    assert "veo-3-1-lite" in media_opts and "kling-2-6" in media_opts
     settings = Path("web/src/components/inspector/project-settings.tsx").read_text(
         encoding="utf-8"
     )
     assert "GenerationModelsPanel" not in settings
     merge = Path("web/src/lib/canvas-node-merge.ts").read_text(encoding="utf-8")
     assert "modelId: n.data.modelId ?? old.data.modelId" in merge
+    assert "aspectRatio" in merge
     serialize = Path("web/src/lib/workflow-node-serialize.ts").read_text(encoding="utf-8")
     assert "data.modelId" in serialize
+    assert "imageResolution" in serialize
     catalog_ts = Path("web/src/lib/node-model-catalog.ts").read_text(encoding="utf-8")
     assert "PRICE_MARKUP = 3" in catalog_ts
     assert "PRICE_MARKUP_CHEAP" not in catalog_ts
