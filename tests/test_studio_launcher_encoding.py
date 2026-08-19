@@ -76,3 +76,16 @@ def test_stop_backend_supports_wait_sec() -> None:
     text = (root / "scripts/stop-backend.ps1").read_text(encoding="utf-8-sig")
     assert "WaitSec" in text
     assert "VP_REPO_ROOT" in text
+
+
+def test_studio_cmd_heals_launcher_before_powershell() -> None:
+    """Broken studio.ps1 cannot parse; STUDIO.cmd must replace it before -File."""
+    root = Path(__file__).resolve().parents[1]
+    data = (root / "STUDIO.cmd").read_bytes()
+    assert not data.startswith(UTF8_BOM), "UTF-8 BOM before @echo off breaks cmd.exe"
+    text = data.decode("ascii")
+    assert "STUDIO_HEALED" in text
+    assert "Invoke-WebRequest" in text
+    assert "raw.githubusercontent.com/rohos228-spec/video-pipeline/main/scripts/studio.ps1" in text
+    assert "git reset --hard origin/main" in text
+    assert text.index("STUDIO_HEALED") < text.index("-File")
