@@ -255,6 +255,40 @@ def test_node_override_uses_vps_relay_not_direct_vibecode(
         assert "vibecode.moe" not in gpt_api._chat_url("claude-sonnet-5")
 
 
+def test_node_override_empty_vibecode_key_does_not_steal_kie_key(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Без VIBECODE_API_KEY нода не должна слать kie-ключ на /v1/chat/completions."""
+    import app.services.gpt_api as gpt_api
+    import app.settings as settings_mod
+    from app.services.gpt_api import GptApiError
+    from app.services.llm_override import NodeLlmOverride, use_override
+    from app.settings import Settings
+
+    monkeypatch.setenv("TEXT_LLM_PROVIDER", "kie")
+    monkeypatch.setenv("GPT_API_KEY", "kie-key")
+    monkeypatch.setenv("GPT_BASE_URL", "https://api.kie.ai")
+    monkeypatch.setenv("GPT_CHAT_PATH", "/codex/v1/responses")
+    monkeypatch.setenv("VIBECODE_API_KEY", "")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    s = Settings()
+    object.__setattr__(s, "vibecode_api_key", "")
+    monkeypatch.setattr(settings_mod, "settings", s)
+    monkeypatch.setattr(gpt_api, "settings", s)
+
+    ov = NodeLlmOverride(
+        model_id="gpt-5.6-sol",
+        channel="stable",
+        kind="text",
+        provider="vibecode",
+        label="GPT 5.6 Sol",
+    )
+    with use_override(ov):
+        with pytest.raises(GptApiError, match="VIBECODE_API_KEY") as ei:
+            gpt_api._headers()
+        assert "kie-key" not in str(ei.value)
+
+
 @pytest.mark.asyncio
 async def test_catalog_api_returns_marked_up_prices() -> None:
     from httpx import ASGITransport, AsyncClient

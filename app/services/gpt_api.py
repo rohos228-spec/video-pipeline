@@ -185,7 +185,8 @@ def _override_vibecode_base_url() -> str:
 def _headers() -> dict[str, str]:
     vibe_ov = _node_vibecode_override()
     if vibe_ov:
-        key = (settings.vibecode_api_key or "").strip() or settings.gpt_api_effective_key
+        # Не подставлять kie GPT_API_KEY: иначе 401 на vibecode /v1/chat/completions.
+        key = (settings.vibecode_api_key or "").strip()
     else:
         key = settings.gpt_api_effective_key
     if not key:

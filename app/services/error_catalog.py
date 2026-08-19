@@ -28,7 +28,7 @@ ERROR_CATALOG: dict[str, ErrorSpec] = {
     "gpt_no_key": ErrorSpec(
         "gpt_no_key",
         "Текст LLM: нет ключа",
-        "Kimi: TOKENROUTER_API_KEY. GPT: GPT_API_KEY / GRSAI_API_KEY.",
+        "Нода: VIBECODE_API_KEY. Шапка kie: GPT_API_KEY. Kimi: TOKENROUTER_API_KEY.",
     ),
     "gpt_no_base": ErrorSpec(
         "gpt_no_base",
@@ -58,7 +58,11 @@ ERROR_CATALOG: dict[str, ErrorSpec] = {
     "gpt_bad_json": ErrorSpec("gpt_bad_json", "GPT: битый ответ", "Ответ не JSON — повтор."),
     "gpt_provider_error": ErrorSpec("gpt_provider_error", "GPT: ошибка провайдера", "См. текст ответа шлюза."),
     # ── Картинки/видео (app/bots/grsai.py, outsee) ──
-    "media_no_key": ErrorSpec("media_no_key", "Генерация: нет ключа", "Задай GRSAI_API_KEY / KIE_API_KEY."),
+    "media_no_key": ErrorSpec(
+        "media_no_key",
+        "Генерация: нет ключа",
+        "Задай OUTSEE_API_KEY / GRSAI_API_KEY / KIE_API_KEY.",
+    ),
     "media_moderation": ErrorSpec("media_moderation", "Генерация: модерация", "Промт отклонён — смягчи."),
     "media_failed": ErrorSpec("media_failed", "Генерация не удалась", "Провайдер вернул ошибку — повтор."),
     "media_timeout": ErrorSpec("media_timeout", "Генерация: таймаут", "Долгая задача — повтори."),
@@ -123,33 +127,43 @@ ERROR_CATALOG: dict[str, ErrorSpec] = {
 }
 
 
+def _is_media_error(exc: Exception, ctx: dict) -> bool:
+    """Картинка/видео (Outsee/Grsai/Kling) ≠ текстовый LLM на ноде."""
+    name = type(exc).__name__
+    if name in {"OutseeImageError", "KieKlingError", "GrsaiError"}:
+        return True
+    provider = str(ctx.get("provider") or "").lower()
+    return provider in {"outsee", "grsai"}
+
+
 def _match_code(exc: Exception) -> str:  # noqa: C901
     """Определить код ошибки по типу/тексту исключения."""
     name = type(exc).__name__
     msg = str(exc)
     low = msg.lower()
 
-    # GptApiError несёт context — используем его.
+    # GptApiError / OutseeImageError несут context — используем его.
     ctx = getattr(exc, "context", None)
     if isinstance(ctx, dict):
         kind = str(ctx.get("error_kind") or "")
         status = ctx.get("status_code")
         pcode = ctx.get("provider_code")
+        media = _is_media_error(exc, ctx)
         if kind == "no_key":
-            return "gpt_no_key"
+            return "media_no_key" if media else "gpt_no_key"
         if kind == "no_base":
             return "gpt_no_base"
         if kind == "timeout":
-            return "gpt_timeout"
+            return "media_timeout" if media else "gpt_timeout"
         if kind == "network":
             return "gpt_network"
         code_num = pcode if pcode is not None else status
         if code_num in (401, 403):
-            return "gpt_auth"
+            return "media_auth" if media else "gpt_auth"
         if code_num == 429:
-            return "gpt_rate_limit"
+            return "media_rate_limit" if media else "gpt_rate_limit"
         if isinstance(code_num, int) and code_num >= 500:
-            return "gpt_server"
+            return "media_failed" if media else "gpt_server"
 
     if "apikey error" in low or "not authorized" in low:
         return "gpt_model_unauthorized"
