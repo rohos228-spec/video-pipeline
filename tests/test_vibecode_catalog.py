@@ -1,4 +1,4 @@
-"""Каталог моделей vibecode: ×2 cheap / ×3 stable, resolve с ноды."""
+"""Каталог моделей vibecode: только дорогой канал ×3, resolve с ноды."""
 
 from __future__ import annotations
 
@@ -9,8 +9,7 @@ import pytest
 from app.services.vibecode_catalog import (
     DEFAULT_IMAGE_MODEL_ID,
     DEFAULT_TEXT_MODEL_ID,
-    PRICE_MARKUP_CHEAP,
-    PRICE_MARKUP_STABLE,
+    PRICE_MARKUP,
     apply_markup,
     default_model_id_for_node_type,
     find_model,
@@ -34,34 +33,34 @@ def test_snapshot_has_screenshot_tabs() -> None:
     assert len(ids) >= 26
 
 
-def test_prices_doubled_on_cheap_channel() -> None:
+def test_prices_use_expensive_markup() -> None:
     raw = next(m for m in load_snapshot() if m["id"] == "gpt-5.6-sol")
-    priced = apply_markup(raw["pricing"], channel="cheap")
-    assert priced["markup"] == PRICE_MARKUP_CHEAP
-    assert priced["input_usd_per_m"] == round(raw["pricing"]["input_usd_per_m"] * 2, 6)
-    assert priced["output_usd_per_m"] == round(raw["pricing"]["output_usd_per_m"] * 2, 6)
+    priced = apply_markup(raw["pricing"])
+    assert priced["markup"] == PRICE_MARKUP
+    assert priced["input_usd_per_m"] == round(raw["pricing"]["input_usd_per_m"] * 3, 6)
+    assert priced["output_usd_per_m"] == round(raw["pricing"]["output_usd_per_m"] * 3, 6)
     luna = next(m for m in load_snapshot() if m["id"] == "gpt-5.6-luna")
-    cheap = apply_markup(luna["pricing"], channel="cheap")
-    assert cheap["input_usd_per_m"] == round(0.026244 * 2, 6)
+    expensive = apply_markup(luna["pricing"])
+    assert expensive["input_usd_per_m"] == round(0.026244 * 3, 6)
 
 
-def test_stable_channel_is_more_expensive() -> None:
+def test_legacy_cheap_channel_arg_is_ignored() -> None:
     raw = next(m for m in load_snapshot() if m["id"] == "claude-sonnet-5")["pricing"]
-    cheap = apply_markup(raw, channel="cheap")
-    stable = apply_markup(raw, channel="stable")
-    assert stable["markup"] == PRICE_MARKUP_STABLE
-    assert stable["input_usd_per_m"] > cheap["input_usd_per_m"]
-    assert stable["input_usd_per_m"] == round(raw["input_usd_per_m"] * 3, 6)
+    priced = apply_markup(raw, channel="cheap")
+    assert priced["markup"] == PRICE_MARKUP
+    assert priced["input_usd_per_m"] == round(raw["input_usd_per_m"] * 3, 6)
 
 
-def test_image_price_doubled() -> None:
+def test_image_price_marked_up() -> None:
     raw = next(m for m in load_snapshot() if m["id"] == "gpt-image-2")
-    priced = apply_markup(raw["pricing"], channel="cheap")
-    assert priced["usd_per_image"] == round(raw["pricing"]["usd_per_image"] * 2, 6)
+    priced = apply_markup(raw["pricing"])
+    assert priced["usd_per_image"] == round(raw["pricing"]["usd_per_image"] * 3, 6)
 
 
 def test_grouped_vendors_match_ui_tabs() -> None:
-    cat = grouped_catalog(channel="cheap")
+    cat = grouped_catalog()
+    assert cat["channel"] == "stable"
+    assert cat["markup"] == PRICE_MARKUP
     ids = [v["id"] for v in cat["vendors"]]
     assert ids[:6] == ["anthropic", "openai", "gemini", "xai", "moonshot", "images"]
     counts = {v["id"]: v["count"] for v in cat["vendors"]}
@@ -112,7 +111,8 @@ def test_resolve_text_model_from_canvas_node() -> None:
     assert choice is not None
     assert choice["id"] == "claude-sonnet-5"
     assert choice["kind"] == "text"
-    assert choice["pricing"]["input_usd_per_m"] == round(0.196829 * 2, 6)
+    assert choice["channel"] == "stable"
+    assert choice["pricing"]["input_usd_per_m"] == round(0.196829 * 3, 6)
 
 
 def test_resolve_image_generator_from_images_node() -> None:
@@ -139,8 +139,9 @@ def test_frontend_picker_wired() -> None:
     picker = Path("web/src/components/canvas/node-model-picker.tsx").read_text(
         encoding="utf-8"
     )
-    assert "Дешёвый канал" in picker
-    assert "Стабильный канал" in picker
+    assert "Дешёвый канал" not in picker
+    assert "Стабильный канал" not in picker
+    assert "catalog_channels" not in picker
     assert "вход" in picker
     assert "выход" in picker
     settings = Path("web/src/components/inspector/project-settings.tsx").read_text(
@@ -152,7 +153,8 @@ def test_frontend_picker_wired() -> None:
     serialize = Path("web/src/lib/workflow-node-serialize.ts").read_text(encoding="utf-8")
     assert "data.modelId" in serialize
     catalog_ts = Path("web/src/lib/node-model-catalog.ts").read_text(encoding="utf-8")
-    assert "PRICE_MARKUP_CHEAP = 2" in catalog_ts
+    assert "PRICE_MARKUP = 3" in catalog_ts
+    assert "PRICE_MARKUP_CHEAP" not in catalog_ts
     pipeline = Path("app/orchestrator/pipeline.py").read_text(encoding="utf-8")
     assert "bind_project_llm" in pipeline
 
@@ -176,7 +178,7 @@ def test_node_override_routes_chat_to_vibecode(monkeypatch, tmp_path: Path) -> N
 
     ov = NodeLlmOverride(
         model_id="claude-sonnet-5",
-        channel="cheap",
+        channel="stable",
         kind="text",
         provider="vibecode",
         label="Claude Sonnet 5",
@@ -199,11 +201,13 @@ async def test_catalog_api_returns_marked_up_prices() -> None:
     app = create_app()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
-        r = await c.get("/api/text-llm/catalog", params={"channel": "cheap"})
+        r = await c.get("/api/text-llm/catalog")
     assert r.status_code == 200
     body = r.json()
-    assert body["channel"] == "cheap"
+    assert body["channel"] == "stable"
+    assert body["markup"] == 3.0
+    assert "catalog_channels" not in body
     vendors = {v["id"]: v for v in body["vendors"]}
     assert vendors["anthropic"]["count"] == 8
     luna = next(m for m in body["models"] if m["id"] == "gpt-5.6-luna")
-    assert luna["pricing"]["input_usd_per_m"] == round(0.026244 * 2, 6)
+    assert luna["pricing"]["input_usd_per_m"] == round(0.026244 * 3, 6)

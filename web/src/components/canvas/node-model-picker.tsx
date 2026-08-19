@@ -20,7 +20,6 @@ import {
   localCatalog,
   type CatalogModel,
   type ModelCatalogPayload,
-  type ModelChannel,
 } from "@/lib/node-model-catalog";
 import {
   Dialog,
@@ -32,7 +31,6 @@ import {
 
 type CatalogResponse = {
   catalog?: ModelCatalogPayload;
-  catalog_channels?: Record<ModelChannel, ModelCatalogPayload>;
 };
 
 function HexIcon({ className }: { className?: string }) {
@@ -56,10 +54,10 @@ function VendorGlyph({ icon, className }: { icon: string; className?: string }) 
   return <span className={cn("font-semibold leading-none", className)}>{icon}</span>;
 }
 
-function patchNodeModel(nodeKey: string, modelId: string, channel: ModelChannel) {
+function patchNodeModel(nodeKey: string, modelId: string) {
   window.dispatchEvent(
     new CustomEvent("canvas-patch-node-data", {
-      detail: { nodeKey, patch: { modelId, modelChannel: channel } },
+      detail: { nodeKey, patch: { modelId, modelChannel: "stable" } },
     }),
   );
   window.dispatchEvent(new CustomEvent("canvas-save-workflow"));
@@ -69,15 +67,12 @@ export function NodeModelPicker({
   nodeKey,
   nodeType,
   modelId,
-  modelChannel,
 }: {
   nodeKey: string;
   nodeType: string;
   modelId?: string | null;
-  modelChannel?: ModelChannel | string | null;
 }) {
   const [open, setOpen] = useState(false);
-  const channel: ModelChannel = modelChannel === "stable" ? "stable" : "cheap";
   const fallbackId = defaultModelIdForNodeType(nodeType);
   const selectedId = (modelId || "").trim() || fallbackId;
 
@@ -91,10 +86,8 @@ export function NodeModelPicker({
     staleTime: 60_000,
   });
 
-  const cheap = catalogQuery.data?.catalog_channels?.cheap ?? localCatalog("cheap");
-  const stable = catalogQuery.data?.catalog_channels?.stable ?? localCatalog("stable");
-  const catalog = channel === "stable" ? stable : cheap;
-  const selected = findCatalogModel(catalog, selectedId) ?? findCatalogModel(localCatalog(channel), selectedId);
+  const catalog = catalogQuery.data?.catalog ?? localCatalog();
+  const selected = findCatalogModel(catalog, selectedId) ?? findCatalogModel(localCatalog(), selectedId);
 
   return (
     <>
@@ -130,9 +123,7 @@ export function NodeModelPicker({
         onOpenChange={setOpen}
         nodeKey={nodeKey}
         selectedId={selectedId}
-        channel={channel}
-        cheap={cheap}
-        stable={stable}
+        catalog={catalog}
       />
     </>
   );
@@ -143,19 +134,14 @@ function ModelCatalogDialog({
   onOpenChange,
   nodeKey,
   selectedId,
-  channel,
-  cheap,
-  stable,
+  catalog,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   nodeKey: string;
   selectedId: string;
-  channel: ModelChannel;
-  cheap: ModelCatalogPayload;
-  stable: ModelCatalogPayload;
+  catalog: ModelCatalogPayload;
 }) {
-  const catalog = channel === "stable" ? stable : cheap;
   const selectedModel = findCatalogModel(catalog, selectedId);
   const [vendor, setVendor] = useState<string>(selectedModel?.vendor || "anthropic");
 
@@ -208,26 +194,6 @@ function ModelCatalogDialog({
               );
             })}
           </div>
-          <div className="flex shrink-0 items-center gap-1 rounded-full border border-white/10 bg-black/40 p-0.5">
-            {(["cheap", "stable"] as const).map((ch) => {
-              const on = channel === ch;
-              return (
-                <button
-                  key={ch}
-                  type="button"
-                  onClick={() => patchNodeModel(nodeKey, selectedId, ch)}
-                  className={cn(
-                    "rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide transition-all duration-200",
-                    on
-                      ? "bg-[#b49bff] text-[#1a1228] shadow-[0_0_12px_rgba(180,155,255,0.45)]"
-                      : "text-white/40 hover:text-white/70",
-                  )}
-                >
-                  {ch === "cheap" ? "Дешёвый канал" : "Стабильный канал"}
-                </button>
-              );
-            })}
-          </div>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
           <div
@@ -247,7 +213,7 @@ function ModelCatalogDialog({
                 selected={m.id === selectedId}
                 delay={idx * 30}
                 onPick={() => {
-                  patchNodeModel(nodeKey, m.id, channel);
+                  patchNodeModel(nodeKey, m.id);
                   onOpenChange(false);
                   toast.success(`Модель: ${m.label}`);
                 }}
@@ -410,6 +376,6 @@ export function selectedModelLabel(
   catalog?: ModelCatalogPayload | null,
 ): string {
   const id = (modelId || "").trim() || defaultModelIdForNodeType(nodeType);
-  const found = findCatalogModel(catalog ?? localCatalog("cheap"), id);
+  const found = findCatalogModel(catalog ?? localCatalog(), id);
   return found?.label || id || DEFAULT_TEXT_MODEL_ID;
 }

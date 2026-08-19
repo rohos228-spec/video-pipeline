@@ -1,7 +1,7 @@
 import type { VibecodeSnapshotModel } from "./vibecode-models-snapshot";
 import { VIBECODE_MODELS_SNAPSHOT } from "./vibecode-models-snapshot";
 
-export type ModelChannel = "cheap" | "stable";
+export type ModelChannel = "stable";
 export type ModelKind = "text" | "image";
 export type ModelVendorId =
   | "anthropic"
@@ -55,14 +55,14 @@ export type CatalogVendor = {
 
 export type ModelCatalogPayload = {
   channel: ModelChannel;
-  markup_cheap?: number;
+  markup?: number;
   markup_stable?: number;
   vendors: CatalogVendor[];
   models: CatalogModel[];
 };
 
-export const PRICE_MARKUP_CHEAP = 2;
-export const PRICE_MARKUP_STABLE = 3;
+export const PRICE_MARKUP = 3;
+export const PRICE_MARKUP_STABLE = PRICE_MARKUP;
 export const DEFAULT_TEXT_MODEL_ID = "gpt-5.6-sol";
 export const DEFAULT_IMAGE_MODEL_ID = "gpt-image-2";
 export const IMAGE_NODE_TYPES = new Set(["images", "hero", "items", "hitl_images"]);
@@ -108,15 +108,15 @@ function resolutionBadge(displayName: string, modelId: string): string | null {
   return null;
 }
 
-export function markupForChannel(channel: ModelChannel | string | null | undefined): number {
-  return channel === "stable" ? PRICE_MARKUP_STABLE : PRICE_MARKUP_CHEAP;
+export function markupForChannel(_channel?: ModelChannel | string | null): number {
+  return PRICE_MARKUP;
 }
 
 export function applyMarkup(
   pricing: RawVibecodePricing | null | undefined,
-  channel: ModelChannel = "cheap",
+  _channel: ModelChannel | string = "stable",
 ): DisplayPricing {
-  const factor = markupForChannel(channel);
+  const factor = PRICE_MARKUP;
   const out: DisplayPricing = { currency: pricing?.currency || "usd", markup: factor };
   const keys = [
     "input_usd_per_m",
@@ -150,9 +150,9 @@ export function defaultModelIdForNodeType(nodeType: string | null | undefined): 
   return IMAGE_NODE_TYPES.has(nodeType || "") ? DEFAULT_IMAGE_MODEL_ID : DEFAULT_TEXT_MODEL_ID;
 }
 
-function normalizeSnapshot(row: SnapshotRow, channel: ModelChannel): CatalogModel {
+function normalizeSnapshot(row: SnapshotRow): CatalogModel {
   const isImage = Boolean(row.is_image);
-  const pricing = applyMarkup(row.pricing as RawVibecodePricing, channel);
+  const pricing = applyMarkup(row.pricing as RawVibecodePricing);
   return {
     id: row.id,
     label: row.display_name,
@@ -163,12 +163,12 @@ function normalizeSnapshot(row: SnapshotRow, channel: ModelChannel): CatalogMode
     pricing,
     api_model: row.id,
     provider: "vibecode",
-    channel,
+    channel: "stable",
   };
 }
 
-export function localCatalog(channel: ModelChannel = "cheap"): ModelCatalogPayload {
-  const models = VIBECODE_MODELS_SNAPSHOT.map((row) => normalizeSnapshot(row, channel));
+export function localCatalog(): ModelCatalogPayload {
+  const models = VIBECODE_MODELS_SNAPSHOT.map((row) => normalizeSnapshot(row));
   const vendors: CatalogVendor[] = [];
   for (const vid of VENDOR_ORDER) {
     const items = models.filter((m) => m.vendor === vid);
@@ -176,9 +176,9 @@ export function localCatalog(channel: ModelChannel = "cheap"): ModelCatalogPaylo
     vendors.push({ ...VENDOR_META[vid], count: items.length, models: items });
   }
   return {
-    channel,
-    markup_cheap: PRICE_MARKUP_CHEAP,
-    markup_stable: PRICE_MARKUP_STABLE,
+    channel: "stable",
+    markup: PRICE_MARKUP,
+    markup_stable: PRICE_MARKUP,
     vendors,
     models,
   };

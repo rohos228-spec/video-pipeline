@@ -794,10 +794,7 @@ export function FlowCanvas({
             (srcData.modelId as string | undefined) ??
             (n.data?.modelId as string | undefined) ??
             defaultModelIdForNodeType(n.type),
-          modelChannel:
-            (srcData.modelChannel as PipelineNodeData["modelChannel"]) ??
-            (n.data?.modelChannel as PipelineNodeData["modelChannel"]) ??
-            "cheap",
+          modelChannel: "stable",
           status: "pending",
           progress: 0,
           progressText: null,
@@ -928,7 +925,7 @@ export function FlowCanvas({
             ? { slotIndex: Math.min(excelCount + 1, 5) }
             : {}),
           modelId: defaultModelIdForNodeType(type),
-          modelChannel: "cheap",
+          modelChannel: "stable",
           status: "pending",
           progress: 0,
           progressText: null,
@@ -1140,7 +1137,7 @@ export function FlowCanvas({
                 nodeKey: id,
                 type: "excel_feed",
                 modelId: defaultModelIdForNodeType("excel_feed"),
-                modelChannel: "cheap",
+                modelChannel: "stable",
                 status: "pending",
                 progress: 0,
                 progressText: null,
@@ -1722,9 +1719,7 @@ function workflowToReactFlowNodes(
         modelId: (typeof data.modelId === "string" && data.modelId.trim())
           ? data.modelId.trim()
           : defaultModelIdForNodeType(n.type),
-        modelChannel: (data.modelChannel === "stable" ? "stable" : "cheap") as
-          | "cheap"
-          | "stable",
+        modelChannel: "stable",
         status: (nr?.status ?? "pending") as PipelineNodeData["status"],
         progress: nr?.progress ?? 0,
         progressText: nr?.progress_text ?? null,

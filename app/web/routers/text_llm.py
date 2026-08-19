@@ -19,21 +19,16 @@ class TextLlmSelectBody(BaseModel):
 
 
 @router.get("")
-async def get_text_llm(channel: str = "cheap") -> dict[str, Any]:
+async def get_text_llm() -> dict[str, Any]:
     status = catalog_status()
-    status["catalog"] = grouped_catalog(channel=channel)
-    status["catalog_channels"] = {
-        "cheap": grouped_catalog(channel="cheap"),
-        "stable": grouped_catalog(channel="stable"),
-    }
+    status["catalog"] = grouped_catalog()
     return status
 
 
 @router.get("/catalog")
-async def get_text_llm_catalog(channel: str = "cheap") -> dict[str, Any]:
-    ch = channel if channel in {"cheap", "stable"} else "cheap"
-    payload = grouped_catalog(channel=ch)
-    payload["markup"] = markup_for_channel(ch)
+async def get_text_llm_catalog() -> dict[str, Any]:
+    payload = grouped_catalog()
+    payload["markup"] = markup_for_channel()
     return payload
 
 
@@ -43,10 +38,4 @@ async def select_text_llm(body: TextLlmSelectBody) -> dict[str, Any]:
         write_choice(provider=body.provider, model_id=body.model_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return catalog_status() | {
-        "catalog": grouped_catalog(channel="cheap"),
-        "catalog_channels": {
-            "cheap": grouped_catalog(channel="cheap"),
-            "stable": grouped_catalog(channel="stable"),
-        },
-    }
+    return catalog_status() | {"catalog": grouped_catalog()}

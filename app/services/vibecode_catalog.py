@@ -1,7 +1,6 @@
 """Каталог моделей vibecode.moe для выбора на ноде.
 
-Цены в UI = сырые vibecode × PRICE_MARKUP (сейчас 2).
-Канал cheap/stable — разные множители к сырой цене.
+Цены в UI = сырые vibecode × PRICE_MARKUP (дорогой канал).
 """
 
 from __future__ import annotations
@@ -13,8 +12,8 @@ from typing import Any
 
 from loguru import logger
 
-PRICE_MARKUP_CHEAP = 2.0
-PRICE_MARKUP_STABLE = 3.0
+PRICE_MARKUP = 3.0
+PRICE_MARKUP_STABLE = PRICE_MARKUP
 
 _SNAPSHOT_PATH = Path(__file__).resolve().parent / "vibecode_models_snapshot.json"
 
@@ -76,11 +75,10 @@ def load_snapshot() -> list[dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
-def markup_for_channel(channel: str | None) -> float:
-    ch = (channel or "cheap").strip().lower()
-    if ch in {"stable", "стабильный", "stable_channel"}:
-        return PRICE_MARKUP_STABLE
-    return PRICE_MARKUP_CHEAP
+def markup_for_channel(channel: str | None = None) -> float:
+    """Единственный канал — дорогой (×3). Аргумент оставлен для совместимости."""
+    _ = channel
+    return PRICE_MARKUP
 
 
 def _round_price(value: float | None) -> float | None:
@@ -98,7 +96,7 @@ def _round_price(value: float | None) -> float | None:
 def apply_markup(
     pricing: dict[str, Any] | None,
     *,
-    channel: str = "cheap",
+    channel: str | None = None,
 ) -> dict[str, Any]:
     raw = dict(pricing or {})
     factor = markup_for_channel(channel)
@@ -118,7 +116,7 @@ def apply_markup(
     return out
 
 
-def normalize_model(raw: dict[str, Any], *, channel: str = "cheap") -> dict[str, Any]:
+def normalize_model(raw: dict[str, Any], *, channel: str | None = None) -> dict[str, Any]:
     mid = str(raw.get("id") or "").strip()
     is_image = bool(raw.get("is_image"))
     display = str(raw.get("display_name") or mid)
@@ -141,7 +139,7 @@ def normalize_model(raw: dict[str, Any], *, channel: str = "cheap") -> dict[str,
 def models_for_channel(
     raw_models: list[dict[str, Any]] | None = None,
     *,
-    channel: str = "cheap",
+    channel: str | None = None,
 ) -> list[dict[str, Any]]:
     src = raw_models if raw_models is not None else load_snapshot()
     out: list[dict[str, Any]] = []
@@ -160,7 +158,7 @@ def models_for_channel(
 def grouped_catalog(
     raw_models: list[dict[str, Any]] | None = None,
     *,
-    channel: str = "cheap",
+    channel: str | None = None,
 ) -> dict[str, Any]:
     models = models_for_channel(raw_models, channel=channel)
     vendors: list[dict[str, Any]] = []
@@ -182,15 +180,15 @@ def grouped_catalog(
             }
         )
     return {
-        "channel": "stable" if markup_for_channel(channel) == PRICE_MARKUP_STABLE else "cheap",
-        "markup_cheap": PRICE_MARKUP_CHEAP,
-        "markup_stable": PRICE_MARKUP_STABLE,
+        "channel": "stable",
+        "markup": PRICE_MARKUP,
+        "markup_stable": PRICE_MARKUP,
         "vendors": vendors,
         "models": models,
     }
 
 
-def find_model(model_id: str | None, *, channel: str = "cheap") -> dict[str, Any] | None:
+def find_model(model_id: str | None, *, channel: str | None = None) -> dict[str, Any] | None:
     want = (model_id or "").strip()
     if not want:
         return None
@@ -208,15 +206,12 @@ def default_model_id_for_node_type(node_type: str | None) -> str:
 
 def read_node_model_fields(node: dict[str, Any] | None) -> tuple[str | None, str]:
     if not isinstance(node, dict):
-        return None, "cheap"
+        return None, "stable"
     data = node.get("data") if isinstance(node.get("data"), dict) else node
     if not isinstance(data, dict):
-        return None, "cheap"
+        return None, "stable"
     mid = str(data.get("modelId") or data.get("model_id") or "").strip() or None
-    channel = str(data.get("modelChannel") or data.get("model_channel") or "cheap").strip().lower()
-    if channel not in {"cheap", "stable"}:
-        channel = "cheap"
-    return mid, channel
+    return mid, "stable"
 
 
 def find_canvas_node(
