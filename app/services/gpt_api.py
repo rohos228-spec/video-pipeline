@@ -127,7 +127,14 @@ def _mask_proxy_url(url: str) -> str:
         return "<proxy>"
 
 
+def _vps_relay_base() -> str | None:
+    return getattr(settings, "vps_relay_base_url", None)
+
+
 def _gpt_proxy_url() -> str | None:
+    """Прокси на ПК не используется, если настроен VPS-relay."""
+    if (getattr(settings, "gpt_relay_token", None) or "").strip():
+        return None
     raw = (getattr(settings, "gpt_proxy_url", None) or "").strip()
     if not raw:
         return None
@@ -137,8 +144,10 @@ def _gpt_proxy_url() -> str | None:
 
 
 def _async_client(**kwargs: Any) -> httpx.AsyncClient:
-    """httpx-клиент; при GPT_PROXY_URL — весь трафик GPT/kie через прокси."""
+    """httpx-клиент. При VPS-relay — без прокси и без системных HTTP(S)_PROXY."""
     global _PROXY_LOGGED
+    if (getattr(settings, "gpt_relay_token", None) or "").strip():
+        kwargs.setdefault("trust_env", False)
     proxy = _gpt_proxy_url()
     if proxy:
         if proxy.lower().startswith(("socks4://", "socks5://", "socks5h://")):
@@ -150,7 +159,6 @@ def _async_client(**kwargs: Any) -> httpx.AsyncClient:
                     context={"error_kind": "proxy_socks_missing", "retryable": False},
                 ) from e
         kwargs.setdefault("proxy", proxy)
-        # Явный прокси — не подмешивать системные HTTP(S)_PROXY.
         kwargs.setdefault("trust_env", False)
         if not _PROXY_LOGGED:
             logger.info("GPT API: using proxy {}", _mask_proxy_url(proxy))
@@ -168,11 +176,9 @@ def _node_vibecode_override() -> bool:
 
 
 def _override_vibecode_base_url() -> str:
-    relay = (getattr(settings, "gpt_relay_token", None) or "").strip()
-    gbase = (settings.gpt_base_url or "").strip().rstrip("/")
-    low = gbase.lower()
-    if relay and gbase and "kie.ai" not in low and "vibecode.moe" not in low:
-        return gbase
+    vps = _vps_relay_base()
+    if vps:
+        return vps
     return (settings.vibecode_base_url or "https://vibecode.moe/v1").strip().rstrip("/")
 
 
@@ -219,11 +225,12 @@ def _chat_url(model: str) -> str:
             "База текстового LLM пуста — задай TOKENROUTER_BASE_URL, VIBECODE_BASE_URL или GPT_BASE_URL",
             context={"error_kind": "no_base"},
         )
-    if not _RELAY_BASE_LOGGED and "kie.ai" not in base.lower():
-        logger.info(
-            "GPT API: base_url={} (VPS-relay / non-kie host)",
-            base,
-        )
+    if not _RELAY_BASE_LOGGED:
+        vps = _vps_relay_base()
+        if vps:
+            logger.info("GPT API: VPS-relay {} (proxy=off)", vps)
+        elif "kie.ai" not in base.lower():
+            logger.info("GPT API: base_url={} (non-kie host, no VPS-relay)", base)
         _RELAY_BASE_LOGGED = True
     if _node_vibecode_override():
         path = "/chat/completions" if base.lower().endswith("/v1") else "/v1/chat/completions"
@@ -1916,15 +1923,16 @@ async def chat(
     retries = int(max_retries if max_retries is not None else settings.gpt_max_retries)
     ov_model = current_text_model_id()
     provider_label = (
-        f"vibecode.moe ({ov_model})" if _node_vibecode_override() else settings.text_llm_label
+        f"vibecode ({ov_model})" if _node_vibecode_override() else settings.text_llm_label
     )
     proxy = _gpt_proxy_url()
+    via = "vps-relay" if _vps_relay_base() else ("proxy" if proxy else "direct")
     logger.info(
-        "text_llm.chat → {} model={} url={} proxy={}",
+        "text_llm.chat → {} model={} url={} via={}",
         provider_label,
         use_model,
         url,
-        _mask_proxy_url(proxy) if proxy else "direct",
+        via if via != "proxy" else _mask_proxy_url(proxy),
     )
 
     responses_mode = is_responses_mode()

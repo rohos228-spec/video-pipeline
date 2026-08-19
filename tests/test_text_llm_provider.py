@@ -91,6 +91,7 @@ def test_vibecode_models_switch_url_and_key(monkeypatch, tmp_path: Path) -> None
     cat.write_choice(provider="kie", model_id="gpt-kie", cfg=s)
     assert s.resolved_text_llm_provider() == "kie"
     assert s.gpt_api_effective_key == "kie-key"
+    assert s.gpt_api_effective_base_url == "https://api.kie.ai"
 
 
 def test_vibecode_uses_vps_relay_host_when_token_set(
@@ -114,6 +115,11 @@ def test_vibecode_uses_vps_relay_host_when_token_set(
     assert gpt_api._chat_url("gpt-5.5") == "https://gpt.example.com/v1/chat/completions"
     assert gpt_api._headers()["X-VP-Relay-Token"] == "relay-secret"
     assert gpt_api._headers()["Authorization"] == "Bearer vk-test"
+    cat.write_choice(provider="kie", model_id="gpt-kie", cfg=s)
+    assert s.gpt_api_effective_base_url == "https://gpt.example.com"
+    assert gpt_api._chat_url("gpt-5-6-sol") == (
+        "https://gpt.example.com/codex/v1/responses"
+    )
 
 
 def test_parse_chat_completions_sse() -> None:

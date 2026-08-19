@@ -192,6 +192,49 @@ def test_node_override_routes_chat_to_vibecode(monkeypatch, tmp_path: Path) -> N
     assert gpt_api.is_responses_mode() is True
 
 
+def test_node_override_uses_vps_relay_not_direct_vibecode(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import app.services.gpt_api as gpt_api
+    import app.settings as settings_mod
+    from app.services.llm_override import NodeLlmOverride, use_override
+    from app.settings import Settings
+
+    monkeypatch.setenv("TEXT_LLM_PROVIDER", "kie")
+    monkeypatch.setenv("GPT_API_KEY", "kie-key")
+    monkeypatch.setenv("GPT_BASE_URL", "https://gpt.example.com")
+    monkeypatch.setenv("GPT_CHAT_PATH", "/codex/v1/responses")
+    monkeypatch.setenv("GPT_RELAY_TOKEN", "relay-secret")
+    monkeypatch.setenv("GPT_PROXY_URL", "socks5://127.0.0.1:1080")
+    monkeypatch.setenv("VIBECODE_API_KEY", "vk-test")
+    monkeypatch.setenv("VIBECODE_BASE_URL", "https://vibecode.moe/v1")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    s = Settings()
+    monkeypatch.setattr(settings_mod, "settings", s)
+    monkeypatch.setattr(gpt_api, "settings", s)
+
+    assert s.vps_relay_base_url == "https://gpt.example.com"
+    assert gpt_api._gpt_proxy_url() is None
+    assert gpt_api._chat_url("gpt-5-6-sol") == (
+        "https://gpt.example.com/codex/v1/responses"
+    )
+
+    ov = NodeLlmOverride(
+        model_id="claude-sonnet-5",
+        channel="stable",
+        kind="text",
+        provider="vibecode",
+        label="Claude Sonnet 5",
+    )
+    with use_override(ov):
+        assert gpt_api._chat_url("claude-sonnet-5") == (
+            "https://gpt.example.com/v1/chat/completions"
+        )
+        assert gpt_api._headers()["X-VP-Relay-Token"] == "relay-secret"
+        assert gpt_api._headers()["Authorization"] == "Bearer vk-test"
+        assert "vibecode.moe" not in gpt_api._chat_url("claude-sonnet-5")
+
+
 @pytest.mark.asyncio
 async def test_catalog_api_returns_marked_up_prices() -> None:
     from httpx import ASGITransport, AsyncClient

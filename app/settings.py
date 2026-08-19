@@ -126,10 +126,11 @@ class Settings(BaseSettings):
     gpt_max_retries: int = Field(4, alias="GPT_MAX_RETRIES")
     # 0 = ждать EOF SSE (не рвать по GPT_TIMEOUT). >0 = httpx read timeout.
     gpt_stream_read_timeout_s: float = Field(0.0, alias="GPT_STREAM_READ_TIMEOUT_S")
-    # HTTP/SOCKS5 для GPT/kie. Пусто = напрямую. Не путать с TELEGRAM_PROXY_URL.
+    # Legacy SOCKS/HTTP прокси. При GPT_RELAY_TOKEN игнорируется — весь LLM
+    # трафик идёт через VPS (deploy/gpt-relay), прокси на ПК не нужен.
     gpt_proxy_url: str | None = Field(None, alias="GPT_PROXY_URL")
     # Свой VPS-relay (deploy/gpt-relay): GPT_BASE_URL=https://gpt.example.com
-    # + этот токен → заголовок X-VP-Relay-Token. Прокси на ПК не нужен.
+    # + этот токен → заголовок X-VP-Relay-Token.
     gpt_relay_token: str = Field("", alias="GPT_RELAY_TOKEN")
 
     def resolved_text_llm_provider(self) -> str:
@@ -184,18 +185,27 @@ class Settings(BaseSettings):
         return (self.gpt_api_key or "").strip() or (self.grsai_api_key or "").strip()
 
     @property
+    def vps_relay_base_url(self) -> str | None:
+        """Хост VPS-relay, если настроен. Иначе None (не kie.ai / не vibecode.moe)."""
+        token = (self.gpt_relay_token or "").strip()
+        base = (self.gpt_base_url or "").strip().rstrip("/")
+        if not token or not base:
+            return None
+        low = base.lower()
+        if any(h in low for h in ("kie.ai", "vibecode.moe", "tokenrouter.com")):
+            return None
+        return base
+
+    @property
     def gpt_api_effective_base_url(self) -> str:
-        """База активного текстового LLM."""
+        """База активного текстового LLM. kie/vibecode — через VPS, если он задан."""
         if self.text_llm_is_tokenrouter:
             base = (self.tokenrouter_base_url or "https://api.tokenrouter.com/v1").strip()
             return base.rstrip("/")
+        vps = self.vps_relay_base_url
+        if vps:
+            return vps
         if self.text_llm_is_vibecode:
-            relay = (self.gpt_relay_token or "").strip()
-            gbase = (self.gpt_base_url or "").strip().rstrip("/")
-            low = gbase.lower()
-            if relay and gbase and "kie.ai" not in low and "vibecode.moe" not in low:
-                # VPS gpt-relay: Studio → https://gpt.example.com/v1/chat/completions
-                return gbase
             return (self.vibecode_base_url or "https://vibecode.moe/v1").strip().rstrip("/")
         base = (self.gpt_base_url or "").strip() or (self.grsai_base_url or "").strip()
         return base.rstrip("/")

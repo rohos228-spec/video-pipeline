@@ -1088,6 +1088,7 @@ def test_async_client_passes_proxy(monkeypatch) -> None:
         return real(*args, **kwargs)
 
     monkeypatch.setattr(settings, "gpt_proxy_url", "socks5://u:p@1.2.3.4:1080")
+    monkeypatch.setattr(settings, "gpt_relay_token", "")
     monkeypatch.setattr(gpt_api, "_PROXY_LOGGED", False)
     monkeypatch.setattr(gpt_api.httpx, "AsyncClient", factory)
     gpt_api._async_client(timeout=1.0)
@@ -1107,9 +1108,33 @@ def test_headers_include_relay_token(monkeypatch) -> None:
     assert h["X-VP-Relay-Token"] == "relay-secret"
 
 
+def test_gpt_proxy_ignored_when_relay_token_set(monkeypatch) -> None:
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_proxy_url", "socks5://u:p@1.2.3.4:1080")
+    monkeypatch.setattr(settings, "gpt_relay_token", "relay-secret")
+    assert gpt_api._gpt_proxy_url() is None
+
+    captured: dict = {}
+    real = httpx.AsyncClient
+
+    def factory(*args, **kwargs):
+        captured.update(kwargs)
+        kwargs["transport"] = httpx.MockTransport(lambda r: httpx.Response(200))
+        kwargs.pop("proxy", None)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(gpt_api, "_PROXY_LOGGED", False)
+    monkeypatch.setattr(gpt_api.httpx, "AsyncClient", factory)
+    gpt_api._async_client(timeout=1.0)
+    assert "proxy" not in captured
+    assert captured.get("trust_env") is False
+
+
 def test_gpt_proxy_url_normalizes_socks5h(monkeypatch) -> None:
     from app.settings import settings
 
+    monkeypatch.setattr(settings, "gpt_relay_token", "")
     monkeypatch.setattr(settings, "gpt_proxy_url", "socks5h://u:p@10.1.2.3:9050")
     assert gpt_api._gpt_proxy_url() == "socks5://u:p@10.1.2.3:9050"
 
@@ -1117,6 +1142,7 @@ def test_gpt_proxy_url_normalizes_socks5h(monkeypatch) -> None:
 def test_gpt_proxy_url_empty(monkeypatch) -> None:
     from app.settings import settings
 
+    monkeypatch.setattr(settings, "gpt_relay_token", "")
     monkeypatch.setattr(settings, "gpt_proxy_url", None)
     assert gpt_api._gpt_proxy_url() is None
     monkeypatch.setattr(settings, "gpt_proxy_url", "  ")
