@@ -62,8 +62,8 @@ export interface PipelineNodeData extends Record<string, unknown> {
   groupTitle?: string;
   /** Выбранная модель vibecode (id каталога). */
   modelId?: string;
-  /** cheap | stable — канал цен. */
-  modelChannel?: "cheap" | "stable" | string;
+  /** Канал цен (всегда дорогой / stable). */
+  modelChannel?: "stable" | string;
   status: NodeRunStatus;
   progress: number;
   progressText: string | null;
@@ -259,7 +259,6 @@ export function PipelineNode({ data, selected }: NodeProps) {
                   nodeKey={d.nodeKey}
                   nodeType={d.type}
                   modelId={d.modelId}
-                  modelChannel={d.modelChannel}
                 />
                 {isSdAgent ? (
                   <div className="mt-1.5 flex flex-wrap gap-1">

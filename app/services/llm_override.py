@@ -77,7 +77,7 @@ def bind_project_llm(project: Any, status: Any | None = None) -> Iterator[NodeLl
     if choice_raw and choice_raw.get("kind") == "text":
         ov = NodeLlmOverride(
             model_id=str(choice_raw["id"]),
-            channel=str(choice_raw.get("channel") or "cheap"),
+            channel=str(choice_raw.get("channel") or "stable"),
             kind="text",
             provider=str(choice_raw.get("provider") or "vibecode"),
             label=str(choice_raw.get("label") or choice_raw["id"]),
