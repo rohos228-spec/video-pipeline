@@ -35,6 +35,11 @@ def test_long_plan_is_meaningful() -> None:
 
 
 def test_plan_output_contract_targets_general_plan_sheet() -> None:
+    contract_path = REPO / "prompts" / "blocks" / "plan_output_contract" / "xlsx_plan_timing.md"
+    if contract_path.is_file():
+        contract = contract_path.read_text(encoding="utf-8")
+        assert "Общий план" in contract
+        assert "Заполняй лист «план»" not in contract
     template_path = REPO / "prompts" / "steps" / "01_plan" / "template.md"
     if template_path.is_file():
         template = template_path.read_text(encoding="utf-8")

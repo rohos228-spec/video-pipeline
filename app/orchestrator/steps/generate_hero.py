@@ -481,8 +481,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 meta = dict(project.meta or {})
                 meta["hero_skipped_empty"] = True
                 project.meta = meta
-                from app.services import run_sync
-                await run_sync.complete_active_node_for_step(session, project.id, "hero")
                 logger.warning(
                     "[#{}] hero: hero_count/description пусты и лист "
                     "«Персонажи» без данных — пропускаю шаг (hero_ready, "
@@ -491,7 +489,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     project.id,
                 )
                 project.status = ProjectStatus.hero_ready
-                await session.flush()
                 return
 
     # Определяем СЛЕДУЮЩУЮ пару (hero_idx, var_idx), которую надо сделать.

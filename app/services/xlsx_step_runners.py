@@ -256,18 +256,6 @@ def extract_general_plan_from_gpt_reply(reply: str) -> str:
                 for val in fields.values():
                     if isinstance(val, str) and len(val.strip()) >= 80:
                         return val.strip()
-
-    # Fallback: если модель вернула сценарий/план напрямую текстом или в Markdown / TSV
-    import re
-
-    raw = (reply or "").strip()
-    m = re.search(r"```(?:markdown|text|json|tsv)?\s*([\s\S]*?)\s*```", raw, re.IGNORECASE)
-    if m:
-        candidate = m.group(1).strip()
-        if len(candidate) >= 30:
-            return candidate
-    if len(raw) >= 30:
-        return raw
     return ""
 
 
