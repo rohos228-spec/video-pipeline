@@ -8,12 +8,12 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import {
+  Bot,
   Bug,
   ChevronDown,
   ChevronUp,
   GitBranch,
   Maximize2,
-  MessageSquare,
   Minimize2,
   Send,
   Square,
@@ -466,15 +466,17 @@ export function OrchestratorPanel({ projectId }: Props) {
   return (
     <div
       className={cn(
-        "absolute z-40 flex flex-col border border-white/[0.1] bg-[#0c0c0c]/97 shadow-2xl backdrop-blur",
+        "absolute z-40 flex flex-col border border-white/[0.1] bg-[#0c0c0c]/97 shadow-2xl backdrop-blur transition-all duration-200",
         open && expanded
-          ? "inset-x-3 bottom-3 top-[14%] rounded-xl"
-          : "inset-x-0 bottom-0 rounded-none border-x-0 border-b-0",
+          ? "inset-x-0 bottom-0 top-[158px] rounded-t-xl border-x-0 border-b-0"
+          : open
+            ? "inset-x-0 bottom-0 h-64 rounded-none border-x-0 border-b-0"
+            : "inset-x-0 bottom-0 h-10 rounded-none border-x-0 border-b-0",
       )}
     >
       <div className="flex h-10 shrink-0 items-center gap-1.5 border-b border-white/[0.08] px-2">
         <div className="flex min-w-0 flex-1 items-center gap-2 px-1 text-[11px] text-white/60">
-          <MessageSquare className="h-3.5 w-3.5 shrink-0 text-primary" />
+          <Bot className="h-4 w-4 shrink-0 text-primary" />
           <span className="shrink-0 font-semibold text-white/85">Оркестратор</span>
           <span className="truncate text-white/35">
             {projectId == null
@@ -483,7 +485,7 @@ export function OrchestratorPanel({ projectId }: Props) {
                 ? "думает… жми Отмена"
                 : fixBugsMode
                   ? "режим фикса — опиши баг и Enter"
-                  : "шаги · база · фикс багов"}
+                  : "ИИ-ассистент проекта"}
           </span>
         </div>
 
@@ -569,8 +571,8 @@ export function OrchestratorPanel({ projectId }: Props) {
               </div>
             ) : null}
             {chatLog.length === 0 && !fixBugsMode ? (
-              <div className="text-[11px] text-white/25">
-                «Фикс багов» → опиши баг → Отправить. Стрелка вниз — свернуть панель, □ — размер.
+              <div className="text-[11px] text-white/35 leading-relaxed">
+                Задайте вопрос по проекту, попросите изменить параметры или нажмите «Фикс багов» для решения проблемы.
               </div>
             ) : null}
             {chatLog.map((m, i) => (

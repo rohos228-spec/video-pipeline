@@ -604,7 +604,7 @@ export function NodeStudio({
               {(
                 [
                   ["settings", "Настройки", Settings2],
-                  ["prompts", "Промты GPT", FileText],
+                  ["prompts", "Промпты", FileText],
                   ...(showExcel ? [["excel", "Excel", FileSpreadsheet] as const] : []),
                   ["results", "Результаты", FileText],
                 ] as const
@@ -615,36 +615,23 @@ export function NodeStudio({
                   size="sm"
                   variant={tab === id ? "default" : "ghost"}
                   className="gap-1.5 text-xs"
-                  onClick={() => setTab(id)}
+                  onClick={() => {
+                    setTab(id);
+                    setActiveSlotId(pipelineSlots[0]?.id ?? null);
+                  }}
                 >
                   <Icon className="h-3.5 w-3.5" />
                   {label}
                 </Button>
               ))}
-              {nodeSupportsGptText(nodeType) && gptTextSlotForNode(nodeType) ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={showGptTextPanel ? "default" : "outline"}
-                  className="gap-1.5 text-xs border-violet-400/40 text-violet-100"
-                  onClick={() => {
-                    setTab("prompts");
-                    setActiveSlotId("gpt_text");
-                  }}
-                  title="Сопроводительный (прилагаемый) текст в диалог GPT"
-                >
-                  <MessageSquareText className="h-3.5 w-3.5" />
-                  Сопровод. текст
-                </Button>
-              ) : null}
             </div>
-            {tab === "prompts" && pipelineSlots.length > 0 && !showGptTextPanel && (
+            {tab === "prompts" && (
               <div className="mt-3 flex flex-wrap gap-1 border-t border-white/5 pt-3">
                 {pipelineSlots.map((slot) => (
                   <Button
                     key={slot.id}
                     size="sm"
-                    variant={activeSlotId === slot.id ? "default" : "outline"}
+                    variant={activeSlotId === slot.id && !showGptTextPanel ? "default" : "outline"}
                     className="h-7 text-[10px]"
                     onClick={() => {
                       setActiveSlotId(slot.id);
@@ -654,6 +641,21 @@ export function NodeStudio({
                     {slot.title}
                   </Button>
                 ))}
+                {nodeSupportsGptText(nodeType) && gptTextSlotForNode(nodeType) && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={activeSlotId === "gpt_text" ? "default" : "outline"}
+                    className="h-7 text-[10px] border-violet-400/40 text-violet-200"
+                    onClick={() => {
+                      setActiveSlotId("gpt_text");
+                    }}
+                    title="Сопроводительный (прилагаемый) текст в диалог GPT"
+                  >
+                    <MessageSquareText className="mr-1 h-3 w-3" />
+                    Сопроводительный текст
+                  </Button>
+                )}
               </div>
             )}
           </header>

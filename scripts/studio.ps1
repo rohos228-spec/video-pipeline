@@ -1,4 +1,4 @@
-﻿# Единый лаунчер Video Pipeline Studio (меню на русском)
+# Единый лаунчер Video Pipeline Studio (меню на русском)
 # Вызывается из STUDIO.cmd в корне репозитория.
 
 param(
@@ -434,8 +434,15 @@ function Invoke-StudioRestorePromptsAside {
 
 function Invoke-StudioRecoverPromptsFromAllStashes {
     # Безопасный возврат prompts/*: aside + studio stash (идемпотентно).
-    Write-StudioMsg "==> Проверяю aside/stash на локальные prompts/ ..." "Cyan"
-    Invoke-StudioPythonHelper -HelperArgs @("--repo", $Root, "--startup-once", "--json") | Out-Null
+    $helperPy = Join-Path $Root "scripts\return_prompts_from_stash.py"
+    if (Test-Path -LiteralPath $helperPy) {
+        $pyArgs = @(Get-StudioPython)
+        if ($pyArgs -and $pyArgs.Count -ge 1) {
+            $exe = $pyArgs[0]
+            $prefix = if ($pyArgs.Count -gt 1) { $pyArgs[1..($pyArgs.Count - 1)] } else { @() }
+            & $exe @prefix $helperPy --repo $Root --startup-once --json 2>&1 | Out-Null
+        }
+    }
 }
 
 function Invoke-StudioStart {

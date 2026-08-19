@@ -461,18 +461,34 @@ function SplitFields({
     <section className="flex flex-col gap-4 rounded-lg border border-white/10 bg-white/[0.02] p-4">
       <h3 className="text-sm font-semibold text-foreground">Разбивка</h3>
       <NumField
-        label="Минимальное количество символов в ячейке"
+        label="Минимальное количество символов в кадре"
+        description="Стандартное значение: 30 символов (~2 сек озвучки)"
+        placeholder="30"
         value={minDraft}
         onChange={setMinDraft}
       />
       <NumField
-        label="Максимальное количество символов в ячейке"
+        label="Максимальное количество символов в кадре"
+        description="Стандартное значение: 120 символов (~8 сек озвучки)"
+        placeholder="120"
         value={maxDraft}
         onChange={setMaxDraft}
       />
       <div className="grid gap-3 sm:grid-cols-2">
-        <NumField label="Средние значения — от" value={avgMinDraft} onChange={setAvgMinDraft} />
-        <NumField label="Средние значения — до" value={avgMaxDraft} onChange={setAvgMaxDraft} />
+        <NumField
+          label="Среднее значение — от"
+          description="Стандарт: 50 знаков"
+          placeholder="50"
+          value={avgMinDraft}
+          onChange={setAvgMinDraft}
+        />
+        <NumField
+          label="Среднее значение — до"
+          description="Стандарт: 80 знаков"
+          placeholder="80"
+          value={avgMaxDraft}
+          onChange={setAvgMaxDraft}
+        />
       </div>
       <Button
         size="sm"
