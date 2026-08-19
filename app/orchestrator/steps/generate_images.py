@@ -662,6 +662,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             gpt = get_gpt_client()
             phase = "shot1"
             shot2_queued = 0
+            shot1_empty_retries = 0
             try:
                 while True:
                     raise_if_cancelled(project.id)
@@ -676,6 +677,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             limit=streams,
                         )
                         if batch:
+                            shot1_empty_retries = 0
                             logger.info(
                                 "[#{}] generate_images: shot1 batch n={} frames={}",
                                 project.id,
@@ -749,16 +751,35 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             session, project.id, out_dir, project=project
                         )
                         if pending:
+                            shot1_empty_retries += 1
                             logger.warning(
                                 "[#{}] generate_images: нет image_prompt_ready, "
-                                "но {} кадров без PNG — жду: {}{}",
+                                "но {} кадров без PNG (попытка {}/3) — сбрасываю stale inflight: {}{}",
                                 project.id,
                                 len(pending),
+                                shot1_empty_retries,
                                 pending[:8],
                                 "…" if len(pending) > 8 else "",
                             )
-                        await sleep_cancellable(3.0, project.id)
-                        continue
+                            # Снимаем залипший inflight после обрывов, как в shot2
+                            await _clear_stale_inflight(session, project.id)
+                            try:
+                                await session.commit()
+                            except Exception:  # noqa: BLE001
+                                await session.rollback()
+                            session.expire_all()
+
+                            if shot1_empty_retries <= 3:
+                                await sleep_cancellable(2.0, project.id)
+                                continue
+
+                            logger.warning(
+                                "[#{}] generate_images: кадры без PNG {} не имеют готовых промптов — перехожу к shot2/завершению",
+                                project.id,
+                                pending[:8],
+                            )
+                            phase = "shot2"
+                            continue
 
                     # phase == "shot2"
                     batch2 = await _claim_shot2_batch(
