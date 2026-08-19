@@ -557,6 +557,19 @@ async def run_split_xlsx(
                 after.get("avg"),
                 after.get("max"),
             )
+            lo = mn if mn is not None else 1
+            hi = mx if mx is not None else 10_000
+            bad = [
+                len(str(it.get("закадр") or ""))
+                for it in frames_spec
+                if not (lo <= len(str(it.get("закадр") or "")) <= hi)
+            ]
+            if bad:
+                raise RuntimeError(
+                    "split_db: после enforce лимиты "
+                    f"{lo}-{hi} всё ещё нарушены "
+                    f"(outside={len(bad)}, sample_lens={bad[:8]})"
+                )
 
     logger.info("split_db: кадров из GPT/fallback={}", len(frames_spec))
     return XlsxRoundtripResult(

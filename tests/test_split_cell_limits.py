@@ -56,6 +56,34 @@ def test_enforce_keeps_ok_blocks() -> None:
     assert out == blocks
 
 
+def test_enforce_no_short_tails_between_full_neighbors() -> None:
+    """Регресс #33: хвосты 8–20 между соседями ~54 не должны выживать."""
+
+    def fill_near(n: int, token: str = "слово") -> str:
+        parts: list[str] = []
+        while len(" ".join(parts + [token])) <= n:
+            parts.append(token)
+        return " ".join(parts) if parts else token[:n]
+
+    blocks = [
+        fill_near(53),
+        "хвост мал",
+        fill_near(52),
+        "ещё хвост!",
+        fill_near(50),
+        "коротыш тут",
+        fill_near(49),
+    ]
+    out = enforce_split_cell_limits(
+        blocks, min_chars=27, max_chars=54, avg_min=27, avg_max=52
+    )
+    assert len(out) >= 2
+    lens = [len(b) for b in out]
+    assert min(lens) >= 27, lens
+    assert max(lens) <= 54, lens
+    assert "".join(out).replace(" ", "") == "".join(blocks).replace(" ", "")
+
+
 def test_frames_spec_stats() -> None:
     spec = [{"закадр": "a" * 10}, {"закадр": "b" * 40}]
     st = frames_spec_cell_stats(spec)

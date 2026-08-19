@@ -103,6 +103,143 @@ def _split_oversized(text: str, *, max_chars: int, target: int) -> list[str]:
     return fixed
 
 
+def _pack_words_to_limits(
+    words: list[str],
+    *,
+    lo: int,
+    hi: int,
+    target: int,
+) -> list[str]:
+    """Упаковать слова в ячейки около target, не превышая hi (кроме слова > hi)."""
+    if not words:
+        return []
+    chunks: list[str] = []
+    buf: list[str] = []
+
+    def flush() -> None:
+        nonlocal buf
+        if buf:
+            chunks.append(" ".join(buf))
+            buf = []
+
+    for w in words:
+        if len(w) > hi:
+            flush()
+            step = max(1, min(hi, target))
+            for i in range(0, len(w), step):
+                piece = w[i : i + step]
+                if piece:
+                    chunks.append(piece)
+            continue
+        if not buf:
+            buf = [w]
+            continue
+        cand = f"{' '.join(buf)} {w}"
+        cur_len = len(" ".join(buf))
+        if len(cand) <= hi and not (
+            cur_len >= target and cur_len >= lo and len(cand) > target
+        ):
+            buf.append(w)
+            continue
+        if cur_len >= lo:
+            flush()
+            buf = [w]
+            continue
+        # buf ещё короче min — добираем даже если уйдём чуть выше target,
+        # пока не упрёмся в hi.
+        if len(cand) <= hi:
+            buf.append(w)
+        else:
+            flush()
+            buf = [w]
+    flush()
+    return chunks
+
+
+def _rebalance_short_chunks(chunks: list[str], *, lo: int, hi: int) -> list[str]:
+    """Убрать ячейки < lo: украсть слова у соседей, иначе склеить (редко > hi)."""
+    if not chunks:
+        return []
+    out = [c for c in chunks if c.strip()]
+    if len(out) == 1:
+        return out
+
+    guard = 0
+    while guard < 10_000:
+        guard += 1
+        short_i = next((i for i, c in enumerate(out) if len(c) < lo), None)
+        if short_i is None:
+            break
+
+        i = short_i
+        cur_words = out[i].split()
+        moved = False
+
+        # 1) тянем слова из следующей ячейки
+        if i + 1 < len(out):
+            nxt_words = out[i + 1].split()
+            while nxt_words and len(" ".join(cur_words)) < lo:
+                trial = cur_words + [nxt_words[0]]
+                trial_s = " ".join(trial)
+                rest_s = " ".join(nxt_words[1:])
+                if len(trial_s) > hi:
+                    break
+                # не оставляем соседа пустым «в никуда» — ok; если rest < lo,
+                # починим на следующем проходе
+                if rest_s and len(rest_s) < lo and len(trial_s) + 1 + len(rest_s) <= hi:
+                    # выгоднее сразу склеить целиком
+                    break
+                cur_words.append(nxt_words.pop(0))
+                moved = True
+            out[i] = " ".join(cur_words)
+            if nxt_words:
+                out[i + 1] = " ".join(nxt_words)
+            else:
+                del out[i + 1]
+            if len(out[i]) >= lo:
+                continue
+
+        # 2) тянем слова с конца предыдущей
+        if i > 0 and len(out[i]) < lo:
+            prev_words = out[i - 1].split()
+            cur_words = out[i].split()
+            while prev_words and len(" ".join(cur_words)) < lo:
+                trial = [prev_words[-1]] + cur_words
+                trial_s = " ".join(trial)
+                rest_s = " ".join(prev_words[:-1])
+                if len(trial_s) > hi:
+                    break
+                if rest_s and len(rest_s) < lo:
+                    break
+                cur_words.insert(0, prev_words.pop())
+                moved = True
+            out[i] = " ".join(cur_words)
+            if prev_words:
+                out[i - 1] = " ".join(prev_words)
+            else:
+                del out[i - 1]
+                i = max(0, i - 1)
+            if len(out[i]) >= lo:
+                continue
+
+        # 3) принудительный merge — лучше чуть > hi, чем ячейка < lo
+        if len(out[i]) < lo:
+            if i + 1 < len(out):
+                out[i] = f"{out[i]} {out[i + 1]}"
+                del out[i + 1]
+                moved = True
+            elif i > 0:
+                out[i - 1] = f"{out[i - 1]} {out[i]}"
+                del out[i]
+                moved = True
+            else:
+                break
+        if not moved:
+            break
+
+    return [c for c in out if c.strip()]
+
+
 def enforce_split_cell_limits(
     blocks: list[str],
     *,
@@ -111,7 +248,12 @@ def enforce_split_cell_limits(
     avg_min: int | None = None,
     avg_max: int | None = None,
 ) -> list[str]:
-    """Склеить короткие / разрезать длинные ячейки под лимиты из настроек."""
+    """Склеить короткие / разрезать длинные ячейки под лимиты из настроек.
+
+    Алгоритм: склеить весь текст → упаковать слова около target ≤ max →
+    добить короткие (< min) кражей слов у соседей / merge.
+    Старый split-then-merge оставлял хвосты 8–20 между «полными» соседями.
+    """
     cleaned = [" ".join(str(b).split()) for b in blocks if str(b).strip()]
     if not cleaned:
         return []
@@ -132,30 +274,13 @@ def enforce_split_cell_limits(
         target = int(round((lo + hi) / 2))
     target = max(lo, min(hi, target))
 
-    pieces: list[str] = []
-    for b in cleaned:
-        pieces.extend(_split_oversized(b, max_chars=hi, target=target))
+    full = " ".join(cleaned)
+    if len(full) < lo:
+        return [full]
 
-    merged: list[str] = []
-    i = 0
-    while i < len(pieces):
-        cur = pieces[i]
-        while i + 1 < len(pieces) and len(cur) < lo:
-            nxt = pieces[i + 1]
-            if len(cur) + 1 + len(nxt) <= hi:
-                cur = f"{cur} {nxt}"
-                i += 1
-            else:
-                break
-        merged.append(cur)
-        i += 1
-
-    if len(merged) >= 2 and len(merged[-1]) < lo:
-        if len(merged[-2]) + 1 + len(merged[-1]) <= hi:
-            merged[-2] = f"{merged[-2]} {merged[-1]}"
-            merged.pop()
-
-    return [m for m in merged if len(m) >= _MIN_BLOCK_LEN or len(merged) == 1]
+    words = full.split()
+    packed = _pack_words_to_limits(words, lo=lo, hi=hi, target=target)
+    return _rebalance_short_chunks(packed, lo=lo, hi=hi)
 
 
 def parse_dash_separated_blocks(text: str) -> list[str]:

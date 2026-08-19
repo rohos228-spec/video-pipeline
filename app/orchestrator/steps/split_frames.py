@@ -26,11 +26,31 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     ).scalars().all()
     meta = dict(project.meta or {})
     if len(existing_frames) >= 2 and meta.get("split_completed"):
-        from app.services.node_step_params import split_params_fingerprint
+        from app.services.node_step_params import (
+            split_cell_limits_from_project,
+            split_params_fingerprint,
+        )
+        from app.services.voiceover_split_local import (
+            enforce_split_cell_limits,
+            frames_spec_cell_stats,
+        )
 
         applied_fp = str(meta.get("split_params_applied") or "")
         current_fp = split_params_fingerprint(project)
-        if applied_fp and applied_fp == current_fp:
+        mn, mx, amn, amx = split_cell_limits_from_project(project)
+        texts_now = [
+            str(getattr(fr, "voiceover_text", None) or "").strip()
+            for fr in existing_frames
+        ]
+        texts_now = [t for t in texts_now if t]
+        stats_now = frames_spec_cell_stats([{"закадр": t} for t in texts_now])
+        limits_ok = True
+        if texts_now and (mn is not None or mx is not None):
+            lo = mn if mn is not None else 1
+            hi = mx if mx is not None else 10_000
+            limits_ok = all(lo <= len(t) <= hi for t in texts_now)
+
+        if applied_fp and applied_fp == current_fp and limits_ok:
             logger.info(
                 "[#{}] split_frames: split_completed + {} кадров + "
                 "params={} — пропуск GPT",
@@ -41,6 +61,53 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
             project.status = ProjectStatus.frames_ready
             await session.flush()
             return
+
+        if applied_fp and applied_fp == current_fp and not limits_ok:
+            # Старый enforce оставлял хвосты < min — чиним локально без GPT.
+            enforced = enforce_split_cell_limits(
+                texts_now, min_chars=mn, max_chars=mx, avg_min=amn, avg_max=amx
+            )
+            if len(enforced) >= 2:
+                from app.services import db_apply
+
+                ops = [{"target": "replace_frames", "frames": [{"закадр": t} for t in enforced]}]
+                applied = await db_apply.apply_ops(
+                    session, project, ops, export_xlsx=False
+                )
+                after = frames_spec_cell_stats([{"закадр": t} for t in enforced])
+                logger.info(
+                    "[#{}] split_frames: local re-enforce {}-{} "
+                    "frames {}→{} len {}/{}/{} → {}/{}/{} (без GPT)",
+                    project.id,
+                    mn,
+                    mx,
+                    stats_now.get("n"),
+                    after.get("n"),
+                    stats_now.get("min"),
+                    stats_now.get("avg"),
+                    stats_now.get("max"),
+                    after.get("min"),
+                    after.get("avg"),
+                    after.get("max"),
+                )
+                meta = dict(project.meta or {})
+                meta["split_completed"] = True
+                meta["split_params_applied"] = current_fp
+                project.meta = meta
+                project.status = ProjectStatus.frames_ready
+                await session.flush()
+                await session.commit()
+                logger.info(
+                    "[#{}] split_frames: re-enforce → {} кадров",
+                    project.id,
+                    applied.get("replace_frames") or len(enforced),
+                )
+                return
+            logger.warning(
+                "[#{}] split_frames: limits broken but re-enforce failed — GPT",
+                project.id,
+            )
+
         logger.info(
             "[#{}] split_frames: settings changed ({} → {}) — re-run GPT",
             project.id,
