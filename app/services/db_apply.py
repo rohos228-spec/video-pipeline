@@ -329,6 +329,41 @@ def repair_near_miss_frame_uuids(
     return remaps
 
 
+_FRAME_NUMBER_ID_RE = re.compile(r"^\d{1,6}$")
+
+
+def remap_frame_number_uuids(
+    ops: list[dict[str, Any]],
+    number_to_uuid: dict[int, str],
+) -> list[tuple[str, str]]:
+    """Если GPT прислал номер кадра вместо uuid (``"78"``) — подставить uuid.
+
+    Fail-closed: только чистое целое 1…999999 и ровно один кадр с таким
+    ``Frame.number``. Мутирует ``ops`` in-place. Возвращает ``(было, стало)``.
+    """
+    remaps: list[tuple[str, str]] = []
+    if not number_to_uuid:
+        return remaps
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        if op.get("target", "frame") not in (None, "frame"):
+            continue
+        raw = str(op.get("frame_uuid") or "").strip()
+        if not raw or not _FRAME_NUMBER_ID_RE.fullmatch(raw):
+            continue
+        try:
+            num = int(raw)
+        except ValueError:
+            continue
+        fixed = number_to_uuid.get(num)
+        if not fixed:
+            continue
+        op["frame_uuid"] = fixed
+        remaps.append((raw, fixed))
+    return remaps
+
+
 def salvage_ops_from_partial_json(text: str) -> list[dict[str, Any]]:
     """Достать целые объекты из обрезанного ``{"ops":[…`` (без закрытия)."""
     if not text:
@@ -1125,6 +1160,7 @@ async def apply_ops(
 
     by_uuid: dict[str, Frame] = {}
     uuid_repairs: list[tuple[str, str]] = []
+    number_repairs: list[tuple[str, str]] = []
     if frame_ops:
         uuids = [str(op.get("frame_uuid") or "") for op in frame_ops]
         if any(not u for u in uuids):
@@ -1138,6 +1174,29 @@ async def apply_ops(
             ).scalars()
         )
         by_uuid = {f.uuid: f for f in frames}
+        # GPT часто пишет номер кадра ("78") вместо uuid — сначала remap по number.
+        by_number: dict[int, list[str]] = {}
+        for f in frames:
+            n = getattr(f, "number", None)
+            if n is None:
+                continue
+            try:
+                ni = int(n)
+            except (TypeError, ValueError):
+                continue
+            by_number.setdefault(ni, []).append(str(f.uuid))
+        number_to_uuid = {
+            n: ids[0] for n, ids in by_number.items() if len(ids) == 1
+        }
+        number_repairs = remap_frame_number_uuids(frame_ops, number_to_uuid)
+        if number_repairs:
+            from loguru import logger
+
+            logger.warning(
+                "db_apply: frame_number→uuid remapped n={} samples={}",
+                len(number_repairs),
+                number_repairs[:5],
+            )
         uuid_repairs = repair_near_miss_frame_uuids(frame_ops, list(by_uuid.keys()))
         if uuid_repairs:
             from loguru import logger
@@ -1296,6 +1355,6 @@ async def apply_ops(
         "expanded_frames": expanded,
         "exported": exported,
         "uuid_repairs": [
-            {"from": a, "to": b} for a, b in uuid_repairs
+            {"from": a, "to": b} for a, b in (number_repairs + uuid_repairs)
         ],
     }

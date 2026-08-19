@@ -140,6 +140,38 @@ async def test_apply_ops_near_miss_uuid_repaired(api_client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_ops_frame_number_as_uuid_remapped(api_client) -> None:
+    """GPT прислал номер кадра вместо uuid — remap и пишем."""
+    client, project_id, factory = api_client
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        real = fr.uuid
+    r = await client.post(
+        f"/api/db/projects/{project_id}/apply-ops",
+        json={
+            "ops": [
+                {"frame_uuid": "1", "fields": {"voiceover_text": "после number remap"}},
+            ]
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["updated"] == 1
+    assert any(x.get("from") == "1" and x.get("to") == real for x in body.get("uuid_repairs") or [])
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        assert fr.voiceover_text == "после number remap"
+
+
+@pytest.mark.asyncio
 async def test_apply_ops_empty_and_empty_fields_rejected(api_client) -> None:
     client, project_id, factory = api_client
     async with factory() as session:

@@ -42,6 +42,34 @@ def test_repair_near_miss_skips_non_hex() -> None:
     assert remaps == []
 
 
+def test_remap_frame_number_uuids_replaces_digit_id() -> None:
+    """GPT часто пишет номер кадра вместо uuid — подставляем uuid по number."""
+    ops = [
+        {"frame_uuid": "78", "fields": {"место": "лес"}},
+        {"frame_uuid": "abc4bdef0123456789abcdef", "fields": {"место": "ok"}},
+    ]
+    remaps = db_apply.remap_frame_number_uuids(
+        ops,
+        {78: "real-uuid-of-frame-78", 1: "other"},
+    )
+    assert remaps == [("78", "real-uuid-of-frame-78")]
+    assert ops[0]["frame_uuid"] == "real-uuid-of-frame-78"
+    assert ops[1]["frame_uuid"] == "abc4bdef0123456789abcdef"
+
+
+def test_remap_frame_number_skips_unknown_and_ambiguous_text() -> None:
+    ops = [
+        {"frame_uuid": "999", "fields": {"место": "нет"}},
+        {"frame_uuid": "78a", "fields": {"место": "не число"}},
+        {"frame_uuid": " 42 ", "fields": {"место": "ok"}},
+    ]
+    remaps = db_apply.remap_frame_number_uuids(ops, {42: "uuid-42"})
+    assert remaps == [("42", "uuid-42")]
+    assert ops[0]["frame_uuid"] == "999"
+    assert ops[1]["frame_uuid"] == "78a"
+    assert ops[2]["frame_uuid"] == "uuid-42"
+
+
 def test_salvage_ops_from_partial_json_truncated() -> None:
     # нет закрывающих ] } — как при обрыве длинного ответа
     text = (
