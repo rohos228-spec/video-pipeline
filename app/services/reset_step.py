@@ -908,6 +908,7 @@ _PIPELINE_RESET_LEVELS: list[tuple[str, Any]] = [
     ("split",     _wipe_split),
     ("scene_d",   _wipe_scene_design),
     ("scene_asm", _wipe_scene_assemble),
+    ("sd_skel",   _sd_agent_wiper("sd_skel")),
     ("sd_char",   _sd_agent_wiper("sd_char")),
     ("sd_world",  _sd_agent_wiper("sd_world")),
     ("sd_style",  _sd_agent_wiper("sd_style")),
@@ -946,12 +947,13 @@ _WRAPPER_TO_CODES: dict[str, list[str]] = {
 # а сброс одного агента — чекпоинты соседей (иначе перезапуск сборщика
 # требует полного GPT-прогона всех пяти).
 _SD_AGENT_CODES: frozenset[str] = frozenset(
-    {"sd_char", "sd_world", "sd_style", "sd_cam", "sd_act"}
+    {"sd_skel", "sd_char", "sd_world", "sd_style", "sd_cam", "sd_act"}
 )
 _RESET_SKIP_DOWNSTREAM: dict[str, frozenset[str]] = {
     "audio": frozenset({"music"}),
     "video": frozenset({"music"}),
     "scene_asm": _SD_AGENT_CODES,
+    "sd_skel": _SD_AGENT_CODES - {"sd_skel"},
     "sd_char": _SD_AGENT_CODES - {"sd_char"},
     "sd_world": _SD_AGENT_CODES - {"sd_world"},
     "sd_style": _SD_AGENT_CODES - {"sd_style"},
@@ -976,7 +978,7 @@ def _resolve_start_index(step_code: str) -> int | None:
 RESET_SUPPORTED_STEP_CODES: frozenset[str] = frozenset({
     "plan", "script", "split",
     "scene_d", "scene_asm",
-    "sd_char", "sd_world", "sd_style", "sd_cam", "sd_act",
+    "sd_skel", "sd_char", "sd_world", "sd_style", "sd_cam", "sd_act",
     "objects", "hero", "items",
     "enrich",
     "enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5",

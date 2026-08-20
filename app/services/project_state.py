@@ -246,7 +246,10 @@ def _enrich_meta_allowed_for_status(project: Project) -> bool:
     auto_advance тогда стартует excel_gpt #3, минуя split и первые GPT-ноды.
     """
     cur = getattr(project, "status", None)
-    return _status_ord(cur) >= _status_ord(ProjectStatus.enriching_1)
+    return (
+        _status_ord(cur) >= _status_ord(ProjectStatus.enriching_1)
+        and _status_ord(cur) <= _status_ord(ProjectStatus.enrich_5_ready)
+    )
 
 
 def _shot_index_from_attrs(attrs: object) -> int:
@@ -530,6 +533,12 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
                 return ProjectStatus.videos_ready
             # audio ✓
             if final_arts == 0:
+                has_sfx_gen = bool(meta_now.get("sfx_generated")) or bool(meta_now.get("sfx_ready"))
+                has_sfx_plan = bool(meta_now.get("sfx_plan"))
+                if has_sfx_gen:
+                    return ProjectStatus.sfx_ready
+                if has_sfx_plan:
+                    return ProjectStatus.sfx_plan_ready
                 if music_arts > 0:
                     return ProjectStatus.music_ready
                 return ProjectStatus.audio_ready
