@@ -23,13 +23,31 @@ def test_parse_img_pr_ops_does_not_wrap_style() -> None:
       {"frame_uuid":"ccc","fields":{"image_prompt":"Action: reading"}}
     ]}
     """
-    ops = ipb.parse_img_pr_ops(reply, style_id="noir")
+    ops = ipb.parse_img_pr_ops(reply, wrap_style=False, style_id="noir")
     assert len(ops) == 2
     assert {ipb.uuid_of_op(o) for o in ops} == {"aaa", "ccc"}
     body = ops[0]["fields"]["промт_картинки"]
     assert body == "Background: metro car"
     assert "Archival Noir" not in body
     assert "Final style lock" not in body
+
+
+def test_parse_img_pr_ops_pins_canonical_style() -> None:
+    from app.services.img_pr_style import STYLE_TAIL
+
+    scene = "Референс c01. Фон: кухня. Действие: тянет засов. " * 8
+    reply = (
+        '{"ops":[{"frame_uuid":"aaa","fields":{"промт_картинки":'
+        + __import__("json").dumps(
+            scene + "Final style lock: short. Negative: 3D."
+        )
+        + "}}]}"
+    )
+    ops = ipb.parse_img_pr_ops(reply, wrap_style=True, style_id="noir")
+    body = ops[0]["fields"]["промт_картинки"]
+    assert "Фон: кухня" in body
+    assert "Final style lock: short." not in body
+    assert STYLE_TAIL in body
 
 
 def test_parse_img_pr_ops_no_style_does_not_inject_noir() -> None:
@@ -152,7 +170,52 @@ def test_batch_footer_forbids_empty_ops() -> None:
     for body in (text, clay):
         assert "пустой" in body.lower()
         assert '{"ops":[]}' in body
-        assert "один op на каждый uuid" not in body
+        assert "один полный op на каждый uuid" in body
+        assert "частичный json" in body.lower()
+        assert "CONTINUE" not in body
+    assert "канонический" in text.lower()
+
+
+def _full_style_prompt(scene: str) -> str:
+    pad = "mid-motion freeze of the body, detailed background from shot01_bg. "
+    style = (
+        "STYLE: Archival Noir Watercolor Grunge Dossier Poster Illustration. "
+        "Final style lock: unified cinematic frame, dark comic inking. "
+        "Negative: photorealism, glossy 3D, text, watermark. "
+    )
+    return (scene + " " + pad * 20 + style).strip()
+
+
+def test_complete_prompt_rejects_stubs() -> None:
+    assert not ipb.is_complete_img_pr_prompt("short scene")
+    assert not ipb.is_complete_img_pr_prompt(
+        "Background: a long corridor and a table, no wardrobe, no palette. " * 20
+    )
+    full = _full_style_prompt("Референс c01 у стола. Фон: кухня 1900.")
+    assert ipb.is_complete_img_pr_prompt(full)
+    stub_op = {
+        "frame_uuid": "aaa",
+        "fields": {"промт_картинки": "Background: metro"},
+    }
+    full_op = {
+        "frame_uuid": "bbb",
+        "fields": {"промт_картинки": full},
+    }
+    kept, missing = ipb.keep_complete_ops(
+        [stub_op, full_op], expected={"aaa", "bbb"}
+    )
+    assert [ipb.uuid_of_op(o) for o in kept] == ["bbb"]
+    assert missing == ["aaa"]
+
+
+def test_retry_full_batch_message() -> None:
+    msg = ipb.retry_full_batch_message(
+        uuid_lines="кадр 1 = u1", got=3, total=5
+    )
+    assert "FAIL" in msg
+    assert "3/5" in msg
+    assert "все 5" in msg
+    assert "CONTINUE" not in msg
 
 
 def test_checkpoint_roundtrip(tmp_path: Path) -> None:

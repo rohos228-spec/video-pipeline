@@ -33,9 +33,11 @@ from app.storage import for_project as _sheet_for_project
 
 # Должен совпадать со строкой 4 в web/STUDIO_VERSION. Если в логе make_plan
 # нет «xlsx_step_runners» — на диске старый make_plan.py (текст 30k в ask).
-XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v84-img-pr-sem"
+XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v88-img-pr-pin-style"
 # Сколько живых GPT-стримов img_pr держать одновременно (как gpt_api pack).
 _IMG_PR_LIVE_STREAMS = 3
+# Один батч на 155 кадров стримит дольше трёх по 50 — 60 мин, не 30.
+_IMG_PR_ASK_TIMEOUT_S = 3600.0
 _EMPTY_OPS_BACKOFF_S = (5.0, 10.0, 15.0)
 
 
@@ -539,15 +541,16 @@ _IMG_PR_DB_HINT = (
     "без скачивания .xlsx:\n"
     '{"ops":[{"frame_uuid":"<uuid>","fields":{"промт_картинки":"…"}}]}\n'
     "Адрес кадра — ТОЛЬКО frame_uuid из db_frames.json ЭТОГО батча.\n"
-    "Одна операция = один кадр. Пиши только полные ops; если не все влезли — "
-    "верни сколько полных влезло, остальное не трогай. "
+    "Одна операция = один кадр. Один ответ = полный op на КАЖДЫЙ uuid батча. "
+    "Частичный JSON (не все uuid) = провал. Не закрывай ops раньше последнего кадра. "
     'Пустой {"ops":[]} запрещён.\n'
     "Сборка кадра (порядок): ref(cXX?) → shot01_bg → shot01_action → "
     "lighting/scene_lighting → accent → scene_sense → scene_feature → "
     "shot01_description/props → place/время → STYLE. "
     "accent/scene_sense/scene_feature — отдельные строки. "
     "В промт_картинки пиши ПОЛНЫЙ промт: сцена + STYLE LOCK / Final style "
-    "lock / Negative из мастера. Оркестратор НИЧЕГО не дописывает. "
+    "lock / Negative из мастера. Пайплайн подставит канонический STYLE "
+    "одной длины во все ops (батчи не должны расходиться). "
     "characters[] Entity. Не копируй voiceover_text.\n"
 )
 
@@ -557,8 +560,8 @@ _PLASTILIN_IMG_PR_HINT = (
     "без скачивания .xlsx:\n"
     '{"ops":[{"frame_uuid":"<uuid>","fields":{"промт_картинки":"…","персонажи":"c01"}}]}\n'
     "Адрес кадра — ТОЛЬКО frame_uuid из db_frames.json ЭТОГО батча.\n"
-    "Одна операция = один кадр. Пиши только полные ops; если не все влезли — "
-    "верни сколько полных влезло, остальное не трогай. "
+    "Одна операция = один кадр. Один ответ = полный op на КАЖДЫЙ uuid батча. "
+    "Частичный JSON (не все uuid) = провал. Не закрывай ops раньше последнего кадра. "
     'Пустой {"ops":[]} запрещён.\n'
     "В `промт_картинки` пиши ПОЛНЫЙ промт: стиль пластилина ТРИ раза + сцена "
     "+ Negative. Пайплайн НЕ допишет watercolor/noir — не копируй Archival Noir. "
@@ -831,66 +834,69 @@ async def run_img_pr_xlsx(
                 f"{chat_msg}\n# uuid map (справочно)\n"
                 f"{uuid_map_text.strip()[:2000]}\n"
             )
+        expected = {
+            (fr.uuid or "").strip()
+            for fr in batch
+            if (fr.uuid or "").strip()
+        }
+        last_reply = ""
         attach = ipb.batch_attach_files(
             batch_i=bi,
             prompt_file=prompt_file,
             db_path=db_path,
             voiceover=vo if bi == 1 else None,
         )
-        batch_ops: list[dict] = []
-        last_reply = ""
+        ask_msg = chat_msg
         for attempt in range(1, ipb._GPT_ATTEMPTS + 1):
-            if attempt > 1:
-                await gpt_local.new_conversation()
-                attach = ipb.batch_attach_files(
-                    batch_i=bi,
-                    prompt_file=prompt_file,
-                    db_path=db_path,
-                    voiceover=None,
-                )
-                chat_msg = (
-                    f"{img_pr_hint}\n{footer}\n"
-                    f"Адресация:\n{uuid_lines}\n"
-                    "Только JSON apply-ops. "
-                    "Пустой {\"ops\":[]} запрещён — верни сколько полных ops влезло. "
-                    + (
-                        "Стиль пластилина оставь в промт_картинки.\n"
-                        if plastilin
-                        else "Полный промт: сцена + STYLE LOCK / Negative.\n"
-                    )
-                )
-                logger.info(
-                    "img_pr_db: batch {}/{} fresh session retry", bi, batch_n
-                )
             logger.info(
-                "img_pr_db: batch {}/{} attempt {} frames={} attach={} "
-                "parallel={} bytes={}",
+                "img_pr_db: batch {}/{} attempt {} frames={} need={} "
+                "attach={} parallel={} bytes={}",
                 bi,
                 batch_n,
                 attempt,
                 [fr.number for fr in batch],
+                len(expected),
                 [p.name for p in attach],
                 _IMG_PR_LIVE_STREAMS,
                 db_path.stat().st_size,
             )
             last_reply = await gpt_local.ask_with_files(
-                chat_msg,
+                ask_msg,
                 attach,
                 project_id=project_id or project.id,
                 expect_file_download=False,
                 history=None,
                 treat_txt_as_prompt=True,
                 auto_pack=False,
+                volume_complete=False,
+                timeout=_IMG_PR_ASK_TIMEOUT_S,
             )
-            batch_ops = ipb.parse_img_pr_ops(
+            parsed = ipb.parse_img_pr_ops(
                 last_reply or "",
                 wrap_style=not plastilin,
                 style_id=style_id,
             )
-            if batch_ops:
-                break
-            empty_stub = ipb.is_empty_ops_reply(last_reply or "")
-            reason = "empty_ops_stub" if empty_stub else "no_prompt_ops"
+            kept, missing = ipb.keep_complete_ops(
+                parsed, expected=expected, plastilin=plastilin
+            )
+            logger.info(
+                "img_pr_db: batch {}/{} attempt {} reply_len={} "
+                "complete={}/{} missing={}",
+                bi,
+                batch_n,
+                attempt,
+                len(last_reply or ""),
+                len(kept),
+                len(expected),
+                len(missing),
+            )
+            if kept and not missing:
+                return kept, last_reply or ""
+            reason = (
+                "empty_ops_stub"
+                if ipb.is_empty_ops_reply(last_reply or "")
+                else "partial_batch"
+            )
             rej = ipb.write_rejected_reply(
                 tmp_dir,
                 batch_i=bi,
@@ -902,25 +908,40 @@ async def run_img_pr_xlsx(
                 min(attempt - 1, len(_EMPTY_OPS_BACKOFF_S) - 1)
             ]
             logger.warning(
-                "img_pr_db: batch {}/{} attempt {} failed reply_len={} "
-                "reason={} backoff={:.0f}s {}",
+                "img_pr_db: batch {}/{} attempt {} FAIL {} "
+                "reply_len={} complete={}/{} backoff={:.0f}s {}",
                 bi,
                 batch_n,
                 attempt,
-                len(last_reply or ""),
                 reason,
+                len(last_reply or ""),
+                len(kept),
+                len(expected),
                 delay,
                 rej.name,
             )
-            if attempt < ipb._GPT_ATTEMPTS:
-                await sleep_cancellable(
-                    delay, project_id or project.id
-                )
-        return batch_ops, last_reply or ""
+            if attempt >= ipb._GPT_ATTEMPTS:
+                break
+            await gpt_local.new_conversation()
+            attach = ipb.batch_attach_files(
+                batch_i=bi,
+                prompt_file=prompt_file,
+                db_path=db_path,
+                voiceover=None,
+            )
+            ask_msg = ipb.retry_full_batch_message(
+                uuid_lines=uuid_lines,
+                got=len(kept),
+                total=len(expected),
+                plastilin=plastilin,
+            )
+            await sleep_cancellable(delay, project_id or project.id)
+        return [], last_reply or ""
 
     async def _run_batches() -> None:
         nonlocal done_uuids, all_ops, done_set, api_batches
         bi_seq = 0
+        incomplete_tries: dict[str, int] = {}
         while work:
             raise_if_cancelled(project.id)
             wave = list(work)
@@ -1027,27 +1048,29 @@ async def run_img_pr_xlsx(
                     len(missing_uuids),
                 )
                 if missing_uuids:
-                    missing_frames = [
+                    for uid in missing_uuids:
+                        incomplete_tries[uid] = incomplete_tries.get(uid, 0) + 1
+                    retry_frames = [
                         fr
                         for fr in batch
                         if (fr.uuid or "").strip() in missing_uuids
+                        and incomplete_tries[(fr.uuid or "").strip()] < 3
                     ]
-                    nxt = next_split_level(level)
-                    if nxt is not None and len(missing_frames) >= 2:
-                        for half in split_in_half(missing_frames):
-                            work.append((half, nxt))
+                    if retry_frames:
+                        work.append((retry_frames, level))
                         logger.warning(
-                            "img_pr_db: incomplete {}/{} → split L{} (queue={})",
+                            "img_pr_db: incomplete {}/{} → continue same batch "
+                            "retry_frames={} (queue={})",
                             len(got_uuids),
                             len(expected),
-                            nxt,
+                            len(retry_frames),
                             len(work),
                         )
                     else:
-                        logger.warning(
-                            "img_pr_db: still missing {} uuid L{} — stop split",
+                        logger.error(
+                            "img_pr_db: still missing {} uuid after continues "
+                            "— fail at end",
                             len(missing_uuids),
-                            level,
                         )
             ipb.save_checkpoint(
                 project.data_dir, done_uuids=done_uuids, ops=all_ops
@@ -1063,6 +1086,18 @@ async def run_img_pr_xlsx(
         raise RuntimeError(
             "GPT не вернул apply-ops с промт_картинки по frame_uuid. "
             'Нужен {"ops":[{"frame_uuid":"…","fields":{"промт_картинки":"…"}}]}'
+        )
+
+    started = {
+        (fr.uuid or "").strip() for fr in frames if (fr.uuid or "").strip()
+    }
+    got = {ipb.uuid_of_op(op) for op in all_ops if ipb.uuid_of_op(op)}
+    leftover = started - got
+    if leftover:
+        raise RuntimeError(
+            f"img_pr: не закрыты {len(leftover)} кадров полными промтами "
+            f"(готово {len(got & started)}/{len(started)}). "
+            f"uuid: {sorted(leftover)[:8]}"
         )
 
     logger.info(
