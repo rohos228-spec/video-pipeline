@@ -1180,6 +1180,67 @@ def parse_responses_sse_lines(
     return text, status, final_response or {}, response_id
 
 
+def looks_empty_ops_stub(text: str) -> bool:
+    """Короткий валидный JSON с пустым ops — отказ, не полноценный ответ."""
+    t = (text or "").strip()
+    if not t or len(t) > 32:
+        return False
+    try:
+        data = json.loads(t)
+    except Exception:  # noqa: BLE001
+        return re.sub(r"\s+", "", t) == '{"ops":[]}'
+    return (
+        isinstance(data, dict)
+        and data.get("ops") == []
+        and set(data.keys()) <= {"ops"}
+    )
+
+
+def _log_chat_finished(
+    *,
+    provider_label: str,
+    use_model: str,
+    attempt: int,
+    result: "GptChatResult",
+    include_task_id: bool = True,
+) -> None:
+    task_id = ""
+    if include_task_id:
+        task_id = result.response_id or (result.raw or {}).get("id") or "-"
+    if looks_empty_ops_stub(result.text or ""):
+        logger.warning(
+            "gpt_api.chat empty-ops stub provider={} model={} attempt={} "
+            "finish={} chars={} task_id={}",
+            provider_label,
+            use_model,
+            attempt,
+            result.finish_reason,
+            len(result.text or ""),
+            task_id or "-",
+        )
+        return
+    if include_task_id:
+        logger.info(
+            "gpt_api.chat OK provider={} model={} attempt={} "
+            "finish={} chars={} task_id={}",
+            provider_label,
+            use_model,
+            attempt,
+            result.finish_reason,
+            len(result.text),
+            task_id,
+        )
+        return
+    logger.info(
+        "gpt_api.chat OK provider={} model={} attempt={} finish={} chars={}",
+        provider_label,
+        use_model,
+        attempt,
+        result.finish_reason,
+        len(result.text),
+    )
+
+
 def looks_truncated_llm_text(text: str) -> bool:
     """True если ответ похож на обрезанный CF/прокси (незакрытый JSON/строка)."""
     t = (text or "").rstrip()
@@ -2179,15 +2240,11 @@ async def chat(
                     xlsx_write_contract=xlsx_write_contract,
                     volume_complete=volume_complete,
                 )
-                logger.info(
-                    "gpt_api.chat OK provider={} model={} attempt={} "
-                    "finish={} chars={} task_id={}",
-                    provider_label,
-                    use_model,
-                    attempt,
-                    result.finish_reason,
-                    len(result.text),
-                    result.response_id or result.raw.get("id") or "-",
+                _log_chat_finished(
+                    provider_label=provider_label,
+                    use_model=use_model,
+                    attempt=attempt,
+                    result=result,
                 )
                 return result
 
@@ -2265,15 +2322,11 @@ async def chat(
                     xlsx_write_contract=xlsx_write_contract,
                     volume_complete=volume_complete,
                 )
-                logger.info(
-                    "gpt_api.chat OK provider={} model={} attempt={} "
-                    "finish={} chars={} task_id={}",
-                    provider_label,
-                    use_model,
-                    attempt,
-                    result.finish_reason,
-                    len(result.text),
-                    result.response_id or result.raw.get("id") or "-",
+                _log_chat_finished(
+                    provider_label=provider_label,
+                    use_model=use_model,
+                    attempt=attempt,
+                    result=result,
                 )
                 return result
 
@@ -2306,13 +2359,12 @@ async def chat(
                 xlsx_write_contract=xlsx_write_contract,
                 volume_complete=volume_complete,
             )
-            logger.info(
-                "gpt_api.chat OK provider={} model={} attempt={} finish={} chars={}",
-                provider_label,
-                use_model,
-                attempt,
-                result.finish_reason,
-                len(result.text),
+            _log_chat_finished(
+                provider_label=provider_label,
+                use_model=use_model,
+                attempt=attempt,
+                result=result,
+                include_task_id=False,
             )
             return result
         except httpx.TimeoutException:

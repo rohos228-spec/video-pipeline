@@ -33,7 +33,10 @@ from app.storage import for_project as _sheet_for_project
 
 # Должен совпадать со строкой 4 в web/STUDIO_VERSION. Если в логе make_plan
 # нет «xlsx_step_runners» — на диске старый make_plan.py (текст 30k в ask).
-XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v83-adaptive-1-2-4"
+XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v84-img-pr-sem"
+# Сколько живых GPT-стримов img_pr держать одновременно (как gpt_api pack).
+_IMG_PR_LIVE_STREAMS = 3
+_EMPTY_OPS_BACKOFF_S = (5.0, 10.0, 15.0)
 
 
 def _plan_empty_error(xlsx_path: Path, *, plan_len: int) -> RuntimeError:
@@ -536,13 +539,16 @@ _IMG_PR_DB_HINT = (
     "без скачивания .xlsx:\n"
     '{"ops":[{"frame_uuid":"<uuid>","fields":{"промт_картинки":"…"}}]}\n'
     "Адрес кадра — ТОЛЬКО frame_uuid из db_frames.json ЭТОГО батча.\n"
-    "Одна операция = один кадр. Пройди все кадры из текущего db_frames.json.\n"
+    "Одна операция = один кадр. Пиши только полные ops; если не все влезли — "
+    "верни сколько полных влезло, остальное не трогай. "
+    'Пустой {"ops":[]} запрещён.\n'
     "Сборка кадра (порядок): ref(cXX?) → shot01_bg → shot01_action → "
     "lighting/scene_lighting → accent → scene_sense → scene_feature → "
     "shot01_description/props → place/время → STYLE. "
     "accent/scene_sense/scene_feature — отдельные строки. "
-    "В промт_картинки пиши ТОЛЬКО сцену — STYLE LOCK НЕ копируй "
-    "(пайплайн допишет). characters[] Entity. Не копируй voiceover_text.\n"
+    "В промт_картинки пиши ПОЛНЫЙ промт: сцена + STYLE LOCK / Final style "
+    "lock / Negative из мастера. Оркестратор НИЧЕГО не дописывает. "
+    "characters[] Entity. Не копируй voiceover_text.\n"
 )
 
 _PLASTILIN_IMG_PR_HINT = (
@@ -551,7 +557,9 @@ _PLASTILIN_IMG_PR_HINT = (
     "без скачивания .xlsx:\n"
     '{"ops":[{"frame_uuid":"<uuid>","fields":{"промт_картинки":"…","персонажи":"c01"}}]}\n'
     "Адрес кадра — ТОЛЬКО frame_uuid из db_frames.json ЭТОГО батча.\n"
-    "Одна операция = один кадр. Пройди все кадры из текущего файла.\n"
+    "Одна операция = один кадр. Пиши только полные ops; если не все влезли — "
+    "верни сколько полных влезло, остальное не трогай. "
+    'Пустой {"ops":[]} запрещён.\n'
     "В `промт_картинки` пиши ПОЛНЫЙ промт: стиль пластилина ТРИ раза + сцена "
     "+ Negative. Пайплайн НЕ допишет watercolor/noir — не копируй Archival Noir. "
     "Не копируй voiceover_text. Без ASCII двойных кавычек в тексте промта.\n"
@@ -695,6 +703,7 @@ async def run_img_pr_xlsx(
     n_frames: int | None = None,
     project_id: int | None = None,
     uuid_map_text: str = "",
+    n_batches: int | None = None,
 ) -> XlsxRoundtripResult:
     """Шаг «Промты картинок»: GPT батчами → apply-ops (DB)."""
     from app.services import img_pr_batches as ipb
@@ -759,14 +768,22 @@ async def run_img_pr_xlsx(
         )
 
     from collections import deque
+    import asyncio
 
     from app.services.adaptive_llm_batches import next_split_level, split_in_half
+    from app.services.gpt_client import ApiGptClient
+    from app.services.output_batch_plan import pack_frames_img_pr
+    from app.services.step_cancel import raise_if_cancelled, sleep_cancellable
 
-    # Сначала один батч на все кадры. Ошибка → 2, снова → 4.
-    work: deque[tuple[list, int]] = deque([(frames, 1)])
+    # Старт: N батчей в волне, живых стримов не больше _IMG_PR_LIVE_STREAMS.
+    parts = pack_frames_img_pr(frames, n_batches=n_batches)
+    work: deque[tuple[list, int]] = deque((part, 1) for part in parts)
     logger.info(
-        "img_pr_db: frames={} adaptive 1→2→4 checkpoint_done={}",
+        "img_pr_db: frames={} start_batches={} sizes={} parallel={} checkpoint_done={}",
         len(frames),
+        len(parts),
+        [len(p) for p in parts],
+        _IMG_PR_LIVE_STREAMS,
         len(done_set),
     )
 
@@ -774,250 +791,271 @@ async def run_img_pr_xlsx(
     replies: list[str] = []
     api_batches = 0
 
-    from app.services.gpt_client import get_gpt_client
-    from app.services.step_cancel import raise_if_cancelled
-
-    gpt = get_gpt_client()
+    async def _ask_batch_ops(
+        *,
+        bi: int,
+        batch_n: int,
+        batch: list,
+        level: int,
+    ) -> tuple[list[dict], str]:
+        gpt_local = ApiGptClient()
+        await gpt_local.new_conversation()
+        batch_tag = f"b{bi:02d}"
+        db_path = _write_img_pr_db_frames_for(
+            project,
+            tmp_dir,
+            batch,
+            cards,
+            general_plan,
+            batch_tag=batch_tag,
+            include_characters=True,
+        )
+        uuid_lines = "\n".join(
+            f"кадр {fr.number} = {fr.uuid}" for fr in batch if fr.uuid
+        )
+        footer = ipb.batch_footer(
+            batch_i=bi, batch_n=batch_n, n=len(batch), plastilin=plastilin
+        )
+        chat_msg = cx.chat_message(
+            project,
+            "img_pr",
+            prompt_file_name=prompt_file.name,
+            n_frames=len(batch),
+        )
+        chat_msg = (
+            f"{chat_msg}{img_pr_hint}\n{footer}\n"
+            f"Адресация:\n{uuid_lines}\n"
+        )
+        if uuid_map_text.strip():
+            chat_msg = (
+                f"{chat_msg}\n# uuid map (справочно)\n"
+                f"{uuid_map_text.strip()[:2000]}\n"
+            )
+        attach = ipb.batch_attach_files(
+            batch_i=bi,
+            prompt_file=prompt_file,
+            db_path=db_path,
+            voiceover=vo if bi == 1 else None,
+        )
+        batch_ops: list[dict] = []
+        last_reply = ""
+        for attempt in range(1, ipb._GPT_ATTEMPTS + 1):
+            if attempt > 1:
+                await gpt_local.new_conversation()
+                attach = ipb.batch_attach_files(
+                    batch_i=bi,
+                    prompt_file=prompt_file,
+                    db_path=db_path,
+                    voiceover=None,
+                )
+                chat_msg = (
+                    f"{img_pr_hint}\n{footer}\n"
+                    f"Адресация:\n{uuid_lines}\n"
+                    "Только JSON apply-ops. "
+                    "Пустой {\"ops\":[]} запрещён — верни сколько полных ops влезло. "
+                    + (
+                        "Стиль пластилина оставь в промт_картинки.\n"
+                        if plastilin
+                        else "Полный промт: сцена + STYLE LOCK / Negative.\n"
+                    )
+                )
+                logger.info(
+                    "img_pr_db: batch {}/{} fresh session retry", bi, batch_n
+                )
+            logger.info(
+                "img_pr_db: batch {}/{} attempt {} frames={} attach={} "
+                "parallel={} bytes={}",
+                bi,
+                batch_n,
+                attempt,
+                [fr.number for fr in batch],
+                [p.name for p in attach],
+                _IMG_PR_LIVE_STREAMS,
+                db_path.stat().st_size,
+            )
+            last_reply = await gpt_local.ask_with_files(
+                chat_msg,
+                attach,
+                project_id=project_id or project.id,
+                expect_file_download=False,
+                history=None,
+                treat_txt_as_prompt=True,
+                auto_pack=False,
+            )
+            batch_ops = ipb.parse_img_pr_ops(
+                last_reply or "",
+                wrap_style=not plastilin,
+                style_id=style_id,
+            )
+            if batch_ops:
+                break
+            empty_stub = ipb.is_empty_ops_reply(last_reply or "")
+            reason = "empty_ops_stub" if empty_stub else "no_prompt_ops"
+            rej = ipb.write_rejected_reply(
+                tmp_dir,
+                batch_i=bi,
+                attempt=attempt,
+                reply=last_reply or "",
+                reason=reason,
+            )
+            delay = _EMPTY_OPS_BACKOFF_S[
+                min(attempt - 1, len(_EMPTY_OPS_BACKOFF_S) - 1)
+            ]
+            logger.warning(
+                "img_pr_db: batch {}/{} attempt {} failed reply_len={} "
+                "reason={} backoff={:.0f}s {}",
+                bi,
+                batch_n,
+                attempt,
+                len(last_reply or ""),
+                reason,
+                delay,
+                rej.name,
+            )
+            if attempt < ipb._GPT_ATTEMPTS:
+                await sleep_cancellable(
+                    delay, project_id or project.id
+                )
+        return batch_ops, last_reply or ""
 
     async def _run_batches() -> None:
         nonlocal done_uuids, all_ops, done_set, api_batches
-        await gpt.new_conversation()
-        history: list[dict[str, str]] = []
-        bi = 0
-        first_attach = True
-
+        bi_seq = 0
         while work:
             raise_if_cancelled(project.id)
-            batch, level = work.popleft()
-            if not batch:
-                continue
-            bi += 1
-            batch_n = bi + len(work)
-            batch_tag = f"b{bi:02d}"
-            db_path = _write_img_pr_db_frames_for(
-                project,
-                tmp_dir,
-                batch,
-                cards,
-                general_plan,
-                batch_tag=batch_tag,
-                include_characters=True,
+            wave = list(work)
+            work.clear()
+            batch_n = bi_seq + len(wave)
+            sem = asyncio.Semaphore(_IMG_PR_LIVE_STREAMS)
+            logger.info(
+                "img_pr_db: parallel wave size={} live={} levels={} sizes={}",
+                len(wave),
+                _IMG_PR_LIVE_STREAMS,
+                [lvl for _, lvl in wave],
+                [len(b) for b, _ in wave],
             )
-            uuid_lines = "\n".join(
-                f"кадр {fr.number} = {fr.uuid}" for fr in batch if fr.uuid
-            )
-            footer = ipb.batch_footer(
-                batch_i=bi, batch_n=batch_n, n=len(batch), plastilin=plastilin
-            )
-            if first_attach:
-                chat_msg = cx.chat_message(
-                    project,
-                    "img_pr",
-                    prompt_file_name=prompt_file.name,
-                    n_frames=len(batch),
-                )
-                chat_msg = (
-                    f"{chat_msg}{img_pr_hint}\n{footer}\n"
-                    f"Адресация:\n{uuid_lines}\n"
-                )
-                if uuid_map_text.strip():
-                    chat_msg = (
-                        f"{chat_msg}\n# uuid map (справочно)\n"
-                        f"{uuid_map_text.strip()[:2000]}\n"
-                    )
-                attach = ipb.batch_attach_files(
-                    batch_i=1,
-                    prompt_file=prompt_file,
-                    db_path=db_path,
-                    voiceover=vo,
-                )
-                treat_txt = True
-                use_history: list[dict[str, str]] | None = None
-            else:
-                chat_msg = (
-                    f"{ipb.followup_message(batch_i=bi, batch_n=batch_n, n=len(batch), plastilin=plastilin)}\n"
-                    f"Адресация:\n{uuid_lines}\n"
-                    "Файл db_frames полный — не отказывайся из‑за «обрезки». "
-                    "Верни JSON ops на ВСЕ uuid из файла.\n"
-                )
-                attach = ipb.batch_attach_files(
-                    batch_i=bi,
-                    prompt_file=prompt_file,
-                    db_path=db_path,
-                    voiceover=vo,
-                )
-                treat_txt = True
-                use_history = history or None
 
-            batch_ops: list[dict] = []
-            last_reply = ""
-            for attempt in range(1, ipb._GPT_ATTEMPTS + 1):
-                # После фейла follow-up — свежая сессия + короткий master,
-                # чтобы JSON не резался в хвосте длинной history.
-                if attempt > 1 and not first_attach:
-                    await gpt.new_conversation()
-                    history.clear()
-                    use_history = None
-                    treat_txt = True
-                    attach = ipb.batch_attach_files(
-                        batch_i=bi,
-                        prompt_file=prompt_file,
-                        db_path=db_path,
-                        voiceover=None,
+            async def _one(idx: int, batch: list, level: int):
+                async with sem:
+                    raise_if_cancelled(project.id)
+                    bi = bi_seq + idx
+                    ops, reply = await _ask_batch_ops(
+                        bi=bi, batch_n=batch_n, batch=batch, level=level
                     )
-                    chat_msg = (
-                        f"{img_pr_hint}\n{footer}\n"
-                        f"Адресация:\n{uuid_lines}\n"
-                        "Только JSON apply-ops. "
-                        + (
-                            "Стиль пластилина оставь в промт_картинки.\n"
-                            if plastilin
-                            else "STYLE LOCK не пиши.\n"
-                        )
-                    )
-                    logger.info(
-                        "img_pr_db: batch {}/{} fresh session retry",
-                        bi,
-                        batch_n,
-                    )
-                logger.info(
-                    "img_pr_db: batch {}/{} attempt {} frames={} attach={} "
-                    "history={} bytes={}",
-                    bi,
-                    batch_n,
-                    attempt,
-                    [fr.number for fr in batch],
-                    [p.name for p in attach],
-                    len(use_history or []),
-                    db_path.stat().st_size,
-                )
-                last_reply = await gpt.ask_with_files(
-                    chat_msg,
-                    attach,
-                    project_id=project_id or project.id,
-                    expect_file_download=False,
-                    history=use_history,
-                    treat_txt_as_prompt=treat_txt,
-                    auto_pack=False,
-                )
-                replies.append(last_reply or "")
-                batch_ops = ipb.parse_img_pr_ops(
-                    last_reply or "",
-                    wrap_style=not plastilin,
-                    style_id=style_id,
-                )
-                if batch_ops:
-                    break
-                rej = ipb.write_rejected_reply(
-                    tmp_dir,
-                    batch_i=bi,
-                    attempt=attempt,
-                    reply=last_reply or "",
-                    reason="no_prompt_ops",
-                )
-                logger.warning(
-                    "img_pr_db: batch {}/{} attempt {} failed reply_len={} {}",
-                    bi,
-                    batch_n,
-                    attempt,
-                    len(last_reply or ""),
-                    rej.name,
-                )
+                    return bi, batch, level, ops, reply
 
-            if not batch_ops:
-                nxt = next_split_level(level)
-                if nxt is not None and len(batch) >= 2:
-                    parts = split_in_half(batch)
-                    for half in reversed(parts):
-                        work.appendleft((half, nxt))
-                    logger.warning(
-                        "img_pr_db: no ops L{} frames={} → split {} "
-                        "(queue={})",
+            gathered = await asyncio.gather(
+                *[
+                    _one(i, batch, level)
+                    for i, (batch, level) in enumerate(wave, start=1)
+                ],
+                return_exceptions=True,
+            )
+            bi_seq += len(wave)
+            any_ok = False
+            for item, (batch, level) in zip(gathered, wave):
+                if isinstance(item, BaseException):
+                    logger.error(
+                        "img_pr_db: parallel batch L{} frames={} raised: {}",
                         level,
                         len(batch),
-                        nxt,
-                        len(work),
+                        item,
                     )
-                    continue
-                if all_ops:
-                    logger.error(
-                        "img_pr_db: batch {} L{} failed — возвращаю partial "
-                        "ops={} (чекпоинт есть, soft retry добьёт)",
-                        bi,
-                        level,
-                        len(all_ops),
+                    nxt = next_split_level(level)
+                    if nxt is not None and len(batch) >= 2:
+                        for half in split_in_half(batch):
+                            work.append((half, nxt))
+                        continue
+                    if all_ops:
+                        continue
+                    raise item
+                bi, batch, level, batch_ops, last_reply = item
+                replies.append(last_reply)
+                if not batch_ops:
+                    nxt = next_split_level(level)
+                    if nxt is not None and len(batch) >= 2:
+                        for half in split_in_half(batch):
+                            work.append((half, nxt))
+                        logger.warning(
+                            "img_pr_db: no ops L{} frames={} → split {} "
+                            "(queue={})",
+                            level,
+                            len(batch),
+                            nxt,
+                            len(work),
+                        )
+                        continue
+                    if all_ops:
+                        logger.error(
+                            "img_pr_db: batch {} L{} failed — partial ops={}",
+                            bi,
+                            level,
+                            len(all_ops),
+                        )
+                        continue
+                    raise RuntimeError(
+                        f"img_pr batch {bi} L{level}: нет apply-ops "
+                        f"(reply_len={len(last_reply)}). "
+                        f"Смотри tmp_gpt/img_pr_rejected_b{bi}_*.txt"
                     )
-                    return
-                raise RuntimeError(
-                    f"img_pr batch {bi} L{level}: нет apply-ops "
-                    f"(reply_len={len(last_reply or '')}). "
-                    f"Смотри tmp_gpt/img_pr_rejected_b{bi}_*.txt"
-                )
-
-            first_attach = False
-            api_batches += 1
-
-            # В историю — коротко, без гигантского JSON ops.
-            history.append({"role": "user", "content": chat_msg[:2000]})
-            history.append(
-                {
-                    "role": "assistant",
-                    "content": f"OK batch {bi} L{level}: {len(batch_ops)} ops.",
+                api_batches += 1
+                any_ok = True
+                expected = {
+                    (fr.uuid or "").strip()
+                    for fr in batch
+                    if (fr.uuid or "").strip()
                 }
-            )
-
-            expected = {
-                (fr.uuid or "").strip() for fr in batch if (fr.uuid or "").strip()
-            }
-            got_uuids = {
-                ipb.uuid_of_op(op) for op in batch_ops if ipb.uuid_of_op(op)
-            } & expected
-            for u in sorted(got_uuids):
-                if u and u not in done_set:
-                    done_uuids.append(u)
-                    done_set.add(u)
-            # Только ops по uuid этого батча (лишние uuid модели отбрасываем).
-            kept_ops = [
-                op for op in batch_ops if ipb.uuid_of_op(op) in got_uuids
-            ]
-            all_ops.extend(kept_ops)
+                got_uuids = {
+                    ipb.uuid_of_op(op) for op in batch_ops if ipb.uuid_of_op(op)
+                } & expected
+                for u in sorted(got_uuids):
+                    if u and u not in done_set:
+                        done_uuids.append(u)
+                        done_set.add(u)
+                kept_ops = [
+                    op for op in batch_ops if ipb.uuid_of_op(op) in got_uuids
+                ]
+                all_ops.extend(kept_ops)
+                missing_uuids = expected - got_uuids
+                logger.info(
+                    "img_pr_db: batch {} L{} ops=+{} total={} missing={} "
+                    "(checkpoint only, DB apply once at end)",
+                    bi,
+                    level,
+                    len(kept_ops),
+                    len(all_ops),
+                    len(missing_uuids),
+                )
+                if missing_uuids:
+                    missing_frames = [
+                        fr
+                        for fr in batch
+                        if (fr.uuid or "").strip() in missing_uuids
+                    ]
+                    nxt = next_split_level(level)
+                    if nxt is not None and len(missing_frames) >= 2:
+                        for half in split_in_half(missing_frames):
+                            work.append((half, nxt))
+                        logger.warning(
+                            "img_pr_db: incomplete {}/{} → split L{} (queue={})",
+                            len(got_uuids),
+                            len(expected),
+                            nxt,
+                            len(work),
+                        )
+                    else:
+                        logger.warning(
+                            "img_pr_db: still missing {} uuid L{} — stop split",
+                            len(missing_uuids),
+                            level,
+                        )
             ipb.save_checkpoint(
                 project.data_dir, done_uuids=done_uuids, ops=all_ops
             )
-            missing_uuids = expected - got_uuids
-            logger.info(
-                "img_pr_db: batch {} L{} ops=+{} total={} missing={} "
-                "(checkpoint only, DB apply once at end)",
-                bi,
-                level,
-                len(kept_ops),
-                len(all_ops),
-                len(missing_uuids),
-            )
-
-            if missing_uuids:
-                missing_frames = [
-                    fr
-                    for fr in batch
-                    if (fr.uuid or "").strip() in missing_uuids
-                ]
-                nxt = next_split_level(level)
-                if nxt is not None and len(missing_frames) >= 2:
-                    for half in reversed(split_in_half(missing_frames)):
-                        work.appendleft((half, nxt))
-                    logger.warning(
-                        "img_pr_db: incomplete {}/{} → split L{} (queue={})",
-                        len(got_uuids),
-                        len(expected),
-                        nxt,
-                        len(work),
-                    )
-                else:
-                    logger.warning(
-                        "img_pr_db: still missing {} uuid L{} — stop split",
-                        len(missing_uuids),
-                        level,
-                    )
+            if not any_ok and not work and not all_ops:
+                raise RuntimeError(
+                    "img_pr: все параллельные батчи провалились без ops"
+                )
 
     await xgf.run_under_xlsx_lock(project.id, "img_pr", _run_batches)
 

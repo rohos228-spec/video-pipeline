@@ -16,6 +16,7 @@ from app.services.gpt_api import (
     chat,
     collect_result_urls,
     download_content,
+    looks_empty_ops_stub,
     looks_truncated_llm_text,
     parse_responses_sse_lines,
     parse_retrieved_response_payload,
@@ -303,6 +304,16 @@ def test_looks_truncated_llm_text_json() -> None:
     assert looks_truncated_llm_text('{"ops":[{"frame_uuid":"a"') is True
     assert looks_truncated_llm_text('{"ops":[{"frame_uuid":"a","fields":{}}]}') is False
     assert looks_truncated_llm_text("просто текст") is False
+
+
+def test_looks_empty_ops_stub() -> None:
+    assert looks_empty_ops_stub('{"ops":[]}') is True
+    assert looks_empty_ops_stub('{"ops": []}') is True
+    assert looks_empty_ops_stub("") is False
+    assert looks_empty_ops_stub(
+        '{"ops":[{"frame_uuid":"a","fields":{"промт_картинки":"x"}}]}'
+    ) is False
+    assert looks_empty_ops_stub("просто текст") is False
 
 
 def test_stream_timeout_does_not_use_call_timeout_as_read(monkeypatch) -> None:

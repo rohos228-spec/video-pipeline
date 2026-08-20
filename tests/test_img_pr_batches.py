@@ -135,6 +135,26 @@ def test_batch_attach_includes_master_on_every_batch(tmp_path: Path) -> None:
     assert master in later
 
 
+def test_is_empty_ops_reply_detects_stub() -> None:
+    assert ipb.is_empty_ops_reply('{"ops":[]}')
+    assert ipb.is_empty_ops_reply('{"ops": []}')
+    assert ipb.is_empty_ops_reply('  {"ops":[]}\n')
+    assert not ipb.is_empty_ops_reply("")
+    assert not ipb.is_empty_ops_reply("hello")
+    assert not ipb.is_empty_ops_reply(
+        '{"ops":[{"frame_uuid":"a","fields":{"промт_картинки":"x"}}]}'
+    )
+
+
+def test_batch_footer_forbids_empty_ops() -> None:
+    text = ipb.batch_footer(batch_i=1, batch_n=3, n=10)
+    clay = ipb.batch_footer(batch_i=1, batch_n=3, n=10, plastilin=True)
+    for body in (text, clay):
+        assert "пустой" in body.lower()
+        assert '{"ops":[]}' in body
+        assert "один op на каждый uuid" not in body
+
+
 def test_checkpoint_roundtrip(tmp_path: Path) -> None:
     project_dir = tmp_path
     ipb.save_checkpoint(

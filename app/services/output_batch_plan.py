@@ -74,8 +74,10 @@ def split_into_n_batches(frames: Sequence[T], n_batches: int) -> list[list[T]]:
     return [b for b in out if b]
 
 
-def pack_frames_img_pr(frames: Sequence[T]) -> list[list[T]]:
-    n = batch_count_img_pr(len(frames))
+def pack_frames_img_pr(
+    frames: Sequence[T], *, n_batches: int | None = None
+) -> list[list[T]]:
+    n = int(n_batches) if n_batches and int(n_batches) >= 2 else batch_count_img_pr(len(frames))
     batches = split_into_n_batches(frames, n)
     logger.info(
         "output_batch_plan img_pr: frames={} chars/frame={} budget={} "
