@@ -671,10 +671,11 @@ async def _run_check_vision_batched(
             "ЗАПРЕЩЕНО: XLSX_WRITEBACK, жалобы на отсутствие TSV/xlsx, mode=fix.\n"
             "В findings для брака пиши [critical], не [error]."
         )
+        batch_node_key = f"{node_key}__b{bi}" if streams > 1 else node_key
         async with acquire_check_slot(streams):
             res = await _run_operator_api_real(
                 project_dir=project_dir,
-                node_key=node_key,
+                node_key=batch_node_key,
                 role=role,
                 output_mode=output_mode,
                 prompt=batch_prompt,

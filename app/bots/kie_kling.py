@@ -123,7 +123,7 @@ def _raise_from_kie_payload(
         code_i = int(code) if code is not None else http_status
     except (TypeError, ValueError):
         code_i = http_status
-    if code_i in (None, 200):
+    if code_i in (None, 200, 0):
         return
     raise KieKlingError(
         f"kie Kling {where}: code={code_i} {msg}"[:400],
@@ -156,7 +156,7 @@ async def _create_task(body: dict[str, Any]) -> str:
 
 async def _poll_task(task_id: str, *, timeout_s: float) -> dict[str, Any]:
     url = f"{kie_api_base_url()}{_DETAIL_PATH}"
-    deadline = asyncio.get_event_loop().time() + max(30.0, timeout_s)
+    deadline = asyncio.get_running_loop().time() + max(30.0, timeout_s)
     net_fail_streak = 0
     async with httpx.AsyncClient(timeout=60.0) as client:
         while True:
@@ -184,7 +184,7 @@ async def _poll_task(task_id: str, *, timeout_s: float) -> dict[str, Any]:
                             "kind": "network",
                         },
                     ) from e
-                if asyncio.get_event_loop().time() >= deadline:
+                if asyncio.get_running_loop().time() >= deadline:
                     raise KieKlingError(
                         f"kie Kling: таймаут ожидания task {task_id}",
                         context={
@@ -195,6 +195,22 @@ async def _poll_task(task_id: str, *, timeout_s: float) -> dict[str, Any]:
                     ) from e
                 await asyncio.sleep(_POLL_INTERVAL_S)
                 continue
+            if r.status_code in {500, 502, 503, 504}:
+                net_fail_streak += 1
+                logger.warning(
+                    "kie_kling: poll transient HTTP {} {}/8 taskId={}",
+                    r.status_code,
+                    net_fail_streak,
+                    task_id,
+                )
+                if net_fail_streak < 8:
+                    if asyncio.get_running_loop().time() >= deadline:
+                        raise KieKlingError(
+                            f"kie Kling: таймаут ожидания task {task_id}",
+                            context={"provider_code": 504, "task_id": task_id, "kind": "timeout"},
+                        )
+                    await asyncio.sleep(_POLL_INTERVAL_S * 1.5)
+                    continue
             try:
                 payload = r.json()
             except Exception:  # noqa: BLE001
@@ -227,7 +243,7 @@ async def _poll_task(task_id: str, *, timeout_s: float) -> dict[str, Any]:
                         "kind": "generation",
                     },
                 )
-            if asyncio.get_event_loop().time() >= deadline:
+            if asyncio.get_running_loop().time() >= deadline:
                 raise KieKlingError(
                     f"kie Kling: таймаут ожидания task {task_id}",
                     context={"provider_code": 504, "task_id": task_id, "kind": "timeout"},

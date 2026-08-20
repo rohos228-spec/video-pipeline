@@ -225,6 +225,8 @@ async def _poll_generation(
     deadline = asyncio.get_running_loop().time() + timeout
     last: dict[str, Any] = {}
     url = f"{_base_url()}/api/v1/generations/{gen_id}"
+    transient_5xx_streak = 0
+    max_transient_5xx = 6
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             while asyncio.get_running_loop().time() < deadline:
@@ -238,6 +240,22 @@ async def _poll_generation(
                     )
                     await asyncio.sleep(_POLL_INTERVAL_S)
                     continue
+                if r.status_code in {500, 502, 503, 504}:
+                    transient_5xx_streak += 1
+                    if transient_5xx_streak <= max_transient_5xx:
+                        logger.warning(
+                            "outsee_api.poll transient HTTP {} id={} (streak {}/{}) — retry in {}s",
+                            r.status_code,
+                            gen_id,
+                            transient_5xx_streak,
+                            max_transient_5xx,
+                            _POLL_INTERVAL_S * 1.5,
+                        )
+                        await asyncio.sleep(_POLL_INTERVAL_S * 1.5)
+                        continue
+                else:
+                    transient_5xx_streak = 0
+
                 if r.status_code >= 400:
                     _raise_api(r, where=f"generations/{gen_id}")
                 data = r.json()

@@ -414,12 +414,26 @@ async def generate_image(
 
 async def _poll_result(task_id: str, *, timeout: float = 600) -> dict[str, Any]:
     """Poll image async result (GET /v1/api/result)."""
-    deadline = asyncio.get_event_loop().time() + timeout
+    deadline = asyncio.get_running_loop().time() + timeout
     url = f"{_base_url()}/v1/api/result"
     last: dict[str, Any] = {}
+    transient_5xx_streak = 0
     async with httpx.AsyncClient(timeout=30) as client:
-        while asyncio.get_event_loop().time() < deadline:
-            r = await client.get(url, headers=_headers(), params={"id": task_id})
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                r = await client.get(url, headers=_headers(), params={"id": task_id})
+            except (httpx.HTTPError, OSError) as e:
+                logger.warning("grsai.poll network task={} err={} — retry", task_id, e)
+                await asyncio.sleep(3.0)
+                continue
+            if r.status_code in {500, 502, 503, 504}:
+                transient_5xx_streak += 1
+                if transient_5xx_streak <= 6:
+                    logger.warning("grsai.poll transient HTTP {} task={} streak={}/6", r.status_code, task_id, transient_5xx_streak)
+                    await asyncio.sleep(3.0)
+                    continue
+            else:
+                transient_5xx_streak = 0
             if r.status_code >= 400:
                 raise GrsaiError(
                     f"grsai poll HTTP {r.status_code}: {r.text[:300]}",
@@ -438,12 +452,26 @@ async def _poll_result(task_id: str, *, timeout: float = 600) -> dict[str, Any]:
 
 async def _poll_draw_result(task_id: str, *, timeout: float = 900) -> dict[str, Any]:
     """Poll video result (POST /v1/draw/result {id})."""
-    deadline = asyncio.get_event_loop().time() + timeout
+    deadline = asyncio.get_running_loop().time() + timeout
     url = f"{_base_url()}/v1/draw/result"
     last: dict[str, Any] = {}
+    transient_5xx_streak = 0
     async with httpx.AsyncClient(timeout=30) as client:
-        while asyncio.get_event_loop().time() < deadline:
-            r = await client.post(url, headers=_headers(), json={"id": task_id})
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                r = await client.post(url, headers=_headers(), json={"id": task_id})
+            except (httpx.HTTPError, OSError) as e:
+                logger.warning("grsai.draw poll network task={} err={} — retry", task_id, e)
+                await asyncio.sleep(5.0)
+                continue
+            if r.status_code in {500, 502, 503, 504}:
+                transient_5xx_streak += 1
+                if transient_5xx_streak <= 6:
+                    logger.warning("grsai.draw transient HTTP {} task={} streak={}/6", r.status_code, task_id, transient_5xx_streak)
+                    await asyncio.sleep(5.0)
+                    continue
+            else:
+                transient_5xx_streak = 0
             if r.status_code >= 400:
                 raise GrsaiError(
                     f"grsai draw/result HTTP {r.status_code}: {r.text[:300]}",
