@@ -1,8 +1,7 @@
 """Стиль проекта для img_pr (resolve / markers).
 
-После ответа модели хвост STYLE/Negative заменяется каноническим
-STYLE_HEAD + STYLE_TAIL (или knitted). Сцена остаётся как написала модель.
-Так параллельные батчи не получают лок разной длины.
+Обёртка STYLE_HEAD/TAIL отключена: в `промт_картинки` уходит текст GPT
+как есть. Хелперы `wrap_*` оставлены no-op для совместимости импортов.
 """
 
 from __future__ import annotations
@@ -227,62 +226,15 @@ def _wrap_with_block(body: str, block: str) -> str:
     return f"{block}\n\n{body}"
 
 
-def strip_model_style_tail(text: str) -> str:
-    """Сцена без модельного STYLE/Negative — их подменит канон."""
-    body = (text or "").strip()
-    if not body:
-        return ""
-    low = body.lower()
-    cut = -1
-    for mark in ("\nfinal style lock", "final style lock:", "\nnegative:"):
-        i = low.find(mark)
-        if i >= 0 and (cut < 0 or i < cut):
-            cut = i
-    if cut >= 0:
-        body = body[:cut].strip()
-    if body.lower().startswith("style:"):
-        split_at = body.find("\n\n")
-        if split_at > 0:
-            rest = body[split_at:].strip()
-            if rest:
-                body = rest
-    return body.strip()
-
-
-def _has_canonical_lock(text: str, tail: str) -> bool:
-    body = text or ""
-    needle = (tail or "").strip()[:80]
-    return bool(needle) and needle in body
-
-
 def wrap_scene_with_style(
     scene_body: str,
     *,
     style_id: str | None = None,
     style_block: str | None = None,
 ) -> str:
-    """Сцена модели + один канонический STYLE/Negative (одинаковый во всех батчах)."""
-    raw = (scene_body or "").strip()
-    if not raw:
-        return ""
-    if style_block:
-        scene = strip_model_style_tail(raw)
-        return _wrap_with_block(scene or raw, style_block)
-    sid = (style_id or "").strip().lower()
-    if sid == "knitted":
-        if _has_canonical_lock(raw, KNITTED_STYLE_TAIL):
-            return raw
-        scene = strip_model_style_tail(raw)
-        return f"{KNITTED_STYLE_HEAD}\n\n{scene or raw}\n\n{KNITTED_STYLE_TAIL}"
-    if sid == "noir":
-        if _has_canonical_lock(raw, STYLE_TAIL):
-            return raw
-        scene = strip_model_style_tail(raw)
-        return f"{STYLE_HEAD}\n\n{scene or raw}\n\n{STYLE_TAIL}"
-    if already_has_style(raw) and sid not in {"noir", "knitted"}:
-        return raw
-    _warn_no_style_once()
-    return raw
+    """No-op: стиль больше не вшиваем — возвращаем сцену как есть."""
+    _ = style_id, style_block
+    return (scene_body or "").strip()
 
 
 def wrap_ops_styles(
@@ -291,21 +243,6 @@ def wrap_ops_styles(
     style_id: str | None = None,
     style_block: str | None = None,
 ) -> list[dict]:
-    """Вшить канонический STYLE в каждый промт_картинки."""
-    out: list[dict] = []
-    for op in ops or []:
-        if not isinstance(op, dict):
-            continue
-        new = dict(op)
-        fields = new.get("fields")
-        if isinstance(fields, dict):
-            fields = dict(fields)
-            for key in _PROMPT_FIELD_KEYS:
-                val = fields.get(key)
-                if val:
-                    fields[key] = wrap_scene_with_style(
-                        str(val), style_id=style_id, style_block=style_block
-                    )
-            new["fields"] = fields
-        out.append(new)
-    return out
+    """No-op: ops без STYLE-обёртки."""
+    _ = style_id, style_block
+    return list(ops)

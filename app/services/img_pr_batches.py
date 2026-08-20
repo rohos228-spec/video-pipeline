@@ -22,9 +22,6 @@ _FRAMES_PER_BATCH = 25
 _T = TypeVar("_T")
 _CHECKPOINT_NAME = "img_pr_checkpoint.json"
 _GPT_ATTEMPTS = 3
-_IMG_PR_CONTINUE_ROUNDS = 40
-_MIN_COMPLETE_PROMPT_CHARS = 800
-_MIN_SCENE_CHARS = 400
 
 _BATCH_FOOTER = """
 # BATCH {batch_i}/{batch_n} — только эти {n} кадров из db_frames.json
@@ -32,19 +29,16 @@ _BATCH_FOOTER = """
 {{"ops":[{{"frame_uuid":"<uuid>","fields":{{"промт_картинки":"…","персонажи":"c01"}}}}]}}
 
 ЖЁСТКО:
-- один полный op на каждый uuid этого батча;
 - `персонажи` ТОЛЬКО внутри `fields`, не рядом с frame_uuid;
 - в тексте промта НЕ используй символ ASCII двойной кавычки \"; пиши «ёлочки»;
 - ровно одна закрывающая скобка на конец каждого op; не закрывай массив ops раньше времени;
-- пиши только полные ops (сцена + STYLE + Negative), без обрубков;
-- не закрывай массив ops, пока нет полного op на КАЖДЫЙ uuid батча;
-- частичный JSON (не все uuid) = провал, не успех;
+- пиши только полные ops (сцена + STYLE + Negative); если не все uuid влезли —
+  верни сколько полных влезло, остальные uuid не включай;
 - пустой {{"ops":[]}} запрещён.
 
-В `промт_картинки` пиши ПОЛНУЮ сцену на русском (Референс?/Фон/Действие/
+В `промт_картинки` пиши ПОЛНЫЙ промт: сцена на русском (Референс?/Фон/Действие/
 Свет/Акцент/Смысл/План-ракурс/Эмоция/Детали/Место) + STYLE LOCK / Final style
-lock / Negative из мастера. Пайплайн потом подставит ОДИН канонический
-STYLE/Negative во все ops — не ужимай лок сам.
+lock / Negative из мастера. Оркестратор НИЧЕГО не дописывает.
 Тело ≤ 4877 символов (режь сюжет, не STYLE/Negative).
 
 === ФОН / ПЛАН / РЕФ / ТЕКСТ (КРИТИЧНО) ===
@@ -76,11 +70,9 @@ _PLASTILIN_BATCH_FOOTER = """
 ЖЁСТКО:
 - `персонажи` ТОЛЬКО внутри `fields`, не рядом с frame_uuid;
 - в тексте промта НЕ используй символ ASCII двойной кавычки \"; пиши «ёлочки»;
-- один полный op на каждый uuid этого батча;
 - ровно одна закрывающая скобка на конец каждого op;
-- пиши только полные ops, без обрубков;
-- не закрывай массив ops, пока нет полного op на КАЖДЫЙ uuid батча;
-- частичный JSON (не все uuid) = провал, не успех;
+- пиши только полные ops; если не все uuid влезли — верни сколько полных
+  влезло, остальные uuid не включай;
 - пустой {{"ops":[]}} запрещён.
 
 В `промт_картинки` пиши ПОЛНЫЙ промт: стиль пластилина ТРИ раза + сцена + Negative.
@@ -328,6 +320,7 @@ def parse_img_pr_ops(
     style_id: str | None = None,
     style_block: str | None = None,
 ) -> list[dict]:
+    _ = wrap_style, style_id, style_block  # legacy kwargs, wrap отключён
     data = extract_apply_ops_json(reply or "")
     ops = list((data or {}).get("ops") or []) if isinstance(data, dict) else []
     clean = filter_prompt_ops(ops)
@@ -338,103 +331,7 @@ def parse_img_pr_ops(
         clean = salvaged
     elif (partial or len(clean) <= 1) and len(salvaged) > len(clean):
         clean = salvaged
-    if wrap_style:
-        from app.services.img_pr_style import wrap_ops_styles
-
-        clean = wrap_ops_styles(
-            clean, style_id=style_id, style_block=style_block
-        )
     return clean
-
-
-def prompt_text_of_op(op: dict) -> str:
-    fields = op.get("fields") if isinstance(op, dict) else None
-    if not isinstance(fields, dict):
-        fields = op if isinstance(op, dict) else {}
-    for key in _PROMPT_FIELD_KEYS:
-        text = str(fields.get(key) or "").strip()
-        if text:
-            return text
-    return ""
-
-
-def is_complete_img_pr_prompt(text: str, *, plastilin: bool = False) -> bool:
-    """True если промт не обрубок: сцена + STYLE/Negative (или пластилин)."""
-    body = (text or "").strip()
-    if len(body) < _MIN_COMPLETE_PROMPT_CHARS:
-        return False
-    if body.endswith(("\\", ",", ":")):
-        return False
-    from app.services.img_pr_style import strip_model_style_tail
-
-    scene = strip_model_style_tail(body)
-    if len(scene) < _MIN_SCENE_CHARS:
-        return False
-    low = body.lower()
-    if plastilin:
-        return any(
-            mark in low
-            for mark in ("plasticine", "claymation", "clay", "пластилин")
-        )
-    has_style = "final style lock" in low or "style:" in low
-    has_neg = "negative:" in low or "\nnegative" in low
-    return has_style and has_neg
-
-
-def is_complete_img_pr_op(op: dict, *, plastilin: bool = False) -> bool:
-    return is_complete_img_pr_prompt(prompt_text_of_op(op), plastilin=plastilin)
-
-
-def keep_complete_ops(
-    ops: Sequence[Any],
-    *,
-    expected: set[str] | None = None,
-    plastilin: bool = False,
-) -> tuple[list[dict], list[str]]:
-    """Оставить только полные ops. Вернуть (complete, incomplete_or_missing uuids)."""
-    complete: list[dict] = []
-    seen: set[str] = set()
-    for op in ops or []:
-        if not isinstance(op, dict):
-            continue
-        uid = uuid_of_op(op)
-        if not uid or uid in seen:
-            continue
-        if expected is not None and uid not in expected:
-            continue
-        if not is_complete_img_pr_op(op, plastilin=plastilin):
-            continue
-        complete.append(op)
-        seen.add(uid)
-    missing = (
-        [u for u in expected if u not in seen]
-        if expected is not None
-        else []
-    )
-    return complete, missing
-
-
-def retry_full_batch_message(
-    *,
-    uuid_lines: str,
-    got: int,
-    total: int,
-    plastilin: bool = False,
-) -> str:
-    style = (
-        "Стиль пластилина оставь в промт_картинки."
-        if plastilin
-        else "Полный промт: сцена + STYLE LOCK / Final style lock / Negative."
-    )
-    return (
-        f"# FAIL — нужен ОДИН JSON на все {total} uuid этого батча. "
-        f"Прошлый ответ закрыл только {got}/{total}. Это провал.\n"
-        "Перепиши целиком: полный op на каждый uuid. "
-        "Не закрывай массив ops до последнего кадра. "
-        "Частичный JSON снова = провал.\n"
-        f"{style}\n\n"
-        f"Адресация:\n{uuid_lines}\n"
-    )
 
 
 def batch_footer(*, batch_i: int, batch_n: int, n: int, plastilin: bool = False) -> str:

@@ -1,41 +1,31 @@
-"""img_pr: канонический STYLE одинаковый во всех батчах."""
+"""img_pr: STYLE wrap отключён — сцена уходит как есть."""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 
-from app.services.img_pr_style import (
-    STYLE_TAIL,
-    wrap_ops_styles,
-    wrap_scene_with_style,
-)
+from app.services.img_pr_style import wrap_ops_styles, wrap_scene_with_style
 
 SCENE = "Background: metro car. Action: reading."
 
 
-def test_wrap_pins_canonical_noir() -> None:
-    short = SCENE + "\nFinal style lock: unified poster, no photorealism.\nNegative: 3D."
-    wrapped = wrap_scene_with_style(short, style_id="noir")
-    assert SCENE in wrapped
-    assert "unified poster, no photorealism" not in wrapped
-    assert STYLE_TAIL in wrapped
-    again = wrap_scene_with_style(wrapped, style_id="noir")
-    assert again == wrapped
+def test_wrap_is_noop_regardless_of_style_id() -> None:
+    assert wrap_scene_with_style(SCENE) == SCENE
+    assert wrap_scene_with_style(SCENE, style_id="knitted") == SCENE
+    assert wrap_scene_with_style(SCENE, style_id="noir") == SCENE
+    assert (
+        wrap_scene_with_style(
+            SCENE, style_block="STYLE: custom.\n\nFinal style lock: custom."
+        )
+        == SCENE
+    )
+    assert "Archival Noir" not in wrap_scene_with_style(SCENE, style_id="noir")
 
 
-def test_wrap_ops_styles_pins_every_op() -> None:
-    ops = [
-        {
-            "frame_uuid": "a",
-            "fields": {
-                "промт_картинки": SCENE + "\nFinal style lock: short.\nNegative: x."
-            },
-        }
-    ]
-    out = wrap_ops_styles(ops, style_id="noir")
-    body = out[0]["fields"]["промт_картинки"]
-    assert SCENE in body
-    assert STYLE_TAIL in body
+def test_wrap_ops_styles_is_noop() -> None:
+    ops = [{"frame_uuid": "a", "fields": {"промт_картинки": SCENE}}]
+    out = wrap_ops_styles(ops, style_id="knitted")
+    assert out[0]["fields"]["промт_картинки"] == SCENE
 
 
 def test_resolve_project_img_style_from_meta() -> None:
