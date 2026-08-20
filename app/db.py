@@ -44,12 +44,44 @@ event.listens_for(engine.sync_engine, "connect")(_configure_sqlite_connection)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 
+async def commit_with_retry(
+    session: AsyncSession, *, max_retries: int = 5, base_delay: float = 0.2
+) -> None:
+    """Commit with retry on sqlite3.OperationalError: database is locked / busy."""
+    import asyncio
+    from loguru import logger
+    from sqlalchemy.exc import OperationalError
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            await session.commit()
+            return
+        except OperationalError as e:
+            err_msg = str(e).lower()
+            if "locked" in err_msg or "busy" in err_msg:
+                if attempt < max_retries:
+                    delay = base_delay * (1.5 ** (attempt - 1))
+                    logger.warning(
+                        "db: database is locked on commit (attempt {}/{}) — retry in {:.2f}s",
+                        attempt,
+                        max_retries,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+            await session.rollback()
+            raise
+        except Exception:
+            await session.rollback()
+            raise
+
+
 @asynccontextmanager
 async def session_scope() -> AsyncIterator[AsyncSession]:
     async with SessionLocal() as session:
         try:
             yield session
-            await session.commit()
+            await commit_with_retry(session)
         except Exception:
             await session.rollback()
             raise

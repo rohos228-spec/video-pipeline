@@ -26,6 +26,7 @@ from app.services.project_state import recompute_status
 from app.services.project_steps import list_step_codes, start_step
 from app.services.run_sync import ensure_run_for_project, sync_run_for_project, _get_default_workflow_id
 from app.storage import ProjectSheet
+from app.db import commit_with_retry
 from app.web.deps import get_session
 from app.web.project_dto import project_to_detail, project_to_summary
 from app.web.schemas import CreateProjectRequest, ProjectDetail, ProjectSummary
@@ -304,6 +305,20 @@ async def patch_project(
         clamp_image_resolution_id,
     )
 
+    # Нормализация camelCase алиасов из React Flow канваса / фронтенда
+    if "imageResolution" in payload and "image_resolution" not in payload:
+        payload["image_resolution"] = payload.pop("imageResolution")
+    if "aspectRatio" in payload and "aspect_ratio" not in payload:
+        payload["aspect_ratio"] = payload.pop("aspectRatio")
+    if "videoResolution" in payload and "video_resolution" not in payload:
+        payload["video_resolution"] = payload.pop("videoResolution")
+    if "imageGenerator" in payload and "image_generator" not in payload:
+        payload["image_generator"] = payload.pop("imageGenerator")
+    if "videoGenerator" in payload and "video_generator" not in payload:
+        payload["video_generator"] = payload.pop("videoGenerator")
+    if "autoMode" in payload and "auto_mode" not in payload:
+        payload["auto_mode"] = payload.pop("autoMode")
+
     img_gid = payload.get("image_generator")
     if "image_generator" in payload and img_gid and img_gid not in IMAGE_GENERATORS_BY_ID:
         raise HTTPException(status_code=400, detail=f"unknown image_generator: {img_gid}")
@@ -401,7 +416,7 @@ async def patch_project(
             p.prompt_overrides if isinstance(p.prompt_overrides, dict) else {}
         )
     p.updated_at = datetime.utcnow()
-    await session.commit()
+    await commit_with_retry(session)
     await session.refresh(p)
     await publish_project_event(project_id, event_type="project_updated")
     return p
