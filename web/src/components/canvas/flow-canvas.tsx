@@ -48,7 +48,7 @@ import type {
   WorkflowNode,
   WorkflowRunDetail,
 } from "@/lib/types";
-import { getNodeSpec, NODE_CATALOG } from "@/lib/node-catalog";
+import { getNodeSpec } from "@/lib/node-catalog";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { formatNodeKeyLabel, formatRunStatus, formatStepCode } from "@/lib/format-labels";
 import { buildExcelLaneBindings } from "@/lib/excel-lane-bindings";
@@ -67,6 +67,8 @@ import {
 } from "@/lib/canvas-clipboard";
 import { excelGptSlotIndex } from "@/lib/excel-gpt-config";
 import { PipelineNode, type PipelineNodeData } from "./pipeline-node";
+import { NodePalette } from "./node-palette";
+import { GroupFrames } from "./group-frames";
 import {
   assignExcelGptSlotIndices,
   migrateWorkflowNodes,
@@ -77,6 +79,7 @@ import {
   readCanvasGraph,
 } from "@/lib/canvas-graph-storage";
 import { mergeGraphNodesWithRuntime } from "@/lib/canvas-node-merge";
+import { defaultModelIdForNodeType } from "@/lib/node-model-catalog";
 import { EdgeKindControls } from "./edge-kind-controls";
 import { SoftThreadEdge } from "./soft-thread-edge";
 import { edgeKindLabel } from "@/lib/gpt-operator";
@@ -200,8 +203,19 @@ export function FlowCanvas({
     // Не рисуем factory-layout, пока project.meta ещё грузится — иначе
     // позиции залипают и потом перезаписывают canvas_graph при autosave.
     if (projectId != null && !project.isFetched) return null;
+    // Пустой canvas_graph у дочерних — брать snapshot WorkflowRun, не дефолтный
+    // шаблон на 16 нод (иначе пропадают excel_gpt / storage).
+    const runNodes = run.data?.nodes_snapshot;
+    const runEdges = run.data?.edges_snapshot;
+    if (Array.isArray(runNodes) && runNodes.length > 0) {
+      return {
+        ...workflow.data,
+        nodes: runNodes,
+        edges: Array.isArray(runEdges) ? runEdges : [],
+      };
+    }
     return workflow.data;
-  }, [workflow.data, canvasGraph, projectId, project.isFetched]);
+  }, [workflow.data, canvasGraph, projectId, project.isFetched, run.data]);
 
   const baseNodes = useMemo(() => {
     if (!graphSource) return [];
@@ -301,17 +315,19 @@ export function FlowCanvas({
     });
   }, [project.data?.meta, nodes.length, setNodes]);
 
-  // Статусы run — только NodeRun (SSoT). Project.status не вмешивается.
+  // Статусы run — NodeRun + лёгкий sync Project для линейных media
+  // (не рисовать «прервано», пока Project.generating_* того же шага).
   useEffect(() => {
     if (nodes.length === 0) return;
     // Не сбрасываем в pending при кратковременном отсутствии run.data (refetch/invalidate).
     if (!run.data) return;
+    const projectStatus = project.data?.status;
     const nodeRunByKey = new Map(run.data.node_runs.map((nr) => [nr.node_key, nr]));
     setNodes((prev) =>
       prev.map((n) => {
         const nr = nodeRunByKey.get(n.id);
         if (!nr) {
-          const status = inferNodeStatusFromProject(n.data.type);
+          const status = inferNodeStatusFromProject(n.data.type, projectStatus);
           return {
             ...n,
             data: {
@@ -326,6 +342,7 @@ export function FlowCanvas({
         const status = reconcileNodeRunStatus(
           n.data.type,
           nr.status as PipelineNodeData["status"],
+          projectStatus,
         );
         const progress = status === "running" ? (nr.progress ?? 0) : 0;
         const progressText = status === "running" ? (nr.progress_text ?? null) : null;
@@ -342,7 +359,7 @@ export function FlowCanvas({
         };
       }),
     );
-  }, [run.data, setNodes, nodes.length, projectId]);
+  }, [run.data, project.data?.status, setNodes, nodes.length, projectId]);
 
   // Выделение на канвасе ← selectedNodeKey (кнопка V без клика по телу ноды).
   useEffect(() => {
@@ -375,6 +392,7 @@ export function FlowCanvas({
           const to = reconcileNodeRunStatus(
             n.data.type,
             e.to as PipelineNodeData["status"],
+            project.data?.status,
           );
           return {
             ...n,
@@ -595,10 +613,19 @@ export function FlowCanvas({
           };
         }),
       );
+      if (
+        detail.patch.modelId != null ||
+        detail.patch.modelChannel != null ||
+        detail.patch.imageResolution != null ||
+        detail.patch.imageQuality != null ||
+        detail.patch.aspectRatio != null
+      ) {
+        scheduleSaveWorkflow();
+      }
     };
     window.addEventListener("canvas-patch-node-data", onPatch);
     return () => window.removeEventListener("canvas-patch-node-data", onPatch);
-  }, [setNodes]);
+  }, [setNodes, scheduleSaveWorkflow]);
 
   useEffect(() => {
     const onDetach = (ev: Event) => {
@@ -769,6 +796,11 @@ export function FlowCanvas({
           workMode:
             (srcData.workMode as PipelineNodeData["workMode"]) ??
             (n.data?.workMode as PipelineNodeData["workMode"]),
+          modelId:
+            (srcData.modelId as string | undefined) ??
+            (n.data?.modelId as string | undefined) ??
+            defaultModelIdForNodeType(n.type),
+          modelChannel: "stable",
           status: "pending",
           progress: 0,
           progressText: null,
@@ -867,8 +899,11 @@ export function FlowCanvas({
       if (!workflow.data) return;
       const id = `n_${type}_${Date.now()}`;
       const spec = getNodeSpec(type);
+      // scene-агенты (sdAgent) слоты enrich не занимают — не считаем их.
       const excelCount = nodes.filter(
-        (n) => (n.data as PipelineNodeData).type === "excel_gpt",
+        (n) =>
+          (n.data as PipelineNodeData).type === "excel_gpt" &&
+          !(n.data as PipelineNodeData).sdAgent,
       ).length;
 
       let position = { x: 120, y: 200 };
@@ -895,6 +930,8 @@ export function FlowCanvas({
           ...(type === "excel_gpt"
             ? { slotIndex: Math.min(excelCount + 1, 5) }
             : {}),
+          modelId: defaultModelIdForNodeType(type),
+          modelChannel: "stable",
           status: "pending",
           progress: 0,
           progressText: null,
@@ -1029,6 +1066,12 @@ export function FlowCanvas({
             ignoreSelectionChangeRef.current -= 1;
             return;
           }
+          // Мультивыделение (marquee правой кнопкой): не сводить к одной ноде —
+          // onSelectNode(first) переключил бы selectedNodeKey, а эффект синка
+          // выделения стёр бы остальные. Инспектор keeps последнюю одиночную.
+          if (sel.nodes.length > 1) {
+            return;
+          }
           const first = sel.nodes[0];
           if (first) {
             onSelectNode((first.data as PipelineNodeData).nodeKey);
@@ -1049,6 +1092,7 @@ export function FlowCanvas({
           variant={BackgroundVariant.Dots}
         />
         {onCanvasZoom ? <ViewportZoomReporter onZoom={onCanvasZoom} /> : null}
+        <GroupFrames />
         <EdgeKindControls edges={edges} onEdgesLocal={setEdges} />
         <Controls position="bottom-right" showInteractive={false} />
         <MiniMap
@@ -1074,9 +1118,11 @@ export function FlowCanvas({
       </div>
       <WorkflowToolbar
         workflowId={workflow.data?.id}
+        projectId={projectId}
         onSave={persistWorkflow}
         saving={saving}
         onAddNode={addNode}
+        getSelectedNodeIds={() => selectedNodesRef.current.map((n) => n.id)}
         onCopy={copySelectedNodes}
         onPaste={pasteFromClipboard}
         canPaste={hasClipboard}
@@ -1096,6 +1142,8 @@ export function FlowCanvas({
               data: {
                 nodeKey: id,
                 type: "excel_feed",
+                modelId: defaultModelIdForNodeType("excel_feed"),
+                modelChannel: "stable",
                 status: "pending",
                 progress: 0,
                 progressText: null,
@@ -1187,9 +1235,11 @@ export function FlowCanvas({
 
 function WorkflowToolbar({
   workflowId,
+  projectId,
   onSave,
   saving,
   onAddNode,
+  getSelectedNodeIds,
   onCopy,
   onPaste,
   canPaste,
@@ -1199,9 +1249,11 @@ function WorkflowToolbar({
   onAddExcelFeed,
 }: {
   workflowId?: number;
+  projectId?: number | null;
   onSave: () => void;
   saving: boolean;
   onAddNode: (type: string) => void;
+  getSelectedNodeIds: () => string[];
   onCopy: () => void;
   onPaste: () => void;
   canPaste: boolean;
@@ -1210,9 +1262,6 @@ function WorkflowToolbar({
   onDuplicateBelow: () => void;
   onAddExcelFeed: () => void;
 }) {
-  const addable = Object.keys(NODE_CATALOG).filter(
-    (t) => !t.startsWith("hitl_") && t !== "excel_feed",
-  );
   const qc = useQueryClient();
 
   const duplicateWf = async () => {
@@ -1229,23 +1278,11 @@ function WorkflowToolbar({
   return (
     <div className="pointer-events-none absolute left-4 top-4 z-10 flex max-w-[calc(100%-2rem)] flex-wrap gap-2">
       <div className="pointer-events-auto flex flex-wrap items-center gap-1 rounded-lg border border-border bg-card/80 p-1 backdrop-blur-sm">
-        <select
-          className="studio-select h-8 max-w-[140px] rounded-md border border-input bg-card px-2 text-xs"
-          defaultValue=""
-          onChange={(e) => {
-            if (e.target.value) {
-              onAddNode(e.target.value);
-              e.target.value = "";
-            }
-          }}
-        >
-          <option value="">+ Нода</option>
-          {addable.map((t) => (
-            <option key={t} value={t}>
-              {getNodeSpec(t).label}
-            </option>
-          ))}
-        </select>
+        <NodePalette
+          projectId={projectId ?? null}
+          onAddNode={onAddNode}
+          getSelectedNodeIds={getSelectedNodeIds}
+        />
         <Button size="sm" variant="ghost" className="h-8 gap-1 text-xs" onClick={onSave} disabled={saving}>
           {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
           Сохранить граф
@@ -1676,10 +1713,31 @@ function workflowToReactFlowNodes(
         label: (typeof data.label === "string" && data.label.trim()) || spec.label,
         description: (data.description as string | undefined) ?? spec.description,
         slotIndex: data.slotIndex as number | undefined,
+        slotOverflow: data.slotOverflow === true ? true : undefined,
         inputSource: data.inputSource as PipelineNodeData["inputSource"],
         uploadedFileName: data.uploadedFileName as string | undefined,
         workMode: data.workMode as PipelineNodeData["workMode"],
         role: data.role as string | undefined,
+        agent: data.agent as string | undefined,
+        sdAgent: (data.sd_agent ?? data.agent) as string | undefined,
+        groupId: data.groupId as string | undefined,
+        groupTitle: data.groupTitle as string | undefined,
+        modelId: (typeof data.modelId === "string" && data.modelId.trim())
+          ? data.modelId.trim()
+          : defaultModelIdForNodeType(n.type),
+        modelChannel: "stable",
+        imageResolution:
+          typeof data.imageResolution === "string" && data.imageResolution.trim()
+            ? data.imageResolution.trim()
+            : undefined,
+        imageQuality:
+          typeof data.imageQuality === "string" && data.imageQuality.trim()
+            ? data.imageQuality.trim()
+            : undefined,
+        aspectRatio:
+          typeof data.aspectRatio === "string" && data.aspectRatio.trim()
+            ? data.aspectRatio.trim()
+            : undefined,
         status: (nr?.status ?? "pending") as PipelineNodeData["status"],
         progress: nr?.progress ?? 0,
         progressText: nr?.progress_text ?? null,

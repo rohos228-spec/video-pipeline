@@ -453,6 +453,12 @@ async def ensure_r15_from_asr(
         raise RuntimeError(
             f"[#{project.id}] не удалось записать R{ts_row} в project.xlsx — закрой Excel"
         )
+    # Метки длительности в строку «Время на кадр» (R50) — из того же ASR-разбора.
+    from app.storage.plan_sheet_v8 import write_plan_durations
+
+    write_plan_durations(
+        project, [(t.frame_number, t.duration) for t in timings]
+    )
 
     logger.info(
         "[#{}] R{} автозаполнена из ASR: {} кадров → {}",
@@ -507,6 +513,12 @@ async def auto_sync_r15_from_voice(
         for t in timings
     ]
     written = write_plan_timestamps(project, ranges)
+    if written > 0:
+        from app.storage.plan_sheet_v8 import write_plan_durations
+
+        write_plan_durations(
+            project, [(t.frame_number, t.duration) for t in timings]
+        )
 
     if written > 0:
         ts_cells, _ts_row = read_plan_timestamps_cells(project, frame_numbers)
@@ -727,6 +739,11 @@ def write_asr_timestamps_to_r15(
     ]
     written = write_plan_timestamps(project, ranges)
     if written:
+        from app.storage.plan_sheet_v8 import write_plan_durations
+
+        write_plan_durations(
+            project, [(t.frame_number, t.duration) for t in timings]
+        )
         logger.info(
             "[#{}] plan R15: записано {} таймкодов ASR → {}",
             project.id,

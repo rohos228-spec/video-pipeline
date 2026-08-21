@@ -39,7 +39,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         session,
         project,
         [{"target": "project", "fields": {"общий_план": plan_text}}],
-        export_xlsx=True,
+        export_xlsx=False,
     )
 
     try:

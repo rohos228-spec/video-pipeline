@@ -2,13 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, RefreshCw, Upload } from "lucide-react";
+import { Eye, Loader2, RefreshCw, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import type { ExcelGptNodeConfig } from "@/lib/excel-gpt-config";
 import {
@@ -93,6 +94,46 @@ export function ExcelGptSettingsPanel({
   ]);
 
   const agentFileRef = useRef<HTMLInputElement>(null);
+  // Что смотрим в диалоге: финальный промт проверки / файл агента / промт источника.
+  const [viewTarget, setViewTarget] = useState<
+    { kind: "prompt" } | { kind: "agent" } | { kind: "source"; key: string } | null
+  >(null);
+  const agentFileView = useQuery({
+    queryKey: ["check-agent-file", projectId, nodeKey],
+    queryFn: () => api.getCheckAgentFile(projectId, nodeKey),
+    enabled: viewTarget?.kind === "agent",
+    staleTime: 10_000,
+  });
+  const viewSourceKey = viewTarget?.kind === "source" ? viewTarget.key : null;
+  const sourcePromptView = useQuery({
+    queryKey: ["check-source-prompt", projectId, nodeKey, viewSourceKey],
+    queryFn: () => api.getGptOperatorSourcePrompt(projectId, nodeKey, viewSourceKey!),
+    enabled: viewSourceKey !== null,
+    staleTime: 10_000,
+  });
+  const checkPromptPreview = useQuery({
+    queryKey: ["check-prompt-preview", projectId, nodeKey],
+    queryFn: () => api.getCheckPromptPreview(projectId, nodeKey),
+    enabled: viewTarget?.kind === "prompt",
+    staleTime: 10_000,
+  });
+  const activeView =
+    viewTarget?.kind === "prompt"
+      ? checkPromptPreview
+      : viewTarget?.kind === "agent"
+        ? agentFileView
+        : sourcePromptView;
+  const viewOpen = viewTarget !== null;
+  const viewLoading = activeView.isLoading;
+  const viewError = activeView.isError ? activeView.error : null;
+  const viewText = activeView.data?.text;
+  const viewChars = activeView.data?.chars;
+  const viewTitle =
+    viewTarget?.kind === "prompt"
+      ? "Промт проверки — финальный, как уйдёт в GPT"
+      : viewTarget?.kind === "source"
+        ? `${viewTarget.key}${sourcePromptView.data?.variant ? ` · ${sourcePromptView.data.variant}` : ""}`
+        : agentFileView.data?.fileName || checkAgentFileName || "Агент проверки";
   const uploadAgent = useMutation({
     mutationFn: (file: File) => api.uploadCheckAgentFile(projectId, nodeKey, file),
     onSuccess: (res) => {
@@ -187,6 +228,20 @@ export function ExcelGptSettingsPanel({
           ) : null}
         </div>
         {checkMode ? (
+          <Button
+            type="button"
+            size="sm"
+            variant={viewTarget?.kind === "prompt" ? "outline" : "default"}
+            className="mt-3 w-fit gap-1.5"
+            onClick={() =>
+              setViewTarget(viewTarget?.kind === "prompt" ? null : { kind: "prompt" })
+            }
+          >
+            <Eye className="h-3.5 w-3.5" />
+            Просмотр промта проверки
+          </Button>
+        ) : null}
+        {checkMode ? (
           <div className="mt-3 space-y-2">
             <p className="text-[11px] font-medium text-muted-foreground">
               Откуда критерии отчёта
@@ -267,6 +322,21 @@ export function ExcelGptSettingsPanel({
                     )}
                     Загрузить .txt / .md
                   </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5"
+                    title="Просмотр текста агента (файл или builtin)"
+                    onClick={() =>
+                      setViewTarget(
+                        viewTarget?.kind === "agent" ? null : { kind: "agent" },
+                      )
+                    }
+                  >
+                    <Eye className="h-3.5 w-3.5" />
+                    Просмотр
+                  </Button>
                   {checkAgentFileName ? (
                     <Button
                       type="button"
@@ -290,12 +360,29 @@ export function ExcelGptSettingsPanel({
                   sourcePrompts.map((s) => (
                     <li
                       key={String(s.nodeKey)}
-                      className={s.ok ? "text-emerald-200/90" : "text-destructive"}
+                      className={cn(
+                        "flex items-center gap-1.5",
+                        s.ok ? "text-emerald-200/90" : "text-destructive",
+                      )}
                     >
-                      {s.ok ? "✓" : "✗"} {s.nodeKey}
-                      {s.variant ? ` · ${s.variant}` : ""}
-                      {s.chars ? ` · ${s.chars} симв` : ""}
-                      {s.error ? ` · ${s.error}` : ""}
+                      <span className="min-w-0 flex-1 truncate">
+                        {s.ok ? "✓" : "✗"} {s.nodeKey}
+                        {s.variant ? ` · ${s.variant}` : ""}
+                        {s.chars ? ` · ${s.chars} симв` : ""}
+                        {s.error ? ` · ${s.error}` : ""}
+                      </span>
+                      {s.ok ? (
+                        <button
+                          type="button"
+                          title="Просмотр промта источника"
+                          className="shrink-0 rounded p-0.5 text-muted-foreground transition hover:bg-white/10 hover:text-foreground"
+                          onClick={() =>
+                            setViewTarget({ kind: "source", key: String(s.nodeKey) })
+                          }
+                        >
+                          <Eye className="h-3.5 w-3.5" />
+                        </button>
+                      ) : null}
                     </li>
                   ))
                 ) : (
@@ -504,6 +591,43 @@ export function ExcelGptSettingsPanel({
           ) : null}
         </ul>
       </section>
+
+      {viewOpen ? (
+        <section className="overflow-hidden rounded-xl border border-white/10 bg-black/30">
+          <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-1.5">
+            <p className="min-w-0 truncate font-mono text-[11px] text-foreground">
+              {viewTitle}
+              {viewChars ? (
+                <span className="text-muted-foreground"> · {viewChars} симв.</span>
+              ) : null}
+            </p>
+            <button
+              type="button"
+              title="Скрыть"
+              className="shrink-0 rounded p-0.5 text-muted-foreground transition hover:bg-white/10 hover:text-foreground"
+              onClick={() => setViewTarget(null)}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <ScrollArea className="max-h-[55vh]">
+            {viewLoading ? (
+              <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Читаю файл…
+              </div>
+            ) : viewError ? (
+              <p className="p-4 text-xs text-destructive">
+                {errorMessageFromUnknown(viewError)}
+              </p>
+            ) : (
+              <pre className="whitespace-pre-wrap p-4 font-mono text-[11px] leading-snug text-foreground/90">
+                {viewText || ""}
+              </pre>
+            )}
+          </ScrollArea>
+        </section>
+      ) : null}
     </div>
   );
 }

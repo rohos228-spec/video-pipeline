@@ -2,21 +2,29 @@
 
 from __future__ import annotations
 
-LAYOUT_VERSION = 8
+LAYOUT_VERSION = 11
+
+# Состав веера scene_design — SSoT для группы «scene_design_fanout»
+# (app/services/node_groups.py). В ДЕФОЛТНЫЙ шаблон веер не входит:
+# добавляется точечно кнопкой «+ Группа» на канвасе.
+SD_FANOUT: list[tuple[str, str, str]] = [
+    ("characters", "GPT: персонажи", "Реестр персонажей и вариации"),
+    ("world", "GPT: мир", "Локации и зоны из locations_seed"),
+    ("camera", "GPT: камера", "Планы/ракурсы/движение (каталог наборов)"),
+    ("action", "GPT: действие", "Драматургия, границы сцен, цепи действий"),
+]
 
 
 def default_graph() -> tuple[list[dict], list[dict]]:
-    """Возвращает (nodes, edges) дефолтного линейного пайплайна."""
+    """Возвращает (nodes, edges) дефолтного линейного пайплайна.
+
+    Без scene_design/веера: связка агентов — opt-in через «+ Группа».
+    """
     steps = [
         ("topic", "Тема", "Тема ролика"),
         ("plan", "Сценарий", "Сценарий ролика"),
         ("script", "Закадровый текст", "Закадровый текст по кадрам"),
         ("split", "Разбивка", "Разбивка на кадры"),
-        (
-            "scene_design",
-            "Сцены (агенты)",
-            "Мульти-агентный дизайн сцен (SCENE_DESIGN_ENABLED)",
-        ),
         ("excel_gpt", "Работа с GPT", "xlsx round-trip перед персонажами"),
         ("hero", "Персонажи", "Генерация референсов героев"),
         ("items", "Предметы", "Генерация референсов предметов"),
@@ -27,6 +35,8 @@ def default_graph() -> tuple[list[dict], list[dict]]:
         ("videos", "Видео", "Генерация 8-сек клипов"),
         ("audio", "Озвучка", "ElevenLabs TTS + Whisper"),
         ("music", "Музыка", "GPT + Suno (Outsee)"),
+        ("sfx_plan", "План звуков", "GPT: метки звуков сопровождения по таймлайну"),
+        ("sfx_gen", "Звуки", "Создание SFX (11Labs API / локальный синтез)"),
         ("assemble", "Сборка", "FFmpeg финальный mp4"),
         ("publish", "Публикация", "Публикация на 5 площадок"),
     ]

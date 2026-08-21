@@ -314,6 +314,82 @@ def test_start_hero_loop_via_vision(
     assert p.meta["vision_check_return_node"] == check_key
 
 
+def test_pass_gate_not_overridden_by_warn_as_error_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Регресс #58: gate=pass + findings [error] из warn — без hero regen."""
+    from app.services.check_analysis import (
+        extract_critical_hero_regen_ids,
+        has_critical_vision_issues,
+        resolve_vision_check_gate,
+    )
+
+    bad_report = """# ОТЧЁТ ПРОВЕРКИ
+verdict: pass
+
+## summary
+ок, предупреждения без регена
+
+## findings
+- [ok] c01.png: ок
+- [error] c06.png: лёгкое отклонение причёски
+- [error] c07.png: куртка чуть иначе
+- [ok] c08.png: ок
+
+## actions
+Критических замечаний, требующих регенерации, нет.
+"""
+    assert has_critical_vision_issues(bad_report) is False
+    assert resolve_vision_check_gate(bad_report) == "pass"
+    assert extract_critical_hero_regen_ids(bad_report) == []
+
+    p = _project(tmp_path, monkeypatch, "vh-pass")
+    check_key = "n_excel_gpt_1"
+    p.meta = {
+        "excel_gpt_nodes": {
+            check_key: {"checkMode": True, "checkFix": False, "slotIndex": 1},
+        },
+        "gpt_operator_results": {
+            check_key: {
+                "gateStatus": "pass",
+                "analysis": {"schema": "vp.check.v1", "verdict": "pass"},
+            }
+        },
+        "canvas_graph": {
+            "nodes": [
+                {"id": "n_hero", "type": "hero"},
+                {
+                    "id": check_key,
+                    "type": "excel_gpt",
+                    "data": {"slotIndex": 1, "checkMode": True},
+                },
+            ],
+            "edges": [
+                {
+                    "source": "n_hero",
+                    "target": check_key,
+                    "data": {"kind": "after"},
+                }
+            ],
+        },
+    }
+    out = upload_dir(p, check_key)
+    out.mkdir(parents=True, exist_ok=True)
+    # Как старый render_check_report_txt: warn схлопнут в [error]
+    (out / "check_report.txt").write_text(bad_report, encoding="utf-8")
+
+    class _Sess:
+        async def flush(self):
+            return None
+
+    started = asyncio.run(
+        vcl.maybe_start_vision_check_loop_after_check(_Sess(), p, check_key)
+    )
+    assert started is False
+    assert p.status is ProjectStatus.enrich_1_ready
+    assert not p.meta.get("hero_check_regen_ids")
+
+
 def test_start_scenes_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

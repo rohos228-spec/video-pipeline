@@ -1,8 +1,8 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, RefreshCw, Upload } from "lucide-react";
+import { Eye, Loader2, RefreshCw, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
@@ -17,6 +17,7 @@ import {
   type OperatorRole,
 } from "@/lib/gpt-operator";
 import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 
 function syncNodeLabelOnCanvas(nodeKey: string, label: string, role: string) {
@@ -45,6 +46,7 @@ export function GptOperatorMenuPanel({
 }) {
   const qc = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
+  const [agentViewOpen, setAgentViewOpen] = useState(false);
 
   const resolve = useQuery({
     queryKey: ["gpt-operator-resolve", projectId, nodeKey],
@@ -156,6 +158,12 @@ export function GptOperatorMenuPanel({
   });
 
   const agentFileRef = useRef<HTMLInputElement>(null);
+  const agentFileView = useQuery({
+    queryKey: ["check-agent-file", projectId, nodeKey],
+    queryFn: () => api.getCheckAgentFile(projectId, nodeKey),
+    enabled: agentViewOpen,
+    staleTime: 10_000,
+  });
 
   const data = resolve.data;
   const role = (data?.role || "assist") as OperatorRole;
@@ -188,6 +196,7 @@ export function GptOperatorMenuPanel({
   };
 
   return (
+    <>
     <div className="mt-2 space-y-2 border-t border-white/10 pt-2">
       <div className="flex items-center justify-between gap-2">
         <span className="text-[9px] font-semibold uppercase tracking-widest text-sky-300/90">
@@ -378,6 +387,20 @@ export function GptOperatorMenuPanel({
                       <Upload className="h-3 w-3" />
                     )}
                     Загрузить .txt
+                  </button>
+                  <button
+                    type="button"
+                    title="Просмотр текста агента (файл или builtin)"
+                    onClick={() => setAgentViewOpen((v) => !v)}
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded-md border px-1.5 py-1 text-[9px]",
+                      agentViewOpen
+                        ? "border-violet-400/50 bg-violet-500/20 text-violet-50"
+                        : "border-white/15 text-muted-foreground hover:border-white/30 hover:text-foreground",
+                    )}
+                  >
+                    <Eye className="h-3 w-3" />
+                    Просмотр
                   </button>
                   {checkAgentFileName ? (
                     <button
@@ -781,6 +804,52 @@ export function GptOperatorMenuPanel({
           {String(data.lastResult.replyPreview)}
         </p>
       ) : null}
+
+      {/* Инлайн: меню V на z-[10000], модалка z-50/120 уходит под него и не кликается */}
+      {agentViewOpen ? (
+        <div className="mt-2 overflow-hidden rounded-lg border border-violet-400/30 bg-black/40">
+          <div className="flex items-center justify-between gap-2 border-b border-white/10 px-2 py-1.5">
+            <p className="min-w-0 truncate font-mono text-[10px] text-foreground">
+              {agentFileView.data?.fileName ||
+                checkAgentFileName ||
+                (checkAgentStep
+                  ? `builtin: ${checkAgentStep}`
+                  : "Агент проверки")}
+              {agentFileView.data?.chars ? (
+                <span className="text-muted-foreground">
+                  {" "}
+                  · {agentFileView.data.chars} симв.
+                </span>
+              ) : null}
+            </p>
+            <button
+              type="button"
+              title="Скрыть"
+              className="shrink-0 rounded p-0.5 text-muted-foreground transition hover:bg-white/10 hover:text-foreground"
+              onClick={() => setAgentViewOpen(false)}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <ScrollArea className="max-h-[45vh]">
+            {agentFileView.isLoading ? (
+              <div className="flex items-center gap-2 p-3 text-[10px] text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Загружаю агента…
+              </div>
+            ) : agentFileView.isError ? (
+              <p className="p-3 text-[10px] text-destructive">
+                {errorMessageFromUnknown(agentFileView.error)}
+              </p>
+            ) : (
+              <pre className="whitespace-pre-wrap p-3 font-mono text-[10px] leading-snug text-foreground/90">
+                {agentFileView.data?.text || ""}
+              </pre>
+            )}
+          </ScrollArea>
+        </div>
+      ) : null}
     </div>
+    </>
   );
 }

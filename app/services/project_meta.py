@@ -26,6 +26,7 @@ PROTECTED_META_BUCKETS: frozenset[str] = frozenset(
         "prompt_history",
         "node_step_params",
         "excel_lane_bindings",
+        "canvas_graph",
     }
 )
 
@@ -74,6 +75,34 @@ def audit_prompt_meta_change(
             logger.warning("prompts_audit: {}", line)
 
 
+def _canvas_node_count(raw: Any) -> int:
+    if not isinstance(raw, dict):
+        return 0
+    nodes = raw.get("nodes")
+    return len(nodes) if isinstance(nodes, list) else 0
+
+
+def _merge_canvas_graph(base_val: Any, patch_val: Any) -> Any:
+    """canvas_graph: не принимать пустой/урезанный граф из stale UI autosave."""
+    if patch_val is None:
+        return base_val
+    if not isinstance(patch_val, dict):
+        return patch_val
+    base_n = _canvas_node_count(base_val)
+    patch_n = _canvas_node_count(patch_val)
+    if patch_n == 0 and base_n > 0:
+        return dict(base_val) if isinstance(base_val, dict) else base_val
+    # Урезало ≥30% нод — почти всегда stale cache, не autosave одной ноды.
+    if base_n >= 8 and patch_n < int(base_n * 0.7):
+        logger.warning(
+            "project_meta: отказано в canvas_graph wipe {} → {} nodes",
+            base_n,
+            patch_n,
+        )
+        return dict(base_val) if isinstance(base_val, dict) else base_val
+    return dict(patch_val)
+
+
 def _merge_protected_bucket(base_val: Any, patch_val: Any) -> Any:
     """Deep-merge dict-бакета: null и пустой {} не затирают живые данные."""
     if patch_val is None:
@@ -118,6 +147,9 @@ def merge_project_meta(
     merged = {**base, **patch}
     for key in PROTECTED_META_BUCKETS:
         if key not in patch:
+            continue
+        if key == "canvas_graph":
+            merged[key] = _merge_canvas_graph(base.get(key), patch.get(key))
             continue
         merged[key] = _merge_protected_bucket(base.get(key), patch.get(key))
     audit_prompt_meta_change(

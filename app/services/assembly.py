@@ -18,6 +18,10 @@ import asyncio
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.services.sfx_mix import SfxInput
 
 from loguru import logger
 
@@ -154,6 +158,7 @@ async def assemble(
     max_duration: float | None = None,
     tail_seconds: float = 0.0,
     bgm: BgmConfig | None = None,
+    sfx: list[SfxInput] | None = None,
 ) -> Path:
     if not clips:
         raise ValueError("нет клипов для сборки")
@@ -212,29 +217,27 @@ async def assemble(
         with_audio = tmp_dir / "with_audio.mp4"
         mux_cmd: list[str] = ["ffmpeg", "-y", "-i", str(concat_mp4), "-i", str(audio_path)]
 
-        if bgm is not None and bgm.path.is_file():
-            bgm_gain = max(bgm.level, 0.0) * 0.50
-            if output_duration is not None and tail > 0:
-                dur = f"{output_duration:.3f}"
-                filter_complex = (
-                    f"[1:a]apad=whole_dur={dur}[vo];"
-                    f"[2:a]volume={bgm_gain:.4f},atrim=0:{dur},asetpts=PTS-STARTPTS[bgm];"
-                    f"[vo][bgm]amix=inputs=2:duration=longest:"
-                    f"dropout_transition=2:normalize=0[aout]"
-                )
-            else:
-                trim = f"atrim=0:{output_duration:.3f}," if output_duration is not None else ""
-                filter_complex = (
-                    f"[2:a]volume={bgm_gain:.4f},{trim}asetpts=PTS-STARTPTS[bgm];"
-                    f"[1:a][bgm]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]"
-                )
+        from app.services import sfx_mix
+
+        bgm_path = bgm.path if bgm is not None and bgm.path.is_file() else None
+        bgm_gain = max(bgm.level, 0.0) * 0.50 if bgm is not None else 0.0
+        mix_args, filter_complex = sfx_mix.build_mux_audio_args(
+            bgm_path=bgm_path,
+            bgm_gain=bgm_gain,
+            output_duration=output_duration,
+            tail=tail,
+            sfx=sfx or [],
+        )
+        if filter_complex is not None:
+            mux_cmd.extend(mix_args)
             mux_cmd.extend([
-                "-stream_loop", "-1",
-                "-i", str(bgm.path),
                 "-filter_complex", filter_complex,
                 "-map", "0:v:0", "-map", "[aout]",
             ])
-            logger.info("assembly: mixing BGM {} (gain {:.2f})", bgm.path.name, bgm_gain)
+            if bgm_path is not None:
+                logger.info("assembly: mixing BGM {} (gain {:.2f})", bgm_path.name, bgm_gain)
+            if sfx:
+                logger.info("assembly: mixing {} SFX по меткам", len(sfx))
         else:
             mux_cmd.extend(["-map", "0:v:0", "-map", "1:a:0"])
             if bgm is not None:

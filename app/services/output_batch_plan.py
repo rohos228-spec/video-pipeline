@@ -74,8 +74,10 @@ def split_into_n_batches(frames: Sequence[T], n_batches: int) -> list[list[T]]:
     return [b for b in out if b]
 
 
-def pack_frames_img_pr(frames: Sequence[T]) -> list[list[T]]:
-    n = batch_count_img_pr(len(frames))
+def pack_frames_img_pr(
+    frames: Sequence[T], *, n_batches: int | None = None
+) -> list[list[T]]:
+    n = int(n_batches) if n_batches and int(n_batches) >= 2 else batch_count_img_pr(len(frames))
     batches = split_into_n_batches(frames, n)
     logger.info(
         "output_batch_plan img_pr: frames={} chars/frame={} budget={} "
@@ -181,11 +183,11 @@ def plan_db_frames_slices(
     vo_text: str | None = None,
     prompt: str | None = None,
     accompanying: str | None = None,
+    force_batches: int | None = None,
 ) -> list[Path] | None:
     """Нарезать db_frames на файлы-батчи. None = одна пачка, резать нечего.
 
-    img_pr-формула главнее VO: если шаг img_pr — voiceover.txt игнорируется
-    для числа батчей.
+    ``force_batches``: 2 или 4 — Adaptive 1→2→4 (игнор VO/img_pr формул).
     """
     from app.services.volume_batches import is_db_frames_path
 
@@ -201,6 +203,21 @@ def plan_db_frames_slices(
     if payload is None:
         return None
     frames = [fr for fr in (payload.get("frames") or []) if isinstance(fr, dict)]
+    n_force = int(force_batches) if force_batches else 0
+    if n_force >= 2:
+        batches = split_into_n_batches(frames, n_force)
+        if len(batches) <= 1:
+            return None
+        logger.info(
+            "output_batch_plan force_batches={} frames={} sizes={}",
+            n_force,
+            len(frames),
+            [len(b) for b in batches],
+        )
+        return [
+            write_db_frames_slice(src, payload, list(batch), tag=f"p{i:02d}")
+            for i, batch in enumerate(batches, start=1)
+        ]
     kind = detect_pack_kind(
         paths,
         prompt=prompt,

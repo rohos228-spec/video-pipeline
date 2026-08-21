@@ -29,8 +29,8 @@ def test_anim_pr_initial_default_no_master_in_chat(monkeypatch) -> None:
     )
     assert "MASTER" not in text
     assert "prompt_anim_pr_test.md" in text
-    assert "ID изображения" in text
-    assert "Закадровый текст" in text
+    assert "apply-ops" in text
+    assert "промт_видео" in text
 
 
 def test_write_anim_pr_prompt_file(tmp_path: Path, monkeypatch) -> None:

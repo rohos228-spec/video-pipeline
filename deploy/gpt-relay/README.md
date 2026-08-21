@@ -1,7 +1,8 @@
-# GPT / kie relay (VPS)
+# GPT / kie + vibecode relay (VPS)
 
-Тонкая прокладка: **на VPS нет video-pipeline**, только reverse-proxy на `api.kie.ai`.
+Тонкая прокладка: **на VPS нет video-pipeline**, только reverse-proxy.
 ПК шлёт запросы на твой домен; VPS прозрачно форвардит (включая SSE).
+**Прокси на ПК не нужен** (`GPT_PROXY_URL` пустой).
 
 ## Быстрый старт (Docker + Caddy)
 
@@ -26,9 +27,10 @@ GPT_CHAT_PATH=/codex/v1/responses
 GPT_RELAY_TOKEN=<тот же RELAY_TOKEN>
 GPT_PROXY_URL=
 GPT_API_KEY=<ключ kie>
+VIBECODE_API_KEY=vk-…
 ```
 
-4. Рестарт бэкенда. В логе: запросы идут на твой домен, не на `api.kie.ai` напрямую.
+4. Рестарт бэкенда. В логе: `GPT API: VPS-relay https://gpt.example.com (proxy=off)`.
 
 Проверка:
 
@@ -39,10 +41,9 @@ curl -sS -H "X-VP-Relay-Token: $RELAY_TOKEN" https://gpt.example.com/__relay_hea
 
 ## Что форвардится
 
-Весь path на upstream `https://api.kie.ai` (Host: `api.kie.ai`):
-- `/codex/v1/responses` (POST + SSE)
-- `/api/v1/jobs/recordInfo` (retrieve после обрыва)
-- прочие kie-пути
+Весь path на upstream:
+- `/v1/*` → `https://vibecode.moe` (chat/completions, модели с ноды: GPT 5.5 / 5.6 Sol, Claude, …)
+- всё остальное (`/codex/v1/responses`, `/api/v1/jobs/recordInfo`, …) → `https://api.kie.ai`
 
 Буферизация SSE отключена (`flush_interval -1`).
 
@@ -50,16 +51,8 @@ curl -sS -H "X-VP-Relay-Token: $RELAY_TOKEN" https://gpt.example.com/__relay_hea
 
 См. `Caddyfile` — можно поставить Caddy вручную с тем же конфигом и env `DOMAIN` / `RELAY_TOKEN`.
 
-Альтернатива без домена: SSH-туннель с ПК
-
-```bash
-ssh -N -D 1080 user@vps
-# GPT_PROXY_URL=socks5://127.0.0.1:1080
-# GPT_BASE_URL=https://api.kie.ai
-```
-
 ## Безопасность
 
 - `RELAY_TOKEN` обязателен: без заголовка `X-VP-Relay-Token` — 401.
-- Ключ kie (`Authorization: Bearer …`) по-прежнему только на ПК / в `.env`, на VPS не хранится.
+- Ключи kie / vibecode (`Authorization: Bearer …`) только на ПК / в `.env`, на VPS не хранятся.
 - По желанию ограничь firewall входящий 443 только своим домашним IP.

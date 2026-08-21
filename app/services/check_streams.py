@@ -12,7 +12,6 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 from app.models import Project
-from app.settings import settings
 
 META_KEY = "check_streams"
 CHECK_STREAMS_MIN = 0
@@ -31,7 +30,9 @@ def clamp_check_streams(raw: Any) -> int:
 
 
 def default_check_streams() -> int:
-    return clamp_check_streams(getattr(settings, "check_max_streams", 2) or 2)
+    from app.services.runtime_streams import get_default_check_streams
+
+    return clamp_check_streams(get_default_check_streams())
 
 
 def get_check_streams(project: Project | None) -> int:

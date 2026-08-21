@@ -32,7 +32,6 @@ from app.generation_options import (
 )
 from app.models import Frame, Project, PromptVersion
 from app.orchestrator.steps.generate_images import _load_refs_for_frame
-from app.services.animation_prompt_gpt import animation_prompt_shot2_in_plan_xlsx
 from app.services.gpt_client import get_gpt_client
 from app.services.montage_board_assets import (
     finalize_scene_image,
@@ -51,14 +50,6 @@ from app.services.plan_shot2 import (
     SHOT2_VIDEO_PROMPT_ATTR,
     find_shot1_image,
     find_shot2_image,
-)
-from app.storage.plan_sheet_v8 import (
-    read_plan_animation_prompt_cells,
-    read_plan_image_prompt_cells,
-    write_plan_animation_prompt,
-    write_plan_animation_prompt_shot2,
-    write_plan_image_prompt,
-    write_plan_image_prompt_shot2,
 )
 
 
@@ -136,11 +127,8 @@ class _ApiOnlyOutseeStub:
 
 
 def image_prompt_from_excel(project: Project, frame: Frame, shot: int) -> str:
-    """Запасной промт из Excel R45/R46 (если в БД пусто)."""
-    cells = read_plan_image_prompt_cells(project, [frame.number], shot=shot)
-    excel_prompt = (cells[0][1] if cells else "").strip()
-    if excel_prompt:
-        return excel_prompt
+    """Legacy name: Excel больше не SoT — только Frame/attrs."""
+    del project  # API compat
     if shot == 2:
         attrs = dict(frame.attrs or {})
         return (attrs.get(SHOT2_PROMPT_ATTR) or "").strip()
@@ -148,15 +136,12 @@ def image_prompt_from_excel(project: Project, frame: Frame, shot: int) -> str:
 
 
 def video_prompt_from_excel(project: Project, frame: Frame, shot: int) -> str:
-    """Запасной промт из Excel R48/R64 (если в БД пусто)."""
+    """Legacy name: Excel больше не SoT — только Frame/attrs."""
+    del project
     if shot == 2:
-        prompt = animation_prompt_shot2_in_plan_xlsx(project, frame.number)
-        if len(prompt) < MIN_SHOT2_VIDEO_PROMPT_LEN:
-            attrs = frame.attrs or {}
-            prompt = (attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or "").strip()
-        return prompt
-    cells = read_plan_animation_prompt_cells(project, [frame.number])
-    return (cells[0][1] if cells else "").strip() or (frame.animation_prompt or "").strip()
+        attrs = dict(frame.attrs or {})
+        return (attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or "").strip()
+    return (frame.animation_prompt or "").strip()
 
 
 # Совместимость со старыми импортами/вызовами внутри модуля.
@@ -242,29 +227,22 @@ async def _persist_image_prompt(
     shot: int,
     text: str,
 ) -> None:
-    """Запись промта в БД (+ Excel best-effort, не блокирует при сбое)."""
+    """Запись промта только в БД (Excel — явный Export)."""
     from app.services import db_v2
 
+    del project
     if shot == 2:
         attrs = dict(frame.attrs or {})
         attrs[SHOT2_PROMPT_ATTR] = text
         frame.attrs = attrs
-        try:
-            write_plan_image_prompt_shot2(project, frame.number, text)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("montage regen: Excel shot2 image prompt write failed: {}", e)
     else:
         frame.image_prompt = text
         try:
             await db_v2.add_prompt_version(
-                session, project.id, frame.id, kind="img", text=text, set_active=True
+                session, frame.project_id, frame.id, kind="img", text=text, set_active=True
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("montage regen: prompt_versions img write failed: {}", e)
-        try:
-            write_plan_image_prompt(project, frame.number, text)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("montage regen: Excel R45 write failed: {}", e)
     await session.flush()
 
 
@@ -277,27 +255,37 @@ async def _persist_video_prompt(
 ) -> None:
     from app.services import db_v2
 
+    del project
     if shot == 2:
         attrs = dict(frame.attrs or {})
         attrs[SHOT2_VIDEO_PROMPT_ATTR] = text
         frame.attrs = attrs
-        try:
-            write_plan_animation_prompt_shot2(project, frame.number, text)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("montage regen: Excel shot2 video prompt write failed: {}", e)
     else:
         frame.animation_prompt = text
         try:
             await db_v2.add_prompt_version(
-                session, project.id, frame.id, kind="video", text=text, set_active=True
+                session, frame.project_id, frame.id, kind="video", text=text, set_active=True
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("montage regen: prompt_versions video write failed: {}", e)
-        try:
-            write_plan_animation_prompt(project, frame.number, text)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("montage regen: Excel R48 write failed: {}", e)
-    await session.flush()
+            low = str(e).lower()
+            if "database is locked" in low or "database is busy" in low:
+                try:
+                    await session.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
+                raise
+    try:
+        await session.flush()
+    except Exception as e:  # noqa: BLE001
+        low = str(e).lower()
+        if "database is locked" in low or "database is busy" in low:
+            try:
+                await session.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        raise
 
 
 async def prepare_image_regen(

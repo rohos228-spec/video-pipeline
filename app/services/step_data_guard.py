@@ -86,6 +86,24 @@ async def ready_status_confirmed_by_data(
             if meta.get("split_completed") or project.status is ProjectStatus.frames_ready:
                 return True
 
+    # scene_agents_ready: кадры есть + (все 5 чекпоинтов агентов done ИЛИ
+    # фича выключена — pass-through фазы не оставляет чекпоинтов).
+    if ready_status is ProjectStatus.scene_agents_ready:
+        fr_n = (
+            await session.execute(
+                select(func.count(Frame.id)).where(Frame.project_id == project.id)
+            )
+        ).scalar_one()
+        if int(fr_n or 0) < 1:
+            return False
+        if project.status is ProjectStatus.scene_agents_ready:
+            return True
+        from app.services.scene_design import agents_all_done, scene_design_enabled
+
+        if not scene_design_enabled(project):
+            return True
+        return agents_all_done(project)
+
     # scene_design_ready: кадры есть + (meta.scene_design.status=done ИЛИ
     # фича выключена — pass-through ноды не оставляет флага).
     if ready_status is ProjectStatus.scene_design_ready:
@@ -185,6 +203,19 @@ async def can_enter_running(
                 actual = await compute_actual_status(session, project)
                 return False, "закадровый текст не готов", actual
 
+    if target is ProjectStatus.scene_assembling:
+        # Сборщик требует готовых чекпоинтов всех агентов (или выключенную
+        # фичу — тогда это pass-through).
+        from app.services.scene_design import agents_all_done, scene_design_enabled
+
+        if scene_design_enabled(project) and not agents_all_done(project):
+            return (
+                False,
+                "агенты scene_design ещё не отработали",
+                ProjectStatus.scene_designing,
+            )
+        return True, "", None
+
     if target in (
         ProjectStatus.planning,
         ProjectStatus.scripting,
@@ -250,12 +281,24 @@ async def can_enter_running(
         )
 
     if target is ProjectStatus.generating_animation_prompts:
+        # Видеопромт строится из image_prompt; PNG больше не обязателен на входе.
+        with_img_pr = (
+            await session.execute(
+                select(func.count(Frame.id)).where(
+                    Frame.project_id == project.id,
+                    Frame.image_prompt.isnot(None),
+                    Frame.image_prompt != "",
+                )
+            )
+        ).scalar_one()
+        if with_img_pr > 0:
+            return True, "", None
         imgs = await _count_kind(session, project.id, ArtifactKind.scene_image)
         if imgs == 0:
             return (
                 False,
-                "нет картинок сцен (сначала img)",
-                ProjectStatus.image_prompts_ready,
+                "нет image_prompt / картинок сцен (сначала img_pr или img)",
+                ProjectStatus.generating_image_prompts,
             )
         return True, "", None
 
@@ -266,6 +309,25 @@ async def can_enter_running(
                 False,
                 f"картинок {imgs}/{need_frames}",
                 ProjectStatus.image_prompts_ready,
+            )
+        # Видео требует animation prompts (R48/DB) — иначе sidecar/skip прыгает в video.
+        frames = (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.number)
+            )
+        ).scalars().all()
+        from app.services.animation_prompt_gpt import scan_missing_animation_prompts
+
+        missing_anim = scan_missing_animation_prompts(project, list(frames))
+        if missing_anim:
+            return (
+                False,
+                f"нет video prompts у кадров {missing_anim[:8]}"
+                + ("…" if len(missing_anim) > 8 else "")
+                + " (сначала anim_pr)",
+                ProjectStatus.generating_animation_prompts,
             )
         return True, "", None
 

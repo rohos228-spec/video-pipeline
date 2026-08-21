@@ -22,6 +22,8 @@ import type {
   WorkflowEdge,
   WorkflowRunDetail,
   WorkflowSummary,
+  NodeGroupSummary,
+  NodeGroupDetail,
 } from "./types";
 import type { BlockSelection } from "./prompt-styles";
 
@@ -29,6 +31,58 @@ export interface StepTemplateBlock {
   number: number;
   title: string;
   body: string;
+}
+
+// ---- KIE Create типы (каталог моделей kie.ai) ----
+export interface KieField {
+  name: string;
+  label: string;
+  kind:
+    | "text"
+    | "textarea"
+    | "select"
+    | "toggle"
+    | "number"
+    | "images"
+    | "videos"
+    | "audios"
+    | "dialogue";
+  required?: boolean;
+  default?: unknown;
+  options?: string[];
+  min?: number;
+  max?: number;
+  step?: number;
+  max_items?: number;
+  desc?: string;
+  show_if?: Record<string, unknown>;
+}
+
+export interface KiePricingRule {
+  when: Record<string, unknown>;
+  credits: number;
+}
+
+export interface KieModelSpec {
+  id: string;
+  label: string;
+  category: string;
+  desc: string;
+  result: "video" | "image" | "audio" | "text";
+  fields: KieField[];
+  pricing: {
+    unit: "gen" | "sec" | "1k_chars";
+    rules: KiePricingRule[];
+    default: number;
+    note?: string;
+  };
+}
+
+export interface KieCatalog {
+  credit_usd: number;
+  categories: { id: string; label: string }[];
+  models: KieModelSpec[];
+  configured: boolean;
 }
 
 export interface LibraryItemDTO {
@@ -150,8 +204,10 @@ export interface MontagePendingOp {
     | "image_regen"
     | "image_regen_prompt"
     | "image_regen_correction"
+    | "image_ai_change"
     | "video_regen"
-    | "video_regen_prompt";
+    | "video_regen_prompt"
+    | "video_ai_change";
   frame_number: number;
   shot: 1 | 2;
   prompt?: string;
@@ -286,6 +342,8 @@ export interface DbFrame {
   meaning: string | null;
   image_prompt?: string | null;
   animation_prompt?: string | null;
+  /** Превью картинки кадра (scenes/frame_NNN_*.png) — для фильм-стрипа. */
+  image_url?: string | null;
   attrs: Record<string, unknown>;
   texts: DbFrameText[];
   prompts: DbPromptVersion[];
@@ -332,12 +390,24 @@ export interface DbHarnessSummary {
   next_action: string | null;
 }
 
+export interface DbSceneRegistryEntry {
+  id_scene?: string | null;
+  start_words?: string | null;
+  end_words?: string | null;
+  structure?: string | null;
+  edit_type?: string | null;
+  transition?: string | null;
+  [key: string]: unknown;
+}
+
 export interface DbGraph {
   project: { id: number; slug: string; title: string | null; topic: string | null; status: string | null };
   scenes: DbScene[];
   frames: DbFrame[];
   entities: DbEntity[];
   excel_rows?: Record<string, DbExcelRow>;
+  /** Сцены по словам (meta.scene_registry) — SoT для scene grammar. */
+  scene_registry?: DbSceneRegistryEntry[];
   harness?: DbHarnessSummary;
 }
 
@@ -399,7 +469,7 @@ export const api = {
   dbApplyOps: (
     projectId: number,
     ops: { frame_uuid: string; fields: Record<string, string | number | null> }[],
-    exportXlsx = true,
+    exportXlsx = false,
   ) =>
     http<{ ok: boolean; updated: number; exported: { frames: number; cells: number } | null }>(
       `/api/db/projects/${projectId}/apply-ops`,
@@ -515,6 +585,48 @@ export const api = {
   resetDefaultWorkflow: () =>
     http<WorkflowDetail>(`/api/workflows/default/reset`, { method: "POST" }),
 
+  // ── Группы нод (пресеты канваса) ──────────────────────────────────
+  listNodeGroups: () => http<NodeGroupSummary[]>(`/api/node-groups`),
+  getNodeGroup: (groupId: string) =>
+    http<NodeGroupDetail>(`/api/node-groups/${encodeURIComponent(groupId)}`),
+  insertNodeGroup: (projectId: number, groupId: string, after?: string) =>
+    http<{
+      group: string;
+      after: string;
+      nodes: string[];
+      edges_added: number;
+      prompt_variants: Record<string, string>;
+      project_meta: Record<string, unknown>;
+    }>(`/api/projects/${projectId}/canvas/groups/${groupId}`, {
+      method: "POST",
+      body: JSON.stringify(after ? { after } : {}),
+    }),
+  createNodeGroupFromSelection: (
+    projectId: number,
+    body: {
+      node_ids: string[];
+      title: string;
+      description?: string;
+      category?: string;
+    },
+  ) =>
+    http<NodeGroupSummary>(`/api/projects/${projectId}/node-groups/from-selection`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  updateNodeGroup: (
+    groupId: string,
+    patch: { title?: string; description?: string; category?: string },
+  ) =>
+    http<NodeGroupSummary>(`/api/node-groups/${encodeURIComponent(groupId)}`, {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    }),
+  deleteNodeGroup: (groupId: string) =>
+    http<{ deleted: string }>(`/api/node-groups/${encodeURIComponent(groupId)}`, {
+      method: "DELETE",
+    }),
+
   // ── Projects ─────────────────────────────────────────────────────
   listProjects: () => http<ProjectSummary[]>(`/api/projects`),
   getProject: (id: number) => http<ProjectDetail>(`/api/projects/${id}`),
@@ -542,6 +654,31 @@ export const api = {
 
   // ── Sidebar layout ───────────────────────────────────────────────
   getSidebarLayout: () => http<SidebarLayout>(`/api/sidebar-layout`),
+  getRuntimeStreams: () =>
+    http<{
+      worker_max_parallel: number;
+      default_outsee_streams: number;
+      default_check_streams: number;
+      worker_busy: number;
+      create_max_parallel_outsee: number;
+      limits: Record<string, [number, number]>;
+    }>(`/api/runtime-streams`),
+  patchRuntimeStreams: (body: {
+    worker_max_parallel?: number;
+    default_outsee_streams?: number;
+    default_check_streams?: number;
+  }) =>
+    http<{
+      worker_max_parallel: number;
+      default_outsee_streams: number;
+      default_check_streams: number;
+      worker_busy: number;
+      create_max_parallel_outsee: number;
+      limits: Record<string, [number, number]>;
+    }>(`/api/runtime-streams`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
   updateSidebarLayout: (body: Partial<SidebarLayout>) =>
     http<SidebarLayout>(`/api/sidebar-layout`, {
       method: "PUT",
@@ -677,6 +814,41 @@ export const api = {
       `/api/projects/${projectId}/gpt-operator/${encodeURIComponent(nodeKey)}/check-agent`,
       { method: "DELETE" },
     ),
+  getCheckAgentFile: (projectId: number, nodeKey: string) =>
+    http<{
+      fileName: string;
+      chars: number;
+      text: string;
+      source?: "upload" | "builtin";
+      step?: string;
+    }>(
+      `/api/projects/${projectId}/gpt-operator/${encodeURIComponent(nodeKey)}/check-agent`,
+      {},
+      90_000,
+    ),
+  getGptOperatorSourcePrompt: (
+    projectId: number,
+    nodeKey: string,
+    sourceKey: string,
+  ) =>
+    http<{ nodeKey: string; variant: string | null; chars: number; text: string }>(
+      `/api/projects/${projectId}/gpt-operator/${encodeURIComponent(nodeKey)}/source-prompt?source=${encodeURIComponent(sourceKey)}`,
+      {},
+      90_000,
+    ),
+  getCheckPromptPreview: (projectId: number, nodeKey: string) =>
+    http<{
+      text: string;
+      chars: number;
+      mode: string;
+      checkPromptSource: string;
+      source: string;
+      dbSot: boolean;
+    }>(
+      `/api/projects/${projectId}/gpt-operator/${encodeURIComponent(nodeKey)}/check-prompt-preview`,
+      {},
+      90_000,
+    ),
   patchCanvasEdgeKind: (
     projectId: number,
     edgeId: string,
@@ -801,6 +973,22 @@ export const api = {
       120_000,
     ),
 
+  saveMontageQueue: (
+    projectId: number,
+    body: {
+      pending_ops: MontagePendingOp[];
+      video_trims?: Record<string, { start: number; end: number }>;
+    },
+  ) =>
+    http<{
+      ok: boolean;
+      pending_ops: MontagePendingOp[];
+      meta?: MontageBoardMeta;
+    }>(`/api/projects/${projectId}/montage-board/queue`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   applyMontageBoard: (
     projectId: number,
     body: {
@@ -828,6 +1016,16 @@ export const api = {
         error?: string | null;
         total_ops?: number;
         done_ops?: number;
+        results?: Array<{
+          ok?: boolean;
+          error?: string;
+          highlight?: string;
+          op?: {
+            type?: string;
+            frame_number?: number;
+            shot?: number;
+          };
+        }>;
       };
     }>(`/api/projects/${projectId}/montage-board/apply-status`),
 
@@ -912,6 +1110,67 @@ export const api = {
       };
       last?: Record<string, unknown> | null;
     }>(`/api/projects/${projectId}/audio-align/status`),
+
+  swapMontageShots: (
+    projectId: number,
+    frameNumber: number,
+    kind: "image" | "video" | "both" = "both",
+  ) =>
+    http<{
+      ok: boolean;
+      frame_number: number;
+      kind: string;
+      images_swapped?: boolean;
+      videos_swapped?: boolean;
+      prompts_swapped?: boolean;
+    }>(
+      `/api/projects/${projectId}/montage-board/swap-shots?frame_number=${frameNumber}&kind=${kind}`,
+      { method: "POST" },
+    ),
+
+  /** Обмен двух слотов (картинка↔картинка или видео↔видео) из любых кадров. */
+  swapMontageSlots: (
+    projectId: number,
+    kind: "image" | "video",
+    a: { frameNumber: number; shot: 1 | 2 },
+    b: { frameNumber: number; shot: 1 | 2 },
+  ) =>
+    http<{
+      ok: boolean;
+      mode: "move" | "swap";
+      kind: string;
+      from_frame: number;
+      from_shot: number;
+      to_frame: number;
+      to_shot: number;
+    }>(
+      `/api/projects/${projectId}/montage-board/swap-slots` +
+        `?kind=${kind}` +
+        `&a_frame=${a.frameNumber}&a_shot=${a.shot}` +
+        `&b_frame=${b.frameNumber}&b_shot=${b.shot}`,
+      { method: "POST" },
+    ),
+
+  moveMontageImage: (
+    projectId: number,
+    fromFrame: number,
+    fromShot: 1 | 2,
+    toFrame: number,
+    toShot: 1 | 2,
+  ) =>
+    http<{
+      ok: boolean;
+      mode: "move" | "swap";
+      from_frame: number;
+      from_shot: number;
+      to_frame: number;
+      to_shot: number;
+    }>(
+      `/api/projects/${projectId}/montage-board/move-image` +
+        `?from_frame=${fromFrame}&from_shot=${fromShot}` +
+        `&to_frame=${toFrame}&to_shot=${toShot}`,
+      { method: "POST" },
+    ),
 
   deleteMontageImage: (projectId: number, frameNumber: number, shot: 1 | 2) =>
     http<{ ok: boolean }>(
@@ -1032,7 +1291,7 @@ export const api = {
       `/api/prompt-studio/steps/${stepId}/meta`,
     ),
   promptStudioStepPresets: (stepCode: string) =>
-    http<import("@/lib/prompt-builder/prompt-presets").StepPresetsFile>(
+    http<Record<string, unknown>>(
       `/api/prompt-studio/step-presets/${encodeURIComponent(stepCode)}`,
     ),
   patchStepPreset: (
@@ -1040,7 +1299,7 @@ export const api = {
     presetId: string,
     body: { label?: string; description?: string; blocks?: Record<string, string | null> },
   ) =>
-    http<import("@/lib/prompt-builder/prompt-presets").PromptStepPreset>(
+    http<Record<string, unknown>>(
       `/api/prompt-studio/step-presets/${encodeURIComponent(stepCode)}/presets/${encodeURIComponent(presetId)}`,
       { method: "PATCH", body: JSON.stringify(body) },
     ),
@@ -1049,7 +1308,7 @@ export const api = {
     presetId: string,
     body: { label?: string; description?: string; blocks?: Record<string, string | null> },
   ) =>
-    http<import("@/lib/prompt-builder/prompt-presets").PromptStepPreset>(
+    http<Record<string, unknown>>(
       `/api/prompt-studio/step-presets/${encodeURIComponent(stepCode)}/presets/${encodeURIComponent(presetId)}`,
       { method: "POST", body: JSON.stringify(body) },
     ),
@@ -1605,6 +1864,42 @@ export const api = {
       }[];
     }>(`/api/create/queue`),
 
+  // ---- KIE Create (вкладка «Генерация», провайдер kie.ai) ----
+  kieCatalog: () =>
+    http<KieCatalog>(`/api/kie-create/catalog`),
+  kieCredits: () =>
+    http<{ configured: boolean; credits: number | null; usd: number | null }>(
+      `/api/kie-create/credits`,
+    ),
+  kieGenerate: (body: { model_id: string; values: Record<string, unknown> }) =>
+    http<{
+      job: {
+        job_id: string;
+        status: string;
+        history_id: string;
+        media: string;
+        model: string;
+        queue_position?: number | null;
+      };
+      estimate: { credits: number; usd: number; note?: string };
+    }>(`/api/kie-create/generate`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  kieUpload: async (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const r = await fetch(`/api/kie-create/upload`, { method: "POST", body: fd });
+    const data = (await r.json().catch(() => ({}))) as {
+      url?: string;
+      detail?: string;
+    };
+    if (!r.ok || !data.url) {
+      throw new Error(data.detail || `upload HTTP ${r.status}`);
+    }
+    return data as { url: string; filename: string; bytes: number };
+  },
+
   createJob: (jobId: string) =>
     http<{
       job_id: string;
@@ -1621,7 +1916,10 @@ export const api = {
   wizardCatalog: () =>
     http<{
       questions: { field: string; title: string; choices: { id: string; label: string }[]; cols: number }[];
+      image_generators?: { id: string; label: string; description?: string }[];
+      video_generators?: { id: string; label: string; description?: string }[];
       image_resolutions_by_generator?: Record<string, string[]>;
+      defaults?: { image_generator?: string; video_generator?: string };
     }>(`/api/generation-options/wizard`),
   listGenerationConfigPresets: () =>
     http<{
@@ -2007,47 +2305,120 @@ export interface PromptVersionContent {
 /**
  * WebSocket подписка на канал. Возвращает функцию отписки.
  * channel: "global" | "runs.<id>" | "projects.<id>" | "hitl.<id>" | "logs.<id>"
+ *
+ * Один сокет на channel (hub): иначе React remount / несколько панелей /
+ * CONNECTING без close() копят 100+ WS и душат backend (anim_pr / GPT).
  */
+type WsHandler = (event: unknown) => void;
+
+type WsHub = {
+  channel: string;
+  ws: WebSocket | null;
+  handlers: Set<WsHandler>;
+  reconnectTimer: ReturnType<typeof setTimeout> | null;
+  backoffMs: number;
+  closing: boolean;
+};
+
+const WS_HUBS = new Map<string, WsHub>();
+const WS_BACKOFF_MIN_MS = 1000;
+const WS_BACKOFF_MAX_MS = 15000;
+
+function _wsCloseQuiet(ws: WebSocket | null): void {
+  if (!ws) return;
+  try {
+    // Важно: CLOSE и CONNECTING — иначе orphan-сокеты копятся.
+    if (
+      ws.readyState === WebSocket.CONNECTING ||
+      ws.readyState === WebSocket.OPEN
+    ) {
+      ws.close();
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function _wsConnectHub(hub: WsHub): void {
+  if (hub.closing || hub.handlers.size === 0) return;
+  if (
+    hub.ws &&
+    (hub.ws.readyState === WebSocket.CONNECTING ||
+      hub.ws.readyState === WebSocket.OPEN)
+  ) {
+    return;
+  }
+  const protocol = location.protocol === "https:" ? "wss" : "ws";
+  const url = `${protocol}://${location.host}/ws/${hub.channel}`;
+  const ws = new WebSocket(url);
+  hub.ws = ws;
+  ws.addEventListener("open", () => {
+    hub.backoffMs = WS_BACKOFF_MIN_MS;
+  });
+  ws.addEventListener("message", (ev) => {
+    let data: unknown;
+    try {
+      data = JSON.parse(ev.data);
+    } catch (e) {
+      console.warn("ws parse error", e);
+      return;
+    }
+    for (const h of [...hub.handlers]) {
+      try {
+        h(data);
+      } catch (e) {
+        console.warn("ws handler error", e);
+      }
+    }
+  });
+  ws.addEventListener("close", () => {
+    if (hub.ws === ws) hub.ws = null;
+    if (hub.closing || hub.handlers.size === 0) return;
+    if (hub.reconnectTimer) clearTimeout(hub.reconnectTimer);
+    const delay = hub.backoffMs;
+    hub.backoffMs = Math.min(hub.backoffMs * 2, WS_BACKOFF_MAX_MS);
+    hub.reconnectTimer = setTimeout(() => {
+      hub.reconnectTimer = null;
+      _wsConnectHub(hub);
+    }, delay);
+  });
+  ws.addEventListener("error", () => {
+    // close handler сделает reconnect
+  });
+}
+
 export function subscribeWS(
   channel: string,
-  onMessage: (event: unknown) => void,
+  onMessage: WsHandler,
   onClose?: (reason: string) => void
 ): () => void {
-  let ws: WebSocket | null = null;
-  let closed = false;
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-
-  const connect = () => {
-    if (closed) return;
-    const protocol = location.protocol === "https:" ? "wss" : "ws";
-    const url = `${protocol}://${location.host}/ws/${channel}`;
-    ws = new WebSocket(url);
-    ws.addEventListener("message", (ev) => {
-      try {
-        const data = JSON.parse(ev.data);
-        onMessage(data);
-      } catch (e) {
-        console.warn("ws parse error", e);
-      }
-    });
-    ws.addEventListener("close", () => {
-      if (closed) {
-        onClose?.("closed");
-        return;
-      }
-      // backoff reconnect
-      reconnectTimer = setTimeout(connect, 1500);
-    });
-    ws.addEventListener("error", () => {
-      // close handler сделает reconnect
-    });
-  };
-
-  connect();
+  let hub = WS_HUBS.get(channel);
+  if (!hub) {
+    hub = {
+      channel,
+      ws: null,
+      handlers: new Set(),
+      reconnectTimer: null,
+      backoffMs: WS_BACKOFF_MIN_MS,
+      closing: false,
+    };
+    WS_HUBS.set(channel, hub);
+  }
+  hub.closing = false;
+  hub.handlers.add(onMessage);
+  _wsConnectHub(hub);
 
   return () => {
-    closed = true;
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+    hub!.handlers.delete(onMessage);
+    if (hub!.handlers.size > 0) return;
+    hub!.closing = true;
+    if (hub!.reconnectTimer) {
+      clearTimeout(hub!.reconnectTimer);
+      hub!.reconnectTimer = null;
+    }
+    _wsCloseQuiet(hub!.ws);
+    hub!.ws = null;
+    WS_HUBS.delete(channel);
+    onClose?.("closed");
   };
 }

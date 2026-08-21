@@ -11,10 +11,12 @@ from app.services.project_state import compute_actual_status
 
 
 def test_excel_batch_auto_flag() -> None:
-    p = Project(topic="t", slug="t", auto_mode=True, meta={})
+    """HITL снят: batch всегда, независимо от auto_mode/ai_control."""
+    p = Project(topic="t", slug="t", auto_mode=False, meta={"ai_control": True})
     assert generate_hero._excel_batch_auto(p) is True
-    p.meta = {"ai_control": True}
-    assert generate_hero._excel_batch_auto(p) is False
+    p.auto_mode = True
+    p.meta = {}
+    assert generate_hero._excel_batch_auto(p) is True
 
 
 def test_excel_ref_deps_batch_uses_generated() -> None:
@@ -43,7 +45,7 @@ def test_excel_ref_deps_batch_uses_generated() -> None:
 @pytest.mark.asyncio
 async def test_compute_actual_status_no_hero_no_items_stays_frames_ready() -> None:
     """hero_count=0 без excel — не прыгать сразу на items_ready."""
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import AsyncMock, MagicMock, patch
 
     p = Project(
         id=1,
@@ -56,25 +58,25 @@ async def test_compute_actual_status_no_hero_no_items_stays_frames_ready() -> No
     p.general_plan = "x" * 200
     p.script_text = "script"
     session = AsyncMock()
-    call_count = {"n": 0}
+    values = [5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
     async def mock_execute(stmt):
-        call_count["n"] += 1
         m = MagicMock()
-        if call_count["n"] == 1:
-            m.scalar_one.return_value = 5  # fr_total
-        else:
-            m.scalar_one.return_value = 0
+        m.scalar_one.return_value = values.pop(0) if values else 0
         return m
 
     session.execute = mock_execute
-    st = await compute_actual_status(session, p)
+    with patch(
+        "app.services.project_state._primary_image_prompt_counts",
+        new=AsyncMock(return_value=(5, 0, 0)),
+    ):
+        st = await compute_actual_status(session, p)
     assert st is ProjectStatus.frames_ready
 
 
 @pytest.mark.asyncio
 async def test_compute_actual_status_partial_excel_hero() -> None:
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import AsyncMock, MagicMock, patch
 
     p = Project(
         id=13,
@@ -85,31 +87,36 @@ async def test_compute_actual_status_partial_excel_hero() -> None:
         meta={
             "excel_hero": {
                 "characters": [
-                    {"id": "c01"},
-                    {"id": "c02"},
+                    {"id": "c01", "name": "A", "look": "лицо"},
+                    {"id": "c02", "name": "B", "look": "лицо"},
                 ]
             }
         },
     )
     session = AsyncMock()
-    from unittest.mock import patch
+    p.general_plan = "x" * 200
+    p.script_text = "script"
 
-    with patch(
-        "app.services.project_state._count_excel_hero_artifacts",
-        new=AsyncMock(return_value=1),
+    with (
+        patch(
+            "app.services.project_state._count_excel_hero_artifacts",
+            new=AsyncMock(return_value=1),
+        ),
+        patch(
+            "app.services.project_state._primary_image_prompt_counts",
+            new=AsyncMock(return_value=(10, 0, 0)),
+        ),
     ):
-        p.general_plan = "x" * 200
-        p.script_text = "script"
-
-        call_count = {"n": 0}
+        n = {"i": 0}
 
         async def mock_execute(stmt):
-            call_count["n"] += 1
+            n["i"] += 1
             m = MagicMock()
-            if call_count["n"] == 4:
-                m.scalar_one.return_value = 1  # hero_arts
-            elif call_count["n"] == 1:
-                m.scalar_one.return_value = 10  # fr_total
+            # 1=fr_total=10, 2=anim=0, 3=hero_arts=1
+            if n["i"] == 1:
+                m.scalar_one.return_value = 10
+            elif n["i"] == 3:
+                m.scalar_one.return_value = 1
             else:
                 m.scalar_one.return_value = 0
             return m
@@ -136,21 +143,25 @@ async def test_compute_actual_status_img_pr_done_despite_partial_excel_hero() ->
     p.script_text = "script"
     session = AsyncMock()
 
-    with patch(
-        "app.services.project_state._count_excel_hero_artifacts",
-        new=AsyncMock(return_value=1),
+    with (
+        patch(
+            "app.services.project_state._count_excel_hero_artifacts",
+            new=AsyncMock(return_value=1),
+        ),
+        patch(
+            "app.services.project_state._primary_image_prompt_counts",
+            new=AsyncMock(return_value=(10, 10, 10)),
+        ),
     ):
         call_count = {"n": 0}
 
         async def mock_execute(stmt):
             call_count["n"] += 1
             m = MagicMock()
-            # 1 fr_total, 2 fr_with_img_prompt, 3 fr_with_anim, 4 hero_arts, ...
+            # 1 fr_total, 2 fr_with_anim, 3 hero_arts, ...
             if call_count["n"] == 1:
                 m.scalar_one.return_value = 10
-            elif call_count["n"] == 2:
-                m.scalar_one.return_value = 10
-            elif call_count["n"] == 4:
+            elif call_count["n"] == 3:
                 m.scalar_one.return_value = 1
             else:
                 m.scalar_one.return_value = 0
@@ -180,9 +191,15 @@ async def test_compute_actual_status_enrich_meta_beats_partial_excel_hero() -> N
     p.script_text = "script"
     session = AsyncMock()
 
-    with patch(
-        "app.services.project_state._count_excel_hero_artifacts",
-        new=AsyncMock(return_value=1),
+    with (
+        patch(
+            "app.services.project_state._count_excel_hero_artifacts",
+            new=AsyncMock(return_value=1),
+        ),
+        patch(
+            "app.services.project_state._primary_image_prompt_counts",
+            new=AsyncMock(return_value=(10, 0, 0)),
+        ),
     ):
         call_count = {"n": 0}
 
@@ -191,9 +208,7 @@ async def test_compute_actual_status_enrich_meta_beats_partial_excel_hero() -> N
             m = MagicMock()
             if call_count["n"] == 1:
                 m.scalar_one.return_value = 10
-            elif call_count["n"] == 2:
-                m.scalar_one.return_value = 0
-            elif call_count["n"] == 4:
+            elif call_count["n"] == 3:
                 m.scalar_one.return_value = 1
             else:
                 m.scalar_one.return_value = 0
@@ -203,6 +218,67 @@ async def test_compute_actual_status_enrich_meta_beats_partial_excel_hero() -> N
         st = await compute_actual_status(session, p)
         # meta сохраняет enrich_3_ready, но не поднимает ранний status до него
         assert st is ProjectStatus.enrich_3_ready
+
+
+@pytest.mark.asyncio
+async def test_compute_no_enrich_rollback_when_set_children_lack_prompts() -> None:
+    """Регресс #58: SET-дети без image_prompt не откатывают в enrich_1→hero."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    p = Project(
+        id=58,
+        topic="t",
+        slug="spesivcevy",
+        hero_mode="auto",
+        status=ProjectStatus.image_prompts_ready,
+        meta={
+            "excel_hero": {
+                "characters": [
+                    {"id": f"c{i:02d}", "name": "x", "look": "y"} for i in range(1, 9)
+                ]
+            },
+            "enrich_completed_slots": [1],
+            "split_completed": True,
+            "scene_design": {"status": "done"},
+        },
+    )
+    p.general_plan = "x" * 200
+    p.script_text = "script"
+    session = AsyncMock()
+
+    with (
+        patch(
+            "app.services.project_state._count_excel_hero_artifacts",
+            new=AsyncMock(return_value=8),
+        ),
+        patch(
+            "app.services.project_state._primary_image_prompt_counts",
+            # 20 primary с промтами, 33 всего с промтами, SET-дети без
+            new=AsyncMock(return_value=(20, 20, 33)),
+        ),
+        patch(
+            "app.services.project_state._excel_hero_expected_count",
+            return_value=8,
+        ),
+    ):
+        n = {"i": 0}
+
+        async def mock_execute(stmt):
+            n["i"] += 1
+            m = MagicMock()
+            if n["i"] == 1:
+                m.scalar_one.return_value = 63  # fr_total
+            elif n["i"] == 3:
+                m.scalar_one.return_value = 8  # hero_arts
+            else:
+                m.scalar_one.return_value = 0
+            return m
+
+        session.execute = mock_execute
+        st = await compute_actual_status(session, p)
+        assert st is ProjectStatus.image_prompts_ready
+        assert st is not ProjectStatus.enrich_1_ready
+        assert st is not ProjectStatus.hero_ready
 
 
 @pytest.mark.asyncio

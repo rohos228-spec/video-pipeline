@@ -398,16 +398,59 @@ function SplitRowView({
   nodeKey?: string | null;
   nodeType?: string | null;
 }) {
+  // DB SoT: после replace_frames UI должен показывать кадры из БД, не stale xlsx/snapshot.
+  const framesQ = useQuery({
+    queryKey: ["frames", projectId],
+    queryFn: () => api.listFrames(projectId),
+    refetchInterval: 8000,
+  });
   const row = useQuery({
     queryKey: ["xlsx-split-row", projectId, nodeKey ?? "live"],
     queryFn: () =>
       api.previewProjectXlsx(projectId, {
         sheet: SHEET_PLAN_V8,
         row: ROW_VOICEOVER_V8,
-        maxCols: 120,
+        maxCols: 300,
         nodeKey: nodeKey ?? undefined,
       }),
+    // xlsx — fallback, если кадров в DB ещё нет
+    enabled: (framesQ.data?.length ?? 0) < 2,
   });
+
+  if (framesQ.isLoading) return <LoadingBlock />;
+
+  const dbFrames = (framesQ.data ?? [])
+    .slice()
+    .sort((a, b) => a.number - b.number)
+    .filter((f) => (f.voiceover_text || "").trim());
+
+  if (dbFrames.length >= 2) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <XlsxUploadBar projectId={projectId} nodeKey={nodeKey} nodeType={nodeType} />
+        <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden rounded-lg border border-white/10 bg-black/20 p-3">
+          <p className="mb-2 text-[11px] text-muted-foreground">
+            База · {dbFrames.length} кадров (закадр) — прокрутите вправо
+          </p>
+          <div className="flex min-w-max gap-2">
+            {dbFrames.map((fr) => (
+              <div
+                key={fr.id}
+                className="flex w-[220px] shrink-0 flex-col rounded-lg border border-white/10 bg-black/30 p-2"
+              >
+                <span className="mb-1 text-[10px] font-medium text-primary">
+                  Кадр {fr.number}
+                </span>
+                <p className="max-h-40 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-foreground/90">
+                  {(fr.voiceover_text || "").trim()}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (row.isLoading) return <LoadingBlock />;
 

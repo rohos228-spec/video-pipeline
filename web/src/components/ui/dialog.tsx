@@ -17,6 +17,7 @@ const DialogOverlay = React.forwardRef<
   <DialogPrimitive.Overlay
     ref={ref}
     className={cn(
+      // База z-50; вложенные диалоги поверх node-studio (z-[100]) передают z-[120]+.
       "fixed inset-0 z-50 bg-black/75 backdrop-blur-[3px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
       className
     )}

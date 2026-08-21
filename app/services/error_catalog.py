@@ -28,7 +28,7 @@ ERROR_CATALOG: dict[str, ErrorSpec] = {
     "gpt_no_key": ErrorSpec(
         "gpt_no_key",
         "Текст LLM: нет ключа",
-        "Kimi: TOKENROUTER_API_KEY. GPT: GPT_API_KEY / GRSAI_API_KEY.",
+        "Нода: VIBECODE_API_KEY. Шапка kie: GPT_API_KEY. Kimi: TOKENROUTER_API_KEY.",
     ),
     "gpt_no_base": ErrorSpec(
         "gpt_no_base",
@@ -58,12 +58,49 @@ ERROR_CATALOG: dict[str, ErrorSpec] = {
     "gpt_bad_json": ErrorSpec("gpt_bad_json", "GPT: битый ответ", "Ответ не JSON — повтор."),
     "gpt_provider_error": ErrorSpec("gpt_provider_error", "GPT: ошибка провайдера", "См. текст ответа шлюза."),
     # ── Картинки/видео (app/bots/grsai.py, outsee) ──
-    "media_no_key": ErrorSpec("media_no_key", "Генерация: нет ключа", "Задай GRSAI_API_KEY."),
+    "media_no_key": ErrorSpec(
+        "media_no_key",
+        "Генерация: нет ключа",
+        "Задай OUTSEE_API_KEY / GRSAI_API_KEY / KIE_API_KEY.",
+    ),
     "media_moderation": ErrorSpec("media_moderation", "Генерация: модерация", "Промт отклонён — смягчи."),
     "media_failed": ErrorSpec("media_failed", "Генерация не удалась", "Провайдер вернул ошибку — повтор."),
     "media_timeout": ErrorSpec("media_timeout", "Генерация: таймаут", "Долгая задача — повтори."),
     "media_download": ErrorSpec("media_download", "Скачивание не удалось", "URL результата недоступен."),
     "media_empty": ErrorSpec("media_empty", "Пустой файл результата", "Провайдер вернул пустышку."),
+    "media_auth": ErrorSpec("media_auth", "Генерация: ключ/доступ", "Проверь GRSAI/OUTSEE/KIE API ключ."),
+    "media_credits": ErrorSpec("media_credits", "Генерация: нет кредитов", "Пополни баланс провайдера."),
+    "media_rate_limit": ErrorSpec("media_rate_limit", "Генерация: rate limit", "Снизь параллельность, подожди."),
+    "media_start_frame_policy": ErrorSpec(
+        "media_start_frame_policy",
+        "Генерация: кадр отклонён",
+        "Смягчаем стартовый кадр и повторяем.",
+    ),
+    "media_audio_policy": ErrorSpec(
+        "media_audio_policy",
+        "Генерация: политика звука",
+        "Silent + санация промта.",
+    ),
+    "media_prompt_length": ErrorSpec(
+        "media_prompt_length",
+        "Генерация: промт слишком длинный",
+        "Сжимаем/режем промт под лимит модели.",
+    ),
+    "media_validation": ErrorSpec(
+        "media_validation",
+        "Генерация: неверные параметры",
+        "Проверь duration/aspect/image_url.",
+    ),
+    "media_ladder_exhausted": ErrorSpec(
+        "media_ladder_exhausted",
+        "Видео: лестница исчерпана",
+        "Veo+rewrite и Kling 2.6 не дали клип — кадр пропущен.",
+    ),
+    "media_model_fallback": ErrorSpec(
+        "media_model_fallback",
+        "Видео: смена модели",
+        "Переход Veo → Kling 2.6.",
+    ),
     # ── Файлы / xlsx ──
     "file_missing": ErrorSpec("file_missing", "Нет входного файла", "Проверь входы ноды/стрелки."),
     "xlsx_invalid": ErrorSpec("xlsx_invalid", "Некорректный xlsx", "Структура листов не совпадает."),
@@ -90,33 +127,43 @@ ERROR_CATALOG: dict[str, ErrorSpec] = {
 }
 
 
+def _is_media_error(exc: Exception, ctx: dict) -> bool:
+    """Картинка/видео (Outsee/Grsai/Kling) ≠ текстовый LLM на ноде."""
+    name = type(exc).__name__
+    if name in {"OutseeImageError", "KieKlingError", "GrsaiError"}:
+        return True
+    provider = str(ctx.get("provider") or "").lower()
+    return provider in {"outsee", "grsai"}
+
+
 def _match_code(exc: Exception) -> str:  # noqa: C901
     """Определить код ошибки по типу/тексту исключения."""
     name = type(exc).__name__
     msg = str(exc)
     low = msg.lower()
 
-    # GptApiError несёт context — используем его.
+    # GptApiError / OutseeImageError несут context — используем его.
     ctx = getattr(exc, "context", None)
     if isinstance(ctx, dict):
         kind = str(ctx.get("error_kind") or "")
         status = ctx.get("status_code")
         pcode = ctx.get("provider_code")
+        media = _is_media_error(exc, ctx)
         if kind == "no_key":
-            return "gpt_no_key"
+            return "media_no_key" if media else "gpt_no_key"
         if kind == "no_base":
             return "gpt_no_base"
         if kind == "timeout":
-            return "gpt_timeout"
+            return "media_timeout" if media else "gpt_timeout"
         if kind == "network":
             return "gpt_network"
         code_num = pcode if pcode is not None else status
         if code_num in (401, 403):
-            return "gpt_auth"
+            return "media_auth" if media else "gpt_auth"
         if code_num == 429:
-            return "gpt_rate_limit"
+            return "media_rate_limit" if media else "gpt_rate_limit"
         if isinstance(code_num, int) and code_num >= 500:
-            return "gpt_server"
+            return "media_failed" if media else "gpt_server"
 
     if "apikey error" in low or "not authorized" in low:
         return "gpt_model_unauthorized"
@@ -128,10 +175,16 @@ def _match_code(exc: Exception) -> str:  # noqa: C901
         return "check_no_json"
     if "не json" in low or "нет json" in low:
         return "gpt_bad_json"
+    if name == "VideoLadderExhaustedError" or "video ladder exhausted" in low:
+        return "media_ladder_exhausted"
     if "moderation" in low or "violation" in low:
         return "media_moderation"
     if "download" in low or "скач" in low:
         return "media_download"
+    if "insufficient credit" in low or "нет кредит" in low:
+        return "media_credits"
+    if "rate limit" in low or "429" in low:
+        return "media_rate_limit"
     if "database is locked" in low or "database locked" in low:
         return "infra_db_locked"
     if name in ("FileNotFoundError",) or "нет файл" in low or "не найден" in low:

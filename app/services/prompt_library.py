@@ -67,6 +67,10 @@ STEP_FOLDERS: dict[str, str] = {
     # переехала, но имя папки на диске не зависит от позиции в меню.
     "img_pr":     "05_image_prompts",
     "anim_pr":    "07_animation",
+    # Мульти-агентный дизайн сцен: все агенты и сборщик живут в одной
+    # папке prompts/scene_design/ (characters.md, world.md, ..., assemble.md).
+    "scene_d":    "scene_design",
+    "scene_asm":  "scene_design",
 }
 
 # Человеческое имя шага (для текстовых сообщений в TG).
@@ -90,6 +94,8 @@ STEP_HUMAN_NAMES: dict[str, str] = {
     "anim_pr":    "8. Промты анимации",
     "music":      "10. Музыка",
     "audio":      "Озвучка",
+    "scene_d":    "3.5. Сцены — агенты",
+    "scene_asm":  "3.6. Сцены — сборка",
 }
 
 # Шаги без мастер-промта — для красоты в списках и проверок.

@@ -9,7 +9,8 @@
   planning                       → make_plan
   scripting                      → make_script
   splitting                      → split_frames
-  scene_designing                → scene_design (мульти-агентная режиссура)
+  scene_designing                → scene_design.run (5 агентов параллельно)
+  scene_assembling               → scene_design.run_assemble (сборщик)
   generating_hero                → generate_hero
   generating_image_prompts       → generate_image_prompts (только промты)
   generating_images              → generate_images        (только картинки)
@@ -95,11 +96,23 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
     if task is not None:
         register_advance_task(project.id, task)
     ran_status: ProjectStatus | None = None
+    _step_lock_cm = None
     try:
         abort_if_cancelled(project.id)
         status = project.status
         ran_status = status
         logger.debug("advance #{} status={}", project.id, status.value)
+
+        from app.services.llm_override import bind_project_llm
+
+        # Параллельные проекты + SQLite: split — строго по одному (иначе db is locked).
+        from app.services.step_global_lock import (
+            acquire_step_lock,
+            step_code_from_status,
+        )
+
+        _step_lock_cm = acquire_step_lock(step_code_from_status(status))
+        await _step_lock_cm.__aenter__()
 
         # UI SSoT: NodeRun → running, иначе на ноде нет «в работе».
         try:
@@ -116,50 +129,68 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
                 exc_info=True,
             )
 
-        if status is ProjectStatus.planning:
-            await make_plan.run(session, project, bot)
-        elif status is ProjectStatus.scripting:
-            await make_script.run(session, project, bot)
-        elif status is ProjectStatus.splitting:
-            await split_frames.run(session, project)
-        elif status is ProjectStatus.scene_designing:
-            from app.orchestrator.steps import scene_design
+        with bind_project_llm(project, status):
+            if status is ProjectStatus.planning:
+                await make_plan.run(session, project, bot)
+            elif status is ProjectStatus.scripting:
+                await make_script.run(session, project, bot)
+            elif status is ProjectStatus.splitting:
+                await split_frames.run(session, project)
+            elif status is ProjectStatus.scene_designing:
+                from app.orchestrator.steps import scene_design
 
-            await scene_design.run(session, project, bot)
-        elif status is ProjectStatus.generating_hero:
-            await generate_hero.run(session, project, bot)
-        elif status is ProjectStatus.generating_items:
-            await generate_items.run(session, project, bot)
-        elif status in (
-            ProjectStatus.enriching_1,
-            ProjectStatus.enriching_2,
-            ProjectStatus.enriching_3,
-            ProjectStatus.enriching_4,
-            ProjectStatus.enriching_5,
-        ):
-            await enrich_xlsx.run(session, project, bot)
-        elif status is ProjectStatus.generating_image_prompts:
-            await generate_image_prompts.run(session, project, bot)
-        elif status is ProjectStatus.generating_images:
-            await generate_images.run(session, project, bot)
-        elif status is ProjectStatus.generating_animation_prompts:
-            await make_animation_prompts.run(session, project, bot)
-        elif status is ProjectStatus.generating_videos:
-            await generate_videos.run(session, project, bot)
-        elif status is ProjectStatus.generating_music:
-            from app.orchestrator.steps import generate_music
+                await scene_design.run(session, project, bot)
+            elif status is ProjectStatus.scene_assembling:
+                from app.orchestrator.steps import scene_design
 
-            await generate_music.run(session, project, bot)
-        elif status is ProjectStatus.generating_audio:
-            await generate_audio.run(session, project, bot)
-        elif status is ProjectStatus.assembling:
-            await assemble.run(session, project, bot)
-        elif status is ProjectStatus.publishing:
-            await publish.run(session, project, bot)
-        else:
-            ran_status = None
+                await scene_design.run_assemble(session, project, bot)
+            elif status is ProjectStatus.generating_hero:
+                await generate_hero.run(session, project, bot)
+            elif status is ProjectStatus.generating_items:
+                await generate_items.run(session, project, bot)
+            elif status in (
+                ProjectStatus.enriching_1,
+                ProjectStatus.enriching_2,
+                ProjectStatus.enriching_3,
+                ProjectStatus.enriching_4,
+                ProjectStatus.enriching_5,
+            ):
+                await enrich_xlsx.run(session, project, bot)
+            elif status is ProjectStatus.generating_image_prompts:
+                await generate_image_prompts.run(session, project, bot)
+            elif status is ProjectStatus.generating_images:
+                await generate_images.run(session, project, bot)
+            elif status is ProjectStatus.generating_animation_prompts:
+                await make_animation_prompts.run(session, project, bot)
+            elif status is ProjectStatus.generating_videos:
+                await generate_videos.run(session, project, bot)
+            elif status is ProjectStatus.generating_music:
+                from app.orchestrator.steps import generate_music
+
+                await generate_music.run(session, project, bot)
+            elif status is ProjectStatus.sfx_planning:
+                from app.orchestrator.steps import plan_sfx
+
+                await plan_sfx.run(session, project, bot)
+            elif status is ProjectStatus.generating_sfx:
+                from app.orchestrator.steps import generate_sfx
+
+                await generate_sfx.run(session, project, bot)
+            elif status is ProjectStatus.generating_audio:
+                await generate_audio.run(session, project, bot)
+            elif status is ProjectStatus.assembling:
+                await assemble.run(session, project, bot)
+            elif status is ProjectStatus.publishing:
+                await publish.run(session, project, bot)
+            else:
+                ran_status = None
 
         if ran_status is not None:
             await _sync_storage_after_advance(session, project, ran_status)
     finally:
+        if _step_lock_cm is not None:
+            try:
+                await _step_lock_cm.__aexit__(None, None, None)
+            except Exception:  # noqa: BLE001
+                pass
         unregister_advance_task(project.id)

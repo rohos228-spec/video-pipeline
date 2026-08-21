@@ -16,6 +16,11 @@ export type CanvasRuntimeData = {
   label?: unknown;
   inputSource?: unknown;
   uploadedFileName?: unknown;
+  modelId?: unknown;
+  modelChannel?: unknown;
+  imageResolution?: unknown;
+  imageQuality?: unknown;
+  aspectRatio?: unknown;
 };
 
 export type MergeableCanvasNode<T extends CanvasRuntimeData = CanvasRuntimeData> = {
@@ -51,6 +56,11 @@ export function mergeGraphNodesWithRuntime<T extends CanvasRuntimeData>(
         label: n.data.label ?? old.data.label,
         inputSource: n.data.inputSource ?? old.data.inputSource,
         uploadedFileName: n.data.uploadedFileName ?? old.data.uploadedFileName,
+        modelId: n.data.modelId ?? old.data.modelId,
+        modelChannel: n.data.modelChannel ?? old.data.modelChannel,
+        imageResolution: n.data.imageResolution ?? old.data.imageResolution,
+        imageQuality: n.data.imageQuality ?? old.data.imageQuality,
+        aspectRatio: n.data.aspectRatio ?? old.data.aspectRatio,
       },
     };
   });

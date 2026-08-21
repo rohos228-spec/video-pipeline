@@ -44,12 +44,34 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
 
     from app.services import db_apply
 
-    applied = await db_apply.apply_ops(session, project, ops, export_xlsx=True)
+    applied = await db_apply.apply_ops(session, project, ops, export_xlsx=False)
     logger.info(
         "[#{}] split_frames: replace_frames → {} кадров",
         project.id,
         applied.get("replace_frames") or applied.get("updated"),
     )
+
+    # UI (SplitRowView / База excel_rows) и node snapshot читают project.xlsx R49.
+    # Без DB→xlsx после replace_frames снимок остаётся на старых ~N колонках
+    # (проект #33: DB=133, xlsx/UI=80).
+    try:
+        frames_for_export = (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.number)
+            )
+        ).scalars().all()
+        if len(frames_for_export) >= 2:
+            exported = db_apply.export_project_xlsx(project, list(frames_for_export))
+            logger.info(
+                "[#{}] split_frames: export_project_xlsx → {} кадров (cells={})",
+                project.id,
+                exported.get("frames"),
+                exported.get("cells"),
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] split_frames: export_project_xlsx failed: {}", project.id, e)
 
     try:
         from app.services.node_xlsx_snapshot import snapshot_and_bind_node_xlsx
@@ -94,6 +116,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     ):
         meta.pop(key, None)
     meta["split_completed"] = True
+    from app.services.node_step_params import split_params_fingerprint
+
+    meta["split_params_applied"] = split_params_fingerprint(project)
     project.meta = meta
     project.status = ProjectStatus.frames_ready
     await session.flush()

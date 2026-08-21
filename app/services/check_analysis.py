@@ -110,6 +110,57 @@ path: <относительный путь от корня проекта или
 Система сама наложит TSV на копию книги. Остальные листы не трогай.
 """.strip().format(marker=CHECK_WRITEBACK_MARKER)
 
+TXT_REPORT_FOOTER_DB_SOT = """
+---
+ФОРМАТ ОТВЕТА (строго): один текстовый отчёт на русском по БАЗЕ.
+НЕ JSON в секциях отчёта. Excel / TSV / `# Лист:` / project.xlsx НЕ используются.
+
+ВАЖНО ПРО ДАННЫЕ:
+- Источник правды — вложение db_check.json: frames[].uuid + attrs + voiceover,
+  scene_registry, characters.
+- Пустой Excel или отсутствие .xlsx — НЕ ошибка и НЕ finding.
+- Запрещены findings про TSV, `@row=`, «нет frame_uuid в TSV», «нет project.xlsx».
+- UUID кадров бери только из frames[].uuid.
+
+Шаблон (все секции обязательны, в этом порядке):
+
+# ОТЧЁТ ПРОВЕРКИ
+verdict: pass|fail
+mode: fix|report_only
+source_prompts: <nodeKey[, nodeKey…]>
+
+## summary
+2–4 предложения: итог по базе / scene_registry / кадрам.
+
+## analysis
+Что проверяли по исходным промтам; что увидели в db_check.json.
+
+## findings
+- [error] …
+- [warn] …
+
+## related
+- <finding> → промт:<узел> | frame_uuid:… | scene:… | поле:…
+
+## logic
+Что логично / согласовано.
+Что странно или противоречит.
+
+## actions
+Что сделано в этой ноде.
+Что осталось.
+
+## forward
+file: original|fixed
+path: —
+
+Правила:
+- mode=report_only → только отчёт, файл/DB не меняй.
+- mode=fix и нужна правка → после ## forward верни JSON apply-ops:
+  {"ops":[...],"characters":[...],"scenes":[...]}
+  Пайплайн запишет в DB. НЕ пиши --- XLSX_WRITEBACK --- и не пиши TSV.
+""".strip()
+
 _SECTION_RE = re.compile(
     r"(?m)^##\s+(summary|analysis|findings|related|logic|actions|forward|"
     r"scores|issues|regen_heroes|regen_frames|db_patch)\s*$"
@@ -119,7 +170,9 @@ _HEADER_MODE_RE = re.compile(r"(?im)^\s*mode\s*:\s*(\S+)\s*$")
 _HEADER_SOURCES_RE = re.compile(r"(?im)^\s*source_prompts\s*:\s*(.+?)\s*$")
 _FORWARD_FILE_RE = re.compile(r"(?im)^\s*file\s*:\s*(\S+)\s*$")
 _FORWARD_PATH_RE = re.compile(r"(?im)^\s*path\s*:\s*(.+?)\s*$")
-_FINDING_RE = re.compile(r"(?m)^\s*[-*]\s*\[(error|warn|ok|pass|fail)\]\s*(.+?)\s*$")
+_FINDING_RE = re.compile(
+    r"(?m)^\s*[-*]\s*\[(critical|error|warn|warning|minor|ok|pass|fail)\]\s*(.+?)\s*$"
+)
 _REGEN_LINE_RE = re.compile(r"(?im)^\s*regen\s*:\s*(.+?)\s*$")
 _HERO_EXCEL_ID_RE = re.compile(r"\bc(\d{1,3})\b", re.IGNORECASE)
 _HERO_FILE_ID_RE = re.compile(
@@ -662,7 +715,20 @@ def extract_vision_issues(text: str) -> list[dict[str, Any]]:
 
 
 def has_critical_vision_issues(text: str) -> bool:
-    return any(i.get("severity") == "critical" for i in extract_vision_issues(text))
+    """Есть ли critical для regen.
+
+    Явный ``verdict: pass`` без тега ``[critical]``: ``[error]`` не считаем
+    critical (часто это warn, схлопнутый render_check_report_txt, или мягкий
+    finding при pass) — иначе цикл зря гоняет hero/img.
+    """
+    raw = text or ""
+    if not any(i.get("severity") == "critical" for i in extract_vision_issues(raw)):
+        return False
+    if re.search(r"(?im)^\s*verdict\s*:\s*pass\b", raw) and not re.search(
+        r"(?i)\[critical\]", raw
+    ):
+        return False
+    return True
 
 
 _OK_LINE_RE = re.compile(
@@ -1046,6 +1112,20 @@ def looks_like_check_report_txt(text: str) -> bool:
     return False
 
 
+def _json_looks_like_check(obj: dict[str, Any]) -> bool:
+    """JSON — контракт проверки, а не db_check/apply-ops/кадры."""
+    if str(obj.get("schema") or "").strip() == SCHEMA_ID:
+        return True
+    if "verdict" in obj and ("checks" in obj or "fix" in obj or "forward" in obj):
+        return True
+    decision = str(obj.get("decision") or "").strip()
+    if decision and (
+        "criteria" in obj or "issues" in obj or "red_flags" in obj or "checks" in obj
+    ):
+        return True
+    return False
+
+
 def looks_like_check_payload(text: str) -> bool:
     """True, если текст — отчёт проверки (TXT/JSON), а не закадровый текст.
 
@@ -1060,16 +1140,7 @@ def looks_like_check_payload(text: str) -> bool:
     obj = extract_json_object(raw)
     if not isinstance(obj, dict):
         return False
-    if str(obj.get("schema") or "").strip() == SCHEMA_ID:
-        return True
-    if "verdict" in obj and ("checks" in obj or "fix" in obj or "forward" in obj):
-        return True
-    decision = str(obj.get("decision") or "").strip()
-    if decision and (
-        "criteria" in obj or "issues" in obj or "red_flags" in obj or "checks" in obj
-    ):
-        return True
-    return False
+    return _json_looks_like_check(obj)
 
 
 def split_check_reply_and_writeback(text: str) -> tuple[str, str]:
@@ -1157,6 +1228,22 @@ def parse_check_report_txt(text: str) -> CheckAnalysis | None:
     )
 
 
+def _finding_tag_for_check(item: CheckItem) -> str:
+    """Тег findings из CheckItem: не схлопывать warn→error (иначе vision regen)."""
+    if item.ok:
+        return "ok"
+    prefix = (item.id or "").strip().lower().split("_", 1)[0]
+    if prefix in ("warn", "warning"):
+        return "warn"
+    if prefix == "minor":
+        return "minor"
+    if prefix == "critical":
+        return "critical"
+    if prefix in ("error", "fail"):
+        return "error"
+    return "error"
+
+
 def render_check_report_txt(
     analysis: CheckAnalysis,
     *,
@@ -1168,7 +1255,7 @@ def render_check_report_txt(
     sources = ", ".join(str(x).strip() for x in (source_prompts or []) if str(x).strip()) or "—"
     findings_lines: list[str] = []
     for c in analysis.checks:
-        tag = "ok" if c.ok else "error"
+        tag = _finding_tag_for_check(c)
         note = (c.note or c.id or "").strip() or "—"
         findings_lines.append(f"- [{tag}] {note}")
     if not findings_lines:
@@ -1237,6 +1324,9 @@ def parse_check_analysis(text: str, *, require_schema: bool = False) -> CheckAna
     report_text, _wb = split_check_reply_and_writeback(text or "")
     probe = report_text or (text or "")
     obj = extract_json_object(probe)
+    if obj is not None and not _json_looks_like_check(obj):
+        # Модель эхом вернула db_check.json / apply-ops — это не отчёт проверки.
+        obj = None
     if obj is not None:
         if require_schema:
             sid = str(obj.get("schema") or "").strip()

@@ -301,7 +301,10 @@ function HitlPreview({ hitl }: { hitl: HITLDTO }) {
   // Пытаемся понять что показать на основе payload и kind.
   const photoPath = (hitl.payload?.photo_path as string | undefined) ?? null;
   const videoPath = (hitl.payload?.video_path as string | undefined) ?? null;
-  const text = (hitl.payload?.text as string | undefined) ?? null;
+  const text =
+    (hitl as { text?: string | null }).text ??
+    (hitl.payload?.text as string | undefined) ??
+    null;
 
   // Артефакты на диске показывать через GET /api/artifacts/<uuid>/file —
   // но в payload путь файловый, не uuid. Пока показываем как preview-стаб.

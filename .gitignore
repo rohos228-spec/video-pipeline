@@ -11,6 +11,8 @@ dist/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+web/.next/
+web/out/
 
 # Virtualenvs
 .venv/
@@ -22,6 +24,8 @@ env/
 .env.local
 .env.bak
 .env.bak-*
+Data_video_pipeline.env
+STUDIO-LOCAL.cmd
 *.pem
 
 # MCP / local tools
@@ -48,5 +52,11 @@ Thumbs.db
 prompts/**/.history/
 
 # Все промты — только локально (не тянуть с GitHub при install/update)
-prompts/
+prompts/*
 !prompts/.gitkeep
+# Промпты scene_design — часть кода ноды, без них load_prompt падает: держим в git
+!prompts/scene_design/
+# Промпты scene-агентов веера (группа «Сцены: веер агентов») — часть пресета,
+# наследуются всеми ПК: держим в git
+!prompts/05_excel_gpt/
+!prompts/05_excel_gpt/sd_*.md

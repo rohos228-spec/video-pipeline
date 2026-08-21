@@ -32,6 +32,12 @@ from app.web.routers import (
     config_presets as config_presets_router,
 )
 from app.web.routers import (
+    create_queue as create_queue_router,
+)
+from app.web.routers import (
+    db_browser as db_browser_router,
+)
+from app.web.routers import (
     fleet as fleet_router,
 )
 from app.web.routers import (
@@ -41,7 +47,16 @@ from app.web.routers import (
     generation_options as generation_options_router,
 )
 from app.web.routers import (
+    gpt_workspace as gpt_workspace_router,
+)
+from app.web.routers import (
+    grsai as grsai_router,
+)
+from app.web.routers import (
     hitl as hitl_router,
+)
+from app.web.routers import (
+    kie_create as kie_create_router,
 )
 from app.web.routers import (
     knowledge as knowledge_router,
@@ -50,25 +65,13 @@ from app.web.routers import (
     library as library_router,
 )
 from app.web.routers import (
+    node_groups as node_groups_router,
+)
+from app.web.routers import (
     outsee_create as outsee_create_router,
 )
 from app.web.routers import (
     outsee_http as outsee_http_router,
-)
-from app.web.routers import (
-    create_queue as create_queue_router,
-)
-from app.web.routers import (
-    db_browser as db_browser_router,
-)
-from app.web.routers import (
-    gpt_workspace as gpt_workspace_router,
-)
-from app.web.routers import (
-    grsai as grsai_router,
-)
-from app.web.routers import (
-    text_llm as text_llm_router,
 )
 from app.web.routers import (
     project_ops as project_ops_router,
@@ -89,7 +92,13 @@ from app.web.routers import (
     runs as runs_router,
 )
 from app.web.routers import (
+    runtime_streams as runtime_streams_router,
+)
+from app.web.routers import (
     sidebar_layout as sidebar_layout_router,
+)
+from app.web.routers import (
+    text_llm as text_llm_router,
 )
 from app.web.routers import (
     workflows as workflows_router,
@@ -133,6 +142,15 @@ async def _lifespan(app: FastAPI):
         await seed_default_workflow()
     except Exception:  # noqa: BLE001
         logger.exception("seed_default_workflow failed (non-fatal)")
+
+    try:
+        from app.db import session_scope
+        from app.services.node_groups import backfill_group_stamps
+
+        async with session_scope() as s:
+            await backfill_group_stamps(s)
+    except Exception:  # noqa: BLE001
+        logger.exception("node_groups backfill failed (non-fatal)")
 
     try:
         from app.db import session_scope
@@ -224,10 +242,12 @@ def create_app() -> FastAPI:
     app.include_router(outsee_create_router.router, prefix=API_PREFIX)
     app.include_router(outsee_http_router.router, prefix=API_PREFIX)
     app.include_router(create_queue_router.router, prefix=API_PREFIX)
+    app.include_router(kie_create_router.router, prefix=API_PREFIX)
     app.include_router(gpt_workspace_router.router, prefix=API_PREFIX)
     app.include_router(text_llm_router.router, prefix=API_PREFIX)
     app.include_router(grsai_router.router, prefix=API_PREFIX)
     app.include_router(sidebar_layout_router.router, prefix=API_PREFIX)
+    app.include_router(runtime_streams_router.router, prefix=API_PREFIX)
     app.include_router(runs_router.router, prefix=API_PREFIX)
     app.include_router(prompts_router.router, prefix=API_PREFIX)
     app.include_router(prompt_studio_router.router, prefix=API_PREFIX)
@@ -242,6 +262,7 @@ def create_app() -> FastAPI:
     app.include_router(fleet_router.router, prefix=API_PREFIX)
     app.include_router(auth_router.router, prefix=API_PREFIX)
     app.include_router(db_browser_router.router, prefix=API_PREFIX)
+    app.include_router(node_groups_router.router, prefix=API_PREFIX)
 
     @app.api_route(f"{API_PREFIX}/{{rest:path}}", methods=["POST", "PUT", "PATCH", "DELETE"])
     async def api_write_not_found(rest: str) -> None:
@@ -254,12 +275,31 @@ def create_app() -> FastAPI:
         )
 
     # ── WebSocket: live-стрим событий выбранного канала ──
+    # Лимит: утечки на клиенте (до WS-hub) иначе копят 200+ сокетов и
+    # душат event loop — anim_pr / GPT API выглядят «зависшими».
+    _ws_active = {"n": 0}
+    _WS_MAX = 48
+
     @app.websocket("/ws/{channel:path}")
     async def ws_channel(ws: WebSocket, channel: str) -> None:
         """Клиент подписывается на канал (например, `runs.42`, `global`,
         `hitl.7`). Сервер шлёт JSON-сообщения каждое полученное событие.
         """
+        if _ws_active["n"] >= _WS_MAX:
+            await ws.accept()
+            with suppress(Exception):
+                await ws.send_text(
+                    json.dumps(
+                        {
+                            "type": "error",
+                            "detail": f"too many websocket connections (max {_WS_MAX})",
+                        }
+                    )
+                )
+                await ws.close(code=1013)
+            return
         await ws.accept()
+        _ws_active["n"] += 1
         bus = get_bus()
         try:
             async with bus.subscribe(channel) as queue:
@@ -296,6 +336,8 @@ def create_app() -> FastAPI:
             logger.exception("ws channel={} crashed", channel)
             with suppress(Exception):
                 await ws.close(code=1011)
+        finally:
+            _ws_active["n"] = max(0, _ws_active["n"] - 1)
 
     # ── Health ──
     @app.get(f"{API_PREFIX}/health")

@@ -9,11 +9,13 @@ import {
   useMemo,
   useRef,
   useState,
+  type DragEvent as ReactDragEvent,
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  ArrowLeftRight,
   ChevronDown,
   ChevronRight,
   Clapperboard,
@@ -28,7 +30,7 @@ import {
 import { toast } from "sonner";
 import { api, subscribeWS, type MontagePendingOp } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
-import type { MontageBoardFrame } from "@/lib/types";
+import type { MontageBoardDTO, MontageBoardFrame } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -84,6 +86,53 @@ type PromptModalState = {
 
 function trimKey(frameNumber: number, shot: 1 | 2): string {
   return `${frameNumber}:${shot}`;
+}
+
+/** Ключ слота: image → `N:imageS`, video → `N:S`. */
+function slotKeyFromOp(op: Pick<MontagePendingOp, "type" | "frame_number" | "shot">): string {
+  if (String(op.type || "").startsWith("image_")) {
+    return `${op.frame_number}:image${op.shot}`;
+  }
+  return trimKey(op.frame_number, op.shot);
+}
+
+/** Мгновенный preview URL после regen (без ждать полный refetch доски). */
+function filesUrlFromAbsPath(absPath: string): string {
+  return `/api/files?path=${encodeURIComponent(absPath)}&v=${Date.now()}`;
+}
+
+function patchBoardFrameMedia(
+  data: MontageBoardDTO,
+  frameNumber: number,
+  shot: 1 | 2,
+  absPath: string,
+  highlight: string,
+): MontageBoardDTO {
+  const url = filesUrlFromAbsPath(absPath);
+  const isImage = highlight.includes(":image");
+  let changed = false;
+  const frames = data.frames.map((fr) => {
+    if (fr.number !== frameNumber) return fr;
+    changed = true;
+    if (isImage) {
+      return shot === 2
+        ? { ...fr, image_shot2_url: url }
+        : { ...fr, image_shot1_url: url };
+    }
+    return shot === 2
+      ? { ...fr, video_shot2_url: url }
+      : { ...fr, video_shot1_url: url };
+  });
+  return changed ? { ...data, frames } : data;
+}
+
+type SlotTone = "applied" | "pending" | "failed";
+
+function slotToneRing(tone: SlotTone | undefined): string | false {
+  if (tone === "failed") return "ring-2 ring-rose-500/80";
+  if (tone === "pending") return "ring-2 ring-amber-400/70";
+  if (tone === "applied") return "ring-2 ring-emerald-400/60";
+  return false;
 }
 
 function voiceoverForFrame(fr: MontageBoardFrame): string {
@@ -346,25 +395,41 @@ function MediaLightbox({
   );
 }
 
+type SwapSlotPick = {
+  kind: "image" | "video";
+  frameNumber: number;
+  shot: 1 | 2;
+};
+
 const MediaActionBar = memo(function MediaActionBar({
   kind,
   onRegen,
   onEditPrompt,
+  onAiChange,
   onRegenWithCorrection,
   onDelete,
   onUpload,
+  onSwapPick,
+  swapSelected,
+  swapBusy,
 }: {
   kind: "image" | "video";
   onRegen: () => void;
   onEditPrompt: () => void;
+  onAiChange: () => void;
   onRegenWithCorrection?: () => void;
   onDelete: () => void;
   onUpload: (file: File) => void;
+  /** Кнопка обмена: первый клик — выбор, второй — swap с другим слотом. */
+  onSwapPick?: () => void;
+  swapSelected?: boolean;
+  swapBusy?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const imageActions = [
     { label: "Перегенерация без редакции", action: onRegen },
     { label: "Редактировать промт", action: onEditPrompt },
+    { label: "ИИзменение", action: onAiChange },
     ...(onRegenWithCorrection
       ? [{ label: "Перегенерация существующего изображения", action: onRegenWithCorrection }]
       : []),
@@ -372,11 +437,38 @@ const MediaActionBar = memo(function MediaActionBar({
   const videoActions = [
     { label: "Перегенерация без редакции", action: onRegen },
     { label: "Редактировать промт", action: onEditPrompt },
+    { label: "ИИзменение", action: onAiChange },
   ];
   const actions = kind === "image" ? imageActions : videoActions;
 
   return (
     <div className="mt-2 flex items-center gap-1">
+      {onSwapPick && (
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          disabled={swapBusy}
+          className={cn(
+            "h-7 w-7 shrink-0",
+            swapSelected
+              ? "border-amber-400/70 bg-amber-500/25 text-amber-100"
+              : "text-muted-foreground hover:border-amber-400/50 hover:text-amber-200",
+          )}
+          title={
+            swapSelected
+              ? "Выбрано — нажмите ↔ на другом слоте того же типа"
+              : "Обмен: нажмите ↔ на двух слотах (картинка↔картинка или видео↔видео)"
+          }
+          onClick={onSwapPick}
+        >
+          {swapBusy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <ArrowLeftRight className="h-3.5 w-3.5" />
+          )}
+        </Button>
+      )}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button type="button" variant="outline" size="sm" className="h-7 flex-1 px-2 text-[10px]">
@@ -427,6 +519,33 @@ const MediaActionBar = memo(function MediaActionBar({
   );
 });
 
+const MONTAGE_IMAGE_DRAG = "application/x-vp-montage-image";
+
+type ImageSlotRef = { frameNumber: number; shot: 1 | 2 };
+
+/** Chrome часто не отдаёт custom mime в dragOver.types — держим активный drag здесь. */
+let activeImageDrag: ImageSlotRef | null = null;
+
+function parseImageDrag(e: ReactDragEvent): ImageSlotRef | null {
+  if (activeImageDrag) return activeImageDrag;
+  try {
+    const raw =
+      e.dataTransfer.getData(MONTAGE_IMAGE_DRAG) ||
+      e.dataTransfer.getData("text/plain");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ImageSlotRef;
+    if (
+      typeof parsed.frameNumber === "number" &&
+      (parsed.shot === 1 || parsed.shot === 2)
+    ) {
+      return parsed;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
 const ClickableMedia = memo(function ClickableMedia({
   url,
   kind,
@@ -434,12 +553,18 @@ const ClickableMedia = memo(function ClickableMedia({
   onPreview,
   onRegen,
   onEditPrompt,
+  onAiChange,
   onRegenWithCorrection,
   onDelete,
   onUpload,
-  highlighted,
+  slotTone,
   stale,
   scrollRootRef,
+  imageSlot,
+  onImageDrop,
+  onSwapPick,
+  swapSelected,
+  swapBusy,
 }: {
   url: string | null;
   kind: "image" | "video";
@@ -447,16 +572,26 @@ const ClickableMedia = memo(function ClickableMedia({
   onPreview: (p: MediaPreview) => void;
   onRegen: () => void;
   onEditPrompt: () => void;
+  onAiChange: () => void;
   onRegenWithCorrection?: () => void;
   onDelete: () => void;
   onUpload: (file: File) => void;
-  highlighted?: boolean;
+  /** applied=зелёный, pending=янтарь (очередь), failed=красный. */
+  slotTone?: SlotTone;
   stale?: boolean;
   scrollRootRef?: RefObject<HTMLDivElement | null>;
+  /** Слот картинки: drag с файла + drop в пустую/занятую ячейку. */
+  imageSlot?: ImageSlotRef;
+  onImageDrop?: (from: ImageSlotRef) => void;
+  onSwapPick?: () => void;
+  swapSelected?: boolean;
+  swapBusy?: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   // Не монтировать сотни <video>/<img> сразу — Chrome зависает на 150×2 клипах.
   const [inView, setInView] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const canDropImage = kind === "image" && !!imageSlot && !!onImageDrop;
 
   useEffect(() => {
     const el = hostRef.current;
@@ -472,19 +607,60 @@ const ClickableMedia = memo(function ClickableMedia({
     return () => io.disconnect();
   }, [url, scrollRootRef]);
 
+  const dropHandlers = canDropImage
+    ? {
+        onDragOver: (e: ReactDragEvent) => {
+          if (!activeImageDrag) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          setDragOver(true);
+        },
+        onDragLeave: () => setDragOver(false),
+        onDrop: (e: ReactDragEvent) => {
+          e.preventDefault();
+          setDragOver(false);
+          const from = parseImageDrag(e);
+          activeImageDrag = null;
+          if (!from || !imageSlot || !onImageDrop) return;
+          if (from.frameNumber === imageSlot.frameNumber && from.shot === imageSlot.shot) {
+            return;
+          }
+          onImageDrop(from);
+        },
+      }
+    : {};
+
   if (!url) {
     return (
-      <div className={cn(highlighted && "ring-2 ring-emerald-400/60 rounded-lg")}>
-        <div className="flex h-32 w-full items-center justify-center rounded-lg border border-dashed border-white/15 bg-black/20 text-xs text-muted-foreground">
-          нет файла
+      <div
+        className={cn(
+          "rounded-lg",
+          slotToneRing(slotTone),
+          swapSelected && "ring-2 ring-amber-400/70",
+          dragOver && "ring-2 ring-sky-400/70",
+        )}
+        {...dropHandlers}
+      >
+        <div
+          className={cn(
+            "flex h-32 w-full items-center justify-center rounded-lg border border-dashed bg-black/20 text-xs text-muted-foreground",
+            dragOver ? "border-sky-400/60 bg-sky-500/10 text-sky-100" : "border-white/15",
+            swapSelected && "border-amber-400/50 bg-amber-500/10",
+          )}
+        >
+          {dragOver ? "отпустить сюда" : canDropImage ? "нет файла · можно бросить" : "нет файла"}
         </div>
         <MediaActionBar
           kind={kind}
           onRegen={onRegen}
           onEditPrompt={onEditPrompt}
+          onAiChange={onAiChange}
           onRegenWithCorrection={onRegenWithCorrection}
           onDelete={onDelete}
           onUpload={onUpload}
+          onSwapPick={onSwapPick}
+          swapSelected={swapSelected}
+          swapBusy={swapBusy}
         />
       </div>
     );
@@ -497,9 +673,13 @@ const ClickableMedia = memo(function ClickableMedia({
       ref={hostRef}
       className={cn(
         "rounded-lg",
-        highlighted && "ring-2 ring-emerald-400/60",
-        stale && "ring-2 ring-amber-500/50",
+        slotToneRing(slotTone),
+        // stale только если нет статуса apply (иначе failed/pending важнее).
+        !slotTone && stale && "ring-2 ring-amber-500/50",
+        swapSelected && "ring-2 ring-amber-400/70",
+        dragOver && "ring-2 ring-sky-400/70",
       )}
+      {...dropHandlers}
     >
       {kind === "video" ? (
         <button
@@ -510,9 +690,10 @@ const ClickableMedia = memo(function ClickableMedia({
         >
           {inView ? (
             <video
+              key={url}
               src={url}
               className="h-full w-full object-cover transition group-hover:brightness-110"
-              preload="none"
+              preload="metadata"
               muted
               playsInline
             />
@@ -528,17 +709,36 @@ const ClickableMedia = memo(function ClickableMedia({
       ) : (
         <button
           type="button"
-          className="group block h-32 w-full overflow-hidden rounded-lg border border-white/10 bg-black"
+          draggable={!!imageSlot}
+          className="group block h-32 w-full cursor-grab overflow-hidden rounded-lg border border-white/10 bg-black active:cursor-grabbing"
           onClick={open}
-          title={`Открыть ${label}`}
+          title={
+            imageSlot
+              ? `Открыть ${label} · перетащи в другую ячейку (в т.ч. пустую)`
+              : `Открыть ${label}`
+          }
+          onDragStart={(e) => {
+            if (!imageSlot) return;
+            activeImageDrag = imageSlot;
+            const payload = JSON.stringify(imageSlot);
+            e.dataTransfer.setData(MONTAGE_IMAGE_DRAG, payload);
+            e.dataTransfer.setData("text/plain", payload);
+            e.dataTransfer.effectAllowed = "move";
+          }}
+          onDragEnd={() => {
+            activeImageDrag = null;
+            setDragOver(false);
+          }}
         >
           {inView ? (
             /* eslint-disable-next-line @next/next/no-img-element */
             <img
+              key={url}
               src={url}
               alt={label}
               loading="lazy"
               decoding="async"
+              draggable={false}
               className="h-full w-full object-cover transition group-hover:scale-[1.02] group-hover:brightness-110"
             />
           ) : (
@@ -550,9 +750,13 @@ const ClickableMedia = memo(function ClickableMedia({
         kind={kind}
         onRegen={onRegen}
         onEditPrompt={onEditPrompt}
+        onAiChange={onAiChange}
         onRegenWithCorrection={onRegenWithCorrection}
         onDelete={onDelete}
         onUpload={onUpload}
+        onSwapPick={onSwapPick}
+        swapSelected={swapSelected}
+        swapBusy={swapBusy}
       />
     </div>
   );
@@ -732,11 +936,15 @@ const VideoMediaCell = memo(function VideoMediaCell({
   onTrimChange,
   onRegen,
   onEditPrompt,
+  onAiChange,
   onDelete,
   onUpload,
-  highlighted,
+  slotTone,
   stale,
   scrollRootRef,
+  onSwapPick,
+  swapSelected,
+  swapBusy,
 }: {
   fr: MontageBoardFrame;
   shot: 1 | 2;
@@ -746,11 +954,15 @@ const VideoMediaCell = memo(function VideoMediaCell({
   onTrimChange: (next: VideoTrim) => void;
   onRegen: () => void;
   onEditPrompt: () => void;
+  onAiChange: () => void;
   onDelete: () => void;
   onUpload: (file: File) => void;
-  highlighted?: boolean;
+  slotTone?: SlotTone;
   stale?: boolean;
   scrollRootRef?: RefObject<HTMLDivElement | null>;
+  onSwapPick?: () => void;
+  swapSelected?: boolean;
+  swapBusy?: boolean;
 }) {
   const isShot2 = shot === 2;
   const sceneUse = isShot2 ? fr.shot2_use_seconds : fr.shot1_use_seconds;
@@ -772,11 +984,15 @@ const VideoMediaCell = memo(function VideoMediaCell({
         onPreview={onPreview}
         onRegen={onRegen}
         onEditPrompt={onEditPrompt}
+        onAiChange={onAiChange}
         onDelete={onDelete}
         onUpload={onUpload}
-        highlighted={highlighted}
+        slotTone={slotTone}
         stale={stale}
         scrollRootRef={scrollRootRef}
+        onSwapPick={onSwapPick}
+        swapSelected={swapSelected}
+        swapBusy={swapBusy}
       />
       <VideoTrimSlider
         fileDuration={fileDur}
@@ -936,10 +1152,14 @@ export function AssembleMontageBoard({
   const [pendingOps, setPendingOps] = useState<MontagePendingOp[]>([]);
   const [promptModal, setPromptModal] = useState<PromptModalState>(null);
   const [highlights, setHighlights] = useState<string[]>([]);
+  const [failedHighlights, setFailedHighlights] = useState<string[]>([]);
   const [staleVideos, setStaleVideos] = useState<string[]>([]);
   const [montageRunning, setMontageRunning] = useState(false);
   const [applyRunning, setApplyRunning] = useState(false);
   const [recoverRunning, setRecoverRunning] = useState(false);
+  const [swapPick, setSwapPick] = useState<SwapSlotPick | null>(null);
+  const [swapBusy, setSwapBusy] = useState(false);
+  const [moveImageBusy, setMoveImageBusy] = useState(false);
   const [applyProgress, setApplyProgress] = useState<{ done: number; total: number } | null>(
     null,
   );
@@ -974,8 +1194,15 @@ export function AssembleMontageBoard({
     // остаются на кнопке «Применить правки» при переключении.
   });
 
-  // Сброс локальной очереди при смене проекта (даже если key сменился снаружи).
+  // Сброс локальной очереди при смене проекта — СНАЧАЛА flush старой очереди.
+  const prevProjectIdRef = useRef<number | null>(null);
   useEffect(() => {
+    const prev = prevProjectIdRef.current;
+    prevProjectIdRef.current = projectId;
+    if (prev != null && prev !== projectId && localQueueDirtyRef.current) {
+      const ops = pendingOpsRef.current;
+      void api.saveMontageQueue(prev, { pending_ops: ops }).catch(() => {});
+    }
     setPendingOps([]);
     pendingOpsRef.current = [];
     localQueueDirtyRef.current = false;
@@ -984,6 +1211,7 @@ export function AssembleMontageBoard({
     applySeenRunningRef.current = false;
     setTrims({});
     setHighlights([]);
+    setFailedHighlights([]);
     setStaleVideos([]);
     setApplyRunning(false);
     setApplyProgress(null);
@@ -991,6 +1219,8 @@ export function AssembleMontageBoard({
     setRecoverRunning(false);
     setPromptModal(null);
     setPreview(null);
+    setSwapPick(null);
+    setSwapBusy(false);
     lastApplyToastKeyRef.current = "";
   }, [projectId]);
 
@@ -1002,9 +1232,22 @@ export function AssembleMontageBoard({
       queryFn: () => api.getProject(projectId),
       staleTime: 30_000,
     });
-    // Подтянуть highlights/клипы после apply (staleTime иначе держит пустую подсветку).
-    void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
+    // После regen staleTime/кэш иначе показывает старые клипы и пустую подсветку.
+    void queryClient.resetQueries({ queryKey: ["montage-board", projectId] });
   }, [open, projectId, queryClient]);
+
+  // При закрытии панели — сразу сохранить очередь (не ждать debounce).
+  useEffect(() => {
+    if (open || projectId == null) return;
+    if (!localQueueDirtyRef.current) return;
+    const ops = pendingOpsRef.current;
+    void api
+      .saveMontageQueue(projectId, { pending_ops: ops })
+      .then(() => {
+        localQueueDirtyRef.current = false;
+      })
+      .catch(() => {});
+  }, [open, projectId]);
 
   const frames = board.data?.frames ?? [];
   const meta = board.data?.meta;
@@ -1021,8 +1264,10 @@ export function AssembleMontageBoard({
         t !== "image_regen" &&
         t !== "image_regen_prompt" &&
         t !== "image_regen_correction" &&
+        t !== "image_ai_change" &&
         t !== "video_regen" &&
-        t !== "video_regen_prompt"
+        t !== "video_regen_prompt" &&
+        t !== "video_ai_change"
       ) {
         continue;
       }
@@ -1046,6 +1291,7 @@ export function AssembleMontageBoard({
     if (board.isFetching) return;
 
     setHighlights(meta?.highlights ?? []);
+    setFailedHighlights(meta?.failed_highlights ?? []);
     setStaleVideos(meta?.stale_videos ?? []);
     if (!trimsDirtyRef.current) {
       setTrims(mergeTrimsFromMeta(frames, meta?.video_trims ?? {}));
@@ -1057,15 +1303,15 @@ export function AssembleMontageBoard({
     if (board.data == null) return;
 
     const restored = parsePendingOps(meta?.pending_ops);
-    if (localQueueDirtyRef.current && restored.length === 0) {
-      // Локальная очередь пользователя важнее пустого meta.
+    // Пока пользователь набирает очередь (dirty) — НИКОГДА не затирать её
+    // серверным meta. Иначе: локально 40+, на сервере старые 8 → «стало 8».
+    if (localQueueDirtyRef.current) {
       return;
     }
     const nextKey = JSON.stringify(restored);
     if (nextKey === JSON.stringify(pendingOpsRef.current)) return;
     pendingOpsRef.current = restored;
     setPendingOps(restored);
-    localQueueDirtyRef.current = false;
   }, [
     projectId,
     board.data,
@@ -1074,6 +1320,7 @@ export function AssembleMontageBoard({
     frames.length,
     meta?.video_trims,
     meta?.highlights,
+    meta?.failed_highlights,
     meta?.stale_videos,
     pendingOpsKey,
     applyRunning,
@@ -1084,15 +1331,42 @@ export function AssembleMontageBoard({
     setPreview(p);
   }, []);
 
-  const queueOp = useCallback((op: MontagePendingOp) => {
-    localQueueDirtyRef.current = true;
-    setPendingOps((prev) => {
-      const next = [...prev, op];
-      pendingOpsRef.current = next;
-      return next;
-    });
-    toast.message("Операция в очереди — нажмите «Применить правки»");
-  }, []);
+  const queueSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const persistQueue = useCallback(
+    (ops: MontagePendingOp[]) => {
+      if (projectId == null) return;
+      // Во время apply очередь пишет сам apply (_finish_op) — клиентский
+      // debounce с [] или устаревшим списком иначе затирает remaining.
+      if (applyRunning) return;
+      if (queueSaveTimerRef.current) clearTimeout(queueSaveTimerRef.current);
+      queueSaveTimerRef.current = setTimeout(() => {
+        void api
+          .saveMontageQueue(projectId, {
+            pending_ops: ops,
+            video_trims: trimsDirtyRef.current ? trims : undefined,
+          })
+          .catch(() => {
+            // Не мешаем набору очереди — при следующем add/retry сохранится.
+          });
+      }, 400);
+    },
+    [projectId, trims, applyRunning],
+  );
+
+  const queueOp = useCallback(
+    (op: MontagePendingOp) => {
+      localQueueDirtyRef.current = true;
+      setPendingOps((prev) => {
+        const next = [...prev, op];
+        pendingOpsRef.current = next;
+        persistQueue(next);
+        return next;
+      });
+      toast.message("Операция в очереди — нажмите «Применить правки»");
+    },
+    [persistQueue],
+  );
 
   const applyMutation = useMutation({
     mutationFn: () => {
@@ -1111,8 +1385,13 @@ export function AssembleMontageBoard({
         submittedApplyRef.current = true;
         localQueueDirtyRef.current = false;
         trimsDirtyRef.current = false;
+        if (queueSaveTimerRef.current) {
+          clearTimeout(queueSaveTimerRef.current);
+          queueSaveTimerRef.current = null;
+        }
         setPendingOps([]);
         pendingOpsRef.current = [];
+        setFailedHighlights([]);
         applySeenRunningRef.current = false;
         setApplyRunning(true);
         lastApplyToastKeyRef.current = "";
@@ -1133,6 +1412,7 @@ export function AssembleMontageBoard({
       pendingOpsRef.current = [];
       if (res.meta) {
         setHighlights(res.meta.highlights ?? []);
+        setFailedHighlights(res.meta.failed_highlights ?? []);
         setStaleVideos(res.meta.stale_videos ?? []);
         if (res.meta.video_trims) {
           setTrims(mergeTrimsFromMeta(frames, res.meta.video_trims));
@@ -1239,13 +1519,18 @@ export function AssembleMontageBoard({
         else if (status === "cancelled") toast.message("Генерация остановлена");
       }
       void queryClient
-        .fetchQuery({
-          queryKey: ["montage-board", projectId],
-          queryFn: () => api.getMontageBoard(projectId!),
-        })
+        .resetQueries({ queryKey: ["montage-board", projectId] })
+        .then(() =>
+          queryClient.fetchQuery({
+            queryKey: ["montage-board", projectId],
+            queryFn: () => api.getMontageBoard(projectId!),
+          }),
+        )
         .then((data) => {
           const hl = data?.meta?.highlights;
           if (Array.isArray(hl)) setHighlights(hl.map(String));
+          const failed = data?.meta?.failed_highlights;
+          if (Array.isArray(failed)) setFailedHighlights(failed.map(String));
           const stale = data?.meta?.stale_videos;
           if (Array.isArray(stale)) setStaleVideos(stale.map(String));
           const restored = parsePendingOps(data?.meta?.pending_ops);
@@ -1315,6 +1600,9 @@ export function AssembleMontageBoard({
           saved_count?: number;
           refresh_board?: boolean;
           highlight?: string;
+          frame_number?: number;
+          shot?: number;
+          path?: string;
         };
       };
       if (evt.payload?.stopped) {
@@ -1355,15 +1643,35 @@ export function AssembleMontageBoard({
               setApplyProgress({ done: doneOps, total: totalOps });
             });
           }
-          // Только когда реально сменился кадр — не на каждый progress-тикт.
-          if (evt.payload.refresh_board) {
-            void queryClient.invalidateQueries({
-              queryKey: ["montage-board", projectId],
-            });
-          }
           const hl = evt.payload.highlight;
           if (typeof hl === "string" && hl) {
             setHighlights((prev) => (prev.includes(hl) ? prev : [...prev, hl]));
+            setFailedHighlights((prev) => prev.filter((k) => k !== hl));
+          }
+          // Сразу подменить превью кадра из path — полный refetch доски слишком редкий/тяжёлый.
+          const absPath = evt.payload.path;
+          const frNum = Number(evt.payload.frame_number);
+          const shotRaw = Number(evt.payload.shot);
+          const shot: 1 | 2 = shotRaw === 2 ? 2 : 1;
+          if (
+            typeof absPath === "string" &&
+            absPath &&
+            Number.isFinite(frNum) &&
+            frNum >= 1 &&
+            typeof hl === "string" &&
+            hl
+          ) {
+            queryClient.setQueryData<MontageBoardDTO>(
+              ["montage-board", projectId],
+              (old) =>
+                old
+                  ? patchBoardFrameMedia(old, frNum, shot, absPath, hl)
+                  : old,
+            );
+          } else if (evt.payload.refresh_board) {
+            void queryClient.invalidateQueries({
+              queryKey: ["montage-board", projectId],
+            });
           }
         } else if (status === "done" || status === "error" || status === "cancelled") {
           if (!applySeenRunningRef.current && status !== "cancelled") return;
@@ -1501,6 +1809,37 @@ export function AssembleMontageBoard({
     }
   };
 
+  const handleMoveImage = async (from: ImageSlotRef, to: ImageSlotRef) => {
+    if (!projectId || moveImageBusy) return;
+    if (from.frameNumber === to.frameNumber && from.shot === to.shot) return;
+    setMoveImageBusy(true);
+    try {
+      const res = await api.moveMontageImage(
+        projectId,
+        from.frameNumber,
+        from.shot,
+        to.frameNumber,
+        to.shot,
+      );
+      setStaleVideos((prev) => {
+        const next = new Set(prev);
+        next.add(trimKey(from.frameNumber, from.shot));
+        next.add(trimKey(to.frameNumber, to.shot));
+        return [...next];
+      });
+      refreshBoard();
+      toast.success(
+        res.mode === "move"
+          ? `Картинка → #${to.frameNumber} shot${to.shot}`
+          : `Обмен #${from.frameNumber}.${from.shot} ↔ #${to.frameNumber}.${to.shot}`,
+      );
+    } catch (e) {
+      toast.error(errorMessageFromUnknown(e));
+    } finally {
+      setMoveImageBusy(false);
+    }
+  };
+
   const handleDeleteVideo = async (frameNumber: number, shot: 1 | 2) => {
     if (!projectId) return;
     try {
@@ -1535,6 +1874,78 @@ export function AssembleMontageBoard({
       toast.success("Видео загружено");
     } catch (e) {
       toast.error(errorMessageFromUnknown(e));
+    }
+  };
+
+  const isSwapSelected = (kind: "image" | "video", frameNumber: number, shot: 1 | 2) =>
+    swapPick?.kind === kind &&
+    swapPick.frameNumber === frameNumber &&
+    swapPick.shot === shot;
+
+  const handleSwapPick = async (slot: SwapSlotPick) => {
+    if (!projectId || swapBusy) return;
+    if (!swapPick) {
+      setSwapPick(slot);
+      toast.message(
+        slot.kind === "image"
+          ? `Выбрано изображение #${slot.frameNumber}.${slot.shot} — нажмите ↔ на другом`
+          : `Выбрано видео #${slot.frameNumber}.${slot.shot} — нажмите ↔ на другом`,
+      );
+      return;
+    }
+    if (
+      swapPick.kind === slot.kind &&
+      swapPick.frameNumber === slot.frameNumber &&
+      swapPick.shot === slot.shot
+    ) {
+      setSwapPick(null);
+      return;
+    }
+    if (swapPick.kind !== slot.kind) {
+      setSwapPick(slot);
+      toast.message(
+        slot.kind === "image"
+          ? `Выбрано изображение #${slot.frameNumber}.${slot.shot} — нажмите ↔ на другом`
+          : `Выбрано видео #${slot.frameNumber}.${slot.shot} — нажмите ↔ на другом`,
+      );
+      return;
+    }
+    setSwapBusy(true);
+    try {
+      const res = await api.swapMontageSlots(projectId, slot.kind, swapPick, slot);
+      if (slot.kind === "video") {
+        setTrims((prev) => {
+          const k1 = trimKey(swapPick.frameNumber, swapPick.shot);
+          const k2 = trimKey(slot.frameNumber, slot.shot);
+          const t1 = prev[k1];
+          const t2 = prev[k2];
+          if (t1 == null && t2 == null) return prev;
+          const next = { ...prev };
+          if (t2 == null) delete next[k1];
+          else next[k1] = t2;
+          if (t1 == null) delete next[k2];
+          else next[k2] = t1;
+          return next;
+        });
+      }
+      setStaleVideos((prev) => {
+        const next = new Set(prev);
+        next.add(trimKey(swapPick.frameNumber, swapPick.shot));
+        next.add(trimKey(slot.frameNumber, slot.shot));
+        return [...next];
+      });
+      setSwapPick(null);
+      refreshBoard();
+      const label = slot.kind === "image" ? "картинки" : "видео";
+      toast.success(
+        res.mode === "move"
+          ? `${label}: перенос #${res.from_frame}.${res.from_shot} → #${res.to_frame}.${res.to_shot}`
+          : `${label}: обмен #${swapPick.frameNumber}.${swapPick.shot} ↔ #${slot.frameNumber}.${slot.shot}`,
+      );
+    } catch (e) {
+      toast.error(errorMessageFromUnknown(e));
+    } finally {
+      setSwapBusy(false);
     }
   };
 
@@ -1610,7 +2021,36 @@ export function AssembleMontageBoard({
     queueOp(op);
   };
 
-  const isHighlighted = (key: string) => highlights.includes(key);
+  const pendingSlotKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const op of pendingOps) {
+      keys.add(slotKeyFromOp(op));
+    }
+    return keys;
+  }, [pendingOps]);
+
+  const failedSlotKeys = useMemo(() => new Set(failedHighlights), [failedHighlights]);
+  const appliedSlotKeys = useMemo(() => new Set(highlights), [highlights]);
+
+  const toneForSlot = useCallback(
+    (key: string): SlotTone | undefined => {
+      // failed > pending (доделать) > applied
+      if (failedSlotKeys.has(key)) return "failed";
+      if (pendingSlotKeys.has(key)) return "pending";
+      if (appliedSlotKeys.has(key)) return "applied";
+      return undefined;
+    },
+    [failedSlotKeys, pendingSlotKeys, appliedSlotKeys],
+  );
+
+  const pendingOnlyCount = useMemo(() => {
+    let n = 0;
+    for (const key of pendingSlotKeys) {
+      if (!failedSlotKeys.has(key)) n += 1;
+    }
+    return n;
+  }, [pendingSlotKeys, failedSlotKeys]);
+
   const isStaleVideo = (frameNumber: number, shot: 1 | 2) =>
     staleVideos.includes(trimKey(frameNumber, shot));
 
@@ -1647,11 +2087,17 @@ export function AssembleMontageBoard({
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !preview) onClose();
+      if (e.key !== "Escape") return;
+      if (swapPick) {
+        e.preventDefault();
+        setSwapPick(null);
+        return;
+      }
+      if (!preview) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose, preview]);
+  }, [open, onClose, preview, swapPick]);
 
   const toggleRow = (key: RowKey) => {
     setCollapsedRows((prev) => {
@@ -1678,8 +2124,34 @@ export function AssembleMontageBoard({
             <div>
               <h2 className="text-base font-semibold">Панель монтажа</h2>
               <p className="text-xs text-muted-foreground">
-                Кадры ролика — озвучка, персонажи, медиа и таймкоды
+                {swapPick
+                  ? `Обмен ${swapPick.kind === "image" ? "картинок" : "видео"}: выбран #${swapPick.frameNumber}.${swapPick.shot} — нажмите ↔ на другом слоте (Esc — отмена)`
+                  : "Кадры ролика — ↔ на двух слотах меняет местами картинки или видео"}
               </p>
+              {(highlights.length > 0 ||
+                failedHighlights.length > 0 ||
+                pendingOnlyCount > 0) && (
+                <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                  {highlights.length > 0 && (
+                    <span>
+                      <span className="mr-1 inline-block h-2 w-2 rounded-full bg-emerald-400/80" />
+                      применено {highlights.length}
+                    </span>
+                  )}
+                  {pendingOnlyCount > 0 && (
+                    <span>
+                      <span className="mr-1 inline-block h-2 w-2 rounded-full bg-amber-400/80" />
+                      в очереди {pendingOnlyCount}
+                    </span>
+                  )}
+                  {failedHighlights.length > 0 && (
+                    <span>
+                      <span className="mr-1 inline-block h-2 w-2 rounded-full bg-rose-500/80" />
+                      ошибка {failedHighlights.length}
+                    </span>
+                  )}
+                </p>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -1835,7 +2307,7 @@ export function AssembleMontageBoard({
                         <th
                           key={fr.frame_id}
                           className={cn(
-                            "border-b border-white/10 px-3 py-2 text-center font-mono text-xs",
+                            "border-b border-white/10 px-2 py-2 text-center font-mono text-xs",
                             FRAME_COL_CLASS,
                           )}
                         >
@@ -1903,6 +2375,13 @@ export function AssembleMontageBoard({
                                   label={`Изображение 1 · кадр #${fr.number}`}
                                   onPreview={showPreview}
                                   scrollRootRef={tableScrollRef}
+                                  imageSlot={{ frameNumber: fr.number, shot: 1 }}
+                                  onImageDrop={(from) =>
+                                    void handleMoveImage(from, {
+                                      frameNumber: fr.number,
+                                      shot: 1,
+                                    })
+                                  }
                                   onRegen={() =>
                                     queueOp({
                                       type: "image_regen",
@@ -1912,23 +2391,43 @@ export function AssembleMontageBoard({
                                     })
                                   }
                                   onEditPrompt={() => openPromptModal("image", fr.number, 1, "prompt")}
+                                  onAiChange={() =>
+                                    queueOp({
+                                      type: "image_ai_change",
+                                      frame_number: fr.number,
+                                      shot: 1,
+                                    })
+                                  }
                                   onRegenWithCorrection={() =>
                                     openPromptModal("image", fr.number, 1, "correction")
                                   }
                                   onDelete={() => void handleDeleteImage(fr.number, 1)}
                                   onUpload={(file) => void handleUploadImage(fr.number, 1, file)}
-                                  highlighted={isHighlighted(`${fr.number}:image1`)}
+                                  slotTone={toneForSlot(`${fr.number}:image1`)}
+                                  onSwapPick={() =>
+                                    void handleSwapPick({
+                                      kind: "image",
+                                      frameNumber: fr.number,
+                                      shot: 1,
+                                    })
+                                  }
+                                  swapSelected={isSwapSelected("image", fr.number, 1)}
+                                  swapBusy={swapBusy}
                                 />
                               ) : row.key === "image2" ? (
-                                !fr.has_shot2 ? (
-                                  <p className="text-xs text-muted-foreground">Второй кадр не задан</p>
-                                ) : (
                                 <ClickableMedia
                                   url={fr.image_shot2_url}
                                   kind="image"
                                   label={`Изображение 2 · кадр #${fr.number}`}
                                   onPreview={showPreview}
                                   scrollRootRef={tableScrollRef}
+                                  imageSlot={{ frameNumber: fr.number, shot: 2 }}
+                                  onImageDrop={(from) =>
+                                    void handleMoveImage(from, {
+                                      frameNumber: fr.number,
+                                      shot: 2,
+                                    })
+                                  }
                                   onRegen={() =>
                                     queueOp({
                                       type: "image_regen",
@@ -1938,14 +2437,29 @@ export function AssembleMontageBoard({
                                     })
                                   }
                                   onEditPrompt={() => openPromptModal("image", fr.number, 2, "prompt")}
+                                  onAiChange={() =>
+                                    queueOp({
+                                      type: "image_ai_change",
+                                      frame_number: fr.number,
+                                      shot: 2,
+                                    })
+                                  }
                                   onRegenWithCorrection={() =>
                                     openPromptModal("image", fr.number, 2, "correction")
                                   }
                                   onDelete={() => void handleDeleteImage(fr.number, 2)}
                                   onUpload={(file) => void handleUploadImage(fr.number, 2, file)}
-                                  highlighted={isHighlighted(`${fr.number}:image2`)}
+                                  slotTone={toneForSlot(`${fr.number}:image2`)}
+                                  onSwapPick={() =>
+                                    void handleSwapPick({
+                                      kind: "image",
+                                      frameNumber: fr.number,
+                                      shot: 2,
+                                    })
+                                  }
+                                  swapSelected={isSwapSelected("image", fr.number, 2)}
+                                  swapBusy={swapBusy}
                                 />
-                                )
                               ) : row.key === "video1" ? (
                                 <VideoMediaCell
                                   fr={fr}
@@ -1963,10 +2477,26 @@ export function AssembleMontageBoard({
                                     })
                                   }
                                   onEditPrompt={() => openPromptModal("video", fr.number, 1, "prompt")}
+                                  onAiChange={() =>
+                                    queueOp({
+                                      type: "video_ai_change",
+                                      frame_number: fr.number,
+                                      shot: 1,
+                                    })
+                                  }
                                   onDelete={() => void handleDeleteVideo(fr.number, 1)}
                                   onUpload={(file) => void handleUploadVideo(fr.number, 1, file)}
-                                  highlighted={isHighlighted(trimKey(fr.number, 1))}
+                                  slotTone={toneForSlot(trimKey(fr.number, 1))}
                                   stale={isStaleVideo(fr.number, 1)}
+                                  onSwapPick={() =>
+                                    void handleSwapPick({
+                                      kind: "video",
+                                      frameNumber: fr.number,
+                                      shot: 1,
+                                    })
+                                  }
+                                  swapSelected={isSwapSelected("video", fr.number, 1)}
+                                  swapBusy={swapBusy}
                                 />
                               ) : (
                                 <VideoMediaCell
@@ -1985,10 +2515,26 @@ export function AssembleMontageBoard({
                                     })
                                   }
                                   onEditPrompt={() => openPromptModal("video", fr.number, 2, "prompt")}
+                                  onAiChange={() =>
+                                    queueOp({
+                                      type: "video_ai_change",
+                                      frame_number: fr.number,
+                                      shot: 2,
+                                    })
+                                  }
                                   onDelete={() => void handleDeleteVideo(fr.number, 2)}
                                   onUpload={(file) => void handleUploadVideo(fr.number, 2, file)}
-                                  highlighted={isHighlighted(trimKey(fr.number, 2))}
+                                  slotTone={toneForSlot(trimKey(fr.number, 2))}
                                   stale={isStaleVideo(fr.number, 2)}
+                                  onSwapPick={() =>
+                                    void handleSwapPick({
+                                      kind: "video",
+                                      frameNumber: fr.number,
+                                      shot: 2,
+                                    })
+                                  }
+                                  swapSelected={isSwapSelected("video", fr.number, 2)}
+                                  swapBusy={swapBusy}
                                 />
                               )}
                             </td>

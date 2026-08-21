@@ -553,14 +553,29 @@ def writeback_project_xlsx(
     reply_text: str,
     downloaded_paths: list[Path] | None = None,
 ) -> Path | None:
-    """Обновить project.xlsx из скачанного .xlsx или TSV-ответа.
+    """Запрещено: Excel меняется только через excel_io Export/Import.
 
-    Перед любой мутацией живого файла — backup в ``old/<ts>_project.xlsx``
-    (result-снимок ноды снимается уже *после* записи; без этого откат
-    на «до GPT» невозможен).
-
-    Возвращает путь к project.xlsx при успехе, иначе None.
+    Раньше обновлял project.xlsx из скачанного .xlsx или TSV.
     """
+    raise RuntimeError(
+        "Excel writeback отключён: правки только через apply-ops (БД) "
+        "или кнопки Import/Export (excel_io). "
+        f"Игнорирую writeback для {project_xlsx}"
+    )
+    # unreachable — legacy body removed from runtime path
+    downloaded_paths = list(downloaded_paths or [])
+    reply = reply_text or ""
+    del reply, downloaded_paths
+    return None
+
+
+def _writeback_project_xlsx_legacy_disabled(
+    *,
+    project_xlsx: Path,
+    reply_text: str,
+    downloaded_paths: list[Path] | None = None,
+) -> Path | None:
+    """Legacy implementation kept for reference/tests that patch this — unused."""
     downloaded_paths = list(downloaded_paths or [])
     reply = reply_text or ""
     backed_up = False

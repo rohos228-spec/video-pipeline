@@ -44,6 +44,7 @@ _MANUAL_CHILD_META_KEYS = frozenset(
         "excel_gpt_nodes",
         "node_step_params",
         "sidebar_folder_id",
+        "scene_design_enabled",
     }
 )
 

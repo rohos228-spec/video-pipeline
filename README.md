@@ -1,61 +1,129 @@
-# video-pipeline
+﻿# 🎬 Video Pipeline (Studio & Autonomous Orchestration)
 
-Автоматический конвейер генерации коротких роликов (60–75 сек, 9:16) с оркестрацией, **веб-студией** (HITL и запуск шагов) и опциональным Telegram-ботом. Интеграции: outsee.io (Nano Banana 2 + Veo 3.1 Fast Relax), ChatGPT web, 11Labs, Whisper, FFmpeg и MoreLogin.
+> **Автоматический модульный конвейер генерации коротких и длинных видеороликов (9:16 / 16:9)** с интерактивной **Веб-Студией**, HITL-контролем (Human-In-The-Loop), нейросетевыми агентами сценариев и надежной архитектурой с защитой от сбоев.
 
-## Стек
+---
 
-- Python 3.11 (pure Python, без Docker)
-- SQLite + aiosqlite (локальное состояние)
-- SQLAlchemy 2 + Alembic (ORM + миграции)
-- aiogram 3 (Telegram-бот) + FastAPI (внутренний API / webhook)
-- Playwright (async, через CDP `localhost:29229` к существующему Chrome пользователя)
-- faster-whisper (локальный Whisper для субтитров)
-- ffmpeg-python (обёртка над FFmpeg)
-- pydantic-settings (конфиги), loguru (логи)
+## 🌟 Возможности и Ключевые Архитектурные Решения
 
-## Ключевые решения
+- 🎨 **Интерактивная Веб-Студия (Next.js 15 + Tailwind CSS):**
+  - Визуальный граф пайплайна (Canvas Graph) с индикацией статусов и прогресса.
+  - Пошаговый HITL-контроль: проверка и редактирование сценария, раскадровки, промптов и видео на каждом этапе.
+  - Селекторы моделей ИИ для каждого узла генерации.
+- ⚙️ **Единый источник истины (Database-First):**
+  - SQLite + `aiosqlite` + `SQLAlchemy 2.0` — все шаги, кадры и артефакты синхронизируются в БД.
+  - Экспорт и импорт в `project.xlsx` без потери состояния.
+- 🤖 **Мультимодельный ИИ-Транспорт:**
+  - **Текст/Сценарии:** GPT 5.5 / 5.6 Sol через VPS Relay, Kie Responses, Kimi K3 (TokenRouter).
+  - **Изображения:** Outsee (Nano Banana 2, GPT Image 2), ComfyUI.
+  - **Видео:** Veo 3.1 Lite/Fast, Kling 2.6 через Kie.
+  - **Озвучка и субтитры:** ElevenLabs, faster-whisper, edge-tts.
+- 🛡️ **Надежность промышленного уровня (Fault-Tolerance):**
+  - **Защита от потери данных:** автоматический бэкап готовых сцен и видео в `data/.../old/scenes/` перед любыми сбросами.
+  - **Умное восстановление:** автоснятие залипших блокировок (`img_gen_inflight`) при разрыве связи.
+  - **Бесшовный Fallback хостинга:** автоматическое переключение на публичные хранилища (Litterbox/Catbox/Uguu), если Yandex Cloud S3 не сконфигурирован.
+  - **Устойчивый статус проекта:** монотонная прогрессия статусов без ложных откатов назад.
 
-- **Без Docker.** Всё крутится напрямую на Windows/macOS/Linux, `python -m app.main` — и всё.
-- **Короткий формат:** 60–75 сек, вертикаль 9:16, кадры по 2–4 сек, 15–30 кадров на ролик, 1000–1300 знаков текста.
-- **1 слой:** все кадры одиночные, без «сборных сцен».
-- **БД — источник правды.** Excel генерится экспортом по запросу из Telegram-бота.
-- **HITL-гейты** по умолчанию: концепт/план, сценарий, референс ГГ (если нужен), все сцены перед анимацией, все видео перед сборкой, финальный ролик перед публикацией.
-- **Площадки:** TikTok, YouTube Shorts, Instagram Reels, VK Клипы, Likee (через MoreLogin, 1 профиль).
+---
 
-## Структура репо
+## 📐 Схема Пайплайна
 
+```mermaid
+flowchart TD
+    A["1. 💡 Тема ролика"] --> B["2. 📝 Общий план"]
+    B --> C["3. 🎙️ Закадровый текст"]
+    C --> D["4. ✂️ Разбивка по сценам"]
+    D --> E["5. 🎭 Дизайн сцен (5 агентов)"]
+    E --> F["6. 👤 Персонажи & 7. 📦 Предметы"]
+    F --> G["8. 🖼️ Промпты картинок (img_pr)"]
+    G --> H["9. 🎨 Генерация кадров (Outsee)"]
+    H --> I["10. 🎬 Анимация & Видео (Veo / Kling)"]
+    I --> J["11. 🔊 Озвучка & Субтитры (Whisper)"]
+    J --> K["12. 🎞️ Финальная сборка (FFmpeg)"]
 ```
-app/
-  orchestrator/       # пайплайн + шаги
-  models.py           # SQLAlchemy
-  services/           # hitl / whisper / mapper / assembly / prompts
-  bots/               # браузерные боты (chatgpt, outsee, elevenlabs, morelogin, publishers)
-  telegram/           # aiogram-бот, HITL-гейты
-  settings.py         # конфиг
-  db.py               # SQLite engine + session
-  main.py             # запуск TG-бота
-  worker.py           # фоновый воркер
-prompts/              # мастер-промты (PLAN_SHORTS, SCRIPT_SHORTS, IMAGE_SHORTS, ...)
-data/                 # videos/<slug>/{characters, scenes, videos, audio, subs, final}
-```
 
-## Быстрый старт (веб-студия, без Telegram)
+---
+
+## 🛠️ Стек Технологий
+
+| Компонент | Технологии |
+| :--- | :--- |
+| **Бэкенд** | Python 3.11+, FastAPI, SQLAlchemy 2.0, aiosqlite, Pydantic v2, Loguru |
+| **Фронтенд** | Next.js 15 (App Router), React 19, TypeScript, Tailwind CSS, Lucide Icons |
+| **Интеграции** | Outsee API, Kie API, ElevenLabs, faster-whisper, FFmpeg |
+| **Оркестрация** | Внутренний State Machine оркестратор, Event Bus (SSE / WebSocket) |
+
+---
+
+## 🚀 Быстрый Старт
+
+### 1. Установка окружения
 
 ```bash
+# Клонирование и настройка Python
+python -m venv .venv
+.\.venv\Scripts\activate          # (на Windows)
 pip install -e ".[dev]"
-cp .env.example .env          # TELEGRAM_ENABLED=false по умолчанию
-./start-studio.sh             # воркер + API :8765
-# второй терминал:
-cd web && npm install && npm run dev   # UI http://localhost:3000
+
+# Установка зависимостей интерфейса
+cd web
+npm install
+npm run build
+cd ..
 ```
 
-С Telegram: задайте `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ENABLED=true`, `python -m app.main` или `.\start.ps1`.
+### 2. Настройка переменных окружения
 
-Подробная инструкция — см. [HOW_TO_RUN.md](HOW_TO_RUN.md).
+Скопируйте шаблон `.env.example` в `.env`:
+```bash
+cp .env.example .env
+```
+Заполните необходимые API-ключи:
+* `GPT_RELAY_TOKEN` / `VIBECODE_API_KEY` — для доступа к языковым моделям.
+* `OUTSEE_TOKEN` / `KIE_API_KEY` — для генерации картинок и видео.
+* `YANDEX_STORAGE_*` — (опционально) для хранения референсов (при отсутствии автоматически используется бесплатный fallback).
 
-## Портабельность на новый ПК
+### 3. Запуск Студии
 
-1. Скопировать папку проекта.
-2. Поставить Python 3.11+ и выполнить `pip install -e .`.
-3. Запустить Chrome с `--remote-debugging-port=29229` и залогиниться во все сервисы.
-4. `python -m app.main`.
+**На Windows:**  
+Просто запустите файл `STUDIO.cmd` в корне папки и выберите пункт `[1] Запуск студии`.
+
+**Через консоль:**
+```bash
+python scripts/studio.py
+```
+Студия откроется в браузере по адресу: **`http://localhost:8765`**
+
+---
+
+## 🧪 Запуск Тестов
+
+В проекте настроена автоматическая система модульного и сквозного тестирования:
+
+```bash
+pytest
+```
+
+Для проверки ключевых сценариев стабильности:
+```bash
+pytest tests/test_e2e_incident_fixes.py tests/test_project_state_regression.py tests/test_safe_image_wipe_backup.py
+```
+
+---
+
+## 📂 Структура Проекта
+
+```
+video-pipeline/
+├── app/
+│   ├── orchestrator/       # Движок шагов и воркеров пайплайна
+│   ├── services/           # Бизнес-логика (парсинг, БД, синхронизация, бэкапы)
+│   ├── bots/               # Клиенты ИИ-провайдеров (Outsee, Kie, Yandex S3, GPT)
+│   ├── models.py           # Модели базы данных SQLAlchemy
+│   └── web/                # FastAPI роутеры и эндпоинты Студии
+├── web/                    # Next.js 15 веб-интерфейс Студии
+├── prompts/                # Промпты для шагов и агентов дизайна сцен
+├── tests/                  # Набор автоматических тестов (pytest)
+├── scripts/                # Скрипты запуска, миграций и сборки версий
+└── STUDIO.cmd              # Главный лаунчер для Windows
+```

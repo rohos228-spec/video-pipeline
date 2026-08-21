@@ -81,14 +81,20 @@ _STEP_TMP_GLOBS: dict[str, tuple[str, ...]] = {
     "plan": ("plan_*.xlsx", "prompt_plan_*"),
     "script": ("script_*.txt", "prompt_script_*"),
     "split": ("split_*.xlsx", "prompt_split_*"),
-    "img_pr": ("prompt_img_pr_*"),
-    "anim_pr": ("prompt_anim_pr_*"),
+    # ВАЖНО: trailing comma — иначе ("x") это str, и glob("*") сносит весь tmp_gpt.
+    "img_pr": ("prompt_img_pr_*", "db_frames_*.json", "img_pr_rejected_*.txt"),
+    "anim_pr": ("prompt_anim_pr_*",),
     "enrich_1": ("prompt_enrich_1_*", "enrich_1_*.xlsx"),
     "enrich_2": ("prompt_enrich_2_*", "enrich_2_*.xlsx"),
     "enrich_3": ("prompt_enrich_3_*", "enrich_3_*.xlsx"),
     "enrich_4": ("prompt_enrich_4_*", "enrich_4_*.xlsx"),
     "enrich_5": ("prompt_enrich_5_*", "enrich_5_*.xlsx"),
 }
+
+# Чекпоинты / resume — никогда не удалять через purge.
+_PURGE_TMP_GPT_KEEP_NAMES: frozenset[str] = frozenset({
+    "img_pr_checkpoint.json",
+})
 
 
 def purge_tmp_gpt_for_step(project: Project, step_code: str) -> int:
@@ -98,8 +104,22 @@ def purge_tmp_gpt_for_step(project: Project, step_code: str) -> int:
         return 0
     removed = 0
     protect_enrich = not step_code.startswith("enrich_")
-    for pattern in _STEP_TMP_GLOBS.get(step_code, ()):
+    patterns = _STEP_TMP_GLOBS.get(step_code, ())
+    if isinstance(patterns, str):
+        # Защита от регресса: одиночная строка ≠ tuple паттернов.
+        patterns = (patterns,)
+    for pattern in patterns:
+        if not pattern or pattern == "*":
+            logger.error(
+                "[#{}] purge_tmp_gpt {}: refuse glob {!r}",
+                project.id,
+                step_code,
+                pattern,
+            )
+            continue
         for path in tmp_dir.glob(pattern):
+            if path.name in _PURGE_TMP_GPT_KEEP_NAMES:
+                continue
             if protect_enrich and path.name.startswith("prompt_enrich_"):
                 continue
             try:
@@ -134,19 +154,16 @@ def _get_master_or_fallback(project: Project, step_code: str, fallback: str) -> 
         return fallback
 
 
-# Даже legacy default.md без xlsx-контракта: импортёр читает только «Общий план».
+# Footer для plan: DB/текст SoT (не xlsx/TSV). См. docs/PROMPT_CONTRACT.md.
 PLAN_XLSX_OUTPUT_FOOTER = (
     "\n\n---\n"
-    "ОБЯЗАТЕЛЬНЫЙ ФОРМАТ ВЫВОДА (xlsx):\n"
-    "1. Заполни лист «Общий план» развёрнутым планом ролика "
-    "(не короче ~200 символов после заполнения ячеек).\n"
-    "2. Лист «план» на этом шаге НЕ трогай — он для следующих этапов.\n"
-    "3. Не переименовывай листы и не меняй структуру книги.\n"
-    "4. В ответе ОБЯЗАТЕЛЬНО блок TSV (не только прозу в чат):\n"
-    "   # Лист: Общий план\n"
-    "   Заголовок\\tтекст ячейки\n"
-    "   ...\n"
-    "   (ячейки через TAB). Либо прямая https-ссылка на .xlsx файл.\n"
+    "ОБЯЗАТЕЛЬНЫЙ ФОРМАТ ВЫВОДА (план проекта):\n"
+    "1. Верни развёрнутый общий план ролика текстом "
+    "(не короче ~200 символов).\n"
+    '2. Можно обернуть в JSON {"general_plan":"…"} '
+    "или просто связный текст плана.\n"
+    "3. Не прикладывай xlsx и не используй блоки TSV «# Лист:…» — "
+    "данные пишутся в DB проекта, Excel только экспорт.\n"
 )
 
 
@@ -228,17 +245,23 @@ def write_script_prompt_file(
 def write_split_prompt_file(
     project: Project, tmp_dir: Path, *, ts: str | None = None
 ) -> Path:
+    from app.services.node_step_params import build_split_params_block
+
     topic = (project.topic or "").strip()
     prompt_text = _get_master_or_fallback(
         project,
         "split",
         "Мастер-промт для шага «Разбивка на блоки» ещё не настроен.",
     )
+    params_block = build_split_params_block(project).strip()
+    body = f"{prompt_text}\n"
+    if params_block:
+        body = f"{prompt_text}\n\n---\n{params_block}\n"
     prompt_file = tmp_dir / f"prompt_split_{ts or _timestamp()}.txt"
     prompt_file.write_text(
         f"# Инструкция для GPT (шаг 3 «Разбивка на блоки»)\n"
         f"# Тема ролика: «{topic}»\n\n"
-        f"{prompt_text}\n",
+        f"{body}",
         encoding="utf-8",
     )
     return prompt_file

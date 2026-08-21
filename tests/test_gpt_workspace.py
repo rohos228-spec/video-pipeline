@@ -724,13 +724,18 @@ async def test_ask_auto_packs_contract_reply(
     assert "Готовые файлы" in out["messages"][-1]["content"]
     # простыню договора в пузыре не дублируем
     assert "1.1. Сервис" not in out["messages"][-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_ask_blank_txt_packs_empty_on_empty_gpt_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """«пустой txt» → запрос в GPT; пустой output пакуется как empty_*.txt."""
     import app.services.gpt_client as gc
+    from app.services.gpt_api import GptApiError
 
     class FakeGpt:
         async def ask_with_files(self, *a, **k):
-            from app.services.gpt_api import GptApiError
-
             raise GptApiError("GPT(responses): пустой output")
 
         async def download_attachment_from_last_reply(self, *a, **k):
@@ -749,6 +754,30 @@ async def test_ask_auto_packs_contract_reply(
     assert Path(blank["path"]).is_file()
     assert Path(blank["path"]).stat().st_size == 0
     assert "Готовые файлы" in out["messages"][-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_ask_pack_does_not_mask_empty_stream_as_blank_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Обычный «пришли файлом» + empty_stream — ошибка, не пустой .txt."""
+    import app.services.gpt_client as gc
+    from app.services.gpt_api import GptApiError
+
+    class FakeGpt:
+        async def ask_with_files(self, *a, **k):
+            raise GptApiError(
+                "GPT(responses/stream): пустой output",
+                context={"error_kind": "empty_stream"},
+            )
+
+        async def download_attachment_from_last_reply(self, *a, **k):
+            return None
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: FakeGpt())
+    s = gw.create_session()
+    with pytest.raises(Exception, match="пустой output"):
+        await gw.ask(s["id"], "переведи и пришли файлом")
 
 
 def test_placeholder_1x1_png_detected(tmp_path: Path) -> None:

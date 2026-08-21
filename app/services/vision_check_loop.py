@@ -255,7 +255,7 @@ async def _apply_db_patch(
             list(ops or []),
             characters=list(chars) if chars else None,
             scenes=list(scenes) if scenes else None,
-            export_xlsx=True,
+            export_xlsx=False,
         )
         await session.flush()
         logger.info(
@@ -510,7 +510,17 @@ async def maybe_start_vision_check_loop_after_check(
     resolved = resolve_vision_check_gate(reply)
     gate = (_gate_status(project, key) or "").strip().lower()
     if resolved in ("pass", "fail"):
-        gate = resolved
+        # Meta/analysis уже pass (модель: verdict:pass + [warn]) — не даём
+        # переписанному check_report ([warn]→[error]) крутить regen.
+        if gate == "pass" and resolved == "fail":
+            logger.info(
+                "[#{}] vision_check_loop: keep gate=pass на {} "
+                "(meta pass, resolve=fail — warn/не critical)",
+                project.id,
+                key,
+            )
+        else:
+            gate = resolved
 
     # [ok] из отчёта сразу в passed — больше не проверяем/не регенерим.
     mark_ok_tokens_from_reply(project, reply)

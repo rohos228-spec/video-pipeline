@@ -1,0 +1,4 @@
+# PowerShell 5.1 on Windows: CRLF checkout on every OS.
+# UTF-8 BOM stays in the file (required for Cyrillic in studio.ps1).
+*.ps1 text eol=crlf
+STUDIO.cmd text eol=crlf

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -129,13 +130,14 @@ async def _persist_align_db(
     method_id: str,
     clips: list[FrameAudioClip],
     words_path: Path | None,
+    words: list | None,
     speech_source: str,
     crumbs: int,
     master_s: float,
     r15_written: int,
     engine: str,
 ) -> None:
-    """Короткий write: bulk UPDATE кадров + meta + artifact."""
+    """Короткий write: bulk UPDATE кадров + meta + artifact + asr_words."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     for clip in clips:
         await session.execute(
@@ -151,6 +153,7 @@ async def _persist_align_db(
             )
         )
 
+    art_uuid: str | None = None
     if words_path is not None:
         speech_kind = (
             "nemo_chunks"
@@ -159,11 +162,12 @@ async def _persist_align_db(
             if method_id in SHARED_NEMO_FULL_METHODS
             else "other"
         )
+        art_uuid = uuid.uuid4().hex
         session.add(
             Artifact(
                 project_id=project.id,
                 kind=ArtifactKind.whisper_words,
-                uuid=uuid.uuid4().hex,
+                uuid=art_uuid,
                 path=str(words_path),
                 meta={
                     "source": "audio_align",
@@ -172,6 +176,26 @@ async def _persist_align_db(
                     "engine": "nemo",
                 },
             )
+        )
+
+    if words:
+        from app.services.asr_words_store import replace_project_asr_words
+
+        frame_segments = [
+            {
+                "frame_number": c.frame_number,
+                "start_ts": c.start_ts,
+                "end_ts": c.end_ts,
+            }
+            for c in clips
+        ]
+        await replace_project_asr_words(
+            session,
+            project.id,
+            words,
+            backend=engine or method_id,
+            artifact_uuid=art_uuid,
+            frame_segments=frame_segments,
         )
 
     meta = dict(project.meta or {}) if isinstance(project.meta, dict) else {}
@@ -193,6 +217,7 @@ async def _persist_align_db_with_retry(
     method_id: str,
     clips: list[FrameAudioClip],
     words_path: Path | None,
+    words: list | None,
     speech_source: str,
     crumbs: int,
     master_s: float,
@@ -212,6 +237,7 @@ async def _persist_align_db_with_retry(
                     method_id=method_id,
                     clips=clips,
                     words_path=words_path,
+                    words=words,
                     speech_source=speech_source,
                     crumbs=crumbs,
                     master_s=master_s,
@@ -308,21 +334,8 @@ async def run_audio_align_for_project(
     crumbs = sum(1 for c in clips if c.duration <= 0.1 + 1e-9)
     summary["crumbs"] = crumbs
     summary["clips_n"] = len(clips)
-
-    # Excel R15 — источник правды для доски; пишем ДО DB, чтобы lock не съел результат.
-    from app.services.plan_timestamps import write_asr_timestamps_to_r15
-
-    # Нужен Project только для data_dir/xlsx — лёгкий stub через session.
-    async with session_scope() as session:
-        project = await session.get(Project, project_id)
-        if project is None:
-            summary["error"] = "проект не найден"
-            return summary
-        written = write_asr_timestamps_to_r15(project, clips, allow_crumbs=True)
-    summary["r15_written"] = written
-    if written <= 0:
-        summary["error"] = "не удалось записать R15 (закрой Excel?)"
-        return summary
+    # Excel R15 больше не пишем — таймкоды только в Frame (Export выгрузит).
+    summary["r15_written"] = 0
 
     words_path: Path | None = None
     if result.words and result.speech_source != "cache":
@@ -337,6 +350,7 @@ async def run_audio_align_for_project(
             method_id=method_id,
             clips=clips,
             words_path=words_path,
+            words=list(result.words or []),
             speech_source=result.speech_source,
             crumbs=crumbs,
             master_s=summary["master_s"],
@@ -355,6 +369,52 @@ async def run_audio_align_for_project(
         if _is_sqlite_locked(exc):
             summary["db_frames_error"] = (
                 "database is locked — R15 записана, кадры в БД обновятся при следующем sync"
+            )
+
+    # Точные метки слов (сопоставление ASR ↔ текст кадров) → word_marks.json.
+    # Чистая функция на уже полученных словах — повторный ASR не нужен.
+    if result.words:
+        try:
+            from app.services.audio_marks import build_marks_from_words
+
+            async with session_scope() as session:
+                project = await session.get(Project, project_id)
+                if project is not None:
+                    frames = (
+                        (
+                            await session.execute(
+                                select(Frame)
+                                .where(Frame.project_id == project_id)
+                                .order_by(Frame.sort_key, Frame.number)
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    marks, _spans, wm_report = build_marks_from_words(
+                        list(frames), list(result.words), audio_duration=master
+                    )
+                    wm_path = project.data_dir / "word_marks.json"
+                    wm_path.write_text(
+                        json.dumps(
+                            {
+                                "audio": voice_path.name,
+                                "audio_duration": master,
+                                "method": method_id,
+                                "report": wm_report.to_dict(),
+                                "marks": [vars(m) for m in marks],
+                            },
+                            ensure_ascii=False,
+                            indent=1,
+                        ),
+                        encoding="utf-8",
+                    )
+                    summary["word_marks"] = wm_report.to_dict()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[#{}] audio_align: word_marks не записаны (non-fatal): {}",
+                project_id,
+                exc,
             )
 
     raise_if_cancelled(project_id)

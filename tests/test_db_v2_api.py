@@ -99,6 +99,79 @@ async def test_apply_ops_unknown_uuid_fail_closed(api_client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_ops_near_miss_uuid_repaired(api_client) -> None:
+    """Опечатка одного hex в uuid — чиним и пишем (не валим весь батч)."""
+    client, project_id, factory = api_client
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        real = fr.uuid
+    assert len(real) >= 2
+    # один символ hex → другой
+    chars = list(real)
+    for i, ch in enumerate(chars):
+        if ch.lower() in "0123456789abcdef":
+            chars[i] = "d" if ch.lower() != "d" else "b"
+            break
+    typo = "".join(chars)
+    assert typo != real
+    r = await client.post(
+        f"/api/db/projects/{project_id}/apply-ops",
+        json={
+            "ops": [
+                {"frame_uuid": typo, "fields": {"voiceover_text": "после repair"}},
+            ]
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["updated"] == 1
+    assert body.get("uuid_repairs")
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        assert fr.voiceover_text == "после repair"
+
+
+@pytest.mark.asyncio
+async def test_apply_ops_frame_number_as_uuid_remapped(api_client) -> None:
+    """GPT прислал номер кадра вместо uuid — remap и пишем."""
+    client, project_id, factory = api_client
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        real = fr.uuid
+    r = await client.post(
+        f"/api/db/projects/{project_id}/apply-ops",
+        json={
+            "ops": [
+                {"frame_uuid": "1", "fields": {"voiceover_text": "после number remap"}},
+            ]
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["updated"] == 1
+    assert any(x.get("from") == "1" and x.get("to") == real for x in body.get("uuid_repairs") or [])
+    async with factory() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project_id, Frame.number == 1)
+            )
+        ).scalar_one()
+        assert fr.voiceover_text == "после number remap"
+
+
+@pytest.mark.asyncio
 async def test_apply_ops_empty_and_empty_fields_rejected(api_client) -> None:
     client, project_id, factory = api_client
     async with factory() as session:
@@ -131,6 +204,7 @@ async def test_apply_ops_updates_db_versions_and_exports_xlsx(api_client, tmp_pa
     r = await client.post(
         f"/api/db/projects/{project_id}/apply-ops",
         json={
+            "export_xlsx": True,
             "ops": [
                 {
                     "frame_uuid": uuid,
@@ -318,6 +392,7 @@ async def test_apply_ops_plan_analytics_and_shot_export(api_client, tmp_path) ->
     r = await client.post(
         f"/api/db/projects/{project_id}/apply-ops",
         json={
+            "export_xlsx": True,
             "ops": [
                 {
                     "frame_uuid": uuid,
@@ -367,7 +442,10 @@ async def test_apply_ops_project_target_general_plan_exports(api_client, tmp_pat
     client, project_id, factory = api_client
     r = await client.post(
         f"/api/db/projects/{project_id}/apply-ops",
-        json={"ops": [{"target": "project", "fields": {"общий_план": "Эпизод 1 …"}}]},
+        json={
+            "export_xlsx": True,
+            "ops": [{"target": "project", "fields": {"общий_план": "Эпизод 1 …"}}],
+        },
     )
     assert r.status_code == 200, r.text
     async with factory() as session:
@@ -470,12 +548,11 @@ async def test_orchestrator_chat_runs_step_action(api_client, monkeypatch) -> No
     assert r.status_code == 200, r.text
     data = r.json()
     assert data["error"] is None
-    # Шаг запущен по пути UI-кнопки (start_step); гард anim_pr честно ответил
-    # «нечего генерировать» (нет PNG на диске) — статус не сменился, и это ок.
+    # Шаг реально стартует (Excel sync больше не заполняет промты → missing).
     assert data["actions_run"] and data["actions_run"][0]["run_step"] == "anim_pr"
     async with factory() as session:
         p = await session.get(Project, project_id)
-        assert p.status is ProjectStatus.new
+        assert p.status is ProjectStatus.generating_animation_prompts
 
     monkeypatch.setattr(
         "app.services.gpt_client.get_gpt_client",
@@ -1458,7 +1535,6 @@ async def test_orchestrator_chat_diagnostics_in_context(api_client, monkeypatch)
     assert "ДИАГНОСТИКА" in _FakeGpt.last_prompt
     assert "ОШИБКИ НОД" in _FakeGpt.last_prompt
     assert "Outsee timeout" in _FakeGpt.last_prompt
-    assert "кодинг-агент" in _FakeGpt.last_prompt
 
 
 @pytest.mark.asyncio
@@ -1487,9 +1563,18 @@ async def test_orchestrator_chat_writes_feedback_journal(api_client, monkeypatch
 @pytest.mark.asyncio
 async def test_orchestrator_chat_without_gpt_key_503(api_client, monkeypatch) -> None:
     """Без GPT-ключа — вежливая 503 с причиной, не 500/404."""
+    from app.services.gpt_client import GptApiUnavailable
+
     client, project_id, factory = api_client
-    for var in ("GPT_API_KEY", "TOKENROUTER_API_KEY"):
-        monkeypatch.delenv(var, raising=False)
+
+    class _NoKey:
+        async def ask_fresh(self, *args, **kwargs):
+            raise GptApiUnavailable("GPT API ключ не настроен")
+
+    monkeypatch.setattr(
+        "app.services.gpt_client.get_gpt_client",
+        lambda: _NoKey(),
+    )
     r = await client.post(
         f"/api/db/projects/{project_id}/orchestrator/chat",
         json={"message": "привет", "history": []},

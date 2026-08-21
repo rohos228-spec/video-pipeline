@@ -14,6 +14,7 @@ def test_merge_helper_source_positions_win() -> None:
     assert "position: old.position" not in src
     # Роль «Ок / не ок» не должна пропадать при reload структуры.
     assert "role: n.data.role ?? old.data.role" in src
+    assert "modelId: n.data.modelId ?? old.data.modelId" in src
 
 
 def test_flow_canvas_waits_for_project_meta() -> None:

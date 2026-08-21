@@ -105,37 +105,43 @@ _STATUS_ORDER: dict[ProjectStatus, int] = {
     ProjectStatus.splitting: 5,
     ProjectStatus.frames_ready: 6,
     ProjectStatus.scene_designing: 7,
-    ProjectStatus.scene_design_ready: 8,
-    ProjectStatus.generating_hero: 9,
-    ProjectStatus.hero_ready: 10,
-    ProjectStatus.generating_items: 11,
-    ProjectStatus.items_ready: 12,
-    ProjectStatus.enriching_1: 13,
-    ProjectStatus.enrich_1_ready: 14,
-    ProjectStatus.enriching_2: 15,
-    ProjectStatus.enrich_2_ready: 16,
-    ProjectStatus.enriching_3: 17,
-    ProjectStatus.enrich_3_ready: 18,
-    ProjectStatus.enriching_4: 19,
-    ProjectStatus.enrich_4_ready: 20,
-    ProjectStatus.enriching_5: 21,
-    ProjectStatus.enrich_5_ready: 22,
-    ProjectStatus.generating_image_prompts: 23,
-    ProjectStatus.image_prompts_ready: 24,
-    ProjectStatus.generating_images: 25,
-    ProjectStatus.images_ready: 26,
-    ProjectStatus.generating_animation_prompts: 27,
-    ProjectStatus.animation_prompts_ready: 28,
-    ProjectStatus.generating_videos: 29,
-    ProjectStatus.videos_ready: 30,
-    ProjectStatus.generating_audio: 31,
-    ProjectStatus.audio_ready: 32,
-    ProjectStatus.generating_music: 33,
-    ProjectStatus.music_ready: 34,
-    ProjectStatus.assembling: 35,
-    ProjectStatus.assembled: 36,
-    ProjectStatus.publishing: 37,
-    ProjectStatus.published: 38,
+    ProjectStatus.scene_agents_ready: 8,
+    ProjectStatus.scene_assembling: 9,
+    ProjectStatus.scene_design_ready: 10,
+    ProjectStatus.generating_hero: 11,
+    ProjectStatus.hero_ready: 12,
+    ProjectStatus.generating_items: 13,
+    ProjectStatus.items_ready: 14,
+    ProjectStatus.enriching_1: 15,
+    ProjectStatus.enrich_1_ready: 16,
+    ProjectStatus.enriching_2: 17,
+    ProjectStatus.enrich_2_ready: 18,
+    ProjectStatus.enriching_3: 19,
+    ProjectStatus.enrich_3_ready: 20,
+    ProjectStatus.enriching_4: 21,
+    ProjectStatus.enrich_4_ready: 22,
+    ProjectStatus.enriching_5: 23,
+    ProjectStatus.enrich_5_ready: 24,
+    ProjectStatus.generating_image_prompts: 25,
+    ProjectStatus.image_prompts_ready: 26,
+    ProjectStatus.generating_images: 27,
+    ProjectStatus.images_ready: 28,
+    ProjectStatus.generating_animation_prompts: 29,
+    ProjectStatus.animation_prompts_ready: 30,
+    ProjectStatus.generating_videos: 31,
+    ProjectStatus.videos_ready: 32,
+    ProjectStatus.generating_audio: 33,
+    ProjectStatus.audio_ready: 34,
+    ProjectStatus.generating_music: 35,
+    ProjectStatus.music_ready: 36,
+    ProjectStatus.sfx_planning: 37,
+    ProjectStatus.sfx_plan_ready: 38,
+    ProjectStatus.generating_sfx: 39,
+    ProjectStatus.sfx_ready: 40,
+    ProjectStatus.assembling: 41,
+    ProjectStatus.assembled: 42,
+    ProjectStatus.publishing: 43,
+    ProjectStatus.published: 44,
     ProjectStatus.paused: 0,
     ProjectStatus.failed: 0,
 }
@@ -307,17 +313,54 @@ _STEP_BY_CODE["hero"] = StepDef(
     ProjectStatus.generating_hero, ProjectStatus.hero_ready,
     ProjectStatus.frames_ready,
 )
-# Sub-step «Сцены (агенты)» — мульти-агентный scene_design между split и
-# hero. В основном меню нет (n=-1), запуск через Studio canvas / API.
+# Sub-step «Сцены (агенты)» — фаза 1 мульти-агентного scene_design между
+# split и hero: 5 категорийных агентов параллельно → staging-ячейки.
+# В основном меню нет (n=-1), запуск через Studio canvas / API.
 _STEP_BY_CODE["scene_d"] = StepDef(
-    -1, "scene_d", "Сцены (агенты)",
-    ProjectStatus.scene_designing, ProjectStatus.scene_design_ready,
+    -1, "scene_d", "Сцены: агенты",
+    ProjectStatus.scene_designing, ProjectStatus.scene_agents_ready,
     ProjectStatus.frames_ready,
 )
+# Sub-step «Сцены (сборщик)» — фаза 2: финальный агент-сборщик
+# (ячейки → scene_registry + attrs кадров).
+_STEP_BY_CODE["scene_asm"] = StepDef(
+    -1, "scene_asm", "Сцены: сборка",
+    ProjectStatus.scene_assembling, ProjectStatus.scene_design_ready,
+    ProjectStatus.scene_agents_ready,
+)
+# Per-agent перезапуск (кнопка ▶ на ноде агента на канвасе): гоняет GPT
+# только для одного агента (чекпоинт сбрасывается в start_step), остальные
+# берутся из чекпоинтов. После — статус scene_agents_ready, сборку
+# перезапускать отдельно (scene_asm).
+for _code, _title in (
+    ("sd_skel", "Агент: скелет"),
+    ("sd_char", "Агент: персонажи"),
+    ("sd_world", "Агент: мир"),
+    ("sd_style", "Агент: стиль"),
+    ("sd_cam", "Агент: камера"),
+    ("sd_act", "Агент: действие"),
+):
+    _STEP_BY_CODE[_code] = StepDef(
+        -1, _code, _title,
+        ProjectStatus.scene_designing, ProjectStatus.scene_agents_ready,
+        ProjectStatus.frames_ready,
+    )
 _STEP_BY_CODE["audio"] = StepDef(
     -1, "audio", "Озвучка",
     ProjectStatus.generating_audio, ProjectStatus.audio_ready,
     ProjectStatus.videos_ready,
+)
+# Sub-steps «Звуки сопровождения»: план по таймлайну → генерация. На канвасе
+# — ноды sfx_plan/sfx_gen между «Музыка» и «Сборка»; в главном меню TG нет.
+_STEP_BY_CODE["sfx_plan"] = StepDef(
+    -1, "sfx_plan", "План звуков",
+    ProjectStatus.sfx_planning, ProjectStatus.sfx_plan_ready,
+    ProjectStatus.music_ready,
+)
+_STEP_BY_CODE["sfx_gen"] = StepDef(
+    -1, "sfx_gen", "Звуки (SFX)",
+    ProjectStatus.generating_sfx, ProjectStatus.sfx_ready,
+    ProjectStatus.sfx_plan_ready,
 )
 # requires=hero_ready.
 _STEP_BY_CODE["items"] = StepDef(
@@ -329,6 +372,11 @@ _STEP_BY_CODE["items"] = StepDef(
 for _slot in range(1, MAX_ENRICH_SLOTS + 1):
     _code = f"enrich_{_slot}"
     _STEP_BY_CODE[_code] = _enrich_slot_step(_slot)
+_STEP_BY_CODE["publish"] = StepDef(
+    -1, "publish", "Публикация",
+    ProjectStatus.publishing, ProjectStatus.published,
+    ProjectStatus.assembled,
+)
 
 
 def step_by_code(code: str) -> StepDef | None:
@@ -338,8 +386,8 @@ def step_by_code(code: str) -> StepDef | None:
 def step_by_running_status(running_status: ProjectStatus) -> StepDef | None:
     """Найти StepDef по running_status. Учитывает как «верхние» шаги
     основного меню (см. steps_for(None)), так и sub-step'ы для
-    hero/items/enrich_1..5 — последнее важно для rollback'а при
-    failed-шаге.
+    hero/items/enrich_1..5/sfx_plan/sfx_gen — последнее важно для rollback'а при
+    failed-шаге / отмене ⏹.
 
     Sub-step'ы матчатся первыми, т.к. они точнее (например wrapper
     "objects" имеет running=generating_hero, но при failed-rollback
@@ -347,12 +395,18 @@ def step_by_running_status(running_status: ProjectStatus) -> StepDef | None:
     это совпадает с requires "objects", так что разницы нет, но
     приоритет на sub-step'ах — на будущее).
     """
-    # Sub-step'ы (точнее, чем wrapper'ы).
-    for code in ("hero", "items", "audio", "scene_d", *(f"enrich_{i}" for i in range(1, MAX_ENRICH_SLOTS + 1))):
+    # 1. Приоритетные sub-step'ы (точнее, чем wrapper'ы).
+    for code in ("hero", "items", "audio", "scene_d", "scene_asm", "sfx_plan", "sfx_gen", *(f"enrich_{i}" for i in range(1, MAX_ENRICH_SLOTS + 1))):
         sd = _STEP_BY_CODE.get(code)
         if sd is not None and sd.running_status is running_status:
             return sd
-    # Затем — среди базовых шагов основного меню (1..11).
+
+    # 2. Все остальные зарегистрированные шаги из _STEP_BY_CODE.
+    for sd in _STEP_BY_CODE.values():
+        if sd.running_status is running_status:
+            return sd
+
+    # 3. Затем — среди базовых шагов основного меню (1..11).
     for sd in STEPS:
         # Wrapper'ы (objects/enrich) уже покрыты sub-step'ами выше.
         if sd.code in ("objects", "enrich"):

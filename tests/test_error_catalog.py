@@ -26,6 +26,45 @@ def test_gpt_context_mapping() -> None:
     assert describe_error(GptApiError("x", context={"provider_code": 401}))[0] == "gpt_auth"
 
 
+def test_outsee_missing_key_is_media_not_gpt_text() -> None:
+    """Hero/Картинки с GPT Image 2 без OUTSEE_API_KEY — не «Текст LLM»."""
+    from app.bots.outsee import OutseeImageError
+
+    err = OutseeImageError(
+        "OUTSEE_API_KEY пуст — GPT Image 2 / Nano Banana 2 / Veo 3.1 Lite "
+        "идут через ключ Outsee",
+        context={"error_kind": "no_key", "provider": "outsee"},
+    )
+    code, msg = describe_error(err)
+    assert code == "media_no_key"
+    assert "Текст LLM" not in msg
+    assert "OUTSEE_API_KEY" in ERROR_CATALOG["media_no_key"].hint
+
+
+def test_kling_missing_key_is_media_not_gpt_text() -> None:
+    from app.bots.kie_kling import KieKlingError
+
+    err = KieKlingError(
+        "kie Kling: нет API ключа (KIE_API_KEY / GPT_API_KEY)",
+        context={"provider_code": 401, "error_kind": "no_key"},
+    )
+    code, msg = describe_error(err)
+    assert code == "media_no_key"
+    assert "Текст LLM" not in msg
+
+
+def test_outsee_401_is_media_auth_not_gpt_auth() -> None:
+    from app.bots.outsee import OutseeImageError
+
+    err = OutseeImageError(
+        "outsee 401",
+        context={"error_kind": "no_key", "provider": "outsee", "provider_code": 401},
+    )
+    assert describe_error(err)[0] == "media_no_key"
+    err401 = OutseeImageError("outsee forbidden", context={"provider_code": 403})
+    assert describe_error(err401)[0] == "media_auth"
+
+
 def test_message_text_mapping() -> None:
     assert describe_error(Exception("apikey error"))[0] == "gpt_model_unauthorized"
     assert describe_error(Exception("model not register: gpt-5.6"))[0] == "gpt_model_unsupported"

@@ -165,25 +165,12 @@ async def _backfill_from_disk() -> None:
                     )
                 ).scalar_one() or 0
 
-                if proj_xlsx.exists() and not _xlsx_backfill_skip(p, proj_xlsx, frame_count):
-                    try:
-                        info = await sync_project_xlsx(
-                            s, p, proj_xlsx, keep_fields=True
-                        )
-                        meta = dict(p.meta or {})
-                        meta["backfill_xlsx_mtime"] = proj_xlsx.stat().st_mtime
-                        p.meta = meta
-                        flag_modified(p, "meta")
-                        if _sync_had_changes(info):
-                            logger.info(
-                                "backfill[#{}]: xlsx → DB: {}", p.id, info
-                            )
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning(
-                            "backfill[#{}]: sync_project_xlsx failed: {}",
-                            p.id,
-                            e,
-                        )
+                # Excel → DB только явный Import (excel_io). Startup auto-sync выключен.
+                if proj_xlsx.exists() and frame_count <= 0:
+                    logger.debug(
+                        "backfill[#{}]: skip auto xlsx import (file present, use Import)",
+                        p.id,
+                    )
 
                 if voiceover_txt.exists() and not p.script_text:
                     try:
@@ -308,29 +295,9 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
     # Воркер запускает только «running»-статусы. «ready»-статусы — это
     # ожидание действия пользователя из TG-меню, авто-advance отключён.
     # ВАЖНО: список должен содержать ВСЕ running-статусы из ProjectStatus,
-    # иначе воркер не подхватит шаг и юзер увидит «бесконечно выполняется».
-    # Маппинг running-статус → handler смотри в `pipeline.advance_project`.
-    active = [
-        ProjectStatus.planning,
-            ProjectStatus.scripting,
-            ProjectStatus.splitting,
-            ProjectStatus.scene_designing,
-            ProjectStatus.generating_hero,
-        ProjectStatus.generating_items,
-        ProjectStatus.enriching_1,
-        ProjectStatus.enriching_2,
-        ProjectStatus.enriching_3,
-        ProjectStatus.enriching_4,
-        ProjectStatus.enriching_5,
-        ProjectStatus.generating_image_prompts,
-        ProjectStatus.generating_images,
-        ProjectStatus.generating_animation_prompts,
-        ProjectStatus.generating_videos,
-        ProjectStatus.generating_music,
-        ProjectStatus.generating_audio,
-        ProjectStatus.assembling,
-        ProjectStatus.publishing,
-    ]
+    from app.services.step_registry import running_statuses_list
+
+    active = running_statuses_list()
     from app.services.mass_pause import is_active as _mass_pause_active
     from app.services.step_cancel import active_advance_count, is_stop_requested
     from app.telegram.bot import notify_step_done
@@ -341,6 +308,7 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
         maybe_resume_after_sleep,
         record_step_failure,
         failure_sleep_until,
+        resume_expired_error_sleeps,
     )
 
     async def _handle_one_advance(
@@ -351,7 +319,27 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
     ) -> None:
         """Один advance + post-processing в своих сессиях (безопасно для parallel)."""
         try:
-            result = await advance_project_job(project_id, bot)
+            result = None
+            db_locked_err: BaseException | None = None
+            for _db_try in range(1, 4):
+                try:
+                    result = await advance_project_job(project_id, bot)
+                    db_locked_err = None
+                    break
+                except Exception as e:  # noqa: BLE001
+                    msg = str(e).lower()
+                    if "database is locked" not in msg and "database is busy" not in msg:
+                        raise
+                    db_locked_err = e
+                    logger.warning(
+                        "[#{}] advance_project: database locked — retry {}/3",
+                        project_id,
+                        _db_try,
+                    )
+                    await asyncio.sleep(2.0 * _db_try)
+            if db_locked_err is not None:
+                raise db_locked_err
+            assert result is not None
             async with session_scope() as s:
                 p = await s.get(Project, project_id)
                 if p is not None:
@@ -393,9 +381,16 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                     logger.exception(
                         "notify_step_done({}) failed", project_id
                     )
-        except (StepCancelledError, asyncio.CancelledError):
+        except StepCancelledError:
             logger.info(
-                "[#{}] advance_project cancelled by user (⏹)",
+                "[#{}] advance_project cancelled by stop-flag (⏹)",
+                project_id,
+            )
+            fail_counts.pop(key, None)
+        except asyncio.CancelledError:
+            # task.cancel() от preempt/▶ kill_active_generation — НЕ user ⏹
+            logger.info(
+                "[#{}] advance_project CancelledError (preempt/kill, not user ⏹)",
                 project_id,
             )
             fail_counts.pop(key, None)
@@ -504,6 +499,14 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                 from app.services.project_control import stop_project_running
                 from app.services.run_sync import sync_run_for_project
 
+                woke = await resume_expired_error_sleeps(s)
+                if woke:
+                    await s.commit()
+                    logger.info(
+                        "worker: авто-резюм после паузы ошибок: {}",
+                        woke,
+                    )
+
                 projects = (
                     await s.execute(select(Project).where(Project.status.in_(active)))
                 ).scalars().all()
@@ -534,6 +537,16 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         )
                         continue
                     if is_stop_requested(p.id):
+                        from app.services.step_cancel import stop_flag_path
+
+                        stop_path = stop_flag_path(p.id)
+                        logger.warning(
+                            "worker: #{} is_stop_requested "
+                            "(file_exists={}, path={}) — stop_project_running",
+                            p.id,
+                            stop_path.exists(),
+                            stop_path,
+                        )
                         info = await stop_project_running(s, p)
                         if info["ok"]:
                             await s.commit()
@@ -865,6 +878,11 @@ async def main() -> None:
         settings.telegram_owner_chat_id,
         settings.db_url,
     )
+    if (getattr(settings, "gpt_relay_token", None) or "").strip():
+        logger.warning(
+            "🔒 SECURITY NOTICE: GPT_RELAY_TOKEN установлен — все текстовые LLM-запросы "
+            "проксируются через VPS-relay. Для прямого подключения к API очистите GPT_RELAY_TOKEN в .env"
+        )
     await _init_db()
 
     from app.db import session_scope

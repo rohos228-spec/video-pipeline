@@ -5,6 +5,8 @@ export const NODE_TO_STEP: Record<string, string> = {
   script: "script",
   split: "split",
   scene_design: "scene_d",
+  sd_agent: "scene_d",
+  sd_assemble: "scene_asm",
   hero: "hero",
   items: "items",
   excel_gpt: "excel_gpt",
@@ -14,6 +16,8 @@ export const NODE_TO_STEP: Record<string, string> = {
   videos: "video",
   music: "music",
   audio: "audio",
+  sfx_plan: "sfx_plan",
+  sfx_gen: "sfx_gen",
   assemble: "assemble",
   publish: "publish",
 };

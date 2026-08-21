@@ -104,7 +104,7 @@ export function NewProjectWizard({
       .filter((q) => {
         if (q.field === "image_quality") {
           const g = answers.image_generator;
-          if (!g || !["gpt_image_1_5", "gpt_image_2"].includes(g)) return false;
+          if (!g || !["gpt_image_1_5", "gpt_image_2", "gpt_image_2_vip"].includes(g)) return false;
         }
         if (q.field === "video_relax" && answers.video_generator !== "veo_3_1_fast") {
           return false;

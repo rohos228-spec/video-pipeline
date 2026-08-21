@@ -8,16 +8,33 @@
 	@noauth not header X-VP-Relay-Token {$RELAY_TOKEN}
 	respond @noauth "unauthorized\n" 401
 
-	reverse_proxy https://api.kie.ai {
-		header_up Host api.kie.ai
-		header_up X-Forwarded-Proto {scheme}
-		# SSE / длинные chunked ответы — не буферизовать
-		flush_interval -1
-		transport http {
-			versions 1.1
-			read_timeout 0
-			write_timeout 0
-			dial_timeout 30s
+	# vibecode.moe — OpenAI /v1/chat/completions (GPT 5.5 / 5.6 Sol)
+	handle /v1/* {
+		reverse_proxy https://vibecode.moe {
+			header_up Host vibecode.moe
+			header_up X-Forwarded-Proto {scheme}
+			flush_interval -1
+			transport http {
+				versions 1.1
+				read_timeout 0
+				write_timeout 0
+				dial_timeout 30s
+			}
+		}
+	}
+
+	# kie.ai — /codex/v1/responses и jobs retrieve
+	handle {
+		reverse_proxy https://api.kie.ai {
+			header_up Host api.kie.ai
+			header_up X-Forwarded-Proto {scheme}
+			flush_interval -1
+			transport http {
+				versions 1.1
+				read_timeout 0
+				write_timeout 0
+				dial_timeout 30s
+			}
 		}
 	}
 }

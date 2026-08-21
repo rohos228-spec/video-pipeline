@@ -21,6 +21,52 @@ def _rollback_running_status(status: ProjectStatus) -> ProjectStatus:
     return ProjectStatus.new
 
 
+async def _reset_matching_noderuns_after_rollback(
+    session: AsyncSession,
+    project: Project,
+    previous_running: ProjectStatus,
+) -> int:
+    """Project rolled back from running → reset matching NodeRun to pending."""
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from app.models import NodeRunStatus, WorkflowRun
+    from app.orchestrator.node_registry import RUNNING_TO_NODE_TYPE
+    from app.services.node_status_machine import reset_node_to_pending
+
+    want = RUNNING_TO_NODE_TYPE.get(previous_running)
+    if not want:
+        return 0
+    run = (
+        await session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == project.id)
+            .options(selectinload(WorkflowRun.node_runs))
+            .order_by(WorkflowRun.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if run is None:
+        return 0
+    n = 0
+    for nr in run.node_runs:
+        if nr.node_type != want:
+            continue
+        if nr.status not in (NodeRunStatus.running, NodeRunStatus.queued):
+            continue
+        if reset_node_to_pending(
+            nr, project_id=project.id, initiator="auto_unstick"
+        ):
+            n += 1
+            logger.info(
+                "[#{}] STARTUP GUARD: NodeRun {}/{} → pending (parity with Project)",
+                project.id,
+                nr.node_type,
+                nr.node_key,
+            )
+    return n
+
+
 async def block_pipeline_autorun_on_startup(session: AsyncSession) -> dict[str, Any]:
     """Rollback running work on restart — but keep user's auto_mode preference.
 
@@ -65,6 +111,18 @@ async def block_pipeline_autorun_on_startup(session: AsyncSession) -> dict[str, 
             meta = dict(project.meta or {})
             stats["running_projects_rolled_back"] += 1
             changed = True
+            # Parity: NodeRun running/queued того же шага → pending,
+            # иначе reconcile пометит ложный failed.
+            try:
+                await _reset_matching_noderuns_after_rollback(
+                    session, project, previous
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "[#{}] STARTUP GUARD: NodeRun reset after rollback failed",
+                    project.id,
+                    exc_info=True,
+                )
             logger.warning(
                 "[#{}] STARTUP GUARD: rolled back {} -> {} (auto_mode={} сохранён)",
                 project.id,

@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     create_max_parallel_outsee: int = Field(4, alias="CREATE_MAX_PARALLEL_OUTSEE")
     create_max_parallel_grsai: int = Field(10, alias="CREATE_MAX_PARALLEL_GRSAI")
     # Пайплайн img: параллельные кадры 0..4 (0=не генерить; дефолт для проектов).
-    img_max_streams: int = Field(1, alias="IMG_MAX_STREAMS")
+    img_max_streams: int = Field(2, alias="IMG_MAX_STREAMS")
     # Vision checkMode: параллельные GPT-батчи 0..10 (каждый батч ≤8 PNG).
     check_max_streams: int = Field(2, alias="CHECK_MAX_STREAMS")
 
@@ -93,33 +93,56 @@ class Settings(BaseSettings):
         "moonshotai/kimi-k3-free", alias="TOKENROUTER_MODEL"
     )
 
+    # vibecode.moe — OpenAI-совместимый chat/completions (GPT 5.5 / 5.6 Sol).
+    vibecode_api_key: str = Field("", alias="VIBECODE_API_KEY")
+    vibecode_base_url: str = Field(
+        "https://vibecode.moe/v1", alias="VIBECODE_BASE_URL"
+    )
+
     # GPT / kie.ai — основной текстовый стек (не удалять при добавлении Kimi)
     gpt_api_key: str = Field("", alias="GPT_API_KEY")
     gpt_base_url: str = Field("", alias="GPT_BASE_URL")
     gpt_model: str = Field("gpt-5-6-sol", alias="GPT_MODEL")
+    # Kie Market (Kling 2.6 video fallback). Пусто → GPT_API_KEY + api.kie.ai.
+    kie_api_key: str = Field("", alias="KIE_API_KEY")
+    kie_api_base_url: str = Field("https://api.kie.ai", alias="KIE_API_BASE_URL")
+    # Загрузка референс-файлов для kie (file-upload-api хост из доков).
+    kie_upload_base_url: str = Field(
+        "https://kieai.redpandaai.co", alias="KIE_UPLOAD_BASE_URL"
+    )
+    # Yandex Object Storage — публичный хост реф-кадров для Outsee/Kling.
+    yandex_storage_bucket: str = Field("", alias="YANDEX_STORAGE_BUCKET")
+    yandex_storage_access_key: str = Field("", alias="YANDEX_STORAGE_ACCESS_KEY")
+    yandex_storage_secret_key: str = Field("", alias="YANDEX_STORAGE_SECRET_KEY")
+    yandex_storage_endpoint: str = Field(
+        "https://storage.yandexcloud.net", alias="YANDEX_STORAGE_ENDPOINT"
+    )
+    yandex_storage_region: str = Field("ru-central1", alias="YANDEX_STORAGE_REGION")
     # Шаблон пути chat-эндпоинта. grsai/OpenAI: /v1/chat/completions;
     # kie.ai: путь зависит от модели → /{model}/v1/chat/completions.
     # Плейсхолдер {model} подставляется слагом модели.
     # TokenRouter: /chat/completions (база уже с /v1).
     gpt_chat_path: str = Field("/codex/v1/responses", alias="GPT_CHAT_PATH")
+    # reasoning.effort для Responses (kie gpt-5-6-sol): low/medium/high/xhigh/off.
+    gpt_reasoning_effort: str = Field("low", alias="GPT_REASONING_EFFORT")
     # Формат API: chat (messages/choices) | responses (input/output) | auto.
     # auto → responses, если в пути есть "responses" (kie.ai gpt-5.6/5.5/5.4 codex).
     gpt_api_mode: str = Field("auto", alias="GPT_API_MODE")
     gpt_timeout_s: float = Field(600.0, alias="GPT_TIMEOUT_S")
     gpt_max_retries: int = Field(4, alias="GPT_MAX_RETRIES")
-    # kie gpt-5-6-sol: low|medium|high|xhigh (дока: default low).
-    # Явно шлём low — меньше silent reasoning до первых output_text.delta.
-    gpt_reasoning_effort: str = Field("low", alias="GPT_REASONING_EFFORT")
-    # HTTP/SOCKS5 для GPT/kie. Пусто = напрямую. Не путать с TELEGRAM_PROXY_URL.
+    # 0 = ждать EOF SSE (не рвать по GPT_TIMEOUT). >0 = httpx read timeout.
+    gpt_stream_read_timeout_s: float = Field(0.0, alias="GPT_STREAM_READ_TIMEOUT_S")
+    # Legacy SOCKS/HTTP прокси. При GPT_RELAY_TOKEN игнорируется — весь LLM
+    # трафик идёт через VPS (deploy/gpt-relay), прокси на ПК не нужен.
     gpt_proxy_url: str | None = Field(None, alias="GPT_PROXY_URL")
-    # VPS-relay (deploy/gpt-relay): GPT_BASE_URL=https://gpt.example.com
-    # + токен → заголовок X-VP-Relay-Token.
+    # Свой VPS-relay (deploy/gpt-relay): GPT_BASE_URL=https://gpt.example.com
+    # + этот токен → заголовок X-VP-Relay-Token.
     gpt_relay_token: str = Field("", alias="GPT_RELAY_TOKEN")
 
     def resolved_text_llm_provider(self) -> str:
-        """Активный текстовый провайдер: kie (GPT) | tokenrouter (Kimi).
+        """Активный текстовый провайдер: kie | vibecode | tokenrouter.
 
-        Default — kie. Kimi только по явному выбору (UI / choice.json / env).
+        Default — kie. vibecode/Kimi только по явному выбору (UI / choice.json / env).
         """
         from app.services.text_llm_catalog import resolve_active_provider
 
@@ -130,12 +153,26 @@ class Settings(BaseSettings):
         return self.resolved_text_llm_provider() == "tokenrouter"
 
     @property
+    def text_llm_is_vibecode(self) -> bool:
+        return self.resolved_text_llm_provider() == "vibecode"
+
+    @property
     def text_llm_label(self) -> str:
         """Человекочитаемая метка для UI/логов (не «GPT», если это Kimi)."""
         if self.text_llm_is_tokenrouter:
             model = (self.tokenrouter_model or "moonshotai/kimi-k3-free").strip()
             short = model.split("/")[-1] if "/" in model else model
             return f"Kimi K3 · TokenRouter ({short})"
+        if self.text_llm_is_vibecode:
+            from app.services.text_llm_catalog import (
+                catalog_item,
+                resolve_active_model_id,
+            )
+
+            item = catalog_item(resolve_active_model_id(self))
+            api_model = (item or {}).get("api_model") or "gpt-5.6-sol"
+            pretty = (item or {}).get("label") or "GPT"
+            return f"{pretty} · vibecode.moe ({api_model})"
         model = (self.gpt_model or "gpt").strip()
         base = (self.gpt_base_url or "").strip().lower()
         host = "kie.ai" if "kie.ai" in base else ("grsai" if "grsai" in base else "API")
@@ -149,14 +186,37 @@ class Settings(BaseSettings):
                 (self.tokenrouter_api_key or "").strip()
                 or (self.gpt_api_key or "").strip()
             )
+        if self.text_llm_is_vibecode:
+            return (self.vibecode_api_key or "").strip()
         return (self.gpt_api_key or "").strip() or (self.grsai_api_key or "").strip()
 
     @property
+    def vps_relay_base_url(self) -> str | None:
+        """Хост VPS-relay, если настроен. Иначе None (не kie.ai / не vibecode.moe)."""
+        token = (self.gpt_relay_token or "").strip()
+        base = (self.gpt_base_url or "").strip().rstrip("/")
+        if not token or not base:
+            return None
+        low = base.lower()
+        if any(h in low for h in ("kie.ai", "vibecode.moe", "tokenrouter.com")):
+            return None
+        return base
+
+    @property
     def gpt_api_effective_base_url(self) -> str:
-        """База активного текстового LLM."""
+        """База активного текстового LLM.
+
+        kie — через VPS-relay, если задан. vibecode — всегда прямиком на
+        vibecode.moe (VPS часто ещё только на api.kie.ai; иначе 401-envelope).
+        """
         if self.text_llm_is_tokenrouter:
             base = (self.tokenrouter_base_url or "https://api.tokenrouter.com/v1").strip()
             return base.rstrip("/")
+        if self.text_llm_is_vibecode:
+            return (self.vibecode_base_url or "https://vibecode.moe/v1").strip().rstrip("/")
+        vps = self.vps_relay_base_url
+        if vps:
+            return vps
         base = (self.gpt_base_url or "").strip() or (self.grsai_base_url or "").strip()
         return base.rstrip("/")
 
@@ -164,6 +224,13 @@ class Settings(BaseSettings):
     def gpt_model_effective(self) -> str:
         if self.text_llm_is_tokenrouter:
             return (self.tokenrouter_model or "moonshotai/kimi-k3-free").strip()
+        if self.text_llm_is_vibecode:
+            from app.services.text_llm_catalog import (
+                catalog_api_model,
+                resolve_active_model_id,
+            )
+
+            return catalog_api_model(resolve_active_model_id(self))
         return (self.gpt_model or "gpt-5-6-sol").strip()
 
     @property
@@ -172,11 +239,16 @@ class Settings(BaseSettings):
         if self.text_llm_is_tokenrouter:
             # base уже …/v1 → финальный URL …/v1/chat/completions
             return "/chat/completions"
+        if self.text_llm_is_vibecode:
+            base = self.gpt_api_effective_base_url.lower()
+            if base.endswith("/v1"):
+                return "/chat/completions"
+            return "/v1/chat/completions"
         return (self.gpt_chat_path or "/v1/chat/completions").strip()
 
     @property
     def gpt_api_mode_effective(self) -> str:
-        if self.text_llm_is_tokenrouter:
+        if self.text_llm_is_tokenrouter or self.text_llm_is_vibecode:
             return "chat"
         return (self.gpt_api_mode or "auto").strip().lower() or "auto"
 
@@ -188,6 +260,11 @@ class Settings(BaseSettings):
     elevenlabs_web_url: str = Field(
         "https://elevenlabs.io/app/speech-synthesis", alias="ELEVENLABS_WEB_URL"
     )
+    # Опциональный API-ключ 11Labs — SFX-генерация звуков сопровождения
+    # (POST /v1/sound-effects). Без ключа — локальный синтез (wave, офлайн).
+    elevenlabs_api_key: str = Field("", alias="ELEVENLABS_API_KEY")
+    # Звуки сопровождения в пайплайне (sfx_plan → sfx_gen → микс в сборке).
+    sfx_enabled: bool = Field(True, alias="SFX_ENABLED")
 
     # MoreLogin / социалки
     morelogin_profile_id: str | None = Field(None, alias="MORELOGIN_PROFILE_ID")
@@ -266,8 +343,34 @@ class Settings(BaseSettings):
     scene_design_enabled: bool = Field(False, alias="SCENE_DESIGN_ENABLED")
     # Сколько категорийных агентов дёргают GPT одновременно внутри ноды.
     scene_design_max_parallel: int = Field(5, alias="SCENE_DESIGN_MAX_PARALLEL")
-    # Сколько категорийных агентов дёргают GPT одновременно внутри ноды.
-    scene_design_max_parallel: int = Field(5, alias="SCENE_DESIGN_MAX_PARALLEL")
+    # Сборка: сколько Frame-строк пайплайна в одном GPT-запросе (чанк).
+    # 0 / 1 = один запрос на весь ролик (старое поведение, легко ловит 524).
+    scene_design_assemble_chunk_frames: int = Field(
+        10, alias="SCENE_DESIGN_ASSEMBLE_CHUNK_FRAMES"
+    )
+    # action/camera: сразу режем на куски ≤N кадров (не жечь 5 мин на 524).
+    # 0 = старое: сначала полный запрос, дробим только после 524.
+    scene_design_agent_chunk_frames: int = Field(
+        10, alias="SCENE_DESIGN_AGENT_CHUNK_FRAMES"
+    )
+    # Сколько кусков action/camera одновременно (kie).
+    scene_design_agent_chunk_parallel: int = Field(
+        3, alias="SCENE_DESIGN_AGENT_CHUNK_PARALLEL"
+    )
+    # Один GPT-вызов action/camera: abort раньше Cloudflare ~300s → сразу /2.
+    # V9 плотнее — 240с часто режет живые куски; 280 даёт запас до CF.
+    scene_design_agent_attempt_timeout_s: float = Field(
+        280.0, alias="SCENE_DESIGN_AGENT_ATTEMPT_TIMEOUT_S"
+    )
+    # Волна 0: черновик→редактор скелета (sd_skeleton / sd_skeleton_editor).
+    # Per-project: meta.scene_design_skeleton + нода marker=skeleton на канвасе.
+    scene_design_skeleton_enabled: bool = Field(
+        True, alias="SCENE_DESIGN_SKELETON_ENABLED"
+    )
+    # Тайминг скелета: len(закадр)/RATE vs сумма время_сек кадров (допуск 15%).
+    scene_design_vo_chars_per_sec: float = Field(
+        14.0, alias="SCENE_DESIGN_VO_CHARS_PER_SEC"
+    )
 
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")

@@ -5,11 +5,35 @@ from __future__ import annotations
 from pathlib import Path
 
 from loguru import logger
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 DEFAULT_GUTTER_PX = 6
 DEFAULT_MAX_HEIGHT_PX = 768
 _GUTTER_RGB = (255, 255, 255)
+
+
+def _panel_font(size: int) -> ImageFont.ImageFont | ImageFont.FreeTypeFont:
+    for name in ("arial.ttf", "Arial.ttf", "DejaVuSans.ttf", "segoeui.ttf"):
+        try:
+            return ImageFont.truetype(name, size=size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def _burn_panel_label(img: Image.Image, label: str) -> Image.Image:
+    """Чёрная полоса снизу с белым ID кадра — чтобы vision не путал панели."""
+    text = (label or "").strip()
+    if not text:
+        return img
+    out = img.copy()
+    draw = ImageDraw.Draw(out)
+    bar_h = max(20, min(48, out.height // 10))
+    draw.rectangle((0, out.height - bar_h, out.width, out.height), fill=(0, 0, 0))
+    font = _panel_font(max(14, bar_h - 8))
+    # чуть отступ от края полосы
+    draw.text((6, out.height - bar_h + 3), text, fill=(255, 255, 255), font=font)
+    return out
 
 
 def compose_horizontal_strip(
@@ -20,6 +44,7 @@ def compose_horizontal_strip(
     max_height: int | None = DEFAULT_MAX_HEIGHT_PX,
     gutter_color: tuple[int, int, int] = _GUTTER_RGB,
     max_bytes: int | None = 3_500_000,
+    panel_labels: list[str] | None = None,
 ) -> Path:
     """Склеивает изображения слева направо; между ними — тонкие вертикальные полоски.
 
@@ -28,6 +53,12 @@ def compose_horizontal_strip(
     """
     if not image_paths:
         raise ValueError("compose_horizontal_strip: image_paths пустой")
+    labels = list(panel_labels or [])
+    if labels and len(labels) != len(image_paths):
+        raise ValueError(
+            f"compose_horizontal_strip: panel_labels={len(labels)} "
+            f"≠ images={len(image_paths)}"
+        )
 
     opened: list[Image.Image] = []
     try:
@@ -50,14 +81,17 @@ def compose_horizontal_strip(
         for target_h in heights:
             scaled: list[Image.Image] = []
             try:
-                for img in opened:
+                for idx, img in enumerate(opened):
                     if img.height == target_h:
-                        scaled.append(img.copy())
+                        panel = img.copy()
                     else:
                         new_w = max(1, int(img.width * target_h / img.height))
-                        scaled.append(
-                            img.resize((new_w, target_h), Image.Resampling.LANCZOS)
-                        )
+                        panel = img.resize((new_w, target_h), Image.Resampling.LANCZOS)
+                    if labels:
+                        labeled = _burn_panel_label(panel, labels[idx])
+                        panel.close()
+                        panel = labeled
+                    scaled.append(panel)
 
                 gutter = max(1, gutter_px)
                 total_w = sum(img.width for img in scaled) + gutter * (len(scaled) - 1)

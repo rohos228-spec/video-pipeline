@@ -4,7 +4,6 @@ import { excelGptPromptStepCode, excelGptSlotIndex, isExcelGptNode, EXCEL_GPT_ST
 import { gptTextStepForNode, isHitlNodeType } from "./gpt-text-steps";
 import { NODE_CATALOG } from "./node-catalog";
 import { stepCodeForNodeType } from "./node-step-map";
-import { nodeSupportsBlocksV2 } from "./prompt-builder/step-compose-map";
 
 export type NodePromptKind = "gpt" | "text" | "blocks" | "excel" | "frame_prompts";
 
@@ -16,6 +15,8 @@ export interface NodePromptSlot {
   description?: string;
   /** Пользовательский слот (+промт). */
   custom?: boolean;
+  /** Файл в папке шага, который панель промтов должна предвыбрать (без .md). */
+  preferredFile?: string;
 }
 
 const NO_EXCEL_NODE_TYPES = new Set(["topic", "excel_feed", "excel_gpt", "storage"]);
@@ -33,6 +34,27 @@ const BASE: Record<string, NodePromptSlot[]> = {
   split: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "split" },
     { id: "main", title: "Промт разбивки", kind: "gpt", stepCode: "split" },
+  ],
+  sd_agent: [
+    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "scene_d" },
+    {
+      id: "main",
+      title: "Промт агента",
+      kind: "gpt",
+      stepCode: "excel_gpt",
+      description: "05_excel_gpt/sd_<агент>.md — файл подставляется по ноде",
+    },
+  ],
+  sd_assemble: [
+    { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "scene_asm" },
+    {
+      id: "main",
+      title: "Промт сборщика",
+      kind: "gpt",
+      stepCode: "excel_gpt",
+      preferredFile: "sd_assemble",
+      description: "05_excel_gpt/sd_assemble.md",
+    },
   ],
   hero: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "hero" },
@@ -92,6 +114,18 @@ const BASE: Record<string, NodePromptSlot[]> = {
     { id: "social", title: "Публикация", kind: "gpt" },
   ],
 };
+
+const SD_AGENT_KEY_RE = /_sd_(characters|world|style|camera|action)$/;
+const SD_ASM_KEY_RE = /_sd_(asm|assemble)$/;
+
+/** Агент scene_design из node_key (n_excel_gpt_sd_characters / n_sd_agent_world). */
+export function sceneAgentFromNodeKey(nodeKey?: string | null): string | undefined {
+  if (!nodeKey) return undefined;
+  const m = SD_AGENT_KEY_RE.exec(nodeKey);
+  if (m) return m[1];
+  if (SD_ASM_KEY_RE.test(nodeKey)) return "assemble";
+  return undefined;
+}
 
 export function defaultPromptSlots(nodeType: string): NodePromptSlot[] {
   if (isHitlNodeType(nodeType)) return [];
@@ -177,29 +211,12 @@ export function mergePromptSlotsWithDefaults(
 }
 
 export function ensureBlocksPromptSlot(
-  nodeType: string,
+  _nodeType: string,
   slots: NodePromptSlot[],
-  nodeKey?: string,
-  slotIndex?: number,
+  _nodeKey?: string,
+  _slotIndex?: number,
 ): NodePromptSlot[] {
-  if (!nodeSupportsBlocksV2(nodeType, undefined, nodeKey, slotIndex)) return slots;
-  if (slots.some((s) => s.kind === "blocks")) return slots;
-  const blocksStep = isExcelGptNode(nodeType)
-    ? excelGptPromptStepCode(excelGptSlotIndex(nodeKey, slotIndex))
-    : stepCodeForNodeType(nodeType);
-  const slot: NodePromptSlot = {
-    id: "blocks_builder",
-    title: "Конструктор промта",
-    kind: "blocks",
-    stepCode: blocksStep,
-  };
-  const excelIdx = slots.findIndex((s) => s.kind === "excel");
-  if (excelIdx >= 0) {
-    const next = [...slots];
-    next.splice(excelIdx + 1, 0, slot);
-    return next;
-  }
-  return [slot, ...slots];
+  return slots;
 }
 
 function normalizeExcelGptSlots(slots: NodePromptSlot[]): NodePromptSlot[] {

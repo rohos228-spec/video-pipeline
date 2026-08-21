@@ -78,3 +78,42 @@ async def test_stale_running_node_run_becomes_failed(mem_db) -> None:
         assert row is not None
         assert row.status == NodeRunStatus.failed
         assert "рабочий процесс не активен" in (row.error or "")
+
+
+@pytest.mark.asyncio
+async def test_startup_reconcile_keeps_node_when_project_still_generating(
+    mem_db,
+) -> None:
+    """Рестарт mid-video не должен красить n_videos в failed (ложные ERROR в UI)."""
+    slug = f"gen-nr-{uuid.uuid4().hex[:8]}"
+    async with mem_db() as session:
+        wf = Workflow(name="default", is_default=True, nodes=[], edges=[])
+        session.add(wf)
+        await session.flush()
+        project = Project(slug=slug, topic="t", status="generating_videos")
+        session.add(project)
+        await session.flush()
+        run = WorkflowRun(
+            project_id=project.id,
+            workflow_id=wf.id,
+            status=WorkflowRunStatus.running,
+        )
+        session.add(run)
+        await session.flush()
+        nr = NodeRun(
+            workflow_run_id=run.id,
+            node_key="n_videos",
+            node_type="videos",
+            status=NodeRunStatus.running,
+        )
+        session.add(nr)
+        await session.flush()
+        nr_id = nr.id
+
+    fixed = await reconcile_stale_node_runs_on_startup()
+    assert fixed == 0
+
+    async with mem_db() as session:
+        row = await session.get(NodeRun, nr_id)
+        assert row is not None
+        assert row.status == NodeRunStatus.running

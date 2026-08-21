@@ -21,6 +21,30 @@ from app.services.scan_frames import disk_has_valid_frame_image
 from app.services.xlsx_v8_import import read_v8_active_frame_count
 
 
+def glob_delete_frame_video_clips(videos_dir: Path, frame_number: int) -> int:
+    """Удалить clip_{NNN}_*.mp4 shot1 (не _s2_) и clip_{NNN}_s2_* shot2."""
+    if not videos_dir.is_dir():
+        return 0
+    removed = 0
+    shot1 = [
+        p
+        for p in videos_dir.glob(f"clip_{frame_number:03d}_*.mp4")
+        if p.is_file() and "_s2_" not in p.name
+    ]
+    shot2 = [
+        p
+        for p in videos_dir.glob(f"clip_{frame_number:03d}_s2_*.mp4")
+        if p.is_file()
+    ]
+    for p in shot1 + shot2:
+        try:
+            p.unlink(missing_ok=True)
+            removed += 1
+        except OSError:
+            logger.warning("post_validate: cannot delete video {}", p)
+    return removed
+
+
 @dataclass
 class ValidationResult:
     ok: bool
@@ -104,29 +128,62 @@ async def _frames_with_artifact(
 async def validate_after_videos(
     session: AsyncSession, project: Project
 ) -> ValidationResult:
+    """MP4 обязателен только у кадров с реальным ``animation_prompt``.
+
+    После camera/SET-expand в БД может быть больше кадров, чем колонок в xlsx
+    (65 vs 180). Сверка len(DB)==Excel ломала soft-retry: очередь gen=0, а
+    post_validate вечно fail. Кадры без anim_pr не считаем дырками.
+    """
+    from app.generation_options import is_skippable_empty_prompt
+
     await recover_scene_videos_from_disk(session, project)
-    expected = await _expected_frame_count(session, project)
-    numbers = await _frame_numbers(session, project)
+    frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project.id)
+            .order_by(Frame.number)
+        )
+    ).scalars().all()
+    numbers = [f.number for f in frames]
     msgs: list[str] = []
-    if expected <= 0:
+    if not numbers:
         return ValidationResult(ok=False, messages=["нет кадров в Excel/БД"])
-    if len(numbers) != expected:
-        msgs.append(f"кадров в БД {len(numbers)}, в Excel {expected}")
     dups = _find_duplicate_numbers(numbers)
     if dups:
         msgs.append(f"дубликаты номеров кадров: {dups}")
+
+    need_video = [
+        f.number
+        for f in frames
+        if not is_skippable_empty_prompt(f.animation_prompt or "")
+    ]
+    skipped_no_prompt = sorted(set(numbers) - set(need_video))
     have = await _frames_with_artifact(
         session, project, ArtifactKind.scene_video
     )
-    missing = sorted(set(range(1, expected + 1)) - have)
-    if numbers and expected == len(numbers):
-        missing = sorted(set(numbers) - have)
-    ok = not missing and not dups and len(numbers) == expected
+    # Клип на диске без artifact тоже ок — recover уже прошёл; добираем glob.
+    videos_dir = project.data_dir / "videos"
+    if videos_dir.is_dir():
+        for n in need_video:
+            if n in have:
+                continue
+            if any(
+                p.is_file() and p.stat().st_size > 1000
+                for p in videos_dir.glob(f"clip_{n:03d}_*.mp4")
+                if "_s2_" not in p.name
+            ):
+                have.add(n)
+    missing = sorted(set(need_video) - have)
+    ok = not missing and not dups
     if missing:
         msgs.append(f"нет клипов для кадров: {missing}")
+    if skipped_no_prompt:
+        msgs.append(
+            f"без anim_pr (пропуск, не блокирует): {len(skipped_no_prompt)} кадров"
+        )
     return ValidationResult(
         ok=ok,
-        expected_frames=expected,
+        expected_frames=len(need_video),
         missing_frame_numbers=missing,
         duplicate_frame_numbers=dups,
         messages=msgs,
@@ -136,27 +193,49 @@ async def validate_after_videos(
 async def validate_after_images(
     session: AsyncSession, project: Project
 ) -> ValidationResult:
-    expected = await _expected_frame_count(session, project)
-    numbers = await _frame_numbers(session, project)
+    """PNG обязателен только у кадров с реальным ``image_prompt``.
+
+    После camera/SET-expand в БД может быть больше кадров, чем колонок R45
+    в xlsx (65 vs 180). Кадры без промта Outsee не генерит — их не считаем
+    дырками, иначе soft-retry крутится вечно.
+    """
+    from app.generation_options import is_skippable_empty_prompt
+
+    frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project.id)
+            .order_by(Frame.number)
+        )
+    ).scalars().all()
+    numbers = [f.number for f in frames]
     msgs: list[str] = []
-    if expected <= 0:
+    if not numbers:
         return ValidationResult(ok=False, messages=["нет кадров в Excel/БД"])
     dups = _find_duplicate_numbers(numbers)
     if dups:
         msgs.append(f"дубликаты номеров кадров: {dups}")
+
+    need_png = [
+        f.number
+        for f in frames
+        if not is_skippable_empty_prompt(f.image_prompt or "")
+    ]
+    skipped_no_prompt = sorted(set(numbers) - set(need_png))
     scenes = project.data_dir / "scenes"
-    have: set[int] = set()
-    for n in numbers:
-        if disk_has_valid_frame_image(scenes, n):
-            have.add(n)
-    target = numbers if numbers else list(range(1, expected + 1))
-    missing = sorted(set(target) - have)
-    ok = not missing and not dups and len(numbers) == expected
+    have = {n for n in need_png if disk_has_valid_frame_image(scenes, n)}
+    missing = sorted(set(need_png) - have)
+    ok = not missing and not dups
     if missing:
         msgs.append(f"нет картинок для кадров: {missing}")
+    if skipped_no_prompt:
+        msgs.append(
+            f"без промта картинки (пропуск, не блокирует): "
+            f"{len(skipped_no_prompt)} кадров"
+        )
     return ValidationResult(
         ok=ok,
-        expected_frames=expected,
+        expected_frames=len(need_png),
         missing_frame_numbers=missing,
         duplicate_frame_numbers=dups,
         messages=msgs,
@@ -291,12 +370,25 @@ async def mark_frames_for_video_regen(
                 except OSError:
                     pass
             await session.delete(a)
+        glob_delete_frame_video_clips(project.data_dir / "videos", fr.number)
+        # Снимаем ladder-skip, иначе claim снова пропустит кадр и soft-retry
+        # будет крутиться с gen=0.
+        attrs = dict(fr.attrs or {})
+        before = dict(attrs)
+        attrs.pop("video_gen_skip", None)
+        attrs.pop("video_gen_fail_count", None)
+        attrs.pop("video_gen_inflight", None)
+        if attrs != before:
+            fr.attrs = attrs
+            changed += 1
         if fr.status not in (
             FrameStatus.animation_prompt_ready,
             FrameStatus.image_generated,
         ):
             fr.status = FrameStatus.animation_prompt_ready
             changed += 1
+        elif attrs != before:
+            fr.status = FrameStatus.animation_prompt_ready
     if changed:
         await session.flush()
     logger.warning(

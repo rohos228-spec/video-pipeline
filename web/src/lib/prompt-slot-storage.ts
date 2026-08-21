@@ -29,6 +29,7 @@ export function getPromptSlotVariantsMeta(
 /** Имя .md-файла, который редактирует этот слот (без расширения). */
 export function preferredPromptFileName(slot: NodePromptSlot | null): string | undefined {
   if (!slot) return undefined;
+  if (slot.preferredFile) return slot.preferredFile;
   if (isCustomPromptSlot(slot)) return slot.id;
   return undefined;
 }

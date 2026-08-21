@@ -31,7 +31,11 @@ async def _prepare_manual_finish_restart(
     project: Project,
     running: ProjectStatus,
 ) -> list[str]:
-    """Доделка = явный ручной перезапуск: снять stop/sleep/user_stop как у ▶."""
+    """Доделка = явный ручной перезапуск: снять stop/sleep/user_stop как у ▶.
+
+    Если шаг «залип» (advance-task жив, прогресса нет) — отменяем task,
+    иначе воркер вечно пишет «шаг уже выполняется» и доделка бесполезна.
+    """
     from loguru import logger
 
     from app.services.mass_factory import mass_parent_id
@@ -41,9 +45,23 @@ async def _prepare_manual_finish_restart(
         clear_user_stop_gate,
     )
     from app.services.sidebar_layout import clear_gen_queue_halted
+    from app.services.step_cancel import (
+        cancel_advance_task,
+        clear_stop,
+        is_generation_active,
+    )
     from app.services.step_failure_policy import clear_failure_backoff_for_manual_start
+    from app.services.xlsx_flow_locks import clear_xlsx_flow_locks
 
     actions: list[str] = []
+    # Сначала cancel зависшего advance — потом clear_stop (cancel пишет stop-файл
+    # только через request_stop; cancel_advance_task сам stop не ставит).
+    if is_generation_active(project.id):
+        if cancel_advance_task(project.id):
+            actions.append("cancel_advance")
+        xlsx_stopped = clear_xlsx_flow_locks(project.id)
+        if xlsx_stopped:
+            actions.append("xlsx_locks:" + ",".join(xlsx_stopped))
     clear_stop(project.id)
     actions.append("stop_file")
     if clear_failure_backoff_for_manual_start(
@@ -100,9 +118,9 @@ async def trigger_finish_missing_images(
         session, project, missing_shot2
     )
     queued = queued_shot1 + queued_shot2
-    if not already and queued:
+    if queued:
         project.status = ProjectStatus.generating_images
-    await _prepare_manual_finish_restart(
+    restart_actions = await _prepare_manual_finish_restart(
         session, project, ProjectStatus.generating_images
     )
     parts: list[str] = []
@@ -117,7 +135,9 @@ async def trigger_finish_missing_images(
             head2 += f", … +{len(missing_shot2) - 20}"
         parts.append(f"shot_02: {queued_shot2} ({head2})")
     msg = "В очередь: " + "; ".join(parts) if parts else "Нечего ставить в очередь"
-    if already:
+    if already and "cancel_advance" in restart_actions:
+        msg = f"Перезапуск залипшего шага картинок. {msg}"
+    elif already:
         msg = f"Шаг картинок уже идёт. {msg}"
     missing = sorted(set(missing_shot1) | set(missing_shot2))
     return {
@@ -131,6 +151,7 @@ async def trigger_finish_missing_images(
         "queued_shot2": queued_shot2,
         "synced_on_disk": synced,
         "already_running": already,
+        "restart_actions": restart_actions,
         "message": msg,
     }
 

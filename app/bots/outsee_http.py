@@ -141,8 +141,9 @@ def studio_id_to_outsee_video_slug(studio_id: str | None) -> str:
         "veo-3-fast": "veo-3-1-lite",
         "veo3.1-fast": "veo-3-1-lite",
         "veo3.1-lite": "veo-3-1-lite",
-        "kling_2_5_turbo": "veo-3-1-lite",
-        "kling-2-5-turbo": "veo-3-1-lite",
+        # Kling 2.6 fallback идёт через kie.ai (app/bots/kie_kling.py), не Outsee API.
+        # Если slug Kling попал сюда по ошибке — не притворяемся Veo молча:
+        # падаем в default Veo primary (логирует caller).
     }
     return mapping.get(s, default)
 
@@ -189,25 +190,33 @@ async def fetch_balance() -> dict[str, Any]:
 
 
 async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        r = await client.post(
-            f"{_base_url()}{path}", headers=_headers(), json=body
-        )
-        if r.status_code >= 400:
-            _raise_api(r, where=path)
-        data = r.json()
-        if not isinstance(data, dict) or data.get("id") is None:
-            raise OutseeApiError(
-                "Outsee generate: нет id",
-                context={"path": path, "body": data},
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.post(
+                f"{_base_url()}{path}", headers=_headers(), json=body
             )
-        logger.info(
-            "outsee_api.submitted path={} id={} status={}",
-            path,
-            data.get("id"),
-            data.get("status"),
-        )
-        return data
+            if r.status_code >= 400:
+                _raise_api(r, where=path)
+            data = r.json()
+            if not isinstance(data, dict) or data.get("id") is None:
+                raise OutseeApiError(
+                    "Outsee generate: нет id",
+                    context={"path": path, "body": data},
+                )
+            logger.info(
+                "outsee_api.submitted path={} id={} status={}",
+                path,
+                data.get("id"),
+                data.get("status"),
+            )
+            return data
+    except OutseeApiError:
+        raise
+    except (httpx.HTTPError, OSError) as e:
+        raise OutseeApiError(
+            f"Outsee API network {path}: {e}",
+            context={"path": path, "network": True},
+        ) from e
 
 
 async def _poll_generation(
@@ -216,26 +225,69 @@ async def _poll_generation(
     deadline = asyncio.get_running_loop().time() + timeout
     last: dict[str, Any] = {}
     url = f"{_base_url()}/api/v1/generations/{gen_id}"
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        while asyncio.get_running_loop().time() < deadline:
-            r = await client.get(url, headers=_headers())
-            if r.status_code >= 400:
-                _raise_api(r, where=f"generations/{gen_id}")
-            data = r.json()
-            if not isinstance(data, dict):
-                await asyncio.sleep(_POLL_INTERVAL_S)
-                continue
-            last = data
-            status = (data.get("status") or "").lower()
-            if status in {"queued", "processing", "pending", "running"}:
-                await asyncio.sleep(_POLL_INTERVAL_S)
-                continue
-            if status in {"failed", "error", "rejected", "cancelled"}:
-                raise OutseeApiError(
-                    f"Outsee generation failed: {data.get('error') or status}",
-                    context={"id": gen_id, "status": data},
-                )
-            return data
+    transient_5xx_streak = 0
+    max_transient_5xx = 6
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            while asyncio.get_running_loop().time() < deadline:
+                try:
+                    r = await client.get(url, headers=_headers())
+                except (httpx.HTTPError, OSError) as e:
+                    logger.warning(
+                        "outsee_api.poll network id={} err={} — retry",
+                        gen_id,
+                        e,
+                    )
+                    await asyncio.sleep(_POLL_INTERVAL_S)
+                    continue
+                if r.status_code in {500, 502, 503, 504}:
+                    transient_5xx_streak += 1
+                    if transient_5xx_streak <= max_transient_5xx:
+                        logger.warning(
+                            "outsee_api.poll transient HTTP {} id={} (streak {}/{}) — retry in {}s",
+                            r.status_code,
+                            gen_id,
+                            transient_5xx_streak,
+                            max_transient_5xx,
+                            _POLL_INTERVAL_S * 1.5,
+                        )
+                        await asyncio.sleep(_POLL_INTERVAL_S * 1.5)
+                        continue
+                else:
+                    transient_5xx_streak = 0
+
+                if r.status_code >= 400:
+                    _raise_api(r, where=f"generations/{gen_id}")
+                data = r.json()
+                if not isinstance(data, dict):
+                    await asyncio.sleep(_POLL_INTERVAL_S)
+                    continue
+                last = data
+                status = (data.get("status") or "").lower()
+                if status in {"queued", "processing", "pending", "running"}:
+                    await asyncio.sleep(_POLL_INTERVAL_S)
+                    continue
+                if status in {"failed", "error", "rejected", "cancelled"}:
+                    err = data.get("error") or status
+                    code = ""
+                    if isinstance(err, dict):
+                        code = str(err.get("code") or "")
+                    raise OutseeApiError(
+                        f"Outsee generation failed: {err}",
+                        context={
+                            "id": gen_id,
+                            "status": data,
+                            "code": code.lower() if code else "",
+                        },
+                    )
+                return data
+    except OutseeApiError:
+        raise
+    except (httpx.HTTPError, OSError) as e:
+        raise OutseeApiError(
+            f"Outsee API network poll id={gen_id}: {e}",
+            context={"id": gen_id, "network": True},
+        ) from e
     raise OutseeApiError(
         f"Outsee: таймаут ожидания id={gen_id} ({timeout:.0f}s)",
         context={"last": last},
@@ -271,6 +323,23 @@ async def _download(url: str, out_path: Path) -> Path:
         f"Outsee download failed after retries: {last_err}",
         context={"url": url[:160]},
     ) from last_err
+
+
+def _assert_video_not_mush(path: Path, *, duration_sec: int) -> None:
+    """Проверить, что клип скачался. Порог битрейта не ставим:
+
+    clay/lite 720p 8с часто 0.7–2.0 MB — отбраковка «мыла» гнала на Kling 401
+    и блокировала очередь.
+    """
+    del duration_sec
+    if not path.is_file():
+        raise OutseeApiError(f"видео не скачано: {path.name}")
+    size = path.stat().st_size
+    if size < 1024:
+        raise OutseeApiError(
+            f"видео пустое или обрезано ({size} bytes)",
+            context={"path": str(path), "bytes": size},
+        )
 
 
 def _pick_result_url(status: dict[str, Any]) -> str:
@@ -322,6 +391,29 @@ _FRAME_UPLOAD_UA = (
 _FRAME_HOST_SOFT_MAX_BYTES = 1_800_000
 
 
+def _looks_like_image_bytes(raw: bytes, content_type: str | None = None) -> bool:
+    """Отсекаем HTML-лендинги (tmpfiles /dl/ часто отдаёт text/html, не JPEG)."""
+    if not raw or len(raw) < 16:
+        return False
+    head = raw[:32].lstrip()
+    if head[:1] == b"<" or head[:9].lower() == b"<!doctype" or head[:5].lower() == b"<html":
+        return False
+    ctype = (content_type or "").split(";")[0].strip().lower()
+    if ctype.startswith("text/html") or ctype in {"text/plain", "application/json"}:
+        return False
+    if raw[:3] == b"\xff\xd8\xff":
+        return True  # JPEG
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return True
+    if raw[:6] in (b"GIF87a", b"GIF89a"):
+        return True
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return True
+    if ctype.startswith("image/"):
+        return True
+    return False
+
+
 async def _verify_hosted_image(
     client: httpx.AsyncClient,
     url: str,
@@ -335,12 +427,33 @@ async def _verify_hosted_image(
         try:
             # HEAD часто режет ботов — пробуем GET с Range, потом полный GET.
             r = await client.get(url, headers={"Range": "bytes=0-2047"})
-            if r.status_code in (200, 206) and len(r.content or b"") >= min(min_bytes, 16):
+            body = r.content or b""
+            if (
+                r.status_code in (200, 206)
+                and len(body) >= min(min_bytes, 16)
+                and _looks_like_image_bytes(body, r.headers.get("content-type"))
+            ):
                 return True
-            r = await client.get(url)
-            if r.status_code < 400 and len(r.content or b"") >= min_bytes:
-                return True
-            last_err = f"HTTP {r.status_code} bytes={len(r.content or b'')}"
+            if r.status_code in (200, 206) and body and not _looks_like_image_bytes(
+                body, r.headers.get("content-type")
+            ):
+                last_err = (
+                    f"HTTP {r.status_code} not-image "
+                    f"ctype={r.headers.get('content-type')!r} head={body[:12]!r}"
+                )
+            else:
+                r = await client.get(url)
+                body = r.content or b""
+                if (
+                    r.status_code < 400
+                    and len(body) >= min_bytes
+                    and _looks_like_image_bytes(body, r.headers.get("content-type"))
+                ):
+                    return True
+                last_err = (
+                    f"HTTP {r.status_code} bytes={len(body)} "
+                    f"ctype={r.headers.get('content-type')!r}"
+                )
         except Exception as exc:  # noqa: BLE001
             last_err = str(exc)[:120]
         if i + 1 < attempts:
@@ -420,20 +533,46 @@ async def _accept_hosted_url(
     host: str,
     raw_len: int,
 ) -> str:
-    """Проверяем URL; если хост отдал http, а GET режет — всё равно принимаем.
+    """Проверяем, что URL реально отдаёт байты — иначе Outsee тоже не скачает.
 
-    Реальный баг: catbox отдаёт https://files.catbox.moe/….png, наш GET пустой/403,
-    Outsee при этом качает нормально.
+    Soft-accept (раньше) залипал на catbox с пустым GET → Outsee:
+    «Не удалось скачать изображение по ссылке».
     """
     ok = await _verify_hosted_image(client, url, min_bytes=min(32, max(16, raw_len // 1000)))
     if ok:
         return url
-    logger.warning(
-        "outsee_api.frame host {}: verify miss после upload, принимаем URL {}",
-        host,
-        url[:120],
+    raise OutseeApiError(
+        f"{host}: verify miss после upload ({url[:100]})",
+        context={"host": host, "url": url[:160]},
     )
-    return url
+
+
+def _host_name_from_url(url: str) -> str | None:
+    low = (url or "").lower()
+    if "storage.yandexcloud.net" in low or "yandexcloud.net" in low:
+        return "yandex"
+    if "litter.catbox" in low or "litterbox" in low:
+        return "litterbox"
+    if "catbox.moe" in low:
+        return "catbox"
+    if "tmpfiles.org" in low:
+        return "tmpfiles"
+    if "0x0.st" in low:
+        return "0x0"
+    if "uguu.se" in low:
+        return "uguu"
+    return None
+
+
+async def _host_via_yandex(
+    client: httpx.AsyncClient, raw: bytes, mime: str, filename: str
+) -> str:
+    from app.bots.yandex_storage import upload_public_bytes, yandex_storage_configured
+
+    if not yandex_storage_configured():
+        raise OutseeApiError("yandex storage: не настроен")
+    url = await upload_public_bytes(client, raw, mime, filename)
+    return await _accept_hosted_url(client, url, host="yandex", raw_len=len(raw))
 
 
 async def _host_via_uguu(client: httpx.AsyncClient, raw: bytes, mime: str, filename: str) -> str:
@@ -510,16 +649,25 @@ async def _host_via_tmpfiles(client: httpx.AsyncClient, raw: bytes, mime: str, f
     return await _accept_hosted_url(client, direct, host="tmpfiles", raw_len=len(raw))
 
 
-async def ensure_public_image_url(url: str | None) -> str | None:
+async def ensure_public_image_url(
+    url: str | None,
+    *,
+    skip_hosts: frozenset[str] | set[str] | None = None,
+    force_rehost: bool = False,
+) -> str | None:
     """Outsee image_url принимает только http(s); data: молча игнорит.
 
-    data: → публичный URL (JPEG-сжатие + uguu/litterbox/catbox/0x0/tmpfiles).
-    http(s) → как есть (кроме localhost).
+    data: → публичный URL только через Yandex Object Storage.
+    http(s) → как есть (кроме localhost), либо force_rehost=True → скачать и
+    залить в Yandex. Публичные хосты (litterbox/catbox/uguu) отключены.
+    ``yandex`` в skip_hosts игнорируется: новый PUT = новый URL.
     """
     if not url or not str(url).strip():
         return None
     u = str(url).strip()
-    if u.startswith(("http://", "https://")):
+    skip = {str(x).lower() for x in (skip_hosts or ())}
+    skip.discard("yandex")  # новый PUT = новый URL, yandex не банить
+    if u.startswith(("http://", "https://")) and not force_rehost:
         # Outsee не скачает localhost / 127.0.0.1 — молча получится чужое видео
         low = u.lower()
         if "://127." in low or "://localhost" in low or "://[::1]" in low:
@@ -528,19 +676,53 @@ async def ensure_public_image_url(url: str | None) -> str | None:
                 context={"url": u[:120]},
             )
         return u
-    decoded = _decode_data_url(u)
-    if not decoded:
-        logger.warning("outsee_api.frame: не data/http URL, пропускаю")
-        return None
-    raw, mime = decoded
+    raw: bytes
+    mime: str
+    if u.startswith(("http://", "https://")) and force_rehost:
+        async with httpx.AsyncClient(
+            timeout=90.0,
+            follow_redirects=True,
+            headers={"User-Agent": _FRAME_UPLOAD_UA},
+        ) as client:
+            r = await client.get(u)
+            if r.status_code >= 400 or len(r.content or b"") < 64:
+                raise OutseeApiError(
+                    f"force_rehost: не скачал исходник HTTP {r.status_code}",
+                    context={"url": u[:160]},
+                )
+            raw = r.content
+            ctype = (r.headers.get("content-type") or "").split(";")[0].strip().lower()
+            mime = ctype if ctype.startswith("image/") else "image/jpeg"
+            known = _host_name_from_url(u)
+            if known and known != "yandex":
+                skip.add(known)
+    else:
+        decoded = _decode_data_url(u)
+        if not decoded:
+            logger.warning("outsee_api.frame: не data/http URL, пропускаю")
+            return None
+        raw, mime = decoded
     errors: list[str] = []
-    hosts = (
-        ("uguu", _host_via_uguu),
-        ("litterbox", _host_via_litterbox),
-        ("catbox", _host_via_catbox),
-        ("0x0", _host_via_0x0),
-        ("tmpfiles", _host_via_tmpfiles),
-    )
+    from app.bots.yandex_storage import yandex_storage_configured
+
+    hosts: list[tuple[str, Any]] = []
+    if yandex_storage_configured():
+        hosts.append(("yandex", _host_via_yandex))
+        # Резервные хосты на случай временного сбоя S3
+        hosts.extend([
+            ("litterbox", _host_via_litterbox),
+            ("catbox", _host_via_catbox),
+        ])
+        logger.info("outsee_api.frame: upload host=yandex (с fallback на litterbox/catbox, {} bytes)", len(raw))
+    else:
+        logger.info("outsee_api.frame: Yandex S3 не настроен, использую fallback (litterbox/catbox/uguu/0x0, {} bytes)", len(raw))
+        hosts.extend([
+            ("litterbox", _host_via_litterbox),
+            ("catbox", _host_via_catbox),
+            ("uguu", _host_via_uguu),
+            ("0x0", _host_via_0x0),
+        ])
+
     variants = _upload_payload_variants(raw, mime)
     async with httpx.AsyncClient(
         timeout=90.0,
@@ -555,6 +737,8 @@ async def ensure_public_image_url(url: str | None) -> str | None:
             }.get(pmime, "jpg")
             filename = f"frame.{ext}"
             for name, upload in hosts:
+                if name in skip:
+                    continue
                 try:
                     hosted = await upload(client, payload, pmime, filename)
                     logger.info(
@@ -576,8 +760,34 @@ async def ensure_public_image_url(url: str | None) -> str | None:
                         msg,
                     )
     raise OutseeApiError(
-        "frame upload failed: " + " | ".join(errors)[:500],
-        context={"mime": mime, "bytes": len(raw), "variants": [v[2] for v in variants]},
+        "frame upload failed (проверь доступность хостов/Yandex S3): "
+        + " | ".join(errors)[:500],
+        context={
+            "mime": mime,
+            "bytes": len(raw),
+            "variants": [v[2] for v in variants],
+            "yandex_configured": yandex_storage_configured(),
+        },
+    )
+
+
+def _is_outsee_image_fetch_error(err: BaseException) -> bool:
+    """Outsee не смог скачать наш image_url (хост/сеть) — нужна смена хоста."""
+    blob = str(getattr(err, "reason", None) or err).lower()
+    return any(
+        m in blob
+        for m in (
+            "не удалось скачать изображение",
+            "скачать изображение по ссылке",
+            "по ссылке находится не изображение",
+            "не изображение",
+            "failed to download the image",
+            "failed to download image",
+            "could not download image",
+            "unable to download image",
+            "not an image",
+            "is not an image",
+        )
     )
 
 
@@ -738,38 +948,71 @@ async def generate_image(
         }
         body["detail_level"] = mapping.get(dl, dl)
     refs = _normalize_refs(reference_images)
-    if refs:
-        hosted: list[str] = []
-        for u in refs:
-            pub = await ensure_public_image_url(u)
-            if pub:
-                hosted.append(pub)
-        if not hosted:
-            raise OutseeApiError(
-                "outsee_api.image: рефы не удалось залить "
-                "(uguu/litterbox/catbox) — генерация без рефа запрещена",
-                context={"raw_refs": len(refs), "model": model, "project_id": project_id},
+    skip_hosts: set[str] = set()
+    submitted: dict[str, Any] | None = None
+    last_submit_err: BaseException | None = None
+    for host_try in range(1, 4):
+        if refs:
+            hosted: list[str] = []
+            for u in refs:
+                pub = await ensure_public_image_url(u, skip_hosts=skip_hosts)
+                if pub:
+                    hosted.append(pub)
+            if not hosted:
+                raise OutseeApiError(
+                    "outsee_api.image: рефы не удалось залить "
+                    "(Yandex Object Storage) — генерация без рефа запрещена",
+                    context={
+                        "raw_refs": len(refs),
+                        "model": model,
+                        "project_id": project_id,
+                        "skip_hosts": sorted(skip_hosts),
+                    },
+                )
+            # Живой probe 2026-08-03: field `reference_images` Outsee МОЛЧА
+            # игнорит (результат без identity). Рабочее поле — `image_urls`
+            # (как video: `image_url`, не first_frame_url).
+            body["image_urls"] = hosted
+            logger.info(
+                "outsee_api.image refs ready model={} n={} image_urls={}",
+                model,
+                len(hosted),
+                [u[:80] for u in hosted],
             )
-        # Живой probe 2026-08-03: field `reference_images` Outsee МОЛЧА
-        # игнорит (результат без identity). Рабочее поле — `image_urls`
-        # (как video: `image_url`, не first_frame_url).
-        body["image_urls"] = hosted
-        logger.info(
-            "outsee_api.image refs ready model={} n={} image_urls={}",
-            model,
-            len(hosted),
-            [u[:80] for u in hosted],
-        )
 
-    logger.info(
-        "outsee_api.image model={} aspect={} res={} refs={} project={}",
-        model,
-        body.get("aspect_ratio"),
-        body.get("resolution"),
-        len(body.get("image_urls") or []),
-        project_id,
-    )
-    submitted = await _post_generate("/api/v1/images/generate", body)
+        logger.info(
+            "outsee_api.image model={} aspect={} res={} refs={} project={} try={}/3",
+            model,
+            body.get("aspect_ratio"),
+            body.get("resolution"),
+            len(body.get("image_urls") or []),
+            project_id,
+            host_try,
+        )
+        try:
+            submitted = await _post_generate("/api/v1/images/generate", body)
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_submit_err = exc
+            if (
+                not _is_outsee_image_fetch_error(exc)
+                or not refs
+                or host_try >= 3
+            ):
+                raise
+            for u in body.get("image_urls") or []:
+                bad = _host_name_from_url(str(u))
+                # yandex не баним — следующий try = новый объект в бакете.
+                if bad and bad != "yandex":
+                    skip_hosts.add(bad)
+            logger.warning(
+                "outsee_api.image: Outsee отверг image_urls (skip={}) try {}/3",
+                sorted(skip_hosts),
+                host_try,
+                3,
+            )
+    if submitted is None:
+        raise last_submit_err or OutseeApiError("image generate: no submit")
     task_id = submitted["id"]
     done = await _poll_generation(task_id, timeout=timeout)
     url = _pick_result_url(done)
@@ -810,6 +1053,10 @@ async def generate_video(
     """
     if prompt_id_prefix:
         prompt = prepend_gen_id(prompt, prompt_id_prefix)
+    from app.services.video_prompt_sanitize import ensure_silent_video_prompt
+
+    # Звук всегда off: + явный silent в промте (Veo иначе сам клеит речь).
+    prompt = ensure_silent_video_prompt(prompt)
     model = studio_id_to_outsee_video_slug(model_slug)
     aspect = (aspect_ratio or "9:16").replace("_", ":")
     if aspect not in {"16:9", "9:16"}:
@@ -834,45 +1081,143 @@ async def generate_video(
             dur = 8
     body["duration_sec"] = dur
 
-    # Pipeline clips are always silent; Create may pass True for Veo audio.
-    body["generate_audio"] = bool(generate_audio) if generate_audio is not None else False
+    # Пайплайн / Studio: звук ВСЕГДА выкл. Veo всё равно может вшить AAC —
+    # тогда режем локально; на API шлём только false.
+    if generate_audio:
+        logger.warning(
+            "outsee_api.video: generate_audio=True проигнорирован — всегда silent"
+        )
+    body["generate_audio"] = False
 
+    want_start = bool(first_frame_url) or reference_image is not None
     frame = first_frame_url
-    if not frame and isinstance(reference_image, str) and reference_image.startswith(
-        ("http", "data:")
-    ):
-        frame = reference_image
-    elif not frame and isinstance(reference_image, Path) and reference_image.is_file():
-        frame = _path_to_data_url(reference_image)
+    if not frame and reference_image is not None:
+        if isinstance(reference_image, str):
+            s = reference_image.strip()
+            if s.startswith(("http://", "https://", "data:")):
+                frame = s
+            else:
+                p = Path(s)
+                if not p.is_file():
+                    raise OutseeApiError(
+                        f"стартовый кадр не найден на диске: {s[:200]}",
+                        context={"project_id": project_id},
+                    )
+                frame = _path_to_data_url(p)
+        elif isinstance(reference_image, Path):
+            if not reference_image.is_file():
+                raise OutseeApiError(
+                    f"стартовый кадр не найден на диске: {reference_image}",
+                    context={"project_id": project_id},
+                )
+            frame = _path_to_data_url(reference_image)
+        else:
+            raise OutseeApiError(
+                f"стартовый кадр: неподдерживаемый тип {type(reference_image).__name__}",
+                context={"project_id": project_id},
+            )
+    frame_source = frame  # data: или исходный http — для rehost при fetch-fail Outsee
     frame = await ensure_public_image_url(frame)
     if frame:
         # Outsee Developer API: стартовый кадр = image_url (first_frame_url молча игнорит!)
         body["image_url"] = frame
+    elif want_start:
+        # Раньше молча уходили в text→video без рефа — клипы «не похожи» на кадр.
+        raise OutseeApiError(
+            "стартовый кадр передан, но image_url не получен (upload/host)",
+            context={"project_id": project_id},
+        )
 
+    want_end = bool(last_frame_url) or last_frame_image is not None
     last = last_frame_url
-    if not last and isinstance(last_frame_image, str) and last_frame_image.startswith(
-        ("http", "data:")
-    ):
-        last = last_frame_image
-    elif not last and isinstance(last_frame_image, Path) and last_frame_image.is_file():
-        last = _path_to_data_url(last_frame_image)
+    if not last and last_frame_image is not None:
+        if isinstance(last_frame_image, str):
+            s = last_frame_image.strip()
+            if s.startswith(("http://", "https://", "data:")):
+                last = s
+            else:
+                p = Path(s)
+                if not p.is_file():
+                    raise OutseeApiError(
+                        f"конечный кадр не найден на диске: {s[:200]}",
+                        context={"project_id": project_id},
+                    )
+                last = _path_to_data_url(p)
+        elif isinstance(last_frame_image, Path):
+            if not last_frame_image.is_file():
+                raise OutseeApiError(
+                    f"конечный кадр не найден на диске: {last_frame_image}",
+                    context={"project_id": project_id},
+                )
+            last = _path_to_data_url(last_frame_image)
+        else:
+            raise OutseeApiError(
+                f"конечный кадр: неподдерживаемый тип {type(last_frame_image).__name__}",
+                context={"project_id": project_id},
+            )
     last = await ensure_public_image_url(last)
     if last:
         # конечный кадр в каталоге не заявлен; пробуем end_image_url
         body["end_image_url"] = last
+    elif want_end:
+        raise OutseeApiError(
+            "конечный кадр передан, но end_image_url не получен (upload/host)",
+            context={"project_id": project_id},
+        )
 
-    logger.info(
-        "outsee_api.video model={} aspect={} res={} dur={} audio={} image_url={} end={} project={}",
-        model,
-        body.get("aspect_ratio"),
-        body.get("resolution"),
-        body.get("duration_sec"),
-        body.get("generate_audio"),
-        bool(body.get("image_url")),
-        bool(body.get("end_image_url")),
-        project_id,
-    )
-    submitted = await _post_generate("/api/v1/videos/generate", body)
+    skip_hosts: set[str] = set()
+    submitted: dict[str, Any] | None = None
+    last_submit_err: BaseException | None = None
+    for host_try in range(1, 4):
+        logger.info(
+            "outsee_api.video model={} aspect={} res={} dur={} audio={} "
+            "image_url={} end={} project={} host_try={}",
+            model,
+            body.get("aspect_ratio"),
+            body.get("resolution"),
+            body.get("duration_sec"),
+            body.get("generate_audio"),
+            bool(body.get("image_url")),
+            bool(body.get("end_image_url")),
+            project_id,
+            host_try,
+        )
+        try:
+            submitted = await _post_generate("/api/v1/videos/generate", body)
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_submit_err = exc
+            if (
+                not _is_outsee_image_fetch_error(exc)
+                or not frame_source
+                or host_try >= 3
+            ):
+                raise
+            bad = _host_name_from_url(str(body.get("image_url") or ""))
+            # yandex не баним: следующий try зальёт новый объект в бакет.
+            if bad and bad != "yandex":
+                skip_hosts.add(bad)
+            logger.warning(
+                "outsee_api.video: Outsee не скачал image_url (host={}) — "
+                "rehost skip={} try {}/3",
+                bad or "?",
+                sorted(skip_hosts),
+                host_try,
+                3,
+            )
+            # Rehost из исходного data:/файла, не из мёртвого catbox URL.
+            rehosted = await ensure_public_image_url(
+                frame_source if str(frame_source).startswith("data:") else frame_source,
+                skip_hosts=skip_hosts,
+                force_rehost=bool(
+                    str(frame_source).startswith(("http://", "https://"))
+                ),
+            )
+            if not rehosted or rehosted == body.get("image_url"):
+                raise
+            body["image_url"] = rehosted
+    if submitted is None:
+        raise last_submit_err or OutseeApiError("video generate: no submit")
     task_id = submitted["id"]
     done = await _poll_generation(task_id, timeout=timeout)
     url = _pick_result_url(done)
@@ -880,12 +1225,13 @@ async def generate_video(
     if suf in {".mp4", ".webm"} and out_path.suffix.lower() != suf:
         out_path = out_path.with_suffix(suf)
     await _download(url, out_path)
-    # Strip AAC even if API ignored generate_audio=false (Veo often still has track).
+    # Strip AAC always — generate_audio на API форсится False.
     await postprocess_veo_mp4(
         out_path,
         duration=dur if model == "veo-3-1-lite" else None,
-        generate_audio=generate_audio,
+        generate_audio=False,
     )
+    _assert_video_not_mush(out_path, duration_sec=dur)
     return GenerationResult(
         file_path=out_path,
         raw_url=url,

@@ -63,17 +63,39 @@ def build_duration_params_block(project: Project, step_code: str, *, header: str
     )
 
 
-def build_split_params_block(project: Project) -> str:
+def split_cell_limits_from_project(
+    project: Project,
+) -> tuple[int | None, int | None, int | None, int | None]:
+    """(min, max, avg_min, avg_max) из meta.node_step_params.split."""
     split = _step_bucket(project, "split")
 
-    def cell(key: str) -> str:
-        return _fmt_num(_parse_number(split.get(key)))
+    def as_int(key: str) -> int | None:
+        n = _parse_number(split.get(key))
+        if n is None:
+            return None
+        return int(round(n))
 
     return (
+        as_int("cell_min_chars"),
+        as_int("cell_max_chars"),
+        as_int("cell_avg_min"),
+        as_int("cell_avg_max"),
+    )
+
+
+def split_params_fingerprint(project: Project) -> str:
+    mn, mx, amn, amx = split_cell_limits_from_project(project)
+    return f"{mn or ''}:{mx or ''}:{amn or ''}:{amx or ''}"
+
+
+def build_split_params_block(project: Project) -> str:
+    mn, mx, amn, amx = split_cell_limits_from_project(project)
+    return (
         "Разбивка\n"
-        f"Минимальное количество символов в ячейке {cell('cell_min_chars')}\n"
-        f"Максимальное количество символов в ячейке {cell('cell_max_chars')}\n"
-        f"Средние значения от {cell('cell_avg_min')} до {cell('cell_avg_max')}"
+        f"Минимальное количество символов в ячейке {_fmt_num(float(mn) if mn else None)}\n"
+        f"Максимальное количество символов в ячейке {_fmt_num(float(mx) if mx else None)}\n"
+        f"Средние значения от {_fmt_num(float(amn) if amn else None)} "
+        f"до {_fmt_num(float(amx) if amx else None)}"
     )
 
 

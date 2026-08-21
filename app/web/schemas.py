@@ -95,6 +95,29 @@ class CreateProjectRequest(BaseModel):
     workflow_id: int | None = None  # если None — берём дефолтный
     auto_mode: bool = False
     sidebar_folder_id: str | None = None
+    aspect_ratio: str | None = None
+    image_resolution: str | None = None
+    video_resolution: str | None = None
+    image_generator: str | None = None
+    video_generator: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_camel_case(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "aspectRatio" in data and "aspect_ratio" not in data:
+                data["aspect_ratio"] = data.pop("aspectRatio")
+            if "imageResolution" in data and "image_resolution" not in data:
+                data["image_resolution"] = data.pop("imageResolution")
+            if "videoResolution" in data and "video_resolution" not in data:
+                data["video_resolution"] = data.pop("videoResolution")
+            if "imageGenerator" in data and "image_generator" not in data:
+                data["image_generator"] = data.pop("imageGenerator")
+            if "videoGenerator" in data and "video_generator" not in data:
+                data["video_generator"] = data.pop("videoGenerator")
+            if "autoMode" in data and "auto_mode" not in data:
+                data["auto_mode"] = data.pop("autoMode")
+        return data
 
 
 # ── Frame ──

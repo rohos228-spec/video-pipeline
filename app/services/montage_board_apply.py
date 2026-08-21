@@ -23,20 +23,25 @@ from app.db import session_scope
 from app.models import Project
 from app.services.img_streams import acquire_image_slot, get_img_streams
 from app.services.montage_board_meta import (
+    add_failed_highlight,
     add_highlight,
-    clear_highlights,
+    clear_failed_highlight,
+    slot_key_from_op,
     montage_meta,
     public_board_meta,
     set_montage_meta,
     touch_applied,
 )
+from app.services.montage_ai_change import rewrite_prompt_via_gpt
 from app.services.montage_board_regen import (
+    _frame_by_number,
     execute_image_regen,
     execute_video_regen,
     finalize_image_regen,
     finalize_video_regen,
     prepare_image_regen,
     prepare_video_regen,
+    resolve_image_prompt,
 )
 
 
@@ -48,9 +53,16 @@ _READY_IMAGE_BYTES = 200_000
 _READY_VIDEO_BYTES = 80_000
 
 _IMAGE_OP_TYPES = frozenset(
-    {"image_regen", "image_regen_prompt", "image_regen_correction"}
+    {
+        "image_regen",
+        "image_regen_prompt",
+        "image_regen_correction",
+        "image_ai_change",
+    }
 )
-_VIDEO_OP_TYPES = frozenset({"video_regen", "video_regen_prompt"})
+_VIDEO_OP_TYPES = frozenset(
+    {"video_regen", "video_regen_prompt", "video_ai_change"}
+)
 
 
 def _ready_local_asset(path: Path, *, min_bytes: int) -> bool:
@@ -63,6 +75,50 @@ def _ready_local_asset(path: Path, *, min_bytes: int) -> bool:
 def _is_sqlite_locked(exc: BaseException) -> bool:
     msg = str(exc).lower()
     return "database is locked" in msg or "database is busy" in msg
+
+
+def _is_sqlite_transient(exc: BaseException) -> bool:
+    """Locked / poisoned session после параллельного flush — можно retry."""
+    msg = str(exc).lower()
+    return _is_sqlite_locked(exc) or (
+        "rolled back due to a previous exception" in msg
+        or "invalid transaction is rolled back" in msg
+        or "this session's transaction has been rolled back" in msg
+    )
+
+
+async def _call_with_sqlite_retry(
+    factory,
+    *,
+    project_id: int,
+    frame_number: int,
+    label: str,
+    attempts: int = 7,
+):
+    """Повторить короткую DB-операцию при SQLite lock / rollback."""
+    last: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return await factory()
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            if _is_sqlite_transient(exc) and attempt < attempts:
+                wait = min(2.0 * attempt, 10.0)
+                logger.warning(
+                    "montage {} #{} F{} sqlite transient ({}/{}), wait {:.1f}s: {}",
+                    label,
+                    project_id,
+                    frame_number,
+                    attempt,
+                    attempts,
+                    wait,
+                    str(exc)[:160].replace("\n", " "),
+                )
+                await asyncio.sleep(wait)
+                continue
+            raise
+    assert last is not None
+    raise last
 
 
 def _op_frame_shot(op: dict[str, Any]) -> tuple[int, int]:
@@ -202,17 +258,33 @@ async def _run_op_with_short_sessions(
     op: dict[str, Any],
     board: dict[str, Any],
 ) -> dict[str, Any]:
-    """Чтение БД → Outsee (без сессии) → запись результата."""
+    """Чтение БД → (GPT для ИИзменение вне сессии) → Outsee → запись."""
     op_type = str(op.get("type") or "").strip()
     frame_number = int(op["frame_number"])
     shot = int(op.get("shot") or 1)
+
+    ai_kind: str | None = None
+    ai_image_prompt = ""
+    ai_voiceover = ""
+    prep: Any = None
 
     async with session_scope() as session:
         project = await session.get(Project, project_id)
         if project is None:
             raise RuntimeError(f"проект #{project_id} не найден")
 
-        if op_type in ("image_regen", "image_regen_prompt", "image_regen_correction"):
+        if op_type in ("image_ai_change", "video_ai_change"):
+            fr = await _frame_by_number(session, project.id, frame_number)
+            if fr is None:
+                raise RuntimeError(f"кадр {frame_number} не найден")
+            ai_kind = "image" if op_type == "image_ai_change" else "video"
+            ai_image_prompt = await resolve_image_prompt(session, project, fr, shot)
+            ai_voiceover = fr.voiceover_text or ""
+        elif op_type in (
+            "image_regen",
+            "image_regen_prompt",
+            "image_regen_correction",
+        ):
             mode = "same_prompt"
             if op_type == "image_regen_prompt":
                 mode = "edit_prompt"
@@ -243,6 +315,49 @@ async def _run_op_with_short_sessions(
             )
         else:
             raise RuntimeError(f"неизвестная операция: {op_type}")
+
+    if ai_kind is not None:
+        new_prompt = await rewrite_prompt_via_gpt(
+            image_prompt=ai_image_prompt,
+            voiceover_text=ai_voiceover,
+            kind=ai_kind,  # type: ignore[arg-type]
+            project_id=project_id,
+        )
+
+        async def _prepare_after_gpt():
+            async with session_scope() as session:
+                project = await session.get(Project, project_id)
+                if project is None:
+                    raise RuntimeError(f"проект #{project_id} не найден")
+                if ai_kind == "image":
+                    return await prepare_image_regen(
+                        session,
+                        project,
+                        frame_number,
+                        shot=shot,
+                        mode="edit_prompt",
+                        new_prompt=new_prompt,
+                        correction="",
+                        board=board,
+                    )
+                return await prepare_video_regen(
+                    session,
+                    project,
+                    frame_number,
+                    shot=shot,
+                    mode="edit_prompt",
+                    new_prompt=new_prompt,
+                    board=board,
+                )
+
+        prep = await _call_with_sqlite_retry(
+            _prepare_after_gpt,
+            project_id=project_id,
+            frame_number=frame_number,
+            label="prepare ai_change",
+        )
+
+    assert prep is not None
 
     # Слот общий с Create/img/video — не долбим Outsee сверх лимита потоков.
     async with acquire_image_slot():
@@ -330,9 +445,15 @@ async def _run_ops_phase(
                 highlight = result.get("highlight")
                 if highlight:
                     add_highlight(board, str(highlight))
+                    clear_failed_highlight(board, str(highlight))
             else:
                 errors.append(str(result.get("error") or "error"))
                 results.append(result)
+                fail_key = slot_key_from_op(all_ops[idx])
+                if not fail_key and isinstance(result.get("op"), dict):
+                    fail_key = slot_key_from_op(result.get("op"))
+                if fail_key:
+                    add_failed_highlight(board, fail_key)
             board["pending_ops"] = _pending_snapshot()
             async with session_scope() as session:
                 project = await session.get(Project, project_id)
@@ -382,7 +503,13 @@ async def apply_montage_board(
     ops = order_montage_pending_ops(
         list(pending_ops or board.get("pending_ops") or [])
     )
-    clear_highlights(board)
+    # Не стираем прошлые зелёные слоты — иначе после следующего apply
+    # «слетают» все ранее применённые правки в UI. Чистим только failed
+    # у слотов этой очереди (их снова добавят при ошибке).
+    for op in ops:
+        key = slot_key_from_op(op)
+        if key:
+            clear_failed_highlight(board, key)
 
     results: list[dict[str, Any]] = []
     errors: list[str] = []

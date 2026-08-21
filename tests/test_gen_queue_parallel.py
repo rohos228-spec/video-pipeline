@@ -86,12 +86,17 @@ async def test_parallel_allows_second_while_first_busy(
 
 
 @pytest.mark.asyncio
-async def test_parallel_paused_still_hard_blocks(
+async def test_parallel_paused_skipped_frees_window(
     session: AsyncSession,
 ) -> None:
+    """paused/user_stop не блокируют хвост — параллель заполняется дальше."""
     await _add(session, 1, status=ProjectStatus.paused)
     await _add(session, 2, status=ProjectStatus.plan_ready)
-    assert await gen_queue_blocks_project(session, 2) == 1
+    await _add(session, 3, status=ProjectStatus.plan_ready)
+    assert await gen_queue_blocks_project(session, 2) is None
+    assert await gen_queue_blocks_project(session, 3) is None
+    window = await gen_queue_window_projects(session)
+    assert [p.id for p in window] == [2, 3]
 
 
 @pytest.mark.asyncio

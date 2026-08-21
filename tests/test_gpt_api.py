@@ -11,13 +11,12 @@ import pytest
 from app.services import gpt_api
 from app.services.gpt_api import (
     GptApiError,
-    _responses_reasoning_block,
     _stream_timeout,
     build_messages,
     chat,
     collect_result_urls,
     download_content,
-    extract_text_fragments_from_sse_buffer,
+    looks_empty_ops_stub,
     looks_truncated_llm_text,
     parse_responses_sse_lines,
     parse_retrieved_response_payload,
@@ -198,8 +197,6 @@ async def test_chat_responses_mode(monkeypatch) -> None:
     assert captured["path"] == "/codex/v1/responses"
     assert "input" in captured["body"]  # responses-формат
     assert "messages" not in captured["body"]
-    assert captured["body"].get("reasoning") == {"effort": "low"}
-    assert captured["body"].get("store") is False
 
 
 def test_parse_responses_sse_lines_prefers_completed_payload() -> None:
@@ -258,8 +255,6 @@ async def test_chat_responses_salvages_after_stream_disconnect(monkeypatch) -> N
 
     monkeypatch.setattr(settings, "gpt_chat_path", "/codex/v1/responses")
     monkeypatch.setattr(settings, "gpt_api_mode", "auto")
-    # Короткий salvage не должен уходить в CF-continue в этом тесте.
-    monkeypatch.setattr(gpt_api, "_CF_CONTINUE_MIN_CHARS", 10_000)
 
     class _BoomStream:
         def __init__(self) -> None:
@@ -272,16 +267,11 @@ async def test_chat_responses_salvages_after_stream_disconnect(monkeypatch) -> N
         async def __aexit__(self, *args):
             return False
 
-        async def aiter_text(self):
-            yield (
-                'data: {"type":"response.created","response":'
-                '{"id":"resp_salv","status":"in_progress"}}\n'
-            )
-            yield 'data: {"type":"response.output_text.delta","delta":"живой "}\n'
-            yield 'data: {"type":"response.output_text.delta","delta":"текст"}\n'
-            raise httpx.RemoteProtocolError(
-                "Server disconnected without sending a response."
-            )
+        async def aiter_lines(self):
+            yield 'data: {"type":"response.created","response":{"id":"resp_salv","status":"in_progress"}}'
+            yield 'data: {"type":"response.output_text.delta","delta":"живой "}'
+            yield 'data: {"type":"response.output_text.delta","delta":"текст"}'
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
 
     class _BoomClient:
         def __init__(self, *a, **k):
@@ -295,9 +285,6 @@ async def test_chat_responses_salvages_after_stream_disconnect(monkeypatch) -> N
 
         def stream(self, *a, **k):
             return _BoomStream()
-
-        async def get(self, *a, **k):
-            raise httpx.ConnectError("no retrieve in unit test")
 
     monkeypatch.setattr(gpt_api.httpx, "AsyncClient", _BoomClient)
 
@@ -313,42 +300,20 @@ async def test_chat_responses_salvages_after_stream_disconnect(monkeypatch) -> N
     assert res.raw.get("sse_salvaged") is True
 
 
-def test_responses_reasoning_block_effort(monkeypatch) -> None:
-    from app.settings import settings
-
-    monkeypatch.setattr(settings, "gpt_reasoning_effort", "low")
-    assert _responses_reasoning_block() == {"effort": "low"}
-    monkeypatch.setattr(settings, "gpt_reasoning_effort", "MEDIUM")
-    assert _responses_reasoning_block() == {"effort": "medium"}
-    monkeypatch.setattr(settings, "gpt_reasoning_effort", "off")
-    assert _responses_reasoning_block() is None
-
-
-def test_extract_text_fragments_from_incomplete_sse_tail() -> None:
-    tail = (
-        'data: {"type":"response.output_text.delta","delta":"hello \\"world\\" '
-        "partial"
-    )
-    frag = extract_text_fragments_from_sse_buffer(tail)
-    assert "hello" in frag
-    assert "world" in frag
-
-
-def test_parse_responses_sse_lines_salvages_broken_json_delta() -> None:
-    lines = [
-        'data: {"type":"response.created","response":{"id":"resp_z","status":"in_progress"}}',
-        'data: {"type":"response.output_text.delta","delta":"часть "',  # обрезано
-    ]
-    text, status, _payload, rid = parse_responses_sse_lines(lines)
-    assert "часть" in text
-    assert rid == "resp_z"
-    assert status == "stream_partial"
-
-
 def test_looks_truncated_llm_text_json() -> None:
     assert looks_truncated_llm_text('{"ops":[{"frame_uuid":"a"') is True
     assert looks_truncated_llm_text('{"ops":[{"frame_uuid":"a","fields":{}}]}') is False
     assert looks_truncated_llm_text("просто текст") is False
+
+
+def test_looks_empty_ops_stub() -> None:
+    assert looks_empty_ops_stub('{"ops":[]}') is True
+    assert looks_empty_ops_stub('{"ops": []}') is True
+    assert looks_empty_ops_stub("") is False
+    assert looks_empty_ops_stub(
+        '{"ops":[{"frame_uuid":"a","fields":{"промт_картинки":"x"}}]}'
+    ) is False
+    assert looks_empty_ops_stub("просто текст") is False
 
 
 def test_stream_timeout_does_not_use_call_timeout_as_read(monkeypatch) -> None:
@@ -412,7 +377,6 @@ async def test_chat_cf_continue_after_truncated_salvage(monkeypatch) -> None:
 
     monkeypatch.setattr(settings, "gpt_chat_path", "/codex/v1/responses")
     monkeypatch.setattr(settings, "gpt_api_mode", "auto")
-    monkeypatch.setattr(gpt_api, "_CF_CONTINUE_MIN_CHARS", 10)
     state = {"n": 0}
 
     class _Stream:
@@ -428,9 +392,9 @@ async def test_chat_cf_continue_after_truncated_salvage(monkeypatch) -> None:
         async def __aexit__(self, *args):
             return False
 
-        async def aiter_text(self):
+        async def aiter_lines(self):
             for line in self._lines:
-                yield line + "\n"
+                yield line
             if self._boom:
                 raise httpx.RemoteProtocolError("Server disconnected")
 
@@ -462,9 +426,6 @@ async def test_chat_cf_continue_after_truncated_salvage(monkeypatch) -> None:
                 ]
             )
 
-        async def get(self, *a, **k):
-            raise httpx.ConnectError("no retrieve")
-
     monkeypatch.setattr(gpt_api.httpx, "AsyncClient", _Client)
 
     async def _no_sleep(*_a, **_k):
@@ -480,145 +441,6 @@ async def test_chat_cf_continue_after_truncated_salvage(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_chat_skips_cf_continue_when_salvage_too_small(monkeypatch) -> None:
-    """133 chars salvage → не продолжать, а retryable full chat."""
-    _enable(monkeypatch)
-    from app.settings import settings
-
-    monkeypatch.setattr(settings, "gpt_chat_path", "/codex/v1/responses")
-    monkeypatch.setattr(settings, "gpt_api_mode", "auto")
-    monkeypatch.setattr(gpt_api, "_CF_CONTINUE_MIN_CHARS", 2000)
-    state = {"n": 0}
-
-    class _Stream:
-        def __init__(self) -> None:
-            self.headers = {"cf-ray": "tiny"}
-            self.status_code = 200
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return False
-
-        async def aiter_text(self):
-            yield (
-                'data: {"type":"response.created","response":'
-                '{"id":"resp_tiny","status":"in_progress"}}\n'
-            )
-            yield 'data: {"type":"response.output_text.delta","delta":"{\\"a\\":"}\n'
-            raise httpx.RemoteProtocolError("cut")
-
-    class _Client:
-        def __init__(self, *a, **k):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return False
-
-        def stream(self, *a, **k):
-            state["n"] += 1
-            return _Stream()
-
-        async def get(self, *a, **k):
-            raise httpx.ConnectError("no retrieve")
-
-    monkeypatch.setattr(gpt_api.httpx, "AsyncClient", _Client)
-
-    async def _no_sleep(*_a, **_k):
-        return None
-
-    monkeypatch.setattr(gpt_api.asyncio, "sleep", _no_sleep)
-
-    with pytest.raises(GptApiError) as ei:
-        await chat(prompt="x", model="gpt-5-6-sol", max_retries=0)
-    assert ei.value.context.get("error_kind") == "stream_scarce_salvage"
-    assert state["n"] == 1
-
-
-@pytest.mark.asyncio
-async def test_chat_keeps_salvage_when_cf_continue_http500(monkeypatch) -> None:
-    """Большой salvage + continue 500 → вернуть salvage, не raise."""
-    _enable(monkeypatch)
-    from app.settings import settings
-
-    monkeypatch.setattr(settings, "gpt_chat_path", "/codex/v1/responses")
-    monkeypatch.setattr(settings, "gpt_api_mode", "auto")
-    monkeypatch.setattr(gpt_api, "_CF_CONTINUE_MIN_CHARS", 50)
-    monkeypatch.setattr(gpt_api, "_CF_CONTINUE_KEEP_MIN_CHARS", 50)
-    big = '{"ops":[' + (",".join(f'{{"i":{i}' for i in range(40)))
-    assert looks_truncated_llm_text(big)
-    assert len(big) >= 50
-    state = {"n": 0}
-
-    class _Stream:
-        def __init__(self, lines: list[str], boom: bool = False, http500: bool = False) -> None:
-            self.headers = {"cf-ray": "keep"}
-            self.status_code = 500 if http500 else 200
-            self._lines = lines
-            self._boom = boom
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return False
-
-        async def aread(self):
-            return b'{"error":{"message":"being maintained"}}'
-
-        async def aiter_text(self):
-            if self.status_code >= 400:
-                return
-                yield  # pragma: no cover
-            for line in self._lines:
-                yield line + "\n"
-            if self._boom:
-                raise httpx.RemoteProtocolError("cut")
-
-    class _Client:
-        def __init__(self, *a, **k):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return False
-
-        def stream(self, *a, **k):
-            state["n"] += 1
-            if state["n"] == 1:
-                delta = json.dumps(big)
-                return _Stream(
-                    [
-                        'data: {"type":"response.created","response":{"id":"resp_big","status":"in_progress"}}',
-                        f'data: {{"type":"response.output_text.delta","delta":{delta}}}',
-                    ],
-                    boom=True,
-                )
-            return _Stream([], http500=True)
-
-        async def get(self, *a, **k):
-            raise httpx.ConnectError("no retrieve")
-
-    monkeypatch.setattr(gpt_api.httpx, "AsyncClient", _Client)
-
-    async def _no_sleep(*_a, **_k):
-        return None
-
-    monkeypatch.setattr(gpt_api.asyncio, "sleep", _no_sleep)
-
-    res = await chat(prompt="json", model="gpt-5-6-sol", max_retries=0)
-    assert res.text == big
-    assert res.raw.get("cf_continue_failed") is True
-    assert state["n"] >= 2
-
-
-@pytest.mark.asyncio
 async def test_chat_keeps_salvage_when_cf_continue_empty(monkeypatch) -> None:
     """Цельный длинный ответ обрезан — continue пустой. Не терять salvage."""
     _enable(monkeypatch)
@@ -626,8 +448,6 @@ async def test_chat_keeps_salvage_when_cf_continue_empty(monkeypatch) -> None:
 
     monkeypatch.setattr(settings, "gpt_chat_path", "/codex/v1/responses")
     monkeypatch.setattr(settings, "gpt_api_mode", "auto")
-    monkeypatch.setattr(gpt_api, "_CF_CONTINUE_MIN_CHARS", 10)
-    monkeypatch.setattr(gpt_api, "_CF_CONTINUE_KEEP_MIN_CHARS", 10)
     state = {"n": 0}
 
     class _Stream:
@@ -643,9 +463,9 @@ async def test_chat_keeps_salvage_when_cf_continue_empty(monkeypatch) -> None:
         async def __aexit__(self, *args):
             return False
 
-        async def aiter_text(self):
+        async def aiter_lines(self):
             for line in self._lines:
-                yield line + "\n"
+                yield line
             if self._boom:
                 raise httpx.RemoteProtocolError("Server disconnected")
 
@@ -676,9 +496,6 @@ async def test_chat_keeps_salvage_when_cf_continue_empty(monkeypatch) -> None:
                 ]
             )
 
-        async def get(self, *a, **k):
-            raise httpx.ConnectError("no retrieve")
-
     monkeypatch.setattr(gpt_api.httpx, "AsyncClient", _Client)
 
     async def _no_sleep(*_a, **_k):
@@ -705,7 +522,6 @@ async def test_chat_fetches_completed_response_after_sse_cut(monkeypatch) -> Non
     monkeypatch.setattr(settings, "gpt_chat_path", "/codex/v1/responses")
     monkeypatch.setattr(settings, "gpt_api_mode", "auto")
     monkeypatch.setattr(settings, "gpt_base_url", "https://api.kie.ai")
-    monkeypatch.setattr(gpt_api, "_CF_CONTINUE_MIN_CHARS", 10_000)
     state = {"stream": 0, "gets": []}
     full = '{"ops":[{"frame_uuid":"aa","fields":{"x":"1"}},{"frame_uuid":"bb","fields":{"x":"2"}}]}'
 
@@ -720,15 +536,9 @@ async def test_chat_fetches_completed_response_after_sse_cut(monkeypatch) -> Non
         async def __aexit__(self, *args):
             return False
 
-        async def aiter_text(self):
-            yield (
-                'data: {"type":"response.created","response":'
-                '{"id":"resp_full","status":"in_progress"}}\n'
-            )
-            yield (
-                'data: {"type":"response.output_text.delta",'
-                '"delta":"{\\"ops\\":[{\\"frame_uuid\\":\\"aa\\""}\n'
-            )
+        async def aiter_lines(self):
+            yield 'data: {"type":"response.created","response":{"id":"resp_full","status":"in_progress"}}'
+            yield 'data: {"type":"response.output_text.delta","delta":"{\\"ops\\":[{\\"frame_uuid\\":\\"aa\\""}'
             raise httpx.RemoteProtocolError("Server disconnected")
 
     class _GetResp:
@@ -1289,6 +1099,7 @@ def test_async_client_passes_proxy(monkeypatch) -> None:
         return real(*args, **kwargs)
 
     monkeypatch.setattr(settings, "gpt_proxy_url", "socks5://u:p@1.2.3.4:1080")
+    monkeypatch.setattr(settings, "gpt_relay_token", "")
     monkeypatch.setattr(gpt_api, "_PROXY_LOGGED", False)
     monkeypatch.setattr(gpt_api.httpx, "AsyncClient", factory)
     gpt_api._async_client(timeout=1.0)
@@ -1308,9 +1119,33 @@ def test_headers_include_relay_token(monkeypatch) -> None:
     assert h["X-VP-Relay-Token"] == "relay-secret"
 
 
+def test_gpt_proxy_ignored_when_relay_token_set(monkeypatch) -> None:
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_proxy_url", "socks5://u:p@1.2.3.4:1080")
+    monkeypatch.setattr(settings, "gpt_relay_token", "relay-secret")
+    assert gpt_api._gpt_proxy_url() is None
+
+    captured: dict = {}
+    real = httpx.AsyncClient
+
+    def factory(*args, **kwargs):
+        captured.update(kwargs)
+        kwargs["transport"] = httpx.MockTransport(lambda r: httpx.Response(200))
+        kwargs.pop("proxy", None)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(gpt_api, "_PROXY_LOGGED", False)
+    monkeypatch.setattr(gpt_api.httpx, "AsyncClient", factory)
+    gpt_api._async_client(timeout=1.0)
+    assert "proxy" not in captured
+    assert captured.get("trust_env") is False
+
+
 def test_gpt_proxy_url_normalizes_socks5h(monkeypatch) -> None:
     from app.settings import settings
 
+    monkeypatch.setattr(settings, "gpt_relay_token", "")
     monkeypatch.setattr(settings, "gpt_proxy_url", "socks5h://u:p@10.1.2.3:9050")
     assert gpt_api._gpt_proxy_url() == "socks5://u:p@10.1.2.3:9050"
 
@@ -1318,6 +1153,7 @@ def test_gpt_proxy_url_normalizes_socks5h(monkeypatch) -> None:
 def test_gpt_proxy_url_empty(monkeypatch) -> None:
     from app.settings import settings
 
+    monkeypatch.setattr(settings, "gpt_relay_token", "")
     monkeypatch.setattr(settings, "gpt_proxy_url", None)
     assert gpt_api._gpt_proxy_url() is None
     monkeypatch.setattr(settings, "gpt_proxy_url", "  ")

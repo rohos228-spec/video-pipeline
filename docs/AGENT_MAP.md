@@ -13,11 +13,14 @@
 
 | Файл | Зачем |
 |------|--------|
+| [`../ai-pack/START_HERE.md`](../ai-pack/START_HERE.md) | **Пакет для ИИ** (копии гайдов + как чинить/промпты). Пересборка: `python scripts/build_ai_pack.py` |
 | [`AGENTS.md`](../AGENTS.md) | Cloud/dev: git→main, providers, GPT API, UI version |
 | [`.cursor/rules/video-pipeline-ops.mdc`](../.cursor/rules/video-pipeline-ops.mdc) | Studio, anim_pr/R48, soft-retry, diagnose |
 | [`.cursor/rules/video-pipeline-map.mdc`](../.cursor/rules/video-pipeline-map.mdc) | Это правило: сначала карта |
 | [`NODE_SYSTEM.md`](NODE_SYSTEM.md) | Система нод оркестратора: доноры, контракты, harness-гейты, каталог нод/действий |
 | [`DB_V2.md`](DB_V2.md) | DB v2 = SoT: apply-ops контракт, алиасы, экспорт в Excel, руководство оператора |
+| [`PROMPT_CONTRACT.md`](PROMPT_CONTRACT.md) | Контракт промптов GPT↔DB: apply-ops / artifact / staging; стоп-лист Excel/TSV |
+| [`NODE_MODELS.md`](NODE_MODELS.md) | Пикер модели на ноде: vibecode vs kie vs Grsai/Outsee, какие ключи |
 
 ---
 
@@ -70,7 +73,7 @@ docs/                     # human/agent docs
 | plan | plan | план ролика |
 | script | script | сценарий / VO |
 | split | split | разбивка кадров |
-| scene_design | scene_d | мульти-агентный дизайн сцен (5 GPT-агентов параллельно + сборщик → `scene_registry` + attrs кадров). Флаг `SCENE_DESIGN_ENABLED` / `meta.scene_design_enabled`; выключен — pass-through. Модуль: [`app/services/scene_design/`](../app/services/scene_design/), промпты `prompts/scene_design/*.md` |
+| scene_design | scene_d | мульти-агентный дизайн сцен: 5 GPT-агентов параллельно → staging-ячейки `scene_design_cells` (валидация при записи, `cells.py`) → хронология по закадру + привязка кадров (`chronology.py`) → сборщик → валидация → apply-ops. В боевые таблицы пишет только финальная сборка. Флаг `SCENE_DESIGN_ENABLED` / `meta.scene_design_enabled`; выключен — pass-through. Модуль: [`app/services/scene_design/`](../app/services/scene_design/), промпты `prompts/scene_design/*.md` |
 | hero | hero | hero-кадр |
 | items | items | предметы/рефы |
 | enrich_1…5 | enrich_* | доп. Excel-слоты |
@@ -120,6 +123,7 @@ Series workbook — отдельный трек: `docs/SERIES_XLSX_WORKBOOK.md`.
 
 **Не переписывать — читать:**
 
+- [`docs/PROMPT_CONTRACT.md`](PROMPT_CONTRACT.md) — GPT↔DB IO (apply-ops); Excel/TSV стоп-лист
 - [`docs/PROMPTS_BLOCKS.md`](PROMPTS_BLOCKS.md) — контракт blocks/steps/vars/weights
 - [`app/services/prompt_composer.py`](../app/services/prompt_composer.py)
 - Диск: `prompts/blocks/`, `prompts/steps/`, `prompts/step-presets/`, legacy `prompts/0*_*/`
@@ -179,6 +183,7 @@ Series workbook — отдельный трек: `docs/SERIES_XLSX_WORKBOOK.md`.
 | Сборка ролика | `app/orchestrator/steps/assemble.py` |
 | Таймлайн / sync | `app/services/frame_timeline_sync.py`, `mapper.py` |
 | Whisper / ASR | `app/services/whisper.py`; NVIDIA: `ASR_BACKEND=nvidia`, `.[nvidia]`, `scripts/download_nvidia_asr.py` |
+| Word-level в БД | таблица `asr_words` (`app/models.py` AsrWord), запись `app/services/asr_words_store.py`; API `GET /api/projects/{id}/asr-words` |
 | VO в xlsx | R49 (`ROW_VOICEOVER_V8`) + таймкоды R15 |
 | **Regen на доске** | `montage_board_regen.py` → тот же API, что img/video (`outsee_retry`); промты из БД (`prompt_versions`/Frame), Excel fallback. CDP не нужен при `IMAGE/VIDEO_PROVIDER=outsee\|grsai`. См. `docs/DB_V2.md` §8 |
 
@@ -228,6 +233,7 @@ SoT по тексту GPT: `AGENTS.md` + этот map §8.
 | Монтаж regen img/video | `montage_board_regen.py` (API = ноды img/video; промты из БД) |
 | step_code / status | `node_registry.py` |
 | R48 anim | `plan_sheet_v8.py`, ops rule |
+| Prompt contract (GPT↔DB) | `PROMPT_CONTRACT.md` |
 | Prompt blocks | `PROMPTS_BLOCKS.md` |
 | Free GPT chat files | `gpt_workspace.py` |
 | Create settings | `outsee_create.py` + Create UI |
@@ -236,3 +242,5 @@ SoT по тексту GPT: `AGENTS.md` + этот map §8.
 | Soft retry steps | `step_failure_policy.py` |
 | Image style Cursor skills | `.cursor/skills/README.md` (opt-in, не пайплайн) |
 | Knowledge search | `scripts/build_knowledge_index.py`, `/api/knowledge/search` |
+| **GPT VPS-relay (только прокладка)** | [`../deploy/gpt-relay/README.md`](../deploy/gpt-relay/README.md) |
+| **Группы нод («+ Группа»)** | `app/services/node_groups.py` (каталог+вставка), `app/web/routers/node_groups.py`, веер scene_design = группа `scene_design_fanout` |

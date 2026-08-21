@@ -29,14 +29,24 @@ export function StudioVersionBadge() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/studio-version", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data: ServerVersion | null) => {
-        if (!cancelled && data?.label) setServer(data);
-      })
-      .catch(() => undefined);
+    const load = () => {
+      fetch("/api/studio-version", { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data: ServerVersion | null) => {
+          if (!cancelled && data?.label) setServer(data);
+        })
+        .catch(() => undefined);
+    };
+    load();
+    // Бейдж — индикатор «UI/бэкенд устарели»: опрашиваем периодически и на
+    // возврат фокуса, иначе открытая вкладка держит старый sha после рестарта.
+    const onFocus = () => load();
+    window.addEventListener("focus", onFocus);
+    const timer = window.setInterval(load, 30_000);
     return () => {
       cancelled = true;
+      window.removeEventListener("focus", onFocus);
+      window.clearInterval(timer);
     };
   }, []);
 

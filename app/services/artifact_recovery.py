@@ -29,6 +29,34 @@ _FRAME_IMG_RE = re.compile(r"^frame_(\d{3})_", re.I)
 _FRAME_MP3_RE = re.compile(r"^frame_(\d{3})\.mp3$", re.I)
 
 
+def archive_older_frame_clips(
+    videos_dir: Path,
+    frame_number: int,
+    *,
+    shot: int,
+    keep: Path,
+) -> int:
+    """Старые sibling того же кадра/shot → ``old/videos/``; ``keep`` остаётся."""
+    from types import SimpleNamespace
+
+    from app.services.montage_board_assets import purge_replaced_media
+    from app.services.plan_shot2 import shot2_video_file_pattern
+
+    if shot == 2:
+        patterns = [shot2_video_file_pattern(frame_number)]
+    else:
+        patterns = [f"clip_{frame_number:03d}_*.mp4"]
+    project = SimpleNamespace(data_dir=videos_dir.parent)
+    return purge_replaced_media(
+        videos_dir,
+        patterns=patterns,
+        keep=keep,
+        project=project,
+        sub="videos",
+        shot=shot,
+    )
+
+
 def newest_disk_video(videos_dir: Path, frame_number: int, shot: int) -> Path | None:
     if shot == 2:
         candidates = [
@@ -471,13 +499,24 @@ async def ensure_whisper_words(
     audio_dir.mkdir(parents=True, exist_ok=True)
     words_path = audio_dir / f"words_{uuid.uuid4().hex[:8]}.json"
     dump_words_json(words, words_path)
+    art_uuid = uuid.uuid4().hex
     session.add(
         Artifact(
             project_id=project.id,
             kind=ArtifactKind.whisper_words,
-            uuid=uuid.uuid4().hex,
+            uuid=art_uuid,
             path=str(words_path.resolve()),
         )
+    )
+    from app.services.asr import active_asr_backend
+    from app.services.asr_words_store import replace_project_asr_words
+
+    await replace_project_asr_words(
+        session,
+        project.id,
+        words,
+        backend=active_asr_backend(),
+        artifact_uuid=art_uuid,
     )
     await session.flush()
     logger.info(

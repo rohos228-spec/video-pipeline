@@ -12,7 +12,6 @@ from app.models import Project, ProjectStatus
 from app.services.mass_factory import assert_not_factory_template_for_generation
 from app.services.reset_step import clear_step_outputs_for_rerun, _WRAPPER_TO_CODES
 from app.services.chatgpt_xlsx import purge_tmp_gpt_for_step
-from app.services.chatgpt_xlsx import sync_project_xlsx
 from app.services.step_cancel import clear_stop
 from app.services.project_state import is_running_status
 from app.telegram.menu import step_by_code, step_by_running_status
@@ -45,11 +44,11 @@ async def _preempt_running_for_manual_start(
         return
     from app.services.project_control import clear_user_stop_gate
     from app.services.run_sync import stop_active_running_node
-    from app.services.step_cancel import clear_stop, request_stop
+    from app.services.step_cancel import clear_stop, kill_active_generation
     from app.services.xlsx_flow_locks import clear_xlsx_flow_locks
 
     prev = project.status
-    request_stop(project.id)
+    kill_active_generation(project.id, reason="preempt_other_step")
     clear_xlsx_flow_locks(project.id)
     await stop_active_running_node(session, project)
     clear_stop(project.id)
@@ -78,6 +77,37 @@ async def start_step(
     explicit_ui_start: bool = False,
 ) -> ProjectStatus:
     """Перевести проект в running-статус шага — воркер подхватит."""
+    # Ноды «Работа с GPT» с маркером data.sd_agent — scene-агенты: их ▶
+    # приходит как excel_gpt (таков тип ноды), но гоняется шагами
+    # scene_d/scene_asm, а не enrich-слотами.
+    if step_code == "excel_gpt" and node_key:
+        try:
+            from app.services.canvas_graph import canvas_graph_from_meta
+            from app.services.excel_gpt_node import (
+                SCENE_AGENT_ASSEMBLER,
+                sd_agent_marker,
+            )
+
+            cg = canvas_graph_from_meta(
+                project.meta if isinstance(project.meta, dict) else {}
+            )
+            for n in (cg or {}).get("nodes") or []:
+                if str(n.get("id") or "") != str(node_key):
+                    continue
+                marker = sd_agent_marker(n)
+                if marker:
+                    step_code = (
+                        "scene_asm"
+                        if marker == SCENE_AGENT_ASSEMBLER
+                        else "scene_d"
+                    )
+                break
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[#{}] start_step: sd_agent reroute по node_key failed",
+                project.id,
+                exc_info=True,
+            )
     # Studio/явный UI: очередь и «уже running» не блокируют — preempt + старт.
     if explicit_ui_start:
         skip_queue_guard = True
@@ -123,6 +153,17 @@ async def start_step(
         raise ValueError(f"unknown step code: {step_code}")
     assert_not_factory_template_for_generation(project)
 
+    # Ручной ▶: убить хвост предыдущего GPT/xlsx (иначе worker видит
+    # is_generation_active и не стартует split, а stale enrich дописывает
+    # enrich_1_ready → reconcile ложно красит n_split в done).
+    # НЕ request_stop: stop-файл → worker ложный ⏹ / user_stop mid-run.
+    if explicit_ui_start:
+        from app.services.step_cancel import kill_active_generation
+        from app.services.xlsx_flow_locks import clear_xlsx_flow_locks
+
+        kill_active_generation(project.id, reason="explicit_ui_start")
+        clear_xlsx_flow_locks(project.id)
+
     if is_running_status(project.status) and project.status is not step.running_status:
         cur_step = step_by_running_status(project.status)
         same_family = cur_step is not None and cur_step.code == step_code
@@ -164,6 +205,76 @@ async def start_step(
             step_code,
         )
 
+    # Per-agent перезапуск веера scene_design: сбросить чекпоинт ТОЛЬКО этого
+    # агента (остальные возьмутся из чекпоинтов без GPT) + сборка → stale.
+    # Два входа: шаги sd_char/sd_world/... ИЛИ scene_d с node_key ноды
+    # sd_agent (кнопка ▶ на ноде агента на канвасе).
+    from app.orchestrator.node_registry import SD_AGENT_STEP_CODES
+
+    sd_agent_name = SD_AGENT_STEP_CODES.get(step_code)
+    if sd_agent_name is None and step_code == "scene_d" and node_key:
+        try:
+            from app.services.canvas_graph import canvas_graph_from_meta
+            from app.services.excel_gpt_node import (
+                SCENE_AGENT_ASSEMBLER,
+                sd_agent_marker,
+            )
+
+            cg = canvas_graph_from_meta(
+                project.meta if isinstance(project.meta, dict) else {}
+            )
+            for n in (cg or {}).get("nodes") or []:
+                if str(n.get("id") or "") != str(node_key):
+                    continue
+                cand = sd_agent_marker(n)
+                if cand and cand != SCENE_AGENT_ASSEMBLER:
+                    sd_agent_name = cand
+                break
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[#{}] start_step scene_d: agent resolve по node_key failed",
+                project.id,
+                exc_info=True,
+            )
+    if sd_agent_name:
+        from app.services.scene_design import invalidate_agent
+        from app.services.scene_design import runner as sd_runner
+
+        invalidate_agent(project, sd_agent_name)
+        # ▶ на одной ноде веера — GPT только для неё (не поднимать весь веер).
+        sd_runner.set_only_agent(project, sd_agent_name)
+        logger.info(
+            "[#{}] start_step {}: чекпоинт агента {} сброшен (per-agent rerun)",
+            project.id,
+            step_code,
+            sd_agent_name,
+        )
+    elif step_code in ("scene_d", "scene_asm"):
+        from app.services.scene_design import runner as sd_runner
+
+        sd_runner.clear_only_agent(project)
+
+    if sd_agent_name or step_code in ("scene_d", "scene_asm"):
+        # Нода сборщика на канвасе → pending (сборка устарела).
+        try:
+            from app.services.run_sync import _workflow_run_with_nodes
+            from app.services.node_status_machine import reset_node_to_pending
+
+            run = await _workflow_run_with_nodes(session, project.id)
+            if run is not None:
+                for nr in run.node_runs:
+                    if nr.node_type == "sd_assemble" and nr.status.value == "done":
+                        reset_node_to_pending(
+                            nr, project_id=project.id, initiator="ui_restart"
+                        )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[#{}] start_step {}: sd_assemble reset failed",
+                project.id,
+                step_code,
+                exc_info=True,
+            )
+
     # Ручной старт: порядок нод и data-guard не блокируют запуск.
 
     if step_code == "anim_pr":
@@ -173,7 +284,6 @@ async def start_step(
         from app.services.animation_prompt_gpt import (
             count_animation_prompt_stats,
             scan_missing_animation_prompts_all,
-            sync_animation_prompts_from_xlsx,
         )
         from app.services.vision_check_loop import (
             clear_vision_check_meta,
@@ -189,10 +299,10 @@ async def start_step(
                 project.id,
             )
 
-        # Ручной ▶ из UI: всегда полный переген с заменой (даже если R48 готов).
+        # Ручной ▶: идём в generating_* (даже если промты уже есть); wipe — soft
+        # (force_wipe=False ниже). Полный сброс промтов — reset_step.
         # Авто/очередь без missing — skip на ready (не прыгаем в video/images).
         if not explicit_ui_start:
-            synced = await sync_animation_prompts_from_xlsx(session, project)
             frames = (
                 await session.execute(
                     select(Frame)
@@ -212,9 +322,8 @@ async def start_step(
                 await session.flush()
                 logger.info(
                     "[#{}] start_step anim_pr: авто-пропуск — нечего генерировать "
-                    "(synced={}, plan R48={}, картинок={}, status={})",
+                    "(plan R48 mirror={}, картинок={}, status={})",
                     project.id,
-                    synced,
                     xlsx_filled,
                     with_image,
                     project.status.value,
@@ -233,27 +342,7 @@ async def start_step(
             step_code,
         )
 
-    proj_xlsx = project.data_dir / "project.xlsx"
-    if proj_xlsx.exists():
-        try:
-            # keep_fields=True: ▶ любого шага не должен перетирать готовый
-            # script_text/general_plan склейкой R49 из project.xlsx.
-            info = await sync_project_xlsx(
-                session, project, proj_xlsx, keep_fields=True
-            )
-            logger.info(
-                "[#{}] start_step {}: synced project.xlsx into DB: {}",
-                project.id,
-                step_code,
-                info,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[#{}] start_step {}: sync_project_xlsx failed: {}",
-                project.id,
-                step_code,
-                e,
-            )
+    # Excel → DB только через явный Import (excel_io), не на старте шага.
 
     for code in _WRAPPER_TO_CODES.get(step_code, [step_code]):
         purge_tmp_gpt_for_step(project, code)
@@ -273,27 +362,23 @@ async def start_step(
             ", ".join(cleared),
         )
     try:
-        # UI ▶ anim_pr: wipe R48/DB, иначе soft-resume оставляет готовые промты
-        # и шаг сразу «ничего делать» → auto уходит в video.
-        force_wipe = bool(explicit_ui_start and step_code == "anim_pr")
-        if force_wipe:
-            from sqlalchemy import select as _select
-
-            from app.models import Frame as _Frame
-            from app.storage.plan_sheet_v8 import clear_plan_animation_prompts
-
-            nums = [
-                int(n)
-                for (n,) in (
-                    await session.execute(
-                        _select(_Frame.number).where(_Frame.project_id == project.id)
-                    )
-                ).all()
-            ]
-            clear_plan_animation_prompts(project, nums)
-        wiped = await clear_step_outputs_for_rerun(
-            session, project, step_code, force_wipe=force_wipe
-        )
+        # Soft ▶ anim_pr / img / video: не wipe готовые пачки.
+        # Явный ▶ img_pr — всегда пересобрать промты (иначе skip «already in DB»).
+        force_wipe = bool(explicit_ui_start and step_code == "img_pr")
+        # ▶ одной sd_agent-ноды: invalidate_agent уже сбросил чекпоинт.
+        # Полный wipe scene_d удаляет meta.scene_design целиком — вместе с
+        # only_agent → worker prepare без only_agent зажигает весь веер.
+        if sd_agent_name and step_code == "scene_d":
+            wiped = {}
+            logger.info(
+                "[#{}] start_step scene_d: skip full wipe (only_agent={})",
+                project.id,
+                sd_agent_name,
+            )
+        else:
+            wiped = await clear_step_outputs_for_rerun(
+                session, project, step_code, force_wipe=force_wipe
+            )
         if wiped:
             logger.info(
                 "[#{}] start_step {}: очищены выходы шага перед запуском: {} "
@@ -310,21 +395,11 @@ async def start_step(
             step_code,
             e,
         )
-    if step_code == "img" and proj_xlsx.exists():
-        from app.services.xlsx_v8_import import bootstrap_frames_for_image_step
+    # only_agent обязан пережить clear_step_outputs (wipe scene_d).
+    if sd_agent_name:
+        from app.services.scene_design import runner as sd_runner
 
-        boot = await bootstrap_frames_for_image_step(session, project, proj_xlsx)
-        logger.info(
-            "[#{}] start_step img: xlsx bootstrap R45={} R46={} created={} "
-            "shot1={} shot2={} reset={}",
-            project.id,
-            boot.prompts_in_xlsx,
-            boot.shot2_in_xlsx,
-            boot.frames_created,
-            boot.frames_prompt_updated,
-            boot.frames_shot2_updated,
-            boot.frames_status_reset,
-        )
+        sd_runner.set_only_agent(project, sd_agent_name)
     running_status = step.running_status
     if step_code == "excel_gpt":
         from app.orchestrator.graph.planner import load_graph_for_project

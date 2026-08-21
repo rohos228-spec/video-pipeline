@@ -43,6 +43,7 @@ _RUNNING_STATUSES = {
     ProjectStatus.scripting,
     ProjectStatus.splitting,
     ProjectStatus.scene_designing,
+    ProjectStatus.scene_assembling,
     ProjectStatus.generating_hero,
     ProjectStatus.generating_items,
     ProjectStatus.enriching_1,
@@ -56,6 +57,8 @@ _RUNNING_STATUSES = {
     ProjectStatus.generating_videos,
     ProjectStatus.generating_audio,
     ProjectStatus.generating_music,
+    ProjectStatus.sfx_planning,
+    ProjectStatus.generating_sfx,
     ProjectStatus.assembling,
     ProjectStatus.publishing,
 }
@@ -243,7 +246,56 @@ def _enrich_meta_allowed_for_status(project: Project) -> bool:
     auto_advance тогда стартует excel_gpt #3, минуя split и первые GPT-ноды.
     """
     cur = getattr(project, "status", None)
-    return _status_ord(cur) >= _status_ord(ProjectStatus.enriching_1)
+    return (
+        _status_ord(cur) >= _status_ord(ProjectStatus.enriching_1)
+        and _status_ord(cur) <= _status_ord(ProjectStatus.enrich_5_ready)
+    )
+
+
+def _shot_index_from_attrs(attrs: object) -> int:
+    """shot_index из attrs.camera_subdivide (SET); без метки = 1 (primary)."""
+    if not isinstance(attrs, dict):
+        return 1
+    cs = attrs.get("camera_subdivide")
+    if isinstance(cs, dict):
+        try:
+            return max(1, int(cs.get("shot_index") or 1))
+        except (TypeError, ValueError):
+            return 1
+    try:
+        return max(1, int(attrs.get("shot_index") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+async def _primary_image_prompt_counts(
+    session, project_id: int
+) -> tuple[int, int, int]:
+    """(primary_total, primary_with_img_prompt, all_with_img_prompt).
+
+    После camera_subdivide SET-дети часто без своего image_prompt — gate
+    «промты готовы» смотрит на primary (shot_index=1), иначе recompute
+    вечно видит fr_with < fr_total → enrich_1_ready → auto hero loop.
+    """
+    rows = (
+        await session.execute(select(Frame).where(Frame.project_id == project_id))
+    ).scalars().all()
+    primary_total = 0
+    primary_with = 0
+    all_with = 0
+    for fr in rows:
+        has = bool((getattr(fr, "image_prompt", None) or "").strip())
+        if has:
+            all_with += 1
+        if _shot_index_from_attrs(getattr(fr, "attrs", None)) <= 1:
+            primary_total += 1
+            if has:
+                primary_with += 1
+    if primary_total == 0:
+        # Нет SET-меток — все кадры primary.
+        primary_total = len(rows)
+        primary_with = all_with
+    return primary_total, primary_with, all_with
 
 
 def _excel_hero_expected_count(project: Project) -> int:
@@ -329,15 +381,11 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
             select(func.count(Frame.id)).where(Frame.project_id == pid)
         )
     ).scalar_one()
-    fr_with_img_prompt = (
-        await session.execute(
-            select(func.count(Frame.id)).where(
-                Frame.project_id == pid,
-                Frame.image_prompt.isnot(None),
-                Frame.image_prompt != "",
-            )
-        )
-    ).scalar_one()
+    (
+        fr_primary_total,
+        fr_primary_with_img_prompt,
+        fr_with_img_prompt,
+    ) = await _primary_image_prompt_counts(session, pid)
     fr_with_anim_prompt = (
         await session.execute(
             select(func.count(Frame.id)).where(
@@ -463,26 +511,67 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
     # scene_design выполнен (meta.scene_design.status=done) — не откатывать
     # в frames_ready: recompute иначе зациклил бы auto_advance на повторный
     # запуск ноды. Данные ноды — attrs кадров, отдельного счётчика нет.
+    # Промежуточная фаза agents_done → scene_agents_ready (сборка впереди).
     _sd = meta_now.get("scene_design")
-    frames_exit = (
-        ProjectStatus.scene_design_ready
-        if isinstance(_sd, dict) and _sd.get("status") == "done"
-        else ProjectStatus.frames_ready
-    )
+    _sd_status = _sd.get("status") if isinstance(_sd, dict) else None
+    if _sd_status == "done":
+        frames_exit = ProjectStatus.scene_design_ready
+    elif _sd_status == "agents_done":
+        frames_exit = ProjectStatus.scene_agents_ready
+    else:
+        frames_exit = ProjectStatus.frames_ready
+    # SET: gate по primary (shot_index=1), не по всем Frame после subdivide.
+    img_prompts_incomplete = fr_primary_with_img_prompt < fr_primary_total
+    images_needed = max(int(fr_with_img_prompt or 0), int(fr_primary_total or 0))
+
+    # 1. Наивысшие готовые стадии (видео, анимационные промпты, картинки).
+    # Готовые артефакты на диске/БД никогда не должны откатываться в frames_ready.
+    if images_needed > 0:
+        if scene_video_arts >= images_needed:
+            # videos ✓
+            if audio_arts == 0:
+                return ProjectStatus.videos_ready
+            # audio ✓
+            if final_arts == 0:
+                has_sfx_gen = bool(meta_now.get("sfx_generated")) or bool(meta_now.get("sfx_ready"))
+                has_sfx_plan = bool(meta_now.get("sfx_plan"))
+                if has_sfx_gen:
+                    return ProjectStatus.sfx_ready
+                if has_sfx_plan:
+                    return ProjectStatus.sfx_plan_ready
+                if music_arts > 0:
+                    return ProjectStatus.music_ready
+                return ProjectStatus.audio_ready
+            # final ✓
+            return ProjectStatus.assembled
+
+        if scene_image_arts >= images_needed:
+            # images ✓
+            if fr_with_anim_prompt >= images_needed:
+                return ProjectStatus.animation_prompts_ready
+            return ProjectStatus.images_ready
+
+    # 2. Картинки ещё не готовы (scene_image_arts < images_needed).
+    # Если промпты картинок полностью готовы — image_prompts_ready.
+    if not img_prompts_incomplete:
+        return ProjectStatus.image_prompts_ready
+
+    # 3. Промпты картинок не готовы — проверяем ранние стадии (hero, items, enrich, frames).
     if meta_now.get("hero_skipped_empty") and hero_arts == 0 and not has_hero_descr:
         # Пустой skip зафиксирован — не откатывать в frames_ready (цикл auto).
-        if fr_with_img_prompt < fr_total:
-            if _enrich_meta_allowed_for_status(project):
-                enrich_st = _enrich_ready_from_meta(project)
-                if enrich_st is not None:
-                    return enrich_st
-            if _items_step_required(project):
-                item_descs = _nonempty_item_descriptions(project)
-                if item_arts < len(item_descs):
-                    return ProjectStatus.hero_ready
-                return ProjectStatus.items_ready
-            return ProjectStatus.hero_ready
-        # дальше — обычная проверка img/video
+        if _enrich_meta_allowed_for_status(project):
+            enrich_st = _enrich_ready_from_meta(project)
+            cur = getattr(project, "status", None)
+            # Не откатывать image_prompts_ready/hero_ready → enrich_1
+            # из‑за stale enrich_completed_slots (цикл auto → hero).
+            if enrich_st is not None and _status_ord(cur) <= _status_ord(enrich_st):
+                return enrich_st
+        if _items_step_required(project):
+            item_descs = _nonempty_item_descriptions(project)
+            if item_arts < len(item_descs):
+                return ProjectStatus.hero_ready
+            return ProjectStatus.items_ready
+        return ProjectStatus.hero_ready
     elif hero_required:
         n_excel = _excel_hero_expected_count(project)
         if hero_arts == 0 and not has_hero_descr:
@@ -499,48 +588,27 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
                 if n_excel_done < n_excel:
                     return ProjectStatus.hero_ready
             return frames_exit
-    # Excel-hero / items / enrich — только пока нет image_prompt на всех кадрах.
-    # Иначе recompute откатывал image_prompts_ready → hero_ready при частичном hero.
-    if fr_with_img_prompt < fr_total:
-        # Зафиксированные enrich-слоты важнее частичного excel-hero —
-        # но только если проект уже дошёл до frames_ready (не stale meta).
-        if _enrich_meta_allowed_for_status(project):
-            enrich_st = _enrich_ready_from_meta(project)
-            if enrich_st is not None:
-                return enrich_st
-        if hero_required:
-            n_excel = _excel_hero_expected_count(project)
-            if n_excel > 0:
-                n_excel_done = await _count_excel_hero_artifacts(session, pid)
-                if n_excel_done < n_excel:
-                    return ProjectStatus.hero_ready
-        if _items_step_required(project):
-            item_descs = _nonempty_item_descriptions(project)
-            if item_arts < len(item_descs):
+
+    # Excel-hero / items / enrich — пока нет image_prompt на primary-кадрах.
+    if _enrich_meta_allowed_for_status(project):
+        enrich_st = _enrich_ready_from_meta(project)
+        cur = getattr(project, "status", None)
+        if enrich_st is not None and _status_ord(cur) <= _status_ord(enrich_st):
+            return enrich_st
+    if hero_required:
+        n_excel = _excel_hero_expected_count(project)
+        if n_excel > 0:
+            n_excel_done = await _count_excel_hero_artifacts(session, pid)
+            if n_excel_done < n_excel:
                 return ProjectStatus.hero_ready
-            return ProjectStatus.items_ready
-        if hero_required:
+    if _items_step_required(project):
+        item_descs = _nonempty_item_descriptions(project)
+        if item_arts < len(item_descs):
             return ProjectStatus.hero_ready
-        return frames_exit
-    # image_prompts ✓
-    if scene_image_arts < fr_total:
-        return ProjectStatus.image_prompts_ready
-    # images ✓
-    if fr_with_anim_prompt < fr_total:
-        return ProjectStatus.images_ready
-    # animation_prompts ✓
-    if scene_video_arts < fr_total:
-        return ProjectStatus.animation_prompts_ready
-    # videos ✓
-    if audio_arts == 0:
-        return ProjectStatus.videos_ready
-    # audio ✓
-    if final_arts == 0:
-        if music_arts > 0:
-            return ProjectStatus.music_ready
-        return ProjectStatus.audio_ready
-    # final ✓
-    return ProjectStatus.assembled  # `published` ставится отдельно по факту YT-аплоада
+        return ProjectStatus.items_ready
+    if hero_required:
+        return ProjectStatus.hero_ready
+    return frames_exit
 
 
 async def recompute_status(

@@ -12,8 +12,9 @@ import {
   X,
 } from "lucide-react";
 import type { NodeRunStatus } from "@/lib/types";
-import { getNodeSpec, formatNodeTypeLabel } from "@/lib/node-catalog";
+import { getNodeSpec, formatNodeTypeLabel, SD_AGENT_LABELS } from "@/lib/node-catalog";
 import { getNodeIcon } from "@/lib/node-icons";
+import { groupHue } from "@/lib/group-color";
 import { cn } from "@/lib/utils";
 import {
   assetTrayKindForNodeType,
@@ -28,6 +29,7 @@ import { StoragePanel } from "./storage-panel";
 import { HeroConfigPanel } from "./hero-config-panel";
 import { AssembleMontageTrigger } from "./assemble-montage-board";
 import { GptOperatorCardPanel } from "./gpt-operator-card-panel";
+import { NodeModelPicker } from "./node-model-picker";
 
 import {
   excelGptAttachmentChipTitle,
@@ -44,11 +46,28 @@ export interface PipelineNodeData extends Record<string, unknown> {
   label?: string;
   description?: string;
   slotIndex?: number;
+  /** Нода вне enrich-слотов 1..5 (например проверки scene-веера) — запуск по node_key. */
+  slotOverflow?: boolean;
   inputSource?: ExcelGptInputSource;
   uploadedFileName?: string;
   workMode?: ExcelGptWorkMode;
   /** Полная роль оператора (assist/review/…/gate); workMode — legacy. */
   role?: string;
+  /** Имя агента для legacy-нод sd_agent (characters/world/style/camera/action). */
+  agent?: string;
+  /** Маркер scene-агента на ноде «Работа с GPT» (data.sd_agent, + "assemble"). */
+  sdAgent?: string;
+  /** Импортированная группа (штамп при вставке группы) — рамка на канвасе. */
+  groupId?: string;
+  groupTitle?: string;
+  /** Выбранная модель vibecode (id каталога). */
+  modelId?: string;
+  /** Канал цен (всегда дорогой / stable). */
+  modelChannel?: "stable" | string;
+  /** Параметры media-ноды (картинка/видео) из пикера. */
+  imageResolution?: string;
+  imageQuality?: string;
+  aspectRatio?: string;
   status: NodeRunStatus;
   progress: number;
   progressText: string | null;
@@ -73,7 +92,28 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const running = d.status === "running";
   const wide = needsWidePanel(d.type);
 
-  const slots = actions?.getPromptSlots(d.nodeKey, d.type) ?? [];
+  const rawSlots = actions?.getPromptSlots(d.nodeKey, d.type) ?? [];
+  // Scene-агент: legacy-тип (sd_agent/sd_assemble) ИЛИ marked «Работа с GPT»
+  // (excel_gpt + data.sd_agent). agentName — characters/…/action/assemble.
+  const agentName =
+    d.sdAgent ??
+    (d.type === "sd_agent" || d.type === "sd_assemble" ? d.agent : undefined) ??
+    (d.type === "sd_assemble" ? "assemble" : undefined);
+  const isSdAgent =
+    d.type === "sd_agent" || d.type === "sd_assemble" || !!d.sdAgent;
+  // Ноде агента подставляем её файл промпта (05_excel_gpt/sd_<агент>.md).
+  const slots =
+    isSdAgent && agentName
+      ? rawSlots.map((s) =>
+          s.id === "main"
+            ? {
+                ...s,
+                preferredFile: `sd_${agentName}`,
+                title: `Промт: ${SD_AGENT_LABELS[agentName] ?? agentName}`,
+              }
+            : s,
+        )
+      : rawSlots;
   const assetKind = assetTrayKindForNodeType(d.type);
   const vMenuOpen = actions?.vMenuNodeKey === d.nodeKey;
   const resultSnapshot = actions?.getNodeResult(d.type, d.status, d.nodeKey);
@@ -81,6 +121,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const isStorage = d.type === "storage";
   const isHero = d.type === "hero";
   const isExcelGpt = isExcelGptNode(d.type);
+  const isGptWork = isExcelGpt || isSdAgent;
   const isAssemble = d.type === "assemble";
   const anchorRef = useRef<HTMLDivElement>(null);
 
@@ -108,7 +149,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
             ref={anchorRef}
             className={cn(
               "group relative overflow-visible rounded-3xl border border-white/10 bg-card/80 shadow-lg shadow-black/40 backdrop-blur-md premium-node-glow",
-              isExcelGpt || isStorage ? "w-[300px]" : "w-[260px]",
+              isGptWork || isStorage ? "w-[300px]" : "w-[260px]",
               "hover:-translate-y-0.5 hover:border-primary/35",
               running && "glow-running border-amber-400/60",
               d.status === "done" && "border-emerald-500/40",
@@ -135,8 +176,14 @@ export function PipelineNode({ data, selected }: NodeProps) {
             {actions && !isHitlNodeType(d.type) && !isExcelFeed && !isStorage && (
               <VTrigger
                 open={!!vMenuOpen}
-                title={isExcelGpt ? "Пульт оператора + промты (V)" : "Меню промтов (V)"}
-                label={isExcelGpt ? "GPT" : "V"}
+                title={
+                  isExcelGpt
+                    ? "Пульт оператора + промты (V)"
+                    : isSdAgent
+                      ? "Промт агента + меню (V)"
+                      : "Меню промтов (V)"
+                }
+                label={isGptWork ? "GPT" : "V"}
                 onToggle={() => actions.setVMenuNodeKey(vMenuOpen ? null : d.nodeKey)}
               />
             )}
@@ -197,22 +244,42 @@ export function PipelineNode({ data, selected }: NodeProps) {
               </OrbIcon>
               <div className="min-w-0 flex-1 pr-8 leading-tight">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-[13px] font-semibold tracking-tight">{title}</span>
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    {d.groupId ? (
+                      <span
+                        className="inline-block h-2 w-2 shrink-0 rounded-full"
+                        style={{ background: `hsl(${groupHue(d.groupId)} 85% 65%)` }}
+                        title={`Импортированная группа: ${d.groupTitle ?? d.groupId}`}
+                      />
+                    ) : null}
+                    <span className="truncate text-[13px] font-semibold tracking-tight">{title}</span>
+                  </span>
                   <span className={cn("status-pill shrink-0", statusConfig.bg, statusConfig.text)}>
                     {running ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <StatusIcon className="h-2.5 w-2.5" />}
                     {statusConfig.label}
                   </span>
                 </div>
-                <span className="mt-0.5 line-clamp-2 text-[10.5px] leading-snug text-muted-foreground">
-                  {isExcelGpt
-                    ? isBranchingRole(d.role || d.workMode)
-                      ? "Две исходящие: «Ок» и «Не ок». Вход от прошлых — в пульте."
-                      : "Вход от прошлых нод и роли — в пульте. На стрелке: связь / ок / не ок."
-                    : isStorage
-                      ? "Хранилище всех входящих файлов. Имя: номерНоды_время_файл."
-                      : spec.description}
-                </span>
-                {isExcelGpt ? (
+                <NodeModelPicker
+                  nodeKey={d.nodeKey}
+                  nodeType={d.type}
+                  modelId={d.modelId}
+                  imageResolution={d.imageResolution}
+                  imageQuality={d.imageQuality}
+                  aspectRatio={d.aspectRatio}
+                />
+                {isSdAgent ? (
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    <span className="rounded-full border border-violet-400/25 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-medium text-violet-100/90">
+                      {agentName && agentName !== "assemble"
+                        ? `агент: ${SD_AGENT_LABELS[agentName] ?? agentName}`
+                        : "сборщик сцен"}
+                    </span>
+                    <span className="rounded-full border border-emerald-400/20 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-100/90">
+                      GPT API
+                    </span>
+                  </div>
+                ) : null}
+                {!isSdAgent && isExcelGpt ? (
                   <div className="mt-1.5 flex flex-wrap gap-1">
                     <span className="rounded-full border border-violet-400/25 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-medium text-violet-100/90">
                       {d.role ? roleChip(d.role) : workModeChip(d.workMode)}

@@ -142,6 +142,12 @@ def sanitize_voiceover_text(text: str) -> str:
     extracted = extract_voiceover_block(body)
     if extracted is not None:
         body = extracted
+    else:
+        # Незакрытый блок: GPT открыл <<<VOICEOVER>>>, но не вернул <<<END>>> —
+        # берём всё после START, мусор перед маркером выкидываем.
+        m = re.search(r"<<<\s*VOICEOVER\s*>>>", body, re.IGNORECASE)
+        if m:
+            body = body[m.end() :].strip()
     body = _ITOGO_RE.sub("", body).strip()
     # Если маркеры уже вырезали блок — мета снаружи отброшена; внутри чистим ИТОГО.
     if extracted is not None:

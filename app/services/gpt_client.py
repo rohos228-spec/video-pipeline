@@ -30,7 +30,8 @@ def require_gpt_api() -> None:
     if not gpt_text_via_api():
         raise GptApiUnavailable(
             "Текстовый LLM не настроен: для Kimi задай TOKENROUTER_API_KEY "
-            "(TEXT_LLM_PROVIDER=tokenrouter), для GPT — GPT_API_KEY + GPT_BASE_URL. "
+            "(TEXT_LLM_PROVIDER=tokenrouter), для vibecode — VIBECODE_API_KEY, "
+            "для GPT/kie — GPT_API_KEY + GPT_BASE_URL. "
             "Браузерный ChatGPT для текста отключён."
         )
 
@@ -52,6 +53,7 @@ class ApiGptClient:
         *,
         timeout: float = 600,
         project_id: int | None = None,
+        max_retries: int | None = None,
     ) -> str:
         return await self.ask_with_files(
             text,
@@ -59,6 +61,7 @@ class ApiGptClient:
             timeout=timeout,
             project_id=project_id,
             expect_file_download=False,
+            max_retries=max_retries,
         )
 
     async def ask_with_files(
@@ -73,6 +76,7 @@ class ApiGptClient:
         treat_txt_as_prompt: bool = True,
         system: str | None = None,
         max_retries: int | None = None,
+        auto_pack: bool = True,
     ) -> str:
         require_gpt_api()
         from app.services.gpt_api import (
@@ -170,6 +174,9 @@ class ApiGptClient:
                 max_retries=None,
             )
         else:
+            pack_kind = None
+            if prompt_file is not None and "img_pr" in prompt_file.name.lower():
+                pack_kind = "img_pr"
             try:
                 result = await chat(
                     prompt=master or accompanying,
@@ -179,6 +186,8 @@ class ApiGptClient:
                     history=hist or None,
                     system=system,
                     max_retries=max_retries,
+                    pack_kind=pack_kind,
+                    auto_pack=auto_pack,
                 )
             except Exception as e:  # noqa: BLE001
                 if pdfs and is_pdf_provider_failure(e):
@@ -219,6 +228,7 @@ class ApiGptClient:
         *,
         timeout: float = 300,
         project_id: int | None = None,
+        max_retries: int | None = None,
     ) -> str:
         return await self.ask_with_files(
             text,
@@ -226,6 +236,7 @@ class ApiGptClient:
             timeout=timeout,
             project_id=project_id,
             expect_file_download=False,
+            max_retries=max_retries,
         )
 
     async def ask_anim_pr_batch(
@@ -235,6 +246,8 @@ class ApiGptClient:
         *,
         timeout: float = 600,
         project_id: int | None = None,
+        system: str | None = None,
+        max_retries: int | None = None,
     ) -> str:
         return await self.ask_with_files(
             text,
@@ -242,6 +255,8 @@ class ApiGptClient:
             timeout=timeout,
             project_id=project_id,
             expect_file_download=False,
+            system=system,
+            max_retries=max_retries,
         )
 
     async def download_attachment_from_last_reply(
@@ -370,9 +385,12 @@ async def gpt_ask_fresh(
     *,
     timeout: float = 600,
     project_id: int | None = None,
+    max_retries: int | None = None,
 ) -> str:
     client = get_gpt_client()
-    return await client.ask_fresh(text, timeout=timeout, project_id=project_id)
+    return await client.ask_fresh(
+        text, timeout=timeout, project_id=project_id, max_retries=max_retries
+    )
 
 
 async def gpt_ask_with_files(

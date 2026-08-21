@@ -6,7 +6,7 @@ import enum
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import JSON, Enum, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Enum, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
 
 from app.settings import settings
@@ -23,7 +23,8 @@ class ProjectStatus(str, enum.Enum):
     scripting = "scripting"  # шаг 2: сценарий → закадровые тексты
     splitting = "splitting"  # шаг 3: разбивка на кадры
     # Шаг 3.5: мульти-агентный дизайн сцен (между split и hero)
-    scene_designing = "scene_designing"
+    scene_designing = "scene_designing"  # 5 категорийных агентов (параллельно)
+    scene_assembling = "scene_assembling"  # финальный агент-сборщик
     # ───── Шаг 4: «Объекты» — sub-menu внутри ────
     generating_hero = "generating_hero"  # шаг 4a: персонажи (former hero)
     generating_items = "generating_items"  # шаг 4b: предметы (new)
@@ -40,12 +41,16 @@ class ProjectStatus(str, enum.Enum):
     generating_videos = "generating_videos"
     generating_music = "generating_music"
     generating_audio = "generating_audio"
+    # Звуки сопровождения (SFX): план по таймлайну → генерация → микс в сборке
+    sfx_planning = "sfx_planning"  # агент-планировщик звуков по меткам
+    generating_sfx = "generating_sfx"  # создание звуков (11Labs API / синтез)
     assembling = "assembling"
     publishing = "publishing"
     # «ready» статусы — воркер их игнорирует, ждём действия пользователя из бота.
     plan_ready = "plan_ready"
     script_ready = "script_ready"
     frames_ready = "frames_ready"
+    scene_agents_ready = "scene_agents_ready"  # срезы агентов + staging-ячейки записаны
     scene_design_ready = "scene_design_ready"  # сцены собраны агентами
     hero_ready = "hero_ready"  # персонажи готовы
     items_ready = "items_ready"  # предметы готовы (new)
@@ -60,6 +65,8 @@ class ProjectStatus(str, enum.Enum):
     videos_ready = "videos_ready"
     music_ready = "music_ready"
     audio_ready = "audio_ready"
+    sfx_plan_ready = "sfx_plan_ready"  # план звуков готов
+    sfx_ready = "sfx_ready"  # звуки сгенерированы
     assembled = "assembled"
     published = "published"
     paused = "paused"
@@ -426,6 +433,31 @@ class FrameEdge(Base):
     created_at: Mapped[datetime] = mapped_column(default=_now)
 
 
+class SceneDesignCell(Base):
+    """Staging-ячейка scene_design: атомарный факт от одного агента.
+
+    Промежуточное хранилище между категорийными агентами и финальной сборкой:
+    каждая ячейка чётко привязана (агент → тип сущности → ключ → поле),
+    валидируется при записи, в боевые таблицы попадает только после
+    финальной сборки через apply-ops.
+    """
+
+    __tablename__ = "scene_design_cells"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    agent: Mapped[str] = mapped_column(String(16), index=True)  # characters/world/style/camera/action
+    kind: Mapped[str] = mapped_column(String(24), index=True)  # character/location/style_stage/scene/shot
+    target_key: Mapped[str] = mapped_column(String(64), index=True)  # c01 / loc01 / scene_01 / …
+    field: Mapped[str] = mapped_column(String(48))  # имя / start_words / крупность / …
+    value: Mapped[str] = mapped_column(Text)  # текст или JSON-скаляр/список
+    seq: Mapped[int] = mapped_column(default=0)  # порядок внутри (agent, kind, target_key)
+    vo_offset: Mapped[int | None] = mapped_column(default=None, index=True)  # смещение в закадре (хронология)
+    status: Mapped[str] = mapped_column(String(16), default="ok", index=True)  # ok / rejected
+    error: Mapped[str | None] = mapped_column(String(300), default=None)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
+
+
 class Artifact(Base):
     __tablename__ = "artifacts"
 
@@ -441,6 +473,38 @@ class Artifact(Base):
 
     project: Mapped[Project] = relationship(back_populates="artifacts")
     frame: Mapped[Frame | None] = relationship(back_populates="artifacts")
+
+
+class AsrWord(Base):
+    """Word-level транскрибация озвучки (NVIDIA/Whisper) — SoT для работы со словами.
+
+    На каждый новый ASR-прогон строки проекта заменяются целиком (один активный run).
+    Файл words.json остаётся артефактом на диске; эта таблица — для запросов/монтажа.
+    """
+
+    __tablename__ = "asr_words"
+    __table_args__ = (
+        Index("ix_asr_words_project_idx", "project_id", "idx"),
+        Index("ix_asr_words_project_run", "project_id", "run_uuid"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    run_uuid: Mapped[str] = mapped_column(String(64), index=True)
+    idx: Mapped[int] = mapped_column()  # 0-based порядок в полном audio
+    word: Mapped[str] = mapped_column(String(256))
+    start_s: Mapped[float] = mapped_column()
+    end_s: Mapped[float] = mapped_column()
+    prob: Mapped[float] = mapped_column(default=0.0)
+    frame_number: Mapped[int | None] = mapped_column(default=None, index=True)
+    frame_id: Mapped[int | None] = mapped_column(
+        ForeignKey("frames.id", ondelete="SET NULL"), default=None, index=True
+    )
+    backend: Mapped[str] = mapped_column(String(64), default="")
+    artifact_uuid: Mapped[str | None] = mapped_column(String(64), default=None)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
 
 
 class MasterPrompt(Base):

@@ -5919,7 +5919,7 @@ async def _run_plan_xlsx(
                     s,
                     project,
                     [{"target": "project", "fields": {"общий_план": plan_text}}],
-                    export_xlsx=True,
+                    export_xlsx=False,
                 )
                 project.status = ProjectStatus.plan_ready
     except Exception as e:  # noqa: BLE001

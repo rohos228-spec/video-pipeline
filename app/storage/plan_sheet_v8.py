@@ -13,6 +13,7 @@ from openpyxl import load_workbook
 
 from app.models import Project
 from app.services.xlsx_v8_import import (
+    ROW_DURATION_V8,
     ROW_IMAGE_PROMPT_V8,
     ROW_TIMECODE_V8,
     ROW_VIDEO_PROMPT_2_V8,
@@ -233,6 +234,57 @@ def write_plan_timestamps(
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] write_plan_timestamps failed: {}", project.id, e)
         return 0
+    return written
+
+
+def write_plan_durations(
+    project: Project,
+    durations: list[tuple[int, float]],
+) -> int:
+    """Длительности кадров (сек) — строка 50 «Время на кадр» листа «план».
+
+    Колонка кадра та же, что у его закадрового текста в R49: метка времени
+    привязана к тексту кадра, а не к «голому» номеру колонки.
+    Возвращает число записанных ячеек.
+    """
+    path = project.data_dir / "project.xlsx"
+    if not path.exists() or not durations:
+        return 0
+    written = 0
+    try:
+        with _file_lock(path):
+            wb = load_workbook(path)
+            ws = _resolve_plan_sheet(wb)
+            if ws is None:
+                wb.close()
+                return 0
+            if not (_cell_text(ws, ROW_DURATION_V8, 1) or "").strip():
+                ws.cell(row=ROW_DURATION_V8, column=1, value="Время на кадр, сек")
+            col_map = voiceover_frame_columns(ws)
+            for frame_number, seconds in durations:
+                try:
+                    sec = float(seconds)
+                except (TypeError, ValueError):
+                    continue
+                if sec <= 0:
+                    continue
+                col = _timestamp_column(frame_number, col_map)
+                ws.cell(row=ROW_DURATION_V8, column=col, value=round(sec, 2))
+                written += 1
+            if written:
+                wb.save(path)
+            wb.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] write_plan_durations failed: {}", project.id, e)
+        return 0
+    if written:
+        logger.info(
+            "[#{}] plan R{}: записано {} длительностей кадров → {}",
+            project.id,
+            ROW_DURATION_V8,
+            written,
+            path,
+        )
     return written
 
 
@@ -589,6 +641,51 @@ def merge_gpt_image_prompt_rows_into_project(
         )
         return 0, 0
     return n45, n46
+
+
+def clear_plan_image_prompts(project: Project, frame_numbers: list[int]) -> int:
+    """Обнулить R45/R46, чтобы xlsx→DB sync не вернул старые промты после wipe."""
+    if not frame_numbers:
+        return 0
+    path = project.data_dir / "project.xlsx"
+    if not path.exists():
+        return 0
+    from app.services.plan_shot2 import ROW_IMAGE_PROMPT_2_V8
+
+    cleared = 0
+    try:
+        with _file_lock(path):
+            wb = load_workbook(path)
+            ws = _resolve_plan_sheet(wb)
+            if ws is None:
+                wb.close()
+                return 0
+            for n in frame_numbers:
+                col = plan_frame_column(n)
+                for row in (ROW_IMAGE_PROMPT_V8, ROW_IMAGE_PROMPT_2_V8):
+                    cell = ws.cell(row=row, column=col)
+                    if cell.value not in (None, ""):
+                        cell.value = None
+                        cleared += 1
+            if cleared:
+                wb.save(path)
+            wb.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[#{}] clear_plan_image_prompts failed: {}",
+            project.id,
+            e,
+        )
+        return 0
+    if cleared:
+        logger.info(
+            "[#{}] plan R{}/R{}: очищено {} ячеек image_prompt",
+            project.id,
+            ROW_IMAGE_PROMPT_V8,
+            ROW_IMAGE_PROMPT_2_V8,
+            cleared,
+        )
+    return cleared
 
 
 def write_plan_image_prompts_bulk(

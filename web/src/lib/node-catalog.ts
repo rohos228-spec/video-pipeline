@@ -15,6 +15,30 @@ export type NodeCategory =
   | "publish"
   | "hitl";
 
+/** Человеческие подписи категорий для палитры (optgroup). */
+export const NODE_CATEGORY_LABELS: Record<NodeCategory, string> = {
+  planning: "Планирование",
+  objects: "Герои и предметы",
+  enrich: "Работа с GPT",
+  media: "Медиа",
+  audio: "Аудио",
+  assembly: "Сборка",
+  publish: "Публикация",
+  hitl: "Проверки",
+};
+
+/** Порядок категорий в палитре. */
+export const NODE_CATEGORY_ORDER: NodeCategory[] = [
+  "planning",
+  "objects",
+  "enrich",
+  "media",
+  "audio",
+  "assembly",
+  "publish",
+  "hitl",
+];
+
 export interface NodeSpec {
   type: NodeType;
   label: string;
@@ -82,9 +106,27 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
     type: "scene_design",
     label: "Сцены (агенты)",
     description:
-      "Мульти-агентный дизайн сцен: персонажи/мир/стиль/камера/действие → сборщик. Без флага SCENE_DESIGN_ENABLED — pass-through.",
+      "Legacy-нода старых канвасов: весь мульти-агентный дизайн сцен одной нодой. Новые канвасы — веер sd_agent ×5 + sd_assemble.",
     category: "planning",
     accent: "175 60% 55%",
+    iconKey: "sparkles",
+  },
+  sd_agent: {
+    type: "sd_agent",
+    label: "GPT-агент сцен",
+    description:
+      "Работа с GPT: категорийный агент дизайна сцен (data.agent: characters/world/style/camera/action). Свой промт prompts/scene_design/<агент>.md — кнопка GPT на ноде. 5 нод веера работают параллельно, ▶ на ноде — перезапуск только этого агента.",
+    category: "planning",
+    accent: "270 55% 64%",
+    iconKey: "sparkles",
+  },
+  sd_assemble: {
+    type: "sd_assemble",
+    label: "GPT-сборка сцен",
+    description:
+      "Работа с GPT: финальный агент-сборщик (промт prompts/scene_design/assemble.md): staging-ячейки агентов → scene_registry + атрибуты кадров. Перезапуск не трогает чекпоинты агентов.",
+    category: "planning",
+    accent: "270 55% 64%",
     iconKey: "sparkles",
   },
   hero: {
@@ -152,6 +194,24 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
     accent: "300 55% 62%",
     iconKey: "music",
   },
+  sfx_plan: {
+    type: "sfx_plan",
+    label: "План звуков",
+    description:
+      "GPT-агент: метки звуков сопровождения по таймлайну (время, вид, промт, громкость).",
+    category: "audio",
+    accent: "340 60% 60%",
+    iconKey: "audio-waveform",
+  },
+  sfx_gen: {
+    type: "sfx_gen",
+    label: "Звуки (SFX)",
+    description:
+      "Создание звуков сопровождения по плану: 11Labs SFX API или локальный синтез; микс в сборке.",
+    category: "audio",
+    accent: "340 60% 60%",
+    iconKey: "audio-waveform",
+  },
   audio: {
     type: "audio",
     label: "Озвучка",
@@ -208,6 +268,17 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
     accent: "0 0% 58%",
     iconKey: "check-square",
   },
+};
+
+/** Имена категорийных агентов scene_design (data.sd_agent → по-русски). */
+export const SD_AGENT_LABELS: Record<string, string> = {
+  skeleton: "скелет",
+  characters: "персонажи",
+  world: "мир",
+  style: "стиль",
+  camera: "камера",
+  action: "действие",
+  assemble: "сборка",
 };
 
 export function formatNodeTypeLabel(type: string): string {

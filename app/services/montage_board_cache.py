@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import threading
 from pathlib import Path
@@ -150,20 +151,58 @@ async def probe_video_durations_parallel(paths: list[Path | None]) -> list[float
     return out
 
 
+def _plan_excel_disk_path(xlsx_path: Path, mtime: float) -> Path:
+    from app.settings import settings
+
+    root = Path(settings.data_dir)
+    safe = hashlib.sha1(str(xlsx_path.resolve()).encode("utf-8")).hexdigest()[:16]
+    return root / ".cache" / f"montage_plan_excel_{safe}_{int(mtime)}.json"
+
+
 def get_cached_plan_excel_cells(
     xlsx_path: Path,
     *,
     loader: Any,
 ) -> dict[int, dict[str, Any]]:
-    """loader: callable(xlsx_path) -> dict."""
+    """loader: callable(xlsx_path) -> dict.
+
+    Disk cache: cold openpyxl на 200 колонок ~40с — после рестарта бэкенда
+    доска снова Failed to fetch, если каждый раз парсить xlsx.
+    """
     key = _xlsx_mtime_key(xlsx_path)
     if key is None:
         return {}
     hit = _plan_excel_cache.get(key)
     if hit is not None:
         return hit
+    disk = _plan_excel_disk_path(xlsx_path, key[1])
+    if disk.is_file():
+        try:
+            raw = json.loads(disk.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                data = {int(k): v for k, v in raw.items() if str(k).isdigit()}
+                _plan_excel_cache[key] = data
+                return data
+        except Exception as e:  # noqa: BLE001
+            logger.debug("montage_board_cache: plan disk load {}: {}", disk, e)
     data = loader(xlsx_path)
     _plan_excel_cache[key] = data
+    try:
+        disk.parent.mkdir(parents=True, exist_ok=True)
+        # character_refs image_url — ок в JSON; чистим старые кэши этого xlsx
+        disk.write_text(
+            json.dumps({str(k): v for k, v in data.items()}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        stem_prefix = disk.name.rsplit("_", 1)[0]  # montage_plan_excel_<hash>
+        for old in disk.parent.glob(f"{stem_prefix}_*.json"):
+            if old != disk:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+    except Exception as e:  # noqa: BLE001
+        logger.debug("montage_board_cache: plan disk save {}: {}", disk, e)
     return data
 
 

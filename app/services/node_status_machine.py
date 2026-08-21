@@ -42,7 +42,16 @@ _FORWARD_TRANSITIONS: dict[NodeRunStatus, frozenset[NodeRunStatus]] = {
 }
 
 _RESET_INITIATORS = frozenset(
-    {"ui_reset", "api_reset", "api_stop", "ui_restart", "auto_unstick"}
+    {
+        "ui_reset",
+        "api_reset",
+        "api_stop",
+        "ui_restart",
+        "auto_unstick",
+        # Точечный ▶ scene_design: чужие sd_agent, ошибочно в running/queued,
+        # вернуть в pending (иначе залипают → background_reconcile → failed).
+        "only_agent_scope",
+    }
 )
 
 # Contextvar: True только внутри transition_node_status / _apply_side_effects.
@@ -290,6 +299,29 @@ def heal_failed_node_done(
         initiator="heal_success",
         project_id=project_id,
     )
+
+
+def sync_node_done_from_data(
+    nr: NodeRun, *, project_id: int | None, initiator: str = "sidecar"
+) -> bool:
+    """Пометить ноду done, когда работа уже сделана вне официального шага.
+
+    Sidecar (anim_pr) заполняет R48/DB без Project.status — canvas должен
+    показать done, а не idle. Не трогает skipped.
+    """
+    if nr.status == NodeRunStatus.done:
+        return False
+    if nr.status == NodeRunStatus.skipped:
+        return False
+    if nr.status == NodeRunStatus.failed:
+        return heal_failed_node_done(nr, project_id=project_id)
+    if nr.status != NodeRunStatus.running:
+        if not start_node_running(
+            nr, project_id=project_id, initiator=initiator
+        ):
+            if nr.status != NodeRunStatus.running:
+                return False
+    return complete_node(nr, project_id=project_id, initiator="worker")
 
 
 def fail_node(

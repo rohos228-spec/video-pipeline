@@ -40,6 +40,11 @@ def _stop_flag_path(project_id: int) -> Path:
     return _stop_flag_dir() / f"project_{project_id}.stop"
 
 
+def stop_flag_path(project_id: int) -> Path:
+    """Путь к stop-файлу (для диагностики воркера/логов)."""
+    return _stop_flag_path(project_id)
+
+
 def _write_stop_flag(project_id: int) -> None:
     _stop_flag_path(project_id).write_text("1", encoding="utf-8")
 
@@ -123,6 +128,41 @@ def cancel_advance_task(project_id: int) -> bool:
     return False
 
 
+def kill_active_generation(
+    project_id: int,
+    *,
+    reason: str = "preempt",
+) -> tuple[bool, list[str]]:
+    """Снять живой advance/xlsx БЕЗ stop-файла и БЕЗ user_stop.
+
+    Для ручного ▶ / preempt: иначе ``request_stop`` пишет
+    ``data/.stop/project_N.stop``, воркер видит ``is_stop_requested`` и
+    делает полный STOP (user_stop + rollback) — ложный «⏹ by user».
+    """
+    from app.services.xlsx_flow_locks import cancel_xlsx_flow_tasks
+
+    cancelled_adv = cancel_advance_task(project_id)
+    cancelled_xlsx = cancel_xlsx_flow_tasks(project_id)
+    # На всякий случай убрать чужой leftover-флаг, не создавая новый.
+    clear_stop(project_id)
+    if cancelled_adv or cancelled_xlsx:
+        logger.info(
+            "step_cancel.kill_active_generation: #{} reason={} "
+            "(advance_cancel={}, xlsx_cancel={}, no stop-file)",
+            project_id,
+            reason,
+            cancelled_adv,
+            cancelled_xlsx,
+        )
+    else:
+        logger.debug(
+            "step_cancel.kill_active_generation: #{} reason={} — нечего снимать",
+            project_id,
+            reason,
+        )
+    return cancelled_adv, cancelled_xlsx
+
+
 def clear_stop(project_id: int) -> None:
     if project_id in _stop_pids:
         _stop_pids.discard(project_id)
@@ -130,7 +170,11 @@ def clear_stop(project_id: int) -> None:
     _clear_stop_flag(project_id)
 
 
-def request_stop(project_id: int) -> tuple[bool, list[str]]:
+def request_stop(
+    project_id: int,
+    *,
+    reason: str = "user_stop",
+) -> tuple[bool, list[str]]:
     """Stop: файл (все процессы) + cancel task (этот процесс)."""
     from app.services.xlsx_flow_locks import cancel_xlsx_flow_tasks
 
@@ -140,16 +184,19 @@ def request_stop(project_id: int) -> tuple[bool, list[str]]:
     cancelled_xlsx = cancel_xlsx_flow_tasks(project_id)
     if cancelled_adv or cancelled_xlsx:
         logger.info(
-            "step_cancel.request_stop: #{} (advance_cancel={}, xlsx_cancel={}, file=ok)",
+            "step_cancel.request_stop: #{} reason={} "
+            "(advance_cancel={}, xlsx_cancel={}, file=ok)",
             project_id,
+            reason,
             cancelled_adv,
             cancelled_xlsx,
         )
     else:
         logger.info(
-            "step_cancel.request_stop: #{} stop-файл записан "
+            "step_cancel.request_stop: #{} reason={} stop-файл записан "
             "(воркер увидит в outsee/GPT, advance_cancel={})",
             project_id,
+            reason,
             cancelled_adv,
         )
     return cancelled_adv, cancelled_xlsx

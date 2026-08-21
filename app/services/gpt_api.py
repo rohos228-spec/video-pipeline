@@ -80,25 +80,7 @@ _XLSX_PRIORITY_SHEET_RE = re.compile(
 # Критичные строки листа «план» — всегда в context pack до остального бюджета.
 _XLSX_PINNED_PLAN_ROWS: tuple[int, ...] = (15, 45, 46, 48, 49, 50, 64)
 
-# CF/kie рвут SSE: CF-continue только если уже есть хвост для склейки.
-# Иначе continue с 100–200 символами → мусор + лишние запросы.
-_CF_CONTINUE_MIN_CHARS = 2000
-# При падении continue (500/сеть) не выбрасывать уже накопленный salvage.
-_CF_CONTINUE_KEEP_MIN_CHARS = 1500
-# После обрыва SSE — дольше poll retrieve (kie UI часто уже success).
-_SSE_BREAK_RETRIEVE_POLLS = 36
-_SSE_BREAK_RETRIEVE_POLL_S = 5.0
-# Неполные/битые SSE data-line: вытащить delta/text без целого JSON
-# (закрывающая кавычка опциональна — обрыв mid-string).
-_SSE_DELTA_FRAG_RE = re.compile(r'"delta"\s*:\s*"((?:\\.|[^"\\])*)')
-_SSE_TEXT_FRAG_RE = re.compile(r'"text"\s*:\s*"((?:\\.|[^"\\])*)')
-_SSE_TEXT_EVENT_TYPES = frozenset(
-    {
-        "response.output_text.delta",
-        "response.reasoning_summary_text.delta",
-        "response.content_part.delta",
-    }
-)
+
 _REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 
 
@@ -162,7 +144,14 @@ def _mask_proxy_url(url: str) -> str:
         return "<proxy>"
 
 
+def _vps_relay_base() -> str | None:
+    return getattr(settings, "vps_relay_base_url", None)
+
+
 def _gpt_proxy_url() -> str | None:
+    """Прокси на ПК не используется, если настроен VPS-relay."""
+    if (getattr(settings, "gpt_relay_token", None) or "").strip():
+        return None
     raw = (getattr(settings, "gpt_proxy_url", None) or "").strip()
     if not raw:
         return None
@@ -172,8 +161,10 @@ def _gpt_proxy_url() -> str | None:
 
 
 def _async_client(**kwargs: Any) -> httpx.AsyncClient:
-    """httpx-клиент; при GPT_PROXY_URL — весь трафик GPT/kie через прокси."""
+    """httpx-клиент. При VPS-relay — без прокси и без системных HTTP(S)_PROXY."""
     global _PROXY_LOGGED
+    if (getattr(settings, "gpt_relay_token", None) or "").strip():
+        kwargs.setdefault("trust_env", False)
     proxy = _gpt_proxy_url()
     if proxy:
         if proxy.lower().startswith(("socks4://", "socks5://", "socks5h://")):
@@ -185,7 +176,6 @@ def _async_client(**kwargs: Any) -> httpx.AsyncClient:
                     context={"error_kind": "proxy_socks_missing", "retryable": False},
                 ) from e
         kwargs.setdefault("proxy", proxy)
-        # Явный прокси — не подмешивать системные HTTP(S)_PROXY.
         kwargs.setdefault("trust_env", False)
         if not _PROXY_LOGGED:
             logger.info("GPT API: using proxy {}", _mask_proxy_url(proxy))
@@ -193,9 +183,35 @@ def _async_client(**kwargs: Any) -> httpx.AsyncClient:
     return httpx.AsyncClient(**kwargs)
 
 
+def _node_vibecode_override() -> bool:
+    try:
+        from app.services.llm_override import current_override
+    except Exception:  # noqa: BLE001
+        return False
+    ov = current_override()
+    return bool(ov and ov.kind == "text" and ov.provider == "vibecode")
+
+
+def _override_vibecode_base_url() -> str:
+    # Не гонять vibecode через GPT_BASE_URL/VPS: старый relay часто проксирует
+    # только api.kie.ai. Тогда vibecode-ключ даёт HTTP 200 + {"code":401}
+    # без choices → «пустой output» в chat/stream.
+    return (settings.vibecode_base_url or "https://vibecode.moe/v1").strip().rstrip("/")
+
+
 def _headers() -> dict[str, str]:
-    key = settings.gpt_api_effective_key
+    vibe_ov = _node_vibecode_override()
+    if vibe_ov:
+        # Не подставлять kie GPT_API_KEY: иначе 401 на vibecode /v1/chat/completions.
+        key = (settings.vibecode_api_key or "").strip()
+    else:
+        key = settings.gpt_api_effective_key
     if not key:
+        if vibe_ov or settings.text_llm_is_vibecode:
+            raise GptApiError(
+                "VIBECODE_API_KEY пуст — задай ключ vibecode.moe (vk-…) в .env",
+                context={"error_kind": "no_key", "provider": "vibecode"},
+            )
         if settings.text_llm_is_tokenrouter:
             raise GptApiError(
                 "TOKENROUTER_API_KEY пуст — задай ключ TokenRouter (Kimi K3) в .env",
@@ -209,27 +225,37 @@ def _headers() -> dict[str, str]:
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
     }
-    relay = (getattr(settings, "gpt_relay_token", None) or "").strip()
-    if relay:
-        headers["X-VP-Relay-Token"] = relay
+    # Relay-токен только когда реально бьём в VPS (kie). На vibecode.moe не нужен.
+    if not vibe_ov and not settings.text_llm_is_vibecode:
+        relay = (getattr(settings, "gpt_relay_token", None) or "").strip()
+        if relay:
+            headers["X-VP-Relay-Token"] = relay
     return headers
 
 
 def _chat_url(model: str) -> str:
     global _RELAY_BASE_LOGGED
-    base = settings.gpt_api_effective_base_url
+    base = (
+        _override_vibecode_base_url()
+        if _node_vibecode_override()
+        else settings.gpt_api_effective_base_url
+    )
     if not base:
         raise GptApiError(
-            "База текстового LLM пуста — задай TOKENROUTER_BASE_URL или GPT_BASE_URL",
+            "База текстового LLM пуста — задай TOKENROUTER_BASE_URL, VIBECODE_BASE_URL или GPT_BASE_URL",
             context={"error_kind": "no_base"},
         )
-    if not _RELAY_BASE_LOGGED and "kie.ai" not in base.lower():
-        logger.info(
-            "GPT API: base_url={} (VPS-relay / non-kie host)",
-            base,
-        )
+    if not _RELAY_BASE_LOGGED:
+        vps = _vps_relay_base()
+        if vps:
+            logger.info("GPT API: VPS-relay {} (proxy=off)", vps)
+        elif "kie.ai" not in base.lower():
+            logger.info("GPT API: base_url={} (non-kie host, no VPS-relay)", base)
         _RELAY_BASE_LOGGED = True
-    path = (settings.gpt_chat_path_effective or "/v1/chat/completions").strip()
+    if _node_vibecode_override():
+        path = "/chat/completions" if base.lower().endswith("/v1") else "/v1/chat/completions"
+    else:
+        path = (settings.gpt_chat_path_effective or "/v1/chat/completions").strip()
     if not path.startswith("/"):
         path = "/" + path
     # kie.ai: путь зависит от модели (/{model}/v1/chat/completions).
@@ -734,6 +760,8 @@ def split_input_paths(
 
 def is_responses_mode() -> bool:
     """API формата Responses (input/output) вместо chat/completions?"""
+    if _node_vibecode_override():
+        return False
     mode = (settings.gpt_api_mode_effective or "auto").strip().lower()
     if mode == "responses":
         return True
@@ -1079,36 +1107,6 @@ def _raise_http_status(
         )
 
 
-def _unescape_sse_json_string(raw: str) -> str:
-    """Разэскейпить фрагмент JSON-строки из битой SSE data-line."""
-    try:
-        return json.loads(f'"{raw}"')
-    except json.JSONDecodeError:
-        return (
-            raw.replace("\\n", "\n")
-            .replace("\\r", "\r")
-            .replace("\\t", "\t")
-            .replace('\\"', '"')
-            .replace("\\\\", "\\")
-        )
-
-
-def extract_text_fragments_from_sse_buffer(buf: str) -> str:
-    """Вытащить delta/text из неполного хвоста SSE (обрыв mid-line)."""
-    if not (buf or "").strip():
-        return ""
-    parts: list[str] = []
-    for rx in (_SSE_DELTA_FRAG_RE, _SSE_TEXT_FRAG_RE):
-        for m in rx.finditer(buf):
-            frag = _unescape_sse_json_string(m.group(1))
-            if frag:
-                parts.append(frag)
-    if not parts:
-        return ""
-    # Дельты обычно короче и их больше; text — полный кусок. Берём max.
-    return max(parts, key=len)
-
-
 def parse_responses_sse_lines(
     lines: list[str],
 ) -> tuple[str, str, dict[str, Any], str]:
@@ -1122,7 +1120,6 @@ def parse_responses_sse_lines(
     """
     delta_parts: list[str] = []
     done_text = ""
-    frag_text = ""
     response_id = ""
     final_response: dict[str, Any] | None = None
     status = ""
@@ -1134,10 +1131,6 @@ def parse_responses_sse_lines(
         if not line or line.startswith("event:"):
             continue
         if not line.startswith("data:"):
-            # Хвост без префикса data: после incomplete chunked — тоже копаем.
-            frag = extract_text_fragments_from_sse_buffer(line)
-            if frag and len(frag) > len(frag_text):
-                frag_text = frag
             continue
         data_str = line[5:].strip()
         if not data_str or data_str == "[DONE]":
@@ -1146,9 +1139,6 @@ def parse_responses_sse_lines(
             event = json.loads(data_str)
         except json.JSONDecodeError:
             bad_json_n += 1
-            frag = extract_text_fragments_from_sse_buffer(data_str)
-            if frag:
-                delta_parts.append(frag)
             continue
         if not isinstance(event, dict):
             continue
@@ -1159,7 +1149,7 @@ def parse_responses_sse_lines(
             resp = event.get("response")
             if isinstance(resp, dict) and resp.get("id"):
                 response_id = str(resp["id"])
-        elif etype in _SSE_TEXT_EVENT_TYPES:
+        elif etype == "response.output_text.delta":
             delta = event.get("delta")
             if delta:
                 delta_parts.append(str(delta))
@@ -1185,8 +1175,8 @@ def parse_responses_sse_lines(
             status = status or str(final_response.get("status") or "")
 
     # Берём самый полный источник: completed часто рвётся на длинных файлах,
-    # а дельты / done / фрагменты хвоста уже целые.
-    candidates = [completed_text, done_text.strip(), deltas_joined, frag_text]
+    # а дельты / done уже целые.
+    candidates = [completed_text, done_text.strip(), deltas_joined]
     text = max(candidates, key=lambda s: len(s or "")).strip()
 
     if not text:
@@ -1205,6 +1195,67 @@ def parse_responses_sse_lines(
     if not status:
         status = "completed" if final_response is not None else "stream_partial"
     return text, status, final_response or {}, response_id
+
+
+def looks_empty_ops_stub(text: str) -> bool:
+    """Короткий валидный JSON с пустым ops — отказ, не полноценный ответ."""
+    t = (text or "").strip()
+    if not t or len(t) > 32:
+        return False
+    try:
+        data = json.loads(t)
+    except Exception:  # noqa: BLE001
+        return re.sub(r"\s+", "", t) == '{"ops":[]}'
+    return (
+        isinstance(data, dict)
+        and data.get("ops") == []
+        and set(data.keys()) <= {"ops"}
+    )
+
+
+def _log_chat_finished(
+    *,
+    provider_label: str,
+    use_model: str,
+    attempt: int,
+    result: "GptChatResult",
+    include_task_id: bool = True,
+) -> None:
+    task_id = ""
+    if include_task_id:
+        task_id = result.response_id or (result.raw or {}).get("id") or "-"
+    if looks_empty_ops_stub(result.text or ""):
+        logger.warning(
+            "gpt_api.chat empty-ops stub provider={} model={} attempt={} "
+            "finish={} chars={} task_id={}",
+            provider_label,
+            use_model,
+            attempt,
+            result.finish_reason,
+            len(result.text or ""),
+            task_id or "-",
+        )
+        return
+    if include_task_id:
+        logger.info(
+            "gpt_api.chat OK provider={} model={} attempt={} "
+            "finish={} chars={} task_id={}",
+            provider_label,
+            use_model,
+            attempt,
+            result.finish_reason,
+            len(result.text),
+            task_id,
+        )
+        return
+    logger.info(
+        "gpt_api.chat OK provider={} model={} attempt={} finish={} chars={}",
+        provider_label,
+        use_model,
+        attempt,
+        result.finish_reason,
+        len(result.text),
+    )
 
 
 def looks_truncated_llm_text(text: str) -> bool:
@@ -1426,8 +1477,8 @@ async def _chat_responses_stream(
 ) -> GptChatResult:
     """POST Responses API с stream=true и сборкой текста из SSE.
 
-    При обрыве после дельт: salvage (в т.ч. неполный хвост mid-line), затем
-    длинный GET готового ответа по resp_ id (kie UI уже success, стрим CF оборвал).
+    При обрыве после дельт: salvage, затем GET готового ответа по resp_ id
+    (kie UI уже success, стрим Cloudflare оборвал).
     """
     stream_body = {**body, "stream": True}
     lines: list[str] = []
@@ -1436,16 +1487,11 @@ async def _chat_responses_stream(
     saw_text_done = False
     saw_completed = False
     stream_err: BaseException | None = None
-    incomplete_tail = ""
-    buf = ""
     sto = _stream_timeout(timeout)
     logger.info(
-        "gpt_api.chat SSE start model={} read_timeout={} reasoning={} store={} "
-        "(None=wait server EOF)",
+        "gpt_api.chat SSE start model={} read_timeout={} (None=wait server EOF)",
         use_model,
         sto.read,
-        (stream_body.get("reasoning") or {}).get("effort") or "-",
-        stream_body.get("store"),
     )
     async with _async_client(timeout=sto) as client:
         try:
@@ -1456,46 +1502,36 @@ async def _chat_responses_stream(
                 if resp.status_code >= 400:
                     err_body = (await resp.aread()).decode("utf-8", errors="replace")
                     _raise_http_status(resp.status_code, err_body, use_model=use_model)
-                # Буфер строк: aiter_lines теряет неполный хвост при chunked cut.
-                async for chunk in resp.aiter_text():
-                    if not chunk:
+                # Читаем до EOF сервера — сами цикл не прерываем.
+                async for line in resp.aiter_lines():
+                    lines.append(line)
+                    if not line.startswith("data:") or "response." not in line:
                         continue
-                    buf += chunk
-                    while True:
-                        nl = buf.find("\n")
-                        if nl < 0:
-                            break
-                        line = buf[:nl].rstrip("\r")
-                        buf = buf[nl + 1 :]
-                        lines.append(line)
-                        if not line.startswith("data:") or "response." not in line:
-                            continue
-                        try:
-                            ev = json.loads(line[5:].strip())
-                        except json.JSONDecodeError:
-                            continue
-                        if not isinstance(ev, dict):
-                            continue
-                        et = str(ev.get("type") or "")
-                        if et == "response.output_text.done":
-                            saw_text_done = True
-                        elif et == "response.completed":
-                            saw_completed = True
-                        if logged_task_id or "resp_" not in line:
-                            continue
-                        resp_obj = ev.get("response")
-                        if isinstance(resp_obj, dict) and resp_obj.get("id"):
-                            logger.info(
-                                "gpt_api.chat task_id={} cf_ray={} model={}",
-                                resp_obj["id"],
-                                cf_ray or "-",
-                                use_model,
-                            )
-                            logged_task_id = True
-                if buf.strip():
-                    # Нормальный EOF иногда без финального \n — добираем.
-                    lines.append(buf.rstrip("\r"))
-                    buf = ""
+                    try:
+                        ev = json.loads(line[5:].strip())
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(ev, dict):
+                        continue
+                    et = str(ev.get("type") or "")
+                    if et == "response.output_text.done":
+                        saw_text_done = True
+                    elif et == "response.completed":
+                        saw_completed = True
+                    if (
+                        logged_task_id
+                        or "resp_" not in line
+                    ):
+                        continue
+                    resp_obj = ev.get("response")
+                    if isinstance(resp_obj, dict) and resp_obj.get("id"):
+                        logger.info(
+                            "gpt_api.chat task_id={} cf_ray={} model={}",
+                            resp_obj["id"],
+                            cf_ray or "-",
+                            use_model,
+                        )
+                        logged_task_id = True
                 logger.info(
                     "gpt_api.chat SSE EOF lines={} text_done={} completed={} "
                     "cf_ray={}",
@@ -1506,17 +1542,12 @@ async def _chat_responses_stream(
                 )
         except (httpx.TimeoutException, httpx.HTTPError) as e:
             stream_err = e
-            # Неполный хвост chunked read — главный источник «133 chars».
-            if buf.strip():
-                incomplete_tail = buf
-                lines.append(buf)
             logger.warning(
                 "gpt_api.chat SSE interrupted lines={} text_done={} completed={} "
-                "tail_chars={} err={}: {} — try salvage",
+                "err={}: {} — try salvage",
                 len(lines),
                 saw_text_done,
                 saw_completed,
-                len(incomplete_tail),
                 type(e).__name__,
                 e,
             )
@@ -1529,36 +1560,24 @@ async def _chat_responses_stream(
         text, finish, final_payload, response_id = parse_responses_sse_lines(lines)
     except GptApiError as e:
         response_id = str((e.context or {}).get("response_id") or "")
-        # Хвост mid-line без валидных data: — всё равно попробуем фрагменты.
-        if incomplete_tail and not response_id:
-            frag = extract_text_fragments_from_sse_buffer(incomplete_tail)
-            if frag:
-                text = frag
-                finish = "stream_partial"
-        if not (text or "").strip():
-            if not response_id:
-                if stream_err is not None:
-                    raise GptApiError(
-                        f"GPT сетевая ошибка: {type(stream_err).__name__}: {stream_err}",
-                        context={
-                            "error_kind": "network",
-                            "retryable": True,
-                            "model": use_model,
-                            "sse_lines": len(lines),
-                            "cf_ray": cf_ray,
-                        },
-                    ) from stream_err
-                raise
+        if not response_id:
+            if stream_err is not None:
+                raise GptApiError(
+                    f"GPT сетевая ошибка: {type(stream_err).__name__}: {stream_err}",
+                    context={
+                        "error_kind": "network",
+                        "retryable": True,
+                        "model": use_model,
+                        "sse_lines": len(lines),
+                        "cf_ray": cf_ray,
+                    },
+                ) from stream_err
+            raise
 
     if stream_err is not None:
-        if incomplete_tail:
-            frag = extract_text_fragments_from_sse_buffer(incomplete_tail)
-            if frag and len(frag) > len(text or ""):
-                text = frag
-                finish = "stream_partial"
         logger.warning(
             "gpt_api.chat SSE salvaged chars={} task_id={} after {}",
-            len(text or ""),
+            len(text),
             response_id or "-",
             type(stream_err).__name__,
         )
@@ -1572,24 +1591,13 @@ async def _chat_responses_stream(
         or not (text or "").strip()
     )
     if need_fetch:
-        # После обрыва — дольше ждём, пока kie допишет result (UI уже success).
-        polls = (
-            _SSE_BREAK_RETRIEVE_POLLS
-            if stream_err is not None
-            else 12
-        )
-        poll_s = (
-            _SSE_BREAK_RETRIEVE_POLL_S
-            if stream_err is not None
-            else 3.0
-        )
         got, got_status, got_raw = await fetch_completed_response(
             post_url=url,
             headers=headers,
             response_id=response_id,
             timeout=max(90.0, min(float(timeout), 180.0)),
-            polls=polls,
-            poll_s=poll_s,
+            polls=12,
+            poll_s=3.0,
         )
         if got and len(got) > len(text or ""):
             text = got
@@ -1626,8 +1634,6 @@ async def _chat_responses_stream(
     elif stream_err is not None:
         raw["sse_salvaged"] = True
         raw["sse_interrupt"] = type(stream_err).__name__
-        if incomplete_tail:
-            raw["sse_incomplete_tail_chars"] = len(incomplete_tail)
     return GptChatResult(
         text=text,
         model=use_model,
@@ -1635,6 +1641,130 @@ async def _chat_responses_stream(
         usage=usage,
         raw=raw,
         response_id=response_id,
+    )
+
+
+def parse_chat_completions_sse_lines(lines: list[str]) -> tuple[str, str, dict[str, Any]]:
+    """Собрать текст из OpenAI-совместимого SSE ``chat/completions``."""
+    chunks: list[str] = []
+    finish = ""
+    last: dict[str, Any] = {}
+    for raw in lines:
+        line = (raw or "").strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            obj = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        last = obj
+        choices = obj.get("choices")
+        if not isinstance(choices, list) or not choices:
+            continue
+        first = choices[0] if isinstance(choices[0], dict) else {}
+        fr = first.get("finish_reason")
+        if isinstance(fr, str) and fr:
+            finish = fr
+        delta = first.get("delta") if isinstance(first.get("delta"), dict) else {}
+        piece = delta.get("content")
+        if isinstance(piece, str) and piece:
+            chunks.append(piece)
+        elif isinstance(piece, list):
+            chunks.append(
+                "".join(
+                    str(p.get("text") or "")
+                    for p in piece
+                    if isinstance(p, dict)
+                )
+            )
+        msg = first.get("message") if isinstance(first.get("message"), dict) else {}
+        mc = msg.get("content")
+        if isinstance(mc, str) and mc and not delta:
+            chunks.append(mc)
+    return "".join(chunks), finish or "stop", last
+
+
+async def _chat_completions_stream(
+    *,
+    url: str,
+    headers: dict[str, str],
+    body: dict[str, Any],
+    timeout: float,
+    use_model: str,
+) -> GptChatResult:
+    """POST chat/completions с stream=true (длинные ответы vibecode / OpenAI)."""
+    stream_body = {**body, "stream": True}
+    sto = _stream_timeout(timeout)
+    lines: list[str] = []
+    stream_err: BaseException | None = None
+    async with _async_client(timeout=sto) as client:
+        try:
+            async with client.stream(
+                "POST", url, headers=headers, json=stream_body
+            ) as resp:
+                if resp.status_code >= 400:
+                    err_txt = (await resp.aread()).decode("utf-8", errors="replace")
+                    _raise_http_status(
+                        resp.status_code, err_txt, use_model=use_model
+                    )
+                async for raw in resp.aiter_lines():
+                    if raw:
+                        lines.append(raw)
+        except GptApiError:
+            raise
+        except BaseException as e:
+            stream_err = e
+            logger.warning(
+                "GPT(chat/stream) interrupt after {} lines: {}: {}",
+                len(lines),
+                type(e).__name__,
+                e,
+            )
+    text, finish, last = parse_chat_completions_sse_lines(lines)
+    if not (text or "").strip():
+        # HTTP 200 + JSON envelope (kie/relay) без SSE — не маскировать под empty.
+        for raw in lines[:3]:
+            s = (raw or "").strip()
+            if s.startswith("data:"):
+                s = s[5:].strip()
+            if not s.startswith("{"):
+                continue
+            try:
+                payload = json.loads(s)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                _check_provider_envelope(payload)
+        if stream_err is not None:
+            raise GptApiError(
+                f"GPT(chat/stream) пустой output после {type(stream_err).__name__}: {stream_err}",
+                context={
+                    "retryable": True,
+                    "error_kind": "empty_stream",
+                    "sse_lines": len(lines),
+                },
+            ) from stream_err
+        raise GptApiError(
+            "GPT(chat/stream): пустой output",
+            context={"retryable": True, "error_kind": "empty_stream", "sse_lines": len(lines)},
+        )
+    usage = last.get("usage") if isinstance(last.get("usage"), dict) else {}
+    raw = dict(last) if last else {"stream_lines": len(lines)}
+    if stream_err is not None:
+        raw["sse_salvaged"] = True
+        raw["sse_interrupt"] = type(stream_err).__name__
+    return GptChatResult(
+        text=text,
+        model=use_model,
+        finish_reason=finish,
+        usage=usage,
+        raw=raw,
+        response_id=str(last.get("id") or ""),
     )
 
 
@@ -1680,7 +1810,7 @@ async def _maybe_volume_complete_chat_result(
     volume_complete: bool | None,
 ) -> GptChatResult:
     """Если apply-ops/db_frames покрыты частично — добор батчами (~80%)."""
-    if volume_complete is False:
+    if volume_complete is not True:
         return result
     try:
         from app.services.volume_batches import (
@@ -1822,6 +1952,120 @@ async def _chat_packed_parallel(
     )
 
 
+async def _chat_adaptive_1_2_4(
+    *,
+    prompt: str,
+    accompanying: str,
+    input_paths: list[Path] | None,
+    system: str | None,
+    history: list[dict[str, Any]] | None,
+    model: str | None,
+    temperature: float | None,
+    timeout: float | None,
+    max_retries: int | None,
+    xlsx_write_contract: str,
+    pack_kind: str | None,
+    level: int = 1,
+) -> GptChatResult:
+    """Сначала один вызов. Ошибка/обрез → этот кусок пополам (2). Снова → 4."""
+    from app.services.adaptive_llm_batches import next_split_level
+    from app.services.output_batch_plan import plan_db_frames_slices
+    from app.services.volume_batches import is_db_frames_path
+
+    kwargs = dict(
+        prompt=prompt,
+        accompanying=accompanying,
+        input_paths=input_paths,
+        system=system,
+        history=history,
+        model=model,
+        temperature=temperature,
+        timeout=timeout,
+        max_retries=max_retries,
+        xlsx_write_contract=xlsx_write_contract,
+        volume_complete=False,
+        auto_pack=False,
+        pack_kind=pack_kind,
+    )
+    try:
+        result = await chat(**kwargs)
+        if not looks_truncated_llm_text(result.text or ""):
+            return result
+        nxt = next_split_level(level)
+        slices = plan_db_frames_slices(
+            input_paths,
+            pack_kind=pack_kind,
+            prompt=prompt,
+            accompanying=accompanying,
+            force_batches=2,
+        )
+        if nxt is None or not slices:
+            return result
+        raise GptApiError(
+            f"GPT: ответ обрезан — дроблю батч L{level}",
+            context={"retryable": True, "error_kind": "truncated"},
+        )
+    except GptApiError as err:
+        nxt = next_split_level(level)
+        slices = plan_db_frames_slices(
+            input_paths,
+            pack_kind=pack_kind,
+            prompt=prompt,
+            accompanying=accompanying,
+            force_batches=2,
+        )
+        if nxt is None or not slices:
+            raise
+        logger.warning(
+            "gpt_api.chat adaptive L{}→{} after {} slices={}",
+            level,
+            nxt,
+            err,
+            len(slices),
+        )
+        parts: list[GptChatResult] = []
+        for i, slice_path in enumerate(slices, start=1):
+            new_paths = [
+                slice_path if is_db_frames_path(p) else p
+                for p in list(input_paths or [])
+            ]
+            acc = (
+                f"{accompanying}\n\n"
+                f"# SPLIT L{nxt} {i}/{len(slices)} — только uuid из "
+                f"{slice_path.name}. JSON ops на ВСЕ кадры ЭТОГО файла.\n"
+            )
+            part = await _chat_adaptive_1_2_4(
+                prompt=prompt,
+                accompanying=acc,
+                input_paths=new_paths,
+                system=system,
+                history=None,
+                model=model,
+                temperature=temperature,
+                timeout=timeout,
+                max_retries=max_retries,
+                xlsx_write_contract=xlsx_write_contract,
+                pack_kind=pack_kind,
+                level=nxt,
+            )
+            parts.append(part)
+        merged = _merge_packed_apply_ops([p.text for p in parts])
+        first = parts[0]
+        return GptChatResult(
+            text=merged,
+            model=first.model,
+            finish_reason="packed",
+            usage=first.usage,
+            raw={
+                **(first.raw or {}),
+                "packed_slices": len(parts),
+                "packed_chars": len(merged),
+                "adaptive_level": nxt,
+            },
+            response_id=first.response_id,
+        )
+
+
 async def chat(
     *,
     prompt: str,
@@ -1840,55 +2084,48 @@ async def chat(
 ) -> GptChatResult:
     """Вызвать текстовый LLM (kie GPT / TokenRouter Kimi) с ретраями.
 
-    ``volume_complete``: после частичного apply-ops добрать остаток
-    (None = авто: apply_ops contract или db_frames*.json во вложениях).
-    ``auto_pack``: нарезать db_frames на батчи
-    (img_pr: n*4000/228000; иначе len(закадр)/3500) и гнать пачки параллельно.
-    ``pack_kind``: явный ``img_pr`` | ``vo`` (img_pr всегда важнее VO-файла).
+    ``volume_complete``: True — после частичного apply-ops добрать остаток.
+    По умолчанию выключено (None/False), чтобы не плодить десятки вызовов.
+    ``auto_pack``: схема 1→2→4: сначала один вызов на все кадры;
+    ошибка/обрез → этот кусок пополам; снова ошибка → ещё раз пополам (4).
+    ``pack_kind``: явный ``img_pr`` | ``vo`` при force-split db_frames.
     """
     if auto_pack:
-        from app.services.output_batch_plan import plan_db_frames_slices
-
-        slices = plan_db_frames_slices(
-            input_paths,
-            pack_kind=pack_kind,
+        return await _chat_adaptive_1_2_4(
             prompt=prompt,
             accompanying=accompanying,
+            input_paths=input_paths,
+            system=system,
+            history=history,
+            model=model,
+            temperature=temperature,
+            timeout=timeout,
+            max_retries=max_retries,
+            xlsx_write_contract=xlsx_write_contract,
+            pack_kind=pack_kind,
         )
-        if slices:
-            logger.info(
-                "gpt_api.chat auto_pack kind={} slices={} files={}",
-                pack_kind or "auto",
-                len(slices),
-                [p.name for p in slices],
-            )
-            return await _chat_packed_parallel(
-                slice_paths=slices,
-                prompt=prompt,
-                accompanying=accompanying,
-                input_paths=list(input_paths or []),
-                system=system,
-                history=history,
-                model=model,
-                temperature=temperature,
-                timeout=timeout,
-                max_retries=max_retries,
-                xlsx_write_contract=xlsx_write_contract,
-            )
 
     headers = _headers()
-    use_model = (model or settings.gpt_model_effective or "gpt-5.5").strip()
+    from app.services.llm_override import current_text_model_id
+
+    use_model = (
+        model or current_text_model_id() or settings.gpt_model_effective or "gpt-5.5"
+    ).strip()
     url = _chat_url(use_model)
     use_timeout = float(timeout if timeout is not None else settings.gpt_timeout_s)
     retries = int(max_retries if max_retries is not None else settings.gpt_max_retries)
-    provider_label = settings.text_llm_label
+    ov_model = current_text_model_id()
+    provider_label = (
+        f"vibecode ({ov_model})" if _node_vibecode_override() else settings.text_llm_label
+    )
     proxy = _gpt_proxy_url()
+    via = "vps-relay" if _vps_relay_base() else ("proxy" if proxy else "direct")
     logger.info(
-        "text_llm.chat → {} model={} url={} proxy={}",
+        "text_llm.chat → {} model={} url={} via={}",
         provider_label,
         use_model,
         url,
-        _mask_proxy_url(proxy) if proxy else "direct",
+        via if via != "proxy" else _mask_proxy_url(proxy),
     )
 
     responses_mode = is_responses_mode()
@@ -1942,31 +2179,8 @@ async def chat(
                 )
                 # Cloudflare/kie рвёт длинный SSE: дельты уже есть, но JSON
                 # незакрыт — добираем хвост коротким continue (без тяжёлых файлов).
-                # Continue с крошечным salvage бессмысленен → полный chat-retry.
                 cont_round = 0
                 while cont_round < 2 and looks_truncated_llm_text(result.text):
-                    salvage_n = len(result.text or "")
-                    if salvage_n < _CF_CONTINUE_MIN_CHARS:
-                        logger.warning(
-                            "gpt_api.chat CF-continue skip — salvage too small "
-                            "chars={} min={} task_id={}",
-                            salvage_n,
-                            _CF_CONTINUE_MIN_CHARS,
-                            result.response_id or "-",
-                        )
-                        if result.raw.get("retrieved_by_id"):
-                            break
-                        raise GptApiError(
-                            "GPT: SSE обрыв, salvage слишком короткий для continue "
-                            f"({salvage_n} chars)",
-                            context={
-                                "retryable": True,
-                                "error_kind": "stream_scarce_salvage",
-                                "response_id": result.response_id or "",
-                                "salvage_chars": salvage_n,
-                                "model": use_model,
-                            },
-                        )
                     cont_round += 1
                     tail = (result.text or "")[-4000:]
                     cont_prompt = (
@@ -1997,7 +2211,7 @@ async def chat(
                     logger.warning(
                         "gpt_api.chat CF-continue round={} chars_so_far={} task_id={}",
                         cont_round,
-                        salvage_n,
+                        len(result.text or ""),
                         result.response_id or "-",
                     )
                     try:
@@ -2009,26 +2223,17 @@ async def chat(
                             use_model=use_model,
                         )
                     except GptApiError as e:
-                        # Continue упал (500/сеть/пусто) — не терять salvage
-                        # и не уходить в soft-retry полного skeleton зря.
-                        if salvage_n >= _CF_CONTINUE_KEEP_MIN_CHARS:
+                        # Continue без исходного файла часто → пустой output.
+                        # Уже полученный текст цельного ответа нельзя выбрасывать.
+                        if (result.text or "").strip() and (
+                            e.context.get("error_kind") == "empty_stream"
+                            or "пустой output" in str(e)
+                        ):
                             logger.warning(
-                                "gpt_api.chat CF-continue failed — keep salvage "
+                                "gpt_api.chat CF-continue empty — keep salvage "
                                 "chars={} ({})",
-                                salvage_n,
+                                len(result.text or ""),
                                 e,
-                            )
-                            raw_keep = dict(result.raw or {})
-                            raw_keep["cf_continue_failed"] = True
-                            raw_keep["cf_continue_error"] = str(e)[:300]
-                            result = GptChatResult(
-                                text=result.text,
-                                model=use_model,
-                                finish_reason=result.finish_reason
-                                or "stream_salvaged",
-                                usage=result.usage,
-                                raw=raw_keep,
-                                response_id=result.response_id,
                             )
                             break
                         raise
@@ -2061,15 +2266,93 @@ async def chat(
                     xlsx_write_contract=xlsx_write_contract,
                     volume_complete=volume_complete,
                 )
-                logger.info(
-                    "gpt_api.chat OK provider={} model={} attempt={} "
-                    "finish={} chars={} task_id={}",
-                    provider_label,
-                    use_model,
-                    attempt,
-                    result.finish_reason,
-                    len(result.text),
-                    result.response_id or result.raw.get("id") or "-",
+                _log_chat_finished(
+                    provider_label=provider_label,
+                    use_model=use_model,
+                    attempt=attempt,
+                    result=result,
+                )
+                return result
+
+            if settings.text_llm_is_vibecode or _node_vibecode_override():
+                result = await _chat_completions_stream(
+                    url=url,
+                    headers=headers,
+                    body=body,
+                    timeout=use_timeout,
+                    use_model=use_model,
+                )
+                cont_round = 0
+                while cont_round < 2 and looks_truncated_llm_text(result.text):
+                    cont_round += 1
+                    tail = (result.text or "")[-4000:]
+                    cont_prompt = (
+                        "Предыдущий ответ оборван сетью. Продолжи СТРОГО с места "
+                        "обрыва: не повторяй уже написанное, без пояснений — "
+                        "только продолжение текста.\n\n"
+                        f"--- хвост уже полученного ---\n{tail}\n"
+                        "--- конец хвоста ---"
+                    )
+                    cont_body = {
+                        "model": use_model,
+                        "messages": [
+                            {"role": "user", "content": cont_prompt},
+                        ],
+                    }
+                    try:
+                        cont = await _chat_completions_stream(
+                            url=url,
+                            headers=headers,
+                            body=cont_body,
+                            timeout=min(use_timeout, 180.0),
+                            use_model=use_model,
+                        )
+                    except GptApiError as e:
+                        if (result.text or "").strip() and (
+                            e.context.get("error_kind") == "empty_stream"
+                            or "пустой output" in str(e)
+                        ):
+                            logger.warning(
+                                "gpt_api.chat vibecode-continue empty — keep salvage "
+                                "chars={} ({})",
+                                len(result.text or ""),
+                                e,
+                            )
+                            break
+                        raise
+                    merged = stitch_llm_continuation(result.text, cont.text)
+                    if len(merged) <= len(result.text or ""):
+                        break
+                    result = GptChatResult(
+                        text=merged,
+                        model=use_model,
+                        finish_reason="stream_continued",
+                        usage=result.usage,
+                        raw={
+                            **(result.raw or {}),
+                            "cf_continued": True,
+                            "cf_continue_rounds": cont_round,
+                        },
+                        response_id=result.response_id or cont.response_id,
+                    )
+                result = await _maybe_volume_complete_chat_result(
+                    result,
+                    prompt=prompt,
+                    accompanying=accompanying,
+                    input_paths=input_paths,
+                    system=system,
+                    history=history,
+                    model=use_model,
+                    temperature=temperature,
+                    timeout=use_timeout,
+                    xlsx_write_contract=xlsx_write_contract,
+                    volume_complete=volume_complete,
+                )
+                _log_chat_finished(
+                    provider_label=provider_label,
+                    use_model=use_model,
+                    attempt=attempt,
+                    result=result,
                 )
                 return result
 
@@ -2102,13 +2385,12 @@ async def chat(
                 xlsx_write_contract=xlsx_write_contract,
                 volume_complete=volume_complete,
             )
-            logger.info(
-                "gpt_api.chat OK provider={} model={} attempt={} finish={} chars={}",
-                provider_label,
-                use_model,
-                attempt,
-                result.finish_reason,
-                len(result.text),
+            _log_chat_finished(
+                provider_label=provider_label,
+                use_model=use_model,
+                attempt=attempt,
+                result=result,
+                include_task_id=False,
             )
             return result
         except httpx.TimeoutException:

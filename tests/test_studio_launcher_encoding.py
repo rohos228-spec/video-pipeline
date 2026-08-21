@@ -6,6 +6,11 @@ import re
 from pathlib import Path
 
 UTF8_BOM = b"\xef\xbb\xbf"
+# UTF-8 em-dash / en-dash. Byte 0x94 of em-dash is '"' in CP1251, which
+# closes a double-quoted string and then `[4]` looks like a type literal.
+EM_DASH_UTF8 = "\u2014".encode("utf-8")
+EN_DASH_UTF8 = "\u2013".encode("utf-8")
+ELLIPSIS_UTF8 = "\u2026".encode("utf-8")
 
 LAUNCHER_SCRIPTS = (
     "scripts/studio.ps1",
@@ -19,6 +24,42 @@ def test_launcher_ps1_files_have_utf8_bom() -> None:
     for rel in LAUNCHER_SCRIPTS:
         data = (root / rel).read_bytes()
         assert data.startswith(UTF8_BOM), f"{rel} must start with UTF-8 BOM for Windows PS 5.1"
+
+
+def test_launcher_ps1_files_use_crlf() -> None:
+    root = Path(__file__).resolve().parents[1]
+    for rel in LAUNCHER_SCRIPTS:
+        data = (root / rel).read_bytes()
+        assert b"\r\n" in data, f"{rel} must use CRLF for Windows PS 5.1"
+        assert data.replace(b"\r\n", b"").count(b"\n") == 0, f"{rel} has bare LF"
+
+
+def test_launcher_ps1_no_unicode_dashes() -> None:
+    """PS 5.1 without BOM treats the file as CP1251: em-dash bytes become a quote."""
+    root = Path(__file__).resolve().parents[1]
+    for rel in (*LAUNCHER_SCRIPTS, "STUDIO.cmd"):
+        data = (root / rel).read_bytes()
+        assert EM_DASH_UTF8 not in data, f"{rel} contains U+2014 em-dash (breaks PS 5.1 strings)"
+        assert EN_DASH_UTF8 not in data, f"{rel} contains U+2013 en-dash"
+        assert ELLIPSIS_UTF8 not in data, f"{rel} contains U+2026 ellipsis"
+
+
+def test_preflight_python_avoids_ps51_quote_trap() -> None:
+    """Win/PS 5.1 mangles multiline python -c with print(\"...\") into SyntaxError."""
+    root = Path(__file__).resolve().parents[1]
+    for rel in ("scripts/studio.ps1", "scripts/run-backend.ps1"):
+        text = (root / rel).read_text(encoding="utf-8-sig")
+        assert "from app.web.api import create_app" in text
+        assert "print('create_app OK')" in text, (
+            f"{rel} must use single-quoted print in python -c (not print(\"...\"))"
+        )
+        assert 'print("create_app OK")' not in text, (
+            f"{rel} still has print(\"create_app OK\") which breaks under python -c on Windows"
+        )
+        assert not re.search(
+            r'-c\s+"[^"]*from\s+app\.web',
+            text,
+        ), f"{rel} still has python -c \"... from ...\" (PS 5.1 'from' keyword trap)"
 
 
 def test_studio_ps1_menu_and_profile() -> None:
@@ -40,3 +81,16 @@ def test_stop_backend_supports_wait_sec() -> None:
     text = (root / "scripts/stop-backend.ps1").read_text(encoding="utf-8-sig")
     assert "WaitSec" in text
     assert "VP_REPO_ROOT" in text
+
+
+def test_studio_cmd_heals_launcher_before_powershell() -> None:
+    """Broken studio.ps1 cannot parse; STUDIO.cmd must replace it before -File."""
+    root = Path(__file__).resolve().parents[1]
+    data = (root / "STUDIO.cmd").read_bytes()
+    assert not data.startswith(UTF8_BOM), "UTF-8 BOM before @echo off breaks cmd.exe"
+    text = data.decode("ascii")
+    assert "STUDIO_HEALED" in text
+    assert "Invoke-WebRequest" in text
+    assert "raw.githubusercontent.com/rohos228-spec/video-pipeline/main/scripts/studio.ps1" in text
+    assert "git reset --hard origin/main" in text
+    assert text.index("STUDIO_HEALED") < text.index("-File")

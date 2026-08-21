@@ -30,6 +30,7 @@ import {
   pipelinePromptSlots,
   resolvePromptSlots,
   resolvePromptSlotsForNode,
+  sceneAgentFromNodeKey,
   type NodePromptSlot,
 } from "@/lib/node-prompts";
 import { nodeSupportsGptText } from "@/lib/gpt-text-steps";
@@ -42,6 +43,7 @@ import {
   type ExcelGptNodeConfig,
 } from "@/lib/excel-gpt-config";
 import { ExcelGptSettingsPanel } from "@/components/studio/excel-gpt-settings-panel";
+import { CheckNodePromptPanel } from "@/components/studio/check-node-prompt-panel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -67,12 +69,9 @@ import { FramePromptsPanel } from "@/components/studio/frame-prompts-panel";
 import { NodeStepParamsPanel } from "@/components/studio/node-step-params-panel";
 import { PromptFilesPanel } from "@/components/studio/prompt-files-panel";
 import { GptTextPanel } from "@/components/studio/gpt-text-panel";
-import { PromptBuilderStudio } from "@/components/prompt-builder/prompt-builder-studio";
-import { nodeSupportsBlocksV2 } from "@/lib/prompt-builder/step-compose-map";
 import { shouldShowStopBar } from "@/lib/project-running";
 
 type StudioTab = "settings" | "prompts" | "results" | "excel";
-type PromptEditMode = "classic" | "constructor";
 
 function slotStepCode(slot: NodePromptSlot | null, nodeStepCode: string | undefined): string | undefined {
   return slot?.stepCode ?? nodeStepCode;
@@ -104,7 +103,6 @@ export function NodeStudio({
 
   const [tab, setTab] = useState<StudioTab>(initialTab);
   const [activeSlotId, setActiveSlotId] = useState<string | null>(null);
-  const [promptMode, setPromptMode] = useState<PromptEditMode>("classic");
   const [xlsxSheet, setXlsxSheet] = useState<string>("");
   /** false = весь лист (дефолт); true = узкий ключевой фрагмент по типу ноды */
   const [xlsxFocusKeyRows, setXlsxFocusKeyRows] = useState(false);
@@ -154,6 +152,16 @@ export function NodeStudio({
   useEffect(() => {
     setExcelConfig(excelGptConfig);
   }, [excelGptConfig]);
+
+  // Тот же queryKey, что у ExcelGptSettingsPanel — общий кэш, лишних запросов нет.
+  const operatorResolve = useQuery({
+    queryKey: ["gpt-operator-resolve", projectId, nodeKey],
+    queryFn: () => api.resolveGptOperator(projectId!, nodeKey!),
+    enabled: open && projectId != null && !!nodeKey && isExcelGptNode(nodeType),
+    staleTime: 5000,
+  });
+  const isCheckNode =
+    isExcelGptNode(nodeType) && operatorResolve.data?.checkMode === true;
 
   const patchExcelNodeData = (patch: Partial<ExcelGptNodeConfig>) => {
     if (!nodeKey) return;
@@ -327,7 +335,10 @@ export function NodeStudio({
           )
       : "default";
   const activeVariantSourceLabel = promptSourceLabel(activeVariantSource);
-  const preferredFile = preferredPromptFileName(activeSlot);
+  const sdAgentFromKey = sceneAgentFromNodeKey(nodeKey);
+  const preferredFile =
+    preferredPromptFileName(activeSlot) ??
+    (sdAgentFromKey ? `sd_${sdAgentFromKey}` : undefined);
 
   const activateVariant = useMutation({
     mutationFn: async (variant: string) => {
@@ -453,23 +464,6 @@ export function NodeStudio({
     activeSlot?.kind === "gpt" &&
     Boolean(promptStepCode) &&
     stepHasPromptVariants(promptStepCode);
-  const supportsPromptConstructor =
-    projectId != null &&
-    Boolean(promptStepCode) &&
-    nodeSupportsBlocksV2(
-      nodeType,
-      promptStepCode,
-      nodeKey,
-      isExcelGptNode(nodeType) ? excelConfig.slotIndex : undefined,
-    );
-  const builderNodeType = isExcelGptNode(nodeType)
-    ? (promptStepCode ?? EXCEL_GPT_STEP_CODE)
-    : nodeType;
-
-  useEffect(() => {
-    if (open) setPromptMode("classic");
-  }, [open, activeSlotId, nodeKey]);
-
   const [mounted, setMounted] = useState(false);
   const backdropGuardUntil = useRef(0);
   useEffect(() => setMounted(true), []);
@@ -589,7 +583,7 @@ export function NodeStudio({
               {(
                 [
                   ["settings", "Настройки", Settings2],
-                  ["prompts", "Промты GPT", FileText],
+                  ["prompts", "Промпты", FileText],
                   ...(showExcel ? [["excel", "Excel", FileSpreadsheet] as const] : []),
                   ["results", "Результаты", FileText],
                 ] as const
@@ -600,36 +594,23 @@ export function NodeStudio({
                   size="sm"
                   variant={tab === id ? "default" : "ghost"}
                   className="gap-1.5 text-xs"
-                  onClick={() => setTab(id)}
+                  onClick={() => {
+                    setTab(id);
+                    setActiveSlotId(pipelineSlots[0]?.id ?? null);
+                  }}
                 >
                   <Icon className="h-3.5 w-3.5" />
                   {label}
                 </Button>
               ))}
-              {nodeSupportsGptText(nodeType) && gptTextSlotForNode(nodeType) ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={showGptTextPanel ? "default" : "outline"}
-                  className="gap-1.5 text-xs border-violet-400/40 text-violet-100"
-                  onClick={() => {
-                    setTab("prompts");
-                    setActiveSlotId("gpt_text");
-                  }}
-                  title="Сопроводительный (прилагаемый) текст в диалог GPT"
-                >
-                  <MessageSquareText className="h-3.5 w-3.5" />
-                  Сопровод. текст
-                </Button>
-              ) : null}
             </div>
-            {tab === "prompts" && pipelineSlots.length > 0 && !showGptTextPanel && (
+            {tab === "prompts" && (
               <div className="mt-3 flex flex-wrap gap-1 border-t border-white/5 pt-3">
                 {pipelineSlots.map((slot) => (
                   <Button
                     key={slot.id}
                     size="sm"
-                    variant={activeSlotId === slot.id ? "default" : "outline"}
+                    variant={activeSlotId === slot.id && !showGptTextPanel ? "default" : "outline"}
                     className="h-7 text-[10px]"
                     onClick={() => {
                       setActiveSlotId(slot.id);
@@ -639,6 +620,21 @@ export function NodeStudio({
                     {slot.title}
                   </Button>
                 ))}
+                {nodeSupportsGptText(nodeType) && gptTextSlotForNode(nodeType) && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={activeSlotId === "gpt_text" ? "default" : "outline"}
+                    className="h-7 text-[10px] border-violet-400/40 text-violet-200"
+                    onClick={() => {
+                      setActiveSlotId("gpt_text");
+                    }}
+                    title="Сопроводительный (прилагаемый) текст в диалог GPT"
+                  >
+                    <MessageSquareText className="mr-1 h-3 w-3" />
+                    Сопроводительный текст
+                  </Button>
+                )}
               </div>
             )}
           </header>
@@ -823,34 +819,6 @@ export function NodeStudio({
                       <span className="font-medium text-foreground">{activeSlot.title}</span>
                     </p>
                   )}
-                  {showFilesPanel && supportsPromptConstructor && (
-                    <div className="flex gap-1 rounded-lg border border-white/10 bg-white/[0.02] p-1">
-                      <button
-                        type="button"
-                        onClick={() => setPromptMode("classic")}
-                        className={cn(
-                          "flex-1 rounded-md px-3 py-2 text-xs font-medium transition",
-                          promptMode === "classic"
-                            ? "bg-primary/15 text-foreground"
-                            : "text-muted-foreground hover:bg-white/[0.04]",
-                        )}
-                      >
-                        Классический промт
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPromptMode("constructor")}
-                        className={cn(
-                          "flex-1 rounded-md px-3 py-2 text-xs font-medium transition",
-                          promptMode === "constructor"
-                            ? "bg-primary/15 text-foreground"
-                            : "text-muted-foreground hover:bg-white/[0.04]",
-                        )}
-                      >
-                        Конструктор промтов
-                      </button>
-                    </div>
-                  )}
                   {showGptTextPanel ? (
                     <GptTextPanel
                       key={`gpt-${activeSlot?.id}-${activeStepCode}`}
@@ -863,20 +831,13 @@ export function NodeStudio({
                       projectId={projectId}
                       field="image_prompt"
                     />
-                  ) : showFilesPanel &&
-                    promptMode === "constructor" &&
-                    supportsPromptConstructor &&
-                    projectId &&
-                    promptStepCode ? (
-                    <div className="min-h-[min(70vh,720px)] overflow-hidden rounded-xl border border-white/10">
-                      <PromptBuilderStudio
-                        key={`builder-${nodeKey}-${promptStepCode}`}
-                        projectId={projectId}
-                        nodeType={builderNodeType}
-                        stepCode={promptStepCode}
-                        fullscreen={false}
-                      />
-                    </div>
+                  ) : showFilesPanel && isCheckNode ? (
+                    <CheckNodePromptPanel
+                      projectId={projectId!}
+                      nodeKey={nodeKey!}
+                      resolve={operatorResolve.data}
+                      loading={operatorResolve.isLoading}
+                    />
                   ) : showFilesPanel && promptStepCode ? (
                     <PromptFilesPanel
                       key={`files-${nodeKey}-${activeSlot?.id}-${promptStepCode}`}

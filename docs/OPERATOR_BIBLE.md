@@ -7,7 +7,8 @@
 | Нужно | Куда |
 |-------|------|
 | Запуск | `STUDIO.cmd` → пункт **[1]** |
-| Обновление с GitHub | `STUDIO.cmd` → **[2]** (`origin/main`) |
+| Остановить бэкенд | `STUDIO.cmd` → **[2]** (или `stop-backend.cmd`) |
+| Обновление с GitHub | `STUDIO.cmd` → **[4]** (`origin/<ORCHESTRATOR_GIT_BRANCH>`, не всегда main) |
 | Новый проект + пресет настроек | кнопка **Новый проект** → сохранить/выбрать конфигурацию |
 | Настройки проекта / авто / режим | справа Inspector → **Настройки** |
 | Массовые ролики из Excel | Inspector → **Фабрика видео** (Excel тем → очередь) |
@@ -39,6 +40,7 @@
 | Массовый режим Telegram `/mass` | [`MASS_CREATION.md`](MASS_CREATION.md) |
 | Сериальный пайплайн | `SERIES_*.md` |
 | Карта для ИИ-агента | [`AGENT_MAP.md`](AGENT_MAP.md) |
+| Модели на нодах (кто какой ключ) | [`NODE_MODELS.md`](NODE_MODELS.md) |
 
 **Не опираться на** `HANDOVER.md` (устарел).
 

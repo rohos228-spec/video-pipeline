@@ -169,22 +169,11 @@ async def _soft_retry_without_wipe(
             project.id,
         )
     elif step_code == "anim_pr":
-        from app.services.animation_prompt_gpt import sync_animation_prompts_from_xlsx
-
-        try:
-            synced = await sync_animation_prompts_from_xlsx(session, project)
-            logger.info(
-                "[#{}] soft retry {}: synced {} animation_prompt из xlsx (без reset)",
-                project.id,
-                step_code,
-                synced,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[#{}] sync_animation_prompts_from_xlsx on fail: {}",
-                project.id,
-                e,
-            )
+        logger.info(
+            "[#{}] soft retry {}: без wipe, без Excel sync (DB SoT)",
+            project.id,
+            step_code,
+        )
     elif step_code == "img":
         from app.services.scan_frames import sync_frames_with_disk_images
 
@@ -198,9 +187,14 @@ async def _soft_retry_without_wipe(
         from app.services.artifact_recovery import recover_scene_videos_from_disk
 
         recovered = await recover_scene_videos_from_disk(session, project)
+        videos_dir = project.data_dir / "videos"
+        on_disk = (
+            len(list(videos_dir.glob("clip_*.mp4"))) if videos_dir.is_dir() else 0
+        )
         logger.info(
-            "[#{}] soft retry video: {} clip на диске (без wipe)",
+            "[#{}] soft retry video: {} clip на диске, {} newly linked (без wipe)",
             project.id,
+            on_disk,
             len(recovered),
         )
     else:
@@ -228,6 +222,74 @@ async def record_step_failure(
     from app.services.gen_queue_run import is_user_stopped
     from app.services.project_state import is_running_status
     from app.services.step_cancel import is_stop_requested
+
+    # SQLite busy / PendingRollback при parallel projects — не копить к 30-мин sleep.
+    err_code_early, err_msg_early = describe_error(error)
+    # 402 / нет кредитов — не soft-retry и не sleep 30 мин (только жечь баланс).
+    try:
+        from app.services.scene_design.agent_chunks import is_credits_failure
+    except Exception:  # noqa: BLE001
+        is_credits_failure = lambda _e: False  # noqa: E731
+    if is_credits_failure(error) or "credits insufficient" in (err_msg_early or "").lower():
+        from app.services.project_control import pause_project as pause_project_svc
+        from app.services.run_sync import mark_running_node_failed
+
+        running = project.status
+        step = step_by_running_status(running)
+        fs = _failure_state(project)
+        fs["last_error"] = err_msg_early
+        fs["last_error_code"] = err_code_early or "gpt_credits"
+        fs["last_running"] = running.value
+        fs.pop("sleep_until", None)
+        _save_failure_state(project, fs)
+        await mark_running_node_failed(
+            session,
+            project,
+            error,
+            initiator="worker",
+            error_code=err_code_early or "gpt_credits",
+        )
+        try:
+            from app.services.scene_design import runner as sd_runner
+
+            sd_runner.mark_failed(project, err_msg_early)
+        except Exception:  # noqa: BLE001
+            pass
+        await pause_project_svc(session, project)
+        await session.flush()
+        logger.error(
+            "[#{}] GPT credits exhausted (402) — pause, no soft-retry: {}",
+            project.id,
+            err_msg_early[:200],
+        )
+        return "pause_infra"
+
+    if err_code_early == "infra_db_locked":
+        running = project.status
+        step = step_by_running_status(running)
+        step_code = step.code if step else running.value
+        await _soft_retry_without_wipe(session, project, step_code)
+        fs = _failure_state(project)
+        fs["last_error"] = err_msg_early
+        fs["last_error_code"] = err_code_early
+        fs["last_running"] = running.value
+        fs.pop("sleep_until", None)
+        _save_failure_state(project, fs)
+        if step is not None:
+            project.status = step.running_status
+        from app.services.run_sync import update_active_node_progress_text
+
+        await update_active_node_progress_text(
+            session,
+            project,
+            f"БД занята — повтор без счётчика: {err_msg_early[:80]}",
+        )
+        await session.flush()
+        logger.warning(
+            "[#{}] infra_db_locked: soft retry без fail-счётчика (не sleep)",
+            project.id,
+        )
+        return "retry"
 
     # ⏹ уже нажат — не поднимать planning снова soft-retry'ем (иначе крутилка вечная)
     if is_user_stopped(project) or is_stop_requested(project.id):
@@ -383,6 +445,34 @@ def clear_failure_on_success(project: Project, running: ProjectStatus) -> None:
     _save_failure_state(project, fs)
 
 
+def _running_status_to_resume(fs: dict[str, Any]) -> ProjectStatus | None:
+    """Pick a real running status: last_running, or total_fails keys (not paused)."""
+    candidates: list[str] = []
+    last = fs.get("last_running")
+    if last:
+        candidates.append(str(last))
+    totals = fs.get("total_fails") or {}
+    if isinstance(totals, dict):
+        for key in sorted(totals, key=lambda k: int(totals.get(k) or 0), reverse=True):
+            if key not in candidates:
+                candidates.append(str(key))
+    skip = {
+        ProjectStatus.paused,
+        ProjectStatus.failed,
+        ProjectStatus.new,
+    }
+    for key in candidates:
+        try:
+            running = ProjectStatus(key)
+        except ValueError:
+            continue
+        if running in skip:
+            continue
+        if step_by_running_status(running) is not None:
+            return running
+    return None
+
+
 async def maybe_resume_after_sleep(
     session: AsyncSession,
     project: Project,
@@ -394,15 +484,11 @@ async def maybe_resume_after_sleep(
 
     if is_user_stopped(project):
         return False
-    if not project.auto_mode or project.status is ProjectStatus.paused:
-        return False
+    # Error-sleep parks as paused (not generating_*). Skipping paused here
+    # left projects stuck after sleep_until with the worker never seeing them.
     fs = _failure_state(project)
-    step_key = fs.get("last_running")
-    if not step_key:
-        return False
-    try:
-        running = ProjectStatus(step_key)
-    except ValueError:
+    running = _running_status_to_resume(fs)
+    if running is None:
         return False
     step = step_by_running_status(running)
     if step is None:
@@ -410,5 +496,25 @@ async def maybe_resume_after_sleep(
     await _soft_retry_without_wipe(session, project, step.code)
     project.status = step.running_status
     await session.flush()
-    logger.info("[#{}] resumed after sleep → {} (без wipe)", project.id, step.code)
+    logger.info(
+        "[#{}] авто-резюм после паузы ошибок → {} (без wipe)",
+        project.id,
+        step.code,
+    )
     return True
+
+
+async def resume_expired_error_sleeps(session: AsyncSession) -> list[int]:
+    """paused + expired sleep_until → restore last_running (worker tick)."""
+    from sqlalchemy import select
+
+    rows = (
+        await session.execute(
+            select(Project).where(Project.status == ProjectStatus.paused)
+        )
+    ).scalars().all()
+    ids: list[int] = []
+    for p in rows:
+        if await maybe_resume_after_sleep(session, p):
+            ids.append(p.id)
+    return ids

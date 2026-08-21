@@ -1408,11 +1408,16 @@ async def ask(
                 max_retries=0,
             )
         except Exception as e:  # noqa: BLE001
-            # Модель иногда отдаёт пустой output на «пустой txt» — это валидный контент файла.
+            # Только явный запрос «пустой txt» — иначе empty_stream маскировался
+            # пустым файлом («GPT вернул пустой»), хотя kie уже success.
             err = str(e)
-            if want_pack and "пустой output" in err.lower():
+            if (
+                want_pack
+                and _wants_blank_file(text)
+                and "пустой output" in err.lower()
+            ):
                 logger.info(
-                    "gpt_workspace: session={} empty GPT output → pack as empty file",
+                    "gpt_workspace: session={} blank-file intent + empty GPT → empty file",
                     session_id,
                 )
                 reply = ""

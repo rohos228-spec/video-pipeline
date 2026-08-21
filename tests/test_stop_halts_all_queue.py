@@ -83,6 +83,44 @@ async def test_stop_mass_lane_does_not_start_next_sibling(
 
 
 @pytest.mark.asyncio
+async def test_stop_mass_lane_does_not_cancel_running_siblings(
+    session: AsyncSession,
+) -> None:
+    """⏹ на одном дочернем не hard-cancel'ит уже крутящихся соседей."""
+    parent = Project(slug="mass2", topic="Mass", status=ProjectStatus.new, auto_mode=True)
+    parent.meta = {"mass_factory": True}
+    session.add(parent)
+    await session.flush()
+
+    c1 = Project(
+        slug="lane1b",
+        topic="A",
+        status=ProjectStatus.generating_videos,
+        auto_mode=True,
+        meta={"mass_parent_id": parent.id, "mass_lane_position": 1},
+    )
+    c2 = Project(
+        slug="lane2b",
+        topic="B",
+        status=ProjectStatus.generating_animation_prompts,
+        auto_mode=True,
+        meta={"mass_parent_id": parent.id, "mass_lane_position": 2},
+    )
+    session.add_all([c1, c2])
+    await session.flush()
+
+    await stop_project_running(session, c1)
+    await session.refresh(c1)
+    await session.refresh(c2)
+
+    assert c1.status is not ProjectStatus.generating_videos
+    assert (c1.meta or {}).get("user_stop") is True
+    # сосед продолжает свой шаг
+    assert c2.status is ProjectStatus.generating_animation_prompts
+    assert not (c2.meta or {}).get("user_stop")
+
+
+@pytest.mark.asyncio
 async def test_stop_halts_gen_queue_tick(
     session: AsyncSession,
     monkeypatch,

@@ -53,6 +53,7 @@ async def wizard_catalog() -> dict:
         "boolean": _choices_to_dict(wiz.BOOLEAN_CHOICES),
         "defaults": {
             "image_generator": "gpt_image_2",
+            "video_generator": "veo_3_fast",
             "allowed_resolutions_for_default": list(
                 allowed_image_resolution_ids("gpt_image_2")
             ),

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import defer, selectinload
 
 from app.models import Artifact, ArtifactKind, BatchProject, Frame, Project, ProjectStatus
 from app.services.default_project import default_auto_mode_for_new_project
@@ -26,6 +26,7 @@ from app.services.project_state import recompute_status
 from app.services.project_steps import list_step_codes, start_step
 from app.services.run_sync import ensure_run_for_project, sync_run_for_project, _get_default_workflow_id
 from app.storage import ProjectSheet
+from app.db import commit_with_retry
 from app.web.deps import get_session
 from app.web.project_dto import project_to_detail, project_to_summary
 from app.web.schemas import CreateProjectRequest, ProjectDetail, ProjectSummary
@@ -57,9 +58,32 @@ def _slugify(s: str) -> str:
 @router.get("", response_model=list[ProjectSummary])
 async def list_projects(
     session: AsyncSession = Depends(get_session),
-) -> list[Project]:
+) -> list[ProjectSummary]:
+    """Лёгкий список для сайдбара: без recompute/disk-recover.
+
+    Раньше на каждый poll (5с) гоняли ``recompute_status`` по всем root —
+    внутри ``recover_*_from_disk`` + куча COUNT. При живой генерации это
+    давало 6–14с на ``GET /api/projects`` и сайдбар «висел».
+    Статус в списке = то, что уже в БД; тяжёлый recompute остаётся в
+    ``GET /projects/{id}`` и воркере.
+    """
     rows = (
-        await session.execute(select(Project).order_by(Project.id.desc()))
+        await session.execute(
+            select(Project)
+            .options(
+                defer(Project.general_plan),
+                defer(Project.script_text),
+                defer(Project.hero_description),
+                defer(Project.hero_descriptions),
+                defer(Project.hero_variations),
+                defer(Project.hero_variation_modifiers),
+                defer(Project.item_descriptions),
+                defer(Project.item_variations),
+                defer(Project.prompt_overrides),
+                defer(Project.gpt_text_overrides),
+            )
+            .order_by(Project.id.desc())
+        )
     ).scalars().all()
     root_ids = {
         p.id for p in rows if mass_parent_id(p) is None and p.batch_id is None
@@ -98,8 +122,6 @@ async def list_projects(
         except (TypeError, ValueError):
             order = None
         fid = pl.get("folder_id")
-        if mass_parent_id(p) is None and p.batch_id is None:
-            await recompute_status(session, p, log_prefix="recompute(list)")
         out.append(
             project_to_summary(
                 p,
@@ -108,7 +130,6 @@ async def list_projects(
                 gen_queue_position=qpos,
             )
         )
-    await session.commit()
     return out
 
 
@@ -278,6 +299,32 @@ async def patch_project(
     p = await session.get(Project, project_id)
     if p is None:
         raise HTTPException(status_code=404, detail="project not found")
+    from app.generation_options import (
+        IMAGE_GENERATORS_BY_ID,
+        VIDEO_GENERATORS_BY_ID,
+        clamp_image_resolution_id,
+    )
+
+    # Нормализация camelCase алиасов из React Flow канваса / фронтенда
+    if "imageResolution" in payload and "image_resolution" not in payload:
+        payload["image_resolution"] = payload.pop("imageResolution")
+    if "aspectRatio" in payload and "aspect_ratio" not in payload:
+        payload["aspect_ratio"] = payload.pop("aspectRatio")
+    if "videoResolution" in payload and "video_resolution" not in payload:
+        payload["video_resolution"] = payload.pop("videoResolution")
+    if "imageGenerator" in payload and "image_generator" not in payload:
+        payload["image_generator"] = payload.pop("imageGenerator")
+    if "videoGenerator" in payload and "video_generator" not in payload:
+        payload["video_generator"] = payload.pop("videoGenerator")
+    if "autoMode" in payload and "auto_mode" not in payload:
+        payload["auto_mode"] = payload.pop("autoMode")
+
+    img_gid = payload.get("image_generator")
+    if "image_generator" in payload and img_gid and img_gid not in IMAGE_GENERATORS_BY_ID:
+        raise HTTPException(status_code=400, detail=f"unknown image_generator: {img_gid}")
+    vid_gid = payload.get("video_generator")
+    if "video_generator" in payload and vid_gid and vid_gid not in VIDEO_GENERATORS_BY_ID:
+        raise HTTPException(status_code=400, detail=f"unknown video_generator: {vid_gid}")
     ALLOWED = {
         "title", "topic", "hero_mode", "general_plan", "hero_description", "script_text",
         "image_generator", "aspect_ratio", "image_resolution", "image_quality", "image_relax",
@@ -309,6 +356,10 @@ async def patch_project(
             setattr(p, k, v)
             if k in ("prompt_overrides", "gpt_text_overrides"):
                 flag_modified(p, k)
+    if "image_generator" in payload:
+        p.image_resolution = clamp_image_resolution_id(
+            p.image_generator, p.image_resolution
+        )
     # Контроль только ИИ — ручной режим убран.
     meta_now = dict(p.meta or {}) if isinstance(p.meta, dict) else {}
     if meta_now.get("ai_control") is not True:
@@ -365,7 +416,7 @@ async def patch_project(
             p.prompt_overrides if isinstance(p.prompt_overrides, dict) else {}
         )
     p.updated_at = datetime.utcnow()
-    await session.commit()
+    await commit_with_retry(session)
     await session.refresh(p)
     await publish_project_event(project_id, event_type="project_updated")
     return p

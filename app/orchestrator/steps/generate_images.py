@@ -24,8 +24,9 @@ from __future__ import annotations
 import asyncio
 import re
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 from aiogram import Bot
 from loguru import logger
@@ -42,15 +43,11 @@ from app.bots.outsee import (
     outsee_error_kind_label,
 )
 from app.generation_options import (
-    ASPECT_RATIOS_BY_ID,
-    DEFAULTS,
     IMAGE_GENERATORS_BY_ID,
-    IMAGE_RESOLUTIONS_BY_ID,
     OUTSEE_PROMPT_MAX_CHARS,
     build_gen_id_prefix,
     is_skippable_empty_prompt,
     prepend_gen_id,
-    resolve_image_quality_slug,
 )
 from app.models import (
     Artifact,
@@ -91,6 +88,27 @@ from app.services.step_cancel import (
 )
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
+
+def _img_http_primary() -> bool:
+    """Outsee/Grsai HTTP — без Chrome CDP (как excel_hero)."""
+    from app.bots.grsai import grsai_enabled
+    from app.bots.outsee_http import outsee_api_configured, outsee_api_enabled_for_image
+
+    return bool(
+        grsai_enabled() or outsee_api_enabled_for_image() or outsee_api_configured()
+    )
+
+
+@asynccontextmanager
+async def _optional_browser_session(
+    need_cdp: bool,
+) -> AsyncIterator[Any]:
+    if not need_cdp:
+        yield None
+        return
+    async with browser_session() as bs:
+        yield bs
+
 
 # Лист «план» v8 — какие строки в столбце кадра используются для рефов.
 _XLSX_SHEET_PLAN = "план"
@@ -445,6 +463,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_images:
         return
     logger.info("[#{}] generate_images starting", project.id)
+    # Параллельно: видеопромты из image_prompt, не останавливая img.
+    try:
+        from app.services.anim_pr_sidecar import ensure_anim_pr_sidecar
+
+        ensure_anim_pr_sidecar(project.id)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[#{}] anim_pr_sidecar: не стартовал", project.id, exc_info=True
+        )
 
     # PNG на диске без Artifact (после partial wipe / restore) → подтянуть в БД,
     # иначе шаг «всё есть» по диску, а compute_actual_status видит дыры.
@@ -464,142 +491,28 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             project.id,
         )
 
-    xlsx_path = project.data_dir / "project.xlsx"
-    from app.services.xlsx_v8_import import bootstrap_frames_for_image_step
-
-    if not xlsx_path.is_file():
-        logger.error(
-            "[#{}] generate_images: project.xlsx не найден: {}",
-            project.id,
-            xlsx_path,
-        )
-    else:
-        boot = await bootstrap_frames_for_image_step(session, project, xlsx_path)
-        logger.info(
-            "[#{}] generate_images: bootstrap R45={} R46={} created={} "
-            "shot1={} shot2={}",
-            project.id,
-            boot.prompts_in_xlsx,
-            boot.shot2_in_xlsx,
-            boot.frames_created,
-            boot.frames_prompt_updated,
-            boot.frames_shot2_updated,
-        )
-
+    # Excel не bootstrap'им: кадры/промты только из БД (явный Import отдельно).
     frames = (
         await session.execute(
             select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
         )
     ).scalars().all()
-    if not frames and xlsx_path.exists():
-        await bootstrap_frames_for_image_step(session, project, xlsx_path)
-        frames = (
-            await session.execute(
-                select(Frame)
-                .where(Frame.project_id == project.id)
-                .order_by(Frame.number)
-            )
-        ).scalars().all()
 
     if not frames:
-        from app.services.xlsx_v8_import import (
-            describe_image_prompts_xlsx_scan,
-            read_image_prompts_from_project_xlsx,
-        )
-
-        scan = (
-            describe_image_prompts_xlsx_scan(xlsx_path)
-            if xlsx_path.exists()
-            else "project.xlsx не найден"
-        )
-        n_xlsx = (
-            len(read_image_prompts_from_project_xlsx(xlsx_path))
-            if xlsx_path.exists()
-            else 0
-        )
-        if n_xlsx:
-            raise RuntimeError(
-                f"в project.xlsx {n_xlsx} промтов, но кадры в БД не созданы. "
-                f"Диагностика: {scan}"
-            )
         raise RuntimeError(
-            f"нет кадров и нет промтов в project.xlsx. Диагностика: {scan}"
+            "нет кадров в БД. Сделай split или явный Импорт Excel "
+            "(кнопка Import / excel_io.import_project_xlsx)."
         )
 
-    # Промты с диска → БД (до проверки missing / failed).
-    if xlsx_path.is_file():
-        from app.services.xlsx_v8_import import (
-            apply_image_prompts_from_xlsx_to_frames,
-            read_image_prompts_from_project_xlsx,
-        )
-
-        n = apply_image_prompts_from_xlsx_to_frames(frames, xlsx_path)
-        if n:
-            logger.info(
-                "[#{}] generate_images: image_prompt с диска xlsx → {} кадров",
-                project.id,
-                n,
-            )
-            await session.flush()
-            frames = (
-                await session.execute(
-                    select(Frame)
-                    .where(Frame.project_id == project.id)
-                    .order_by(Frame.number)
-                )
-            ).scalars().all()
-
-    xlsx_prompts: dict[int, str] = (
-        read_image_prompts_from_project_xlsx(xlsx_path)
-        if xlsx_path.is_file()
-        else {}
-    )
-
-    # Доп. sync v7/v8 (voiceover, animation) — после bootstrap по R45.
     missing_prompts = [
         fr.number
         for fr in frames
-        if fr.number in xlsx_prompts
-        and is_skippable_empty_prompt(xlsx_prompts.get(fr.number) or "")
+        if is_skippable_empty_prompt(fr.image_prompt or "")
     ]
-    if missing_prompts and xlsx_path.exists():
-        try:
-            from app.services.chatgpt_xlsx import sync_project_xlsx
-
-            logger.info(
-                "[#{}] generate_images: у {} кадров нет image_prompt после "
-                "bootstrap — sync_project_xlsx",
-                project.id,
-                len(missing_prompts),
-            )
-            await sync_project_xlsx(session, project, xlsx_path, keep_fields=False)
-            await bootstrap_frames_for_image_step(session, project, xlsx_path)
-            apply_image_prompts_from_xlsx_to_frames(frames, xlsx_path)
-            await session.flush()
-            frames = (
-                await session.execute(
-                    select(Frame)
-                    .where(Frame.project_id == project.id)
-                    .order_by(Frame.number)
-                )
-            ).scalars().all()
-            xlsx_prompts = read_image_prompts_from_project_xlsx(xlsx_path)
-            missing_prompts = [
-                fr.number
-                for fr in frames
-                if fr.number in xlsx_prompts
-                and is_skippable_empty_prompt(xlsx_prompts.get(fr.number) or "")
-            ]
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[#{}] generate_images: доп. sync xlsx failed: {}",
-                project.id,
-                e,
-            )
 
     if missing_prompts:
         logger.warning(
-            "[#{}] generate_images: у {} кадров в xlsx R45 заглушка/пусто — "
+            "[#{}] generate_images: у {} кадров пустой image_prompt в БД — "
             "пропускаю (failed): {}",
             project.id,
             len(missing_prompts),
@@ -649,19 +562,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 bad.stat().st_size,
             )
         if not frame_needs_shot1_image(fr, out_dir):
-            if (
-                fr.number in xlsx_prompts
-                and (xlsx_prompts[fr.number] or "").strip()
-                and not is_skippable_empty_prompt(xlsx_prompts[fr.number])
-                and not disk_has_valid_frame_image(out_dir, fr.number)
-            ):
-                fr.image_prompt = xlsx_prompts[fr.number]
-                fr.status = FrameStatus.image_prompt_ready
-                attrs = dict(fr.attrs or {})
-                if attrs.pop("fail_reason", None) is not None:
-                    fr.attrs = attrs
-            else:
-                continue
+            continue
         fr.status = FrameStatus.image_prompt_ready
         queued += 1
     await session.flush()
@@ -686,7 +587,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         logger.warning(
             "[#{}] generate_images: очередь пуста — кадров в БД={}, "
             "с image_prompt={}, валидных PNG на диске={}, без PNG но с промтом={}. "
-            "Проверь project.xlsx R45 и «Перечитать xlsx».",
+            "Нужны промты в БД (img_pr / Импорт Excel).",
             project.id,
             len(frames),
             with_prompt,
@@ -694,46 +595,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             missing,
         )
         if with_prompt == 0:
-            from app.services.xlsx_v8_import import describe_image_prompts_xlsx_scan
-
-            scan = describe_image_prompts_xlsx_scan(xlsx_path)
-            in_xlsx = len(xlsx_prompts)
-            skippable = sum(
-                1 for p in xlsx_prompts.values() if is_skippable_empty_prompt(p or "")
-            )
             raise RuntimeError(
-                f"в project.xlsx {in_xlsx} ячеек R45, из них заглушек {skippable}, "
-                f"в БД с промтом 0. Диагностика: {scan}"
+                "в БД нет image_prompt. Сделай img_pr или явный Импорт Excel."
             )
-        if missing and xlsx_path.exists():
-            await bootstrap_frames_for_image_step(session, project, xlsx_path)
-            await session.flush()
-            frames = (
-                await session.execute(
-                    select(Frame)
-                    .where(Frame.project_id == project.id)
-                    .order_by(Frame.number)
-                )
-            ).scalars().all()
-            queued = 0
-            for fr in frames:
-                if disk_has_valid_frame_image(out_dir, fr.number):
-                    continue
-                if not frame_needs_shot1_image(fr, out_dir):
-                    continue
-                fr.status = FrameStatus.image_prompt_ready
-                queued += 1
-            await session.flush()
-            logger.info(
-                "[#{}] generate_images: повторная очередь после bootstrap — {}",
-                project.id,
-                queued,
+        if missing:
+            raise RuntimeError(
+                f"в БД есть промты, на диске нет картинок, но очередь outsee=0 "
+                f"(без PNG: {missing}). Проверь scenes/ и статусы кадров"
             )
-            if queued == 0:
-                raise RuntimeError(
-                    f"в xlsx есть промты, на диске нет картинок, но в outsee "
-                    f"0 кадров (без PNG: {missing}). Проверь scenes/ и статусы кадров"
-                )
         if not missing and on_disk >= with_prompt:
             logger.info(
                 "[#{}] generate_images: все {} кадров с промтом уже на диске — "
@@ -775,14 +644,21 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             project.id,
         )
     else:
-        async with browser_session() as bs:
-            outsee = OutseeBot(bs)
+        http_primary = _img_http_primary()
+        async with _optional_browser_session(need_cdp=not http_primary) as bs:
+            outsee = OutseeBot(bs) if bs is not None else None
+            if http_primary:
+                logger.info(
+                    "[#{}] generate_images: HTTP image API (без CDP)",
+                    project.id,
+                )
             # `gpt` нужен для GPT-rewrite внутри generate_image_with_retries —
             # после 3 неудачных попыток в outsee он попросит ChatGPT переписать
             # промт без триггеров модерации, потом ещё 3 попытки.
             gpt = get_gpt_client()
             phase = "shot1"
             shot2_queued = 0
+            shot1_empty_retries = 0
             try:
                 while True:
                     raise_if_cancelled(project.id)
@@ -797,6 +673,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             limit=streams,
                         )
                         if batch:
+                            shot1_empty_retries = 0
                             logger.info(
                                 "[#{}] generate_images: shot1 batch n={} frames={}",
                                 project.id,
@@ -870,16 +747,35 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             session, project.id, out_dir, project=project
                         )
                         if pending:
+                            shot1_empty_retries += 1
                             logger.warning(
                                 "[#{}] generate_images: нет image_prompt_ready, "
-                                "но {} кадров без PNG — жду: {}{}",
+                                "но {} кадров без PNG (попытка {}/3) — сбрасываю stale inflight: {}{}",
                                 project.id,
                                 len(pending),
+                                shot1_empty_retries,
                                 pending[:8],
                                 "…" if len(pending) > 8 else "",
                             )
-                        await sleep_cancellable(3.0, project.id)
-                        continue
+                            # Снимаем залипший inflight после обрывов, как в shot2
+                            await _clear_stale_inflight(session, project.id)
+                            try:
+                                await session.commit()
+                            except Exception:  # noqa: BLE001
+                                await session.rollback()
+                            session.expire_all()
+
+                            if shot1_empty_retries <= 3:
+                                await sleep_cancellable(2.0, project.id)
+                                continue
+
+                            logger.warning(
+                                "[#{}] generate_images: кадры без PNG {} не имеют готовых промптов — перехожу к shot2/завершению",
+                                project.id,
+                                pending[:8],
+                            )
+                            phase = "shot2"
+                            continue
 
                     # phase == "shot2"
                     batch2 = await _claim_shot2_batch(
@@ -905,6 +801,47 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         )
                         continue
                     if await _all_shot2_done(session, project.id):
+                        break
+                    # Пустой claim при неготовых shot2: часто stale session /
+                    # залипший img_gen_inflight после обрыва. Перечитываем БД
+                    # и пересобираем очередь — иначе вечный sleep 3с.
+                    cleared = await _clear_stale_inflight(session, project.id)
+                    try:
+                        await session.commit()
+                    except Exception:  # noqa: BLE001
+                        await session.rollback()
+                    session.expire_all()
+                    frames_fresh = (
+                        await session.execute(
+                            select(Frame)
+                            .where(Frame.project_id == project.id)
+                            .order_by(Frame.number)
+                        )
+                    ).scalars().all()
+                    xlsx_path = project.data_dir / "project.xlsx"
+                    requeued = 0
+                    if xlsx_path.is_file():
+                        requeued = await _init_shot2_queue(
+                            session,
+                            project,
+                            list(frames_fresh),
+                            out_dir,
+                            xlsx_path,
+                        )
+                        try:
+                            await session.commit()
+                        except Exception:  # noqa: BLE001
+                            await session.rollback()
+                    logger.warning(
+                        "[#{}] generate_images: shot2 claim пуст — "
+                        "inflight_cleared={} requeued={} (ждём 3с)",
+                        project.id,
+                        cleared,
+                        requeued,
+                    )
+                    if requeued == 0 and await _all_shot2_done(
+                        session, project.id
+                    ):
                         break
                     await sleep_cancellable(3.0, project.id)
             except StepCancelledError as e:
@@ -978,6 +915,24 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
 
 # ---------------------------------------------------------------------------
+
+
+async def _clear_stale_inflight(session: AsyncSession, project_id: int) -> int:
+    """Снять ``img_gen_inflight`` со всех кадров (после обрыва streams)."""
+    frames = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project_id)
+        )
+    ).scalars().all()
+    n = 0
+    for fr in frames:
+        attrs = dict(fr.attrs or {})
+        if attrs.pop(INFLIGHT_ATTR, None) is not None:
+            fr.attrs = attrs
+            n += 1
+    if n:
+        await session.flush()
+    return n
 
 
 async def _pending_shot1_numbers(
@@ -1119,7 +1074,7 @@ async def _generate_frame_job(
     shot: int,
     shot1_reference: Path | None,
     bot: Bot,
-    outsee: OutseeBot,
+    outsee: OutseeBot | None,
     gpt: Any,
 ) -> None:
     """Один кадр в отдельной DB-сессии + слот провайдера (для streams>1)."""
@@ -1160,7 +1115,7 @@ async def _run_claimed_batch(
     *,
     session: AsyncSession,
     bot: Bot,
-    outsee: OutseeBot,
+    outsee: OutseeBot | None,
     gpt: Any,
     project: Project,
     out_dir: Path,
@@ -1440,7 +1395,7 @@ async def _apply_pending_regens(session: AsyncSession, project_id: int) -> None:
 async def _generate_and_send(
     session: AsyncSession,
     bot: Bot,
-    outsee: OutseeBot,
+    outsee: OutseeBot | None,
     gpt,  # ApiGptClient | duck-typed ask_fresh
     project: Project,
     frame: Frame,
@@ -1518,25 +1473,16 @@ async def _generate_and_send(
             OUTSEE_PROMPT_MAX_CHARS,
         )
 
-    # Настройки картинки из проекта (с дефолтами).
-    from app.generation_options import clamp_image_resolution_id
+    # Настройки картинки: модель + resolution/quality/aspect с ноды «Картинки», иначе проект.
+    from app.services.vibecode_catalog import resolve_node_media_settings
 
-    img_gen = IMAGE_GENERATORS_BY_ID.get(
-        project.image_generator or DEFAULTS["image_generator"]
-    )
-    ar = ASPECT_RATIOS_BY_ID.get(
-        project.aspect_ratio or DEFAULTS["aspect_ratio"]
-    )
-    res_id = clamp_image_resolution_id(
-        project.image_generator, project.image_resolution
-    )
-    ir = IMAGE_RESOLUTIONS_BY_ID.get(res_id)
-    aspect_slug = ar.outsee_slug if ar else "9:16"
+    media = resolve_node_media_settings(project, node_type="images")
+    img_gid = media["image_generator_id"]
+    img_gen = IMAGE_GENERATORS_BY_ID.get(img_gid)
+    aspect_slug = media["aspect_slug"] or "9:16"
     model_slug = img_gen.outsee_slug if img_gen else None
-    res_slug = ir.outsee_slug if ir else None
-    quality_slug = resolve_image_quality_slug(
-        project.image_generator, project.image_quality
-    )
+    res_slug = media["resolution_slug"]
+    quality_slug = media["quality_slug"]
     logger.info(
         "[#{}] frame {} shot_{} attempt {} gen_id={}: outsee {}",
         project.id,
@@ -1570,8 +1516,10 @@ async def _generate_and_send(
         )
 
     try:
-        if use_regen_button:
+        # regenerate_image — только CDP UI; при HTTP (outsee is None) — fresh generate.
+        if use_regen_button and outsee is not None:
             try:
+                await session.commit()
                 result = await outsee.regenerate_image(
                     file_path,
                     gen_id=gen_id,
@@ -1587,6 +1535,8 @@ async def _generate_and_send(
                     project.id,
                     frame.number,
                 )
+                # Отпустить SQLite txn перед долгим Outsee (parallel → db locked).
+                await session.commit()
                 result = await generate_image_with_retries(
                     outsee, gpt,
                     prompt=prompt_text,
@@ -1606,6 +1556,7 @@ async def _generate_and_send(
         else:
             # До 3 попыток с исходным image_prompt; если все 3 провалились —
             # GPT-rewrite промта (убирает триггеры модерации) + ещё 3 попытки.
+            await session.commit()
             result = await generate_image_with_retries(
                 outsee, gpt,
                 prompt=prompt_text,

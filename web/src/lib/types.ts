@@ -4,7 +4,7 @@
 
 export type ProjectStatus =
   | "new" | "planning" | "scripting" | "splitting"
-  | "scene_designing" | "scene_design_ready"
+  | "scene_designing" | "scene_agents_ready" | "scene_assembling" | "scene_design_ready"
   | "generating_hero" | "generating_items"
   | "enriching_1" | "enriching_2" | "enriching_3" | "enriching_4" | "enriching_5"
   | "generating_image_prompts" | "generating_images"
@@ -18,7 +18,7 @@ export type ProjectStatus =
   | "assembled" | "published" | "paused" | "failed";
 
 export type NodeType =
-  | "plan" | "script" | "split" | "scene_design"
+  | "plan" | "script" | "split" | "scene_design" | "sd_agent" | "sd_assemble"
   | "hero" | "items"
   | "enrich_1" | "enrich_2" | "enrich_3" | "enrich"
   | "image_prompts" | "images"
@@ -90,6 +90,49 @@ export interface WorkflowDetail extends WorkflowSummary {
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   meta: Record<string, unknown>;
+}
+
+/** Группа нод (пресет канваса) из GET /api/node-groups. */
+export interface NodeGroupSummary {
+  id: string;
+  title: string;
+  description: string;
+  category: string;
+  node_count: number;
+  nodes: { key: string; label: string; type: string }[];
+  default_after_type: string;
+  /** Встроенная (из кода) — true; пользовательская (node_groups/*.json) — false. */
+  builtin: boolean;
+  /** ISO-время последнего обновления (у пользовательских). */
+  updated_at?: string | null;
+}
+
+/** Полный spec группы из GET /api/node-groups/{id} — для превью дизайна. */
+export interface NodeGroupDetail {
+  id: string;
+  title: string;
+  description: string;
+  category: string;
+  builtin: boolean;
+  updated_at?: string | null;
+  default_after_type: string;
+  entry_keys: string[];
+  exit_key: string;
+  exit_edge_kind: string;
+  project_meta: Record<string, unknown>;
+  nodes: {
+    key: string;
+    label: string;
+    type: string;
+    description: string;
+    dx: number;
+    dy: number;
+    marker: string | null;
+    prompt_variant: string | null;
+    slot_overflow: boolean;
+    has_operator_config: boolean;
+  }[];
+  internal_edges: { source: string; target: string; kind: string }[];
 }
 
 export interface ProjectSummary {
@@ -271,6 +314,8 @@ export interface MontageBoardMeta {
   video_trims: Record<string, { start: number; end: number }>;
   stale_videos: string[];
   highlights: string[];
+  /** Слоты с ошибкой последнего apply (красная подсветка). */
+  failed_highlights?: string[];
   corrections: Record<string, string>;
   pending_ops?: Array<{
     type: string;

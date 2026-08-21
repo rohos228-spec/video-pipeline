@@ -295,22 +295,72 @@ def assemble_check_master_prompt(
     check_fix: bool = True,
     reviewer_notes: str = "",
     report_format: str | None = None,
+    db_sot: bool = False,
 ) -> str:
     """Собрать master-промт проверки из промтов источников + TXT footer."""
-    from app.services.check_analysis import append_txt_report_footer
+    from app.services.check_analysis import (
+        TXT_REPORT_FOOTER_DB_SOT,
+        append_txt_report_footer,
+        normalize_check_report_format,
+    )
 
     mode = "fix" if check_fix else "report_only"
-    blocks: list[str] = [
-        "Ты — агент проверки результата.",
-        "Проверь входной файл СТРОГО по исходным промтам работы ниже (не придумывай свой этап).",
-        f"mode: {mode}",
-        (
+    effective_format = report_format
+    if db_sot and not normalize_check_report_format(report_format):
+        effective_format = TXT_REPORT_FOOTER_DB_SOT
+    if db_sot:
+        attach_rule = (
+            "Источник правды — БАЗА: вложение db_check.json "
+            "(frames[].uuid + attrs + voiceover, scene_registry, characters). "
+            "Excel/TSV/# Лист:/project.xlsx НЕ используются и НЕ упоминай их. "
+            + (
+                "При mode=fix после отчёта верни JSON apply-ops "
+                '{"ops":[...],"characters":[...],"scenes":[...]} '
+                "— пайплайн запишет в DB. Не пиши XLSX_WRITEBACK / TSV."
+                if check_fix
+                else "mode=report_only — только TXT-отчёт по базе, без правок."
+            )
+        )
+        contract = (
+            "# КОНТРАКТ API (DB SoT, важнее исходных промтов)\n"
+            "Проверяй db_check.json / scene_registry / frame uuid+attrs. "
+            "Пустой Excel или отсутствие .xlsx — НЕ ошибка и НЕ finding. "
+            "Запрещены findings про TSV, `# Лист:`, `@row=`, «нет frame_uuid "
+            "в TSV», «нет project.xlsx». UUID бери из frames[].uuid. "
+            + (
+                "mode=fix: отчёт + JSON apply-ops в DB."
+                if check_fix
+                else "mode=report_only: только отчёт."
+            )
+        )
+    else:
+        attach_rule = (
             "Вложение — текстовый экспорт xlsx (TSV). Бинарный .xlsx недоступен — это норма, "
             "не отказывай из‑за «нет project.xlsx». При правках: после отчёта блок "
             "--- XLSX_WRITEBACK --- с `# Лист:` TSV; в forward укажи file: fixed."
             if check_fix
             else "НЕ изменяй файл — только отчёт (file: original). TSV-экспорт во вложении — это и есть книга."
-        ),
+        )
+        contract = (
+            "# КОНТРАКТ API (важнее исходных промтов)\n"
+            + (
+                "Бинарный project.xlsx в API недоступен — во вложении TSV-экспорт, "
+                "это и есть книга. Отказ «нет файла / нет project.xlsx» ЗАПРЕЩЁН. "
+                "При mode=fix ОБЯЗАТЕЛЕН блок --- XLSX_WRITEBACK --- с секциями "
+                "`# Лист: …` (TSV). Требования исходных промтов «прикрепи/верни .xlsx» "
+                "заменяются этим контрактом: правки только через XLSX_WRITEBACK. "
+                "В forward укажи file: fixed."
+                if check_fix
+                else "Бинарный project.xlsx недоступен; TSV во вложении = книга. "
+                "Не отказывай из‑за «нет файла». mode=report_only — только отчёт, "
+                "без XLSX_WRITEBACK; file: original."
+            )
+        )
+    blocks: list[str] = [
+        "Ты — агент проверки результата.",
+        "Проверь вход СТРОГО по исходным промтам работы ниже (не придумывай свой этап).",
+        f"mode: {mode}",
+        attach_rule,
         "",
         "# Исходные промты работы",
     ]
@@ -328,29 +378,11 @@ def assemble_check_master_prompt(
     if notes:
         blocks.append("# Доп. указания ревьюера (эта нода)")
         blocks.append(notes)
-    # После исходных промтов — жёсткий override: plan/script часто требуют
-    # «верни project.xlsx», а API отдаёт только TSV → модель отказывается
-    # писать XLSX_WRITEBACK. Этот блок важнее всего выше.
     blocks.append("")
-    blocks.append("# КОНТРАКТ API (важнее исходных промтов)")
-    if check_fix:
-        blocks.append(
-            "Бинарный project.xlsx в API недоступен — во вложении TSV-экспорт, "
-            "это и есть книга. Отказ «нет файла / нет project.xlsx» ЗАПРЕЩЁН. "
-            "При mode=fix ОБЯЗАТЕЛЕН блок --- XLSX_WRITEBACK --- с секциями "
-            "`# Лист: …` (TSV). Требования исходных промтов «прикрепи/верни .xlsx» "
-            "заменяются этим контрактом: правки только через XLSX_WRITEBACK. "
-            "В forward укажи file: fixed."
-        )
-    else:
-        blocks.append(
-            "Бинарный project.xlsx недоступен; TSV во вложении = книга. "
-            "Не отказывай из‑за «нет файла». mode=report_only — только отчёт, "
-            "без XLSX_WRITEBACK; file: original."
-        )
+    blocks.append(contract)
     return append_txt_report_footer(
         "\n".join(blocks).strip(),
-        report_format=report_format,
+        report_format=effective_format,
     )
 
 
@@ -457,6 +489,41 @@ def load_custom_check_agent_body(project: Project, node_key: str) -> str | None:
     return None
 
 
+def load_check_agent_view(
+    project: Project, node_key: str
+) -> dict[str, Any] | None:
+    """Текст агента для кнопки «Просмотр»: свой файл или builtin check_operator."""
+    from app.services.check_analysis import (
+        load_check_operator_prompt_body,
+        resolve_check_operator_step,
+    )
+
+    cfg = operator_config(project, node_key)
+    custom = load_custom_check_agent_body(project, node_key)
+    if custom:
+        name = str(cfg.get("checkAgentFileName") or "").strip() or "check_agent.txt"
+        return {
+            "fileName": name,
+            "chars": len(custom),
+            "text": custom,
+            "source": "upload",
+        }
+    typ = upstream_node_type_for_check(project, node_key)
+    if not typ:
+        return None
+    step = resolve_check_operator_step(typ)
+    body = load_check_operator_prompt_body(typ)
+    if not body:
+        return None
+    return {
+        "fileName": f"builtin:{step}",
+        "chars": len(body),
+        "text": body,
+        "source": "builtin",
+        "step": step,
+    }
+
+
 def assemble_check_agent_prompt(
     project: Project,
     node_key: str,
@@ -464,6 +531,7 @@ def assemble_check_agent_prompt(
     check_fix: bool = True,
     reviewer_notes: str = "",
     report_format: str | None = None,
+    db_sot: bool = False,
 ) -> tuple[str, str | None]:
     """Master-промт из загруженного .txt или prompts/check_operator.
 
@@ -507,12 +575,21 @@ def assemble_check_agent_prompt(
         "",
         f"mode: {mode}",
         (
-            "Вложение — текстовый экспорт xlsx (TSV) или файлы со стрелки. "
-            "Бинарный .xlsx в рабочей директории модели может быть недоступен — это норма. "
-            "При правках: после отчёта блок --- XLSX_WRITEBACK --- с `# Лист:` TSV; "
-            "в forward укажи file: fixed."
-            if check_fix
-            else "НЕ изменяй файл — только отчёт (file: original)."
+            (
+                "Источник — db_check.json (DB SoT). Excel/TSV не используются. "
+                "При mode=fix: отчёт + JSON apply-ops в базу."
+                if check_fix
+                else "Источник — db_check.json (DB SoT). Только отчёт, без Excel."
+            )
+            if db_sot
+            else (
+                "Вложение — текстовый экспорт xlsx (TSV) или файлы со стрелки. "
+                "Бинарный .xlsx в рабочей директории модели может быть недоступен — это норма. "
+                "При правках: после отчёта блок --- XLSX_WRITEBACK --- с `# Лист:` TSV; "
+                "в forward укажи file: fixed."
+                if check_fix
+                else "НЕ изменяй файл — только отчёт (file: original)."
+            )
         ),
         "Отвечай TXT-отчётом по шаблону формата ниже (НЕ JSON vp.check.v1).",
     ]
@@ -1174,22 +1251,25 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
         unique_files.append(f)
 
     check_mode = bool(cfg.get("checkMode"))
-    # project_file после check (OK): на стрелке часто только check_report /
-    # gpt_reply — модель не видит книгу и отвечает пустым apply-ops.
-    if output_mode == "project_file" and not check_mode:
-        has_xlsx = any(
-            str(f.get("name") or "").lower().endswith((".xlsx", ".xlsm", ".xls"))
-            and f.get("ok")
+    # project_file = DB SoT (apply-ops). Excel больше НЕ подставляем и не
+    # требуем: enrich_xlsx сам отдаёт db_frames.json. Иначе модель снова
+    # уходит в отказ «нет бинарного project.xlsx».
+    db_sot = output_mode == "project_file" and not check_mode
+    if db_sot:
+        before = len(unique_files)
+        unique_files = [
+            f
             for f in unique_files
-        )
-        if not has_xlsx:
-            xlsx = project.data_dir / "project.xlsx"
-            if xlsx.is_file() and xlsx.stat().st_size > 0:
-                unique_files.append(_file_probe(xlsx, origin="project"))
-                warnings.append(
-                    "project_file: на входе не было xlsx (часто после check) — "
-                    "подставлен project.xlsx"
-                )
+            if not str(f.get("name") or "").lower().endswith(
+                (".xlsx", ".xlsm", ".xls")
+            )
+        ]
+        dropped = before - len(unique_files)
+        if dropped:
+            warnings.append(
+                f"project_file/DB SoT: убрано xlsx со входа ({dropped}) — "
+                "пишем в базу через apply-ops"
+            )
 
     ok_files = [f for f in unique_files if f.get("ok")]
     for f in unique_files:
@@ -1248,8 +1328,13 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
                     )
 
     if not ok_files and role in ("assist", "transform", "extract", "review"):
-        # soft: assist без файлов — ошибка запуска
-        errors.append("нет ни одного существующего файла на входе")
+        if db_sot:
+            warnings.append(
+                "project_file/DB SoT: входных файлов нет — ок, будет db_frames.json"
+            )
+        else:
+            # soft: assist без файлов — ошибка запуска
+            errors.append("нет ни одного существующего файла на входе")
     elif not ok_files and check_mode:
         errors.append("нет ни одного существующего файла на входе")
 
@@ -1369,7 +1454,8 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
         "errors": errors,
         "warnings": warnings,
         "consistent": consistent,
-        "canRun": consistent and (len(ok_files) > 0 or role == "gate"),
+        "canRun": consistent
+        and (len(ok_files) > 0 or role == "gate" or db_sot),
         "lastResult": last,
         "config": {
             "role": role,

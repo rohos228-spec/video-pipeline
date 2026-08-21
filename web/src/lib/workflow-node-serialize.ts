@@ -45,10 +45,35 @@ export function workflowNodeFromCanvas(n: Node): WorkflowNode {
   const legacySlot = slotFromLegacyType(d.type);
   if (legacySlot != null) data.slotIndex = legacySlot;
   if (typeof d.slotIndex === "number") data.slotIndex = d.slotIndex;
+  // slotOverflow (проверки scene-веера и т.п.) — вне enrich-слотов, не терять.
+  if (d.slotOverflow === true) {
+    data.slotOverflow = true;
+    delete data.slotIndex;
+  }
   if (typeof d.inputSource === "string") data.inputSource = d.inputSource;
   if (typeof d.uploadedFileName === "string") data.uploadedFileName = d.uploadedFileName;
   if (typeof d.workMode === "string") data.workMode = d.workMode;
   if (typeof d.role === "string") data.role = d.role;
+  // sd_agent: имя агента — идентичность ноды (per-agent rerun), не терять.
+  if (typeof d.agent === "string") data.agent = d.agent;
+  // Маркер scene-агента на ноде «Работа с GPT» — идентичность, не терять.
+  if (typeof d.sdAgent === "string") data.sd_agent = d.sdAgent;
+  // Принадлежность к импортированной группе — обводка на канвасе, не терять.
+  if (typeof d.groupId === "string") data.groupId = d.groupId;
+  if (typeof d.groupTitle === "string") data.groupTitle = d.groupTitle;
+  if (typeof d.modelId === "string" && d.modelId.trim()) data.modelId = d.modelId.trim();
+  if (typeof d.modelChannel === "string" && d.modelChannel.trim()) {
+    data.modelChannel = d.modelChannel.trim();
+  }
+  if (typeof d.imageResolution === "string" && d.imageResolution.trim()) {
+    data.imageResolution = d.imageResolution.trim();
+  }
+  if (typeof d.imageQuality === "string" && d.imageQuality.trim()) {
+    data.imageQuality = d.imageQuality.trim();
+  }
+  if (typeof d.aspectRatio === "string" && d.aspectRatio.trim()) {
+    data.aspectRatio = d.aspectRatio.trim();
+  }
   return {
     id: n.id,
     type,
@@ -58,13 +83,30 @@ export function workflowNodeFromCanvas(n: Node): WorkflowNode {
 }
 
 export function assignExcelGptSlotIndices(nodes: WorkflowNode[]): WorkflowNode[] {
+  // scene-агенты (data.sd_agent) — не enrich-слоты: нумерацию пропускают.
+  const isSceneAgent = (n: WorkflowNode) =>
+    typeof (n.data as Record<string, unknown> | undefined)?.sd_agent === "string" ||
+    typeof (n.data as Record<string, unknown> | undefined)?.agent === "string";
+  // slotOverflow — закреплённые вне слотов (проверки scene-веера): не трогаем.
+  const isOverflow = (n: WorkflowNode) =>
+    (n.data as Record<string, unknown> | undefined)?.slotOverflow === true;
   const excel = nodes
-    .filter((n) => n.type === "excel_gpt")
+    .filter((n) => n.type === "excel_gpt" && !isSceneAgent(n) && !isOverflow(n))
     .sort((a, b) => (a.position?.x ?? 0) - (b.position?.x ?? 0));
   const slotById = new Map<string, number>();
   excel.forEach((n, i) => slotById.set(n.id, Math.min(i + 1, 5)));
   return nodes.map((n) => {
     if (n.type !== "excel_gpt") return n;
+    if (isSceneAgent(n)) {
+      const data = { ...(n.data || {}) } as Record<string, unknown>;
+      delete data.slotIndex;
+      return { ...n, data };
+    }
+    if (isOverflow(n)) {
+      const data = { ...(n.data || {}) } as Record<string, unknown>;
+      delete data.slotIndex;
+      return { ...n, data };
+    }
     const slotIndex = slotById.get(n.id) ?? 1;
     const rawLabel = (n.data?.label as string) || "";
     const label =

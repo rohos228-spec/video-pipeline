@@ -1,4 +1,4 @@
-"""Сбор багрепорта: описание + хвост логов → файл в ``баги/``."""
+﻿"""Сбор багрепорта: описание + хвост логов → файл в ``баги/``."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ _TS_RE = re.compile(
 
 def bugs_dir() -> Path:
     root = find_project_root()
-    d = root / "баги"
+    d = root / "docs" / "bug-reports"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -199,7 +199,7 @@ def write_bug_report(
         n += 1
 
     snippets = collect_log_snippets(minutes=minutes)
-    rel = f"баги/{filename}"
+    rel = f"docs/bug-reports/{filename}"
 
     parts: list[str] = [
         f"# Багрепорт {stamp}",

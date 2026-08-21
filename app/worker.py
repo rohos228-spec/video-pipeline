@@ -26,25 +26,9 @@ from app.services.step_cancel import (
 from app.prompts_loader import sync_prompts_from_files
 from app.settings import settings
 
-ACTIVE_STATUSES = [
-    ProjectStatus.planning,
-    ProjectStatus.scripting,
-    ProjectStatus.splitting,
-    ProjectStatus.generating_hero,
-    ProjectStatus.generating_items,
-    ProjectStatus.enriching_1,
-    ProjectStatus.enriching_2,
-    ProjectStatus.enriching_3,
-    ProjectStatus.enriching_4,
-    ProjectStatus.enriching_5,
-    ProjectStatus.generating_image_prompts,
-    ProjectStatus.generating_images,
-    ProjectStatus.generating_animation_prompts,
-    ProjectStatus.generating_videos,
-    ProjectStatus.generating_audio,
-    ProjectStatus.assembling,
-    ProjectStatus.publishing,
-]
+from app.services.step_registry import running_statuses_list
+
+ACTIVE_STATUSES = running_statuses_list()
 
 
 async def _loop_once(bot) -> None:  # noqa: ANN001 — aiogram.Bot | NoopBot

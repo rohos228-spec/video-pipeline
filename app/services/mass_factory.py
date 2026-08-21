@@ -47,6 +47,11 @@ COPY_META_KEYS = (
     "custom_prompts",
     "disabled_nodes",
     "excel_lane_bindings",
+    "canvas_graph",
+    "excel_gpt_nodes",
+    "node_step_params",
+    # Иначе ребёнок идёт pass-through: 1 VO = 1 кадр, без SET/сцен.
+    "scene_design_enabled",
 )
 
 STRIP_META_KEYS = frozenset(
@@ -269,9 +274,10 @@ async def ensure_child_workflow_from_parent(
     parent_run = (
         await session.execute(select(WorkflowRun).where(WorkflowRun.project_id == parent_id))
     ).scalar_one_or_none()
-    if parent_run and parent_run.nodes_snapshot and parent_run.edges_snapshot:
+    # edges_snapshot=[] валиден (граф без рёбер) — не путать с «нет графа».
+    if parent_run is not None and parent_run.nodes_snapshot:
         nodes_snapshot = list(parent_run.nodes_snapshot)
-        edges_snapshot = list(parent_run.edges_snapshot)
+        edges_snapshot = list(parent_run.edges_snapshot or [])
         workflow_id = parent_run.workflow_id
     else:
         wf = (
@@ -287,6 +293,8 @@ async def ensure_child_workflow_from_parent(
         edges_snapshot = list(wf.edges or [])
         workflow_id = wf.id
 
+    from app.services.excel_gpt_node import effective_node_type
+
     run = WorkflowRun(
         workflow_id=workflow_id,
         project_id=child_id,
@@ -296,12 +304,15 @@ async def ensure_child_workflow_from_parent(
     )
     session.add(run)
     await session.flush()
+    # Как ensure_run_for_project: excel_gpt+sd_marker → sd_agent/sd_assemble.
+    # Иначе у ребёнка NodeRun.type=excel_gpt, complete/reconcile не находят
+    # веер → ложные «прервано» на всех sd_* (у родителя type уже sd_*).
     for node in run.nodes_snapshot:
         session.add(
             NodeRun(
                 workflow_run_id=run.id,
                 node_key=node["id"],
-                node_type=node["type"],
+                node_type=effective_node_type(node),
             )
         )
     await session.flush()

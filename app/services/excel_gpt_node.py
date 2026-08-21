@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
 from typing import Any, Literal
 
@@ -56,6 +57,40 @@ def is_excel_gpt_node_type(node_type: str) -> bool:
     )
 
 
+# Маркер scene-агента на ноде «Работа с GPT»: data.sd_agent =
+# skeleton/characters/world/style/camera/action (агенты веера) или "assemble".
+# Такие ноды — обычные excel_gpt в UI (пульт, промты 05_excel_gpt), но
+# оркестратор гоняет их шагами scene_d/scene_asm, а не enrich-слотами.
+SCENE_AGENT_DATA_KEY = "sd_agent"
+SCENE_AGENT_ASSEMBLER = "assemble"
+
+
+def sd_agent_marker(node: dict[str, Any]) -> str | None:
+    """Имя scene-агента с ноды или None для обычной «Работы с GPT»."""
+    data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    raw = data.get(SCENE_AGENT_DATA_KEY) or data.get("agent")  # agent — legacy
+    v = str(raw or "").strip()
+    return v or None
+
+
+def effective_node_type(node: dict[str, Any]) -> str:
+    """Тип ноды для оркестратора: marked excel_gpt → sd_agent/sd_assemble.
+
+    UI видит тип excel_gpt (настоящая «Работа с GPT»), а планировщик и
+    run_sync работают с виртуальными типами веера scene_design.
+    """
+    typ = str(node.get("type") or "")
+    if typ in ("sd_agent", "sd_assemble"):
+        return typ  # legacy-канвасы с уникальными типами
+    if typ == EXCEL_GPT_NODE_TYPE:
+        marker = sd_agent_marker(node)
+        if marker:
+            return (
+                "sd_assemble" if marker == SCENE_AGENT_ASSEMBLER else "sd_agent"
+            )
+    return typ
+
+
 def is_legacy_enrich_label(label: str | None) -> bool:
     """Старые подписи enrich_1..5 / «Доп работа с Excel» — перезаписываем при миграции."""
     if not label or not str(label).strip():
@@ -89,6 +124,9 @@ def legacy_enrich_slot_from_type(node_type: str) -> int | None:
 
 def slot_index_from_node(node: dict[str, Any]) -> int:
     data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    if sd_agent_marker(node):
+        # scene-агенты не занимают enrich-слоты (шаги scene_d/scene_asm).
+        return 0
     if data.get("slotOverflow"):
         # >5 excel_gpt: не участвует в resolve(slot), только запуск по node_key.
         return 0
@@ -103,9 +141,24 @@ def slot_index_from_node(node: dict[str, Any]) -> int:
 
 
 def assign_slot_indices(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Нумерует excel_gpt ноды слева направо (1..5). Лишние — без slotIndex."""
+    """Нумерует excel_gpt ноды слева направо (1..5). Лишние — без slotIndex.
+
+    Ноды с маркером sd_agent (scene-агенты) слоты не занимают. Ноды с
+    явным data.slotOverflow (проверки scene-веера и т.п.) закреплены вне
+    слотов: нумерацию пропускают, флаг сохраняют.
+    """
+    def _pinned_overflow(n: dict[str, Any]) -> bool:
+        data = n.get("data")
+        return isinstance(data, dict) and data.get("slotOverflow") is True
+
     excel_nodes = sorted(
-        [n for n in nodes if is_excel_gpt_node_type(str(n.get("type") or ""))],
+        [
+            n
+            for n in nodes
+            if is_excel_gpt_node_type(str(n.get("type") or ""))
+            and not sd_agent_marker(n)
+            and not _pinned_overflow(n)
+        ],
         key=lambda n: float((n.get("position") or {}).get("x", 0)),
     )
     out: list[dict[str, Any]] = []
@@ -124,6 +177,17 @@ def assign_slot_indices(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         label = str(data.get("label") or "").strip()
         if not label or is_legacy_enrich_label(label):
             data["label"] = default_excel_gpt_label(MAX_EXCEL_GPT_SLOTS)
+        out.append({**n, "data": data, "type": EXCEL_GPT_NODE_TYPE})
+    # Закреплённые overflow-ноды: флаг сохранить, slotIndex не давать.
+    for n in nodes:
+        if not (
+            is_excel_gpt_node_type(str(n.get("type") or ""))
+            and not sd_agent_marker(n)
+            and _pinned_overflow(n)
+        ):
+            continue
+        data = dict(n.get("data") or {})
+        data.pop("slotIndex", None)
         out.append({**n, "data": data, "type": EXCEL_GPT_NODE_TYPE})
     keyed = {n["id"]: n for n in out}
     result: list[dict[str, Any]] = []
@@ -369,8 +433,8 @@ def _resolve_colliding_slot_via_graph(
     match_ids: set[str],
 ) -> str | None:
     """При коллизии slotIndex — следующая excel_gpt по стрелкам канваса."""
-    from app.orchestrator.node_registry import READY_TO_NODE_TYPE, RUNNING_TO_NODE_TYPE
     from app.orchestrator.graph.planner import WorkflowGraph
+    from app.orchestrator.node_registry import READY_TO_NODE_TYPE, RUNNING_TO_NODE_TYPE
     from app.services.canvas_graph import canvas_graph_from_meta
 
     meta = project.meta if isinstance(project.meta, dict) else {}
@@ -521,6 +585,11 @@ def work_mode(project: Project, node_key: str | None) -> WorkMode:
 
 def expects_xlsx_result(project: Project, node_key: str | None) -> bool:
     """True — round-trip ждёт обновлённый .xlsx; False — достаточно ответа GPT."""
+    if node_key:
+        cfg = node_config(project, node_key)
+        # DB SoT: ответ = apply-ops JSON, не файл Excel.
+        if str(cfg.get("outputMode") or "").strip() == "project_file":
+            return False
     src = input_source(project, node_key)
     if src in ("image", "hero_refs", "scene_images", "voiceover"):
         return False
@@ -787,7 +856,7 @@ def save_gpt_reply_text(
     project: Project, node_key: str | None, reply: str
 ) -> Path | None:
     """Сохранить текстовый ответ GPT (режим review/transform / image)."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     key = (node_key or active_node_key(project) or "default").strip() or "default"
     out_dir = upload_dir(project, key)
@@ -798,7 +867,7 @@ def save_gpt_reply_text(
     configs = dict(meta.get("excel_gpt_nodes") or {})
     cur = dict(configs.get(key) or {})
     cur["lastReplyPath"] = str(path.relative_to(project.data_dir)).replace("\\", "/")
-    cur["lastReplyAt"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    cur["lastReplyAt"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     configs[key] = cur
     meta["excel_gpt_nodes"] = configs
     project.meta = meta

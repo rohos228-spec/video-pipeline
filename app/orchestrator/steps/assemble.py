@@ -503,6 +503,11 @@ async def _assemble_body(
             ass_w, ass_h = await probe_video_size(clips[0].src)
             make_simple_ass(sub_entries, subs_path, width=ass_w, height=ass_h)
         tail_seconds = post_voiceover_tail_seconds_for_project(project)
+        from app.services.sfx_mix import collect_sfx_inputs
+
+        sfx_inputs = collect_sfx_inputs(project)
+        if sfx_inputs:
+            logger.info("[#{}] assemble: {} SFX из sfx_gen идут в микс", project.id, len(sfx_inputs))
         await assemble(
             clips,
             audio_path,
@@ -511,6 +516,7 @@ async def _assemble_body(
             max_duration=audio_duration,
             tail_seconds=tail_seconds,
             bgm=bgm,
+            sfx=sfx_inputs,
         )
     else:
         await run_variant2(

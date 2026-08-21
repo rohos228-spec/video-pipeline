@@ -38,13 +38,13 @@ _WEBP_TAG = b"WEBP"
 
 
 def newest_frame_image_path(scenes_dir: Path, frame_number: int) -> Path | None:
-    """Самый свежий PNG shot_01 для кадра (без ``_s2_`` в имени)."""
+    """Самый свежий файл изображения shot_01 для кадра (без ``_s2_`` в имени)."""
     if not scenes_dir.is_dir():
         return None
     candidates = [
         p
-        for p in scenes_dir.glob(f"frame_{frame_number:03d}_*.png")
-        if "_s2_" not in p.name
+        for p in scenes_dir.glob(f"frame_{frame_number:03d}_*.*")
+        if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"} and "_s2_" not in p.name
     ]
     if not candidates:
         return None
@@ -265,6 +265,10 @@ async def reset_shot2_to_prompt_ready(
         attrs = dict(fr.attrs or {})
         attrs[SHOT2_PROMPT_ATTR] = info.prompt
         attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
+        # Снять залипший lease — иначе claim вечно пропускает кадр.
+        from app.services.img_streams import INFLIGHT_ATTR
+
+        attrs.pop(INFLIGHT_ATTR, None)
         fr.attrs = attrs
         changed += 1
     await session.flush()

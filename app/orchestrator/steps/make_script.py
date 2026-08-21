@@ -35,7 +35,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     ops = list(result.apply_ops or []) or [
         {"target": "project", "fields": {"закадровый_текст": voiceover_text}}
     ]
-    await db_apply.apply_ops(session, project, ops, export_xlsx=True)
+    await db_apply.apply_ops(session, project, ops, export_xlsx=False)
 
     project.status = ProjectStatus.script_ready
     await session.flush()

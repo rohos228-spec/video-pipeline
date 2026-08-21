@@ -10,8 +10,8 @@ from app.services.excel_gpt_node import (
     EXCEL_GPT_NODE_TYPE,
     EXCEL_GPT_STEP_CODE,
     is_excel_gpt_node_type,
-    running_status_for_slot,
     ready_status_for_slot,
+    running_status_for_slot,
     slot_index_from_node,
 )
 
@@ -38,10 +38,26 @@ WORK_NODES: dict[str, WorkNodeSpec] = {
     "split": WorkNodeSpec(
         "split", "split", ProjectStatus.splitting, ProjectStatus.frames_ready
     ),
+    # scene_design — legacy-тип старых канвасов (одна нода на всю ноду-фазу).
+    # Канон: веер sd_agent ×5 (data.agent=characters/world/style/camera/action)
+    # → sd_assemble. Оба типа делят step scene_d/scene_asm; в обратных map'ах
+    # (RUNNING/READY_TO_NODE_TYPE) побеждают sd_agent/sd_assemble (см. ниже).
     "scene_design": WorkNodeSpec(
         "scene_design",
         "scene_d",
         ProjectStatus.scene_designing,
+        ProjectStatus.scene_design_ready,
+    ),
+    "sd_agent": WorkNodeSpec(
+        "sd_agent",
+        "scene_d",
+        ProjectStatus.scene_designing,
+        ProjectStatus.scene_agents_ready,
+    ),
+    "sd_assemble": WorkNodeSpec(
+        "sd_assemble",
+        "scene_asm",
+        ProjectStatus.scene_assembling,
         ProjectStatus.scene_design_ready,
     ),
     "hero": WorkNodeSpec(
@@ -89,6 +105,12 @@ WORK_NODES: dict[str, WorkNodeSpec] = {
     "music": WorkNodeSpec(
         "music", "music", ProjectStatus.generating_music, ProjectStatus.music_ready
     ),
+    "sfx_plan": WorkNodeSpec(
+        "sfx_plan", "sfx_plan", ProjectStatus.sfx_planning, ProjectStatus.sfx_plan_ready
+    ),
+    "sfx_gen": WorkNodeSpec(
+        "sfx_gen", "sfx_gen", ProjectStatus.generating_sfx, ProjectStatus.sfx_ready
+    ),
     "assemble": WorkNodeSpec(
         "assemble", "assemble", ProjectStatus.assembling, ProjectStatus.assembled
     ),
@@ -102,12 +124,30 @@ STEP_CODE_TO_NODE_TYPE[EXCEL_GPT_STEP_CODE] = EXCEL_GPT_NODE_TYPE
 NODE_TYPE_TO_STEP_CODE: dict[str, str] = {s.node_type: s.step_code for s in WORK_NODES.values()}
 NODE_TYPE_TO_STEP_CODE[EXCEL_GPT_NODE_TYPE] = EXCEL_GPT_STEP_CODE
 
+# Per-agent ручной перезапуск (canvas node ▶ / API). Все ведут на тип sd_agent;
+# конкретный агент — из step code.
+SD_AGENT_STEP_CODES: dict[str, str] = {
+    "sd_skel": "skeleton",
+    "sd_char": "characters",
+    "sd_world": "world",
+    "sd_cam": "camera",
+    "sd_act": "action",
+    # sd_style снят с волн; wipe старых нод — reset_step("_sd_agent_wiper")
+}
+for _code in SD_AGENT_STEP_CODES:
+    STEP_CODE_TO_NODE_TYPE[_code] = "sd_agent"
+
 RUNNING_TO_NODE_TYPE: dict[ProjectStatus, str] = {
     s.running_status: s.node_type for s in WORK_NODES.values()
 }
 READY_TO_NODE_TYPE: dict[ProjectStatus, str] = {
     s.ready_status: s.node_type for s in WORK_NODES.values()
 }
+# Коллизии legacy scene_design vs веер sd_*: канон — sd_agent/sd_assemble.
+RUNNING_TO_NODE_TYPE[ProjectStatus.scene_designing] = "sd_agent"
+RUNNING_TO_NODE_TYPE[ProjectStatus.scene_assembling] = "sd_assemble"
+READY_TO_NODE_TYPE[ProjectStatus.scene_agents_ready] = "sd_agent"
+READY_TO_NODE_TYPE[ProjectStatus.scene_design_ready] = "sd_assemble"
 NODE_TYPE_TO_RUNNING: dict[str, ProjectStatus] = {
     s.node_type: s.running_status for s in WORK_NODES.values()
 }
@@ -117,7 +157,8 @@ LINEAR_NODE_TYPES: list[str] = [
     "plan",
     "script",
     "split",
-    "scene_design",
+    "sd_agent",
+    "sd_assemble",
     "hero",
     "items",
     "enrich_1",
@@ -174,7 +215,9 @@ def excel_gpt_spec_for_node(node: dict[str, Any]) -> WorkNodeSpec:
 
 
 def spec_for_node(node: dict[str, Any]) -> WorkNodeSpec | None:
-    typ = str(node.get("type") or "")
+    from app.services.excel_gpt_node import effective_node_type
+
+    typ = effective_node_type(node)
     if typ == EXCEL_GPT_NODE_TYPE or is_excel_gpt_node_type(typ):
         return excel_gpt_spec_for_node(node)
     return spec_for_type(typ)

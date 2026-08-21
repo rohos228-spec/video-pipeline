@@ -95,10 +95,10 @@ def test_incoming_edge_pulls_scene_images(tmp_path: Path, monkeypatch) -> None:
     assert all(f["origin"] in ("edge", "snapshot") for f in res["files"] if f["ok"])
 
 
-def test_project_file_injects_xlsx_after_check_edge(
+def test_project_file_does_not_inject_xlsx(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """После check на OK часто только отчёт — project_file должен получить xlsx."""
+    """DB SoT: project_file не тащит Excel — canRun без xlsx (db_frames на run)."""
     p = _project(tmp_path, monkeypatch)
     check = "n_check"
     next_gpt = "n_excel_gpt_2"
@@ -148,8 +148,8 @@ def test_project_file_injects_xlsx_after_check_edge(
     }
     res = resolve_operator(p, next_gpt)
     names = {str(f.get("name") or "") for f in res["files"] if f.get("ok")}
-    assert "project.xlsx" in names
-    assert any("подставлен project.xlsx" in w for w in res["warnings"])
+    assert "project.xlsx" not in names
+    assert res["canRun"] is True
 
 
 def test_take_from_edges_off_skips_incoming(tmp_path: Path, monkeypatch) -> None:

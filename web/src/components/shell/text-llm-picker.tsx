@@ -67,16 +67,16 @@ export function TextLlmPicker() {
       )}
       disabled={busy}
       value={active.id}
-      title={`${status.active_label}\nGPT остаётся в списке; Kimi — доп. модель с tokenrouter.com`}
+      title={`${status.active_label}\nGPT 5.6 Sol / 5.5 — vibecode.moe; kie и Kimi остаются в списке`}
       onChange={(e) => {
         const m = status.models.find((x) => x.id === e.target.value);
         if (m) void onChange(m.provider, m.id);
       }}
     >
       {status.models.map((m) => (
-        <option key={m.id} value={m.id} disabled={!m.key_configured && m.provider === "tokenrouter"}>
+        <option key={m.id} value={m.id} disabled={!m.key_configured && m.provider !== "kie"}>
           {m.label}
-          {!m.key_configured && m.provider === "tokenrouter" ? " · нет ключа" : ""}
+          {!m.key_configured && m.provider !== "kie" ? " · нет ключа" : ""}
         </option>
       ))}
     </select>

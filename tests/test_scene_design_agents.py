@@ -62,6 +62,126 @@ def test_parse_slice_no_json() -> None:
         ag.parse_agent_slice("action", "просто текст без данных")
 
 
+def test_loads_json_loose_strips_block_comments() -> None:
+    raw = '{"scenes": [ /* stub */ {"id_scene": "scene_01"} ], "x": 1,}'
+    data = ag.loads_json_loose(raw)
+    assert data["scenes"][0]["id_scene"] == "scene_01"
+
+
+def test_parse_skeleton_accepts_commented_stub_and_full() -> None:
+    # Stub с пустым scenes + рабочий объект — берём непустой.
+    text = (
+        '```json\n{"scenes": [ /* карточки */ ], "map": {}}\n```\n'
+        + _fence(
+            {
+                "scenes": [
+                    {
+                        "id_scene": "scene_01",
+                        "кадры": [1],
+                        "суть": "тест",
+                    }
+                ],
+                "characters_seed": [],
+            }
+        )
+    )
+    # Первый fence с комментарием: loose парсит scenes как [] после strip?
+    # Главное — непустой scenes из второго объекта.
+    data = ag.parse_agent_slice("skeleton", text)
+    assert data["scenes"][0]["id_scene"] == "scene_01"
+
+
+def test_parse_skeleton_scenes_alias() -> None:
+    data = ag.parse_agent_slice(
+        "skeleton",
+        _fence({"сцены": [{"id_scene": "scene_01", "кадры": [1], "суть": "x"}]}),
+    )
+    assert data["scenes"][0]["id_scene"] == "scene_01"
+
+
+def test_parse_skeleton_scenes_after_nested_map_frames() -> None:
+    """Регресс: rfind('{{') перед \"scenes\" брал кадр из map.кадры."""
+    payload = {
+        "map": {
+            "кадры": [
+                {
+                    "number": 1,
+                    "места": ["x"],
+                    "время": [],
+                    "персонажи": [],
+                    "предметы": ["y"],
+                },
+                {
+                    "number": 2,
+                    "места": ["z"],
+                    "время": [],
+                    "персонажи": ["A"],
+                    "предметы": [],
+                },
+            ]
+        },
+        "scenes": [
+            {
+                "id_scene": "scene_01",
+                "кадры": [1, 2],
+                "суть": "ok",
+                "нити": [],
+            }
+        ],
+        "characters_seed": [],
+        "locations_seed": [],
+    }
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    data = ag.parse_agent_slice("skeleton", raw)
+    assert len(data["scenes"]) == 1
+    assert data["scenes"][0]["id_scene"] == "scene_01"
+
+
+def test_skeleton_rejects_glued_vo_cells() -> None:
+    """1 ячейка закадра = 1 сцена: [1,2,3] — разрыв покрытия."""
+    raw = _fence(
+        {
+            "scenes": [
+                {"id_scene": "scene_01", "кадры": [1, 2, 3], "суть": "group"},
+            ]
+        }
+    )
+    with pytest.raises(ag.SceneDesignAgentError, match="склейка|покрытие"):
+        ag.parse_agent_slice(
+            "skeleton", raw, expected_frame_numbers=[1, 2, 3]
+        )
+
+
+def test_skeleton_rejects_non_adjacent_or_gap() -> None:
+    raw = _fence(
+        {
+            "scenes": [
+                {"id_scene": "scene_01", "кадры": [1, 3], "суть": "gap"},
+            ]
+        }
+    )
+    with pytest.raises(ag.SceneDesignAgentError, match="покрытие|сосед"):
+        ag.parse_agent_slice(
+            "skeleton", raw, expected_frame_numbers=[1, 2, 3]
+        )
+
+
+def test_skeleton_accepts_one_scene_per_vo_cell() -> None:
+    raw = _fence(
+        {
+            "scenes": [
+                {"id_scene": "scene_01", "кадры": [1], "суть": "a"},
+                {"id_scene": "scene_02", "кадры": [2], "суть": "b"},
+                {"id_scene": "scene_03", "кадры": [3], "суть": "c"},
+            ]
+        }
+    )
+    data = ag.parse_agent_slice(
+        "skeleton", raw, expected_frame_numbers=[1, 2, 3]
+    )
+    assert [sc["кадры"] for sc in data["scenes"]] == [[1], [2], [3]]
+
+
 # ── parse_assembler_payload ──────────────────────────────────────────
 
 
@@ -96,8 +216,18 @@ def test_parse_assembler_error_field() -> None:
 
 # ── validate_payload ─────────────────────────────────────────────────
 
-_VO = "Альфа начало истории. Бета середина пути. Гамма финал рассказа."
-_FRAMES = [SimpleNamespace(uuid=f"u{i}") for i in range(1, 4)]
+_VO_PARTS = [
+    "Альфа начало истории.",
+    "Бета середина пути.",
+    "Гамма финал рассказа.",
+]
+_VO = " ".join(_VO_PARTS)
+# SoT времени сцены = Σ len(закадр)/subtitle_chars_per_second (не duration_seconds БД).
+_SCENE_SEC = round(sum(len(p) for p in _VO_PARTS) / 14.0, 1)
+_FRAMES = [
+    SimpleNamespace(uuid=f"u{i}", duration_seconds=3.0, voiceover_text=part)
+    for i, part in enumerate(_VO_PARTS, start=1)
+]
 _PROJECT = SimpleNamespace(id=1)
 
 
@@ -109,6 +239,7 @@ def _valid_payload() -> dict:
                 "id_scene": "sc01",
                 "start_words": "Альфа начало",
                 "end_words": "финал рассказа",
+                "время_сек": _SCENE_SEC,
             }
         ],
         "ops": [
@@ -120,6 +251,27 @@ def _valid_payload() -> dict:
 
 def test_validate_ok() -> None:
     assert validate_payload(_PROJECT, _FRAMES, _valid_payload(), _VO) == []
+
+
+def test_validate_scene_time_required() -> None:
+    p = _valid_payload()
+    del p["scenes"][0]["время_сек"]
+    problems = validate_payload(_PROJECT, _FRAMES, p, _VO)
+    assert any("время_сек" in x for x in problems)
+
+
+def test_validate_scene_time_mismatch() -> None:
+    p = _valid_payload()
+    p["scenes"][0]["время_сек"] = 25.0  # далеко от Σ VO/14
+    problems = validate_payload(_PROJECT, _FRAMES, p, _VO)
+    assert any("не бьётся с суммой кадров" in x for x in problems)
+
+
+def test_validate_scene_time_within_tolerance() -> None:
+    p = _valid_payload()
+    # diff 1.0 < tolerance max(1.5, 0.35*_SCENE_SEC)
+    p["scenes"][0]["время_сек"] = round(_SCENE_SEC + 1.0, 1)
+    assert validate_payload(_PROJECT, _FRAMES, p, _VO) == []
 
 
 def test_validate_quote_not_in_voiceover() -> None:

@@ -336,45 +336,74 @@ async def get_excel_hero(
 async def load_excel_hero(
     project_id: int, session: AsyncSession = Depends(get_session)
 ) -> dict:
-    """Перечитать лист «Персонажи» из project.xlsx → project.meta['excel_hero'].
+    """Загрузить персонажей в meta['excel_hero']: Entity (SoT) → fallback Excel.
 
     После этого шаг hero пойдёт по excel-ветке (`_run_excel`), беря данные
     из meta, без необходимости заполнять hero_descriptions/hero_count.
     """
-    from app.services.excel_characters import parse_persons_sheet
+    from sqlalchemy import select
+
+    from app.models import Entity
+    from app.services.excel_characters import (
+        characters_from_entities,
+        parse_persons_sheet,
+    )
 
     p = _project_or_404(await session.get(Project, project_id))
-    xlsx = p.data_dir / "project.xlsx"
-    if not xlsx.exists():
-        raise HTTPException(
-            status_code=404,
-            detail=f"project.xlsx не найден по пути {xlsx}",
-        )
-    try:
-        chars = parse_persons_sheet(xlsx)
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(
-            status_code=400,
-            detail=f"не удалось распарсить лист «Персонажи»: {e}",
-        ) from e
+    ents = list(
+        (
+            await session.execute(
+                select(Entity)
+                .where(
+                    Entity.project_id == p.id,
+                    Entity.type == "character",
+                )
+                .order_by(Entity.sort_key, Entity.id)
+            )
+        ).scalars().all()
+    )
+    chars = characters_from_entities(ents)
+    source = "entity"
+    if not chars:
+        xlsx = p.data_dir / "project.xlsx"
+        if not xlsx.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "в Базе нет персонажей (Entity) и нет project.xlsx "
+                    f"по пути {xlsx}"
+                ),
+            )
+        try:
+            chars = parse_persons_sheet(xlsx)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(
+                status_code=400,
+                detail=f"не удалось распарсить лист «Персонажи»: {e}",
+            ) from e
+        source = "xlsx"
     if not chars:
         raise HTTPException(
             status_code=400,
-            detail="на листе «Персонажи» нет ни одного заполненного персонажа",
+            detail="нет заполненных персонажей ни в Базе, ни на листе «Персонажи»",
         )
     meta = dict(p.meta or {})
-    meta["excel_hero"] = {"characters": [c.to_dict() for c in chars]}
+    meta["excel_hero"] = {
+        "characters": [c.to_dict() for c in chars],
+        "source": source,
+    }
     p.meta = meta
     p.updated_at = datetime.utcnow()
     await session.commit()
     await publish_project_event(
         project_id,
         event_type="project_updated",
-        payload={"excel_hero": len(chars)},
+        payload={"excel_hero": len(chars), "source": source},
     )
     return {
         "loaded": True,
         "count": len(chars),
+        "source": source,
         "characters": [c.to_dict() for c in chars],
     }
 
@@ -677,7 +706,11 @@ async def montage_board(
     from app.services.montage_board import build_montage_board
 
     try:
-        return await build_montage_board(session, p)
+        board = await build_montage_board(session, p)
+        # get_session не коммитит сам — без commit кэш R15/meta откатывается,
+        # и каждый GET снова пишет сотни кадров → database is locked + Failed to fetch.
+        await session.commit()
+        return board
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001
@@ -686,6 +719,78 @@ async def montage_board(
             status_code=500,
             detail=f"Не удалось собрать монтаж: {type(e).__name__}: {e}",
         ) from e
+
+
+@router.post("/{project_id}/montage-board/queue")
+async def montage_board_save_queue(
+    project_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Сохранить очередь pending_ops на сервер (без запуска apply).
+
+    Иначе очередь живёт только в React state и слетает при refresh/рестарте.
+    """
+    from app.services.montage_board_apply_job import get_apply_job
+    from app.services.montage_board_meta import (
+        montage_meta,
+        public_board_meta,
+        set_montage_meta,
+        should_accept_queue_save,
+    )
+
+    p = _project_or_404(await session.get(Project, project_id))
+    ops = list(body.get("pending_ops") or [])
+    # Нормализуем: только известные типы + валидный frame.
+    cleaned: list[dict] = []
+    for raw in ops:
+        if not isinstance(raw, dict):
+            continue
+        t = str(raw.get("type") or "")
+        if not t.startswith(("image_", "video_")):
+            continue
+        try:
+            fr = int(raw.get("frame_number"))
+        except (TypeError, ValueError):
+            continue
+        if fr < 1:
+            continue
+        shot = 2 if raw.get("shot") == 2 else 1
+        item: dict = {"type": t, "frame_number": fr, "shot": shot}
+        if isinstance(raw.get("prompt"), str) and raw["prompt"].strip():
+            item["prompt"] = raw["prompt"]
+        if isinstance(raw.get("correction"), str) and raw["correction"].strip():
+            item["correction"] = raw["correction"]
+        cleaned.append(item)
+
+    board = montage_meta(p)
+    existing = list(board.get("pending_ops") or [])
+    job = get_apply_job(p)
+    accept, rejected = should_accept_queue_save(
+        cleaned=cleaned,
+        existing=existing,
+        apply_running=job.get("status") == "running",
+        force_clear=bool(body.get("force_clear")),
+    )
+    if not accept:
+        return {
+            "ok": False,
+            "rejected": rejected,
+            "pending_ops": existing,
+            "meta": public_board_meta(board),
+            "message": (
+                "Apply ещё идёт — очередь не перезаписываем более коротким списком"
+                if rejected == "apply_running"
+                else "Пустая очередь не затирает существующую (нужен force_clear)"
+            ),
+        }
+
+    board["pending_ops"] = cleaned
+    if isinstance(body.get("video_trims"), dict):
+        board["video_trims"] = body["video_trims"]
+    set_montage_meta(p, board)
+    await session.commit()
+    return {"ok": True, "pending_ops": cleaned, "meta": public_board_meta(board)}
 
 
 @router.post("/{project_id}/montage-board/apply")
@@ -860,6 +965,91 @@ async def montage_board_recover_outsee_status(
 
     p = _project_or_404(await session.get(Project, project_id))
     return {"job": get_recover_job(p)}
+
+
+@router.post("/{project_id}/montage-board/swap-shots")
+async def montage_board_swap_shots(
+    project_id: int,
+    frame_number: int = Query(..., ge=1),
+    kind: str = Query("both", pattern="^(image|video|both)$"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Поменять местами shot1 ↔ shot2 (картинки и/или видео + промты)."""
+    from app.services.montage_board_assets import swap_shot_media
+
+    p = _project_or_404(await session.get(Project, project_id))
+    result = await swap_shot_media(
+        session, p, frame_number, kind=kind  # type: ignore[arg-type]
+    )
+    await session.commit()
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=400,
+            detail=result.get("reason") or "нечего менять",
+        )
+    return result
+
+
+@router.post("/{project_id}/montage-board/swap-slots")
+async def montage_board_swap_slots(
+    project_id: int,
+    kind: str = Query(..., pattern="^(image|video)$"),
+    a_frame: int = Query(..., ge=1),
+    a_shot: int = Query(..., ge=1, le=2),
+    b_frame: int = Query(..., ge=1),
+    b_shot: int = Query(..., ge=1, le=2),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Обмен двух слотов одного типа между любыми кадрами (кнопка↔кнопка в UI)."""
+    from app.services.montage_board_assets import swap_media_slots
+
+    p = _project_or_404(await session.get(Project, project_id))
+    result = await swap_media_slots(
+        session,
+        p,
+        kind=kind,  # type: ignore[arg-type]
+        a_frame=a_frame,
+        a_shot=a_shot,
+        b_frame=b_frame,
+        b_shot=b_shot,
+    )
+    await session.commit()
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=400,
+            detail=result.get("reason") or "не удалось поменять местами",
+        )
+    return result
+
+
+@router.post("/{project_id}/montage-board/move-image")
+async def montage_board_move_image(
+    project_id: int,
+    from_frame: int = Query(..., ge=1),
+    from_shot: int = Query(..., ge=1, le=2),
+    to_frame: int = Query(..., ge=1),
+    to_shot: int = Query(..., ge=1, le=2),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Перенести картинку в другой слот (в т.ч. пустой); если цель занята — swap."""
+    from app.services.montage_board_assets import move_scene_image
+
+    p = _project_or_404(await session.get(Project, project_id))
+    result = await move_scene_image(
+        session,
+        p,
+        from_frame=from_frame,
+        from_shot=from_shot,
+        to_frame=to_frame,
+        to_shot=to_shot,
+    )
+    await session.commit()
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=400,
+            detail=result.get("reason") or "не удалось перенести",
+        )
+    return result
 
 
 @router.post("/{project_id}/montage-board/delete-image")
@@ -1524,6 +1714,131 @@ async def delete_check_agent_file(
     return result
 
 
+@router.get("/{project_id}/gpt-operator/{node_key}/check-agent")
+async def get_check_agent_file(
+    project_id: int,
+    node_key: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Текст агента проверки (свой файл или builtin) — кнопка «Просмотр» в Studio."""
+    from app.services.gpt_operator import load_check_agent_view
+
+    p = _project_or_404(await session.get(Project, project_id))
+    view = load_check_agent_view(p, node_key)
+    if view is None:
+        raise HTTPException(
+            status_code=404,
+            detail="агент не найден — загрузите .txt или проведите стрелку от результата",
+        )
+    return view
+
+
+@router.get("/{project_id}/gpt-operator/{node_key}/check-prompt-preview")
+async def get_check_prompt_preview(
+    project_id: int,
+    node_key: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Финальный master-промт проверки ровно как при запуске — просмотр в Studio."""
+    from pathlib import Path
+
+    from app.orchestrator.steps.enrich_xlsx import _get_accompanying_text
+    from app.services.excel_gpt_node import EXCEL_GPT_STEP_CODE
+    from app.services.gpt_operator import (
+        append_vision_hint_for_upstream,
+        assemble_check_agent_prompt,
+        assemble_check_master_prompt,
+        collect_source_prompts,
+        operator_config,
+        resolve_check_report_format,
+        resolve_operator,
+        sanitize_check_reviewer_notes,
+    )
+
+    p = _project_or_404(await session.get(Project, project_id))
+    cfg = operator_config(p, node_key)
+    if not bool(cfg.get("checkMode")):
+        raise HTTPException(status_code=400, detail="у ноды не включена «Проверка»")
+    check_fix = bool(cfg.get("checkFix", True))
+    cps = str(cfg.get("checkPromptSource") or "upstream").strip().lower()
+    if cps not in ("upstream", "agent"):
+        cps = "upstream"
+
+    resolved = resolve_operator(p, node_key)
+    img_ext = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+    has_vision = any(
+        Path(str(f.get("name") or f.get("path") or "")).suffix.lower() in img_ext
+        for f in (resolved.get("files") or [])
+        if f.get("ok")
+    )
+    db_sot = not has_vision
+    accompanying = _get_accompanying_text(p, EXCEL_GPT_STEP_CODE)
+    reviewer_notes = sanitize_check_reviewer_notes(accompanying or "")
+    report_fmt, _ = resolve_check_report_format(p, node_key)
+
+    if cps == "agent":
+        master, agent_step = assemble_check_agent_prompt(
+            p,
+            node_key,
+            check_fix=check_fix,
+            reviewer_notes=reviewer_notes,
+            report_format=report_fmt,
+            db_sot=db_sot,
+        )
+        source = f"agent:{agent_step}" if agent_step else "agent"
+    else:
+        sources = collect_source_prompts(p, node_key)
+        ok_sources = [s for s in sources if s.get("ok")]
+        if not ok_sources:
+            raise HTTPException(
+                status_code=404, detail="нет исходного промта для проверки"
+            )
+        master = assemble_check_master_prompt(
+            ok_sources,
+            check_fix=check_fix,
+            reviewer_notes=reviewer_notes,
+            report_format=report_fmt,
+            db_sot=db_sot,
+        )
+        source = ",".join(str(s.get("nodeKey") or "") for s in ok_sources)
+    master = append_vision_hint_for_upstream(p, node_key, master)
+    return {
+        "text": master,
+        "chars": len(master),
+        "mode": "fix" if check_fix else "report_only",
+        "checkPromptSource": cps,
+        "source": source,
+        "dbSot": db_sot,
+    }
+
+
+@router.get("/{project_id}/gpt-operator/{node_key}/source-prompt")
+async def get_gpt_operator_source_prompt(
+    project_id: int,
+    node_key: str,
+    source: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Текст мастер-промта ноды-источника (критерии проверки) — просмотр в Studio."""
+    from app.services.gpt_operator import collect_source_prompts
+
+    p = _project_or_404(await session.get(Project, project_id))
+    for s in collect_source_prompts(p, node_key):
+        if str(s.get("nodeKey") or "") == source:
+            if not s.get("ok"):
+                raise HTTPException(
+                    status_code=404,
+                    detail=str(s.get("error") or "промт не прочитан"),
+                )
+            return {
+                "nodeKey": source,
+                "variant": s.get("variant"),
+                "chars": int(s.get("chars") or 0),
+                "text": str(s.get("text") or ""),
+            }
+    raise HTTPException(status_code=404, detail="источник не найден")
+
+
 @router.post("/{project_id}/excel-gpt/remap-keys")
 async def remap_excel_gpt_keys(
     project_id: int,
@@ -1685,6 +2000,28 @@ async def audio_align_methods_list() -> dict:
     from app.services.audio_align_methods import list_align_methods
 
     return {"methods": list_align_methods()}
+
+
+@router.get("/{project_id}/asr-words")
+async def project_asr_words(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Word-level транскрибация из БД (таблица asr_words)."""
+    from app.services.asr_words_store import asr_words_to_dicts, load_project_asr_words
+
+    _project_or_404(await session.get(Project, project_id))
+    rows = await load_project_asr_words(session, project_id)
+    words = asr_words_to_dicts(rows)
+    run_uuid = words[0]["run_uuid"] if words else None
+    backend = words[0]["backend"] if words else None
+    return {
+        "project_id": project_id,
+        "count": len(words),
+        "run_uuid": run_uuid,
+        "backend": backend,
+        "words": words,
+    }
 
 
 @router.post("/{project_id}/audio-align")

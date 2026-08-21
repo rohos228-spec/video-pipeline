@@ -13,7 +13,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -166,14 +166,33 @@ async def db_graph(
     project_id: int, session: AsyncSession = Depends(get_session)
 ) -> dict:
     project = await _project(session, project_id)
-    await db_v2.backfill_project_v2(session, project)
-    await session.commit()
+    # Backfill только если есть кадры без v2-полей — иначе UI «Базы» тормозит
+    # десятки секунд и успевает мелькнуть чужой stale-граф.
+    needs_backfill = (
+        await session.execute(
+            select(func.count(Frame.id)).where(
+                Frame.project_id == project.id,
+                or_(
+                    Frame.uuid.is_(None),
+                    Frame.sort_key.is_(None),
+                    Frame.scene_id.is_(None),
+                ),
+            )
+        )
+    ).scalar_one()
+    if needs_backfill:
+        await db_v2.backfill_project_v2(session, project)
+        await session.commit()
     graph = await db_v2.project_graph(session, project)
     graph["excel_rows"] = _excel_rows_for_project(project)
     # Сводка последних проверок — чип «Проверки» в «Базе».
     from app.services.agent_harness import read_ops_telemetry
 
-    tel = read_ops_telemetry(project.meta if isinstance(project.meta, dict) else {})
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    # Сцены по словам (scene grammar) — SoT в meta, не в Excel.
+    registry = meta.get("scene_registry")
+    graph["scene_registry"] = registry if isinstance(registry, list) else []
+    tel = read_ops_telemetry(meta)
     checks = tel.get("checks") or []
     graph["harness"] = {
         "outcome": tel.get("last_outcome"),
@@ -248,7 +267,7 @@ class ApplyOpsBody(BaseModel):
     ops: list[ApplyOp] = Field(default_factory=list)
     characters: list[dict] = Field(default_factory=list)
     scenes: list[dict] = Field(default_factory=list)
-    export_xlsx: bool = True
+    export_xlsx: bool = False
 
 
 @router.post("/projects/{project_id}/apply-ops")
@@ -351,7 +370,7 @@ _ORCHESTRATOR_SYSTEM = (
     "{\"actions\":[{\"set_prompt\":{\"step\":\"<шаг>\",\"variant\":\"<имя>\"}}]} — "
     "варианты в разделе ПРОМТЫ контекста.\n"
     "6) ТЕКСТОВАЯ LLM → "
-    "{\"actions\":[{\"set_text_llm\":{\"provider\":\"kie|tokenrouter\"}}]}.\n"
+    "{\"actions\":[{\"set_text_llm\":{\"provider\":\"kie|vibecode|tokenrouter\"}}]}.\n"
     "7) ОТКРЫТЬ окна программы → {\"actions\":[{\"open_ui\":{...}}]} — kinds: "
     "step_prompts (плюс step; ОБЯЗАТЕЛЬНО при выборе/сравнении вариантов "
     "промтов — человек выбирает в окне), node_studio/prompt_builder/hitl "
@@ -2248,7 +2267,7 @@ async def orchestrator_chat(
                     ops,
                     characters=chars or None,
                     scenes=scenes or None,
-                    export_xlsx=bool(ops_data.get("export_xlsx", True)),
+                    export_xlsx=bool(ops_data.get("export_xlsx", False)),
                 )
                 await session.commit()
             except db_apply.ApplyOpsError as e:
