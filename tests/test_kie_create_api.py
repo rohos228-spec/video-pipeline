@@ -129,7 +129,10 @@ def test_credits_not_configured(monkeypatch: pytest.MonkeyPatch) -> None:
     c = TestClient(_app())
     r = c.get("/api/kie-create/credits")
     assert r.status_code == 200
-    assert r.json() == {"configured": False, "credits": None, "usd": None}
+    data = r.json()
+    assert data["configured"] is False
+    assert data["credits"] is None and data["usd"] is None
+    assert "key_fingerprint" in data and "key_source" in data
 
 
 @pytest.mark.asyncio
