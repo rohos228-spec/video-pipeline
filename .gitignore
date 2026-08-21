@@ -12,7 +12,7 @@ dist/
 .mypy_cache/
 .ruff_cache/
 web/.next/
-web/out/
+# web/out коммитим на ПК-ветках: git pull обновляет UI без npm (см. web/.gitignore)
 
 # Virtualenvs
 .venv/
