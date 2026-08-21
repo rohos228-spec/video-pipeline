@@ -15,6 +15,7 @@ import {
   Coins,
   History,
   ImageIcon,
+  Link2,
   Loader2,
   Music,
   Paperclip,
@@ -25,6 +26,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import type { KieField, KieModelSpec } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { cn } from "@/lib/utils";
 import {
@@ -50,7 +52,12 @@ import {
   type OutseeMediaType,
 } from "@/lib/outsee-catalog";
 import { estimateCreatePrice } from "@/lib/create-pricing";
-import { KieCreatePanel } from "@/components/outsee/kie-create-panel";
+import {
+  estimateKie,
+  kieChipFields,
+  kieFileFields,
+  kieMainTextField,
+} from "@/lib/kie-pricing";
 
 type Props = {
   open: boolean;
@@ -116,8 +123,8 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   const [firstFrameName, setFirstFrameName] = useState<string | null>(null);
   const [lastFrameName, setLastFrameName] = useState<string | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
-  const [engine, setEngine] = useState<"studio" | "kie">("studio");
   const [openChip, setOpenChip] = useState<OutseeChip | null>(null);
+  const [kieValues, setKieValues] = useState<Record<string, unknown>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [settingsHydrated, setSettingsHydrated] = useState(false);
   const modelRef = useRef<HTMLDivElement>(null);
@@ -149,6 +156,19 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     queryFn: api.createQueue,
     enabled: open,
     refetchInterval: open ? 1200 : false,
+  });
+
+  const kieCatalogQ = useQuery({
+    queryKey: ["kie-catalog"],
+    queryFn: api.kieCatalog,
+    enabled: open,
+    staleTime: 60_000,
+  });
+  const kieCreditsQ = useQuery({
+    queryKey: ["kie-credits"],
+    queryFn: api.kieCredits,
+    enabled: open,
+    refetchInterval: open ? 60_000 : false,
   });
 
   const runningJobs = createQueueQ.data?.running ?? [];
@@ -220,18 +240,42 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   const audioModel = getAudioModel(audioSlug);
   const dockChips = dockChipsForModel(activeSlug, mediaType);
 
-  const currentName =
-    mediaType === "image"
+  // ---- KIE: модель выбрана из общего пикера (slug "kie:<id>") ----
+  const kieModels = useMemo(
+    () => kieCatalogQ.data?.models ?? [],
+    [kieCatalogQ.data],
+  );
+  const kieModel = useMemo(() => {
+    if (!activeSlug.startsWith("kie:")) return null;
+    return kieModels.find((m) => m.id === activeSlug.slice(4)) ?? null;
+  }, [activeSlug, kieModels]);
+  const kieActive = kieModel != null;
+  const kieTextField = kieModel ? kieMainTextField(kieModel) : null;
+  const kiePrice = useMemo(() => {
+    if (!kieModel || !kieCatalogQ.data) return null;
+    const vals = { ...kieValues };
+    if (kieTextField) vals[kieTextField] = prompt;
+    return estimateKie(kieModel, vals, kieCatalogQ.data.credit_usd);
+  }, [kieModel, kieValues, prompt, kieTextField, kieCatalogQ.data]);
+  useEffect(() => {
+    setKieValues({});
+  }, [activeSlug]);
+
+  const currentName = kieActive
+    ? (kieModel.label ?? kieModel.id)
+    : mediaType === "image"
       ? imageModel.displayName
       : mediaType === "video"
         ? videoModel.displayName
         : audioModel.displayName;
-  const currentWired = isGrsaiWiredSlug(activeSlug, mediaType);
+  const currentWired = !kieActive && isGrsaiWiredSlug(activeSlug, mediaType);
   const outseeConfigured = Boolean(outseeStatusQ.data?.configured);
   const grsaiConfigured = Boolean(grsaiStatusQ.data?.configured);
+  const kieConfigured = Boolean(kieCatalogQ.data?.configured);
 
   /** Без UI-переключателя: ключ Outsee → Outsee; Sora/Kling → Grsai; иначе Grsai. */
   const autoProvider: "outsee" | "grsai" | null = useMemo(() => {
+    if (kieActive) return null;
     if (mediaType === "audio") return null;
     const slug = activeSlug.toLowerCase();
     if (mediaType === "image") {
@@ -248,7 +292,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     if (grsaiConfigured) return "grsai";
     if (outseeConfigured) return "outsee";
     return null;
-  }, [mediaType, activeSlug, outseeConfigured, grsaiConfigured]);
+  }, [kieActive, mediaType, activeSlug, outseeConfigured, grsaiConfigured]);
 
   const maxParallel =
     autoProvider === "outsee"
@@ -257,9 +301,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
         ? (createQueueQ.data?.max_parallel_grsai ?? 10)
         : (createQueueQ.data?.max_parallel ?? 5);
 
-  const canApiDirect = autoProvider != null;
-  const currentIcon =
-    mediaType === "image"
+  const canApiDirect = kieActive ? kieConfigured : autoProvider != null;
+  const currentIcon = kieActive
+    ? null
+    : mediaType === "image"
       ? imageModel.icon
       : mediaType === "video"
         ? videoModel.icon
@@ -295,20 +340,23 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
         size: soraSize,
         catalog_price: currentCatalogPrice,
       }),
-    enabled: open,
+    enabled: open && !kieActive,
     staleTime: 5_000,
   });
 
-  const priceLabel =
-    quoteQ.data?.label ||
-    estimateCreatePrice({
-      media: mediaType,
-      model: quoteModel,
-      resolution,
-      duration: Number(duration) || 10,
-      size: soraSize,
-      catalogPrice: currentCatalogPrice,
-    }).label;
+  const priceLabel = kieActive
+    ? kiePrice
+      ? `$${kiePrice.usd.toFixed(3)} · ${kiePrice.credits} кр`
+      : "—"
+    : quoteQ.data?.label ||
+      estimateCreatePrice({
+        media: mediaType,
+        model: quoteModel,
+        resolution,
+        duration: Number(duration) || 10,
+        size: soraSize,
+        catalogPrice: currentCatalogPrice,
+      }).label;
 
   useEffect(() => {
     if (mediaType === "image") {
@@ -471,7 +519,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   });
 
   const [trackingJobs, setTrackingJobs] = useState<
-    { provider: "grsai" | "outsee"; jobId: string; historyId: string }[]
+    { provider: "grsai" | "outsee" | "kie"; jobId: string; historyId: string }[]
   >([]);
 
   useEffect(() => {
@@ -523,6 +571,34 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   const createGenerate = useMutation({
     mutationFn: async () => {
       const text = prompt.trim();
+      // ---- KIE: динамическая модель из каталога kie.ai ----
+      if (kieActive && kieModel) {
+        if (!kieConfigured) {
+          throw new Error("KIE_API_KEY не задан в .env");
+        }
+        const vals: Record<string, unknown> = { ...kieValues };
+        if (kieTextField) vals[kieTextField] = text;
+        const missing = kieModel.fields
+          .filter((f) => f.required)
+          .filter((f) => {
+            const v = vals[f.name] ?? f.default;
+            if (v === undefined || v === null) return true;
+            if (typeof v === "string") return v.trim() === "";
+            if (Array.isArray(v)) return v.length === 0;
+            return false;
+          });
+        if (missing.length) {
+          throw new Error(`Заполни: ${missing.map((f) => f.label).join(", ")}`);
+        }
+        const res = await api.kieGenerate({ model_id: kieModel.id, values: vals });
+        return {
+          job_id: res.job.job_id,
+          history_id: res.job.history_id,
+          status: res.job.status,
+          queue_position: res.job.queue_position,
+          provider: "kie" as const,
+        };
+      }
       if (!text) throw new Error("Введите промпт");
       if (mediaType === "audio") {
         if (projectId == null) {
@@ -605,7 +681,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
           running_count?: number;
           status?: string;
           queue_position?: number | null;
-          provider: "grsai" | "outsee";
+          provider: "grsai" | "outsee" | "kie";
         };
         if (r.history_id) setSelectedId(r.history_id);
         setTrackingJobs((prev) => [
@@ -674,28 +750,6 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <div className="flex items-center rounded-lg border border-white/10 bg-white/[0.03] p-0.5">
-            {(
-              [
-                ["studio", "Outsee / Grsai"],
-                ["kie", "KIE"],
-              ] as const
-            ).map(([id, label]) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => setEngine(id)}
-                className={cn(
-                  "rounded-md px-2.5 py-1 text-[11px] font-medium transition",
-                  engine === id
-                    ? "bg-[rgba(209,254,23,0.16)] text-[rgba(209,254,23,1)]"
-                    : "text-white/45 hover:text-white/80",
-                )}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
           <span className="hidden text-[11px] text-white/40 sm:inline">
             настройки и история общие для Studio
           </span>
@@ -937,12 +991,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 )}
             </h2>
           </div>
-          <div
-            className={cn(
-              "flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 lg:px-6",
-              engine === "kie" ? "pb-[440px]" : "pb-[230px]",
-            )}
-          >
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 pb-[230px] lg:px-6">
             {selected?.preview_url &&
             selected.status !== "queued" &&
             selected.status !== "processing" ? (
@@ -967,8 +1016,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     className="max-h-[calc(100vh-320px)] max-w-full rounded-xl border border-white/[0.06] object-contain"
                   />
                 )}
-                {engine === "studio" &&
-                  mediaType === "video" &&
+                {mediaType === "video" &&
                   videoModel.chips.includes("image-input") &&
                   selected.kind === "image" &&
                   selected.status === "done" && (
@@ -1050,15 +1098,6 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
 
           {/* prompt dock + vertical type toggle */}
           <div className="absolute bottom-0 left-0 right-0 z-10 px-3 pb-3 lg:px-5 lg:pb-4">
-            {engine === "kie" ? (
-              <KieCreatePanel
-                onGenerated={(historyId) => {
-                  if (historyId) setSelectedId(historyId);
-                  qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
-                  qc.invalidateQueries({ queryKey: ["create-queue"] });
-                }}
-              />
-            ) : (
             <div className="flex items-end gap-2">
               {/* cs-typetoggle */}
               <div className="flex shrink-0 flex-col gap-2">
@@ -1094,10 +1133,29 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 className="min-w-0 flex-1 border border-white/[0.08] bg-[#171717] shadow-[0_12px_40px_rgba(0,0,0,0.55)]"
                 style={{ borderRadius: 16 }}
               >
+                {/* KIE: вложения из схемы модели (загрузка в kie / URL) */}
+                {kieActive && kieModel && kieFileFields(kieModel).length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.06] px-3 py-2.5 lg:px-4">
+                    {kieFileFields(kieModel).map((f) => (
+                      <KieAttachButton
+                        key={f.name}
+                        field={f}
+                        values={kieValues}
+                        onChange={(name, items) =>
+                          setKieValues((prev) => ({ ...prev, [name]: items }))
+                        }
+                      />
+                    ))}
+                    <span className="text-[10px] text-white/35">
+                      файл грузится в kie → публичный URL; или вставь свой URL в поле
+                    </span>
+                  </div>
+                )}
                 {/* Явная зона вложений — как на outsee.io (не прятать в чипах) */}
-                {(mediaType === "video"
-                  ? videoModel.chips.includes("image-input")
-                  : mediaType === "image" && imageModel.chips.includes("image-input")) && (
+                {!kieActive &&
+                  (mediaType === "video"
+                    ? videoModel.chips.includes("image-input")
+                    : mediaType === "image" && imageModel.chips.includes("image-input")) && (
                   <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.06] px-3 py-2.5 lg:px-4">
                     <input
                       ref={firstFrameInputRef}
@@ -1210,21 +1268,40 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     </span>
                   </div>
                 )}
-                <div className="px-3 pt-3 lg:px-4">
-                  <textarea
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
-                    placeholder={
-                      mediaType === "audio"
-                        ? "Текст / описание трека…"
-                        : mediaType === "video"
-                          ? "Опишите видео…"
-                          : "Опишите изображение…"
-                    }
-                    rows={3}
-                    className="w-full resize-none bg-transparent text-[13px] leading-relaxed text-white/90 placeholder:text-white/30 focus:outline-none"
-                  />
-                </div>
+                {(!kieActive || kieTextField) && (
+                  <div className="px-3 pt-3 lg:px-4">
+                    <textarea
+                      value={prompt}
+                      onChange={(e) => setPrompt(e.target.value)}
+                      placeholder={
+                        kieActive && kieModel
+                          ? kieModel.fields.find((f) => f.name === kieTextField)
+                              ?.label || "Опишите…"
+                          : mediaType === "audio"
+                            ? "Текст / описание трека…"
+                            : mediaType === "video"
+                              ? "Опишите видео…"
+                              : "Опишите изображение…"
+                      }
+                      rows={3}
+                      className="w-full resize-none bg-transparent text-[13px] leading-relaxed text-white/90 placeholder:text-white/30 focus:outline-none"
+                    />
+                  </div>
+                )}
+                {kieActive && kieModel && !kieTextField && (
+                  <div className="px-3 pt-3 lg:px-4">
+                    <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] px-3 py-2.5 text-[12px] leading-relaxed text-white/60">
+                      {kieModel.hint || kieModel.desc}
+                    </div>
+                  </div>
+                )}
+                {kieActive && kieModel?.hint && kieTextField && (
+                  <div className="px-3 pt-1 lg:px-4">
+                    <div className="text-[10px] leading-snug text-white/35">
+                      {kieModel.hint}
+                    </div>
+                  </div>
+                )}
 
                 <div className="flex flex-wrap items-end gap-2 border-t border-white/[0.06] px-3 py-2.5 lg:px-4">
                   <div className="relative" ref={modelRef}>
@@ -1235,14 +1312,20 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                         setOpenChip(null);
                       }}
                     >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={currentIcon}
-                        alt=""
-                        width={18}
-                        height={18}
-                        className="h-[18px] w-[18px] shrink-0 rounded-md object-cover ring-1 ring-white/10"
-                      />
+                      {currentIcon ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={currentIcon}
+                          alt=""
+                          width={18}
+                          height={18}
+                          className="h-[18px] w-[18px] shrink-0 rounded-md object-cover ring-1 ring-white/10"
+                        />
+                      ) : (
+                        <span className="inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-md bg-[rgba(120,170,255,0.2)] font-mono text-[10px] font-bold text-[rgba(120,170,255,1)] ring-1 ring-white/10">
+                          K
+                        </span>
+                      )}
                       <span className="font-medium">
                         {currentWired ? (
                           <span className="mr-1 font-mono text-[rgba(209,254,23,1)]">+</span>
@@ -1255,18 +1338,20 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       <ModelPickerPopover
                         mediaType={mediaType}
                         selectedSlug={activeSlug}
+                        kieModels={kieModels}
+                        creditUsd={kieCatalogQ.data?.credit_usd ?? 0.005}
                         onSelect={(slug) => {
                           if (mediaType === "image") setImageSlug(slug);
                           else if (mediaType === "video") setVideoSlug(slug);
                           else setAudioSlug(slug);
-                          applyModelDefaults(slug, mediaType);
+                          if (!slug.startsWith("kie:")) applyModelDefaults(slug, mediaType);
                           setModelOpen(false);
                         }}
                       />
                     )}
                   </div>
 
-                  {mediaType === "video" && videoModel.chips.includes("orientation") && (
+                  {!kieActive && mediaType === "video" && videoModel.chips.includes("orientation") && (
                     <div className="inline-flex gap-0.5 rounded-full border border-white/10 bg-[#1a1a1a] p-0.5">
                       {(["video", "image"] as const).map((o) => (
                         <button
@@ -1286,7 +1371,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     </div>
                   )}
 
-                  {mediaType === "video" && videoModel.chips.includes("quality") && (
+                  {!kieActive && mediaType === "video" && videoModel.chips.includes("quality") && (
                     <div className="inline-flex gap-0.5 rounded-full border border-white/10 bg-[#1a1a1a] p-0.5">
                       {chipOptions(videoSlug, "quality").map((q) => (
                         <button
@@ -1306,7 +1391,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     </div>
                   )}
 
-                  {dockChips.map((chip) => {
+                  {!kieActive && dockChips.map((chip) => {
                     if (chip === "audio") {
                       return (
                         <button
@@ -1398,8 +1483,26 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     );
                   })}
 
+                  {/* KIE: динамические настройки модели из каталога */}
+                  {kieActive && kieModel && (
+                    <div className="flex max-h-[180px] w-full flex-wrap items-end gap-2 overflow-y-auto">
+                      {kieChipFields(kieModel)
+                        .filter((f) => kieFieldVisible(f, kieValues))
+                        .map((f) => (
+                          <KieFieldChip
+                            key={f.name}
+                            field={f}
+                            values={kieValues}
+                            onChange={(name, v) =>
+                              setKieValues((prev) => ({ ...prev, [name]: v }))
+                            }
+                          />
+                        ))}
+                    </div>
+                  )}
+
                   <div className="ml-auto flex flex-wrap items-center gap-2">
-                    {mediaType === "video" &&
+                    {!kieActive && mediaType === "video" &&
                       (videoSlug === "sora-2" ||
                         videoSlug === "sora2-portrait" ||
                         videoSlug === "sora2-landscape") && (
@@ -1429,18 +1532,32 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     >
                       {saveGlobal.isPending ? "…" : "Сохранить"}
                     </button>
-                    <button
-                      type="button"
-                      disabled={applyToProject.isPending || projectId == null}
-                      onClick={() => applyToProject.mutate()}
-                      className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2.5 text-[11px] font-medium text-white/70 hover:bg-white/[0.08] disabled:opacity-40"
-                      title="Скопировать глобальные настройки в выбранный проект"
-                    >
-                      В проект
-                    </button>
+                    {!kieActive && (
+                      <button
+                        type="button"
+                        disabled={applyToProject.isPending || projectId == null}
+                        onClick={() => applyToProject.mutate()}
+                        className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2.5 text-[11px] font-medium text-white/70 hover:bg-white/[0.08] disabled:opacity-40"
+                        title="Скопировать глобальные настройки в выбранный проект"
+                      >
+                        В проект
+                      </button>
+                    )}
+                    {kieActive && kieCreditsQ.data?.credits != null && (
+                      <div
+                        className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#1a1a1a] px-2.5 font-mono text-[11px] text-white/50"
+                        title="Баланс kie.ai"
+                      >
+                        {kieCreditsQ.data.credits.toFixed(0)} кр
+                      </div>
+                    )}
                     <div
                       className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#1a1a1a] px-2.5 font-mono text-[11px] text-white/75"
-                      title="1 токен = $0.10 (10¢). Цена за выбранные параметры."
+                      title={
+                        kieActive
+                          ? "kie.ai: 1 кр = $0.005. Цена за выбранные параметры."
+                          : "1 токен = $0.10 (10¢). Цена за выбранные параметры."
+                      }
                     >
                       <Coins className="h-3 w-3 text-[rgba(209,254,23,0.85)]" strokeWidth={2.5} />
                       <span>{priceLabel}</span>
@@ -1449,9 +1566,11 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       type="button"
                       disabled={
                         createGenerate.isPending ||
-                        !prompt.trim() ||
-                        (mediaType === "audio" && projectId == null) ||
-                        (mediaType !== "audio" && !canApiDirect)
+                        (kieActive
+                          ? (kieTextField && !prompt.trim()) || !kieConfigured
+                          : !prompt.trim() ||
+                            (mediaType === "audio" && projectId == null) ||
+                            (mediaType !== "audio" && !canApiDirect))
                       }
                       onClick={() => {
                         if (createGenerate.isPending) return;
@@ -1480,11 +1599,261 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 </div>
               </div>
             </div>
-            )}
           </div>
         </section>
       </div>
     </div>
+  );
+}
+
+function kieFieldVisible(f: KieField, values: Record<string, unknown>): boolean {
+  if (!f.show_if) return true;
+  return Object.entries(f.show_if).every(([k, want]) => {
+    const got = values[k];
+    if (typeof want === "boolean") {
+      const truthy = got === true || String(got).toLowerCase() === "true";
+      return truthy === want;
+    }
+    return String(got ?? "") === String(want);
+  });
+}
+
+/** KIE: одна настройка модели в виде чипа (select/toggle/number/text). */
+function KieFieldChip({
+  field,
+  values,
+  onChange,
+}: {
+  field: KieField;
+  values: Record<string, unknown>;
+  onChange: (name: string, v: unknown) => void;
+}) {
+  const v = values[field.name] ?? field.default;
+
+  if (field.kind === "toggle") {
+    const on = v === true || String(v).toLowerCase() === "true";
+    return (
+      <button
+        type="button"
+        onClick={() => onChange(field.name, !on)}
+        title={field.desc || field.label}
+        className={cn(
+          "inline-flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] font-medium",
+          on
+            ? "border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.10)]"
+            : "border-white/10 bg-[#222] text-white/70",
+        )}
+      >
+        {field.label}
+        <span className="font-mono text-[10px] text-white/45">{on ? "on" : "off"}</span>
+      </button>
+    );
+  }
+
+  if (field.kind === "select") {
+    // inline-чипы (как orientation/quality у outsee): popover в scroll-зоне клинит
+    return (
+      <div
+        className="inline-flex flex-col gap-0.5"
+        title={field.desc || field.label}
+      >
+        <span className="px-0.5 text-[10px] text-gray-400">{field.label}</span>
+        <div className="inline-flex flex-wrap gap-0.5 rounded-full border border-white/10 bg-[#1a1a1a] p-0.5">
+          {(field.options || []).map((o) => {
+            const activeOpt = String(v ?? "") === o;
+            return (
+              <button
+                key={o}
+                type="button"
+                onClick={() => onChange(field.name, o)}
+                className={cn(
+                  "rounded-full px-2.5 py-1 font-mono text-[11px]",
+                  activeOpt
+                    ? "bg-[rgba(209,254,23,0.15)] text-[rgba(209,254,23,1)]"
+                    : "text-white/45 hover:text-white/75",
+                )}
+              >
+                {o || "—"}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  if (field.kind === "number") {
+    return (
+      <div
+        className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#222] px-2.5"
+        title={field.desc || field.label}
+      >
+        <span className="text-[11px] text-white/55">{field.label}</span>
+        <input
+          type="number"
+          value={v === undefined || v === null ? "" : String(v)}
+          min={field.min}
+          max={field.max}
+          step={field.step ?? 1}
+          onChange={(e) =>
+            onChange(field.name, e.target.value === "" ? undefined : Number(e.target.value))
+          }
+          className="w-16 bg-transparent font-mono text-[12px] text-white/90 outline-none"
+        />
+      </div>
+    );
+  }
+
+  // text
+  return (
+    <div
+      className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#222] px-2.5"
+      title={field.desc || field.label}
+    >
+      <span className="text-[11px] text-white/55">{field.label}</span>
+      <input
+        value={String(v ?? "")}
+        onChange={(e) => onChange(field.name, e.target.value)}
+        placeholder="—"
+        className="w-32 bg-transparent text-[12px] text-white/90 outline-none placeholder:text-white/25"
+      />
+    </div>
+  );
+}
+
+const KIE_FILE_ACCEPT: Record<string, string> = {
+  images: "image/png,image/jpeg,image/webp,image/bmp,image/gif",
+  videos: "video/mp4,video/quicktime,video/webm",
+  audios: "audio/mpeg,audio/wav,audio/mp4,audio/x-m4a",
+};
+
+/** KIE: кнопка вложения в стиле «Стартовый кадр» — загрузка в kie или URL. */
+function KieAttachButton({
+  field,
+  values,
+  onChange,
+}: {
+  field: KieField;
+  values: Record<string, unknown>;
+  onChange: (name: string, items: string[]) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [urlMode, setUrlMode] = useState(false);
+  const [urlDraft, setUrlDraft] = useState("");
+  const items: string[] = Array.isArray(values[field.name])
+    ? (values[field.name] as string[])
+    : [];
+  const max = field.max_items ?? 99;
+  const canAdd = items.length < max;
+
+  const addUrl = () => {
+    const u = urlDraft.trim();
+    if (!u) return;
+    if (!/^https?:\/\//.test(u)) {
+      toast.error("Нужен http(s) URL");
+      return;
+    }
+    onChange(field.name, [...items, u]);
+    setUrlDraft("");
+    setUrlMode(false);
+  };
+
+  return (
+    <>
+      {items.map((u, i) => (
+        <span
+          key={`${u}-${i}`}
+          className="inline-flex h-10 items-center gap-2 rounded-xl border border-[rgba(209,254,23,0.45)] bg-[rgba(209,254,23,0.12)] px-3 text-[12px] font-medium"
+        >
+          {field.kind === "images" ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={u} alt="" className="h-7 w-7 rounded-md object-cover ring-1 ring-white/15" />
+          ) : (
+            <Paperclip className="h-4 w-4" />
+          )}
+          <span className="max-w-[120px] truncate font-mono text-[10px] text-white/60">
+            {u.split("/").pop()}
+          </span>
+          <span
+            className="cursor-pointer text-white/45 hover:text-white"
+            onClick={() => onChange(field.name, items.filter((_, j) => j !== i))}
+          >
+            <X className="h-3.5 w-3.5" />
+          </span>
+        </span>
+      ))}
+      {canAdd && (
+        <span className="inline-flex items-center gap-1">
+          <input
+            ref={inputRef}
+            type="file"
+            accept={KIE_FILE_ACCEPT[field.kind] || "*/*"}
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (!f) return;
+              setBusy(true);
+              api
+                .kieUpload(f)
+                .then((r) => {
+                  onChange(field.name, [...items, r.url]);
+                  toast.success(`${field.label}: файл загружен`);
+                })
+                .catch((err) => toast.error(errorMessageFromUnknown(err)))
+                .finally(() => setBusy(false));
+              e.target.value = "";
+            }}
+          />
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => inputRef.current?.click()}
+            title={field.desc || field.label}
+            className="inline-flex h-10 items-center gap-2 rounded-xl border border-dashed border-white/25 bg-white/[0.03] px-3 text-[12px] font-medium text-white/70 hover:border-white/40 disabled:opacity-50"
+          >
+            {busy ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Paperclip className="h-4 w-4" />
+            )}
+            {field.label}
+            {field.required ? <span className="text-red-400">*</span> : null}
+          </button>
+          <button
+            type="button"
+            onClick={() => setUrlMode((v) => !v)}
+            title="Вставить URL вместо загрузки"
+            className="inline-flex h-10 w-8 items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-white/50 hover:text-white"
+          >
+            <Link2 className="h-3.5 w-3.5" />
+          </button>
+          {urlMode && (
+            <span className="inline-flex items-center gap-1">
+              <input
+                value={urlDraft}
+                onChange={(e) => setUrlDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addUrl();
+                  }
+                }}
+                placeholder="https://…"
+                className="h-10 w-48 rounded-xl border border-white/10 bg-white/[0.03] px-2.5 text-[11px] text-white/80 outline-none placeholder:text-white/25 focus:border-white/25"
+              />
+              <button
+                type="button"
+                onClick={addUrl}
+                className="h-10 rounded-xl border border-white/10 px-2.5 text-[11px] text-white/60 hover:text-white"
+              >
+                +
+              </button>
+            </span>
+          )}
+        </span>
+      )}
+    </>
   );
 }
 
@@ -1584,10 +1953,14 @@ function OptionDropdown({
 function ModelPickerPopover({
   mediaType,
   selectedSlug,
+  kieModels = [],
+  creditUsd = 0.005,
   onSelect,
 }: {
   mediaType: OutseeMediaType;
   selectedSlug: string;
+  kieModels?: KieModelSpec[];
+  creditUsd?: number;
   onSelect: (slug: string) => void;
 }) {
   const title =
@@ -1597,6 +1970,10 @@ function ModelPickerPopover({
         ? "Модели видео"
         : "Модели аудио";
   const models = pickerModelsForType(mediaType);
+  const kieForType = kieModels.filter((m) => {
+    const media = m.media || (m.category === "video" ? "video" : m.category === "image" ? "image" : "audio");
+    return media === mediaType;
+  });
 
   return (
     <div
@@ -1691,6 +2068,67 @@ function ModelPickerPopover({
           );
         })}
       </div>
+      {kieForType.length > 0 && (
+        <>
+          <div className="border-y border-white/[0.06] px-3 py-2">
+            <span className="text-[12px] font-semibold text-white/80">KIE · kie.ai</span>
+            <span className="ml-2 font-mono text-[10px] text-white/35">
+              {kieForType.length}
+            </span>
+          </div>
+          <div
+            className="grid gap-1.5 overflow-y-auto p-2"
+            style={{
+              gridTemplateColumns:
+                mediaType === "audio" ? "1fr" : "repeat(2, minmax(0, 1fr))",
+              minHeight: 0,
+            }}
+          >
+            {kieForType.map((m) => {
+              const slug = `kie:${m.id}`;
+              const active = slug === selectedSlug;
+              const est = estimateKie(m, {}, creditUsd);
+              return (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => onSelect(slug)}
+                  className={cn(
+                    "relative flex items-start gap-2.5 rounded-xl border px-2.5 py-2.5 text-left transition",
+                    active
+                      ? "border-[rgba(120,170,255,0.45)] bg-[rgba(120,170,255,0.10)]"
+                      : "border-white/[0.06] bg-white/[0.03] hover:bg-white/[0.06]",
+                  )}
+                >
+                  <span className="absolute -top-1.5 left-2 z-10 rounded-md bg-[rgba(120,170,255,0.9)] px-1.5 py-0.5 font-mono text-[9px] font-bold leading-none text-black">
+                    KIE
+                  </span>
+                  <div className="flex shrink-0 flex-col items-center">
+                    <span className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-[rgba(120,170,255,0.15)] font-mono text-[14px] font-bold text-[rgba(120,170,255,1)] ring-1 ring-white/10">
+                      {m.label.slice(0, 1)}
+                    </span>
+                    <span className="mt-1 inline-flex items-center gap-0.5 font-mono text-[10px] text-white/55">
+                      <Coins className="h-2.5 w-2.5" strokeWidth={2.5} />
+                      {est.usd > 0 ? `$${est.usd.toFixed(3)}` : "—"}
+                    </span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p
+                      className="truncate text-[12px] font-medium"
+                      style={{ color: active ? "rgba(120,170,255,1)" : "white" }}
+                    >
+                      {m.label}
+                    </p>
+                    <p className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-white/45">
+                      {m.hint || m.desc}
+                    </p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
     </div>
   );
 }

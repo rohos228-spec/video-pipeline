@@ -487,6 +487,7 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "kling-3-0-motion-control",
+        "hint": "Картинка персонажа + видео с движением → персонаж повторяет движение из видео.",
         "label": "Kling 3.0 Motion Control",
         "category": "video",
         "api": "jobs",
@@ -822,6 +823,7 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "infinitalk",
+        "hint": "Фото лица + аудио речи → говорящее видео (губы в такт).",
         "label": "InfiniTalk (говорящее фото)",
         "category": "video",
         "api": "jobs",
@@ -847,6 +849,7 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "kling-ai-avatar",
+        "hint": "Фото + аудио → говорящий аватар. Pro = 1080p.",
         "label": "Kling AI Avatar",
         "category": "video",
         "api": "jobs",
@@ -872,6 +875,7 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "omnihuman-1-5",
+        "hint": "Фото + аудио → реалистичный говорящий человек (ByteDance).",
         "label": "OmniHuman 1.5",
         "category": "video",
         "api": "jobs",
@@ -896,6 +900,7 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "wan-speech-to-video",
+        "hint": "Картинка/текст + аудио речи → видео, синхронное с речью.",
         "label": "WAN 2.2 Speech-to-Video",
         "category": "video",
         "api": "jobs",
@@ -922,6 +927,7 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "volcengine-lip-sync",
+        "hint": "Готовое видео + новое аудио → губы двигаются под новое аудио.",
         "label": "Lip Sync (video→video)",
         "category": "video",
         "api": "jobs",
@@ -1332,6 +1338,7 @@ MODELS: list[dict[str, Any]] = [
     # ============================ МУЗЫКА (SUNO) ============================
     {
         "id": "suno-music",
+        "hint": "Опиши трек («мрачный фонк, женский вокал») или в custom-режиме дай свой текст, стиль и название.",
         "label": "Suno — трек",
         "category": "music",
         "api": "suno",
@@ -1359,6 +1366,7 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "suno-extend",
+        "hint": "Продлевает трек Suno: нужен audioId из прошлой генерации (виден в логах kie).",
         "label": "Suno — продлить трек",
         "category": "music",
         "api": "suno",
@@ -1380,6 +1388,7 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "suno-upload-cover",
+        "hint": "Твоё аудио → кавер в новом стиле. Загрузи файл, опиши стиль.",
         "label": "Suno — кавер на своё аудио",
         "category": "music",
         "api": "suno",
@@ -1401,6 +1410,7 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "suno-add-vocals",
+        "hint": "Инструментал + текст песни → трек с вокалом.",
         "label": "Suno — добавить вокал",
         "category": "music",
         "api": "suno",
@@ -1421,6 +1431,7 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "suno-separate-vocals",
+        "hint": "Трек → вокал и минус раздельно (или по инструментам).",
         "label": "Suno — разделить вокал/минус",
         "category": "music",
         "api": "suno",
@@ -1449,6 +1460,7 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "suno-lyrics",
+        "hint": "Опиши тему → готовый текст песни для Suno.",
         "label": "Suno — текст песни",
         "category": "music",
         "api": "suno",
@@ -1463,6 +1475,7 @@ MODELS: list[dict[str, Any]] = [
     # ============================ ЗВУКИ ============================
     {
         "id": "suno-sounds",
+        "hint": "Пиши звук словами: «удар по металлу», «шаги по снегу», «whoosh для перехода». Loop — для бесшовного фона, темп/тональность — под музыку ролика.",
         "label": "Suno — звуковые эффекты",
         "category": "sound",
         "api": "suno",
@@ -1483,6 +1496,7 @@ MODELS: list[dict[str, Any]] = [
     # ============================ ГОЛОС / TTS ============================
     {
         "id": "elevenlabs-tts-turbo",
+        "hint": "Текст → озвучка. Цена растёт от длины текста (за 1000 символов).",
         "label": "ElevenLabs Turbo 2.5",
         "category": "voice",
         "api": "jobs",
@@ -1511,6 +1525,7 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "elevenlabs-tts-multilingual",
+        "hint": "Текст → озвучка качественнее Turbo, дороже. Цена за 1000 символов.",
         "label": "ElevenLabs Multilingual V2",
         "category": "voice",
         "api": "jobs",
@@ -1536,6 +1551,7 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "elevenlabs-dialogue-v3",
+        "hint": "Диалог нескольких голосов: каждая строка = «Голос | реплика». Цена за 1000 символов суммарно.",
         "label": "ElevenLabs Dialogue V3",
         "category": "voice",
         "api": "jobs",
@@ -1557,6 +1573,7 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "elevenlabs-audio-isolation",
+        "hint": "Аудио с шумом → чистая речь. Промпт не нужен.",
         "label": "ElevenLabs — изоляция голоса",
         "category": "voice",
         "api": "jobs",
@@ -1571,6 +1588,7 @@ MODELS: list[dict[str, Any]] = [
     # ============================ АПСКЕЙЛ / УТИЛИТЫ ============================
     {
         "id": "topaz-video-upscale",
+        "hint": "Как работает: загружаешь своё видео (например 720p из Seedance) → выбираешь кратность → получаешь то же видео в ×2 (≈2K) или ×4 (≈4K). Цена — за секунду исходника.",
         "label": "Topaz — апскейл видео",
         "category": "tools",
         "api": "jobs",
@@ -1594,6 +1612,7 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "topaz-image-upscale",
+        "hint": "Картинка → та же картинка в 2K или 4K. Без промпта — только файл.",
         "label": "Topaz — апскейл картинки",
         "category": "tools",
         "api": "jobs",
@@ -1616,6 +1635,7 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "grok-imagine-upscale",
+        "hint": "Видео 480p → 720p или 1080p. Загружаешь файл, выбираешь цель — всё.",
         "label": "Grok — апскейл видео",
         "category": "tools",
         "api": "jobs",
@@ -1638,6 +1658,7 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "recraft-remove-bg",
+        "hint": "Картинка → PNG без фона (прозрачный). Промпт не нужен.",
         "label": "Recraft — убрать фон",
         "category": "tools",
         "api": "jobs",
@@ -1651,6 +1672,7 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "recraft-crisp-upscale",
+        "hint": "Картинка → резче и больше. Промпт не нужен.",
         "label": "Recraft — crisp апскейл",
         "category": "tools",
         "api": "jobs",
@@ -1879,6 +1901,19 @@ def build_payload(spec: dict[str, Any], values: dict[str, Any]) -> dict[str, Any
     return body
 
 
+def _media_of(m: dict[str, Any]) -> str:
+    """В какой тип Create-пикера попадает модель: image | video | audio."""
+    cat = m.get("category")
+    if cat in ("video",):
+        return "video"
+    if cat in ("image",):
+        return "image"
+    if cat in ("music", "sound", "voice"):
+        return "audio"
+    # tools — по типу результата
+    return str(m.get("result") or "video")
+
+
 def catalog_for_ui() -> dict[str, Any]:
     """Каталог для фронта: категории + модели с полями и правилами цен."""
     return {
@@ -1889,7 +1924,9 @@ def catalog_for_ui() -> dict[str, Any]:
                 "id": m["id"],
                 "label": m["label"],
                 "category": m["category"],
+                "media": _media_of(m),
                 "desc": m.get("desc") or "",
+                "hint": m.get("hint") or "",
                 "result": m.get("result"),
                 "fields": m.get("fields") or [],
                 "pricing": m.get("pricing") or {},

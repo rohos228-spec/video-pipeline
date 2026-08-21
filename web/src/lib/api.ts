@@ -67,7 +67,11 @@ export interface KieModelSpec {
   id: string;
   label: string;
   category: string;
+  /** В какой тип Create-пикера попадает: image | video | audio */
+  media?: string;
   desc: string;
+  /** Понятное объяснение «как работает» (для утилит/звуков) */
+  hint?: string;
   result: "video" | "image" | "audio" | "text";
   fields: KieField[];
   pricing: {
