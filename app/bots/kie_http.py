@@ -67,6 +67,9 @@ def _check(payload: Any, *, http_status: int, where: str) -> dict[str, Any]:
     if code_i in (None, 200):
         return data
     msg = str(data.get("msg") or data.get("message") or where)
+    if code_i == 401:
+        # Частая причина: в .env лежит relay/GPT токен вместо ключа kie.ai.
+        msg += " — проверь, что в .env задан KIE_API_KEY именно от kie.ai (не relay/GPT-токен)"
     raise KieHttpError(
         f"kie {where}: code={code_i} {msg}"[:400],
         context={"provider_code": code_i, "kie_msg": msg[:200]},
