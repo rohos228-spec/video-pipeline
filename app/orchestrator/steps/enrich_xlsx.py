@@ -137,8 +137,24 @@ _SLOT_MAP: dict[int, tuple[ProjectStatus, ProjectStatus, str]] = {
     5: (ProjectStatus.enriching_5, ProjectStatus.enrich_5_ready, "enrich_5"),
 }
 
-# Сколько раз пробуем round-trip, если ChatGPT не приложил файл в ответе.
-_MAX_RETRIES = 3
+def _check_mode_input_paths(
+    data_paths: list[Path], db_check_path: Path
+) -> list[Path]:
+    """checkMode DB SoT: только db_check.json + картинки, без leftover JSON/txt."""
+    keep_img = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+    out: list[Path] = [db_check_path]
+    seen = {db_check_path.resolve()}
+    for p in data_paths:
+        try:
+            rp = p.resolve()
+        except OSError:
+            rp = p
+        if rp in seen:
+            continue
+        if p.suffix.lower() in keep_img:
+            out.append(p)
+            seen.add(rp)
+    return out
 
 
 def _persist_excel_gpt_reply_for_ui(
@@ -728,17 +744,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 _json.dumps(db_check, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            # Только DB. Excel/TSV со стрелок/inputSource выкидываем.
-            data_paths = [
-                db_check_path,
-                *[
-                    p
-                    for p in data_paths
-                    if p.suffix.lower()
-                    not in {".xlsx", ".xlsm", ".xls", ".tsv", ".csv"}
-                    and p.resolve() != db_check_path.resolve()
-                ],
-            ]
+            # Только DB. Excel/TSV и leftover батчи/gpt_reply со стрелок — нет.
+            data_paths = _check_mode_input_paths(data_paths, db_check_path)
             accompanying = (
                 f"{accompanying}\n\n"
                 "# DB SoT CHECK\n"
@@ -1191,6 +1198,28 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 if isinstance(ops_data, dict)
                 else []
             )
+            if check_mode and ops_list:
+                n_rf = sum(
+                    1
+                    for op in ops_list
+                    if isinstance(op, dict) and op.get("target") == "replace_frames"
+                )
+                if n_rf:
+                    logger.warning(
+                        "[#{}] enrich_xlsx node={}: checkMode drop "
+                        "replace_frames x{} (проверка не переписывает разбивку)",
+                        project.id,
+                        node_key,
+                        n_rf,
+                    )
+                    ops_list = [
+                        op
+                        for op in ops_list
+                        if not (
+                            isinstance(op, dict)
+                            and op.get("target") == "replace_frames"
+                        )
+                    ]
             chars_list = (
                 list(ops_data.get("characters") or [])
                 if isinstance(ops_data, dict)
@@ -1317,22 +1346,30 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         f"enrich_xlsx node={node_key}: apply-ops отклонён: {e}"
                     ) from None
             elif ops_data:
-                detail = (
-                    str(ops_data.get("error") or ops_data.get("report") or "")
-                    .strip()
-                    or "ops и characters пустые"
-                )
-                _persist_excel_gpt_reply_for_ui(
-                    project,
-                    node_key,
-                    data_paths=data_paths,
-                    api_res=api_res,
-                )
-                raise RuntimeError(
-                    f"enrich_xlsx node={node_key}: apply-ops JSON пустой — {detail}. "
-                    "Нужны непустые ops и/или characters (создай реестр, "
-                    "не возвращай пустые списки)."
-                )
+                if check_mode:
+                    logger.info(
+                        "[#{}] enrich_xlsx node={}: checkMode без apply "
+                        "после фильтра — только отчёт",
+                        project.id,
+                        node_key,
+                    )
+                else:
+                    detail = (
+                        str(ops_data.get("error") or ops_data.get("report") or "")
+                        .strip()
+                        or "ops и characters пустые"
+                    )
+                    _persist_excel_gpt_reply_for_ui(
+                        project,
+                        node_key,
+                        data_paths=data_paths,
+                        api_res=api_res,
+                    )
+                    raise RuntimeError(
+                        f"enrich_xlsx node={node_key}: apply-ops JSON пустой — {detail}. "
+                        "Нужны непустые ops и/или characters (создай реестр, "
+                        "не возвращай пустые списки)."
+                    )
             else:
                 # DB SoT: без apply-ops шаг не принимаем (TSV/xlsx writeback отключён).
                 _persist_excel_gpt_reply_for_ui(
