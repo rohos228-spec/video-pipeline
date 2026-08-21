@@ -276,7 +276,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     if (mediaType === "video" && !isKie(videoSlug) && videoSlug !== "veo-3-1-lite") {
       setVideoSlug("veo-3-1-lite");
     }
-    if (mediaType === "audio" && !isKie(audioSlug)) {
+    if (mediaType === "audio" && audioSlug === "kie:suno-sounds") {
+      // Suno Sounds Task поёт / делает петли — настоящий SFX это ElevenLabs.
+      setAudioSlug("kie:elevenlabs-sfx");
+    } else if (mediaType === "audio" && !isKie(audioSlug)) {
       setAudioSlug("kie:suno-music");
     }
   }, [kieCatalogQ.data, kieModels, mediaType, imageSlug, videoSlug, audioSlug]);
