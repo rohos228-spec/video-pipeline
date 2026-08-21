@@ -134,14 +134,14 @@ _STATUS_ORDER: dict[ProjectStatus, int] = {
     ProjectStatus.audio_ready: 34,
     ProjectStatus.generating_music: 35,
     ProjectStatus.music_ready: 36,
-    ProjectStatus.sfx_planning: 36,
-    ProjectStatus.sfx_plan_ready: 37,
-    ProjectStatus.generating_sfx: 37,
-    ProjectStatus.sfx_ready: 38,
-    ProjectStatus.assembling: 38,
-    ProjectStatus.assembled: 38,
-    ProjectStatus.publishing: 39,
-    ProjectStatus.published: 40,
+    ProjectStatus.sfx_planning: 37,
+    ProjectStatus.sfx_plan_ready: 38,
+    ProjectStatus.generating_sfx: 39,
+    ProjectStatus.sfx_ready: 40,
+    ProjectStatus.assembling: 41,
+    ProjectStatus.assembled: 42,
+    ProjectStatus.publishing: 43,
+    ProjectStatus.published: 44,
     ProjectStatus.paused: 0,
     ProjectStatus.failed: 0,
 }
@@ -372,6 +372,11 @@ _STEP_BY_CODE["items"] = StepDef(
 for _slot in range(1, MAX_ENRICH_SLOTS + 1):
     _code = f"enrich_{_slot}"
     _STEP_BY_CODE[_code] = _enrich_slot_step(_slot)
+_STEP_BY_CODE["publish"] = StepDef(
+    -1, "publish", "Публикация",
+    ProjectStatus.publishing, ProjectStatus.published,
+    ProjectStatus.assembled,
+)
 
 
 def step_by_code(code: str) -> StepDef | None:
@@ -381,8 +386,8 @@ def step_by_code(code: str) -> StepDef | None:
 def step_by_running_status(running_status: ProjectStatus) -> StepDef | None:
     """Найти StepDef по running_status. Учитывает как «верхние» шаги
     основного меню (см. steps_for(None)), так и sub-step'ы для
-    hero/items/enrich_1..5 — последнее важно для rollback'а при
-    failed-шаге.
+    hero/items/enrich_1..5/sfx_plan/sfx_gen — последнее важно для rollback'а при
+    failed-шаге / отмене ⏹.
 
     Sub-step'ы матчатся первыми, т.к. они точнее (например wrapper
     "objects" имеет running=generating_hero, но при failed-rollback
@@ -390,12 +395,18 @@ def step_by_running_status(running_status: ProjectStatus) -> StepDef | None:
     это совпадает с requires "objects", так что разницы нет, но
     приоритет на sub-step'ах — на будущее).
     """
-    # Sub-step'ы (точнее, чем wrapper'ы).
-    for code in ("hero", "items", "audio", "scene_d", "scene_asm", *(f"enrich_{i}" for i in range(1, MAX_ENRICH_SLOTS + 1))):
+    # 1. Приоритетные sub-step'ы (точнее, чем wrapper'ы).
+    for code in ("hero", "items", "audio", "scene_d", "scene_asm", "sfx_plan", "sfx_gen", *(f"enrich_{i}" for i in range(1, MAX_ENRICH_SLOTS + 1))):
         sd = _STEP_BY_CODE.get(code)
         if sd is not None and sd.running_status is running_status:
             return sd
-    # Затем — среди базовых шагов основного меню (1..11).
+
+    # 2. Все остальные зарегистрированные шаги из _STEP_BY_CODE.
+    for sd in _STEP_BY_CODE.values():
+        if sd.running_status is running_status:
+            return sd
+
+    # 3. Затем — среди базовых шагов основного меню (1..11).
     for sd in STEPS:
         # Wrapper'ы (objects/enrich) уже покрыты sub-step'ами выше.
         if sd.code in ("objects", "enrich"):

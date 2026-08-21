@@ -15,9 +15,10 @@ from typing import Any
 
 from loguru import logger
 
-from app.models import Project
 from app.services.scene_design import agents as ag
 from app.settings import settings
+
+_META_LOCK = asyncio.Lock()
 
 
 def scene_design_enabled(project: Project | None) -> bool:
@@ -700,7 +701,8 @@ async def run_category_agents(
                             exc_info=True,
                         )
                 return
-        save_checkpoint(project, name, data)
+        async with _META_LOCK:
+            save_checkpoint(project, name, data)
         results[name] = data
         logger.info("[#{}] scene_design/{}: ok", project.id, name)
 

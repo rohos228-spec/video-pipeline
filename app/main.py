@@ -295,30 +295,9 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
     # Воркер запускает только «running»-статусы. «ready»-статусы — это
     # ожидание действия пользователя из TG-меню, авто-advance отключён.
     # ВАЖНО: список должен содержать ВСЕ running-статусы из ProjectStatus,
-    # иначе воркер не подхватит шаг и юзер увидит «бесконечно выполняется».
-    # Маппинг running-статус → handler смотри в `pipeline.advance_project`.
-    active = [
-        ProjectStatus.planning,
-            ProjectStatus.scripting,
-            ProjectStatus.splitting,
-            ProjectStatus.scene_designing,
-            ProjectStatus.scene_assembling,
-            ProjectStatus.generating_hero,
-        ProjectStatus.generating_items,
-        ProjectStatus.enriching_1,
-        ProjectStatus.enriching_2,
-        ProjectStatus.enriching_3,
-        ProjectStatus.enriching_4,
-        ProjectStatus.enriching_5,
-        ProjectStatus.generating_image_prompts,
-        ProjectStatus.generating_images,
-        ProjectStatus.generating_animation_prompts,
-        ProjectStatus.generating_videos,
-        ProjectStatus.generating_music,
-        ProjectStatus.generating_audio,
-        ProjectStatus.assembling,
-        ProjectStatus.publishing,
-    ]
+    from app.services.step_registry import running_statuses_list
+
+    active = running_statuses_list()
     from app.services.mass_pause import is_active as _mass_pause_active
     from app.services.step_cancel import active_advance_count, is_stop_requested
     from app.telegram.bot import notify_step_done
@@ -899,6 +878,11 @@ async def main() -> None:
         settings.telegram_owner_chat_id,
         settings.db_url,
     )
+    if (getattr(settings, "gpt_relay_token", None) or "").strip():
+        logger.warning(
+            "🔒 SECURITY NOTICE: GPT_RELAY_TOKEN установлен — все текстовые LLM-запросы "
+            "проксируются через VPS-relay. Для прямого подключения к API очистите GPT_RELAY_TOKEN в .env"
+        )
     await _init_db()
 
     from app.db import session_scope
