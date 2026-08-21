@@ -106,7 +106,7 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
     type: "scene_design",
     label: "Сцены (агенты)",
     description:
-      "Legacy-нода старых канвасов: весь мульти-агентный дизайн сцен одной нодой. Новые канвасы — веер sd_agent ×5 + sd_assemble.",
+      "Дизайн сцен: комплексная генерация персонажей, локаций, стиля, камеры и действий.",
     category: "planning",
     accent: "175 60% 55%",
     iconKey: "sparkles",

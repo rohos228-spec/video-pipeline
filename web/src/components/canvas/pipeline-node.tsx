@@ -259,14 +259,16 @@ export function PipelineNode({ data, selected }: NodeProps) {
                     {statusConfig.label}
                   </span>
                 </div>
-                <NodeModelPicker
-                  nodeKey={d.nodeKey}
-                  nodeType={d.type}
-                  modelId={d.modelId}
-                  imageResolution={d.imageResolution}
-                  imageQuality={d.imageQuality}
-                  aspectRatio={d.aspectRatio}
-                />
+                {d.type !== "topic" && (
+                  <NodeModelPicker
+                    nodeKey={d.nodeKey}
+                    nodeType={d.type}
+                    modelId={d.modelId}
+                    imageResolution={d.imageResolution}
+                    imageQuality={d.imageQuality}
+                    aspectRatio={d.aspectRatio}
+                  />
+                )}
                 {isSdAgent ? (
                   <div className="mt-1.5 flex flex-wrap gap-1">
                     <span className="rounded-full border border-violet-400/25 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-medium text-violet-100/90">
