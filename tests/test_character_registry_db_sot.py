@@ -9,6 +9,7 @@ import pytest
 from app.orchestrator.steps.enrich_xlsx import (
     _is_character_registry_prompt,
     _is_scene_grammar_prompt,
+    _is_script_writer_prompt,
 )
 from app.services.excel_characters import (
     ExcelCharacter,
@@ -26,6 +27,12 @@ def test_detect_character_registry_prompt() -> None:
     )
     assert not _is_character_registry_prompt("scene_grammar_unified_agent_v1", None)
     assert _is_scene_grammar_prompt("scene_grammar_unified_agent_v1", None)
+
+
+def test_detect_script_writer_prompt() -> None:
+    assert _is_script_writer_prompt("script_writer_ru.md", None)
+    assert _is_script_writer_prompt(None, "Ты — сценарист закадра.\n")
+    assert not _is_script_writer_prompt("sd_skeleton.md", "shot fill")
 
 
 def test_characters_from_entities_and_gpt_cards() -> None:

@@ -97,6 +97,18 @@ def _is_character_registry_prompt(variant: str | None, master: str | None) -> bo
     blob = f"{variant or ''}\n{(master or '')[:800]}".casefold()
     return any(m in blob for m in _CHARACTER_REGISTRY_PROMPT_MARKERS)
 
+
+_SCRIPT_WRITER_PROMPT_MARKERS = (
+    "script_writer",
+    "сценарист закадра",
+)
+
+
+def _is_script_writer_prompt(variant: str | None, master: str | None) -> bool:
+    """Сценарист: закадр + разбивка, батчи по 9 ячеек VO, не shot-fill."""
+    blob = f"{variant or ''}\n{(master or '')[:800]}".casefold()
+    return any(m in blob for m in _SCRIPT_WRITER_PROMPT_MARKERS)
+
 # Маппинг slot_idx (1..5) → (running_status, ready_status, step_code).
 _SLOT_MAP: dict[int, tuple[ProjectStatus, ProjectStatus, str]] = {
     1: (ProjectStatus.enriching_1, ProjectStatus.enrich_1_ready, "enrich_1"),
@@ -1015,10 +1027,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             and ctx_path is not None
         ):
             from app.services.apply_ops_batches import (
+                VO_PARALLEL_MAX,
+                VO_STAGGER_SEC,
+                VO_UNITS_PER_BATCH,
                 run_apply_ops_batched,
             )
             from app.services import db_apply as _db_apply
             from app.services.node_write_contract import filter_ops_for_node
+
+            script_writer = _is_script_writer_prompt(variant, master) or str(
+                node_key or ""
+            ).endswith("_fw_script")
+            keep_voiceover = script_writer
 
             async def _apply_batch(payload: dict) -> None:
                 from app.services.db_apply import FIELD_ALIASES
@@ -1029,7 +1049,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 )
                 # Shot-fill не должен затирать закадр/смысл, если
                 # volume-continue подмешал чужую схему полей.
-                _drop = {"voiceover_text", "meaning"}
+                # Сценарист как раз пишет закадр — не выкидываем.
+                _drop = set() if keep_voiceover else {"voiceover_text", "meaning"}
                 cleaned: list[dict] = []
                 for op in ops:
                     fields = op.get("fields")
@@ -1063,9 +1084,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
             logger.info(
                 "[#{}] enrich_xlsx node={!r}: apply-ops adaptive "
-                "1→2→4 (dense shot fill)",
+                "1→2→4 ({} )",
                 project.id,
                 node_key,
+                (
+                    f"закадр по {VO_UNITS_PER_BATCH}, "
+                    f"параллельно {VO_PARALLEL_MAX}, "
+                    f"сдвиг {VO_STAGGER_SEC:g}с"
+                    if script_writer
+                    else "dense shot fill"
+                ),
             )
             api_res = await run_apply_ops_batched(
                 project_dir=project.data_dir,
@@ -1079,6 +1107,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 project_id=project.id,
                 dense=True,
                 apply_fn=_apply_batch,
+                chunk_size=VO_UNITS_PER_BATCH if script_writer else None,
+                parallel_max=VO_PARALLEL_MAX if script_writer else None,
+                stagger_sec=VO_STAGGER_SEC if script_writer else None,
             )
         else:
             api_res = await run_operator_api(
