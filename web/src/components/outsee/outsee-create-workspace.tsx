@@ -261,6 +261,26 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     setKieValues({});
   }, [activeSlug]);
 
+  // Трим каталога Create: outsee — только GPT Image 2 / Nano Banana 2 /
+  // Veo 3.1 Lite; аудио — только KIE (Suno/ElevenLabs не дублируются).
+  useEffect(() => {
+    if (!kieCatalogQ.data) return;
+    const isKie = (s: string) => kieModels.some((m) => `kie:${m.id}` === s);
+    if (
+      mediaType === "image" &&
+      !isKie(imageSlug) &&
+      !["gpt-image-2", "nano-banana-2"].includes(imageSlug)
+    ) {
+      setImageSlug("gpt-image-2");
+    }
+    if (mediaType === "video" && !isKie(videoSlug) && videoSlug !== "veo-3-1-lite") {
+      setVideoSlug("veo-3-1-lite");
+    }
+    if (mediaType === "audio" && !isKie(audioSlug)) {
+      setAudioSlug("kie:suno-music");
+    }
+  }, [kieCatalogQ.data, kieModels, mediaType, imageSlug, videoSlug, audioSlug]);
+
   const currentName = kieActive
     ? (kieModel.label ?? kieModel.id)
     : mediaType === "image"
@@ -1988,8 +2008,11 @@ function ModelPickerPopover({
     >
       <div className="border-b border-white/[0.06] px-3 py-2.5">
         <span className="text-[12px] font-semibold text-white/80">{title}</span>
-        <span className="ml-2 font-mono text-[10px] text-white/35">{models.length}</span>
+        <span className="ml-2 font-mono text-[10px] text-white/35">
+          {models.length + kieForType.length}
+        </span>
       </div>
+      {models.length > 0 && (
       <div
         className="grid gap-1.5 overflow-y-auto p-2"
         style={{
@@ -2068,6 +2091,7 @@ function ModelPickerPopover({
           );
         })}
       </div>
+      )}
       {kieForType.length > 0 && (
         <>
           <div className="border-y border-white/[0.06] px-3 py-2">
