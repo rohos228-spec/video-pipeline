@@ -30,6 +30,9 @@ _POLL_INTERVAL_S = 4.0
 _POLL_MAX_S = 1200.0
 _UPLOAD_PATH = "/api/file-stream-upload"
 _CALLBACK_PLACEHOLDER = "https://localhost/kie-callback"
+_AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".ogg", ".flac")
+_VIDEO_EXTS = (".mp4", ".webm", ".mov")
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 
 _POLL_PATHS = {
     "jobs": "/api/v1/jobs/recordInfo",
@@ -179,6 +182,63 @@ def _extract_urls(obj: Any, out: list[str] | None = None) -> list[str]:
     return out
 
 
+def _url_ext(url: str) -> str:
+    path = str(url).split("?", 1)[0].lower()
+    for ext in _AUDIO_EXTS + _VIDEO_EXTS + _IMAGE_EXTS:
+        if path.endswith(ext):
+            return ext
+    return ""
+
+
+def _suno_clip_audio_urls(data: dict[str, Any]) -> list[str]:
+    """audioUrl из sunoData (длинные клипы первыми). Без обложек и stream."""
+    resp = data.get("response") if isinstance(data.get("response"), dict) else data
+    rows = resp.get("sunoData") if isinstance(resp, dict) else None
+    if not isinstance(rows, list):
+        return []
+    ranked: list[tuple[float, str]] = []
+    for it in rows:
+        if not isinstance(it, dict):
+            continue
+        url = str(it.get("audioUrl") or it.get("sourceAudioUrl") or "").strip()
+        if not url.startswith("http") or _url_ext(url) not in _AUDIO_EXTS:
+            continue
+        try:
+            dur = float(it.get("duration") or 0)
+        except (TypeError, ValueError):
+            dur = 0.0
+        ranked.append((dur, url))
+    ranked.sort(key=lambda x: -x[0])
+    seen: set[str] = set()
+    out: list[str] = []
+    for _, url in ranked:
+        if url not in seen:
+            seen.add(url)
+            out.append(url)
+    return out
+
+
+def _result_media_urls(data: dict[str, Any]) -> list[str]:
+    """Ссылки на готовый файл: для Suno — mp3 из sunoData, иначе без картинок-обложек."""
+    suno = _suno_clip_audio_urls(data)
+    if suno:
+        return suno
+    urls = list(_extract_urls(data))
+    raw = data.get("resultJson")
+    if isinstance(raw, str) and raw.strip():
+        with contextlib.suppress(json.JSONDecodeError):
+            urls.extend(_extract_urls(json.loads(raw)))
+    urls = list(dict.fromkeys(urls))
+    audio = [u for u in urls if _url_ext(u) in _AUDIO_EXTS]
+    if audio:
+        return audio
+    video = [u for u in urls if _url_ext(u) in _VIDEO_EXTS]
+    if video:
+        return video
+    images = [u for u in urls if _url_ext(u) in _IMAGE_EXTS]
+    return images or urls
+
+
 def _task_state(api: str, data: dict[str, Any]) -> str:
     """Нормализованный статус: pending | success | fail."""
     if api == "jobs":
@@ -240,6 +300,14 @@ async def poll_task(api: str, task_id: str, *, timeout_s: float = _POLL_MAX_S) -
             data = _check(payload, http_status=r.status_code, where=f"poll {path}")
             inner = data.get("data") if isinstance(data.get("data"), dict) else {}
             state = _task_state(api, inner)
+            # FIRST_SUCCESS у Suno часто без audioUrl — ждём SUCCESS, иначе качаем jpeg/stream.
+            if (
+                state == "success"
+                and api == "suno"
+                and str(inner.get("status") or "").upper() == "FIRST_SUCCESS"
+                and not _result_media_urls(inner)
+            ):
+                state = "pending"
             if state == "success":
                 return inner
             if state == "fail":
@@ -284,13 +352,7 @@ async def run_generation(
     task_id = await create_task(api, spec.get("endpoint"), payload)
     logger.info("kie_http: task {} создана (model={})", task_id, spec.get("id"))
     data = await poll_task(api, task_id, timeout_s=timeout_s)
-    urls = _extract_urls(data)
-    # resultJson у jobs — строка JSON
-    raw = data.get("resultJson")
-    if isinstance(raw, str) and raw.strip():
-        with contextlib.suppress(json.JSONDecodeError):
-            urls.extend(_extract_urls(json.loads(raw)))
-    urls = list(dict.fromkeys(urls))
+    urls = _result_media_urls(data)
     if not urls:
         raise KieHttpError(
             "kie: success без ссылок на результат",

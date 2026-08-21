@@ -66,6 +66,21 @@ def test_suno_flat_price() -> None:
     assert est["credits"] == 12 and est["usd"] == 0.06
 
 
+def test_suno_sounds_payload_sends_model_omits_any_key() -> None:
+    spec = kc.get_model("suno-sounds")
+    assert spec is not None
+    body = kc.build_payload(spec, {"prompt": "удар по металлу"})
+    assert body["prompt"] == "удар по металлу"
+    assert body["model"] == "V5_5"
+    assert "soundKey" not in body
+    assert body.get("soundLoop") is False
+    with_key = kc.build_payload(spec, {"prompt": "whoosh", "soundKey": "Dm", "model": "V5"})
+    assert with_key["soundKey"] == "Dm"
+    assert with_key["model"] == "V5"
+    errs = kc.validate_values(spec, {"prompt": "x" * 501})
+    assert any("max 500" in e for e in errs)
+
+
 def test_validate_required_and_enum() -> None:
     sd = kc.get_model("seedance-2-5")
     assert sd is not None

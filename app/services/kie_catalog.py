@@ -57,6 +57,8 @@ def _f(
     max_items: int | None = None,
     desc: str = "",
     show_if: dict[str, Any] | None = None,
+    max_len: int | None = None,
+    omit_values: list[Any] | None = None,
 ) -> dict[str, Any]:
     f: dict[str, Any] = {
         "name": name,
@@ -79,6 +81,10 @@ def _f(
         f["max_items"] = max_items
     if show_if:
         f["show_if"] = show_if
+    if max_len is not None:
+        f["max_len"] = max_len
+    if omit_values:
+        f["omit_values"] = list(omit_values)
     return f
 
 
@@ -1483,13 +1489,15 @@ MODELS: list[dict[str, Any]] = [
         "result": "audio",
         "desc": "Генератор звуков/SFX по описанию: удары, ambience, whoosh…",
         "fields": [
-            _prompt("Описание звука"),
+            _prompt("Описание звука", max_len=500),
+            _f("model", "Модель", "select", options=["V5_5", "V5"], default="V5_5",
+               desc="V5_5 — актуальный генератор SFX; V5 — запасной"),
             _f("soundLoop", "Зациклить", "toggle", default=False),
-            _f("soundTempo", "Темп (BPM, 0 — без)", "number", min=1, max=300, step=1),
+            _f("soundTempo", "Темп (BPM, пусто — авто)", "number", min=1, max=300, step=1),
             _f("soundKey", "Тональность", "select",
                options=["Any", "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
                         "Cm", "C#m", "Dm", "D#m", "Em", "Fm", "F#m", "Gm", "G#m", "Am", "A#m", "Bm"],
-               default="Any"),
+               default="Any", omit_values=["Any"]),
         ],
         "pricing": {"unit": "gen", "rules": [], "default": 2.5, "note": "2.5 кр/звук (~$0.0125)"},
     },
@@ -1819,6 +1827,9 @@ def validate_values(
                     errors.append(f"{name}: {num} > max {f['max']}")
             except (TypeError, ValueError):
                 errors.append(f"{name}: не число: {v!r}")
+        elif kind in ("text", "textarea") and f.get("max_len"):
+            if len(str(v)) > int(f["max_len"]):
+                errors.append(f"{name}: {len(str(v))} символов > max {f['max_len']}")
         elif kind in _FILE_KINDS:
             items = v if isinstance(v, list) else [v]
             if f.get("max_items") and len(items) > int(f["max_items"]):
@@ -1855,6 +1866,9 @@ def build_payload(spec: dict[str, Any], values: dict[str, Any]) -> dict[str, Any
         name = f["name"]
         v = merged.get(name)
         if v is None:
+            continue
+        omit = {str(x) for x in (f.get("omit_values") or [])}
+        if str(v) in omit:
             continue
         kind = f.get("kind")
         if kind in _FILE_KINDS:
