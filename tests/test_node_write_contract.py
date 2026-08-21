@@ -9,6 +9,23 @@ from app.services.node_write_contract import (
 )
 
 
+def test_excel_gpt_prompts_keeps_image_and_anim():
+    ops = [
+        {
+            "frame_uuid": "aa",
+            "fields": {
+                "промт_картинки": "YES",
+                "промт_видео": "MOVE",
+                "место": "кухня",
+            },
+        }
+    ]
+    out = filter_ops_for_node(ops, node_kind="excel_gpt_prompts")
+    assert out[0]["fields"]["промт_картинки"] == "YES"
+    assert out[0]["fields"]["промт_видео"] == "MOVE"
+    assert out[0]["fields"]["место"] == "кухня"
+
+
 def test_excel_gpt_strips_prompt_fields():
     ops = [
         {

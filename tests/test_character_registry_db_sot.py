@@ -35,6 +35,17 @@ def test_detect_script_writer_prompt() -> None:
     assert not _is_script_writer_prompt("sd_skeleton.md", "shot fill")
 
 
+def test_detect_frame_and_qc_prompt() -> None:
+    from app.orchestrator.steps.enrich_xlsx import (
+        _is_frame_prompts_prompt,
+        _is_qc_prompts_prompt,
+    )
+
+    assert _is_frame_prompts_prompt("frame_prompts_continuity_ru.md", None)
+    assert _is_qc_prompts_prompt("prompts_qc_continuity_ru.md", None)
+    assert not _is_frame_prompts_prompt("script_writer_ru.md", None)
+
+
 def test_characters_from_entities_and_gpt_cards() -> None:
     ents = [
         SimpleNamespace(

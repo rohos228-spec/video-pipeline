@@ -28,6 +28,7 @@ _LIGHT_JSON_BYTES_PER_BATCH = 180_000
 # Image prompts (~5000 символов/кадр): меньше, чем shot_fill.
 _IMG_FRAMES_PER_BATCH = 8
 _IMG_JSON_BYTES_PER_BATCH = 24_000
+PROMPT_UNITS_PER_BATCH = _IMG_FRAMES_PER_BATCH
 # Сценарист / закадр: пачка = 9 ячеек VO, до 6 пачек параллельно
 # со сдвигом старта 1 с.
 VO_UNITS_PER_BATCH = 9
@@ -167,15 +168,28 @@ def select_frames_for_batches(
 
 
 def _batch_footer(
-    batch_i: int, split_level: int, n: int, *, vo_units: bool = False
+    batch_i: int,
+    split_level: int,
+    n: int,
+    *,
+    footer_kind: str | None = None,
 ) -> str:
-    if vo_units:
+    kind = (footer_kind or "").strip().lower()
+    if kind in {"vo", "voiceover"}:
         return (
             f"\n# BATCH call={batch_i} split={split_level} "
             f"(закадр по {VO_UNITS_PER_BATCH})\n"
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Верни ops ровно по каждому uuid: fields.закадр / voiceover_text. "
             "Чужие кадры не пиши. JSON apply-ops, без прозы.\n"
+        )
+    if kind in {"prompts", "img"}:
+        return (
+            f"\n# BATCH call={batch_i} split={split_level} "
+            f"(промты по {PROMPT_UNITS_PER_BATCH})\n"
+            f"В db_frames.json только этот кусок: {n} кадров.\n"
+            "Верни ops ровно по каждому uuid: fields.промт_картинки и "
+            "промт_видео. Чужие кадры не пиши. JSON apply-ops, без прозы.\n"
         )
     return (
         f"\n# BATCH call={batch_i} split={split_level} (схема 1→2→4)\n"
@@ -203,6 +217,7 @@ async def run_apply_ops_batched(
     chunk_size: int | None = None,
     parallel_max: int | None = None,
     stagger_sec: float | None = None,
+    footer_kind: str | None = None,
 ) -> OperatorApiResult:
     """Один GPT-вызов на пачку. Ошибка внутри пачки → 2, затем 4.
 
@@ -286,7 +301,7 @@ async def run_apply_ops_batched(
             encoding="utf-8",
         )
         foot = _batch_footer(
-            my_i, level, len(chunk), vo_units=bool(chunk_size)
+            my_i, level, len(chunk), footer_kind=footer_kind
         )
         res = await run_operator_api(
             project_dir=project_dir,

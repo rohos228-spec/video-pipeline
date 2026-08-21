@@ -102,12 +102,31 @@ _SCRIPT_WRITER_PROMPT_MARKERS = (
     "script_writer",
     "сценарист закадра",
 )
+_FRAME_PROMPTS_MARKERS = (
+    "frame_prompts",
+    "промты кадров",
+)
+_QC_PROMPTS_MARKERS = (
+    "prompts_qc",
+    "qc промпт",
+)
+
+
+def _prompt_blob(variant: str | None, master: str | None) -> str:
+    return f"{variant or ''}\n{(master or '')[:800]}".casefold()
 
 
 def _is_script_writer_prompt(variant: str | None, master: str | None) -> bool:
     """Сценарист: закадр + разбивка, батчи по 9 ячеек VO, не shot-fill."""
-    blob = f"{variant or ''}\n{(master or '')[:800]}".casefold()
-    return any(m in blob for m in _SCRIPT_WRITER_PROMPT_MARKERS)
+    return any(m in _prompt_blob(variant, master) for m in _SCRIPT_WRITER_PROMPT_MARKERS)
+
+
+def _is_frame_prompts_prompt(variant: str | None, master: str | None) -> bool:
+    return any(m in _prompt_blob(variant, master) for m in _FRAME_PROMPTS_MARKERS)
+
+
+def _is_qc_prompts_prompt(variant: str | None, master: str | None) -> bool:
+    return any(m in _prompt_blob(variant, master) for m in _QC_PROMPTS_MARKERS)
 
 # Маппинг slot_idx (1..5) → (running_status, ready_status, step_code).
 _SLOT_MAP: dict[int, tuple[ProjectStatus, ProjectStatus, str]] = {
@@ -1027,6 +1046,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             and ctx_path is not None
         ):
             from app.services.apply_ops_batches import (
+                PROMPT_UNITS_PER_BATCH,
                 VO_PARALLEL_MAX,
                 VO_STAGGER_SEC,
                 VO_UNITS_PER_BATCH,
@@ -1035,17 +1055,26 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             from app.services import db_apply as _db_apply
             from app.services.node_write_contract import filter_ops_for_node
 
-            script_writer = _is_script_writer_prompt(variant, master) or str(
-                node_key or ""
-            ).endswith("_fw_script")
+            nk = str(node_key or "")
+            script_writer = _is_script_writer_prompt(variant, master) or nk.endswith(
+                "_fw_script"
+            )
+            frame_prompts = _is_frame_prompts_prompt(variant, master) or nk.endswith(
+                "_fw_frames"
+            )
+            qc_prompts = _is_qc_prompts_prompt(variant, master) or nk.endswith("_fw_qc")
+            write_prompts = frame_prompts or qc_prompts
             keep_voiceover = script_writer
+            apply_kind = (
+                "excel_gpt_prompts" if write_prompts else "excel_gpt_no_prompts"
+            )
 
             async def _apply_batch(payload: dict) -> None:
                 from app.services.db_apply import FIELD_ALIASES
 
                 ops = filter_ops_for_node(
                     list(payload.get("ops") or []),
-                    node_kind="excel_gpt_no_prompts",
+                    node_kind=apply_kind,
                 )
                 # Shot-fill не должен затирать закадр/смысл, если
                 # volume-continue подмешал чужую схему полей.
@@ -1077,23 +1106,31 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     project,
                     ops,
                     export_xlsx=bool(payload.get("export_xlsx", False)),
-                    node_kind="excel_gpt_no_prompts",
+                    node_kind=apply_kind,
                 )
                 await session.commit()
                 await session.refresh(project)
 
+            if script_writer:
+                batch_label = (
+                    f"закадр по {VO_UNITS_PER_BATCH}, "
+                    f"параллельно {VO_PARALLEL_MAX}, "
+                    f"сдвиг {VO_STAGGER_SEC:g}с"
+                )
+            elif write_prompts:
+                batch_label = (
+                    f"промты по {PROMPT_UNITS_PER_BATCH}, "
+                    f"параллельно {VO_PARALLEL_MAX}, "
+                    f"сдвиг {VO_STAGGER_SEC:g}с"
+                )
+            else:
+                batch_label = "dense shot fill"
             logger.info(
                 "[#{}] enrich_xlsx node={!r}: apply-ops adaptive "
                 "1→2→4 ({} )",
                 project.id,
                 node_key,
-                (
-                    f"закадр по {VO_UNITS_PER_BATCH}, "
-                    f"параллельно {VO_PARALLEL_MAX}, "
-                    f"сдвиг {VO_STAGGER_SEC:g}с"
-                    if script_writer
-                    else "dense shot fill"
-                ),
+                batch_label,
             )
             api_res = await run_apply_ops_batched(
                 project_dir=project.data_dir,
@@ -1105,11 +1142,25 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 db_ctx=db_ctx,
                 ctx_path=ctx_path,
                 project_id=project.id,
-                dense=True,
+                dense=not write_prompts,
                 apply_fn=_apply_batch,
-                chunk_size=VO_UNITS_PER_BATCH if script_writer else None,
-                parallel_max=VO_PARALLEL_MAX if script_writer else None,
-                stagger_sec=VO_STAGGER_SEC if script_writer else None,
+                skip_if_field="image_prompt" if frame_prompts else None,
+                chunk_size=(
+                    VO_UNITS_PER_BATCH
+                    if script_writer
+                    else (PROMPT_UNITS_PER_BATCH if write_prompts else None)
+                ),
+                parallel_max=(
+                    VO_PARALLEL_MAX if script_writer or write_prompts else None
+                ),
+                stagger_sec=(
+                    VO_STAGGER_SEC if script_writer or write_prompts else None
+                ),
+                footer_kind=(
+                    "vo"
+                    if script_writer
+                    else ("prompts" if write_prompts else None)
+                ),
             )
         else:
             api_res = await run_operator_api(
@@ -1151,20 +1202,28 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 else []
             )
             # check/report_only не пишут (или пишут DB-check без стрипа).
-            # excel_gpt на графе с img_pr/anim_pr не пишет чужие промты.
+            # Shot-fill не пишет промты картинки/видео; frames/QC — пишут.
             apply_node_kind: str | None = None
             if ops_list and not check_mode:
                 from app.services.node_write_contract import filter_ops_for_node
 
+                nk = str(node_key or "")
+                write_prompts = (
+                    _is_frame_prompts_prompt(variant, master)
+                    or _is_qc_prompts_prompt(variant, master)
+                    or nk.endswith("_fw_frames")
+                    or nk.endswith("_fw_qc")
+                )
+                apply_kind = (
+                    "excel_gpt_prompts" if write_prompts else "excel_gpt_no_prompts"
+                )
                 n_fields_before = sum(
                     len(op.get("fields") or {})
                     for op in ops_list
                     if isinstance(op, dict)
                 )
-                ops_list = filter_ops_for_node(
-                    ops_list, node_kind="excel_gpt_no_prompts"
-                )
-                apply_node_kind = "excel_gpt_no_prompts"
+                ops_list = filter_ops_for_node(ops_list, node_kind=apply_kind)
+                apply_node_kind = apply_kind
                 n_fields_after = sum(
                     len(op.get("fields") or {})
                     for op in ops_list
@@ -1173,11 +1232,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 dropped = n_fields_before - n_fields_after
                 if dropped:
                     logger.info(
-                        "[#{}] enrich_xlsx node={}: stripped {} prompt "
-                        "fields (excel_gpt_no_prompts)",
+                        "[#{}] enrich_xlsx node={}: stripped {} fields ({})",
                         project.id,
                         node_key,
                         dropped,
+                        apply_kind,
                     )
             if getattr(api_res, "applied_in_runner", False):
                 logger.info(
