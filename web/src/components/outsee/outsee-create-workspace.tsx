@@ -50,6 +50,7 @@ import {
   type OutseeMediaType,
 } from "@/lib/outsee-catalog";
 import { estimateCreatePrice } from "@/lib/create-pricing";
+import { KieCreatePanel } from "@/components/outsee/kie-create-panel";
 
 type Props = {
   open: boolean;
@@ -115,6 +116,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   const [firstFrameName, setFirstFrameName] = useState<string | null>(null);
   const [lastFrameName, setLastFrameName] = useState<string | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
+  const [engine, setEngine] = useState<"studio" | "kie">("studio");
   const [openChip, setOpenChip] = useState<OutseeChip | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [settingsHydrated, setSettingsHydrated] = useState(false);
@@ -672,6 +674,28 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <div className="flex items-center rounded-lg border border-white/10 bg-white/[0.03] p-0.5">
+            {(
+              [
+                ["studio", "Outsee / Grsai"],
+                ["kie", "KIE"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setEngine(id)}
+                className={cn(
+                  "rounded-md px-2.5 py-1 text-[11px] font-medium transition",
+                  engine === id
+                    ? "bg-[rgba(209,254,23,0.16)] text-[rgba(209,254,23,1)]"
+                    : "text-white/45 hover:text-white/80",
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <span className="hidden text-[11px] text-white/40 sm:inline">
             настройки и история общие для Studio
           </span>
@@ -913,7 +937,12 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 )}
             </h2>
           </div>
-          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 pb-[230px] lg:px-6">
+          <div
+            className={cn(
+              "flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 lg:px-6",
+              engine === "kie" ? "pb-[440px]" : "pb-[230px]",
+            )}
+          >
             {selected?.preview_url &&
             selected.status !== "queued" &&
             selected.status !== "processing" ? (
@@ -938,7 +967,8 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     className="max-h-[calc(100vh-320px)] max-w-full rounded-xl border border-white/[0.06] object-contain"
                   />
                 )}
-                {mediaType === "video" &&
+                {engine === "studio" &&
+                  mediaType === "video" &&
                   videoModel.chips.includes("image-input") &&
                   selected.kind === "image" &&
                   selected.status === "done" && (
@@ -1020,6 +1050,15 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
 
           {/* prompt dock + vertical type toggle */}
           <div className="absolute bottom-0 left-0 right-0 z-10 px-3 pb-3 lg:px-5 lg:pb-4">
+            {engine === "kie" ? (
+              <KieCreatePanel
+                onGenerated={(historyId) => {
+                  if (historyId) setSelectedId(historyId);
+                  qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
+                  qc.invalidateQueries({ queryKey: ["create-queue"] });
+                }}
+              />
+            ) : (
             <div className="flex items-end gap-2">
               {/* cs-typetoggle */}
               <div className="flex shrink-0 flex-col gap-2">
@@ -1441,6 +1480,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 </div>
               </div>
             </div>
+            )}
           </div>
         </section>
       </div>

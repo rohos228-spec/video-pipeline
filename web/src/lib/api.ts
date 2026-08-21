@@ -33,6 +33,58 @@ export interface StepTemplateBlock {
   body: string;
 }
 
+// ---- KIE Create типы (каталог моделей kie.ai) ----
+export interface KieField {
+  name: string;
+  label: string;
+  kind:
+    | "text"
+    | "textarea"
+    | "select"
+    | "toggle"
+    | "number"
+    | "images"
+    | "videos"
+    | "audios"
+    | "dialogue";
+  required?: boolean;
+  default?: unknown;
+  options?: string[];
+  min?: number;
+  max?: number;
+  step?: number;
+  max_items?: number;
+  desc?: string;
+  show_if?: Record<string, unknown>;
+}
+
+export interface KiePricingRule {
+  when: Record<string, unknown>;
+  credits: number;
+}
+
+export interface KieModelSpec {
+  id: string;
+  label: string;
+  category: string;
+  desc: string;
+  result: "video" | "image" | "audio" | "text";
+  fields: KieField[];
+  pricing: {
+    unit: "gen" | "sec" | "1k_chars";
+    rules: KiePricingRule[];
+    default: number;
+    note?: string;
+  };
+}
+
+export interface KieCatalog {
+  credit_usd: number;
+  categories: { id: string; label: string }[];
+  models: KieModelSpec[];
+  configured: boolean;
+}
+
 export interface LibraryItemDTO {
   id: number;
   kind: string;
@@ -1811,6 +1863,42 @@ export const api = {
         provider: string;
       }[];
     }>(`/api/create/queue`),
+
+  // ---- KIE Create (вкладка «Генерация», провайдер kie.ai) ----
+  kieCatalog: () =>
+    http<KieCatalog>(`/api/kie-create/catalog`),
+  kieCredits: () =>
+    http<{ configured: boolean; credits: number | null; usd: number | null }>(
+      `/api/kie-create/credits`,
+    ),
+  kieGenerate: (body: { model_id: string; values: Record<string, unknown> }) =>
+    http<{
+      job: {
+        job_id: string;
+        status: string;
+        history_id: string;
+        media: string;
+        model: string;
+        queue_position?: number | null;
+      };
+      estimate: { credits: number; usd: number; note?: string };
+    }>(`/api/kie-create/generate`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  kieUpload: async (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const r = await fetch(`/api/kie-create/upload`, { method: "POST", body: fd });
+    const data = (await r.json().catch(() => ({}))) as {
+      url?: string;
+      detail?: string;
+    };
+    if (!r.ok || !data.url) {
+      throw new Error(data.detail || `upload HTTP ${r.status}`);
+    }
+    return data as { url: string; filename: string; bytes: number };
+  },
 
   createJob: (jobId: string) =>
     http<{

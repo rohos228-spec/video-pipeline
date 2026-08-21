@@ -106,6 +106,10 @@ class Settings(BaseSettings):
     # Kie Market (Kling 2.6 video fallback). Пусто → GPT_API_KEY + api.kie.ai.
     kie_api_key: str = Field("", alias="KIE_API_KEY")
     kie_api_base_url: str = Field("https://api.kie.ai", alias="KIE_API_BASE_URL")
+    # Загрузка референс-файлов для kie (file-upload-api хост из доков).
+    kie_upload_base_url: str = Field(
+        "https://kieai.redpandaai.co", alias="KIE_UPLOAD_BASE_URL"
+    )
     # Yandex Object Storage — публичный хост реф-кадров для Outsee/Kling.
     yandex_storage_bucket: str = Field("", alias="YANDEX_STORAGE_BUCKET")
     yandex_storage_access_key: str = Field("", alias="YANDEX_STORAGE_ACCESS_KEY")
