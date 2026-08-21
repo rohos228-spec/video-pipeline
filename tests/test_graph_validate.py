@@ -72,6 +72,39 @@ def test_hero_excel_gpt_loop_auto_marks_fail() -> None:
     assert (fwd.get("data") or {}).get("kind") == "after"
 
 
+def test_split_feed_into_scriptwriter_does_not_flip_writer_to_check() -> None:
+    """Пунктир Разбивка→сценарист не должен делать сценарист→проверка «не ок».
+
+    Иначе проверка теряет вход, а ▶ сценариста падает: «у ноды check нет файлов».
+    """
+    nodes = [
+        {"id": "n_plan", "type": "plan", "position": {}, "data": {}},
+        {"id": "n_script", "type": "script", "position": {}, "data": {}},
+        {"id": "n_split", "type": "split", "position": {}, "data": {}},
+        {"id": "n_excel_gpt_fw_script", "type": "excel_gpt", "position": {}, "data": {}},
+        {"id": "n_excel_gpt_fw_check_script", "type": "excel_gpt", "position": {}, "data": {}},
+        {"id": "n_excel_gpt_fw_frames", "type": "excel_gpt", "position": {}, "data": {}},
+        {"id": "n_excel_gpt_fw_qc", "type": "excel_gpt", "position": {}, "data": {}},
+    ]
+    writer_to_check = "e_n_excel_gpt_fw_script_n_excel_gpt_fw_check_script"
+    edges = [
+        {"id": "e_plan_writer", "source": "n_plan", "target": "n_excel_gpt_fw_script", "data": {"kind": "after"}},
+        {"id": writer_to_check, "source": "n_excel_gpt_fw_script", "target": "n_excel_gpt_fw_check_script", "data": {"kind": "after"}},
+        {"id": "e_check_frames", "source": "n_excel_gpt_fw_check_script", "target": "n_excel_gpt_fw_frames", "data": {"kind": "pass"}},
+        {"id": "e_check_writer", "source": "n_excel_gpt_fw_check_script", "target": "n_excel_gpt_fw_script", "data": {"kind": "fail"}},
+        {"id": "e_frames_qc", "source": "n_excel_gpt_fw_frames", "target": "n_excel_gpt_fw_qc", "data": {"kind": "after"}},
+        {"id": "e_qc_script", "source": "n_excel_gpt_fw_qc", "target": "n_script", "data": {"kind": "after"}},
+        {"id": "e_script_split", "source": "n_script", "target": "n_split", "data": {"kind": "after"}},
+        {"id": "e_split_writer", "source": "n_split", "target": "n_excel_gpt_fw_script", "data": {"kind": "after"}},
+    ]
+    r = validate_workflow_graph(nodes, edges)
+    assert r["valid"] is True, r["errors"]
+    assert not any(p["id"] == writer_to_check for p in r.get("edge_patches") or [])
+    kept = {e["id"]: e for e in (r.get("edges") or edges)}
+    kind = ((kept[writer_to_check].get("data") or {}).get("kind") or "after")
+    assert kind == "after"
+
+
 def test_does_not_overwrite_pass_edge_on_cycle() -> None:
     """Уже размеченная «Ок» не превращается в «Не ок» при петле."""
     nodes = [

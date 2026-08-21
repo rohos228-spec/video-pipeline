@@ -9,6 +9,10 @@ from app.orchestrator.node_registry import is_work_node_type
 
 # Ветка «не ок» — допустимый обратный ход (проверка → починить → снова проверка).
 _FEEDBACK_EDGE_KINDS = frozenset({"fail"})
+# Ок/Не ок не задают жёсткий порядок: иначе пунктир Разбивка→сценарист
+# замыкает writer→check→frames(pass)→…→split→writer и валидатор
+# помечает сценарист→проверка как fail.
+_CYCLE_EXEMPT_KINDS = frozenset({"fail", "pass", "gate"})
 # Только «связь» можно автопометить как fail. pass/gate («Ок») не трогаем.
 _AUTO_FAILABLE_KINDS = frozenset({"after", "feed", "review", ""})
 
@@ -67,6 +71,35 @@ def normalize_check_feedback_edges(
     soft_exclude: set[str] = set()
     soft_pass_warned = False
 
+    # After, который возвращается к проверке по её ветке «Ок» (A pass→ B after→ A).
+    for e in out_edges:
+        src, tgt = str(e.get("source") or ""), str(e.get("target") or "")
+        if _edge_kind(e) not in _AUTO_FAILABLE_KINDS:
+            continue
+        if src not in by_id or tgt not in by_id:
+            continue
+        has_pass_back = False
+        for other in out_edges:
+            if str(other.get("source") or "") != tgt:
+                continue
+            if str(other.get("target") or "") != src:
+                continue
+            if _edge_kind(other) in ("pass", "gate"):
+                has_pass_back = True
+                break
+        if not has_pass_back:
+            continue
+        eid = str(e.get("id") or "")
+        _set_edge_kind(e, "fail")
+        if not e.get("label") or str(e.get("label")).lower() in (
+            "связь",
+            "after",
+            "→",
+        ):
+            e["label"] = "не ок"
+        if eid:
+            patches.append({"id": eid, "kind": "fail"})
+
     for _ in range(max(8, len(out_edges) + 1)):
         out_forward: dict[str, list[str]] = {nid: [] for nid in by_id}
         edge_by_pair: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -77,7 +110,7 @@ def normalize_check_feedback_edges(
                 continue
             kind = _edge_kind(e)
             edge_by_pair.setdefault((src, tgt), []).append(e)
-            if kind in _FEEDBACK_EDGE_KINDS or eid in soft_exclude:
+            if kind in _CYCLE_EXEMPT_KINDS or eid in soft_exclude:
                 continue
             out_forward[src].append(tgt)
 
@@ -185,8 +218,9 @@ def validate_workflow_graph(
         rev[tgt].append(src)
         kind = _edge_kind(e)
         eid = str(e.get("id") or "")
-        if kind in _FEEDBACK_EDGE_KINDS or eid in soft_exclude:
-            feedback_count += 1
+        if kind in _CYCLE_EXEMPT_KINDS or eid in soft_exclude:
+            if kind in _FEEDBACK_EDGE_KINDS or eid in soft_exclude:
+                feedback_count += 1
             continue
         out_forward[src].append(tgt)
 

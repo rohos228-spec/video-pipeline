@@ -318,3 +318,58 @@ def test_resolve_hydrates_assist_reply_from_disk(tmp_path: Path, monkeypatch) ->
     assert any(
         str(p).endswith("gpt_reply.txt") for p in (last.get("outputPaths") or [])
     )
+
+
+def test_fail_retry_and_split_do_not_block_project_file_writer(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Первый ▶ сценариста: петля «Не ок» от проверки + пунктир от разбивки.
+
+    Файлов у check ещё нет, project.xlsx может не быть — DB SoT всё равно canRun.
+    """
+    p = _project(tmp_path, monkeypatch)
+    writer = "n_excel_gpt_fw_script"
+    check = "n_excel_gpt_fw_check_script"
+    split = "n_split"
+    plan = "n_plan"
+    p.meta = {
+        "canvas_graph": {
+            "nodes": [
+                {"id": plan, "type": "plan", "position": {"x": 0, "y": 0}},
+                {"id": split, "type": "split", "position": {"x": 0, "y": 80}},
+                {"id": writer, "type": "excel_gpt", "position": {"x": 200, "y": 0}},
+                {"id": check, "type": "excel_gpt", "position": {"x": 400, "y": 0}},
+            ],
+            "edges": [
+                {"id": "e_plan", "source": plan, "target": writer, "data": {"kind": "after"}},
+                {"id": "e_split", "source": split, "target": writer, "data": {"kind": "after"}},
+                {"id": "e_fail", "source": check, "target": writer, "data": {"kind": "fail"}},
+                {
+                    "id": "e_fwd",
+                    "source": writer,
+                    "target": check,
+                    "data": {"kind": "after"},
+                },
+            ],
+        },
+        "excel_gpt_nodes": {
+            writer: {
+                "role": "assist",
+                "outputMode": "project_file",
+                "transport": "api",
+                "takeFromEdges": True,
+            },
+            check: {
+                "role": "review",
+                "checkMode": True,
+                "transport": "api",
+                "emitKinds": ["inputs", "reply_txt"],
+            },
+        },
+    }
+    res = resolve_operator(p, writer)
+    assert res["canRun"] is True, res["errors"]
+    assert res["consistent"] is True, res["errors"]
+    joined = " ".join(res["errors"])
+    assert "n_excel_gpt_fw_check_script" not in joined
+    assert "нет файлов на диске" not in joined
