@@ -129,7 +129,7 @@ def test_catalog_has_scene_fanout() -> None:
     groups = list_node_groups()
     fan = next(g for g in groups if g["id"] == "scene_design_fanout")
     assert fan["category"] == "planning"
-    assert fan["node_count"] == 12  # 5 агентов + 5 проверок + сборщик + его проверка
+    assert fan["node_count"] == 10  # 4 агента + 4 проверки + сборщик + его проверка (стиль удалён)
     assert fan["default_after_type"] == "split"
     keys = {n["key"] for n in fan["nodes"]}
     assert keys == {
@@ -171,7 +171,7 @@ async def test_insert_fanout_after_split(mem_db) -> None:
         res = await insert_node_group(session, project, "scene_design_fanout")
 
     assert res["after"] == "n_split"
-    assert len(res["nodes"]) == 12
+    assert len(res["nodes"]) == 10
     cg = project.meta["canvas_graph"]
     by_id = {n["id"]: n for n in cg["nodes"]}
     split_x = by_id["n_split"]["position"]["x"]
@@ -252,6 +252,60 @@ async def test_insert_fanout_after_split(mem_db) -> None:
         by_key = {nr.node_key: nr.node_type for nr in nrs}
         assert by_key["n_excel_gpt_sd_camera"] == "sd_agent"
         assert by_key["n_excel_gpt_sd_asm"] == "sd_assemble"
+
+
+async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
+    """Группа «Сценарий → промпты кадров + QC»: вставка после plan, стиль веера."""
+    async with mem_db() as session:
+        project = await _mk_project(session)
+        res = await insert_node_group(session, project, "script_frames_qc")
+
+    assert res["after"] == "n_plan"
+    assert len(res["nodes"]) == 4
+    cg = project.meta["canvas_graph"]
+    by_id = {n["id"]: n for n in cg["nodes"]}
+    plan_x = by_id["n_plan"]["position"]["x"]
+
+    script = by_id["n_excel_gpt_fw_script"]
+    assert script["type"] == "excel_gpt"
+    assert script["position"]["x"] == plan_x + 290.0
+    assert script["data"]["groupId"] == "script_frames_qc"
+    assert project.meta["prompt_slot_variants"]["n_excel_gpt_fw_script"] == {
+        "main": "script_writer_ru"
+    }
+    # рабочие ноды пишут в DB через apply-ops
+    cfg = project.meta["excel_gpt_nodes"]["n_excel_gpt_fw_script"]
+    assert cfg["outputMode"] == "project_file"
+    assert cfg["transport"] == "api"
+
+    # проверка сценария — как в веере: checkMode, правила с промта источника
+    chk = by_id["n_excel_gpt_fw_check_script"]
+    assert chk["data"]["slotOverflow"] is True
+    ccfg = project.meta["excel_gpt_nodes"]["n_excel_gpt_fw_check_script"]
+    assert ccfg["checkMode"] is True
+    assert ccfg["checkPromptSource"] == "upstream"
+    assert "n_excel_gpt_fw_check_script" not in project.meta["prompt_slot_variants"]
+
+    assert project.meta["prompt_slot_variants"]["n_excel_gpt_fw_frames"] == {
+        "main": "frame_prompts_continuity_ru"
+    }
+    assert project.meta["prompt_slot_variants"]["n_excel_gpt_fw_qc"] == {
+        "main": "prompts_qc_continuity_ru"
+    }
+
+    pairs = {(e["source"], e["target"]) for e in cg["edges"]}
+    assert ("n_plan", "n_script") not in pairs  # нет такого ребра
+    assert ("n_plan", "n_excel_gpt_fw_script") in pairs
+    assert ("n_excel_gpt_fw_script", "n_excel_gpt_fw_check_script") in pairs
+    kinds = {
+        (e["source"], e["target"]): (e.get("data") or {}).get("kind")
+        for e in cg["edges"]
+    }
+    assert kinds[("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_frames")] == "pass"
+    assert kinds[("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_script")] == "fail"
+    assert ("n_excel_gpt_fw_frames", "n_excel_gpt_fw_qc") in pairs
+    # выход группы → старая цель plan (script)
+    assert ("n_excel_gpt_fw_qc", "n_script") in pairs
 
 
 async def test_insert_duplicate_raises(mem_db) -> None:
@@ -433,7 +487,7 @@ def test_group_detail_spec() -> None:
     assert d["builtin"] is True
     assert d["exit_key"] == "check_asm"
     assert set(d["entry_keys"]) == {
-        "characters", "world", "style", "camera", "action"
+        "characters", "world", "camera", "action"
     }
     by_key = {n["key"]: n for n in d["nodes"]}
     cam = by_key["camera"]
@@ -464,7 +518,7 @@ async def test_backfill_group_stamps(mem_db) -> None:
 
         stats = await backfill_group_stamps(session)
 
-    assert stats["nodes"] == 12  # 5 агентов + сборщик + 6 проверок
+    assert stats["nodes"] == 10  # 4 агента + сборщик + 5 проверок (стиль удалён)
     assert stats["projects"] == 1
     cg = project.meta["canvas_graph"]
     stamped = [
@@ -472,7 +526,7 @@ async def test_backfill_group_stamps(mem_db) -> None:
         for n in cg["nodes"]
         if (n.get("data") or {}).get("groupId") == "scene_design_fanout"
     ]
-    assert len(stamped) == 12
+    assert len(stamped) == 10
     assert all(
         n["data"]["groupTitle"] == "Сцены: веер агентов" for n in stamped
     )
