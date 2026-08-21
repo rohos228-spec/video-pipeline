@@ -445,8 +445,22 @@ async def start_step(
 
         started_slot = slot_index_from_node(node)
         project.meta = meta
-        cleared = clear_excel_gpt_tail_completion(project, started_slot)
-        chain_to = ensure_enrich_auto_chain_to(project, started_slot)
+        if started_slot < 1:
+            # overflow: не трактовать слот 0 как «сбросить enrich 1..5».
+            keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
+            keys_cleared = [k for k in keys if k == nk]
+            if keys_cleared:
+                meta["excel_gpt_completed_keys"] = [k for k in keys if k != nk]
+                project.meta = meta
+            cleared = {
+                "from_slot": 0,
+                "slots_cleared": [],
+                "keys_cleared": keys_cleared,
+            }
+            chain_to = None
+        else:
+            cleared = clear_excel_gpt_tail_completion(project, started_slot)
+            chain_to = ensure_enrich_auto_chain_to(project, started_slot)
         if cleared.get("slots_cleared") or cleared.get("keys_cleared"):
             logger.info(
                 "[#{}] start_step excel_gpt: cleared done for slots>={} "
