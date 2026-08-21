@@ -276,7 +276,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     if (mediaType === "video" && !isKie(videoSlug) && videoSlug !== "veo-3-1-lite") {
       setVideoSlug("veo-3-1-lite");
     }
-    if (mediaType === "audio" && !isKie(audioSlug)) {
+    if (mediaType === "audio" && audioSlug === "kie:suno-sounds") {
+      // Suno Sounds Task поёт / делает петли — настоящий SFX это ElevenLabs.
+      setAudioSlug("kie:elevenlabs-sfx");
+    } else if (mediaType === "audio" && !isKie(audioSlug)) {
       setAudioSlug("kie:suno-music");
     }
   }, [kieCatalogQ.data, kieModels, mediaType, imageSlug, videoSlug, audioSlug]);
@@ -915,6 +918,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 {historyItems.map((item) => {
                   const active = selected?.id === item.id;
                   const isVideo = item.kind === "video";
+                  const isAudio = item.kind === "audio";
                   const waitJob = waitingJobs.find((j) => j.history_id === item.id);
                   const runJob = runningJobs.find((j) => j.history_id === item.id);
                   const pending =
@@ -951,6 +955,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                             preload="metadata"
                             className="h-full w-full object-cover"
                           />
+                        ) : isAudio ? (
+                          <div className="flex h-full flex-col items-center justify-center gap-1 bg-white/[0.03]">
+                            <Music className="h-6 w-6 text-white/40" />
+                          </div>
                         ) : (
                           // eslint-disable-next-line @next/next/no-img-element
                           <img

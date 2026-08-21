@@ -151,6 +151,34 @@ async def test_kie_http_extract_urls_nested() -> None:
     assert "https://x/a.mp3" in urls and "https://x/b.mp3" in urls
 
 
+@pytest.mark.asyncio
+async def test_kie_http_prefers_longest_suno_mp3_not_cover() -> None:
+    from app.bots.kie_http import _result_media_urls
+
+    data = {
+        "status": "SUCCESS",
+        "response": {
+            "sunoData": [
+                {
+                    "audioUrl": "https://x/short.mp3",
+                    "imageUrl": "https://x/cover.jpeg",
+                    "streamAudioUrl": "https://musicfile.kie.ai/stream-no-ext",
+                    "duration": 2.0,
+                },
+                {
+                    "audioUrl": "https://x/long.mp3",
+                    "imageUrl": "https://x/cover2.jpeg",
+                    "duration": 8.04,
+                },
+            ]
+        },
+    }
+    urls = _result_media_urls(data)
+    assert urls[0] == "https://x/long.mp3"
+    assert all(_u.endswith(".mp3") for _u in urls)
+    assert "https://x/cover.jpeg" not in urls
+
+
 def test_kie_http_task_state_mapping() -> None:
     from app.bots.kie_http import _task_state
 

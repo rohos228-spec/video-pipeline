@@ -57,6 +57,9 @@ def _f(
     max_items: int | None = None,
     desc: str = "",
     show_if: dict[str, Any] | None = None,
+    max_len: int | None = None,
+    omit_values: list[Any] | None = None,
+    omit_from_payload: bool = False,
 ) -> dict[str, Any]:
     f: dict[str, Any] = {
         "name": name,
@@ -79,6 +82,12 @@ def _f(
         f["max_items"] = max_items
     if show_if:
         f["show_if"] = show_if
+    if max_len is not None:
+        f["max_len"] = max_len
+    if omit_values:
+        f["omit_values"] = list(omit_values)
+    if omit_from_payload:
+        f["omit_from_payload"] = True
     return f
 
 
@@ -1474,24 +1483,48 @@ MODELS: list[dict[str, Any]] = [
     },
     # ============================ ЗВУКИ ============================
     {
-        "id": "suno-sounds",
-        "hint": "Пиши звук словами: «удар по металлу», «шаги по снегу», «whoosh для перехода». Loop — для бесшовного фона, темп/тональность — под музыку ролика.",
-        "label": "Suno — звуковые эффекты",
+        "id": "elevenlabs-sfx",
+        "hint": "kie отключил ElevenLabs SFX (500 Internal Error). Здесь Foley через Suno Sounds V5: «разбитое стекло», «whoosh» — без песни.",
+        "label": "Звуковые эффекты",
         "category": "sound",
         "api": "suno",
         "endpoint": "/api/v1/generate/sounds",
         "result": "audio",
-        "desc": "Генератор звуков/SFX по описанию: удары, ambience, whoosh…",
+        "desc": "Foley/SFX через Suno Sounds Task (V5). kie больше не гоняет elevenlabs/sound-effect-v2.",
+        "prompt_wrap": (
+            "Foley sound effect only: {prompt}. "
+            "No music, no melody, no singing, no vocals, no speech, no lyrics."
+        ),
         "fields": [
-            _prompt("Описание звука"),
+            _prompt("Описание звука", max_len=400),
+            _f("model", "Модель", "select", options=["V5"], default="V5"),
             _f("soundLoop", "Зациклить", "toggle", default=False),
-            _f("soundTempo", "Темп (BPM, 0 — без)", "number", min=1, max=300, step=1),
+            _f("duration_seconds", "Длительность, сек (пусто — авто)", "number",
+               min=0.5, max=22, step=0.1, omit_from_payload=True),
+        ],
+        "pricing": {"unit": "gen", "rules": [], "default": 2.5, "note": "2.5 кр/звук (~$0.0125), Suno Sounds"},
+    },
+    {
+        "id": "suno-sounds",
+        "hint": "Suno Sounds — короткие музыкальные петли/атмосфера. Часто с вокалом. Для ударов/whoosh бери ElevenLabs SFX.",
+        "label": "Suno — саундскейп (не Foley)",
+        "category": "sound",
+        "api": "suno",
+        "endpoint": "/api/v1/generate/sounds",
+        "result": "audio",
+        "desc": "Suno Sounds Task (только V5): петли и атмосфера, не чистый SFX.",
+        "fields": [
+            _prompt("Описание атмосферы", max_len=500),
+            _f("model", "Модель", "select", options=["V5"], default="V5",
+               desc="Sounds Task на kie принимает только V5; V5_5 — это песни"),
+            _f("soundLoop", "Зациклить", "toggle", default=False),
+            _f("soundTempo", "Темп (BPM, пусто — авто)", "number", min=1, max=300, step=1),
             _f("soundKey", "Тональность", "select",
                options=["Any", "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
                         "Cm", "C#m", "Dm", "D#m", "Em", "Fm", "F#m", "Gm", "G#m", "Am", "A#m", "Bm"],
-               default="Any"),
+               default="Any", omit_values=["Any"]),
         ],
-        "pricing": {"unit": "gen", "rules": [], "default": 2.5, "note": "2.5 кр/звук (~$0.0125)"},
+        "pricing": {"unit": "gen", "rules": [], "default": 2.5, "note": "2.5 кр/клип (~$0.0125)"},
     },
     # ============================ ГОЛОС / TTS ============================
     {
@@ -1819,6 +1852,9 @@ def validate_values(
                     errors.append(f"{name}: {num} > max {f['max']}")
             except (TypeError, ValueError):
                 errors.append(f"{name}: не число: {v!r}")
+        elif kind in ("text", "textarea") and f.get("max_len"):
+            if len(str(v)) > int(f["max_len"]):
+                errors.append(f"{name}: {len(str(v))} символов > max {f['max_len']}")
         elif kind in _FILE_KINDS:
             items = v if isinstance(v, list) else [v]
             if f.get("max_items") and len(items) > int(f["max_items"]):
@@ -1856,6 +1892,11 @@ def build_payload(spec: dict[str, Any], values: dict[str, Any]) -> dict[str, Any
         v = merged.get(name)
         if v is None:
             continue
+        omit = {str(x) for x in (f.get("omit_values") or [])}
+        if str(v) in omit:
+            continue
+        if f.get("omit_from_payload"):
+            continue
         kind = f.get("kind")
         if kind in _FILE_KINDS:
             items = v if isinstance(v, list) else [v]
@@ -1891,6 +1932,16 @@ def build_payload(spec: dict[str, Any], values: dict[str, Any]) -> dict[str, Any
         if isinstance(v, str) and not v.strip():
             continue
         body[name] = v
+    wrap = str(spec.get("prompt_wrap") or "")
+    if wrap and "{prompt}" in wrap:
+        key = "prompt" if "prompt" in body else ("text" if "text" in body else "")
+        raw = str(body.get(key) or "").strip()
+        if key and raw and "Foley sound effect only:" not in raw:
+            extra = ""
+            dur = merged.get("duration_seconds")
+            if dur not in (None, ""):
+                extra = f" Duration about {dur} seconds."
+            body[key] = (wrap.format(prompt=raw) + extra)[:500]
     api = spec.get("api")
     if api == "jobs":
         return {"model": resolve_model_id(spec, merged), "input": body}
