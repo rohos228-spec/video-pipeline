@@ -251,7 +251,7 @@ export function HeroConfigPanel({
             ) : (
               <ChevronRight className="h-3 w-3" />
             )}
-            Ввести руками
+            Ввести описание
             {!excelLoaded && projectQ.data?.hero_count ? (
               <span className="text-amber-300/90">· {projectQ.data.hero_count}</span>
             ) : null}
@@ -322,16 +322,14 @@ export function HeroConfigPanel({
                 type="button"
                 size="sm"
                 variant="outline"
-                className="h-6 text-[10px]"
+                className="h-6 w-28 self-center text-[10px]"
                 disabled={!canSaveManual || saveManual.isPending}
                 onClick={() => saveManual.mutate()}
               >
                 {saveManual.isPending ? (
                   <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                ) : (
-                  <Save className="mr-1 h-3 w-3" />
-                )}
-                Сохранить руками
+                ) : null}
+                Сохранить
               </Button>
 
               {!canSaveManual && (

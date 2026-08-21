@@ -43,6 +43,8 @@ import {
   type ExcelGptNodeConfig,
 } from "@/lib/excel-gpt-config";
 import { ExcelGptSettingsPanel } from "@/components/studio/excel-gpt-settings-panel";
+import { ItemsConfigPanel } from "@/components/canvas/items-config-panel";
+import { HeroConfigPanel } from "@/components/canvas/hero-config-panel";
 import { CheckNodePromptPanel } from "@/components/studio/check-node-prompt-panel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -777,13 +779,23 @@ export function NodeStudio({
                   {showStepParams ? (
                     <NodeStepParamsPanel projectId={projectId!} nodeType={nodeType} />
                   ) : null}
+                  {nodeType === "items" && projectId ? (
+                    <div className="rounded-xl border border-cyan-400/20 bg-cyan-500/[0.05] p-3">
+                      <ItemsConfigPanel projectId={projectId} />
+                    </div>
+                  ) : null}
+                  {nodeType === "hero" && projectId ? (
+                    <div className="rounded-xl border border-amber-400/20 bg-amber-500/[0.05] p-3">
+                      <HeroConfigPanel projectId={projectId} />
+                    </div>
+                  ) : null}
                   {nodeSupportsGptText(nodeType) && gptTextSlotForNode(nodeType) && projectId ? (
                     <div className="rounded-xl border border-violet-400/30 bg-violet-500/[0.08] p-4">
                       <h3 className="text-sm font-semibold text-foreground">
                         Сопроводительный текст
                       </h3>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        Прилагаемое сообщение в диалог GPT (не мастер-промт-файл). Мастер-промпт доступен во вкладке «Промпты».
+                        Сопроводительное сообщение для генератора. Системные мастер-промпты настраиваются во вкладке «Промпты».
                       </p>
                       <Button
                         type="button"
