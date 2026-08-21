@@ -706,27 +706,18 @@ export const OUTSEE_AUDIO_MODELS: OutseeAudioModel[] = [
 ];
 
 /**
- * Порядок picker image как ej на /create (все модели, включая «hidden»).
+ * Create-пикер (после объединения с KIE): outsee/grsai-секция — только
+ * GPT Image 2, Nano Banana 2, Veo 3.1 Lite. Остальное — секция KIE.
+ * Аудио outsee не дублируем: Suno/ElevenLabs живут в KIE-секции.
  */
-const IMAGE_PICKER_ORDER = [
-  "gpt-image-2",
-  "gpt-image-2-vip",
-  "nano-banana-2",
-  "nano-banana-2-lite",
-  "nano-banana-pro",
-  "nano-banana-fast",
-  "nano-banana",
-  "nano-banana-pro-vt",
-  "seedream-4.5",
-  "seedream-5-pro",
-  "seedream-5-lite",
-  "gpt-image-1.5",
-  "topaz-image-upscale",
-] as const;
+const CREATE_PICKER_IMAGE_SLUGS = ["gpt-image-2", "nano-banana-2"] as const;
+const CREATE_PICKER_VIDEO_SLUGS = ["veo-3-1-lite"] as const;
 
 export function pickerImageModels(): OutseeImageModel[] {
   const by = new Map(OUTSEE_IMAGE_MODELS.map((m) => [m.slug, m]));
-  return IMAGE_PICKER_ORDER.map((s) => by.get(s)).filter(Boolean) as OutseeImageModel[];
+  return CREATE_PICKER_IMAGE_SLUGS.map((s) => by.get(s)).filter(
+    Boolean,
+  ) as OutseeImageModel[];
 }
 
 export function pickerVideoModels(): OutseeVideoModel[] {
@@ -734,11 +725,14 @@ export function pickerVideoModels(): OutseeVideoModel[] {
 }
 
 export function pickerVideoModelsAll(): OutseeVideoModel[] {
-  return OUTSEE_VIDEO_MODELS.filter((m) => !m.hidden);
+  const by = new Map(OUTSEE_VIDEO_MODELS.map((m) => [m.slug, m]));
+  return CREATE_PICKER_VIDEO_SLUGS.map((s) => by.get(s)).filter(
+    Boolean,
+  ) as OutseeVideoModel[];
 }
 
 export function pickerAudioModels(): OutseeAudioModel[] {
-  return [...OUTSEE_AUDIO_MODELS];
+  return [];
 }
 
 export function pickerModelsForType(type: OutseeMediaType) {
