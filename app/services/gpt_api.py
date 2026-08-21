@@ -81,6 +81,23 @@ _XLSX_PRIORITY_SHEET_RE = re.compile(
 _XLSX_PINNED_PLAN_ROWS: tuple[int, ...] = (15, 45, 46, 48, 49, 50, 64)
 
 
+_REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
+
+
+def _responses_reasoning_block() -> dict[str, str] | None:
+    """``reasoning.effort`` для Codex/Responses (kie gpt-5-6-sol)."""
+    raw = str(getattr(settings, "gpt_reasoning_effort", "") or "").strip().lower()
+    if not raw or raw in {"off", "none", "0", "false"}:
+        return None
+    # алиасы из RU-доки
+    aliases = {"середина": "medium", "mid": "medium", "низкий": "low", "высокий": "high"}
+    effort = aliases.get(raw, raw)
+    if effort not in _REASONING_EFFORTS:
+        logger.warning("gpt_api: unknown GPT_REASONING_EFFORT={!r} — skip", raw)
+        return None
+    return {"effort": effort}
+
+
 class GptApiError(Exception):
     """Ошибка GPT API с контекстом для логов/повторов."""
 
@@ -2126,7 +2143,12 @@ async def chat(
                 xlsx_write_contract=xlsx_write_contract,
             ),
             "stream": True,
+            # kie: store=true → market job / CF-долгое хранение; dev советует false.
+            "store": False,
         }
+        reasoning = _responses_reasoning_block()
+        if reasoning is not None:
+            body["reasoning"] = reasoning
     else:
         body = {
             "model": use_model,
@@ -2179,7 +2201,11 @@ async def chat(
                             }
                         ],
                         "stream": True,
+                        "store": False,
                     }
+                    cont_reasoning = _responses_reasoning_block()
+                    if cont_reasoning is not None:
+                        cont_body["reasoning"] = cont_reasoning
                     if temperature is not None:
                         cont_body["temperature"] = temperature
                     logger.warning(

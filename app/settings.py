@@ -123,6 +123,8 @@ class Settings(BaseSettings):
     # Плейсхолдер {model} подставляется слагом модели.
     # TokenRouter: /chat/completions (база уже с /v1).
     gpt_chat_path: str = Field("/codex/v1/responses", alias="GPT_CHAT_PATH")
+    # reasoning.effort для Responses (kie gpt-5-6-sol): low/medium/high/xhigh/off.
+    gpt_reasoning_effort: str = Field("low", alias="GPT_REASONING_EFFORT")
     # Формат API: chat (messages/choices) | responses (input/output) | auto.
     # auto → responses, если в пути есть "responses" (kie.ai gpt-5.6/5.5/5.4 codex).
     gpt_api_mode: str = Field("auto", alias="GPT_API_MODE")
