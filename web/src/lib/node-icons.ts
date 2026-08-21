@@ -18,6 +18,7 @@ import {
   CheckSquare,
   Sparkles,
   Music2,
+  LayoutList,
   type LucideIcon,
 } from "lucide-react";
 
@@ -36,6 +37,7 @@ const ICONS: Record<string, LucideIcon> = {
   send: Send,
   "check-square": CheckSquare,
   sparkles: Sparkles,
+  menu: LayoutList,
 };
 
 export function getNodeIcon(key: string): LucideIcon {

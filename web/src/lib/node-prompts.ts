@@ -19,10 +19,11 @@ export interface NodePromptSlot {
   preferredFile?: string;
 }
 
-const NO_EXCEL_NODE_TYPES = new Set(["topic", "excel_feed", "excel_gpt", "storage"]);
+const NO_EXCEL_NODE_TYPES = new Set(["topic", "excel_feed", "excel_gpt", "storage", "shot_menu"]);
 
 const BASE: Record<string, NodePromptSlot[]> = {
   topic: [],
+  shot_menu: [],
   plan: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "plan" },
     { id: "main", title: "Промт сценария", kind: "gpt", stepCode: "plan" },
@@ -128,7 +129,7 @@ export function sceneAgentFromNodeKey(nodeKey?: string | null): string | undefin
 }
 
 export function defaultPromptSlots(nodeType: string): NodePromptSlot[] {
-  if (isHitlNodeType(nodeType)) return [];
+  if (isHitlNodeType(nodeType) || nodeType === "shot_menu") return [];
   const base = BASE[nodeType];
   if (base?.length) return base;
   if (nodeTypeRequiresExcel(nodeType)) {

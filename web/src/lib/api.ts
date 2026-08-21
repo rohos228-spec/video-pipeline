@@ -26,6 +26,7 @@ import type {
   NodeGroupDetail,
 } from "./types";
 import type { BlockSelection } from "./prompt-styles";
+import type { ShotMenuDTO } from "./shot-menu";
 
 export interface StepTemplateBlock {
   number: number;
@@ -419,6 +420,8 @@ export const api = {
   // ── База (DB v2 browser) ─────────────────────────────────────────
   dbOverview: () => http<DbOverview>(`/api/db/overview`),
   dbGraph: (projectId: number) => http<DbGraph>(`/api/db/projects/${projectId}/graph`),
+  shotMenu: (projectId: number) =>
+    http<ShotMenuDTO>(`/api/db/projects/${projectId}/shot-menu`),
   dbPatchFrame: (frameId: number, body: Record<string, unknown>) =>
     http<{ ok: boolean }>(`/api/db/frames/${frameId}`, { method: "PATCH", body: JSON.stringify(body) }),
   dbInsertFrame: (projectId: number, afterFrameId: number | null, sceneId?: number | null) =>

@@ -12,6 +12,7 @@ from app.models import NodeRunStatus, Project, ProjectStatus, WorkflowRun
 from app.orchestrator.node_registry import (
     READY_TO_NODE_TYPE,
     RUNNING_TO_NODE_TYPE,
+    UI_MENU_NODE_TYPES,
     is_config_node_type,
     is_hitl_node_type,
     is_work_node_type,
@@ -35,7 +36,7 @@ from app.services.excel_gpt_node import (
 # excel_feed — прозрачный вход. storage — НЕ passthrough: это side-sink
 # (много рёбер work→storage), иначе predecessors раздуваются на весь граф.
 PASSTHROUGH_NODE_TYPES: frozenset[str] = frozenset({"excel_feed"})
-SIDE_SINK_NODE_TYPES: frozenset[str] = frozenset({"storage"})
+SIDE_SINK_NODE_TYPES: frozenset[str] = frozenset({"storage"}) | UI_MENU_NODE_TYPES
 
 
 def is_side_sink_node_type(node_type: str) -> bool:

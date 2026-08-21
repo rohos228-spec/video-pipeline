@@ -907,10 +907,10 @@ async def group_from_canvas(
 
 
 def _side_sink_ids(nodes: list[dict]) -> set[str]:
-    """Ноды-приёмники «сбоку» (storage/topic/excel_feed) — не цепочка."""
-    from app.orchestrator.node_registry import CONFIG_NODE_TYPES
+    """Ноды-приёмники «сбоку» (storage/topic/excel_feed/shot_menu) — не цепочка."""
+    from app.orchestrator.node_registry import SIDE_NODE_TYPES
 
-    side = set(CONFIG_NODE_TYPES) | {"excel_feed"}
+    side = set(SIDE_NODE_TYPES)
     return {
         str(n.get("id"))
         for n in nodes

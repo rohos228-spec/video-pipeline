@@ -44,6 +44,9 @@ export interface CanvasActions {
   montageBusy: boolean;
   onOpenMontageBoard: () => void;
   onCloseMontageBoard: () => void;
+  shotMenuOpen: boolean;
+  onOpenShotMenu: (cellIndex?: number) => void;
+  onCloseShotMenu: () => void;
 }
 
 const Ctx = createContext<CanvasActions | null>(null);
