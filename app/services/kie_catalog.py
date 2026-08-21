@@ -59,6 +59,7 @@ def _f(
     show_if: dict[str, Any] | None = None,
     max_len: int | None = None,
     omit_values: list[Any] | None = None,
+    omit_from_payload: bool = False,
 ) -> dict[str, Any]:
     f: dict[str, Any] = {
         "name": name,
@@ -85,6 +86,8 @@ def _f(
         f["max_len"] = max_len
     if omit_values:
         f["omit_values"] = list(omit_values)
+    if omit_from_payload:
+        f["omit_from_payload"] = True
     return f
 
 
@@ -1481,30 +1484,25 @@ MODELS: list[dict[str, Any]] = [
     # ============================ ЗВУКИ ============================
     {
         "id": "elevenlabs-sfx",
-        "hint": "Опиши эффект, не сцену с персонажем: «удар по металлу», «whoosh», «шаги по снегу». Без пения и речи.",
-        "label": "ElevenLabs — звуковые эффекты",
+        "hint": "kie отключил ElevenLabs SFX (500 Internal Error). Здесь Foley через Suno Sounds V5: «разбитое стекло», «whoosh» — без песни.",
+        "label": "Звуковые эффекты",
         "category": "sound",
-        "api": "jobs",
-        "model": "elevenlabs/sound-effect-v2",
+        "api": "suno",
+        "endpoint": "/api/v1/generate/sounds",
         "result": "audio",
-        "desc": "Настоящий SFX: удары, whoosh, ambience. Не голос и не песня.",
+        "desc": "Foley/SFX через Suno Sounds Task (V5). kie больше не гоняет elevenlabs/sound-effect-v2.",
+        "prompt_wrap": (
+            "Foley sound effect only: {prompt}. "
+            "No music, no melody, no singing, no vocals, no speech, no lyrics."
+        ),
         "fields": [
-            _f("text", "Описание звука", "textarea", required=True, max_len=5000),
-            _f("loop", "Зациклить", "toggle", default=False),
+            _prompt("Описание звука", max_len=400),
+            _f("model", "Модель", "select", options=["V5"], default="V5"),
+            _f("soundLoop", "Зациклить", "toggle", default=False),
             _f("duration_seconds", "Длительность, сек (пусто — авто)", "number",
-               min=0.5, max=22, step=0.1),
-            _f("prompt_influence", "Следовать промпту (0–1)", "number",
-               default=0.3, min=0, max=1, step=0.01),
-            _f("output_format", "Формат", "select",
-               options=["mp3_44100_128", "mp3_44100_192", "mp3_44100_96"],
-               default="mp3_44100_128"),
+               min=0.5, max=22, step=0.1, omit_from_payload=True),
         ],
-        "pricing": {
-            "unit": "gen",
-            "rules": [],
-            "default": 2,
-            "note": "≈2 кр/эффект (~$0.01), длительность kie подберёт сам",
-        },
+        "pricing": {"unit": "gen", "rules": [], "default": 2.5, "note": "2.5 кр/звук (~$0.0125), Suno Sounds"},
     },
     {
         "id": "suno-sounds",
@@ -1897,6 +1895,8 @@ def build_payload(spec: dict[str, Any], values: dict[str, Any]) -> dict[str, Any
         omit = {str(x) for x in (f.get("omit_values") or [])}
         if str(v) in omit:
             continue
+        if f.get("omit_from_payload"):
+            continue
         kind = f.get("kind")
         if kind in _FILE_KINDS:
             items = v if isinstance(v, list) else [v]
@@ -1932,6 +1932,16 @@ def build_payload(spec: dict[str, Any], values: dict[str, Any]) -> dict[str, Any
         if isinstance(v, str) and not v.strip():
             continue
         body[name] = v
+    wrap = str(spec.get("prompt_wrap") or "")
+    if wrap and "{prompt}" in wrap:
+        key = "prompt" if "prompt" in body else ("text" if "text" in body else "")
+        raw = str(body.get(key) or "").strip()
+        if key and raw and "Foley sound effect only:" not in raw:
+            extra = ""
+            dur = merged.get("duration_seconds")
+            if dur not in (None, ""):
+                extra = f" Duration about {dur} seconds."
+            body[key] = (wrap.format(prompt=raw) + extra)[:500]
     api = spec.get("api")
     if api == "jobs":
         return {"model": resolve_model_id(spec, merged), "input": body}

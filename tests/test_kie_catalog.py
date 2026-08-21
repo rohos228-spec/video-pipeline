@@ -82,15 +82,20 @@ def test_suno_sounds_payload_sends_v5_omits_any_key() -> None:
     assert any("max 500" in e for e in errs)
 
 
-def test_elevenlabs_sfx_jobs_payload() -> None:
+def test_elevenlabs_sfx_routes_to_suno_sounds() -> None:
     spec = kc.get_model("elevenlabs-sfx")
     assert spec is not None
-    body = kc.build_payload(spec, {"text": "metal hit impact, no voice"})
-    assert body["model"] == "elevenlabs/sound-effect-v2"
-    assert body["input"]["text"] == "metal hit impact, no voice"
-    assert body["input"]["loop"] is False
-    assert "duration_seconds" not in body["input"]
-    assert body["input"]["output_format"] == "mp3_44100_128"
+    assert spec["api"] == "suno"
+    assert spec["endpoint"] == "/api/v1/generate/sounds"
+    body = kc.build_payload(spec, {"prompt": "разбитое стекло"})
+    assert body["model"] == "V5"
+    assert "input" not in body
+    assert body["prompt"].startswith("Foley sound effect only: разбитое стекло")
+    assert "no vocals" in body["prompt"]
+    assert "duration_seconds" not in body
+    with_dur = kc.build_payload(spec, {"prompt": "whoosh", "duration_seconds": 3})
+    assert "Duration about 3" in with_dur["prompt"]
+    assert "duration_seconds" not in with_dur
 
 
 def test_validate_required_and_enum() -> None:
