@@ -145,7 +145,7 @@ def _pending_frames(
     for fr in frames:
         if not _has_uuid(fr):
             continue
-        if not _has_voiceover(fr) and not skip_if_field:
+        if not _has_voiceover(fr):
             continue
         if _frame_complete(fr, dense=dense, skip_if_field=skip_if_field):
             continue

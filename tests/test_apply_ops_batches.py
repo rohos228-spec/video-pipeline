@@ -131,6 +131,12 @@ def test_img_prompt_skip_and_small_batches() -> None:
     ]
     pending = _pending_frames(frames, dense=False, skip_if_field="image_prompt")
     assert [f["uuid"] for f in pending] == ["b" * 24]
+    no_vo = [
+        {"uuid": "d" * 24, "voiceover_text": "", "image_prompt": ""},
+        {"uuid": "e" * 24, "voiceover_text": "ok", "image_prompt": ""},
+    ]
+    pending2 = _pending_frames(no_vo, dense=False, skip_if_field="image_prompt")
+    assert [f["uuid"] for f in pending2] == ["e" * 24]
 
 
 def _frame(i: int) -> dict:
