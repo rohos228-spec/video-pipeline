@@ -175,6 +175,11 @@ def build_excel_gpt_db_context(
         vo = str(getattr(fr, "voiceover_text", None) or "")
         if vo.strip():
             row["voiceover_text"] = _clip(vo, _EXCEL_GPT_VO_MAX)
+        vo_shot = str(_camera_subdivide_from(fr).get("vo_shot") or "").strip()
+        if vo_shot:
+            clipped_shot = _clip(vo_shot, _EXCEL_GPT_VO_MAX)
+            row["vo_shot"] = clipped_shot
+            row["закадр_шота"] = clipped_shot
         meaning = str(getattr(fr, "meaning", None) or "").strip()
         if meaning:
             row["meaning"] = _clip(meaning, _ATTR_MAX)
@@ -258,6 +263,10 @@ def build_img_pr_db_context(
         vo = str(getattr(fr, "voiceover_text", None) or "").strip()
         if vo:
             row["voiceover_text"] = vo
+        vo_shot = str(_camera_subdivide_from(fr).get("vo_shot") or "").strip()
+        if vo_shot:
+            row["vo_shot"] = vo_shot
+            row["закадр_шота"] = vo_shot
         meaning = (getattr(fr, "meaning", None) or "") or ""
         if meaning.strip():
             row["meaning"] = meaning.strip()

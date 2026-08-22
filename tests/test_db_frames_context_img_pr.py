@@ -204,3 +204,28 @@ def test_excel_gpt_db_context_exposes_image_prompt_for_skip() -> None:
         ctx["frames"], dense=False, skip_if_field=SKIP_PROMPTS_AND_ACTION
     )
     assert [f["uuid"] for f in pending] == ["b" * 24]
+
+
+def test_excel_gpt_exposes_vo_shot_copy_not_as_voiceover() -> None:
+    fr = SimpleNamespace(
+        number=2,
+        uuid="c" * 24,
+        voiceover_text="",
+        meaning="",
+        image_prompt="",
+        animation_prompt="",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": "p" * 24,
+                "vo_shot": "фрагмент шота из копии",
+            }
+        },
+    )
+    ctx = build_excel_gpt_db_context(
+        project_id=60, slug="x", frames=[fr], characters=[]
+    )
+    row = ctx["frames"][0]
+    assert "voiceover_text" not in row
+    assert row["vo_shot"] == "фрагмент шота из копии"
+    assert row["закадр_шота"] == "фрагмент шота из копии"

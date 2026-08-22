@@ -1,7 +1,8 @@
-"""Визуальные шоты внутри ячейки разбивки. Закадр разбивки не трогаем.
+"""Визуальные шоты внутри ячейки разбивки.
 
-1 ячейка закадра = 1 сцена. Полный текст ячейки живёт на родителе.
-Дети — только картинка/камера. Нарезка по шотам — в меню (DTO), не в БД.
+Frame.voiceover_text = результат ноды разбивки. Не пишем, не режем.
+Копия ячейки режется по шотам в attrs.camera_subdivide.vo_shot —
+так же, как раньше резался закадр (split_text_into_parts).
 """
 
 from __future__ import annotations
@@ -17,9 +18,11 @@ from app.services.db_v2 import insert_frame_after
 from app.services.scene_design.camera_expand import (
     already_subdivided,
     renumber_frames_by_sort_key,
+    split_text_into_parts,
 )
 
 _ATTR_KEY = "camera_subdivide"
+_VO_SHOT_KEY = "vo_shot"
 _CLAUSE_RE = re.compile(r"(?<=[.!?…])\s+")
 _VO_CHARS_PER_SEC = 14.0
 _MIN_SEC = 2.0
@@ -51,6 +54,24 @@ def _cs(frame: Any) -> dict[str, Any]:
         return {}
     raw = attrs.get(_ATTR_KEY)
     return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _flag_attrs(frame: Any) -> None:
+    state = getattr(frame, "_sa_instance_state", None)
+    if state is None:
+        return
+    from sqlalchemy.orm.attributes import flag_modified
+
+    flag_modified(frame, "attrs")
+
+
+def _set_cs(frame: Any, **fields: Any) -> None:
+    attrs = dict(getattr(frame, "attrs", None) or {})
+    cs = dict(attrs.get(_ATTR_KEY) or {})
+    cs.update(fields)
+    attrs[_ATTR_KEY] = cs
+    frame.attrs = attrs
+    _flag_attrs(frame)
 
 
 def repair_split_vo_on_parents(frames: list[Any]) -> int:
@@ -95,10 +116,37 @@ def repair_split_vo_on_parents(frames: list[Any]) -> int:
         for m in members:
             if m is not parent:
                 m.voiceover_text = ""
-            attrs = dict(getattr(m, "attrs", None) or {})
-            m.attrs = attrs
         repaired += 1
     return repaired
+
+
+def apply_vo_shot_cuts(frames: list[Any]) -> int:
+    """Дубликат ячейки разбивки режем по шотам. voiceover_text не трогаем."""
+    groups: dict[str, list[Any]] = {}
+    for fr in frames:
+        cs = _cs(fr)
+        parent = str(cs.get("parent_uuid") or getattr(fr, "uuid", "") or "").strip()
+        if not parent:
+            continue
+        groups.setdefault(parent, []).append(fr)
+    updated = 0
+    for members in groups.values():
+        members.sort(key=lambda m: int(_cs(m).get("shot_index") or 0))
+        parent = next(
+            (m for m in members if _cs(m).get("role") == "vo_parent"),
+            members[0],
+        )
+        original = (getattr(parent, "voiceover_text", None) or "").strip()
+        if not original:
+            continue
+        parts = split_text_into_parts(original, len(members))
+        for i, fr in enumerate(members):
+            piece = parts[i] if i < len(parts) else ""
+            if str(_cs(fr).get(_VO_SHOT_KEY) or "") == piece:
+                continue
+            _set_cs(fr, **{_VO_SHOT_KEY: piece})
+            updated += 1
+    return updated
 
 
 async def expand_vo_cells_into_shots(
@@ -106,18 +154,20 @@ async def expand_vo_cells_into_shots(
     project: Project,
     frames: list[Frame],
 ) -> tuple[list[Frame], dict[str, Any]]:
-    """Вставить визуальные шоты. Закадр разбивки на родителе не меняем."""
+    """Вставить визуальные шоты. Закадр разбивки не меняем; режем копию."""
     report: dict[str, Any] = {
         "skipped": False,
         "parents": 0,
         "inserted": 0,
         "repaired_vo": 0,
+        "vo_shot_cuts": 0,
         "frames_before": len(frames),
         "frames_after": len(frames),
     }
     if already_subdivided(frames):
         report["skipped"] = True
         report["repaired_vo"] = repair_split_vo_on_parents(frames)
+        report["vo_shot_cuts"] = apply_vo_shot_cuts(frames)
         return frames, report
 
     parents = [f for f in frames if f.uuid]
@@ -131,15 +181,16 @@ async def expand_vo_cells_into_shots(
         start_ts = parent.start_ts
         end_ts = parent.end_ts
         parent_uuid = parent.uuid
+        vo_parts = split_text_into_parts(original_vo, need)
         if need <= 1:
-            attrs = dict(parent.attrs or {})
-            attrs[_ATTR_KEY] = {
-                "role": "vo_parent",
-                "parent_uuid": parent_uuid,
-                "shot_index": 1,
-                "shots_in_beat": 1,
-            }
-            parent.attrs = attrs
+            _set_cs(
+                parent,
+                role="vo_parent",
+                parent_uuid=parent_uuid,
+                shot_index=1,
+                shots_in_beat=1,
+                vo_shot=vo_parts[0] if vo_parts else original_vo,
+            )
             if not parent.duration_seconds:
                 parent.duration_seconds = part_sec
             continue
@@ -165,25 +216,27 @@ async def expand_vo_cells_into_shots(
                 fr.end_ts = None
                 fr.voiceover_text = ""
             fr.duration_seconds = part_sec
-            attrs = dict(fr.attrs or {})
-            attrs[_ATTR_KEY] = {
-                "role": "vo_parent" if i == 0 else "shot",
-                "parent_uuid": parent_uuid,
-                "shot_index": i + 1,
-                "shots_in_beat": need,
-            }
-            fr.attrs = attrs
+            _set_cs(
+                fr,
+                role="vo_parent" if i == 0 else "shot",
+                parent_uuid=parent_uuid,
+                shot_index=i + 1,
+                shots_in_beat=need,
+                vo_shot=vo_parts[i],
+            )
 
     await session.flush()
     ordered = await renumber_frames_by_sort_key(session, project)
     report["parents"] = len(parents)
     report["inserted"] = inserted
+    report["vo_shot_cuts"] = apply_vo_shot_cuts(ordered)
     report["frames_after"] = len(ordered)
     logger.info(
-        "[#{}] vo_shot_expand: parents={} inserted={} frames {}→{}",
+        "[#{}] vo_shot_expand: parents={} inserted={} vo_shot_cuts={} frames {}→{}",
         project.id,
         report["parents"],
         inserted,
+        report["vo_shot_cuts"],
         report["frames_before"],
         report["frames_after"],
     )

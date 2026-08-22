@@ -174,7 +174,16 @@ def _has_uuid(frame: dict[str, Any]) -> bool:
 
 
 def _has_voiceover(frame: dict[str, Any]) -> bool:
-    return bool(str(frame.get("voiceover_text") or "").strip())
+    if str(frame.get("voiceover_text") or "").strip():
+        return True
+    if str(frame.get("vo_shot") or frame.get("закадр_шота") or "").strip():
+        return True
+    attrs = frame.get("attrs")
+    if isinstance(attrs, dict):
+        cs = attrs.get("camera_subdivide")
+        if isinstance(cs, dict) and str(cs.get("vo_shot") or "").strip():
+            return True
+    return False
 
 
 def _pending_frames(

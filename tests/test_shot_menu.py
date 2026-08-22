@@ -605,3 +605,47 @@ def test_display_vo_split_does_not_mutate_frames() -> None:
     assert cells[0]["shots"][1]["voiceover_in_shot"] != "—"
     assert cells[0]["shots"][1]["voiceover_in_shot"] != ""
 
+
+def test_menu_uses_vo_shot_copy_not_split_column() -> None:
+    cell = "Первая фраза целиком. Вторая фраза целиком."
+    frames = [
+        {
+            "id": 1,
+            "number": 1,
+            "sort_key": 10,
+            "uuid": "p1",
+            "voiceover_text": cell,
+            "duration_seconds": 2,
+            "attrs": {
+                "camera_subdivide": {
+                    "role": "vo_parent",
+                    "parent_uuid": "p1",
+                    "shot_index": 1,
+                    "vo_shot": "Первая фраза целиком.",
+                }
+            },
+        },
+        {
+            "id": 2,
+            "number": 2,
+            "sort_key": 20,
+            "uuid": "c1",
+            "voiceover_text": "",
+            "duration_seconds": 2,
+            "attrs": {
+                "camera_subdivide": {
+                    "role": "shot",
+                    "parent_uuid": "p1",
+                    "shot_index": 2,
+                    "vo_shot": "Вторая фраза целиком.",
+                }
+            },
+        },
+    ]
+    cells = group_vo_cells(frames)
+    assert frames[0]["voiceover_text"] == cell
+    assert frames[1]["voiceover_text"] == ""
+    assert cells[0]["voiceover"] == cell
+    assert cells[0]["shots"][0]["voiceover_in_shot"] == "Первая фраза целиком."
+    assert cells[0]["shots"][1]["voiceover_in_shot"] == "Вторая фраза целиком."
+

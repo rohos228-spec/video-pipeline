@@ -61,3 +61,44 @@ def test_repair_glues_fragments_back_to_parent() -> None:
     assert n == 1
     assert parent.voiceover_text == "Первая фраза. Вторая фраза."
     assert child.voiceover_text == ""
+
+
+def test_cut_duplicate_leaves_split_vo_intact() -> None:
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import apply_vo_shot_cuts
+
+    pu = "aa" * 12
+    cell = "Первая фраза. Вторая фраза."
+    parent = SimpleNamespace(
+        uuid=pu,
+        voiceover_text=cell,
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": pu,
+                "shot_index": 1,
+            }
+        },
+    )
+    child = SimpleNamespace(
+        uuid="bb" * 12,
+        voiceover_text="",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": pu,
+                "shot_index": 2,
+            }
+        },
+    )
+    n = apply_vo_shot_cuts([parent, child])
+    assert n == 2
+    assert parent.voiceover_text == cell
+    assert child.voiceover_text == ""
+    p_shot = parent.attrs["camera_subdivide"]["vo_shot"]
+    c_shot = child.attrs["camera_subdivide"]["vo_shot"]
+    assert p_shot
+    assert c_shot
+    assert p_shot != cell
+    assert " ".join((p_shot + " " + c_shot).split()) == " ".join(cell.split())

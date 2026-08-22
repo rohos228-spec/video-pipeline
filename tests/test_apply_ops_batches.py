@@ -139,6 +139,19 @@ def test_img_prompt_skip_and_small_batches() -> None:
     assert [f["uuid"] for f in pending2] == ["e" * 24]
 
 
+def test_pending_keeps_child_with_vo_shot_copy() -> None:
+    frames = [
+        {
+            "uuid": "c" * 24,
+            "voiceover_text": "",
+            "vo_shot": "фрагмент шота",
+            "image_prompt": "",
+        }
+    ]
+    pending = _pending_frames(frames, dense=False, skip_if_field="image_prompt")
+    assert [f["uuid"] for f in pending] == ["c" * 24]
+
+
 def test_prompts_and_action_skip_requires_all_three() -> None:
     from app.services.apply_ops_batches import SKIP_PROMPTS_AND_ACTION
 
