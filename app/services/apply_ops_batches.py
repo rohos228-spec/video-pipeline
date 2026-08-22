@@ -220,6 +220,7 @@ async def run_apply_ops_batched(
     stagger_sec: float | None = None,
     footer_kind: str | None = None,
     on_progress: ProgressFn | None = None,
+    allow_empty_ops: bool = False,
 ) -> OperatorApiResult:
     """Один GPT-вызов на пачку. Ошибка внутри пачки → 2, затем 4.
 
@@ -361,6 +362,9 @@ async def run_apply_ops_batched(
             except Exception:
                 logger.debug("apply_ops progress callback failed", exc_info=True)
         if not ops:
+            if allow_empty_ops:
+                # QC: ops только по нарушителям; пустой пакет = ок.
+                return []
             raise RuntimeError(
                 f"enrich_xlsx node={node_key}: L{level} call {my_i} "
                 f"без ops (ждали {len(chunk)} кадров)."
@@ -375,6 +379,8 @@ async def run_apply_ops_batched(
             last_paths = list(res.output_paths or []) or [batch_path]
             replies.append(res.reply_text or "")
             merged_ops.extend(ops)
+        if allow_empty_ops:
+            return []
         got_uuids = {
             str(op.get("frame_uuid") or "").strip()
             for op in ops

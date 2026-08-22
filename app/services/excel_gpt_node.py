@@ -314,7 +314,7 @@ def first_work_successor_along_edges(
             continue
         visited.add(key)
         node = by_id.get(key) or {}
-        typ = str(node.get("type") or "")
+        typ = effective_node_type(node)
         if is_passthrough_node_type(typ):
             queue.extend(outs.get(key, []))
             continue
@@ -391,15 +391,30 @@ def prepare_enrich_chain_for_auto_advance(
         return None
     from_key = (finished_key or "").strip() or None
     if not from_key:
-        # Последний completed key на этом слоте, иначе resolve.
+        # Последний completed key на этом слоте. overflow-группа (slot 0)
+        # тоже ходит через enrich_N_ready — слот в meta не 1..5, поэтому
+        # берём последний не-sd completed, иначе resolve(N) хватает world.
         meta0 = project.meta if isinstance(project.meta, dict) else {}
         for raw in reversed(list(meta0.get("excel_gpt_completed_keys") or [])):
             k = str(raw or "").strip()
             if not k:
                 continue
-            if slot_for_excel_gpt_node_key(project, k) == finished:
+            slot_k = slot_for_excel_gpt_node_key(project, k)
+            if slot_k == finished:
                 from_key = k
                 break
+        if not from_key:
+            for raw in reversed(list(meta0.get("excel_gpt_completed_keys") or [])):
+                k = str(raw or "").strip()
+                if not k:
+                    continue
+                node = canvas_node_by_key(project, k)
+                if node is None or sd_agent_marker(node):
+                    continue
+                slot_k = slot_for_excel_gpt_node_key(project, k)
+                if slot_k in (0, None):
+                    from_key = k
+                    break
         if not from_key:
             from_key = resolve_excel_gpt_node_key_for_slot(project, finished)
     succ = first_work_successor_from_excel_slot(
@@ -439,14 +454,34 @@ def active_excel_gpt_node_key(project: Project) -> str | None:
     return key or None
 
 
+def canvas_node_by_key(project: Project, node_key: str) -> dict[str, Any] | None:
+    """Нода канваса по id (включая scene-агентов type=excel_gpt)."""
+    key = (node_key or "").strip()
+    if not key:
+        return None
+    from app.services.canvas_graph import canvas_graph_from_meta
+
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    cg = canvas_graph_from_meta(meta) or {}
+    for n in cg.get("nodes") or []:
+        if isinstance(n, dict) and str(n.get("id") or "").strip() == key:
+            return n
+    return None
+
+
 def excel_gpt_nodes_from_project(project: Project) -> list[dict[str, Any]]:
-    """Ноды excel_gpt из canvas_graph meta (fallback — пусто)."""
+    """Ноды excel_gpt из canvas_graph meta (без scene-агентов sd_agent)."""
     from app.services.canvas_graph import canvas_graph_from_meta
 
     meta = project.meta if isinstance(project.meta, dict) else {}
     cg = canvas_graph_from_meta(meta)
     nodes = list((cg or {}).get("nodes") or [])
-    return [n for n in nodes if is_excel_gpt_node_type(str(n.get("type") or ""))]
+    return [
+        n
+        for n in nodes
+        if is_excel_gpt_node_type(str(n.get("type") or ""))
+        and not sd_agent_marker(n)
+    ]
 
 
 def _resolve_colliding_slot_via_graph(
@@ -502,6 +537,7 @@ def resolve_excel_gpt_node_key_for_slot(
     if not (1 <= int(slot) <= MAX_EXCEL_GPT_SLOTS):
         return None
     pool = nodes if nodes is not None else excel_gpt_nodes_from_project(project)
+    pool = [n for n in pool if not sd_agent_marker(n)]
     if not pool:
         return None
     matches = [

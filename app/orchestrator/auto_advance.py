@@ -706,6 +706,22 @@ async def _prepare_node_run_for_status(
                     slot,
                     node_key,
                 )
+        if node_key:
+            from app.services.excel_gpt_node import (
+                canvas_node_by_key,
+                sd_agent_marker,
+            )
+
+            node = canvas_node_by_key(project, node_key)
+            if node is not None and sd_agent_marker(node):
+                logger.warning(
+                    "auto_advance: #{} slot={} active/resolve sd_agent {} "
+                    "— не запускаем как excel_gpt",
+                    project.id,
+                    slot,
+                    node_key,
+                )
+                return False
     else:
         node_type = RUNNING_TO_NODE_TYPE.get(running_status)
         if node_type is not None:
