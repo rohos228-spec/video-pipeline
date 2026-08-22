@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from app.services.scene_design.assembler import force_scenes_from_chrono
 from app.services.scene_design.camera_expand import (
+    _vo_parts_by_shot_quotes,
     clamp_shots_to_duration,
     expand_shot_plan_rows,
     parse_krupnost_ladder,
@@ -81,6 +82,36 @@ def test_split_text_into_parts_sum_equals_source():
     parts = split_text_into_parts("только два", 4)
     assert parts == ["только", "два", "", ""]
     assert " ".join(parts).split() == ["только", "два"]
+
+
+def test_split_text_into_parts_by_sentence_not_half() -> None:
+    """Разбиение по смыслу: фраза не рвётся между кадрами."""
+    vo = (
+        "Оттуда нередко доносилась громкая музыка, из квартиры шёл "
+        "неприятный запах, вокруг жильцов ходили тревожные слухи."
+    )
+    parts = split_text_into_parts(vo, 2)
+    assert parts[0] == "Оттуда нередко доносилась громкая музыка,"
+    assert parts[1].startswith("из квартиры шёл неприятный запах")
+    assert " ".join(parts).split() == vo.split()
+
+
+def test_vo_parts_by_shot_quotes() -> None:
+    """Фрагмент кадра = текст от цитаты его шота до цитаты следующего."""
+    vo = (
+        "В доме № 53 люди встречались у лифта и знали, что в квартире 357 "
+        "живёт семья Спесивцевых."
+    )
+    parts = _vo_parts_by_shot_quotes(vo, ["В доме № 53", "и знали, что"], 2)
+    assert parts == [
+        "В доме № 53 люди встречались у лифта",
+        "и знали, что в квартире 357 живёт семья Спесивцевых.",
+    ]
+    # инвариант
+    assert " ".join(parts).split() == vo.split()
+    # цитата не найдена / число не сошлось → None (фолбэк на split)
+    assert _vo_parts_by_shot_quotes(vo, ["В доме", "нет такого"], 2) is None
+    assert _vo_parts_by_shot_quotes(vo, ["В доме"], 2) is None
 
 
 def test_expand_shot_plan_rows():

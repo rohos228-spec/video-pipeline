@@ -202,6 +202,63 @@ def _balance_units(units: list[str], n: int) -> list[str]:
     return parts
 
 
+def _quotes_in_range(
+    shots: list[dict[str, Any]],
+    spans: list[tuple[int, int]],
+    off: int,
+    vo_len: int,
+) -> list[str]:
+    """Цитаты шотов, чей VO-диапазон начинается внутри текста родителя."""
+    out: list[str] = []
+    for i, sh in enumerate(shots):
+        q = str(sh.get("цитата") or "").strip()
+        if not q or i >= len(spans):
+            continue
+        lo, _hi = spans[i]
+        if lo >= 0 and off <= lo < off + vo_len:
+            out.append(q)
+    return out
+
+
+def _vo_parts_by_shot_quotes(
+    parent_vo: str, quotes: list[str], need: int
+) -> list[str] | None:
+    """Фрагменты закадра по цитатам шотов: кадр i = текст от цитаты шота i
+    до цитаты шота i+1. None — если цитаты не ложатся (фолбэк на split).
+
+    Камера выбирала цитату шота под его визуал — так текст кадра совпадает
+    с тем, что кадр показывает (разбиение по логике кадра, не по длине).
+    """
+    words = (parent_vo or "").split()
+    if not words or len(quotes) != need or need < 1:
+        return None
+    vo_norm = _norm(parent_vo)
+    starts: list[int] = []
+    cursor = 0
+    for q in quotes:
+        qn = _norm(q)
+        if not qn:
+            return None
+        idx = vo_norm.find(qn, cursor)
+        if idx < 0:
+            idx = vo_norm.find(qn)
+        if idx < 0:
+            return None
+        starts.append(idx)
+        cursor = idx + len(qn)
+    # индекс слова начала цитаты = число пробелов перед ней (vo_norm однопробельный)
+    widx = [vo_norm[:s].count(" ") for s in starts]
+    widx[0] = 0  # первый кадр забирает текст до своей цитаты
+    parts: list[str] = []
+    for i in range(need):
+        w0 = widx[i]
+        w1 = widx[i + 1] if i + 1 < need else len(words)
+        if w1 <= w0:
+            w1 = min(len(words), w0 + 1)
+        parts.append(" ".join(words[w0:w1]))
+    return parts
+
+
 def split_text_into_parts(text: str, n: int) -> list[str]:
     """Разрезать закадр на n кусков ПО СМЫСЛУ: фразы целиком, баланс по длине.
 
@@ -661,8 +718,17 @@ async def subdivide_vo_frames_by_camera(
             inserted += 1
 
         group = [parent, *children]
-        # Текст ячейки разбивается по кадрам сцены: сумма фрагментов = ячейка.
-        vo_parts = split_text_into_parts(original_vo or "", need)
+        # Текст ячейки — по логике кадров: фрагмент шота = текст от его
+        # цитаты до цитаты следующего (камера выбрала цитату под визуал).
+        # Не легли цитаты → фолбэк: смысловое разбиение по фразам.
+        vo_parts = None
+        off = offsets.get(parent.uuid or "")
+        if off is not None and shots:
+            vo_n = _norm(original_vo or "")
+            quotes = _quotes_in_range(shots, spans, off, len(vo_n))
+            vo_parts = _vo_parts_by_shot_quotes(original_vo or "", quotes, need)
+        if vo_parts is None:
+            vo_parts = split_text_into_parts(original_vo or "", need)
         if " ".join(vo_parts).split() != (original_vo or "").split():
             report["vo_sum_errors"] = int(report.get("vo_sum_errors") or 0) + 1
             logger.error(
