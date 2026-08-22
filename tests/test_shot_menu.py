@@ -77,6 +77,53 @@ def test_shot_menu_is_menu_not_work_step() -> None:
     assert not is_work_node_type("shot_menu")
 
 
+def test_subdivide_group_is_one_cell_and_vo_sum_equals_cell() -> None:
+    """Ячейка = сцена: кадры с одним parent_uuid — одна ячейка; текст ячейки =
+    сумма фрагментов кадров (после раздачи закадра по шотам)."""
+    frames = [
+        {
+            "id": 1,
+            "number": 1,
+            "sort_key": 10,
+            "voiceover_text": "Что, если самый",
+            "duration_seconds": 2.0,
+            "attrs": {"camera_subdivide": {"parent_uuid": "p1", "shot_index": 1}},
+        },
+        {
+            "id": 2,
+            "number": 2,
+            "sort_key": 20,
+            "voiceover_text": "страшный адрес —",
+            "duration_seconds": 2.0,
+            "attrs": {"camera_subdivide": {"parent_uuid": "p1", "shot_index": 2}},
+        },
+        {
+            "id": 3,
+            "number": 3,
+            "sort_key": 30,
+            "voiceover_text": "самый обычный?",
+            "duration_seconds": 2.0,
+            "attrs": {"camera_subdivide": {"parent_uuid": "p1", "shot_index": 3}},
+        },
+        {
+            "id": 4,
+            "number": 4,
+            "sort_key": 40,
+            "voiceover_text": "Следующая ячейка",
+            "duration_seconds": 3.0,
+        },
+    ]
+    cells = group_vo_cells(frames)
+    assert len(cells) == 2
+    assert [s["label"] for s in cells[0]["shots"]] == ["1.1", "1.2", "1.3"]
+    assert cells[0]["voiceover"] == "Что, если самый страшный адрес — самый обычный?"
+    assert cells[0]["voiceover"].split() == [
+        "Что,", "если", "самый", "страшный", "адрес", "—", "самый", "обычный?",
+    ]
+    assert cells[0]["shots"][1]["voiceover_in_shot"] == "страшный адрес —"
+    assert cells[1]["voiceover"] == "Следующая ячейка"
+
+
 def test_build_shot_menu_summary() -> None:
     frames = [
         {"id": 1, "number": 1, "voiceover_text": "aaa", "duration_seconds": 1.5},

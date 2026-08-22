@@ -70,6 +70,19 @@ def test_split_text_into_parts():
     ]
 
 
+def test_split_text_into_parts_sum_equals_source():
+    """Сумма фрагментов = исходный закадр: слова не теряются и не дублируются."""
+    text = "Раз два три четыре пять шесть семь восемь девять десять."
+    for n in (1, 2, 3, 4, 7):
+        parts = split_text_into_parts(text, n)
+        assert len(parts) == n
+        assert " ".join(parts).split() == text.split()
+    # Слов меньше, чем кадров: хвост пустой, сумма сохраняется.
+    parts = split_text_into_parts("только два", 4)
+    assert parts == ["только", "два", "", ""]
+    assert " ".join(parts).split() == ["только", "два"]
+
+
 def test_expand_shot_plan_rows():
     shots = [
         {
