@@ -205,6 +205,18 @@ def test_camera_menu_skip_requires_size_move_set() -> None:
     assert [f["uuid"] for f in pending] == ["b" * 24]
 
 
+def test_prompt_footer_asks_shot_menu_fields() -> None:
+    from app.services.apply_ops_batches import _batch_footer
+
+    text = _batch_footer(1, 1, 8, footer_kind="prompts")
+    assert "крупность" in text
+    assert "движение" in text
+    assert "набор" in text
+    cam = _batch_footer(1, 1, 8, footer_kind="camera_menu")
+    assert "крупность" in cam
+    assert "Не пиши промт_картинки" in cam
+
+
 def _frame(i: int) -> dict:
     return {
         "uuid": f"{i:024d}",

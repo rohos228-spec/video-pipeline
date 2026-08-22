@@ -1395,6 +1395,88 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     on_progress=_progress,
                     allow_empty_ops=qc_prompts,
                 )
+                if fw_frames:
+                    from sqlalchemy import select as _sel_fw
+
+                    session.expire_all()
+
+                    leftover = list(
+                        (
+                            await session.execute(
+                                _sel_fw(Frame)
+                                .where(Frame.project_id == project.id)
+                                .order_by(Frame.sort_key, Frame.number)
+                            )
+                        ).scalars().all()
+                    )
+                    missing_cam = [
+                        fr
+                        for fr in leftover
+                        if getattr(fr, "uuid", None)
+                        and not _frame_camera_menu_ready(fr)
+                    ]
+                    if missing_cam:
+                        logger.warning(
+                            "[#{}] fw_frames: меню съёмки пустое {}/{} "
+                            "— добор в этом же прогоне, без второго ▶",
+                            project.id,
+                            len(missing_cam),
+                            len(leftover),
+                        )
+                        fw_camera_menu_only = True
+                        cam_ctx = build_excel_gpt_db_context(
+                            project_id=project.id,
+                            slug=project.slug,
+                            frames=missing_cam,
+                            characters=entity_cards_for_gpt(ents),
+                        )
+                        ctx_path.write_text(
+                            _json.dumps(cam_ctx, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+                        api_res = await run_apply_ops_batched(
+                            project_dir=project.data_dir,
+                            node_key=node_key,
+                            role=role,
+                            output_mode=output_mode,
+                            prompt=master or "",
+                            accompanying=accompanying,
+                            db_ctx=cam_ctx,
+                            ctx_path=ctx_path,
+                            project_id=project.id,
+                            dense=False,
+                            apply_fn=_apply_batch,
+                            skip_if_field=SKIP_CAMERA_MENU,
+                            chunk_size=CAMERA_MENU_UNITS_PER_BATCH,
+                            parallel_max=VO_PARALLEL_MAX,
+                            stagger_sec=VO_STAGGER_SEC,
+                            footer_kind="camera_menu",
+                            on_progress=_progress,
+                            allow_empty_ops=False,
+                        )
+                        session.expire_all()
+                        leftover = list(
+                            (
+                                await session.execute(
+                                    _sel_fw(Frame)
+                                    .where(Frame.project_id == project.id)
+                                    .order_by(Frame.sort_key, Frame.number)
+                                )
+                            ).scalars().all()
+                        )
+                        still = [
+                            fr
+                            for fr in leftover
+                            if getattr(fr, "uuid", None)
+                            and not _frame_camera_menu_ready(fr)
+                        ]
+                        if still:
+                            raise RuntimeError(
+                                f"enrich_xlsx node={node_key}: меню съёмки "
+                                f"не полное {len(leftover) - len(still)}/"
+                                f"{len(leftover)} (крупность/движение/набор). "
+                                "Нода не done."
+                            )
         else:
             api_res = await run_operator_api(
                 project_dir=project.data_dir,

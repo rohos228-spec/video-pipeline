@@ -231,8 +231,8 @@ def _batch_footer(
             f"(промты по {PROMPT_UNITS_PER_BATCH})\n"
             f"В db_frames.json только этот кусок: {n} кадров.\n"
             "Верни ops ровно по каждому uuid: fields.промт_картинки, "
-            "промт_видео и действие. Чужие кадры не пиши. JSON apply-ops, "
-            "без прозы.\n"
+            "промт_видео, действие, крупность, движение, набор. "
+            "Чужие кадры не пиши. JSON apply-ops, без прозы.\n"
         )
     if kind in {"camera_menu", "shot_menu"}:
         return (
