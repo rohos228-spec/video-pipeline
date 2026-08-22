@@ -454,3 +454,41 @@ async def test_incomplete_one_uuid_retries_that_frame(tmp_path, monkeypatch) -> 
     )
     assert calls == [8, 1]
     assert len(res.apply_ops["ops"]) == 8
+
+
+@pytest.mark.asyncio
+async def test_qc_allow_empty_does_not_split_on_gpt_fail(tmp_path, monkeypatch) -> None:
+    """QC: обрыв GPT не должен 1→2→4 крутить пачку до залипания."""
+    import json
+
+    calls: list[int] = []
+
+    async def fake_run(**kwargs):
+        path = kwargs["input_paths"][0]
+        frames = json.loads(path.read_text(encoding="utf-8"))["frames"]
+        calls.append(len(frames))
+        raise RuntimeError("ConnectError: All connection attempts failed")
+
+    monkeypatch.setattr(
+        "app.services.apply_ops_batches.run_operator_api", fake_run
+    )
+    frames = [_frame(i) for i in range(8)]
+    ctx = tmp_path / "db_frames.json"
+    ctx.write_text("{}", encoding="utf-8")
+    res = await run_apply_ops_batched(
+        project_dir=tmp_path,
+        node_key="n_excel_gpt_fw_qc",
+        role="excel_gpt",
+        output_mode="project_file",
+        prompt="p",
+        accompanying="",
+        db_ctx={"frames": frames},
+        ctx_path=ctx,
+        project_id=1,
+        dense=False,
+        chunk_size=8,
+        parallel_max=1,
+        allow_empty_ops=True,
+    )
+    assert calls == [8]
+    assert res.apply_ops["ops"] == []

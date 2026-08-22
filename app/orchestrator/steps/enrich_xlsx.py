@@ -175,6 +175,19 @@ def _is_frame_prompts_prompt(variant: str | None, master: str | None) -> bool:
 def _is_qc_prompts_prompt(variant: str | None, master: str | None) -> bool:
     return any(m in _prompt_blob(variant, master) for m in _QC_PROMPTS_MARKERS)
 
+
+def _all_frame_prompts_ready(frames) -> bool:
+    """True если у каждого кадра уже есть image+anim промт (QC можно не ждать GPT)."""
+    rows = list(frames or [])
+    if len(rows) < 2:
+        return False
+    for fr in rows:
+        img = (getattr(fr, "image_prompt", None) or "").strip()
+        anim = (getattr(fr, "animation_prompt", None) or "").strip()
+        if not img or not anim:
+            return False
+    return True
+
 # Маппинг slot_idx (1..5) → (running_status, ready_status, step_code).
 _SLOT_MAP: dict[int, tuple[ProjectStatus, ProjectStatus, str]] = {
     1: (ProjectStatus.enriching_1, ProjectStatus.enrich_1_ready, "enrich_1"),
@@ -1162,6 +1175,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     reply_text='{"ops":[]}',
                     output_paths=[ctx_path],
                     apply_ops={"ops": [], "report": "script_writer_passthrough"},
+                    applied_in_runner=True,
+                )
+            elif qc_prompts and _all_frame_prompts_ready(frames_for_map):
+                from app.services.gpt_operator_client import OperatorApiResult
+
+                logger.warning(
+                    "[#{}] enrich_xlsx node={!r}: QC skip — промты уже "
+                    "в БД (frames={}), GPT не ждём",
+                    project.id,
+                    node_key,
+                    len(frames_for_map),
+                )
+                api_res = OperatorApiResult(
+                    reply_text='{"ops":[]}',
+                    output_paths=[ctx_path],
+                    apply_ops={"ops": [], "report": "qc_prompts_already_filled"},
                     applied_in_runner=True,
                 )
             else:

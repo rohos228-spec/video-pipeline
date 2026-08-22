@@ -397,6 +397,16 @@ async def run_apply_ops_batched(
         try:
             missing = await _one_chunk(chunk, level)
         except Exception as exc:
+            if allow_empty_ops:
+                logger.warning(
+                    "[#{}] apply_ops node={!r}: L{} fail ({}) — "
+                    "QC не ретраим пачку (промты уже в БД)",
+                    project_id,
+                    node_key,
+                    level,
+                    str(exc)[:160],
+                )
+                return
             nxt = next_split_level(level)
             if nxt is None or len(chunk) <= 1:
                 raise
