@@ -183,6 +183,9 @@ def build_excel_gpt_db_context(
             # Нужен ключ для skip_if_field=image_prompt, иначе retry
             # снова шлёт все 188 кадров.
             row["image_prompt"] = _clip(img, _ATTR_MAX)
+        anim = str(getattr(fr, "animation_prompt", None) or "").strip()
+        if anim:
+            row["animation_prompt"] = _clip(anim, _ATTR_MAX)
         row.update(slim_attrs_for_excel_gpt(getattr(fr, "attrs", None)))
         rows.append(row)
     return {

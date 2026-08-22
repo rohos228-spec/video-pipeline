@@ -175,7 +175,8 @@ def test_excel_gpt_db_context_exposes_image_prompt_for_skip() -> None:
             voiceover_text="vo",
             meaning="",
             image_prompt="already filled prompt",
-            attrs={},
+            animation_prompt="already filled anim",
+            attrs={"shot01_action": "шаг"},
         ),
         SimpleNamespace(
             number=2,
@@ -183,6 +184,7 @@ def test_excel_gpt_db_context_exposes_image_prompt_for_skip() -> None:
             voiceover_text="vo2",
             meaning="",
             image_prompt="",
+            animation_prompt="",
             attrs={},
         ),
     ]
@@ -190,4 +192,15 @@ def test_excel_gpt_db_context_exposes_image_prompt_for_skip() -> None:
         project_id=60, slug="x", frames=frames, characters=[]
     )
     assert ctx["frames"][0]["image_prompt"].startswith("already")
+    assert ctx["frames"][0]["animation_prompt"].startswith("already")
+    assert ctx["frames"][0]["shot01_action"] == "шаг"
     assert "image_prompt" not in ctx["frames"][1]
+    from app.services.apply_ops_batches import (
+        SKIP_PROMPTS_AND_ACTION,
+        _pending_frames,
+    )
+
+    pending = _pending_frames(
+        ctx["frames"], dense=False, skip_if_field=SKIP_PROMPTS_AND_ACTION
+    )
+    assert [f["uuid"] for f in pending] == ["b" * 24]

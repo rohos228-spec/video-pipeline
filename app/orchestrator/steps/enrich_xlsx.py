@@ -188,17 +188,18 @@ def _frame_action_text(fr) -> str:
     ).strip()
 
 
+def _frame_prompts_and_action_ready(fr) -> bool:
+    img = (getattr(fr, "image_prompt", None) or "").strip()
+    anim = (getattr(fr, "animation_prompt", None) or "").strip()
+    return bool(img and anim and _frame_action_text(fr))
+
+
 def _all_frame_prompts_ready(frames) -> bool:
     """True если у каждого кадра image+anim+действие (QC можно не ждать GPT)."""
     rows = list(frames or [])
     if len(rows) < 2:
         return False
-    for fr in rows:
-        img = (getattr(fr, "image_prompt", None) or "").strip()
-        anim = (getattr(fr, "animation_prompt", None) or "").strip()
-        if not img or not anim or not _frame_action_text(fr):
-            return False
-    return True
+    return all(_frame_prompts_and_action_ready(fr) for fr in rows)
 
 # Маппинг slot_idx (1..5) → (running_status, ready_status, step_code).
 _SLOT_MAP: dict[int, tuple[ProjectStatus, ProjectStatus, str]] = {
@@ -1035,10 +1036,25 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     "characters": entity_cards_for_gpt(ents),
                 }
             else:
+                gpt_frames = list(frames_for_map)
+                if str(node_key or "").endswith("_fw_frames"):
+                    gpt_frames = [
+                        fr
+                        for fr in frames_for_map
+                        if getattr(fr, "uuid", None)
+                        and not _frame_prompts_and_action_ready(fr)
+                    ]
+                    logger.info(
+                        "[#{}] fw_frames GPT payload {}/{} "
+                        "(skip filled image+anim+action)",
+                        project.id,
+                        len(gpt_frames),
+                        len(frames_for_map),
+                    )
                 db_ctx = build_excel_gpt_db_context(
                     project_id=project.id,
                     slug=project.slug,
-                    frames=frames_for_map,
+                    frames=gpt_frames,
                     characters=entity_cards_for_gpt(ents),
                 )
             ctx_dir = project.data_dir / "excel_gpt_uploads" / str(node_key)
