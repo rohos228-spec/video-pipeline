@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from app.services.scene_design.assembler import force_scenes_from_chrono
 from app.services.scene_design.camera_expand import (
     clamp_shots_to_duration,
+    chrono_scene_shot_counts,
     expand_shot_plan_rows,
     parse_krupnost_ladder,
     rebuild_scenes_from_camera,
@@ -55,6 +56,18 @@ def test_clamp_shots_to_duration():
     assert clamp_shots_to_duration(4, 10) == 4
     assert clamp_shots_to_duration(4, 5) == 2
     assert clamp_shots_to_duration(3, 3) == 1
+
+
+def test_chrono_scene_shot_counts_zip_by_id_scene():
+    """VO-родитель i ↔ сцена i, даже если цитаты не совпали с текстом."""
+    shots = [
+        {"id_scene": "scene_01", "цитата": "чужой текст А"},
+        {"id_scene": "scene_01", "цитата": "чужой текст Б"},
+        {"id_scene": "scene_01", "цитата": "чужой текст В"},
+        {"id_scene": "scene_02", "цитата": "чужой текст Г"},
+        {"id_scene": "scene_02", "цитата": "чужой текст Д"},
+    ]
+    assert chrono_scene_shot_counts(shots) == [3, 2]
 
 
 def test_split_text_into_parts():

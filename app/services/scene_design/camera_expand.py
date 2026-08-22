@@ -117,6 +117,25 @@ def clamp_shots_to_duration(need: int, duration_sec: float) -> int:
     return max(1, min(need, by_time))
 
 
+def chrono_scene_shot_counts(shots: list[dict[str, Any]]) -> list[int]:
+    """Число шотов на id_scene в порядке первого появления.
+
+    Цитаты камеры часто не совпадают с текстом ячейки (нормализация,
+    пунктуация) — тогда VO-родитель i ↔ сцена i, need = длина сцены.
+    """
+    order: list[str] = []
+    counts: dict[str, int] = {}
+    for shot in shots:
+        sid = str(shot.get("id_scene") or "").strip()
+        if not sid:
+            continue
+        if sid not in counts:
+            order.append(sid)
+            counts[sid] = 0
+        counts[sid] += 1
+    return [counts[sid] for sid in order]
+
+
 def expand_shot_plan_rows(
     shots: list[dict[str, Any]],
     set_counts: dict[str, tuple[int, int]] | None = None,
@@ -510,6 +529,8 @@ async def subdivide_vo_frames_by_camera(
     parents.sort(key=lambda f: (f.sort_key is None, f.sort_key or 0.0, f.number or 0))
     offsets = frame_offsets(parents, full_vo)
     spans = _beat_vo_spans(shots, full_vo)
+    parent_index = {p.uuid: i for i, p in enumerate(parents) if p.uuid}
+    zip_counts = chrono_scene_shot_counts(shots) if chrono else []
 
     def _phases_for_parent(parent: Frame) -> int:
         """Сколько shot_plan/фаз попадает в VO-диапазон родителя."""
@@ -530,6 +551,10 @@ async def subdivide_vo_frames_by_camera(
                     lo, hi = spans[i]
                     if lo >= 0 and lo <= off < hi:
                         n_shots += 1
+            idx = parent_index.get(parent.uuid or "", -1)
+            zipped = zip_counts[idx] if 0 <= idx < len(zip_counts) else 0
+            # Цитаты часто rejected — zip parent i ↔ id_scene i.
+            n_shots = max(n_shots, zipped)
             if n_shots > 0:
                 return n_shots
         best = 0
