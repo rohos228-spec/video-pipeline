@@ -50,6 +50,34 @@ def test_duration_from_vo_when_seconds_missing() -> None:
     assert cells[0]["shots"][0]["duration_sec"] > 0
 
 
+def test_camera_subdivide_fills_size_move_set() -> None:
+    frames = [
+        {
+            "id": 1,
+            "number": 1,
+            "uuid": "a" * 24,
+            "voiceover_text": "фрагмент",
+            "duration_seconds": 3,
+            "attrs": {
+                "shot01_action": "кладёт жалобу",
+                "camera_subdivide": {
+                    "role": "vo_parent",
+                    "parent_uuid": "a" * 24,
+                    "крупность": "Средний план",
+                    "движение": "статика",
+                    "набор": "SET_08",
+                },
+            },
+        }
+    ]
+    cells = group_vo_cells(frames)
+    fields = cells[0]["shots"][0]["fields"]
+    assert fields["action"] == "кладёт жалобу"
+    assert fields["size"] == "Средний план"
+    assert fields["move"] == "статика"
+    assert "SET_08" in fields["set"]
+
+
 def test_empty_vo_shots_attach_to_parent_cell() -> None:
     frames = [
         {

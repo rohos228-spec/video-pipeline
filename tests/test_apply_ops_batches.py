@@ -172,6 +172,39 @@ def test_prompts_and_action_skip_requires_all_three() -> None:
     assert [f["uuid"] for f in pending] == ["b" * 24, "c" * 24]
 
 
+def test_camera_menu_skip_requires_size_move_set() -> None:
+    from app.services.apply_ops_batches import SKIP_CAMERA_MENU
+
+    done = {
+        "uuid": "a" * 24,
+        "voiceover_text": "one",
+        "attrs": {
+            "camera_subdivide": {
+                "крупность": "Средний план",
+                "движение": "статика",
+                "набор": "SET_08",
+            }
+        },
+    }
+    no_set = {
+        "uuid": "b" * 24,
+        "voiceover_text": "two",
+        "attrs": {
+            "camera_subdivide": {
+                "крупность": "Средний план",
+                "движение": "наезд",
+            }
+        },
+    }
+    assert _frame_complete(done, dense=False, skip_if_field=SKIP_CAMERA_MENU)
+    pending = _pending_frames(
+        [done, no_set],
+        dense=False,
+        skip_if_field=SKIP_CAMERA_MENU,
+    )
+    assert [f["uuid"] for f in pending] == ["b" * 24]
+
+
 def _frame(i: int) -> dict:
     return {
         "uuid": f"{i:024d}",

@@ -187,6 +187,21 @@ def build_excel_gpt_db_context(
         if anim:
             row["animation_prompt"] = _clip(anim, _ATTR_MAX)
         row.update(slim_attrs_for_excel_gpt(getattr(fr, "attrs", None)))
+        cs = _camera_subdivide_from(fr)
+        if cs:
+            row["camera_subdivide"] = {
+                k: v
+                for k, v in cs.items()
+                if v not in (None, "")
+            }
+            for src, dst in (
+                ("крупность", "крупность"),
+                ("движение", "движение"),
+                ("набор", "набор"),
+            ):
+                val = str(cs.get(src) or "").strip()
+                if val:
+                    row[dst] = val
         rows.append(row)
     return {
         "source": "db_v2",

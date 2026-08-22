@@ -41,8 +41,14 @@ _ANIM_SKIP_KEYS = ("animation_prompt", "промт_видео")
 _ACTION_SKIP_KEYS = ("shot01_action", "main_action", "действие")
 # fw_frames: кадр готов только если картинка + видео + действие.
 SKIP_PROMPTS_AND_ACTION = "prompts_and_action"
+# Добор меню съёмки: крупность + движение + набор.
+SKIP_CAMERA_MENU = "camera_menu"
+CAMERA_MENU_UNITS_PER_BATCH = 16
 # Зависший SSE не должен держать всю волну 10 мин (GPT_TIMEOUT_S=600).
 _PROMPT_PACK_TIMEOUT_S = 240.0
+_SIZE_SKIP_KEYS = ("крупность", "size", "shot_size")
+_MOVE_SKIP_KEYS = ("движение", "движение_камеры", "move", "shot_move")
+_SET_SKIP_KEYS = ("набор", "set", "shot_set")
 
 ApplyFn = Callable[[dict[str, Any]], Awaitable[None]]
 ProgressFn = Callable[[str], Awaitable[None]]
@@ -116,6 +122,16 @@ def _any_field(frame: dict[str, Any], attrs: dict[str, Any], keys: tuple[str, ..
     )
 
 
+def _camera_menu_attrs(frame: dict[str, Any], attrs: dict[str, Any]) -> dict[str, Any]:
+    cs = attrs.get("camera_subdivide") if isinstance(attrs, dict) else {}
+    if not isinstance(cs, dict):
+        cs = {}
+    extra = frame.get("camera_subdivide")
+    if isinstance(extra, dict):
+        cs = {**cs, **extra}
+    return {**attrs, **cs}
+
+
 def _frame_complete(
     frame: dict[str, Any],
     *,
@@ -128,6 +144,13 @@ def _frame_complete(
             _any_field(frame, attrs, _IMG_SKIP_KEYS)
             and _any_field(frame, attrs, _ANIM_SKIP_KEYS)
             and _any_field(frame, attrs, _ACTION_SKIP_KEYS)
+        )
+    if skip_if_field == SKIP_CAMERA_MENU:
+        blob = _camera_menu_attrs(frame, attrs)
+        return (
+            _any_field(frame, blob, _SIZE_SKIP_KEYS)
+            and _any_field(frame, blob, _MOVE_SKIP_KEYS)
+            and _any_field(frame, blob, _SET_SKIP_KEYS)
         )
     if skip_if_field:
         keys = (skip_if_field, *_IMG_SKIP_KEYS)
@@ -210,6 +233,20 @@ def _batch_footer(
             "Верни ops ровно по каждому uuid: fields.промт_картинки, "
             "промт_видео и действие. Чужие кадры не пиши. JSON apply-ops, "
             "без прозы.\n"
+        )
+    if kind in {"camera_menu", "shot_menu"}:
+        return (
+            f"\n# BATCH call={batch_i} split={split_level} "
+            f"(меню съёмки по {CAMERA_MENU_UNITS_PER_BATCH})\n"
+            f"В db_frames.json только этот кусок: {n} кадров.\n"
+            "Верни ops ровно по каждому uuid — ТОЛЬКО три поля:\n"
+            "крупность (полное русское имя: Общий план / Средний план / "
+            "Крупный план / Средне-крупный план / Врезка предмета / …),\n"
+            "движение (статика | наезд | отъезд | сдвиг вбок | панорама | "
+            "следование | ручная камера | вид сверху),\n"
+            "набор (SET_01…SET_50 или короткое место, 2–6 слов).\n"
+            "Не пиши промт_картинки, промт_видео, действие, закадр. "
+            "JSON apply-ops, без прозы.\n"
         )
     return (
         f"\n# BATCH call={batch_i} split={split_level} (схема 1→2→4)\n"
@@ -337,7 +374,8 @@ async def run_apply_ops_batched(
         )
         pack_timeout = (
             _PROMPT_PACK_TIMEOUT_S
-            if (footer_kind or "").strip().lower() in {"prompts", "img"}
+            if (footer_kind or "").strip().lower()
+            in {"prompts", "img", "camera_menu", "shot_menu"}
             else 0.0
         )
         try:

@@ -204,6 +204,17 @@ FIELD_ALIASES: dict[str, str] = {
     "предметы": "shot01_props",
     "shot01_action": "shot01_action",
     "действие": "shot01_action",
+    # Меню съёмки (группа script_frames_qc): крупность / движение / SET.
+    "shot_size": "shot_size",
+    "крупность": "shot_size",
+    "size": "shot_size",
+    "shot_move": "shot_move",
+    "движение": "shot_move",
+    "движение_камеры": "shot_move",
+    "move": "shot_move",
+    "shot_set": "shot_set",
+    "набор": "shot_set",
+    "set": "shot_set",
     "shot01_description": "shot01_description",
     "описание_shot01": "shot01_description",
     "shot01_transition": "shot01_transition",
@@ -1291,6 +1302,22 @@ async def apply_ops(
         for attr_key in _ATTR_EXCEL_ROWS:
             if attr_key in fields:
                 attrs[attr_key] = str(fields[attr_key] or "")
+        cs_raw = attrs.get("camera_subdivide")
+        cs = dict(cs_raw) if isinstance(cs_raw, dict) else {}
+        _cs_map = (
+            ("shot_size", "крупность"),
+            ("shot_move", "движение"),
+            ("shot_set", "набор"),
+        )
+        wrote_cs = False
+        for canon, cs_key in _cs_map:
+            if canon in fields and str(fields[canon] or "").strip():
+                cs[cs_key] = str(fields[canon]).strip()
+                wrote_cs = True
+        if wrote_cs:
+            attrs["camera_subdivide"] = cs
+            if cs.get("набор"):
+                attrs["place"] = cs["набор"]
         fr.attrs = attrs
         updated += 1
 
