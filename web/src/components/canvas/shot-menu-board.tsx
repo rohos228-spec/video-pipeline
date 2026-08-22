@@ -236,9 +236,11 @@ export function ShotMenuBoard({
         <div className="min-w-0 flex-1 leading-tight">
           <h2 className="text-sm font-semibold tracking-tight">Меню съёмки</h2>
           <p className="text-[10px] text-white/40">
-            {summary
-              ? `${summary.vo_cells} ячеек закадра · ${summary.shots} шотов · ${summary.duration_clock} · ${summary.vo_chars} зн.`
-              : "Лента из БД"}
+            {q.isError
+              ? "Лента не загрузилась — обновите страницу"
+              : summary
+                ? `${summary.vo_cells} ячеек закадра · ${summary.shots} шотов · ${summary.duration_clock} · ${summary.vo_chars} зн.`
+                : "Лента из БД"}
             {" · "}клик по тексту — править · «+» между ячейками — новая
           </p>
         </div>

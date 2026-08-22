@@ -71,9 +71,11 @@ export function ShotMenuPanel({
       ) : (
         <>
           <p className="text-[10px] leading-snug text-sky-100/80">
-            {summary
-              ? `${summary.vo_cells} ячеек · ${summary.shots} шотов · ${summary.duration_clock}`
-              : "Нет кадров в БД"}
+            {q.isError
+              ? "Лента не загрузилась — обновите страницу"
+              : summary
+                ? `${summary.vo_cells} ячеек · ${summary.shots} шотов · ${summary.duration_clock}`
+                : "Нет кадров в БД"}
           </p>
           <p className="mt-0.5 text-[9px] text-muted-foreground">
             Меню: ячейка закадра → шоты. Соседний VO не склеивается.

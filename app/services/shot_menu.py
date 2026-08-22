@@ -100,7 +100,11 @@ def set_human_name(set_id: str) -> str:
     sid = set_id.strip().upper()
     if not re.fullmatch(r"SET_?\d+", sid):
         return set_id
-    sid = f"SET_{int(re.search(r'\d+', sid).group()):02d}"  # noqa: B905
+    # Python 3.11: backslash inside f-string expression is SyntaxError.
+    digits = re.search(r"\d+", sid)
+    if not digits:
+        return set_id
+    sid = f"SET_{int(digits.group()):02d}"
     name = _set_catalog().get(sid)
     return f"{sid} · {name}" if name else set_id
 
