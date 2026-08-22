@@ -2,10 +2,13 @@
 
 Не склеивает соседние VO. Кадры без закадра — только шоты предыдущей ячейки.
 Источник правды — DB frames, не rewrite чек-ноды.
+SET_xx показываем с человеческим именем из camera_sets.md.
 """
 
 from __future__ import annotations
 
+import re
+from functools import lru_cache
 from typing import Any
 
 SHOT_MENU_TRACKS: tuple[dict[str, Any], ...] = (
@@ -76,15 +79,39 @@ def _shot_cam(frame: dict[str, Any]) -> str:
     return _text(notes, from_cs)
 
 
+@lru_cache(maxsize=1)
+def _set_catalog() -> dict[str, str]:
+    """SET_01 → «Открытие места» из prompts/scene_design/camera_sets.md."""
+    from app.project_root import find_project_root
+
+    path = find_project_root() / "prompts" / "scene_design" / "camera_sets.md"
+    out: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for m in re.finditer(r"^##\s+(SET_\d+)\s*«([^»]+)»", text, re.M):
+        out[m.group(1)] = m.group(2).strip()
+    return out
+
+
+def set_human_name(set_id: str) -> str:
+    """SET_08 → «SET_08 · Документ/свидетельство» (без id в каталоге — как есть)."""
+    sid = set_id.strip().upper()
+    if not re.fullmatch(r"SET_?\d+", sid):
+        return set_id
+    sid = f"SET_{int(re.search(r'\d+', sid).group()):02d}"  # noqa: B905
+    name = _set_catalog().get(sid)
+    return f"{sid} · {name}" if name else set_id
+
+
 def _shot_set(frame: dict[str, Any]) -> str:
     cs = _camera_subdivide(frame)
     nab = cs.get("набор")
     if isinstance(nab, dict):
         nab = nab.get("id") or nab.get("name") or nab.get("title")
-    return _text(
-        nab,
-        frame_field(frame, "place", "shot01_bg", "shot01_props"),
-    )
+    raw = _text(nab) or frame_field(frame, "place", "shot01_bg", "shot01_props")
+    return set_human_name(raw) if raw else ""
 
 
 def _vo_text(frame: dict[str, Any]) -> str:
@@ -133,6 +160,29 @@ def _format_clock(seconds: float) -> str:
     return f"{minutes}:{rest:04.1f}"
 
 
+def _all_fields(frame: dict[str, Any]) -> dict[str, str]:
+    """Все поля кадра (колонки + attrs) — для пользовательских строк меню."""
+    out: dict[str, str] = {}
+    for key in (
+        "number",
+        "voiceover_text",
+        "image_prompt",
+        "animation_prompt",
+        "duration_seconds",
+        "status",
+    ):
+        val = _text(frame.get(key))
+        if val:
+            out[key] = val[:2000]
+    attrs = frame.get("attrs")
+    if isinstance(attrs, dict):
+        for k, v in attrs.items():
+            s = _text(v if not isinstance(v, (dict, list)) else str(v))
+            if s:
+                out[str(k)] = s[:2000]
+    return out
+
+
 def _shot_dto(frame: dict[str, Any], cell_index: int, shot_index: int) -> dict[str, Any]:
     vo = _vo_text(frame)
     return {
@@ -156,6 +206,7 @@ def _shot_dto(frame: dict[str, Any], cell_index: int, shot_index: int) -> dict[s
             "video_prompt": _active_prompt(frame, "video", "animation_prompt"),
             "frame_no": str(frame.get("number") or ""),
         },
+        "all": _all_fields(frame),
     }
 
 
@@ -244,4 +295,159 @@ def build_shot_menu(
             "duration_clock": _format_clock(total_sec),
             "vo_chars": vo_chars,
         },
+    }
+
+
+# ── Правки из меню: ячейки и поля шотов ──────────────────────────────
+
+# Редактируемые поля шота → колонка Frame или ключ attrs.
+_FIELD_TO_COLUMN = {
+    "img_prompt": "image_prompt",
+    "video_prompt": "animation_prompt",
+}
+_FIELD_TO_ATTR = {
+    "action": "shot01_action",
+    "characters": "characters",
+    "stitch": "scene_transition",
+    "scene": "id_scene",
+}
+
+
+async def edit_cell_voiceover(
+    session: Any,
+    project_id: int,
+    parent_uuid: str,
+    text: str,
+) -> dict[str, Any]:
+    """Правка закадра ячейки (родительский кадр) из меню съёмки."""
+    from sqlalchemy import select
+
+    from app.models import Frame
+
+    fr = (
+        await session.execute(
+            select(Frame).where(
+                Frame.project_id == project_id, Frame.uuid == parent_uuid
+            )
+        )
+    ).scalars().first()
+    if fr is None:
+        raise ValueError(f"кадр {parent_uuid!r} не найден")
+    fr.voiceover_text = text.strip()
+    await session.commit()
+    return {"ok": True, "uuid": parent_uuid, "chars": len(fr.voiceover_text)}
+
+
+async def edit_shot_field(
+    session: Any,
+    project_id: int,
+    frame_uuid: str,
+    field: str,
+    value: str,
+) -> dict[str, Any]:
+    """Правка поля шота (колонка или attrs) из меню съёмки."""
+    from sqlalchemy import select
+
+    from app.models import Frame
+
+    fr = (
+        await session.execute(
+            select(Frame).where(
+                Frame.project_id == project_id, Frame.uuid == frame_uuid
+            )
+        )
+    ).scalars().first()
+    if fr is None:
+        raise ValueError(f"кадр {frame_uuid!r} не найден")
+    if field in _FIELD_TO_COLUMN:
+        setattr(fr, _FIELD_TO_COLUMN[field], value.strip() or None)
+    elif field in _FIELD_TO_ATTR:
+        attrs = dict(fr.attrs or {})
+        attrs[_FIELD_TO_ATTR[field]] = value.strip()
+        fr.attrs = attrs
+    else:
+        raise ValueError(f"поле {field!r} не редактируется из меню")
+    await session.commit()
+    return {"ok": True, "uuid": frame_uuid, "field": field}
+
+
+async def add_cell(
+    session: Any,
+    project: Any,
+    *,
+    before_index: int | None = None,
+    voiceover: str = "",
+) -> dict[str, Any]:
+    """Новая пустая ячейка перед ячейкой N (или в конец) — дробный sort_key."""
+    from sqlalchemy import select
+
+    from app.models import Frame
+    from app.services.db_v2 import sort_key_between
+    from app.services.scene_design.camera_expand import renumber_frames_by_sort_key
+
+    frames = list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    cells = group_vo_cells([_frame_dump(fr) for fr in frames])
+
+    before_sk: float | None = None
+    after_sk: float | None = None
+    if before_index is None or before_index > len(cells):
+        # в конец
+        after_sk = float(frames[-1].sort_key or 0.0) if frames else None
+    else:
+        target = cells[max(0, before_index - 1)]
+        before_frame = next(
+            (fr for fr in frames if str(fr.uuid) == str(target["parent_uuid"])),
+            None,
+        )
+        before_sk = (
+            float(before_frame.sort_key or 0.0) if before_frame is not None else None
+        )
+        # предыдущий кадр перед целевым
+        if before_frame is not None:
+            idx = frames.index(before_frame)
+            if idx > 0:
+                after_sk = float(frames[idx - 1].sort_key or 0.0)
+        else:
+            after_sk = None
+
+    max_number = max((int(fr.number or 0) for fr in frames), default=0)
+    import uuid as _uuid
+
+    fr = Frame(
+        project_id=project.id,
+        number=max_number + 1,
+        voiceover_text=voiceover.strip(),
+        status="planned",
+        uuid=_uuid.uuid4().hex[:12],
+        sort_key=sort_key_between(after_sk, before_sk),
+        attrs={},
+    )
+    session.add(fr)
+    await session.flush()
+    await renumber_frames_by_sort_key(session, project)
+    await session.commit()
+    return {"ok": True, "uuid": fr.uuid, "number": fr.number}
+
+
+def _frame_dump(fr: Any) -> dict[str, Any]:
+    return {
+        "id": fr.id,
+        "uuid": fr.uuid,
+        "number": fr.number,
+        "voiceover_text": fr.voiceover_text,
+        "duration_seconds": fr.duration_seconds,
+        "image_prompt": fr.image_prompt,
+        "animation_prompt": fr.animation_prompt,
+        "attrs": fr.attrs or {},
+        "sort_key": fr.sort_key,
     }

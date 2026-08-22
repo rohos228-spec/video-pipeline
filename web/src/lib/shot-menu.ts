@@ -1,19 +1,11 @@
-export type ShotMenuTrackKey =
-  | "vo"
-  | "action"
-  | "cam"
-  | "set"
-  | "characters"
-  | "stitch"
-  | "scene"
-  | "img_prompt"
-  | "video_prompt"
-  | "frame_no";
+export type ShotMenuTrackKey = string;
 
 export interface ShotMenuTrackDef {
   key: ShotMenuTrackKey;
   label: string;
   pinned: boolean;
+  /** своя строка: читается из shot.all[key] (любое поле кадра/attrs) */
+  custom?: boolean;
 }
 
 export interface ShotMenuShot {
@@ -25,6 +17,8 @@ export interface ShotMenuShot {
   image_url?: string | null;
   voiceover_in_shot: string;
   fields: Record<string, string>;
+  /** все поля кадра (колонки + attrs) — для своих строк */
+  all?: Record<string, string>;
 }
 
 export interface ShotMenuCell {
@@ -56,39 +50,33 @@ export interface ShotMenuDTO {
   summary: ShotMenuSummary;
 }
 
-const STORAGE_KEY = "shot-menu-tracks-v1";
+const STORAGE_KEY = "shot-menu-tracks-v2";
 
-const KNOWN_TRACKS = new Set<ShotMenuTrackKey>([
-  "vo",
-  "action",
-  "cam",
-  "set",
-  "characters",
-  "stitch",
-  "scene",
-  "img_prompt",
-  "video_prompt",
-  "frame_no",
-]);
+interface StoredTrack {
+  key: string;
+  label?: string;
+  custom?: boolean;
+}
 
-export function loadShotMenuTracks(defaults: ShotMenuTrackKey[]): ShotMenuTrackKey[] {
+export function loadShotMenuTracks(defaults: ShotMenuTrackKey[]): StoredTrack[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return defaults;
-    const arr = JSON.parse(raw) as string[];
-    if (!Array.isArray(arr) || !arr.includes("vo")) return defaults;
-    const valid = arr.filter((k): k is ShotMenuTrackKey =>
-      KNOWN_TRACKS.has(k as ShotMenuTrackKey),
-    );
-    return valid.includes("vo") ? valid : defaults;
+    if (!raw) return defaults.map((k) => ({ key: k }));
+    const arr = JSON.parse(raw) as StoredTrack[];
+    if (!Array.isArray(arr) || !arr.some((t) => t.key === "vo")) {
+      return defaults.map((k) => ({ key: k }));
+    }
+    return arr.filter((t) => typeof t?.key === "string" && t.key);
   } catch {
-    return defaults;
+    return defaults.map((k) => ({ key: k }));
   }
 }
 
-export function saveShotMenuTracks(keys: ShotMenuTrackKey[]): void {
+export function saveShotMenuTracks(tracks: StoredTrack[]): void {
   try {
-    const next = keys.includes("vo") ? keys : (["vo", ...keys] as ShotMenuTrackKey[]);
+    const next = tracks.some((t) => t.key === "vo")
+      ? tracks
+      : [{ key: "vo" }, ...tracks];
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch {
     /* private mode */

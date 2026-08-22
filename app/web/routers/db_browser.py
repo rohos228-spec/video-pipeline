@@ -216,6 +216,67 @@ async def shot_menu(
     return build_shot_menu(graph.get("frames") or [], scenes=graph.get("scenes") or [])
 
 
+class ShotMenuCellEdit(BaseModel):
+    parent_uuid: str = Field(..., min_length=1)
+    voiceover: str = ""
+
+
+@router.patch("/projects/{project_id}/shot-menu/cell")
+async def shot_menu_edit_cell(
+    project_id: int,
+    body: ShotMenuCellEdit,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Правка закадра ячейки из меню съёмки."""
+    from app.services.shot_menu import edit_cell_voiceover
+
+    await _project(session, project_id)
+    try:
+        return await edit_cell_voiceover(session, project_id, body.parent_uuid, body.voiceover)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from None
+
+
+class ShotMenuCellAdd(BaseModel):
+    before_index: int | None = None  # ячейка перед которой вставить; None = в конец
+    voiceover: str = ""
+
+
+@router.post("/projects/{project_id}/shot-menu/cell")
+async def shot_menu_add_cell(
+    project_id: int,
+    body: ShotMenuCellAdd,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Новая ячейка перед N (или в конец) — дробный sort_key, без перенумерации."""
+    from app.services.shot_menu import add_cell
+
+    project = await _project(session, project_id)
+    return await add_cell(session, project, before_index=body.before_index, voiceover=body.voiceover)
+
+
+class ShotMenuFieldEdit(BaseModel):
+    frame_uuid: str = Field(..., min_length=1)
+    field: str = Field(..., min_length=1, max_length=60)
+    value: str = ""
+
+
+@router.patch("/projects/{project_id}/shot-menu/shot-field")
+async def shot_menu_edit_field(
+    project_id: int,
+    body: ShotMenuFieldEdit,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Правка поля шота (действие/персонажи/стык/промты…) из меню съёмки."""
+    from app.services.shot_menu import edit_shot_field
+
+    await _project(session, project_id)
+    try:
+        return await edit_shot_field(session, project_id, body.frame_uuid, body.field, body.value)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+
+
 @router.post("/projects/{project_id}/export-xlsx")
 async def export_xlsx(
     project_id: int, session: AsyncSession = Depends(get_session)

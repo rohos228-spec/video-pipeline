@@ -1,4 +1,26 @@
+from contextlib import asynccontextmanager
+
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from app.models import Base
 from app.services.shot_menu import build_shot_menu, group_vo_cells
+
+
+@pytest.fixture
+async def mem_db():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    @asynccontextmanager
+    async def _scope():
+        async with factory() as session:
+            yield session
+
+    yield _scope
+    await engine.dispose()
 
 
 def test_adjacent_vo_cells_are_not_glued() -> None:
@@ -47,7 +69,8 @@ def test_empty_vo_shots_attach_to_parent_cell() -> None:
     assert cells[0]["shots"][0]["voiceover_in_shot"] != "—"
     assert cells[0]["shots"][1]["voiceover_in_shot"] == "—"
     assert cells[0]["shots"][1]["fields"]["action"] == "Соседка хватает рукав"
-    assert cells[0]["loc"] == "SET_32"
+    # SET показываем с человеческим именем из camera_sets.md
+    assert cells[0]["loc"] == "SET_32 · Два человека"
     assert len(cells[1]["shots"]) == 1
     assert cells[1]["voiceover"].startswith("Новокузнецк")
 
@@ -90,3 +113,105 @@ def test_build_shot_menu_summary() -> None:
     assert menu["summary"]["vo_chars"] == 5
     assert any(t["key"] == "vo" and t["pinned"] for t in menu["tracks"])
     assert "vo" in menu["default_tracks"]
+
+
+def test_set_human_name() -> None:
+    from app.services.shot_menu import set_human_name
+
+    assert set_human_name("SET_08") == "SET_08 · Документ/свидетельство"
+    assert set_human_name("set_8") == "SET_08 · Документ/свидетельство"
+    assert set_human_name("SET_99") == "SET_99"  # нет в каталоге — как есть
+    assert set_human_name("подъезд") == "подъезд"
+
+
+def test_shot_dto_has_all_fields_for_custom_rows() -> None:
+    frames = [
+        {
+            "id": 1,
+            "number": 1,
+            "voiceover_text": "текст",
+            "duration_seconds": 2,
+            "attrs": {"shot01_action": "идёт", "custom_field": "моё значение"},
+        },
+    ]
+    menu = build_shot_menu(frames)
+    shot = menu["cells"][0]["shots"][0]
+    assert shot["all"]["custom_field"] == "моё значение"
+    assert shot["all"]["voiceover_text"] == "текст"
+    assert shot["all"]["number"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_edit_cell_and_field_and_add_cell(mem_db) -> None:
+    import uuid as _uuid
+
+    from app.models import Frame, Project, ProjectStatus
+    from app.services.shot_menu import add_cell, edit_cell_voiceover, edit_shot_field
+
+    async with mem_db() as session:
+        p = Project(
+            slug=f"sm-{_uuid.uuid4().hex[:6]}",
+            topic="t",
+            status=ProjectStatus.new,
+            meta={},
+        )
+        session.add(p)
+        await session.flush()
+        for i, txt in enumerate(("первая", "вторая"), start=1):
+            session.add(
+                Frame(
+                    project_id=p.id,
+                    number=i,
+                    voiceover_text=txt,
+                    status="planned",
+                    uuid=f"u{i:03d}",
+                    sort_key=float(i) * 10.0,
+                    attrs={},
+                )
+            )
+        await session.commit()
+
+        # правка закадра ячейки
+        out = await edit_cell_voiceover(session, p.id, "u001", "первая исправленная")
+        assert out["ok"] and out["chars"] == len("первая исправленная")
+
+        # правка поля шота (attrs) и колонки
+        await edit_shot_field(session, p.id, "u001", "action", "смотрит вверх")
+        await edit_shot_field(session, p.id, "u001", "img_prompt", "промт картинки")
+        from sqlalchemy import select
+
+        fr = (
+            await session.execute(select(Frame).where(Frame.uuid == "u001"))
+        ).scalars().first()
+        assert fr.attrs["shot01_action"] == "смотрит вверх"
+        assert fr.image_prompt == "промт картинки"
+
+        # добавление ячейки между первой и второй
+        add = await add_cell(session, p, before_index=2, voiceover="новая между")
+        assert add["ok"]
+        frames = list(
+            (
+                await session.execute(
+                    select(Frame).where(Frame.project_id == p.id).order_by(
+                        Frame.sort_key, Frame.number
+                    )
+                )
+            ).scalars().all()
+        )
+        texts = [f.voiceover_text for f in frames]
+        assert texts == ["первая исправленная", "новая между", "вторая"]
+        # number перенумерованы 1..N без дыр
+        assert [f.number for f in frames] == [1, 2, 3]
+
+        # добавление в конец
+        await add_cell(session, p, before_index=None, voiceover="в конец")
+        frames = list(
+            (
+                await session.execute(
+                    select(Frame).where(Frame.project_id == p.id).order_by(
+                        Frame.sort_key, Frame.number
+                    )
+                )
+            ).scalars().all()
+        )
+        assert frames[-1].voiceover_text == "в конец"

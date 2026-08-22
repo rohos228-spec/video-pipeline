@@ -422,6 +422,29 @@ export const api = {
   dbGraph: (projectId: number) => http<DbGraph>(`/api/db/projects/${projectId}/graph`),
   shotMenu: (projectId: number) =>
     http<ShotMenuDTO>(`/api/db/projects/${projectId}/shot-menu`),
+  shotMenuEditCell: (projectId: number, parentUuid: string, voiceover: string) =>
+    http<{ ok: boolean }>(`/api/db/projects/${projectId}/shot-menu/cell`, {
+      method: "PATCH",
+      body: JSON.stringify({ parent_uuid: parentUuid, voiceover }),
+    }),
+  shotMenuAddCell: (projectId: number, beforeIndex: number | null, voiceover = "") =>
+    http<{ ok: boolean; uuid: string; number: number }>(
+      `/api/db/projects/${projectId}/shot-menu/cell`,
+      {
+        method: "POST",
+        body: JSON.stringify({ before_index: beforeIndex, voiceover }),
+      },
+    ),
+  shotMenuEditField: (
+    projectId: number,
+    frameUuid: string,
+    field: string,
+    value: string,
+  ) =>
+    http<{ ok: boolean }>(`/api/db/projects/${projectId}/shot-menu/shot-field`, {
+      method: "PATCH",
+      body: JSON.stringify({ frame_uuid: frameUuid, field, value }),
+    }),
   dbPatchFrame: (frameId: number, body: Record<string, unknown>) =>
     http<{ ok: boolean }>(`/api/db/frames/${frameId}`, { method: "PATCH", body: JSON.stringify(body) }),
   dbInsertFrame: (projectId: number, afterFrameId: number | null, sceneId?: number | null) =>
