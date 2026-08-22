@@ -495,6 +495,7 @@ async def _seed_excel_gpt_overflow(
     node_status: NodeRunStatus,
     node_key: str = "n_excel_gpt_fw_script",
     completed_keys: list[str] | None = None,
+    canvas_slot: int | None = None,
     started_ago_sec: float = 120,
 ) -> tuple[int, int]:
     slug = f"egpt-nr-{uuid.uuid4().hex[:8]}"
@@ -510,6 +511,17 @@ async def _seed_excel_gpt_overflow(
         meta: dict = {}
         if completed_keys:
             meta["excel_gpt_completed_keys"] = list(completed_keys)
+        if canvas_slot is not None:
+            meta["canvas_graph"] = {
+                "nodes": [
+                    {
+                        "id": node_key,
+                        "type": "excel_gpt",
+                        "data": {"slotIndex": canvas_slot, "label": "GPT"},
+                    }
+                ],
+                "edges": [],
+            }
         project = Project(
             slug=slug,
             topic="t",
@@ -617,6 +629,34 @@ async def test_excel_gpt_false_failed_heals_from_completed_keys(mem_db) -> None:
     fixed = await _reconcile_stale_node_runs(initiator="background_reconcile")
     assert fixed >= 1
 
+    async with mem_db() as session:
+        row = await session.get(NodeRun, nr_id)
+        assert row is not None
+        assert row.status == NodeRunStatus.done
+
+
+@pytest.mark.asyncio
+async def test_excel_gpt_ready_slot_heals_without_completed_keys(
+    mem_db, monkeypatch
+) -> None:
+    """enrich_2_ready + slotIndex=2: running → done даже без completed_keys."""
+    from app.services import step_cancel as sc
+
+    _pid, nr_id = await _seed_excel_gpt_overflow(
+        mem_db,
+        project_status=ProjectStatus.enrich_2_ready,
+        node_status=NodeRunStatus.running,
+        node_key="n_excel_gpt_2",
+        completed_keys=None,
+        canvas_slot=2,
+    )
+    monkeypatch.setattr(sc, "is_generation_active", lambda _pid: False)
+
+    await _reconcile_stale_node_runs(
+        initiator="background_reconcile",
+        require_no_live_task=True,
+        grace_sec=0,
+    )
     async with mem_db() as session:
         row = await session.get(NodeRun, nr_id)
         assert row is not None

@@ -1459,6 +1459,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         meta.pop("active_excel_gpt_node_key", None)
         project.meta = meta
         flag_modified(project, "meta")
+        await session.flush()
         await session.refresh(project)
         # Юзер мог ▶ другой шаг (split) пока GPT enrich ещё отвечал.
         if project.status is not running_status:
