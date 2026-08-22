@@ -1,13 +1,16 @@
 """Разворот camera SET/лестницы: много кадров на одну VO-ячейку.
 
 Модель:
-- Ячейка закадра + аудиометки = временной диапазон текста (не режем текст).
+- Ячейка закадра + аудиометки = временной диапазон текста = целая сцена.
 - К одной ячейке может относиться много Frame (шоты SET).
-- Сцена ≠ ячейка: сцена — смысловой кусок с таймингом озвучки; в ней может
+- Текст ячейки разбивается по кадрам сцены: каждый Frame несёт свой фрагмент
+  закадра; сумма фрагментов кадров сцены = полный текст ячейки.
+- Сцена = ячейка: смысловой кусок с таймингом озвучки; в ней может
   быть много кадров. Многокадровая сцена ок, если её время = озвучке отрезка.
 
-При дроблении: полный ``voiceover_text`` остаётся только у родителя; дети —
-визуальные шоты с пустым закадром и долей duration.
+При дроблении: ``voiceover_text`` родителя режется на фрагменты по словам
+(``split_text_into_parts``) и раздаётся всей группе; дети получают долю
+duration и пустые ts (их выставит Whisper-выравнивание по фрагменту).
 """
 
 from __future__ import annotations
@@ -151,7 +154,11 @@ def expand_shot_plan_rows(
 
 
 def split_text_into_parts(text: str, n: int) -> list[str]:
-    """Разрезать закадр на n кусков по словам (хвост забирает остаток)."""
+    """Разрезать закадр на n кусков по словам (хвост забирает остаток).
+
+    Инвариант: сумма фрагментов = исходный текст (слова не теряются и не
+    дублируются). Если слов меньше, чем кадров, — хвостовые куски пустые.
+    """
     words = (text or "").strip().split()
     n = max(1, int(n))
     if n == 1:
@@ -159,8 +166,8 @@ def split_text_into_parts(text: str, n: int) -> list[str]:
     if not words:
         return [""] * n
     if len(words) < n:
-        # Мало слов — первые куски по слову, пустые хвосты недопустимы: дублируем.
-        parts = words + [words[-1]] * (n - len(words))
+        # Слов меньше кадров — по слову на кадр, хвост пустой: сумма = текст.
+        parts = list(words) + [""] * (n - len(words))
         return parts[:n]
     base, rem = divmod(len(words), n)
     parts: list[str] = []
@@ -201,7 +208,10 @@ def already_subdivided(frames: list[Frame]) -> bool:
 async def collapse_shot_children(
     session: AsyncSession, project: Project
 ) -> dict[str, Any]:
-    """Удалить SET-детей, оставить VO-родителей. Закадр не трогаем.
+    """Удалить SET-детей, оставить VO-родителей.
+
+    Перед удалением склеиваем фрагменты закадра группы обратно на родителя
+    (после дроби родитель несёт только свой кусок текста ячейки).
 
     Нужно перед повторным scene_design: иначе camera_subdivide skip
     («already has shot children») и кадры размножаются.
@@ -220,6 +230,27 @@ async def collapse_shot_children(
         ).scalars()
     )
     child_ids = [fr.id for fr in frames if _is_shot_child(fr)]
+    # Восстановить полный текст ячейки на родителе ДО удаления детей:
+    # после дроби родитель несёт только свой фрагмент — склеиваем группу.
+    by_parent: dict[str, list[Frame]] = {}
+    for fr in frames:
+        meta = _subdivide_attr(fr)
+        pu = str(meta.get("parent_uuid") or "").strip()
+        if pu:
+            by_parent.setdefault(pu, []).append(fr)
+    for members in by_parent.values():
+        members.sort(key=lambda f: int(_subdivide_attr(f).get("shot_index") or 1))
+        parent_fr = next((f for f in members if not _is_shot_child(f)), None)
+        if parent_fr is None:
+            continue
+        full = " ".join(
+            (f.voiceover_text or "").strip()
+            for f in members
+            if (f.voiceover_text or "").strip()
+        )
+        full = " ".join(full.split())
+        if full:
+            parent_fr.voiceover_text = full
     parents_cleared = 0
     for fr in frames:
         if _is_shot_child(fr):
@@ -431,10 +462,12 @@ async def subdivide_vo_frames_by_camera(
     *,
     set_counts: dict[str, tuple[int, int]] | None = None,
 ) -> tuple[list[Frame], dict[str, Any]]:
-    """Вставить шоты SET на VO-родителя **без резки** ``voiceover_text``.
+    """Вставить шоты SET на VO-родителя, раздав закадр по кадрам группы.
 
-    Полный закадр и аудиометки остаются у родителя (shot_index=1).
-    Дочерние Frame — только визуал: пустой закадр, доля duration, ladder step.
+    ``voiceover_text`` ячейки режется на фрагменты по словам: каждый Frame
+    группы (родитель + дети) несёт свой кусок; сумма фрагментов = текст ячейки.
+    Аудиометки (start/end) остаются у родителя (shot_index=1); дети получают
+    долю duration и пустые ts — их выставит Whisper-выравнивание по фрагменту.
     """
     from app.services.scene_design.agents import uses_chrono_dyn
     from app.services.scene_design.assembler import _parse_action_chain
@@ -570,13 +603,21 @@ async def subdivide_vo_frames_by_camera(
             inserted += 1
 
         group = [parent, *children]
+        # Текст ячейки разбивается по кадрам сцены: сумма фрагментов = ячейка.
+        vo_parts = split_text_into_parts(original_vo or "", need)
+        if " ".join(vo_parts).split() != (original_vo or "").split():
+            report["vo_sum_errors"] = int(report.get("vo_sum_errors") or 0) + 1
+            logger.error(
+                "[#{}] camera_subdivide: сумма фрагментов != текст ячейки (parent={})",
+                project.id,
+                parent_uuid,
+            )
         for i, fr in enumerate(group):
+            fr.voiceover_text = vo_parts[i]
             if i == 0:
-                fr.voiceover_text = original_vo
                 fr.start_ts = start_ts
                 fr.end_ts = end_ts
             else:
-                fr.voiceover_text = ""
                 fr.start_ts = None
                 fr.end_ts = None
             fr.duration_seconds = part_sec
@@ -756,15 +797,15 @@ def rebuild_scenes_from_camera(
             continue
         meta0 = _subdivide_attr(frs[0])
         parent_u = str(meta0.get("parent_uuid") or frs[0].uuid or "").strip()
-        parent_vo = vo_by_uuid.get(parent_u, "")
-        if not parent_vo or (chrono_dyn and len(frs) > 1):
-            # chrono: VO размазан по кадрам сцены (в т.ч. vo_parent ×1) — склеиваем.
-            joined = " ".join(
-                (f.voiceover_text or "").strip()
-                for f in frs
-                if (f.voiceover_text or "").strip()
-            )
-            parent_vo = joined or parent_vo
+        # Ячейка = сцена: полный текст сцены = сумма фрагментов её кадров.
+        group_parts = [
+            (f.voiceover_text or "").strip()
+            for f in frs
+            if (f.voiceover_text or "").strip()
+        ]
+        parent_vo = " ".join(group_parts) if group_parts else ""
+        if not parent_vo:
+            parent_vo = vo_by_uuid.get(parent_u, "")
         if not parent_vo:
             parent_vo = next(
                 (

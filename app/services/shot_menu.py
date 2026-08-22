@@ -210,13 +210,28 @@ def _shot_dto(frame: dict[str, Any], cell_index: int, shot_index: int) -> dict[s
     }
 
 
+def _subdivide_parent_uuid(frame: dict[str, Any]) -> str:
+    """parent_uuid из attrs.camera_subdivide (SET-дробь); без метки = ''."""
+    attrs = frame.get("attrs")
+    if not isinstance(attrs, dict):
+        return ""
+    cs = attrs.get("camera_subdivide")
+    if not isinstance(cs, dict):
+        return ""
+    return str(cs.get("parent_uuid") or "").strip()
+
+
 def group_vo_cells(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """1 непустой закадр = новая ячейка. Пустой VO только присоединяется как шот."""
+    """Ячейка = сцена: кадры одной VO-ячейки группируются по parent_uuid
+    (camera_subdivide). Без метки — старое правило: непустой закадр = новая
+    ячейка, пустой VO присоединяется как шот. Текст ячейки = сумма фрагментов
+    её кадров (после дроби каждый кадр несёт свой кусок закадра)."""
     cells: list[dict[str, Any]] = []
     current_frames: list[dict[str, Any]] = []
+    current_pu = ""
 
     def flush() -> None:
-        nonlocal current_frames
+        nonlocal current_frames, current_pu
         if not current_frames:
             return
         cell_index = len(cells) + 1
@@ -226,7 +241,9 @@ def group_vo_cells(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
             for i, fr in enumerate(current_frames, start=1)
         ]
         duration = round(sum(s["duration_sec"] for s in shots), 2)
-        vo = _vo_text(parent)
+        vo = " ".join(
+            t for t in (_vo_text(fr) for fr in current_frames) if t
+        ).strip()
         loc = _shot_set(parent)
         items = frame_field(parent, "shot01_props", "items")
         hide = frame_field(parent, "hide", "не_показывать")
@@ -257,18 +274,31 @@ def group_vo_cells(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
         current_frames = []
+        current_pu = ""
 
     for frame in _order_frames(frames):
         vo = _vo_text(frame)
+        pu = _subdivide_parent_uuid(frame)
+        if pu:
+            # Кадр SET-группы: та же ячейка, что и родитель.
+            if current_frames and pu == current_pu:
+                current_frames.append(frame)
+                continue
+            flush()
+            current_frames = [frame]
+            current_pu = pu
+            continue
         if vo:
             flush()
             current_frames = [frame]
+            current_pu = ""
             continue
         if current_frames:
             current_frames.append(frame)
             continue
         # Шоты без родителя в начале ленты — отдельная ячейка без закадра.
         current_frames = [frame]
+        current_pu = ""
     flush()
     return cells
 

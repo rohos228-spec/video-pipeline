@@ -17,6 +17,19 @@ def _norm_words(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().casefold())
 
 
+def _vo_cell_shot_index(fr: object) -> int:
+    """shot_index из attrs.camera_subdivide; без метки = 1 (VO-ячейка/родитель)."""
+    attrs = getattr(fr, "attrs", None)
+    if isinstance(attrs, dict):
+        cs = attrs.get("camera_subdivide")
+        if isinstance(cs, dict):
+            try:
+                return max(1, int(cs.get("shot_index") or 1))
+            except (TypeError, ValueError):
+                return 1
+    return 1
+
+
 def _fold_ru(text: str) -> str:
     """casefold + снять combining accents (Алекса́ндр → александр)."""
     import unicodedata
@@ -801,8 +814,13 @@ def validate_payload(
     if len(scenes) > 1:
         # Сравниваем с VO-ячейками, не с SET после camera_expand.
         # Иначе 6 сцен × 5–7 шотов (40 кадров) ложно валится как «склейка VO».
+        # После раздачи фрагментов закадра по кадрам текст есть у каждого шота —
+        # ячейкой считается только vo_parent (shot_index <= 1).
         vo_n = sum(
-            1 for fr in frames if (getattr(fr, "voiceover_text", None) or "").strip()
+            1
+            for fr in frames
+            if (getattr(fr, "voiceover_text", None) or "").strip()
+            and _vo_cell_shot_index(fr) <= 1
         )
         vo_basis = vo_n if vo_n > 0 else len(frame_uuids)
         if len(scenes) < max(3, int(0.5 * vo_basis)):
