@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from app.orchestrator.steps.enrich_xlsx import _check_mode_input_paths
 from app.services.gpt_operator import assemble_check_master_prompt
 
 
@@ -35,3 +38,21 @@ def test_assemble_check_legacy_still_mentions_tsv() -> None:
     )
     assert "XLSX_WRITEBACK" in text
     assert "# Лист:" in text or "TSV" in text
+
+
+def test_check_mode_input_paths_drops_leftover_batches(tmp_path: Path) -> None:
+    db = tmp_path / "db_check.json"
+    db.write_text("{}", encoding="utf-8")
+    leftover = [
+        tmp_path / "db_frames.json",
+        tmp_path / "db_frames_batch_01_L1.json",
+        tmp_path / "gpt_reply.txt",
+        tmp_path / "gpt_reply_raw.txt",
+    ]
+    for p in leftover:
+        p.write_text("x", encoding="utf-8")
+    img = tmp_path / "hero.png"
+    img.write_bytes(b"\x89PNG")
+    out = _check_mode_input_paths([db, *leftover, img], db)
+    names = [p.name for p in out]
+    assert names == ["db_check.json", "hero.png"]

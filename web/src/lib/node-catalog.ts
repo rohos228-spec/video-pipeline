@@ -48,7 +48,7 @@ export interface NodeSpec {
   iconKey:
     | "plan" | "script" | "split" | "user-round" | "package"
     | "wand" | "image" | "film" | "audio-waveform"
-    | "scissors" | "send" | "check-square" | "sparkles" | "music";
+    | "scissors" | "send" | "check-square" | "sparkles" | "music" | "menu";
 }
 
 export const NODE_CATALOG: Record<string, NodeSpec> = {
@@ -69,6 +69,15 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
     category: "objects",
     accent: "200 55% 55%",
     iconKey: "package",
+  },
+  shot_menu: {
+    type: "shot_menu",
+    label: "Меню съёмки",
+    description:
+      "Нода-меню: горизонтальная лента ячеек закадра и шотов. Строки — поля БД (действие, камера, SET, промты…). Соседний VO не склеивается.",
+    category: "planning",
+    accent: "190 70% 55%",
+    iconKey: "menu",
   },
   topic: {
     type: "topic",

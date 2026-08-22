@@ -131,6 +131,12 @@ def test_img_prompt_skip_and_small_batches() -> None:
     ]
     pending = _pending_frames(frames, dense=False, skip_if_field="image_prompt")
     assert [f["uuid"] for f in pending] == ["b" * 24]
+    no_vo = [
+        {"uuid": "d" * 24, "voiceover_text": "", "image_prompt": ""},
+        {"uuid": "e" * 24, "voiceover_text": "ok", "image_prompt": ""},
+    ]
+    pending2 = _pending_frames(no_vo, dense=False, skip_if_field="image_prompt")
+    assert [f["uuid"] for f in pending2] == ["e" * 24]
 
 
 def _frame(i: int) -> dict:
@@ -284,3 +290,167 @@ async def test_run_apply_ops_splits_2_to_4_on_second_error(
     # 160 fail, 80 fail → 40+40, other 80 fail → 40+40
     assert calls == [160, 80, 40, 40, 80, 40, 40]
     assert len(res.apply_ops["ops"]) == 160
+
+
+@pytest.mark.asyncio
+async def test_vo_chunk_size_9_packs(tmp_path, monkeypatch) -> None:
+    """Сценарист: заранее пачки по 9 ячеек закадра, не все 66 разом."""
+    import json
+
+    from app.services.gpt_operator_client import OperatorApiResult
+
+    calls: list[int] = []
+
+    async def fake_run(**kwargs):
+        path = kwargs["input_paths"][0]
+        frames = json.loads(path.read_text(encoding="utf-8"))["frames"]
+        calls.append(len(frames))
+        ops = [
+            {"frame_uuid": fr["uuid"], "fields": {"закадр": "x"}}
+            for fr in frames
+        ]
+        return OperatorApiResult(
+            reply_text='{"ops":[]}',
+            output_paths=[path],
+            apply_ops={"ops": ops},
+        )
+
+    monkeypatch.setattr(
+        "app.services.apply_ops_batches.run_operator_api", fake_run
+    )
+    frames = [_frame(i) for i in range(20)]
+    ctx = tmp_path / "db_frames.json"
+    ctx.write_text("{}", encoding="utf-8")
+    res = await run_apply_ops_batched(
+        project_dir=tmp_path,
+        node_key="n_excel_gpt_fw_script",
+        role="excel_gpt",
+        output_mode="project_file",
+        prompt="p",
+        accompanying="",
+        db_ctx={"frames": frames},
+        ctx_path=ctx,
+        project_id=1,
+        dense=True,
+        chunk_size=9,
+        parallel_max=1,
+    )
+    assert calls == [9, 9, 2]
+    assert len(res.apply_ops["ops"]) == 20
+
+
+@pytest.mark.asyncio
+async def test_vo_six_parallel_staggered(tmp_path, monkeypatch) -> None:
+    """До 6 пачек параллельно, старт со сдвигом; вторая волна после первой."""
+    import asyncio
+    import json
+    import time
+
+    from app.services.gpt_operator_client import OperatorApiResult
+
+    starts: list[float] = []
+    inflight = 0
+    max_inflight = 0
+    lock = asyncio.Lock()
+    calls: list[int] = []
+
+    async def fake_run(**kwargs):
+        nonlocal inflight, max_inflight
+        async with lock:
+            inflight += 1
+            max_inflight = max(max_inflight, inflight)
+            starts.append(time.monotonic())
+            calls.append(
+                len(json.loads(kwargs["input_paths"][0].read_text(encoding="utf-8"))["frames"])
+            )
+        await asyncio.sleep(0.25)
+        path = kwargs["input_paths"][0]
+        frames = json.loads(path.read_text(encoding="utf-8"))["frames"]
+        async with lock:
+            inflight -= 1
+        return OperatorApiResult(
+            reply_text='{"ops":[]}',
+            output_paths=[path],
+            apply_ops={
+                "ops": [
+                    {"frame_uuid": fr["uuid"], "fields": {"закадр": "x"}}
+                    for fr in frames
+                ]
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.services.apply_ops_batches.run_operator_api", fake_run
+    )
+    frames = [_frame(i) for i in range(66)]
+    ctx = tmp_path / "db_frames.json"
+    ctx.write_text("{}", encoding="utf-8")
+    res = await run_apply_ops_batched(
+        project_dir=tmp_path,
+        node_key="n_excel_gpt_fw_script",
+        role="excel_gpt",
+        output_mode="project_file",
+        prompt="p",
+        accompanying="",
+        db_ctx={"frames": frames},
+        ctx_path=ctx,
+        project_id=1,
+        dense=True,
+        chunk_size=9,
+        parallel_max=6,
+        stagger_sec=0.03,
+    )
+    assert calls.count(9) == 7
+    assert calls.count(3) == 1
+    assert len(res.apply_ops["ops"]) == 66
+    assert max_inflight == 6
+    assert starts[6] >= starts[0] + 0.20
+
+
+@pytest.mark.asyncio
+async def test_incomplete_one_uuid_retries_that_frame(tmp_path, monkeypatch) -> None:
+    """7/8 ops → добить один uuid, не валить пачку."""
+    import json
+
+    from app.services.gpt_operator_client import OperatorApiResult
+
+    calls: list[int] = []
+
+    async def fake_run(**kwargs):
+        path = kwargs["input_paths"][0]
+        frames = json.loads(path.read_text(encoding="utf-8"))["frames"]
+        calls.append(len(frames))
+        keep = frames if len(frames) == 1 else frames[:-1]
+        return OperatorApiResult(
+            reply_text='{"ops":[]}',
+            output_paths=[path],
+            apply_ops={
+                "ops": [
+                    {"frame_uuid": fr["uuid"], "fields": {"закадр": "x"}}
+                    for fr in keep
+                ]
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.services.apply_ops_batches.run_operator_api", fake_run
+    )
+    frames = [_frame(i) for i in range(8)]
+    ctx = tmp_path / "db_frames.json"
+    ctx.write_text("{}", encoding="utf-8")
+    res = await run_apply_ops_batched(
+        project_dir=tmp_path,
+        node_key="n_excel_gpt_fw_frames",
+        role="excel_gpt",
+        output_mode="project_file",
+        prompt="p",
+        accompanying="",
+        db_ctx={"frames": frames},
+        ctx_path=ctx,
+        project_id=1,
+        dense=False,
+        chunk_size=8,
+        parallel_max=1,
+    )
+    assert calls == [8, 1]
+    assert len(res.apply_ops["ops"]) == 8

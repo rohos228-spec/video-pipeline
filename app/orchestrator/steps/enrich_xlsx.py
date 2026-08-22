@@ -97,6 +97,47 @@ def _is_character_registry_prompt(variant: str | None, master: str | None) -> bo
     blob = f"{variant or ''}\n{(master or '')[:800]}".casefold()
     return any(m in blob for m in _CHARACTER_REGISTRY_PROMPT_MARKERS)
 
+
+_SCRIPT_WRITER_PROMPT_MARKERS = (
+    "script_writer",
+    "сценарист закадра",
+)
+_FRAME_PROMPTS_MARKERS = (
+    "frame_prompts",
+    "промты кадров",
+)
+_QC_PROMPTS_MARKERS = (
+    "prompts_qc",
+    "qc промпт",
+)
+
+
+def _drop_replace_frames_ops(ops: list) -> tuple[list, int]:
+    """Разбивка — только шаг split / camera_expand, не excel_gpt."""
+    kept = [
+        op
+        for op in ops
+        if not (isinstance(op, dict) and op.get("target") == "replace_frames")
+    ]
+    return kept, len(ops) - len(kept)
+
+
+def _prompt_blob(variant: str | None, master: str | None) -> str:
+    return f"{variant or ''}\n{(master or '')[:800]}".casefold()
+
+
+def _is_script_writer_prompt(variant: str | None, master: str | None) -> bool:
+    """Сценарист: закадр + разбивка, батчи по 9 ячеек VO, не shot-fill."""
+    return any(m in _prompt_blob(variant, master) for m in _SCRIPT_WRITER_PROMPT_MARKERS)
+
+
+def _is_frame_prompts_prompt(variant: str | None, master: str | None) -> bool:
+    return any(m in _prompt_blob(variant, master) for m in _FRAME_PROMPTS_MARKERS)
+
+
+def _is_qc_prompts_prompt(variant: str | None, master: str | None) -> bool:
+    return any(m in _prompt_blob(variant, master) for m in _QC_PROMPTS_MARKERS)
+
 # Маппинг slot_idx (1..5) → (running_status, ready_status, step_code).
 _SLOT_MAP: dict[int, tuple[ProjectStatus, ProjectStatus, str]] = {
     1: (ProjectStatus.enriching_1, ProjectStatus.enrich_1_ready, "enrich_1"),
@@ -106,8 +147,24 @@ _SLOT_MAP: dict[int, tuple[ProjectStatus, ProjectStatus, str]] = {
     5: (ProjectStatus.enriching_5, ProjectStatus.enrich_5_ready, "enrich_5"),
 }
 
-# Сколько раз пробуем round-trip, если ChatGPT не приложил файл в ответе.
-_MAX_RETRIES = 3
+def _check_mode_input_paths(
+    data_paths: list[Path], db_check_path: Path
+) -> list[Path]:
+    """checkMode DB SoT: только db_check.json + картинки, без leftover JSON/txt."""
+    keep_img = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+    out: list[Path] = [db_check_path]
+    seen = {db_check_path.resolve()}
+    for p in data_paths:
+        try:
+            rp = p.resolve()
+        except OSError:
+            rp = p
+        if rp in seen:
+            continue
+        if p.suffix.lower() in keep_img:
+            out.append(p)
+            seen.add(rp)
+    return out
 
 
 def _persist_excel_gpt_reply_for_ui(
@@ -697,17 +754,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 _json.dumps(db_check, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            # Только DB. Excel/TSV со стрелок/inputSource выкидываем.
-            data_paths = [
-                db_check_path,
-                *[
-                    p
-                    for p in data_paths
-                    if p.suffix.lower()
-                    not in {".xlsx", ".xlsm", ".xls", ".tsv", ".csv"}
-                    and p.resolve() != db_check_path.resolve()
-                ],
-            ]
+            # Только DB. Excel/TSV и leftover батчи/gpt_reply со стрелок — нет.
+            data_paths = _check_mode_input_paths(data_paths, db_check_path)
             accompanying = (
                 f"{accompanying}\n\n"
                 "# DB SoT CHECK\n"
@@ -1015,21 +1063,71 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             and ctx_path is not None
         ):
             from app.services.apply_ops_batches import (
+                PROMPT_UNITS_PER_BATCH,
+                VO_PARALLEL_MAX,
+                VO_STAGGER_SEC,
+                VO_UNITS_PER_BATCH,
                 run_apply_ops_batched,
             )
             from app.services import db_apply as _db_apply
             from app.services.node_write_contract import filter_ops_for_node
 
+            nk = str(node_key or "")
+            script_writer = _is_script_writer_prompt(variant, master) or nk.endswith(
+                "_fw_script"
+            )
+            frame_prompts = _is_frame_prompts_prompt(variant, master) or nk.endswith(
+                "_fw_frames"
+            )
+            qc_prompts = _is_qc_prompts_prompt(variant, master) or nk.endswith("_fw_qc")
+            write_prompts = frame_prompts or qc_prompts
+            keep_voiceover = script_writer
+            apply_kind = (
+                "excel_gpt_prompts" if write_prompts else "excel_gpt_no_prompts"
+            )
+
+            if script_writer:
+                from app.services.db_frames_context import collapse_script_writer_frames
+
+                cell_rows = collapse_script_writer_frames(
+                    frames_for_map, list(db_ctx.get("frames") or [])
+                )
+                logger.info(
+                    "[#{}] enrich_xlsx node={!r}: script_writer VO-cells={} "
+                    "(frames={})",
+                    project.id,
+                    node_key,
+                    len(cell_rows),
+                    len(frames_for_map),
+                )
+                db_ctx = {**db_ctx, "frames": cell_rows}
+                ctx_path.write_text(
+                    _json.dumps(db_ctx, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+
             async def _apply_batch(payload: dict) -> None:
                 from app.services.db_apply import FIELD_ALIASES
 
+                raw_ops = list(payload.get("ops") or [])
+                if script_writer:
+                    _, n_rf = _drop_replace_frames_ops(raw_ops)
+                    if n_rf:
+                        logger.warning(
+                            "[#{}] enrich_xlsx node={}: script_writer drop "
+                            "replace_frames x{} (сценарист не переписывает разбивку)",
+                            project.id,
+                            node_key,
+                            n_rf,
+                        )
                 ops = filter_ops_for_node(
-                    list(payload.get("ops") or []),
-                    node_kind="excel_gpt_no_prompts",
+                    raw_ops,
+                    node_kind=apply_kind,
                 )
                 # Shot-fill не должен затирать закадр/смысл, если
                 # volume-continue подмешал чужую схему полей.
-                _drop = {"voiceover_text", "meaning"}
+                # Сценарист как раз пишет закадр — не выкидываем.
+                _drop = set() if keep_voiceover else {"voiceover_text", "meaning"}
                 cleaned: list[dict] = []
                 for op in ops:
                     fields = op.get("fields")
@@ -1056,16 +1154,37 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     project,
                     ops,
                     export_xlsx=bool(payload.get("export_xlsx", False)),
-                    node_kind="excel_gpt_no_prompts",
+                    node_kind=apply_kind,
                 )
                 await session.commit()
                 await session.refresh(project)
 
+            async def _progress(msg: str) -> None:
+                from app.services.run_sync import update_active_node_progress_text
+
+                await update_active_node_progress_text(session, project, msg)
+                await session.commit()
+
+            if script_writer:
+                batch_label = (
+                    f"закадр по {VO_UNITS_PER_BATCH}, "
+                    f"параллельно {VO_PARALLEL_MAX}, "
+                    f"сдвиг {VO_STAGGER_SEC:g}с"
+                )
+            elif write_prompts:
+                batch_label = (
+                    f"промты по {PROMPT_UNITS_PER_BATCH}, "
+                    f"параллельно {VO_PARALLEL_MAX}, "
+                    f"сдвиг {VO_STAGGER_SEC:g}с"
+                )
+            else:
+                batch_label = "dense shot fill"
             logger.info(
                 "[#{}] enrich_xlsx node={!r}: apply-ops adaptive "
-                "1→2→4 (dense shot fill)",
+                "1→2→4 ({} )",
                 project.id,
                 node_key,
+                batch_label,
             )
             api_res = await run_apply_ops_batched(
                 project_dir=project.data_dir,
@@ -1077,8 +1196,26 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 db_ctx=db_ctx,
                 ctx_path=ctx_path,
                 project_id=project.id,
-                dense=True,
+                dense=not (write_prompts or script_writer),
                 apply_fn=_apply_batch,
+                skip_if_field="image_prompt" if frame_prompts else None,
+                chunk_size=(
+                    VO_UNITS_PER_BATCH
+                    if script_writer
+                    else (PROMPT_UNITS_PER_BATCH if write_prompts else None)
+                ),
+                parallel_max=(
+                    VO_PARALLEL_MAX if script_writer or write_prompts else None
+                ),
+                stagger_sec=(
+                    VO_STAGGER_SEC if script_writer or write_prompts else None
+                ),
+                footer_kind=(
+                    "vo"
+                    if script_writer
+                    else ("prompts" if write_prompts else None)
+                ),
+                on_progress=_progress,
             )
         else:
             api_res = await run_operator_api(
@@ -1109,6 +1246,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 if isinstance(ops_data, dict)
                 else []
             )
+            if check_mode and ops_list:
+                ops_list, n_rf = _drop_replace_frames_ops(ops_list)
+                if n_rf:
+                    logger.warning(
+                        "[#{}] enrich_xlsx node={}: checkMode drop "
+                        "replace_frames x{} (проверка не переписывает разбивку)",
+                        project.id,
+                        node_key,
+                        n_rf,
+                    )
             chars_list = (
                 list(ops_data.get("characters") or [])
                 if isinstance(ops_data, dict)
@@ -1120,20 +1267,28 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 else []
             )
             # check/report_only не пишут (или пишут DB-check без стрипа).
-            # excel_gpt на графе с img_pr/anim_pr не пишет чужие промты.
+            # Shot-fill не пишет промты картинки/видео; frames/QC — пишут.
             apply_node_kind: str | None = None
             if ops_list and not check_mode:
                 from app.services.node_write_contract import filter_ops_for_node
 
+                nk = str(node_key or "")
+                write_prompts = (
+                    _is_frame_prompts_prompt(variant, master)
+                    or _is_qc_prompts_prompt(variant, master)
+                    or nk.endswith("_fw_frames")
+                    or nk.endswith("_fw_qc")
+                )
+                apply_kind = (
+                    "excel_gpt_prompts" if write_prompts else "excel_gpt_no_prompts"
+                )
                 n_fields_before = sum(
                     len(op.get("fields") or {})
                     for op in ops_list
                     if isinstance(op, dict)
                 )
-                ops_list = filter_ops_for_node(
-                    ops_list, node_kind="excel_gpt_no_prompts"
-                )
-                apply_node_kind = "excel_gpt_no_prompts"
+                ops_list = filter_ops_for_node(ops_list, node_kind=apply_kind)
+                apply_node_kind = apply_kind
                 n_fields_after = sum(
                     len(op.get("fields") or {})
                     for op in ops_list
@@ -1142,11 +1297,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 dropped = n_fields_before - n_fields_after
                 if dropped:
                     logger.info(
-                        "[#{}] enrich_xlsx node={}: stripped {} prompt "
-                        "fields (excel_gpt_no_prompts)",
+                        "[#{}] enrich_xlsx node={}: stripped {} fields ({})",
                         project.id,
                         node_key,
                         dropped,
+                        apply_kind,
                     )
             if getattr(api_res, "applied_in_runner", False):
                 logger.info(
@@ -1227,22 +1382,30 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         f"enrich_xlsx node={node_key}: apply-ops отклонён: {e}"
                     ) from None
             elif ops_data:
-                detail = (
-                    str(ops_data.get("error") or ops_data.get("report") or "")
-                    .strip()
-                    or "ops и characters пустые"
-                )
-                _persist_excel_gpt_reply_for_ui(
-                    project,
-                    node_key,
-                    data_paths=data_paths,
-                    api_res=api_res,
-                )
-                raise RuntimeError(
-                    f"enrich_xlsx node={node_key}: apply-ops JSON пустой — {detail}. "
-                    "Нужны непустые ops и/или characters (создай реестр, "
-                    "не возвращай пустые списки)."
-                )
+                if check_mode:
+                    logger.info(
+                        "[#{}] enrich_xlsx node={}: checkMode без apply "
+                        "после фильтра — только отчёт",
+                        project.id,
+                        node_key,
+                    )
+                else:
+                    detail = (
+                        str(ops_data.get("error") or ops_data.get("report") or "")
+                        .strip()
+                        or "ops и characters пустые"
+                    )
+                    _persist_excel_gpt_reply_for_ui(
+                        project,
+                        node_key,
+                        data_paths=data_paths,
+                        api_res=api_res,
+                    )
+                    raise RuntimeError(
+                        f"enrich_xlsx node={node_key}: apply-ops JSON пустой — {detail}. "
+                        "Нужны непустые ops и/или characters (создай реестр, "
+                        "не возвращай пустые списки)."
+                    )
             else:
                 # DB SoT: без apply-ops шаг не принимаем (TSV/xlsx writeback отключён).
                 _persist_excel_gpt_reply_for_ui(
@@ -1286,6 +1449,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         meta.pop("active_excel_gpt_node_key", None)
         project.meta = meta
         flag_modified(project, "meta")
+        await session.flush()
         await session.refresh(project)
         # Юзер мог ▶ другой шаг (split) пока GPT enrich ещё отвечал.
         if project.status is not running_status:

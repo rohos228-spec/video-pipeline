@@ -9,6 +9,23 @@ from app.services.node_write_contract import (
 )
 
 
+def test_excel_gpt_prompts_keeps_image_and_anim():
+    ops = [
+        {
+            "frame_uuid": "aa",
+            "fields": {
+                "промт_картинки": "YES",
+                "промт_видео": "MOVE",
+                "место": "кухня",
+            },
+        }
+    ]
+    out = filter_ops_for_node(ops, node_kind="excel_gpt_prompts")
+    assert out[0]["fields"]["промт_картинки"] == "YES"
+    assert out[0]["fields"]["промт_видео"] == "MOVE"
+    assert out[0]["fields"]["место"] == "кухня"
+
+
 def test_excel_gpt_strips_prompt_fields():
     ops = [
         {
@@ -160,3 +177,14 @@ def test_anim_pr_keeps_only_animation_prompt():
     assert out[0]["fields"]["промт_видео"] == "MOVE"
     assert "промт_картинки" not in out[0]["fields"]
     assert "персонажи" not in out[0]["fields"]
+
+
+def test_excel_gpt_drops_replace_frames() -> None:
+    ops = [
+        {"target": "replace_frames", "frames": [{"закадр": "нет"}]},
+        {"frame_uuid": "aa", "fields": {"закадр": "да"}},
+    ]
+    out = filter_ops_for_node(ops, node_kind="excel_gpt_no_prompts")
+    assert len(out) == 1
+    assert out[0]["frame_uuid"] == "aa"
+    assert out[0]["fields"]["закадр"] == "да"

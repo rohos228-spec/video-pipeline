@@ -25,7 +25,13 @@ ANIM_PROMPT_FIELDS = frozenset({"animation_prompt", "animation_prompt_shot2"})
 CHARACTER_FIELDS = frozenset({"characters"})
 
 _NODE_KINDS = frozenset(
-    {"img_pr", "anim_pr", "excel_gpt", "excel_gpt_no_prompts"}
+    {
+        "img_pr",
+        "anim_pr",
+        "excel_gpt",
+        "excel_gpt_no_prompts",
+        "excel_gpt_prompts",
+    }
 )
 
 
@@ -54,6 +60,8 @@ _ANIM_PR_KEYS = _alias_set(ANIM_PROMPT_FIELDS)
 def _keep_field(key: str, node_kind: str) -> bool:
     norm = _norm_key(key)
     canon = _canon_field(key)
+    if node_kind == "excel_gpt_prompts":
+        return True
     if node_kind in ("excel_gpt", "excel_gpt_no_prompts"):
         if canon in PROMPT_FIELDS or norm in _PROMPT_KEYS:
             return False
@@ -86,6 +94,12 @@ def filter_ops_for_node(
         if not isinstance(op, dict):
             continue
         new_op = dict(op)
+        if (
+            kind.startswith("excel_gpt")
+            and str(new_op.get("target") or "") == "replace_frames"
+        ):
+            # Разбивка — шаг split / camera_expand, не excel_gpt.
+            continue
         fields = op.get("fields")
         if isinstance(fields, dict):
             kept = {k: v for k, v in fields.items() if _keep_field(str(k), kind)}

@@ -218,12 +218,24 @@ def migrate_enrich_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return assign_slot_indices(migrated)
 
 
+def _slot_status_pair(slot: int) -> tuple[ProjectStatus, ProjectStatus, str]:
+    """Пара running/ready для слота 1..5.
+
+    Слот 0 (slotOverflow / sd_agent без enrich) и любой мусор — занимаем
+    enriching_1: фактическая нода задаётся ``active_excel_gpt_node_key``.
+    Иначе ▶ overflow-ноды даёт KeyError → HTTP 500.
+    """
+    if slot in _SLOT_MAP:
+        return _SLOT_MAP[slot]
+    return _SLOT_MAP[1]
+
+
 def running_status_for_slot(slot: int) -> ProjectStatus:
-    return _SLOT_MAP[slot][0]
+    return _slot_status_pair(slot)[0]
 
 
 def ready_status_for_slot(slot: int) -> ProjectStatus:
-    return _SLOT_MAP[slot][1]
+    return _slot_status_pair(slot)[1]
 
 
 def slot_from_running_status(status: ProjectStatus) -> int | None:
@@ -402,8 +414,17 @@ def prepare_enrich_chain_for_auto_advance(
         return None
     if nxt_slot is None:
         nxt_slot = slot_for_excel_gpt_node_key(project, next_key)
-    if nxt_slot is None or nxt_slot < 1:
+    if nxt_slot is None:
         return None
+    meta = dict(project.meta or {})
+    if nxt_slot < 1:
+        # overflow → overflow: слот общий (enriching_1), различаем по id.
+        keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
+        if next_key in keys:
+            meta["excel_gpt_completed_keys"] = [k for k in keys if k != next_key]
+        meta["active_excel_gpt_node_key"] = next_key
+        project.meta = meta
+        return running_status_for_slot(nxt_slot)
     ensure_enrich_auto_chain_to(project, finished, from_key=from_key)
     clear_excel_gpt_tail_completion(project, nxt_slot)
     meta = dict(project.meta or {})

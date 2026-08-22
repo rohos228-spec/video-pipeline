@@ -87,6 +87,7 @@ docs/                     # human/agent docs
 | publish | publish | выгрузка |
 
 Canvas HITL/config nodes (`hitl_*`, `topic`, `storage`) — см. тот же registry.
+Нода-меню съёмки: `shot_menu` (`app/services/shot_menu.py`, палитра «Планирование»).
 
 ---
 

@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -202,6 +203,111 @@ async def db_graph(
         "next_action": tel.get("next_action"),
     }
     return graph
+
+
+@router.get("/projects/{project_id}/shot-menu")
+async def shot_menu(
+    project_id: int, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Лента меню съёмки: ячейки закадра + шоты, без склейки соседнего VO.
+
+    Пустая БД на старом проекте → один раз подтягиваем кадры из project.xlsx
+    (keep_fields=True: script_text не трогаем) и перечитываем граф.
+    """
+    from app.services.shot_menu import (
+        build_shot_menu,
+        load_project_shot_plan,
+    )
+
+    project = await _project(session, project_id)
+    graph = await db_v2.project_graph(session, project)
+    menu = build_shot_menu(
+        graph.get("frames") or [],
+        scenes=graph.get("scenes") or [],
+        shot_plan=load_project_shot_plan(project),
+    )
+    if menu["cells"]:
+        return menu
+
+    xlsx = project.data_dir / "project.xlsx"
+    if not xlsx.is_file():
+        return menu
+    try:
+        from app.services.chatgpt_xlsx import sync_project_xlsx
+
+        await sync_project_xlsx(session, project, xlsx, keep_fields=True)
+        await session.commit()
+        logger.info("[#{}] shot-menu: пустая БД → подтянуто из project.xlsx", project.id)
+        graph = await db_v2.project_graph(session, project)
+        menu = build_shot_menu(
+            graph.get("frames") or [],
+            scenes=graph.get("scenes") or [],
+            shot_plan=load_project_shot_plan(project),
+        )
+    except Exception as e:  # noqa: BLE001 — меню остаётся пустым, не падаем
+        logger.warning("[#{}] shot-menu xlsx fallback failed: {}", project.id, e)
+    return menu
+
+
+class ShotMenuCellEdit(BaseModel):
+    parent_uuid: str = Field(..., min_length=1)
+    voiceover: str = ""
+
+
+@router.patch("/projects/{project_id}/shot-menu/cell")
+async def shot_menu_edit_cell(
+    project_id: int,
+    body: ShotMenuCellEdit,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Правка закадра ячейки из меню съёмки."""
+    from app.services.shot_menu import edit_cell_voiceover
+
+    await _project(session, project_id)
+    try:
+        return await edit_cell_voiceover(session, project_id, body.parent_uuid, body.voiceover)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from None
+
+
+class ShotMenuCellAdd(BaseModel):
+    before_index: int | None = None  # ячейка перед которой вставить; None = в конец
+    voiceover: str = ""
+
+
+@router.post("/projects/{project_id}/shot-menu/cell")
+async def shot_menu_add_cell(
+    project_id: int,
+    body: ShotMenuCellAdd,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Новая ячейка перед N (или в конец) — дробный sort_key, без перенумерации."""
+    from app.services.shot_menu import add_cell
+
+    project = await _project(session, project_id)
+    return await add_cell(session, project, before_index=body.before_index, voiceover=body.voiceover)
+
+
+class ShotMenuFieldEdit(BaseModel):
+    frame_uuid: str = Field(..., min_length=1)
+    field: str = Field(..., min_length=1, max_length=60)
+    value: str = ""
+
+
+@router.patch("/projects/{project_id}/shot-menu/shot-field")
+async def shot_menu_edit_field(
+    project_id: int,
+    body: ShotMenuFieldEdit,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Правка поля шота (действие/персонажи/стык/промты…) из меню съёмки."""
+    from app.services.shot_menu import edit_shot_field
+
+    await _project(session, project_id)
+    try:
+        return await edit_shot_field(session, project_id, body.frame_uuid, body.field, body.value)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
 
 
 @router.post("/projects/{project_id}/export-xlsx")
@@ -1035,17 +1141,32 @@ def _apply_set_prompt(project: Project, step: object, variant: object) -> str:
 
 
 _UI_NODE_KINDS = ("node_studio", "prompt_builder", "hitl")
-_UI_SIMPLE_KINDS = ("topic", "baza", "gpt_chat", "create", "fleet", "settings")
+_UI_SIMPLE_KINDS = (
+    "topic",
+    "baza",
+    "gpt_chat",
+    "create",
+    "fleet",
+    "settings",
+    "shot_menu",
+)
 
 
 def _all_node_types() -> set[str]:
     from app.orchestrator.node_registry import (
         CONFIG_NODE_TYPES,
         HITL_NODE_TYPES,
+        UI_MENU_NODE_TYPES,
         WORK_NODES,
     )
 
-    return set(WORK_NODES) | set(HITL_NODE_TYPES) | set(CONFIG_NODE_TYPES) | {"excel_gpt"}
+    return (
+        set(WORK_NODES)
+        | set(HITL_NODE_TYPES)
+        | set(CONFIG_NODE_TYPES)
+        | set(UI_MENU_NODE_TYPES)
+        | {"excel_gpt", "excel_feed"}
+    )
 
 
 async def _pending_hitl_id(session: AsyncSession, project: Project) -> int | None:
@@ -1075,6 +1196,7 @@ async def _resolve_open_ui(
     from app.orchestrator.node_registry import (
         CONFIG_NODE_TYPES,
         NODE_TYPE_TO_STEP_CODE,
+        UI_MENU_NODE_TYPES,
     )
 
     kind = str((spec or {}).get("kind") or "").strip()
@@ -1097,7 +1219,7 @@ async def _resolve_open_ui(
         return out
     if kind in _UI_NODE_KINDS:
         node_type = str(spec.get("node_type") or "").strip() or (key_type or "")
-        if node_type in CONFIG_NODE_TYPES:
+        if node_type in CONFIG_NODE_TYPES or node_type in UI_MENU_NODE_TYPES:
             raise db_apply.ApplyOpsError(
                 f"open_ui {kind}: у ноды {node_type!r} нет промтов/студии — "
                 "это настройка. Тема меняется через set_topic "
@@ -1371,14 +1493,14 @@ async def _apply_create_child(
 
 
 def _side_sink_ids(nodes: list[dict]) -> set[str]:
-    """Ноды-приёмники «сбоку» (storage/topic/excel_feed): рёбра к ним ≠ цепочка.
+    """Ноды-приёмники «сбоку» (storage/topic/excel_feed/shot_menu): рёбра к ним ≠ цепочка.
 
     К ним можно вести много параллельных связей (каждая рабочая нода →
     хранилище), не ломая линейный пайплайн.
     """
-    from app.orchestrator.node_registry import CONFIG_NODE_TYPES
+    from app.orchestrator.node_registry import SIDE_NODE_TYPES
 
-    side = set(CONFIG_NODE_TYPES) | {"excel_feed"}
+    side = set(SIDE_NODE_TYPES)
     return {
         str(n.get("id"))
         for n in nodes
@@ -1492,7 +1614,11 @@ async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -
     (hitl_gate = нода проверки-аппрува).
     """
     from app.models import Workflow, WorkflowRun
-    from app.orchestrator.node_registry import CONFIG_NODE_TYPES, HITL_NODE_TYPES
+    from app.orchestrator.node_registry import (
+        CONFIG_NODE_TYPES,
+        HITL_NODE_TYPES,
+        UI_MENU_NODE_TYPES,
+    )
 
     node_type = str((spec or {}).get("node_type") or "").strip()
     if node_type not in _all_node_types():
@@ -1523,7 +1649,7 @@ async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -
     by_id = {str(n.get("id")): n for n in nodes}
 
     if after == "each":
-        skip = set(CONFIG_NODE_TYPES) | set(HITL_NODE_TYPES)
+        skip = set(CONFIG_NODE_TYPES) | set(HITL_NODE_TYPES) | set(UI_MENU_NODE_TYPES)
         next_of_pre = {
             str(e.get("source")): str(e.get("target"))
             for e in _pipeline_edges(nodes, edges)

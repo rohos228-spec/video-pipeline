@@ -189,6 +189,9 @@ export function OrchestratorPanel({ projectId }: Props) {
           } else if (u.kind === "baza") {
             window.dispatchEvent(new CustomEvent("studio-open-baza"));
             notes.push("открыл «Базу»");
+          } else if (u.kind === "shot_menu") {
+            window.dispatchEvent(new CustomEvent("studio-open-shot-menu"));
+            notes.push("открыл меню съёмки");
           } else if (u.kind === "gpt_chat") {
             window.dispatchEvent(new CustomEvent("studio-open-gpt"));
             notes.push("открыл общий чат");

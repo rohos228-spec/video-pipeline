@@ -20,6 +20,11 @@ HITL_NODE_TYPES: frozenset[str] = frozenset(
 )
 
 CONFIG_NODE_TYPES: frozenset[str] = frozenset({"topic", "storage"})
+# Нода-меню на канвасе (не шаг пайплайна). excel_feed — прозрачный вход.
+UI_MENU_NODE_TYPES: frozenset[str] = frozenset({"shot_menu"})
+SIDE_NODE_TYPES: frozenset[str] = (
+    CONFIG_NODE_TYPES | UI_MENU_NODE_TYPES | frozenset({"excel_feed"})
+)
 
 
 @dataclass(frozen=True)
@@ -191,6 +196,14 @@ def is_hitl_node_type(node_type: str) -> bool:
 
 def is_config_node_type(node_type: str) -> bool:
     return node_type in CONFIG_NODE_TYPES
+
+
+def is_ui_menu_node_type(node_type: str) -> bool:
+    return str(node_type or "") in UI_MENU_NODE_TYPES
+
+
+def is_side_node_type(node_type: str) -> bool:
+    return str(node_type or "") in SIDE_NODE_TYPES
 
 
 def spec_for_type(node_type: str) -> WorkNodeSpec | None:

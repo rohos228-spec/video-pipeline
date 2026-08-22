@@ -7,6 +7,7 @@ stream_partial, salvage ops=65, нода done. Аналитика (коротк�
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -27,11 +28,18 @@ _LIGHT_JSON_BYTES_PER_BATCH = 180_000
 # Image prompts (~5000 символов/кадр): меньше, чем shot_fill.
 _IMG_FRAMES_PER_BATCH = 8
 _IMG_JSON_BYTES_PER_BATCH = 24_000
+PROMPT_UNITS_PER_BATCH = _IMG_FRAMES_PER_BATCH
+# Сценарист / закадр: пачка = 9 ячеек VO, до 6 пачек параллельно
+# со сдвигом старта 1 с.
+VO_UNITS_PER_BATCH = 9
+VO_PARALLEL_MAX = 6
+VO_STAGGER_SEC = 1.0
 
 _COMPLETE_ATTRS_DENSE = ("main_action", "shot01_description")
 _IMG_SKIP_KEYS = ("image_prompt", "промт_картинки")
 
 ApplyFn = Callable[[dict[str, Any]], Awaitable[None]]
+ProgressFn = Callable[[str], Awaitable[None]]
 
 
 def frames_per_batch(
@@ -138,7 +146,7 @@ def _pending_frames(
     for fr in frames:
         if not _has_uuid(fr):
             continue
-        if not _has_voiceover(fr) and not skip_if_field:
+        if not _has_voiceover(fr):
             continue
         if _frame_complete(fr, dense=dense, skip_if_field=skip_if_field):
             continue
@@ -160,7 +168,30 @@ def select_frames_for_batches(
     )
 
 
-def _batch_footer(batch_i: int, split_level: int, n: int) -> str:
+def _batch_footer(
+    batch_i: int,
+    split_level: int,
+    n: int,
+    *,
+    footer_kind: str | None = None,
+) -> str:
+    kind = (footer_kind or "").strip().lower()
+    if kind in {"vo", "voiceover"}:
+        return (
+            f"\n# BATCH call={batch_i} split={split_level} "
+            f"(закадр по {VO_UNITS_PER_BATCH})\n"
+            f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
+            "Верни ops ровно по каждому uuid: fields.закадр / voiceover_text. "
+            "Чужие кадры не пиши. JSON apply-ops, без прозы.\n"
+        )
+    if kind in {"prompts", "img"}:
+        return (
+            f"\n# BATCH call={batch_i} split={split_level} "
+            f"(промты по {PROMPT_UNITS_PER_BATCH})\n"
+            f"В db_frames.json только этот кусок: {n} кадров.\n"
+            "Верни ops ровно по каждому uuid: fields.промт_картинки и "
+            "промт_видео. Чужие кадры не пиши. JSON apply-ops, без прозы.\n"
+        )
     return (
         f"\n# BATCH call={batch_i} split={split_level} (схема 1→2→4)\n"
         f"В db_frames.json только этот кусок: {n} кадров.\n"
@@ -184,8 +215,19 @@ async def run_apply_ops_batched(
     apply_fn: ApplyFn | None = None,
     skip_if_field: str | None = None,
     target_batches: int | None = None,
+    chunk_size: int | None = None,
+    parallel_max: int | None = None,
+    stagger_sec: float | None = None,
+    footer_kind: str | None = None,
+    on_progress: ProgressFn | None = None,
 ) -> OperatorApiResult:
-    """Один GPT-вызов на все кадры. Ошибка → 2 пачки. Снова ошибка → 4."""
+    """Один GPT-вызов на пачку. Ошибка внутри пачки → 2, затем 4.
+
+    ``chunk_size`` — заранее резать pending (сценарист: 9 ячеек закадра).
+    ``parallel_max`` — сколько пачек стартовать сразу (сценарист: 6),
+    со сдвигом ``stagger_sec`` (1 с). Без chunk_size — как раньше:
+    сначала все pending, при ошибке 1→2→4.
+    """
     from app.services.adaptive_llm_batches import next_split_level, split_in_half
 
     del target_batches
@@ -209,11 +251,24 @@ async def run_apply_ops_batched(
             applied_in_runner=True,
         )
 
+    size = int(chunk_size) if chunk_size and int(chunk_size) > 0 else 0
+    packs = split_frames(pending, size) if size else [pending]
+    wave_n = int(parallel_max) if parallel_max and int(parallel_max) > 1 else 1
+    delay_s = (
+        float(stagger_sec)
+        if stagger_sec is not None
+        else (VO_STAGGER_SEC if wave_n > 1 else 0.0)
+    )
     logger.info(
-        "[#{}] apply_ops batched node={!r}: pending={} adaptive 1→2→4 dense={}",
+        "[#{}] apply_ops batched node={!r}: pending={} packs={} "
+        "pack_size={} parallel={} stagger={}s adaptive 1→2→4 dense={}",
         project_id,
         node_key,
         len(pending),
+        len(packs),
+        size or "all",
+        wave_n,
+        delay_s,
         dense,
     )
 
@@ -221,33 +276,35 @@ async def run_apply_ops_batched(
     replies: list[str] = []
     last_paths: list[Path] = [ctx_path]
     call_i = 0
+    meta_lock = asyncio.Lock()
+    apply_lock = asyncio.Lock()
 
     async def _one_chunk(
         chunk: list[dict[str, Any]], level: int
     ) -> list[dict[str, Any]]:
         nonlocal call_i, last_paths
-        call_i += 1
+        async with meta_lock:
+            call_i += 1
+            my_i = call_i
         batch_ctx = {
             **db_ctx,
             "frames": chunk,
             "batch": {
-                "index": call_i,
+                "index": my_i,
                 "split_level": level,
                 "frames": len(chunk),
             },
         }
         batch_path = ctx_path.with_name(
-            f"db_frames_batch_{call_i:02d}_L{level}.json"
+            f"db_frames_batch_{my_i:02d}_L{level}.json"
         )
         batch_path.write_text(
             json.dumps(batch_ctx, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        ctx_path.write_text(
-            json.dumps(batch_ctx, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        foot = _batch_footer(
+            my_i, level, len(chunk), footer_kind=footer_kind
         )
-        foot = _batch_footer(call_i, level, len(chunk))
         res = await run_operator_api(
             project_dir=project_dir,
             node_key=node_key,
@@ -258,8 +315,6 @@ async def run_apply_ops_batched(
             input_paths=[batch_path],
             auto_pack=False,
         )
-        last_paths = list(res.output_paths or []) or [batch_path]
-        replies.append(res.reply_text or "")
         ops = []
         if isinstance(res.apply_ops, dict):
             ops = list(res.apply_ops.get("ops") or [])
@@ -284,7 +339,7 @@ async def run_apply_ops_batched(
                 "dropped {} unknown frame_uuid",
                 project_id,
                 node_key,
-                call_i,
+                my_i,
                 level,
                 dropped,
             )
@@ -293,22 +348,33 @@ async def run_apply_ops_batched(
             "[#{}] apply_ops batched node={!r}: call {} L{} sent={} got_ops={}",
             project_id,
             node_key,
-            call_i,
+            my_i,
             level,
             len(chunk),
             len(ops),
         )
+        if on_progress is not None:
+            try:
+                await on_progress(
+                    f"пачка {my_i}/{len(packs)} · {len(ops)} ops"
+                )
+            except Exception:
+                logger.debug("apply_ops progress callback failed", exc_info=True)
         if not ops:
             raise RuntimeError(
-                f"enrich_xlsx node={node_key}: L{level} call {call_i} "
+                f"enrich_xlsx node={node_key}: L{level} call {my_i} "
                 f"без ops (ждали {len(chunk)} кадров)."
             )
         if apply_fn is not None:
             payload = dict(res.apply_ops or {})
             payload["ops"] = ops
             payload["export_xlsx"] = False
-            await apply_fn(payload)
-        merged_ops.extend(ops)
+            async with apply_lock:
+                await apply_fn(payload)
+        async with meta_lock:
+            last_paths = list(res.output_paths or []) or [batch_path]
+            replies.append(res.reply_text or "")
+            merged_ops.extend(ops)
         got_uuids = {
             str(op.get("frame_uuid") or "").strip()
             for op in ops
@@ -344,8 +410,28 @@ async def run_apply_ops_batched(
             return
         if not missing:
             return
+        # 1 пропущенный uuid: ещё раз только его. Раньше len<=1 сразу
+        # валил всю пачку (7/8 → RuntimeError → soft retry всех 188).
+        if len(missing) == 1:
+            uid = str(missing[0].get("uuid") or "")[:8]
+            if len(chunk) <= 1:
+                raise RuntimeError(
+                    f"enrich_xlsx node={node_key}: L{level} неполный apply-ops "
+                    f"(0/1). uuid: {uid}"
+                )
+            logger.warning(
+                "[#{}] apply_ops node={!r}: L{} incomplete {}/{} → retry uuid {}",
+                project_id,
+                node_key,
+                level,
+                len(chunk) - 1,
+                len(chunk),
+                uid,
+            )
+            await _run_adaptive(missing, next_split_level(level) or level)
+            return
         nxt = next_split_level(level)
-        if nxt is None or len(missing) <= 1:
+        if nxt is None:
             raise RuntimeError(
                 f"enrich_xlsx node={node_key}: L{level} неполный apply-ops "
                 f"({len(chunk) - len(missing)}/{len(chunk)}). uuid: "
@@ -363,7 +449,45 @@ async def run_apply_ops_batched(
         for part in split_in_half(missing):
             await _run_adaptive(part, nxt)
 
-    await _run_adaptive(pending, 1)
+    async def _run_pack(delay: float, pack: list[dict[str, Any]]) -> None:
+        if delay > 0:
+            await asyncio.sleep(delay)
+        await _run_adaptive(pack, 1)
+
+    if wave_n <= 1 or len(packs) <= 1:
+        for pack in packs:
+            await _run_adaptive(pack, 1)
+    else:
+        for wave_start in range(0, len(packs), wave_n):
+            wave = packs[wave_start : wave_start + wave_n]
+            logger.info(
+                "[#{}] apply_ops node={!r}: wave {}–{} / {} "
+                "(parallel={}, stagger={}s)",
+                project_id,
+                node_key,
+                wave_start + 1,
+                wave_start + len(wave),
+                len(packs),
+                wave_n,
+                delay_s,
+            )
+            if on_progress is not None:
+                try:
+                    await on_progress(
+                        f"волна {wave_start + 1}–{wave_start + len(wave)} / {len(packs)}"
+                    )
+                except Exception:
+                    logger.debug("apply_ops progress callback failed", exc_info=True)
+            results = await asyncio.gather(
+                *[
+                    _run_pack(i * delay_s, pack)
+                    for i, pack in enumerate(wave)
+                ],
+                return_exceptions=True,
+            )
+            errs = [r for r in results if isinstance(r, BaseException)]
+            if errs:
+                raise errs[0]
 
     ctx_path.write_text(
         json.dumps(db_ctx, ensure_ascii=False, indent=2),

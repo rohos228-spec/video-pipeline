@@ -121,5 +121,9 @@ export function projectHasXlsx(assets: { id: string; kind: string }[]): boolean 
 
 /** Ноды проверки (HITL) — без нижнего кружка результата. */
 export function hideResultBadgeForNodeType(nodeType: string): boolean {
-  return nodeType.startsWith("hitl_") || nodeType === "hitl_gate";
+  return (
+    nodeType.startsWith("hitl_") ||
+    nodeType === "hitl_gate" ||
+    nodeType === "shot_menu"
+  );
 }

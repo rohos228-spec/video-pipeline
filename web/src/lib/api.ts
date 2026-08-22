@@ -26,11 +26,68 @@ import type {
   NodeGroupDetail,
 } from "./types";
 import type { BlockSelection } from "./prompt-styles";
+import type { ShotMenuDTO } from "./shot-menu";
 
 export interface StepTemplateBlock {
   number: number;
   title: string;
   body: string;
+}
+
+// ---- KIE Create типы (каталог моделей kie.ai) ----
+export interface KieField {
+  name: string;
+  label: string;
+  kind:
+    | "text"
+    | "textarea"
+    | "select"
+    | "toggle"
+    | "number"
+    | "images"
+    | "videos"
+    | "audios"
+    | "dialogue";
+  required?: boolean;
+  default?: unknown;
+  options?: string[];
+  min?: number;
+  max?: number;
+  step?: number;
+  max_items?: number;
+  desc?: string;
+  show_if?: Record<string, unknown>;
+}
+
+export interface KiePricingRule {
+  when: Record<string, unknown>;
+  credits: number;
+}
+
+export interface KieModelSpec {
+  id: string;
+  label: string;
+  category: string;
+  /** В какой тип Create-пикера попадает: image | video | audio */
+  media?: string;
+  desc: string;
+  /** Понятное объяснение «как работает» (для утилит/звуков) */
+  hint?: string;
+  result: "video" | "image" | "audio" | "text";
+  fields: KieField[];
+  pricing: {
+    unit: "gen" | "sec" | "1k_chars";
+    rules: KiePricingRule[];
+    default: number;
+    note?: string;
+  };
+}
+
+export interface KieCatalog {
+  credit_usd: number;
+  categories: { id: string; label: string }[];
+  models: KieModelSpec[];
+  configured: boolean;
 }
 
 export interface LibraryItemDTO {
@@ -363,6 +420,31 @@ export const api = {
   // ── База (DB v2 browser) ─────────────────────────────────────────
   dbOverview: () => http<DbOverview>(`/api/db/overview`),
   dbGraph: (projectId: number) => http<DbGraph>(`/api/db/projects/${projectId}/graph`),
+  shotMenu: (projectId: number) =>
+    http<ShotMenuDTO>(`/api/db/projects/${projectId}/shot-menu`),
+  shotMenuEditCell: (projectId: number, parentUuid: string, voiceover: string) =>
+    http<{ ok: boolean }>(`/api/db/projects/${projectId}/shot-menu/cell`, {
+      method: "PATCH",
+      body: JSON.stringify({ parent_uuid: parentUuid, voiceover }),
+    }),
+  shotMenuAddCell: (projectId: number, beforeIndex: number | null, voiceover = "") =>
+    http<{ ok: boolean; uuid: string; number: number }>(
+      `/api/db/projects/${projectId}/shot-menu/cell`,
+      {
+        method: "POST",
+        body: JSON.stringify({ before_index: beforeIndex, voiceover }),
+      },
+    ),
+  shotMenuEditField: (
+    projectId: number,
+    frameUuid: string,
+    field: string,
+    value: string,
+  ) =>
+    http<{ ok: boolean }>(`/api/db/projects/${projectId}/shot-menu/shot-field`, {
+      method: "PATCH",
+      body: JSON.stringify({ frame_uuid: frameUuid, field, value }),
+    }),
   dbPatchFrame: (frameId: number, body: Record<string, unknown>) =>
     http<{ ok: boolean }>(`/api/db/frames/${frameId}`, { method: "PATCH", body: JSON.stringify(body) }),
   dbInsertFrame: (projectId: number, afterFrameId: number | null, sceneId?: number | null) =>
@@ -1811,6 +1893,42 @@ export const api = {
         provider: string;
       }[];
     }>(`/api/create/queue`),
+
+  // ---- KIE Create (вкладка «Генерация», провайдер kie.ai) ----
+  kieCatalog: () =>
+    http<KieCatalog>(`/api/kie-create/catalog`),
+  kieCredits: () =>
+    http<{ configured: boolean; credits: number | null; usd: number | null }>(
+      `/api/kie-create/credits`,
+    ),
+  kieGenerate: (body: { model_id: string; values: Record<string, unknown> }) =>
+    http<{
+      job: {
+        job_id: string;
+        status: string;
+        history_id: string;
+        media: string;
+        model: string;
+        queue_position?: number | null;
+      };
+      estimate: { credits: number; usd: number; note?: string };
+    }>(`/api/kie-create/generate`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  kieUpload: async (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const r = await fetch(`/api/kie-create/upload`, { method: "POST", body: fd });
+    const data = (await r.json().catch(() => ({}))) as {
+      url?: string;
+      detail?: string;
+    };
+    if (!r.ok || !data.url) {
+      throw new Error(data.detail || `upload HTTP ${r.status}`);
+    }
+    return data as { url: string; filename: string; bytes: number };
+  },
 
   createJob: (jobId: string) =>
     http<{

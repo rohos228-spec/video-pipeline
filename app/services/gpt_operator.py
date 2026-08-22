@@ -1166,6 +1166,10 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
     incoming = _incoming_edges(project, node_key)
     edge_summaries: list[dict[str, Any]] = []
     edge_files: list[dict[str, Any]] = []
+    check_mode = bool(cfg.get("checkMode"))
+    # project_file = DB SoT (apply-ops). Excel больше НЕ подставляем и не
+    # требуем: enrich_xlsx сам отдаёт db_frames.json.
+    db_sot = output_mode == "project_file" and not check_mode
 
     for e in incoming:
         kind = edge_kind_of(e)
@@ -1202,9 +1206,19 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
             )
             if not paths:
                 msg = f"у ноды {src} нет файлов на диске (вход со стрелки)"
-                summary["ok"] = False
-                summary["errors"].append(msg)
-                errors.append(msg)
+                if is_fail_edge_kind(kind):
+                    warnings.append(
+                        f"{msg} — петля «Не ок»: на первом ▶ файлов проверки ещё нет"
+                    )
+                    summary["takesFiles"] = False
+                elif db_sot:
+                    warnings.append(
+                        f"{msg} — project_file/DB SoT: ок, будет db_frames.json"
+                    )
+                else:
+                    summary["ok"] = False
+                    summary["errors"].append(msg)
+                    errors.append(msg)
             for p in paths:
                 probe = _file_probe(
                     p,
@@ -1250,11 +1264,6 @@ def resolve_operator(project: Project, node_key: str) -> dict[str, Any]:
         seen.add(key)
         unique_files.append(f)
 
-    check_mode = bool(cfg.get("checkMode"))
-    # project_file = DB SoT (apply-ops). Excel больше НЕ подставляем и не
-    # требуем: enrich_xlsx сам отдаёт db_frames.json. Иначе модель снова
-    # уходит в отказ «нет бинарного project.xlsx».
-    db_sot = output_mode == "project_file" and not check_mode
     if db_sot:
         before = len(unique_files)
         unique_files = [

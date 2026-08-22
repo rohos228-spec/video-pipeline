@@ -29,6 +29,7 @@ import { StoragePanel } from "./storage-panel";
 import { HeroConfigPanel } from "./hero-config-panel";
 import { ItemsConfigPanel } from "./items-config-panel";
 import { AssembleMontageTrigger } from "./assemble-montage-board";
+import { ShotMenuPanel, ShotMenuTrigger } from "./shot-menu-panel";
 import { GptOperatorCardPanel } from "./gpt-operator-card-panel";
 import { NodeModelPicker } from "./node-model-picker";
 
@@ -120,6 +121,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const resultSnapshot = actions?.getNodeResult(d.type, d.status, d.nodeKey);
   const isExcelFeed = d.type === "excel_feed";
   const isStorage = d.type === "storage";
+  const isShotMenu = d.type === "shot_menu";
   const isHero = d.type === "hero";
   const isItems = d.type === "items";
   const isExcelGpt = isExcelGptNode(d.type);
@@ -145,13 +147,25 @@ export function PipelineNode({ data, selected }: NodeProps) {
             }}
           />
         )}
+        {isShotMenu && actions?.projectId && (
+          <ShotMenuTrigger
+            active={actions.shotMenuOpen}
+            onClick={() => {
+              if (actions.shotMenuOpen) {
+                actions.onCloseShotMenu();
+              } else {
+                actions.onOpenShotMenu();
+              }
+            }}
+          />
+        )}
 
         {wide ? (
           <div
             ref={anchorRef}
             className={cn(
               "group relative overflow-visible rounded-3xl border border-white/10 bg-card/80 shadow-lg shadow-black/40 backdrop-blur-md premium-node-glow",
-              isGptWork || isStorage ? "w-[300px]" : "w-[260px]",
+              isGptWork || isStorage || isShotMenu ? "w-[300px]" : "w-[260px]",
               "hover:-translate-y-0.5 hover:border-primary/35",
               running && "glow-running border-amber-400/60",
               d.status === "done" && "border-emerald-500/40",
@@ -175,7 +189,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 }}
               />
             )}
-            {actions && !isHitlNodeType(d.type) && !isExcelFeed && !isStorage && (
+            {actions && !isHitlNodeType(d.type) && !isExcelFeed && !isStorage && !isShotMenu && (
               <VTrigger
                 open={!!vMenuOpen}
                 title={
@@ -189,7 +203,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 onToggle={() => actions.setVMenuNodeKey(vMenuOpen ? null : d.nodeKey)}
               />
             )}
-            {actions && !isHitlNodeType(d.type) && !isExcelFeed && !isStorage && (
+            {actions && !isHitlNodeType(d.type) && !isExcelFeed && !isStorage && !isShotMenu && (
               <NodeVMenu
                 open={!!vMenuOpen}
                 anchorRef={anchorRef}
@@ -261,7 +275,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
                     {statusConfig.label}
                   </span>
                 </div>
-                {d.type !== "topic" && (
+                {!isShotMenu && d.type !== "topic" ? (
                   <NodeModelPicker
                     nodeKey={d.nodeKey}
                     nodeType={d.type}
@@ -270,7 +284,14 @@ export function PipelineNode({ data, selected }: NodeProps) {
                     imageQuality={d.imageQuality}
                     aspectRatio={d.aspectRatio}
                   />
-                )}
+                ) : null}
+                {isShotMenu ? (
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    <span className="rounded-full border border-sky-400/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-medium text-sky-100/90">
+                      меню · не шаг
+                    </span>
+                  </div>
+                ) : null}
                 {isSdAgent ? (
                   <div className="mt-1.5 flex flex-wrap gap-1">
                     <span className="rounded-full border border-violet-400/25 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-medium text-violet-100/90">
@@ -306,6 +327,12 @@ export function PipelineNode({ data, selected }: NodeProps) {
             )}
             {isStorage && actions?.projectId && (
               <StoragePanel projectId={actions.projectId} nodeKey={d.nodeKey} />
+            )}
+            {isShotMenu && actions?.projectId && (
+              <ShotMenuPanel
+                projectId={actions.projectId}
+                onOpenBoard={(cellIndex) => actions.onOpenShotMenu(cellIndex)}
+              />
             )}
             {isHero && actions?.projectId && <HeroConfigPanel projectId={actions.projectId} />}
             {isItems && actions?.projectId && <ItemsConfigPanel projectId={actions.projectId} />}
@@ -375,7 +402,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 </div>
               )}
 
-              {actions && !isHitlNodeType(d.type) && (
+              {actions && !isHitlNodeType(d.type) && !isShotMenu && (
                 <button
                   type="button"
                   className={cn(
@@ -397,7 +424,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 </button>
               )}
 
-              {actions && !isHitlNodeType(d.type) && (
+              {actions && !isHitlNodeType(d.type) && !isShotMenu && (
                 <NodeVMenu
                   open={!!vMenuOpen}
                   anchorRef={anchorRef}

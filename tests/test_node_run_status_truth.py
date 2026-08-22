@@ -486,3 +486,178 @@ async def test_scene_assembling_heals_false_failed_excel_gpt_sd_agents(mem_db) -
         assert asm_row is not None
         assert asm_row.node_type == "sd_assemble"
         assert asm_row.status == NodeRunStatus.running
+
+
+async def _seed_excel_gpt_overflow(
+    scope,
+    *,
+    project_status: ProjectStatus,
+    node_status: NodeRunStatus,
+    node_key: str = "n_excel_gpt_fw_script",
+    completed_keys: list[str] | None = None,
+    canvas_slot: int | None = None,
+    started_ago_sec: float = 120,
+) -> tuple[int, int]:
+    slug = f"egpt-nr-{uuid.uuid4().hex[:8]}"
+    async with scope() as session:
+        wf = Workflow(
+            name=f"wf-{uuid.uuid4().hex[:8]}",
+            is_default=False,
+            nodes=[],
+            edges=[],
+        )
+        session.add(wf)
+        await session.flush()
+        meta: dict = {}
+        if completed_keys:
+            meta["excel_gpt_completed_keys"] = list(completed_keys)
+        if canvas_slot is not None:
+            meta["canvas_graph"] = {
+                "nodes": [
+                    {
+                        "id": node_key,
+                        "type": "excel_gpt",
+                        "data": {"slotIndex": canvas_slot, "label": "GPT"},
+                    }
+                ],
+                "edges": [],
+            }
+        project = Project(
+            slug=slug,
+            topic="t",
+            status=project_status,
+            meta=meta,
+        )
+        session.add(project)
+        await session.flush()
+        run = WorkflowRun(
+            project_id=project.id,
+            workflow_id=wf.id,
+            status=WorkflowRunStatus.running,
+            nodes_snapshot=[{"id": node_key, "type": "excel_gpt"}],
+            edges_snapshot=[],
+        )
+        session.add(run)
+        await session.flush()
+        nr = NodeRun(
+            workflow_run_id=run.id,
+            node_key=node_key,
+            node_type="excel_gpt",
+            status=node_status,
+            started_at=datetime.utcnow() - timedelta(seconds=started_ago_sec),
+            error=(
+                "прервано: рабочий процесс не активен"
+                if node_status == NodeRunStatus.failed
+                else None
+            ),
+        )
+        session.add(nr)
+        await session.flush()
+        return project.id, nr.id
+
+
+@pytest.mark.asyncio
+async def test_excel_gpt_overflow_reconcile_heals_from_completed_keys(
+    mem_db, monkeypatch
+) -> None:
+    """Overflow excel_gpt в completed_keys, NodeRun ещё running → done, не failed."""
+    from app.services import step_cancel as sc
+
+    _pid, nr_id = await _seed_excel_gpt_overflow(
+        mem_db,
+        project_status=ProjectStatus.enrich_1_ready,
+        node_status=NodeRunStatus.running,
+        node_key="n_excel_gpt_fw_script",
+        completed_keys=["n_excel_gpt_fw_script"],
+    )
+    monkeypatch.setattr(sc, "is_generation_active", lambda _pid: False)
+
+    fixed = await _reconcile_stale_node_runs(
+        initiator="background_reconcile",
+        require_no_live_task=True,
+        grace_sec=0,
+    )
+    assert fixed >= 1
+
+    async with mem_db() as session:
+        row = await session.get(NodeRun, nr_id)
+        assert row is not None
+        assert row.status == NodeRunStatus.done
+        assert "рабочий процесс не активен" not in (row.error or "")
+
+
+@pytest.mark.asyncio
+async def test_excel_gpt_keep_running_while_enriching(
+    mem_db, monkeypatch
+) -> None:
+    """GPT-батч дольше grace: не красить excel_gpt, пока project enriching_N."""
+    from app.services import step_cancel as sc
+
+    _pid, nr_id = await _seed_excel_gpt_overflow(
+        mem_db,
+        project_status=ProjectStatus.enriching_1,
+        node_status=NodeRunStatus.running,
+        node_key="n_excel_gpt_fw_frames",
+        completed_keys=None,
+    )
+    monkeypatch.setattr(sc, "is_generation_active", lambda _pid: False)
+
+    fixed = await _reconcile_stale_node_runs(
+        initiator="background_reconcile",
+        require_no_live_task=True,
+        grace_sec=0,
+    )
+    assert fixed == 0
+
+    async with mem_db() as session:
+        row = await session.get(NodeRun, nr_id)
+        assert row is not None
+        assert row.status == NodeRunStatus.running
+
+
+@pytest.mark.asyncio
+async def test_excel_gpt_false_failed_heals_from_completed_keys(mem_db) -> None:
+    """Ложный background_reconcile: failed + ключ в completed_keys → done."""
+    _pid, nr_id = await _seed_excel_gpt_overflow(
+        mem_db,
+        project_status=ProjectStatus.enrich_1_ready,
+        node_status=NodeRunStatus.failed,
+        node_key="n_excel_gpt_fw_qc",
+        completed_keys=["n_excel_gpt_fw_qc"],
+    )
+
+    fixed = await _reconcile_stale_node_runs(initiator="background_reconcile")
+    assert fixed >= 1
+
+    async with mem_db() as session:
+        row = await session.get(NodeRun, nr_id)
+        assert row is not None
+        assert row.status == NodeRunStatus.done
+
+
+@pytest.mark.asyncio
+async def test_excel_gpt_ready_slot_heals_without_completed_keys(
+    mem_db, monkeypatch
+) -> None:
+    """enrich_2_ready + slotIndex=2: running → done даже без completed_keys."""
+    from app.services import step_cancel as sc
+
+    _pid, nr_id = await _seed_excel_gpt_overflow(
+        mem_db,
+        project_status=ProjectStatus.enrich_2_ready,
+        node_status=NodeRunStatus.running,
+        node_key="n_excel_gpt_2",
+        completed_keys=None,
+        canvas_slot=2,
+    )
+    monkeypatch.setattr(sc, "is_generation_active", lambda _pid: False)
+
+    await _reconcile_stale_node_runs(
+        initiator="background_reconcile",
+        require_no_live_task=True,
+        grace_sec=0,
+    )
+    async with mem_db() as session:
+        row = await session.get(NodeRun, nr_id)
+        assert row is not None
+        assert row.status == NodeRunStatus.done

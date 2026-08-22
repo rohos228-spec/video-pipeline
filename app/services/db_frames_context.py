@@ -76,6 +76,88 @@ def slim_attrs_for_excel_gpt(attrs: dict[str, Any] | None) -> dict[str, str]:
     return {k: _clip(v, _ATTR_MAX) for k, v in picked.items()}
 
 
+def _camera_subdivide_from(obj: Any) -> dict[str, Any]:
+    attrs = getattr(obj, "attrs", None)
+    if attrs is None and isinstance(obj, dict):
+        attrs = obj.get("attrs")
+    if isinstance(attrs, dict):
+        raw = attrs.get("camera_subdivide")
+        if isinstance(raw, dict):
+            return raw
+    return {}
+
+
+def _shot_index_from(obj: Any) -> int:
+    try:
+        return max(1, int(_camera_subdivide_from(obj).get("shot_index") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _frame_uuid(obj: Any) -> str:
+    if isinstance(obj, dict):
+        return str(obj.get("uuid") or "").strip()
+    return str(getattr(obj, "uuid", None) or "").strip()
+
+
+def _frame_vo(obj: Any) -> str:
+    if isinstance(obj, dict):
+        return str(obj.get("voiceover_text") or obj.get("закадр") or "").strip()
+    return str(getattr(obj, "voiceover_text", None) or "").strip()
+
+
+def collapse_script_writer_frames(
+    frames: list[Any],
+    rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Сценарист: пачка для GPT = 1 VO-ячейка (uuid родителя + полный закадр).
+
+    Только вход модели: не режем и не пишем фрагменты шотов. После camera_expand
+    дети уже несут свои куски; если отдать все кадры, будет ~188 пачек вместо
+    ~66 ячеек.
+    """
+    by_uuid_row = {
+        str(r.get("uuid") or "").strip(): dict(r)
+        for r in (rows or [])
+        if str(r.get("uuid") or "").strip()
+    }
+    groups: dict[str, list[Any]] = {}
+    order: list[str] = []
+    for fr in frames:
+        uid = _frame_uuid(fr)
+        if not uid:
+            continue
+        parent = str(_camera_subdivide_from(fr).get("parent_uuid") or "").strip() or uid
+        if parent not in groups:
+            groups[parent] = []
+            order.append(parent)
+        groups[parent].append(fr)
+    out: list[dict[str, Any]] = []
+    for parent_uid in order:
+        members = list(groups[parent_uid])
+        members.sort(key=_shot_index_from)
+        parent_fr = next(
+            (m for m in members if _shot_index_from(m) <= 1),
+            members[0],
+        )
+        parent_id = _frame_uuid(parent_fr)
+        full = " ".join(_frame_vo(m) for m in members if _frame_vo(m))
+        full = " ".join(full.split())
+        if not full:
+            continue
+        row = dict(by_uuid_row.get(parent_id) or {})
+        row["uuid"] = parent_id
+        row["voiceover_text"] = full
+        if "number" not in row:
+            num = getattr(parent_fr, "number", None)
+            if isinstance(parent_fr, dict):
+                num = parent_fr.get("number", num)
+            if num is not None:
+                row["number"] = num
+        out.append(row)
+    return out
+
+
 def build_excel_gpt_db_context(
     *,
     project_id: int,
@@ -96,6 +178,11 @@ def build_excel_gpt_db_context(
         meaning = str(getattr(fr, "meaning", None) or "").strip()
         if meaning:
             row["meaning"] = _clip(meaning, _ATTR_MAX)
+        img = str(getattr(fr, "image_prompt", None) or "").strip()
+        if img:
+            # Нужен ключ для skip_if_field=image_prompt, иначе retry
+            # снова шлёт все 188 кадров.
+            row["image_prompt"] = _clip(img, _ATTR_MAX)
         row.update(slim_attrs_for_excel_gpt(getattr(fr, "attrs", None)))
         rows.append(row)
     return {

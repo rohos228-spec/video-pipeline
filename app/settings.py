@@ -106,6 +106,10 @@ class Settings(BaseSettings):
     # Kie Market (Kling 2.6 video fallback). Пусто → GPT_API_KEY + api.kie.ai.
     kie_api_key: str = Field("", alias="KIE_API_KEY")
     kie_api_base_url: str = Field("https://api.kie.ai", alias="KIE_API_BASE_URL")
+    # Загрузка референс-файлов для kie (file-upload-api хост из доков).
+    kie_upload_base_url: str = Field(
+        "https://kieai.redpandaai.co", alias="KIE_UPLOAD_BASE_URL"
+    )
     # Yandex Object Storage — публичный хост реф-кадров для Outsee/Kling.
     yandex_storage_bucket: str = Field("", alias="YANDEX_STORAGE_BUCKET")
     yandex_storage_access_key: str = Field("", alias="YANDEX_STORAGE_ACCESS_KEY")
@@ -119,6 +123,8 @@ class Settings(BaseSettings):
     # Плейсхолдер {model} подставляется слагом модели.
     # TokenRouter: /chat/completions (база уже с /v1).
     gpt_chat_path: str = Field("/codex/v1/responses", alias="GPT_CHAT_PATH")
+    # reasoning.effort для Responses (kie gpt-5-6-sol): low/medium/high/xhigh/off.
+    gpt_reasoning_effort: str = Field("low", alias="GPT_REASONING_EFFORT")
     # Формат API: chat (messages/choices) | responses (input/output) | auto.
     # auto → responses, если в пути есть "responses" (kie.ai gpt-5.6/5.5/5.4 codex).
     gpt_api_mode: str = Field("auto", alias="GPT_API_MODE")
