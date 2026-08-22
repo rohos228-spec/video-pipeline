@@ -153,11 +153,62 @@ def expand_shot_plan_rows(
     return expanded
 
 
-def split_text_into_parts(text: str, n: int) -> list[str]:
-    """Разрезать закадр на n кусков по словам (хвост забирает остаток).
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+")
+_CLAUSE_SPLIT_RE = re.compile(r"(?<=[,;—–:])\s+")
 
-    Инвариант: сумма фрагментов = исходный текст (слова не теряются и не
-    дублируются). Если слов меньше, чем кадров, — хвостовые куски пустые.
+
+def _sentence_units(text: str) -> list[str]:
+    """Фразы целиком (по .!?…), без пустых."""
+    return [u.strip() for u in _SENTENCE_SPLIT_RE.split(text.strip()) if u.strip()]
+
+
+def _clause_units(units: list[str]) -> list[str]:
+    """Длинные фразы режем по клаузам (, ; — :), короткие оставляем целыми."""
+    out: list[str] = []
+    for u in units:
+        if len(u) > 60:
+            parts = [p.strip() for p in _CLAUSE_SPLIT_RE.split(u) if p.strip()]
+            out.extend(parts if len(parts) > 1 else [u])
+        else:
+            out.append(u)
+    return out
+
+
+def _balance_units(units: list[str], n: int) -> list[str]:
+    """Раздать целые фразы по n кадрам, балансируя длину (не рвать фразу)."""
+    total = sum(len(u) for u in units)
+    parts: list[str] = []
+    i = 0
+    for k in range(n):
+        remaining_groups = n - k
+        remaining_units = units[i:]
+        if len(remaining_units) <= remaining_groups:
+            # по юниту на группу, хвост — в последнюю
+            parts.extend(remaining_units[: remaining_groups - 1])
+            parts.append(" ".join(remaining_units[remaining_groups - 1 :]))
+            return parts
+        target = total / n
+        acc: list[str] = []
+        acc_len = 0
+        while i < len(units) and len(units) - i > remaining_groups - 1:
+            u = units[i]
+            # класть юнит, пока не перепрыгнем цель (но минимум один)
+            if acc and acc_len + len(u) > target and acc_len >= target * 0.6:
+                break
+            acc.append(u)
+            acc_len += len(u)
+            i += 1
+        parts.append(" ".join(acc))
+    return parts
+
+
+def split_text_into_parts(text: str, n: int) -> list[str]:
+    """Разрезать закадр на n кусков ПО СМЫСЛУ: фразы целиком, баланс по длине.
+
+    Не «пополам по словам»: предложение не рвётся между кадрами; длинная
+    фраза может распасться по клаузам (, ; —). Инвариант: сумма фрагментов
+    = исходный текст (слова не теряются и не дублируются). Слов меньше,
+    чем кадров, — по слову на кадр, хвост пустой.
     """
     words = (text or "").strip().split()
     n = max(1, int(n))
@@ -169,14 +220,21 @@ def split_text_into_parts(text: str, n: int) -> list[str]:
         # Слов меньше кадров — по слову на кадр, хвост пустой: сумма = текст.
         parts = list(words) + [""] * (n - len(words))
         return parts[:n]
-    base, rem = divmod(len(words), n)
-    parts: list[str] = []
-    i = 0
-    for k in range(n):
-        take = base + (1 if k < rem else 0)
-        parts.append(" ".join(words[i : i + take]))
-        i += take
-    return parts
+
+    units = _sentence_units(" ".join(words))
+    if len(units) < n:
+        units = _clause_units(units)
+    if len(units) < n:
+        # даже после клауз юнитов мало — ровный word-level как раньше
+        base, rem = divmod(len(words), n)
+        parts = []
+        i = 0
+        for k in range(n):
+            take = base + (1 if k < rem else 0)
+            parts.append(" ".join(words[i : i + take]))
+            i += take
+        return parts
+    return _balance_units(units, n)
 
 
 def _frame_row(fr: Frame) -> dict[str, Any]:
