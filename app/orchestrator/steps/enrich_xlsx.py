@@ -1261,7 +1261,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 dense=not (write_prompts or script_writer),
                 apply_fn=_apply_batch,
                 skip_if_field=(
-                    "image_prompt" if frame_prompts and not qc_prompts else None
+                    None
+                    if frame_prompts and str(node_key or "").endswith("_fw_frames")
+                    else (
+                        "image_prompt"
+                        if frame_prompts and not qc_prompts
+                        else None
+                    )
                 ),
                 chunk_size=(
                     VO_UNITS_PER_BATCH
@@ -1335,6 +1341,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             node_key,
                             n_unk,
                         )
+                if ops_list:
+                    logger.warning(
+                        "[#{}] enrich_xlsx node={}: checkMode drop "
+                        "{} apply-ops (гейт не пишет закадр/промты в кадры)",
+                        project.id,
+                        node_key,
+                        len(ops_list),
+                    )
+                    ops_list = []
             chars_list = (
                 list(ops_data.get("characters") or [])
                 if isinstance(ops_data, dict)
