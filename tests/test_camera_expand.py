@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from app.services.scene_design.assembler import force_scenes_from_chrono
 from app.services.scene_design.camera_expand import (
+    assign_parent_vo_parts,
     clamp_shots_to_duration,
     expand_shot_plan_rows,
     parse_krupnost_ladder,
@@ -430,3 +431,18 @@ def test_pick_unique_quote_does_not_steal_film_ending():
     assert "Спесивцевы" in start
     assert "документах" not in end
     assert "Финальная" not in end
+
+
+def test_assign_parent_vo_parts_splits_full_cell_across_shots():
+    members = [
+        SimpleNamespace(voiceover_text="full cell one two three four five six"),
+        SimpleNamespace(voiceover_text="old fragment"),
+        SimpleNamespace(voiceover_text="old two"),
+    ]
+    changed = assign_parent_vo_parts(
+        members, "full cell one two three four five six"
+    )
+    assert changed == 3
+    joined = " ".join(m.voiceover_text for m in members if m.voiceover_text)
+    assert joined.split() == "full cell one two three four five six".split()
+    assert members[0].voiceover_text != "full cell one two three four five six"

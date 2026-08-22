@@ -1076,6 +1076,26 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 "excel_gpt_prompts" if write_prompts else "excel_gpt_no_prompts"
             )
 
+            if script_writer:
+                from app.services.db_frames_context import collapse_script_writer_frames
+
+                cell_rows = collapse_script_writer_frames(
+                    frames_for_map, list(db_ctx.get("frames") or [])
+                )
+                logger.info(
+                    "[#{}] enrich_xlsx node={!r}: script_writer VO-cells={} "
+                    "(frames={})",
+                    project.id,
+                    node_key,
+                    len(cell_rows),
+                    len(frames_for_map),
+                )
+                db_ctx = {**db_ctx, "frames": cell_rows}
+                ctx_path.write_text(
+                    _json.dumps(db_ctx, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+
             async def _apply_batch(payload: dict) -> None:
                 from app.services.db_apply import FIELD_ALIASES
 
@@ -1118,6 +1138,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 await session.commit()
                 await session.refresh(project)
 
+            async def _progress(msg: str) -> None:
+                from app.services.run_sync import update_active_node_progress_text
+
+                await update_active_node_progress_text(session, project, msg)
+                await session.commit()
+
             if script_writer:
                 batch_label = (
                     f"закадр по {VO_UNITS_PER_BATCH}, "
@@ -1149,7 +1175,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 db_ctx=db_ctx,
                 ctx_path=ctx_path,
                 project_id=project.id,
-                dense=not write_prompts,
+                dense=not (write_prompts or script_writer),
                 apply_fn=_apply_batch,
                 skip_if_field="image_prompt" if frame_prompts else None,
                 chunk_size=(
@@ -1168,7 +1194,27 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     if script_writer
                     else ("prompts" if write_prompts else None)
                 ),
+                on_progress=_progress,
             )
+            if script_writer:
+                from app.services.scene_design.camera_expand import (
+                    resplit_vo_fragments_from_parents,
+                )
+
+                ops_payload = getattr(api_res, "apply_ops", None) or {}
+                written = {
+                    str(op.get("frame_uuid") or "").strip()
+                    for op in (
+                        ops_payload.get("ops") if isinstance(ops_payload, dict) else []
+                    )
+                    or []
+                    if isinstance(op, dict) and str(op.get("frame_uuid") or "").strip()
+                }
+                n_split = await resplit_vo_fragments_from_parents(
+                    session, project, parent_uuids=written
+                )
+                if n_split:
+                    await session.commit()
         else:
             api_res = await run_operator_api(
                 project_dir=project.data_dir,

@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from app.services.db_frames_context import build_img_pr_db_context
+from app.services.db_frames_context import (
+    build_img_pr_db_context,
+    collapse_script_writer_frames,
+)
 
 
 def test_img_pr_db_context_picks_scene_grammar_keys() -> None:
@@ -112,3 +115,52 @@ def test_excel_gpt_check_context_is_slim_with_scene_registry() -> None:
     assert len(row["voiceover_text"]) <= 400
     assert len(row["meaning"]) <= 500
     assert len(json.dumps(ctx)) < 20_000
+
+
+def _vo_frame(uid: str, number: int, vo: str, *, parent: str, shot: int):
+    return SimpleNamespace(
+        uuid=uid,
+        number=number,
+        voiceover_text=vo,
+        attrs={
+            "camera_subdivide": {
+                "parent_uuid": parent,
+                "shot_index": shot,
+                "role": "vo_parent" if shot <= 1 else "shot",
+            }
+        },
+    )
+
+
+def test_script_writer_collapses_shot_children_into_vo_cells() -> None:
+    """188 шотов с фрагментами → 2 ячейки закадра, полный текст на родителе."""
+    frames = [
+        _vo_frame("p1", 1, "один два три", parent="p1", shot=1),
+        _vo_frame("c1", 2, "четыре пять", parent="p1", shot=2),
+        _vo_frame("c2", 3, "шесть", parent="p1", shot=3),
+        _vo_frame("p2", 4, "семь восемь", parent="p2", shot=1),
+        _vo_frame("c3", 5, "девять", parent="p2", shot=2),
+    ]
+    clipped = [
+        {"uuid": "p1", "voiceover_text": "один два…", "main_action": "x"},
+        {"uuid": "c1", "voiceover_text": "четыре пять"},
+        {"uuid": "c2", "voiceover_text": "шесть"},
+        {"uuid": "p2", "voiceover_text": "семь восемь"},
+        {"uuid": "c3", "voiceover_text": "девять"},
+    ]
+    rows = collapse_script_writer_frames(frames, clipped)
+    assert [r["uuid"] for r in rows] == ["p1", "p2"]
+    assert rows[0]["voiceover_text"] == "один два три четыре пять шесть"
+    assert rows[1]["voiceover_text"] == "семь восемь девять"
+    assert "main_action" in rows[0]
+
+
+def test_script_writer_keeps_plain_vo_frames_without_subdivide() -> None:
+    frames = [
+        SimpleNamespace(uuid="a", number=1, voiceover_text="hello", attrs={}),
+        SimpleNamespace(uuid="b", number=2, voiceover_text="", attrs={}),
+        SimpleNamespace(uuid="c", number=3, voiceover_text="world", attrs=None),
+    ]
+    rows = collapse_script_writer_frames(frames)
+    assert [r["uuid"] for r in rows] == ["a", "c"]
+    assert rows[0]["voiceover_text"] == "hello"

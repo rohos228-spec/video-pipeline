@@ -1070,8 +1070,23 @@ def _stream_timeout(total_s: float) -> httpx.Timeout:
         read = None
     # upload большого input (xlsx/db_frames) тоже не режем 60с.
     write: float | None = None
-    _ = total_s  # оставлен для совместимости вызова; на SSE idle не влияет
+    _ = total_s  # idle read отдельно; общий дедлайн — _sse_deadline_s
     return httpx.Timeout(None, connect=30.0, read=read, write=write, pool=30.0)
+
+
+def _sse_deadline_s(timeout: float) -> float:
+    """Стена времени на весь SSE-вызов (не idle между токенами).
+
+    ``read=None`` ждёт EOF сервера — мёртвый сокет без байт висит вечно.
+    Дедлайн = GPT_TIMEOUT_S / аргумент chat(timeout=…), минимум 30с.
+    """
+    try:
+        value = float(timeout)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value <= 0:
+        value = float(getattr(settings, "gpt_timeout_s", 600.0) or 600.0)
+    return max(30.0, value)
 
 
 def _raise_http_status(
@@ -1488,58 +1503,71 @@ async def _chat_responses_stream(
     saw_completed = False
     stream_err: BaseException | None = None
     sto = _stream_timeout(timeout)
+    deadline = _sse_deadline_s(timeout)
     logger.info(
-        "gpt_api.chat SSE start model={} read_timeout={} (None=wait server EOF)",
+        "gpt_api.chat SSE start model={} read_timeout={} wall_clock={}s",
         use_model,
         sto.read,
+        deadline,
     )
     async with _async_client(timeout=sto) as client:
         try:
-            async with client.stream(
-                "POST", url, headers=headers, json=stream_body
-            ) as resp:
-                cf_ray = resp.headers.get("cf-ray") or ""
-                if resp.status_code >= 400:
-                    err_body = (await resp.aread()).decode("utf-8", errors="replace")
-                    _raise_http_status(resp.status_code, err_body, use_model=use_model)
-                # Читаем до EOF сервера — сами цикл не прерываем.
-                async for line in resp.aiter_lines():
-                    lines.append(line)
-                    if not line.startswith("data:") or "response." not in line:
-                        continue
-                    try:
-                        ev = json.loads(line[5:].strip())
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(ev, dict):
-                        continue
-                    et = str(ev.get("type") or "")
-                    if et == "response.output_text.done":
-                        saw_text_done = True
-                    elif et == "response.completed":
-                        saw_completed = True
-                    if (
-                        logged_task_id
-                        or "resp_" not in line
-                    ):
-                        continue
-                    resp_obj = ev.get("response")
-                    if isinstance(resp_obj, dict) and resp_obj.get("id"):
-                        logger.info(
-                            "gpt_api.chat task_id={} cf_ray={} model={}",
-                            resp_obj["id"],
-                            cf_ray or "-",
-                            use_model,
-                        )
-                        logged_task_id = True
-                logger.info(
-                    "gpt_api.chat SSE EOF lines={} text_done={} completed={} "
-                    "cf_ray={}",
-                    len(lines),
-                    saw_text_done,
-                    saw_completed,
-                    cf_ray or "-",
-                )
+            async with asyncio.timeout(deadline):
+                async with client.stream(
+                    "POST", url, headers=headers, json=stream_body
+                ) as resp:
+                    cf_ray = resp.headers.get("cf-ray") or ""
+                    if resp.status_code >= 400:
+                        err_body = (await resp.aread()).decode("utf-8", errors="replace")
+                        _raise_http_status(resp.status_code, err_body, use_model=use_model)
+                    # Читаем до EOF сервера — сами цикл не прерываем.
+                    async for line in resp.aiter_lines():
+                        lines.append(line)
+                        if not line.startswith("data:") or "response." not in line:
+                            continue
+                        try:
+                            ev = json.loads(line[5:].strip())
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(ev, dict):
+                            continue
+                        et = str(ev.get("type") or "")
+                        if et == "response.output_text.done":
+                            saw_text_done = True
+                        elif et == "response.completed":
+                            saw_completed = True
+                        if (
+                            logged_task_id
+                            or "resp_" not in line
+                        ):
+                            continue
+                        resp_obj = ev.get("response")
+                        if isinstance(resp_obj, dict) and resp_obj.get("id"):
+                            logger.info(
+                                "gpt_api.chat task_id={} cf_ray={} model={}",
+                                resp_obj["id"],
+                                cf_ray or "-",
+                                use_model,
+                            )
+                            logged_task_id = True
+                    logger.info(
+                        "gpt_api.chat SSE EOF lines={} text_done={} completed={} "
+                        "cf_ray={}",
+                        len(lines),
+                        saw_text_done,
+                        saw_completed,
+                        cf_ray or "-",
+                    )
+        except TimeoutError as e:
+            stream_err = e
+            logger.warning(
+                "gpt_api.chat SSE wall-clock timeout after {}s lines={} "
+                "text_done={} completed={} — try salvage",
+                deadline,
+                len(lines),
+                saw_text_done,
+                saw_completed,
+            )
         except (httpx.TimeoutException, httpx.HTTPError) as e:
             stream_err = e
             logger.warning(
@@ -1700,21 +1728,23 @@ async def _chat_completions_stream(
     """POST chat/completions с stream=true (длинные ответы vibecode / OpenAI)."""
     stream_body = {**body, "stream": True}
     sto = _stream_timeout(timeout)
+    deadline = _sse_deadline_s(timeout)
     lines: list[str] = []
     stream_err: BaseException | None = None
     async with _async_client(timeout=sto) as client:
         try:
-            async with client.stream(
-                "POST", url, headers=headers, json=stream_body
-            ) as resp:
-                if resp.status_code >= 400:
-                    err_txt = (await resp.aread()).decode("utf-8", errors="replace")
-                    _raise_http_status(
-                        resp.status_code, err_txt, use_model=use_model
-                    )
-                async for raw in resp.aiter_lines():
-                    if raw:
-                        lines.append(raw)
+            async with asyncio.timeout(deadline):
+                async with client.stream(
+                    "POST", url, headers=headers, json=stream_body
+                ) as resp:
+                    if resp.status_code >= 400:
+                        err_txt = (await resp.aread()).decode("utf-8", errors="replace")
+                        _raise_http_status(
+                            resp.status_code, err_txt, use_model=use_model
+                        )
+                    async for raw in resp.aiter_lines():
+                        if raw:
+                            lines.append(raw)
         except GptApiError:
             raise
         except BaseException as e:

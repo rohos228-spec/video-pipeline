@@ -39,6 +39,7 @@ _COMPLETE_ATTRS_DENSE = ("main_action", "shot01_description")
 _IMG_SKIP_KEYS = ("image_prompt", "промт_картинки")
 
 ApplyFn = Callable[[dict[str, Any]], Awaitable[None]]
+ProgressFn = Callable[[str], Awaitable[None]]
 
 
 def frames_per_batch(
@@ -218,6 +219,7 @@ async def run_apply_ops_batched(
     parallel_max: int | None = None,
     stagger_sec: float | None = None,
     footer_kind: str | None = None,
+    on_progress: ProgressFn | None = None,
 ) -> OperatorApiResult:
     """Один GPT-вызов на пачку. Ошибка внутри пачки → 2, затем 4.
 
@@ -351,6 +353,13 @@ async def run_apply_ops_batched(
             len(chunk),
             len(ops),
         )
+        if on_progress is not None:
+            try:
+                await on_progress(
+                    f"пачка {my_i}/{len(packs)} · {len(ops)} ops"
+                )
+            except Exception:
+                logger.debug("apply_ops progress callback failed", exc_info=True)
         if not ops:
             raise RuntimeError(
                 f"enrich_xlsx node={node_key}: L{level} call {my_i} "
@@ -442,6 +451,13 @@ async def run_apply_ops_batched(
                 wave_n,
                 delay_s,
             )
+            if on_progress is not None:
+                try:
+                    await on_progress(
+                        f"волна {wave_start + 1}–{wave_start + len(wave)} / {len(packs)}"
+                    )
+                except Exception:
+                    logger.debug("apply_ops progress callback failed", exc_info=True)
             results = await asyncio.gather(
                 *[
                     _run_pack(i * delay_s, pack)
