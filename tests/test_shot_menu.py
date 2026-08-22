@@ -262,3 +262,55 @@ async def test_edit_cell_and_field_and_add_cell(mem_db) -> None:
             ).scalars().all()
         )
         assert frames[-1].voiceover_text == "в конец"
+
+
+@pytest.mark.asyncio
+async def test_shot_menu_xlsx_fallback(tmp_path, monkeypatch) -> None:
+    """Пустая БД + project.xlsx с закадром → меню подтягивает кадры из xlsx."""
+    import uuid as _uuid
+
+
+    from app.models import Project, ProjectStatus
+    from app.settings import settings
+    from app.web.routers.db_browser import shot_menu
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/sm.db")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with factory() as session:
+        p = Project(
+            slug=f"smx-{_uuid.uuid4().hex[:6]}",
+            topic="t",
+            status=ProjectStatus.new,
+            meta={},
+        )
+        session.add(p)
+        await session.flush()
+        await session.commit()
+        pid = p.id
+        slug = p.slug
+
+    # project.xlsx из шаблона v8 + закадр в R49
+    from openpyxl import load_workbook
+
+    from app.project_root import find_project_root
+
+    tpl = find_project_root() / "templates" / "project_template_v8.xlsx"
+    d = tmp_path / "videos" / slug
+    d.mkdir(parents=True)
+    wb = load_workbook(tpl)
+    ws = wb["план"]
+    ws.cell(row=49, column=3, value="Первая ячейка из xlsx")
+    ws.cell(row=49, column=4, value="Вторая ячейка из xlsx")
+    wb.save(d / "project.xlsx")
+    wb.close()
+
+    async with factory() as session:
+        menu = await shot_menu(pid, session)
+    texts = [c["voiceover"] for c in menu["cells"]]
+    assert texts == ["Первая ячейка из xlsx", "Вторая ячейка из xlsx"]
+
+    await engine.dispose()
