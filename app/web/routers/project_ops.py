@@ -565,19 +565,42 @@ async def preview_xlsx(
         sheet_obj = ProjectSheet(file_path=xlsx)
         sheet_obj.ensure_initialized(project_id=p.id, slug=p.slug)
     if not xlsx.exists():
+        from app.services.db_virtual_xlsx import build_virtual_project_sheets
+
+        v_sheets = await build_virtual_project_sheets(session, p)
+        sheet_names = list(v_sheets.keys())
+        active = sheet if sheet in sheet_names else (sheet_names[0] if sheet_names else "план")
+        all_v_rows = v_sheets.get(active, [])
+        
+        # Выбираем срез строк
+        start_idx = max(0, start_row - 1)
+        end_idx = min(len(all_v_rows), start_idx + max_rows)
+        v_slice = all_v_rows[start_idx:end_idx] if all_v_rows else []
+        
+        # Обрезаем ширину до max_cols
+        processed_rows = []
+        for r in v_slice:
+            processed_rows.append(r[:max_cols])
+            
+        processed_rows = _trim_trailing_empty_rows(processed_rows)
+        processed_rows = _trim_trailing_empty_cols(processed_rows)
+        
+        width = max((len(r) for r in processed_rows), default=0)
+        col_letters = [_col_letter(i) for i in range(width)]
+        
         return {
             "path": str(xlsx),
-            "sheets": [],
-            "active_sheet": "",
+            "sheets": sheet_names,
+            "active_sheet": active,
             "headers": [],
-            "rows": [],
+            "rows": processed_rows,
             "cells": [],
             "start_row": start_row,
-            "col_letters": [],
-            "truncated_rows": False,
+            "col_letters": col_letters,
+            "truncated_rows": len(all_v_rows) > end_idx,
             "truncated_cols": False,
-            "sheet_max_row": 0,
-            "sheet_max_col": 0,
+            "sheet_max_row": len(all_v_rows),
+            "sheet_max_col": width,
             "node_key": node_key,
             "xlsx_snapshot": snapshot_name,
         }

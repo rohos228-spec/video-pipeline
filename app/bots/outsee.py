@@ -818,6 +818,11 @@ class GenerationResult:
     # в TG для отладки селекторов.
     dumps: list[Path] | None = None
 
+    @property
+    def image_path(self) -> Path:
+        """Совместимость для шагов, обращающихся к image_path."""
+        return self.file_path
+
 
 class OutseeImageError(RuntimeError):
     """Ошибка с описательным контекстом — пайплайн использует это,

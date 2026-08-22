@@ -184,7 +184,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             frame_id=None,
             kind=ArtifactKind.item_reference,
             uuid=uuid.uuid4().hex,
-            path=str(result.image_path),
+            path=str(result.file_path),
             meta={
                 "item_index": idx,
                 "item_id": f"predmet{idx}",
@@ -198,7 +198,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             "[#{}] items: predmet{} → {}",
             project.id,
             idx,
-            result.image_path,
+            result.file_path,
         )
 
     # Все предметы готовы.
