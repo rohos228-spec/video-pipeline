@@ -562,9 +562,8 @@ export function NodeStepParamsPanel({
     <div className="flex flex-col gap-4">
       {step !== "audio" && step !== "assemble" ? (
         <p className="text-xs text-muted-foreground">
-          Эти параметры автоматически добавляются в конец сопроводительного текста для ChatGPT
-          (вкладка «Промты GPT» → «Текстовый вариант»). Пустые поля в сообщении GPT отображаются
-          как <span className="font-mono">____</span>.
+          Эти параметры автоматически добавляются в конец сопроводительного текста для генератора
+          (вкладка «Промпты»).
         </p>
       ) : null}
       {step === "plan" ? (

@@ -50,7 +50,7 @@ export interface ShotMenuDTO {
   summary: ShotMenuSummary;
 }
 
-const STORAGE_KEY = "shot-menu-tracks-v2";
+const STORAGE_KEY = "shot-menu-tracks-v3";
 
 interface StoredTrack {
   key: string;
@@ -66,7 +66,11 @@ export function loadShotMenuTracks(defaults: ShotMenuTrackKey[]): StoredTrack[] 
     if (!Array.isArray(arr) || !arr.some((t) => t.key === "vo")) {
       return defaults.map((k) => ({ key: k }));
     }
-    return arr.filter((t) => typeof t?.key === "string" && t.key);
+    return arr
+      .filter((t) => typeof t?.key === "string" && t.key)
+      .flatMap((t) =>
+        t.key === "cam" ? [{ key: "size" }, { key: "move" }] : [t],
+      );
   } catch {
     return defaults.map((k) => ({ key: k }));
   }

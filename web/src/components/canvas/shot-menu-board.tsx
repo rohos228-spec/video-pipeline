@@ -16,6 +16,8 @@ import {
 } from "@/lib/shot-menu";
 
 const PPS = 28;
+const VO_ROW_H = 140;
+const TRACK_ROW_H = 72;
 const MIN_SHOT_PX = 96;
 const LABEL_PX = 160;
 const CELL_HUES = [200, 262, 150, 35, 320, 88, 0, 175];
@@ -236,9 +238,11 @@ export function ShotMenuBoard({
         <div className="min-w-0 flex-1 leading-tight">
           <h2 className="text-sm font-semibold tracking-tight">Меню съёмки</h2>
           <p className="text-[10px] text-white/40">
-            {summary
-              ? `${summary.vo_cells} ячеек закадра · ${summary.shots} шотов · ${summary.duration_clock} · ${summary.vo_chars} зн.`
-              : "Лента из БД"}
+            {q.isError
+              ? "Лента не загрузилась — обновите страницу"
+              : summary
+                ? `${summary.vo_cells} ячеек закадра · ${summary.shots} шотов · ${summary.duration_clock} · ${summary.vo_chars} зн.`
+                : "Лента из БД"}
             {" · "}клик по тексту — править · «+» между ячейками — новая
           </p>
         </div>
@@ -369,7 +373,7 @@ export function ShotMenuBoard({
                   key={t.key}
                   className={cn(
                     "flex items-center border-b border-white/5 px-3 text-[11px] font-medium",
-                    t.key === "vo" ? "h-[88px]" : "h-[64px]",
+                    t.key === "vo" ? "h-[140px]" : "h-[72px]",
                   )}
                   style={t.key === "vo" ? { color: ACCENT } : undefined}
                 >
@@ -496,7 +500,7 @@ function CellColumn({
   cell,
   hue,
   tracks,
-  onSaveVo,
+  onSaveVo: _onSaveVo,
   onSaveField,
 }: {
   cell: ShotMenuCell;
@@ -525,40 +529,40 @@ function CellColumn({
         <div className="mt-0.5 line-clamp-2 text-[10px] text-white/50">{cell.layer}</div>
       </div>
       {tracks.map((t) => {
-        if (t.key === "vo") {
-          return (
-            <div
-              key={t.key}
-              className="h-[88px] overflow-hidden border-b border-white/5 px-2 py-1.5 text-[12px] leading-snug"
-              style={{ background: "rgba(209,254,23,0.05)" }}
-            >
-              <div className="h-full overflow-auto whitespace-pre-wrap text-white/90">
-                <EditableText
-                  value={cell.voiceover}
-                  placeholder="+ написать закадр ячейки"
-                  multiline
-                  onSave={onSaveVo}
-                />
-              </div>
-            </div>
-          );
-        }
+        const rowH = t.key === "vo" ? VO_ROW_H : TRACK_ROW_H;
         return (
-          <div key={t.key} className="flex h-[64px] border-b border-white/5">
+          <div key={t.key} className="flex border-b border-white/5" style={{ height: rowH }}>
             {cell.shots.map((shot) => {
-              const val = t.custom
-                ? (shot.all?.[t.key] ?? shot.fields[t.key] ?? "")
-                : shot.fields[t.key] || "";
+              const val =
+                t.key === "vo"
+                  ? shot.voiceover_in_shot === "—"
+                    ? ""
+                    : shot.voiceover_in_shot
+                  : t.custom
+                    ? (shot.all?.[t.key] ?? shot.fields[t.key] ?? "")
+                    : shot.fields[t.key] || "";
               const editable =
                 !t.custom &&
-                ["action", "characters", "stitch", "scene", "img_prompt", "video_prompt"].includes(
-                  t.key,
-                );
+                [
+                  "vo",
+                  "action",
+                  "size",
+                  "move",
+                  "set",
+                  "characters",
+                  "stitch",
+                  "scene",
+                  "img_prompt",
+                  "video_prompt",
+                ].includes(t.key);
               return (
                 <div
                   key={`${shot.uuid || shot.id}-${t.key}`}
                   className="overflow-hidden border-r border-white/5 px-1.5 py-1 text-[10px] leading-snug text-white/85 last:border-r-0"
-                  style={{ width: shotWidth(shot.duration_sec) }}
+                  style={{
+                    width: shotWidth(shot.duration_sec),
+                    background: t.key === "vo" ? "rgba(209,254,23,0.05)" : undefined,
+                  }}
                   title={val}
                 >
                   <div className="mb-0.5 font-mono text-[8px] text-white/35">
@@ -569,12 +573,26 @@ function CellColumn({
                     <EditableText
                       value={val}
                       placeholder="—"
-                      multiline={t.key === "img_prompt" || t.key === "video_prompt"}
-                      className="line-clamp-3"
-                      onSave={(next) => onSaveField(shot.uuid, t.key, next)}
+                      multiline={
+                        t.key === "vo" || t.key === "img_prompt" || t.key === "video_prompt"
+                      }
+                      className={t.key === "vo" ? "whitespace-pre-wrap" : "line-clamp-4"}
+                      onSave={(next) =>
+                        t.key === "vo"
+                          ? onSaveField(shot.uuid, "vo", next)
+                          : onSaveField(shot.uuid, t.key, next)
+                      }
                     />
                   ) : (
-                    <div className="line-clamp-3">{val || "—"}</div>
+                    <div
+                      className={
+                        t.key === "vo"
+                          ? "h-[calc(100%-14px)] overflow-auto whitespace-pre-wrap text-[12px] text-white/90"
+                          : "line-clamp-4"
+                      }
+                    >
+                      {val || "—"}
+                    </div>
                   )}
                 </div>
               );

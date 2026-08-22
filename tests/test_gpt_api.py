@@ -12,6 +12,7 @@ from app.services import gpt_api
 from app.services.gpt_api import (
     GptApiError,
     _stream_timeout,
+    _sse_deadline_s,
     build_messages,
     chat,
     collect_result_urls,
@@ -327,6 +328,14 @@ def test_stream_timeout_does_not_use_call_timeout_as_read(monkeypatch) -> None:
     monkeypatch.setattr(settings, "gpt_stream_read_timeout_s", 900.0)
     sto2 = _stream_timeout(280.0)
     assert sto2.read == 900.0
+
+
+def test_sse_wall_clock_uses_call_timeout_not_idle_read() -> None:
+    """Мёртвый SSE без байт не должен висеть вечно: дедлайн = GPT_TIMEOUT."""
+    assert _sse_deadline_s(600.0) == 600.0
+    assert _sse_deadline_s(280.0) == 280.0
+    assert _sse_deadline_s(10.0) == 30.0
+    assert _sse_deadline_s(0.0) >= 30.0
 
 
 def test_responses_retrieve_urls_include_post_path_and_jobs() -> None:

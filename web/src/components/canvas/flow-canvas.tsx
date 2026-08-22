@@ -1556,13 +1556,13 @@ function RunOverlay({
     {/* Отдельно от Run-кнопок: при running ноде бар раздувается и раньше
         перехватывал/давил тумблер; z-40 выше канваса и панелей. */}
     {project ? (
-      <div className="pointer-events-none absolute right-4 top-4 z-40">
+      <div className="pointer-events-none absolute right-4 top-3 z-40">
         <div className="pointer-events-auto min-w-[200px] max-w-[260px] shadow-sm">
           <AutoAdvanceToggle project={project} />
         </div>
       </div>
     ) : null}
-    <div className="pointer-events-none absolute right-4 top-[4.75rem] z-30 flex max-w-[min(100%,640px)] flex-wrap items-center justify-end gap-2">
+    <div className="pointer-events-none absolute right-4 top-[5.5rem] z-30 flex max-w-[min(100%,640px)] flex-wrap items-center justify-end gap-2">
       <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs shadow-sm backdrop-blur-sm">
         <span className="text-muted-foreground">Run:</span>
         <span className="font-medium">
@@ -1645,8 +1645,8 @@ function RunOverlay({
         className="pointer-events-auto gap-1.5 text-xs font-semibold"
         title="Откат running-шага; автопродвижение не сбрасывается"
       >
-        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3.5 w-3.5 fill-current" />}
-        ⏹ Остановить текущий шаг
+        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <span>🛑</span>}
+        Остановить текущий шаг
       </Button>
       {run && (
         <Button

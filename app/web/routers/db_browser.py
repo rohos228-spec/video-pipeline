@@ -214,11 +214,18 @@ async def shot_menu(
     Пустая БД на старом проекте → один раз подтягиваем кадры из project.xlsx
     (keep_fields=True: script_text не трогаем) и перечитываем граф.
     """
-    from app.services.shot_menu import build_shot_menu
+    from app.services.shot_menu import (
+        build_shot_menu,
+        load_project_shot_plan,
+    )
 
     project = await _project(session, project_id)
     graph = await db_v2.project_graph(session, project)
-    menu = build_shot_menu(graph.get("frames") or [], scenes=graph.get("scenes") or [])
+    menu = build_shot_menu(
+        graph.get("frames") or [],
+        scenes=graph.get("scenes") or [],
+        shot_plan=load_project_shot_plan(project),
+    )
     if menu["cells"]:
         return menu
 
@@ -232,7 +239,11 @@ async def shot_menu(
         await session.commit()
         logger.info("[#{}] shot-menu: пустая БД → подтянуто из project.xlsx", project.id)
         graph = await db_v2.project_graph(session, project)
-        menu = build_shot_menu(graph.get("frames") or [], scenes=graph.get("scenes") or [])
+        menu = build_shot_menu(
+            graph.get("frames") or [],
+            scenes=graph.get("scenes") or [],
+            shot_plan=load_project_shot_plan(project),
+        )
     except Exception as e:  # noqa: BLE001 — меню остаётся пустым, не падаем
         logger.warning("[#{}] shot-menu xlsx fallback failed: {}", project.id, e)
     return menu

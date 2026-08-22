@@ -126,6 +126,81 @@ def test_prepare_overflow_chain_advances_to_next() -> None:
     assert p.meta["active_excel_gpt_node_key"] == "n_excel_gpt_fw_check_script"
 
 
+def test_overflow_qc_does_not_chain_into_scene_agent() -> None:
+    """После QC overflow-группы не хватать world/style как excel_gpt slot 1."""
+    from app.models import ProjectStatus
+    from app.services.excel_gpt_node import (
+        first_work_successor_along_edges,
+        prepare_enrich_chain_for_auto_advance,
+        resolve_excel_gpt_node_key_for_slot,
+    )
+
+    nodes = _overflow_nodes() + [
+        {
+            "id": "n_excel_gpt_sd_cd_world",
+            "type": "excel_gpt",
+            "position": {"x": 50, "y": 0},
+            "data": {"sd_agent": "world", "label": "мир"},
+        },
+        {
+            "id": "n_excel_gpt_sd_cd_style",
+            "type": "excel_gpt",
+            "position": {"x": 80, "y": 0},
+            "data": {"sd_agent": "style", "label": "стиль"},
+        },
+        {"id": "n_script", "type": "script", "position": {"x": 2000, "y": 0}, "data": {}},
+    ]
+    edges = [
+        {"id": "e1", "source": "n_excel_gpt_fw_script", "target": "n_excel_gpt_fw_check_script"},
+        {"id": "e2", "source": "n_excel_gpt_fw_check_script", "target": "n_excel_gpt_fw_frames"},
+        {"id": "e3", "source": "n_excel_gpt_fw_frames", "target": "n_excel_gpt_fw_qc"},
+        {"id": "e4", "source": "n_excel_gpt_fw_qc", "target": "n_script"},
+        {"id": "e5", "source": "n_excel_gpt_sd_cd_world", "target": "n_excel_gpt_sd_cd_style"},
+    ]
+    p = SimpleNamespace(
+        id=60,
+        status=ProjectStatus.enrich_4_ready,
+        meta={
+            "canvas_graph": {"nodes": nodes, "edges": edges},
+            "excel_gpt_completed_keys": [
+                "n_excel_gpt_fw_script",
+                "n_excel_gpt_fw_check_script",
+                "n_excel_gpt_fw_frames",
+                "n_excel_gpt_fw_qc",
+            ],
+        },
+    )
+    assert first_work_successor_along_edges(p, "n_excel_gpt_fw_qc") == (
+        "n_script",
+        "script",
+    )
+    assert first_work_successor_along_edges(p, "n_excel_gpt_sd_cd_world") == (
+        "n_excel_gpt_sd_cd_style",
+        "sd_agent",
+    )
+    assert (
+        prepare_enrich_chain_for_auto_advance(p, ProjectStatus.enrich_4_ready)
+        is None
+    )
+    assert resolve_excel_gpt_node_key_for_slot(p, 1) != "n_excel_gpt_sd_cd_world"
+    assert resolve_excel_gpt_node_key_for_slot(p, 1) != "n_excel_gpt_sd_cd_style"
+
+
+def test_detect_qc_prompt_body_is_not_frame_fill() -> None:
+    from pathlib import Path
+
+    from app.orchestrator.steps.enrich_xlsx import (
+        _is_frame_prompts_prompt,
+        _is_qc_prompts_prompt,
+    )
+
+    body = Path("prompts/05_excel_gpt/prompts_qc_continuity_ru.md").read_text(
+        encoding="utf-8"
+    )
+    assert _is_qc_prompts_prompt("prompts_qc_continuity_ru", body)
+    assert not _is_frame_prompts_prompt("prompts_qc_continuity_ru", body)
+
+
 @pytest.fixture
 async def mem_db(monkeypatch):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -253,3 +328,74 @@ async def test_start_step_overflow_group_nodes(
     async with mem_db() as session:
         nr = await session.get(NodeRun, nr_ids[node_key])
         assert nr is not None and nr.status == NodeRunStatus.running, label
+
+
+def test_overflow_successor_after_check_stays_enriching_1() -> None:
+    """check → frames: slot 0, running = enriching_1, не слот 2."""
+    from app.services.excel_gpt_node import (
+        first_work_successor_from_excel_slot,
+        running_status_for_slot,
+    )
+
+    nodes = _overflow_nodes()
+    edges = [
+        {"id": "e1", "source": "n_excel_gpt_fw_script", "target": "n_excel_gpt_fw_check_script"},
+        {"id": "e2", "source": "n_excel_gpt_fw_check_script", "target": "n_excel_gpt_fw_frames"},
+        {"id": "e3", "source": "n_excel_gpt_fw_frames", "target": "n_excel_gpt_fw_qc"},
+    ]
+    p = SimpleNamespace(
+        id=60,
+        status=ProjectStatus.enrich_1_ready,
+        meta={"canvas_graph": {"nodes": nodes, "edges": edges}},
+    )
+    succ = first_work_successor_from_excel_slot(
+        p, 1, from_key="n_excel_gpt_fw_check_script"
+    )
+    assert succ is not None
+    key, typ, slot = succ
+    assert key == "n_excel_gpt_fw_frames"
+    assert typ == "excel_gpt"
+    assert slot == 0
+    assert running_status_for_slot(slot) is ProjectStatus.enriching_1
+
+
+def test_filter_check_ops_drops_unknown_uuid() -> None:
+    from app.orchestrator.steps.enrich_xlsx import _filter_check_frame_ops
+
+    kept, n = _filter_check_frame_ops(
+        [
+            {"frame_uuid": "4e3c758bdb4f7ca1f75fa6", "fields": {"voiceover_text": "x"}},
+            {"frame_uuid": "abc", "fields": {"voiceover_text": "ok"}},
+        ],
+        ["abc"],
+        {},
+    )
+    assert n == 1
+    assert kept == [{"frame_uuid": "abc", "fields": {"voiceover_text": "ok"}}]
+
+
+@pytest.mark.asyncio
+async def test_clear_overflow_slot_only_clears_clicked_node(mem_db) -> None:
+    """▶ check не должен сносить excel_gpt_completed_keys сценариста."""
+    from app.services.excel_gpt_node import clear_slot_completion_meta
+
+    project_id, _wf_id, _nr = await _seed_overflow_group(mem_db)
+    async with mem_db() as session:
+        project = await session.get(Project, project_id)
+        assert project is not None
+        meta = dict(project.meta or {})
+        meta["excel_gpt_completed_keys"] = [
+            "n_excel_gpt_fw_script",
+            "n_excel_gpt_fw_check_script",
+        ]
+        project.meta = meta
+        await clear_slot_completion_meta(
+            session,
+            project,
+            0,
+            node_key="n_excel_gpt_fw_check_script",
+        )
+        keys = project.meta.get("excel_gpt_completed_keys") or []
+        assert "n_excel_gpt_fw_script" in keys
+        assert "n_excel_gpt_fw_check_script" not in keys
+

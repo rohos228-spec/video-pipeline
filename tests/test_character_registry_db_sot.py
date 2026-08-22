@@ -9,6 +9,7 @@ import pytest
 from app.orchestrator.steps.enrich_xlsx import (
     _is_character_registry_prompt,
     _is_scene_grammar_prompt,
+    _is_script_writer_node,
     _is_script_writer_prompt,
 )
 from app.services.excel_characters import (
@@ -33,10 +34,14 @@ def test_detect_script_writer_prompt() -> None:
     assert _is_script_writer_prompt("script_writer_ru.md", None)
     assert _is_script_writer_prompt(None, "Ты — сценарист закадра.\n")
     assert not _is_script_writer_prompt("sd_skeleton.md", "shot fill")
+    assert _is_script_writer_node("script_writer_ru.md", None, "n_excel_gpt_fw_script")
+    assert _is_script_writer_node(None, None, "n_excel_gpt_fw_script")
+    assert not _is_script_writer_node("frame_prompts_continuity_ru.md", None, "n_excel_gpt_fw_frames")
 
 
 def test_detect_frame_and_qc_prompt() -> None:
     from app.orchestrator.steps.enrich_xlsx import (
+        _all_frame_prompts_ready,
         _is_frame_prompts_prompt,
         _is_qc_prompts_prompt,
     )
@@ -44,6 +49,23 @@ def test_detect_frame_and_qc_prompt() -> None:
     assert _is_frame_prompts_prompt("frame_prompts_continuity_ru.md", None)
     assert _is_qc_prompts_prompt("prompts_qc_continuity_ru.md", None)
     assert not _is_frame_prompts_prompt("script_writer_ru.md", None)
+    qc_body = (
+        "Нода: excel_gpt. ПОСЛЕ агента-конвертера\n"
+        "(frame_prompts_continuity) и ДО генерации картинок.\n"
+    )
+    assert _is_qc_prompts_prompt("prompts_qc_continuity_ru", qc_body)
+    assert not _is_frame_prompts_prompt("prompts_qc_continuity_ru", qc_body)
+    ready = [
+        SimpleNamespace(image_prompt="img", animation_prompt="mov"),
+        SimpleNamespace(image_prompt="img2", animation_prompt="mov2"),
+    ]
+    assert _all_frame_prompts_ready(ready)
+    assert not _all_frame_prompts_ready(ready[:1])
+    missing = [
+        SimpleNamespace(image_prompt="img", animation_prompt="mov"),
+        SimpleNamespace(image_prompt="img2", animation_prompt=""),
+    ]
+    assert not _all_frame_prompts_ready(missing)
 
 
 def test_characters_from_entities_and_gpt_cards() -> None:

@@ -30,3 +30,4 @@
 | Mass Telegram | `docs/MASS_CREATION.md` |
 | XLSX short rows | `app/services/xlsx_v8_import.py`, `app/storage/plan_sheet_v8.py` |
 | Оператор (человек) | `docs/OPERATOR_BIBLE.md` |
+| Модели на нодах / ключи | `docs/NODE_MODELS.md` |

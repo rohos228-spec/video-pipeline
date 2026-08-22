@@ -1336,6 +1336,27 @@ def _node_already_succeeded_for_project(project: Project, nr: NodeRun) -> bool:
         ProjectStatus.published,
     ):
         return True
+    # Overflow excel_gpt: слот общий (enrich_1_ready), успех — только свой ключ.
+    # Иначе reconcile красит сценариста/промты/QC в «процесс не активен»
+    # после успешной записи, пока worker-сессия ещё не commit.
+    key = (nr.node_key or "").strip()
+    if key and key in completed_node_keys(project):
+        return True
+    if _effective_type_from_nr(nr) == EXCEL_GPT_NODE_TYPE:
+        from app.services.excel_gpt_node import (
+            slot_for_excel_gpt_node_key,
+            slot_from_ready_status,
+            slot_from_running_status,
+        )
+
+        node_slot = slot_for_excel_gpt_node_key(project, key) if key else None
+        ready_slot = slot_from_ready_status(project.status)
+        running_slot = slot_from_running_status(project.status)
+        if node_slot is not None and node_slot >= 1:
+            if ready_slot is not None and node_slot <= ready_slot:
+                return True
+            if running_slot is not None and node_slot < running_slot:
+                return True
     eff = _effective_type_from_nr(nr)
     # Веер scene_design: агенты done при scene_agents_ready / assembling / дальше.
     if eff == "sd_agent" and project.status in (
@@ -1411,6 +1432,7 @@ async def _reconcile_stale_node_runs(
                 _heal_types = (
                     "sd_agent",
                     "sd_assemble",
+                    "excel_gpt",
                     "image_prompts",
                     "images",
                     "animation_prompts",
@@ -1535,6 +1557,7 @@ async def _reconcile_stale_node_runs(
                     and running_type == eff
                     and (
                         str(status_val).startswith("generating_")
+                        or str(status_val).startswith("enriching_")
                         or status_val
                         in ("scene_designing", "scene_assembling")
                     )

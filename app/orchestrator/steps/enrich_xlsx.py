@@ -112,21 +112,81 @@ _QC_PROMPTS_MARKERS = (
 )
 
 
+def _drop_replace_frames_ops(ops: list) -> tuple[list, int]:
+    """Разбивка — только шаг split / camera_expand, не excel_gpt."""
+    kept = [
+        op
+        for op in ops
+        if not (isinstance(op, dict) and op.get("target") == "replace_frames")
+    ]
+    return kept, len(ops) - len(kept)
+
+
+def _filter_check_frame_ops(
+    ops: list,
+    known_uuids: list[str],
+    number_to_uuid: dict[int, str] | None = None,
+) -> tuple[list, int]:
+    """checkMode: неизвестные uuid не валят шаг — дропаем, гейт остаётся."""
+    from app.services.db_apply import (
+        remap_frame_number_uuids,
+        repair_near_miss_frame_uuids,
+    )
+
+    frame_ops = [op for op in ops if isinstance(op, dict)]
+    if number_to_uuid:
+        remap_frame_number_uuids(frame_ops, number_to_uuid)
+    known = [u for u in known_uuids if u]
+    if known:
+        repair_near_miss_frame_uuids(frame_ops, known)
+    known_set = set(known)
+    kept: list = []
+    dropped = 0
+    for op in frame_ops:
+        uid = str(op.get("frame_uuid") or "").strip()
+        if uid in known_set:
+            kept.append(op)
+        else:
+            dropped += 1
+    return kept, dropped
+
+
 def _prompt_blob(variant: str | None, master: str | None) -> str:
     return f"{variant or ''}\n{(master or '')[:800]}".casefold()
 
 
 def _is_script_writer_prompt(variant: str | None, master: str | None) -> bool:
-    """Сценарист: закадр + разбивка, батчи по 9 ячеек VO, не shot-fill."""
+    """Сценарист-нода на канвасе: больше не пишет закадр, только pass-through."""
     return any(m in _prompt_blob(variant, master) for m in _SCRIPT_WRITER_PROMPT_MARKERS)
 
 
+def _is_script_writer_node(variant: str | None, master: str | None, node_key: str | None) -> bool:
+    nk = str(node_key or "")
+    return _is_script_writer_prompt(variant, master) or nk.endswith("_fw_script")
+
+
 def _is_frame_prompts_prompt(variant: str | None, master: str | None) -> bool:
+    # QC-промт ссылается на frame_prompts_continuity — это не fill-агент.
+    if _is_qc_prompts_prompt(variant, master):
+        return False
     return any(m in _prompt_blob(variant, master) for m in _FRAME_PROMPTS_MARKERS)
 
 
 def _is_qc_prompts_prompt(variant: str | None, master: str | None) -> bool:
     return any(m in _prompt_blob(variant, master) for m in _QC_PROMPTS_MARKERS)
+
+
+def _all_frame_prompts_ready(frames) -> bool:
+    """True если у каждого кадра уже есть image+anim промт (QC можно не ждать GPT)."""
+    rows = list(frames or [])
+    if len(rows) < 2:
+        return False
+    for fr in rows:
+        img = (getattr(fr, "image_prompt", None) or "").strip()
+        anim = (getattr(fr, "animation_prompt", None) or "").strip()
+        if not img or not anim:
+            return False
+    return True
 
 # Маппинг slot_idx (1..5) → (running_status, ready_status, step_code).
 _SLOT_MAP: dict[int, tuple[ProjectStatus, ProjectStatus, str]] = {
@@ -370,19 +430,32 @@ async def _maybe_auto_chain_excel_gpt(
         return
     if not next_key or next_key == (finished_key or ""):
         return
-    if next_slot is None or next_slot < 1:
-        next_slot = slot_idx + 1 if slot_idx < 5 else 5
-    if next_slot not in _SLOT_MAP:
-        return
 
-    ensure_enrich_auto_chain_to(project, slot_idx, from_key=finished_key)
-    clear_excel_gpt_tail_completion(project, next_slot)
-    meta = dict(project.meta or {})
-    chain_to = meta.get("enrich_auto_chain_to")
-    next_running = _SLOT_MAP[next_slot][0]
+    from app.services.excel_gpt_node import running_status_for_slot
     from app.services.run_sync import prepare_node_for_step_start
 
+    overflow_next = next_slot is None or next_slot < 1
+    if overflow_next:
+        # fw-группа: все ноды slotIndex=0, бегут как enriching_1.
+        # Не прыгать на slot+1 — startup guard откатывает enriching_2 → ▶.
+        next_running = running_status_for_slot(0)
+        enrich_slot = 1
+        chain_to = None
+    else:
+        if next_slot not in _SLOT_MAP:
+            return
+        ensure_enrich_auto_chain_to(project, slot_idx, from_key=finished_key)
+        clear_excel_gpt_tail_completion(project, next_slot)
+        next_running = _SLOT_MAP[next_slot][0]
+        enrich_slot = next_slot
+        meta_chain = dict(project.meta or {})
+        chain_to = meta_chain.get("enrich_auto_chain_to")
+
     meta = dict(project.meta or {})
+    if overflow_next:
+        keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
+        if next_key in keys:
+            meta["excel_gpt_completed_keys"] = [k for k in keys if k != next_key]
     meta["active_excel_gpt_node_key"] = next_key
     project.meta = meta
     try:
@@ -391,7 +464,7 @@ async def _maybe_auto_chain_excel_gpt(
             project,
             EXCEL_GPT_STEP_CODE,
             node_key=next_key,
-            enrich_slot=next_slot,
+            enrich_slot=enrich_slot,
             strict=False,
             explicit_ui_start=True,
         )
@@ -694,6 +767,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         ):
             raise RuntimeError("gpt-operator: нет существующих файлов на входе")
 
+        check_known_uuids: list[str] = []
+        check_number_to_uuid: dict[int, str] = {}
         if check_mode and node_key and db_sot_check:
             import json as _json
 
@@ -762,6 +837,21 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 len(db_check["scene_registry"] or []),
                 [p.name for p in data_paths],
             )
+            check_known_uuids = [
+                str(fr.uuid or "").strip()
+                for fr in frames_chk
+                if str(fr.uuid or "").strip()
+            ]
+            for fr in frames_chk:
+                n = getattr(fr, "number", None)
+                uid = str(fr.uuid or "").strip()
+                if n is None or not uid:
+                    continue
+                try:
+                    ni = int(n)
+                except (TypeError, ValueError):
+                    continue
+                check_number_to_uuid.setdefault(ni, uid)
 
         if check_mode and node_key:
             from app.services.vision_check_db import build_vision_db_snapshot
@@ -878,10 +968,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     await session.execute(
                         _select(Frame)
                         .where(Frame.project_id == project.id)
-                        .order_by(Frame.number)
+                        .order_by(Frame.sort_key, Frame.number)
                     )
                 ).scalars().all()
             )
+            if str(node_key or "").endswith("_fw_frames"):
+                from app.services.vo_shot_expand import expand_vo_cells_into_shots
+
+                frames_for_map, exp = await expand_vo_cells_into_shots(
+                    session, project, frames_for_map
+                )
+                await session.flush()
+                logger.info(
+                    "[#{}] fw_frames vo_shot_expand {}",
+                    project.id,
+                    exp,
+                )
             ents = list(
                 (
                     await session.execute(
@@ -1056,119 +1158,150 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 PROMPT_UNITS_PER_BATCH,
                 VO_PARALLEL_MAX,
                 VO_STAGGER_SEC,
-                VO_UNITS_PER_BATCH,
                 run_apply_ops_batched,
             )
             from app.services import db_apply as _db_apply
             from app.services.node_write_contract import filter_ops_for_node
 
             nk = str(node_key or "")
-            script_writer = _is_script_writer_prompt(variant, master) or nk.endswith(
-                "_fw_script"
-            )
+            script_writer = _is_script_writer_node(variant, master, node_key)
             frame_prompts = _is_frame_prompts_prompt(variant, master) or nk.endswith(
                 "_fw_frames"
             )
             qc_prompts = _is_qc_prompts_prompt(variant, master) or nk.endswith("_fw_qc")
             write_prompts = frame_prompts or qc_prompts
-            keep_voiceover = script_writer
             apply_kind = (
                 "excel_gpt_prompts" if write_prompts else "excel_gpt_no_prompts"
             )
 
-            async def _apply_batch(payload: dict) -> None:
-                from app.services.db_apply import FIELD_ALIASES
-
-                ops = filter_ops_for_node(
-                    list(payload.get("ops") or []),
-                    node_kind=apply_kind,
-                )
-                # Shot-fill не должен затирать закадр/смысл, если
-                # volume-continue подмешал чужую схему полей.
-                # Сценарист как раз пишет закадр — не выкидываем.
-                _drop = set() if keep_voiceover else {"voiceover_text", "meaning"}
-                cleaned: list[dict] = []
-                for op in ops:
-                    fields = op.get("fields")
-                    if not isinstance(fields, dict):
-                        cleaned.append(op)
-                        continue
-                    kept = {}
-                    for k, v in fields.items():
-                        canon = FIELD_ALIASES.get(
-                            str(k).strip().lower().replace(" ", "_"),
-                            str(k),
-                        )
-                        if canon in _drop:
-                            continue
-                        kept[k] = v
-                    if not kept:
-                        continue
-                    new_op = dict(op)
-                    new_op["fields"] = kept
-                    cleaned.append(new_op)
-                ops = cleaned
-                await _db_apply.apply_ops(
-                    session,
-                    project,
-                    ops,
-                    export_xlsx=bool(payload.get("export_xlsx", False)),
-                    node_kind=apply_kind,
-                )
-                await session.commit()
-                await session.refresh(project)
-
             if script_writer:
-                batch_label = (
-                    f"закадр по {VO_UNITS_PER_BATCH}, "
-                    f"параллельно {VO_PARALLEL_MAX}, "
-                    f"сдвиг {VO_STAGGER_SEC:g}с"
+                from app.services.gpt_operator_client import OperatorApiResult
+
+                logger.warning(
+                    "[#{}] enrich_xlsx node={!r}: сценарист не генерирует "
+                    "закадр — готовый текст из БД, GPT не вызываем",
+                    project.id,
+                    node_key,
                 )
-            elif write_prompts:
-                batch_label = (
-                    f"промты по {PROMPT_UNITS_PER_BATCH}, "
-                    f"параллельно {VO_PARALLEL_MAX}, "
-                    f"сдвиг {VO_STAGGER_SEC:g}с"
+                api_res = OperatorApiResult(
+                    reply_text='{"ops":[]}',
+                    output_paths=[ctx_path],
+                    apply_ops={"ops": [], "report": "script_writer_passthrough"},
+                    applied_in_runner=True,
+                )
+            elif qc_prompts and _all_frame_prompts_ready(frames_for_map):
+                from app.services.gpt_operator_client import OperatorApiResult
+
+                logger.warning(
+                    "[#{}] enrich_xlsx node={!r}: QC skip — промты уже "
+                    "в БД (frames={}), GPT не ждём",
+                    project.id,
+                    node_key,
+                    len(frames_for_map),
+                )
+                api_res = OperatorApiResult(
+                    reply_text='{"ops":[]}',
+                    output_paths=[ctx_path],
+                    apply_ops={"ops": [], "report": "qc_prompts_already_filled"},
+                    applied_in_runner=True,
                 )
             else:
-                batch_label = "dense shot fill"
-            logger.info(
-                "[#{}] enrich_xlsx node={!r}: apply-ops adaptive "
-                "1→2→4 ({} )",
-                project.id,
-                node_key,
-                batch_label,
-            )
-            api_res = await run_apply_ops_batched(
-                project_dir=project.data_dir,
-                node_key=node_key,
-                role=role,
-                output_mode=output_mode,
-                prompt=master or "",
-                accompanying=accompanying,
-                db_ctx=db_ctx,
-                ctx_path=ctx_path,
-                project_id=project.id,
-                dense=not write_prompts,
-                apply_fn=_apply_batch,
-                skip_if_field="image_prompt" if frame_prompts else None,
-                chunk_size=(
-                    VO_UNITS_PER_BATCH
-                    if script_writer
-                    else (PROMPT_UNITS_PER_BATCH if write_prompts else None)
-                ),
-                parallel_max=(
-                    VO_PARALLEL_MAX if script_writer or write_prompts else None
-                ),
-                stagger_sec=(
-                    VO_STAGGER_SEC if script_writer or write_prompts else None
-                ),
-                footer_kind=(
-                    "vo"
-                    if script_writer
-                    else ("prompts" if write_prompts else None)
-                ),
-            )
+                async def _apply_batch(payload: dict) -> None:
+                    from app.services.db_apply import FIELD_ALIASES
+
+                    raw_ops = list(payload.get("ops") or [])
+                    ops = filter_ops_for_node(
+                        raw_ops,
+                        node_kind=apply_kind,
+                    )
+                    # excel_gpt не имеет права писать закадр/смысл.
+                    _drop = {"voiceover_text", "meaning"}
+                    cleaned: list[dict] = []
+                    for op in ops:
+                        fields = op.get("fields")
+                        if not isinstance(fields, dict):
+                            cleaned.append(op)
+                            continue
+                        kept = {}
+                        for k, v in fields.items():
+                            canon = FIELD_ALIASES.get(
+                                str(k).strip().lower().replace(" ", "_"),
+                                str(k),
+                            )
+                            if canon in _drop:
+                                continue
+                            kept[k] = v
+                        if not kept:
+                            continue
+                        new_op = dict(op)
+                        new_op["fields"] = kept
+                        cleaned.append(new_op)
+                    ops = cleaned
+                    await _db_apply.apply_ops(
+                        session,
+                        project,
+                        ops,
+                        export_xlsx=bool(payload.get("export_xlsx", False)),
+                        node_kind=apply_kind,
+                    )
+                    await session.commit()
+                    await session.refresh(project)
+
+                async def _progress(msg: str) -> None:
+                    from app.services.run_sync import update_active_node_progress_text
+
+                    await update_active_node_progress_text(session, project, msg)
+                    await session.commit()
+
+                if write_prompts:
+                    batch_label = (
+                        f"промты по {PROMPT_UNITS_PER_BATCH}, "
+                        f"параллельно {VO_PARALLEL_MAX}, "
+                        f"сдвиг {VO_STAGGER_SEC:g}с"
+                    )
+                else:
+                    batch_label = "dense shot fill"
+                logger.info(
+                    "[#{}] enrich_xlsx node={!r}: apply-ops adaptive "
+                    "1→2→4 ({} )",
+                    project.id,
+                    node_key,
+                    batch_label,
+                )
+                api_res = await run_apply_ops_batched(
+                    project_dir=project.data_dir,
+                    node_key=node_key,
+                    role=role,
+                    output_mode=output_mode,
+                    prompt=master or "",
+                    accompanying=accompanying,
+                    db_ctx=db_ctx,
+                    ctx_path=ctx_path,
+                    project_id=project.id,
+                    dense=not write_prompts,
+                    apply_fn=_apply_batch,
+                    skip_if_field=(
+                        None
+                        if frame_prompts and str(node_key or "").endswith("_fw_frames")
+                        else (
+                            "image_prompt"
+                            if frame_prompts and not qc_prompts
+                            else None
+                        )
+                    ),
+                    chunk_size=(
+                        PROMPT_UNITS_PER_BATCH if write_prompts else None
+                    ),
+                    parallel_max=(
+                        VO_PARALLEL_MAX if write_prompts else None
+                    ),
+                    stagger_sec=(
+                        VO_STAGGER_SEC if write_prompts else None
+                    ),
+                    footer_kind=("prompts" if write_prompts else None),
+                    on_progress=_progress,
+                    allow_empty_ops=qc_prompts,
+                )
         else:
             api_res = await run_operator_api(
                 project_dir=project.data_dir,
@@ -1199,11 +1332,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 else []
             )
             if check_mode and ops_list:
-                n_rf = sum(
-                    1
-                    for op in ops_list
-                    if isinstance(op, dict) and op.get("target") == "replace_frames"
-                )
+                ops_list, n_rf = _drop_replace_frames_ops(ops_list)
                 if n_rf:
                     logger.warning(
                         "[#{}] enrich_xlsx node={}: checkMode drop "
@@ -1212,14 +1341,29 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         node_key,
                         n_rf,
                     )
-                    ops_list = [
-                        op
-                        for op in ops_list
-                        if not (
-                            isinstance(op, dict)
-                            and op.get("target") == "replace_frames"
+                if check_known_uuids:
+                    ops_list, n_unk = _filter_check_frame_ops(
+                        ops_list,
+                        check_known_uuids,
+                        check_number_to_uuid,
+                    )
+                    if n_unk:
+                        logger.warning(
+                            "[#{}] enrich_xlsx node={}: checkMode drop "
+                            "unknown frame_uuid x{} (гейт без apply)",
+                            project.id,
+                            node_key,
+                            n_unk,
                         )
-                    ]
+                if ops_list:
+                    logger.warning(
+                        "[#{}] enrich_xlsx node={}: checkMode drop "
+                        "{} apply-ops (гейт не пишет закадр/промты в кадры)",
+                        project.id,
+                        node_key,
+                        len(ops_list),
+                    )
+                    ops_list = []
             chars_list = (
                 list(ops_data.get("characters") or [])
                 if isinstance(ops_data, dict)
@@ -1413,6 +1557,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         meta.pop("active_excel_gpt_node_key", None)
         project.meta = meta
         flag_modified(project, "meta")
+        await session.flush()
         await session.refresh(project)
         # Юзер мог ▶ другой шаг (split) пока GPT enrich ещё отвечал.
         if project.status is not running_status:

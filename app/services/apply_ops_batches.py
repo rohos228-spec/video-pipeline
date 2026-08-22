@@ -39,6 +39,7 @@ _COMPLETE_ATTRS_DENSE = ("main_action", "shot01_description")
 _IMG_SKIP_KEYS = ("image_prompt", "промт_картинки")
 
 ApplyFn = Callable[[dict[str, Any]], Awaitable[None]]
+ProgressFn = Callable[[str], Awaitable[None]]
 
 
 def frames_per_batch(
@@ -218,6 +219,8 @@ async def run_apply_ops_batched(
     parallel_max: int | None = None,
     stagger_sec: float | None = None,
     footer_kind: str | None = None,
+    on_progress: ProgressFn | None = None,
+    allow_empty_ops: bool = False,
 ) -> OperatorApiResult:
     """Один GPT-вызов на пачку. Ошибка внутри пачки → 2, затем 4.
 
@@ -351,7 +354,17 @@ async def run_apply_ops_batched(
             len(chunk),
             len(ops),
         )
+        if on_progress is not None:
+            try:
+                await on_progress(
+                    f"пачка {my_i}/{len(packs)} · {len(ops)} ops"
+                )
+            except Exception:
+                logger.debug("apply_ops progress callback failed", exc_info=True)
         if not ops:
+            if allow_empty_ops:
+                # QC: ops только по нарушителям; пустой пакет = ок.
+                return []
             raise RuntimeError(
                 f"enrich_xlsx node={node_key}: L{level} call {my_i} "
                 f"без ops (ждали {len(chunk)} кадров)."
@@ -366,6 +379,8 @@ async def run_apply_ops_batched(
             last_paths = list(res.output_paths or []) or [batch_path]
             replies.append(res.reply_text or "")
             merged_ops.extend(ops)
+        if allow_empty_ops:
+            return []
         got_uuids = {
             str(op.get("frame_uuid") or "").strip()
             for op in ops
@@ -382,6 +397,16 @@ async def run_apply_ops_batched(
         try:
             missing = await _one_chunk(chunk, level)
         except Exception as exc:
+            if allow_empty_ops:
+                logger.warning(
+                    "[#{}] apply_ops node={!r}: L{} fail ({}) — "
+                    "QC не ретраим пачку (промты уже в БД)",
+                    project_id,
+                    node_key,
+                    level,
+                    str(exc)[:160],
+                )
+                return
             nxt = next_split_level(level)
             if nxt is None or len(chunk) <= 1:
                 raise
@@ -401,8 +426,28 @@ async def run_apply_ops_batched(
             return
         if not missing:
             return
+        # 1 пропущенный uuid: ещё раз только его. Раньше len<=1 сразу
+        # валил всю пачку (7/8 → RuntimeError → soft retry всех 188).
+        if len(missing) == 1:
+            uid = str(missing[0].get("uuid") or "")[:8]
+            if len(chunk) <= 1:
+                raise RuntimeError(
+                    f"enrich_xlsx node={node_key}: L{level} неполный apply-ops "
+                    f"(0/1). uuid: {uid}"
+                )
+            logger.warning(
+                "[#{}] apply_ops node={!r}: L{} incomplete {}/{} → retry uuid {}",
+                project_id,
+                node_key,
+                level,
+                len(chunk) - 1,
+                len(chunk),
+                uid,
+            )
+            await _run_adaptive(missing, next_split_level(level) or level)
+            return
         nxt = next_split_level(level)
-        if nxt is None or len(missing) <= 1:
+        if nxt is None:
             raise RuntimeError(
                 f"enrich_xlsx node={node_key}: L{level} неполный apply-ops "
                 f"({len(chunk) - len(missing)}/{len(chunk)}). uuid: "
@@ -442,6 +487,13 @@ async def run_apply_ops_batched(
                 wave_n,
                 delay_s,
             )
+            if on_progress is not None:
+                try:
+                    await on_progress(
+                        f"волна {wave_start + 1}–{wave_start + len(wave)} / {len(packs)}"
+                    )
+                except Exception:
+                    logger.debug("apply_ops progress callback failed", exc_info=True)
             results = await asyncio.gather(
                 *[
                     _run_pack(i * delay_s, pack)

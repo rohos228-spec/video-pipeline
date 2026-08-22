@@ -40,6 +40,7 @@
 | Массовый режим Telegram `/mass` | [`MASS_CREATION.md`](MASS_CREATION.md) |
 | Сериальный пайплайн | `SERIES_*.md` |
 | Карта для ИИ-агента | [`AGENT_MAP.md`](AGENT_MAP.md) |
+| Модели на нодах (кто какой ключ) | [`NODE_MODELS.md`](NODE_MODELS.md) |
 
 **Не опираться на** `HANDOVER.md` (устарел).
 

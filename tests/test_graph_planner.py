@@ -165,3 +165,41 @@ def test_isolated_work_node_marked_skipped_in_derived_states() -> None:
     states = g.derived_node_states(p)
     # script без связи с plan — входная нода, не skipped
     assert states["n_script"] == NodeRunStatus.pending
+
+
+def test_split_to_scriptwriter_does_not_wait_rewired_plan() -> None:
+    """plan → сценарист ← split: после разбивки идём по стрелке, не в веер без входов."""
+    nodes = [
+        {"id": "n_plan", "type": "plan", "position": {"x": 0, "y": 0}, "data": {}},
+        {"id": "n_script", "type": "script", "position": {"x": 100, "y": 0}, "data": {}},
+        {"id": "n_split", "type": "split", "position": {"x": 200, "y": 0}, "data": {}},
+        {
+            "id": "n_excel_gpt_fw_script",
+            "type": "excel_gpt",
+            "position": {"x": 150, "y": 80},
+            "data": {"slotOverflow": True, "label": "GPT: сценарист"},
+        },
+        {
+            "id": "n_excel_gpt_sd_cd_characters",
+            "type": "excel_gpt",
+            "position": {"x": 300, "y": 0},
+            "data": {"sd_agent": "characters"},
+        },
+    ]
+    edges = [
+        {"id": "e1", "source": "n_plan", "target": "n_excel_gpt_fw_script"},
+        {"id": "e2", "source": "n_script", "target": "n_split"},
+        {"id": "e3", "source": "n_split", "target": "n_excel_gpt_fw_script"},
+    ]
+    g = WorkflowGraph(nodes, edges)
+    p = Project(
+        topic="t",
+        slug="t",
+        status=ProjectStatus.frames_ready,
+        meta={"excel_gpt_completed_keys": []},
+    )
+    found = g.next_work_node_after_ready(p, ProjectStatus.frames_ready)
+    assert found is not None
+    key, running = found
+    assert key == "n_excel_gpt_fw_script"
+    assert running is ProjectStatus.enriching_1

@@ -20,6 +20,34 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if is_user_stopped(project):
         logger.info("[#{}] make_script: user_stop — не запускаем GPT", project.id)
         return
+
+    from sqlalchemy import select
+
+    from app.models import Frame
+
+    existing_frames = (
+        await session.execute(
+            select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
+        )
+    ).scalars().all()
+    existing_vo = " ".join(
+        (fr.voiceover_text or "").strip()
+        for fr in existing_frames
+        if (fr.voiceover_text or "").strip()
+    )
+    ready = existing_vo.strip() or (project.script_text or "").strip()
+    if len(ready) >= 200:
+        logger.warning(
+            "[#{}] make_script: закадр уже есть ({} симв) — GPT не вызываем",
+            project.id,
+            len(ready),
+        )
+        if not (project.script_text or "").strip():
+            project.script_text = existing_vo or ready
+        project.status = ProjectStatus.script_ready
+        await session.flush()
+        return
+
     logger.info("[#{}] make_script (db-first) starting", project.id)
 
     result, voiceover_text = await xsr.run_script_xlsx(project)
