@@ -156,8 +156,13 @@ def _prompt_blob(variant: str | None, master: str | None) -> str:
 
 
 def _is_script_writer_prompt(variant: str | None, master: str | None) -> bool:
-    """Сценарист: закадр + разбивка, батчи по 9 ячеек VO, не shot-fill."""
+    """Сценарист-нода на канвасе: больше не пишет закадр, только pass-through."""
     return any(m in _prompt_blob(variant, master) for m in _SCRIPT_WRITER_PROMPT_MARKERS)
+
+
+def _is_script_writer_node(variant: str | None, master: str | None, node_key: str | None) -> bool:
+    nk = str(node_key or "")
+    return _is_script_writer_prompt(variant, master) or nk.endswith("_fw_script")
 
 
 def _is_frame_prompts_prompt(variant: str | None, master: str | None) -> bool:
@@ -1128,166 +1133,134 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 PROMPT_UNITS_PER_BATCH,
                 VO_PARALLEL_MAX,
                 VO_STAGGER_SEC,
-                VO_UNITS_PER_BATCH,
                 run_apply_ops_batched,
             )
             from app.services import db_apply as _db_apply
             from app.services.node_write_contract import filter_ops_for_node
 
             nk = str(node_key or "")
-            script_writer = _is_script_writer_prompt(variant, master) or nk.endswith(
-                "_fw_script"
-            )
+            script_writer = _is_script_writer_node(variant, master, node_key)
             frame_prompts = _is_frame_prompts_prompt(variant, master) or nk.endswith(
                 "_fw_frames"
             )
             qc_prompts = _is_qc_prompts_prompt(variant, master) or nk.endswith("_fw_qc")
             write_prompts = frame_prompts or qc_prompts
-            keep_voiceover = script_writer
             apply_kind = (
                 "excel_gpt_prompts" if write_prompts else "excel_gpt_no_prompts"
             )
 
             if script_writer:
-                from app.services.db_frames_context import collapse_script_writer_frames
+                from app.services.gpt_operator_client import OperatorApiResult
 
-                cell_rows = collapse_script_writer_frames(
-                    frames_for_map, list(db_ctx.get("frames") or [])
-                )
-                logger.info(
-                    "[#{}] enrich_xlsx node={!r}: script_writer VO-cells={} "
-                    "(frames={})",
+                logger.warning(
+                    "[#{}] enrich_xlsx node={!r}: сценарист не генерирует "
+                    "закадр — готовый текст из БД, GPT не вызываем",
                     project.id,
                     node_key,
-                    len(cell_rows),
-                    len(frames_for_map),
                 )
-                db_ctx = {**db_ctx, "frames": cell_rows}
-                ctx_path.write_text(
-                    _json.dumps(db_ctx, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-
-            async def _apply_batch(payload: dict) -> None:
-                from app.services.db_apply import FIELD_ALIASES
-
-                raw_ops = list(payload.get("ops") or [])
-                if script_writer:
-                    _, n_rf = _drop_replace_frames_ops(raw_ops)
-                    if n_rf:
-                        logger.warning(
-                            "[#{}] enrich_xlsx node={}: script_writer drop "
-                            "replace_frames x{} (сценарист не переписывает разбивку)",
-                            project.id,
-                            node_key,
-                            n_rf,
-                        )
-                ops = filter_ops_for_node(
-                    raw_ops,
-                    node_kind=apply_kind,
-                )
-                # Shot-fill не должен затирать закадр/смысл, если
-                # volume-continue подмешал чужую схему полей.
-                # Сценарист как раз пишет закадр — не выкидываем.
-                _drop = set() if keep_voiceover else {"voiceover_text", "meaning"}
-                cleaned: list[dict] = []
-                for op in ops:
-                    fields = op.get("fields")
-                    if not isinstance(fields, dict):
-                        cleaned.append(op)
-                        continue
-                    kept = {}
-                    for k, v in fields.items():
-                        canon = FIELD_ALIASES.get(
-                            str(k).strip().lower().replace(" ", "_"),
-                            str(k),
-                        )
-                        if canon in _drop:
-                            continue
-                        kept[k] = v
-                    if not kept:
-                        continue
-                    new_op = dict(op)
-                    new_op["fields"] = kept
-                    cleaned.append(new_op)
-                ops = cleaned
-                await _db_apply.apply_ops(
-                    session,
-                    project,
-                    ops,
-                    export_xlsx=bool(payload.get("export_xlsx", False)),
-                    node_kind=apply_kind,
-                )
-                await session.commit()
-                await session.refresh(project)
-
-            async def _progress(msg: str) -> None:
-                from app.services.run_sync import update_active_node_progress_text
-
-                await update_active_node_progress_text(session, project, msg)
-                await session.commit()
-
-            if script_writer:
-                batch_label = (
-                    f"закадр по {VO_UNITS_PER_BATCH}, "
-                    f"параллельно {VO_PARALLEL_MAX}, "
-                    f"сдвиг {VO_STAGGER_SEC:g}с"
-                )
-            elif write_prompts:
-                batch_label = (
-                    f"промты по {PROMPT_UNITS_PER_BATCH}, "
-                    f"параллельно {VO_PARALLEL_MAX}, "
-                    f"сдвиг {VO_STAGGER_SEC:g}с"
+                api_res = OperatorApiResult(
+                    reply_text='{"ops":[]}',
+                    output_paths=[ctx_path],
+                    apply_ops={"ops": [], "report": "script_writer_passthrough"},
+                    applied_in_runner=True,
                 )
             else:
-                batch_label = "dense shot fill"
-            logger.info(
-                "[#{}] enrich_xlsx node={!r}: apply-ops adaptive "
-                "1→2→4 ({} )",
-                project.id,
-                node_key,
-                batch_label,
-            )
-            api_res = await run_apply_ops_batched(
-                project_dir=project.data_dir,
-                node_key=node_key,
-                role=role,
-                output_mode=output_mode,
-                prompt=master or "",
-                accompanying=accompanying,
-                db_ctx=db_ctx,
-                ctx_path=ctx_path,
-                project_id=project.id,
-                dense=not (write_prompts or script_writer),
-                apply_fn=_apply_batch,
-                skip_if_field=(
-                    None
-                    if frame_prompts and str(node_key or "").endswith("_fw_frames")
-                    else (
-                        "image_prompt"
-                        if frame_prompts and not qc_prompts
-                        else None
+                async def _apply_batch(payload: dict) -> None:
+                    from app.services.db_apply import FIELD_ALIASES
+
+                    raw_ops = list(payload.get("ops") or [])
+                    ops = filter_ops_for_node(
+                        raw_ops,
+                        node_kind=apply_kind,
                     )
-                ),
-                chunk_size=(
-                    VO_UNITS_PER_BATCH
-                    if script_writer
-                    else (PROMPT_UNITS_PER_BATCH if write_prompts else None)
-                ),
-                parallel_max=(
-                    VO_PARALLEL_MAX if script_writer or write_prompts else None
-                ),
-                stagger_sec=(
-                    VO_STAGGER_SEC if script_writer or write_prompts else None
-                ),
-                footer_kind=(
-                    "vo"
-                    if script_writer
-                    else ("prompts" if write_prompts else None)
-                ),
-                on_progress=_progress,
-                allow_empty_ops=qc_prompts,
-            )
+                    # excel_gpt не имеет права писать закадр/смысл.
+                    _drop = {"voiceover_text", "meaning"}
+                    cleaned: list[dict] = []
+                    for op in ops:
+                        fields = op.get("fields")
+                        if not isinstance(fields, dict):
+                            cleaned.append(op)
+                            continue
+                        kept = {}
+                        for k, v in fields.items():
+                            canon = FIELD_ALIASES.get(
+                                str(k).strip().lower().replace(" ", "_"),
+                                str(k),
+                            )
+                            if canon in _drop:
+                                continue
+                            kept[k] = v
+                        if not kept:
+                            continue
+                        new_op = dict(op)
+                        new_op["fields"] = kept
+                        cleaned.append(new_op)
+                    ops = cleaned
+                    await _db_apply.apply_ops(
+                        session,
+                        project,
+                        ops,
+                        export_xlsx=bool(payload.get("export_xlsx", False)),
+                        node_kind=apply_kind,
+                    )
+                    await session.commit()
+                    await session.refresh(project)
+
+                async def _progress(msg: str) -> None:
+                    from app.services.run_sync import update_active_node_progress_text
+
+                    await update_active_node_progress_text(session, project, msg)
+                    await session.commit()
+
+                if write_prompts:
+                    batch_label = (
+                        f"промты по {PROMPT_UNITS_PER_BATCH}, "
+                        f"параллельно {VO_PARALLEL_MAX}, "
+                        f"сдвиг {VO_STAGGER_SEC:g}с"
+                    )
+                else:
+                    batch_label = "dense shot fill"
+                logger.info(
+                    "[#{}] enrich_xlsx node={!r}: apply-ops adaptive "
+                    "1→2→4 ({} )",
+                    project.id,
+                    node_key,
+                    batch_label,
+                )
+                api_res = await run_apply_ops_batched(
+                    project_dir=project.data_dir,
+                    node_key=node_key,
+                    role=role,
+                    output_mode=output_mode,
+                    prompt=master or "",
+                    accompanying=accompanying,
+                    db_ctx=db_ctx,
+                    ctx_path=ctx_path,
+                    project_id=project.id,
+                    dense=not write_prompts,
+                    apply_fn=_apply_batch,
+                    skip_if_field=(
+                        None
+                        if frame_prompts and str(node_key or "").endswith("_fw_frames")
+                        else (
+                            "image_prompt"
+                            if frame_prompts and not qc_prompts
+                            else None
+                        )
+                    ),
+                    chunk_size=(
+                        PROMPT_UNITS_PER_BATCH if write_prompts else None
+                    ),
+                    parallel_max=(
+                        VO_PARALLEL_MAX if write_prompts else None
+                    ),
+                    stagger_sec=(
+                        VO_STAGGER_SEC if write_prompts else None
+                    ),
+                    footer_kind=("prompts" if write_prompts else None),
+                    on_progress=_progress,
+                    allow_empty_ops=qc_prompts,
+                )
         else:
             api_res = await run_operator_api(
                 project_dir=project.data_dir,

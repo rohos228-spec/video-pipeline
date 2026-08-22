@@ -9,6 +9,7 @@ import pytest
 from app.orchestrator.steps.enrich_xlsx import (
     _is_character_registry_prompt,
     _is_scene_grammar_prompt,
+    _is_script_writer_node,
     _is_script_writer_prompt,
 )
 from app.services.excel_characters import (
@@ -33,6 +34,9 @@ def test_detect_script_writer_prompt() -> None:
     assert _is_script_writer_prompt("script_writer_ru.md", None)
     assert _is_script_writer_prompt(None, "Ты — сценарист закадра.\n")
     assert not _is_script_writer_prompt("sd_skeleton.md", "shot fill")
+    assert _is_script_writer_node("script_writer_ru.md", None, "n_excel_gpt_fw_script")
+    assert _is_script_writer_node(None, None, "n_excel_gpt_fw_script")
+    assert not _is_script_writer_node("frame_prompts_continuity_ru.md", None, "n_excel_gpt_fw_frames")
 
 
 def test_detect_frame_and_qc_prompt() -> None:

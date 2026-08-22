@@ -186,9 +186,29 @@ def test_anim_pr_keeps_only_animation_prompt():
 def test_excel_gpt_drops_replace_frames() -> None:
     ops = [
         {"target": "replace_frames", "frames": [{"закадр": "нет"}]},
-        {"frame_uuid": "aa", "fields": {"закадр": "да"}},
+        {"frame_uuid": "aa", "fields": {"закадр": "да", "место": "двор"}},
     ]
     out = filter_ops_for_node(ops, node_kind="excel_gpt_no_prompts")
     assert len(out) == 1
     assert out[0]["frame_uuid"] == "aa"
-    assert out[0]["fields"]["закадр"] == "да"
+    assert "закадр" not in out[0]["fields"]
+    assert out[0]["fields"]["место"] == "двор"
+
+
+def test_excel_gpt_no_prompts_strips_voiceover() -> None:
+    ops = [
+        {
+            "frame_uuid": "aa",
+            "fields": {
+                "закадр": "НЕЛЬЗЯ",
+                "voiceover_text": "НЕЛЬЗЯ",
+                "смысл": "НЕЛЬЗЯ",
+                "место": "двор",
+            },
+        }
+    ]
+    out = filter_ops_for_node(ops, node_kind="excel_gpt_no_prompts")
+    assert out[0]["fields"]["место"] == "двор"
+    assert "закадр" not in out[0]["fields"]
+    assert "voiceover_text" not in out[0]["fields"]
+    assert "смысл" not in out[0]["fields"]
