@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -208,12 +209,33 @@ async def db_graph(
 async def shot_menu(
     project_id: int, session: AsyncSession = Depends(get_session)
 ) -> dict:
-    """Лента меню съёмки: ячейки закадра + шоты, без склейки соседнего VO."""
+    """Лента меню съёмки: ячейки закадра + шоты, без склейки соседнего VO.
+
+    Пустая БД на старом проекте → один раз подтягиваем кадры из project.xlsx
+    (keep_fields=True: script_text не трогаем) и перечитываем граф.
+    """
     from app.services.shot_menu import build_shot_menu
 
     project = await _project(session, project_id)
     graph = await db_v2.project_graph(session, project)
-    return build_shot_menu(graph.get("frames") or [], scenes=graph.get("scenes") or [])
+    menu = build_shot_menu(graph.get("frames") or [], scenes=graph.get("scenes") or [])
+    if menu["cells"]:
+        return menu
+
+    xlsx = project.data_dir / "project.xlsx"
+    if not xlsx.is_file():
+        return menu
+    try:
+        from app.services.chatgpt_xlsx import sync_project_xlsx
+
+        await sync_project_xlsx(session, project, xlsx, keep_fields=True)
+        await session.commit()
+        logger.info("[#{}] shot-menu: пустая БД → подтянуто из project.xlsx", project.id)
+        graph = await db_v2.project_graph(session, project)
+        menu = build_shot_menu(graph.get("frames") or [], scenes=graph.get("scenes") or [])
+    except Exception as e:  # noqa: BLE001 — меню остаётся пустым, не падаем
+        logger.warning("[#{}] shot-menu xlsx fallback failed: {}", project.id, e)
+    return menu
 
 
 class ShotMenuCellEdit(BaseModel):
