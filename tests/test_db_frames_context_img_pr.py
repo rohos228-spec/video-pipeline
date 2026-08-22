@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 
 from app.services.db_frames_context import (
+    build_excel_gpt_db_context,
     build_img_pr_db_context,
     collapse_script_writer_frames,
 )
@@ -164,3 +165,29 @@ def test_script_writer_keeps_plain_vo_frames_without_subdivide() -> None:
     rows = collapse_script_writer_frames(frames)
     assert [r["uuid"] for r in rows] == ["a", "c"]
     assert rows[0]["voiceover_text"] == "hello"
+
+
+def test_excel_gpt_db_context_exposes_image_prompt_for_skip() -> None:
+    frames = [
+        SimpleNamespace(
+            number=1,
+            uuid="a" * 24,
+            voiceover_text="vo",
+            meaning="",
+            image_prompt="already filled prompt",
+            attrs={},
+        ),
+        SimpleNamespace(
+            number=2,
+            uuid="b" * 24,
+            voiceover_text="vo2",
+            meaning="",
+            image_prompt="",
+            attrs={},
+        ),
+    ]
+    ctx = build_excel_gpt_db_context(
+        project_id=60, slug="x", frames=frames, characters=[]
+    )
+    assert ctx["frames"][0]["image_prompt"].startswith("already")
+    assert "image_prompt" not in ctx["frames"][1]

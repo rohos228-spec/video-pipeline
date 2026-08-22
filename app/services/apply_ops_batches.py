@@ -410,8 +410,28 @@ async def run_apply_ops_batched(
             return
         if not missing:
             return
+        # 1 пропущенный uuid: ещё раз только его. Раньше len<=1 сразу
+        # валил всю пачку (7/8 → RuntimeError → soft retry всех 188).
+        if len(missing) == 1:
+            uid = str(missing[0].get("uuid") or "")[:8]
+            if len(chunk) <= 1:
+                raise RuntimeError(
+                    f"enrich_xlsx node={node_key}: L{level} неполный apply-ops "
+                    f"(0/1). uuid: {uid}"
+                )
+            logger.warning(
+                "[#{}] apply_ops node={!r}: L{} incomplete {}/{} → retry uuid {}",
+                project_id,
+                node_key,
+                level,
+                len(chunk) - 1,
+                len(chunk),
+                uid,
+            )
+            await _run_adaptive(missing, next_split_level(level) or level)
+            return
         nxt = next_split_level(level)
-        if nxt is None or len(missing) <= 1:
+        if nxt is None:
             raise RuntimeError(
                 f"enrich_xlsx node={node_key}: L{level} неполный apply-ops "
                 f"({len(chunk) - len(missing)}/{len(chunk)}). uuid: "
