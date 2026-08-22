@@ -418,47 +418,21 @@ def group_vo_cells(
         plan_rows = plan_index.get(sid) or []
         vos = [_vo_text(fr) for fr in current_frames]
         nonempty = [v for v in vos if v]
-        # 1 кадр в БД + несколько фаз в camera.json → виртуальные шоты только в DTO.
-        if len(current_frames) == 1 and len(plan_rows) > 1:
-            vo_full = nonempty[0] if nonempty else _vo_text(parent)
-            vo_parts = split_text_into_parts(vo_full, len(plan_rows))
-            parent_dur = _duration_sec(parent)
-            n = len(plan_rows)
-            each = round(parent_dur / n, 2) if n else 0.0
-            acc = 0.0
-            shots = []
-            for i, row in enumerate(plan_rows, start=1):
-                dto = _shot_dto(
-                    parent,
-                    cell_index,
-                    i,
-                    overlay=row,
-                    vo_override=vo_parts[i - 1] if i - 1 < len(vo_parts) else None,
-                )
-                dur = each if i < n else round(max(0.0, parent_dur - acc), 2)
-                if i < n:
-                    acc += dur
-                dto["duration_sec"] = dur
-                if i > 1:
-                    dto["virtual"] = True
-                shots.append(dto)
-            vo = vo_full.strip()
+        if len(current_frames) > 1 and len(nonempty) == 1:
+            vo_parts = split_text_into_parts(nonempty[0], len(current_frames))
         else:
-            if len(current_frames) > 1 and len(nonempty) == 1:
-                vo_parts = split_text_into_parts(nonempty[0], len(current_frames))
-            else:
-                vo_parts = vos
-            shots = [
-                _shot_dto(
-                    fr,
-                    cell_index,
-                    i,
-                    overlay=plan_rows[i - 1] if i - 1 < len(plan_rows) else None,
-                    vo_override=vo_parts[i - 1] if i - 1 < len(vo_parts) else None,
-                )
-                for i, fr in enumerate(current_frames, start=1)
-            ]
-            vo = " ".join(t for t in vo_parts if t).strip()
+            vo_parts = vos
+        shots = [
+            _shot_dto(
+                fr,
+                cell_index,
+                i,
+                overlay=plan_rows[i - 1] if i - 1 < len(plan_rows) else None,
+                vo_override=vo_parts[i - 1] if i - 1 < len(vo_parts) else None,
+            )
+            for i, fr in enumerate(current_frames, start=1)
+        ]
+        vo = " ".join(t for t in vo_parts if t).strip()
         duration = round(sum(s["duration_sec"] for s in shots), 2)
         loc = shots[0]["fields"]["set"] if shots else _shot_set(parent)
         items = frame_field(parent, "shot01_props", "items")

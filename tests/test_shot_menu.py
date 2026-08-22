@@ -488,20 +488,12 @@ def test_shot_plan_overlay_without_id_scene_uses_cell_index() -> None:
     ]
     cells = group_vo_cells(frames, shot_plan=plan)
     assert len(cells) == 2
-    assert len(cells[0]["shots"]) == 2
+    assert len(cells[0]["shots"]) == 1
     assert "SET_32" in cells[0]["shots"][0]["fields"]["set"]
-    assert "SET_37" in cells[0]["shots"][1]["fields"]["set"]
-    assert cells[0]["shots"][1].get("virtual") is True
-    assert cells[0]["duration_sec"] == 6.0
+    assert cells[0]["shots"][0]["voiceover_in_shot"] != "—"
+    assert "Первая ячейка" in cells[0]["voiceover"]
     assert len(cells[1]["shots"]) == 1
     assert "SET_22" in cells[1]["shots"][0]["fields"]["set"]
-    assert cells[0]["shots"][0]["voiceover_in_shot"] != "—"
-    joined = " ".join(
-        s["voiceover_in_shot"]
-        for s in cells[0]["shots"]
-        if s["voiceover_in_shot"] != "—"
-    )
-    assert "Первая ячейка" in joined
 
 
 def test_stray_empty_frame_does_not_join_set_group() -> None:

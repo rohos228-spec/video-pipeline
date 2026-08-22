@@ -61,7 +61,10 @@ def _keep_field(key: str, node_kind: str) -> bool:
     norm = _norm_key(key)
     canon = _canon_field(key)
     if node_kind == "excel_gpt_prompts":
-        return True
+        return (
+            canon in PROMPT_FIELDS
+            or norm in _PROMPT_KEYS
+        )
     if node_kind in ("excel_gpt", "excel_gpt_no_prompts"):
         if canon in PROMPT_FIELDS or norm in _PROMPT_KEYS:
             return False

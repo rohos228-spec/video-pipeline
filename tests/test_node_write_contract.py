@@ -17,13 +17,17 @@ def test_excel_gpt_prompts_keeps_image_and_anim():
                 "промт_картинки": "YES",
                 "промт_видео": "MOVE",
                 "место": "кухня",
+                "закадр": "НЕЛЬЗЯ",
+                "voiceover_text": "НЕЛЬЗЯ",
             },
         }
     ]
     out = filter_ops_for_node(ops, node_kind="excel_gpt_prompts")
     assert out[0]["fields"]["промт_картинки"] == "YES"
     assert out[0]["fields"]["промт_видео"] == "MOVE"
-    assert out[0]["fields"]["место"] == "кухня"
+    assert "место" not in out[0]["fields"]
+    assert "закадр" not in out[0]["fields"]
+    assert "voiceover_text" not in out[0]["fields"]
 
 
 def test_excel_gpt_strips_prompt_fields():
