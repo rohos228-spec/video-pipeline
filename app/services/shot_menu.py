@@ -14,7 +14,8 @@ from typing import Any
 SHOT_MENU_TRACKS: tuple[dict[str, Any], ...] = (
     {"key": "vo", "label": "Закадр", "pinned": True},
     {"key": "action", "label": "Действие", "pinned": False},
-    {"key": "cam", "label": "Крупность · движение", "pinned": False},
+    {"key": "size", "label": "План", "pinned": False},
+    {"key": "move", "label": "Движение камеры", "pinned": False},
     {"key": "set", "label": "SET", "pinned": False},
     {"key": "characters", "label": "Персонажи", "pinned": False},
     {"key": "stitch", "label": "Стык", "pinned": False},
@@ -24,7 +25,50 @@ SHOT_MENU_TRACKS: tuple[dict[str, Any], ...] = (
     {"key": "frame_no", "label": "Номер кадра", "pinned": False},
 )
 
-DEFAULT_TRACK_KEYS: tuple[str, ...] = ("vo", "action", "cam", "set")
+DEFAULT_TRACK_KEYS: tuple[str, ...] = ("vo", "action", "size", "move", "set")
+
+_CHAR_ID_RE = re.compile(r"\bc\d{2,}\b", re.I)
+_SIZE_TOKENS = (
+    "сверхдальний план",
+    "очень общий план",
+    "средне-общий план",
+    "средне-крупный план",
+    "средний крупный",
+    "очень крупный план",
+    "сверхкрупный план",
+    "крупный план",
+    "средний план",
+    "общий план",
+    "деталь",
+    "врезка предмета",
+    "VLS",
+    "ELS",
+    "MCU",
+    "ECU",
+    "LS",
+    "FS",
+    "WS",
+    "MS",
+    "CU",
+)
+_MOVE_TOKENS = (
+    "ручная камера",
+    "сдвиг вбок",
+    "вид сверху",
+    "over-shoulder",
+    "push-in",
+    "handheld",
+    "follow",
+    "static",
+    "tilt",
+    "pan",
+    "наезд",
+    "отъезд",
+    "панорама",
+    "следование",
+    "статика",
+    "ручная",
+)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -39,6 +83,71 @@ def _text(*values: Any) -> str:
         if s:
             return s
     return ""
+
+
+def character_ids(raw: str) -> str:
+    """Только id персонажей (c01, c02) — без имён и «соседка»."""
+    seen: list[str] = []
+    for m in _CHAR_ID_RE.finditer(raw or ""):
+        cid = m.group(0).lower()
+        if cid not in seen:
+            seen.append(cid)
+    return ", ".join(seen)
+
+
+def _token_from(text: str, tokens: tuple[str, ...]) -> str:
+    blob = (text or "").strip()
+    if not blob:
+        return ""
+    low = blob.lower()
+    for tok in tokens:
+        i = low.find(tok.lower())
+        if i >= 0:
+            return blob[i : i + len(tok)]
+    return ""
+
+
+def load_project_shot_plan(project: Any) -> list[dict[str, Any]]:
+    """shot_plan из scene_design/camera.json — SoT по фазам после expand."""
+    import json
+    from pathlib import Path
+
+    data_dir = getattr(project, "data_dir", None)
+    if data_dir is None:
+        return []
+    path = Path(data_dir) / "scene_design" / "camera.json"
+    if not path.is_file():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    rows: Any = raw
+    if isinstance(raw, dict):
+        for key in ("shot_plan", "shot_plan_chrono", "shots"):
+            cand = raw.get(key)
+            if isinstance(cand, list):
+                rows = cand
+                break
+    if not isinstance(rows, list):
+        return []
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def _plan_rows_by_scene(
+    shot_plan: list[dict[str, Any]] | None,
+) -> dict[str, list[dict[str, Any]]]:
+    out: dict[str, list[dict[str, Any]]] = {}
+    for row in shot_plan or []:
+        sid = str(row.get("id_scene") or "").strip()
+        if not sid:
+            continue
+        out.setdefault(sid, []).append(row)
+    for rows in out.values():
+        rows.sort(
+            key=lambda r: int(r.get("phase_index") or r.get("shot_index") or 0)
+        )
+    return out
 
 
 def frame_field(frame: dict[str, Any], *keys: str) -> str:
@@ -70,13 +179,37 @@ def _camera_subdivide(frame: dict[str, Any]) -> dict[str, Any]:
     return cs if isinstance(cs, dict) else {}
 
 
-def _shot_cam(frame: dict[str, Any]) -> str:
+def _shot_size(frame: dict[str, Any], overlay: dict[str, Any] | None = None) -> str:
+    ov = overlay or {}
+    from_ov = _text(ov.get("крупность"), ov.get("size"))
+    if from_ov:
+        return from_ov
     cs = _camera_subdivide(frame)
     notes = frame_field(frame, "shot01_notes")
-    size = _text(cs.get("крупность"), cs.get("size"))
-    move = _text(cs.get("движение"), cs.get("move"))
-    from_cs = " · ".join(p for p in (size, move) if p)
-    return _text(notes, from_cs)
+    return (
+        _text(cs.get("крупность"), cs.get("size"))
+        or _token_from(notes, _SIZE_TOKENS)
+        or _token_from(frame_field(frame, "shot01_size"), _SIZE_TOKENS)
+    )
+
+
+def _shot_move(frame: dict[str, Any], overlay: dict[str, Any] | None = None) -> str:
+    ov = overlay or {}
+    from_ov = _text(ov.get("движение"), ov.get("move"))
+    if from_ov:
+        return from_ov
+    cs = _camera_subdivide(frame)
+    notes = frame_field(frame, "shot01_notes")
+    return (
+        _text(cs.get("движение"), cs.get("move"))
+        or _token_from(notes, _MOVE_TOKENS)
+    )
+
+
+def _shot_cam(frame: dict[str, Any], overlay: dict[str, Any] | None = None) -> str:
+    size = _shot_size(frame, overlay)
+    move = _shot_move(frame, overlay)
+    return " · ".join(p for p in (size, move) if p)
 
 
 @lru_cache(maxsize=1)
@@ -187,8 +320,28 @@ def _all_fields(frame: dict[str, Any]) -> dict[str, str]:
     return out
 
 
-def _shot_dto(frame: dict[str, Any], cell_index: int, shot_index: int) -> dict[str, Any]:
-    vo = _vo_text(frame)
+def _shot_dto(
+    frame: dict[str, Any],
+    cell_index: int,
+    shot_index: int,
+    *,
+    overlay: dict[str, Any] | None = None,
+    vo_override: str | None = None,
+) -> dict[str, Any]:
+    ov = overlay if isinstance(overlay, dict) else {}
+    vo = vo_override if vo_override is not None else _vo_text(frame)
+    nab = _text(ov.get("набор"), ov.get("place"))
+    set_val = set_human_name(nab) if nab else _shot_set(frame)
+    stitch = _text(
+        ov.get("переход"),
+        ov.get("стык"),
+        ov.get("тип_стыка"),
+    ) or frame_field(frame, "scene_transition", "shot01_transition", "edit_type")
+    who = _text(ov.get("кто_в_кадре"), ov.get("персонажи")) or frame_field(
+        frame, "characters", "персонажи"
+    )
+    size = _shot_size(frame, ov)
+    move = _shot_move(frame, ov)
     return {
         "id": frame.get("id"),
         "uuid": frame.get("uuid"),
@@ -199,12 +352,12 @@ def _shot_dto(frame: dict[str, Any], cell_index: int, shot_index: int) -> dict[s
         "voiceover_in_shot": vo if vo else "—",
         "fields": {
             "action": frame_field(frame, "shot01_action", "main_action", "действие"),
-            "cam": _shot_cam(frame),
-            "set": _shot_set(frame),
-            "characters": frame_field(frame, "characters", "персонажи"),
-            "stitch": frame_field(
-                frame, "scene_transition", "shot01_transition", "edit_type"
-            ),
+            "size": size,
+            "move": move,
+            "cam": " · ".join(p for p in (size, move) if p),
+            "set": set_val,
+            "characters": character_ids(who),
+            "stitch": stitch,
             "scene": frame_field(frame, "shot01_id_scene", "id_scene", "scene_sense"),
             "img_prompt": _active_prompt(frame, "img", "image_prompt"),
             "video_prompt": _active_prompt(frame, "video", "animation_prompt"),
@@ -225,14 +378,20 @@ def _subdivide_parent_uuid(frame: dict[str, Any]) -> str:
     return str(cs.get("parent_uuid") or "").strip()
 
 
-def group_vo_cells(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def group_vo_cells(
+    frames: list[dict[str, Any]],
+    shot_plan: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Ячейка = сцена: кадры одной VO-ячейки группируются по parent_uuid
     (camera_subdivide). Без метки — старое правило: непустой закадр = новая
     ячейка, пустой VO присоединяется как шот. Текст ячейки = сумма фрагментов
     её кадров (после дроби каждый кадр несёт свой кусок закадра)."""
+    from app.services.scene_design.camera_expand import split_text_into_parts
+
     cells: list[dict[str, Any]] = []
     current_frames: list[dict[str, Any]] = []
     current_pu = ""
+    plan_index = _plan_rows_by_scene(shot_plan)
 
     def flush() -> None:
         nonlocal current_frames, current_pu
@@ -240,15 +399,27 @@ def group_vo_cells(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
             return
         cell_index = len(cells) + 1
         parent = current_frames[0]
+        sid = frame_field(parent, "shot01_id_scene", "id_scene")
+        plan_rows = plan_index.get(sid) or []
+        vos = [_vo_text(fr) for fr in current_frames]
+        nonempty = [v for v in vos if v]
+        if len(current_frames) > 1 and len(nonempty) == 1:
+            vo_parts = split_text_into_parts(nonempty[0], len(current_frames))
+        else:
+            vo_parts = vos
         shots = [
-            _shot_dto(fr, cell_index, i)
+            _shot_dto(
+                fr,
+                cell_index,
+                i,
+                overlay=plan_rows[i - 1] if i - 1 < len(plan_rows) else None,
+                vo_override=vo_parts[i - 1] if i - 1 < len(vo_parts) else None,
+            )
             for i, fr in enumerate(current_frames, start=1)
         ]
         duration = round(sum(s["duration_sec"] for s in shots), 2)
-        vo = " ".join(
-            t for t in (_vo_text(fr) for fr in current_frames) if t
-        ).strip()
-        loc = _shot_set(parent)
+        vo = " ".join(t for t in vo_parts if t).strip()
+        loc = shots[0]["fields"]["set"] if shots else _shot_set(parent)
         items = frame_field(parent, "shot01_props", "items")
         hide = frame_field(parent, "hide", "не_показывать")
         title_src = vo or frame_field(parent, "meaning") or f"Ячейка {cell_index}"
@@ -292,6 +463,9 @@ def group_vo_cells(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
             current_frames = [frame]
             current_pu = pu
             continue
+        if current_pu:
+            # Кадр без parent_uuid не принадлежит SET-группе (пустая ячейка / мусор).
+            flush()
         if vo:
             flush()
             current_frames = [frame]
@@ -311,10 +485,11 @@ def build_shot_menu(
     frames: list[dict[str, Any]],
     *,
     scenes: list[dict[str, Any]] | None = None,
+    shot_plan: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """DTO ленты меню съёмки."""
     del scenes  # сцены DB не склеивают VO-ячейки; оставляем параметр для API.
-    cells = group_vo_cells(frames)
+    cells = group_vo_cells(frames, shot_plan=shot_plan)
     shot_count = sum(len(c["shots"]) for c in cells)
     total_sec = round(sum(float(c["duration_sec"] or 0) for c in cells), 2)
     vo_chars = sum(len(str(c.get("voiceover") or "")) for c in cells)
@@ -338,13 +513,106 @@ def build_shot_menu(
 _FIELD_TO_COLUMN = {
     "img_prompt": "image_prompt",
     "video_prompt": "animation_prompt",
+    "vo": "voiceover_text",
 }
 _FIELD_TO_ATTR = {
     "action": "shot01_action",
     "characters": "characters",
     "stitch": "scene_transition",
     "scene": "id_scene",
+    "set": "place",
 }
+
+
+_SET_ID_RE = re.compile(r"SET_?\d+", re.I)
+
+
+def _set_id_from_label(label: str) -> str:
+    m = _SET_ID_RE.search(label or "")
+    if not m:
+        return ""
+    digits = re.search(r"\d+", m.group(0))
+    if not digits:
+        return m.group(0).upper()
+    return f"SET_{int(digits.group()):02d}"
+
+
+async def heal_stale_shot_fields(session: Any, project: Any) -> int:
+    """После перегенерации: закадр только на родителе, SET/стык скопированы с бита 1.
+
+    Раздаём VO по шотам и пишем набор/переход/крупность/движение из camera.json.
+    """
+    from sqlalchemy import select
+
+    from app.models import Frame
+    from app.services.scene_design.camera_expand import split_text_into_parts
+
+    plan = load_project_shot_plan(project)
+    frames = list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not frames:
+        return 0
+    by_uuid = {str(fr.uuid): fr for fr in frames if fr.uuid}
+    dumps = [_frame_dump(fr) for fr in frames]
+    changed = 0
+    for cell in group_vo_cells(dumps, shot_plan=plan):
+        shots = cell["shots"]
+        vos = []
+        for s in shots:
+            fr = by_uuid.get(str(s.get("uuid") or ""))
+            vos.append((fr.voiceover_text or "").strip() if fr is not None else "")
+        if len(shots) > 1 and sum(1 for v in vos if v) == 1:
+            full = next(v for v in vos if v)
+            parts = split_text_into_parts(full, len(shots))
+            for s, part in zip(shots, parts):
+                fr = by_uuid.get(str(s.get("uuid") or ""))
+                if fr is None:
+                    continue
+                if (fr.voiceover_text or "").strip() != part:
+                    fr.voiceover_text = part
+                    changed += 1
+        for s in shots:
+            fr = by_uuid.get(str(s.get("uuid") or ""))
+            if fr is None:
+                continue
+            fields = s.get("fields") or {}
+            attrs = dict(fr.attrs or {})
+            cs_raw = attrs.get("camera_subdivide")
+            cs = dict(cs_raw) if isinstance(cs_raw, dict) else {}
+            dirty = False
+            set_id = _set_id_from_label(str(fields.get("set") or ""))
+            if set_id and cs.get("набор") != set_id:
+                cs["набор"] = set_id
+                attrs["place"] = set_id
+                dirty = True
+            stitch = str(fields.get("stitch") or "").strip()
+            if stitch and str(attrs.get("scene_transition") or "") != stitch:
+                attrs["scene_transition"] = stitch
+                dirty = True
+            size = str(fields.get("size") or "").strip()
+            if size and str(cs.get("крупность") or "") != size:
+                cs["крупность"] = size
+                dirty = True
+            move = str(fields.get("move") or "").strip()
+            if move and str(cs.get("движение") or "") != move:
+                cs["движение"] = move
+                dirty = True
+            if dirty:
+                attrs["camera_subdivide"] = cs
+                fr.attrs = attrs
+                changed += 1
+    if changed:
+        await session.flush()
+    return changed
 
 
 async def edit_cell_voiceover(
@@ -395,9 +663,24 @@ async def edit_shot_field(
         raise ValueError(f"кадр {frame_uuid!r} не найден")
     if field in _FIELD_TO_COLUMN:
         setattr(fr, _FIELD_TO_COLUMN[field], value.strip() or None)
+    elif field in ("size", "move"):
+        attrs = dict(fr.attrs or {})
+        cs_raw = attrs.get("camera_subdivide")
+        cs = dict(cs_raw) if isinstance(cs_raw, dict) else {}
+        cs["крупность" if field == "size" else "движение"] = value.strip()
+        attrs["camera_subdivide"] = cs
+        fr.attrs = attrs
     elif field in _FIELD_TO_ATTR:
         attrs = dict(fr.attrs or {})
         attrs[_FIELD_TO_ATTR[field]] = value.strip()
+        if field == "set":
+            set_id = _set_id_from_label(value)
+            if set_id:
+                cs_raw = attrs.get("camera_subdivide")
+                cs = dict(cs_raw) if isinstance(cs_raw, dict) else {}
+                cs["набор"] = set_id
+                attrs["camera_subdivide"] = cs
+                attrs["place"] = set_id
         fr.attrs = attrs
     else:
         raise ValueError(f"поле {field!r} не редактируется из меню")
