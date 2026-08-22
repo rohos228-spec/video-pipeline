@@ -27,3 +27,37 @@ def test_vo_parts_sum_equals_cell() -> None:
 
 def test_vo_duration_at_least_two_sec_per_shot() -> None:
     assert vo_duration_sec("аб", shots=2) >= 4.0
+
+
+def test_repair_glues_fragments_back_to_parent() -> None:
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import repair_split_vo_on_parents
+
+    pu = "aa" * 12
+    parent = SimpleNamespace(
+        uuid=pu,
+        voiceover_text="Первая фраза.",
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": pu,
+                "shot_index": 1,
+            }
+        },
+    )
+    child = SimpleNamespace(
+        uuid="bb" * 12,
+        voiceover_text="Вторая фраза.",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": pu,
+                "shot_index": 2,
+            }
+        },
+    )
+    n = repair_split_vo_on_parents([parent, child])
+    assert n == 1
+    assert parent.voiceover_text == "Первая фраза. Вторая фраза."
+    assert child.voiceover_text == ""

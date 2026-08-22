@@ -1,7 +1,7 @@
-"""Дробление VO-ячейки на визуальные шоты для группы script_frames_qc.
+"""Визуальные шоты внутри ячейки разбивки. Закадр разбивки не трогаем.
 
-1 ячейка закадра = 1 сцена. Кадры сцены несут фрагменты текста;
-сумма фрагментов = ячейка. Не пишет новый закадр и не трогает chrono_dyn.
+1 ячейка закадра = 1 сцена. Полный текст ячейки живёт на родителе.
+Дети — только картинка/камера. Нарезка по шотам — в меню (DTO), не в БД.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ from app.services.db_v2 import insert_frame_after
 from app.services.scene_design.camera_expand import (
     already_subdivided,
     renumber_frames_by_sort_key,
-    split_text_into_parts,
 )
 
 _ATTR_KEY = "camera_subdivide"
@@ -46,21 +45,79 @@ def vo_duration_sec(text: str, *, shots: int = 1) -> float:
     return round(total, 2)
 
 
+def _cs(frame: Any) -> dict[str, Any]:
+    attrs = getattr(frame, "attrs", None)
+    if not isinstance(attrs, dict):
+        return {}
+    raw = attrs.get(_ATTR_KEY)
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def repair_split_vo_on_parents(frames: list[Any]) -> int:
+    """Вернуть полный закадр разбивки на родителя, с детей снять.
+
+    Если expand уже нарезал Frame.voiceover_text — склеить обратно.
+    Не генерирует новый текст.
+    """
+    groups: dict[str, list[Any]] = {}
+    for fr in frames:
+        cs = _cs(fr)
+        parent = str(cs.get("parent_uuid") or getattr(fr, "uuid", "") or "").strip()
+        if not parent:
+            continue
+        groups.setdefault(parent, []).append(fr)
+    repaired = 0
+    for members in groups.values():
+        members.sort(
+            key=lambda m: int(_cs(m).get("shot_index") or 0)
+        )
+        if len(members) <= 1:
+            continue
+        parent = next(
+            (m for m in members if _cs(m).get("role") == "vo_parent"),
+            members[0],
+        )
+        parts = [(getattr(m, "voiceover_text", None) or "").strip() for m in members]
+        child_parts = [
+            (getattr(m, "voiceover_text", None) or "").strip()
+            for m in members
+            if m is not parent
+        ]
+        if not any(child_parts):
+            continue
+        unique = {p for p in parts if p}
+        if len(unique) == 1:
+            joined = next(iter(unique))
+        else:
+            joined = " ".join(p for p in parts if p)
+        if joined:
+            parent.voiceover_text = joined
+        for m in members:
+            if m is not parent:
+                m.voiceover_text = ""
+            attrs = dict(getattr(m, "attrs", None) or {})
+            m.attrs = attrs
+        repaired += 1
+    return repaired
+
+
 async def expand_vo_cells_into_shots(
     session: AsyncSession,
     project: Project,
     frames: list[Frame],
 ) -> tuple[list[Frame], dict[str, Any]]:
-    """Вставить шоты в VO-родителей и раздать фрагменты закадра."""
+    """Вставить визуальные шоты. Закадр разбивки на родителе не меняем."""
     report: dict[str, Any] = {
         "skipped": False,
         "parents": 0,
         "inserted": 0,
+        "repaired_vo": 0,
         "frames_before": len(frames),
         "frames_after": len(frames),
     }
     if already_subdivided(frames):
         report["skipped"] = True
+        report["repaired_vo"] = repair_split_vo_on_parents(frames)
         return frames, report
 
     parents = [f for f in frames if f.uuid]
@@ -98,15 +155,15 @@ async def expand_vo_cells_into_shots(
             inserted += 1
 
         group = [parent, *children]
-        vo_parts = split_text_into_parts(original_vo, need)
+        parent.voiceover_text = original_vo
         for i, fr in enumerate(group):
-            fr.voiceover_text = vo_parts[i]
             if i == 0:
                 fr.start_ts = start_ts
                 fr.end_ts = end_ts
             else:
                 fr.start_ts = None
                 fr.end_ts = None
+                fr.voiceover_text = ""
             fr.duration_seconds = part_sec
             attrs = dict(fr.attrs or {})
             attrs[_ATTR_KEY] = {
