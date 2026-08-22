@@ -319,8 +319,8 @@ def test_auto_chain_uses_edge_key_not_slot_resolve_collision() -> None:
         },
         auto_mode=True,
     )
-    # Коллизия: resolve(5) ≠ check
-    assert resolve_excel_gpt_node_key_for_slot(p, 5) == "n_excel_gpt_2"
+    # Коллизия slot 5: по стрелке следующий work — check, не orphan персонажи.
+    assert resolve_excel_gpt_node_key_for_slot(p, 5) == "n_check"
     assert first_work_successor_along_edges(p, "n_work") == ("n_check", "excel_gpt")
 
     nxt = prepare_enrich_chain_for_auto_advance(

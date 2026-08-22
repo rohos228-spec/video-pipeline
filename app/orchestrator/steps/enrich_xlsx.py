@@ -132,6 +132,9 @@ def _is_script_writer_prompt(variant: str | None, master: str | None) -> bool:
 
 
 def _is_frame_prompts_prompt(variant: str | None, master: str | None) -> bool:
+    # QC-промт ссылается на frame_prompts_continuity — это не fill-агент.
+    if _is_qc_prompts_prompt(variant, master):
+        return False
     return any(m in _prompt_blob(variant, master) for m in _FRAME_PROMPTS_MARKERS)
 
 
@@ -1198,7 +1201,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 project_id=project.id,
                 dense=not (write_prompts or script_writer),
                 apply_fn=_apply_batch,
-                skip_if_field="image_prompt" if frame_prompts else None,
+                skip_if_field=(
+                    "image_prompt" if frame_prompts and not qc_prompts else None
+                ),
                 chunk_size=(
                     VO_UNITS_PER_BATCH
                     if script_writer
@@ -1216,6 +1221,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     else ("prompts" if write_prompts else None)
                 ),
                 on_progress=_progress,
+                allow_empty_ops=qc_prompts,
             )
         else:
             api_res = await run_operator_api(
