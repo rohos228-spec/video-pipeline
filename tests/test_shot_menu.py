@@ -471,3 +471,41 @@ def test_stray_empty_frame_does_not_join_set_group() -> None:
     assert len(cells) == 2
     assert len(cells[0]["shots"]) == 1
 
+
+def test_display_vo_split_does_not_mutate_frames() -> None:
+    """Нарезка VO по шотам — только DTO, исходные кадры не трогаем."""
+    frames = [
+        {
+            "id": 1,
+            "number": 1,
+            "sort_key": 10,
+            "voiceover_text": "один два три четыре пять шесть",
+            "duration_seconds": 2,
+            "attrs": {
+                "camera_subdivide": {
+                    "parent_uuid": "p1",
+                    "shot_index": 1,
+                }
+            },
+        },
+        {
+            "id": 2,
+            "number": 2,
+            "sort_key": 20,
+            "voiceover_text": "",
+            "duration_seconds": 2,
+            "attrs": {
+                "camera_subdivide": {
+                    "parent_uuid": "p1",
+                    "shot_index": 2,
+                }
+            },
+        },
+    ]
+    before = frames[0]["voiceover_text"]
+    cells = group_vo_cells(frames)
+    assert frames[0]["voiceover_text"] == before
+    assert frames[1]["voiceover_text"] == ""
+    assert cells[0]["shots"][1]["voiceover_in_shot"] != "—"
+    assert cells[0]["shots"][1]["voiceover_in_shot"] != ""
+

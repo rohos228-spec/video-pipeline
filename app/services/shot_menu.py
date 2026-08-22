@@ -385,7 +385,8 @@ def group_vo_cells(
     """Ячейка = сцена: кадры одной VO-ячейки группируются по parent_uuid
     (camera_subdivide). Без метки — старое правило: непустой закадр = новая
     ячейка, пустой VO присоединяется как шот. Текст ячейки = сумма фрагментов
-    её кадров (после дроби каждый кадр несёт свой кусок закадра)."""
+    её кадров. Нарезка VO по шотам здесь только в DTO (длина кадра в ленте),
+    в Frame.voiceover_text не пишем."""
     from app.services.scene_design.camera_expand import split_text_into_parts
 
     cells: list[dict[str, Any]] = []
@@ -535,84 +536,6 @@ def _set_id_from_label(label: str) -> str:
     if not digits:
         return m.group(0).upper()
     return f"SET_{int(digits.group()):02d}"
-
-
-async def heal_stale_shot_fields(session: Any, project: Any) -> int:
-    """После перегенерации: закадр только на родителе, SET/стык скопированы с бита 1.
-
-    Раздаём VO по шотам и пишем набор/переход/крупность/движение из camera.json.
-    """
-    from sqlalchemy import select
-
-    from app.models import Frame
-    from app.services.scene_design.camera_expand import split_text_into_parts
-
-    plan = load_project_shot_plan(project)
-    frames = list(
-        (
-            await session.execute(
-                select(Frame)
-                .where(Frame.project_id == project.id)
-                .order_by(Frame.sort_key, Frame.number)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    if not frames:
-        return 0
-    by_uuid = {str(fr.uuid): fr for fr in frames if fr.uuid}
-    dumps = [_frame_dump(fr) for fr in frames]
-    changed = 0
-    for cell in group_vo_cells(dumps, shot_plan=plan):
-        shots = cell["shots"]
-        vos = []
-        for s in shots:
-            fr = by_uuid.get(str(s.get("uuid") or ""))
-            vos.append((fr.voiceover_text or "").strip() if fr is not None else "")
-        if len(shots) > 1 and sum(1 for v in vos if v) == 1:
-            full = next(v for v in vos if v)
-            parts = split_text_into_parts(full, len(shots))
-            for s, part in zip(shots, parts):
-                fr = by_uuid.get(str(s.get("uuid") or ""))
-                if fr is None:
-                    continue
-                if (fr.voiceover_text or "").strip() != part:
-                    fr.voiceover_text = part
-                    changed += 1
-        for s in shots:
-            fr = by_uuid.get(str(s.get("uuid") or ""))
-            if fr is None:
-                continue
-            fields = s.get("fields") or {}
-            attrs = dict(fr.attrs or {})
-            cs_raw = attrs.get("camera_subdivide")
-            cs = dict(cs_raw) if isinstance(cs_raw, dict) else {}
-            dirty = False
-            set_id = _set_id_from_label(str(fields.get("set") or ""))
-            if set_id and cs.get("набор") != set_id:
-                cs["набор"] = set_id
-                attrs["place"] = set_id
-                dirty = True
-            stitch = str(fields.get("stitch") or "").strip()
-            if stitch and str(attrs.get("scene_transition") or "") != stitch:
-                attrs["scene_transition"] = stitch
-                dirty = True
-            size = str(fields.get("size") or "").strip()
-            if size and str(cs.get("крупность") or "") != size:
-                cs["крупность"] = size
-                dirty = True
-            move = str(fields.get("move") or "").strip()
-            if move and str(cs.get("движение") or "") != move:
-                cs["движение"] = move
-                dirty = True
-            if dirty:
-                attrs["camera_subdivide"] = cs
-                fr.attrs = attrs
-                changed += 1
-    if changed:
-        await session.flush()
-    return changed
 
 
 async def edit_cell_voiceover(

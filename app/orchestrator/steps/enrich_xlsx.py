@@ -112,6 +112,16 @@ _QC_PROMPTS_MARKERS = (
 )
 
 
+def _drop_replace_frames_ops(ops: list) -> tuple[list, int]:
+    """Разбивка — только шаг split / camera_expand, не excel_gpt."""
+    kept = [
+        op
+        for op in ops
+        if not (isinstance(op, dict) and op.get("target") == "replace_frames")
+    ]
+    return kept, len(ops) - len(kept)
+
+
 def _prompt_blob(variant: str | None, master: str | None) -> str:
     return f"{variant or ''}\n{(master or '')[:800]}".casefold()
 
@@ -1099,8 +1109,19 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             async def _apply_batch(payload: dict) -> None:
                 from app.services.db_apply import FIELD_ALIASES
 
+                raw_ops = list(payload.get("ops") or [])
+                if script_writer:
+                    _, n_rf = _drop_replace_frames_ops(raw_ops)
+                    if n_rf:
+                        logger.warning(
+                            "[#{}] enrich_xlsx node={}: script_writer drop "
+                            "replace_frames x{} (сценарист не переписывает разбивку)",
+                            project.id,
+                            node_key,
+                            n_rf,
+                        )
                 ops = filter_ops_for_node(
-                    list(payload.get("ops") or []),
+                    raw_ops,
                     node_kind=apply_kind,
                 )
                 # Shot-fill не должен затирать закадр/смысл, если
@@ -1196,25 +1217,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 ),
                 on_progress=_progress,
             )
-            if script_writer:
-                from app.services.scene_design.camera_expand import (
-                    resplit_vo_fragments_from_parents,
-                )
-
-                ops_payload = getattr(api_res, "apply_ops", None) or {}
-                written = {
-                    str(op.get("frame_uuid") or "").strip()
-                    for op in (
-                        ops_payload.get("ops") if isinstance(ops_payload, dict) else []
-                    )
-                    or []
-                    if isinstance(op, dict) and str(op.get("frame_uuid") or "").strip()
-                }
-                n_split = await resplit_vo_fragments_from_parents(
-                    session, project, parent_uuids=written
-                )
-                if n_split:
-                    await session.commit()
         else:
             api_res = await run_operator_api(
                 project_dir=project.data_dir,
@@ -1245,11 +1247,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 else []
             )
             if check_mode and ops_list:
-                n_rf = sum(
-                    1
-                    for op in ops_list
-                    if isinstance(op, dict) and op.get("target") == "replace_frames"
-                )
+                ops_list, n_rf = _drop_replace_frames_ops(ops_list)
                 if n_rf:
                     logger.warning(
                         "[#{}] enrich_xlsx node={}: checkMode drop "
@@ -1258,14 +1256,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         node_key,
                         n_rf,
                     )
-                    ops_list = [
-                        op
-                        for op in ops_list
-                        if not (
-                            isinstance(op, dict)
-                            and op.get("target") == "replace_frames"
-                        )
-                    ]
             chars_list = (
                 list(ops_data.get("characters") or [])
                 if isinstance(ops_data, dict)

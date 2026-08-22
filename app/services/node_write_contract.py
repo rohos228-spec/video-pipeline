@@ -94,6 +94,12 @@ def filter_ops_for_node(
         if not isinstance(op, dict):
             continue
         new_op = dict(op)
+        if (
+            kind.startswith("excel_gpt")
+            and str(new_op.get("target") or "") == "replace_frames"
+        ):
+            # Разбивка — шаг split / camera_expand, не excel_gpt.
+            continue
         fields = op.get("fields")
         if isinstance(fields, dict):
             kept = {k: v for k, v in fields.items() if _keep_field(str(k), kind)}

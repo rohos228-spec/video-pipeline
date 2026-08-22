@@ -216,15 +216,10 @@ async def shot_menu(
     """
     from app.services.shot_menu import (
         build_shot_menu,
-        heal_stale_shot_fields,
         load_project_shot_plan,
     )
 
     project = await _project(session, project_id)
-    healed = await heal_stale_shot_fields(session, project)
-    if healed:
-        await session.commit()
-        logger.info("[#{}] shot-menu: healed {} leftover fields after regen", project.id, healed)
     graph = await db_v2.project_graph(session, project)
     menu = build_shot_menu(
         graph.get("frames") or [],
