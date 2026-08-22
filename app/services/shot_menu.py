@@ -177,8 +177,13 @@ def _duration_sec(frame: dict[str, Any]) -> float:
     try:
         val = float(raw or 0)
     except (TypeError, ValueError):
-        return 0.0
-    return val if val > 0 else 0.0
+        val = 0.0
+    if val > 0:
+        return val
+    vo = _vo_text(frame)
+    if vo:
+        return round(max(2.0, len(vo) / 14.0), 2)
+    return 0.0
 
 
 def _camera_subdivide(frame: dict[str, Any]) -> dict[str, Any]:
@@ -361,7 +366,8 @@ def _shot_dto(
         "image_url": frame.get("image_url"),
         "voiceover_in_shot": vo if vo else "—",
         "fields": {
-            "action": frame_field(frame, "shot01_action", "main_action", "действие"),
+            "action": _text(ov.get("действие"), ov.get("action"))
+            or frame_field(frame, "shot01_action", "main_action", "действие"),
             "size": size,
             "move": move,
             "cam": " · ".join(p for p in (size, move) if p),

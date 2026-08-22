@@ -23,6 +23,8 @@ PROMPT_FIELDS = frozenset(
 IMAGE_PROMPT_FIELDS = frozenset({"image_prompt", "image_prompt_shot2"})
 ANIM_PROMPT_FIELDS = frozenset({"animation_prompt", "animation_prompt_shot2"})
 CHARACTER_FIELDS = frozenset({"characters"})
+# Действие кадра — группа script_frames_qc (fw_frames), не закадр.
+ACTION_FIELDS = frozenset({"shot01_action", "main_action"})
 # Закадр пишет только split / n_script / человек. excel_gpt не генерирует текст.
 VO_FIELDS = frozenset({"voiceover_text", "meaning"})
 
@@ -56,6 +58,7 @@ def _alias_set(canons: frozenset[str]) -> frozenset[str]:
 
 _PROMPT_KEYS = _alias_set(PROMPT_FIELDS)
 _VO_KEYS = _alias_set(VO_FIELDS)
+_ACTION_KEYS = _alias_set(ACTION_FIELDS)
 _IMG_PR_KEYS = _alias_set(IMAGE_PROMPT_FIELDS) | _alias_set(CHARACTER_FIELDS)
 _ANIM_PR_KEYS = _alias_set(ANIM_PROMPT_FIELDS)
 
@@ -66,7 +69,9 @@ def _keep_field(key: str, node_kind: str) -> bool:
     if node_kind == "excel_gpt_prompts":
         return (
             canon in PROMPT_FIELDS
+            or canon in ACTION_FIELDS
             or norm in _PROMPT_KEYS
+            or norm in _ACTION_KEYS
         )
     if node_kind in ("excel_gpt", "excel_gpt_no_prompts"):
         if canon in PROMPT_FIELDS or norm in _PROMPT_KEYS:

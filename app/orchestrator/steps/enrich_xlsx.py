@@ -968,10 +968,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     await session.execute(
                         _select(Frame)
                         .where(Frame.project_id == project.id)
-                        .order_by(Frame.number)
+                        .order_by(Frame.sort_key, Frame.number)
                     )
                 ).scalars().all()
             )
+            if str(node_key or "").endswith("_fw_frames"):
+                from app.services.vo_shot_expand import expand_vo_cells_into_shots
+
+                frames_for_map, exp = await expand_vo_cells_into_shots(
+                    session, project, frames_for_map
+                )
+                await session.flush()
+                logger.info(
+                    "[#{}] fw_frames vo_shot_expand {}",
+                    project.id,
+                    exp,
+                )
             ents = list(
                 (
                     await session.execute(

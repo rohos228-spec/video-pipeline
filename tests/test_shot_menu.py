@@ -36,6 +36,20 @@ def test_adjacent_vo_cells_are_not_glued() -> None:
     assert [s["label"] for s in cells[1]["shots"]] == ["2.1"]
 
 
+def test_duration_from_vo_when_seconds_missing() -> None:
+    frames = [
+        {
+            "id": 1,
+            "number": 1,
+            "voiceover_text": "История Дарьи Салтыковой началась не с процесса",
+            "duration_seconds": 0,
+        }
+    ]
+    cells = group_vo_cells(frames)
+    assert cells[0]["duration_sec"] > 0
+    assert cells[0]["shots"][0]["duration_sec"] > 0
+
+
 def test_empty_vo_shots_attach_to_parent_cell() -> None:
     frames = [
         {
