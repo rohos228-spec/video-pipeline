@@ -139,6 +139,39 @@ def test_img_prompt_skip_and_small_batches() -> None:
     assert [f["uuid"] for f in pending2] == ["e" * 24]
 
 
+def test_prompts_and_action_skip_requires_all_three() -> None:
+    from app.services.apply_ops_batches import SKIP_PROMPTS_AND_ACTION
+
+    done = {
+        "uuid": "a" * 24,
+        "voiceover_text": "one",
+        "image_prompt": "img",
+        "animation_prompt": "mov",
+        "attrs": {"shot01_action": "шаг"},
+    }
+    no_action = {
+        "uuid": "b" * 24,
+        "voiceover_text": "two",
+        "image_prompt": "img",
+        "animation_prompt": "mov",
+        "attrs": {},
+    }
+    no_img = {
+        "uuid": "c" * 24,
+        "voiceover_text": "three",
+        "image_prompt": "",
+        "animation_prompt": "mov",
+        "attrs": {"shot01_action": "шаг"},
+    }
+    assert _frame_complete(done, dense=False, skip_if_field=SKIP_PROMPTS_AND_ACTION)
+    pending = _pending_frames(
+        [done, no_action, no_img],
+        dense=False,
+        skip_if_field=SKIP_PROMPTS_AND_ACTION,
+    )
+    assert [f["uuid"] for f in pending] == ["b" * 24, "c" * 24]
+
+
 def _frame(i: int) -> dict:
     return {
         "uuid": f"{i:024d}",

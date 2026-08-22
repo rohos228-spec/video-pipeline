@@ -176,15 +176,27 @@ def _is_qc_prompts_prompt(variant: str | None, master: str | None) -> bool:
     return any(m in _prompt_blob(variant, master) for m in _QC_PROMPTS_MARKERS)
 
 
+def _frame_action_text(fr) -> str:
+    attrs = getattr(fr, "attrs", None) or {}
+    if not isinstance(attrs, dict):
+        return ""
+    return str(
+        attrs.get("shot01_action")
+        or attrs.get("main_action")
+        or attrs.get("действие")
+        or ""
+    ).strip()
+
+
 def _all_frame_prompts_ready(frames) -> bool:
-    """True если у каждого кадра уже есть image+anim промт (QC можно не ждать GPT)."""
+    """True если у каждого кадра image+anim+действие (QC можно не ждать GPT)."""
     rows = list(frames or [])
     if len(rows) < 2:
         return False
     for fr in rows:
         img = (getattr(fr, "image_prompt", None) or "").strip()
         anim = (getattr(fr, "animation_prompt", None) or "").strip()
-        if not img or not anim:
+        if not img or not anim or not _frame_action_text(fr):
             return False
     return True
 
@@ -1156,6 +1168,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         ):
             from app.services.apply_ops_batches import (
                 PROMPT_UNITS_PER_BATCH,
+                SKIP_PROMPTS_AND_ACTION,
                 VO_PARALLEL_MAX,
                 VO_STAGGER_SEC,
                 run_apply_ops_batched,
@@ -1281,7 +1294,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     dense=not write_prompts,
                     apply_fn=_apply_batch,
                     skip_if_field=(
-                        None
+                        SKIP_PROMPTS_AND_ACTION
                         if frame_prompts and str(node_key or "").endswith("_fw_frames")
                         else (
                             "image_prompt"

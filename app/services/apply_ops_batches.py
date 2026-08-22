@@ -37,6 +37,12 @@ VO_STAGGER_SEC = 1.0
 
 _COMPLETE_ATTRS_DENSE = ("main_action", "shot01_description")
 _IMG_SKIP_KEYS = ("image_prompt", "промт_картинки")
+_ANIM_SKIP_KEYS = ("animation_prompt", "промт_видео")
+_ACTION_SKIP_KEYS = ("shot01_action", "main_action", "действие")
+# fw_frames: кадр готов только если картинка + видео + действие.
+SKIP_PROMPTS_AND_ACTION = "prompts_and_action"
+# Зависший SSE не должен держать всю волну 10 мин (GPT_TIMEOUT_S=600).
+_PROMPT_PACK_TIMEOUT_S = 240.0
 
 ApplyFn = Callable[[dict[str, Any]], Awaitable[None]]
 ProgressFn = Callable[[str], Awaitable[None]]
@@ -104,6 +110,12 @@ def split_frames(frames: list[Any], size: int) -> list[list[Any]]:
     return [frames[i : i + size] for i in range(0, len(frames), size)]
 
 
+def _any_field(frame: dict[str, Any], attrs: dict[str, Any], keys: tuple[str, ...]) -> bool:
+    return any(
+        str(frame.get(k) or attrs.get(k) or "").strip() for k in keys
+    )
+
+
 def _frame_complete(
     frame: dict[str, Any],
     *,
@@ -111,6 +123,12 @@ def _frame_complete(
     skip_if_field: str | None = None,
 ) -> bool:
     attrs = frame.get("attrs") if isinstance(frame.get("attrs"), dict) else {}
+    if skip_if_field == SKIP_PROMPTS_AND_ACTION:
+        return (
+            _any_field(frame, attrs, _IMG_SKIP_KEYS)
+            and _any_field(frame, attrs, _ANIM_SKIP_KEYS)
+            and _any_field(frame, attrs, _ACTION_SKIP_KEYS)
+        )
     if skip_if_field:
         keys = (skip_if_field, *_IMG_SKIP_KEYS)
         for k in keys:
@@ -189,8 +207,9 @@ def _batch_footer(
             f"\n# BATCH call={batch_i} split={split_level} "
             f"(промты по {PROMPT_UNITS_PER_BATCH})\n"
             f"В db_frames.json только этот кусок: {n} кадров.\n"
-            "Верни ops ровно по каждому uuid: fields.промт_картинки и "
-            "промт_видео. Чужие кадры не пиши. JSON apply-ops, без прозы.\n"
+            "Верни ops ровно по каждому uuid: fields.промт_картинки, "
+            "промт_видео и действие. Чужие кадры не пиши. JSON apply-ops, "
+            "без прозы.\n"
         )
     return (
         f"\n# BATCH call={batch_i} split={split_level} (схема 1→2→4)\n"
@@ -306,7 +325,7 @@ async def run_apply_ops_batched(
         foot = _batch_footer(
             my_i, level, len(chunk), footer_kind=footer_kind
         )
-        res = await run_operator_api(
+        api_kw = dict(
             project_dir=project_dir,
             node_key=node_key,
             role=role,
@@ -316,6 +335,24 @@ async def run_apply_ops_batched(
             input_paths=[batch_path],
             auto_pack=False,
         )
+        pack_timeout = (
+            _PROMPT_PACK_TIMEOUT_S
+            if (footer_kind or "").strip().lower() in {"prompts", "img"}
+            else 0.0
+        )
+        try:
+            if pack_timeout > 0:
+                res = await asyncio.wait_for(
+                    run_operator_api(**api_kw),
+                    timeout=pack_timeout,
+                )
+            else:
+                res = await run_operator_api(**api_kw)
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"enrich_xlsx node={node_key}: L{level} call {my_i} "
+                f"timeout {pack_timeout:.0f}s ({len(chunk)} кадров)"
+            ) from exc
         ops = []
         if isinstance(res.apply_ops, dict):
             ops = list(res.apply_ops.get("ops") or [])
