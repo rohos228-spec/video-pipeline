@@ -35,6 +35,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { MetaPromptDialog } from "@/components/studio/meta-prompt-dialog";
 
 const POLL_INTERVAL_MS = 8000;
 
@@ -66,6 +67,7 @@ export function PromptFilesPanel({
   stepCode,
   folderHint,
   slotId,
+  projectId,
   preferredFile,
   activeVariant,
   activeVariantSourceLabel,
@@ -76,6 +78,7 @@ export function PromptFilesPanel({
   stepCode: string;
   folderHint?: string;
   slotId?: string;
+  projectId?: number;
   preferredFile?: string;
   activeVariant?: string;
   activeVariantSourceLabel?: string;
@@ -346,7 +349,16 @@ export function PromptFilesPanel({
             )}
           </p>
         </div>
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1.5">
+          <MetaPromptDialog
+            stepCode={stepCode}
+            projectId={projectId}
+            onSaved={(fileName) => {
+              const baseName = fileName.replace(/\.md$/, "");
+              setSelectedName(baseName);
+              userPickedRef.current = true;
+            }}
+          />
           <Button
             size="sm"
             variant="outline"

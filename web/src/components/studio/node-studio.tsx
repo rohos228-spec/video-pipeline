@@ -853,6 +853,7 @@ export function NodeStudio({
                       key={`files-${nodeKey}-${activeSlot?.id}-${promptStepCode}`}
                       stepCode={promptStepCode}
                       slotId={activeSlot?.id}
+                      projectId={projectId ?? undefined}
                       preferredFile={preferredFile}
                       folderHint={
                         legacyPromptFolder(promptStepCode) ??

@@ -21,6 +21,15 @@
 
 ## ✅ ВЫПОЛНЕННЫЕ ЭТАПЫ И ЗАДАЧИ (ПОЛНАЯ ХРОНОЛОГИЯ)
 
+### 🌟 ЭТАП 7: Мета-Агент — Интеллектуальный конструктор системных промптов (22 Августа 2026)
+- [x] **META-01:** Создан сервис `app/services/meta_prompt_compiler.py` с базой знаний всех нод пайплайна (`excel_gpt`, `scene_d`, `hero_style`, `items`, `img_pr`, `anim_pr`, `plan`, `script`), поддержкой No-Chat guards, плейсхолдеров и Few-Shot синтеза.
+- [x] **META-02:** Создан FastAPI роутер `app/web/routers/meta_agent.py` (`POST /api/meta-agent/compile`, `POST /api/meta-agent/save-and-activate`).
+- [x] **META-03:** Создан UI-компонент `MetaPromptDialog` (`web/src/components/studio/meta-prompt-dialog.tsx`) с быстрыми шаблонами под каждый шаг, живой статистикой валидации и сохранением.
+- [x] **META-04:** Кнопка **«✨ Создать с Агентом»** интегрирована во все панели промптов Студии (`PromptFilesPanel` / `node-studio.tsx`).
+- [x] **TEST-11:** Добавлен пакет тестов `tests/test_meta_prompt_compiler.py` (3 теста, 100% GREEN).
+
+---
+
 ### 🌟 ЭТАП 6: Ручной ввод предметов, исправление генератора и полировка канваса (21 Августа 2026)
 - [x] **ITEMS-01:** Создан компонент `ItemsConfigPanel` (`web/src/components/canvas/items-config-panel.tsx`) для ручного ввода описаний предметов (количество 1..5, валидация, сохранение в `project.item_descriptions`).
 - [x] **ITEMS-02:** Панель предметов интегрирована на карточку ноды «Предметы» на канвасе (`pipeline-node.tsx`) и во вкладку «Настройки» в окне Студии (`node-studio.tsx`).
