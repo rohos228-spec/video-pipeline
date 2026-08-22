@@ -442,6 +442,68 @@ def test_shot_plan_overlay_set_and_stitch_differ_inside_scene() -> None:
     )
 
 
+def test_shot_plan_overlay_without_id_scene_uses_cell_index() -> None:
+    """После replace_frames нет id_scene — меню берёт фазы из camera.json по индексу ячейки."""
+    frames = [
+        {
+            "id": 1,
+            "number": 1,
+            "uuid": "u1",
+            "voiceover_text": "Первая ячейка целиком для нарезки",
+            "duration_seconds": 6.0,
+        },
+        {
+            "id": 2,
+            "number": 2,
+            "uuid": "u2",
+            "voiceover_text": "Вторая ячейка",
+            "duration_seconds": 3.0,
+        },
+    ]
+    plan = [
+        {
+            "id_scene": "scene_01",
+            "phase_index": 1,
+            "набор": "SET_32",
+            "крупность": "средний план",
+            "движение": "handheld",
+            "переход": "eyeline",
+        },
+        {
+            "id_scene": "scene_01",
+            "phase_index": 2,
+            "набор": "SET_37",
+            "крупность": "крупный план",
+            "движение": "push-in",
+            "переход": "cut_on_action",
+        },
+        {
+            "id_scene": "scene_02",
+            "phase_index": 1,
+            "набор": "SET_22",
+            "крупность": "средний план",
+            "движение": "static",
+            "переход": "cut",
+        },
+    ]
+    cells = group_vo_cells(frames, shot_plan=plan)
+    assert len(cells) == 2
+    assert len(cells[0]["shots"]) == 2
+    assert "SET_32" in cells[0]["shots"][0]["fields"]["set"]
+    assert "SET_37" in cells[0]["shots"][1]["fields"]["set"]
+    assert cells[0]["shots"][1].get("virtual") is True
+    assert cells[0]["duration_sec"] == 6.0
+    assert len(cells[1]["shots"]) == 1
+    assert "SET_22" in cells[1]["shots"][0]["fields"]["set"]
+    assert cells[0]["shots"][0]["voiceover_in_shot"] != "—"
+    joined = " ".join(
+        s["voiceover_in_shot"]
+        for s in cells[0]["shots"]
+        if s["voiceover_in_shot"] != "—"
+    )
+    assert "Первая ячейка" in joined
+
+
 def test_stray_empty_frame_does_not_join_set_group() -> None:
     frames = [
         {

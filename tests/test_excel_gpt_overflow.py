@@ -328,3 +328,74 @@ async def test_start_step_overflow_group_nodes(
     async with mem_db() as session:
         nr = await session.get(NodeRun, nr_ids[node_key])
         assert nr is not None and nr.status == NodeRunStatus.running, label
+
+
+def test_overflow_successor_after_check_stays_enriching_1() -> None:
+    """check → frames: slot 0, running = enriching_1, не слот 2."""
+    from app.services.excel_gpt_node import (
+        first_work_successor_from_excel_slot,
+        running_status_for_slot,
+    )
+
+    nodes = _overflow_nodes()
+    edges = [
+        {"id": "e1", "source": "n_excel_gpt_fw_script", "target": "n_excel_gpt_fw_check_script"},
+        {"id": "e2", "source": "n_excel_gpt_fw_check_script", "target": "n_excel_gpt_fw_frames"},
+        {"id": "e3", "source": "n_excel_gpt_fw_frames", "target": "n_excel_gpt_fw_qc"},
+    ]
+    p = SimpleNamespace(
+        id=60,
+        status=ProjectStatus.enrich_1_ready,
+        meta={"canvas_graph": {"nodes": nodes, "edges": edges}},
+    )
+    succ = first_work_successor_from_excel_slot(
+        p, 1, from_key="n_excel_gpt_fw_check_script"
+    )
+    assert succ is not None
+    key, typ, slot = succ
+    assert key == "n_excel_gpt_fw_frames"
+    assert typ == "excel_gpt"
+    assert slot == 0
+    assert running_status_for_slot(slot) is ProjectStatus.enriching_1
+
+
+def test_filter_check_ops_drops_unknown_uuid() -> None:
+    from app.orchestrator.steps.enrich_xlsx import _filter_check_frame_ops
+
+    kept, n = _filter_check_frame_ops(
+        [
+            {"frame_uuid": "4e3c758bdb4f7ca1f75fa6", "fields": {"voiceover_text": "x"}},
+            {"frame_uuid": "abc", "fields": {"voiceover_text": "ok"}},
+        ],
+        ["abc"],
+        {},
+    )
+    assert n == 1
+    assert kept == [{"frame_uuid": "abc", "fields": {"voiceover_text": "ok"}}]
+
+
+@pytest.mark.asyncio
+async def test_clear_overflow_slot_only_clears_clicked_node(mem_db) -> None:
+    """▶ check не должен сносить excel_gpt_completed_keys сценариста."""
+    from app.services.excel_gpt_node import clear_slot_completion_meta
+
+    project_id, _wf_id, _nr = await _seed_overflow_group(mem_db)
+    async with mem_db() as session:
+        project = await session.get(Project, project_id)
+        assert project is not None
+        meta = dict(project.meta or {})
+        meta["excel_gpt_completed_keys"] = [
+            "n_excel_gpt_fw_script",
+            "n_excel_gpt_fw_check_script",
+        ]
+        project.meta = meta
+        await clear_slot_completion_meta(
+            session,
+            project,
+            0,
+            node_key="n_excel_gpt_fw_check_script",
+        )
+        keys = project.meta.get("excel_gpt_completed_keys") or []
+        assert "n_excel_gpt_fw_script" in keys
+        assert "n_excel_gpt_fw_check_script" not in keys
+

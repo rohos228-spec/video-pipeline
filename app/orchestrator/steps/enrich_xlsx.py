@@ -122,6 +122,35 @@ def _drop_replace_frames_ops(ops: list) -> tuple[list, int]:
     return kept, len(ops) - len(kept)
 
 
+def _filter_check_frame_ops(
+    ops: list,
+    known_uuids: list[str],
+    number_to_uuid: dict[int, str] | None = None,
+) -> tuple[list, int]:
+    """checkMode: неизвестные uuid не валят шаг — дропаем, гейт остаётся."""
+    from app.services.db_apply import (
+        remap_frame_number_uuids,
+        repair_near_miss_frame_uuids,
+    )
+
+    frame_ops = [op for op in ops if isinstance(op, dict)]
+    if number_to_uuid:
+        remap_frame_number_uuids(frame_ops, number_to_uuid)
+    known = [u for u in known_uuids if u]
+    if known:
+        repair_near_miss_frame_uuids(frame_ops, known)
+    known_set = set(known)
+    kept: list = []
+    dropped = 0
+    for op in frame_ops:
+        uid = str(op.get("frame_uuid") or "").strip()
+        if uid in known_set:
+            kept.append(op)
+        else:
+            dropped += 1
+    return kept, dropped
+
+
 def _prompt_blob(variant: str | None, master: str | None) -> str:
     return f"{variant or ''}\n{(master or '')[:800]}".casefold()
 
@@ -383,19 +412,32 @@ async def _maybe_auto_chain_excel_gpt(
         return
     if not next_key or next_key == (finished_key or ""):
         return
-    if next_slot is None or next_slot < 1:
-        next_slot = slot_idx + 1 if slot_idx < 5 else 5
-    if next_slot not in _SLOT_MAP:
-        return
 
-    ensure_enrich_auto_chain_to(project, slot_idx, from_key=finished_key)
-    clear_excel_gpt_tail_completion(project, next_slot)
-    meta = dict(project.meta or {})
-    chain_to = meta.get("enrich_auto_chain_to")
-    next_running = _SLOT_MAP[next_slot][0]
+    from app.services.excel_gpt_node import running_status_for_slot
     from app.services.run_sync import prepare_node_for_step_start
 
+    overflow_next = next_slot is None or next_slot < 1
+    if overflow_next:
+        # fw-группа: все ноды slotIndex=0, бегут как enriching_1.
+        # Не прыгать на slot+1 — startup guard откатывает enriching_2 → ▶.
+        next_running = running_status_for_slot(0)
+        enrich_slot = 1
+        chain_to = None
+    else:
+        if next_slot not in _SLOT_MAP:
+            return
+        ensure_enrich_auto_chain_to(project, slot_idx, from_key=finished_key)
+        clear_excel_gpt_tail_completion(project, next_slot)
+        next_running = _SLOT_MAP[next_slot][0]
+        enrich_slot = next_slot
+        meta_chain = dict(project.meta or {})
+        chain_to = meta_chain.get("enrich_auto_chain_to")
+
     meta = dict(project.meta or {})
+    if overflow_next:
+        keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
+        if next_key in keys:
+            meta["excel_gpt_completed_keys"] = [k for k in keys if k != next_key]
     meta["active_excel_gpt_node_key"] = next_key
     project.meta = meta
     try:
@@ -404,7 +446,7 @@ async def _maybe_auto_chain_excel_gpt(
             project,
             EXCEL_GPT_STEP_CODE,
             node_key=next_key,
-            enrich_slot=next_slot,
+            enrich_slot=enrich_slot,
             strict=False,
             explicit_ui_start=True,
         )
@@ -707,6 +749,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         ):
             raise RuntimeError("gpt-operator: нет существующих файлов на входе")
 
+        check_known_uuids: list[str] = []
+        check_number_to_uuid: dict[int, str] = {}
         if check_mode and node_key and db_sot_check:
             import json as _json
 
@@ -775,6 +819,21 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 len(db_check["scene_registry"] or []),
                 [p.name for p in data_paths],
             )
+            check_known_uuids = [
+                str(fr.uuid or "").strip()
+                for fr in frames_chk
+                if str(fr.uuid or "").strip()
+            ]
+            for fr in frames_chk:
+                n = getattr(fr, "number", None)
+                uid = str(fr.uuid or "").strip()
+                if n is None or not uid:
+                    continue
+                try:
+                    ni = int(n)
+                except (TypeError, ValueError):
+                    continue
+                check_number_to_uuid.setdefault(ni, uid)
 
         if check_mode and node_key:
             from app.services.vision_check_db import build_vision_db_snapshot
@@ -1262,6 +1321,20 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         node_key,
                         n_rf,
                     )
+                if check_known_uuids:
+                    ops_list, n_unk = _filter_check_frame_ops(
+                        ops_list,
+                        check_known_uuids,
+                        check_number_to_uuid,
+                    )
+                    if n_unk:
+                        logger.warning(
+                            "[#{}] enrich_xlsx node={}: checkMode drop "
+                            "unknown frame_uuid x{} (гейт без apply)",
+                            project.id,
+                            node_key,
+                            n_unk,
+                        )
             chars_list = (
                 list(ops_data.get("characters") or [])
                 if isinstance(ops_data, dict)

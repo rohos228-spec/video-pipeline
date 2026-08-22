@@ -955,11 +955,16 @@ async def clear_slot_completion_meta(
     if node_key:
         targets.add(str(node_key))
     graph = await load_graph_for_project(session, project)
-    for nid, n in graph._by_id.items():
-        if str(n.get("type") or "") != EXCEL_GPT_NODE_TYPE:
-            continue
-        if slot_index_from_node(n) == slot:
-            targets.add(str(nid))
+    # overflow / slot 0: вся fw-группа и sd_agent имеют slotIndex=0.
+    # ▶ одной ноды не должен сносить completed_keys соседей.
+    if slot >= 1:
+        for nid, n in graph._by_id.items():
+            if str(n.get("type") or "") != EXCEL_GPT_NODE_TYPE:
+                continue
+            if sd_agent_marker(n):
+                continue
+            if slot_index_from_node(n) == slot:
+                targets.add(str(nid))
     for k in list(keys):
         if k in targets:
             keys.remove(k)

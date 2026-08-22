@@ -134,6 +134,16 @@ def load_project_shot_plan(project: Any) -> list[dict[str, Any]]:
     return [r for r in rows if isinstance(r, dict)]
 
 
+def _scene_ids_in_plan_order(shot_plan: list[dict[str, Any]] | None) -> list[str]:
+    """Уникальные id_scene в порядке появления в camera.json."""
+    out: list[str] = []
+    for row in shot_plan or []:
+        sid = str(row.get("id_scene") or "").strip()
+        if sid and sid not in out:
+            out.append(sid)
+    return out
+
+
 def _plan_rows_by_scene(
     shot_plan: list[dict[str, Any]] | None,
 ) -> dict[str, list[dict[str, Any]]]:
@@ -358,7 +368,8 @@ def _shot_dto(
             "set": set_val,
             "characters": character_ids(who),
             "stitch": stitch,
-            "scene": frame_field(frame, "shot01_id_scene", "id_scene", "scene_sense"),
+            "scene": _text(ov.get("id_scene"))
+            or frame_field(frame, "shot01_id_scene", "id_scene", "scene_sense"),
             "img_prompt": _active_prompt(frame, "img", "image_prompt"),
             "video_prompt": _active_prompt(frame, "video", "animation_prompt"),
             "frame_no": str(frame.get("number") or ""),
@@ -393,6 +404,7 @@ def group_vo_cells(
     current_frames: list[dict[str, Any]] = []
     current_pu = ""
     plan_index = _plan_rows_by_scene(shot_plan)
+    scene_order = _scene_ids_in_plan_order(shot_plan)
 
     def flush() -> None:
         nonlocal current_frames, current_pu
@@ -401,25 +413,53 @@ def group_vo_cells(
         cell_index = len(cells) + 1
         parent = current_frames[0]
         sid = frame_field(parent, "shot01_id_scene", "id_scene")
+        if not sid and scene_order and cell_index - 1 < len(scene_order):
+            sid = scene_order[cell_index - 1]
         plan_rows = plan_index.get(sid) or []
         vos = [_vo_text(fr) for fr in current_frames]
         nonempty = [v for v in vos if v]
-        if len(current_frames) > 1 and len(nonempty) == 1:
-            vo_parts = split_text_into_parts(nonempty[0], len(current_frames))
+        # 1 кадр в БД + несколько фаз в camera.json → виртуальные шоты только в DTO.
+        if len(current_frames) == 1 and len(plan_rows) > 1:
+            vo_full = nonempty[0] if nonempty else _vo_text(parent)
+            vo_parts = split_text_into_parts(vo_full, len(plan_rows))
+            parent_dur = _duration_sec(parent)
+            n = len(plan_rows)
+            each = round(parent_dur / n, 2) if n else 0.0
+            acc = 0.0
+            shots = []
+            for i, row in enumerate(plan_rows, start=1):
+                dto = _shot_dto(
+                    parent,
+                    cell_index,
+                    i,
+                    overlay=row,
+                    vo_override=vo_parts[i - 1] if i - 1 < len(vo_parts) else None,
+                )
+                dur = each if i < n else round(max(0.0, parent_dur - acc), 2)
+                if i < n:
+                    acc += dur
+                dto["duration_sec"] = dur
+                if i > 1:
+                    dto["virtual"] = True
+                shots.append(dto)
+            vo = vo_full.strip()
         else:
-            vo_parts = vos
-        shots = [
-            _shot_dto(
-                fr,
-                cell_index,
-                i,
-                overlay=plan_rows[i - 1] if i - 1 < len(plan_rows) else None,
-                vo_override=vo_parts[i - 1] if i - 1 < len(vo_parts) else None,
-            )
-            for i, fr in enumerate(current_frames, start=1)
-        ]
+            if len(current_frames) > 1 and len(nonempty) == 1:
+                vo_parts = split_text_into_parts(nonempty[0], len(current_frames))
+            else:
+                vo_parts = vos
+            shots = [
+                _shot_dto(
+                    fr,
+                    cell_index,
+                    i,
+                    overlay=plan_rows[i - 1] if i - 1 < len(plan_rows) else None,
+                    vo_override=vo_parts[i - 1] if i - 1 < len(vo_parts) else None,
+                )
+                for i, fr in enumerate(current_frames, start=1)
+            ]
+            vo = " ".join(t for t in vo_parts if t).strip()
         duration = round(sum(s["duration_sec"] for s in shots), 2)
-        vo = " ".join(t for t in vo_parts if t).strip()
         loc = shots[0]["fields"]["set"] if shots else _shot_set(parent)
         items = frame_field(parent, "shot01_props", "items")
         hide = frame_field(parent, "hide", "не_показывать")
