@@ -2257,6 +2257,49 @@ export const api = {
       `/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}/save-voiceover`,
       { method: "POST", body: JSON.stringify(body) },
     ),
+  compileMetaPrompt: (body: {
+    step_code: string;
+    user_intent: string;
+    project_id?: number | null;
+    target_name?: string | null;
+  }) =>
+    http<{
+      ok: boolean;
+      step_code: string;
+      name: string;
+      compiled_prompt: string;
+      stats: {
+        length_chars: number;
+        lines_count: number;
+        has_schema: boolean;
+        has_guards: boolean;
+      };
+    }>(
+      "/api/meta-agent/compile",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+      120_000,
+    ),
+  saveAndActivateMetaPrompt: (body: {
+    step_code: string;
+    name: string;
+    content: string;
+    project_id?: number | null;
+    activate?: boolean;
+  }) =>
+    http<{
+      ok: boolean;
+      step_code: string;
+      name: string;
+      file_name: string;
+      file_path: string;
+      activated: boolean;
+    }>("/api/meta-agent/save-and-activate", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
 
 export type GptWorkspaceSessionSummary = {
