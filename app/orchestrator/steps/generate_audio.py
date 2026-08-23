@@ -300,7 +300,13 @@ async def run(
             "положите готовый mp3/wav в audio/ или заполните текст"
         )
 
-    if not settings.audio_use_elevenlabs_fallback:
+    import os
+    use_11labs = (
+        getattr(settings, "audio_use_elevenlabs_fallback", False)
+        or os.environ.get("AUDIO_USE_ELEVENLABS_FALLBACK", "").strip() in ("1", "true", "True")
+        or bool(getattr(settings, "elevenlabs_api_key", None))
+    )
+    if not use_11labs:
         audio_hint = project.data_dir / "audio"
         raise RuntimeError(
             f"[#{project.id}] нет озвучки в {audio_hint} — положите voice.mp3 или "
