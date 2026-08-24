@@ -68,6 +68,9 @@ import {
 } from "@/lib/xlsx-sheets";
 import { StudioExcelGrid } from "@/components/studio/studio-excel-grid";
 import { FramePromptsPanel } from "@/components/studio/frame-prompts-panel";
+import { NodeResultViewBody } from "@/components/canvas/node-result-views";
+import { resolveNodeResult } from "@/lib/node-result-resolver";
+import type { FrameDTO } from "@/lib/types";
 import { NodeStepParamsPanel } from "@/components/studio/node-step-params-panel";
 import { PromptFilesPanel } from "@/components/studio/prompt-files-panel";
 import { GptTextPanel } from "@/components/studio/gpt-text-panel";
@@ -451,13 +454,52 @@ export function NodeStudio({
     return list.slice(0, 12);
   }, [artifacts.data, nodeType]);
 
+  const assets = useQuery({
+    queryKey: ["project-assets", projectId],
+    queryFn: () => api.listProjectAssets(projectId!),
+    enabled: open && projectId != null,
+  });
+
+  const dbBrowser = useQuery({
+    queryKey: ["db-graph-project", projectId],
+    queryFn: () => api.dbGraph(projectId!),
+    enabled: open && projectId != null,
+  });
+
+  const resultSnapshot = useMemo(() => {
+    if (!projectId) return null;
+    return resolveNodeResult(
+      nodeType,
+      {
+        project: project.data,
+        artifacts: artifacts.data ?? [],
+        assets: assets.data ?? [],
+        frames: (dbBrowser.data?.frames as unknown as FrameDTO[]) ?? [],
+        mediaImages: [],
+        mediaVideos: [],
+      },
+      undefined,
+      nodeKey,
+    );
+  }, [
+    nodeType,
+    projectId,
+    project.data,
+    artifacts.data,
+    assets.data,
+    dbBrowser.data?.frames,
+    nodeKey,
+  ]);
+
   const showStepParams =
     projectId != null &&
     (nodeType === "plan" ||
       nodeType === "script" ||
       nodeType === "split" ||
       nodeType === "audio" ||
-      nodeType === "assemble");
+      nodeType === "assemble" ||
+      nodeType === "images" ||
+      nodeType === "videos");
 
   const showGptTextPanel = activeSlot?.kind === "text" && activeStepCode && projectId;
   const showFramePromptsPanel =
@@ -473,6 +515,29 @@ export function NodeStudio({
   useEffect(() => {
     if (open) backdropGuardUntil.current = Date.now() + 500;
   }, [open]);
+
+  const isThisNodeRunning = useMemo(() => {
+    if (runStep.isPending) return true;
+    const status = project.data?.status as string | undefined;
+    const genActive = Boolean(project.data?.generation_active);
+    if (!status) return false;
+    if (status === "generating_images" && (nodeType === "images" || stepCode === "img")) return true;
+    if (status === "generating_image_prompts" && (nodeType === "image_prompts" || stepCode === "img_pr")) return true;
+    if (status === "generating_animation_prompts" && (nodeType === "animation_prompts" || stepCode === "anim_pr")) return true;
+    if (status === "generating_videos" && (nodeType === "videos" || stepCode === "video")) return true;
+    if (status === "generating_audio" && (nodeType === "audio" || stepCode === "audio")) return true;
+    if (status === "generating_music" && (nodeType === "music" || stepCode === "music")) return true;
+    if (status === "assembling" && (nodeType === "assemble" || stepCode === "assemble")) return true;
+    if (status === "generating_hero" && (nodeType === "hero" || stepCode === "hero")) return true;
+    if (status === "generating_items" && (nodeType === "items" || stepCode === "items")) return true;
+    if (status === "planning" && (nodeType === "plan" || stepCode === "plan")) return true;
+    if (status === "scripting" && (nodeType === "script" || stepCode === "script")) return true;
+    if (status === "splitting" && (nodeType === "split" || stepCode === "split")) return true;
+    if (status === "scene_designing" && (nodeType === "scene_design" || stepCode === "scene_d")) return true;
+    if (status.startsWith("enriching_") && isExcelGptNode(nodeType)) return true;
+    if (genActive && (status.includes(stepCode || "") || status.includes(nodeType))) return true;
+    return false;
+  }, [runStep.isPending, project.data?.status, project.data?.generation_active, nodeType, stepCode]);
 
   if (!nodeKey || !mounted || !open) return null;
 
@@ -560,23 +625,35 @@ export function NodeStudio({
                 {stepCode && (
                   <Button
                     size="sm"
-                    variant="default"
+                    variant={isThisNodeRunning ? "secondary" : "default"}
                     onClick={() => runStep.mutate()}
-                    disabled={!projectId || runStep.isPending || nodeDisabled}
+                    disabled={!projectId || isThisNodeRunning || nodeDisabled}
+                    className={cn(
+                      "transition-all duration-200",
+                      isThisNodeRunning &&
+                        "border border-emerald-500/50 bg-emerald-500/20 text-emerald-300 animate-pulse font-medium shadow-[0_0_12px_rgba(16,185,129,0.25)]",
+                    )}
                     title={
                       nodeDisabled
                         ? "Нода отключена в графе"
-                        : generationRunning
-                          ? "Другой шаг выполняется — будет остановлен и запущен этот"
-                          : undefined
+                        : isThisNodeRunning
+                          ? "Шаг сейчас выполняется..."
+                          : generationRunning
+                            ? "Другой шаг выполняется — будет остановлен и запущен этот"
+                            : undefined
                     }
                   >
-                    {runStep.isPending ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    {isThisNodeRunning ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-400" />
+                        <span>В процессе...</span>
+                      </>
                     ) : (
-                      <Play className="h-3.5 w-3.5" />
+                      <>
+                        <Play className="h-3.5 w-3.5" />
+                        <span>Запустить шаг</span>
+                      </>
                     )}
-                    Запустить шаг
                   </Button>
                 )}
               </div>
@@ -608,26 +685,32 @@ export function NodeStudio({
             </div>
             {tab === "prompts" && (
               <div className="mt-3 flex flex-wrap gap-1 border-t border-white/5 pt-3">
-                {pipelineSlots.map((slot) => (
-                  <Button
-                    key={slot.id}
-                    size="sm"
-                    variant={activeSlotId === slot.id && !showGptTextPanel ? "default" : "outline"}
-                    className="h-7 text-[10px]"
-                    onClick={() => {
-                      setActiveSlotId(slot.id);
-                      if (slot.kind === "excel") setTab("excel");
-                    }}
-                  >
-                    {slot.title}
-                  </Button>
-                ))}
+                {pipelineSlots
+                  .filter((slot) => slot.kind !== "excel")
+                  .map((slot) => (
+                    <Button
+                      key={slot.id}
+                      size="sm"
+                      variant={activeSlotId === slot.id && !showGptTextPanel ? "default" : "outline"}
+                      className="h-7 text-[10px]"
+                      onClick={() => {
+                        setActiveSlotId(slot.id);
+                      }}
+                    >
+                      {slot.title}
+                    </Button>
+                  ))}
                 {nodeSupportsGptText(nodeType) && gptTextSlotForNode(nodeType) && (
                   <Button
                     type="button"
                     size="sm"
                     variant={activeSlotId === "gpt_text" ? "default" : "outline"}
-                    className="h-7 text-[10px] border-violet-400/40 text-violet-200"
+                    className={cn(
+                      "h-7 text-[10px]",
+                      activeSlotId === "gpt_text"
+                        ? "text-black font-semibold"
+                        : "border-violet-400/40 text-violet-200"
+                    )}
                     onClick={() => {
                       setActiveSlotId("gpt_text");
                     }}
@@ -893,41 +976,54 @@ export function NodeStudio({
 
 
               {tab === "results" && (
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {filteredArtifacts.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">Артефактов пока нет.</p>
-                  ) : (
-                    filteredArtifacts.map((a) => (
-                      <div
-                        key={a.id}
-                        className="rounded-xl border border-white/10 bg-white/5 p-2"
-                      >
-                        <div className="text-[10px] uppercase text-muted-foreground">
-                          {humanizeSlug(a.kind)}
-                        </div>
-                        {a.path.match(/\.(mp4|webm)$/i) ? (
-                          <video
-                            controls
-                            className="mt-1 max-h-40 w-full rounded"
-                            src={api.artifactFileUrl(a.uuid)}
-                          />
-                        ) : (
-                          <img
-                            alt=""
-                            className="mt-1 max-h-40 w-full rounded object-contain"
-                            src={api.artifactFileUrl(a.uuid)}
-                          />
-                        )}
-                        <a
-                          href={api.artifactFileUrl(a.uuid)}
-                          download
-                          className="mt-2 inline-flex items-center gap-1 text-[10px] text-primary hover:underline"
+                <div className="flex flex-col gap-4">
+                  {resultSnapshot && (resultSnapshot.hasResult || resultSnapshot.items.length > 0) ? (
+                    <NodeResultViewBody
+                      projectId={projectId!}
+                      nodeKey={nodeKey}
+                      nodeType={nodeType}
+                      snapshot={resultSnapshot}
+                    />
+                  ) : filteredArtifacts.length > 0 ? (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {filteredArtifacts.map((a) => (
+                        <div
+                          key={a.id}
+                          className="rounded-xl border border-white/10 bg-white/5 p-2"
                         >
-                          <Download className="h-3 w-3" />
-                          Скачать
-                        </a>
-                      </div>
-                    ))
+                          <div className="text-[10px] uppercase text-muted-foreground">
+                            {humanizeSlug(a.kind)}
+                          </div>
+                          {a.path.match(/\.(mp4|webm)$/i) ? (
+                            <video
+                              controls
+                              className="mt-1 max-h-40 w-full rounded"
+                              src={api.artifactFileUrl(a.uuid)}
+                            />
+                          ) : (
+                            <img
+                              alt=""
+                              className="mt-1 max-h-40 w-full rounded object-contain"
+                              src={api.artifactFileUrl(a.uuid)}
+                            />
+                          )}
+                          <a
+                            href={api.artifactFileUrl(a.uuid)}
+                            download
+                            className="mt-2 inline-flex items-center gap-1 text-[10px] text-primary hover:underline"
+                          >
+                            <Download className="h-3 w-3" />
+                            Скачать
+                          </a>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
+                      <p className="text-sm">
+                        {resultSnapshot?.summary || "Результаты ещё не сформированы. Запустите шаг для генерации."}
+                      </p>
+                    </div>
                   )}
                 </div>
               )}
