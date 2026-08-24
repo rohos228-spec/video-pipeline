@@ -324,6 +324,8 @@ async def test_start_step_overflow_group_nodes(
         )
         assert status is ProjectStatus.enriching_1, label
         assert (project.meta or {}).get("active_excel_gpt_node_key") == node_key
+        assert (project.meta or {}).get("excel_gpt_ui_force_full") is True
+        assert (project.meta or {}).get("excel_gpt_force_full_rerun") == node_key
 
     async with mem_db() as session:
         nr = await session.get(NodeRun, nr_ids[node_key])

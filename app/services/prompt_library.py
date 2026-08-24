@@ -484,10 +484,13 @@ def resolve_project_prompt_with_source(
                     return clean, "override"
         # Слоты проекта (в т.ч. унаследованные ребёнком) важнее global —
         # иначе active_variants.json с «default» перекрывает выбор родителя.
-        for key in excel_gpt_source_steps():
-            from_meta = _variant_from_studio_meta(meta, key)
-            if from_meta:
-                return from_meta, "slot"
+        # Если node_key уже задан и у этой ноды слота нет — не воровать
+        # вариант соседней ноды (QC last-wins перекрывал check_script).
+        if not node_key:
+            for key in excel_gpt_source_steps():
+                from_meta = _variant_from_studio_meta(meta, key)
+                if from_meta:
+                    return from_meta, "slot"
         from app.services.prompt_active_global import get_global_active
 
         global_name = get_global_active(EXCEL_GPT_UNIFIED_STEP)
