@@ -206,6 +206,36 @@ def test_excel_gpt_db_context_exposes_image_prompt_for_skip() -> None:
     assert [f["uuid"] for f in pending] == ["b" * 24]
 
 
+def test_excel_gpt_force_full_strips_old_prompts_keeps_vo() -> None:
+    """Ручной ▶ не должен кормить GPT старыми image/anim — иначе копия 1-в-1."""
+    fr = SimpleNamespace(
+        number=1,
+        uuid="a" * 24,
+        voiceover_text="у ворот канцелярии толпа",
+        meaning="",
+        image_prompt="Москва, середина XVIII века, приёмная канцелярии",
+        animation_prompt="камера медленно наезжает на стол",
+        attrs={
+            "shot01_action": "рука раскладывает две жалобы",
+            "place": "канцелярия",
+            "camera_subdivide": {
+                "role": "shot",
+                "vo_shot": "у ворот канцелярии толпа",
+            },
+        },
+    )
+    ctx = build_excel_gpt_db_context(
+        project_id=60, slug="x", frames=[fr], characters=[], strip_prompts=True
+    )
+    row = ctx["frames"][0]
+    assert "image_prompt" not in row
+    assert "animation_prompt" not in row
+    assert "shot01_action" not in row
+    assert row["voiceover_text"] == "у ворот канцелярии толпа"
+    assert row["vo_shot"] == "у ворот канцелярии толпа"
+    assert row["place"] == "канцелярия"
+
+
 def test_excel_gpt_exposes_vo_shot_copy_not_as_voiceover() -> None:
     fr = SimpleNamespace(
         number=2,

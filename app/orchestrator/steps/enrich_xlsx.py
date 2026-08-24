@@ -1123,7 +1123,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         len(gpt_frames),
                         len(frames_for_map),
                         (
-                            "force_full rewrite image+anim+action"
+                            "force_full rewrite image+anim+action, strip old prompts from payload"
                             if force_full
                             else "skip filled image+anim+action"
                         ),
@@ -1134,6 +1134,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     slug=project.slug,
                     frames=gpt_frames,
                     characters=entity_cards_for_gpt(ents),
+                    strip_prompts=bool(
+                        force_full and str(node_key or "").endswith("_fw_frames")
+                    ),
                 )
             ctx_dir = project.data_dir / "excel_gpt_uploads" / str(node_key)
             ctx_dir.mkdir(parents=True, exist_ok=True)
@@ -1152,11 +1155,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             data_paths = [ctx_path]
             logger.info(
                 "[#{}] enrich_xlsx node={!r}: project_file/DB SoT — "
-                "только db_frames.json frames={} characters={}",
+                "только db_frames.json frames={} characters={} "
+                "payload_image_prompt={} payload_vo={}",
                 project.id,
                 node_key,
                 len(db_ctx["frames"]),
                 len(db_ctx.get("characters") or []),
+                sum(
+                    1
+                    for row in (db_ctx.get("frames") or [])
+                    if str(row.get("image_prompt") or "").strip()
+                ),
+                sum(
+                    1
+                    for row in (db_ctx.get("frames") or [])
+                    if str(row.get("voiceover_text") or row.get("vo_shot") or "").strip()
+                ),
             )
             if scene_grammar:
                 hint = _SCENE_GRAMMAR_APPLY_HINT
