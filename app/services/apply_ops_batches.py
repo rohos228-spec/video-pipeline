@@ -37,6 +37,18 @@ VO_STAGGER_SEC = 1.0
 
 _COMPLETE_ATTRS_DENSE = ("main_action", "shot01_description")
 _IMG_SKIP_KEYS = ("image_prompt", "промт_картинки")
+_ANIM_SKIP_KEYS = ("animation_prompt", "промт_видео")
+_ACTION_SKIP_KEYS = ("shot01_action", "main_action", "действие")
+# fw_frames: кадр готов только если картинка + видео + действие.
+SKIP_PROMPTS_AND_ACTION = "prompts_and_action"
+# Добор меню съёмки: крупность + движение + набор.
+SKIP_CAMERA_MENU = "camera_menu"
+CAMERA_MENU_UNITS_PER_BATCH = 16
+# Зависший SSE не должен держать всю волну 10 мин (GPT_TIMEOUT_S=600).
+_PROMPT_PACK_TIMEOUT_S = 240.0
+_SIZE_SKIP_KEYS = ("крупность", "size", "shot_size")
+_MOVE_SKIP_KEYS = ("движение", "движение_камеры", "move", "shot_move")
+_SET_SKIP_KEYS = ("набор", "set", "shot_set")
 
 ApplyFn = Callable[[dict[str, Any]], Awaitable[None]]
 ProgressFn = Callable[[str], Awaitable[None]]
@@ -104,6 +116,22 @@ def split_frames(frames: list[Any], size: int) -> list[list[Any]]:
     return [frames[i : i + size] for i in range(0, len(frames), size)]
 
 
+def _any_field(frame: dict[str, Any], attrs: dict[str, Any], keys: tuple[str, ...]) -> bool:
+    return any(
+        str(frame.get(k) or attrs.get(k) or "").strip() for k in keys
+    )
+
+
+def _camera_menu_attrs(frame: dict[str, Any], attrs: dict[str, Any]) -> dict[str, Any]:
+    cs = attrs.get("camera_subdivide") if isinstance(attrs, dict) else {}
+    if not isinstance(cs, dict):
+        cs = {}
+    extra = frame.get("camera_subdivide")
+    if isinstance(extra, dict):
+        cs = {**cs, **extra}
+    return {**attrs, **cs}
+
+
 def _frame_complete(
     frame: dict[str, Any],
     *,
@@ -111,6 +139,19 @@ def _frame_complete(
     skip_if_field: str | None = None,
 ) -> bool:
     attrs = frame.get("attrs") if isinstance(frame.get("attrs"), dict) else {}
+    if skip_if_field == SKIP_PROMPTS_AND_ACTION:
+        return (
+            _any_field(frame, attrs, _IMG_SKIP_KEYS)
+            and _any_field(frame, attrs, _ANIM_SKIP_KEYS)
+            and _any_field(frame, attrs, _ACTION_SKIP_KEYS)
+        )
+    if skip_if_field == SKIP_CAMERA_MENU:
+        blob = _camera_menu_attrs(frame, attrs)
+        return (
+            _any_field(frame, blob, _SIZE_SKIP_KEYS)
+            and _any_field(frame, blob, _MOVE_SKIP_KEYS)
+            and _any_field(frame, blob, _SET_SKIP_KEYS)
+        )
     if skip_if_field:
         keys = (skip_if_field, *_IMG_SKIP_KEYS)
         for k in keys:
@@ -133,7 +174,16 @@ def _has_uuid(frame: dict[str, Any]) -> bool:
 
 
 def _has_voiceover(frame: dict[str, Any]) -> bool:
-    return bool(str(frame.get("voiceover_text") or "").strip())
+    if str(frame.get("voiceover_text") or "").strip():
+        return True
+    if str(frame.get("vo_shot") or frame.get("закадр_шота") or "").strip():
+        return True
+    attrs = frame.get("attrs")
+    if isinstance(attrs, dict):
+        cs = attrs.get("camera_subdivide")
+        if isinstance(cs, dict) and str(cs.get("vo_shot") or "").strip():
+            return True
+    return False
 
 
 def _pending_frames(
@@ -189,8 +239,23 @@ def _batch_footer(
             f"\n# BATCH call={batch_i} split={split_level} "
             f"(промты по {PROMPT_UNITS_PER_BATCH})\n"
             f"В db_frames.json только этот кусок: {n} кадров.\n"
-            "Верни ops ровно по каждому uuid: fields.промт_картинки и "
-            "промт_видео. Чужие кадры не пиши. JSON apply-ops, без прозы.\n"
+            "Верни ops ровно по каждому uuid: fields.промт_картинки, "
+            "промт_видео, действие, крупность, движение, набор. "
+            "Чужие кадры не пиши. JSON apply-ops, без прозы.\n"
+        )
+    if kind in {"camera_menu", "shot_menu"}:
+        return (
+            f"\n# BATCH call={batch_i} split={split_level} "
+            f"(меню съёмки по {CAMERA_MENU_UNITS_PER_BATCH})\n"
+            f"В db_frames.json только этот кусок: {n} кадров.\n"
+            "Верни ops ровно по каждому uuid — ТОЛЬКО три поля:\n"
+            "крупность (полное русское имя: Общий план / Средний план / "
+            "Крупный план / Средне-крупный план / Врезка предмета / …),\n"
+            "движение (статика | наезд | отъезд | сдвиг вбок | панорама | "
+            "следование | ручная камера | вид сверху),\n"
+            "набор (SET_01…SET_50 или короткое место, 2–6 слов).\n"
+            "Не пиши промт_картинки, промт_видео, действие, закадр. "
+            "JSON apply-ops, без прозы.\n"
         )
     return (
         f"\n# BATCH call={batch_i} split={split_level} (схема 1→2→4)\n"
@@ -306,7 +371,7 @@ async def run_apply_ops_batched(
         foot = _batch_footer(
             my_i, level, len(chunk), footer_kind=footer_kind
         )
-        res = await run_operator_api(
+        api_kw = dict(
             project_dir=project_dir,
             node_key=node_key,
             role=role,
@@ -316,6 +381,25 @@ async def run_apply_ops_batched(
             input_paths=[batch_path],
             auto_pack=False,
         )
+        pack_timeout = (
+            _PROMPT_PACK_TIMEOUT_S
+            if (footer_kind or "").strip().lower()
+            in {"prompts", "img", "camera_menu", "shot_menu"}
+            else 0.0
+        )
+        try:
+            if pack_timeout > 0:
+                res = await asyncio.wait_for(
+                    run_operator_api(**api_kw),
+                    timeout=pack_timeout,
+                )
+            else:
+                res = await run_operator_api(**api_kw)
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"enrich_xlsx node={node_key}: L{level} call {my_i} "
+                f"timeout {pack_timeout:.0f}s ({len(chunk)} кадров)"
+            ) from exc
         ops = []
         if isinstance(res.apply_ops, dict):
             ops = list(res.apply_ops.get("ops") or [])

@@ -22,5 +22,13 @@
   "xlsx_filmmaking_excel_agent_v1.txt": {
     "saved_at": 1785768673.398403,
     "size": 29397
+  },
+  "mood_lighting": {
+    "saved_at": 1787412095.954245,
+    "size": 17987
+  },
+  "scene_qc_check": {
+    "saved_at": 1787412548.419473,
+    "size": 30781
   }
 }

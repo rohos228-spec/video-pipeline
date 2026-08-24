@@ -32,6 +32,25 @@ def test_excel_gpt_prompts_keeps_image_and_anim():
     assert "voiceover_text" not in out[0]["fields"]
 
 
+def test_excel_gpt_prompts_keeps_camera_menu_fields():
+    ops = [
+        {
+            "frame_uuid": "aa",
+            "fields": {
+                "крупность": "Средний план",
+                "движение": "наезд",
+                "набор": "SET_08",
+                "закадр": "НЕЛЬЗЯ",
+            },
+        }
+    ]
+    out = filter_ops_for_node(ops, node_kind="excel_gpt_prompts")
+    assert out[0]["fields"]["крупность"] == "Средний план"
+    assert out[0]["fields"]["движение"] == "наезд"
+    assert out[0]["fields"]["набор"] == "SET_08"
+    assert "закадр" not in out[0]["fields"]
+
+
 def test_excel_gpt_strips_prompt_fields():
     ops = [
         {

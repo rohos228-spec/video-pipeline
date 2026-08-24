@@ -139,6 +139,97 @@ def test_img_prompt_skip_and_small_batches() -> None:
     assert [f["uuid"] for f in pending2] == ["e" * 24]
 
 
+def test_pending_keeps_child_with_vo_shot_copy() -> None:
+    frames = [
+        {
+            "uuid": "c" * 24,
+            "voiceover_text": "",
+            "vo_shot": "фрагмент шота",
+            "image_prompt": "",
+        }
+    ]
+    pending = _pending_frames(frames, dense=False, skip_if_field="image_prompt")
+    assert [f["uuid"] for f in pending] == ["c" * 24]
+
+
+def test_prompts_and_action_skip_requires_all_three() -> None:
+    from app.services.apply_ops_batches import SKIP_PROMPTS_AND_ACTION
+
+    done = {
+        "uuid": "a" * 24,
+        "voiceover_text": "one",
+        "image_prompt": "img",
+        "animation_prompt": "mov",
+        "attrs": {"shot01_action": "шаг"},
+    }
+    no_action = {
+        "uuid": "b" * 24,
+        "voiceover_text": "two",
+        "image_prompt": "img",
+        "animation_prompt": "mov",
+        "attrs": {},
+    }
+    no_img = {
+        "uuid": "c" * 24,
+        "voiceover_text": "three",
+        "image_prompt": "",
+        "animation_prompt": "mov",
+        "attrs": {"shot01_action": "шаг"},
+    }
+    assert _frame_complete(done, dense=False, skip_if_field=SKIP_PROMPTS_AND_ACTION)
+    pending = _pending_frames(
+        [done, no_action, no_img],
+        dense=False,
+        skip_if_field=SKIP_PROMPTS_AND_ACTION,
+    )
+    assert [f["uuid"] for f in pending] == ["b" * 24, "c" * 24]
+
+
+def test_camera_menu_skip_requires_size_move_set() -> None:
+    from app.services.apply_ops_batches import SKIP_CAMERA_MENU
+
+    done = {
+        "uuid": "a" * 24,
+        "voiceover_text": "one",
+        "attrs": {
+            "camera_subdivide": {
+                "крупность": "Средний план",
+                "движение": "статика",
+                "набор": "SET_08",
+            }
+        },
+    }
+    no_set = {
+        "uuid": "b" * 24,
+        "voiceover_text": "two",
+        "attrs": {
+            "camera_subdivide": {
+                "крупность": "Средний план",
+                "движение": "наезд",
+            }
+        },
+    }
+    assert _frame_complete(done, dense=False, skip_if_field=SKIP_CAMERA_MENU)
+    pending = _pending_frames(
+        [done, no_set],
+        dense=False,
+        skip_if_field=SKIP_CAMERA_MENU,
+    )
+    assert [f["uuid"] for f in pending] == ["b" * 24]
+
+
+def test_prompt_footer_asks_shot_menu_fields() -> None:
+    from app.services.apply_ops_batches import _batch_footer
+
+    text = _batch_footer(1, 1, 8, footer_kind="prompts")
+    assert "крупность" in text
+    assert "движение" in text
+    assert "набор" in text
+    cam = _batch_footer(1, 1, 8, footer_kind="camera_menu")
+    assert "крупность" in cam
+    assert "Не пиши промт_картинки" in cam
+
+
 def _frame(i: int) -> dict:
     return {
         "uuid": f"{i:024d}",

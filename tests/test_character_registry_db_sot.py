@@ -56,16 +56,33 @@ def test_detect_frame_and_qc_prompt() -> None:
     assert _is_qc_prompts_prompt("prompts_qc_continuity_ru", qc_body)
     assert not _is_frame_prompts_prompt("prompts_qc_continuity_ru", qc_body)
     ready = [
-        SimpleNamespace(image_prompt="img", animation_prompt="mov"),
-        SimpleNamespace(image_prompt="img2", animation_prompt="mov2"),
+        SimpleNamespace(
+            image_prompt="img",
+            animation_prompt="mov",
+            attrs={"shot01_action": "шаг"},
+        ),
+        SimpleNamespace(
+            image_prompt="img2",
+            animation_prompt="mov2",
+            attrs={"shot01_action": "ещё шаг"},
+        ),
     ]
     assert _all_frame_prompts_ready(ready)
     assert not _all_frame_prompts_ready(ready[:1])
     missing = [
-        SimpleNamespace(image_prompt="img", animation_prompt="mov"),
+        SimpleNamespace(
+            image_prompt="img",
+            animation_prompt="mov",
+            attrs={"shot01_action": "шаг"},
+        ),
         SimpleNamespace(image_prompt="img2", animation_prompt=""),
     ]
     assert not _all_frame_prompts_ready(missing)
+    no_action = [
+        SimpleNamespace(image_prompt="img", animation_prompt="mov", attrs={}),
+        SimpleNamespace(image_prompt="img2", animation_prompt="mov2", attrs={}),
+    ]
+    assert not _all_frame_prompts_ready(no_action)
 
 
 def test_characters_from_entities_and_gpt_cards() -> None:

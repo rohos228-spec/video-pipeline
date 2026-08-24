@@ -176,17 +176,47 @@ def _is_qc_prompts_prompt(variant: str | None, master: str | None) -> bool:
     return any(m in _prompt_blob(variant, master) for m in _QC_PROMPTS_MARKERS)
 
 
+def _frame_action_text(fr) -> str:
+    attrs = getattr(fr, "attrs", None) or {}
+    if not isinstance(attrs, dict):
+        return ""
+    return str(
+        attrs.get("shot01_action")
+        or attrs.get("main_action")
+        or attrs.get("действие")
+        or ""
+    ).strip()
+
+
+def _frame_prompts_and_action_ready(fr) -> bool:
+    img = (getattr(fr, "image_prompt", None) or "").strip()
+    anim = (getattr(fr, "animation_prompt", None) or "").strip()
+    return bool(img and anim and _frame_action_text(fr))
+
+
+def _frame_camera_menu_ready(fr) -> bool:
+    attrs = getattr(fr, "attrs", None) or {}
+    if isinstance(fr, dict):
+        attrs = fr.get("attrs") if isinstance(fr.get("attrs"), dict) else {}
+        cs = fr.get("camera_subdivide") if isinstance(fr.get("camera_subdivide"), dict) else {}
+    else:
+        cs = attrs.get("camera_subdivide") if isinstance(attrs, dict) else {}
+    if not isinstance(cs, dict):
+        cs = {}
+    if isinstance(attrs, dict) and isinstance(attrs.get("camera_subdivide"), dict):
+        cs = {**attrs["camera_subdivide"], **cs}
+    size = str(cs.get("крупность") or cs.get("size") or "").strip()
+    move = str(cs.get("движение") or cs.get("move") or "").strip()
+    nab = str(cs.get("набор") or cs.get("set") or "").strip()
+    return bool(size and move and nab)
+
+
 def _all_frame_prompts_ready(frames) -> bool:
-    """True если у каждого кадра уже есть image+anim промт (QC можно не ждать GPT)."""
+    """True если у каждого кадра image+anim+действие (QC можно не ждать GPT)."""
     rows = list(frames or [])
     if len(rows) < 2:
         return False
-    for fr in rows:
-        img = (getattr(fr, "image_prompt", None) or "").strip()
-        anim = (getattr(fr, "animation_prompt", None) or "").strip()
-        if not img or not anim:
-            return False
-    return True
+    return all(_frame_prompts_and_action_ready(fr) for fr in rows)
 
 # Маппинг slot_idx (1..5) → (running_status, ready_status, step_code).
 _SLOT_MAP: dict[int, tuple[ProjectStatus, ProjectStatus, str]] = {
@@ -951,6 +981,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         expected_frame_uuids: list[str] = []
         db_ctx: dict | None = None
         ctx_path = None
+        fw_camera_menu_only = False
         # DB SoT: для project_file просим apply-ops JSON вместо TSV (+ uuid-мап).
         if output_mode == "project_file" and not check_mode:
             import json as _json
@@ -1023,10 +1054,40 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     "characters": entity_cards_for_gpt(ents),
                 }
             else:
+                gpt_frames = list(frames_for_map)
+                if str(node_key or "").endswith("_fw_frames"):
+                    prompt_pending = [
+                        fr
+                        for fr in frames_for_map
+                        if getattr(fr, "uuid", None)
+                        and not _frame_prompts_and_action_ready(fr)
+                    ]
+                    camera_pending = [
+                        fr
+                        for fr in frames_for_map
+                        if getattr(fr, "uuid", None)
+                        and not _frame_camera_menu_ready(fr)
+                    ]
+                    if prompt_pending:
+                        gpt_frames = prompt_pending
+                    elif camera_pending:
+                        gpt_frames = camera_pending
+                        fw_camera_menu_only = True
+                    else:
+                        gpt_frames = []
+                    logger.info(
+                        "[#{}] fw_frames GPT payload {}/{} "
+                        "(skip filled image+anim+action"
+                        "{})",
+                        project.id,
+                        len(gpt_frames),
+                        len(frames_for_map),
+                        "; camera_menu only" if fw_camera_menu_only else "",
+                    )
                 db_ctx = build_excel_gpt_db_context(
                     project_id=project.id,
                     slug=project.slug,
-                    frames=frames_for_map,
+                    frames=gpt_frames,
                     characters=entity_cards_for_gpt(ents),
                 )
             ctx_dir = project.data_dir / "excel_gpt_uploads" / str(node_key)
@@ -1155,7 +1216,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             and ctx_path is not None
         ):
             from app.services.apply_ops_batches import (
+                CAMERA_MENU_UNITS_PER_BATCH,
                 PROMPT_UNITS_PER_BATCH,
+                SKIP_CAMERA_MENU,
+                SKIP_PROMPTS_AND_ACTION,
                 VO_PARALLEL_MAX,
                 VO_STAGGER_SEC,
                 run_apply_ops_batched,
@@ -1216,6 +1280,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     )
                     # excel_gpt не имеет права писать закадр/смысл.
                     _drop = {"voiceover_text", "meaning"}
+                    if fw_camera_menu_only:
+                        _drop.update(
+                            {
+                                "image_prompt",
+                                "animation_prompt",
+                                "image_prompt_shot2",
+                                "animation_prompt_shot2",
+                                "shot01_action",
+                                "main_action",
+                            }
+                        )
                     cleaned: list[dict] = []
                     for op in ops:
                         fields = op.get("fields")
@@ -1254,11 +1329,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     await session.commit()
 
                 if write_prompts:
-                    batch_label = (
-                        f"промты по {PROMPT_UNITS_PER_BATCH}, "
-                        f"параллельно {VO_PARALLEL_MAX}, "
-                        f"сдвиг {VO_STAGGER_SEC:g}с"
-                    )
+                    if fw_camera_menu_only:
+                        batch_label = (
+                            f"меню съёмки по {CAMERA_MENU_UNITS_PER_BATCH}, "
+                            f"параллельно {VO_PARALLEL_MAX}, "
+                            f"сдвиг {VO_STAGGER_SEC:g}с"
+                        )
+                    else:
+                        batch_label = (
+                            f"промты по {PROMPT_UNITS_PER_BATCH}, "
+                            f"параллельно {VO_PARALLEL_MAX}, "
+                            f"сдвиг {VO_STAGGER_SEC:g}с"
+                        )
                 else:
                     batch_label = "dense shot fill"
                 logger.info(
@@ -1268,6 +1350,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     node_key,
                     batch_label,
                 )
+                fw_frames = frame_prompts and str(node_key or "").endswith("_fw_frames")
                 api_res = await run_apply_ops_batched(
                     project_dir=project.data_dir,
                     node_key=node_key,
@@ -1281,16 +1364,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     dense=not write_prompts,
                     apply_fn=_apply_batch,
                     skip_if_field=(
-                        None
-                        if frame_prompts and str(node_key or "").endswith("_fw_frames")
+                        SKIP_CAMERA_MENU
+                        if fw_frames and fw_camera_menu_only
                         else (
-                            "image_prompt"
-                            if frame_prompts and not qc_prompts
-                            else None
+                            SKIP_PROMPTS_AND_ACTION
+                            if fw_frames
+                            else (
+                                "image_prompt"
+                                if frame_prompts and not qc_prompts
+                                else None
+                            )
                         )
                     ),
                     chunk_size=(
-                        PROMPT_UNITS_PER_BATCH if write_prompts else None
+                        CAMERA_MENU_UNITS_PER_BATCH
+                        if fw_camera_menu_only
+                        else (PROMPT_UNITS_PER_BATCH if write_prompts else None)
                     ),
                     parallel_max=(
                         VO_PARALLEL_MAX if write_prompts else None
@@ -1298,10 +1387,96 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     stagger_sec=(
                         VO_STAGGER_SEC if write_prompts else None
                     ),
-                    footer_kind=("prompts" if write_prompts else None),
+                    footer_kind=(
+                        "camera_menu"
+                        if fw_camera_menu_only
+                        else ("prompts" if write_prompts else None)
+                    ),
                     on_progress=_progress,
                     allow_empty_ops=qc_prompts,
                 )
+                if fw_frames:
+                    from sqlalchemy import select as _sel_fw
+
+                    session.expire_all()
+
+                    leftover = list(
+                        (
+                            await session.execute(
+                                _sel_fw(Frame)
+                                .where(Frame.project_id == project.id)
+                                .order_by(Frame.sort_key, Frame.number)
+                            )
+                        ).scalars().all()
+                    )
+                    missing_cam = [
+                        fr
+                        for fr in leftover
+                        if getattr(fr, "uuid", None)
+                        and not _frame_camera_menu_ready(fr)
+                    ]
+                    if missing_cam:
+                        logger.warning(
+                            "[#{}] fw_frames: меню съёмки пустое {}/{} "
+                            "— добор в этом же прогоне, без второго ▶",
+                            project.id,
+                            len(missing_cam),
+                            len(leftover),
+                        )
+                        fw_camera_menu_only = True
+                        cam_ctx = build_excel_gpt_db_context(
+                            project_id=project.id,
+                            slug=project.slug,
+                            frames=missing_cam,
+                            characters=entity_cards_for_gpt(ents),
+                        )
+                        ctx_path.write_text(
+                            _json.dumps(cam_ctx, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+                        api_res = await run_apply_ops_batched(
+                            project_dir=project.data_dir,
+                            node_key=node_key,
+                            role=role,
+                            output_mode=output_mode,
+                            prompt=master or "",
+                            accompanying=accompanying,
+                            db_ctx=cam_ctx,
+                            ctx_path=ctx_path,
+                            project_id=project.id,
+                            dense=False,
+                            apply_fn=_apply_batch,
+                            skip_if_field=SKIP_CAMERA_MENU,
+                            chunk_size=CAMERA_MENU_UNITS_PER_BATCH,
+                            parallel_max=VO_PARALLEL_MAX,
+                            stagger_sec=VO_STAGGER_SEC,
+                            footer_kind="camera_menu",
+                            on_progress=_progress,
+                            allow_empty_ops=False,
+                        )
+                        session.expire_all()
+                        leftover = list(
+                            (
+                                await session.execute(
+                                    _sel_fw(Frame)
+                                    .where(Frame.project_id == project.id)
+                                    .order_by(Frame.sort_key, Frame.number)
+                                )
+                            ).scalars().all()
+                        )
+                        still = [
+                            fr
+                            for fr in leftover
+                            if getattr(fr, "uuid", None)
+                            and not _frame_camera_menu_ready(fr)
+                        ]
+                        if still:
+                            raise RuntimeError(
+                                f"enrich_xlsx node={node_key}: меню съёмки "
+                                f"не полное {len(leftover) - len(still)}/"
+                                f"{len(leftover)} (крупность/движение/набор). "
+                                "Нода не done."
+                            )
         else:
             api_res = await run_operator_api(
                 project_dir=project.data_dir,
