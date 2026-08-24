@@ -218,6 +218,50 @@ def _all_frame_prompts_ready(frames) -> bool:
         return False
     return all(_frame_prompts_and_action_ready(fr) for fr in rows)
 
+
+def _excel_gpt_ui_force_full(project) -> bool:
+    """Явный ▶ в Studio: эту ноду (и auto-chain хвост) нельзя skip-filled."""
+    meta = getattr(project, "meta", None)
+    if not isinstance(meta, dict):
+        return False
+    return bool(meta.get("excel_gpt_ui_force_full"))
+
+
+def _clear_excel_gpt_ui_force_full(project) -> bool:
+    meta = dict(getattr(project, "meta", None) or {})
+    changed = False
+    for key in ("excel_gpt_ui_force_full", "excel_gpt_force_full_rerun"):
+        if key in meta:
+            meta.pop(key, None)
+            changed = True
+    if changed:
+        project.meta = meta
+    return changed
+
+
+def _select_fw_frames_for_gpt(frames_for_map, *, force_full: bool):
+    """Какие кадры слать в GPT на fw_frames. force_full — все uuid, без skip."""
+    uuid_frames = [
+        fr for fr in (frames_for_map or []) if getattr(fr, "uuid", None)
+    ]
+    if force_full:
+        return list(uuid_frames), False
+    prompt_pending = [
+        fr for fr in uuid_frames if not _frame_prompts_and_action_ready(fr)
+    ]
+    camera_pending = [
+        fr for fr in uuid_frames if not _frame_camera_menu_ready(fr)
+    ]
+    if prompt_pending:
+        return prompt_pending, False
+    if camera_pending:
+        return camera_pending, True
+    return [], False
+
+
+def _should_skip_qc_gpt(frames_for_map, *, force_full: bool) -> bool:
+    return (not force_full) and _all_frame_prompts_ready(frames_for_map)
+
 # Маппинг slot_idx (1..5) → (running_status, ready_status, step_code).
 _SLOT_MAP: dict[int, tuple[ProjectStatus, ProjectStatus, str]] = {
     1: (ProjectStatus.enriching_1, ProjectStatus.enrich_1_ready, "enrich_1"),
@@ -390,6 +434,10 @@ async def _after_excel_gpt_done(
     # пользователь запускает вручную ▶. Воркер сам вызовет maybe_auto_advance
     # только если auto_mode=True.
     if not getattr(project, "auto_mode", False):
+        if _clear_excel_gpt_ui_force_full(project):
+            from sqlalchemy.orm.attributes import flag_modified
+
+            flag_modified(project, "meta")
         logger.info(
             "[#{}] enrich_xlsx: slot {} → {} — auto_mode выкл, без auto-chain/advance",
             project.id,
@@ -437,19 +485,21 @@ async def _maybe_auto_chain_excel_gpt(
     )
     if succ is None:
         meta = dict(project.meta or {})
-        if "enrich_auto_chain_to" in meta:
-            meta.pop("enrich_auto_chain_to", None)
-            project.meta = meta
-            await session.flush()
+        meta.pop("enrich_auto_chain_to", None)
+        meta.pop("excel_gpt_ui_force_full", None)
+        meta.pop("excel_gpt_force_full_rerun", None)
+        project.meta = meta
+        await session.flush()
         return
     next_key, typ, next_slot = succ
     if not is_excel_gpt_node_type(typ):
         # Стрелка ведёт не в excel_gpt — цепочку не форсим.
         meta = dict(project.meta or {})
-        if "enrich_auto_chain_to" in meta:
-            meta.pop("enrich_auto_chain_to", None)
-            project.meta = meta
-            await session.flush()
+        meta.pop("enrich_auto_chain_to", None)
+        meta.pop("excel_gpt_ui_force_full", None)
+        meta.pop("excel_gpt_force_full_rerun", None)
+        project.meta = meta
+        await session.flush()
         logger.info(
             "[#{}] enrich_xlsx: после slot {} / {} следующий work={} — без auto-chain",
             project.id,
@@ -982,6 +1032,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         db_ctx: dict | None = None
         ctx_path = None
         fw_camera_menu_only = False
+        force_full = _excel_gpt_ui_force_full(project)
+        if force_full:
+            logger.info(
+                "[#{}] enrich_xlsx node={!r}: UI ▶ — полный GPT, без skip filled",
+                project.id,
+                node_key,
+            )
         # DB SoT: для project_file просим apply-ops JSON вместо TSV (+ uuid-мап).
         if output_mode == "project_file" and not check_mode:
             import json as _json
@@ -1056,32 +1113,20 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             else:
                 gpt_frames = list(frames_for_map)
                 if str(node_key or "").endswith("_fw_frames"):
-                    prompt_pending = [
-                        fr
-                        for fr in frames_for_map
-                        if getattr(fr, "uuid", None)
-                        and not _frame_prompts_and_action_ready(fr)
-                    ]
-                    camera_pending = [
-                        fr
-                        for fr in frames_for_map
-                        if getattr(fr, "uuid", None)
-                        and not _frame_camera_menu_ready(fr)
-                    ]
-                    if prompt_pending:
-                        gpt_frames = prompt_pending
-                    elif camera_pending:
-                        gpt_frames = camera_pending
-                        fw_camera_menu_only = True
-                    else:
-                        gpt_frames = []
+                    gpt_frames, fw_camera_menu_only = _select_fw_frames_for_gpt(
+                        frames_for_map, force_full=force_full
+                    )
                     logger.info(
                         "[#{}] fw_frames GPT payload {}/{} "
-                        "(skip filled image+anim+action"
-                        "{})",
+                        "({}{})",
                         project.id,
                         len(gpt_frames),
                         len(frames_for_map),
+                        (
+                            "force_full rewrite image+anim+action"
+                            if force_full
+                            else "skip filled image+anim+action"
+                        ),
                         "; camera_menu only" if fw_camera_menu_only else "",
                     )
                 db_ctx = build_excel_gpt_db_context(
@@ -1253,7 +1298,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     apply_ops={"ops": [], "report": "script_writer_passthrough"},
                     applied_in_runner=True,
                 )
-            elif qc_prompts and _all_frame_prompts_ready(frames_for_map):
+            elif qc_prompts and _should_skip_qc_gpt(
+                frames_for_map, force_full=force_full
+            ):
                 from app.services.gpt_operator_client import OperatorApiResult
 
                 logger.warning(
@@ -1364,15 +1411,19 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     dense=not write_prompts,
                     apply_fn=_apply_batch,
                     skip_if_field=(
-                        SKIP_CAMERA_MENU
-                        if fw_frames and fw_camera_menu_only
+                        None
+                        if force_full and fw_frames
                         else (
-                            SKIP_PROMPTS_AND_ACTION
-                            if fw_frames
+                            SKIP_CAMERA_MENU
+                            if fw_frames and fw_camera_menu_only
                             else (
-                                "image_prompt"
-                                if frame_prompts and not qc_prompts
-                                else None
+                                SKIP_PROMPTS_AND_ACTION
+                                if fw_frames
+                                else (
+                                    "image_prompt"
+                                    if frame_prompts and not qc_prompts
+                                    else None
+                                )
                             )
                         )
                     ),
@@ -1398,13 +1449,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 if fw_frames:
                     from sqlalchemy import select as _sel_fw
 
+                    project_id = int(project.id)
                     session.expire_all()
+                    await session.refresh(project)
 
                     leftover = list(
                         (
                             await session.execute(
                                 _sel_fw(Frame)
-                                .where(Frame.project_id == project.id)
+                                .where(Frame.project_id == project_id)
                                 .order_by(Frame.sort_key, Frame.number)
                             )
                         ).scalars().all()
@@ -1455,11 +1508,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             allow_empty_ops=False,
                         )
                         session.expire_all()
+                        await session.refresh(project)
                         leftover = list(
                             (
                                 await session.execute(
                                     _sel_fw(Frame)
-                                    .where(Frame.project_id == project.id)
+                                    .where(Frame.project_id == project_id)
                                     .order_by(Frame.sort_key, Frame.number)
                                 )
                             ).scalars().all()

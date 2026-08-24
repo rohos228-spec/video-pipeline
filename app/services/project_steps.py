@@ -538,10 +538,20 @@ async def start_step(
 
     prepare_key = node_key
     if step_code == "excel_gpt":
-        meta = project.meta if isinstance(project.meta, dict) else {}
+        meta = dict(project.meta if isinstance(project.meta, dict) else {})
         prepare_key = str(
             node_key or meta.get("active_excel_gpt_node_key") or ""
         ) or None
+        # Ручной ▶: GPT обязан отработать, даже если поля уже заполнены.
+        if explicit_ui_start and prepare_key:
+            meta["excel_gpt_ui_force_full"] = True
+            meta["excel_gpt_force_full_rerun"] = prepare_key
+            project.meta = meta
+            logger.info(
+                "[#{}] start_step excel_gpt: UI ▶ force_full GPT node={}",
+                project.id,
+                prepare_key,
+            )
 
     await prepare_node_for_step_start(
         session,
