@@ -1347,7 +1347,9 @@ async def apply_ops(
 
     await session.flush()
 
-    # Детали из scenes[].shots[] → Frame.attrs (place/действие/описание…).
+    # Детали из scenes[].shots[] → Frame.attrs только если ЭТОТ apply
+    # реально обновил scenes. Иначе старый scene_registry затирает
+    # свежие frame ops (место/смысл после повторного ▶ excel_gpt).
     all_frames = list(
         (
             await session.execute(
@@ -1358,11 +1360,13 @@ async def apply_ops(
         ).scalars()
     )
     meta_now = project.meta if isinstance(project.meta, dict) else {}
-    expanded = expand_scene_registry_onto_frames(
-        all_frames, meta_now.get("scene_registry")
-    )
-    if expanded:
-        await session.flush()
+    expanded = 0
+    if scenes_n > 0:
+        expanded = expand_scene_registry_onto_frames(
+            all_frames, meta_now.get("scene_registry")
+        )
+        if expanded:
+            await session.flush()
 
     exported = None
     if export_xlsx:
