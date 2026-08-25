@@ -44,8 +44,6 @@ SKIP_PROMPTS_AND_ACTION = "prompts_and_action"
 # Добор меню съёмки: крупность + движение + набор.
 SKIP_CAMERA_MENU = "camera_menu"
 CAMERA_MENU_UNITS_PER_BATCH = 16
-# Аналитика 54–59: большие пачки копируют место/смысл и меняют только особенность.
-ANALYTICS_UNITS_PER_BATCH = 8
 # Зависший SSE не должен держать всю волну 10 мин (GPT_TIMEOUT_S=600).
 _PROMPT_PACK_TIMEOUT_S = 240.0
 _SIZE_SKIP_KEYS = ("крупность", "size", "shot_size")
@@ -333,7 +331,7 @@ def _batch_footer(
             extra += "".join(f"- {p}\n" for p in used_places[-40:])
         return (
             f"\n# BATCH call={batch_i} split={split_level} "
-            f"(аналитика 54–59 по {ANALYTICS_UNITS_PER_BATCH})\n"
+            f"(аналитика 54–59, кадров в вызове: {n})\n"
             f"В db_frames.json только этот кусок: {n} кадров.\n"
             "На каждый uuid обязательны СВОИ место + смысл_сцены + тип + "
             "особенность + кластер (акцент можно пустым).\n"

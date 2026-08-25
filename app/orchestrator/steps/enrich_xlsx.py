@@ -1282,7 +1282,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             and ctx_path is not None
         ):
             from app.services.apply_ops_batches import (
-                ANALYTICS_UNITS_PER_BATCH,
                 CAMERA_MENU_UNITS_PER_BATCH,
                 PROMPT_UNITS_PER_BATCH,
                 SKIP_CAMERA_MENU,
@@ -1412,7 +1411,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             f"сдвиг {VO_STAGGER_SEC:g}с"
                         )
                 elif scene_analytics:
-                    batch_label = f"аналитика 54–59 по {ANALYTICS_UNITS_PER_BATCH}"
+                    batch_label = "аналитика 54–59 одним вызовом"
                 else:
                     batch_label = "dense shot fill"
                 logger.info(
@@ -1456,15 +1455,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     chunk_size=(
                         CAMERA_MENU_UNITS_PER_BATCH
                         if fw_camera_menu_only
-                        else (
-                            PROMPT_UNITS_PER_BATCH
-                            if write_prompts
-                            else (
-                                ANALYTICS_UNITS_PER_BATCH
-                                if scene_analytics
-                                else None
-                            )
-                        )
+                        else (PROMPT_UNITS_PER_BATCH if write_prompts else None)
                     ),
                     parallel_max=(
                         VO_PARALLEL_MAX if write_prompts else None

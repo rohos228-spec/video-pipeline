@@ -55,6 +55,15 @@ def test_light_analytics_keeps_116_in_one_call() -> None:
     assert not should_batch_apply_ops(n_frames=n, json_bytes=raw, dense=False)
 
 
+def test_analytics_without_chunk_size_is_one_pack() -> None:
+    """54–59: chunk_size=None → все pending в одном вызове, не по 8."""
+    pending = [{"uuid": f"{i:024d}", "voiceover_text": "x"} for i in range(155)]
+    size = 0
+    packs = split_frames(pending, size) if size else [pending]
+    assert len(packs) == 1
+    assert len(packs[0]) == 155
+
+
 def test_pending_skips_top_level_shot_fields() -> None:
     frames = [
         {
