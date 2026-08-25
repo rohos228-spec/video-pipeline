@@ -248,7 +248,10 @@ def _chat_url(model: str) -> str:
     if not _RELAY_BASE_LOGGED:
         vps = _vps_relay_base()
         if vps:
-            logger.info("GPT API: VPS-relay {} (proxy=off)", vps)
+            logger.warning(
+                "🔒 SECURITY NOTICE: GPT API направлен через VPS-relay {} (трафик текстовых LLM проксируется через внешний VPS). Для прямого подключения очистите GPT_RELAY_TOKEN в .env",
+                vps,
+            )
         elif "kie.ai" not in base.lower():
             logger.info("GPT API: base_url={} (non-kie host, no VPS-relay)", base)
         _RELAY_BASE_LOGGED = True

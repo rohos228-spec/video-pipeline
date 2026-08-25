@@ -17,8 +17,10 @@ from loguru import logger
 
 from app.services.scene_design import agents as ag
 from app.settings import settings
+import threading
 
 _META_LOCK = asyncio.Lock()
+_SYNC_META_LOCK = threading.RLock()
 
 
 def scene_design_enabled(project: Project | None) -> bool:
@@ -111,15 +113,28 @@ def clear_chunk_checkpoints(project: Project, name: str) -> None:
 
 
 def _meta_state(project: Project) -> dict[str, Any]:
-    meta = project.meta if isinstance(project.meta, dict) else {}
-    sd = meta.get("scene_design")
-    return dict(sd) if isinstance(sd, dict) else {}
+    with _SYNC_META_LOCK:
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        sd = meta.get("scene_design")
+        return dict(sd) if isinstance(sd, dict) else {}
+
+
+def _update_meta_state(project: Project, updater: Any) -> None:
+    """Атомарная модификация project.meta['scene_design'] под защитой блокировки."""
+    with _SYNC_META_LOCK:
+        meta = dict(project.meta or {})
+        sd = meta.get("scene_design")
+        sd_dict = dict(sd) if isinstance(sd, dict) else {}
+        updater(sd_dict)
+        meta["scene_design"] = sd_dict
+        project.meta = meta
 
 
 def _save_state(project: Project, sd: dict[str, Any]) -> None:
-    meta = dict(project.meta or {})
-    meta["scene_design"] = sd
-    project.meta = meta
+    with _SYNC_META_LOCK:
+        meta = dict(project.meta or {})
+        meta["scene_design"] = dict(sd)
+        project.meta = meta
 
 
 def get_only_agent(project: Project) -> str | None:
@@ -131,12 +146,13 @@ def get_only_agent(project: Project) -> str | None:
 
 def set_only_agent(project: Project, name: str | None) -> None:
     """Запомнить / сбросить only_agent для per-node ▶."""
-    sd = _meta_state(project)
-    if name:
-        sd["only_agent"] = str(name).strip()
-    else:
-        sd.pop("only_agent", None)
-    _save_state(project, sd)
+    def _apply(sd: dict[str, Any]) -> None:
+        if name:
+            sd["only_agent"] = str(name).strip()
+        else:
+            sd.pop("only_agent", None)
+
+    _update_meta_state(project, _apply)
 
 
 def clear_only_agent(project: Project) -> None:
@@ -189,55 +205,62 @@ def save_checkpoint(project: Project, name: str, data: dict[str, Any]) -> None:
     )
     # Полный агент готов — промежуточные чанки больше не нужны.
     clear_chunk_checkpoints(project, name)
-    sd = _meta_state(project)
-    agents_meta = dict(sd.get("agents") or {})
-    agents_meta[name] = {
-        "status": "done",
-        "at": datetime.now(UTC).isoformat(),
-        "path": f"scene_design/{name}.json",
-    }
-    sd["agents"] = agents_meta
-    _save_state(project, sd)
+
+    def _apply(sd: dict[str, Any]) -> None:
+        agents_meta = dict(sd.get("agents") or {})
+        agents_meta[name] = {
+            "status": "done",
+            "at": datetime.now(UTC).isoformat(),
+            "path": f"scene_design/{name}.json",
+        }
+        sd["agents"] = agents_meta
+
+    _update_meta_state(project, _apply)
 
 
 def mark_running(project: Project) -> None:
-    sd = _meta_state(project)
-    sd["status"] = "running"
-    sd["started_at"] = datetime.now(UTC).isoformat()
-    sd.pop("error", None)
-    _save_state(project, sd)
+    def _apply(sd: dict[str, Any]) -> None:
+        sd["status"] = "running"
+        sd["started_at"] = datetime.now(UTC).isoformat()
+        sd.pop("error", None)
+
+    _update_meta_state(project, _apply)
 
 
 def mark_failed(project: Project, error: str) -> None:
-    sd = _meta_state(project)
-    sd["status"] = "failed"
-    sd["error"] = (error or "")[:500]
-    _save_state(project, sd)
+    def _apply(sd: dict[str, Any]) -> None:
+        sd["status"] = "failed"
+        sd["error"] = (error or "")[:500]
+
+    _update_meta_state(project, _apply)
 
 
 def mark_done(project: Project, report: str) -> None:
-    sd = _meta_state(project)
-    sd["status"] = "done"
-    sd["finished_at"] = datetime.now(UTC).isoformat()
-    sd["report"] = (report or "")[:2000]
-    sd.pop("error", None)
-    _save_state(project, sd)
+    def _apply(sd: dict[str, Any]) -> None:
+        sd["status"] = "done"
+        sd["finished_at"] = datetime.now(UTC).isoformat()
+        sd["report"] = (report or "")[:2000]
+        sd.pop("error", None)
+
+    _update_meta_state(project, _apply)
 
 
 def mark_agents_done(project: Project) -> None:
     """Фаза агентов завершена: срезы + ячейки записаны, сборка ещё впереди."""
-    sd = _meta_state(project)
-    sd["status"] = "agents_done"
-    sd["agents_finished_at"] = datetime.now(UTC).isoformat()
-    sd.pop("error", None)
-    _save_state(project, sd)
+    def _apply(sd: dict[str, Any]) -> None:
+        sd["status"] = "agents_done"
+        sd["agents_finished_at"] = datetime.now(UTC).isoformat()
+        sd.pop("error", None)
+
+    _update_meta_state(project, _apply)
 
 
 def mark_assemble_running(project: Project) -> None:
-    sd = _meta_state(project)
-    sd["status"] = "assembling"
-    sd.pop("error", None)
-    _save_state(project, sd)
+    def _apply(sd: dict[str, Any]) -> None:
+        sd["status"] = "assembling"
+        sd.pop("error", None)
+
+    _update_meta_state(project, _apply)
 
 
 def invalidate_agent(project: Project, name: str) -> bool:
@@ -249,16 +272,18 @@ def invalidate_agent(project: Project, name: str) -> bool:
     """
     if name not in ag.ALL_AGENTS:
         return False
-    sd = _meta_state(project)
-    agents_meta = dict(sd.get("agents") or {})
-    agents_meta.pop(name, None)
-    sd["agents"] = agents_meta
-    # Сборка стала stale — статус больше не «done».
-    if sd.get("status") == "done":
-        sd["status"] = "agents_done"
-        sd.pop("report", None)
-        sd.pop("finished_at", None)
-    _save_state(project, sd)
+
+    def _apply(sd: dict[str, Any]) -> None:
+        agents_meta = dict(sd.get("agents") or {})
+        agents_meta.pop(name, None)
+        sd["agents"] = agents_meta
+        # Сборка стала stale — статус больше не «done».
+        if sd.get("status") == "done":
+            sd["status"] = "agents_done"
+            sd.pop("report", None)
+            sd.pop("finished_at", None)
+
+    _update_meta_state(project, _apply)
     path = _agent_file(project, name)
     if path.is_file():
         path.unlink()
@@ -534,14 +559,18 @@ async def _run_one_agent_adaptive(
 
     async def _call_once() -> dict[str, Any]:
         # max_retries=0: первый 524 сразу в /2 split, не жечь GPT_MAX_RETRIES.
+        kwargs: dict[str, Any] = {
+            "timeout": call_timeout,
+            "validate": (depth == 0),
+            "max_retries": 0,
+        }
+        if name == ag.SKELETON and vo_nums:
+            kwargs["expected_frame_numbers"] = vo_nums
         return await _run_one_agent(
             project,
             name,
             ctx,
-            timeout=call_timeout,
-            validate=(depth == 0),
-            max_retries=0,
-            expected_frame_numbers=vo_nums if name == ag.SKELETON else None,
+            **kwargs,
         )
 
     try:
