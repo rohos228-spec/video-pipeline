@@ -231,9 +231,9 @@ def test_excel_gpt_force_full_strips_old_prompts_keeps_vo() -> None:
     assert "image_prompt" not in row
     assert "animation_prompt" not in row
     assert "shot01_action" not in row
+    assert "place" not in row
     assert row["voiceover_text"] == "у ворот канцелярии толпа"
     assert row["vo_shot"] == "у ворот канцелярии толпа"
-    assert row["place"] == "канцелярия"
 
 
 def test_excel_gpt_exposes_vo_shot_copy_not_as_voiceover() -> None:

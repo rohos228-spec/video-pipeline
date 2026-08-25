@@ -73,6 +73,23 @@ def test_pending_skips_top_level_shot_fields() -> None:
     assert [f["uuid"] for f in pending] == ["b" * 24]
 
 
+def test_ui_force_full_sends_already_filled_frames() -> None:
+    frames = [
+        {
+            "uuid": "a" * 24,
+            "voiceover_text": "one",
+            "main_action": "x",
+            "shot01_description": "y",
+        },
+        {
+            "uuid": "b" * 24,
+            "voiceover_text": "two",
+        },
+    ]
+    pending = _pending_frames(frames, dense=True, force_full=True)
+    assert [f["uuid"] for f in pending] == ["a" * 24, "b" * 24]
+
+
 def test_dense_retry_skips_filled_and_keeps_one_tail_batch() -> None:
     frames = []
     for i in range(160):

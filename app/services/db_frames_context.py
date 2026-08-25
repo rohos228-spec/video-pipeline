@@ -200,8 +200,13 @@ def build_excel_gpt_db_context(
                 row["animation_prompt"] = _clip(anim, _ATTR_MAX)
         slim = slim_attrs_for_excel_gpt(getattr(fr, "attrs", None))
         if strip_prompts:
-            slim.pop("shot01_action", None)
-            slim.pop("main_action", None)
+            # Ручной ▶: не кормить старую аналитику/действие — модель копирует.
+            keep: dict[str, str] = {}
+            for key in ("characters", "персонажи"):
+                val = slim.get(key)
+                if val:
+                    keep[key] = val
+            slim = keep
         row.update(slim)
         cs = _camera_subdivide_from(fr)
         if cs:

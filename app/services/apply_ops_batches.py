@@ -191,6 +191,7 @@ def _pending_frames(
     *,
     dense: bool,
     skip_if_field: str | None = None,
+    force_full: bool = False,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for fr in frames:
@@ -198,7 +199,9 @@ def _pending_frames(
             continue
         if not _has_voiceover(fr):
             continue
-        if _frame_complete(fr, dense=dense, skip_if_field=skip_if_field):
+        if (not force_full) and _frame_complete(
+            fr, dense=dense, skip_if_field=skip_if_field
+        ):
             continue
         out.append(fr)
     return out
@@ -210,11 +213,15 @@ def select_frames_for_batches(
     dense: bool,
     skip_if_field: str | None = None,
     target_batches: int | None = None,
+    force_full: bool = False,
 ) -> list[dict[str, Any]]:
-    """Кадры в GPT-пачки: уже заполненные shot-поля пропускаем."""
+    """Кадры в GPT-пачки. force_full (ручной ▶) — все, без skip filled."""
     del target_batches
     return _pending_frames(
-        frames, dense=dense, skip_if_field=skip_if_field
+        frames,
+        dense=dense,
+        skip_if_field=skip_if_field,
+        force_full=force_full,
     )
 
 
@@ -279,6 +286,7 @@ async def run_apply_ops_batched(
     dense: bool,
     apply_fn: ApplyFn | None = None,
     skip_if_field: str | None = None,
+    force_full: bool = False,
     target_batches: int | None = None,
     chunk_size: int | None = None,
     parallel_max: int | None = None,
@@ -291,7 +299,7 @@ async def run_apply_ops_batched(
 
     ``chunk_size`` — заранее резать pending (сценарист: 9 ячеек закадра).
     ``parallel_max`` — сколько пачек стартовать сразу (сценарист: 6),
-    со сдвигом ``stagger_sec`` (1 с). Без chunk_size — как раньше:
+    со сдвигом ``stagger_sec`` (1 с). Без chunk_size —
     сначала все pending, при ошибке 1→2→4.
     """
     from app.services.adaptive_llm_batches import next_split_level, split_in_half
@@ -302,6 +310,7 @@ async def run_apply_ops_batched(
         all_frames,
         dense=dense,
         skip_if_field=skip_if_field,
+        force_full=force_full,
     )
     if not pending:
         logger.info(

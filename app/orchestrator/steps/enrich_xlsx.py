@@ -1032,8 +1032,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         db_ctx: dict | None = None
         ctx_path = None
         fw_camera_menu_only = False
-        force_full = _excel_gpt_ui_force_full(project)
-        if force_full:
+        force_full = True
+        if _excel_gpt_ui_force_full(project):
             logger.info(
                 "[#{}] enrich_xlsx node={!r}: UI ▶ — полный GPT, без skip filled",
                 project.id,
@@ -1134,9 +1134,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     slug=project.slug,
                     frames=gpt_frames,
                     characters=entity_cards_for_gpt(ents),
-                    strip_prompts=bool(
-                        force_full and str(node_key or "").endswith("_fw_frames")
-                    ),
+                    strip_prompts=bool(force_full),
                 )
             ctx_dir = project.data_dir / "excel_gpt_uploads" / str(node_key)
             ctx_dir.mkdir(parents=True, exist_ok=True)
@@ -1424,9 +1422,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     project_id=project.id,
                     dense=not write_prompts,
                     apply_fn=_apply_batch,
+                    force_full=force_full,
                     skip_if_field=(
                         None
-                        if force_full and fw_frames
+                        if force_full
                         else (
                             SKIP_CAMERA_MENU
                             if fw_frames and fw_camera_menu_only
