@@ -25,10 +25,6 @@ _DENSE_JSON_BYTES_PER_BATCH = 40_000
 # Короткий выход (аналитика 54–59): 116 кадров / ~44k символов — ок.
 _LIGHT_FRAMES_PER_BATCH = 120
 _LIGHT_JSON_BYTES_PER_BATCH = 180_000
-# Image prompts (~5000 символов/кадр): меньше, чем shot_fill.
-_IMG_FRAMES_PER_BATCH = 8
-_IMG_JSON_BYTES_PER_BATCH = 24_000
-PROMPT_UNITS_PER_BATCH = _IMG_FRAMES_PER_BATCH
 # Сценарист / закадр: пачка = 9 ячеек VO, до 6 пачек параллельно
 # со сдвигом старта 1 с.
 VO_UNITS_PER_BATCH = 9
@@ -75,11 +71,7 @@ def frames_per_batch(
         return max(1, int(ceil(n / int(target_batches))))
     avg = max(int(json_bytes), 0) / n if n else 0
     if skip_if_field:
-        by_count = _IMG_FRAMES_PER_BATCH
-        if avg > 0:
-            by_bytes = max(4, int(_IMG_JSON_BYTES_PER_BATCH / avg))
-            return max(4, min(by_count, by_bytes, n))
-        return min(by_count, n)
+        return n
     if dense:
         by_count = _DENSE_FRAMES_PER_BATCH
         if avg > 0:
@@ -301,7 +293,7 @@ def _batch_footer(
     if kind in {"prompts", "img"}:
         return (
             f"\n# BATCH call={batch_i} split={split_level} "
-            f"(промты по {PROMPT_UNITS_PER_BATCH})\n"
+            f"(промты, кадров в вызове: {n})\n"
             f"В db_frames.json только этот кусок: {n} кадров.\n"
             "Верни ops ровно по каждому uuid: fields.промт_картинки, "
             "промт_видео, действие, крупность, движение, набор. "

@@ -141,13 +141,13 @@ def test_pending_skips_filled_shot01() -> None:
     assert [f["uuid"] for f in pending] == ["b" * 24]
 
 
-def test_img_prompt_skip_and_small_batches() -> None:
+def test_img_prompt_skip_and_no_eight_packs() -> None:
     n, raw = 40, 80_000
     size = frames_per_batch(
         n_frames=n, json_bytes=raw, dense=False, skip_if_field="image_prompt"
     )
-    assert size <= 8
-    assert should_batch_apply_ops(
+    assert size >= n
+    assert not should_batch_apply_ops(
         n_frames=n, json_bytes=raw, dense=False, skip_if_field="image_prompt"
     )
     frames = [
