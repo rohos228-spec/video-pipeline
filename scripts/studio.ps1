@@ -1,10 +1,13 @@
-﻿# Единый лаунчер Video Pipeline Studio (меню на русском)
-# Вызывается из STUDIO.cmd в корне репозитория.
-
+﻿<#
+Video Pipeline Studio Launcher
+#>
 param(
     [ValidateSet("1", "2", "3", "4", "5", "6", "7", "")]
     [string]$Action = ""
 )
+
+# Единый лаунчер Video Pipeline Studio (меню на русском)
+# Вызывается из STUDIO.cmd в корне репозитория.
 
 $ErrorActionPreference = "Continue"
 if ($env:VP_REPO_ROOT) {
@@ -497,14 +500,11 @@ function Invoke-StudioStart {
     if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
         Write-StudioMsg "ВНИМАНИЕ: web/out отсутствует. Сначала [6] Починить установку." "Yellow"
     }
-    # Если прошлый [4] оставил кастомные промты в stash - вернуть до старта бэкенда.
     Invoke-StudioRecoverPromptsFromAllStashes
     Stop-StudioBackend
     Set-StudioNvidiaEnv
     Invoke-StudioPredownloadNemo | Out-Null
-    Start-StudioChromeCdp
-    # Одна вкладка UI: ждём health в Start-StudioBackendWindow, потом Open-StudioBrowser.
-    # (раньше фоновый job дублировал открытие URL)
+    # Запуск бэкенда и открытие веб-интерфейса в браузере (все сервисы работают через прямой HTTP API)
     if (-not (Start-StudioBackendWindow)) {
         return $false
     }
@@ -980,9 +980,9 @@ function Show-StudioMenu {
     Write-Host "  launcher $stamp | ветка ПК: $brLabel" -ForegroundColor Yellow
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "  [1] Запустить студию (бэкенд + Chrome CDP + http://127.0.0.1:8765)"
-    Write-Host "  [2] Остановить всё (бэкенд :8765; Chrome с ИИ не закрывать)"
-    Write-Host "  [3] Браузер с ИИ (Chrome CDP :29229, outsee.io + chatgpt.com)"
+    Write-Host "  [1] Запустить студию (бэкенд API + веб-интерфейс http://127.0.0.1:8765)"
+    Write-Host "  [2] Остановить всё (бэкенд :8765)"
+    Write-Host "  [3] Открыть внешний браузер с ИИ (Chrome CDP :29229 — опционально)"
     Write-Host "  [4] Обновить и запустить (git origin/$brLabel + зависимости + запуск)"
     Write-Host "  [5] Ветка ПК ($brLabel): сменить"
     Write-Host "  [6] Починить установку (pip, web, Playwright, FFmpeg)"

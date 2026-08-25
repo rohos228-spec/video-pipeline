@@ -1,3 +1,8 @@
+﻿<#
+Restore-Ui
+#>
+param([string]$Start)
+
 # Force-restore web/out UI from devin/windows-installer (Materials / Network buttons).
 # Run: powershell -ExecutionPolicy Bypass -File scripts\Restore-Ui.ps1
 
@@ -5,7 +10,7 @@ $ErrorActionPreference = "Stop"
 $Branch = "devin/windows-installer"
 
 function Get-RepoRoot {
-    param([string]$Start)
+    
     $dir = $Start
     for ($i = 0; $i -lt 12; $i++) {
         if (Test-Path (Join-Path $dir "pyproject.toml")) {

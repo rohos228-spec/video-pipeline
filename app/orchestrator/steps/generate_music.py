@@ -115,16 +115,40 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     music_path = music_dir / f"music_{short_uuid}.mp3"
     prompt_id_prefix = f"[ID: P{project.id}-MUSIC-{short_uuid}]"
 
-    async with browser_session() as bs:
-        outsee = OutseeBot(bs)
-        await outsee.generate_music(
-            suno_prompt,
-            music_path,
-            title=title,
-            timeout=900,
-            prompt_id_prefix=prompt_id_prefix,
-            project_id=project.id,
+    from app.bots.kie_http import kie_configured
+
+    if kie_configured():
+        logger.info("[#{}] generate_music: запуск через прямой API Kie (Suno V5.5)", project.id)
+        from app.bots.kie_http import run_generation
+        from app.services.kie_catalog import build_payload, get_model
+
+        spec = get_model("suno-music") or {
+            "id": "suno-music",
+            "api": "suno",
+            "endpoint": "/api/v1/generate",
+        }
+        payload = build_payload(
+            spec,
+            {
+                "customMode": False,
+                "prompt": suno_prompt[:500],
+                "instrumental": True,
+                "model": "V5_5",
+            },
         )
+        await run_generation(spec, payload, music_path, timeout_s=900)
+    else:
+        logger.info("[#{}] generate_music: запуск через браузерный Outsee (Suno)", project.id)
+        async with browser_session() as bs:
+            outsee = OutseeBot(bs)
+            await outsee.generate_music(
+                suno_prompt,
+                music_path,
+                title=title,
+                timeout=900,
+                prompt_id_prefix=prompt_id_prefix,
+                project_id=project.id,
+            )
 
     session.add(
         Artifact(

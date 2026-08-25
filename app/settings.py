@@ -260,9 +260,10 @@ class Settings(BaseSettings):
     elevenlabs_web_url: str = Field(
         "https://elevenlabs.io/app/speech-synthesis", alias="ELEVENLABS_WEB_URL"
     )
-    # Опциональный API-ключ 11Labs — SFX-генерация звуков сопровождения
-    # (POST /v1/sound-effects). Без ключа — локальный синтез (wave, офлайн).
+    # API-ключ ElevenLabs — синтез речи TTS и SFX (POST /v1/text-to-speech, POST /v1/sound-effects).
     elevenlabs_api_key: str = Field("", alias="ELEVENLABS_API_KEY")
+    elevenlabs_proxy_url: str | None = Field(None, alias="ELEVENLABS_PROXY_URL")
+    elevenlabs_model_id: str = Field("eleven_multilingual_v2", alias="ELEVENLABS_MODEL_ID")
     # Звуки сопровождения в пайплайне (sfx_plan → sfx_gen → микс в сборке).
     sfx_enabled: bool = Field(True, alias="SFX_ENABLED")
 
@@ -279,10 +280,10 @@ class Settings(BaseSettings):
     project_xlsx_template: Path | None = Field(None, alias="PROJECT_XLSX_TEMPLATE")
 
     # ASR — на ПК монтажа: nvidia (NeMo Parakeet) или whisper fallback
-    asr_backend: str = Field("nvidia", alias="ASR_BACKEND")
-    whisper_model: str = Field("large-v3", alias="WHISPER_MODEL")
-    whisper_device: str = Field("cuda", alias="WHISPER_DEVICE")
-    whisper_compute_type: str = Field("float16", alias="WHISPER_COMPUTE_TYPE")
+    asr_backend: str = Field("whisper", alias="ASR_BACKEND")
+    whisper_model: str = Field("small", alias="WHISPER_MODEL")
+    whisper_device: str = Field("cpu", alias="WHISPER_DEVICE")
+    whisper_compute_type: str = Field("int8", alias="WHISPER_COMPUTE_TYPE")
     nvidia_asr_model: str = Field(
         "nvidia/parakeet-tdt-0.6b-v3", alias="NVIDIA_ASR_MODEL"
     )

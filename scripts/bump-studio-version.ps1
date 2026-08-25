@@ -1,7 +1,12 @@
-# Bump web/STUDIO_VERSION after local npm build.
+﻿<#
+bump-studio-version
+#>
 param(
     [string]$Tag = "local-build"
 )
+
+# Bump web/STUDIO_VERSION after local npm build.
+
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $vf = Join-Path $Root "web\STUDIO_VERSION"

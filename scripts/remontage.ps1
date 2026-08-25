@@ -1,13 +1,18 @@
+﻿<#
+remontage
+#>
+param(
+    [int]$ProjectId = 15,
+    [switch]$SkipAssemble
+)
+
 # Повторный монтаж после замены voice_full в audio/
 # Usage:
 #   .\scripts\remontage.ps1
 #   .\scripts\remontage.ps1 -ProjectId 15
 #   .\scripts\remontage.ps1 -ProjectId 15 -SkipAssemble
 
-param(
-    [int]$ProjectId = 15,
-    [switch]$SkipAssemble
-)
+
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path $PSScriptRoot -Parent

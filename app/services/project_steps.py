@@ -75,6 +75,7 @@ async def start_step(
     skip_queue_guard: bool = False,
     require_node_fsm: bool = False,
     explicit_ui_start: bool = False,
+    force_wipe: bool | None = None,
 ) -> ProjectStatus:
     """Перевести проект в running-статус шага — воркер подхватит."""
     # Ноды «Работа с GPT» с маркером data.sd_agent — scene-агенты: их ▶
@@ -362,9 +363,12 @@ async def start_step(
             ", ".join(cleared),
         )
     try:
-        # Soft ▶ anim_pr / img / video: не wipe готовые пачки.
-        # Явный ▶ img_pr — всегда пересобрать промты (иначе skip «already in DB»).
-        force_wipe = bool(explicit_ui_start and step_code == "img_pr")
+        # Если force_wipe не задан явно:
+        # Для ручного UI старта: по умолчанию force_wipe=True (полный перезапуск с 1-го кадра),
+        # Для автоматического продвижения воркером: force_wipe=False (мягкий догон).
+        if force_wipe is None:
+            force_wipe = bool(explicit_ui_start)
+
         # ▶ одной sd_agent-ноды: invalidate_agent уже сбросил чекпоинт.
         # Полный wipe scene_d удаляет meta.scene_design целиком — вместе с
         # only_agent → worker prepare без only_agent зажигает весь веер.

@@ -1,4 +1,4 @@
-# Первичная настройка video-pipeline на новом ПК после распаковки бэкапа.
+﻿# Первичная настройка video-pipeline на новом ПК после распаковки бэкапа.
 #
 #   cd C:\Projects\video-pipeline
 #   powershell -ExecutionPolicy Bypass -File scripts\restore-new-pc.ps1

@@ -1,9 +1,14 @@
-﻿# Запуск бэкенда из корня репозитория (вызывается из scripts/studio.ps1)
-# RUN_BACKEND_ID=session-log-v3
-
+﻿<#
+run-backend
+#>
 param(
     [switch]$NoPause
 )
+
+# Запуск бэкенда из корня репозитория (вызывается из scripts/studio.ps1)
+# RUN_BACKEND_ID=session-log-v3
+
+
 
 $ErrorActionPreference = "Continue"
 $Root = Split-Path -Parent $PSScriptRoot

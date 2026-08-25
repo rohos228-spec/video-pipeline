@@ -435,7 +435,7 @@ export function StudioWorkspace({
         await persistMeta({ custom_prompts: custom });
         toast.success("Промт удалён");
       },
-      onRunNode: async (nodeKey: string, nodeType: string) => {
+      onRunNode: async (nodeKey: string, nodeType: string, mode: "full" | "resume" = "full") => {
         if (!projectId) return;
         if (disabledNodes.has(nodeKey)) {
           toast.error("Нода отключена — включите её в меню V");
@@ -451,8 +451,12 @@ export function StudioWorkspace({
           if (nodeType === "excel_gpt" || nodeType.startsWith("enrich_")) {
             await api.patchExcelGptConfig(projectId, nodeKey, {}).catch(() => undefined);
           }
-          await api.runProjectStep(projectId, step, { nodeKey });
-          toast.success(`Запущен: ${getNodeSpec(nodeType).label}`);
+          await api.runProjectStep(projectId, step, { nodeKey, mode });
+          toast.success(
+            mode === "resume"
+              ? `Доделка: ${getNodeSpec(nodeType).label}`
+              : `Запущен начисто: ${getNodeSpec(nodeType).label}`,
+          );
           qc.invalidateQueries({ queryKey: ["project", projectId] });
           qc.invalidateQueries({ queryKey: ["project-run", projectId] });
           await qc.refetchQueries({ queryKey: ["project-run", projectId] });

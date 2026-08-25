@@ -1,3 +1,10 @@
+﻿<#
+Pull-Hotfix-Safe
+#>
+param(
+    [switch]$HardReset
+)
+
 # Safe git pull for hotfix branch when local files block merge.
 # Run from repo root:
 #   powershell -ExecutionPolicy Bypass -File scripts\Pull-Hotfix-Safe.ps1
@@ -5,9 +12,7 @@
 # Default: stash (incl. untracked) -> pull devin/windows-installer.
 # -HardReset: discard local changes and match origin (no stash).
 
-param(
-    [switch]$HardReset
-)
+
 
 $ErrorActionPreference = "Stop"
 $Branch = "devin/windows-installer"

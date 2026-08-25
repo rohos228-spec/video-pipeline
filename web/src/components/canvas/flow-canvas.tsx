@@ -58,6 +58,7 @@ import {
   workflowStructureKey,
 } from "@/lib/node-run-status";
 import { errorMessageFromUnknown } from "@/lib/error-message";
+import { shouldShowStopBar } from "@/lib/project-running";
 import { nodeTypeFromKey } from "@/lib/node-key";
 import {
   isEditableTarget,
@@ -1226,7 +1227,6 @@ export function FlowCanvas({
         project={project.data ?? null}
         workflow={workflow.data ?? null}
         run={run.data ?? null}
-        runStepNodeKey={runStepNodeKey ?? selectedNodeKey}
         onRunCreated={() => run.refetch()}
       />
     </>
@@ -1373,28 +1373,24 @@ function RunOverlay({
   project,
   workflow,
   run,
-  runStepNodeKey,
   onRunCreated,
 }: {
   projectId: number;
   project: import("@/lib/types").ProjectDetail | null;
   workflow: WorkflowDetail | null;
   run: WorkflowRunDetail | null;
-  runStepNodeKey: string | null;
   onRunCreated: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [pausing, setPausing] = useState(false);
-  const [finishBusy, setFinishBusy] = useState<"images" | "videos" | "animation_prompts" | null>(
-    null,
-  );
   const qc = useQueryClient();
 
   if (!workflow) return null;
 
-  const nodeType = nodeTypeFromKey(runStepNodeKey);
-  const stepCode = stepCodeForNodeType(nodeType);
-  const stepLabel = stepCode ? formatStepCode(stepCode) : null;
+  const isRunning = shouldShowStopBar(
+    project?.status,
+    project?.generation_active,
+  );
 
   const handlePause = async () => {
     setPausing(true);
@@ -1418,7 +1414,7 @@ function RunOverlay({
       } else if (r.action === "resumed") {
         toast.success("Проект продолжен");
       } else {
-        toast.message("Нет шага для автопродвижения — запустите шаг вручную");
+        toast.message("Нет шага для автопродвижения — запустите шаг в ноде");
       }
       onRunCreated();
     } catch (e) {
@@ -1446,244 +1442,64 @@ function RunOverlay({
     }
   };
 
-  const handleFinishImages = async () => {
-    setFinishBusy("images");
-    try {
-      const r = await api.finishMissingImages(projectId);
-      if (r.queued > 0) toast.success(r.message);
-      else toast.message(r.message);
-      qc.invalidateQueries({ queryKey: ["project", projectId] });
-      onRunCreated();
-    } catch (e) {
-      toast.error(errorMessageFromUnknown(e));
-    } finally {
-      setFinishBusy(null);
-    }
-  };
-
-  const handleFinishVideos = async () => {
-    setFinishBusy("videos");
-    try {
-      const r = await api.finishMissingVideos(projectId);
-      if (r.queued > 0) toast.success(r.message);
-      else toast.message(r.message);
-      qc.invalidateQueries({ queryKey: ["project", projectId] });
-      onRunCreated();
-    } catch (e) {
-      toast.error(errorMessageFromUnknown(e));
-    } finally {
-      setFinishBusy(null);
-    }
-  };
-
-  const handleFinishAnimationPrompts = async () => {
-    setFinishBusy("animation_prompts");
-    try {
-      const r = await api.finishMissingAnimationPrompts(projectId);
-      if (r.queued > 0) toast.success(r.message);
-      else toast.message(r.message);
-      qc.invalidateQueries({ queryKey: ["project", projectId] });
-      onRunCreated();
-    } catch (e) {
-      toast.error(errorMessageFromUnknown(e));
-    } finally {
-      setFinishBusy(null);
-    }
-  };
-
-  const handleCancelRun = async () => {
-    if (!run) return;
-    setBusy(true);
-    try {
-      await api.stopProject(projectId);
-      await api.cancelRun(run.id);
-      toast.success("Run остановлен (task.cancel)");
-      qc.invalidateQueries({ queryKey: ["project-run", projectId] });
-      qc.invalidateQueries({ queryKey: ["project", projectId] });
-      await qc.refetchQueries({ queryKey: ["project", projectId] });
-      await qc.refetchQueries({ queryKey: ["project-run", projectId] });
-      onRunCreated();
-    } catch (e) {
-      toast.error(errorMessageFromUnknown(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleResetStep = async () => {
-    if (!stepCode) {
-      toast.error("У выбранной ноды нет шага для сброса");
-      return;
-    }
-    setBusy(true);
-    try {
-      await api.resetProjectStep(projectId, stepCode);
-      toast.success(`Шаг «${formatStepCode(stepCode)}» сброшен`);
-      onRunCreated();
-    } catch (e) {
-      toast.error(errorMessageFromUnknown(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleStart = async () => {
-    if (!stepCode) {
-      toast.error("Выберите ноду с шагом пайплайна");
-      return;
-    }
-    setBusy(true);
-    try {
-      const created = await api.startRunFromWorkflow(workflow.id, {
-        project_id: projectId,
-      });
-      await api.runProjectStep(projectId, stepCode, {
-        nodeKey: runStepNodeKey ?? undefined,
-      });
-      onRunCreated();
-      toast.success(`Run #${created.id} · шаг «${formatStepCode(stepCode)}» запущен`, {
-        description: "Воркер подхватит шаг — HITL в веб-UI",
-      });
-    } catch (e) {
-      toast.error(`Не получилось запустить: ${errorMessageFromUnknown(e)}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <>
-    {/* Отдельно от Run-кнопок: при running ноде бар раздувается и раньше
-        перехватывал/давил тумблер; z-40 выше канваса и панелей. */}
-    {project ? (
-      <div className="pointer-events-none absolute right-4 top-3 z-40">
-        <div className="pointer-events-auto min-w-[200px] max-w-[260px] shadow-sm">
-          <AutoAdvanceToggle project={project} />
+      {/* Тумблер Автопродвижения */}
+      {project ? (
+        <div className="pointer-events-none absolute right-4 top-3 z-40">
+          <div className="pointer-events-auto min-w-[200px] max-w-[260px] shadow-sm">
+            <AutoAdvanceToggle project={project} />
+          </div>
         </div>
-      </div>
-    ) : null}
-    <div className="pointer-events-none absolute right-4 top-[5.5rem] z-30 flex max-w-[min(100%,640px)] flex-wrap items-center justify-end gap-2">
-      <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs shadow-sm backdrop-blur-sm">
-        <span className="text-muted-foreground">Run:</span>
-        <span className="font-medium">
-          {run ? `#${run.id} · ${formatRunStatus(run.status)}` : "не запущен"}
-        </span>
-      </div>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
+      ) : null}
+
+      {/* Верхняя компактная панель управления процессом */}
+      <div className="pointer-events-none absolute right-4 top-[5.5rem] z-30 flex max-w-[min(100%,640px)] flex-wrap items-center justify-end gap-2">
+        <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs shadow-sm backdrop-blur-sm">
+          <span className="text-muted-foreground">Run:</span>
+          <span className="font-medium">
+            {run ? `#${run.id} · ${formatRunStatus(run.status)}` : "не запущен"}
+          </span>
+        </div>
+
+        {isRunning ? (
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handlePause}
+              disabled={pausing}
+              className="pointer-events-auto gap-1 text-xs"
+            >
+              {pausing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+              Пауза
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={handleStopProject}
+              disabled={busy}
+              className="pointer-events-auto gap-1.5 text-xs font-semibold"
+              title="Остановить выполнение текущего шага"
+            >
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <span>🛑</span>}
+              Остановить шаг
+            </Button>
+          </>
+        ) : (
           <Button
             size="sm"
-            variant="outline"
-            disabled={busy || finishBusy !== null}
-            className="pointer-events-auto gap-1 text-xs"
+            variant="default"
+            onClick={handleResume}
+            disabled={pausing}
+            className="pointer-events-auto gap-1.5 text-xs"
+            title="Продолжить выполнение пайплайна (переход к следующему шагу)"
           >
-            {finishBusy ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <ChevronDown className="h-3.5 w-3.5 opacity-60" />
-            )}
-            Доделка
+            {pausing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+            Продолжить
           </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-52">
-          <DropdownMenuItem
-            disabled={finishBusy !== null}
-            onSelect={(e) => {
-              e.preventDefault();
-              void handleFinishImages();
-            }}
-          >
-            <ImageIcon className="mr-2 h-4 w-4" />
-            Доделка картинок
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={finishBusy !== null}
-            onSelect={(e) => {
-              e.preventDefault();
-              void handleFinishVideos();
-            }}
-          >
-            <Video className="mr-2 h-4 w-4" />
-            Доделка видео
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={finishBusy !== null}
-            onSelect={(e) => {
-              e.preventDefault();
-              void handleFinishAnimationPrompts();
-            }}
-          >
-            <Film className="mr-2 h-4 w-4" />
-            Доделка промтов анимации
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <Button
-        size="sm"
-        variant="outline"
-        onClick={handlePause}
-        disabled={pausing}
-        className="pointer-events-auto gap-1 text-xs"
-      >
-        {pausing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-        Пауза
-      </Button>
-      <Button
-        size="sm"
-        variant="outline"
-        onClick={handleResume}
-        disabled={pausing}
-        className="pointer-events-auto text-xs"
-      >
-        Продолжить
-      </Button>
-      <Button
-        size="sm"
-        variant="destructive"
-        onClick={handleStopProject}
-        disabled={busy}
-        className="pointer-events-auto gap-1.5 text-xs font-semibold"
-        title="Откат running-шага; автопродвижение не сбрасывается"
-      >
-        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <span>🛑</span>}
-        Остановить текущий шаг
-      </Button>
-      {run && (
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={handleCancelRun}
-          disabled={busy}
-          className="pointer-events-auto gap-1 text-xs text-destructive"
-        >
-          Отмена run
-        </Button>
-      )}
-      <Button
-        size="sm"
-        variant="ghost"
-        onClick={handleResetStep}
-        disabled={busy}
-        className="pointer-events-auto text-xs"
-      >
-        Сброс шага
-      </Button>
-      <Button
-        size="sm"
-        onClick={handleStart}
-        disabled={busy || !stepCode}
-        className="pointer-events-auto gap-1.5"
-        title={
-          stepLabel
-            ? `Запустить шаг «${stepLabel}» для ноды ${formatNodeKeyLabel(runStepNodeKey ?? "")}`
-            : "Выберите ноду с шагом пайплайна"
-        }
-      >
-        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-        {run ? "Перезапустить" : "Создать Run"}
-        {stepLabel ? ` · ${stepLabel}` : ""}
-      </Button>
-    </div>
+        )}
+      </div>
     </>
   );
 }
