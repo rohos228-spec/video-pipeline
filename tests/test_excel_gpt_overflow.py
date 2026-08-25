@@ -197,6 +197,13 @@ def test_detect_qc_prompt_body_is_not_frame_fill() -> None:
     assert not _is_frame_prompts_prompt("prompts_qc_continuity_ru", body)
 
 
+def test_detect_scene_analytics_prompt_by_54_59_name() -> None:
+    from app.orchestrator.steps.enrich_xlsx import _is_scene_analytics_prompt
+
+    assert _is_scene_analytics_prompt("agent_54_59_07.07BD.txt", "")
+    assert not _is_scene_analytics_prompt("агент по созданию персонажей BD.txt", "")
+
+
 @pytest.fixture
 async def mem_db(monkeypatch):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")

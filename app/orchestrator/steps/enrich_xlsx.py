@@ -110,6 +110,11 @@ _QC_PROMPTS_MARKERS = (
     "prompts_qc",
     "qc промпт",
 )
+_SCENE_ANALYTICS_MARKERS = (
+    "54_59",
+    "scene_analytics_54_59",
+    "scene_analytics",
+)
 
 
 def _drop_replace_frames_ops(ops: list) -> tuple[list, int]:
@@ -174,6 +179,10 @@ def _is_frame_prompts_prompt(variant: str | None, master: str | None) -> bool:
 
 def _is_qc_prompts_prompt(variant: str | None, master: str | None) -> bool:
     return any(m in _prompt_blob(variant, master) for m in _QC_PROMPTS_MARKERS)
+
+
+def _is_scene_analytics_prompt(variant: str | None, master: str | None) -> bool:
+    return any(m in _prompt_blob(variant, master) for m in _SCENE_ANALYTICS_MARKERS)
 
 
 def _frame_action_text(fr) -> str:
@@ -1273,6 +1282,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             and ctx_path is not None
         ):
             from app.services.apply_ops_batches import (
+                ANALYTICS_UNITS_PER_BATCH,
                 CAMERA_MENU_UNITS_PER_BATCH,
                 PROMPT_UNITS_PER_BATCH,
                 SKIP_CAMERA_MENU,
@@ -1291,6 +1301,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             )
             qc_prompts = _is_qc_prompts_prompt(variant, master) or nk.endswith("_fw_qc")
             write_prompts = frame_prompts or qc_prompts
+            scene_analytics = _is_scene_analytics_prompt(variant, master)
             apply_kind = (
                 "excel_gpt_prompts" if write_prompts else "excel_gpt_no_prompts"
             )
@@ -1400,6 +1411,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             f"параллельно {VO_PARALLEL_MAX}, "
                             f"сдвиг {VO_STAGGER_SEC:g}с"
                         )
+                elif scene_analytics:
+                    batch_label = f"аналитика 54–59 по {ANALYTICS_UNITS_PER_BATCH}"
                 else:
                     batch_label = "dense shot fill"
                 logger.info(
@@ -1420,7 +1433,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     db_ctx=db_ctx,
                     ctx_path=ctx_path,
                     project_id=project.id,
-                    dense=not write_prompts,
+                    dense=not write_prompts and not scene_analytics,
                     apply_fn=_apply_batch,
                     force_full=force_full,
                     skip_if_field=(
@@ -1443,7 +1456,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     chunk_size=(
                         CAMERA_MENU_UNITS_PER_BATCH
                         if fw_camera_menu_only
-                        else (PROMPT_UNITS_PER_BATCH if write_prompts else None)
+                        else (
+                            PROMPT_UNITS_PER_BATCH
+                            if write_prompts
+                            else (
+                                ANALYTICS_UNITS_PER_BATCH
+                                if scene_analytics
+                                else None
+                            )
+                        )
                     ),
                     parallel_max=(
                         VO_PARALLEL_MAX if write_prompts else None
@@ -1454,7 +1475,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     footer_kind=(
                         "camera_menu"
                         if fw_camera_menu_only
-                        else ("prompts" if write_prompts else None)
+                        else (
+                            "prompts"
+                            if write_prompts
+                            else ("analytics" if scene_analytics else None)
+                        )
                     ),
                     on_progress=_progress,
                     allow_empty_ops=qc_prompts,

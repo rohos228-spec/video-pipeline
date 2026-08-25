@@ -600,3 +600,123 @@ async def test_qc_allow_empty_does_not_split_on_gpt_fail(tmp_path, monkeypatch) 
     )
     assert calls == [8]
     assert res.apply_ops["ops"] == []
+
+
+def test_analytics_ops_rejects_copied_sense_and_place() -> None:
+    from app.services.apply_ops_batches import analytics_ops_collapsed_reason
+
+    frames = [
+        {"uuid": "aaaa1111", "voiceover_text": "а с двух крестьянских жалоб."},
+        {"uuid": "bbbb2222", "voiceover_text": "в её имениях."},
+    ]
+    ops = [
+        {
+            "frame_uuid": "aaaa1111",
+            "fields": {
+                "место": "ворота канцелярии XVIII века",
+                "смысл_сцены": "двое передают прошение у ворот",
+                "особенность_сцены": "Предметный кадр",
+            },
+        },
+        {
+            "frame_uuid": "bbbb2222",
+            "fields": {
+                "место": "ворота канцелярии XVIII века",
+                "смысл_сцены": "двое передают прошение у ворот",
+                "особенность_сцены": "Общий план локации",
+            },
+        },
+    ]
+    reason = analytics_ops_collapsed_reason(ops, frames)
+    assert reason is not None
+    assert "смысл_сцены" in reason or "место" in reason
+
+
+def test_analytics_ops_allows_same_sense_for_same_voiceover() -> None:
+    from app.services.apply_ops_batches import analytics_ops_collapsed_reason
+
+    frames = [
+        {"uuid": "aaaa1111", "voiceover_text": "один и тот же текст"},
+        {"uuid": "bbbb2222", "voiceover_text": "один и тот же текст"},
+    ]
+    ops = [
+        {
+            "frame_uuid": "aaaa1111",
+            "fields": {
+                "место": "двор усадьбы",
+                "смысл_сцены": "управляющий пишет в книгу",
+            },
+        },
+        {
+            "frame_uuid": "bbbb2222",
+            "fields": {
+                "место": "двор усадьбы",
+                "смысл_сцены": "управляющий пишет в книгу",
+            },
+        },
+    ]
+    assert analytics_ops_collapsed_reason(ops, frames) is None
+
+
+@pytest.mark.asyncio
+async def test_analytics_collapsed_ops_not_applied(tmp_path, monkeypatch) -> None:
+    from app.services.gpt_operator_client import OperatorApiResult
+
+    applied: list[list] = []
+
+    async def fake_run(**kwargs):
+        return OperatorApiResult(
+            reply_text='{"ops":[]}',
+            output_paths=[],
+            apply_ops={
+                "ops": [
+                    {
+                        "frame_uuid": "aaaa1111",
+                        "fields": {
+                            "место": "ворота",
+                            "смысл_сцены": "одно и то же",
+                        },
+                    },
+                    {
+                        "frame_uuid": "bbbb2222",
+                        "fields": {
+                            "место": "ворота",
+                            "смысл_сцены": "одно и то же",
+                        },
+                    },
+                ]
+            },
+        )
+
+    async def apply_fn(payload):
+        applied.append(list(payload.get("ops") or []))
+
+    monkeypatch.setattr(
+        "app.services.apply_ops_batches.run_operator_api", fake_run
+    )
+    monkeypatch.setattr(
+        "app.services.adaptive_llm_batches.next_split_level", lambda _level: None
+    )
+    frames = [
+        {"uuid": "aaaa1111", "voiceover_text": "жалобы"},
+        {"uuid": "bbbb2222", "voiceover_text": "в имениях"},
+    ]
+    ctx = tmp_path / "db_frames.json"
+    ctx.write_text("{}", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="скопирован"):
+        await run_apply_ops_batched(
+            project_dir=tmp_path,
+            node_key="n_excel_gpt_2",
+            role="excel_gpt",
+            output_mode="project_file",
+            prompt="p",
+            accompanying="",
+            db_ctx={"frames": frames},
+            ctx_path=ctx,
+            project_id=1,
+            dense=False,
+            chunk_size=2,
+            footer_kind="analytics",
+            apply_fn=apply_fn,
+        )
+    assert applied == []

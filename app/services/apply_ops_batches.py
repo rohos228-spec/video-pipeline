@@ -44,6 +44,8 @@ SKIP_PROMPTS_AND_ACTION = "prompts_and_action"
 # Добор меню съёмки: крупность + движение + набор.
 SKIP_CAMERA_MENU = "camera_menu"
 CAMERA_MENU_UNITS_PER_BATCH = 16
+# Аналитика 54–59: большие пачки копируют место/смысл и меняют только особенность.
+ANALYTICS_UNITS_PER_BATCH = 8
 # Зависший SSE не должен держать всю волну 10 мин (GPT_TIMEOUT_S=600).
 _PROMPT_PACK_TIMEOUT_S = 240.0
 _SIZE_SKIP_KEYS = ("крупность", "size", "shot_size")
@@ -225,12 +227,69 @@ def select_frames_for_batches(
     )
 
 
+def _norm_analytics_text(value: Any) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+
+def _op_field(fields: dict[str, Any], *names: str) -> str:
+    for name in names:
+        raw = fields.get(name)
+        if raw is not None and str(raw).strip():
+            return str(raw).strip()
+    return ""
+
+
+def analytics_ops_collapsed_reason(
+    ops: list[Any],
+    frames: list[dict[str, Any]],
+) -> str | None:
+    """Разный закадр не может делить смысл или место. Только особенность = брак."""
+    vo_by_uuid: dict[str, str] = {}
+    for fr in frames:
+        uid = str(fr.get("uuid") or "").strip()
+        if uid:
+            vo_by_uuid[uid] = _norm_analytics_text(fr.get("voiceover_text"))
+    sense_owner: dict[str, tuple[str, str]] = {}
+    place_owner: dict[str, tuple[str, str]] = {}
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        uid = str(op.get("frame_uuid") or "").strip()
+        vo = vo_by_uuid.get(uid, "")
+        sense = _norm_analytics_text(
+            _op_field(fields, "смысл_сцены", "scene_sense")
+        )
+        place = _norm_analytics_text(_op_field(fields, "место", "place"))
+        if sense:
+            prev = sense_owner.get(sense)
+            if prev and prev[1] != vo:
+                return (
+                    f"скопирован смысл_сцены у uuid {uid[:8]} "
+                    f"(тот же текст, что у {prev[0][:8]}, закадр другой)"
+                )
+            sense_owner[sense] = (uid, vo)
+        if place:
+            prev = place_owner.get(place)
+            if prev and prev[1] != vo:
+                return (
+                    f"скопировано место у uuid {uid[:8]} "
+                    f"(то же, что у {prev[0][:8]}, закадр другой)"
+                )
+            place_owner[place] = (uid, vo)
+    return None
+
+
 def _batch_footer(
     batch_i: int,
     split_level: int,
     n: int,
     *,
     footer_kind: str | None = None,
+    used_senses: list[str] | None = None,
+    used_places: list[str] | None = None,
 ) -> str:
     kind = (footer_kind or "").strip().lower()
     if kind in {"vo", "voiceover"}:
@@ -263,6 +322,26 @@ def _batch_footer(
             "набор (SET_01…SET_50 или короткое место, 2–6 слов).\n"
             "Не пиши промт_картинки, промт_видео, действие, закадр. "
             "JSON apply-ops, без прозы.\n"
+        )
+    if kind in {"analytics", "scene_analytics", "54_59"}:
+        extra = ""
+        if used_senses:
+            extra += "\nУже занятые смысл_сцены (не копировать):\n"
+            extra += "".join(f"- {s}\n" for s in used_senses[-40:])
+        if used_places:
+            extra += "Уже занятые места (не копировать дословно):\n"
+            extra += "".join(f"- {p}\n" for p in used_places[-40:])
+        return (
+            f"\n# BATCH call={batch_i} split={split_level} "
+            f"(аналитика 54–59 по {ANALYTICS_UNITS_PER_BATCH})\n"
+            f"В db_frames.json только этот кусок: {n} кадров.\n"
+            "На каждый uuid обязательны СВОИ место + смысл_сцены + тип + "
+            "особенность + кластер (акцент можно пустым).\n"
+            "Разный voiceover_text → другой смысл И другое место.\n"
+            "Поменять только особенность_сцены при том же смысле/месте = брак, "
+            "такой JSON не примут.\n"
+            "Чужие кадры не пиши. JSON apply-ops, без прозы.\n"
+            f"{extra}"
         )
     return (
         f"\n# BATCH call={batch_i} split={split_level} (схема 1→2→4)\n"
@@ -351,6 +430,8 @@ async def run_apply_ops_batched(
     replies: list[str] = []
     last_paths: list[Path] = [ctx_path]
     call_i = 0
+    used_senses: list[str] = []
+    used_places: list[str] = []
     meta_lock = asyncio.Lock()
     apply_lock = asyncio.Lock()
 
@@ -378,7 +459,12 @@ async def run_apply_ops_batched(
             encoding="utf-8",
         )
         foot = _batch_footer(
-            my_i, level, len(chunk), footer_kind=footer_kind
+            my_i,
+            level,
+            len(chunk),
+            footer_kind=footer_kind,
+            used_senses=used_senses,
+            used_places=used_places,
         )
         api_kw = dict(
             project_dir=project_dir,
@@ -438,6 +524,17 @@ async def run_apply_ops_batched(
                 dropped,
             )
         ops = kept
+        if (footer_kind or "").strip().lower() in {
+            "analytics",
+            "scene_analytics",
+            "54_59",
+        }:
+            collapsed = analytics_ops_collapsed_reason(ops, chunk)
+            if collapsed:
+                raise RuntimeError(
+                    f"enrich_xlsx node={node_key}: L{level} call {my_i} "
+                    f"{collapsed}"
+                )
         logger.info(
             "[#{}] apply_ops batched node={!r}: call {} L{} sent={} got_ops={}",
             project_id,
@@ -468,6 +565,23 @@ async def run_apply_ops_batched(
             payload["export_xlsx"] = False
             async with apply_lock:
                 await apply_fn(payload)
+        if (footer_kind or "").strip().lower() in {
+            "analytics",
+            "scene_analytics",
+            "54_59",
+        }:
+            for op in ops:
+                if not isinstance(op, dict):
+                    continue
+                fields = op.get("fields")
+                if not isinstance(fields, dict):
+                    continue
+                sense = _op_field(fields, "смысл_сцены", "scene_sense")
+                place = _op_field(fields, "место", "place")
+                if sense and sense not in used_senses:
+                    used_senses.append(sense)
+                if place and place not in used_places:
+                    used_places.append(place)
         async with meta_lock:
             last_paths = list(res.output_paths or []) or [batch_path]
             replies.append(res.reply_text or "")
