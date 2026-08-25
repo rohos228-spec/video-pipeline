@@ -18,12 +18,12 @@ from app.services.output_batch_plan import (
 
 
 def test_img_pr_batch_count_formula() -> None:
-    assert IMG_PR_FRAMES_PER_BATCH == 30
+    assert IMG_PR_FRAMES_PER_BATCH == 10
     assert batch_count_img_pr(1) == 1
-    assert batch_count_img_pr(30) == 1
-    assert batch_count_img_pr(31) == 2
-    assert batch_count_img_pr(155) == 6
-    assert batch_count_img_pr(171) == 6
+    assert batch_count_img_pr(10) == 1
+    assert batch_count_img_pr(11) == 2
+    assert batch_count_img_pr(155) == 16
+    assert batch_count_img_pr(171) == 18
 
 
 def test_vo_batch_count_formula() -> None:
@@ -34,10 +34,10 @@ def test_vo_batch_count_formula() -> None:
     assert batch_count_by_voiceover(10_500) == 3
 
 
-def test_img_pr_pack_splits_155_by_30() -> None:
+def test_img_pr_pack_splits_155_by_10() -> None:
     frames = [{"uuid": f"u{i:03d}", "number": i} for i in range(1, 156)]
     batches = pack_frames_img_pr(frames)
-    assert [len(b) for b in batches] == [30, 30, 30, 30, 30, 5]
+    assert [len(b) for b in batches] == [10] * 15 + [5]
     assert sum(len(b) for b in batches) == 155
     assert [fr["uuid"] for b in batches for fr in b] == [fr["uuid"] for fr in frames]
 
@@ -45,7 +45,7 @@ def test_img_pr_pack_splits_155_by_30() -> None:
 def test_img_pr_pack_splits_171() -> None:
     frames = [{"uuid": f"u{i:03d}", "number": i} for i in range(1, 172)]
     batches = pack_frames_img_pr(frames)
-    assert [len(b) for b in batches] == [30, 30, 30, 30, 30, 21]
+    assert [len(b) for b in batches] == [10] * 17 + [1]
     assert sum(len(b) for b in batches) == 171
     assert [fr["uuid"] for b in batches for fr in b] == [fr["uuid"] for fr in frames]
 
@@ -76,7 +76,7 @@ def test_plan_db_frames_slices_img_pr(tmp_path) -> None:
     prompt.write_text("img", encoding="utf-8")
     slices = plan_db_frames_slices([prompt, path])
     assert slices is not None
-    assert len(slices) == 6
+    assert len(slices) == 18
     total = 0
     for p in slices:
         data = json.loads(p.read_text(encoding="utf-8"))
@@ -113,11 +113,11 @@ def test_img_pr_beats_voiceover_when_pack_kind_set(tmp_path) -> None:
     assert len(slices_vo) == 6
     slices_img = plan_db_frames_slices([path, vo], pack_kind="img_pr")
     assert slices_img is not None
-    assert len(slices_img) == 6
+    assert len(slices_img) == 18
     sizes = [
         len(json.loads(p.read_text(encoding="utf-8"))["frames"]) for p in slices_img
     ]
-    assert sizes == [30, 30, 30, 30, 30, 21]
+    assert sizes == [10] * 17 + [1]
 
 
 def test_force_batches_2_and_4_ignore_vo_formula(tmp_path) -> None:
@@ -156,4 +156,4 @@ def test_img_pr_detected_from_prompt_text_even_with_voiceover(tmp_path) -> None:
         accompanying="промт_картинки в ops",
     )
     assert slices is not None
-    assert len(slices) == 6
+    assert len(slices) == 18

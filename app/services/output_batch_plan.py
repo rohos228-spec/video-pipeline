@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Нарезка db_frames на батчи.
 
-img_pr: ровно 30 кадров в батче (хвост короче). Не по символам.
+img_pr: ровно 10 кадров в батче (хвост короче). Не по символам.
 Прочие ноды с db_frames: ceil(len(закадр) / 3500).
 
 img_pr всегда важнее VO-формулы (даже если во вложениях есть voiceover.txt).
@@ -18,8 +18,8 @@ from loguru import logger
 
 T = TypeVar("T")
 
-# img_pr: один GPT-вызов = не больше 30 кадров.
-IMG_PR_FRAMES_PER_BATCH = 30
+# img_pr: один GPT-вызов = не больше 10 кадров.
+IMG_PR_FRAMES_PER_BATCH = 10
 # Старые имена — только совместимость импортов, нарезку больше не крутят.
 IMG_PR_CHARS_PER_FRAME = 4_000
 IMG_PR_BATCH_CHAR_BUDGET = 228_000
@@ -32,7 +32,7 @@ OUTPUT_TOKEN_BUDGET = IMG_PR_BATCH_CHAR_BUDGET
 
 
 def batch_count_img_pr(n_frames: int) -> int:
-    """ceil(n_frames / 30), минимум 1."""
+    """ceil(n_frames / 10), минимум 1."""
     n = max(0, int(n_frames))
     if n <= 0:
         return 1
@@ -70,7 +70,7 @@ def split_into_n_batches(frames: Sequence[T], n_batches: int) -> list[list[T]]:
 def pack_frames_img_pr(
     frames: Sequence[T], *, n_batches: int | None = None
 ) -> list[list[T]]:
-    """Нарезка img_pr: фиксированные пачки по 30 кадров."""
+    """Нарезка img_pr: фиксированные пачки по 10 кадров."""
     del n_batches
     items = list(frames)
     size = IMG_PR_FRAMES_PER_BATCH
@@ -333,7 +333,7 @@ def pack_frames_for_output(
     pack_kind: str = "img_pr",
     vo_text: str | None = None,
 ) -> list[list[T]]:
-    """SoT: img_pr по 30 кадров; иначе по длине закадра/3500.
+    """SoT: img_pr по 10 кадров; иначе по длине закадра/3500.
 
     ``budget`` / ``count_tokens`` игнорируются (совместимость сигнатуры).
     """
