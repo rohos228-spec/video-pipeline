@@ -134,7 +134,7 @@ def normalize_ref_id(token: str) -> str | None:
 
 
 def ref_id_file_aliases(ref_id: str) -> list[str]:
-    """Варианты имён файлов: i01 ↔ predmet1 (новый/старый лист «Предметы»)."""
+    """Варианты имён файлов: i01 ↔ predmet1; c02 ↔ кириллица «с02»."""
     rid = normalize_ref_id(ref_id)
     if not rid:
         return []
@@ -144,6 +144,9 @@ def ref_id_file_aliases(ref_id: str) -> list[str]:
     elif rid.startswith("predmet") and rid[7:].isdigit():
         n = int(rid[7:])
         aliases.append(f"i{n:02d}")
+    # Explorer/Windows часто сохраняет c02.png как «с02.png» (U+0441).
+    if rid.startswith("c") and rid[1:].isdigit():
+        aliases.append("с" + rid[1:])
     return list(dict.fromkeys(aliases))
 
 

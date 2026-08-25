@@ -40,6 +40,19 @@ def test_ref_id_aliases_i01_predmet1() -> None:
     assert "i01" in ref_id_file_aliases("predmet1")
 
 
+def test_ref_id_aliases_cyrillic_c() -> None:
+    assert "с02" in ref_id_file_aliases("c02")
+
+
+def test_find_ref_file_any_cyrillic_c02(tmp_path: Path) -> None:
+    chars = tmp_path / "characters"
+    chars.mkdir()
+    bad = chars / "с02.png"
+    bad.write_bytes(b"x" * 300_000)
+    found = _find_ref_file_any(chars, "c02")
+    assert found == bad
+
+
 def test_find_ref_file_any_predmet_legacy(tmp_path: Path) -> None:
     items = tmp_path / "items"
     items.mkdir()
