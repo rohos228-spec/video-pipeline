@@ -1,12 +1,17 @@
+﻿<#
+Dump-Recovered-Voiceovers
+#>
+param(
+    [string]$DataDir = "",
+    [int]$MinChars = 80
+)
+
 # Выгрузить ВСЕ найденные длинные voiceover-тексты (родительские проекты) в консоль.
 # Запуск:
 #   powershell -ExecutionPolicy Bypass -File scripts\Dump-Recovered-Voiceovers.ps1
 #   powershell -ExecutionPolicy Bypass -File scripts\Dump-Recovered-Voiceovers.ps1 > recovered.txt
 
-param(
-    [string]$DataDir = "",
-    [int]$MinChars = 80
-)
+
 
 $ErrorActionPreference = "Stop"
 

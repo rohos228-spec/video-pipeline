@@ -15,8 +15,6 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bots.browser import browser_session
-from app.bots.elevenlabs import ElevenLabsBot
 from app.models import (
     Artifact,
     ArtifactKind,
@@ -190,7 +188,7 @@ async def _finalize_audio_ready(
 async def run(
     session: AsyncSession,
     project: Project,
-    bot: Bot,
+    bot: Bot | None = None,
     *,
     force_full_asr: bool = False,
 ) -> None:
@@ -314,16 +312,13 @@ async def run(
             "11Labs отключён: AUDIO_USE_ELEVENLABS_FALLBACK=0"
         )
 
-    async with browser_session() as bs:
-        el = ElevenLabsBot(bs)
-        clips, full_audio_path, words = await synthesize_per_frame_audio(
-            el,
-            project=project,
-            frames=timeline_frames,
-            cells=cells,
-            audio_dir=audio_dir,
-            whisper_model=settings.whisper_model,
-        )
+    clips, full_audio_path, words = await synthesize_per_frame_audio(
+        project=project,
+        frames=timeline_frames,
+        cells=cells,
+        audio_dir=audio_dir,
+        whisper_model=settings.whisper_model,
+    )
 
     await _persist_audio_results(
         session,

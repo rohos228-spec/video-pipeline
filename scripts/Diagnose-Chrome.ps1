@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Continue"
+﻿$ErrorActionPreference = "Continue"
 . "$PSScriptRoot\VpBrowserProfile.ps1"
 Set-Location (Get-VpRepoRoot)
 

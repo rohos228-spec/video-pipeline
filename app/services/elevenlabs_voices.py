@@ -4,28 +4,53 @@ from __future__ import annotations
 
 from app.models import Project
 
-DEFAULT_ELEVENLABS_VOICE_ID = "t6lBrEl93uCiLR1Lgm8v"
+DEFAULT_ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB"  # Адам (Adam)
 
 ELEVENLABS_VOICES: tuple[dict[str, str], ...] = (
     {
-        "id": "TUQNWEvVPBLzMBSVDPUA",
-        "name": "Алекс",
-        "description": "эпичный голос",
+        "id": "pNInz6obpgDQGcFmaJgB",
+        "name": "Адам (Adam)",
+        "description": "глубокий, эпичный голос рассказчика (рекомендуется)",
     },
     {
-        "id": "hLjwV7lYzk15SWLUmhEH",
-        "name": "Маруся",
-        "description": "милый голос, тёплый",
+        "id": "JBFqnCBsd6RMkjVDRZzb",
+        "name": "Джордж (George)",
+        "description": "тёплый, харизматичный сторителлер",
     },
     {
-        "id": "MWyJiWDobXN8FX3CJTdE",
-        "name": "Олег",
-        "description": "средний дикторский голос",
+        "id": "nPczCjzI2devNBz1zQrb",
+        "name": "Брайан (Brian)",
+        "description": "бархатный, солидный диктор",
     },
     {
-        "id": "t6lBrEl93uCiLR1Lgm8v",
-        "name": "Алиса",
-        "description": "естественный голос",
+        "id": "IKne3meq5aSn9XLyUdCD",
+        "name": "Чарли (Charlie)",
+        "description": "уверенный, энергичный голос",
+    },
+    {
+        "id": "TX3LPaxmHKxFdv7VOQHJ",
+        "name": "Лиам (Liam)",
+        "description": "молодой, современный голос",
+    },
+    {
+        "id": "Xb7hH8MSUJpSbSDYk0k2",
+        "name": "Алиса (Alice)",
+        "description": "чёткий, выразительный женский голос",
+    },
+    {
+        "id": "EXAVITQu4vr4xnSDxMaL",
+        "name": "Сара (Sarah)",
+        "description": "уверенный, зрелый женский голос",
+    },
+    {
+        "id": "hpp4J3VqNfWAUOO0d1Us",
+        "name": "Белла (Bella)",
+        "description": "тёплый, яркий женский голос",
+    },
+    {
+        "id": "pFZP5JQG7iQjIQuC4Bku",
+        "name": "Лили (Lily)",
+        "description": "бархатный, кинематографичный женский голос",
     },
 )
 
@@ -33,7 +58,7 @@ _VALID_IDS = frozenset(v["id"] for v in ELEVENLABS_VOICES)
 
 
 def resolve_elevenlabs_voice_id(project: Project) -> str:
-    """ID голоса из meta.node_step_params.audio или Алиса по умолчанию."""
+    """ID голоса из meta.node_step_params.audio или Адам по умолчанию."""
     meta = getattr(project, "meta", None) or {}
     raw = meta.get("node_step_params")
     if not isinstance(raw, dict):

@@ -1,6 +1,11 @@
-# Fix v0 badge: rewrite STUDIO_VERSION without UTF-8 BOM + restore web/out from git.
+﻿<#
+Fix-StudioVersion160
+#>
 param(
-    [string]$Root = (Join-Path $env:USERPROFILE "video-pipeline"),
+    [string]$Root = (Join-Path $env:USERPROFILE "video-pipeline")
+
+# Fix v0 badge: rewrite STUDIO_VERSION without UTF-8 BOM + restore web/out from git.
+,
     [string]$Branch = "fix/text-save-persistence-v153"
 )
 

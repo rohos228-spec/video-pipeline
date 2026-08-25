@@ -1,3 +1,10 @@
+﻿<#
+export-full-backup
+#>
+param(
+    [string]$OutDir = "$env:USERPROFILE\Desktop"
+)
+
 # Полный бэкап video-pipeline для переноса на другой ПК.
 # Включает: код, data/ (проекты, видео, картинки, state.db), .env, prompts, web/out
 #
@@ -6,9 +13,7 @@
 #
 # На новом ПК: распаковать → setup-new-pc.ps1 (см. scripts\restore-new-pc.ps1)
 
-param(
-    [string]$OutDir = "$env:USERPROFILE\Desktop"
-)
+
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path $PSScriptRoot -Parent

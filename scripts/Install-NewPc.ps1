@@ -1,3 +1,9 @@
+﻿<#
+Install-NewPc
+#>
+param(
+    [string]$InstallDir = (Join-Path $env:USERPROFILE "video-pipeline")
+
 # video-pipeline: первичная установка на новом Windows-ПК (любой пользователь).
 #
 # Из корня репо:
@@ -11,8 +17,7 @@
 #   powershell -ExecutionPolicy Bypass -File .\scripts\Install-NewPc.ps1 -SkipClone
 
 [CmdletBinding()]
-param(
-    [string]$InstallDir = (Join-Path $env:USERPROFILE "video-pipeline"),
+,
     [string]$Branch = "fix/text-save-persistence-v153",
     [string]$RepoUrl = "https://github.com/rohos228-spec/video-pipeline.git",
     [switch]$SkipClone,

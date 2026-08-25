@@ -1,3 +1,11 @@
+﻿<#
+push-v160
+#>
+param(
+        [switch]$Quiet,
+        [switch]$AllowFail,
+        [Parameter(ValueFromRemainingArguments = $true)
+
 # Base: 5ab9f8d (Studio v159). Add prompt-history, build, STUDIO_VERSION=160, push.
 $ErrorActionPreference = "Stop"
 if ($PSVersionTable.PSVersion.Major -ge 7) {
@@ -38,10 +46,7 @@ function Log($m, $c = "Gray") {
 }
 
 function Invoke-Git {
-    param(
-        [switch]$Quiet,
-        [switch]$AllowFail,
-        [Parameter(ValueFromRemainingArguments = $true)][string[]]$GitArgs
+    ][string[]]$GitArgs
     )
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = "SilentlyContinue"

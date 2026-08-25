@@ -1,0 +1,185 @@
+"""Прямой HTTP REST API клиент ElevenLabs для синтеза речи (TTS).
+
+Заменяет устаревший Playwright/Chrome-кликер. Вызывает официальный
+эндпоинт POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id}
+с авторизацией через заголовок xi-api-key и сохраняет MP3 напрямую.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any
+
+import httpx
+from loguru import logger
+
+from app.services.elevenlabs_voices import DEFAULT_ELEVENLABS_VOICE_ID
+from app.settings import settings
+
+ELEVENLABS_API_BASE_URL = "https://api.elevenlabs.io/v1"
+
+
+class ElevenLabsApiError(RuntimeError):
+    """Ошибка вызова ElevenLabs API."""
+
+
+def elevenlabs_api_configured() -> bool:
+    """Проверяет наличие API-ключа ElevenLabs в настройках или переменных окружения."""
+    key = getattr(settings, "elevenlabs_api_key", None) or os.environ.get("ELEVENLABS_API_KEY", "")
+    return bool(key and str(key).strip())
+
+
+def _resolve_api_key() -> str:
+    key = getattr(settings, "elevenlabs_api_key", None) or os.environ.get("ELEVENLABS_API_KEY", "")
+    k = str(key or "").strip()
+    if not k:
+        raise ElevenLabsApiError(
+            "Не задан ELEVENLABS_API_KEY в .env — укажите ключ для генерации озвучки."
+        )
+    return k
+
+
+def _resolve_proxy_url() -> str | None:
+    proxy = getattr(settings, "elevenlabs_proxy_url", None) or os.environ.get("ELEVENLABS_PROXY_URL", "")
+    p = str(proxy or "").strip()
+    return p or None
+
+
+async def synthesize_speech(
+    text: str,
+    out_path: Path,
+    *,
+    voice_id: str | None = None,
+    model_id: str | None = None,
+    stability: float = 0.5,
+    similarity_boost: float = 0.75,
+    timeout: float = 240.0,
+) -> Path:
+    """Синтезирует аудиофайл через официальный ElevenLabs HTTP REST API.
+
+    Args:
+        text: Закадровый текст для озвучки.
+        out_path: Целевой путь для сохранения MP3-файла.
+        voice_id: ID голоса (по умолчанию Адам / DEFAULT_ELEVENLABS_VOICE_ID).
+        model_id: ID модели (по умолчанию eleven_multilingual_v2).
+        stability: Стабильность тембра (0.0 .. 1.0).
+        similarity_boost: Схожесть с оригинальным голосом (0.0 .. 1.0).
+        timeout: Таймаут HTTP-запроса в секундах.
+
+    Returns:
+        Path к сохранённому файлу out_path.
+    """
+    clean_text = (text or "").strip()
+    if not clean_text:
+        raise ElevenLabsApiError("Текст для озвучки пуст.")
+
+    api_key = _resolve_api_key()
+    proxy_url = _resolve_proxy_url()
+    effective_voice_id = str(voice_id or DEFAULT_ELEVENLABS_VOICE_ID).strip()
+    effective_model = str(
+        model_id
+        or getattr(settings, "elevenlabs_model_id", "eleven_multilingual_v2")
+        or "eleven_multilingual_v2"
+    ).strip()
+
+    url = f"{ELEVENLABS_API_BASE_URL}/text-to-speech/{effective_voice_id}"
+    headers = {
+        "xi-api-key": api_key,
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg",
+    }
+    payload: dict[str, Any] = {
+        "text": clean_text,
+        "model_id": effective_model,
+        "voice_settings": {
+            "stability": max(0.0, min(1.0, float(stability))),
+            "similarity_boost": max(0.0, min(1.0, float(similarity_boost))),
+        },
+    }
+
+    logger.info(
+        "11Labs API: запрос TTS voice_id={} model={} text_len={} симв. (proxy={})",
+        effective_voice_id,
+        effective_model,
+        len(clean_text),
+        "on" if proxy_url else "off",
+    )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    async def _do_post(active_proxy: str | None) -> httpx.Response:
+        client_kwargs: dict[str, Any] = {
+            "timeout": timeout,
+            "follow_redirects": True,
+        }
+        if active_proxy:
+            client_kwargs["proxy"] = active_proxy
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            return await client.post(url, headers=headers, json=payload)
+
+    resp: httpx.Response | None = None
+    try:
+        resp = await _do_post(proxy_url)
+    except (httpx.TimeoutException, httpx.RequestError, httpx.RemoteProtocolError) as exc:
+        if proxy_url:
+            logger.warning(
+                "11Labs API: ошибка через прокси ({}), выполняем прямой запрос без прокси...",
+                exc,
+            )
+            try:
+                resp = await _do_post(None)
+            except Exception as direct_exc:  # noqa: BLE001
+                raise ElevenLabsApiError(
+                    f"11Labs API: ошибка сетевого соединения: {direct_exc}"
+                ) from direct_exc
+        else:
+            raise ElevenLabsApiError(
+                f"11Labs API: ошибка сетевого соединения: {exc}"
+            ) from exc
+
+    if resp is None:
+        raise ElevenLabsApiError("11Labs API: не получен ответ от сервера.")
+
+    if resp.status_code != 200:
+        err_msg = f"HTTP {resp.status_code}"
+        try:
+            err_json = resp.json()
+            detail = err_json.get("detail")
+            if isinstance(detail, dict):
+                err_msg = f"HTTP {resp.status_code}: {detail.get('message') or detail.get('code') or err_json}"
+            elif isinstance(detail, str):
+                err_msg = f"HTTP {resp.status_code}: {detail}"
+            else:
+                err_msg = f"HTTP {resp.status_code}: {resp.text[:300]}"
+        except Exception:  # noqa: BLE001
+            err_msg = f"HTTP {resp.status_code}: {resp.text[:300]}"
+
+        if resp.status_code == 401:
+            raise ElevenLabsApiError(
+                f"11Labs API: неверный API-ключ (401 Unauthorized) — {err_msg}"
+            )
+        if resp.status_code == 402:
+            raise ElevenLabsApiError(
+                f"11Labs API: недостаточно кредитов или выбранный голос требует платный тариф (402 Payment Required) — {err_msg}"
+            )
+        if resp.status_code == 429:
+            raise ElevenLabsApiError(
+                f"11Labs API: превышен лимит запросов Rate Limit (429) — {err_msg}"
+            )
+
+        raise ElevenLabsApiError(f"11Labs API ошибка генерации: {err_msg}")
+
+    audio_bytes = resp.content
+    if len(audio_bytes) < 1000:
+        raise ElevenLabsApiError(
+            f"11Labs API вернул слишком короткий файл ({len(audio_bytes)} байт) — возможно повреждение данных."
+        )
+
+    out_path.write_bytes(audio_bytes)
+    logger.info(
+        "11Labs API: озвучка успешно сгенерирована → {} ({} байт)",
+        out_path.name,
+        len(audio_bytes),
+    )
+    return out_path

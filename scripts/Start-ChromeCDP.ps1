@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$OpenUrl = "https://chatgpt.com/",
     [switch]$ForceNew
 )

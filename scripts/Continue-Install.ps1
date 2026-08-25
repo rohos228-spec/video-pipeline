@@ -1,4 +1,4 @@
-# Finish pip install on slow/unstable internet. Do NOT press Y to cancel.
+﻿# Finish pip install on slow/unstable internet. Do NOT press Y to cancel.
 $ErrorActionPreference = "Continue"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $Root

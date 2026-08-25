@@ -373,9 +373,18 @@ export function NodeStudio({
   });
 
   const runStep = useMutation({
-    mutationFn: () => api.runProjectStep(projectId!, stepCode!, { nodeKey: nodeKey ?? undefined }),
-    onSuccess: () => {
-      toast.success(`Шаг «${spec.label}» запущен`);
+    mutationFn: (variables?: { mode?: "full" | "resume" }) =>
+      api.runProjectStep(projectId!, stepCode!, {
+        nodeKey: nodeKey ?? undefined,
+        mode: variables?.mode ?? "full",
+      }),
+    onSuccess: (_, vars) => {
+      const isResume = vars?.mode === "resume";
+      toast.success(
+        isResume
+          ? `Доделка шага «${spec.label}» запущена`
+          : `Шаг «${spec.label}» запущен начисто`,
+      );
       qc.invalidateQueries({ queryKey: ["project", projectId] });
       qc.invalidateQueries({ queryKey: ["project-run", projectId] });
       void qc.refetchQueries({ queryKey: ["project-run", projectId] });
@@ -621,40 +630,53 @@ export function NodeStudio({
                   )}
                 </div>
               </div>
-              <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap">
+              <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap items-center">
                 {stepCode && (
-                  <Button
-                    size="sm"
-                    variant={isThisNodeRunning ? "secondary" : "default"}
-                    onClick={() => runStep.mutate()}
-                    disabled={!projectId || isThisNodeRunning || nodeDisabled}
-                    className={cn(
-                      "transition-all duration-200",
-                      isThisNodeRunning &&
-                        "border border-emerald-500/50 bg-emerald-500/20 text-emerald-300 animate-pulse font-medium shadow-[0_0_12px_rgba(16,185,129,0.25)]",
+                  <>
+                    <Button
+                      size="sm"
+                      variant={isThisNodeRunning ? "secondary" : "default"}
+                      onClick={() => runStep.mutate({ mode: "full" })}
+                      disabled={!projectId || isThisNodeRunning || nodeDisabled}
+                      className={cn(
+                        "transition-all duration-200",
+                        isThisNodeRunning &&
+                          "border border-emerald-500/50 bg-emerald-500/20 text-emerald-300 animate-pulse font-medium shadow-[0_0_12px_rgba(16,185,129,0.25)]",
+                      )}
+                      title={
+                        nodeDisabled
+                          ? "Нода отключена в графе"
+                          : isThisNodeRunning
+                            ? "Шаг сейчас выполняется..."
+                            : "Запустить шаг начисто с 1-го кадра (полный перезапуск с очисткой)"
+                      }
+                    >
+                      {isThisNodeRunning ? (
+                        <>
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-400" />
+                          <span>В процессе...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Play className="h-3.5 w-3.5" />
+                          <span>Запустить шаг</span>
+                        </>
+                      )}
+                    </Button>
+                    {!isThisNodeRunning && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => runStep.mutate({ mode: "resume" })}
+                        disabled={!projectId || isThisNodeRunning || nodeDisabled}
+                        className="transition-all duration-200 gap-1.5"
+                        title="Доделать только недостающие элементы (мягкое продолжение без удаления готовых)"
+                      >
+                        <Play className="h-3.5 w-3.5 text-blue-400" />
+                        <span>Продолжить / Доделать</span>
+                      </Button>
                     )}
-                    title={
-                      nodeDisabled
-                        ? "Нода отключена в графе"
-                        : isThisNodeRunning
-                          ? "Шаг сейчас выполняется..."
-                          : generationRunning
-                            ? "Другой шаг выполняется — будет остановлен и запущен этот"
-                            : undefined
-                    }
-                  >
-                    {isThisNodeRunning ? (
-                      <>
-                        <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-400" />
-                        <span>В процессе...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Play className="h-3.5 w-3.5" />
-                        <span>Запустить шаг</span>
-                      </>
-                    )}
-                  </Button>
+                  </>
                 )}
               </div>
             </div>

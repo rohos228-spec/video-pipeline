@@ -1,4 +1,4 @@
-# Update = git pull + restart Studio. Run: UPDATE-STUDIO.cmd
+﻿# Update = git pull + restart Studio. Run: UPDATE-STUDIO.cmd
 $ErrorActionPreference = "Continue"
 $core = Join-Path $PSScriptRoot "StudioUpdateCore.ps1"
 . $core
