@@ -272,16 +272,8 @@ def list_prompts(step_code: str) -> list[str]:
 
 
 def list_excel_gpt_prompts() -> list[str]:
-    """Все .md для «Работа с GPT» — единый список из 05_excel_gpt + legacy enrich_*."""
-    merged: dict[str, None] = {}
-    for code in excel_gpt_source_steps():
-        for n in _list_prompts_in_dir(code):
-            merged.setdefault(n, None)
-    names = sorted(merged.keys())
-    if DEFAULT_NAME in names:
-        names.remove(DEFAULT_NAME)
-        names.insert(0, DEFAULT_NAME)
-    return names
+    """Список «Работа с GPT» — только prompts/05_excel_gpt, без legacy enrich_*."""
+    return _list_prompts_in_dir(EXCEL_GPT_UNIFIED_STEP)
 
 
 def _list_prompts_in_dir(step_code: str) -> list[str]:

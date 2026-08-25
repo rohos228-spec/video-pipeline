@@ -187,16 +187,12 @@ def test_overflow_qc_does_not_chain_into_scene_agent() -> None:
 
 
 def test_detect_qc_prompt_body_is_not_frame_fill() -> None:
-    from pathlib import Path
-
     from app.orchestrator.steps.enrich_xlsx import (
         _is_frame_prompts_prompt,
         _is_qc_prompts_prompt,
     )
 
-    body = Path("prompts/05_excel_gpt/prompts_qc_continuity_ru.md").read_text(
-        encoding="utf-8"
-    )
+    body = "QC промптов: чинит нарушения непрерывности без переписывания кадра."
     assert _is_qc_prompts_prompt("prompts_qc_continuity_ru", body)
     assert not _is_frame_prompts_prompt("prompts_qc_continuity_ru", body)
 

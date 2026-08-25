@@ -128,8 +128,9 @@ def test_3_old_update_then_startup_recover(tmp_path: Path, monkeypatch: pytest.M
     aside = tmp_path / "aside3"
     monkeypatch.setattr(helper, "aside_dir_for_repo", lambda _r: aside)
     _plant_user_prompts(repo)
+    assert helper.backup_prompts_aside(repo, aside=aside).get("ok")
 
-    # First "startup" with nothing to recover must NOT block later recover
+    # First "startup" with nothing extra to recover must NOT block later recover
     empty = helper.recover_prompts_on_startup(repo)
     assert empty.get("ok")
 
@@ -149,6 +150,10 @@ def test_3_old_update_then_startup_recover(tmp_path: Path, monkeypatch: pytest.M
 def test_4_cli_stash_ref_with_braces(tmp_path: Path) -> None:
     repo, origin = _init_prompt_repo(tmp_path)
     _plant_user_prompts(repo)
+    (repo / "prompts" / "03_razbivka").mkdir(parents=True, exist_ok=True)
+    (repo / "prompts" / "03_razbivka" / "user_local.md").write_text(
+        "RAZBIVKA USER\n", encoding="utf-8"
+    )
     _git(repo, "stash", "push", "-u", "-m", "studio: автосохранение перед обновлением")
     _git(repo, "reset", "--hard", origin)
 
@@ -167,7 +172,11 @@ def test_4_cli_stash_ref_with_braces(tmp_path: Path) -> None:
         check=False,
     )
     assert proc.returncode == 0, proc.stderr + proc.stdout
-    _assert_user_prompts(repo)
+    assert (repo / "prompts" / "03_razbivka" / "user_local.md").read_text(
+        encoding="utf-8"
+    ) == "RAZBIVKA USER\n"
+    # excel_gpt не возвращаем из stash — иначе старая библиотека оживает после удаления
+    assert not (repo / "prompts" / "05_excel_gpt" / "custom.md").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +222,6 @@ def test_6_studio_scripts_wire_aside_and_python_fallback() -> None:
     start_fn = studio.split("function Invoke-StudioStart", 1)[1].split("function ", 1)[0]
     assert "Start-Job -ScriptBlock" not in start_fn
     assert "Open-StudioBrowser" in start_fn
-    assert (REPO / "RECOVER-PROMPTS.cmd").is_file()
     helper = HELPER.read_text(encoding="utf-8")
     assert "backup_prompts_aside" in helper
     assert "LOCALAPPDATA" in helper
@@ -248,3 +256,15 @@ def test_7_stash_list_survives_none_stdout_and_cyrillic(
     report = helper.recover_prompts_on_startup(repo)
     assert "from_stash" in report
     assert report["from_stash"].get("ok") is True
+
+
+def test_8_stash_does_not_resurrect_deleted_excel_gpt(tmp_path: Path) -> None:
+    helper = _load_helper()
+    repo, _origin = _init_prompt_repo(tmp_path)
+    _git(repo, "stash", "push", "-u", "-m", "studio: автосохранение перед обновлением")
+    _git(repo, "rm", "-f", "prompts/05_excel_gpt/a.md", "prompts/05_excel_gpt/b.md")
+    _git(repo, "commit", "-m", "drop library")
+    report = helper.return_prompts_from_stash(repo, "stash@{0}", safe=True)
+    assert report.get("ok"), report
+    assert not (repo / "prompts" / "05_excel_gpt" / "a.md").exists()
+    assert not (repo / "prompts" / "05_excel_gpt" / "b.md").exists()

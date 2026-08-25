@@ -1,4 +1,4 @@
-"""excel_gpt list merges legacy enrich_* — content must resolve the same way."""
+"""excel_gpt list — только 05_excel_gpt; legacy enrich_* в списке не светится."""
 
 from __future__ import annotations
 
@@ -29,12 +29,13 @@ def prompts_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-def test_get_excel_gpt_content_resolves_legacy_folder(prompts_root: Path) -> None:
+def test_get_excel_gpt_list_hides_legacy_enrich_folder(prompts_root: Path) -> None:
     client = TestClient(create_app())
     listed = client.get("/api/prompt-files/excel_gpt")
     assert listed.status_code == 200
     names = {row["name"] for row in listed.json()}
-    assert "legacy_only" in names
+    assert "legacy_only" not in names
+    assert "default" in names
 
     r = client.get("/api/prompt-files/excel_gpt/legacy_only/content")
     assert r.status_code == 200, r.text
