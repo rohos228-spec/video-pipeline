@@ -18,7 +18,7 @@ from app.services.volume_batches import (
 )
 
 # Fallback only when caller omits size (xlsx uses plan_batch_size).
-_FRAMES_PER_BATCH = 25
+_FRAMES_PER_BATCH = 30
 _T = TypeVar("_T")
 _CHECKPOINT_NAME = "img_pr_checkpoint.json"
 _GPT_ATTEMPTS = 3

@@ -1,13 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Нарезка db_frames на батчи по символам (без пустых JSON-оценок).
+"""Нарезка db_frames на батчи.
 
-img_pr:
-  на каждый кадр планируем 4000 символов ответа;
-  число батчей = ceil(n_frames * 4000 / 228000)
-  (228000 = 57×4000 → на 171 кадр ровно 3 параллельных батча).
-
-Прочие ноды с db_frames:
-  число батчей = ceil(len(закадр) / 3500).
+img_pr: ровно 30 кадров в батче (хвост короче). Не по символам.
+Прочие ноды с db_frames: ceil(len(закадр) / 3500).
 
 img_pr всегда важнее VO-формулы (даже если во вложениях есть voiceover.txt).
 """
@@ -23,27 +18,25 @@ from loguru import logger
 
 T = TypeVar("T")
 
-# img_pr: ожидаемый объём ответа на кадр (символы) и бюджет одного ответа.
-# 228_000 = 57 кадров × 4000 → на 171 кадр ровно 3 параллельных батча.
+# img_pr: один GPT-вызов = не больше 30 кадров.
+IMG_PR_FRAMES_PER_BATCH = 30
+# Старые имена — только совместимость импортов, нарезку больше не крутят.
 IMG_PR_CHARS_PER_FRAME = 4_000
 IMG_PR_BATCH_CHAR_BUDGET = 228_000
 
 # Прочие ноды: один батч на каждые 3500 символов закадра.
 VO_CHARS_PER_BATCH = 3_500
 
-# Старый имя — оставляем для тестов/импортов; теперь это символьный бюджет img_pr.
+# Старое имя — оставляем для тестов/импортов.
 OUTPUT_TOKEN_BUDGET = IMG_PR_BATCH_CHAR_BUDGET
 
 
 def batch_count_img_pr(n_frames: int) -> int:
-    """ceil(n_frames * 4000 / 228000), минимум 1."""
+    """ceil(n_frames / 30), минимум 1."""
     n = max(0, int(n_frames))
     if n <= 0:
         return 1
-    return max(
-        1,
-        math.ceil(n * IMG_PR_CHARS_PER_FRAME / IMG_PR_BATCH_CHAR_BUDGET),
-    )
+    return max(1, math.ceil(n / IMG_PR_FRAMES_PER_BATCH))
 
 
 def batch_count_by_voiceover(vo_chars: int) -> int:
@@ -77,14 +70,15 @@ def split_into_n_batches(frames: Sequence[T], n_batches: int) -> list[list[T]]:
 def pack_frames_img_pr(
     frames: Sequence[T], *, n_batches: int | None = None
 ) -> list[list[T]]:
-    n = int(n_batches) if n_batches and int(n_batches) >= 2 else batch_count_img_pr(len(frames))
-    batches = split_into_n_batches(frames, n)
+    """Нарезка img_pr: фиксированные пачки по 30 кадров."""
+    del n_batches
+    items = list(frames)
+    size = IMG_PR_FRAMES_PER_BATCH
+    batches = [items[i : i + size] for i in range(0, len(items), size)] if items else []
     logger.info(
-        "output_batch_plan img_pr: frames={} chars/frame={} budget={} "
-        "batches={} sizes={}",
-        len(frames),
-        IMG_PR_CHARS_PER_FRAME,
-        IMG_PR_BATCH_CHAR_BUDGET,
+        "output_batch_plan img_pr: frames={} per_batch={} batches={} sizes={}",
+        len(items),
+        size,
         len(batches),
         [len(b) for b in batches],
     )
@@ -339,7 +333,7 @@ def pack_frames_for_output(
     pack_kind: str = "img_pr",
     vo_text: str | None = None,
 ) -> list[list[T]]:
-    """Новый SoT: img_pr по 4000 симв/кадр; иначе по длине закадра/3500.
+    """SoT: img_pr по 30 кадров; иначе по длине закадра/3500.
 
     ``budget`` / ``count_tokens`` игнорируются (совместимость сигнатуры).
     """
