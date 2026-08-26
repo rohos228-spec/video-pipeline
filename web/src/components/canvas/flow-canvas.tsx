@@ -152,7 +152,8 @@ export function FlowCanvas({
     queryKey: ["project", projectId],
     queryFn: () => api.getProject(projectId!),
     enabled: projectId != null,
-    refetchInterval: 4000,
+    refetchInterval: (q) =>
+      shouldShowStopBar(q.state.data?.status, q.state.data?.generation_active) ? 1000 : 2500,
   });
 
   const run = useQuery({
@@ -1095,7 +1096,6 @@ export function FlowCanvas({
         {onCanvasZoom ? <ViewportZoomReporter onZoom={onCanvasZoom} /> : null}
         <GroupFrames />
         <EdgeKindControls edges={edges} onEdgesLocal={setEdges} />
-        <Controls position="bottom-right" showInteractive={false} />
         <MiniMap
           pannable
           zoomable
@@ -1277,20 +1277,17 @@ function WorkflowToolbar({
 
   return (
     <div className="pointer-events-none absolute left-4 top-4 z-10 flex max-w-[calc(100%-2rem)] flex-wrap gap-2">
-      <div className="pointer-events-auto flex flex-wrap items-center gap-1 rounded-lg border border-border bg-card/80 p-1 backdrop-blur-sm">
+      <div className="pointer-events-auto flex flex-wrap items-center gap-1.5 rounded-lg border border-white/10 bg-card/90 p-1 backdrop-blur-md shadow-md">
         <NodePalette
           projectId={projectId ?? null}
           onAddNode={onAddNode}
           getSelectedNodeIds={getSelectedNodeIds}
         />
-        <Button size="sm" variant="ghost" className="h-8 gap-1 text-xs" onClick={onSave} disabled={saving}>
-          {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-          Сохранить граф
-        </Button>
+        <div className="h-4 w-px bg-white/10" />
         <Button
           size="sm"
           variant="ghost"
-          className="h-8 gap-1 text-xs"
+          className="h-8 gap-1 text-xs hover:bg-white/5"
           onClick={onCopy}
           title="Копировать выделенные ноды (Ctrl+C)"
         >
@@ -1300,7 +1297,7 @@ function WorkflowToolbar({
         <Button
           size="sm"
           variant="ghost"
-          className="h-8 gap-1 text-xs"
+          className="h-8 gap-1 text-xs hover:bg-white/5"
           onClick={onPaste}
           disabled={!canPaste}
           title="Вставить скопированные ноды (Ctrl+V) — работает и в другом проекте"
@@ -1308,40 +1305,41 @@ function WorkflowToolbar({
           <ClipboardPaste className="h-3.5 w-3.5" />
           Вставить
         </Button>
+        <div className="h-4 w-px bg-white/10" />
         <Button
           size="sm"
           variant="ghost"
-          className="h-8 gap-1 text-xs"
+          className="h-8 px-2 text-xs hover:bg-white/5"
           onClick={onDuplicateBelow}
           title="Дублировать весь граф ниже (массовые потоки)"
         >
-          <Copy className="h-3.5 w-3.5 opacity-60" />
+          <Copy className="h-3.5 w-3.5 text-muted-foreground" />
         </Button>
         <Button
           size="sm"
           variant="ghost"
-          className="h-8 gap-1 text-xs"
+          className="h-8 px-2 text-xs hover:bg-white/5"
           onClick={onAddExcelFeed}
           title="Источник Excel для массовой генерации"
         >
-          <FileSpreadsheet className="h-3.5 w-3.5" />
+          <FileSpreadsheet className="h-3.5 w-3.5 text-muted-foreground" />
         </Button>
         {workflowId != null && (
           <Button
             size="sm"
             variant="ghost"
-            className="h-8 gap-1 text-xs"
+            className="h-8 gap-1 px-2 text-xs hover:bg-white/5"
             onClick={() => void duplicateWf()}
             title="Сохранить копию workflow на сервере"
           >
-            <Copy className="h-3.5 w-3.5 opacity-60" />
-            WF
+            <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="text-[10px] text-muted-foreground">WF</span>
           </Button>
         )}
         <Button
           size="sm"
           variant="ghost"
-          className="h-8 gap-1 text-xs text-destructive"
+          className="h-8 px-2 text-xs text-destructive/80 hover:bg-destructive/10 hover:text-destructive"
           onClick={onDelete}
           disabled={!canDelete}
           title="Удалить выделенные ноды (Delete)"
@@ -1469,7 +1467,7 @@ function RunOverlay({
               variant="outline"
               onClick={handlePause}
               disabled={pausing}
-              className="pointer-events-auto gap-1 text-xs"
+              className="pointer-events-auto gap-1 text-xs border-white/20 bg-zinc-800/80 hover:bg-zinc-700"
             >
               {pausing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
               Пауза
@@ -1479,25 +1477,40 @@ function RunOverlay({
               variant="destructive"
               onClick={handleStopProject}
               disabled={busy}
-              className="pointer-events-auto gap-1.5 text-xs font-semibold"
+              className="pointer-events-auto gap-1.5 text-xs font-semibold shadow-lg shadow-red-500/25 bg-red-600 hover:bg-red-500 text-white"
               title="Остановить выполнение текущего шага"
             >
-              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <span>🛑</span>}
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3 w-3 fill-current" />}
               Остановить шаг
             </Button>
           </>
         ) : (
-          <Button
-            size="sm"
-            variant="default"
-            onClick={handleResume}
-            disabled={pausing}
-            className="pointer-events-auto gap-1.5 text-xs"
-            title="Продолжить выполнение пайплайна (переход к следующему шагу)"
-          >
-            {pausing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-            Продолжить
-          </Button>
+          <div className="flex items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="default"
+              onClick={handleResume}
+              disabled={pausing}
+              className="pointer-events-auto gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 font-semibold shadow-sm"
+              title="Продолжить выполнение пайплайна (переход к следующему шагу)"
+            >
+              {pausing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5 fill-current" />}
+              Продолжить
+            </Button>
+            {project?.status && project.status !== "new" && project.status !== "published" && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleStopProject}
+                disabled={busy}
+                className="pointer-events-auto gap-1 text-xs border-white/10 text-muted-foreground hover:border-red-500/40 hover:bg-red-500/10 hover:text-red-400"
+                title="Остановить процесс / сбросить активность"
+              >
+                {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Square className="h-3 w-3 fill-current text-destructive/80" />}
+                Остановить
+              </Button>
+            )}
+          </div>
         )}
       </div>
     </>

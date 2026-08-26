@@ -635,13 +635,12 @@ export function NodeStudio({
                   <>
                     <Button
                       size="sm"
-                      variant={isThisNodeRunning ? "secondary" : "default"}
                       onClick={() => runStep.mutate({ mode: "full" })}
                       disabled={!projectId || isThisNodeRunning || nodeDisabled}
                       className={cn(
-                        "transition-all duration-200",
+                        "transition-all duration-200 gap-1.5 font-semibold text-xs text-white bg-emerald-600 hover:bg-emerald-500 shadow-md shadow-emerald-500/20 border border-emerald-400/40 rounded-lg",
                         isThisNodeRunning &&
-                          "border border-emerald-500/50 bg-emerald-500/20 text-emerald-300 animate-pulse font-medium shadow-[0_0_12px_rgba(16,185,129,0.25)]",
+                          "border-emerald-500/60 bg-emerald-600/30 text-emerald-300 animate-pulse font-medium shadow-[0_0_12px_rgba(16,185,129,0.25)]",
                       )}
                       title={
                         nodeDisabled
@@ -653,12 +652,12 @@ export function NodeStudio({
                     >
                       {isThisNodeRunning ? (
                         <>
-                          <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-400" />
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-300" />
                           <span>В процессе...</span>
                         </>
                       ) : (
                         <>
-                          <Play className="h-3.5 w-3.5" />
+                          <Play className="h-3.5 w-3.5 fill-current" />
                           <span>Запустить шаг</span>
                         </>
                       )}
@@ -666,13 +665,12 @@ export function NodeStudio({
                     {!isThisNodeRunning && (
                       <Button
                         size="sm"
-                        variant="outline"
                         onClick={() => runStep.mutate({ mode: "resume" })}
                         disabled={!projectId || isThisNodeRunning || nodeDisabled}
-                        className="transition-all duration-200 gap-1.5"
+                        className="transition-all duration-200 gap-1.5 font-semibold text-xs text-white bg-blue-600 hover:bg-blue-500 shadow-md shadow-blue-500/25 border border-blue-400/50 rounded-lg"
                         title="Доделать только недостающие элементы (мягкое продолжение без удаления готовых)"
                       >
-                        <Play className="h-3.5 w-3.5 text-blue-400" />
+                        <Play className="h-3.5 w-3.5 text-blue-200 fill-current" />
                         <span>Продолжить / Доделать</span>
                       </Button>
                     )}
@@ -696,8 +694,13 @@ export function NodeStudio({
                   key={id}
                   type="button"
                   size="sm"
-                  variant={tab === id ? "default" : "ghost"}
-                  className="gap-1.5 text-xs"
+                  variant="ghost"
+                  className={cn(
+                    "gap-1.5 text-xs font-semibold rounded-lg transition-all",
+                    tab === id
+                      ? "bg-zinc-800 text-zinc-100 border border-zinc-700 shadow-sm"
+                      : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50",
+                  )}
                   onClick={() => {
                     setTab(id);
                     setActiveSlotId(pipelineSlots[0]?.id ?? null);
@@ -716,8 +719,13 @@ export function NodeStudio({
                     <Button
                       key={slot.id}
                       size="sm"
-                      variant={activeSlotId === slot.id && !showGptTextPanel ? "default" : "outline"}
-                      className="h-7 text-[10px]"
+                      variant="ghost"
+                      className={cn(
+                        "h-7 text-xs font-medium rounded-lg transition-all",
+                        activeSlotId === slot.id && !showGptTextPanel
+                          ? "bg-zinc-800 text-white border border-zinc-700 shadow-sm"
+                          : "border border-zinc-800 bg-zinc-900/60 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40",
+                      )}
                       onClick={() => {
                         setActiveSlotId(slot.id);
                       }}
@@ -729,19 +737,19 @@ export function NodeStudio({
                   <Button
                     type="button"
                     size="sm"
-                    variant={activeSlotId === "gpt_text" ? "default" : "outline"}
+                    variant="ghost"
                     className={cn(
-                      "h-7 text-[10px]",
+                      "h-7 text-xs font-medium rounded-lg transition-all",
                       activeSlotId === "gpt_text"
-                        ? "text-black font-semibold"
-                        : "border-violet-400/40 text-violet-200"
+                        ? "bg-violet-950/80 text-violet-200 border border-violet-500/50 shadow-sm"
+                        : "border border-violet-900/40 bg-violet-950/20 text-violet-300 hover:text-violet-100 hover:bg-violet-900/30",
                     )}
                     onClick={() => {
                       setActiveSlotId("gpt_text");
                     }}
                     title="Сопроводительный (прилагаемый) текст в диалог GPT"
                   >
-                    <MessageSquareText className="mr-1 h-3 w-3" />
+                    <MessageSquareText className="mr-1 h-3.5 w-3.5" />
                     Сопроводительный текст
                   </Button>
                 )}
@@ -908,13 +916,13 @@ export function NodeStudio({
                       <Button
                         type="button"
                         size="sm"
-                        className="mt-3 gap-1.5"
+                        className="mt-3 gap-1.5 font-semibold text-xs bg-zinc-800 text-zinc-100 hover:bg-zinc-700 border border-zinc-700 rounded-lg shadow-sm"
                         onClick={() => {
                           setTab("prompts");
                           setActiveSlotId("gpt_text");
                         }}
                       >
-                        <MessageSquareText className="h-3.5 w-3.5" />
+                        <MessageSquareText className="h-3.5 w-3.5 text-violet-400" />
                         Открыть сопроводительный текст
                       </Button>
                     </div>

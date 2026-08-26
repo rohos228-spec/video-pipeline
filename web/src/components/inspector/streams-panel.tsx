@@ -28,7 +28,7 @@ function StreamButtons({
   onPick: (n: number) => void;
 }) {
   return (
-    <div className="flex flex-wrap gap-1">
+    <div className="flex flex-wrap gap-1.5">
       {values.map((n) => (
         <button
           key={n}
@@ -36,10 +36,10 @@ function StreamButtons({
           disabled={disabled}
           onClick={() => onPick(n)}
           className={
-            "h-7 min-w-7 rounded-md px-2 text-xs font-medium transition-colors " +
+            "h-8 min-w-8 rounded-lg px-2.5 text-xs font-semibold transition-all duration-150 " +
             (local === n
-              ? "bg-primary text-primary-foreground"
-              : "bg-muted/60 text-muted-foreground hover:bg-accent/50")
+              ? "bg-emerald-600 text-white shadow-md shadow-emerald-500/20 border border-emerald-400/50 scale-105"
+              : "bg-zinc-800/80 text-zinc-300 hover:bg-zinc-700 hover:text-white border border-zinc-700/60")
           }
         >
           {n}
@@ -154,25 +154,25 @@ export function StreamsPanel({ project }: { project: ProjectDetail | null }) {
   const pending = patchGlobal.isPending || patchProject.isPending || runtime.isLoading;
 
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-sky-500/25 bg-sky-500/[0.04] p-3">
-      <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-sky-200/90">
-        <Layers className="h-3.5 w-3.5" />
-        Потоки
-        {pending ? <Loader2 className="h-3 w-3 animate-spin opacity-70" /> : null}
+    <div className="flex flex-col gap-3 rounded-2xl border border-sky-500/25 bg-zinc-900/80 p-3.5 shadow-lg">
+      <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-sky-300">
+        <Layers className="h-4 w-4" />
+        Потоки генерации
+        {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin opacity-70" /> : null}
       </div>
-      <p className="text-[10px] leading-snug text-muted-foreground">
+      <p className="text-xs leading-relaxed text-zinc-400">
         Параллель проектов — глобально. Картинки/видео и проверка GPT ниже — для текущего проекта
         (Create делит Outsee-пул ≤{cfg.create_max_parallel_outsee ?? 4}).
       </p>
 
-      <div className="rounded-lg border border-border/50 bg-card/40 px-2.5 py-2">
+      <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-3">
         <div className="mb-1 flex items-center justify-between gap-2">
-          <div className="text-xs font-medium">Параллель проектов</div>
-          <span className="text-[10px] text-muted-foreground">
+          <div className="text-sm font-semibold text-zinc-100">Параллель проектов</div>
+          <span className="text-xs font-mono font-medium text-sky-400">
             занято {busy}/{workerLocal}
           </span>
         </div>
-        <p className="mb-2 text-[10px] leading-snug text-muted-foreground">
+        <p className="mb-2.5 text-xs leading-relaxed text-zinc-400">
           Сколько проектов из очереди крутить сразу (1–4). paused/⏹ не блокируют
           хвост — свободные слоты уходят следующим.
         </p>
@@ -189,10 +189,10 @@ export function StreamsPanel({ project }: { project: ProjectDetail | null }) {
 
       {project ? (
         <>
-          <div className="rounded-lg border border-border/50 bg-card/40 px-2.5 py-2">
-            <div className="mb-1.5 text-xs font-medium">Картинки + Видео</div>
-            <p className="mb-2 text-[10px] leading-snug text-muted-foreground">
-              0 — не звать API; 1 — по одному; 2–4 — параллельно внутри шага.
+          <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-3">
+            <div className="mb-1 text-sm font-semibold text-zinc-100">Картинки + Видео</div>
+            <p className="mb-2.5 text-xs leading-relaxed text-zinc-400">
+              0 — не вызывать API; 1 — по одному; 2–4 — параллельно внутри шага.
             </p>
             <StreamButtons
               values={[0, 1, 2, 3, 4]}
@@ -207,9 +207,9 @@ export function StreamsPanel({ project }: { project: ProjectDetail | null }) {
             />
           </div>
 
-          <div className="rounded-lg border border-border/50 bg-card/40 px-2.5 py-2">
-            <div className="mb-1.5 text-xs font-medium">текстовые модели</div>
-            <p className="mb-2 text-[10px] leading-snug text-muted-foreground">
+          <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-3">
+            <div className="mb-1 text-sm font-semibold text-zinc-100">Текстовые модели</div>
+            <p className="mb-2.5 text-xs leading-relaxed text-zinc-400">
               Параллельные vision-батчи (0–10), каждый до 8 PNG.
             </p>
             <StreamButtons
@@ -224,8 +224,8 @@ export function StreamsPanel({ project }: { project: ProjectDetail | null }) {
           </div>
         </>
       ) : (
-        <p className="text-[10px] text-muted-foreground">
-          Выбери проект — появятся потоки картинок/видео и проверки GPT.
+        <p className="text-xs text-zinc-400">
+          Выберите проект слева, чтобы настроить потоки генерации.
         </p>
       )}
     </div>

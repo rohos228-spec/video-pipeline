@@ -164,15 +164,15 @@ export function PipelineNode({ data, selected }: NodeProps) {
           <div
             ref={anchorRef}
             className={cn(
-              "group relative overflow-visible rounded-3xl border border-white/10 bg-card/80 shadow-lg shadow-black/40 backdrop-blur-md premium-node-glow",
-              isGptWork || isStorage || isShotMenu ? "w-[300px]" : "w-[260px]",
-              "hover:-translate-y-0.5 hover:border-primary/35",
-              running && "glow-running border-amber-400/60",
-              d.status === "done" && "border-emerald-500/40",
-              d.status === "failed" && "border-destructive/60",
-              d.status === "waiting_hitl" && "border-amber-400/50 pulse-soft",
-              selected && "ring-1 ring-primary/50 ring-offset-2 ring-offset-background",
-              disabled && "opacity-45 grayscale",
+              "group relative overflow-visible rounded-3xl border border-zinc-700/70 bg-zinc-900/95 shadow-xl shadow-black/60 backdrop-blur-md transition-all duration-200",
+              isGptWork || isStorage || isShotMenu ? "w-[320px]" : "w-[280px]",
+              "hover:-translate-y-0.5 hover:border-zinc-500",
+              running && "glow-running border-amber-400/80 shadow-[0_0_28px_rgba(245,158,11,0.3)] ring-1 ring-amber-400/50",
+              d.status === "done" && "border-emerald-500/50 shadow-[0_0_20px_rgba(16,185,129,0.16)] hover:border-emerald-400/70",
+              d.status === "failed" && "border-red-500/60 shadow-[0_0_24px_rgba(239,68,68,0.25)] ring-1 ring-red-500/40",
+              d.status === "waiting_hitl" && "border-amber-400/60 shadow-[0_0_20px_rgba(251,191,36,0.2)] pulse-soft",
+              selected && "ring-2 ring-emerald-500/70 ring-offset-2 ring-offset-background",
+              disabled && "opacity-40 grayscale",
             )}
           >
             {/* Вход/выход без точек: связь с левого и правого края по всей высоте */}
@@ -254,9 +254,9 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 }}
               />
             )}
-            <div className="relative flex items-start gap-2.5 px-3.5 pb-2.5 pt-3">
+            <div className="relative flex items-start gap-3 px-4 pb-3 pt-3.5">
               <OrbIcon accent={spec.accent} size="md">
-                <Icon className="h-4 w-4" />
+                <Icon className="h-4.5 w-4.5" />
               </OrbIcon>
               <div className="min-w-0 flex-1 pr-8 leading-tight">
                 <div className="flex items-center justify-between gap-2">
@@ -268,10 +268,10 @@ export function PipelineNode({ data, selected }: NodeProps) {
                         title={`Импортированная группа: ${d.groupTitle ?? d.groupId}`}
                       />
                     ) : null}
-                    <span className="truncate text-[13px] font-semibold tracking-tight">{title}</span>
+                    <span className="truncate text-sm sm:text-[14.5px] font-bold tracking-normal text-zinc-100">{title}</span>
                   </span>
                   <span className={cn("status-pill shrink-0", statusConfig.bg, statusConfig.text)}>
-                    {running ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <StatusIcon className="h-2.5 w-2.5" />}
+                    {running ? <Loader2 className="h-3 w-3 animate-spin" /> : <StatusIcon className="h-3 w-3" />}
                     {statusConfig.label}
                   </span>
                 </div>
@@ -286,35 +286,35 @@ export function PipelineNode({ data, selected }: NodeProps) {
                   />
                 ) : null}
                 {isShotMenu ? (
-                  <div className="mt-1.5 flex flex-wrap gap-1">
-                    <span className="rounded-full border border-sky-400/30 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-medium text-sky-100/90">
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    <span className="rounded-full border border-sky-400/40 bg-sky-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-sky-200">
                       меню · не шаг
                     </span>
                   </div>
                 ) : null}
                 {isSdAgent ? (
-                  <div className="mt-1.5 flex flex-wrap gap-1">
-                    <span className="rounded-full border border-violet-400/25 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-medium text-violet-100/90">
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    <span className="rounded-full border border-violet-400/30 bg-violet-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-violet-200">
                       {agentName && agentName !== "assemble"
                         ? `агент: ${SD_AGENT_LABELS[agentName] ?? agentName}`
                         : "сборщик сцен"}
                     </span>
-                    <span className="rounded-full border border-emerald-400/20 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-100/90">
+                    <span className="rounded-full border border-emerald-400/30 bg-emerald-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-200">
                       GPT API
                     </span>
                   </div>
                 ) : null}
                 {!isSdAgent && isExcelGpt ? (
-                  <div className="mt-1.5 flex flex-wrap gap-1">
-                    <span className="rounded-full border border-violet-400/25 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-medium text-violet-100/90">
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    <span className="rounded-full border border-violet-400/30 bg-violet-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-violet-200">
                       {d.role ? roleChip(d.role) : workModeChip(d.workMode)}
                     </span>
                     {isBranchingRole(d.role || d.workMode) ? (
-                      <span className="rounded-full border border-amber-400/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium text-amber-100/90">
+                      <span className="rounded-full border border-amber-400/40 bg-amber-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-amber-200">
                         ок · не ок
                       </span>
                     ) : (
-                      <span className="rounded-full border border-emerald-400/20 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-100/90">
+                      <span className="rounded-full border border-emerald-400/30 bg-emerald-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-200">
                         {excelGptAttachmentChipTitle(d.inputSource ?? "project_xlsx")}
                       </span>
                     )}
@@ -679,13 +679,13 @@ const STATUS_CONFIG: Record<
   NodeRunStatus,
   { icon: typeof Circle; label: string; bg: string; text: string }
 > = {
-  pending: { icon: Circle, label: "ожидание", bg: "bg-muted/80", text: "text-muted-foreground" },
-  queued: { icon: Hourglass, label: "в очереди", bg: "bg-sky-500/15", text: "text-sky-400" },
-  running: { icon: Loader2, label: "в работе", bg: "bg-amber-500/20", text: "text-amber-400" },
-  waiting_hitl: { icon: Hourglass, label: "проверка", bg: "bg-amber-500/15", text: "text-amber-400" },
-  done: { icon: CheckCircle2, label: "готово", bg: "bg-emerald-500/15", text: "text-emerald-400" },
-  failed: { icon: AlertCircle, label: "ошибка", bg: "bg-destructive/15", text: "text-destructive" },
-  skipped: { icon: MinusCircle, label: "пропуск", bg: "bg-muted/80", text: "text-muted-foreground" },
+  pending: { icon: Circle, label: "ожидание", bg: "bg-white/[0.06] border-white/10", text: "text-zinc-400" },
+  queued: { icon: Hourglass, label: "в очереди", bg: "bg-sky-500/15 border-sky-400/30", text: "text-sky-300" },
+  running: { icon: Loader2, label: "в работе", bg: "bg-amber-500/20 border-amber-400/40", text: "text-amber-300" },
+  waiting_hitl: { icon: Hourglass, label: "проверка", bg: "bg-amber-500/15 border-amber-400/30", text: "text-amber-300" },
+  done: { icon: CheckCircle2, label: "готово", bg: "bg-emerald-500/15 border-emerald-400/30", text: "text-emerald-300" },
+  failed: { icon: AlertCircle, label: "ошибка", bg: "bg-red-500/15 border-red-400/30", text: "text-red-300" },
+  skipped: { icon: MinusCircle, label: "пропуск", bg: "bg-white/[0.04] border-white/5", text: "text-zinc-500" },
 };
 
 function truncate(s: string, n: number): string {

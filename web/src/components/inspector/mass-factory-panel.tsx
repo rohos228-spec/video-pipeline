@@ -86,33 +86,33 @@ export function MassFactoryPanel({ project }: { project: ProjectDetail }) {
         }}
       />
 
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-wrap gap-2">
         <Button
           type="button"
           size="sm"
           variant="outline"
-          className="h-7 gap-1 text-[11px]"
+          className="h-8 gap-1.5 text-xs font-semibold bg-zinc-800/90 text-zinc-200 border-zinc-700/80 hover:bg-zinc-700 hover:text-white rounded-lg"
           disabled={upload.isPending}
           onClick={() => fileRef.current?.click()}
         >
           {upload.isPending ? (
-            <Loader2 className="h-3 w-3 animate-spin" />
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
           ) : (
-            <FileSpreadsheet className="h-3 w-3" />
+            <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-400" />
           )}
           Excel тем
         </Button>
         <Button
           type="button"
           size="sm"
-          className="h-7 gap-1 text-[11px]"
+          className="h-8 gap-1.5 text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500 shadow-md shadow-emerald-500/20 border border-emerald-400/40 rounded-lg"
           disabled={start.isPending || topics.length === 0}
           onClick={() => start.mutate()}
         >
           {start.isPending ? (
-            <Loader2 className="h-3 w-3 animate-spin" />
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
           ) : (
-            <Play className="h-3 w-3" />
+            <Play className="h-3.5 w-3.5" />
           )}
           Запустить очередь
         </Button>

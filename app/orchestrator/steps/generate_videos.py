@@ -127,7 +127,9 @@ def resolve_scene_image_path(
 
 
 def _skip_frame_video_generation(fr: Frame, has_video_file: bool) -> bool:
-    """Не гонять outsee, если клип уже есть на диске."""
+    """Не вызывать outsee, если клип уже есть на диске или одобрен."""
+    if getattr(fr, "status", None) == FrameStatus.video_approved:
+        return True
     return bool(has_video_file)
 
 

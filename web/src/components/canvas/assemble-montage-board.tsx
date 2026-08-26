@@ -845,21 +845,21 @@ function DualRangeSlider({
   if (fileMax <= 0) return null;
 
   return (
-    <div className="relative isolate mt-2 overflow-hidden pt-1">
+    <div className="relative isolate mt-2 px-1 py-2">
       <div
         ref={trackRef}
-        className="relative mx-2 h-2 rounded-full bg-white/10"
+        className="relative mx-1.5 h-2.5 rounded-full bg-white/15"
         role="presentation"
       >
         <div
-          className="absolute top-0 h-2 rounded-full bg-amber-500/70"
+          className="absolute top-0 h-2.5 rounded-full bg-amber-500/80 shadow-sm"
           style={{ left: `${startPct}%`, width: `${Math.max(0, endPct - startPct)}%` }}
         />
         <button
           type="button"
           className={cn(
-            "absolute top-1/2 z-10 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-amber-400 bg-amber-200 shadow",
-            active === "start" && "scale-110",
+            "absolute top-1/2 z-10 h-4.5 w-4.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-amber-400 bg-amber-200 shadow-md transition-transform",
+            active === "start" && "scale-125 ring-2 ring-amber-400/50",
           )}
           style={{ left: `${startPct}%` }}
           aria-label="Начало фрагмента"
@@ -871,8 +871,8 @@ function DualRangeSlider({
         <button
           type="button"
           className={cn(
-            "absolute top-1/2 z-10 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-amber-400 bg-amber-200 shadow",
-            active === "end" && "scale-110",
+            "absolute top-1/2 z-10 h-4.5 w-4.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-amber-400 bg-amber-200 shadow-md transition-transform",
+            active === "end" && "scale-125 ring-2 ring-amber-400/50",
           )}
           style={{ left: `${endPct}%` }}
           aria-label="Конец фрагмента"
@@ -899,7 +899,7 @@ function VideoTrimSlider({
 }) {
   if (sceneUse == null) {
     return (
-      <p className="mt-2 text-[10px] text-muted-foreground">
+      <p className="mt-2 text-xs text-muted-foreground">
         Нет меток озвучки для расчёта длительности сцены
       </p>
     );
@@ -910,12 +910,12 @@ function VideoTrimSlider({
   const usedLen = Math.max(0, current.end - current.start);
 
   return (
-    <div className="mt-2 rounded-lg border border-white/10 bg-black/25 p-2">
-      <p className="text-[11px] text-foreground">
+    <div className="mt-2 rounded-xl border border-zinc-800 bg-zinc-950/70 p-2.5 pb-3 shadow-inner">
+      <p className="text-xs text-zinc-300 font-medium">
         В сцене:{" "}
-        <span className="font-mono font-semibold text-white">{formatSecShort(usedLen)}</span>{" "}
-        с из{" "}
-        <span className="font-mono font-semibold text-white">{formatSecShort(sceneUse)}</span> с
+        <span className="font-mono font-bold text-amber-300">{formatSecShort(usedLen)}</span>{" "}
+        из{" "}
+        <span className="font-mono font-bold text-zinc-100">{formatSecShort(sceneUse)}</span> с
       </p>
       <DualRangeSlider
         fileMax={fileMax}

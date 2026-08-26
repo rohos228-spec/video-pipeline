@@ -5,7 +5,7 @@
  * Сами настройки — в OutseeCreateWorkspace.
  */
 
-import { ExternalLink, Wand2 } from "lucide-react";
+import { ExternalLink, Wand2, Sparkles } from "lucide-react";
 import type { ProjectDetail } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { useUi } from "@/components/shell/topbar";
@@ -37,15 +37,15 @@ export function OutseeGenPanel({ project }: { project: ProjectDetail }) {
           <ExternalLink className="h-3 w-3" />
         </a>
       </div>
-      <div className="flex flex-col gap-2 p-3">
-        <p className="text-[10px] leading-relaxed text-white/40">
+      <div className="flex flex-col gap-2.5 p-3">
+        <p className="text-xs leading-relaxed text-zinc-300">
           Настройки и история общие для Studio (не привязаны к проекту). В проекте сейчас:{" "}
-          <span className="font-mono text-white/60">{slug}</span>
+          <span className="font-mono text-zinc-100 font-semibold">{slug}</span>
           {project.aspect_ratio ? (
             <>
               {" "}
               ·{" "}
-              <span className="font-mono text-white/60">
+              <span className="font-mono text-zinc-100 font-semibold">
                 {project.aspect_ratio.replace("_", ":")}
               </span>
             </>
@@ -54,12 +54,10 @@ export function OutseeGenPanel({ project }: { project: ProjectDetail }) {
         <Button
           type="button"
           size="sm"
-          className="h-9 w-full text-xs font-semibold text-black hover:brightness-110"
-          style={{ backgroundColor: "#D1FE17" }}
+          className="h-9 w-full text-xs font-semibold text-amber-100 bg-gradient-to-r from-violet-700 via-purple-600 to-indigo-700 hover:from-violet-600 hover:via-purple-500 hover:to-indigo-600 border border-amber-400/40 shadow-lg shadow-purple-950/40 rounded-xl transition-all duration-150"
           onClick={() => openOutsee(project.id)}
         >
-          <Wand2 className="mr-1.5 h-3.5 w-3.5" />
-          Открыть Генерацию
+          Открыть генерацию
         </Button>
       </div>
     </div>
