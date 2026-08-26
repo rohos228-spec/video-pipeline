@@ -350,12 +350,14 @@ async def _load_refs_for_frame(
     session: AsyncSession | None,
     project: Project,
     frame_number: int,
+    *,
+    persons_override: list[str] | None = None,
 ) -> list[Path]:
-    """Читает xlsx-ячейки «персонажи» / «предметы» для столбца кадра.
+    """Рефы кадра. persons_override — id из промта/БД, не из листа.
 
     Outsee — максимум 2 рефа на генерацию. Порядок заполнения слотов:
-      1) персонажи из ячейки (c01, c02 через запятую — до 2 найденных);
-      2) предметы — в оставшиеся слоты;
+      1) персонажи (override или ячейка);
+      2) предметы — в оставшиеся слоты (если нет override);
       3) постоянный продукт массового — если остался свободный слот.
     """
     refs: list[Path] = []
@@ -364,7 +366,10 @@ async def _load_refs_for_frame(
     )
     persons_ids: list[str] = []
     items_ids: list[str] = []
-    if xlsx_path.exists():
+    if persons_override:
+        persons_ids = [x for x in persons_override if x]
+        items_ids = []
+    elif xlsx_path.exists():
         try:
             from openpyxl import load_workbook  # ленивый импорт
             wb = load_workbook(xlsx_path, data_only=True, read_only=True)

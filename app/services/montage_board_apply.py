@@ -32,7 +32,11 @@ from app.services.montage_board_meta import (
     set_montage_meta,
     touch_applied,
 )
-from app.services.montage_ai_change import load_img_pr_master, rewrite_prompt_via_gpt
+from app.services.montage_ai_change import (
+    character_ids_from_prompt,
+    load_img_pr_master,
+    rewrite_prompt_via_gpt,
+)
 from app.services.montage_board_regen import (
     _frame_by_number,
     execute_image_regen,
@@ -344,6 +348,7 @@ async def _run_op_with_short_sessions(
                         new_prompt=new_prompt,
                         correction="",
                         board=board,
+                        ref_person_ids=character_ids_from_prompt(new_prompt),
                     )
                 return await prepare_video_regen(
                     session,

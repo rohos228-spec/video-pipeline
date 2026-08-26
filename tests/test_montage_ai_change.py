@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.models import Base, Frame, Project
 from app.services.montage_ai_change import (
     build_ai_change_user_message,
+    character_ids_from_prompt,
     ensure_img_pr_style,
     load_img_pr_master,
     load_img_pr_rules,
@@ -93,9 +94,21 @@ def test_strip_takes_prompt_from_apply_ops_json() -> None:
 
 def test_ensure_style_pins_watercolor_lock() -> None:
     out = ensure_img_pr_style("a woman in a room", variant="img_prompts_trash_polka_watercolor")
-    assert "Archival Noir Watercolor" in out
+    assert out.startswith("STYLE: Archival Noir Watercolor")
     assert "Final style lock" in out
     assert "a woman in a room" in out
+
+
+def test_ensure_style_replaces_old_lock_and_leads() -> None:
+    old = "STYLE: photoreal oil painting.\nscene here\nFinal style lock: glossy 3D."
+    out = ensure_img_pr_style(old, variant="img_prompts_trash_polka_watercolor")
+    assert out.startswith("STYLE: Archival Noir Watercolor")
+    assert "photoreal oil" not in out
+    assert "scene here" in out
+
+
+def test_character_ids_from_prompt() -> None:
+    assert character_ids_from_prompt("sheet for c05 and c01, then c05 again") == ["c05", "c01"]
 
 
 def test_order_ops_includes_ai_change_types() -> None:

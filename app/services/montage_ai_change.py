@@ -104,6 +104,33 @@ def load_img_pr_rules(project: object | None) -> str:
         return ""
 
 
+_C_ID_RE = re.compile(r"\bc(\d{2})\b", re.I)
+
+
+def character_ids_from_prompt(text: str) -> list[str]:
+    seen: list[str] = []
+    for match in _C_ID_RE.finditer(text or ""):
+        rid = f"c{match.group(1)}"
+        if rid not in seen:
+            seen.append(rid)
+    return seen
+
+
+def strip_style_blocks(text: str) -> str:
+    """Убрать строки STYLE / Final style lock / Negative, сцену оставить."""
+    out: list[str] = []
+    for line in (text or "").splitlines():
+        start = line.strip().casefold()
+        if (
+            start.startswith("style:")
+            or start.startswith("final style lock")
+            or start.startswith("negative:")
+        ):
+            continue
+        out.append(line)
+    return "\n".join(out).strip()
+
+
 def strip_ai_change_reply(raw: str) -> str:
     """Срезать обёртки; если модель вернула apply-ops — взять промт_картинки."""
     text = (raw or "").strip()
@@ -146,17 +173,23 @@ def strip_ai_change_reply(raw: str) -> str:
 
 
 def ensure_img_pr_style(text: str, *, variant: str = "") -> str:
-    """Если GPT выкинул lock агента — вернуть канон того же стиля."""
-    body = (text or "").strip()
-    if not body or already_has_style(body):
-        return body
-    blob = f"{variant}\n{body[:800]}"
-    if looks_knitted(blob):
-        return f"{body}\n\n{KNITTED_STYLE_HEAD}\n{KNITTED_STYLE_TAIL}"
-    if looks_noir(variant) or looks_noir(body):
-        return f"{body}\n\n{STYLE_HEAD}\n{STYLE_TAIL}"
-    if "watercolor" in variant.casefold() or "trash_polka" in variant.casefold():
-        return f"{body}\n\n{STYLE_HEAD}\n{STYLE_TAIL}"
+    """Стиль агента — в НАЧАЛО промта для Outsee. Старый lock вырезаем."""
+    raw = (text or "").strip()
+    if not raw:
+        return raw
+    body = strip_style_blocks(raw)
+    name = (variant or "").casefold()
+    if looks_knitted(variant) or looks_knitted(name):
+        return f"{KNITTED_STYLE_HEAD}\n\n{body}\n\n{KNITTED_STYLE_TAIL}"
+    if (
+        looks_noir(variant)
+        or "watercolor" in name
+        or "trash_polka" in name
+        or "trash polka" in name
+    ):
+        return f"{STYLE_HEAD}\n\n{body}\n\n{STYLE_TAIL}"
+    if already_has_style(raw):
+        return raw
     return body
 
 
@@ -201,12 +234,14 @@ async def rewrite_prompt_via_gpt(
     if kind == "image":
         cleaned = ensure_img_pr_style(cleaned, variant=img_pr_variant)
     logger.info(
-        "montage_ai_change: kind={} pid={} in_img={} in_vo={} out={} master={}",
+        "montage_ai_change: kind={} pid={} in_img={} in_vo={} out={} master={} head={!r} refs={}",
         kind,
         project_id,
         len((image_prompt or "").strip()),
         len((voiceover_text or "").strip()),
         len(cleaned),
         img_pr_path.name if img_pr_path is not None else "—",
+        (cleaned or "").replace("\n", " ")[:80],
+        character_ids_from_prompt(cleaned),
     )
     return cleaned

@@ -299,6 +299,7 @@ async def prepare_image_regen(
     correction: str | None = None,
     board: dict | None = None,
     pinned_prompt: str | None = None,
+    ref_person_ids: list[str] | None = None,
 ) -> ImageRegenPrep:
     fr = await _frame_by_number(session, project.id, frame_number)
     if fr is None:
@@ -315,7 +316,12 @@ async def prepare_image_regen(
         prompt_text = text
         refs: list[Path] = []
         if shot == 1:
-            refs = await _load_refs_for_frame(session, project, frame_number)
+            refs = await _load_refs_for_frame(
+                session,
+                project,
+                frame_number,
+                persons_override=ref_person_ids or None,
+            )
     elif mode == "correction":
         text = (correction or "").strip()
         if not text:
