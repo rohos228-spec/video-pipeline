@@ -208,9 +208,8 @@ def build_excel_gpt_db_context(
         slim = slim_attrs_for_excel_gpt(getattr(fr, "attrs", None))
         if strip_prompts:
             # Ручной ▶: не кормить старую аналитику/действие — модель копирует.
-            # Биты и персонажи — не «старый результат», их оставляем.
             keep: dict[str, str] = {}
-            for key in ("characters", "персонажи", "биты"):
+            for key in ("characters", "персонажи"):
                 val = slim.get(key)
                 if val:
                     keep[key] = val
