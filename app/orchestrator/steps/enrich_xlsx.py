@@ -205,6 +205,41 @@ def _is_vo_cell_markup_node(
     )
 
 
+_SCRIPT_FRAMES_QC_SUFFIXES = (
+    "_fw_script",
+    "_fw_action",
+    "_fw_shots",
+    "_fw_frames",
+    "_fw_qc",
+)
+
+
+def _is_script_frames_qc_group_node(
+    variant: str | None, master: str | None, node_key: str | None
+) -> bool:
+    """Группа script_frames_qc: биты → действие → кадры → промты → QC."""
+    nk = str(node_key or "")
+    if any(nk.endswith(s) for s in _SCRIPT_FRAMES_QC_SUFFIXES):
+        return True
+    return (
+        _is_vo_cell_markup_node(variant, master, node_key)
+        or _is_frame_prompts_prompt(variant, master)
+        or _is_qc_prompts_prompt(variant, master)
+    )
+
+
+def _script_frames_qc_footer_kind(
+    variant: str | None, master: str | None, node_key: str | None
+) -> str:
+    if _is_script_writer_node(variant, master, node_key):
+        return "bits"
+    if _is_main_action_node(variant, master, node_key):
+        return "action_chain"
+    if _is_scenes_to_frames_node(variant, master, node_key):
+        return "shots_coverage"
+    return "prompts"
+
+
 def _project_topic_bits(project) -> list[str]:
     """Тема/план для ноды сценария. Project.title, не .name (его нет)."""
     bits: list[str] = []
@@ -1063,6 +1098,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         script_writer = (not check_mode) and _is_script_writer_node(
             variant, master, node_key
         )
+        main_action_node = (not check_mode) and _is_main_action_node(
+            variant, master, node_key
+        )
+        scenes_to_frames = (not check_mode) and _is_scenes_to_frames_node(
+            variant, master, node_key
+        )
         if script_writer and output_mode != "project_file":
             logger.info(
                 "[#{}] enrich_xlsx node={!r}: script_writer → force "
@@ -1354,6 +1395,32 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         "Пайплайн сам запишет твой JSON в базу. "
                         "Excel не используется. Отвечай только JSON apply-ops."
                     ).strip()
+                elif main_action_node:
+                    accompanying = (
+                        f"{accompanying}\n\n"
+                        "# DB SoT\n"
+                        "Файл db_frames.json — VO-ячейки (uuid + voiceover_text + биты). "
+                        "Пиши только fields.главное_действие. Даже одна строка закадра "
+                        "= «1. место — действие» и следующая строка (весь кусок). "
+                        "Слоган без номера = брак. Не пиши закадр и биты."
+                    ).strip()
+                elif scenes_to_frames:
+                    accompanying = (
+                        f"{accompanying}\n\n"
+                        "# ЭТАЛОН ПОКРЫТИЯ (кадр ≠ копия сцены)\n"
+                        "Одна сцена в кабинете — не один кадр, а V-coverage:\n"
+                        "1-K1 ОБЩИЙ/фронт отдел целиком parent=null\n"
+                        "1-K2 СРЕДНИЙ/3/4 папки у доски parent=1-K1\n"
+                        "1-K3 ДЕТАЛЬ/сверху карандаш на схеме parent=1-K1\n"
+                        "Новое место → parent_id null. То же место → parent = "
+                        "первый кадр этой локации.\n"
+                        "Листает и отмечает = один средний. Двор ≠ армия = разные кадры.\n"
+                        "Короткий хвост <27 символов в том же месте — не отдельный кадр.\n"
+                        "Имя в начале («Сергей Ткач») живёт внутри master-кадра, "
+                        "не выдумывай удостоверение.\n"
+                        "# DB SoT\n"
+                        "Пиши только fields.кадры. Не пиши закадр, биты, главное_действие."
+                    ).strip()
                 else:
                     accompanying = (
                         f"{accompanying}\n\n"
@@ -1395,6 +1462,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         ):
             from app.services.apply_ops_batches import (
                 CAMERA_MENU_UNITS_PER_BATCH,
+                SCRIPT_FRAMES_QC_UNITS_PER_BATCH,
                 SKIP_CAMERA_MENU,
                 SKIP_PROMPTS_AND_ACTION,
                 VO_PARALLEL_MAX,
@@ -1498,15 +1566,23 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     await update_active_node_progress_text(session, project, msg)
                     await session.commit()
 
-                if write_prompts:
-                    if fw_camera_menu_only:
-                        batch_label = (
-                            f"меню съёмки по {CAMERA_MENU_UNITS_PER_BATCH}, "
-                            f"параллельно {VO_PARALLEL_MAX}, "
-                            f"сдвиг {VO_STAGGER_SEC:g}с"
-                        )
-                    else:
-                        batch_label = "промты одним вызовом"
+                script_frames_qc = (not fw_camera_menu_only) and (
+                    _is_script_frames_qc_group_node(variant, master, node_key)
+                )
+                if fw_camera_menu_only:
+                    batch_label = (
+                        f"меню съёмки по {CAMERA_MENU_UNITS_PER_BATCH}, "
+                        f"параллельно {VO_PARALLEL_MAX}, "
+                        f"сдвиг {VO_STAGGER_SEC:g}с"
+                    )
+                elif script_frames_qc:
+                    batch_label = (
+                        f"script_frames_qc по {SCRIPT_FRAMES_QC_UNITS_PER_BATCH} "
+                        f"отрезков закадра, параллельно {VO_PARALLEL_MAX}, "
+                        f"сдвиг {VO_STAGGER_SEC:g}с"
+                    )
+                elif write_prompts:
+                    batch_label = "промты одним вызовом"
                 elif scene_analytics:
                     batch_label = "аналитика 54–59 одним вызовом"
                 else:
@@ -1552,21 +1628,35 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     chunk_size=(
                         CAMERA_MENU_UNITS_PER_BATCH
                         if fw_camera_menu_only
-                        else None
+                        else (
+                            SCRIPT_FRAMES_QC_UNITS_PER_BATCH
+                            if script_frames_qc
+                            else None
+                        )
                     ),
                     parallel_max=(
-                        VO_PARALLEL_MAX if fw_camera_menu_only else None
+                        VO_PARALLEL_MAX
+                        if fw_camera_menu_only or script_frames_qc
+                        else None
                     ),
                     stagger_sec=(
-                        VO_STAGGER_SEC if fw_camera_menu_only else None
+                        VO_STAGGER_SEC
+                        if fw_camera_menu_only or script_frames_qc
+                        else None
                     ),
                     footer_kind=(
                         "camera_menu"
                         if fw_camera_menu_only
                         else (
-                            "prompts"
-                            if write_prompts
-                            else ("analytics" if scene_analytics else None)
+                            _script_frames_qc_footer_kind(
+                                variant, master, node_key
+                            )
+                            if script_frames_qc
+                            else (
+                                "prompts"
+                                if write_prompts
+                                else ("analytics" if scene_analytics else None)
+                            )
                         )
                     ),
                     on_progress=_progress,

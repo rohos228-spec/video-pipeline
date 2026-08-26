@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -25,9 +26,11 @@ _DENSE_JSON_BYTES_PER_BATCH = 40_000
 # Короткий выход (аналитика 54–59): 116 кадров / ~44k символов — ок.
 _LIGHT_FRAMES_PER_BATCH = 120
 _LIGHT_JSON_BYTES_PER_BATCH = 180_000
-# Сценарист / закадр: пачка = 9 ячеек VO, до 6 пачек параллельно
-# со сдвигом старта 1 с.
+# Сценарист / закадр (прочие ноды): пачка = 9 ячеек VO.
 VO_UNITS_PER_BATCH = 9
+# Группа script_frames_qc (биты → действие → кадры → промты → QC):
+# всегда 30 отрезков закадра, до 6 пачек параллельно, сдвиг 1 с.
+SCRIPT_FRAMES_QC_UNITS_PER_BATCH = 30
 VO_PARALLEL_MAX = 6
 VO_STAGGER_SEC = 1.0
 
@@ -272,6 +275,128 @@ def analytics_ops_collapsed_reason(
     return None
 
 
+_SCENE_NUM_RE = re.compile(r"(?m)^\s*\d+\.\s+\S")
+
+
+def _frame_main_action(fr: dict[str, Any]) -> str:
+    attrs = fr.get("attrs")
+    if isinstance(attrs, dict):
+        for key in ("main_action", "главное_действие"):
+            raw = str(attrs.get(key) or "").strip()
+            if raw:
+                return raw
+    return str(fr.get("main_action") or fr.get("главное_действие") or "").strip()
+
+
+def _op_shots(fields: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = fields.get("кадры") or fields.get("shots")
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def action_chain_ops_reason(
+    ops: list[Any],
+    frames: list[dict[str, Any]],
+) -> str | None:
+    """Главное действие — нумерованная цепь, не слоган."""
+    del frames
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        uid = str(op.get("frame_uuid") or "").strip()
+        text = _op_field(fields, "главное_действие", "main_action")
+        if not text:
+            return f"uuid {uid[:8]}: пустое главное_действие"
+        if not _SCENE_NUM_RE.search(text):
+            return (
+                f"uuid {uid[:8]}: главное_действие не цепь "
+                "(нет «1. место — действие»)"
+            )
+        if "(" not in text:
+            return f"uuid {uid[:8]}: нет (куска закадра) под сценой"
+    return None
+
+
+def shots_coverage_ops_reason(
+    ops: list[Any],
+    frames: list[dict[str, Any]],
+) -> str | None:
+    """Кадр ≠ копия сцены: покрытие, parent, смена плана/ракурса."""
+    by_uuid: dict[str, dict[str, Any]] = {}
+    for fr in frames:
+        uid = str(fr.get("uuid") or "").strip()
+        if uid:
+            by_uuid[uid] = fr
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        uid = str(op.get("frame_uuid") or "").strip()
+        shots = _op_shots(fields)
+        if not shots:
+            return f"uuid {uid[:8]}: пустые кадры"
+        fr = by_uuid.get(uid) or {}
+        vo = str(fr.get("voiceover_text") or "").strip()
+        chain = _frame_main_action(fr)
+        n_scenes = len(_SCENE_NUM_RE.findall(chain))
+        if n_scenes >= 2 and len(shots) < 2 and len(vo) >= 40:
+            return (
+                f"uuid {uid[:8]}: {n_scenes} сцен, но {len(shots)} кадр "
+                "— это копия сцены, не покрытие"
+            )
+        if len(shots) == 1 and len(vo) >= 80:
+            return (
+                f"uuid {uid[:8]}: длинная ячейка одним кадром "
+                "— нужно покрытие (общий/средний/деталь или смена места)"
+            )
+        by_place: dict[str, list[dict[str, Any]]] = {}
+        for shot in shots:
+            place = str(shot.get("место") or shot.get("place") or "").strip().casefold()
+            if place:
+                by_place.setdefault(place, []).append(shot)
+        for place, group in by_place.items():
+            if len(group) < 2:
+                continue
+            if all(
+                shot.get("parent_id") in (None, "", "null") for shot in group
+            ):
+                return (
+                    f"uuid {uid[:8]}: {len(group)} кадров «{place}» все "
+                    "самостоятельные — parent = первый кадр этой локации"
+                )
+        for i in range(1, len(shots)):
+            prev, cur = shots[i - 1], shots[i]
+            prev_place = str(
+                prev.get("место") or prev.get("place") or ""
+            ).strip().casefold()
+            cur_place = str(
+                cur.get("место") or cur.get("place") or ""
+            ).strip().casefold()
+            if prev_place and cur_place and prev_place != cur_place:
+                continue
+            plan_a = str(prev.get("план") or "").strip().casefold()
+            plan_b = str(cur.get("план") or "").strip().casefold()
+            ang_a = str(prev.get("ракурс") or "").strip().casefold()
+            ang_b = str(cur.get("ракурс") or "").strip().casefold()
+            if plan_a and plan_b and plan_a == plan_b and ang_a == ang_b:
+                return (
+                    f"uuid {uid[:8]}: соседние кадры одной локации с тем же "
+                    "планом и ракурсом — меняй и крупность, и угол"
+                )
+        for shot in shots:
+            if not str(shot.get("план") or "").strip():
+                return f"uuid {uid[:8]}: кадр без плана"
+            if not str(shot.get("ракурс") or "").strip():
+                return f"uuid {uid[:8]}: кадр без ракурса"
+    return None
+
+
 def _batch_footer(
     batch_i: int,
     split_level: int,
@@ -289,6 +414,35 @@ def _batch_footer(
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Верни ops ровно по каждому uuid: fields.закадр / voiceover_text. "
             "Чужие кадры не пиши. JSON apply-ops, без прозы.\n"
+        )
+    if kind in {"bits", "script_beats"}:
+        return (
+            f"\n# BATCH call={batch_i} split={split_level} "
+            f"(биты по {SCRIPT_FRAMES_QC_UNITS_PER_BATCH})\n"
+            f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
+            "Верни ops ровно по каждому uuid: fields.биты. "
+            "Не пиши закадр. Чужие кадры не пиши. JSON apply-ops, без прозы.\n"
+        )
+    if kind in {"action_chain", "main_action"}:
+        return (
+            f"\n# BATCH call={batch_i} split={split_level} "
+            f"(главное действие по {SCRIPT_FRAMES_QC_UNITS_PER_BATCH})\n"
+            f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
+            "Верни ops ровно по каждому uuid: fields.главное_действие — "
+            "нумерованная цепь «N. место — действие» + строка (кусок закадра). "
+            "Даже одна строка закадра = «1. …» и скобки. Слоган без номера = брак. "
+            "Не пиши закадр и биты. JSON apply-ops, без прозы.\n"
+        )
+    if kind in {"shots_coverage", "shots"}:
+        return (
+            f"\n# BATCH call={batch_i} split={split_level} "
+            f"(кадры-покрытие по {SCRIPT_FRAMES_QC_UNITS_PER_BATCH})\n"
+            f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
+            "Верни ops ровно по каждому uuid: fields.кадры. "
+            "Кадр ≠ копия сцены: V-coverage (ОБЩИЙ→СРЕДНИЙ→ДЕТАЛЬ), "
+            "соседние кадры одной локации меняют и план, и ракурс. "
+            "Новое место → parent_id null; то же место → parent = первый кадр локации. "
+            "Не пиши закадр, биты, главное_действие. JSON apply-ops, без прозы.\n"
         )
     if kind in {"prompts", "img"}:
         return (
@@ -366,9 +520,9 @@ async def run_apply_ops_batched(
 ) -> OperatorApiResult:
     """Один GPT-вызов на пачку. Ошибка внутри пачки → 2, затем 4.
 
-    ``chunk_size`` — заранее резать pending (сценарист: 9 ячеек закадра).
-    ``parallel_max`` — сколько пачек стартовать сразу (сценарист: 6),
-    со сдвигом ``stagger_sec`` (1 с). Без chunk_size —
+    ``chunk_size`` — заранее резать pending (script_frames_qc: 30
+    отрезков закадра). ``parallel_max`` — сколько пачек стартовать
+    сразу (6), со сдвигом ``stagger_sec`` (1 с). Без chunk_size —
     сначала все pending, при ошибке 1→2→4.
     """
     from app.services.adaptive_llm_batches import next_split_level, split_in_half
@@ -514,7 +668,8 @@ async def run_apply_ops_batched(
                 dropped,
             )
         ops = kept
-        if (footer_kind or "").strip().lower() in {
+        kind = (footer_kind or "").strip().lower()
+        if kind in {
             "analytics",
             "scene_analytics",
             "54_59",
@@ -524,6 +679,20 @@ async def run_apply_ops_batched(
                 raise RuntimeError(
                     f"enrich_xlsx node={node_key}: L{level} call {my_i} "
                     f"{collapsed}"
+                )
+        if kind in {"action_chain", "main_action"}:
+            bad_action = action_chain_ops_reason(ops, chunk)
+            if bad_action:
+                raise RuntimeError(
+                    f"enrich_xlsx node={node_key}: L{level} call {my_i} "
+                    f"{bad_action}"
+                )
+        if kind in {"shots_coverage", "shots"}:
+            bad_shots = shots_coverage_ops_reason(ops, chunk)
+            if bad_shots:
+                raise RuntimeError(
+                    f"enrich_xlsx node={node_key}: L{level} call {my_i} "
+                    f"{bad_shots}"
                 )
         logger.info(
             "[#{}] apply_ops batched node={!r}: call {} L{} sent={} got_ops={}",

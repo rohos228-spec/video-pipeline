@@ -4,6 +4,39 @@ from app.services.scene_design.camera_expand import split_text_into_parts
 from app.services.vo_shot_expand import shots_needed_for_vo, vo_duration_sec
 
 
+def test_apply_shot_meta_keeps_scene_chain() -> None:
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import _apply_shot_meta, looks_like_scene_chain
+
+    chain = (
+        "1. следственный отдел — отдел целиком\n"
+        "(Сергей Ткач парадокс)\n"
+        "2. комната Ткача — листает инструкции\n"
+        "(которые он прекрасно знал изнутри.)"
+    )
+    assert looks_like_scene_chain(chain)
+    fr = SimpleNamespace(attrs={"main_action": chain})
+    _apply_shot_meta(
+        fr,
+        {"место": "следственный отдел", "действие": "отдел целиком", "план": "ОБЩИЙ"},
+    )
+    assert fr.attrs["main_action"] == chain
+    assert fr.attrs["shot01_action"] == "отдел целиком"
+    assert fr.attrs["place"] == "следственный отдел"
+
+
+def test_apply_shot_meta_sets_action_when_empty() -> None:
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import _apply_shot_meta
+
+    fr = SimpleNamespace(attrs={})
+    _apply_shot_meta(fr, {"действие": "у доски сверяют папки"})
+    assert fr.attrs["main_action"] == "у доски сверяют папки"
+    assert fr.attrs["shot01_action"] == "у доски сверяют папки"
+
+
 def test_shots_needed_splits_sentences() -> None:
     text = "Первая фраза тут. Вторая фраза здесь. Третья уже конец."
     assert shots_needed_for_vo(text) == 3

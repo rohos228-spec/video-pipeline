@@ -729,3 +729,179 @@ async def test_analytics_collapsed_ops_not_applied(tmp_path, monkeypatch) -> Non
             apply_fn=apply_fn,
         )
     assert applied == []
+
+
+def test_action_chain_rejects_slogan() -> None:
+    from app.services.apply_ops_batches import action_chain_ops_reason
+
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {"главное_действие": "Ткач в следственном отделе"},
+        }
+    ]
+    assert action_chain_ops_reason(ops, [])
+
+
+def test_action_chain_accepts_numbered() -> None:
+    from app.services.apply_ops_batches import action_chain_ops_reason
+
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "главное_действие": (
+                    "1. следственный отдел — отдел целиком\n"
+                    "(Сергей Ткач парадокс.)"
+                )
+            },
+        }
+    ]
+    assert action_chain_ops_reason(ops, []) is None
+
+
+def test_shots_coverage_rejects_scene_copy() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    vo = "Ткач родился в Киселёвске, прошёл службу в армии, после чего начал карьеру в милиции."
+    frames = [
+        {
+            "uuid": "aa" * 4,
+            "voiceover_text": vo,
+            "attrs": {
+                "main_action": (
+                    "1. двор — бегает\n(Ткач родился в Киселёвске,)\n"
+                    "2. армия — стоит в строю\n(прошёл службу в армии,)\n"
+                    "3. милиция — входит\n(после чего начал карьеру в милиции.)"
+                )
+            },
+        }
+    ]
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "план": "ОБЩИЙ",
+                        "ракурс": "фронт",
+                        "место": "двор",
+                        "действие": "бегает",
+                    }
+                ]
+            },
+        }
+    ]
+    assert shots_coverage_ops_reason(ops, frames)
+
+
+def test_shots_coverage_accepts_v5_pattern() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    vo = "Сергей Ткач Самый страшный парадокс этой истории заключается в том, что "
+    frames = [
+        {
+            "uuid": "aa" * 4,
+            "voiceover_text": vo + "он знал правила изнутри.",
+            "attrs": {
+                "main_action": (
+                    "1. следственный отдел — отдел целиком\n(Сергей Ткач парадокс)\n"
+                    "2. комната Ткача — листает инструкции\n(знал изнутри.)"
+                )
+            },
+        }
+    ]
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "план": "ОБЩИЙ",
+                        "ракурс": "фронт",
+                        "место": "следственный отдел",
+                        "действие": "отдел целиком",
+                    },
+                    {
+                        "id": "1-K2",
+                        "parent_id": "1-K1",
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "3/4",
+                        "место": "следственный отдел",
+                        "действие": "у доски сверяют папки",
+                    },
+                    {
+                        "id": "1-K3",
+                        "parent_id": "1-K1",
+                        "план": "ДЕТАЛЬ",
+                        "ракурс": "сверху",
+                        "место": "следственный отдел",
+                        "действие": "карандаш на схеме",
+                    },
+                    {
+                        "id": "1-K4",
+                        "parent_id": None,
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "3/4",
+                        "место": "комната Ткача",
+                        "действие": "листает и отмечает",
+                    },
+                ]
+            },
+        }
+    ]
+    assert shots_coverage_ops_reason(ops, frames) is None
+
+
+@pytest.mark.asyncio
+async def test_vo_chunk_size_30_packs(tmp_path, monkeypatch) -> None:
+    """script_frames_qc: пачки по 30 отрезков закадра."""
+    import json
+
+    from app.services.apply_ops_batches import SCRIPT_FRAMES_QC_UNITS_PER_BATCH
+    from app.services.gpt_operator_client import OperatorApiResult
+
+    assert SCRIPT_FRAMES_QC_UNITS_PER_BATCH == 30
+    calls: list[int] = []
+
+    async def fake_run(**kwargs):
+        path = kwargs["input_paths"][0]
+        frames = json.loads(path.read_text(encoding="utf-8"))["frames"]
+        calls.append(len(frames))
+        ops = [
+            {"frame_uuid": fr["uuid"], "fields": {"биты": []}}
+            for fr in frames
+        ]
+        return OperatorApiResult(
+            reply_text='{"ops":[]}',
+            output_paths=[path],
+            apply_ops={"ops": ops},
+        )
+
+    monkeypatch.setattr(
+        "app.services.apply_ops_batches.run_operator_api", fake_run
+    )
+    frames = [_frame(i) for i in range(65)]
+    ctx = tmp_path / "db_frames.json"
+    ctx.write_text("{}", encoding="utf-8")
+    res = await run_apply_ops_batched(
+        project_dir=tmp_path,
+        node_key="n_excel_gpt_fw_script",
+        role="excel_gpt",
+        output_mode="project_file",
+        prompt="p",
+        accompanying="",
+        db_ctx={"frames": frames},
+        ctx_path=ctx,
+        project_id=1,
+        dense=True,
+        chunk_size=SCRIPT_FRAMES_QC_UNITS_PER_BATCH,
+        parallel_max=1,
+        footer_kind="bits",
+    )
+    assert calls == [30, 30, 5]
+    assert len(res.apply_ops["ops"]) == 65

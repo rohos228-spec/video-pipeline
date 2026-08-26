@@ -45,6 +45,28 @@ def test_detect_script_writer_prompt() -> None:
     )
 
 
+def test_script_frames_qc_group_batches_of_30() -> None:
+    from app.orchestrator.steps.enrich_xlsx import (
+        _is_script_frames_qc_group_node,
+        _script_frames_qc_footer_kind,
+    )
+    from app.services.apply_ops_batches import SCRIPT_FRAMES_QC_UNITS_PER_BATCH
+
+    assert SCRIPT_FRAMES_QC_UNITS_PER_BATCH == 30
+    for key, kind in (
+        ("n_excel_gpt_fw_script", "bits"),
+        ("n_excel_gpt_fw_action", "action_chain"),
+        ("n_excel_gpt_fw_shots", "shots_coverage"),
+        ("n_excel_gpt_fw_frames", "prompts"),
+        ("n_excel_gpt_fw_qc", "prompts"),
+    ):
+        assert _is_script_frames_qc_group_node(None, None, key)
+        assert _script_frames_qc_footer_kind(None, None, key) == kind
+    assert not _is_script_frames_qc_group_node(
+        "sd_skeleton.md", None, "n_excel_gpt_1"
+    )
+
+
 def test_detect_frame_and_qc_prompt() -> None:
     from app.orchestrator.steps.enrich_xlsx import (
         _all_frame_prompts_ready,

@@ -54,6 +54,17 @@ def resolve_shot_plan(
     return need, split_text_into_parts(original_vo, need)
 
 
+_SCENE_CHAIN_RE = re.compile(r"(?m)^\s*\d+\.\s+\S")
+
+
+def looks_like_scene_chain(text: str) -> bool:
+    """Нумерованная цепь сцен: «1. место — действие» + кусок в скобках."""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    return bool(_SCENE_CHAIN_RE.search(raw) and "(" in raw)
+
+
 def _apply_shot_meta(frame: Any, shot: dict[str, Any] | None) -> None:
     if not shot:
         return
@@ -63,8 +74,13 @@ def _apply_shot_meta(frame: Any, shot: dict[str, Any] | None) -> None:
     if place:
         attrs["place"] = place
     if action:
-        attrs["main_action"] = action
         attrs["shot01_action"] = action
+        existing = str(
+            attrs.get("main_action") or attrs.get("главное_действие") or ""
+        ).strip()
+        # Expand не затирает цепь сцен (и любой уже записанный main_action).
+        if not existing:
+            attrs["main_action"] = action
     frame.attrs = attrs
     _flag_attrs(frame)
     extra: dict[str, Any] = {}
