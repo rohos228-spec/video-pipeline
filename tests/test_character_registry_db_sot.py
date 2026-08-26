@@ -49,6 +49,11 @@ def test_detect_frame_and_qc_prompt() -> None:
     assert _is_frame_prompts_prompt("frame_prompts_continuity_ru.md", None)
     assert _is_qc_prompts_prompt("prompts_qc_continuity_ru.md", None)
     assert not _is_frame_prompts_prompt("script_writer_ru.md", None)
+    assert not _is_frame_prompts_prompt("main_action_from_bits_ru.md", None)
+    assert not _is_qc_prompts_prompt("main_action_from_bits_ru.md", None)
+    assert not _is_script_writer_node(
+        "main_action_from_bits_ru.md", None, "n_excel_gpt_fw_action"
+    )
     qc_body = (
         "Нода: excel_gpt. ПОСЛЕ агента-конвертера\n"
         "(frame_prompts_continuity) и ДО генерации картинок.\n"

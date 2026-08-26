@@ -218,6 +218,14 @@ def test_excel_gpt_force_full_strips_old_prompts_keeps_vo() -> None:
         attrs={
             "shot01_action": "рука раскладывает две жалобы",
             "place": "канцелярия",
+            "биты": [
+                {
+                    "порядок": 1,
+                    "глагол": "раскладывает",
+                    "изменение": "стол пуст → две жалобы",
+                    "якорь": "у ворот канцелярии",
+                }
+            ],
             "camera_subdivide": {
                 "role": "shot",
                 "vo_shot": "у ворот канцелярии толпа",
@@ -232,6 +240,8 @@ def test_excel_gpt_force_full_strips_old_prompts_keeps_vo() -> None:
     assert "animation_prompt" not in row
     assert "shot01_action" not in row
     assert "place" not in row
+    assert "биты" in row
+    assert "раскладывает" in row["биты"]
     assert row["voiceover_text"] == "у ворот канцелярии толпа"
     assert row["vo_shot"] == "у ворот канцелярии толпа"
 
