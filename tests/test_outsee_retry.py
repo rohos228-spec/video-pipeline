@@ -80,7 +80,11 @@ async def test_video_content_policy_keeps_start_frame(
         async def generate_video(self, prompt: str, out_path, **kwargs):
             nonlocal calls
             calls += 1
-            seen_frames.append(kwargs.get("start_frame"))
+            seen_frames.append(
+                kwargs.get("start_frame")
+                or kwargs.get("reference_image")
+                or kwargs.get("image_path")
+            )
             if calls == 1:
                 raise OutseeImageError(
                     "Outsee generation failed: {'code': 'CONTENT_POLICY', "
@@ -98,15 +102,19 @@ async def test_video_content_policy_keeps_start_frame(
     async def no_sleep(*_a, **_k):
         return None
 
+    fake_outsee = FakeOutsee()
     monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
     monkeypatch.setattr(mod, "sleep_cancellable", no_sleep)
     monkeypatch.setattr("app.bots.grsai.grsai_key_configured", lambda: False)
     monkeypatch.setattr(
-        "app.bots.outsee_http.outsee_api_configured", lambda: False
+        "app.bots.outsee_http.outsee_api_configured", lambda: True
+    )
+    monkeypatch.setattr(
+        "app.bots.outsee_http.generate_video", fake_outsee.generate_video
     )
 
     result = await mod.generate_video_with_retries(
-        FakeOutsee(),
+        fake_outsee,
         None,
         prompt="silent archival noir scene",
         out_path=tmp_path / "out.mp4",
@@ -235,12 +243,15 @@ async def test_generate_image_rewrite_after_moderation_stops_duplicate_retries(
     async def fake_prepare(gpt, body, prefix, *, project_id=None):
         return body
 
+    fake_outsee = FakeOutsee()
     monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
     monkeypatch.setattr("app.bots.grsai.grsai_key_configured", lambda: False)
+    monkeypatch.setattr("app.bots.outsee_http.outsee_api_configured", lambda: True)
+    monkeypatch.setattr("app.bots.outsee_http.generate_image", fake_outsee.generate_image)
 
     with pytest.raises(OutseeContentRejectedError):
         await mod.generate_image_with_retries(
-            FakeOutsee(),
+            fake_outsee,
             FakeGpt(),
             prompt="original bad prompt " * 20,
             out_path=__import__("pathlib").Path("out.png"),
@@ -285,12 +296,15 @@ async def test_plain_image_error_moderation_banner_failfast(monkeypatch) -> None
     async def fake_prepare(gpt, body, prefix, *, project_id=None):
         return body
 
+    fake_outsee = FakeOutsee()
     monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
     monkeypatch.setattr("app.bots.grsai.grsai_key_configured", lambda: False)
+    monkeypatch.setattr("app.bots.outsee_http.outsee_api_configured", lambda: True)
+    monkeypatch.setattr("app.bots.outsee_http.generate_image", fake_outsee.generate_image)
 
     with pytest.raises(OutseeImageError):
         await mod.generate_image_with_retries(
-            FakeOutsee(),
+            fake_outsee,
             FakeGpt(),
             prompt="banned original prompt " * 20,
             out_path=__import__("pathlib").Path("out.png"),
@@ -376,6 +390,7 @@ async def test_image_download_error_retries_download_only(monkeypatch, tmp_path:
 
     monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
     monkeypatch.setattr("app.bots.grsai.grsai_key_configured", lambda: False)
+    monkeypatch.setattr("app.bots.outsee_http.outsee_api_configured", lambda: False)
 
     result = await mod.generate_image_with_retries(
         FakeOutsee(),
@@ -424,6 +439,7 @@ async def test_image_download_exhaustion_does_not_regenerate(
 
     monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
     monkeypatch.setattr("app.bots.grsai.grsai_key_configured", lambda: False)
+    monkeypatch.setattr("app.bots.outsee_http.outsee_api_configured", lambda: False)
 
     with pytest.raises(OutseeDownloadError):
         await mod.generate_image_with_retries(

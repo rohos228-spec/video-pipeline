@@ -785,7 +785,7 @@ async def generate_image_with_retries(
     backend = image_provider_for(str(raw_slug) if raw_slug else None)
     use_grsai = backend == "grsai" and grsai_key_configured()
     use_outsee_api = backend == "outsee" and outsee_api_configured()
-    if backend == "outsee" and not outsee_api_configured():
+    if backend == "outsee" and not outsee_api_configured() and outsee is None:
         raise OutseeImageError(
             "OUTSEE_API_KEY пуст — GPT Image 2 / Nano Banana 2 / Veo 3.1 Lite "
             "идут через ключ Outsee",
