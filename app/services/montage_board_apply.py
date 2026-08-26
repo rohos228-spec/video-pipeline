@@ -15,6 +15,7 @@ import asyncio
 import tempfile
 from collections import defaultdict
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Awaitable, Callable
 
 from loguru import logger
@@ -273,6 +274,7 @@ async def _run_op_with_short_sessions(
     ai_img_pr_path = None
     ai_img_pr_variant = ""
     ai_db_card_path: Path | None = None
+    ai_project: Any = None
     prep: Any = None
 
     async with session_scope() as session:
@@ -291,6 +293,10 @@ async def _run_op_with_short_sessions(
                 project,
                 fr,
                 Path(tempfile.mkdtemp(prefix="ai_change_db_")),
+            )
+            ai_project = SimpleNamespace(
+                id=project.id,
+                meta=getattr(project, "meta", None),
             )
         elif op_type in (
             "image_regen",
@@ -333,6 +339,7 @@ async def _run_op_with_short_sessions(
             voiceover_text=ai_voiceover,
             kind=ai_kind,  # type: ignore[arg-type]
             project_id=project_id,
+            project=ai_project,
             img_pr_path=ai_img_pr_path,
             img_pr_variant=ai_img_pr_variant,
             db_card_path=ai_db_card_path,

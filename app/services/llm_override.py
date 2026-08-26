@@ -91,3 +91,54 @@ def bind_project_llm(project: Any, status: Any | None = None) -> Iterator[NodeLl
         )
     with use_override(ov) as bound:
         yield bound
+
+
+def generation_text_override(
+    project: Any | None = None,
+    *,
+    node_type: str = "image_prompts",
+    node_key: str | None = None,
+) -> NodeLlmOverride:
+    """Текстовая генерация всегда vibecode, шапка kie/Kimi не перебивает."""
+    from app.services.vibecode_catalog import (
+        DEFAULT_TEXT_MODEL_ID,
+        find_model,
+        resolve_node_choice,
+    )
+
+    meta = getattr(project, "meta", None) if project is not None else None
+    choice_raw = resolve_node_choice(meta, node_key=node_key, node_type=node_type)
+    if not (choice_raw and choice_raw.get("kind") == "text"):
+        choice_raw = find_model(DEFAULT_TEXT_MODEL_ID)
+    if not choice_raw:
+        choice_raw = {
+            "id": DEFAULT_TEXT_MODEL_ID,
+            "label": "GPT 5.6 Sol",
+            "channel": "stable",
+        }
+    return NodeLlmOverride(
+        model_id=str(choice_raw.get("id") or DEFAULT_TEXT_MODEL_ID),
+        channel=str(choice_raw.get("channel") or "stable"),
+        kind="text",
+        provider="vibecode",
+        label=str(choice_raw.get("label") or choice_raw.get("id") or DEFAULT_TEXT_MODEL_ID),
+    )
+
+
+@contextmanager
+def bind_generation_llm(
+    project: Any | None = None,
+    *,
+    node_type: str = "image_prompts",
+    node_key: str | None = None,
+) -> Iterator[NodeLlmOverride | None]:
+    ov = generation_text_override(project, node_type=node_type, node_key=node_key)
+    logger.info(
+        "generation_llm: #{} {} → vibecode {} ({})",
+        getattr(project, "id", "?") if project is not None else "?",
+        node_key or node_type,
+        ov.label,
+        ov.model_id,
+    )
+    with use_override(ov) as bound:
+        yield bound

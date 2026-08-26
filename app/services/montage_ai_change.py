@@ -171,14 +171,17 @@ async def rewrite_prompt_via_gpt(
     voiceover_text: str,
     kind: AiChangeKind,
     project_id: int | None = None,
+    project: object | None = None,
     img_pr_rules: str = "",
     img_pr_path: Path | None = None,
     img_pr_variant: str = "",
     image_prompt: str = "",
     db_card_path: Path | None = None,
 ) -> str:
-    """Агент + карточка Базы + закадр → LLM → промт как есть."""
+    """Агент + карточка Базы + закадр → vibecode LLM → промт как есть."""
     del img_pr_rules, img_pr_variant, image_prompt
+    from app.services.llm_override import bind_generation_llm
+
     user = build_ai_change_user_message(voiceover_text=voiceover_text)
     system = system_for_kind(kind)
     files: list[Path] = []
@@ -186,16 +189,17 @@ async def rewrite_prompt_via_gpt(
         files.append(img_pr_path)
     if db_card_path is not None and db_card_path.is_file():
         files.append(db_card_path)
-    gpt = get_gpt_client()
-    raw = await gpt.ask_with_files(
-        user,
-        files,
-        timeout=180,
-        project_id=project_id,
-        expect_file_download=False,
-        system=system,
-        auto_pack=False,
-    )
+    with bind_generation_llm(project, node_type="image_prompts"):
+        gpt = get_gpt_client()
+        raw = await gpt.ask_with_files(
+            user,
+            files,
+            timeout=180,
+            project_id=project_id,
+            expect_file_download=False,
+            system=system,
+            auto_pack=False,
+        )
     cleaned = strip_ai_change_reply(raw)
     if not cleaned:
         raise RuntimeError("ИИзменение: GPT вернул пустой промт")

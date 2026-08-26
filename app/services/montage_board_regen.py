@@ -449,25 +449,28 @@ async def execute_image_regen(prep: ImageRegenPrep) -> Path:
         prep.prompt_id_prefix,
         preview,
     )
+    from app.services.llm_override import bind_generation_llm
+
     gpt = get_gpt_client()
     try:
-        result = await generate_image_with_retries(
-            _ApiOnlyOutseeStub(),  # type: ignore[arg-type]
-            gpt,
-            prompt=prep.prompt_text,
-            out_path=prep.file_path,
-            max_attempts_per_prompt=3,
-            gpt_rewrite=True,
-            aspect_ratio=prep.aspect_slug,
-            gen_id=prep.gen_id or uuid.uuid4().hex,
-            model_slug=prep.model_slug,
-            resolution=prep.res_slug,
-            quality=prep.quality_slug,
-            relax=prep.image_relax,
-            prompt_id_prefix=prep.prompt_id_prefix,
-            reference_image=prep.refs if prep.refs else None,
-            project_id=prep.project_id,
-        )
+        with bind_generation_llm(None, node_type="image_prompts"):
+            result = await generate_image_with_retries(
+                _ApiOnlyOutseeStub(),  # type: ignore[arg-type]
+                gpt,
+                prompt=prep.prompt_text,
+                out_path=prep.file_path,
+                max_attempts_per_prompt=3,
+                gpt_rewrite=True,
+                aspect_ratio=prep.aspect_slug,
+                gen_id=prep.gen_id or uuid.uuid4().hex,
+                model_slug=prep.model_slug,
+                resolution=prep.res_slug,
+                quality=prep.quality_slug,
+                relax=prep.image_relax,
+                prompt_id_prefix=prep.prompt_id_prefix,
+                reference_image=prep.refs if prep.refs else None,
+                project_id=prep.project_id,
+            )
         return Path(result.file_path)
     except Exception as exc:  # noqa: BLE001
         if _ready_regen_file(prep.file_path):
@@ -600,6 +603,8 @@ async def execute_video_regen(prep: VideoRegenPrep) -> Path:
         prep.shot,
         len(prep.prompt_text),
     )
+    from app.services.llm_override import bind_generation_llm
+
     gpt = get_gpt_client()
     videos_dir = prep.file_path.parent
     if prep.shot == 2:
@@ -613,23 +618,24 @@ async def execute_video_regen(prep: VideoRegenPrep) -> Path:
     duplicate_check_paths = list(
         dict.fromkeys(p.resolve() for p in dup_globs if p.is_file())
     )
-    result = await generate_video_with_retries(
-        _ApiOnlyOutseeStub(),  # type: ignore[arg-type]
-        gpt,
-        prompt=prep.prompt_text,
-        out_path=prep.file_path,
-        max_attempts_per_prompt=3,
-        gpt_rewrite=True,
-        project_id=prep.project_id,
-        start_frame=prep.start_frame,
-        aspect_ratio=prep.aspect_slug,
-        timeout=1200,
-        model_slug=prep.video_model_slug,
-        resolution=prep.video_res_slug,
-        relax=prep.video_relax,
-        prompt_id_prefix=prep.prompt_id_prefix,
-        duplicate_check_paths=duplicate_check_paths,
-    )
+    with bind_generation_llm(None, node_type="image_prompts"):
+        result = await generate_video_with_retries(
+            _ApiOnlyOutseeStub(),  # type: ignore[arg-type]
+            gpt,
+            prompt=prep.prompt_text,
+            out_path=prep.file_path,
+            max_attempts_per_prompt=3,
+            gpt_rewrite=True,
+            project_id=prep.project_id,
+            start_frame=prep.start_frame,
+            aspect_ratio=prep.aspect_slug,
+            timeout=1200,
+            model_slug=prep.video_model_slug,
+            resolution=prep.video_res_slug,
+            relax=prep.video_relax,
+            prompt_id_prefix=prep.prompt_id_prefix,
+            duplicate_check_paths=duplicate_check_paths,
+        )
     return Path(result.file_path)
 
 

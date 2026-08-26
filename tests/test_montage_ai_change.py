@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -180,6 +181,77 @@ async def test_rewrite_returns_llm_text_without_pipeline_style(
     )
     assert out == "LLM scene. STYLE: from agent only."
     assert "Archival Noir Watercolor Grunge Dossier Poster Illustration" not in out
+
+
+@pytest.mark.asyncio
+async def test_rewrite_prompt_via_gpt_binds_vibecode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeGpt:
+        async def ask_with_files(self, text, files, **kwargs):
+            from app.services.llm_override import current_override
+
+            ov = current_override()
+            captured["provider"] = None if ov is None else ov.provider
+            captured["kind"] = None if ov is None else ov.kind
+            captured["model"] = None if ov is None else ov.model_id
+            return "scene. STYLE: lock."
+
+    monkeypatch.setattr(
+        "app.services.montage_ai_change.get_gpt_client",
+        lambda: FakeGpt(),
+    )
+    out = await rewrite_prompt_via_gpt(voiceover_text="vo", kind="image")
+    assert out == "scene. STYLE: lock."
+    assert captured["provider"] == "vibecode"
+    assert captured["kind"] == "text"
+    assert captured["model"]
+
+
+@pytest.mark.asyncio
+async def test_rewrite_uses_image_prompts_node_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeGpt:
+        async def ask_with_files(self, text, files, **kwargs):
+            from app.services.llm_override import current_override
+
+            ov = current_override()
+            captured["model"] = None if ov is None else ov.model_id
+            captured["provider"] = None if ov is None else ov.provider
+            return "ok prompt"
+
+    monkeypatch.setattr(
+        "app.services.montage_ai_change.get_gpt_client",
+        lambda: FakeGpt(),
+    )
+    project = SimpleNamespace(
+        id=33,
+        meta={
+            "canvas_graph": {
+                "nodes": [
+                    {
+                        "id": "n_img_pr",
+                        "type": "image_prompts",
+                        "data": {"modelId": "gpt-5.5"},
+                    }
+                ]
+            }
+        },
+    )
+    out = await rewrite_prompt_via_gpt(
+        voiceover_text="vo",
+        kind="image",
+        project=project,
+        project_id=33,
+    )
+    assert out == "ok prompt"
+    assert captured["provider"] == "vibecode"
+    assert captured["model"] == "gpt-5.5"
 
 
 @pytest.fixture
