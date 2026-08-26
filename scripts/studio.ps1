@@ -19,7 +19,8 @@ if ($env:VP_REPO_ROOT) {
 }
 Set-Location -LiteralPath $Root
 
-# Ветки (выбор при первом запуске / [5] -> data/studio-pc-branch + .env)
+# Ветки (выбор при первом запуске / [5] -> только data/studio-pc-branch).
+# Лаунчер никогда не пишет .env.
 # [4] всегда тянет origin/<сохранённая>, не хардкод main.
 $script:PcBranches = @("housepc", "tompc", "strangepc", "workpc", "main")
 $script:PcBranchFile = Join-Path $Root "data\studio-pc-branch"
@@ -47,33 +48,6 @@ function Read-StudioPcBranchFromEnv {
     return ""
 }
 
-function Sync-StudioPcBranchToEnv {
-    param([Parameter(Mandatory = $true)][string]$Branch)
-    if (-not (Test-StudioPcBranchName $Branch)) { return $false }
-    $env:ORCHESTRATOR_GIT_BRANCH = $Branch
-    $lines = @()
-    $found = $false
-    if (Test-Path -LiteralPath $EnvFile) {
-        $lines = @(Get-Content -LiteralPath $EnvFile -Encoding UTF8 -ErrorAction SilentlyContinue)
-        for ($i = 0; $i -lt $lines.Count; $i++) {
-            if ($lines[$i] -match '^\s*ORCHESTRATOR_GIT_BRANCH\s*=') {
-                $lines[$i] = "ORCHESTRATOR_GIT_BRANCH=$Branch"
-                $found = $true
-                break
-            }
-        }
-    }
-    if (-not $found) {
-        $lines += "ORCHESTRATOR_GIT_BRANCH=$Branch"
-    }
-    $dir = Split-Path -Parent $EnvFile
-    if ($dir -and -not (Test-Path -LiteralPath $dir)) {
-        New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    }
-    Set-Content -LiteralPath $EnvFile -Value $lines -Encoding UTF8
-    return $true
-}
-
 function Save-StudioPcBranch {
     param([Parameter(Mandatory = $true)][string]$Branch)
     if (-not (Test-StudioPcBranchName $Branch)) { return $false }
@@ -82,7 +56,7 @@ function Save-StudioPcBranch {
         New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
     }
     Set-Content -LiteralPath $script:PcBranchFile -Value $Branch -Encoding UTF8 -NoNewline
-    Sync-StudioPcBranchToEnv -Branch $Branch | Out-Null
+    $env:ORCHESTRATOR_GIT_BRANCH = $Branch
     $script:StudioBranch = $Branch
     return $true
 }
@@ -97,7 +71,7 @@ function Get-StudioPcBranch {
     }
     $fromEnv = Read-StudioPcBranchFromEnv
     if ($fromEnv) {
-        # Миграция: .env уже задан - зафиксировать в data/studio-pc-branch
+        # Миграция: ветка из .env / процесса -> только data/studio-pc-branch, .env не трогаем.
         Save-StudioPcBranch -Branch $fromEnv | Out-Null
         return $fromEnv
     }
@@ -731,7 +705,12 @@ function Invoke-StudioUpdateAndStart {
         if (-not (Invoke-StudioRepairWeb)) { return $false }
     }
     Stop-StudioBackend
-    return (Invoke-StudioStart)
+    # После git reset в памяти может остаться старый studio.ps1 — стартуем файл с диска.
+    $ps1 = if ($PSCommandPath) { $PSCommandPath } else { Join-Path $Root "scripts\studio.ps1" }
+    $exe = if (Get-Command pwsh -ErrorAction SilentlyContinue) { "pwsh" } else { "powershell.exe" }
+    Write-StudioMsg "Запуск с диска (не из памяти старого лаунчера)" "DarkGray"
+    & $exe -NoProfile -ExecutionPolicy Bypass -File $ps1 -Action 1
+    return ($LASTEXITCODE -eq 0)
 }
 
 function Invoke-StudioRepairWeb {
