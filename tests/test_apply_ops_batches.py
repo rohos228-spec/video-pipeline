@@ -760,23 +760,9 @@ def test_action_chain_accepts_numbered() -> None:
     assert action_chain_ops_reason(ops, []) is None
 
 
-def test_shots_coverage_rejects_scene_copy() -> None:
+def test_shots_coverage_rejects_same_place_all_independent() -> None:
     from app.services.apply_ops_batches import shots_coverage_ops_reason
 
-    vo = "Ткач родился в Киселёвске, прошёл службу в армии, после чего начал карьеру в милиции."
-    frames = [
-        {
-            "uuid": "aa" * 4,
-            "voiceover_text": vo,
-            "attrs": {
-                "main_action": (
-                    "1. двор — бегает\n(Ткач родился в Киселёвске,)\n"
-                    "2. армия — стоит в строю\n(прошёл службу в армии,)\n"
-                    "3. милиция — входит\n(после чего начал карьеру в милиции.)"
-                )
-            },
-        }
-    ]
     ops = [
         {
             "frame_uuid": "aa" * 4,
@@ -787,32 +773,52 @@ def test_shots_coverage_rejects_scene_copy() -> None:
                         "parent_id": None,
                         "план": "ОБЩИЙ",
                         "ракурс": "фронт",
-                        "место": "двор",
-                        "действие": "бегает",
+                        "место": "кухня",
+                        "действие": "стоит у плиты",
+                    },
+                    {
+                        "id": "1-K2",
+                        "parent_id": None,
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "3/4",
+                        "место": "кухня",
+                        "действие": "мешает кастрюлю",
+                    },
+                ]
+            },
+        }
+    ]
+    assert shots_coverage_ops_reason(ops, [])
+
+
+def test_shots_coverage_accepts_one_logical_shot() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    long_vo = "A" * 90
+    frames = [{"uuid": "aa" * 4, "voiceover_text": long_vo}]
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "фронт",
+                        "место": "кухня",
+                        "действие": "мешает кастрюлю",
                     }
                 ]
             },
         }
     ]
-    assert shots_coverage_ops_reason(ops, frames)
+    assert shots_coverage_ops_reason(ops, frames) is None
 
 
-def test_shots_coverage_accepts_v5_pattern() -> None:
+def test_shots_coverage_accepts_parent_on_same_place() -> None:
     from app.services.apply_ops_batches import shots_coverage_ops_reason
 
-    vo = "Сергей Ткач Самый страшный парадокс этой истории заключается в том, что "
-    frames = [
-        {
-            "uuid": "aa" * 4,
-            "voiceover_text": vo + "он знал правила изнутри.",
-            "attrs": {
-                "main_action": (
-                    "1. следственный отдел — отдел целиком\n(Сергей Ткач парадокс)\n"
-                    "2. комната Ткача — листает инструкции\n(знал изнутри.)"
-                )
-            },
-        }
-    ]
     ops = [
         {
             "frame_uuid": "aa" * 4,
@@ -823,38 +829,30 @@ def test_shots_coverage_accepts_v5_pattern() -> None:
                         "parent_id": None,
                         "план": "ОБЩИЙ",
                         "ракурс": "фронт",
-                        "место": "следственный отдел",
-                        "действие": "отдел целиком",
+                        "место": "кухня",
+                        "действие": "стоит у плиты",
                     },
                     {
                         "id": "1-K2",
                         "parent_id": "1-K1",
                         "план": "СРЕДНИЙ",
                         "ракурс": "3/4",
-                        "место": "следственный отдел",
-                        "действие": "у доски сверяют папки",
+                        "место": "кухня",
+                        "действие": "мешает кастрюлю",
                     },
                     {
                         "id": "1-K3",
-                        "parent_id": "1-K1",
-                        "план": "ДЕТАЛЬ",
-                        "ракурс": "сверху",
-                        "место": "следственный отдел",
-                        "действие": "карандаш на схеме",
-                    },
-                    {
-                        "id": "1-K4",
                         "parent_id": None,
-                        "план": "СРЕДНИЙ",
-                        "ракурс": "3/4",
-                        "место": "комната Ткача",
-                        "действие": "листает и отмечает",
+                        "план": "ОБЩИЙ",
+                        "ракурс": "от двери",
+                        "место": "двор",
+                        "действие": "выходит во двор",
                     },
                 ]
             },
         }
     ]
-    assert shots_coverage_ops_reason(ops, frames) is None
+    assert shots_coverage_ops_reason(ops, []) is None
 
 
 @pytest.mark.asyncio

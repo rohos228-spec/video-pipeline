@@ -278,16 +278,6 @@ def analytics_ops_collapsed_reason(
 _SCENE_NUM_RE = re.compile(r"(?m)^\s*\d+\.\s+\S")
 
 
-def _frame_main_action(fr: dict[str, Any]) -> str:
-    attrs = fr.get("attrs")
-    if isinstance(attrs, dict):
-        for key in ("main_action", "главное_действие"):
-            raw = str(attrs.get(key) or "").strip()
-            if raw:
-                return raw
-    return str(fr.get("main_action") or fr.get("главное_действие") or "").strip()
-
-
 def _op_shots(fields: dict[str, Any]) -> list[dict[str, Any]]:
     raw = fields.get("кадры") or fields.get("shots")
     if not isinstance(raw, list):
@@ -325,12 +315,8 @@ def shots_coverage_ops_reason(
     ops: list[Any],
     frames: list[dict[str, Any]],
 ) -> str | None:
-    """Кадр ≠ копия сцены: покрытие, parent, смена плана/ракурса."""
-    by_uuid: dict[str, dict[str, Any]] = {}
-    for fr in frames:
-        uid = str(fr.get("uuid") or "").strip()
-        if uid:
-            by_uuid[uid] = fr
+    """Несколько кадров одного места без parent — брак. Число кадров не диктуем."""
+    del frames
     for op in ops:
         if not isinstance(op, dict):
             continue
@@ -341,20 +327,6 @@ def shots_coverage_ops_reason(
         shots = _op_shots(fields)
         if not shots:
             return f"uuid {uid[:8]}: пустые кадры"
-        fr = by_uuid.get(uid) or {}
-        vo = str(fr.get("voiceover_text") or "").strip()
-        chain = _frame_main_action(fr)
-        n_scenes = len(_SCENE_NUM_RE.findall(chain))
-        if n_scenes >= 2 and len(shots) < 2 and len(vo) >= 40:
-            return (
-                f"uuid {uid[:8]}: {n_scenes} сцен, но {len(shots)} кадр "
-                "— это копия сцены, не покрытие"
-            )
-        if len(shots) == 1 and len(vo) >= 80:
-            return (
-                f"uuid {uid[:8]}: длинная ячейка одним кадром "
-                "— нужно покрытие (общий/средний/деталь или смена места)"
-            )
         by_place: dict[str, list[dict[str, Any]]] = {}
         for shot in shots:
             place = str(shot.get("место") or shot.get("place") or "").strip().casefold()
@@ -369,25 +341,6 @@ def shots_coverage_ops_reason(
                 return (
                     f"uuid {uid[:8]}: {len(group)} кадров «{place}» все "
                     "самостоятельные — parent = первый кадр этой локации"
-                )
-        for i in range(1, len(shots)):
-            prev, cur = shots[i - 1], shots[i]
-            prev_place = str(
-                prev.get("место") or prev.get("place") or ""
-            ).strip().casefold()
-            cur_place = str(
-                cur.get("место") or cur.get("place") or ""
-            ).strip().casefold()
-            if prev_place and cur_place and prev_place != cur_place:
-                continue
-            plan_a = str(prev.get("план") or "").strip().casefold()
-            plan_b = str(cur.get("план") or "").strip().casefold()
-            ang_a = str(prev.get("ракурс") or "").strip().casefold()
-            ang_b = str(cur.get("ракурс") or "").strip().casefold()
-            if plan_a and plan_b and plan_a == plan_b and ang_a == ang_b:
-                return (
-                    f"uuid {uid[:8]}: соседние кадры одной локации с тем же "
-                    "планом и ракурсом — меняй и крупность, и угол"
                 )
         for shot in shots:
             if not str(shot.get("план") or "").strip():
@@ -439,10 +392,10 @@ def _batch_footer(
             f"(кадры-покрытие по {SCRIPT_FRAMES_QC_UNITS_PER_BATCH})\n"
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Верни ops ровно по каждому uuid: fields.кадры. "
-            "Кадр ≠ копия сцены: V-coverage (ОБЩИЙ→СРЕДНИЙ→ДЕТАЛЬ), "
-            "соседние кадры одной локации меняют и план, и ракурс. "
-            "Новое место → parent_id null; то же место → parent = первый кадр локации. "
-            "Не пиши закадр, биты, главное_действие. JSON apply-ops, без прозы.\n"
+            "Число кадров = логика ячейки, не чужой сюжет. "
+            "Одно место, несколько кадров → parent = первый кадр этой локации. "
+            "Новое место → parent_id null. Не пиши закадр, биты, главное_действие. "
+            "JSON apply-ops, без прозы.\n"
         )
     if kind in {"prompts", "img"}:
         return (
