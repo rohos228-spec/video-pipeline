@@ -29,10 +29,9 @@ ACTION_FIELDS = frozenset({"shot01_action", "main_action"})
 CAMERA_MENU_FIELDS = frozenset({"shot_size", "shot_move", "shot_set"})
 # Закадр пишет только split / n_script / человек. excel_gpt не генерирует текст.
 VO_FIELDS = frozenset({"voiceover_text", "meaning"})
-# Биты сценария («было → стало») — пишет нода-сценарист группы script_frames_qc.
+# Биты сценария («было → стало») — единственное, что пишет нода сценария
+# группы script_frames_qc. Текст она не генерирует вообще.
 BEAT_FIELDS = frozenset({"биты"})
-# Проектные поля, которые сценаристу разрешено писать через target=project.
-SCRIPT_PROJECT_KEYS = frozenset({"script_text", "general_plan", "общий_план"})
 
 _NODE_KINDS = frozenset(
     {
@@ -76,14 +75,8 @@ def _keep_field(key: str, node_kind: str) -> bool:
     norm = _norm_key(key)
     canon = _canon_field(key)
     if node_kind == "excel_gpt_script":
-        # Сценарист: закадр + биты + project script_text/общий_план. Не промты.
-        if canon in PROMPT_FIELDS or norm in _PROMPT_KEYS:
-            return False
-        if canon in VO_FIELDS or norm in _VO_KEYS:
-            return True
-        if canon in BEAT_FIELDS or norm in _BEAT_KEYS:
-            return True
-        return norm in SCRIPT_PROJECT_KEYS
+        # Сценарий = только разметка битов по готовому закадру. Текст не пишет.
+        return canon in BEAT_FIELDS or norm in _BEAT_KEYS
     if node_kind == "excel_gpt_prompts":
         return (
             canon in PROMPT_FIELDS
@@ -137,7 +130,9 @@ def filter_ops_for_node(
         if isinstance(fields, dict):
             kept = {k: v for k, v in fields.items() if _keep_field(str(k), kind)}
             new_op["fields"] = kept
-            if str(new_op.get("target") or "frame") == "frame" and not kept:
+            # Op с полностью отфильтрованными полями бессмысленен при любом
+            # target (в db_apply пустые fields — ошибка).
+            if not kept:
                 continue
         out.append(new_op)
     return out

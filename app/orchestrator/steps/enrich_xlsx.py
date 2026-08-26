@@ -161,7 +161,7 @@ def _prompt_blob(variant: str | None, master: str | None) -> str:
 
 
 def _is_script_writer_prompt(variant: str | None, master: str | None) -> bool:
-    """Сценарист-нода на канвасе: пишет закадр + биты VO-ячеек через GPT."""
+    """Нода сценария на канвасе: размечает биты в готовом закадре (текст не пишет)."""
     return any(m in _prompt_blob(variant, master) for m in _SCRIPT_WRITER_PROMPT_MARKERS)
 
 
@@ -1269,13 +1269,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     if topic_bits:
                         accompanying = (
                             f"{accompanying}\n\n"
-                            "# ТЕМА / ПЛАН РОЛИКА\n" + "\n\n".join(topic_bits)
+                            "# ТЕМА / ПЛАН РОЛИКА (контекст, не для переписывания)\n"
+                            + "\n\n".join(topic_bits)
                         ).strip()
                     accompanying = (
                         f"{accompanying}\n\n"
                         "# DB SoT\n"
-                        "Файл db_frames.json — VO-ячейки из базы (uuid + number; "
-                        "voiceover_text может быть пустым — его пишешь ты). "
+                        "Файл db_frames.json — VO-ячейки из базы (uuid + number + "
+                        "voiceover_text). voiceover_text — ГОТОВЫЙ закадр: "
+                        "не пиши, не меняй, не сокращай его. Твоя единственная "
+                        "работа — разметить в нём биты. "
                         "Пайплайн сам запишет твой JSON в базу. "
                         "Excel не используется. Отвечай только JSON apply-ops."
                     ).strip()
@@ -1336,7 +1339,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             qc_prompts = _is_qc_prompts_prompt(variant, master) or nk.endswith("_fw_qc")
             write_prompts = frame_prompts or qc_prompts
             scene_analytics = _is_scene_analytics_prompt(variant, master)
-            # Сценарист пишет закадр + биты — свой kind с правом записи VO.
+            # Нода сценария пишет только биты — свой kind (текст запрещён).
             apply_kind = (
                 "excel_gpt_script"
                 if script_writer
@@ -1372,13 +1375,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         raw_ops,
                         node_kind=apply_kind,
                     )
-                    # excel_gpt не имеет права писать закадр/смысл; сценарист
-                    # (excel_gpt_script) пишет закадр — это его работа.
-                    _drop = (
-                        {"meaning"}
-                        if script_writer
-                        else {"voiceover_text", "meaning"}
-                    )
+                    # excel_gpt не имеет права писать закадр/смысл — включая
+                    # ноду сценария (excel_gpt_script): она пишет только биты.
+                    _drop = {"voiceover_text", "meaning"}
                     if fw_camera_menu_only:
                         _drop.update(
                             {
