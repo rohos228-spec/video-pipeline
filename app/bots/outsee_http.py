@@ -34,11 +34,14 @@ _DEFAULT_BASE = "https://outsee.io"
 _POLL_INTERVAL_S = 2.5
 _DEFAULT_TIMEOUT_S = 600.0
 
-# Живой каталог /api/v1/models (image)
+# Живой каталог /api/v1/models (image). Nano Banana Pro запрещена навсегда.
 OUTSEE_WIRED_IMAGE_MODELS: tuple[str, ...] = (
     "nano-banana-2",
-    "nano-banana-pro",
     "gpt-image-2",
+)
+
+NANO_BANANA_PRO_OUTSEE_BAN = (
+    "Nano Banana Pro запрещена на Outsee — нельзя генерировать этой моделью через Outsee"
 )
 # Живой каталог /api/v1/models (video)
 OUTSEE_WIRED_VIDEO_MODELS: tuple[str, ...] = ("veo-3-1-lite",)
@@ -46,6 +49,10 @@ OUTSEE_WIRED_VIDEO_MODELS: tuple[str, ...] = ("veo-3-1-lite",)
 
 class OutseeApiError(OutseeImageError):
     """Ошибка Outsee Developer API (совместима с outsee_retry)."""
+
+
+class NanoBananaProOutseeBannedError(OutseeApiError):
+    """Жёсткий запрет: Nano Banana Pro через Outsee нельзя никогда."""
 
 
 # Обратная совместимость с cookie-era hooks в OutseeBot
@@ -97,10 +104,25 @@ def _headers() -> dict[str, str]:
     }
 
 
+def assert_not_nano_banana_pro_on_outsee(slug: str | None) -> None:
+    from app.services.media_route import is_nano_banana_pro
+
+    if is_nano_banana_pro(slug):
+        raise NanoBananaProOutseeBannedError(
+            NANO_BANANA_PRO_OUTSEE_BAN,
+            context={"model": slug, "provider": "outsee", "banned": True},
+        )
+
+
 def studio_id_to_outsee_image_slug(studio_id: str | None) -> str:
+    from app.services.media_route import is_nano_banana_pro
+
     default = settings.outsee_default_image_model or "gpt-image-2"
+    if is_nano_banana_pro(default):
+        default = "gpt-image-2"
     if not studio_id:
         return default
+    assert_not_nano_banana_pro_on_outsee(studio_id)
     s = studio_id.strip()
     if s in OUTSEE_WIRED_IMAGE_MODELS:
         return s
@@ -109,8 +131,6 @@ def studio_id_to_outsee_image_slug(studio_id: str | None) -> str:
         "gpt-image-2": "gpt-image-2",
         "nano_banana_2": "nano-banana-2",
         "nano-banana-2": "nano-banana-2",
-        "nano_banana_pro": "nano-banana-pro",
-        "nano-banana-pro": "nano-banana-pro",
         "gpt_image_1_5": "gpt-image-2",
         "nano_banana_2_lite": "nano-banana-2",
         "nano-banana-2-lite": "nano-banana-2",
@@ -120,6 +140,7 @@ def studio_id_to_outsee_image_slug(studio_id: str | None) -> str:
         "nano-banana": "nano-banana-2",
     }
     mapped = mapping.get(s, s.replace("_", "-"))
+    assert_not_nano_banana_pro_on_outsee(mapped)
     if mapped in OUTSEE_WIRED_IMAGE_MODELS:
         return mapped
     return default
@@ -171,13 +192,32 @@ def _raise_api(resp: httpx.Response, *, where: str) -> None:
     )
 
 
+def _strip_banned_outsee_image_models(data: dict[str, Any]) -> dict[str, Any]:
+    from app.services.media_route import is_nano_banana_pro
+
+    def keep(item: Any) -> bool:
+        if isinstance(item, dict):
+            slug = str(item.get("id") or item.get("slug") or item.get("model") or "")
+            return not is_nano_banana_pro(slug)
+        if isinstance(item, str):
+            return not is_nano_banana_pro(item)
+        return True
+
+    out = dict(data)
+    for key, val in list(out.items()):
+        if isinstance(val, list):
+            out[key] = [x for x in val if keep(x)]
+    return out
+
+
 async def fetch_models() -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.get(f"{_base_url()}/api/v1/models", headers=_headers())
         if r.status_code >= 400:
             _raise_api(r, where="models")
         data = r.json()
-        return data if isinstance(data, dict) else {}
+        payload = data if isinstance(data, dict) else {}
+        return _strip_banned_outsee_image_models(payload)
 
 
 async def fetch_balance() -> dict[str, Any]:
@@ -971,9 +1011,11 @@ async def generate_image(
     Рефы → публичные URL в поле ``image_urls`` (не ``reference_images``:
     каталог models врёт max_reference_images, generate это поле игнорит).
     """
+    assert_not_nano_banana_pro_on_outsee(model_slug)
     if prompt_id_prefix:
         prompt = prepend_gen_id(prompt, prompt_id_prefix)
     model = studio_id_to_outsee_image_slug(model_slug)
+    assert_not_nano_banana_pro_on_outsee(model)
     body: dict[str, Any] = {
         "prompt": prompt,
         "model": model,

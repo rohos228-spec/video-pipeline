@@ -8,7 +8,7 @@
 
 Используется существующая инфраструктура:
   * app/bots/chatgpt.py: ChatGPTBot.ask_with_files + download_attachment_from_last_reply
-  * app/bots/outsee.py: OutseeBot.generate_image(model_slug="nano-banana-pro", relax=True)
+  * app/bots/outsee.py: OutseeBot.generate_image(model_slug="nano-banana-2", relax=True)
 
 Параллельно может работать только ОДИН тестовый цикл — лочится по
 test_prompt_projects.status in ('running_gpt', 'running_outsee').
@@ -153,7 +153,7 @@ async def _outsee_generate(
     out_image: Path,
     prompt_id_prefix: str,
 ) -> Path:
-    """Запускает outsee.generate_image для Banana Pro в Relax-режиме,
+    """Запускает outsee.generate_image для Nano Banana 2 в Relax-режиме,
     с уникальным prompt_id_prefix. Возвращает путь до картинки.
     """
     from app.bots.browser import browser_session
@@ -167,7 +167,7 @@ async def _outsee_generate(
             prompt=prompt,
             out_path=out_image,
             aspect_ratio="9:16",
-            model_slug="nano-banana-pro",
+            model_slug="nano-banana-2",
             relax=True,
             prompt_id_prefix=prompt_id_prefix,
         )

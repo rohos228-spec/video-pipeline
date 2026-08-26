@@ -887,13 +887,16 @@ async def generate_image_with_retries(
         outsee_api_configured,
         studio_id_to_outsee_image_slug,
     )
-    from app.services.media_route import image_provider_for
+    from app.services.media_route import image_provider_for, is_nano_banana_pro
     from app.settings import settings as _settings
 
     raw_slug = kwargs.get("model_slug") or getattr(
         _settings, "outsee_default_image_model", None
     )
-    backend = image_provider_for(str(raw_slug) if raw_slug else None)
+    if is_nano_banana_pro(str(raw_slug) if raw_slug else None):
+        backend = "grsai"
+    else:
+        backend = image_provider_for(str(raw_slug) if raw_slug else None)
     use_grsai = backend == "grsai" and grsai_key_configured()
     use_outsee_api = backend == "outsee" and outsee_api_configured()
     if backend == "outsee" and not outsee_api_configured() and outsee is None:

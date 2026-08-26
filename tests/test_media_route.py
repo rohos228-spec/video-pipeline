@@ -31,6 +31,27 @@ def test_image_forced_outsee_even_if_grsai(monkeypatch) -> None:
     assert image_provider_for("nano-banana") == "grsai"
 
 
+def test_nano_banana_pro_never_outsee_even_if_image_provider_outsee(monkeypatch) -> None:
+    monkeypatch.setenv("IMAGE_PROVIDER", "outsee")
+    from app.settings import Settings
+    import app.services.media_route as mr
+    import app.settings as settings_mod
+
+    s = Settings()
+    monkeypatch.setattr(settings_mod, "settings", s)
+    monkeypatch.setattr(mr, "settings", s)
+    for slug in (
+        "nano-banana-pro",
+        "nano_banana_pro",
+        "nano-banana-pro-vt",
+        "nano-banana-pro-vip",
+    ):
+        assert mr.image_provider_for(slug) != "outsee"
+        assert mr.is_nano_banana_pro(slug) is True
+    assert mr.is_nano_banana_pro("nano-banana-2") is False
+    assert mr.image_provider_for("nano-banana-2") == "outsee"
+
+
 def test_video_veo_outsee_kling_kie(monkeypatch) -> None:
     monkeypatch.setenv("VIDEO_PROVIDER", "grsai")
     from app.settings import Settings

@@ -4,6 +4,7 @@
 моделей. Жёстко:
 
 - GPT Image 2 / Nano Banana 2 → OUTSEE_API_KEY
+- Nano Banana Pro и все её варианты → никогда Outsee (даже если IMAGE_PROVIDER=outsee)
 - Veo 3.1 Lite → OUTSEE_API_KEY
 - Kling 2.6 → KIE_API_KEY
 """
@@ -44,7 +45,15 @@ def canonical_media_id(raw: str | None) -> str:
     return _ALIASES.get(s, s)
 
 
+def is_nano_banana_pro(model_slug: str | None) -> bool:
+    """Любой slug Nano Banana Pro (pro / vt / cl / vip / 4k-vip)."""
+    cid = canonical_media_id(model_slug)
+    return cid == "nano-banana-pro" or cid.startswith("nano-banana-pro-")
+
+
 def image_provider_for(model_slug: str | None) -> str:
+    if is_nano_banana_pro(model_slug):
+        return "grsai"
     cid = canonical_media_id(model_slug)
     if cid in OUTSEE_IMAGE_IDS:
         return "outsee"

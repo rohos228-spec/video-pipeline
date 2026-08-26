@@ -34,8 +34,37 @@ def test_pick_result_url_missing() -> None:
 
 def test_studio_image_slug_mapping() -> None:
     assert oh.studio_id_to_outsee_image_slug("gpt_image_2") == "gpt-image-2"
-    assert oh.studio_id_to_outsee_image_slug("nano-banana-pro") == "nano-banana-pro"
+    with pytest.raises(oh.OutseeApiError, match="Nano Banana Pro"):
+        oh.studio_id_to_outsee_image_slug("nano-banana-pro")
+    with pytest.raises(oh.OutseeApiError, match="Nano Banana Pro"):
+        oh.studio_id_to_outsee_image_slug("nano_banana_pro")
+    assert "nano-banana-pro" not in oh.OUTSEE_WIRED_IMAGE_MODELS
     assert oh.studio_id_to_outsee_image_slug("unknown-xyz") == "gpt-image-2"
+    stripped = oh._strip_banned_outsee_image_models(
+        {
+            "models": [
+                {"id": "gpt-image-2"},
+                {"id": "nano-banana-pro"},
+                {"slug": "nano-banana-pro-vt"},
+                {"id": "nano-banana-2"},
+            ]
+        }
+    )
+    ids = [x.get("id") or x.get("slug") for x in stripped["models"]]
+    assert "nano-banana-pro" not in ids
+    assert "nano-banana-pro-vt" not in ids
+    assert "gpt-image-2" in ids
+    assert "nano-banana-2" in ids
+
+
+@pytest.mark.asyncio
+async def test_generate_image_rejects_nano_banana_pro(tmp_path: Path) -> None:
+    with pytest.raises(oh.OutseeApiError, match="Nano Banana Pro"):
+        await oh.generate_image(
+            "x",
+            tmp_path / "a.png",
+            model_slug="nano-banana-pro",
+        )
 
 
 def test_studio_video_slug_mapping() -> None:
