@@ -111,6 +111,51 @@ def split_frames(frames: list[Any], size: int) -> list[list[Any]]:
     return [frames[i : i + size] for i in range(0, len(frames), size)]
 
 
+def _vo_unit_key(frame: dict[str, Any]) -> str:
+    """Ячейка закадра: parent_uuid шота или свой uuid."""
+    uid = str(frame.get("uuid") or "").strip()
+    cs = frame.get("camera_subdivide")
+    if not isinstance(cs, dict):
+        attrs = frame.get("attrs")
+        cs = attrs.get("camera_subdivide") if isinstance(attrs, dict) else {}
+    if not isinstance(cs, dict):
+        cs = {}
+    parent = str(cs.get("parent_uuid") or "").strip()
+    return parent or uid
+
+
+def group_vo_units(frames: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Кадры одной VO-ячейки (родитель + шоты) держатся вместе."""
+    order: list[str] = []
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for fr in frames:
+        key = _vo_unit_key(fr)
+        if not key:
+            continue
+        if key not in buckets:
+            buckets[key] = []
+            order.append(key)
+        buckets[key].append(fr)
+    return [buckets[k] for k in order]
+
+
+def split_vo_units(
+    frames: list[dict[str, Any]], unit_size: int
+) -> list[list[dict[str, Any]]]:
+    """Пачки по N отрезков закадра, не по числу шотов."""
+    if unit_size <= 0:
+        unit_size = 1
+    units = group_vo_units(frames)
+    packs: list[list[dict[str, Any]]] = []
+    for i in range(0, len(units), unit_size):
+        pack: list[dict[str, Any]] = []
+        for unit in units[i : i + unit_size]:
+            pack.extend(unit)
+        if pack:
+            packs.append(pack)
+    return packs or [list(frames)]
+
+
 def _any_field(frame: dict[str, Any], attrs: dict[str, Any], keys: tuple[str, ...]) -> bool:
     return any(
         str(frame.get(k) or attrs.get(k) or "").strip() for k in keys
@@ -467,6 +512,7 @@ async def run_apply_ops_batched(
     chunk_size: int | None = None,
     parallel_max: int | None = None,
     stagger_sec: float | None = None,
+    chunk_by_vo_unit: bool = False,
     footer_kind: str | None = None,
     on_progress: ProgressFn | None = None,
     allow_empty_ops: bool = False,
@@ -474,9 +520,10 @@ async def run_apply_ops_batched(
     """Один GPT-вызов на пачку. Ошибка внутри пачки → 2, затем 4.
 
     ``chunk_size`` — заранее резать pending (script_frames_qc: 30
-    отрезков закадра). ``parallel_max`` — сколько пачек стартовать
-    сразу (6), со сдвигом ``stagger_sec`` (1 с). Без chunk_size —
-    сначала все pending, при ошибке 1→2→4.
+    отрезков закадра). ``chunk_by_vo_unit`` — пачка = N ячеек закадра
+    (родитель + его шоты вместе), не N строк кадров. ``parallel_max`` —
+    сколько пачек стартовать сразу (6), со сдвигом ``stagger_sec`` (1 с).
+    Без chunk_size — сначала все pending, при ошибке 1→2→4.
     """
     from app.services.adaptive_llm_batches import next_split_level, split_in_half
 
@@ -503,7 +550,12 @@ async def run_apply_ops_batched(
         )
 
     size = int(chunk_size) if chunk_size and int(chunk_size) > 0 else 0
-    packs = split_frames(pending, size) if size else [pending]
+    if size and chunk_by_vo_unit:
+        packs = split_vo_units(pending, size)
+    elif size:
+        packs = split_frames(pending, size)
+    else:
+        packs = [pending]
     wave_n = int(parallel_max) if parallel_max and int(parallel_max) > 1 else 1
     delay_s = (
         float(stagger_sec)

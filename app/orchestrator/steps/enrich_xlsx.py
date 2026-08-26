@@ -1638,6 +1638,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         if fw_camera_menu_only or script_frames_qc
                         else None
                     ),
+                    chunk_by_vo_unit=bool(script_frames_qc),
                     footer_kind=(
                         "camera_menu"
                         if fw_camera_menu_only

@@ -4,6 +4,7 @@ from app.services.apply_ops_batches import (
     frames_per_batch,
     should_batch_apply_ops,
     split_frames,
+    split_vo_units,
     select_frames_for_batches,
     _frame_complete,
     _pending_frames,
@@ -261,6 +262,36 @@ def _frame(i: int) -> dict:
         "uuid": f"{i:024d}",
         "voiceover_text": f"vo {i}",
     }
+
+
+def test_split_vo_units_keeps_shots_in_cell_packs() -> None:
+    """145 кадров = 115 ячеек → 4 пачки по 30 ячеек, не 5 по кадрам."""
+    frames: list[dict] = []
+    for i in range(115):
+        uid = f"{i:024d}"
+        frames.append(
+            {
+                "uuid": uid,
+                "voiceover_text": f"vo {i}",
+                "camera_subdivide": {"role": "vo_parent", "parent_uuid": uid},
+            }
+        )
+        if i < 30:
+            frames.append(
+                {
+                    "uuid": f"c{i:023d}",
+                    "voiceover_text": "",
+                    "vo_shot": f"shot {i}",
+                    "camera_subdivide": {"role": "shot", "parent_uuid": uid},
+                }
+            )
+    assert len(frames) == 145
+    packs = split_vo_units(frames, 30)
+    assert len(packs) == 4
+    from app.services.apply_ops_batches import group_vo_units
+
+    assert [len(group_vo_units(p)) for p in packs] == [30, 30, 30, 25]
+    assert {fr["uuid"] for fr in packs[0]} >= {f"{0:024d}", f"c{0:023d}"}
 
 
 @pytest.mark.asyncio
