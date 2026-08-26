@@ -454,3 +454,56 @@ async def test_image_download_exhaustion_does_not_regenerate(
         )
     assert len(gen_calls) == 1
     assert dl_calls == 2
+
+
+_STYLE = (
+    "STYLE: Archival Noir Watercolor Grunge Dossier Poster Illustration. "
+    "transparent watercolor washes, dirty cream pigment.\n"
+    "Final style lock: no photorealism, no glossy 3D.\n"
+    "Negative: photorealism, glossy 3D render, neon."
+)
+
+
+def test_split_style_lock_keeps_tail() -> None:
+    scene, style = mod._split_style_lock(
+        "Reference: c05 in a stone hall.\n\n" + _STYLE
+    )
+    assert scene.startswith("Reference:")
+    assert style.startswith("STYLE:")
+    assert "Negative:" in style
+    assert "c05" not in style
+
+
+def test_hard_truncate_keeps_style_cuts_scene() -> None:
+    scene = "wide stone corridor " * 200
+    text = scene + "\n\n" + _STYLE
+    cut = mod._hard_truncate_prompt(text, 900)
+    assert "STYLE: Archival Noir Watercolor" in cut
+    assert "Negative:" in cut
+    assert len(cut) <= 900
+    assert cut.index("STYLE:") > 0
+
+
+@pytest.mark.asyncio
+async def test_compress_reattaches_style_and_ignores_gpt_rewrite(monkeypatch) -> None:
+    scene = "Reference: character sheet for c05. " + ("stone hall detail " * 180)
+    body = scene + "\n\n" + _STYLE
+    assert len(body) > 2000
+
+    class FakeGpt:
+        async def ask_fresh(self, ask: str, *, timeout: float = 300, project_id=None) -> str:
+            assert "Не пиши STYLE" in ask
+            assert "Archival Noir Watercolor" not in ask
+            return (
+                "short scene about c05 in the hall. "
+                "STYLE: photoreal cinematic oil painting. Negative: none."
+            )
+
+    out = await mod._compress_prompt_for_outsee(
+        FakeGpt(), body, prefix="[ID: P33-F72-abcd1234]", max_body=2000
+    )
+    assert out is not None
+    assert len(out) <= 2000
+    assert "Archival Noir Watercolor Grunge Dossier Poster Illustration" in out
+    assert "photoreal cinematic oil painting" not in out
+    assert "Negative: photorealism" in out
