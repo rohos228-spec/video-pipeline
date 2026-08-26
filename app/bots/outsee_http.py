@@ -1155,13 +1155,18 @@ async def generate_video(
                 f"конечный кадр: неподдерживаемый тип {type(last_frame_image).__name__}",
                 context={"project_id": project_id},
             )
+    last_source = last
     last = await ensure_public_image_url(last)
     if last:
-        # конечный кадр в каталоге не заявлен; пробуем end_image_url
+        # Outsee /models: только supports_first_frame. end_image_url молча
+        # игнорит (как first_frame_url для старта). Живое поле — last_frame_url.
+        body["last_frame_url"] = last
         body["end_image_url"] = last
+        if frame:
+            body["first_frame_url"] = frame
     elif want_end:
         raise OutseeApiError(
-            "конечный кадр передан, но end_image_url не получен (upload/host)",
+            "конечный кадр передан, но last_frame_url не получен (upload/host)",
             context={"project_id": project_id},
         )
 
@@ -1171,14 +1176,14 @@ async def generate_video(
     for host_try in range(1, 4):
         logger.info(
             "outsee_api.video model={} aspect={} res={} dur={} audio={} "
-            "image_url={} end={} project={} host_try={}",
+            "image_url={} last_frame={} project={} host_try={}",
             model,
             body.get("aspect_ratio"),
             body.get("resolution"),
             body.get("duration_sec"),
             body.get("generate_audio"),
             bool(body.get("image_url")),
-            bool(body.get("end_image_url")),
+            bool(body.get("last_frame_url")),
             project_id,
             host_try,
         )
@@ -1189,33 +1194,52 @@ async def generate_video(
             last_submit_err = exc
             if (
                 not _is_outsee_image_fetch_error(exc)
-                or not frame_source
+                or not (frame_source or last_source)
                 or host_try >= 3
             ):
                 raise
-            bad = _host_name_from_url(str(body.get("image_url") or ""))
+            bad = _host_name_from_url(
+                str(body.get("image_url") or body.get("last_frame_url") or "")
+            )
             # yandex не баним: следующий try зальёт новый объект в бакет.
             if bad and bad != "yandex":
                 skip_hosts.add(bad)
             logger.warning(
-                "outsee_api.video: Outsee не скачал image_url (host={}) — "
+                "outsee_api.video: Outsee не скачал кадр (host={}) — "
                 "rehost skip={} try {}/3",
                 bad or "?",
                 sorted(skip_hosts),
                 host_try,
                 3,
             )
-            # Rehost из исходного data:/файла, не из мёртвого catbox URL.
-            rehosted = await ensure_public_image_url(
-                frame_source if str(frame_source).startswith("data:") else frame_source,
-                skip_hosts=skip_hosts,
-                force_rehost=bool(
-                    str(frame_source).startswith(("http://", "https://"))
-                ),
-            )
-            if not rehosted or rehosted == body.get("image_url"):
+            changed = False
+            if frame_source:
+                rehosted = await ensure_public_image_url(
+                    frame_source,
+                    skip_hosts=skip_hosts,
+                    force_rehost=bool(
+                        str(frame_source).startswith(("http://", "https://"))
+                    ),
+                )
+                if rehosted and rehosted != body.get("image_url"):
+                    body["image_url"] = rehosted
+                    if body.get("first_frame_url"):
+                        body["first_frame_url"] = rehosted
+                    changed = True
+            if last_source:
+                rehosted_last = await ensure_public_image_url(
+                    last_source,
+                    skip_hosts=skip_hosts,
+                    force_rehost=bool(
+                        str(last_source).startswith(("http://", "https://"))
+                    ),
+                )
+                if rehosted_last and rehosted_last != body.get("last_frame_url"):
+                    body["last_frame_url"] = rehosted_last
+                    body["end_image_url"] = rehosted_last
+                    changed = True
+            if not changed:
                 raise
-            body["image_url"] = rehosted
     if submitted is None:
         raise last_submit_err or OutseeApiError("video generate: no submit")
     task_id = submitted["id"]

@@ -507,7 +507,7 @@ export const OUTSEE_VIDEO_MODELS: OutseeVideoModel[] = [
       aspectRatio: "16:9",
       resolution: "720p",
       duration: 8,
-      generateAudio: true,
+      generateAudio: false,
     },
     nn: {
       resolutions: ["720p"],

@@ -200,7 +200,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     setDetail(String(s.image_quality || "medium"));
     setVideoResolution(String(s.video_resolution || "1080p"));
     setDuration(String(s.duration || "5"));
-    setGenerateAudio(Boolean(s.generate_audio));
+    const restoredVideo = String(s.video_slug || "kling-3-0");
+    setGenerateAudio(
+      restoredVideo === "veo-3-1-lite" ? false : Boolean(s.generate_audio),
+    );
     setOrientation(s.orientation === "image" ? "image" : "video");
     setMotionQuality(String(s.motion_quality || "std"));
     setInstrumental(Boolean(s.instrumental));
