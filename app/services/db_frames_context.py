@@ -36,17 +36,24 @@ _IMG_PR_ATTR_KEYS: tuple[str, ...] = (
     "shot02_characters",
     "shot02_notes",
     "shot02_transition",
+    "биты",
 )
 
 
 def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, str]:
+    import json as _json
+
     src = attrs if isinstance(attrs, dict) else {}
     out: dict[str, str] = {}
     for key in _IMG_PR_ATTR_KEYS:
         val = src.get(key)
         if val is None:
             continue
-        text = str(val).strip()
+        # Биты и прочие структуры — компактным JSON, не repr.
+        if isinstance(val, (list, dict)):
+            text = _json.dumps(val, ensure_ascii=False, separators=(",", ":"))
+        else:
+            text = str(val).strip()
         if text:
             out[key] = text
     # Русский алиас для персонажей кадра (агенты часто ждут «персонажи»).

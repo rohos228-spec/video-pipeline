@@ -29,6 +29,10 @@ ACTION_FIELDS = frozenset({"shot01_action", "main_action"})
 CAMERA_MENU_FIELDS = frozenset({"shot_size", "shot_move", "shot_set"})
 # Закадр пишет только split / n_script / человек. excel_gpt не генерирует текст.
 VO_FIELDS = frozenset({"voiceover_text", "meaning"})
+# Биты сценария («было → стало») — пишет нода-сценарист группы script_frames_qc.
+BEAT_FIELDS = frozenset({"биты"})
+# Проектные поля, которые сценаристу разрешено писать через target=project.
+SCRIPT_PROJECT_KEYS = frozenset({"script_text", "general_plan", "общий_план"})
 
 _NODE_KINDS = frozenset(
     {
@@ -37,6 +41,7 @@ _NODE_KINDS = frozenset(
         "excel_gpt",
         "excel_gpt_no_prompts",
         "excel_gpt_prompts",
+        "excel_gpt_script",
     }
 )
 
@@ -60,6 +65,7 @@ def _alias_set(canons: frozenset[str]) -> frozenset[str]:
 
 _PROMPT_KEYS = _alias_set(PROMPT_FIELDS)
 _VO_KEYS = _alias_set(VO_FIELDS)
+_BEAT_KEYS = _alias_set(BEAT_FIELDS)
 _ACTION_KEYS = _alias_set(ACTION_FIELDS)
 _CAMERA_MENU_KEYS = _alias_set(CAMERA_MENU_FIELDS)
 _IMG_PR_KEYS = _alias_set(IMAGE_PROMPT_FIELDS) | _alias_set(CHARACTER_FIELDS)
@@ -69,6 +75,15 @@ _ANIM_PR_KEYS = _alias_set(ANIM_PROMPT_FIELDS)
 def _keep_field(key: str, node_kind: str) -> bool:
     norm = _norm_key(key)
     canon = _canon_field(key)
+    if node_kind == "excel_gpt_script":
+        # Сценарист: закадр + биты + project script_text/общий_план. Не промты.
+        if canon in PROMPT_FIELDS or norm in _PROMPT_KEYS:
+            return False
+        if canon in VO_FIELDS or norm in _VO_KEYS:
+            return True
+        if canon in BEAT_FIELDS or norm in _BEAT_KEYS:
+            return True
+        return norm in SCRIPT_PROJECT_KEYS
     if node_kind == "excel_gpt_prompts":
         return (
             canon in PROMPT_FIELDS

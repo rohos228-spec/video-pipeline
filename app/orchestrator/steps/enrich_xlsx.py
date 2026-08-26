@@ -161,7 +161,7 @@ def _prompt_blob(variant: str | None, master: str | None) -> str:
 
 
 def _is_script_writer_prompt(variant: str | None, master: str | None) -> bool:
-    """Сценарист-нода на канвасе: больше не пишет закадр, только pass-through."""
+    """Сценарист-нода на канвасе: пишет закадр + биты VO-ячеек через GPT."""
     return any(m in _prompt_blob(variant, master) for m in _SCRIPT_WRITER_PROMPT_MARKERS)
 
 
@@ -1008,6 +1008,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         character_registry = (not check_mode) and _is_character_registry_prompt(
             variant, master
         )
+        script_writer = (not check_mode) and _is_script_writer_node(
+            variant, master, node_key
+        )
+        if script_writer and output_mode != "project_file":
+            logger.info(
+                "[#{}] enrich_xlsx node={!r}: script_writer → force "
+                "outputMode=project_file (было {!r})",
+                project.id,
+                node_key,
+                output_mode,
+            )
+            output_mode = "project_file"
         if scene_grammar and output_mode != "project_file":
             logger.info(
                 "[#{}] enrich_xlsx node={!r}: scene_grammar → force "
@@ -1243,13 +1255,38 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 accompanying = (
                     f"{accompanying}\n\n{hint}{mapping}"
                 ).strip()
-                accompanying = (
-                    f"{accompanying}\n\n"
-                    "# DB SoT\n"
-                    "Файл db_frames.json — кадры из базы (uuid + voiceover). "
-                    "Пайплайн сам запишет твой JSON в базу. "
-                    "Excel не используется. Отвечай только JSON apply-ops."
-                ).strip()
+                if script_writer:
+                    topic_bits: list[str] = []
+                    if str(project.name or "").strip():
+                        topic_bits.append(f"Название проекта: {project.name.strip()}")
+                    plan_text = str(
+                        project.general_plan
+                        or (project.meta or {}).get("general_plan")
+                        or ""
+                    ).strip()
+                    if plan_text:
+                        topic_bits.append(f"Общий план:\n{plan_text}")
+                    if topic_bits:
+                        accompanying = (
+                            f"{accompanying}\n\n"
+                            "# ТЕМА / ПЛАН РОЛИКА\n" + "\n\n".join(topic_bits)
+                        ).strip()
+                    accompanying = (
+                        f"{accompanying}\n\n"
+                        "# DB SoT\n"
+                        "Файл db_frames.json — VO-ячейки из базы (uuid + number; "
+                        "voiceover_text может быть пустым — его пишешь ты). "
+                        "Пайплайн сам запишет твой JSON в базу. "
+                        "Excel не используется. Отвечай только JSON apply-ops."
+                    ).strip()
+                else:
+                    accompanying = (
+                        f"{accompanying}\n\n"
+                        "# DB SoT\n"
+                        "Файл db_frames.json — кадры из базы (uuid + voiceover). "
+                        "Пайплайн сам запишет твой JSON в базу. "
+                        "Excel не используется. Отвечай только JSON apply-ops."
+                    ).strip()
         # Отпустить SQLite write-txn на время GPT (иначе UI: database is locked / 30с).
         await session.commit()
         check_streams_n = None
@@ -1293,33 +1330,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             from app.services.node_write_contract import filter_ops_for_node
 
             nk = str(node_key or "")
-            script_writer = _is_script_writer_node(variant, master, node_key)
             frame_prompts = _is_frame_prompts_prompt(variant, master) or nk.endswith(
                 "_fw_frames"
             )
             qc_prompts = _is_qc_prompts_prompt(variant, master) or nk.endswith("_fw_qc")
             write_prompts = frame_prompts or qc_prompts
             scene_analytics = _is_scene_analytics_prompt(variant, master)
+            # Сценарист пишет закадр + биты — свой kind с правом записи VO.
             apply_kind = (
-                "excel_gpt_prompts" if write_prompts else "excel_gpt_no_prompts"
+                "excel_gpt_script"
+                if script_writer
+                else (
+                    "excel_gpt_prompts" if write_prompts else "excel_gpt_no_prompts"
+                )
             )
 
-            if script_writer:
-                from app.services.gpt_operator_client import OperatorApiResult
-
-                logger.warning(
-                    "[#{}] enrich_xlsx node={!r}: сценарист не генерирует "
-                    "закадр — готовый текст из БД, GPT не вызываем",
-                    project.id,
-                    node_key,
-                )
-                api_res = OperatorApiResult(
-                    reply_text='{"ops":[]}',
-                    output_paths=[ctx_path],
-                    apply_ops={"ops": [], "report": "script_writer_passthrough"},
-                    applied_in_runner=True,
-                )
-            elif qc_prompts and _should_skip_qc_gpt(
+            if qc_prompts and _should_skip_qc_gpt(
                 frames_for_map, force_full=force_full
             ):
                 from app.services.gpt_operator_client import OperatorApiResult
@@ -1346,8 +1372,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         raw_ops,
                         node_kind=apply_kind,
                     )
-                    # excel_gpt не имеет права писать закадр/смысл.
-                    _drop = {"voiceover_text", "meaning"}
+                    # excel_gpt не имеет права писать закадр/смысл; сценарист
+                    # (excel_gpt_script) пишет закадр — это его работа.
+                    _drop = (
+                        {"meaning"}
+                        if script_writer
+                        else {"voiceover_text", "meaning"}
+                    )
                     if fw_camera_menu_only:
                         _drop.update(
                             {

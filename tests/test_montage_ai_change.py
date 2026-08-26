@@ -11,6 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.models import Base, Frame, Project
 from app.services.montage_ai_change import (
     build_ai_change_user_message,
+    ensure_img_pr_style,
+    load_img_pr_master,
+    load_img_pr_rules,
     rewrite_prompt_via_gpt,
     strip_ai_change_reply,
     system_for_kind,
@@ -46,7 +49,6 @@ def test_system_video_has_hard_bans() -> None:
     sys = system_for_kind("video")
     assert "новые предметы" in sys or "новые объекты" in sys
     assert "смена плана" in sys
-    assert "смена изображения" in sys
     assert "музык" in sys.lower()
     assert "silent" in sys.lower() or "речи" in sys
 
@@ -57,14 +59,43 @@ def test_system_image_locks_plan_and_objects() -> None:
     assert "VOICEOVER" in sys
     assert "новые предметы" in sys or "новые объекты" in sys
     assert "смена плана" in sys
-    assert "смена изображения" in sys
+    assert "STYLE" in sys
+    assert "JSON" in sys
+    assert "вложенный файл" in sys.lower() or "мастер" in sys.lower()
+
+
+def test_system_does_not_embed_agent_text() -> None:
+    sys = system_for_kind(
+        "image",
+        img_pr_rules="STYLE LOCK: watercolor only. Этот длинный агент не должен быть в system.",
+    )
+    assert "Этот длинный агент не должен быть в system" not in sys
+
+
+def test_load_img_pr_master_empty_on_none() -> None:
+    assert load_img_pr_master(None) == (None, "")
+    assert load_img_pr_rules(None) == ""
 
 
 def test_user_message_repeats_hard_locks() -> None:
     msg = build_ai_change_user_message(image_prompt="x", voiceover_text="y")
-    assert "без новых предметов" in msg
-    assert "без смены изображения" in msg
-    assert "без смены плана" in msg
+    low = msg.lower()
+    assert "мастер" in low
+    assert "без новых предметов" in low
+    assert "без смены плана" in low
+    assert "не копируй закадр" in low
+
+
+def test_strip_takes_prompt_from_apply_ops_json() -> None:
+    raw = '{"ops":[{"frame_uuid":"ab","fields":{"промт_картинки":"watercolor scene"}}]}'
+    assert strip_ai_change_reply(raw) == "watercolor scene"
+
+
+def test_ensure_style_pins_watercolor_lock() -> None:
+    out = ensure_img_pr_style("a woman in a room", variant="img_prompts_trash_polka_watercolor")
+    assert "Archival Noir Watercolor" in out
+    assert "Final style lock" in out
+    assert "a woman in a room" in out
 
 
 def test_order_ops_includes_ai_change_types() -> None:
@@ -82,6 +113,7 @@ def test_order_ops_includes_ai_change_types() -> None:
 
 @pytest.mark.asyncio
 async def test_rewrite_prompt_via_gpt_uses_system_and_strips(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
@@ -89,22 +121,31 @@ async def test_rewrite_prompt_via_gpt_uses_system_and_strips(
     class FakeGpt:
         async def ask_with_files(self, text, files, **kwargs):
             captured["text"] = text
+            captured["files"] = list(files)
             captured["system"] = kwargs.get("system")
+            captured["auto_pack"] = kwargs.get("auto_pack")
             return "```\nUPDATED PROMPT HERE\n```"
 
     monkeypatch.setattr(
         "app.services.montage_ai_change.get_gpt_client",
         lambda: FakeGpt(),
     )
+    master = tmp_path / "img_prompts_trash_polka_watercolor.md"
+    master.write_text("STYLE LOCK watercolor", encoding="utf-8")
     out = await rewrite_prompt_via_gpt(
         image_prompt="room",
         voiceover_text="door opens",
         kind="video",
         project_id=31,
+        img_pr_path=master,
+        img_pr_variant="img_prompts_trash_polka_watercolor",
     )
     assert out == "UPDATED PROMPT HERE"
     assert "IMAGE_PROMPT:" in str(captured["text"])
+    assert captured["files"] == [master]
+    assert captured["auto_pack"] is False
     assert "музык" in str(captured["system"]).lower()
+    assert "STYLE LOCK watercolor" not in str(captured["system"])
 
 
 @pytest.fixture

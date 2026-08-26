@@ -117,6 +117,8 @@ FIELD_ALIASES: dict[str, str] = {
     "voiceover": "voiceover_text",
     "закадр": "voiceover_text",
     "закадровый_текст": "voiceover_text",
+    "закадровый": "voiceover_text",
+    "закадровый_text": "voiceover_text",
     "реплика": "voiceover_text",
     "image_prompt": "image_prompt",
     "img_prompt": "image_prompt",
@@ -135,6 +137,10 @@ FIELD_ALIASES: dict[str, str] = {
     "meaning": "meaning",
     "смысл": "meaning",
     "описание_кадра": "meaning",
+    # Биты сценария (смысловые части «было → стало») → Frame.attrs["биты"].
+    "биты": "биты",
+    "смысловые_части": "биты",
+    "beats": "биты",
     "duration_seconds": "duration_seconds",
     "длительность": "duration_seconds",
     "время": "duration_seconds",
@@ -1299,6 +1305,12 @@ async def apply_ops(
             attrs["characters"] = persons
             attrs["persons"] = persons
             attrs["персонажи"] = persons
+        if "биты" in fields:
+            # Список битов храним как есть (JSON), не str().
+            bits_raw = fields["биты"]
+            attrs["биты"] = bits_raw if isinstance(bits_raw, list) else str(
+                bits_raw or ""
+            )
         for attr_key in _ATTR_EXCEL_ROWS:
             if attr_key in fields:
                 attrs[attr_key] = str(fields[attr_key] or "")

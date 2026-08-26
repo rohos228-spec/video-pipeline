@@ -71,7 +71,16 @@ def spawn_apply_job(
                     project = await session.get(Project, project_id)
                     if project is None:
                         return
-                    _set_job(project, {"done_ops": done, "total_ops": total})
+                    job_patch: dict[str, Any] = {
+                        "done_ops": done,
+                        "total_ops": total,
+                    }
+                    if result.get("ok") and result.get("path"):
+                        job_patch["last_path"] = result.get("path")
+                        job_patch["last_frame_number"] = result.get("frame_number")
+                        job_patch["last_shot"] = result.get("shot")
+                        job_patch["last_highlight"] = result.get("highlight")
+                    _set_job(project, job_patch)
                 extra: dict[str, Any] = {
                     "done_ops": done,
                     "total_ops": total,
