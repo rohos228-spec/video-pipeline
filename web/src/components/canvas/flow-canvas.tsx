@@ -31,6 +31,7 @@ import {
   FileSpreadsheet,
   Film,
   ImageIcon,
+  LayoutGrid,
   Loader2,
   Play,
   Save,
@@ -972,6 +973,57 @@ export function FlowCanvas({
     [onSelectNode, scheduleSaveWorkflow, selectedNodeKey, setEdges],
   );
 
+  const autoArrangeNodes = useCallback(() => {
+    setNodes((prev) => {
+      if (prev.length === 0) return prev;
+
+      // Group nodes that share similar X coordinates into columns (within 160px)
+      const sorted = [...prev].sort((a, b) => a.position.x - b.position.x);
+      const columns: Node<PipelineNodeData>[][] = [];
+
+      for (const node of sorted) {
+        const matchCol = columns.find(
+          (col) => Math.abs(col[0].position.x - node.position.x) < 160,
+        );
+        if (matchCol) {
+          matchCol.push(node);
+        } else {
+          columns.push([node]);
+        }
+      }
+
+      let currentX = 80;
+      const STEP_X = 380;
+      const newPositions = new Map<string, { x: number; y: number }>();
+
+      columns.forEach((col) => {
+        col.forEach((node) => {
+          newPositions.set(node.id, {
+            x: currentX,
+            y: node.position.y,
+          });
+        });
+        const maxColWidth = Math.max(
+          ...col.map((n) =>
+            (n.data?.type === "excel_gpt" ||
+              n.data?.type === "storage" ||
+              n.data?.type === "shot_menu")
+              ? 320
+              : 280,
+          ),
+        );
+        currentX += Math.max(STEP_X, maxColWidth + 70);
+      });
+
+      return prev.map((n) => {
+        const pos = newPositions.get(n.id);
+        return pos ? { ...n, position: pos } : n;
+      });
+    });
+    scheduleSaveWorkflow();
+    toast.success("Граф аккуратно выровнен с просторным расстоянием");
+  }, [scheduleSaveWorkflow, setNodes]);
+
   const canvasBootLoading =
     (workflows.isLoading && !workflows.data) ||
     (Boolean(defaultWorkflow) && workflow.isLoading && !workflow.data);
@@ -1221,6 +1273,7 @@ export function FlowCanvas({
               : "Граф продублирован вниз — сохраните при необходимости",
           );
         }}
+        onAutoArrange={autoArrangeNodes}
       />
       <RunOverlay
         projectId={projectId}
@@ -1247,6 +1300,7 @@ function WorkflowToolbar({
   canDelete,
   onDuplicateBelow,
   onAddExcelFeed,
+  onAutoArrange,
 }: {
   workflowId?: number;
   projectId?: number | null;
@@ -1261,6 +1315,7 @@ function WorkflowToolbar({
   canDelete: boolean;
   onDuplicateBelow: () => void;
   onAddExcelFeed: () => void;
+  onAutoArrange: () => void;
 }) {
   const qc = useQueryClient();
 
@@ -1283,6 +1338,17 @@ function WorkflowToolbar({
           onAddNode={onAddNode}
           getSelectedNodeIds={getSelectedNodeIds}
         />
+        <div className="h-4 w-px bg-white/10" />
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-8 gap-1.5 px-2.5 text-xs hover:bg-white/5 text-zinc-200 font-medium"
+          onClick={onAutoArrange}
+          title="Авто-выравнивание: увеличить расстояние между нодами и убрать наложение"
+        >
+          <LayoutGrid className="h-3.5 w-3.5 text-sky-400" />
+          Выровнять
+        </Button>
         <div className="h-4 w-px bg-white/10" />
         <Button
           size="sm"

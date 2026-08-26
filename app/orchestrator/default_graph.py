@@ -40,7 +40,7 @@ def default_graph() -> tuple[list[dict], list[dict]]:
         ("assemble", "Сборка", "FFmpeg финальный mp4"),
         ("publish", "Публикация", "Публикация на 5 площадок"),
     ]
-    STEP_X = 290
+    STEP_X = 380
     BASE_X = 80
     MAIN_Y = 200
 
