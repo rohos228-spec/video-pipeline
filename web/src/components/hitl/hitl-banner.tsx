@@ -229,9 +229,6 @@ export function HitlModal({
                   <PenLine className="h-3.5 w-3.5" />
                   Изменить промт
                 </Button>
-                <span className="hidden text-[10px] text-muted-foreground md:inline">
-                  Enter · одобрить
-                </span>
               </div>
               <div className="flex items-center gap-2">
                 <Button
@@ -298,9 +295,15 @@ export function HitlModal({
 }
 
 function HitlPreview({ hitl }: { hitl: HITLDTO }) {
-  // Пытаемся понять что показать на основе payload и kind.
-  const photoPath = (hitl.payload?.photo_path as string | undefined) ?? null;
-  const videoPath = (hitl.payload?.video_path as string | undefined) ?? null;
+  const photoPath =
+    (hitl.payload?.photo_path as string | undefined) ??
+    (hitl.payload?.image_path as string | undefined) ??
+    null;
+  const videoPath =
+    (hitl.payload?.video_path as string | undefined) ??
+    (hitl.payload?.file_path as string | undefined) ??
+    (hitl.payload?.path as string | undefined) ??
+    null;
   const text =
     (hitl as { text?: string | null }).text ??
     (hitl.payload?.text as string | undefined) ??
@@ -341,12 +344,16 @@ function HitlPreview({ hitl }: { hitl: HITLDTO }) {
           <Video className="h-3 w-3" />
           Превью видео
         </div>
-        <video
-          controls
-          className="max-h-72 w-full rounded"
-          src={`/api/files?path=${encodeURIComponent(videoPath)}`}
-        />
-        <div className="font-mono text-[10px] text-muted-foreground">{videoPath}</div>
+        <div className="flex max-h-[380px] w-full items-center justify-center overflow-hidden rounded-lg bg-black/60">
+          <video
+            controls
+            className="max-h-[380px] w-auto max-w-full rounded-lg object-contain shadow-md"
+            src={`/api/files?path=${encodeURIComponent(videoPath)}`}
+          />
+        </div>
+        <div className="truncate font-mono text-[10px] text-muted-foreground" title={videoPath}>
+          {videoPath}
+        </div>
       </div>
     );
   }

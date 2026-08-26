@@ -323,13 +323,13 @@ function AssembleFields({
         </span>
         <span
           className={cn(
-            "mt-0.5 h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors",
-            sendToMain ? "bg-primary" : "bg-muted",
+            "mt-0.5 h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors border shadow-inner",
+            sendToMain ? "bg-primary border-primary" : "bg-zinc-700/90 border-zinc-500/80",
           )}
         >
           <span
             className={cn(
-              "block h-4 w-4 rounded-full bg-white shadow transition-transform",
+              "block h-4 w-4 rounded-full bg-white shadow-md transition-transform",
               sendToMain && "translate-x-4",
             )}
           />
@@ -352,13 +352,13 @@ function AssembleFields({
         </span>
         <span
           className={cn(
-            "mt-0.5 h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors",
-            subsOn ? "bg-primary" : "bg-muted",
+            "mt-0.5 h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors border shadow-inner",
+            subsOn ? "bg-primary border-primary" : "bg-zinc-700/90 border-zinc-500/80",
           )}
         >
           <span
             className={cn(
-              "block h-4 w-4 rounded-full bg-white shadow transition-transform",
+              "block h-4 w-4 rounded-full bg-white shadow-md transition-transform",
               subsOn && "translate-x-4",
             )}
           />
@@ -388,13 +388,13 @@ function AssembleFields({
         </span>
         <span
           className={cn(
-            "mt-0.5 h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors",
-            skipIntroOn ? "bg-primary" : "bg-muted",
+            "mt-0.5 h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors border shadow-inner",
+            skipIntroOn ? "bg-primary border-primary" : "bg-zinc-700/90 border-zinc-500/80",
           )}
         >
           <span
             className={cn(
-              "block h-4 w-4 rounded-full bg-white shadow transition-transform",
+              "block h-4 w-4 rounded-full bg-white shadow-md transition-transform",
               skipIntroOn && "translate-x-4",
             )}
           />
