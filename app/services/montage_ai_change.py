@@ -37,9 +37,45 @@ def build_ai_change_user_message(*, voiceover_text: str) -> str:
     vo = (voiceover_text or "").strip() or "(пусто)"
     return (
         f"VOICEOVER:\n{vo}\n\n"
+        "Карточка кадра — во вложенном db_frames.json (База: место, действие, "
+        "персонажи, камера, свет). Старого промта нет.\n"
         "Напиши полный промт по вложенному агенту. "
         "STYLE / Final style lock / Negative пишешь ты. Не JSON. Только промт."
     )
+
+
+def write_ai_change_db_card(
+    project: object,
+    frame: object,
+    dest_dir: Path,
+    *,
+    characters: list | None = None,
+) -> Path:
+    """Один кадр из Базы — тот же снимок, что img_pr кладёт в db_frames.json."""
+    from app.services.db_frames_context import build_img_pr_db_context
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    ctx = build_img_pr_db_context(
+        project_id=int(getattr(project, "id", 0) or 0),
+        slug=str(getattr(project, "slug", "") or ""),
+        frames=[frame],
+        characters=list(characters or []),
+        general_plan=str(getattr(project, "general_plan", "") or ""),
+        include_characters=True,
+        include_field_map=True,
+    )
+    path = dest_dir / "db_frames.json"
+    path.write_text(
+        json.dumps(ctx, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    logger.info(
+        "montage_ai_change: db card {} bytes frame={} chars={}",
+        path.stat().st_size,
+        getattr(frame, "number", "?"),
+        len(ctx.get("characters") or []),
+    )
+    return path
 
 
 def load_img_pr_master(project: object | None) -> tuple[Path | None, str]:
@@ -139,14 +175,17 @@ async def rewrite_prompt_via_gpt(
     img_pr_path: Path | None = None,
     img_pr_variant: str = "",
     image_prompt: str = "",
+    db_card_path: Path | None = None,
 ) -> str:
-    """Агент + закадр → LLM → промт как есть."""
+    """Агент + карточка Базы + закадр → LLM → промт как есть."""
     del img_pr_rules, img_pr_variant, image_prompt
     user = build_ai_change_user_message(voiceover_text=voiceover_text)
     system = system_for_kind(kind)
     files: list[Path] = []
     if img_pr_path is not None and img_pr_path.is_file():
         files.append(img_pr_path)
+    if db_card_path is not None and db_card_path.is_file():
+        files.append(db_card_path)
     gpt = get_gpt_client()
     raw = await gpt.ask_with_files(
         user,

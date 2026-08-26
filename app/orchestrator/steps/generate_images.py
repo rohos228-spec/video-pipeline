@@ -366,7 +366,7 @@ async def _load_refs_for_frame(
     )
     persons_ids: list[str] = []
     items_ids: list[str] = []
-    if persons_override:
+    if persons_override is not None:
         persons_ids = [x for x in persons_override if x]
         items_ids = []
     elif xlsx_path.exists():
@@ -443,6 +443,8 @@ async def _load_refs_for_frame(
     meta = getattr(project, "meta", None) or {}
     prod = meta.get("permanent_product") or {}
     prod_ref_path = prod.get("reference_image_path")
+    if persons_override is not None:
+        prod_ref_path = None
     if prod_ref_path and len(refs) < 2:
         prod_path = Path(prod_ref_path)
         if prod_path.exists():

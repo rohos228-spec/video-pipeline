@@ -320,7 +320,7 @@ async def prepare_image_regen(
                 session,
                 project,
                 frame_number,
-                persons_override=ref_person_ids or None,
+                persons_override=ref_person_ids,
             )
     elif mode == "correction":
         text = (correction or "").strip()

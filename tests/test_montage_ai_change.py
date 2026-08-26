@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -17,6 +18,7 @@ from app.services.montage_ai_change import (
     rewrite_prompt_via_gpt,
     strip_ai_change_reply,
     system_for_kind,
+    write_ai_change_db_card,
 )
 from app.services.montage_board_apply import (
     _IMAGE_OP_TYPES,
@@ -30,6 +32,7 @@ def test_build_user_message_labels_fields() -> None:
     msg = build_ai_change_user_message(voiceover_text="Он открывает ящик.")
     assert "IMAGE_PROMPT:" not in msg
     assert "VOICEOVER:" in msg
+    assert "db_frames.json" in msg
     assert "Он открывает ящик." in msg
     assert "полный промт" in msg.lower() or "только промт" in msg.lower()
 
@@ -81,6 +84,22 @@ def test_strip_takes_prompt_from_apply_ops_json() -> None:
     assert strip_ai_change_reply(raw) == "watercolor scene"
 
 
+def test_write_ai_change_db_card_has_frame_fields(tmp_path: Path) -> None:
+    project = Project(id=9, slug="card-test", topic="t", hero_mode="auto")
+    fr = Frame(
+        project_id=9,
+        number=72,
+        uuid="340ef477ea3d463a95e6bae4",
+        voiceover_text="фрагмент закадра",
+        attrs={"characters": "c05", "place": "кабинет", "shot01_action": "печать"},
+    )
+    path = write_ai_change_db_card(project, fr, tmp_path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["frames"][0]["characters"] == "c05"
+    assert data["frames"][0]["place"] == "кабинет"
+    assert "IMAGE_PROMPT" not in path.read_text(encoding="utf-8")
+
+
 def test_character_ids_from_prompt() -> None:
     assert character_ids_from_prompt("sheet for c05 and c01, then c05 again") == ["c05", "c01"]
 
@@ -119,17 +138,20 @@ async def test_rewrite_prompt_via_gpt_uses_system_and_strips(
     )
     master = tmp_path / "img_prompts_trash_polka_watercolor.md"
     master.write_text("STYLE LOCK watercolor", encoding="utf-8")
+    card = tmp_path / "db_frames.json"
+    card.write_text('{"frames":[]}', encoding="utf-8")
     out = await rewrite_prompt_via_gpt(
         voiceover_text="door opens",
         kind="video",
         project_id=31,
         img_pr_path=master,
         img_pr_variant="img_prompts_trash_polka_watercolor",
+        db_card_path=card,
     )
     assert out == "UPDATED PROMPT HERE"
     assert "IMAGE_PROMPT:" not in str(captured["text"])
     assert "VOICEOVER:" in str(captured["text"])
-    assert captured["files"] == [master]
+    assert captured["files"] == [master, card]
     assert captured["auto_pack"] is False
     assert "музык" in str(captured["system"]).lower()
     assert "STYLE LOCK watercolor" not in str(captured["system"])

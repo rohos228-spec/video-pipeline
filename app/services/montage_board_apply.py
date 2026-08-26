@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -36,6 +37,7 @@ from app.services.montage_ai_change import (
     character_ids_from_prompt,
     load_img_pr_master,
     rewrite_prompt_via_gpt,
+    write_ai_change_db_card,
 )
 from app.services.montage_board_regen import (
     _frame_by_number,
@@ -270,6 +272,7 @@ async def _run_op_with_short_sessions(
     ai_voiceover = ""
     ai_img_pr_path = None
     ai_img_pr_variant = ""
+    ai_db_card_path: Path | None = None
     prep: Any = None
 
     async with session_scope() as session:
@@ -284,6 +287,11 @@ async def _run_op_with_short_sessions(
             ai_kind = "image" if op_type == "image_ai_change" else "video"
             ai_voiceover = fr.voiceover_text or ""
             ai_img_pr_path, ai_img_pr_variant = load_img_pr_master(project)
+            ai_db_card_path = write_ai_change_db_card(
+                project,
+                fr,
+                Path(tempfile.mkdtemp(prefix="ai_change_db_")),
+            )
         elif op_type in (
             "image_regen",
             "image_regen_prompt",
@@ -327,6 +335,7 @@ async def _run_op_with_short_sessions(
             project_id=project_id,
             img_pr_path=ai_img_pr_path,
             img_pr_variant=ai_img_pr_variant,
+            db_card_path=ai_db_card_path,
         )
 
         async def _prepare_after_gpt():
