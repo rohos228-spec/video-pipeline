@@ -117,6 +117,8 @@ FIELD_ALIASES: dict[str, str] = {
     "voiceover": "voiceover_text",
     "закадр": "voiceover_text",
     "закадровый_текст": "voiceover_text",
+    "закадровый": "voiceover_text",
+    "закадровый_text": "voiceover_text",
     "реплика": "voiceover_text",
     "image_prompt": "image_prompt",
     "img_prompt": "image_prompt",
