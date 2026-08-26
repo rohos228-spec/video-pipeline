@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.models import Base, Frame, Project
 from app.services.montage_ai_change import (
     build_ai_change_user_message,
+    load_img_pr_rules,
     rewrite_prompt_via_gpt,
     strip_ai_change_reply,
     system_for_kind,
@@ -58,13 +59,29 @@ def test_system_image_locks_plan_and_objects() -> None:
     assert "новые предметы" in sys or "новые объекты" in sys
     assert "смена плана" in sys
     assert "смена изображения" in sys
+    assert "логику промта картинок" in sys or "STYLE" in sys
+    assert "JSON" in sys
+
+
+def test_load_img_pr_rules_empty_on_none() -> None:
+    assert load_img_pr_rules(None) == ""
+
+
+def test_system_appends_project_img_pr_rules() -> None:
+    sys = system_for_kind("image", img_pr_rules="STYLE LOCK: watercolor only. Не копируй закадр.")
+    assert "агент img_pr" in sys
+    assert "STYLE LOCK: watercolor only" in sys
+    assert "json" in sys.lower()
 
 
 def test_user_message_repeats_hard_locks() -> None:
     msg = build_ai_change_user_message(image_prompt="x", voiceover_text="y")
-    assert "без новых предметов" in msg
-    assert "без смены изображения" in msg
-    assert "без смены плана" in msg
+    low = msg.lower()
+    assert "без новых предметов" in low
+    assert "без смены изображения" in low
+    assert "без смены плана" in low
+    assert "правила и логику промта картинок" in low
+    assert "не копируй закадр" in low
 
 
 def test_order_ops_includes_ai_change_types() -> None:
@@ -101,10 +118,12 @@ async def test_rewrite_prompt_via_gpt_uses_system_and_strips(
         voiceover_text="door opens",
         kind="video",
         project_id=31,
+        img_pr_rules="Reference: character sheet. Не копируй закадр.",
     )
     assert out == "UPDATED PROMPT HERE"
     assert "IMAGE_PROMPT:" in str(captured["text"])
     assert "музык" in str(captured["system"]).lower()
+    assert "character sheet" in str(captured["system"])
 
 
 @pytest.fixture

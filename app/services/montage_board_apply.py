@@ -32,7 +32,7 @@ from app.services.montage_board_meta import (
     set_montage_meta,
     touch_applied,
 )
-from app.services.montage_ai_change import rewrite_prompt_via_gpt
+from app.services.montage_ai_change import load_img_pr_rules, rewrite_prompt_via_gpt
 from app.services.montage_board_regen import (
     _frame_by_number,
     execute_image_regen,
@@ -266,6 +266,7 @@ async def _run_op_with_short_sessions(
     ai_kind: str | None = None
     ai_image_prompt = ""
     ai_voiceover = ""
+    ai_img_pr_rules = ""
     prep: Any = None
 
     async with session_scope() as session:
@@ -280,6 +281,7 @@ async def _run_op_with_short_sessions(
             ai_kind = "image" if op_type == "image_ai_change" else "video"
             ai_image_prompt = await resolve_image_prompt(session, project, fr, shot)
             ai_voiceover = fr.voiceover_text or ""
+            ai_img_pr_rules = load_img_pr_rules(project)
         elif op_type in (
             "image_regen",
             "image_regen_prompt",
@@ -322,6 +324,7 @@ async def _run_op_with_short_sessions(
             voiceover_text=ai_voiceover,
             kind=ai_kind,  # type: ignore[arg-type]
             project_id=project_id,
+            img_pr_rules=ai_img_pr_rules,
         )
 
         async def _prepare_after_gpt():
