@@ -182,14 +182,14 @@ async def test_insert_fanout_after_split(mem_db) -> None:
         assert n["type"] == "excel_gpt"
         assert n["data"]["sd_agent"] == agent
         assert "slotIndex" not in n["data"]  # веер слоты enrich не занимает
-        assert n["position"]["x"] == split_x + 290.0
+        assert n["position"]["x"] == split_x + 380.0
         assert project.meta["prompt_slot_variants"][nid] == {"main": f"sd_{agent}"}
         # проверка агента — рядом, вне enrich-слотов, с тумблером «Проверка»
         chk = by_id[f"n_excel_gpt_sd_check_{agent}"]
         assert chk["type"] == "excel_gpt"
         assert "sd_agent" not in chk["data"]
         assert chk["data"]["slotOverflow"] is True
-        assert chk["position"]["x"] == split_x + 580.0
+        assert chk["position"]["x"] == split_x + 760.0
         assert chk["position"]["y"] == n["position"]["y"]
         cfg = project.meta["excel_gpt_nodes"][f"n_excel_gpt_sd_check_{agent}"]
         assert cfg["checkMode"] is True
@@ -199,10 +199,10 @@ async def test_insert_fanout_after_split(mem_db) -> None:
         assert f"n_excel_gpt_sd_check_{agent}" not in project.meta["prompt_slot_variants"]
     asm = by_id["n_excel_gpt_sd_asm"]
     assert asm["data"]["sd_agent"] == "assemble"
-    assert asm["position"]["x"] == split_x + 870.0
+    assert asm["position"]["x"] == split_x + 1140.0
     assert asm["position"]["y"] == split_y
     check_asm = by_id["n_excel_gpt_sd_check_asm"]
-    assert check_asm["position"]["x"] == split_x + 1160.0
+    assert check_asm["position"]["x"] == split_x + 1520.0
     assert check_asm["position"]["y"] == split_y
     assert project.meta["excel_gpt_nodes"]["n_excel_gpt_sd_check_asm"]["checkMode"] is True
 
@@ -268,7 +268,7 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
 
     script = by_id["n_excel_gpt_fw_script"]
     assert script["type"] == "excel_gpt"
-    assert script["position"]["x"] == plan_x + 290.0
+    assert script["position"]["x"] == plan_x + 380.0
     assert script["data"]["groupId"] == "script_frames_qc"
     assert project.meta["prompt_slot_variants"]["n_excel_gpt_fw_script"] == {
         "main": "script_writer_ru"
@@ -487,7 +487,7 @@ def test_group_detail_spec() -> None:
     cam = by_key["camera"]
     assert cam["prompt_variant"] == "sd_camera"
     assert cam["marker"] == "camera"
-    assert cam["dx"] == 290.0
+    assert cam["dx"] == 380.0
     chk = by_key["check_camera"]
     assert chk["slot_overflow"] is True
     assert chk["has_operator_config"] is True
