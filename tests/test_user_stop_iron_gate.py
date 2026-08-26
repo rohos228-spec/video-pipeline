@@ -183,7 +183,8 @@ async def test_user_stop_blocks_later_in_gen_queue(
     session.add_all([p2, p4])
     await session.flush()
 
-    assert await gen_queue_blocks_project(session, 4) == 2
+    # Проект #2 с user_stop=True пропускается и не блокирует очередь для #4
+    assert await gen_queue_blocks_project(session, 4) is None
 
 
 @pytest.mark.asyncio

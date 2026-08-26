@@ -31,19 +31,19 @@ export function GptOperatorCardPanel({
     <div className="border-t border-white/[0.06] px-3 pb-3 pt-2">
       <button
         type="button"
-        className="nodrag nopan flex w-full items-center gap-2 rounded-lg border border-violet-400/25 bg-violet-500/10 px-2.5 py-2 text-left transition hover:border-violet-400/45 hover:bg-violet-500/15"
+        className="nodrag nopan flex w-full items-center gap-2 rounded-xl border border-violet-500/30 bg-violet-950/40 px-3 py-2.5 text-left transition hover:border-violet-400/50 hover:bg-violet-900/40 shadow-sm"
         onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation();
           setOpen((v) => !v);
         }}
       >
-        <Sparkles className="h-3.5 w-3.5 shrink-0 text-violet-300" />
+        <Sparkles className="h-4 w-4 shrink-0 text-violet-400" />
         <span className="min-w-0 flex-1">
-          <span className="block text-[11px] font-semibold text-foreground">
+          <span className="block text-xs sm:text-[13px] font-bold text-zinc-100">
             Пульт оператора GPT
           </span>
-          <span className="mt-0.5 block text-[9px] text-muted-foreground">
+          <span className="mt-1 block text-[11px] sm:text-xs text-zinc-300 font-medium leading-normal">
             {roleChip(data?.role)}
             {isBranchingRole(data?.role) ? " · ок/не ок" : ""}
             {" · "}файлов {data?.okFileCount ?? "…"}
@@ -59,9 +59,9 @@ export function GptOperatorCardPanel({
           </span>
         </span>
         {open ? (
-          <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" />
+          <ChevronUp className="h-4 w-4 text-zinc-400" />
         ) : (
-          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+          <ChevronDown className="h-4 w-4 text-zinc-400" />
         )}
       </button>
 

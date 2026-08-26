@@ -46,13 +46,11 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
       <div className="flex h-full min-h-0 w-full flex-1 flex-col">
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-white/[0.06] bg-black/40 px-4 backdrop-blur-xl">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-7 w-7 items-center justify-center rounded-full border border-primary/30 bg-primary/10 text-primary">
-            <Sparkles className="h-3.5 w-3.5" />
-          </div>
+          <img src="/icon.svg" alt="Studio" className="h-6 w-6 shrink-0 rounded-md shadow-sm" />
           <div className="flex flex-col gap-0.5 leading-tight">
-            <span className="text-sm font-semibold tracking-tight">Видео студия</span>
+            <span className="text-sm font-semibold tracking-tight text-white">Видео студия</span>
             <div className="flex items-center gap-2">
-              <span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+              <span className="text-[10px] uppercase tracking-[0.18em] text-zinc-400 font-medium">
                 автономный режим
               </span>
               <StudioVersionBadge />
@@ -62,13 +60,13 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
         <div className="flex items-center gap-1.5">
           <TextLlmPicker />
           <Button
-            variant="default"
+            variant="outline"
             size="sm"
             onClick={() => openOutsee()}
-            className="gap-2 text-xs font-semibold"
+            className="gap-2 text-xs font-semibold border-emerald-500/40 bg-emerald-950/40 text-emerald-300 hover:bg-emerald-900/50 hover:text-emerald-200 hover:border-emerald-400/60 shadow-sm shadow-emerald-950/50"
             title="Полный интерфейс генерации outsee"
           >
-            <Wand2 className="h-3.5 w-3.5" />
+            <Wand2 className="h-3.5 w-3.5 text-emerald-400" />
             Генерация
           </Button>
           <Button
@@ -80,20 +78,6 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
           >
             <Bot className="h-3.5 w-3.5" />
             Чат
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() =>
-              window.dispatchEvent(
-                new CustomEvent("studio-open-node-prompts", { detail: {} }),
-              )
-            }
-            className="gap-2 text-xs"
-            title="Промты выбранной ноды на канвасе"
-          >
-            <Sparkles className="h-3.5 w-3.5" />
-            Промты
           </Button>
           <Button
             variant="outline"

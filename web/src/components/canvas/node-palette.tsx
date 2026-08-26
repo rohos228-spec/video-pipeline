@@ -144,12 +144,12 @@ export function NodePalette({
       <DialogTrigger asChild>
         <Button
           size="sm"
-          variant="ghost"
-          className="h-8 gap-1 border border-primary/30 bg-primary/10 text-xs text-primary hover:bg-primary/20"
-          title="Библиотека: добавить ноду или группу нод на канвас"
+          variant="outline"
+          className="h-8 gap-1.5 border-white/15 bg-zinc-800/80 px-2.5 text-xs text-foreground hover:bg-zinc-700 hover:text-white"
+          title="Библиотека: добавить ноду или готовую группу нод на канвас"
         >
-          <Plus className="h-3.5 w-3.5" />
-          Добавить
+          <Plus className="h-3.5 w-3.5 text-emerald-400" />
+          <span>Добавить</span>
         </Button>
       </DialogTrigger>
       <DialogContent className="flex h-[640px] max-h-[88vh] w-[960px] max-w-[94vw] flex-col gap-0 overflow-hidden p-0">

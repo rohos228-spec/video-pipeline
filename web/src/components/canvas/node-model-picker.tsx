@@ -184,7 +184,7 @@ export function NodeModelPicker({
           setOpen(true);
         }}
       >
-        <span className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-tight text-foreground/95">
+        <span className="min-w-0 flex-1 truncate text-xs sm:text-[13px] font-semibold tracking-normal text-zinc-100">
           {summaryBits.join(" · ")}
         </span>
         <ChevronDown
