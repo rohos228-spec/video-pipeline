@@ -67,6 +67,57 @@ async def test_post_generate_parses_id(monkeypatch: pytest.MonkeyPatch) -> None:
     assert data["id"] == 314764
 
 
+@pytest.mark.asyncio
+async def test_post_generate_waits_on_concurrency_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {"n": 0}
+
+    class LimitResp:
+        status_code = 429
+        text = "busy"
+
+        def json(self):
+            return {
+                "error": {
+                    "code": "concurrency_limit",
+                    "message": "Достигнут лимит одновременных генераций (4).",
+                    "active": 4,
+                    "limit": 4,
+                }
+            }
+
+    class OkResp:
+        status_code = 200
+
+        def json(self):
+            return {"id": 99, "status": "queued"}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def post(self, *a, **k):
+            calls["n"] += 1
+            return LimitResp() if calls["n"] == 1 else OkResp()
+
+    slept: list[float] = []
+
+    async def fake_sleep(sec):
+        slept.append(sec)
+
+    monkeypatch.setattr(oh.httpx, "AsyncClient", lambda **kw: FakeClient())
+    monkeypatch.setattr(oh, "_headers", lambda: {"Authorization": "Bearer x"})
+    monkeypatch.setattr(oh.asyncio, "sleep", fake_sleep)
+    data = await oh._post_generate("/api/v1/videos/generate", {"prompt": "hi"})
+    assert data["id"] == 99
+    assert calls["n"] == 2
+    assert slept and slept[0] > 0
+
+
 def test_outsee_http_enabled_follows_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(oh, "outsee_api_key", lambda: "outsee-test")
     assert oh.outsee_http_enabled() is True

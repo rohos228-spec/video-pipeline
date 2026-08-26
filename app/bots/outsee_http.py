@@ -189,34 +189,80 @@ async def fetch_balance() -> dict[str, Any]:
         return data if isinstance(data, dict) else {}
 
 
+_CONCURRENCY_MARKERS = (
+    "лимит одновремен",
+    "одновременных генерац",
+    "дождитесь завершения текущих",
+    "too many concurrent",
+    "concurrent generation",
+    "concurrency limit",
+)
+_CONCURRENCY_MAX_WAITS = 24
+_CONCURRENCY_BACKOFF_S = (15.0, 30.0, 45.0, 75.0, 120.0)
+
+
+def _is_concurrency_api_error(err: BaseException) -> bool:
+    if not isinstance(err, OutseeApiError):
+        return False
+    code = str((err.context or {}).get("code") or "").lower()
+    if code in {"concurrency_limit", "rate_limit", "too_many_requests"}:
+        return True
+    blob = str(err).lower()
+    return any(m in blob for m in _CONCURRENCY_MARKERS)
+
+
+def _concurrency_backoff_s(wait_n: int) -> float:
+    idx = max(0, min(wait_n - 1, len(_CONCURRENCY_BACKOFF_S) - 1))
+    return _CONCURRENCY_BACKOFF_S[idx]
+
+
 async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            r = await client.post(
-                f"{_base_url()}{path}", headers=_headers(), json=body
-            )
-            if r.status_code >= 400:
-                _raise_api(r, where=path)
-            data = r.json()
-            if not isinstance(data, dict) or data.get("id") is None:
-                raise OutseeApiError(
-                    "Outsee generate: нет id",
-                    context={"path": path, "body": data},
+    waits = 0
+    last_err: BaseException | None = None
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                r = await client.post(
+                    f"{_base_url()}{path}", headers=_headers(), json=body
                 )
-            logger.info(
-                "outsee_api.submitted path={} id={} status={}",
+                if r.status_code >= 400:
+                    _raise_api(r, where=path)
+                data = r.json()
+                if not isinstance(data, dict) or data.get("id") is None:
+                    raise OutseeApiError(
+                        "Outsee generate: нет id",
+                        context={"path": path, "body": data},
+                    )
+                logger.info(
+                    "outsee_api.submitted path={} id={} status={}",
+                    path,
+                    data.get("id"),
+                    data.get("status"),
+                )
+                return data
+        except OutseeApiError as e:
+            if not _is_concurrency_api_error(e):
+                raise
+            last_err = e
+            waits += 1
+            if waits > _CONCURRENCY_MAX_WAITS:
+                raise
+            delay = _concurrency_backoff_s(waits)
+            logger.warning(
+                "outsee_api: concurrency_limit {} — жду {:.0f}с (wait {}/{})",
                 path,
-                data.get("id"),
-                data.get("status"),
+                delay,
+                waits,
+                _CONCURRENCY_MAX_WAITS,
             )
-            return data
-    except OutseeApiError:
-        raise
-    except (httpx.HTTPError, OSError) as e:
-        raise OutseeApiError(
-            f"Outsee API network {path}: {e}",
-            context={"path": path, "network": True},
-        ) from e
+            await asyncio.sleep(delay)
+            continue
+        except (httpx.HTTPError, OSError) as e:
+            raise OutseeApiError(
+                f"Outsee API network {path}: {e}",
+                context={"path": path, "network": True},
+            ) from e
+    raise last_err or OutseeApiError("Outsee generate: concurrency exhausted")
 
 
 async def _poll_generation(
