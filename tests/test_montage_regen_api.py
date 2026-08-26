@@ -16,7 +16,6 @@ from app.services.montage_board_regen import (
     VideoRegenPrep,
     execute_image_regen,
     execute_video_regen,
-    majority_scene_image_model,
     prepare_image_regen,
     resolve_image_prompt,
     resolve_video_prompt,
@@ -72,16 +71,6 @@ async def test_resolve_image_prompt_prefers_active_version(
     assert text == "из prompt_versions"
 
 
-def test_majority_scene_image_model_prefers_originals(tmp_path: Path) -> None:
-    scenes = tmp_path / "scenes"
-    scenes.mkdir()
-    for i, model in enumerate(["gpt-image-2"] * 4 + ["nano-banana-2"], start=1):
-        (scenes / f"frame_{i:03d}_aaaa.json").write_text(
-            f'{{"model": "{model}"}}', encoding="utf-8"
-        )
-    assert majority_scene_image_model(scenes) == "gpt-image-2"
-
-
 @pytest.mark.asyncio
 async def test_edit_prompt_writes_db_without_excel(
     session: AsyncSession, project: Project, tmp_path: Path
@@ -116,10 +105,23 @@ async def test_edit_prompt_writes_db_without_excel(
 
 
 @pytest.mark.asyncio
-async def test_prepare_uses_original_scene_model_not_project(
+async def test_prepare_uses_images_node_model_not_sidecar(
     session: AsyncSession, project: Project
 ) -> None:
     project.image_generator = "nano_banana_2"
+    project.meta = {
+        "canvas_graph": {
+            "workflow_id": 1,
+            "nodes": [
+                {
+                    "id": "n_images_1",
+                    "type": "images",
+                    "data": {"modelId": "gpt-image-2-vip"},
+                }
+            ],
+            "edges": [],
+        }
+    }
     session.add(project)
     fr = Frame(project_id=project.id, number=1, voiceover_text="v", image_prompt="p")
     session.add(fr)
@@ -128,12 +130,12 @@ async def test_prepare_uses_original_scene_model_not_project(
     scenes.mkdir(parents=True, exist_ok=True)
     for i in range(1, 5):
         (scenes / f"frame_{i:03d}_orig.json").write_text(
-            '{"model": "gpt-image-2"}', encoding="utf-8"
+            '{"model": "nano-banana-pro"}', encoding="utf-8"
         )
     prep = await prepare_image_regen(
         session, project, 1, shot=1, mode="same_prompt"
     )
-    assert prep.model_slug == "gpt-image-2"
+    assert prep.model_slug == "gpt-image-2-vip"
 
 
 @pytest.mark.asyncio

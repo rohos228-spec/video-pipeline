@@ -10,9 +10,7 @@ Excel как запасной вид).
 
 from __future__ import annotations
 
-import json
 import uuid
-from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -128,26 +126,6 @@ class _ApiOnlyOutseeStub:
         raise RuntimeError(
             "montage regen: CDP download отключён — повтор скачивания только через HTTP API"
         )
-
-
-def majority_scene_image_model(scenes_dir: Path) -> str | None:
-    """Модель исходных кадров: самая частая в sidecar scenes/frame_*.json."""
-    if not scenes_dir.is_dir():
-        return None
-    counts: Counter[str] = Counter()
-    for path in scenes_dir.glob("frame_*.json"):
-        if "_s2_" in path.name:
-            continue
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, TypeError):
-            continue
-        model = str(data.get("model") or "").strip()
-        if model:
-            counts[model] += 1
-    if not counts:
-        return None
-    return counts.most_common(1)[0][0]
 
 
 def image_prompt_from_excel(project: Project, frame: Frame, shot: int) -> str:
@@ -398,19 +376,20 @@ async def prepare_image_regen(
         file_path = scenes_dir / f"frame_{frame_number:03d}_{short_uuid}.png"
         prompt_id_prefix = build_gen_id_prefix(project.id, frame_number, short_uuid)
 
+    live = await session.get(Project, project.id)
+    if live is not None:
+        await session.refresh(live, attribute_names=["meta", "image_generator"])
+        project = live
     media = resolve_node_media_settings(project, node_type="images")
     img_gid = media["image_generator_id"]
     img_gen = IMAGE_GENERATORS_BY_ID.get(img_gid)
-    orig_model = majority_scene_image_model(scenes_dir)
-    model_slug = orig_model or (img_gen.outsee_slug if img_gen else None)
-    if orig_model and orig_model != (img_gen.outsee_slug if img_gen else None):
-        logger.info(
-            "montage regen image #{}: модель исходных кадров {} "
-            "(нода/проект был {})",
-            project.id,
-            orig_model,
-            img_gen.outsee_slug if img_gen else img_gid,
-        )
+    model_slug = img_gen.outsee_slug if img_gen else None
+    logger.info(
+        "montage regen image #{}: модель с ноды images {} ({})",
+        project.id,
+        model_slug,
+        img_gid,
+    )
 
     return ImageRegenPrep(
         project_id=project.id,
