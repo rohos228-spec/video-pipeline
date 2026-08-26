@@ -261,7 +261,7 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
         res = await insert_node_group(session, project, "script_frames_qc")
 
     assert res["after"] == "n_plan"
-    assert len(res["nodes"]) == 5
+    assert len(res["nodes"]) == 4
     cg = project.meta["canvas_graph"]
     by_id = {n["id"]: n for n in cg["nodes"]}
     plan_x = by_id["n_plan"]["position"]["x"]
@@ -285,9 +285,6 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
     assert project.meta["prompt_slot_variants"]["n_excel_gpt_fw_action"] == {
         "main": "main_action_from_bits_ru"
     }
-    assert project.meta["prompt_slot_variants"]["n_excel_gpt_fw_shots"] == {
-        "main": "scenes_to_frames_ru"
-    }
     assert project.meta["prompt_slot_variants"]["n_excel_gpt_fw_frames"] == {
         "main": "frame_prompts_continuity_ru"
     }
@@ -299,8 +296,7 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
     assert ("n_plan", "n_script") not in pairs  # нет такого ребра
     assert ("n_plan", "n_excel_gpt_fw_script") in pairs
     assert ("n_excel_gpt_fw_script", "n_excel_gpt_fw_action") in pairs
-    assert ("n_excel_gpt_fw_action", "n_excel_gpt_fw_shots") in pairs
-    assert ("n_excel_gpt_fw_shots", "n_excel_gpt_fw_frames") in pairs
+    assert ("n_excel_gpt_fw_action", "n_excel_gpt_fw_frames") in pairs
     assert ("n_excel_gpt_fw_frames", "n_excel_gpt_fw_qc") in pairs
     # выход группы → старая цель plan (script)
     assert ("n_excel_gpt_fw_qc", "n_script") in pairs
