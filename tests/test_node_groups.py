@@ -255,13 +255,13 @@ async def test_insert_fanout_after_split(mem_db) -> None:
 
 
 async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
-    """Группа «Сценарий → промпты кадров + QC»: вставка после plan, стиль веера."""
+    """Группа «Сценарий → промпты кадров + QC»: сценарист → frames → qc."""
     async with mem_db() as session:
         project = await _mk_project(session)
         res = await insert_node_group(session, project, "script_frames_qc")
 
     assert res["after"] == "n_plan"
-    assert len(res["nodes"]) == 4
+    assert len(res["nodes"]) == 3
     cg = project.meta["canvas_graph"]
     by_id = {n["id"]: n for n in cg["nodes"]}
     plan_x = by_id["n_plan"]["position"]["x"]
@@ -278,13 +278,8 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
     assert cfg["outputMode"] == "project_file"
     assert cfg["transport"] == "api"
 
-    # проверка сценария — как в веере: checkMode, правила с промта источника
-    chk = by_id["n_excel_gpt_fw_check_script"]
-    assert chk["data"]["slotOverflow"] is True
-    ccfg = project.meta["excel_gpt_nodes"]["n_excel_gpt_fw_check_script"]
-    assert ccfg["checkMode"] is True
-    assert ccfg["checkPromptSource"] == "upstream"
-    assert "n_excel_gpt_fw_check_script" not in project.meta["prompt_slot_variants"]
+    # ноды проверки сценария больше нет — сценарист сам выдаёт закадр + биты
+    assert "n_excel_gpt_fw_check_script" not in by_id
 
     assert project.meta["prompt_slot_variants"]["n_excel_gpt_fw_frames"] == {
         "main": "frame_prompts_continuity_ru"
@@ -296,13 +291,7 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
     pairs = {(e["source"], e["target"]) for e in cg["edges"]}
     assert ("n_plan", "n_script") not in pairs  # нет такого ребра
     assert ("n_plan", "n_excel_gpt_fw_script") in pairs
-    assert ("n_excel_gpt_fw_script", "n_excel_gpt_fw_check_script") in pairs
-    kinds = {
-        (e["source"], e["target"]): (e.get("data") or {}).get("kind")
-        for e in cg["edges"]
-    }
-    assert kinds[("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_frames")] == "pass"
-    assert kinds[("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_script")] == "fail"
+    assert ("n_excel_gpt_fw_script", "n_excel_gpt_fw_frames") in pairs
     assert ("n_excel_gpt_fw_frames", "n_excel_gpt_fw_qc") in pairs
     # выход группы → старая цель plan (script)
     assert ("n_excel_gpt_fw_qc", "n_script") in pairs

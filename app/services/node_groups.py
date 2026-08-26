@@ -293,54 +293,41 @@ def _work_spec(
 
 
 def _script_frames_qc_group() -> NodeGroupDef:
-    """Сценарист → проверка → промты кадров (continuity) → QC промптов."""
+    """Сценарист (закадр + биты) → промты кадров (continuity) → QC промптов."""
     script = _work_spec(
         "script",
         "GPT: сценарист",
-        "Тема/план → закадр существующих VO-ячеек (без replace_frames)",
+        "Тема/план → закадр существующих VO-ячеек + биты (без replace_frames)",
         _STEP_X,
         "script_writer_ru",
-    )
-    check_script = GroupNodeSpec(
-        local_key="check_script",
-        node_type="excel_gpt",
-        label="Проверка: сценарий",
-        description="Проверка закадра и разбивки по промту сценариста (Ок/Не ок)",
-        preferred_id="n_excel_gpt_fw_check_script",
-        dx=_STEP_X * 2,
-        dy=0.0,
-        slot_overflow=True,
-        operator_config=dict(_CHECK_OPERATOR_CONFIG),
     )
     frames = _work_spec(
         "frames",
         "GPT: промты кадров · continuity",
         "Разбивка → промт_картинки + промт_видео; сцена = цепь, не слайд-шоу",
-        _STEP_X * 3,
+        _STEP_X * 2,
         "frame_prompts_continuity_ru",
     )
     qc = _work_spec(
         "qc",
         "GPT: QC промптов",
         "Проверка промптов по блоку и правилам; чинит только нарушения (apply-ops)",
-        _STEP_X * 4,
+        _STEP_X * 3,
         "prompts_qc_continuity_ru",
     )
     return NodeGroupDef(
         group_id="script_frames_qc",
         title="Сценарий → промпты кадров + QC",
         description=(
-            "Сценарист (закадр существующих ячеек, без разбивки) → проверка (Ок/Не ок) → "
-            "конвертер промптов continuity (картинка+видео на кадр) → "
-            "QC промптов (чинит нарушения). Промты *_ru из 05_excel_gpt."
+            "Сценарист (закадр существующих ячеек + биты «было → стало», "
+            "без разбивки) → конвертер промптов continuity (картинка+видео "
+            "на кадр) → QC промптов (чинит нарушения). Промты *_ru из 05_excel_gpt."
         ),
         category="planning",
         default_after_type="plan",
-        nodes=(script, check_script, frames, qc),
+        nodes=(script, frames, qc),
         internal_edges=(
-            ("script", "check_script", "after"),
-            ("check_script", "frames", "pass"),
-            ("check_script", "script", "fail"),
+            ("script", "frames", "after"),
             ("frames", "qc", "after"),
         ),
         entry_keys=("script",),
