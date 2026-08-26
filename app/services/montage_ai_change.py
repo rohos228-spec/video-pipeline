@@ -1,7 +1,6 @@
 """ИИзменение в монтаже: LLM пишет промт по агенту img_pr.
 
-В модель: файл агента (master) + кадр/закадр. Из модели — готовый промт.
-Пайплайн стиль не дописывает.
+В модель: файл агента (master) + закадр. Старый промт кадра не отправляем.
 """
 
 from __future__ import annotations
@@ -20,32 +19,26 @@ AiChangeKind = Literal["image", "video"]
 
 _SYSTEM_IMAGE = """\
 Ты — агент из вложенного файла. Пиши промт картинки по его правилам.
-Вход: один кадр (IMAGE_PROMPT + VOICEOVER), не батч.
+Один кадр, не батч. Старого промта кадра нет — пиши с нуля по агенту и закадру.
 
-Верни ОДИН полный промт: сцена + STYLE / Final style lock + Negative —
-как требует агент, ты пишешь это сам. Не JSON apply-ops.
-
-Не копируй закадр. Не добавляй объекты, которых нет в кадре.
+Верни ОДИН полный промт: сцена + STYLE / Final style lock + Negative.
+Не JSON apply-ops. Не копируй закадр.
 Ответ: только текст промта, без пояснений.
 """
 
 _SYSTEM_VIDEO = """\
-Вложенный файл — визуальные правила кадра (агент картинок).
-Пишешь короткий ВИДЕОПРОМТ по IMAGE_PROMPT + VOICEOVER.
-Стиль кадра не меняй. Не JSON. Без музыки, silent video only.
-Не переключай план. Ответ: только текст видеопромта.
+Вложенный файл — агент картинок (стиль и правила кадра).
+Пишешь короткий ВИДЕОПРОМТ по закадру. Не JSON. Без музыки, silent video only.
+Ответ: только текст видеопромта.
 """
 
 
-def build_ai_change_user_message(*, image_prompt: str, voiceover_text: str) -> str:
-    img = (image_prompt or "").strip() or "(пусто)"
+def build_ai_change_user_message(*, voiceover_text: str) -> str:
     vo = (voiceover_text or "").strip() or "(пусто)"
     return (
-        f"IMAGE_PROMPT:\n{img}\n\n"
         f"VOICEOVER:\n{vo}\n\n"
-        "Напиши заново полный промт картинки по вложенному агенту. "
-        "STYLE / Final style lock / Negative пишешь ты, как в агенте. "
-        "Смысл VOICEOVER — через действие. Не JSON. Только промт."
+        "Напиши полный промт по вложенному агенту. "
+        "STYLE / Final style lock / Negative пишешь ты. Не JSON. Только промт."
     )
 
 
@@ -139,20 +132,17 @@ def system_for_kind(kind: AiChangeKind, *, img_pr_rules: str = "") -> str:
 
 async def rewrite_prompt_via_gpt(
     *,
-    image_prompt: str,
     voiceover_text: str,
     kind: AiChangeKind,
     project_id: int | None = None,
     img_pr_rules: str = "",
     img_pr_path: Path | None = None,
     img_pr_variant: str = "",
+    image_prompt: str = "",
 ) -> str:
-    """Агент + кадр → LLM → промт как есть."""
-    del img_pr_rules, img_pr_variant
-    user = build_ai_change_user_message(
-        image_prompt=image_prompt,
-        voiceover_text=voiceover_text,
-    )
+    """Агент + закадр → LLM → промт как есть."""
+    del img_pr_rules, img_pr_variant, image_prompt
+    user = build_ai_change_user_message(voiceover_text=voiceover_text)
     system = system_for_kind(kind)
     files: list[Path] = []
     if img_pr_path is not None and img_pr_path.is_file():
@@ -171,10 +161,9 @@ async def rewrite_prompt_via_gpt(
     if not cleaned:
         raise RuntimeError("ИИзменение: GPT вернул пустой промт")
     logger.info(
-        "montage_ai_change: kind={} pid={} in_img={} in_vo={} out={} master={} head={!r} refs={}",
+        "montage_ai_change: kind={} pid={} in_vo={} out={} master={} head={!r} refs={}",
         kind,
         project_id,
-        len((image_prompt or "").strip()),
         len((voiceover_text or "").strip()),
         len(cleaned),
         img_pr_path.name if img_pr_path is not None else "—",

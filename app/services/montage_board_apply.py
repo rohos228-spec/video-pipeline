@@ -45,7 +45,6 @@ from app.services.montage_board_regen import (
     finalize_video_regen,
     prepare_image_regen,
     prepare_video_regen,
-    resolve_image_prompt,
 )
 
 
@@ -268,7 +267,6 @@ async def _run_op_with_short_sessions(
     shot = int(op.get("shot") or 1)
 
     ai_kind: str | None = None
-    ai_image_prompt = ""
     ai_voiceover = ""
     ai_img_pr_path = None
     ai_img_pr_variant = ""
@@ -284,7 +282,6 @@ async def _run_op_with_short_sessions(
             if fr is None:
                 raise RuntimeError(f"кадр {frame_number} не найден")
             ai_kind = "image" if op_type == "image_ai_change" else "video"
-            ai_image_prompt = await resolve_image_prompt(session, project, fr, shot)
             ai_voiceover = fr.voiceover_text or ""
             ai_img_pr_path, ai_img_pr_variant = load_img_pr_master(project)
         elif op_type in (
@@ -325,7 +322,6 @@ async def _run_op_with_short_sessions(
 
     if ai_kind is not None:
         new_prompt = await rewrite_prompt_via_gpt(
-            image_prompt=ai_image_prompt,
             voiceover_text=ai_voiceover,
             kind=ai_kind,  # type: ignore[arg-type]
             project_id=project_id,
