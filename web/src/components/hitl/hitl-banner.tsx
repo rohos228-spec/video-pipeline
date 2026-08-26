@@ -344,12 +344,16 @@ function HitlPreview({ hitl }: { hitl: HITLDTO }) {
           <Video className="h-3 w-3" />
           Превью видео
         </div>
-        <video
-          controls
-          className="max-h-72 w-full rounded"
-          src={`/api/files?path=${encodeURIComponent(videoPath)}`}
-        />
-        <div className="font-mono text-[10px] text-muted-foreground">{videoPath}</div>
+        <div className="flex max-h-[380px] w-full items-center justify-center overflow-hidden rounded-lg bg-black/60">
+          <video
+            controls
+            className="max-h-[380px] w-auto max-w-full rounded-lg object-contain shadow-md"
+            src={`/api/files?path=${encodeURIComponent(videoPath)}`}
+          />
+        </div>
+        <div className="truncate font-mono text-[10px] text-muted-foreground" title={videoPath}>
+          {videoPath}
+        </div>
       </div>
     );
   }

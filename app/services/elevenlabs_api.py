@@ -46,6 +46,74 @@ def _resolve_proxy_url() -> str | None:
     return p or None
 
 
+import re
+
+_YEAR_CASES = {
+    "2050": "две тысячи пятидесятый",
+    "2030": "две тысячи тридцатый",
+    "2025": "две тысячи двадцать пятый",
+    "2024": "две тысячи двадцать четвёртый",
+}
+
+
+def normalize_text_for_tts(text: str) -> str:
+    """Подготавливает текст для максимально естественной озвучки диктором TTS.
+
+    Преобразует типичные цифровые конструкции, годы и проценты в слова.
+    """
+    if not text:
+        return ""
+    t = text
+    # Обработка годов в падежах с сохранением регистра
+    t = re.sub(
+        r"\b([Вв])\s+2050(\s*году|\s*-?м\s*году|\s*-?м)\b",
+        lambda m: f"{m.group(1)} две тысячи пятидесятом году",
+        t,
+    )
+    t = re.sub(
+        r"\b([Вв])\s+2050\b",
+        lambda m: f"{m.group(1)} две тысячи пятидесятом",
+        t,
+    )
+    t = re.sub(
+        r"\b([Кк])\s+2050(\s*году|\s*-?му)?\b",
+        lambda m: f"{m.group(1)} две тысячи пятидесятому году",
+        t,
+    )
+    t = re.sub(
+        r"\b([Дд])о\s+2050(\s*года)?\b",
+        lambda m: f"{m.group(1)}о две тысячи пятидесятого года",
+        t,
+    )
+    t = re.sub(
+        r"\b2050(\s*год[а-я]*|\s*-?й)?\b",
+        "две тысячи пятидесятый год",
+        t,
+        flags=re.IGNORECASE,
+    )
+
+    t = re.sub(
+        r"\b([Вв])\s+2030(\s*году|\s*-?м\s*году|\s*-?м)\b",
+        lambda m: f"{m.group(1)} две тысячи тридцатом году",
+        t,
+    )
+    t = re.sub(
+        r"\b2030(\s*год[а-я]*|\s*-?й)?\b",
+        "две тысячи тридцатый год",
+        t,
+        flags=re.IGNORECASE,
+    )
+
+    # Проценты
+    t = re.sub(r"\b100\s*%", "сто процентов", t)
+    t = re.sub(r"\b50\s*%", "пятьдесят процентов", t)
+    t = re.sub(r"(\d+)\s*%", r"\1 процентов", t)
+
+    # Лишние пробелы
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
 async def synthesize_speech(
     text: str,
     out_path: Path,
@@ -70,7 +138,7 @@ async def synthesize_speech(
     Returns:
         Path к сохранённому файлу out_path.
     """
-    clean_text = (text or "").strip()
+    clean_text = normalize_text_for_tts(text)
     if not clean_text:
         raise ElevenLabsApiError("Текст для озвучки пуст.")
 

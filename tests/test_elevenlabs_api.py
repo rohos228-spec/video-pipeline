@@ -97,3 +97,14 @@ async def test_synthesize_speech_mock_success(tmp_path: Path, monkeypatch: pytes
         assert "https://api.elevenlabs.io/v1/text-to-speech/pNInz6obpgDQGcFmaJgB" == call_url
         headers = mock_post.call_args[1]["headers"]
         assert headers["xi-api-key"] == "sk_test_key_123"
+
+
+def test_normalize_text_for_tts() -> None:
+    """Числа и даты преобразуются в слова для безупречной озвучки."""
+    from app.services.elevenlabs_api import normalize_text_for_tts
+
+    assert normalize_text_for_tts("В 2050 году мир изменится") == "В две тысячи пятидесятом году мир изменится"
+    assert normalize_text_for_tts("Жизнь в 2050") == "Жизнь в две тысячи пятидесятом"
+    assert normalize_text_for_tts("Успех 100%") == "Успех сто процентов"
+    assert normalize_text_for_tts("Скидка 50%") == "Скидка пятьдесят процентов"
+    assert normalize_text_for_tts("") == ""
