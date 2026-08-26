@@ -1174,6 +1174,7 @@ export function AssembleMontageBoard({
   const lastApplyToastKeyRef = useRef("");
   /** Не принимать done/error, пока хотя бы раз не увидели running (гонка stale meta). */
   const applySeenRunningRef = useRef(false);
+  const lastPatchedPathRef = useRef("");
   const lastMontageToastKeyRef = useRef("");
   const lastRecoverToastKeyRef = useRef("");
 
@@ -1187,9 +1188,8 @@ export function AssembleMontageBoard({
     enabled: open && projectId != null,
     retry: 2,
     retryDelay: (n) => Math.min(1000 * 2 ** n, 4000),
-    // Не долбить API+ffprobe при каждом открытии панели (150+ клипов).
-    refetchOnMount: false,
-    staleTime: 60_000,
+    refetchOnMount: "always",
+    staleTime: 0,
     // НЕ placeholderData/keepPreviousData: иначе очередь/кадры чужого проекта
     // остаются на кнопке «Применить правки» при переключении.
   });
@@ -1393,6 +1393,7 @@ export function AssembleMontageBoard({
         pendingOpsRef.current = [];
         setFailedHighlights([]);
         applySeenRunningRef.current = false;
+        lastPatchedPathRef.current = "";
         setApplyRunning(true);
         lastApplyToastKeyRef.current = "";
         toast.message(res.message || `Генерация ${queued} операций через API…`);
@@ -1734,14 +1735,35 @@ export function AssembleMontageBoard({
         if (status === "running") {
           applySeenRunningRef.current = true;
           if (typeof doneOps === "number" && typeof totalOps === "number") {
-            // Не invalidate доски на каждый тик — иначе UI лагает (ffprobe/xlsx).
-            // Обновление кадров приходит по WS (refresh_board).
             if (doneOps !== lastDone) {
               lastDone = doneOps;
               startTransition(() => {
                 setApplyProgress({ done: doneOps, total: totalOps });
               });
             }
+          }
+          // WS может не дойти — подменяем превью из apply-status.
+          const lastPath = st.job?.last_path;
+          const lastHl = st.job?.last_highlight;
+          const lastFr = Number(st.job?.last_frame_number);
+          const lastShot: 1 | 2 = Number(st.job?.last_shot) === 2 ? 2 : 1;
+          if (
+            typeof lastPath === "string" &&
+            lastPath &&
+            lastPath !== lastPatchedPathRef.current &&
+            typeof lastHl === "string" &&
+            lastHl &&
+            Number.isFinite(lastFr) &&
+            lastFr >= 1
+          ) {
+            lastPatchedPathRef.current = lastPath;
+            queryClient.setQueryData<MontageBoardDTO>(
+              ["montage-board", projectId],
+              (old) =>
+                old
+                  ? patchBoardFrameMedia(old, lastFr, lastShot, lastPath, lastHl)
+                  : old,
+            );
           }
           return;
         }
@@ -2346,17 +2368,38 @@ export function AssembleMontageBoard({
                               <span>{row.label}</span>
                             </button>
                           </td>
-                          {frames.map((fr) => (
+                          {frames.map((fr) => {
+                            const isMediaRow =
+                              row.key.startsWith("image") || row.key.startsWith("video");
+                            const mediaUrl =
+                              row.key === "image1"
+                                ? fr.image_shot1_url
+                                : row.key === "image2"
+                                  ? fr.image_shot2_url
+                                  : row.key === "video1"
+                                    ? fr.video_shot1_url
+                                    : row.key === "video2"
+                                      ? fr.video_shot2_url
+                                      : "";
+                            return (
                             <td
-                              key={`${fr.frame_id}-${row.key}`}
+                              key={
+                                isMediaRow
+                                  ? `${fr.frame_id}-${row.key}-${mediaUrl || ""}`
+                                  : `${fr.frame_id}-${row.key}`
+                              }
                               className={cn(
                                 "relative isolate overflow-hidden px-3 py-2 align-top",
                                 FRAME_COL_CLASS,
                               )}
-                              style={{
-                                contentVisibility: "auto",
-                                containIntrinsicSize: "240px 180px",
-                              }}
+                              style={
+                                isMediaRow
+                                  ? undefined
+                                  : {
+                                      contentVisibility: "auto",
+                                      containIntrinsicSize: "240px 180px",
+                                    }
+                              }
                             >
                               {collapsed ? (
                                 <div className="h-8 rounded-md bg-black/10" />
@@ -2538,7 +2581,8 @@ export function AssembleMontageBoard({
                                 />
                               )}
                             </td>
-                          ))}
+                            );
+                          })}
                         </tr>
                       );
                     })}

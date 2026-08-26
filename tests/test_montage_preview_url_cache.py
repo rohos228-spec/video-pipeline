@@ -25,3 +25,4 @@ def test_apply_progress_publishes_refresh_board() -> None:
 
     src = inspect.getsource(job.spawn_apply_job)
     assert "refresh_board" in src
+    assert "last_path" in src

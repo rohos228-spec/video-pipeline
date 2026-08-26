@@ -1048,6 +1048,10 @@ export const api = {
         error?: string | null;
         total_ops?: number;
         done_ops?: number;
+        last_path?: string;
+        last_frame_number?: number;
+        last_shot?: number;
+        last_highlight?: string;
         results?: Array<{
           ok?: boolean;
           error?: string;
