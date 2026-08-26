@@ -29,6 +29,63 @@ _MIN_SEC = 2.0
 _MAX_SHOTS = 3
 
 
+def planned_shots_from_attrs(frame: Any) -> list[dict[str, Any]]:
+    """Список кадров ноды «сцены → кадры» (attrs.кадры)."""
+    attrs = getattr(frame, "attrs", None)
+    if not isinstance(attrs, dict):
+        return []
+    raw = attrs.get("кадры") or attrs.get("shots")
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def resolve_shot_plan(
+    original_vo: str, planned: list[dict[str, Any]]
+) -> tuple[int, list[str]]:
+    """Сколько шотов и какие vo_shot: из кадры[] или эвристика по фразам."""
+    if planned:
+        need = max(1, len(planned))
+        parts = [str(item.get("закадр") or "").strip() for item in planned]
+        if not any(parts):
+            parts = split_text_into_parts(original_vo, need)
+        return need, parts
+    need = shots_needed_for_vo(original_vo)
+    return need, split_text_into_parts(original_vo, need)
+
+
+def _apply_shot_meta(frame: Any, shot: dict[str, Any] | None) -> None:
+    if not shot:
+        return
+    attrs = dict(getattr(frame, "attrs", None) or {})
+    place = str(shot.get("место") or shot.get("place") or "").strip()
+    action = str(shot.get("действие") or shot.get("action") or "").strip()
+    if place:
+        attrs["place"] = place
+    if action:
+        attrs["main_action"] = action
+        attrs["shot01_action"] = action
+    frame.attrs = attrs
+    _flag_attrs(frame)
+    extra: dict[str, Any] = {}
+    for src, dst in (
+        ("план", "план"),
+        ("ракурс", "ракурс"),
+        ("id", "shot_id"),
+        ("parent_id", "coverage_parent_id"),
+        ("сцена", "сцена"),
+        ("место", "место"),
+    ):
+        val = shot.get(src)
+        if val not in (None, ""):
+            extra[dst] = val
+    plan = str(shot.get("план") or "").strip()
+    if plan:
+        extra["крупность"] = plan
+    if extra:
+        _set_cs(frame, **extra)
+
+
 def shots_needed_for_vo(text: str) -> int:
     """Сколько визуальных шотов на ячейку: по фразам, не больше 3."""
     raw = (text or "").strip()
@@ -175,13 +232,13 @@ async def expand_vo_cells_into_shots(
     inserted = 0
     for parent in reversed(parents):
         original_vo = parent.voiceover_text or ""
-        need = shots_needed_for_vo(original_vo)
+        planned = planned_shots_from_attrs(parent)
+        need, vo_parts = resolve_shot_plan(original_vo, planned)
         total_sec = vo_duration_sec(original_vo, shots=need)
         part_sec = round(total_sec / need, 2)
         start_ts = parent.start_ts
         end_ts = parent.end_ts
         parent_uuid = parent.uuid
-        vo_parts = split_text_into_parts(original_vo, need)
         if need <= 1:
             _set_cs(
                 parent,
@@ -191,6 +248,7 @@ async def expand_vo_cells_into_shots(
                 shots_in_beat=1,
                 vo_shot=vo_parts[0] if vo_parts else original_vo,
             )
+            _apply_shot_meta(parent, planned[0] if planned else None)
             if not parent.duration_seconds:
                 parent.duration_seconds = part_sec
             continue
@@ -222,8 +280,9 @@ async def expand_vo_cells_into_shots(
                 parent_uuid=parent_uuid,
                 shot_index=i + 1,
                 shots_in_beat=need,
-                vo_shot=vo_parts[i],
+                vo_shot=vo_parts[i] if i < len(vo_parts) else "",
             )
+            _apply_shot_meta(fr, planned[i] if i < len(planned) else None)
 
     await session.flush()
     ordered = await renumber_frames_by_sort_key(session, project)

@@ -216,6 +216,23 @@ def test_excel_gpt_drops_replace_frames() -> None:
     assert out[0]["fields"]["место"] == "двор"
 
 
+def test_excel_gpt_no_prompts_keeps_shots_list() -> None:
+    ops = [
+        {
+            "frame_uuid": "aa",
+            "fields": {
+                "кадры": [{"порядок": 1, "действие": "бегает"}],
+                "закадр": "НЕЛЬЗЯ",
+                "промт_картинки": "NO",
+            },
+        }
+    ]
+    out = filter_ops_for_node(ops, node_kind="excel_gpt_no_prompts")
+    assert out[0]["fields"]["кадры"][0]["действие"] == "бегает"
+    assert "закадр" not in out[0]["fields"]
+    assert "промт_картинки" not in out[0]["fields"]
+
+
 def test_excel_gpt_no_prompts_strips_voiceover() -> None:
     ops = [
         {

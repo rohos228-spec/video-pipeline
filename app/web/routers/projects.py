@@ -148,6 +148,11 @@ async def get_project(
         raise HTTPException(status_code=404, detail="project not found")
     # Свежий meta (user_stop) — иначе stale recompute затирает ⏹ и снова крутит ноду.
     await session.refresh(p)
+    from app.services.node_groups import upgrade_script_frames_qc_on_project
+
+    if await upgrade_script_frames_qc_on_project(session, p):
+        await session.commit()
+        await session.refresh(p)
     await recompute_status(session, p, log_prefix="recompute(web_get)")
     await session.commit()
     await session.refresh(p)

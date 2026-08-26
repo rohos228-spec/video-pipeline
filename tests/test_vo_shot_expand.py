@@ -29,6 +29,41 @@ def test_vo_duration_at_least_two_sec_per_shot() -> None:
     assert vo_duration_sec("аб", shots=2) >= 4.0
 
 
+def test_resolve_shot_plan_uses_kadrы() -> None:
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import (
+        planned_shots_from_attrs,
+        resolve_shot_plan,
+    )
+
+    vo = "Ткач родился в Киселёвске, прошёл службу в армии, после чего начал карьеру в милиции."
+    planned = [
+        {"порядок": 1, "закадр": "Ткач родился в Киселёвске,", "план": "ОБЩИЙ"},
+        {"порядок": 2, "закадр": "прошёл службу в армии,", "план": "СРЕДНИЙ"},
+        {
+            "порядок": 3,
+            "закадр": "после чего начал карьеру в милиции.",
+            "план": "СРЕДНИЙ",
+        },
+    ]
+    fr = SimpleNamespace(attrs={"кадры": planned})
+    assert planned_shots_from_attrs(fr) == planned
+    need, parts = resolve_shot_plan(vo, planned)
+    assert need == 3
+    assert parts == [p["закадр"] for p in planned]
+    assert "".join(parts).replace(" ", "") == vo.replace(" ", "")
+
+
+def test_resolve_shot_plan_falls_back_without_kadrы() -> None:
+    from app.services.vo_shot_expand import resolve_shot_plan
+
+    vo = "Первая фраза тут. Вторая фраза здесь."
+    need, parts = resolve_shot_plan(vo, [])
+    assert need == 2
+    assert len(parts) == 2
+
+
 def test_repair_glues_fragments_back_to_parent() -> None:
     from types import SimpleNamespace
 

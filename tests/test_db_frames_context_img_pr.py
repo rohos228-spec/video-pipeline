@@ -236,6 +236,46 @@ def test_excel_gpt_force_full_strips_old_prompts_keeps_vo() -> None:
     assert row["vo_shot"] == "у ворот канцелярии толпа"
 
 
+def test_excel_gpt_keeps_bits_action_shots_and_full_vo() -> None:
+    long_vo = "А" * 450
+    chain = "1. двор — бегает\n(кусок один,)\n" + ("x" * 80)
+    shots = [
+        {"id": "1-K1", "parent_id": None, "порядок": 1, "закадр": "кусок один,"},
+        {"id": "1-K2", "parent_id": "1-K1", "порядок": 2, "закадр": "кусок два."},
+    ]
+    fr = SimpleNamespace(
+        number=1,
+        uuid="d" * 24,
+        voiceover_text=long_vo,
+        meaning="",
+        image_prompt="old",
+        animation_prompt="old-mov",
+        attrs={
+            "биты": [{"порядок": 1, "глагол": "бегает"}],
+            "main_action": chain,
+            "кадры": shots,
+            "place": "двор",
+        },
+    )
+    ctx = build_excel_gpt_db_context(
+        project_id=60,
+        slug="x",
+        frames=[fr],
+        characters=[],
+        strip_prompts=True,
+        full_vo=True,
+    )
+    row = ctx["frames"][0]
+    assert row["voiceover_text"] == long_vo
+    assert "image_prompt" not in row
+    assert "place" not in row
+    bits = json.loads(row["биты"])
+    assert bits[0]["глагол"] == "бегает"
+    assert row["main_action"] == chain
+    stored = json.loads(row["кадры"])
+    assert stored[1]["id"] == "1-K2"
+
+
 def test_excel_gpt_exposes_vo_shot_copy_not_as_voiceover() -> None:
     fr = SimpleNamespace(
         number=2,

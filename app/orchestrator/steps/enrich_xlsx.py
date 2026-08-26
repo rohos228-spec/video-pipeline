@@ -102,6 +102,16 @@ _SCRIPT_WRITER_PROMPT_MARKERS = (
     "script_writer",
     "сценарист закадра",
 )
+_MAIN_ACTION_PROMPT_MARKERS = (
+    "main_action_from_bits",
+    "главное действие · по битам",
+    "главное действие кадра по битам",
+)
+_SCENES_TO_FRAMES_MARKERS = (
+    "scenes_to_frames",
+    "сцены → кадры",
+    "сцены -> кадры",
+)
 _FRAME_PROMPTS_MARKERS = (
     "frame_prompts",
     "промты кадров",
@@ -168,6 +178,31 @@ def _is_script_writer_prompt(variant: str | None, master: str | None) -> bool:
 def _is_script_writer_node(variant: str | None, master: str | None, node_key: str | None) -> bool:
     nk = str(node_key or "")
     return _is_script_writer_prompt(variant, master) or nk.endswith("_fw_script")
+
+
+def _is_main_action_node(variant: str | None, master: str | None, node_key: str | None) -> bool:
+    nk = str(node_key or "")
+    blob = _prompt_blob(variant, master)
+    return any(m in blob for m in _MAIN_ACTION_PROMPT_MARKERS) or nk.endswith("_fw_action")
+
+
+def _is_scenes_to_frames_node(
+    variant: str | None, master: str | None, node_key: str | None
+) -> bool:
+    nk = str(node_key or "")
+    blob = _prompt_blob(variant, master)
+    return any(m in blob for m in _SCENES_TO_FRAMES_MARKERS) or nk.endswith("_fw_shots")
+
+
+def _is_vo_cell_markup_node(
+    variant: str | None, master: str | None, node_key: str | None
+) -> bool:
+    """Биты / главное действие / сцены→кадры работают по VO-ячейке, не по шотам."""
+    return (
+        _is_script_writer_node(variant, master, node_key)
+        or _is_main_action_node(variant, master, node_key)
+        or _is_scenes_to_frames_node(variant, master, node_key)
+    )
 
 
 def _is_frame_prompts_prompt(variant: str | None, master: str | None) -> bool:
@@ -1133,6 +1168,24 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 }
             else:
                 gpt_frames = list(frames_for_map)
+                vo_markup = _is_vo_cell_markup_node(variant, master, node_key)
+                if vo_markup:
+                    from app.services.db_frames_context import (
+                        collapse_script_writer_frames,
+                    )
+
+                    collapsed = collapse_script_writer_frames(frames_for_map)
+                    parent_ids = {
+                        str(r.get("uuid") or "").strip()
+                        for r in collapsed
+                        if str(r.get("uuid") or "").strip()
+                    }
+                    if parent_ids:
+                        gpt_frames = [
+                            fr
+                            for fr in frames_for_map
+                            if str(getattr(fr, "uuid", "") or "") in parent_ids
+                        ]
                 if str(node_key or "").endswith("_fw_frames"):
                     gpt_frames, fw_camera_menu_only = _select_fw_frames_for_gpt(
                         frames_for_map, force_full=force_full
@@ -1156,7 +1209,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     frames=gpt_frames,
                     characters=entity_cards_for_gpt(ents),
                     strip_prompts=bool(force_full),
+                    full_vo=vo_markup,
                 )
+                if vo_markup:
+                    overlay = {
+                        str(r.get("uuid") or "").strip(): r
+                        for r in collapse_script_writer_frames(frames_for_map)
+                        if str(r.get("uuid") or "").strip()
+                    }
+                    for row in db_ctx.get("frames") or []:
+                        src = overlay.get(str(row.get("uuid") or "").strip())
+                        if src and src.get("voiceover_text"):
+                            row["voiceover_text"] = src["voiceover_text"]
             ctx_dir = project.data_dir / "excel_gpt_uploads" / str(node_key)
             ctx_dir.mkdir(parents=True, exist_ok=True)
             ctx_path = ctx_dir / "db_frames.json"

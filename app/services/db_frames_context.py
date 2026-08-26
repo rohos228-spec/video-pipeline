@@ -37,6 +37,7 @@ _IMG_PR_ATTR_KEYS: tuple[str, ...] = (
     "shot02_notes",
     "shot02_transition",
     "биты",
+    "кадры",
 )
 
 
@@ -71,6 +72,7 @@ def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, str]:
 
 _EXCEL_GPT_VO_MAX = 400
 _ATTR_MAX = 500
+_NO_CLIP_ATTRS = frozenset({"биты", "кадры", "main_action"})
 
 
 def _clip(text: str, n: int) -> str:
@@ -80,7 +82,10 @@ def _clip(text: str, n: int) -> str:
 
 def slim_attrs_for_excel_gpt(attrs: dict[str, Any] | None) -> dict[str, str]:
     picked = _pick_attrs(attrs)
-    return {k: _clip(v, _ATTR_MAX) for k, v in picked.items()}
+    return {
+        k: v if k in _NO_CLIP_ATTRS else _clip(v, _ATTR_MAX)
+        for k, v in picked.items()
+    }
 
 
 def _camera_subdivide_from(obj: Any) -> dict[str, Any]:
@@ -172,6 +177,7 @@ def build_excel_gpt_db_context(
     frames: list[Any],
     characters: list[dict[str, str]],
     strip_prompts: bool = False,
+    full_vo: bool = False,
 ) -> dict[str, Any]:
     """Снимок для excel_gpt: whitelist attrs + короткий закадр, без сырого attrs.
 
@@ -187,7 +193,7 @@ def build_excel_gpt_db_context(
         row: dict[str, Any] = {"number": getattr(fr, "number", None), "uuid": uuid}
         vo = str(getattr(fr, "voiceover_text", None) or "")
         if vo.strip():
-            row["voiceover_text"] = _clip(vo, _EXCEL_GPT_VO_MAX)
+            row["voiceover_text"] = vo.strip() if full_vo else _clip(vo, _EXCEL_GPT_VO_MAX)
         vo_shot = str(_camera_subdivide_from(fr).get("vo_shot") or "").strip()
         if vo_shot:
             clipped_shot = _clip(vo_shot, _EXCEL_GPT_VO_MAX)
@@ -208,8 +214,15 @@ def build_excel_gpt_db_context(
         slim = slim_attrs_for_excel_gpt(getattr(fr, "attrs", None))
         if strip_prompts:
             # Ручной ▶: не кормить старую аналитику/действие — модель копирует.
+            # Биты / цепь сцен / кадры — вход следующих нод, не «старый промт».
             keep: dict[str, str] = {}
-            for key in ("characters", "персонажи"):
+            for key in (
+                "characters",
+                "персонажи",
+                "биты",
+                "main_action",
+                "кадры",
+            ):
                 val = slim.get(key)
                 if val:
                     keep[key] = val

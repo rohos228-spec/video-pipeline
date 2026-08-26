@@ -293,7 +293,7 @@ def _work_spec(
 
 
 def _script_frames_qc_group() -> NodeGroupDef:
-    """Сценарий (только биты по готовому закадру) → промты кадров → QC."""
+    """Сценарий (биты) → действие → сцены в кадры → промты → QC."""
     script = _work_spec(
         "script",
         "GPT: сценарий · биты",
@@ -301,33 +301,49 @@ def _script_frames_qc_group() -> NodeGroupDef:
         _STEP_X,
         "script_writer_ru",
     )
+    action = _work_spec(
+        "action",
+        "GPT: главное действие · по битам",
+        "Биты + закадр → нумерованная цепь сцен; текст НЕ генерирует",
+        _STEP_X * 2,
+        "main_action_from_bits_ru",
+    )
+    shots = _work_spec(
+        "shots",
+        "GPT: сцены → кадры",
+        "Цепь сцен → кадры (план/ракурс, id, parent); текст НЕ генерирует",
+        _STEP_X * 3,
+        "scenes_to_frames_ru",
+    )
     frames = _work_spec(
         "frames",
         "GPT: промты кадров · continuity",
         "Разбивка → промт_картинки + промт_видео; сцена = цепь, не слайд-шоу",
-        _STEP_X * 2,
+        _STEP_X * 4,
         "frame_prompts_continuity_ru",
     )
     qc = _work_spec(
         "qc",
         "GPT: QC промптов",
         "Проверка промптов по блоку и правилам; чинит только нарушения (apply-ops)",
-        _STEP_X * 3,
+        _STEP_X * 5,
         "prompts_qc_continuity_ru",
     )
     return NodeGroupDef(
         group_id="script_frames_qc",
         title="Сценарий → промпты кадров + QC",
         description=(
-            "Сценарий · биты (разметка готового закадра VO-ячеек, текст не "
-            "генерируется) → конвертер промптов continuity (картинка+видео "
-            "на кадр) → QC промптов (чинит нарушения). Промты *_ru из 05_excel_gpt."
+            "Сценарий · биты → главное действие по битам → нарезка сцен "
+            "на кадры → конвертер промптов continuity → QC промптов. "
+            "Промты *_ru из 05_excel_gpt."
         ),
         category="planning",
         default_after_type="plan",
-        nodes=(script, frames, qc),
+        nodes=(script, action, shots, frames, qc),
         internal_edges=(
-            ("script", "frames", "after"),
+            ("script", "action", "after"),
+            ("action", "shots", "after"),
+            ("shots", "frames", "after"),
             ("frames", "qc", "after"),
         ),
         entry_keys=("script",),
@@ -940,6 +956,166 @@ def _wire_to_storage(nodes: list[dict], edges: list[dict], new_ids: list[str]) -
     return added
 
 
+def upgrade_script_frames_qc_graph(meta: dict[str, Any]) -> bool:
+    """Вставить action+shots в старую цепь script→frames→qc. True если изменили."""
+    group = _script_frames_qc_group()
+    graph = canvas_graph_from_meta(meta)
+    if graph is None:
+        return False
+    nodes = [dict(n) for n in (graph.get("nodes") or []) if isinstance(n, dict)]
+    edges = [dict(e) for e in (graph.get("edges") or []) if isinstance(e, dict)]
+    by_id = {str(n.get("id") or ""): n for n in nodes if n.get("id")}
+    instances: dict[str, list[dict[str, Any]]] = {}
+    for n in nodes:
+        gid = str(((n.get("data") or {}) if isinstance(n.get("data"), dict) else {}).get("groupId") or "")
+        if gid.split("#")[0] == group.group_id:
+            instances.setdefault(gid or group.group_id, []).append(n)
+    if not instances and "n_excel_gpt_fw_script" in by_id and "n_excel_gpt_fw_frames" in by_id:
+        instances[group.group_id] = [
+            n
+            for n in nodes
+            if str(n.get("id") or "").startswith("n_excel_gpt_fw_")
+        ]
+    if not instances:
+        return False
+
+    specs = {s.local_key: s for s in group.nodes}
+    variants = dict(meta.get("prompt_slot_variants") or {})
+    egn = dict(meta.get("excel_gpt_nodes") or {})
+    changed = False
+
+    for instance_id, members in instances.items():
+        member_ids = {str(n.get("id") or "") for n in members if n.get("id")}
+        have: dict[str, str] = {}
+        for spec in group.nodes:
+            found = next(
+                (
+                    nid
+                    for nid in member_ids
+                    if nid == spec.preferred_id or nid.startswith(spec.preferred_id + "_")
+                ),
+                None,
+            )
+            if found:
+                have[spec.local_key] = found
+        if "script" not in have or "frames" not in have:
+            continue
+        if "action" in have and "shots" in have:
+            continue
+
+        script_n = by_id[have["script"]]
+        sx = float((script_n.get("position") or {}).get("x", 0.0))
+        sy = float((script_n.get("position") or {}).get("y", 0.0))
+        script_dx = specs["script"].dx
+
+        for key in ("action", "shots"):
+            if key in have:
+                continue
+            spec = specs[key]
+            nid = spec.preferred_id
+            k = 2
+            while nid in by_id:
+                nid = f"{spec.preferred_id}_{k}"
+                k += 1
+            node = {
+                "id": nid,
+                "type": spec.node_type,
+                "position": {
+                    "x": sx + (spec.dx - script_dx),
+                    "y": sy + spec.dy,
+                },
+                "data": {
+                    "label": spec.label,
+                    "description": spec.description,
+                    "groupId": instance_id,
+                    "groupTitle": group.title,
+                    "slotOverflow": True,
+                },
+            }
+            nodes.append(node)
+            by_id[nid] = node
+            member_ids.add(nid)
+            have[key] = nid
+            if spec.prompt_variant:
+                variants[nid] = {"main": spec.prompt_variant}
+            if spec.operator_config:
+                egn[nid] = dict(spec.operator_config)
+            changed = True
+
+        for key in ("frames", "qc"):
+            if key not in have:
+                continue
+            node = by_id[have[key]]
+            spec = specs[key]
+            pos = dict(node.get("position") or {})
+            pos["x"] = sx + (spec.dx - script_dx)
+            node["position"] = pos
+
+        skip_ids = {
+            have.get("script"),
+            have.get("action"),
+            have.get("shots"),
+        }
+        frames_id = have["frames"]
+        edges = [
+            e
+            for e in edges
+            if not (
+                str(e.get("source")) in skip_ids
+                and str(e.get("target")) == frames_id
+            )
+        ]
+        wanted = (
+            (have["script"], have["action"]),
+            (have["action"], have["shots"]),
+            (have["shots"], have["frames"]),
+        )
+        existing = {(str(e.get("source")), str(e.get("target"))) for e in edges}
+        for src, tgt in wanted:
+            if (src, tgt) in existing:
+                continue
+            edges.append(
+                {
+                    "id": f"e_{src}_{tgt}",
+                    "source": src,
+                    "target": tgt,
+                    "sourceHandle": "out",
+                    "targetHandle": "in",
+                    "data": {"kind": "after"},
+                }
+            )
+            existing.add((src, tgt))
+            changed = True
+
+    if not changed:
+        return False
+    meta["prompt_slot_variants"] = variants
+    meta["excel_gpt_nodes"] = egn
+    meta["canvas_graph"] = build_canvas_graph_payload(
+        workflow_id=int(graph.get("workflow_id") or 0),
+        nodes=nodes,
+        edges=edges,
+    )
+    return True
+
+
+async def upgrade_script_frames_qc_on_project(
+    session: AsyncSession, project: Project
+) -> bool:
+    """Обновить старую 3-нодную группу на канвасе проекта. True если писали."""
+    meta = dict(project.meta or {}) if isinstance(project.meta, dict) else {}
+    if not upgrade_script_frames_qc_graph(meta):
+        return False
+    from sqlalchemy.orm.attributes import flag_modified
+
+    project.meta = meta
+    flag_modified(project, "meta")
+    await session.flush()
+    await sync_run_snapshot_from_canvas_graph(session, project, force=True)
+    logger.info("[#{}] upgrade script_frames_qc: +action +shots", project.id)
+    return True
+
+
 async def insert_node_group(
     session: AsyncSession,
     project: Project,
@@ -964,6 +1140,39 @@ async def insert_node_group(
     from app.models import Workflow
 
     meta = dict(project.meta or {})
+    if group.group_id == "script_frames_qc" and upgrade_script_frames_qc_graph(meta):
+        from sqlalchemy.orm.attributes import flag_modified
+
+        project.meta = meta
+        flag_modified(project, "meta")
+        await session.flush()
+        await sync_run_snapshot_from_canvas_graph(session, project, force=True)
+        await session.commit()
+        added = [
+            nid
+            for nid in (
+                "n_excel_gpt_fw_action",
+                "n_excel_gpt_fw_shots",
+            )
+            if nid in {
+                str(n.get("id") or "")
+                for n in ((meta.get("canvas_graph") or {}).get("nodes") or [])
+            }
+        ]
+        logger.info(
+            "[#{}] insert_group {}: upgrade stale script_frames_qc +{}",
+            project.id,
+            group.group_id,
+            added,
+        )
+        return {
+            "group": group.group_id,
+            "after": "n_excel_gpt_fw_script",
+            "nodes": added,
+            "replaced_nodes": [],
+            "upgraded": True,
+            "edges_added": 3,
+        }
     graph = canvas_graph_from_meta(meta)
     workflow_id: int | None = None
     if graph is None:

@@ -120,6 +120,13 @@ def excel_gpt_source_steps() -> tuple[str, ...]:
     return (EXCEL_GPT_UNIFIED_STEP, *(f"enrich_{i}" for i in range(1, 6)))
 
 
+def excel_gpt_template_dir() -> Path:
+    """Git SoT промтов excel_gpt (prompts/05_excel_gpt часто gitignored)."""
+    from app.project_root import find_project_root
+
+    return find_project_root() / "templates" / "excel_gpt_agents"
+
+
 def excel_gpt_prompt_exists(name: str) -> bool:
     clean = _clean_variant_name(name) if name else ""
     if not clean:
@@ -130,11 +137,11 @@ def excel_gpt_prompt_exists(name: str) -> bool:
                 return True
         except ValueError:
             continue
-    return False
+    return (excel_gpt_template_dir() / f"{clean}.md").is_file()
 
 
 def resolve_excel_gpt_prompt_path(name: str) -> Path:
-    """Читать из 05_excel_gpt или legacy enrich_*; запись — всегда в excel_gpt."""
+    """Читать из 05_excel_gpt, legacy enrich_* или templates/excel_gpt_agents."""
     clean = _sanitize_name(name) if not is_valid_prompt_name(name) else name
     if not clean:
         raise ValueError(f"некорректное имя промта: {name!r}")
@@ -145,6 +152,9 @@ def resolve_excel_gpt_prompt_path(name: str) -> Path:
         legacy = step_dir(code) / f"{clean}.md"
         if legacy.is_file():
             return legacy
+    tmpl = excel_gpt_template_dir() / f"{clean}.md"
+    if tmpl.is_file():
+        return tmpl
     return primary
 
 # Макс. длина имени варианта на диске (UTF-8 байты). Раньше было 40 из‑за TG callback_data;
@@ -272,8 +282,19 @@ def list_prompts(step_code: str) -> list[str]:
 
 
 def list_excel_gpt_prompts() -> list[str]:
-    """Список «Работа с GPT» — только prompts/05_excel_gpt, без legacy enrich_*."""
-    return _list_prompts_in_dir(EXCEL_GPT_UNIFIED_STEP)
+    """Список «Работа с GPT»: 05_excel_gpt + git-шаблоны excel_gpt_agents."""
+    names = _list_prompts_in_dir(EXCEL_GPT_UNIFIED_STEP)
+    seen = set(names)
+    tmpl = excel_gpt_template_dir()
+    if tmpl.is_dir():
+        for extra in sorted(p.stem for p in tmpl.glob("*.md")):
+            if extra not in seen:
+                names.append(extra)
+                seen.add(extra)
+    if DEFAULT_NAME in names:
+        names.remove(DEFAULT_NAME)
+        names.insert(0, DEFAULT_NAME)
+    return names
 
 
 def _list_prompts_in_dir(step_code: str) -> list[str]:
