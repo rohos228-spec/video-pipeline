@@ -684,7 +684,10 @@ export function NodeStudio({
               {(
                 [
                   ["settings", "Настройки", Settings2],
-                  ["prompts", "Промпты", FileText],
+                  ...(pipelineSlots.some((s) => s.kind !== "excel") ||
+                  (nodeSupportsGptText(nodeType) && gptTextSlotForNode(nodeType))
+                    ? ([["prompts", "Промпты", FileText]] as const)
+                    : []),
                   ...(showExcel ? [["excel", "Excel", FileSpreadsheet] as const] : []),
                   ["results", "Результаты", FileText],
                 ] as const

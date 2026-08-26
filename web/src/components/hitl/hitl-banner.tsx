@@ -229,9 +229,6 @@ export function HitlModal({
                   <PenLine className="h-3.5 w-3.5" />
                   Изменить промт
                 </Button>
-                <span className="hidden text-[10px] text-muted-foreground md:inline">
-                  Enter · одобрить
-                </span>
               </div>
               <div className="flex items-center gap-2">
                 <Button
@@ -298,9 +295,15 @@ export function HitlModal({
 }
 
 function HitlPreview({ hitl }: { hitl: HITLDTO }) {
-  // Пытаемся понять что показать на основе payload и kind.
-  const photoPath = (hitl.payload?.photo_path as string | undefined) ?? null;
-  const videoPath = (hitl.payload?.video_path as string | undefined) ?? null;
+  const photoPath =
+    (hitl.payload?.photo_path as string | undefined) ??
+    (hitl.payload?.image_path as string | undefined) ??
+    null;
+  const videoPath =
+    (hitl.payload?.video_path as string | undefined) ??
+    (hitl.payload?.file_path as string | undefined) ??
+    (hitl.payload?.path as string | undefined) ??
+    null;
   const text =
     (hitl as { text?: string | null }).text ??
     (hitl.payload?.text as string | undefined) ??

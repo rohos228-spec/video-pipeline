@@ -108,11 +108,9 @@ const BASE: Record<string, NodePromptSlot[]> = {
   ],
   assemble: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "assemble" },
-    { id: "ffmpeg", title: "Сборка FFmpeg", kind: "gpt" },
   ],
   publish: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "publish" },
-    { id: "social", title: "Публикация", kind: "gpt" },
   ],
 };
 
