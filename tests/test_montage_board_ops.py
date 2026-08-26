@@ -417,6 +417,7 @@ async def test_move_image_swap_when_target_occupied(
         voiceover_text="a",
         status="planned",
         image_prompt="P1",
+        attrs={"characters": "c01", "персонажи": "c01", "persons": "c01"},
     )
     fr2 = Frame(
         project_id=montage_project.id,
@@ -424,6 +425,7 @@ async def test_move_image_swap_when_target_occupied(
         voiceover_text="b",
         status="planned",
         image_prompt="P2",
+        attrs={"characters": "c05", "персонажи": "c05", "persons": "c05"},
     )
     session.add(montage_project)
     session.add(fr1)
@@ -455,6 +457,8 @@ async def test_move_image_swap_when_target_occupied(
     await session.refresh(fr2)
     assert fr1.image_prompt == "P2"
     assert fr2.image_prompt == "P1"
+    assert (fr1.attrs or {}).get("characters") == "c05"
+    assert (fr2.attrs or {}).get("characters") == "c01"
 
 
 @pytest.mark.asyncio

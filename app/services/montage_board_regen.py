@@ -38,6 +38,7 @@ from app.services.gpt_client import get_gpt_client
 from app.services.montage_board_assets import (
     finalize_scene_image,
     finalize_scene_video,
+    frame_shot_character_ids,
 )
 from app.services.montage_board_meta import (
     clear_stale_video,
@@ -339,11 +340,16 @@ async def prepare_image_regen(
         prompt_text = text
         refs: list[Path] = []
         if shot == 1:
+            if ref_person_ids is not None:
+                override = ref_person_ids
+            else:
+                db_ids = frame_shot_character_ids(fr, 1)
+                override = db_ids if db_ids else None
             refs = await _load_refs_for_frame(
                 session,
                 project,
                 frame_number,
-                persons_override=ref_person_ids,
+                persons_override=override,
             )
     elif mode == "correction":
         text = (correction or "").strip()
@@ -369,7 +375,13 @@ async def prepare_image_regen(
                 f"нет промта картинки в БД/Excel (кадр {frame_number}, shot {shot})"
             )
         if shot == 1:
-            refs = await _load_refs_for_frame(session, project, frame_number)
+            db_ids = frame_shot_character_ids(fr, 1)
+            refs = await _load_refs_for_frame(
+                session,
+                project,
+                frame_number,
+                persons_override=db_ids if db_ids else None,
+            )
         elif shot == 2:
             ref1 = find_shot1_image(scenes_dir, frame_number)
             refs = [ref1] if ref1 is not None else []

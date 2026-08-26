@@ -585,6 +585,10 @@ async def swap_shot_media(
         # Промты меняем вместе с соответствующим kind; при both — оба.
         if kind == "both":
             result["prompts"] = _swap_prompt_fields(fr)
+            c1 = _get_shot_characters(fr, 1)
+            c2 = _get_shot_characters(fr, 2)
+            _set_shot_characters(fr, 1, c2)
+            _set_shot_characters(fr, 2, c1)
             result["prompts_swapped"] = True
         elif kind == "image":
             attrs = dict(fr.attrs or {})
@@ -597,6 +601,10 @@ async def swap_shot_media(
                 attrs.pop(SHOT2_PROMPT_ATTR, None)
             fr.attrs = attrs
             flag_modified(fr, "attrs")
+            c1 = _get_shot_characters(fr, 1)
+            c2 = _get_shot_characters(fr, 2)
+            _set_shot_characters(fr, 1, c2)
+            _set_shot_characters(fr, 2, c1)
             result["prompts_swapped"] = True
         elif kind == "video":
             attrs = dict(fr.attrs or {})
@@ -652,6 +660,46 @@ def _find_shot_video(videos_dir: Path, frame_number: int, shot: int) -> Path | N
     if shot == 2:
         return _find_shot2_video(videos_dir, frame_number)
     return _find_shot1_video(videos_dir, frame_number)
+
+
+_SHOT1_CHAR_KEYS = ("characters", "персонажи", "persons")
+_SHOT2_CHAR_KEY = "shot02_characters"
+
+
+def _get_shot_characters(fr: Frame, shot: int) -> str:
+    attrs = fr.attrs or {}
+    if shot == 2:
+        return str(attrs.get(_SHOT2_CHAR_KEY) or "").strip()
+    for key in _SHOT1_CHAR_KEYS:
+        val = str(attrs.get(key) or "").strip()
+        if val:
+            return val
+    return ""
+
+
+def _set_shot_characters(fr: Frame, shot: int, value: str) -> None:
+    text = (value or "").strip()
+    attrs = dict(fr.attrs or {})
+    if shot == 2:
+        if text:
+            attrs[_SHOT2_CHAR_KEY] = text
+        else:
+            attrs.pop(_SHOT2_CHAR_KEY, None)
+    else:
+        if text:
+            for key in _SHOT1_CHAR_KEYS:
+                attrs[key] = text
+        else:
+            for key in _SHOT1_CHAR_KEYS:
+                attrs.pop(key, None)
+    fr.attrs = attrs
+    flag_modified(fr, "attrs")
+
+
+def frame_shot_character_ids(fr: Frame, shot: int) -> list[str]:
+    from app.orchestrator.steps.generate_images import _parse_ref_ids
+
+    return _parse_ref_ids(_get_shot_characters(fr, shot))
 
 
 def _get_image_prompt(fr: Frame, shot: int) -> str:
@@ -788,6 +836,10 @@ async def move_scene_image(
         p_to = _get_image_prompt(fr_to, to_shot)
         _set_image_prompt(fr_to, to_shot, p_from)
         _set_image_prompt(fr_from, from_shot, p_to if mode == "swap" else "")
+        c_from = _get_shot_characters(fr_from, from_shot)
+        c_to = _get_shot_characters(fr_to, to_shot)
+        _set_shot_characters(fr_to, to_shot, c_from)
+        _set_shot_characters(fr_from, from_shot, c_to if mode == "swap" else "")
         prompts_moved = True
 
     from app.services.montage_board_meta import mark_stale_videos, montage_meta, set_montage_meta
