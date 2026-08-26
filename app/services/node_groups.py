@@ -293,7 +293,7 @@ def _work_spec(
 
 
 def _script_frames_qc_group() -> NodeGroupDef:
-    """Сценарий (биты) → главное действие по битам → промты кадров → QC."""
+    """Сценарий (биты) → действие → сцены в кадры → промты → QC."""
     script = _work_spec(
         "script",
         "GPT: сценарий · биты",
@@ -308,35 +308,42 @@ def _script_frames_qc_group() -> NodeGroupDef:
         _STEP_X * 2,
         "main_action_from_bits_ru",
     )
+    shots = _work_spec(
+        "shots",
+        "GPT: сцены → кадры",
+        "Цепь сцен из главное_действие → кадры (одно действие / кадр); текст НЕ генерирует",
+        _STEP_X * 3,
+        "scenes_to_frames_ru",
+    )
     frames = _work_spec(
         "frames",
         "GPT: промты кадров · continuity",
         "Разбивка → промт_картинки + промт_видео; сцена = цепь, не слайд-шоу",
-        _STEP_X * 3,
+        _STEP_X * 4,
         "frame_prompts_continuity_ru",
     )
     qc = _work_spec(
         "qc",
         "GPT: QC промптов",
         "Проверка промптов по блоку и правилам; чинит только нарушения (apply-ops)",
-        _STEP_X * 4,
+        _STEP_X * 5,
         "prompts_qc_continuity_ru",
     )
     return NodeGroupDef(
         group_id="script_frames_qc",
         title="Сценарий → промпты кадров + QC",
         description=(
-            "Сценарий · биты (разметка готового закадра VO-ячеек, текст не "
-            "генерируется) → главное действие кадра по битам → конвертер "
-            "промптов continuity (картинка+видео на кадр) → QC промптов "
-            "(чинит нарушения). Промты *_ru из 05_excel_gpt."
+            "Сценарий · биты → главное действие по битам → нарезка сцен "
+            "на кадры → конвертер промптов continuity → QC промптов. "
+            "Промты *_ru из 05_excel_gpt."
         ),
         category="planning",
         default_after_type="plan",
-        nodes=(script, action, frames, qc),
+        nodes=(script, action, shots, frames, qc),
         internal_edges=(
             ("script", "action", "after"),
-            ("action", "frames", "after"),
+            ("action", "shots", "after"),
+            ("shots", "frames", "after"),
             ("frames", "qc", "after"),
         ),
         entry_keys=("script",),

@@ -141,6 +141,9 @@ FIELD_ALIASES: dict[str, str] = {
     "биты": "биты",
     "смысловые_части": "биты",
     "beats": "биты",
+    "кадры": "кадры",
+    "shots": "кадры",
+    "разбивка_кадров": "кадры",
     "duration_seconds": "duration_seconds",
     "длительность": "duration_seconds",
     "время": "duration_seconds",
@@ -1310,6 +1313,11 @@ async def apply_ops(
             bits_raw = fields["биты"]
             attrs["биты"] = bits_raw if isinstance(bits_raw, list) else str(
                 bits_raw or ""
+            )
+        if "кадры" in fields:
+            shots_raw = fields["кадры"]
+            attrs["кадры"] = shots_raw if isinstance(shots_raw, list) else str(
+                shots_raw or ""
             )
         for attr_key in _ATTR_EXCEL_ROWS:
             if attr_key in fields:

@@ -37,6 +37,7 @@ _IMG_PR_ATTR_KEYS: tuple[str, ...] = (
     "shot02_notes",
     "shot02_transition",
     "биты",
+    "кадры",
 )
 
 
@@ -210,7 +211,13 @@ def build_excel_gpt_db_context(
             # Ручной ▶: не кормить старую аналитику/действие — модель копирует.
             # Биты и персонажи — не «старый результат», их оставляем.
             keep: dict[str, str] = {}
-            for key in ("characters", "персонажи", "биты"):
+            for key in (
+                "characters",
+                "персонажи",
+                "биты",
+                "main_action",
+                "кадры",
+            ):
                 val = slim.get(key)
                 if val:
                     keep[key] = val
