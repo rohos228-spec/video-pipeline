@@ -32,8 +32,8 @@ from app.services.canvas_graph import (
 )
 from app.services.excel_gpt_node import sd_agent_marker
 
-_STEP_X = 290.0  # как в default_graph
-_FAN_DY = 145.0
+_STEP_X = 380.0  # просторный шаг (без наложения нод)
+_FAN_DY = 160.0
 
 
 @dataclass(frozen=True)

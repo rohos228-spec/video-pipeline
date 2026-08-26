@@ -202,6 +202,7 @@ export function NewProjectWizard({
   });
 
   const totalSteps = 4 + wizardQuestions.length;
+  const effectiveTotalSteps = skipWizard ? 4 : totalSteps;
   const currentStepNum =
     phase === "title"
       ? 1
@@ -251,9 +252,11 @@ export function NewProjectWizard({
       setWizIndex(0);
       return;
     }
-    if (wizIndex < wizardQuestions.length - 1) {
-      setWizIndex((i) => i + 1);
-    } else {
+    if (phase === "wizard") {
+      if (wizIndex < wizardQuestions.length - 1) {
+        setWizIndex((i) => i + 1);
+        return;
+      }
       create.mutate();
     }
   };
@@ -280,11 +283,10 @@ export function NewProjectWizard({
     }
   };
 
+  const presets = presetsQ.data?.presets ?? [];
   const isLast =
     (phase === "auto" && (skipWizard || wizardQuestions.length === 0)) ||
-    (phase === "wizard" && wizIndex >= wizardQuestions.length - 1);
-
-  const presets = presetsQ.data?.presets ?? [];
+    (phase === "wizard" && wizIndex === wizardQuestions.length - 1);
 
   return (
     <Dialog
@@ -295,30 +297,35 @@ export function NewProjectWizard({
       }}
     >
       <DialogTrigger asChild>{trigger}</DialogTrigger>
-      <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
+      <DialogContent
+        className="max-h-[90vh] max-w-lg overflow-y-auto rounded-2xl border border-zinc-800 bg-zinc-950/95 shadow-2xl backdrop-blur-xl"
+        onPointerDownOutside={(e) => e.preventDefault()}
+        onInteractOutside={(e) => e.preventDefault()}
+      >
         <DialogHeader>
-          <DialogTitle>Новый проект</DialogTitle>
-          <DialogDescription>
-            Шаг {currentStepNum} из {totalSteps} — мастер как в Telegram-боте
+          <DialogTitle className="text-base font-bold text-zinc-100">Новый проект</DialogTitle>
+          <DialogDescription className="text-xs font-medium text-sky-400">
+            Шаг {currentStepNum} из {effectiveTotalSteps}
           </DialogDescription>
         </DialogHeader>
 
         {(catalog.isLoading || presetsQ.isLoading) && (
           <div className="flex justify-center py-8">
-            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            <Loader2 className="h-5 w-5 animate-spin text-sky-400" />
           </div>
         )}
 
         {!catalog.isLoading && !presetsQ.isLoading && phase === "title" && (
           <div className="flex flex-col gap-2">
-            <label className="text-xs font-medium text-muted-foreground">Название проекта</label>
+            <label className="text-xs font-semibold text-zinc-300">Название проекта</label>
             <Input
               value={projectTitle}
               onChange={(e) => setProjectTitle(e.target.value)}
-              placeholder="Например: Киберпанк — рачки"
+              placeholder="Например: Полет в космос"
               autoFocus
+              className="h-10 rounded-xl border-zinc-700 bg-zinc-900/80 px-3.5 text-sm font-medium text-zinc-100 placeholder:text-zinc-500 focus-visible:border-sky-500 focus-visible:ring-1 focus-visible:ring-sky-500/70"
             />
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-[11.5px] text-zinc-400">
               Тема ролика заполняется отдельно в первой ноде графа.
             </p>
           </div>
@@ -326,38 +333,39 @@ export function NewProjectWizard({
 
         {!catalog.isLoading && !presetsQ.isLoading && phase === "config" && (
           <div className="flex flex-col gap-3">
-            <p className="text-sm font-medium">Конфигурация генерации</p>
+            <p className="text-sm font-semibold text-zinc-100">Конфигурация генерации</p>
             {selectedPresetName && (
-              <p className="rounded-lg border border-emerald-400/40 bg-emerald-400/10 px-3 py-2 text-xs">
-                Применена: <b>{selectedPresetName}</b> — мастер настроек будет пропущен
-              </p>
+              <div className="rounded-xl border border-sky-400/40 bg-sky-500/15 px-3.5 py-2.5 text-xs text-sky-200">
+                Применена: <b className="text-white">{selectedPresetName}</b> — детальные настройки генерации будут взяты из этой конфигурации
+              </div>
             )}
             {presets.length === 0 ? (
               <p className="text-xs text-muted-foreground">Сохранённых конфигураций пока нет.</p>
             ) : (
               <div className="flex flex-col gap-2">
-                <p className="text-xs text-muted-foreground">Выбор конфигурации</p>
+                <p className="text-xs font-medium text-zinc-400">Сохранённые конфигурации</p>
                 {presets.map((p) => (
-                  <div key={p.id} className="flex gap-1">
+                  <div key={p.id} className="flex items-center gap-1.5">
                     <button
                       type="button"
                       onClick={() => applyPreset(p)}
                       className={cn(
-                        "flex-1 rounded-xl border px-3 py-2 text-left text-xs",
+                        "flex-1 rounded-xl border px-3.5 py-2.5 text-left text-xs transition-all",
                         selectedPresetName === p.name
-                          ? "border-emerald-400/50 bg-emerald-400/10"
-                          : "border-white/10 hover:border-white/20",
+                          ? "border-sky-500/60 bg-sky-500/20 text-sky-100 ring-1 ring-sky-400/50 shadow-sm"
+                          : "border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800 hover:border-zinc-700",
                       )}
                     >
-                      <div className="font-medium">{p.name}</div>
+                      <div className="font-bold text-zinc-100">{p.name}</div>
                     </button>
                     <Button
                       type="button"
                       variant="ghost"
                       size="icon"
-                      className="shrink-0"
+                      className="h-9 w-9 shrink-0 text-zinc-400 hover:text-red-400 hover:bg-zinc-800/80 rounded-xl"
                       onClick={() => deletePreset.mutate(p.id)}
                       disabled={deletePreset.isPending}
+                      title="Удалить конфигурацию"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
@@ -373,16 +381,17 @@ export function NewProjectWizard({
                 setAnswers({});
                 setSavePresetAfterCreate(true);
                 setSavePresetName("");
+                toast.info("Выбран режим создания новой конфигурации");
               }}
               className={cn(
-                "rounded-xl border px-3 py-2 text-left text-xs",
+                "rounded-xl border px-3.5 py-2.5 text-left text-xs transition-all",
                 savePresetAfterCreate && !skipWizard
-                  ? "border-violet-400/50 bg-violet-500/10"
-                  : "border-white/10",
+                  ? "border-sky-500/60 bg-sky-500/20 text-sky-100 ring-1 ring-sky-400/50 shadow-sm"
+                  : "border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800 hover:border-zinc-700",
               )}
             >
-              <div className="font-medium">➕ Создание конфигурации</div>
-              <div className="text-muted-foreground">Пройти мастер и сохранить настройки для следующих проектов</div>
+              <div className="font-bold text-zinc-100">➕ Создание новой конфигурации</div>
+              <div className="text-zinc-400 mt-0.5">Пройти мастер и сохранить настройки в шаблон для будущих проектов</div>
             </button>
             <button
               type="button"
@@ -390,31 +399,37 @@ export function NewProjectWizard({
                 setSkipWizard(false);
                 setSelectedPresetName(null);
                 setSavePresetAfterCreate(false);
+                toast.info("Выбран режим ручной настройки");
               }}
               className={cn(
-                "rounded-xl border px-3 py-2 text-left text-xs",
+                "rounded-xl border px-3.5 py-2.5 text-left text-xs transition-all",
                 !skipWizard && !savePresetAfterCreate
-                  ? "border-amber-400/50 bg-amber-400/10"
-                  : "border-white/10",
+                  ? "border-sky-500/60 bg-sky-500/20 text-sky-100 ring-1 ring-sky-400/50 shadow-sm"
+                  : "border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800 hover:border-zinc-700",
               )}
             >
-              <div className="font-medium">⚙️ Настроить вручную</div>
-              <div className="text-muted-foreground">Без сохранения пресета — только для этого проекта</div>
+              <div className="font-bold text-zinc-100">⚙️ Настроить вручную</div>
+              <div className="text-zinc-400 mt-0.5">Пройти все шаги без сохранения шаблона — только для этого проекта</div>
             </button>
           </div>
         )}
 
         {!catalog.isLoading && phase === "hero" && (
           <div className="flex flex-col gap-2">
-            <label className="text-xs font-medium text-muted-foreground">Главный герой</label>
-            <div className="flex gap-1">
+            <label className="text-xs font-semibold text-zinc-300">Главный герой</label>
+            <div className="flex gap-2">
               {(["auto", "hero", "no_hero"] as const).map((mode) => (
                 <Button
                   key={mode}
                   type="button"
-                  variant={heroMode === mode ? "default" : "outline"}
+                  variant="outline"
                   size="sm"
-                  className="flex-1 text-xs"
+                  className={cn(
+                    "flex-1 text-xs font-semibold rounded-xl transition-all h-9",
+                    heroMode === mode
+                      ? "border-sky-500/60 bg-sky-500/20 text-sky-200 ring-1 ring-sky-400/50 shadow-sm"
+                      : "border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800 hover:text-white",
+                  )}
                   onClick={() => setHeroMode(mode)}
                 >
                   {mode === "auto" ? "Авто" : mode === "hero" ? "Есть герой" : "Без героя"}
@@ -426,29 +441,33 @@ export function NewProjectWizard({
 
         {!catalog.isLoading && phase === "auto" && (
           <div className="flex flex-col gap-3">
-            <label className="text-xs font-medium text-muted-foreground">Режим проверки</label>
+            <label className="text-xs font-semibold text-zinc-300">Режим проверки</label>
             <div className="flex flex-col gap-2">
               <button
                 type="button"
                 onClick={() => setAutoMode(false)}
                 className={cn(
-                  "rounded-xl border px-3 py-2 text-left text-xs",
-                  !autoMode ? "border-amber-400/50 bg-amber-400/10" : "border-white/10",
+                  "rounded-xl border px-3.5 py-2.5 text-left text-xs transition-all",
+                  !autoMode
+                    ? "border-sky-500/60 bg-sky-500/20 text-sky-100 ring-1 ring-sky-400/50 shadow-sm"
+                    : "border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800",
                 )}
               >
-                <div className="font-medium">Ручная проверка</div>
-                <div className="text-muted-foreground">Жёлтый кружок на HITL-нодах, кнопки одобрения</div>
+                <div className="font-bold text-zinc-100">Ручная проверка</div>
+                <div className="text-zinc-400 mt-0.5">Жёлтый кружок на HITL-нодах, кнопки одобрения</div>
               </button>
               <button
                 type="button"
                 onClick={() => setAutoMode(true)}
                 className={cn(
-                  "rounded-xl border px-3 py-2 text-left text-xs",
-                  autoMode ? "border-violet-400/50 bg-violet-500/10" : "border-white/10",
+                  "rounded-xl border px-3.5 py-2.5 text-left text-xs transition-all",
+                  autoMode
+                    ? "border-sky-500/60 bg-sky-500/20 text-sky-100 ring-1 ring-sky-400/50 shadow-sm"
+                    : "border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800",
                 )}
               >
-                <div className="font-medium">Автопроверка GPT</div>
-                <div className="text-muted-foreground">Как массовая генерация — иконка GPT на нодах</div>
+                <div className="font-bold text-zinc-100">Автопроверка GPT</div>
+                <div className="text-zinc-400 mt-0.5">Как массовая генерация — иконка GPT на нодах</div>
               </button>
             </div>
           </div>
@@ -456,7 +475,7 @@ export function NewProjectWizard({
 
         {!catalog.isLoading && phase === "wizard" && currentWizQ && (
           <div className="flex flex-col gap-3">
-            <p className="text-sm font-medium">{currentWizQ.title}</p>
+            <p className="text-sm font-semibold text-zinc-100">{currentWizQ.title}</p>
             <div
               className="grid gap-2"
               style={{
@@ -467,9 +486,14 @@ export function NewProjectWizard({
                 <Button
                   key={ch.id}
                   type="button"
-                  variant={answers[currentWizQ.field] === ch.id ? "default" : "outline"}
+                  variant="outline"
                   size="sm"
-                  className="h-auto min-h-9 whitespace-normal py-2 text-xs"
+                  className={cn(
+                    "h-auto min-h-10 whitespace-normal py-2 text-xs font-semibold rounded-xl transition-all",
+                    answers[currentWizQ.field] === ch.id
+                      ? "border-sky-500/60 bg-sky-500/20 text-sky-200 ring-1 ring-sky-400/50 shadow-sm"
+                      : "border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:bg-zinc-800 hover:text-white",
+                  )}
                   onClick={() =>
                     setAnswers((a) => {
                       const next: WizardAnswers = {
@@ -498,37 +522,44 @@ export function NewProjectWizard({
               ))}
             </div>
             {savePresetAfterCreate && isLast && (
-              <div className="flex flex-col gap-1 pt-2">
-                <label className="text-xs font-medium text-muted-foreground">
+              <div className="flex flex-col gap-1.5 pt-2">
+                <label className="text-xs font-semibold text-zinc-300">
                   Имя конфигурации для сохранения
                 </label>
                 <Input
                   value={savePresetName}
                   onChange={(e) => setSavePresetName(e.target.value)}
                   placeholder="Например: GPT Image 2 — 16:9 — Безлимит"
+                  className="h-10 rounded-xl border-zinc-700 bg-zinc-900/80 px-3.5 text-sm font-medium text-zinc-100 placeholder:text-zinc-500 focus-visible:border-sky-500 focus-visible:ring-1 focus-visible:ring-sky-500/70"
                 />
               </div>
             )}
           </div>
         )}
 
-        <DialogFooter className="gap-2 sm:justify-between">
+        <DialogFooter className="gap-2 sm:justify-between pt-3 border-t border-zinc-800/80">
           <Button
             type="button"
             variant="ghost"
-            size="sm"
+            className="h-9 px-4 rounded-xl text-xs font-semibold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/80 transition-all"
             onClick={goBack}
             disabled={phase === "title" || create.isPending}
           >
-            <ChevronLeft className="h-3.5 w-3.5" />
+            <ChevronLeft className="h-3.5 w-3.5 mr-1" />
             Назад
           </Button>
-          <div className="flex gap-2">
-            <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-9 px-5 min-w-[88px] rounded-xl text-xs font-semibold text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800/80 border border-zinc-800 transition-all"
+              onClick={() => setOpen(false)}
+            >
               Отмена
             </Button>
             <Button
               type="button"
+              className="h-9 px-5 min-w-[88px] gap-1.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-500 border border-sky-400/50 shadow-md shadow-sky-500/20 rounded-xl transition-all disabled:opacity-50"
               onClick={goNext}
               disabled={
                 create.isPending ||
