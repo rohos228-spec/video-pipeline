@@ -1,7 +1,7 @@
-"""ИИзменение в монтаже: GPT переписывает промт картинки/видео.
+"""ИИзменение в монтаже: LLM пишет промт по агенту img_pr.
 
-Мастер = живой файл img_pr проекта (как у ноды), не хардкод-переписчик.
-Кадр + закадр — accompanying. Стиль берётся из агента, не из system.
+В модель: файл агента (master) + кадр/закадр. Из модели — готовый промт.
+Пайплайн стиль не дописывает.
 """
 
 from __future__ import annotations
@@ -14,51 +14,26 @@ from typing import Literal
 from loguru import logger
 
 from app.services.gpt_client import get_gpt_client
-from app.services.img_pr_style import (
-    KNITTED_STYLE_HEAD,
-    KNITTED_STYLE_TAIL,
-    STYLE_HEAD,
-    STYLE_TAIL,
-    already_has_style,
-    looks_knitted,
-    looks_noir,
-)
 from app.services.prompt_library import read_resolved_project_prompt
 
 AiChangeKind = Literal["image", "video"]
 
-_HARD_LOCKS = """\
-ЖЁСТКИЕ ЗАПРЕТЫ (нарушение = брак):
-1) Стиль — ТОЛЬКО из вложенного агента img_pr. Не меняй medium / палитру / lock.
-2) ЗАПРЕЩЕНО добавлять новые предметы/объекты/людей/среду, которых нет в IMAGE_PROMPT.
-3) ЗАПРЕЩЕНА смена плана: крупность, ракурс, угол, дистанция, кадрирование.
-4) ЗАПРЕЩЕНО копировать или пересказывать VOICEOVER в промт.
-5) Не пиши JSON apply-ops и не заполняй батч uuid.
-Можно менять только действие/мизансцену, чтобы отразить смысл VOICEOVER.
-"""
-
 _SYSTEM_IMAGE = """\
-Вложенный файл — мастер-агент промтов картинок проекта. Следуй ему.
-IMAGE_PROMPT + VOICEOVER — один кадр, не батч.
+Ты — агент из вложенного файла. Пиши промт картинки по его правилам.
+Вход: один кадр (IMAGE_PROMPT + VOICEOVER), не батч.
 
-Верни ОДИН полный промт картинки: сцена + STYLE / Final style lock + Negative
-из агента. Стиль агента священен. Не JSON.
+Верни ОДИН полный промт: сцена + STYLE / Final style lock + Negative —
+как требует агент, ты пишешь это сам. Не JSON apply-ops.
 
-""" + _HARD_LOCKS + """
-Ответ: ТОЛЬКО текст промта. Без markdown, без кавычек-обёрток, без пояснений.
+Не копируй закадр. Не добавляй объекты, которых нет в кадре.
+Ответ: только текст промта, без пояснений.
 """
 
 _SYSTEM_VIDEO = """\
-Вложенный файл — визуальные правила кадра (агент картинок). Стиль не меняй.
+Вложенный файл — визуальные правила кадра (агент картинок).
 Пишешь короткий ВИДЕОПРОМТ по IMAGE_PROMPT + VOICEOVER.
-
-""" + _HARD_LOCKS + """
-Дополнительно для видео:
-- запрещена музыка;
-- silent video only: без речи, диалога, закадра, звуковых эффектов и голосов;
-- не переключай кадр, не делай cut на другой план.
-
-Ответ: ТОЛЬКО текст видеопромта. Без markdown, без кавычек-обёрток, без пояснений.
+Стиль кадра не меняй. Не JSON. Без музыки, silent video only.
+Не переключай план. Ответ: только текст видеопромта.
 """
 
 
@@ -68,9 +43,9 @@ def build_ai_change_user_message(*, image_prompt: str, voiceover_text: str) -> s
     return (
         f"IMAGE_PROMPT:\n{img}\n\n"
         f"VOICEOVER:\n{vo}\n\n"
-        "Вложенный .md — мастер. Стиль и lock бери из него, не выдумывай другой. "
-        "Без новых предметов, без смены плана. Не копируй закадр. Не JSON.\n"
-        "Ответь ТОЛЬКО обновлённым промтом, без пояснений."
+        "Напиши заново полный промт картинки по вложенному агенту. "
+        "STYLE / Final style lock / Negative пишешь ты, как в агенте. "
+        "Смысл VOICEOVER — через действие. Не JSON. Только промт."
     )
 
 
@@ -116,21 +91,6 @@ def character_ids_from_prompt(text: str) -> list[str]:
     return seen
 
 
-def strip_style_blocks(text: str) -> str:
-    """Убрать строки STYLE / Final style lock / Negative, сцену оставить."""
-    out: list[str] = []
-    for line in (text or "").splitlines():
-        start = line.strip().casefold()
-        if (
-            start.startswith("style:")
-            or start.startswith("final style lock")
-            or start.startswith("negative:")
-        ):
-            continue
-        out.append(line)
-    return "\n".join(out).strip()
-
-
 def strip_ai_change_reply(raw: str) -> str:
     """Срезать обёртки; если модель вернула apply-ops — взять промт_картинки."""
     text = (raw or "").strip()
@@ -172,27 +132,6 @@ def strip_ai_change_reply(raw: str) -> str:
     return text.strip()
 
 
-def ensure_img_pr_style(text: str, *, variant: str = "") -> str:
-    """Стиль агента — в НАЧАЛО промта для Outsee. Старый lock вырезаем."""
-    raw = (text or "").strip()
-    if not raw:
-        return raw
-    body = strip_style_blocks(raw)
-    name = (variant or "").casefold()
-    if looks_knitted(variant) or looks_knitted(name):
-        return f"{KNITTED_STYLE_HEAD}\n\n{body}\n\n{KNITTED_STYLE_TAIL}"
-    if (
-        looks_noir(variant)
-        or "watercolor" in name
-        or "trash_polka" in name
-        or "trash polka" in name
-    ):
-        return f"{STYLE_HEAD}\n\n{body}\n\n{STYLE_TAIL}"
-    if already_has_style(raw):
-        return raw
-    return body
-
-
 def system_for_kind(kind: AiChangeKind, *, img_pr_rules: str = "") -> str:
     del img_pr_rules
     return _SYSTEM_VIDEO if kind == "video" else _SYSTEM_IMAGE
@@ -208,8 +147,8 @@ async def rewrite_prompt_via_gpt(
     img_pr_path: Path | None = None,
     img_pr_variant: str = "",
 ) -> str:
-    """Мастер = файл img_pr. Кадр — в сообщении. Стиль из агента."""
-    del img_pr_rules
+    """Агент + кадр → LLM → промт как есть."""
+    del img_pr_rules, img_pr_variant
     user = build_ai_change_user_message(
         image_prompt=image_prompt,
         voiceover_text=voiceover_text,
@@ -231,8 +170,6 @@ async def rewrite_prompt_via_gpt(
     cleaned = strip_ai_change_reply(raw)
     if not cleaned:
         raise RuntimeError("ИИзменение: GPT вернул пустой промт")
-    if kind == "image":
-        cleaned = ensure_img_pr_style(cleaned, variant=img_pr_variant)
     logger.info(
         "montage_ai_change: kind={} pid={} in_img={} in_vo={} out={} master={} head={!r} refs={}",
         kind,
