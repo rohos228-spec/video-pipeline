@@ -205,6 +205,23 @@ def _is_vo_cell_markup_node(
     )
 
 
+def _project_topic_bits(project) -> list[str]:
+    """Тема/план для ноды сценария. Project.title, не .name (его нет)."""
+    bits: list[str] = []
+    title = str(getattr(project, "title", None) or "").strip()
+    if title:
+        bits.append(f"Название проекта: {title}")
+    meta = getattr(project, "meta", None)
+    plan_text = str(
+        getattr(project, "general_plan", None)
+        or (meta if isinstance(meta, dict) else {}).get("general_plan")
+        or ""
+    ).strip()
+    if plan_text:
+        bits.append(f"Общий план:\n{plan_text}")
+    return bits
+
+
 def _is_frame_prompts_prompt(variant: str | None, master: str | None) -> bool:
     # QC-промт ссылается на frame_prompts_continuity — это не fill-агент.
     if _is_qc_prompts_prompt(variant, master):
@@ -1320,16 +1337,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     f"{accompanying}\n\n{hint}{mapping}"
                 ).strip()
                 if script_writer:
-                    topic_bits: list[str] = []
-                    if str(project.name or "").strip():
-                        topic_bits.append(f"Название проекта: {project.name.strip()}")
-                    plan_text = str(
-                        project.general_plan
-                        or (project.meta or {}).get("general_plan")
-                        or ""
-                    ).strip()
-                    if plan_text:
-                        topic_bits.append(f"Общий план:\n{plan_text}")
+                    topic_bits = _project_topic_bits(project)
                     if topic_bits:
                         accompanying = (
                             f"{accompanying}\n\n"

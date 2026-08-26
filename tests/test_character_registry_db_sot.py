@@ -93,6 +93,20 @@ def test_detect_frame_and_qc_prompt() -> None:
     assert not _all_frame_prompts_ready(no_action)
 
 
+def test_project_topic_bits_uses_title_not_name() -> None:
+    """Project.title, не .name — иначе ▶ сценария падает AttributeError."""
+    from app.orchestrator.steps.enrich_xlsx import _project_topic_bits
+
+    class Proj:
+        title = "Ткач"
+        general_plan = "двор и армия"
+        meta = {}
+
+    bits = _project_topic_bits(Proj())
+    assert bits[0] == "Название проекта: Ткач"
+    assert "двор и армия" in bits[1]
+
+
 def test_characters_from_entities_and_gpt_cards() -> None:
     ents = [
         SimpleNamespace(
