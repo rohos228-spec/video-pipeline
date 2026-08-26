@@ -236,7 +236,7 @@ async def test_veo_generate_video_hosts_frame_and_postprocesses(
 async def test_veo_sends_last_frame_under_outsee_field_names(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """end_image_url Outsee молча игнорит — нужен last_frame_url, как first→image_url."""
+    """Два кадра → image_urls[start,end]. image_url один = режим без конца."""
     from app.bots import outsee_http as oh
 
     monkeypatch.setattr(oh.settings, "outsee_api_key", "test-key")
@@ -283,9 +283,11 @@ async def test_veo_sends_last_frame_under_outsee_field_names(
         )
 
     body = captured["body"]
-    assert body["image_url"] == "https://cdn.example/start.png"
-    assert body["last_frame_url"] == "https://cdn.example/end.png"
-    assert body["first_frame_url"] == "https://cdn.example/start.png"
+    assert body.get("image_urls") == [
+        "https://cdn.example/start.png",
+        "https://cdn.example/end.png",
+    ]
+    assert "image_url" not in body
     assert body["generate_audio"] is False
 
 

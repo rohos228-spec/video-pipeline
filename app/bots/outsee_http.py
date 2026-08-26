@@ -1164,15 +1164,6 @@ async def generate_video(
             )
     frame_source = frame  # data: или исходный http — для rehost при fetch-fail Outsee
     frame = await ensure_public_image_url(frame)
-    if frame:
-        # Outsee Developer API: стартовый кадр = image_url (first_frame_url молча игнорит!)
-        body["image_url"] = frame
-    elif want_start:
-        # Раньше молча уходили в text→video без рефа — клипы «не похожи» на кадр.
-        raise OutseeApiError(
-            "стартовый кадр передан, но image_url не получен (upload/host)",
-            context={"project_id": project_id},
-        )
 
     want_end = bool(last_frame_url) or last_frame_image is not None
     last = last_frame_url
@@ -1203,33 +1194,37 @@ async def generate_video(
             )
     last_source = last
     last = await ensure_public_image_url(last)
-    if last:
-        # Outsee /models: только supports_first_frame. end_image_url молча
-        # игнорит (как first_frame_url для старта). Живое поле — last_frame_url.
-        body["last_frame_url"] = last
-        body["end_image_url"] = last
-        if frame:
-            body["first_frame_url"] = frame
-    elif want_end:
+    if want_start and not frame:
         raise OutseeApiError(
-            "конечный кадр передан, но last_frame_url не получен (upload/host)",
+            "стартовый кадр передан, но image_url не получен (upload/host)",
             context={"project_id": project_id},
         )
+    if want_end and not last:
+        raise OutseeApiError(
+            "конечный кадр передан, но URL не получен (upload/host)",
+            context={"project_id": project_id},
+        )
+    if frame and last:
+        # Один image_url = только старт. Два кадра — как картинки: image_urls.
+        body["image_urls"] = [frame, last]
+    elif frame:
+        body["image_url"] = frame
 
     skip_hosts: set[str] = set()
     submitted: dict[str, Any] | None = None
     last_submit_err: BaseException | None = None
     for host_try in range(1, 4):
+        urls = list(body.get("image_urls") or [])
         logger.info(
             "outsee_api.video model={} aspect={} res={} dur={} audio={} "
-            "image_url={} last_frame={} project={} host_try={}",
+            "image_url={} image_urls={} project={} host_try={}",
             model,
             body.get("aspect_ratio"),
             body.get("resolution"),
             body.get("duration_sec"),
             body.get("generate_audio"),
             bool(body.get("image_url")),
-            bool(body.get("last_frame_url")),
+            len(urls),
             project_id,
             host_try,
         )
@@ -1244,8 +1239,9 @@ async def generate_video(
                 or host_try >= 3
             ):
                 raise
+            hosted = list(body.get("image_urls") or [])
             bad = _host_name_from_url(
-                str(body.get("image_url") or body.get("last_frame_url") or "")
+                str(body.get("image_url") or (hosted[0] if hosted else "") or "")
             )
             # yandex не баним: следующий try зальёт новый объект в бакет.
             if bad and bad != "yandex":
@@ -1259,6 +1255,11 @@ async def generate_video(
                 3,
             )
             changed = False
+            new_start = body.get("image_url")
+            new_end = None
+            pair = list(body.get("image_urls") or [])
+            if pair:
+                new_start, new_end = pair[0], pair[1] if len(pair) > 1 else None
             if frame_source:
                 rehosted = await ensure_public_image_url(
                     frame_source,
@@ -1267,10 +1268,8 @@ async def generate_video(
                         str(frame_source).startswith(("http://", "https://"))
                     ),
                 )
-                if rehosted and rehosted != body.get("image_url"):
-                    body["image_url"] = rehosted
-                    if body.get("first_frame_url"):
-                        body["first_frame_url"] = rehosted
+                if rehosted and rehosted != new_start:
+                    new_start = rehosted
                     changed = True
             if last_source:
                 rehosted_last = await ensure_public_image_url(
@@ -1280,12 +1279,17 @@ async def generate_video(
                         str(last_source).startswith(("http://", "https://"))
                     ),
                 )
-                if rehosted_last and rehosted_last != body.get("last_frame_url"):
-                    body["last_frame_url"] = rehosted_last
-                    body["end_image_url"] = rehosted_last
+                if rehosted_last and rehosted_last != new_end:
+                    new_end = rehosted_last
                     changed = True
             if not changed:
                 raise
+            if new_start and new_end:
+                body.pop("image_url", None)
+                body["image_urls"] = [new_start, new_end]
+            elif new_start:
+                body.pop("image_urls", None)
+                body["image_url"] = new_start
     if submitted is None:
         raise last_submit_err or OutseeApiError("video generate: no submit")
     task_id = submitted["id"]
