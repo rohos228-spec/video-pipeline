@@ -10,7 +10,9 @@ Excel как запасной вид).
 
 from __future__ import annotations
 
+import json
 import uuid
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -44,6 +46,7 @@ from app.services.montage_board_meta import (
     trim_key,
 )
 from app.services.outsee_retry import generate_image_with_retries, generate_video_with_retries
+from app.services.vibecode_catalog import resolve_node_media_settings
 from app.services.plan_shot2 import (
     MIN_SHOT2_VIDEO_PROMPT_LEN,
     SHOT2_PROMPT_ATTR,
@@ -124,6 +127,26 @@ class _ApiOnlyOutseeStub:
         raise RuntimeError(
             "montage regen: CDP download отключён — повтор скачивания только через HTTP API"
         )
+
+
+def majority_scene_image_model(scenes_dir: Path) -> str | None:
+    """Модель исходных кадров: самая частая в sidecar scenes/frame_*.json."""
+    if not scenes_dir.is_dir():
+        return None
+    counts: Counter[str] = Counter()
+    for path in scenes_dir.glob("frame_*.json"):
+        if "_s2_" in path.name:
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            continue
+        model = str(data.get("model") or "").strip()
+        if model:
+            counts[model] += 1
+    if not counts:
+        return None
+    return counts.most_common(1)[0][0]
 
 
 def image_prompt_from_excel(project: Project, frame: Frame, shot: int) -> str:
@@ -363,13 +386,19 @@ async def prepare_image_regen(
         file_path = scenes_dir / f"frame_{frame_number:03d}_{short_uuid}.png"
         prompt_id_prefix = build_gen_id_prefix(project.id, frame_number, short_uuid)
 
-    img_gen = IMAGE_GENERATORS_BY_ID.get(project.image_generator or DEFAULTS["image_generator"])
-    ar = ASPECT_RATIOS_BY_ID.get(project.aspect_ratio or DEFAULTS["aspect_ratio"])
-    ir = IMAGE_RESOLUTIONS_BY_ID.get(
-        clamp_image_resolution_id(
-            project.image_generator, project.image_resolution
+    media = resolve_node_media_settings(project, node_type="images")
+    img_gid = media["image_generator_id"]
+    img_gen = IMAGE_GENERATORS_BY_ID.get(img_gid)
+    orig_model = majority_scene_image_model(scenes_dir)
+    model_slug = orig_model or (img_gen.outsee_slug if img_gen else None)
+    if orig_model and orig_model != (img_gen.outsee_slug if img_gen else None):
+        logger.info(
+            "montage regen image #{}: модель исходных кадров {} "
+            "(нода/проект был {})",
+            project.id,
+            orig_model,
+            img_gen.outsee_slug if img_gen else img_gid,
         )
-    )
 
     return ImageRegenPrep(
         project_id=project.id,
@@ -380,10 +409,10 @@ async def prepare_image_regen(
         refs=refs,
         prompt_id_prefix=prompt_id_prefix,
         gen_id=gen_id,
-        aspect_slug=ar.outsee_slug if ar else "9:16",
-        model_slug=img_gen.outsee_slug if img_gen else None,
-        res_slug=ir.outsee_slug if ir else None,
-        quality_slug=resolve_image_quality_slug(project.image_generator, project.image_quality),
+        aspect_slug=media["aspect_slug"] or "9:16",
+        model_slug=model_slug,
+        res_slug=media["resolution_slug"],
+        quality_slug=media["quality_slug"],
         image_relax=bool(project.image_relax),
     )
 
