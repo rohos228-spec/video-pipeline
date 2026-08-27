@@ -124,6 +124,59 @@ export function assignExcelGptSlotIndices(nodes: WorkflowNode[]): WorkflowNode[]
   });
 }
 
+export function ensureSpaciousNodePositions(nodes: WorkflowNode[]): WorkflowNode[] {
+  if (!nodes || nodes.length <= 1) return nodes;
+
+  const sorted = [...nodes].sort((a, b) => (a.position?.x ?? 0) - (b.position?.x ?? 0));
+
+  let needsExpansion = false;
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const diff = (sorted[i + 1].position?.x ?? 0) - (sorted[i].position?.x ?? 0);
+    if (diff > 50 && diff < 340) {
+      needsExpansion = true;
+      break;
+    }
+  }
+
+  if (!needsExpansion) return nodes;
+
+  const columns: WorkflowNode[][] = [];
+  for (const node of sorted) {
+    const matchCol = columns.find(
+      (col) => Math.abs((col[0].position?.x ?? 0) - (node.position?.x ?? 0)) < 160,
+    );
+    if (matchCol) {
+      matchCol.push(node);
+    } else {
+      columns.push([node]);
+    }
+  }
+
+  let currentX = columns[0]?.[0]?.position?.x ?? 80;
+  const STEP_X = 380;
+  const newPositions = new Map<string, { x: number; y: number }>();
+
+  columns.forEach((col) => {
+    col.forEach((node) => {
+      newPositions.set(node.id, {
+        x: currentX,
+        y: node.position?.y ?? 200,
+      });
+    });
+    const maxColWidth = Math.max(
+      ...col.map((n) =>
+        n.type === "excel_gpt" || n.type === "storage" || n.type === "shot_menu" ? 320 : 280,
+      ),
+    );
+    currentX += Math.max(STEP_X, maxColWidth + 70);
+  });
+
+  return nodes.map((n) => {
+    const pos = newPositions.get(n.id);
+    return pos ? { ...n, position: pos } : n;
+  });
+}
+
 export function migrateWorkflowNodes(nodes: WorkflowNode[]): WorkflowNode[] {
   const migrated = nodes.map((n) => {
     if (!n.type.startsWith("enrich_")) return n;
@@ -143,5 +196,5 @@ export function migrateWorkflowNodes(nodes: WorkflowNode[]): WorkflowNode[] {
       },
     };
   });
-  return assignExcelGptSlotIndices(migrated);
+  return ensureSpaciousNodePositions(assignExcelGptSlotIndices(migrated));
 }
