@@ -886,6 +886,165 @@ def test_shots_coverage_accepts_parent_on_same_place() -> None:
     assert shots_coverage_ops_reason(ops, []) is None
 
 
+def test_bits_ops_rejects_slogan_string() -> None:
+    from app.services.apply_ops_batches import bits_ops_reason
+
+    vo = "Дарья Салтыкова. История началась не с процесса, а с двух жалоб."
+    frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {"биты": "Хук: история начинается с двух жалоб"},
+        }
+    ]
+    assert bits_ops_reason(ops, frames)
+
+
+def test_bits_ops_rejects_one_bit_for_two_clauses() -> None:
+    from app.services.apply_ops_batches import bits_ops_reason
+
+    vo = "Дарья Салтыкова. История началась не с процесса, а с двух жалоб."
+    frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "биты": [
+                    {
+                        "порядок": 1,
+                        "глагол": "сдвигает",
+                        "изменение": "процесс → жалобы",
+                        "якорь": "Дарья Салтыкова",
+                    }
+                ]
+            },
+        }
+    ]
+    assert bits_ops_reason(ops, frames)
+
+
+def test_bits_ops_accepts_two_bits() -> None:
+    from app.services.apply_ops_batches import bits_ops_reason
+
+    vo = "Дарья Салтыкова. История началась не с процесса, а с двух жалоб."
+    frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "биты": [
+                    {
+                        "порядок": 1,
+                        "глагол": "называет",
+                        "изменение": "никто → названа",
+                        "якорь": "Дарья Салтыкова",
+                    },
+                    {
+                        "порядок": 2,
+                        "глагол": "сдвигает",
+                        "изменение": "процесс → две жалобы",
+                        "якорь": "История началась не с процесса",
+                    },
+                ]
+            },
+        }
+    ]
+    assert bits_ops_reason(ops, frames) is None
+
+
+def test_shots_coverage_rejects_single_shot_on_two_clauses() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    vo = "Дарья Салтыкова. История началась не с процесса, а с двух жалоб."
+    frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "фронт",
+                        "место": "двор",
+                        "действие": "стоит",
+                    }
+                ]
+            },
+        }
+    ]
+    reason = shots_coverage_ops_reason(ops, frames)
+    assert reason and "один кадр" in reason
+
+
+def test_shots_coverage_rejects_all_independent_invented_places() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    vo = "Дарья Салтыкова. История началась не с процесса, а с двух жалоб."
+    frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "план": "ОБЩИЙ",
+                        "ракурс": "фронт",
+                        "место": "двор усадьбы",
+                        "действие": "стоит у крыльца",
+                    },
+                    {
+                        "id": "1-K2",
+                        "parent_id": None,
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "3/4",
+                        "место": "канцелярия",
+                        "действие": "две жалобы на столе",
+                    },
+                ]
+            },
+        }
+    ]
+    reason = shots_coverage_ops_reason(ops, frames)
+    assert reason and "дочерн" in reason
+
+
+def test_shots_coverage_accepts_master_and_child() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    vo = "Дарья Салтыкова. История началась не с процесса, а с двух жалоб."
+    frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "план": "ОБЩИЙ",
+                        "ракурс": "фронт",
+                        "место": "двор усадьбы",
+                        "действие": "двор целиком",
+                    },
+                    {
+                        "id": "1-K2",
+                        "parent_id": "1-K1",
+                        "план": "ДЕТАЛЬ",
+                        "ракурс": "сверху",
+                        "место": "двор усадьбы",
+                        "действие": "две жалобы",
+                    },
+                ]
+            },
+        }
+    ]
+    assert shots_coverage_ops_reason(ops, frames) is None
+
+
 @pytest.mark.asyncio
 async def test_vo_chunk_size_30_packs(tmp_path, monkeypatch) -> None:
     """script_frames_qc: пачки по 30 отрезков закадра."""
@@ -902,7 +1061,19 @@ async def test_vo_chunk_size_30_packs(tmp_path, monkeypatch) -> None:
         frames = json.loads(path.read_text(encoding="utf-8"))["frames"]
         calls.append(len(frames))
         ops = [
-            {"frame_uuid": fr["uuid"], "fields": {"биты": []}}
+            {
+                "frame_uuid": fr["uuid"],
+                "fields": {
+                    "биты": [
+                        {
+                            "порядок": 1,
+                            "глагол": "говорит",
+                            "изменение": "молчит → сказано",
+                            "якорь": fr["voiceover_text"],
+                        }
+                    ]
+                },
+            }
             for fr in frames
         ]
         return OperatorApiResult(

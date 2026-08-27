@@ -297,7 +297,7 @@ def _script_frames_qc_group() -> NodeGroupDef:
     script = _work_spec(
         "script",
         "GPT: сценарий · биты",
-        "Готовый закадр VO-ячеек → биты «было → стало»; текст НЕ генерирует",
+        "Готовый закадр → биты по числу изменений, не 1 на ячейку",
         _STEP_X,
         "script_writer_ru",
     )
@@ -311,7 +311,7 @@ def _script_frames_qc_group() -> NodeGroupDef:
     shots = _work_spec(
         "shots",
         "GPT: сцены → кадры",
-        "Цепь сцен → кадры (план/ракурс, id, parent); текст НЕ генерирует",
+        "Цепь сцен → покрытие (master + дочерние); текст НЕ генерирует",
         _STEP_X * 3,
         "scenes_to_frames_ru",
     )

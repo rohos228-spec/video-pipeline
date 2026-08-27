@@ -40,3 +40,18 @@ def test_get_excel_gpt_list_hides_legacy_enrich_folder(prompts_root: Path) -> No
     r = client.get("/api/prompt-files/excel_gpt/legacy_only/content")
     assert r.status_code == 200, r.text
     assert r.json()["content"] == "from enrich_3"
+
+
+def test_stale_local_script_writer_uses_git_template(
+    prompts_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (prompts_root / "05_excel_gpt" / "script_writer_ru.md").write_text(
+        "# Агент: сценарист закадра RU (v1)\nпишет script_text\n",
+        encoding="utf-8",
+    )
+    tmpl = tmp_path / "tmpl"
+    tmpl.mkdir()
+    (tmpl / "script_writer_ru.md").write_text("# биты v3\n", encoding="utf-8")
+    monkeypatch.setattr(pl, "excel_gpt_template_dir", lambda: tmpl)
+    path = pl.resolve_excel_gpt_prompt_path("script_writer_ru")
+    assert path == tmpl / "script_writer_ru.md"

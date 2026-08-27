@@ -321,6 +321,8 @@ def analytics_ops_collapsed_reason(
 
 
 _SCENE_NUM_RE = re.compile(r"(?m)^\s*\d+\.\s+\S")
+_VO_CLAUSE_RE = re.compile(r"[.!?…]+|\n+")
+_PLACE_TOKEN_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
 
 
 def _op_shots(fields: dict[str, Any]) -> list[dict[str, Any]]:
@@ -328,6 +330,125 @@ def _op_shots(fields: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
     return [item for item in raw if isinstance(item, dict)]
+
+
+def _op_bits(fields: dict[str, Any]) -> Any:
+    if "биты" in fields:
+        return fields["биты"]
+    return fields.get("bits")
+
+
+def _vo_clauses(vo: str) -> list[str]:
+    return [p.strip() for p in _VO_CLAUSE_RE.split(vo or "") if p.strip()]
+
+
+def _frames_by_uuid(frames: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for fr in frames:
+        if not isinstance(fr, dict):
+            continue
+        uid = str(fr.get("uuid") or "").strip()
+        if uid:
+            out[uid] = fr
+    return out
+
+
+def _frame_vo(fr: dict[str, Any] | None) -> str:
+    if not fr:
+        return ""
+    return str(fr.get("voiceover_text") or fr.get("закадр") or "").strip()
+
+
+def _frame_bits_list(fr: dict[str, Any] | None) -> list[Any]:
+    if not fr:
+        return []
+    raw = fr.get("биты")
+    if raw is None:
+        attrs = fr.get("attrs")
+        if isinstance(attrs, dict):
+            raw = attrs.get("биты")
+    if isinstance(raw, str) and raw.strip().startswith("["):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+    return raw if isinstance(raw, list) else []
+
+
+def _shot_independent(shot: dict[str, Any]) -> bool:
+    return shot.get("parent_id") in (None, "", "null")
+
+
+def _place_attested_in_vo(place: str, vo: str) -> bool:
+    """Место из кадра должно читаться в закадре, иначе это выдуманный сетап."""
+    vo_cf = (vo or "").casefold()
+    place_cf = (place or "").strip().casefold()
+    if not place_cf or not vo_cf:
+        return False
+    if place_cf in vo_cf:
+        return True
+    tokens = [
+        t.casefold()
+        for t in _PLACE_TOKEN_RE.findall(place)
+        if len(t) >= 4
+    ]
+    for t in tokens:
+        if t in vo_cf:
+            return True
+        if len(t) >= 4 and t[:4] in vo_cf:
+            return True
+    return False
+
+
+def bits_ops_reason(
+    ops: list[Any],
+    frames: list[dict[str, Any]],
+) -> str | None:
+    """Биты — массив объектов по числу изменений, не строка и не единица на ячейку."""
+    by_uid = _frames_by_uuid(frames)
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        uid = str(op.get("frame_uuid") or "").strip()
+        raw = _op_bits(fields)
+        vo = _frame_vo(by_uid.get(uid))
+        if raw is None:
+            return f"uuid {uid[:8]}: нет поля биты"
+        if isinstance(raw, str):
+            return (
+                f"uuid {uid[:8]}: биты — строка, нужен массив объектов "
+                "(не слоган на всю ячейку)"
+            )
+        if not isinstance(raw, list):
+            return f"uuid {uid[:8]}: биты не массив"
+        if not vo:
+            if raw:
+                return f"uuid {uid[:8]}: пустой закадр, биты должны быть []"
+            continue
+        if not raw:
+            return f"uuid {uid[:8]}: пустые биты у непустой ячейки"
+        for i, bit in enumerate(raw, start=1):
+            if not isinstance(bit, dict):
+                return f"uuid {uid[:8]}: бит {i} не объект"
+            if not str(bit.get("глагол") or "").strip():
+                return f"uuid {uid[:8]}: бит {i} без глагола"
+            if not str(bit.get("изменение") or "").strip():
+                return f"uuid {uid[:8]}: бит {i} без изменения"
+            anchor = str(bit.get("якорь") or "").strip()
+            if not anchor:
+                return f"uuid {uid[:8]}: бит {i} без якоря"
+            if anchor.casefold() not in vo.casefold():
+                return f"uuid {uid[:8]}: якорь бита {i} не из закадра"
+        clauses = _vo_clauses(vo)
+        if len(clauses) >= 2 and len(raw) < 2:
+            return (
+                f"uuid {uid[:8]}: {len(clauses)} частей закадра, "
+                f"бит {len(raw)} — число битов = число изменений, не 1"
+            )
+    return None
 
 
 def action_chain_ops_reason(
@@ -360,8 +481,8 @@ def shots_coverage_ops_reason(
     ops: list[Any],
     frames: list[dict[str, Any]],
 ) -> str | None:
-    """Несколько кадров одного места без parent — брак. Число кадров не диктуем."""
-    del frames
+    """Покрытие сцены: не один кадр на ячейку; на одном сетапе — дочерние."""
+    by_uid = _frames_by_uuid(frames)
     for op in ops:
         if not isinstance(op, dict):
             continue
@@ -372,6 +493,16 @@ def shots_coverage_ops_reason(
         shots = _op_shots(fields)
         if not shots:
             return f"uuid {uid[:8]}: пустые кадры"
+        vo = _frame_vo(by_uid.get(uid))
+        bits = _frame_bits_list(by_uid.get(uid))
+        need_coverage = (len(_vo_clauses(vo)) >= 2 and len(vo) >= 40) or (
+            len(bits) >= 2
+        )
+        if need_coverage and len(shots) < 2:
+            return (
+                f"uuid {uid[:8]}: один кадр на ячейку — нужно покрытие "
+                "(master + дочерние), число кадров не равно 1"
+            )
         by_place: dict[str, list[dict[str, Any]]] = {}
         for shot in shots:
             place = str(shot.get("место") or shot.get("place") or "").strip().casefold()
@@ -380,12 +511,33 @@ def shots_coverage_ops_reason(
         for place, group in by_place.items():
             if len(group) < 2:
                 continue
-            if all(
-                shot.get("parent_id") in (None, "", "null") for shot in group
-            ):
+            if all(_shot_independent(shot) for shot in group):
                 return (
                     f"uuid {uid[:8]}: {len(group)} кадров «{place}» все "
                     "самостоятельные — parent = первый кадр этой локации"
+                )
+        n_children = sum(1 for s in shots if not _shot_independent(s))
+        if need_coverage and len(shots) >= 2 and n_children == 0:
+            attested = [
+                s
+                for s in shots
+                if _place_attested_in_vo(
+                    str(s.get("место") or s.get("place") or ""), vo
+                )
+            ]
+            unique_places = {
+                str(s.get("место") or s.get("place") or "").strip().casefold()
+                for s in shots
+                if str(s.get("место") or s.get("place") or "").strip()
+            }
+            real_montage = (
+                len(unique_places) == len(shots)
+                and len(attested) >= 2
+            )
+            if not real_montage:
+                return (
+                    f"uuid {uid[:8]}: нет дочерних кадров — покрытие "
+                    "одного сетапа: parent_id = id master"
                 )
         for shot in shots:
             if not str(shot.get("план") or "").strip():
@@ -418,7 +570,9 @@ def _batch_footer(
             f"\n# BATCH call={batch_i} split={split_level} "
             f"(биты по {SCRIPT_FRAMES_QC_UNITS_PER_BATCH})\n"
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
-            "Верни ops ровно по каждому uuid: fields.биты. "
+            "Верни ops ровно по каждому uuid: fields.биты — JSON-массив "
+            "объектов {{порядок, глагол, изменение, якорь}}. "
+            "Число битов = число изменений в ячейке, не 1 и не строка-слоган. "
             "Не пиши закадр. Чужие кадры не пиши. JSON apply-ops, без прозы.\n"
         )
     if kind in {"action_chain", "main_action"}:
@@ -437,10 +591,10 @@ def _batch_footer(
             f"(кадры-покрытие по {SCRIPT_FRAMES_QC_UNITS_PER_BATCH})\n"
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Верни ops ровно по каждому uuid: fields.кадры. "
-            "Число кадров = логика ячейки, не чужой сюжет. "
-            "Одно место, несколько кадров → parent = первый кадр этой локации. "
-            "Новое место → parent_id null. Не пиши закадр, биты, главное_действие. "
-            "JSON apply-ops, без прозы.\n"
+            "Число кадров НЕ равно 1: master + дочерние покрытие сцены. "
+            "Одно место → parent_id = id master. Новое место только если "
+            "его назвал закадр. Все parent_id null на одном сетапе = брак. "
+            "Не пиши закадр, биты, главное_действие. JSON apply-ops, без прозы.\n"
         )
     if kind in {"prompts", "img"}:
         return (
@@ -674,6 +828,13 @@ async def run_apply_ops_batched(
             )
         ops = kept
         kind = (footer_kind or "").strip().lower()
+        if kind in {"bits", "script_beats"}:
+            bad_bits = bits_ops_reason(ops, chunk)
+            if bad_bits:
+                raise RuntimeError(
+                    f"enrich_xlsx node={node_key}: L{level} call {my_i} "
+                    f"{bad_bits}"
+                )
         if kind in {
             "analytics",
             "scene_analytics",
