@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-LAYOUT_VERSION = 11
+LAYOUT_VERSION = 12
 
 # Состав веера scene_design — SSoT для группы «scene_design_fanout»
 # (app/services/node_groups.py). В ДЕФОЛТНЫЙ шаблон веер не входит:
