@@ -483,10 +483,10 @@ function ModelCard({
         ) : model.kind === "video" ? (
           <div className="mt-2">
             <div className="text-[16px] font-semibold leading-none text-[#c4b2ff]">
-              {model.provider === "kie" ? "Kie" : "Outsee"}
+              {model.provider === "kie" ? "Kie" : model.provider === "grsai" ? "Grsai" : "Outsee"}
             </div>
             <div className="mt-1 text-[9px] uppercase tracking-wider text-white/35">
-              {model.provider === "kie" ? "KIE_API_KEY" : "OUTSEE_API_KEY"}
+              {model.provider === "kie" ? "KIE_API_KEY" : model.provider === "grsai" ? "GRSAI_API_KEY" : "OUTSEE_API_KEY"}
             </div>
           </div>
         ) : (

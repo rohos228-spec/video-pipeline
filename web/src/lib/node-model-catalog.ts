@@ -71,7 +71,7 @@ export const DEFAULT_VIDEO_MODEL_ID = "veo-3-1-lite";
 export const IMAGE_NODE_TYPES = new Set(["images", "hero", "items", "hitl_images"]);
 export const VIDEO_NODE_TYPES = new Set(["videos", "hitl_videos"]);
 export const IMAGE_MODEL_ALIASES: Record<string, string> = { "gpt-image-2": "gpt-image-2-vip" };
-export const HIDDEN_IMAGE_IDS = new Set(["gpt-image-2"]);
+export const HIDDEN_IMAGE_IDS = new Set(["gpt-image-2", "nano-banana-pro"]);
 
 export const VENDOR_META: Record<
   Exclude<ModelVendorId, "other">,
@@ -166,6 +166,22 @@ function kindOf(row: SnapshotRow, isVideo = false): ModelKind {
   return row.is_image ? "image" : "text";
 }
 
+const IMAGE_EXTRA: CatalogModel[] = [
+  {
+    id: "nano-banana-fast",
+    label: "Nano Banana Fast",
+    vendor: "images",
+    kind: "image",
+    online: true,
+    resolution: "1K/2K",
+    pricing: { currency: "usd", markup: PRICE_MARKUP, usd_per_image: 0.03 },
+    api_model: "nano-banana-fast",
+    provider: "grsai",
+    image_generator: "nano_banana_fast",
+    channel: "stable",
+  },
+];
+
 const VIDEO_EXTRA: CatalogModel[] = [
   {
     id: "veo-3-1-lite",
@@ -180,6 +196,18 @@ const VIDEO_EXTRA: CatalogModel[] = [
     channel: "stable",
   },
   {
+    id: "veo-3-1-fast",
+    label: "Veo 3.1 Fast",
+    vendor: "video",
+    kind: "video",
+    online: true,
+    pricing: { currency: "usd", markup: PRICE_MARKUP },
+    api_model: "veo-3-1-fast",
+    provider: "grsai",
+    video_generator: "veo_3_1_fast",
+    channel: "stable",
+  },
+  {
     id: "kling-2-6",
     label: "Kling 2.6",
     vendor: "video",
@@ -189,6 +217,18 @@ const VIDEO_EXTRA: CatalogModel[] = [
     api_model: "kling-2-6",
     provider: "kie",
     video_generator: "kling_2_6",
+    channel: "stable",
+  },
+  {
+    id: "sora-2",
+    label: "Sora 2",
+    vendor: "video",
+    kind: "video",
+    online: true,
+    pricing: { currency: "usd", markup: PRICE_MARKUP },
+    api_model: "sora-2",
+    provider: "grsai",
+    video_generator: "sora_2",
     channel: "stable",
   },
 ];
@@ -216,6 +256,7 @@ export function localCatalog(): ModelCatalogPayload {
     ...VIBECODE_MODELS_SNAPSHOT.filter((row) => !HIDDEN_IMAGE_IDS.has(row.id)).map((row) =>
       normalizeSnapshot(row),
     ),
+    ...IMAGE_EXTRA,
     ...VIDEO_EXTRA,
   ];
   const vendors: CatalogVendor[] = [];

@@ -108,15 +108,15 @@ export function MediaFrameGallery({
         return (
           <div
             key={frame.frame_id}
-            className="flex flex-col overflow-hidden rounded-lg border border-border bg-card/40"
+            className="flex flex-col overflow-hidden rounded-xl border border-white/10 bg-black/40 backdrop-blur-md shadow-sm"
           >
-            <div className="flex items-center justify-between border-b border-border px-2 py-1">
-              <Badge variant="muted" className="font-mono text-[10px]">
+            <div className="flex items-center justify-between border-b border-white/10 bg-white/[0.02] px-2.5 py-1.5">
+              <Badge variant="muted" className="font-mono text-[10px] text-cyan-300">
                 #{frame.number}
               </Badge>
               <span className="text-[9px] text-muted-foreground">{frame.status}</span>
             </div>
-            <div className="aspect-[9/16] max-h-48 bg-muted/30">
+            <div className="aspect-[9/16] max-h-48 bg-black/40">
               {kind === "videos" ? (
                 <video
                   src={frame.preview_url!}
@@ -131,15 +131,15 @@ export function MediaFrameGallery({
                 />
               )}
             </div>
-            <p className="line-clamp-3 px-2 py-1.5 text-[10px] leading-snug text-muted-foreground">
+            <p className="line-clamp-3 px-2.5 py-2 text-[11px] leading-snug text-zinc-300">
               {frame.voiceover_text}
             </p>
-            <div className="flex gap-1 border-t border-border p-1.5">
+            <div className="flex gap-1.5 border-t border-white/10 bg-white/[0.01] p-1.5">
               <Button
                 type="button"
                 size="sm"
                 variant="ghost"
-                className="h-7 flex-1 px-1 text-[10px]"
+                className="h-7 flex-1 px-1 text-[10px] text-zinc-400 hover:text-cyan-300 hover:bg-cyan-950/30 rounded-lg"
                 onClick={() => {
                   setEditFrame(frame.frame_id);
                   setEditPrompt(
@@ -155,21 +155,21 @@ export function MediaFrameGallery({
                 <a
                   href={frame.preview_url}
                   download
-                  className="inline-flex h-7 flex-1 items-center justify-center rounded-md text-[10px] text-primary hover:bg-accent"
+                  className="inline-flex h-7 flex-1 items-center justify-center rounded-lg text-[11px] font-bold text-cyan-400 hover:bg-cyan-950/30 transition-colors"
                 >
                   ↓
                 </a>
               )}
             </div>
             {showApproveButtons && kind === "images" && (
-              <div className="flex gap-1 border-t border-border p-1.5">
+              <div className="flex gap-1.5 border-t border-white/10 bg-white/[0.01] p-1.5">
                 <Button
                   type="button"
                   size="sm"
                   variant="outline"
                   className={cn(
-                    "h-7 flex-1 text-[10px] text-destructive hover:text-destructive",
-                    rejected && "border-destructive/40 bg-destructive/10",
+                    "h-7 flex-1 text-[10px] font-semibold text-red-300 hover:text-red-200 bg-red-950/25 border-red-500/30 rounded-lg hover:bg-red-900/40 transition-all",
+                    rejected && "border-red-500/50 bg-red-950/50",
                   )}
                   disabled={frameDecision.isPending || rejected}
                   onClick={() =>
@@ -182,7 +182,7 @@ export function MediaFrameGallery({
                   {frameDecision.isPending ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
                   ) : (
-                    <XCircle className="h-3 w-3" />
+                    <XCircle className="h-3 w-3 text-red-400" />
                   )}
                   {rejected ? "Отклонено" : "Отклонить"}
                 </Button>
@@ -190,10 +190,9 @@ export function MediaFrameGallery({
                   type="button"
                   size="sm"
                   className={cn(
-                    "h-7 flex-1 text-[10px]",
-                    approved && "bg-success/20 text-success hover:bg-success/30",
+                    "h-7 flex-1 text-[10px] font-semibold text-emerald-200 bg-emerald-950/30 border border-emerald-500/40 rounded-lg hover:bg-emerald-900/50 shadow-sm shadow-emerald-500/20 transition-all",
+                    approved && "bg-emerald-500/30 text-emerald-100 border-emerald-400",
                   )}
-                  variant={approved ? "outline" : "default"}
                   disabled={frameDecision.isPending || approved}
                   onClick={() =>
                     frameDecision.mutate({
@@ -205,7 +204,7 @@ export function MediaFrameGallery({
                   {frameDecision.isPending ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
                   ) : (
-                    <CheckCircle2 className="h-3 w-3" />
+                    <CheckCircle2 className="h-3 w-3 text-emerald-400" />
                   )}
                   {approved ? "Одобрено" : "Одобрить"}
                 </Button>

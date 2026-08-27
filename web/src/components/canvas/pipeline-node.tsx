@@ -182,6 +182,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
               <NodeResultBadge
                 snapshot={resultSnapshot}
                 nodeType={d.type}
+                nodeStatus={d.status}
                 projectId={actions.projectId}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -393,6 +394,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
                   <NodeResultBadge
                     snapshot={resultSnapshot}
                     nodeType={d.type}
+                    nodeStatus={d.status}
                     projectId={actions.projectId}
                     onClick={(e) => {
                       e.stopPropagation();
