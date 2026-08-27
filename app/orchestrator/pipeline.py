@@ -92,16 +92,17 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
         unregister_advance_task,
     )
 
+    project_id = int(project.id)
     task = asyncio.current_task()
     if task is not None:
-        register_advance_task(project.id, task)
+        register_advance_task(project_id, task)
     ran_status: ProjectStatus | None = None
     _step_lock_cm = None
     try:
-        abort_if_cancelled(project.id)
+        abort_if_cancelled(project_id)
         status = project.status
         ran_status = status
-        logger.debug("advance #{} status={}", project.id, status.value)
+        logger.debug("advance #{} status={}", project_id, status.value)
 
         from app.services.llm_override import bind_project_llm
 
@@ -124,7 +125,7 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
         except Exception:  # noqa: BLE001
             logger.debug(
                 "advance #{}: prepare NodeRun for {} failed",
-                project.id,
+                project_id,
                 status.value,
                 exc_info=True,
             )
@@ -193,4 +194,4 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
                 await _step_lock_cm.__aexit__(None, None, None)
             except Exception:  # noqa: BLE001
                 pass
-        unregister_advance_task(project.id)
+        unregister_advance_task(project_id)
