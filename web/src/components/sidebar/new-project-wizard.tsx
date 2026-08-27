@@ -172,6 +172,7 @@ export function NewProjectWizard({
     mutationFn: async () => {
       const p = await api.createProject({
         title: projectTitle.trim(),
+        topic: projectTitle.trim(),
         hero_mode: heroMode,
         auto_mode: autoMode,
         sidebar_folder_id: folderId,

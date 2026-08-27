@@ -1485,16 +1485,15 @@ function RunOverlay({
             </Button>
           </>
         ) : (
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
             <Button
               size="sm"
-              variant="default"
               onClick={handleResume}
               disabled={pausing}
-              className="pointer-events-auto gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 font-semibold shadow-sm"
+              className="pointer-events-auto transition-all duration-200 gap-2 h-9 px-4 font-semibold text-xs text-white bg-gradient-to-r from-emerald-500 via-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 active:scale-[0.98] shadow-lg shadow-emerald-500/35 border border-emerald-300/40 rounded-xl backdrop-blur-md"
               title="Продолжить выполнение пайплайна (переход к следующему шагу)"
             >
-              {pausing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5 fill-current" />}
+              {pausing ? <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-200" /> : <Play className="h-3.5 w-3.5 fill-current" />}
               Продолжить
             </Button>
             {project?.status && project.status !== "new" && project.status !== "published" && (

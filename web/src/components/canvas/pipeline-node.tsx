@@ -171,7 +171,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
               d.status === "done" && "border-emerald-500/50 shadow-[0_0_20px_rgba(16,185,129,0.16)] hover:border-emerald-400/70",
               d.status === "failed" && "border-red-500/60 shadow-[0_0_24px_rgba(239,68,68,0.25)] ring-1 ring-red-500/40",
               d.status === "waiting_hitl" && "border-amber-400/60 shadow-[0_0_20px_rgba(251,191,36,0.2)] pulse-soft",
-              selected && "ring-2 ring-emerald-500/70 ring-offset-2 ring-offset-background",
+              selected && "ring-2 ring-sky-400/90 shadow-[0_0_22px_rgba(56,189,248,0.3)] ring-offset-2 ring-offset-background",
               disabled && "opacity-40 grayscale",
             )}
           >

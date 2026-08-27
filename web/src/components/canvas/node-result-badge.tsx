@@ -1,7 +1,7 @@
 "use client";
 
 import type { MouseEvent } from "react";
-import { Circle, Package } from "lucide-react";
+import { Circle, Check, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { NodeResultSnapshot } from "@/lib/node-result-resolver";
 
@@ -63,7 +63,7 @@ export function NodeResultBadge({
                 className="h-full w-full object-cover object-top"
               />
             ) : (
-              <Package className="h-5 w-5 text-muted-foreground" />
+              <User className="h-5 w-5 text-muted-foreground" />
             )}
           </div>
           <div className="flex min-w-0 flex-1 flex-col justify-center px-2 py-1 text-left">
@@ -75,7 +75,7 @@ export function NodeResultBadge({
     );
   }
 
-  const Icon = ready ? Package : Circle;
+  const Icon = ready ? Check : Circle;
 
   return (
     <>
@@ -92,7 +92,7 @@ export function NodeResultBadge({
         className={cn(
           "nodrag nopan absolute -bottom-12 left-1/2 z-20 flex h-7 w-7 -translate-x-1/2 items-center justify-center rounded-full border-2 shadow-md transition hover:scale-110 hover:brightness-110",
           ready
-            ? "border-emerald-500/70 bg-emerald-500/25 text-emerald-400"
+            ? "border-emerald-500/80 bg-emerald-500/20 text-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.3)]"
             : "border-muted-foreground/40 bg-muted/80 text-muted-foreground",
         )}
         title={
@@ -101,7 +101,7 @@ export function NodeResultBadge({
             : "Результата пока нет — нажмите для деталей"
         }
       >
-        <Icon className="h-3.5 w-3.5" />
+        <Icon className={cn(ready ? "h-4 w-4 stroke-[2.5]" : "h-3.5 w-3.5")} />
       </button>
     </>
   );

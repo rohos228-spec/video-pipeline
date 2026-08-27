@@ -112,7 +112,7 @@ function PlanScriptFields({
       </div>
       <Button
         size="sm"
-        className="w-fit gap-1.5"
+        className="w-fit self-start h-8 px-5 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-500 border border-cyan-400/50 shadow-md shadow-cyan-500/20 rounded-xl transition-all disabled:opacity-50"
         disabled={saving}
         onClick={() => {
           const trimmed = durDraft.trim();
@@ -121,7 +121,7 @@ function PlanScriptFields({
           });
         }}
       >
-        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
         Сохранить
       </Button>
     </section>
@@ -174,7 +174,7 @@ function AudioFields({
       </label>
       <Button
         size="sm"
-        className="w-fit gap-1.5"
+        className="w-fit self-start h-8 px-5 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-500 border border-cyan-400/50 shadow-md shadow-cyan-500/20 rounded-xl transition-all disabled:opacity-50"
         disabled={saving}
         onClick={() =>
           onSave({
@@ -182,7 +182,7 @@ function AudioFields({
           })
         }
       >
-        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
         Сохранить
       </Button>
     </section>
@@ -492,7 +492,7 @@ function SplitFields({
       </div>
       <Button
         size="sm"
-        className="w-fit gap-1.5"
+        className="w-fit self-start h-8 px-5 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-500 border border-cyan-400/50 shadow-md shadow-cyan-500/20 rounded-xl transition-all disabled:opacity-50"
         disabled={saving}
         onClick={() =>
           onSave({
@@ -503,7 +503,7 @@ function SplitFields({
           })
         }
       >
-        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
         Сохранить
       </Button>
     </section>
