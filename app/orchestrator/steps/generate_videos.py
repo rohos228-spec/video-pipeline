@@ -42,6 +42,7 @@ from app.generation_options import (
     VIDEO_GENERATORS_BY_ID,
     VIDEO_RESOLUTIONS_BY_ID,
     build_gen_id_prefix,
+    is_skippable_empty_prompt,
 )
 from app.models import (
     Artifact,
@@ -67,7 +68,10 @@ from app.services.img_streams import (
     get_outsee_streams,
 )
 from app.services.outsee_retry import generate_video_with_retries
-from app.services.plan_shot2 import (    MIN_SHOT2_VIDEO_PROMPT_LEN,
+from app.services.plan_shot2 import (
+    MIN_SHOT2_VIDEO_PROMPT_LEN,
+    SHOT2_PROMPT_ATTR,
+    SHOT2_STATUS_ATTR,
     SHOT2_VIDEO_PROMPT_ATTR,
     disk_has_shot2_video,
     effective_shot_from_artifact,
@@ -340,12 +344,20 @@ async def _claim_shot2_video_batch(
             .execution_options(populate_existing=True)
         )
     ).scalars().all()
+    from app.services.vo_shot_expand import is_shot_child
+
     claimed: list[tuple[Frame, str, Path]] = []
     for fr in frames:
-        info = shot2_by.get(fr.number)
-        if info is None or not info.has_shot2:
-            continue
         attrs = dict(fr.attrs or {})
+        if str(attrs.get(SHOT2_STATUS_ATTR) or "") == "skipped":
+            continue
+        info = shot2_by.get(fr.number)
+        has_plan = info is not None and info.has_shot2
+        if not has_plan and is_skippable_empty_prompt(
+            str(attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or attrs.get(SHOT2_PROMPT_ATTR) or "")
+        ):
+            if not is_shot_child(fr):
+                continue
         if attrs.get(VIDEO_INFLIGHT_ATTR):
             continue
         if attrs.get(VIDEO_SKIP_ATTR):
@@ -359,10 +371,13 @@ async def _claim_shot2_video_batch(
         if len(prompt2) < MIN_SHOT2_VIDEO_PROMPT_LEN:
             prompt2 = (attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or "").strip()
         if len(prompt2) < MIN_SHOT2_VIDEO_PROMPT_LEN:
+            prompt2 = (fr.animation_prompt or "").strip()
+        if len(prompt2) < MIN_SHOT2_VIDEO_PROMPT_LEN:
             continue
-        shot1 = await _scene_video_file_on_disk(session, project.id, fr.id, shot=1)
-        if shot1 is None:
-            continue
+        if not is_shot_child(fr):
+            shot1 = await _scene_video_file_on_disk(session, project.id, fr.id, shot=1)
+            if shot1 is None:
+                continue
         attrs[VIDEO_INFLIGHT_ATTR] = True
         fr.attrs = attrs
         claimed.append((fr, prompt2, s2_img))

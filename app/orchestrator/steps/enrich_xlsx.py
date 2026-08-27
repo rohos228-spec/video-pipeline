@@ -190,8 +190,17 @@ def _is_scenes_to_frames_node(
     variant: str | None, master: str | None, node_key: str | None
 ) -> bool:
     nk = str(node_key or "")
+    # Промт картинок цитирует «сцены → кадры» в шапке — это не нода покрытия.
+    if nk.endswith(("_fw_frames", "_fw_qc", "_fw_script", "_fw_action")):
+        return False
+    if nk.endswith("_fw_shots"):
+        return True
+    if _is_frame_prompts_prompt(variant, master) or _is_qc_prompts_prompt(
+        variant, master
+    ):
+        return False
     blob = _prompt_blob(variant, master)
-    return any(m in blob for m in _SCENES_TO_FRAMES_MARKERS) or nk.endswith("_fw_shots")
+    return any(m in blob for m in _SCENES_TO_FRAMES_MARKERS)
 
 
 def _is_vo_cell_markup_node(
@@ -231,6 +240,15 @@ def _is_script_frames_qc_group_node(
 def _script_frames_qc_footer_kind(
     variant: str | None, master: str | None, node_key: str | None
 ) -> str:
+    nk = str(node_key or "")
+    if nk.endswith("_fw_script"):
+        return "bits"
+    if nk.endswith("_fw_action"):
+        return "action_chain"
+    if nk.endswith("_fw_shots"):
+        return "shots_coverage"
+    if nk.endswith(("_fw_frames", "_fw_qc")):
+        return "prompts"
     if _is_script_writer_node(variant, master, node_key):
         return "bits"
     if _is_main_action_node(variant, master, node_key):
@@ -285,12 +303,20 @@ def _frame_action_text(fr) -> str:
 
 
 def _frame_prompts_and_action_ready(fr) -> bool:
+    from app.services.vo_shot_expand import is_shot_child
+
+    if is_shot_child(fr):
+        return True
     img = (getattr(fr, "image_prompt", None) or "").strip()
     anim = (getattr(fr, "animation_prompt", None) or "").strip()
     return bool(img and anim and _frame_action_text(fr))
 
 
 def _frame_camera_menu_ready(fr) -> bool:
+    from app.services.vo_shot_expand import is_shot_child
+
+    if is_shot_child(fr):
+        return True
     attrs = getattr(fr, "attrs", None) or {}
     if isinstance(fr, dict):
         attrs = fr.get("attrs") if isinstance(fr.get("attrs"), dict) else {}
@@ -337,8 +363,12 @@ def _clear_excel_gpt_ui_force_full(project) -> bool:
 
 def _select_fw_frames_for_gpt(frames_for_map, *, force_full: bool):
     """Какие кадры слать в GPT на fw_frames. force_full — все uuid, без skip."""
+    from app.services.vo_shot_expand import is_shot_child
+
     uuid_frames = [
-        fr for fr in (frames_for_map or []) if getattr(fr, "uuid", None)
+        fr
+        for fr in (frames_for_map or [])
+        if getattr(fr, "uuid", None) and not is_shot_child(fr)
     ]
     if force_full:
         return list(uuid_frames), False
@@ -1261,6 +1291,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         ),
                         "; camera_menu only" if fw_camera_menu_only else "",
                     )
+                elif (
+                    _is_qc_prompts_prompt(variant, master)
+                    or str(node_key or "").endswith("_fw_qc")
+                ):
+                    from app.services.vo_shot_expand import is_shot_child
+
+                    gpt_frames = [
+                        fr for fr in gpt_frames if not is_shot_child(fr)
+                    ]
                 db_ctx = build_excel_gpt_db_context(
                     project_id=project.id,
                     slug=project.slug,
@@ -1415,6 +1454,18 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         "Не копируй чужой сюжет. Не плоди планы ради схемы. "
                         "Не пиши закадр, биты, главное_действие."
                     ).strip()
+                elif _is_frame_prompts_prompt(variant, master) or str(
+                    node_key or ""
+                ).endswith("_fw_frames"):
+                    accompanying = (
+                        f"{accompanying}\n\n"
+                        "# DB SoT\n"
+                        "Файл db_frames.json — родительские кадры (uuid + voiceover). "
+                        "Пиши только промт_картинки, промт_видео, действие, "
+                        "крупность, движение, набор; дети покрытия — в "
+                        "промты_детей / промт_картинки_2. "
+                        "кадры[] во входе — только читать, не возвращай fields.кадры."
+                    ).strip()
                 else:
                     accompanying = (
                         f"{accompanying}\n\n"
@@ -1519,6 +1570,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                                 "animation_prompt",
                                 "image_prompt_shot2",
                                 "animation_prompt_shot2",
+                                "child_prompts",
                                 "shot01_action",
                                 "main_action",
                             }
@@ -1544,6 +1596,42 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         new_op["fields"] = kept
                         cleaned.append(new_op)
                     ops = cleaned
+                    if str(node_key or "").endswith(("_fw_frames", "_fw_qc")):
+                        from app.services.vo_shot_expand import is_shot_child
+
+                        child_ids = {
+                            str(getattr(fr, "uuid", "") or "").strip()
+                            for fr in frames_for_map
+                            if is_shot_child(fr)
+                        }
+                        if child_ids:
+                            stripped: list[dict] = []
+                            for op in ops:
+                                uid = str(op.get("frame_uuid") or "").strip()
+                                if uid not in child_ids:
+                                    stripped.append(op)
+                                    continue
+                                fields = op.get("fields")
+                                if not isinstance(fields, dict):
+                                    continue
+                                kept = {
+                                    k: v
+                                    for k, v in fields.items()
+                                    if str(k).strip().lower().replace(" ", "_")
+                                    not in {
+                                        "image_prompt",
+                                        "animation_prompt",
+                                        "промт_картинки",
+                                        "промт_видео",
+                                        "промпт_картинки",
+                                        "промпт_видео",
+                                    }
+                                }
+                                if kept:
+                                    new_op = dict(op)
+                                    new_op["fields"] = kept
+                                    stripped.append(new_op)
+                            ops = stripped
                     await _db_apply.apply_ops(
                         session,
                         project,
@@ -1967,6 +2055,39 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     "Нужен {\"ops\":[…]} и/или {\"characters\":[…]} — "
                     "запись через Excel/TSV больше не поддерживается."
                 )
+        nk_now = str(node_key or "")
+        if nk_now.endswith("_fw_frames") or nk_now.endswith("_fw_qc"):
+            from sqlalchemy import select as _sel_cov
+
+            from app.services.vo_shot_expand import (
+                apply_shot_voiceover_to_cells,
+                distribute_coverage_prompts,
+                inherit_camera_on_children,
+            )
+
+            cov_frames = list(
+                (
+                    await session.execute(
+                        _sel_cov(Frame)
+                        .where(Frame.project_id == project.id)
+                        .order_by(Frame.sort_key, Frame.number)
+                    )
+                ).scalars().all()
+            )
+            n_dist = distribute_coverage_prompts(cov_frames)
+            n_cam = inherit_camera_on_children(cov_frames)
+            n_vo = 0
+            if nk_now.endswith("_fw_qc"):
+                n_vo = apply_shot_voiceover_to_cells(cov_frames)
+            await session.flush()
+            logger.info(
+                "[#{}] {} coverage: vo_cells={} child_prompts={} camera={}",
+                project.id,
+                nk_now,
+                n_vo,
+                n_dist,
+                n_cam,
+            )
         save_operator_result(
             project,
             node_key,

@@ -152,6 +152,8 @@ FIELD_ALIASES: dict[str, str] = {
     "img_prompt_2": "image_prompt_shot2",
     "промт_картинки_2": "image_prompt_shot2",
     "промпт_картинки_2": "image_prompt_shot2",
+    "child_prompts": "child_prompts",
+    "промты_детей": "child_prompts",
     "animation_prompt_shot2": "animation_prompt_shot2",
     "video_prompt_2": "animation_prompt_shot2",
     "промт_видео_2": "animation_prompt_shot2",
@@ -255,6 +257,7 @@ _ATTR_FIELD_KEYS = frozenset(_ATTR_EXCEL_ROWS) | {
     "characters",
     "image_prompt_shot2",
     "animation_prompt_shot2",
+    "child_prompts",
 }
 
 PROJECT_FIELD_ALIASES: dict[str, str] = {
@@ -1303,6 +1306,11 @@ async def apply_ops(
 
         if "animation_prompt_shot2" in fields:
             attrs[SHOT2_VIDEO_PROMPT_ATTR] = str(fields["animation_prompt_shot2"] or "")
+        if "child_prompts" in fields:
+            raw_kids = fields["child_prompts"]
+            attrs["промты_детей"] = (
+                raw_kids if isinstance(raw_kids, list) else []
+            )
         if "characters" in fields:
             persons = str(fields["characters"] or "").strip()
             attrs["characters"] = persons

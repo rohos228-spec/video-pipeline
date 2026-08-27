@@ -170,3 +170,90 @@ def test_cut_duplicate_leaves_split_vo_intact() -> None:
     assert c_shot
     assert p_shot != cell
     assert " ".join((p_shot + " " + c_shot).split()) == " ".join(cell.split())
+
+
+def test_apply_shot_voiceover_writes_cell_parts() -> None:
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import apply_shot_voiceover_to_cells
+
+    pu = "aa" * 12
+    full = "Дарья Салтыкова. История началась не с процесса, а с двух жалоб."
+    parent = SimpleNamespace(
+        uuid=pu,
+        voiceover_text=full,
+        attrs={
+            "кадры": [
+                {"id": "1-K1", "закадр": "Дарья Салтыкова. "},
+                {
+                    "id": "1-K2",
+                    "закадр": "История началась не с процесса, а с двух жалоб.",
+                },
+            ],
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": pu,
+                "shot_index": 1,
+            },
+        },
+    )
+    child = SimpleNamespace(
+        uuid="bb" * 12,
+        voiceover_text="",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": pu,
+                "shot_index": 2,
+            }
+        },
+    )
+    n = apply_shot_voiceover_to_cells([parent, child])
+    assert n == 2
+    assert parent.voiceover_text == "Дарья Салтыкова."
+    assert child.voiceover_text.startswith("История началась")
+    assert parent.attrs["vo_cell_full"] == full
+
+
+def test_distribute_coverage_prompts_fills_child_shot2() -> None:
+    from types import SimpleNamespace
+
+    from app.services.plan_shot2 import SHOT2_PROMPT_ATTR, SHOT2_STATUS_ATTR
+    from app.services.vo_shot_expand import distribute_coverage_prompts
+
+    pu = "aa" * 12
+    parent = SimpleNamespace(
+        uuid=pu,
+        image_prompt="master prompt",
+        animation_prompt="",
+        attrs={
+            "image_prompt_shot2": "child closer",
+            "промты_детей": [
+                {"промт_картинки": "child closer", "промт_видео": "child move"}
+            ],
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": pu,
+                "shot_index": 1,
+            },
+        },
+    )
+    child = SimpleNamespace(
+        uuid="bb" * 12,
+        image_prompt="SHOULD CLEAR",
+        animation_prompt="",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": pu,
+                "shot_index": 2,
+            }
+        },
+    )
+    n = distribute_coverage_prompts([parent, child])
+    assert n == 1
+    assert child.image_prompt == ""
+    assert child.attrs[SHOT2_PROMPT_ATTR] == "child closer"
+    assert child.attrs[SHOT2_STATUS_ATTR] == "image_prompt_ready"
+    assert child.animation_prompt == "child move"
+    assert parent.attrs[SHOT2_STATUS_ATTR] == "skipped"

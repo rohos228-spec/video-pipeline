@@ -150,6 +150,9 @@ _STALE_EXCEL_GPT_MARKERS: dict[str, tuple[str, ...]] = {
         "Не плоди покрытие",
         "одна сцена, одно действие",
     ),
+    "frame_prompts_continuity_ru": (
+        '"frame_uuid": "u002"',
+    ),
 }
 
 

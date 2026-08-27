@@ -65,6 +65,27 @@ def test_script_frames_qc_group_batches_of_30() -> None:
     assert not _is_script_frames_qc_group_node(
         "sd_skeleton.md", None, "n_excel_gpt_1"
     )
+    # Шапка промта картинок цитирует «сцены → кадры» — ключ ноды важнее.
+    frames_master = (
+        "Нода: excel_gpt · после «сцены → кадры».\n"
+        "Пишет промт_картинки для родителя.\n"
+    )
+    from app.orchestrator.steps.enrich_xlsx import _is_scenes_to_frames_node
+
+    assert not _is_scenes_to_frames_node(
+        "frame_prompts_continuity_ru.md", frames_master, "n_excel_gpt_fw_frames"
+    )
+    assert (
+        _script_frames_qc_footer_kind(
+            "frame_prompts_continuity_ru.md",
+            frames_master,
+            "n_excel_gpt_fw_frames",
+        )
+        == "prompts"
+    )
+    assert _is_scenes_to_frames_node(
+        "scenes_to_frames_ru.md", "агент: сцены → кадры", "n_excel_gpt_fw_shots"
+    )
 
 
 def test_detect_frame_and_qc_prompt() -> None:

@@ -82,6 +82,10 @@ def disk_has_valid_shot2_image(scenes_dir: Path, frame_number: int) -> bool:
 
 def frame_needs_shot1_image(fr: Frame, scenes_dir: Path) -> bool:
     """Кадр должен пройти outsee: есть промт, нет валидного PNG на диске."""
+    from app.services.vo_shot_expand import is_shot_child
+
+    if is_shot_child(fr):
+        return False
     if is_skippable_empty_prompt(fr.image_prompt or ""):
         return False
     if fr.status is FrameStatus.image_approved:
@@ -119,7 +123,11 @@ async def scan_missing_frames(
     scenes_dir = project.data_dir / "scenes"
     missing: list[int] = []
     total_with_prompt = 0
+    from app.services.vo_shot_expand import is_shot_child
+
     for fr in frames:
+        if is_shot_child(fr):
+            continue
         if is_skippable_empty_prompt(fr.image_prompt or ""):
             continue
         total_with_prompt += 1
@@ -136,7 +144,9 @@ async def scan_missing_frames(
 async def scan_missing_shot2_frames(
     session: AsyncSession, project: Project
 ) -> list[int]:
-    """Кадры с промтом shot_02 в xlsx, но без ``frame_NNN_s2_*.png`` на диске."""
+    """Кадры с промтом shot_02 (xlsx или attrs), но без ``frame_NNN_s2_*.png``."""
+    from app.services.vo_shot_expand import is_shot_child
+
     frames = (
         await session.execute(
             select(Frame)
@@ -146,14 +156,34 @@ async def scan_missing_shot2_frames(
     ).scalars().all()
     xlsx_path = project.data_dir / "project.xlsx"
     by_num = read_shot2_columns(xlsx_path) if xlsx_path.is_file() else {}
+    by_uuid = {str(fr.uuid or ""): fr for fr in frames if fr.uuid}
     scenes_dir = project.data_dir / "scenes"
     missing: list[int] = []
     expected = 0
     for fr in frames:
-        info = by_num.get(fr.number)
-        if info is None or not info.has_shot2:
+        attrs = dict(fr.attrs or {})
+        if str(attrs.get(SHOT2_STATUS_ATTR) or "") == "skipped":
             continue
-        if not disk_has_valid_frame_image(scenes_dir, fr.number):
+        info = by_num.get(fr.number)
+        prompt = ""
+        if info is not None and info.has_shot2:
+            prompt = info.prompt or ""
+        if is_skippable_empty_prompt(prompt):
+            prompt = str(attrs.get(SHOT2_PROMPT_ATTR) or "").strip()
+        if is_skippable_empty_prompt(prompt):
+            continue
+        if is_shot_child(fr):
+            cs = attrs.get("camera_subdivide")
+            parent_uid = ""
+            if isinstance(cs, dict):
+                parent_uid = str(cs.get("parent_uuid") or "")
+            parent = by_uuid.get(parent_uid)
+            parent_no = parent.number if parent is not None else None
+            if parent_no is None or not disk_has_valid_frame_image(
+                scenes_dir, parent_no
+            ):
+                continue
+        elif not disk_has_valid_frame_image(scenes_dir, fr.number):
             continue
         expected += 1
         if not disk_has_valid_shot2_image(scenes_dir, fr.number):

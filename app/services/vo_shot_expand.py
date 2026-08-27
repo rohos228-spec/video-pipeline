@@ -29,6 +29,11 @@ _MIN_SEC = 2.0
 _MAX_SHOTS = 3
 
 
+def is_shot_child(frame: Any) -> bool:
+    """Визуальный дочерний кадр покрытия, не VO-родитель."""
+    return str(_cs(frame).get("role") or "") == "shot"
+
+
 def planned_shots_from_attrs(frame: Any) -> list[dict[str, Any]]:
     """Список кадров ноды «сцены → кадры» (attrs.кадры)."""
     attrs = getattr(frame, "attrs", None)
@@ -219,6 +224,157 @@ def apply_vo_shot_cuts(frames: list[Any]) -> int:
                 continue
             _set_cs(fr, **{_VO_SHOT_KEY: piece})
             updated += 1
+    return updated
+
+
+def _group_by_parent(frames: list[Any]) -> dict[str, list[Any]]:
+    groups: dict[str, list[Any]] = {}
+    for fr in frames:
+        cs = _cs(fr)
+        parent = str(cs.get("parent_uuid") or getattr(fr, "uuid", "") or "").strip()
+        if not parent:
+            continue
+        groups.setdefault(parent, []).append(fr)
+    for members in groups.values():
+        members.sort(key=lambda m: int(_cs(m).get("shot_index") or 0))
+    return groups
+
+
+def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
+    """После QC: закадр ячейки → voiceover_text каждого кадра группы.
+
+    Склейка кусков по порядку = исходная ячейка. Полный текст копируется
+    в attrs.vo_cell_full у родителя.
+    """
+    updated = 0
+    for members in _group_by_parent(frames).values():
+        if not members:
+            continue
+        parent = next(
+            (m for m in members if _cs(m).get("role") == "vo_parent"),
+            members[0],
+        )
+        attrs = dict(getattr(parent, "attrs", None) or {})
+        full = str(attrs.get("vo_cell_full") or "").strip()
+        if not full:
+            full = (getattr(parent, "voiceover_text", None) or "").strip()
+            if not full:
+                full = " ".join(
+                    (getattr(m, "voiceover_text", None) or "").strip()
+                    for m in members
+                    if (getattr(m, "voiceover_text", None) or "").strip()
+                )
+                full = " ".join(full.split())
+        if not full:
+            continue
+        planned = planned_shots_from_attrs(parent)
+        parts = [str(item.get("закадр") or "").strip() for item in planned]
+        if len(parts) != len(members) or not all(parts):
+            parts = [
+                str(_cs(m).get(_VO_SHOT_KEY) or "").strip() for m in members
+            ]
+        if len(parts) != len(members) or not all(parts):
+            parts = split_text_into_parts(full, len(members))
+        attrs["vo_cell_full"] = full
+        parent.attrs = attrs
+        _flag_attrs(parent)
+        for i, fr in enumerate(members):
+            piece = parts[i] if i < len(parts) else ""
+            if (getattr(fr, "voiceover_text", None) or "") != piece:
+                fr.voiceover_text = piece
+                updated += 1
+            _set_cs(fr, **{_VO_SHOT_KEY: piece})
+    return updated
+
+
+def distribute_coverage_prompts(frames: list[Any]) -> int:
+    """Промты покрытия: с родителя в shot2 детей. image_prompt детей не трогаем.
+
+    Классический shot2 на родителе не запускаем, если есть дети — иначе
+    дубль PNG. Статус shot2 переезжает на ребёнка.
+    """
+    from app.services.plan_shot2 import (
+        SHOT2_PROMPT_ATTR,
+        SHOT2_STATUS_ATTR,
+        SHOT2_VIDEO_PROMPT_ATTR,
+    )
+
+    updated = 0
+    for members in _group_by_parent(frames).values():
+        parent = next(
+            (m for m in members if _cs(m).get("role") == "vo_parent"),
+            members[0],
+        )
+        children = [m for m in members if m is not parent]
+        if not children:
+            continue
+        pattrs = dict(getattr(parent, "attrs", None) or {})
+        listed = pattrs.get("промты_детей") or pattrs.get("child_prompts") or []
+        if not isinstance(listed, list):
+            listed = []
+        parent_shot2 = str(pattrs.get(SHOT2_PROMPT_ATTR) or "").strip()
+        parent_vid2 = str(pattrs.get(SHOT2_VIDEO_PROMPT_ATTR) or "").strip()
+        for i, child in enumerate(children):
+            entry = listed[i] if i < len(listed) and isinstance(listed[i], dict) else {}
+            img = str(
+                entry.get("промт_картинки")
+                or entry.get("image_prompt")
+                or (parent_shot2 if i == 0 else "")
+                or ""
+            ).strip()
+            vid = str(
+                entry.get("промт_видео")
+                or entry.get("animation_prompt")
+                or (parent_vid2 if i == 0 else "")
+                or ""
+            ).strip()
+            cattrs = dict(getattr(child, "attrs", None) or {})
+            if img:
+                cattrs[SHOT2_PROMPT_ATTR] = img
+                cattrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
+                updated += 1
+            if vid:
+                cattrs[SHOT2_VIDEO_PROMPT_ATTR] = vid
+                if not str(getattr(child, "animation_prompt", None) or "").strip():
+                    child.animation_prompt = vid
+            child.attrs = cattrs
+            _flag_attrs(child)
+            if getattr(child, "image_prompt", None):
+                child.image_prompt = ""
+        if children:
+            pattrs[SHOT2_STATUS_ATTR] = "skipped"
+            parent.attrs = pattrs
+            _flag_attrs(parent)
+    return updated
+
+
+def inherit_camera_on_children(frames: list[Any]) -> int:
+    """Дети берут движение/набор с родителя; крупность уже из плана шота."""
+    updated = 0
+    for members in _group_by_parent(frames).values():
+        parent = next(
+            (m for m in members if _cs(m).get("role") == "vo_parent"),
+            None,
+        )
+        if parent is None:
+            continue
+        pcs = _cs(parent)
+        move = str(pcs.get("движение") or pcs.get("move") or "").strip()
+        nab = str(pcs.get("набор") or pcs.get("set") or "").strip()
+        if not move and not nab:
+            continue
+        for child in members:
+            if child is parent:
+                continue
+            extra: dict[str, Any] = {}
+            ccs = _cs(child)
+            if move and not str(ccs.get("движение") or "").strip():
+                extra["движение"] = move
+            if nab and not str(ccs.get("набор") or "").strip():
+                extra["набор"] = nab
+            if extra:
+                _set_cs(child, **extra)
+                updated += 1
     return updated
 
 

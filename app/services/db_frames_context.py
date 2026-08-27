@@ -38,6 +38,8 @@ _IMG_PR_ATTR_KEYS: tuple[str, ...] = (
     "shot02_transition",
     "биты",
     "кадры",
+    "промты_детей",
+    "image_prompt_shot2",
 )
 
 
@@ -72,7 +74,7 @@ def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, str]:
 
 _EXCEL_GPT_VO_MAX = 400
 _ATTR_MAX = 500
-_NO_CLIP_ATTRS = frozenset({"биты", "кадры", "main_action"})
+_NO_CLIP_ATTRS = frozenset({"биты", "кадры", "main_action", "промты_детей"})
 
 
 def _clip(text: str, n: int) -> str:

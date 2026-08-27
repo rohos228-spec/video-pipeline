@@ -14,7 +14,8 @@
   Фаза B — вторые кадры (shot_02, строка 46), только где enrich заполнил
   блок 16–29 / есть промт:
   3. После завершения фазы A — для каждой сцены с shot_02 генерит
-     ``frame_NNN_s2_<uuid>.png`` с референсом = PNG первого кадра той же колонки.
+     ``frame_NNN_s2_<uuid>.png`` с референсом = PNG shot_01 той же колонки
+     (у дочернего кадра покрытия — PNG родителя).
 
   HITL-карточки шлются, но воркер не ждёт approve между кадрами.
 """
@@ -65,7 +66,7 @@ from app.services.plan_shot2 import (
     SHOT2_PROMPT_ATTR,
     SHOT2_STATUS_ATTR,
     disk_has_shot2_image,
-    find_shot1_image,
+    find_shot2_reference_image,
     read_shot2_columns,
 )
 from app.services.scan_frames import (
@@ -1035,6 +1036,42 @@ async def _claim_shot1_batch(
     return claimed
 
 
+def _coverage_parent_uuid(frame: Frame) -> str:
+    attrs = dict(frame.attrs or {})
+    cs = attrs.get("camera_subdivide")
+    if not isinstance(cs, dict):
+        return ""
+    return str(cs.get("parent_uuid") or "").strip()
+
+
+async def _resolve_shot2_reference(
+    session: AsyncSession,
+    project_id: int,
+    out_dir: Path,
+    frame: Frame,
+) -> Path | None:
+    """Реф shot2: свой shot1, у ребёнка покрытия — PNG родителя."""
+    from app.services.vo_shot_expand import is_shot_child
+
+    parent_no: int | None = None
+    if is_shot_child(frame):
+        uid = _coverage_parent_uuid(frame)
+        if uid:
+            parent = (
+                await session.execute(
+                    select(Frame).where(
+                        Frame.project_id == project_id,
+                        Frame.uuid == uid,
+                    )
+                )
+            ).scalar_one_or_none()
+            if parent is not None:
+                parent_no = parent.number
+    return find_shot2_reference_image(
+        out_dir, frame.number, parent_frame_number=parent_no
+    )
+
+
 async def _claim_shot2_batch(
     session: AsyncSession,
     project_id: int,
@@ -1140,7 +1177,11 @@ async def _run_claimed_batch(
         fr = claimed[0]
         try:
             ref = (
-                find_shot1_image(out_dir, fr.number) if shot == 2 else None
+                await _resolve_shot2_reference(
+                    session, project.id, out_dir, fr
+                )
+                if shot == 2
+                else None
             )
             if shot == 2 and ref is None:
                 logger.error(
@@ -1178,7 +1219,11 @@ async def _run_claimed_batch(
     await session.commit()
     jobs = []
     for fr in claimed:
-        ref = find_shot1_image(out_dir, fr.number) if shot == 2 else None
+        ref = (
+            await _resolve_shot2_reference(session, project.id, out_dir, fr)
+            if shot == 2
+            else None
+        )
         if shot == 2 and ref is None:
             from app.db import SessionLocal
 
@@ -1279,12 +1324,28 @@ async def _init_shot2_queue(
     out_dir: Path,
     xlsx_path: Path,
 ) -> int:
-    """Подготовить очередь shot_02 из xlsx → ``frame.attrs``."""
+    """Подготовить очередь shot_02: xlsx + дети покрытия из DB."""
+    from app.services.vo_shot_expand import is_shot_child
+
     by_num = read_shot2_columns(xlsx_path)
     queued = 0
     for fr in frames:
-        info = by_num.get(fr.number)
         attrs = dict(fr.attrs or {})
+        if str(attrs.get(SHOT2_STATUS_ATTR) or "") == "skipped":
+            continue
+        if is_shot_child(fr):
+            prompt = str(attrs.get(SHOT2_PROMPT_ATTR) or "").strip()
+            if is_skippable_empty_prompt(prompt):
+                continue
+            if disk_has_shot2_image(out_dir, fr.number):
+                attrs[SHOT2_STATUS_ATTR] = "image_generated"
+                fr.attrs = attrs
+                continue
+            attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
+            fr.attrs = attrs
+            queued += 1
+            continue
+        info = by_num.get(fr.number)
         if info is None or not info.has_shot2:
             if SHOT2_PROMPT_ATTR in attrs or SHOT2_STATUS_ATTR in attrs:
                 attrs.pop(SHOT2_PROMPT_ATTR, None)
@@ -1514,7 +1575,8 @@ async def _generate_and_send(
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] xlsx write_frame(gen_id) failed: {}", project.id, e)
 
-    # Референсы: shot_02 — всегда PNG shot_01 той же колонки; shot_01 — персонажи/предметы из xlsx.
+    # Референсы: shot_02 — PNG shot_01 той же колонки; дочерний кадр —
+    # PNG родителя; shot_01 родителя — персонажи/предметы.
     if is_shot2:
         refs: list[Path] = [shot1_reference] if shot1_reference else []
     else:

@@ -252,9 +252,31 @@ def test_prompt_footer_asks_shot_menu_fields() -> None:
     assert "крупность" in text
     assert "движение" in text
     assert "набор" in text
+    assert "Не пиши кадры" in text
+    assert "промты_детей" in text
     cam = _batch_footer(1, 1, 8, footer_kind="camera_menu")
     assert "крупность" in cam
     assert "Не пиши промт_картинки" in cam
+
+
+def test_prompts_ops_reason_rejects_kadry_only() -> None:
+    from app.services.apply_ops_batches import prompts_ops_reason
+
+    frames = [{"uuid": "a" * 24, "voiceover_text": "vo"}]
+    kadry_only = [
+        {
+            "frame_uuid": "a" * 24,
+            "fields": {"кадры": [{"id": "1-K1", "план": "средний"}]},
+        }
+    ]
+    assert prompts_ops_reason(kadry_only, frames) == "uuid aaaaaaaa: нет промт_картинки"
+    ok = [
+        {
+            "frame_uuid": "a" * 24,
+            "fields": {"промт_картинки": "двор, средний план"},
+        }
+    ]
+    assert prompts_ops_reason(ok, frames) is None
 
 
 def _frame(i: int) -> dict:
@@ -1037,6 +1059,81 @@ def test_shots_coverage_accepts_master_and_child() -> None:
                         "ракурс": "сверху",
                         "место": "двор усадьбы",
                         "действие": "две жалобы",
+                    },
+                ]
+            },
+        }
+    ]
+    assert shots_coverage_ops_reason(ops, frames) is None
+
+
+def test_shots_vo_rejects_comma_splinter() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    vo = (
+        "Главный вопрос этой истории заключается в другом: "
+        "почему крепостные люди так долго оставались без защиты, "
+        "несмотря на существование чиновников, судов и государственной власти?"
+    )
+    frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "фронт",
+                        "место": "канцелярия",
+                        "действие": "чиновник",
+                        "закадр": "несмотря на существование чиновников,",
+                    },
+                    {
+                        "id": "1-K2",
+                        "parent_id": "1-K1",
+                        "план": "КРУПНЫЙ",
+                        "ракурс": "сверху",
+                        "место": "канцелярия",
+                        "действие": "слово суды",
+                        "закадр": "судов",
+                    },
+                ]
+            },
+        }
+    ]
+    reason = shots_coverage_ops_reason(ops, frames)
+    assert reason and "симв" in reason
+
+
+def test_shots_vo_accepts_name_title_and_normal_chunk() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    vo = "Дарья Салтыкова. История началась не с процесса, а с двух жалоб."
+    frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "план": "ОБЩИЙ",
+                        "ракурс": "фронт",
+                        "место": "приёмная",
+                        "действие": "титр имени",
+                        "закадр": "Дарья Салтыкова.",
+                    },
+                    {
+                        "id": "1-K2",
+                        "parent_id": "1-K1",
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "3/4",
+                        "место": "приёмная",
+                        "действие": "две жалобы на стол",
+                        "закадр": " История началась не с процесса, а с двух жалоб.",
                     },
                 ]
             },

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import unicodedata
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,8 @@ VO_UNITS_PER_BATCH = 9
 SCRIPT_FRAMES_QC_UNITS_PER_BATCH = 30
 VO_PARALLEL_MAX = 6
 VO_STAGGER_SEC = 1.0
+SHOT_VO_MIN_CHARS = 27
+SHOT_VO_MAX_CHARS = 54
 
 _COMPLETE_ATTRS_DENSE = ("main_action", "shot01_description")
 _IMG_SKIP_KEYS = ("image_prompt", "промт_картинки")
@@ -379,6 +382,58 @@ def _shot_independent(shot: dict[str, Any]) -> bool:
     return shot.get("parent_id") in (None, "", "null")
 
 
+def _vo_visible_len(text: str) -> int:
+    """Длина закадра без комбинирующих ударений (символы как в речи)."""
+    return len(
+        "".join(c for c in (text or "") if unicodedata.category(c) != "Mn")
+    )
+
+
+def _shot_vo_chunk(shot: dict[str, Any]) -> str:
+    return str(shot.get("закадр") or shot.get("voiceover_text") or "").strip()
+
+
+def _is_special_short_vo(chunk: str, plan: str) -> bool:
+    """1–2 слова отдельным кадром только как титр/имя/ударная деталь."""
+    compact = re.sub(r"\s+", " ", chunk or "").strip()
+    if not compact:
+        return False
+    if re.match(r"^(и|или|а|но|да|—|–|-)\b", compact.casefold()):
+        return False
+    words = re.findall(r"[^\W\d_]+", compact, flags=re.UNICODE)
+    if not (1 <= len(words) <= 2):
+        return False
+    has_quote = any(q in compact for q in ("«", "»", "“", "”"))
+    is_name = all(w[:1].isupper() for w in words if w)
+    return bool(has_quote or is_name)
+
+
+def _shot_vo_len_reason(
+    shots: list[dict[str, Any]],
+    cell_vo: str,
+    uid: str,
+) -> str | None:
+    cell_n = _vo_visible_len(cell_vo)
+    if cell_n < SHOT_VO_MIN_CHARS:
+        return None
+    for shot in shots:
+        chunk = _shot_vo_chunk(shot)
+        if not chunk:
+            continue
+        n = _vo_visible_len(chunk)
+        if n < SHOT_VO_MIN_CHARS:
+            plan = str(shot.get("план") or "")
+            if _is_special_short_vo(chunk, plan):
+                continue
+            sid = str(shot.get("id") or "")
+            return (
+                f"uuid {uid[:8]}: кадр {sid or '?'} закадр {n} симв. "
+                f"(нужно {SHOT_VO_MIN_CHARS}–{SHOT_VO_MAX_CHARS}, "
+                "короче — только титр/имя/ударная деталь)"
+            )
+    return None
+
+
 def _place_attested_in_vo(place: str, vo: str) -> bool:
     """Место из кадра должно читаться в закадре, иначе это выдуманный сетап."""
     vo_cf = (vo or "").casefold()
@@ -495,8 +550,8 @@ def shots_coverage_ops_reason(
             return f"uuid {uid[:8]}: пустые кадры"
         vo = _frame_vo(by_uid.get(uid))
         bits = _frame_bits_list(by_uid.get(uid))
-        need_coverage = (len(_vo_clauses(vo)) >= 2 and len(vo) >= 40) or (
-            len(bits) >= 2
+        need_coverage = (len(_vo_clauses(vo)) >= 2 and len(vo) >= 54) or (
+            len(bits) >= 2 and len(vo) >= 54
         )
         if need_coverage and len(shots) < 2:
             return (
@@ -544,6 +599,32 @@ def shots_coverage_ops_reason(
                 return f"uuid {uid[:8]}: кадр без плана"
             if not str(shot.get("ракурс") or "").strip():
                 return f"uuid {uid[:8]}: кадр без ракурса"
+        bad_vo = _shot_vo_len_reason(shots, vo, uid)
+        if bad_vo:
+            return bad_vo
+    return None
+
+
+def prompts_ops_reason(
+    ops: list[Any],
+    frames: list[dict[str, Any]],
+) -> str | None:
+    """Промты картинок: нужен промт_картинки, не fields.кадры."""
+    del frames
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        uid = str(op.get("frame_uuid") or "").strip()
+        img = _op_field(fields, "промт_картинки", "image_prompt")
+        vid = _op_field(fields, "промт_видео", "animation_prompt")
+        img2 = _op_field(fields, "промт_картинки_2", "image_prompt_shot2")
+        kids = fields.get("промты_детей") or fields.get("child_prompts")
+        has_kids = isinstance(kids, list) and any(kids)
+        if not (img or vid or img2 or has_kids):
+            return f"uuid {uid[:8]}: нет промт_картинки"
     return None
 
 
@@ -592,6 +673,8 @@ def _batch_footer(
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Верни ops ровно по каждому uuid: fields.кадры. "
             "Число кадров НЕ равно 1: master + дочерние покрытие сцены. "
+            "Закадр кадра 27–54 символа; 1–2 слова — только титр/имя/деталь "
+            "с основанием, не нарезка по запятой. "
             "Одно место → parent_id = id master. Новое место только если "
             "его назвал закадр. Все parent_id null на одном сетапе = брак. "
             "Не пиши закадр, биты, главное_действие. JSON apply-ops, без прозы.\n"
@@ -603,7 +686,9 @@ def _batch_footer(
             f"В db_frames.json только этот кусок: {n} кадров.\n"
             "Верни ops ровно по каждому uuid: fields.промт_картинки, "
             "промт_видео, действие, крупность, движение, набор. "
-            "Чужие кадры не пиши. JSON apply-ops, без прозы.\n"
+            "Дети покрытия — в промты_детей / промт_картинки_2, не отдельным uuid. "
+            "Не пиши кадры, биты, закадр. Чужие кадры не пиши. "
+            "JSON apply-ops, без прозы.\n"
         )
     if kind in {"camera_menu", "shot_menu"}:
         return (
@@ -859,6 +944,13 @@ async def run_apply_ops_batched(
                 raise RuntimeError(
                     f"enrich_xlsx node={node_key}: L{level} call {my_i} "
                     f"{bad_shots}"
+                )
+        if kind in {"prompts", "img"}:
+            bad_prompts = prompts_ops_reason(ops, chunk)
+            if bad_prompts:
+                raise RuntimeError(
+                    f"enrich_xlsx node={node_key}: L{level} call {my_i} "
+                    f"{bad_prompts}"
                 )
         logger.info(
             "[#{}] apply_ops batched node={!r}: call {} L{} sent={} got_ops={}",

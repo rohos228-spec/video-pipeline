@@ -17,6 +17,7 @@ PROMPT_FIELDS = frozenset(
         "animation_prompt",
         "image_prompt_shot2",
         "animation_prompt_shot2",
+        "child_prompts",
     }
 )
 
