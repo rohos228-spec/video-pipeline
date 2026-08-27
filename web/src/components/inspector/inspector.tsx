@@ -70,7 +70,7 @@ export function Inspector({
               {onOpenNodeStudio && nodeTypeFromKey(selectedNodeKey) !== "topic" && (
                 <Button
                   size="sm"
-                  className="w-full h-9 text-xs font-semibold text-amber-100 bg-gradient-to-r from-violet-700 via-purple-600 to-indigo-700 hover:from-violet-600 hover:via-purple-500 hover:to-indigo-600 border border-amber-400/40 shadow-lg shadow-purple-950/40 rounded-xl transition-all duration-150"
+                  className="w-full h-10 text-xs font-semibold text-white bg-gradient-to-r from-violet-600 via-purple-600 to-indigo-600 hover:from-violet-500 hover:via-purple-500 hover:to-indigo-500 active:scale-[0.98] border border-purple-400/40 shadow-lg shadow-purple-600/30 rounded-xl backdrop-blur-md transition-all duration-200"
                   onClick={onOpenNodeStudio}
                 >
                   Открыть ноду
@@ -208,6 +208,9 @@ function NodeInspector({
 }) {
   const type = nodeTypeFromKey(nodeKey);
   const spec = getNodeSpec(type);
+  if (type === "topic" && projectId != null) {
+    return <TopicEditor projectId={projectId} />;
+  }
   return (
     <div className="flex flex-col gap-3">
       <div>
@@ -215,15 +218,9 @@ function NodeInspector({
         <div className="mt-1 text-base font-semibold">{spec.label}</div>
         <div className="mt-1 text-[12px] text-muted-foreground">{spec.description}</div>
       </div>
-      {type === "topic" && projectId != null ? (
-        <TopicEditor projectId={projectId} />
-      ) : (
-        <>
-          <Row label="Тип">{humanizeSlug(spec.type)}</Row>
-          <Row label="Категория">{formatNodeCategory(spec.category)}</Row>
-          <Row label="Ключ">{formatNodeKeyLabel(nodeKey)}</Row>
-        </>
-      )}
+      <Row label="Тип">{humanizeSlug(spec.type)}</Row>
+      <Row label="Категория">{formatNodeCategory(spec.category)}</Row>
+      <Row label="Ключ">{formatNodeKeyLabel(nodeKey)}</Row>
     </div>
   );
 }

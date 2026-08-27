@@ -329,11 +329,11 @@ function computeNodeResult(
     }
 
     case "split": {
-      if (projectHasXlsx(ctx.assets) || ctx.frames.length > 0) {
+      if (ctx.frames.length > 0) {
         return {
           hasResult: true,
-          itemCount: ctx.frames.length || 1,
-          summary: "Разбивка по ячейкам (лист «план», строка 49)",
+          itemCount: ctx.frames.length,
+          summary: `Раскадровка готова (${ctx.frames.length} кадров)`,
           items: [{ id: "split_row", label: "Разбивка", kind: "frames" }],
           replaceMode: "studio",
           viewMode: "xlsx_split_row",
@@ -456,12 +456,12 @@ function computeNodeResult(
       const replyPreview = String(last?.replyPreview || "").trim();
       const hasReplyMeta = Boolean(replyPreview || cfg?.lastReplyPath);
       const xlsx = xlsxAsset(ctx.assets);
-      if (xlsx && project?.id) {
-        const snapMeta = meta?.xlsx_snapshots_by_node;
-        const snapName =
-          nodeKey && snapMeta?.[nodeKey]?.name
-            ? String(snapMeta[nodeKey].name)
-            : null;
+      const snapMeta = meta?.xlsx_snapshots_by_node;
+      const snapName =
+        nodeKey && snapMeta?.[nodeKey]?.name
+          ? String(snapMeta[nodeKey].name)
+          : null;
+      if ((hasReplyMeta || snapName) && xlsx && project?.id) {
         const items: NodeResultItem[] = [
           {
             id: xlsx.id,
@@ -486,7 +486,7 @@ function computeNodeResult(
             ? `Снимок Excel: ${snapName}`
             : hasReplyMeta
               ? "Excel + ответ GPT"
-              : "Таблица Excel загружена",
+              : "Таблица Excel",
           "xlsx",
           "default",
         );
@@ -523,7 +523,7 @@ function computeNodeResult(
           viewMode: "default",
         };
       }
-      return empty("Таблица Excel ещё не создана", "xlsx");
+      return empty("Оператор GPT ещё не запускался", "xlsx", "default");
     }
 
     case "image_prompts": {

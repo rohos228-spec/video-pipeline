@@ -638,9 +638,9 @@ export function NodeStudio({
                       onClick={() => runStep.mutate({ mode: "full" })}
                       disabled={!projectId || isThisNodeRunning || nodeDisabled}
                       className={cn(
-                        "transition-all duration-200 gap-1.5 font-semibold text-xs text-white bg-emerald-600 hover:bg-emerald-500 shadow-md shadow-emerald-500/20 border border-emerald-400/40 rounded-lg",
+                        "transition-all duration-200 gap-2 h-9 px-4 font-semibold text-xs text-white bg-gradient-to-r from-emerald-500 via-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 active:scale-[0.98] shadow-lg shadow-emerald-500/35 border border-emerald-300/40 rounded-xl backdrop-blur-md",
                         isThisNodeRunning &&
-                          "border-emerald-500/60 bg-emerald-600/30 text-emerald-300 animate-pulse font-medium shadow-[0_0_12px_rgba(16,185,129,0.25)]",
+                          "border-emerald-400/80 bg-emerald-500/25 text-emerald-200 animate-pulse font-medium shadow-[0_0_20px_rgba(16,185,129,0.35)]",
                       )}
                       title={
                         nodeDisabled
@@ -652,8 +652,8 @@ export function NodeStudio({
                     >
                       {isThisNodeRunning ? (
                         <>
-                          <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-300" />
-                          <span>В процессе...</span>
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-200" />
+                          <span>В работе...</span>
                         </>
                       ) : (
                         <>
@@ -667,10 +667,10 @@ export function NodeStudio({
                         size="sm"
                         onClick={() => runStep.mutate({ mode: "resume" })}
                         disabled={!projectId || isThisNodeRunning || nodeDisabled}
-                        className="transition-all duration-200 gap-1.5 font-semibold text-xs text-white bg-blue-600 hover:bg-blue-500 shadow-md shadow-blue-500/25 border border-blue-400/50 rounded-lg"
+                        className="transition-all duration-200 gap-2 h-9 px-4 font-semibold text-xs text-amber-950 bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-400 hover:from-amber-300 hover:to-yellow-300 active:scale-[0.98] shadow-lg shadow-amber-500/25 border border-amber-200/60 rounded-xl backdrop-blur-md"
                         title="Доделать только недостающие элементы (мягкое продолжение без удаления готовых)"
                       >
-                        <Play className="h-3.5 w-3.5 text-blue-200 fill-current" />
+                        <Play className="h-3.5 w-3.5 text-amber-950 fill-current" />
                         <span>Продолжить / Доделать</span>
                       </Button>
                     )}
@@ -905,32 +905,6 @@ export function NodeStudio({
                       <HeroConfigPanel projectId={projectId} />
                     </div>
                   ) : null}
-                  {nodeSupportsGptText(nodeType) && gptTextSlotForNode(nodeType) && projectId ? (
-                    <div className="rounded-xl border border-violet-400/30 bg-violet-500/[0.08] p-4">
-                      <h3 className="text-sm font-semibold text-foreground">
-                        Сопроводительный текст
-                      </h3>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        Сопроводительное сообщение для генератора. Системные мастер-промпты настраиваются во вкладке «Промпты».
-                      </p>
-                      <Button
-                        type="button"
-                        size="sm"
-                        className="mt-3 gap-1.5 font-semibold text-xs bg-zinc-800 text-zinc-100 hover:bg-zinc-700 border border-zinc-700 rounded-lg shadow-sm"
-                        onClick={() => {
-                          setTab("prompts");
-                          setActiveSlotId("gpt_text");
-                        }}
-                      >
-                        <MessageSquareText className="h-3.5 w-3.5 text-violet-400" />
-                        Открыть сопроводительный текст
-                      </Button>
-                    </div>
-                  ) : (
-                    <p>
-                      Управление системными промптами и сопроводительным текстом доступно во вкладке «Промпты».
-                    </p>
-                  )}
                   {nodeDisabled && (
                     <p className="text-amber-400">Нода отключена в графе — шаг не запустится.</p>
                   )}

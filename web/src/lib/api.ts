@@ -662,6 +662,7 @@ export const api = {
   getProject: (id: number) => http<ProjectDetail>(`/api/projects/${id}`),
   createProject: (body: {
     title: string;
+    topic?: string;
     hero_mode?: string;
     auto_mode?: boolean;
     sidebar_folder_id?: string | null;

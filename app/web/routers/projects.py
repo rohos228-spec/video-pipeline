@@ -182,7 +182,7 @@ async def create_project(
     p = Project(
         slug=slug,
         title=display_title,
-        topic="",
+        topic=(body.topic.strip() if body.topic and body.topic.strip() else ""),
         hero_mode=body.hero_mode,
         status=ProjectStatus.new,
         auto_mode=auto_mode,
