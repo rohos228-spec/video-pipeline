@@ -293,7 +293,7 @@ def _work_spec(
 
 
 def _script_frames_qc_group() -> NodeGroupDef:
-    """Сценарист → проверка → промты кадров (continuity) → QC промптов."""
+    """Сценарист → проверка → действие → кадры T/X → промты → QC."""
     script = _work_spec(
         "script",
         "GPT: сценарист",
@@ -312,36 +312,51 @@ def _script_frames_qc_group() -> NodeGroupDef:
         slot_overflow=True,
         operator_config=dict(_CHECK_OPERATOR_CONFIG),
     )
+    action = _work_spec(
+        "action",
+        "GPT: главное действие · по битам",
+        "Биты + закадр → нумерованная цепь сцен; текст НЕ генерирует",
+        _STEP_X * 3,
+        "main_action_from_bits_ru",
+    )
+    shots = _work_spec(
+        "shots",
+        "GPT: сцены → кадры",
+        "Цепь сцен → шаблоны T/X (select→shots→drop_order); текст НЕ генерирует",
+        _STEP_X * 4,
+        "scenes_to_frames_ru",
+    )
     frames = _work_spec(
         "frames",
         "GPT: промты кадров · continuity",
         "Разбивка → промт_картинки + промт_видео; сцена = цепь, не слайд-шоу",
-        _STEP_X * 3,
+        _STEP_X * 5,
         "frame_prompts_continuity_ru",
     )
     qc = _work_spec(
         "qc",
         "GPT: QC промптов",
         "Проверка промптов по блоку и правилам; чинит только нарушения (apply-ops)",
-        _STEP_X * 4,
+        _STEP_X * 6,
         "prompts_qc_continuity_ru",
     )
     return NodeGroupDef(
         group_id="script_frames_qc",
         title="Сценарий → промпты кадров + QC",
         description=(
-            "Сценарист: целый закадр (script_text/voiceover.txt) → 1 seed → биты → "
-            "проверка (Ок/Не ок) → промпты continuity → QC. "
-            "Разбивка на ячейки — хвостом группы (vo_shot_expand). "
-            "Промты *_ru из 05_excel_gpt."
+            "Сценарист: целый закадр → 1 seed → биты → проверка → "
+            "главное действие → кадры по шаблонам T/X → промпты → QC. "
+            "Разбивка на ячейки — хвостом группы (vo_shot_expand)."
         ),
         category="planning",
         default_after_type="plan",
-        nodes=(script, check_script, frames, qc),
+        nodes=(script, check_script, action, shots, frames, qc),
         internal_edges=(
             ("script", "check_script", "after"),
-            ("check_script", "frames", "pass"),
+            ("check_script", "action", "pass"),
             ("check_script", "script", "fail"),
+            ("action", "shots", "after"),
+            ("shots", "frames", "after"),
             ("frames", "qc", "after"),
         ),
         entry_keys=("script",),
@@ -954,6 +969,107 @@ def _wire_to_storage(nodes: list[dict], edges: list[dict], new_ids: list[str]) -
     return added
 
 
+def upgrade_script_frames_qc_graph(meta: dict[str, Any]) -> bool:
+    """Старая цепочка check→frames: вставить action+shots (T/X) между ними."""
+    graph = canvas_graph_from_meta(meta)
+    if graph is None:
+        return False
+    nodes = [dict(n) for n in graph["nodes"]]
+    edges = [dict(e) for e in graph["edges"]]
+    by_id = {str(n.get("id")): n for n in nodes}
+    check_id = "n_excel_gpt_fw_check_script"
+    action_id = "n_excel_gpt_fw_action"
+    shots_id = "n_excel_gpt_fw_shots"
+    frames_id = "n_excel_gpt_fw_frames"
+    if check_id not in by_id or frames_id not in by_id:
+        return False
+    if action_id in by_id and shots_id in by_id:
+        return False
+    # есть прямое check→frames (pass/after) — перешить
+    direct = [
+        e
+        for e in edges
+        if str(e.get("source")) == check_id and str(e.get("target")) == frames_id
+    ]
+    if not direct and (action_id in by_id or shots_id in by_id):
+        return False
+    check = by_id[check_id]
+    frames = by_id[frames_id]
+    cx = float((check.get("position") or {}).get("x") or 0)
+    cy = float((check.get("position") or {}).get("y") or 0)
+    fx = float((frames.get("position") or {}).get("x") or (cx + _STEP_X * 3))
+    group = _script_frames_qc_group()
+    action_spec = next(s for s in group.nodes if s.local_key == "action")
+    shots_spec = next(s for s in group.nodes if s.local_key == "shots")
+    gid = str((check.get("data") or {}).get("groupId") or "script_frames_qc")
+    gtitle = str(
+        (check.get("data") or {}).get("groupTitle") or group.title
+    )
+
+    def _mk(spec: GroupNodeSpec, x: float) -> dict[str, Any]:
+        return {
+            "id": spec.preferred_id,
+            "type": spec.node_type,
+            "position": {"x": x, "y": cy},
+            "data": {
+                "label": spec.label,
+                "description": spec.description,
+                "slotOverflow": True,
+                "groupId": gid,
+                "groupTitle": gtitle,
+            },
+        }
+
+    if action_id not in by_id:
+        nodes.append(_mk(action_spec, cx + (fx - cx) / 3))
+    if shots_id not in by_id:
+        nodes.append(_mk(shots_spec, cx + 2 * (fx - cx) / 3))
+    edges = [
+        e
+        for e in edges
+        if not (
+            str(e.get("source")) == check_id and str(e.get("target")) == frames_id
+        )
+    ]
+    need = [
+        (check_id, action_id, "pass"),
+        (action_id, shots_id, "after"),
+        (shots_id, frames_id, "after"),
+    ]
+    have = {(str(e.get("source")), str(e.get("target"))) for e in edges}
+    for src, tgt, kind in need:
+        if (src, tgt) in have:
+            continue
+        e: dict[str, Any] = {
+            "id": f"e_{src}_{tgt}",
+            "source": src,
+            "target": tgt,
+            "sourceHandle": "out",
+            "targetHandle": "in",
+            "data": {"kind": kind},
+        }
+        if kind == "pass":
+            e["label"] = "Ок"
+            e["data"]["label"] = "Ок"
+        edges.append(e)
+    variants = meta.get("prompt_slot_variants")
+    variants = dict(variants) if isinstance(variants, dict) else {}
+    variants[action_id] = {"main": "main_action_from_bits_ru"}
+    variants[shots_id] = {"main": "scenes_to_frames_ru"}
+    meta["prompt_slot_variants"] = variants
+    egn = meta.get("excel_gpt_nodes")
+    egn = dict(egn) if isinstance(egn, dict) else {}
+    egn[action_id] = dict(_WORK_OPERATOR_CONFIG)
+    egn[shots_id] = dict(_WORK_OPERATOR_CONFIG)
+    meta["excel_gpt_nodes"] = egn
+    meta["canvas_graph"] = build_canvas_graph_payload(
+        workflow_id=int(graph.get("workflow_id") or 0),
+        nodes=nodes,
+        edges=edges,
+    )
+    return True
+
+
 async def insert_node_group(
     session: AsyncSession,
     project: Project,
@@ -972,6 +1088,22 @@ async def insert_node_group(
         raise ValueError(
             f"неизвестная группа {group_id!r}; есть: {sorted(all_groups())}"
         )
+    if group_id == "script_frames_qc":
+        meta0 = dict(project.meta or {})
+        if upgrade_script_frames_qc_graph(meta0):
+            project.meta = meta0
+            await session.flush()
+            await sync_run_snapshot_from_canvas_graph(session, project, force=True)
+            await session.commit()
+            logger.info("[#{}] upgrade script_frames_qc: +action +shots", project.id)
+            return {
+                "group": group_id,
+                "upgraded": True,
+                "nodes": [
+                    "n_excel_gpt_fw_action",
+                    "n_excel_gpt_fw_shots",
+                ],
+            }
 
     from sqlalchemy import select
 

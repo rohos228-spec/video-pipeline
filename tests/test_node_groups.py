@@ -261,7 +261,7 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
         res = await insert_node_group(session, project, "script_frames_qc")
 
     assert res["after"] == "n_plan"
-    assert len(res["nodes"]) == 4
+    assert len(res["nodes"]) == 6
     cg = project.meta["canvas_graph"]
     by_id = {n["id"]: n for n in cg["nodes"]}
     plan_x = by_id["n_plan"]["position"]["x"]
@@ -286,6 +286,12 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
     assert ccfg["checkPromptSource"] == "upstream"
     assert "n_excel_gpt_fw_check_script" not in project.meta["prompt_slot_variants"]
 
+    assert project.meta["prompt_slot_variants"]["n_excel_gpt_fw_action"] == {
+        "main": "main_action_from_bits_ru"
+    }
+    assert project.meta["prompt_slot_variants"]["n_excel_gpt_fw_shots"] == {
+        "main": "scenes_to_frames_ru"
+    }
     assert project.meta["prompt_slot_variants"]["n_excel_gpt_fw_frames"] == {
         "main": "frame_prompts_continuity_ru"
     }
@@ -301,8 +307,10 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
         (e["source"], e["target"]): (e.get("data") or {}).get("kind")
         for e in cg["edges"]
     }
-    assert kinds[("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_frames")] == "pass"
+    assert kinds[("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_action")] == "pass"
     assert kinds[("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_script")] == "fail"
+    assert ("n_excel_gpt_fw_action", "n_excel_gpt_fw_shots") in pairs
+    assert ("n_excel_gpt_fw_shots", "n_excel_gpt_fw_frames") in pairs
     assert ("n_excel_gpt_fw_frames", "n_excel_gpt_fw_qc") in pairs
     # выход группы → старая цель plan (script)
     assert ("n_excel_gpt_fw_qc", "n_script") in pairs

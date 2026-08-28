@@ -1,0 +1,725 @@
+{
+  "version": 1,
+  "select": [
+    {
+      "step": 1,
+      "if": "двое_говорят",
+      "then_template": "T1"
+    },
+    {
+      "step": 2,
+      "if": "новое_место_и_находка",
+      "then_template": "T2"
+    },
+    {
+      "step": 3,
+      "if": "только_смена_места",
+      "then_template": "T3"
+    },
+    {
+      "step": 4,
+      "if": "смысл_во_взгляде",
+      "then_template": "T4"
+    },
+    {
+      "step": 5,
+      "if": "руки_работают",
+      "then_template": "T5"
+    },
+    {
+      "step": 6,
+      "if": "путь_A_в_B",
+      "then_template": "T6"
+    },
+    {
+      "step": 7,
+      "if": "короткий_удар",
+      "then_template": "T7"
+    },
+    {
+      "step": 8,
+      "if": "монтаж_мест_времени",
+      "then_template": "T8"
+    },
+    {
+      "step": 9,
+      "if": "один_быт",
+      "then_template": "T9"
+    },
+    {
+      "step": 10,
+      "if": "уход_конец",
+      "then_template": "T10"
+    },
+    {
+      "step": 99,
+      "if": "иначе",
+      "then_template": "T0"
+    }
+  ],
+  "templates": [
+    {
+      "id": "T0",
+      "name": "один_кадр",
+      "when": "одно_место;одно_действие;нет_диалога;нет_находки",
+      "axis": "нет",
+      "shots_full": "T0-K1",
+      "parent_default": "null"
+    },
+    {
+      "id": "T1",
+      "name": "диалог_двое",
+      "when": "двое;говорят|спорят|спрашивают;одно_место",
+      "axis": "keep_sides",
+      "shots_full": "T1-K1;T1-K2;T1-K3;T1-K4;T1-K5",
+      "drop_order": "T1-K5;T1-K4;T1-K1",
+      "parent_default": "по_кадру"
+    },
+    {
+      "id": "T2",
+      "name": "пришёл_нашёл",
+      "when": "новое_место;нашёл|взял|прочитал;есть_предмет",
+      "axis": "нет",
+      "shots_full": "T2-K1;T2-K2;T2-K3;T2-K4",
+      "drop_order": "T2-K4;T2-K1",
+      "parent_default": "master=K1"
+    },
+    {
+      "id": "T3",
+      "name": "новое_место",
+      "when": "смена_места;нет_диалога;нет_находки",
+      "axis": "нет",
+      "shots_full": "T3-K1;T3-K2",
+      "drop_order": "T3-K2",
+      "parent_default": "master=K1"
+    },
+    {
+      "id": "T4",
+      "name": "взгляд",
+      "when": "смотрит_на;смысл_во_взгляде",
+      "axis": "look_chain",
+      "shots_full": "T4-K1;T4-K2;T4-K3",
+      "drop_order": "T4-K3;T4-K2",
+      "parent_default": "по_кадру"
+    },
+    {
+      "id": "T5",
+      "name": "руки_предмет",
+      "when": "руки_работают;пишет|моет|режет|считает|листает",
+      "axis": "нет",
+      "shots_full": "T5-K0;T5-K1;T5-K2;T5-K3",
+      "drop_order": "T5-K3;T5-K0;T5-K2",
+      "parent_default": "master"
+    },
+    {
+      "id": "T6",
+      "name": "путь",
+      "when": "идёт|едет;откуда_и_куда",
+      "axis": "нет",
+      "shots_full": "T6-K1;T6-K2;T6-K3",
+      "drop_order": "T6-K2;T6-K1",
+      "parent_default": "по_кадру"
+    },
+    {
+      "id": "T7",
+      "name": "удар",
+      "when": "услышал|понял|получил;короткий_слом;не_хвост_диалога",
+      "axis": "нет",
+      "shots_full": "T7-K1;T7-K2;T7-K3",
+      "drop_order": "T7-K1;T7-K2",
+      "parent_default": "по_кадру"
+    },
+    {
+      "id": "T8",
+      "name": "монтаж_мест",
+      "when": "годы|а_потом|другая_жизнь;несколько_мест",
+      "axis": "нет",
+      "shots_full": "T8-K1;T8-Kn",
+      "parent_default": "все_null"
+    },
+    {
+      "id": "T9",
+      "name": "один_в_месте",
+      "when": "один;одно_помещение;быт|ожидание;нет_диалога;нет_находки",
+      "axis": "нет",
+      "shots_full": "T9-K1;T9-K2;T9-K3",
+      "drop_order": "T9-K3;T9-K1",
+      "parent_default": "master=K1"
+    },
+    {
+      "id": "T10",
+      "name": "уход",
+      "when": "уходит|сцена_конец|пустое_место",
+      "axis": "нет",
+      "shots_full": "T10-K1;T10-K2",
+      "drop_order": "T10-K1;T10-K2",
+      "parent_default": "по_кадру"
+    },
+    {
+      "id": "X1",
+      "name": "хвост_то_же_место",
+      "when": "следующая_ячейка;место_не_сменилось",
+      "axis": "нет",
+      "shots_full": "X1-K1",
+      "parent_default": "prev_location_master"
+    },
+    {
+      "id": "X2",
+      "name": "хвост_смена_места",
+      "when": "следующая_ячейка;место_сменилось",
+      "axis": "нет",
+      "shots_full": "X2-A;X2-B",
+      "parent_default": "все_null"
+    }
+  ],
+  "shots": [
+    {
+      "template_id": "T0",
+      "shot_id": "T0-K1",
+      "n": 1,
+      "plan": "СРЕДНИЙ",
+      "angle": "—",
+      "place": "{место}",
+      "who": "{кто}",
+      "action": "{действие}",
+      "parent": "null",
+      "role": "alone",
+      "required": 1
+    },
+    {
+      "template_id": "T1",
+      "shot_id": "T1-K1",
+      "n": 1,
+      "plan": "ОБЩИЙ",
+      "angle": "фронт",
+      "place": "{место}",
+      "who": "{A}+{B}",
+      "action": "оба в кадре",
+      "parent": "null",
+      "role": "master",
+      "required": 0
+    },
+    {
+      "template_id": "T1",
+      "shot_id": "T1-K2",
+      "n": 2,
+      "plan": "СРЕДНИЙ",
+      "angle": "с_плеча",
+      "place": "{место}",
+      "who": "{A}",
+      "action": "{действие_A}",
+      "parent": "null",
+      "role": "side_A",
+      "required": 1
+    },
+    {
+      "template_id": "T1",
+      "shot_id": "T1-K3",
+      "n": 3,
+      "plan": "СРЕДНИЙ",
+      "angle": "с_плеча",
+      "place": "{место}",
+      "who": "{B}",
+      "action": "слушает / смотрит на {A}",
+      "parent": "null",
+      "role": "side_B",
+      "required": 1
+    },
+    {
+      "template_id": "T1",
+      "shot_id": "T1-K4",
+      "n": 4,
+      "plan": "ДЕТАЛЬ",
+      "angle": "макро",
+      "place": "{место}",
+      "who": "—",
+      "action": "{предмет}",
+      "parent": "null",
+      "role": "insert",
+      "required": 0
+    },
+    {
+      "template_id": "T1",
+      "shot_id": "T1-K5",
+      "n": 5,
+      "plan": "КРУПНЫЙ",
+      "angle": "фронт",
+      "place": "{место}",
+      "who": "{лицо_удара}",
+      "action": "реакция",
+      "parent": "side_of_face",
+      "role": "reaction",
+      "required": 0
+    },
+    {
+      "template_id": "T2",
+      "shot_id": "T2-K1",
+      "n": 1,
+      "plan": "ОБЩИЙ",
+      "angle": "фронт",
+      "place": "{место}",
+      "who": "{кто}",
+      "action": "вошёл",
+      "parent": "null",
+      "role": "master",
+      "required": 0
+    },
+    {
+      "template_id": "T2",
+      "shot_id": "T2-K2",
+      "n": 2,
+      "plan": "СРЕДНИЙ",
+      "angle": "3/4",
+      "place": "{место}",
+      "who": "{кто}",
+      "action": "берёт / открывает {предмет}",
+      "parent": "master",
+      "role": "action",
+      "required": 1
+    },
+    {
+      "template_id": "T2",
+      "shot_id": "T2-K3",
+      "n": 3,
+      "plan": "ДЕТАЛЬ",
+      "angle": "макро",
+      "place": "{место}",
+      "who": "—",
+      "action": "{предмет} крупно",
+      "parent": "master",
+      "role": "insert",
+      "required": 1
+    },
+    {
+      "template_id": "T2",
+      "shot_id": "T2-K4",
+      "n": 4,
+      "plan": "КРУПНЫЙ",
+      "angle": "фронт",
+      "place": "{место}",
+      "who": "{кто}",
+      "action": "понял",
+      "parent": "master",
+      "role": "reaction",
+      "required": 0
+    },
+    {
+      "template_id": "T3",
+      "shot_id": "T3-K1",
+      "n": 1,
+      "plan": "ОБЩИЙ",
+      "angle": "фронт",
+      "place": "{место}",
+      "who": "{кто}",
+      "action": "среда / у входа",
+      "parent": "null",
+      "role": "master",
+      "required": 1
+    },
+    {
+      "template_id": "T3",
+      "shot_id": "T3-K2",
+      "n": 2,
+      "plan": "СРЕДНИЙ",
+      "angle": "3/4",
+      "place": "{место}",
+      "who": "{кто}",
+      "action": "{действие}",
+      "parent": "master",
+      "role": "enter",
+      "required": 0
+    },
+    {
+      "template_id": "T4",
+      "shot_id": "T4-K1",
+      "n": 1,
+      "plan": "СРЕДНИЙ",
+      "angle": "3/4",
+      "place": "{место}",
+      "who": "{кто}",
+      "action": "смотрит",
+      "parent": "master_or_null",
+      "role": "eyeline_out",
+      "required": 1
+    },
+    {
+      "template_id": "T4",
+      "shot_id": "T4-K2",
+      "n": 2,
+      "plan": "ДЕТАЛЬ",
+      "angle": "макро",
+      "place": "{объект}",
+      "who": "—",
+      "action": "то что видит",
+      "parent": "null",
+      "role": "eyeline_object",
+      "required": 1
+    },
+    {
+      "template_id": "T4",
+      "shot_id": "T4-K3",
+      "n": 3,
+      "plan": "КРУПНЫЙ",
+      "angle": "фронт",
+      "place": "{место}",
+      "who": "{кто}",
+      "action": "реакция",
+      "parent": "T4-K1",
+      "role": "eyeline_back",
+      "required": 0
+    },
+    {
+      "template_id": "T5",
+      "shot_id": "T5-K0",
+      "n": 0,
+      "plan": "ОБЩИЙ",
+      "angle": "фронт",
+      "place": "{место}",
+      "who": "{кто}",
+      "action": "человек в среде",
+      "parent": "null",
+      "role": "master",
+      "required": 0
+    },
+    {
+      "template_id": "T5",
+      "shot_id": "T5-K1",
+      "n": 1,
+      "plan": "СРЕДНИЙ",
+      "angle": "3/4",
+      "place": "{место}",
+      "who": "{кто}",
+      "action": "{жест}",
+      "parent": "master",
+      "role": "action",
+      "required": 1
+    },
+    {
+      "template_id": "T5",
+      "shot_id": "T5-K2",
+      "n": 2,
+      "plan": "ДЕТАЛЬ",
+      "angle": "макро",
+      "place": "{место}",
+      "who": "руки",
+      "action": "{предмет}",
+      "parent": "master",
+      "role": "insert",
+      "required": 0
+    },
+    {
+      "template_id": "T5",
+      "shot_id": "T5-K3",
+      "n": 3,
+      "plan": "КРУПНЫЙ",
+      "angle": "фронт",
+      "place": "{место}",
+      "who": "{кто}",
+      "action": "{состояние}",
+      "parent": "master",
+      "role": "reaction",
+      "required": 0
+    },
+    {
+      "template_id": "T6",
+      "shot_id": "T6-K1",
+      "n": 1,
+      "plan": "ОБЩИЙ",
+      "angle": "фронт",
+      "place": "{откуда}",
+      "who": "{кто}",
+      "action": "вышел",
+      "parent": "null",
+      "role": "start",
+      "required": 0
+    },
+    {
+      "template_id": "T6",
+      "shot_id": "T6-K2",
+      "n": 2,
+      "plan": "СРЕДНИЙ",
+      "angle": "следование",
+      "place": "{путь}",
+      "who": "{кто}",
+      "action": "в движении",
+      "parent": "T6-K1",
+      "role": "travel",
+      "required": 0
+    },
+    {
+      "template_id": "T6",
+      "shot_id": "T6-K3",
+      "n": 3,
+      "plan": "ОБЩИЙ",
+      "angle": "фронт",
+      "place": "{куда}",
+      "who": "{кто}",
+      "action": "пришёл",
+      "parent": "null",
+      "role": "arrive",
+      "required": 1
+    },
+    {
+      "template_id": "T7",
+      "shot_id": "T7-K1",
+      "n": 1,
+      "plan": "СРЕДНИЙ",
+      "angle": "3/4",
+      "place": "{место}",
+      "who": "{кто}",
+      "action": "ещё до удара",
+      "parent": "master_or_null",
+      "role": "before",
+      "required": 0
+    },
+    {
+      "template_id": "T7",
+      "shot_id": "T7-K2",
+      "n": 2,
+      "plan": "ДЕТАЛЬ",
+      "angle": "макро",
+      "place": "{место}",
+      "who": "—",
+      "action": "{удар}",
+      "parent": "null",
+      "role": "hit",
+      "required": 0
+    },
+    {
+      "template_id": "T7",
+      "shot_id": "T7-K3",
+      "n": 3,
+      "plan": "КРУПНЫЙ",
+      "angle": "фронт",
+      "place": "{место}",
+      "who": "{кто}",
+      "action": "лицо после",
+      "parent": "side_of_face",
+      "role": "reaction",
+      "required": 1
+    },
+    {
+      "template_id": "T8",
+      "shot_id": "T8-Kn",
+      "n": 1,
+      "plan": "ОБЩИЙ",
+      "angle": "фронт",
+      "place": "{место_N}",
+      "who": "{кто}",
+      "action": "{действие_N}",
+      "parent": "null",
+      "role": "world",
+      "required": 1
+    },
+    {
+      "template_id": "T9",
+      "shot_id": "T9-K1",
+      "n": 1,
+      "plan": "ОБЩИЙ",
+      "angle": "фронт",
+      "place": "{место}",
+      "who": "{кто}",
+      "action": "в среде",
+      "parent": "null",
+      "role": "master",
+      "required": 0
+    },
+    {
+      "template_id": "T9",
+      "shot_id": "T9-K2",
+      "n": 2,
+      "plan": "СРЕДНИЙ",
+      "angle": "3/4",
+      "place": "{место}",
+      "who": "{кто}",
+      "action": "{быт}",
+      "parent": "master",
+      "role": "action",
+      "required": 1
+    },
+    {
+      "template_id": "T9",
+      "shot_id": "T9-K3",
+      "n": 3,
+      "plan": "ДЕТАЛЬ",
+      "angle": "макро",
+      "place": "{место}",
+      "who": "—",
+      "action": "{якорь}",
+      "parent": "master",
+      "role": "anchor",
+      "required": 0
+    },
+    {
+      "template_id": "T10",
+      "shot_id": "T10-K1",
+      "n": 1,
+      "plan": "СРЕДНИЙ",
+      "angle": "3/4",
+      "place": "{место}",
+      "who": "{кто}",
+      "action": "{последнее}",
+      "parent": "master",
+      "role": "point",
+      "required": 0
+    },
+    {
+      "template_id": "T10",
+      "shot_id": "T10-K2",
+      "n": 2,
+      "plan": "ОБЩИЙ",
+      "angle": "фронт",
+      "place": "{место}",
+      "who": "{кто}|пусто",
+      "action": "уходит / пусто",
+      "parent": "null_if_new_meaning",
+      "role": "exit",
+      "required": 0
+    },
+    {
+      "template_id": "X1",
+      "shot_id": "X1-K1",
+      "n": 1,
+      "plan": "СРЕДНИЙ",
+      "angle": "—",
+      "place": "{место}",
+      "who": "{кто}",
+      "action": "{новое_действие}",
+      "parent": "prev_location_master",
+      "role": "continue",
+      "required": 1
+    },
+    {
+      "template_id": "X2",
+      "shot_id": "X2-A",
+      "n": 1,
+      "plan": "—",
+      "angle": "—",
+      "place": "{место_A}",
+      "who": "{кто}",
+      "action": "{действие_A}",
+      "parent": "null",
+      "role": "master_A",
+      "required": 1
+    },
+    {
+      "template_id": "X2",
+      "shot_id": "X2-B",
+      "n": 2,
+      "plan": "—",
+      "angle": "—",
+      "place": "{место_B}",
+      "who": "{кто}",
+      "action": "{действие_B}",
+      "parent": "null",
+      "role": "master_B",
+      "required": 1
+    }
+  ],
+  "rules_ai": [
+    {
+      "тема": "axis",
+      "значение": "нет",
+      "как понять": "Не проверять стороны персонажей. Подходит для одного человека, пути, монтажа мест.",
+      "команда_для_ии": "Ничего не делать с сторонами."
+    },
+    {
+      "тема": "axis",
+      "значение": "keep_sides",
+      "как понять": "В сцене двое. В первом кадре где оба видны, зафиксируй: кто слева кадра, кто справа. Во всех следующих кадрах этой сцены эти стороны НЕ менять.",
+      "команда_для_ии": "ЗАПРЕЩЕНО: в одном кадре {A} смотрит вправо, а в следующем кадре той же сцены {A} смотрит влево без смены места. ЗАПРЕЩЕНО: поставить камеру так, будто герои поменялись местами."
+    },
+    {
+      "тема": "axis",
+      "значение": "look_chain",
+      "как понять": "Сначала кадр того кто смотрит, потом кадр того НА ЧТО он смотрит, потом кадр реакции ТОГО ЖЕ человека.",
+      "команда_для_ии": "ЗАПРЕЩЕНО: реакция другого человека вместо смотрящего. ЗАПРЕЩЕНО: прыжок лицо→лицо без кадра объекта взгляда, если смысл именно во взгляде."
+    },
+    {
+      "тема": "parent",
+      "значение": "null",
+      "как понять": "Кадр самостоятельный. Новое место или новая сторона диалога или новый объект.",
+      "команда_для_ии": "В выходном JSON parent_id = null."
+    },
+    {
+      "тема": "parent",
+      "значение": "master",
+      "как понять": "Кадр продолжает первое место этой схемы. Parent = shot_id первого кадра этой локации в ячейке.",
+      "команда_для_ии": "В выходном JSON parent_id = id master-кадра места."
+    },
+    {
+      "тема": "parent",
+      "значение": "side_of_face",
+      "как понять": "Крупный лица продолжает сторону того же человека (его предыдущий средний/плечо).",
+      "команда_для_ии": "parent_id = shot_id последнего кадра этого же who в этой сцене."
+    },
+    {
+      "тема": "parent",
+      "значение": "prev_location_master",
+      "как понять": "Ячейка новая, место то же что в прошлой ячейке.",
+      "команда_для_ии": "parent_id = id первого кадра этой локации из предыдущей ячейки. Новый ОБЩИЙ не создавать."
+    },
+    {
+      "тема": "parent",
+      "значение": "T4-K1",
+      "как понять": "Жёсткая ссылка на конкретный shot_id схемы.",
+      "команда_для_ии": "parent_id = id кадра, который получился из T4-K1 после подстановки."
+    },
+    {
+      "тема": "compress",
+      "значение": "drop_order",
+      "как понять": "Если суммарный закадр слишком короткий для всех кадров — удаляй shot_id из drop_order по порядку.",
+      "команда_для_ии": "ОСТАНОВИСЬ, если остались только required=1. Не удаляй required=1. Не удаляй единственный кадр нового места, если when требует новое_место."
+    },
+    {
+      "тема": "slots",
+      "значение": "{}",
+      "как понять": "Всё в фигурных скобках надо заменить конкретными словами из входа.",
+      "команда_для_ии": "Не оставляй {место} в ответе. Не выдумывай структуру кадров — только подставляй значения в готовые строки shots."
+    },
+    {
+      "тема": "select",
+      "значение": "first_match",
+      "как понять": "Иди по select сверху вниз. Первое истинное if → бери then_template. Остальные не смотри.",
+      "команда_для_ии": "Если ничего не совпало → T0."
+    }
+  ],
+  "chains": [
+    {
+      "id": "находка_потом_диалог",
+      "chain": "T2>T1"
+    },
+    {
+      "id": "биография_места",
+      "chain": "T8>T8>T8"
+    },
+    {
+      "id": "взгляд_удар_бег",
+      "chain": "T4>T7>T6"
+    },
+    {
+      "id": "допрос",
+      "chain": "T1"
+    },
+    {
+      "id": "утро_уход_работа",
+      "chain": "T9>T10>T3"
+    },
+    {
+      "id": "диалог_врезка_взгляда",
+      "chain": "T1[K4=T4-K2]"
+    },
+    {
+      "id": "ячейка_то_же_место",
+      "chain": "T*>X1"
+    },
+    {
+      "id": "ячейка_другое_место",
+      "chain": "T*>X2"
+    },
+    {
+      "id": "ячейка_другое_место_с_переходом",
+      "chain": "T*>T6>X2"
+    }
+  ]
+}

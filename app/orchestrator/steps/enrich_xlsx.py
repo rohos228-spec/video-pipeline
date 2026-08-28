@@ -1489,16 +1489,25 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         "Слоган без номера = брак. Не пиши закадр и биты."
                     ).strip()
                 elif scenes_to_frames:
+                    from app.services.shot_templates import (
+                        format_shot_templates_catalog,
+                        neighbor_place_hints,
+                    )
+
+                    catalog = format_shot_templates_catalog()
+                    neighbors = neighbor_place_hints(gpt_frames)
                     accompanying = (
                         f"{accompanying}\n\n"
                         "# DB SoT\n"
                         "Файл db_frames.json — VO-ячейки (uuid + voiceover_text + "
-                        "главное_действие). Пиши только fields.кадры по логике "
-                        "этой ячейки: одно место и несколько кадров → parent = "
-                        "первый кадр локации; новое место → parent_id null. "
-                        "Не копируй чужой сюжет. Не плоди планы ради схемы. "
-                        "Не пиши закадр, биты, главное_действие."
+                        "главное_действие). Пиши только fields.кадры. "
+                        "Выбери шаблон T/X из каталога ниже, раскрой shots, "
+                        "подставь слоты, сожми по drop_order (required=1 не трогай). "
+                        "Не пиши закадр, биты, главное_действие.\n\n"
+                        f"{catalog}"
                     ).strip()
+                    if neighbors:
+                        accompanying = f"{accompanying}\n\n{neighbors}".strip()
                 elif _is_frame_prompts_prompt(variant, master) or str(
                     node_key or ""
                 ).endswith("_fw_frames"):

@@ -603,6 +603,22 @@ def shots_coverage_ops_reason(
                 return f"uuid {uid[:8]}: кадр без плана"
             if not str(shot.get("ракурс") or "").strip():
                 return f"uuid {uid[:8]}: кадр без ракурса"
+        templates = {
+            str(s.get("шаблон") or s.get("template") or "").strip()
+            for s in shots
+        }
+        templates.discard("")
+        if templates:
+            if len(templates) > 1:
+                return (
+                    f"uuid {uid[:8]}: разные шаблон в кадрах ячейки: "
+                    f"{sorted(templates)}"
+                )
+            tid = next(iter(templates))
+            if not (
+                tid.startswith("T") or tid.startswith("X")
+            ):
+                return f"uuid {uid[:8]}: шаблон {tid!r} — нужен T* или X*"
         bad_vo = _shot_vo_len_reason(shots, vo, uid)
         if bad_vo:
             return bad_vo
@@ -673,16 +689,18 @@ def _batch_footer(
     if kind in {"shots_coverage", "shots"}:
         return (
             f"\n# BATCH call={batch_i} split={split_level} "
-            f"(кадры-покрытие по {SCRIPT_FRAMES_QC_UNITS_PER_BATCH})\n"
+            f"(кадры по шаблонам T/X, по {SCRIPT_FRAMES_QC_UNITS_PER_BATCH})\n"
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Верни ops ровно по каждому uuid: fields.кадры. "
-            "Число кадров НЕ равно 1: master + дочерние покрытие сцены. "
+            "select → template_id (T*/X*) → shots из каталога → слоты → "
+            "drop_order (required=1 нельзя удалять). "
+            "У каждого кадра поле шаблон. "
             "Закадр кадра — целая фраза/клауза, не обрубок «вместе с». "
             "Лишний кадр покрытия может быть без закадра. "
             "1–2 слова — только титр/имя/деталь "
             "с основанием, не нарезка по запятой. "
-            "Одно место → parent_id = id master. Новое место только если "
-            "его назвал закадр. Все parent_id null на одном сетапе = брак. "
+            "Одно место → parent_id = id master (кроме T8 разных мест). "
+            "Новое место только если его назвал закадр. "
             "Не пиши закадр, биты, главное_действие. JSON apply-ops, без прозы.\n"
         )
     if kind in {"prompts", "img"}:

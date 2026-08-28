@@ -133,12 +133,51 @@ def excel_gpt_prompt_exists(name: str) -> bool:
     return False
 
 
+# Локальная копия 05_excel_gpt устарела → брать git-шаблон.
+_STALE_EXCEL_GPT_MARKERS: dict[str, tuple[str, ...]] = {
+    "scenes_to_frames_ru": (
+        "Как в кино: покрытие сцены",
+        "v6 — покрытие",
+        "v7 — покрытие",
+        "Не плоди покрытие",
+    ),
+}
+
+
+def _excel_gpt_template_path(name: str) -> Path:
+    from app.project_root import find_project_root
+
+    return find_project_root() / "templates" / "excel_gpt_agents" / f"{name}.md"
+
+
+def _excel_gpt_local_is_stale(name: str, path: Path) -> bool:
+    markers = _STALE_EXCEL_GPT_MARKERS.get(name)
+    tmpl = _excel_gpt_template_path(name)
+    if not markers or not path.is_file() or not tmpl.is_file():
+        return False
+    try:
+        head = path.read_text(encoding="utf-8")[:1600]
+        tmpl_head = tmpl.read_text(encoding="utf-8")[:400]
+    except OSError:
+        return False
+    if "шаблоны T/X" in head or "v8 — шаблоны" in head:
+        return False
+    if "шаблоны T/X" not in tmpl_head and "v8 — шаблоны" not in tmpl_head:
+        return False
+    return any(m in head for m in markers)
+
+
 def resolve_excel_gpt_prompt_path(name: str) -> Path:
-    """Читать из 05_excel_gpt или legacy enrich_*; запись — всегда в excel_gpt."""
+    """Читать из 05_excel_gpt, legacy enrich_* или templates/excel_gpt_agents."""
     clean = _sanitize_name(name) if not is_valid_prompt_name(name) else name
     if not clean:
         raise ValueError(f"некорректное имя промта: {name!r}")
     primary = step_dir(EXCEL_GPT_UNIFIED_STEP) / f"{clean}.md"
+    tmpl = _excel_gpt_template_path(clean)
+    if primary.is_file() and not _excel_gpt_local_is_stale(clean, primary):
+        return primary
+    if tmpl.is_file():
+        return tmpl
     if primary.is_file():
         return primary
     for code in (f"enrich_{i}" for i in range(1, 6)):
@@ -524,7 +563,10 @@ def read_resolved_project_prompt(
     name, source = resolve_project_prompt_with_source(
         overrides, step_code, meta=meta, node_key=node_key, slot_id=slot_id
     )
-    path = prompt_path(step_code, name)
+    if is_excel_gpt_prompt_step(step_code):
+        path = resolve_excel_gpt_prompt_path(name)
+    else:
+        path = prompt_path(step_code, name)
     text = read_prompt(step_code, name)
     from app.services.gpt_text_builder import inject_topic_placeholders
 
