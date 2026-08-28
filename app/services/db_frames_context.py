@@ -36,17 +36,27 @@ _IMG_PR_ATTR_KEYS: tuple[str, ...] = (
     "shot02_characters",
     "shot02_notes",
     "shot02_transition",
+    "биты",
+    "кадры",
+    "промты_детей",
+    "image_prompt_shot2",
 )
 
 
 def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, str]:
+    import json as _json
+
     src = attrs if isinstance(attrs, dict) else {}
     out: dict[str, str] = {}
     for key in _IMG_PR_ATTR_KEYS:
         val = src.get(key)
         if val is None:
             continue
-        text = str(val).strip()
+        # Биты и прочие структуры — компактным JSON, не repr.
+        if isinstance(val, (list, dict)):
+            text = _json.dumps(val, ensure_ascii=False, separators=(",", ":"))
+        else:
+            text = str(val).strip()
         if text:
             out[key] = text
     # Русский алиас для персонажей кадра (агенты часто ждут «персонажи»).
@@ -64,6 +74,20 @@ def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, str]:
 
 _EXCEL_GPT_VO_MAX = 400
 _ATTR_MAX = 500
+_PARENT_PROMPT_HEAD = 800
+_NO_CLIP_ATTRS = frozenset({"биты", "кадры", "main_action", "промты_детей"})
+_PARENT_SNAP_KEYS = (
+    "place",
+    "shot01_bg",
+    "shot01_action",
+    "shot01_description",
+    "shot01_props",
+    "lighting",
+    "scene_lighting",
+    "персонажи",
+    "characters",
+    "accent",
+)
 
 
 def _clip(text: str, n: int) -> str:
@@ -73,7 +97,10 @@ def _clip(text: str, n: int) -> str:
 
 def slim_attrs_for_excel_gpt(attrs: dict[str, Any] | None) -> dict[str, str]:
     picked = _pick_attrs(attrs)
-    return {k: _clip(v, _ATTR_MAX) for k, v in picked.items()}
+    return {
+        k: v if k in _NO_CLIP_ATTRS else _clip(v, _ATTR_MAX)
+        for k, v in picked.items()
+    }
 
 
 def _camera_subdivide_from(obj: Any) -> dict[str, Any]:
@@ -164,8 +191,15 @@ def build_excel_gpt_db_context(
     slug: str,
     frames: list[Any],
     characters: list[dict[str, str]],
+    strip_prompts: bool = False,
+    full_vo: bool = False,
 ) -> dict[str, Any]:
-    """Снимок для excel_gpt: whitelist attrs + короткий закадр, без сырого attrs."""
+    """Снимок для excel_gpt: whitelist attrs + короткий закадр, без сырого attrs.
+
+    ``strip_prompts``: не отдавать уже заполненные image/anim/действие.
+    Нужен на ручном ▶ (force_full), иначе модель копирует старые промты
+    и «результат тот же», хотя GPT формально отработал.
+    """
     rows: list[dict[str, Any]] = []
     for fr in frames:
         uuid = str(getattr(fr, "uuid", None) or "").strip()
@@ -174,16 +208,56 @@ def build_excel_gpt_db_context(
         row: dict[str, Any] = {"number": getattr(fr, "number", None), "uuid": uuid}
         vo = str(getattr(fr, "voiceover_text", None) or "")
         if vo.strip():
-            row["voiceover_text"] = _clip(vo, _EXCEL_GPT_VO_MAX)
+            row["voiceover_text"] = vo.strip() if full_vo else _clip(vo, _EXCEL_GPT_VO_MAX)
+        vo_shot = str(_camera_subdivide_from(fr).get("vo_shot") or "").strip()
+        if vo_shot:
+            clipped_shot = _clip(vo_shot, _EXCEL_GPT_VO_MAX)
+            row["vo_shot"] = clipped_shot
+            row["закадр_шота"] = clipped_shot
         meaning = str(getattr(fr, "meaning", None) or "").strip()
         if meaning:
             row["meaning"] = _clip(meaning, _ATTR_MAX)
-        img = str(getattr(fr, "image_prompt", None) or "").strip()
-        if img:
-            # Нужен ключ для skip_if_field=image_prompt, иначе retry
-            # снова шлёт все 188 кадров.
-            row["image_prompt"] = _clip(img, _ATTR_MAX)
-        row.update(slim_attrs_for_excel_gpt(getattr(fr, "attrs", None)))
+        if not strip_prompts:
+            img = str(getattr(fr, "image_prompt", None) or "").strip()
+            if img:
+                # Нужен ключ для skip_if_field=image_prompt, иначе retry
+                # снова шлёт все 188 кадров.
+                row["image_prompt"] = _clip(img, _ATTR_MAX)
+            anim = str(getattr(fr, "animation_prompt", None) or "").strip()
+            if anim:
+                row["animation_prompt"] = _clip(anim, _ATTR_MAX)
+        slim = slim_attrs_for_excel_gpt(getattr(fr, "attrs", None))
+        if strip_prompts:
+            # Ручной ▶: не кормить старую аналитику/действие — модель копирует.
+            # Биты / цепь сцен / кадры — вход следующих нод, не «старый промт».
+            keep: dict[str, str] = {}
+            for key in (
+                "characters",
+                "персонажи",
+                "биты",
+                "main_action",
+                "кадры",
+            ):
+                val = slim.get(key)
+                if val:
+                    keep[key] = val
+            slim = keep
+        row.update(slim)
+        cs = _camera_subdivide_from(fr)
+        if cs:
+            row["camera_subdivide"] = {
+                k: v
+                for k, v in cs.items()
+                if v not in (None, "")
+            }
+            for src, dst in (
+                ("крупность", "крупность"),
+                ("движение", "движение"),
+                ("набор", "набор"),
+            ):
+                val = str(cs.get(src) or "").strip()
+                if val:
+                    row[dst] = val
         rows.append(row)
     return {
         "source": "db_v2",
@@ -213,6 +287,27 @@ def build_excel_gpt_check_context(
     return ctx
 
 
+def _coverage_parent_snapshot(parent: Any) -> dict[str, Any]:
+    from app.services.vo_shot_expand import coverage_shot_id
+
+    picked = _pick_attrs(getattr(parent, "attrs", None))
+    snap: dict[str, Any] = {
+        "number": getattr(parent, "number", None),
+        "uuid": _frame_uuid(parent),
+    }
+    sid = coverage_shot_id(parent)
+    if sid:
+        snap["shot_id"] = sid
+    for key in _PARENT_SNAP_KEYS:
+        val = picked.get(key)
+        if val:
+            snap[key] = val
+    img = str(getattr(parent, "image_prompt", None) or "").strip()
+    if img:
+        snap["image_prompt_head"] = _clip(img, _PARENT_PROMPT_HEAD)
+    return snap
+
+
 def build_img_pr_db_context(
     *,
     project_id: int,
@@ -222,12 +317,23 @@ def build_img_pr_db_context(
     general_plan: str = "",
     include_characters: bool = True,
     include_field_map: bool = False,
+    all_frames: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Полный снимок кадра из DB для агента промтов картинок.
 
     SoT = База: uuid + закадр + meaning + scene_grammar attrs + animation_prompt
     (если уже есть). Батчинг режет по числу кадров — VO не выкидываем.
+    ``all_frames``: все кадры проекта, чтобы K2/K3 видели coverage_parent,
+    даже если K1 в другом батче.
     """
+    from app.services.vo_shot_expand import (
+        coverage_shot_id,
+        find_coverage_parent_frame,
+        is_coverage_child,
+        parse_coverage_shot,
+    )
+
+    universe = list(all_frames) if all_frames is not None else list(frames)
     frame_rows: list[dict[str, Any]] = []
     for fr in frames:
         uuid = getattr(fr, "uuid", None) or ""
@@ -240,6 +346,10 @@ def build_img_pr_db_context(
         vo = str(getattr(fr, "voiceover_text", None) or "").strip()
         if vo:
             row["voiceover_text"] = vo
+        vo_shot = str(_camera_subdivide_from(fr).get("vo_shot") or "").strip()
+        if vo_shot:
+            row["vo_shot"] = vo_shot
+            row["закадр_шота"] = vo_shot
         meaning = (getattr(fr, "meaning", None) or "") or ""
         if meaning.strip():
             row["meaning"] = meaning.strip()
@@ -248,6 +358,18 @@ def build_img_pr_db_context(
             row["animation_prompt"] = anim
         picked = _pick_attrs(getattr(fr, "attrs", None))
         row.update(picked)
+        sid = coverage_shot_id(fr)
+        if sid:
+            row["shot_id"] = sid
+        if is_coverage_child(fr):
+            row["coverage_role"] = "child"
+            parent = find_coverage_parent_frame(universe, fr)
+            if parent is not None:
+                row["coverage_parent"] = _coverage_parent_snapshot(parent)
+        else:
+            parsed = parse_coverage_shot(sid)
+            if parsed is not None and parsed[1] == 1:
+                row["coverage_role"] = "parent"
         frame_rows.append(row)
     out: dict[str, Any] = {
         "source": "db_v2",
@@ -271,5 +393,6 @@ def build_img_pr_db_context(
             "accent": "FOCAL",
             "scene_sense": "visible facts",
             "scene_feature": "shot scale",
+            "coverage_parent": "K1 still of the SAME scene (Preserve/Change)",
         }
     return out

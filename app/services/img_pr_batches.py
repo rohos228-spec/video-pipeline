@@ -53,11 +53,22 @@ lock / Negative из мастера. Оркестратор НИЧЕГО не д
 - Один place на соседних кадрах = ЦЕПЬ фаз (не 4 одинаковых постера).
 - Соседи отличаются ≥2 из: фаза действия, поза тела, состояние пропа, камера/accent.
 - Визуальный twin (тот же силуэт+prop+дистанция) = брак — перепиши Action/камеру.
+
+=== COVERAGE K2/K3 (КРИТИЧНО) ===
+Если у кадра есть coverage_parent — это НЕ новая сцена, а следующий ракурс той же.
+Первый абзац промта:
+Image 1 is the previous coverage still of the SAME scene (layout / cast-count / prop-identity lock).
+Preserve: [place, shot01_bg, lighting, персонажи — то же число тел, key props = тот же экземпляр].
+Change: camera + действие ЭТОГО шота (shot01_description / shot01_action).
+Запрещено: новая локация; второй человек, которого не было в master;
+крупный план другой картины/документа (нужен punch-in той же).
+Фон/мебель/стены/люди/предметы бери из coverage_parent.
 """.strip()
 
 _FOLLOWUP_MSG = """
 Следующий батч. Те же правила. Полный промт: сцена + STYLE LOCK / Negative.
 Фон и план священны; ≤4877; 1 cXX = 1 тело; mid-motion; анти-twin.
+K2/K3 с coverage_parent: Preserve/Change, тот же сет/состав/предметы что у родителя, только камера.
 Мастер-промт и db_frames.json во вложении — только кадры этого батча.
 {footer}
 """.strip()

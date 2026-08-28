@@ -14,7 +14,8 @@
   Фаза B — вторые кадры (shot_02, строка 46), только где enrich заполнил
   блок 16–29 / есть промт:
   3. После завершения фазы A — для каждой сцены с shot_02 генерит
-     ``frame_NNN_s2_<uuid>.png`` с референсом = PNG первого кадра той же колонки.
+     ``frame_NNN_s2_<uuid>.png`` с референсом = PNG shot_01 той же колонки
+     (у дочернего кадра покрытия — PNG родителя).
 
   HITL-карточки шлются, но воркер не ждёт approve между кадрами.
 """
@@ -134,7 +135,7 @@ def normalize_ref_id(token: str) -> str | None:
 
 
 def ref_id_file_aliases(ref_id: str) -> list[str]:
-    """Варианты имён файлов: i01 ↔ predmet1 (новый/старый лист «Предметы»)."""
+    """Варианты имён файлов: i01 ↔ predmet1; c02 ↔ кириллица «с02»."""
     rid = normalize_ref_id(ref_id)
     if not rid:
         return []
@@ -144,6 +145,9 @@ def ref_id_file_aliases(ref_id: str) -> list[str]:
     elif rid.startswith("predmet") and rid[7:].isdigit():
         n = int(rid[7:])
         aliases.append(f"i{n:02d}")
+    # Explorer/Windows часто сохраняет c02.png как «с02.png» (U+0441).
+    if rid.startswith("c") and rid[1:].isdigit():
+        aliases.append("с" + rid[1:])
     return list(dict.fromkeys(aliases))
 
 
@@ -347,12 +351,14 @@ async def _load_refs_for_frame(
     session: AsyncSession | None,
     project: Project,
     frame_number: int,
+    *,
+    persons_override: list[str] | None = None,
 ) -> list[Path]:
-    """Читает xlsx-ячейки «персонажи» / «предметы» для столбца кадра.
+    """Рефы кадра. persons_override — id из промта/БД, не из листа.
 
     Outsee — максимум 2 рефа на генерацию. Порядок заполнения слотов:
-      1) персонажи из ячейки (c01, c02 через запятую — до 2 найденных);
-      2) предметы — в оставшиеся слоты;
+      1) персонажи (override или ячейка);
+      2) предметы — в оставшиеся слоты (если нет override);
       3) постоянный продукт массового — если остался свободный слот.
     """
     refs: list[Path] = []
@@ -361,7 +367,10 @@ async def _load_refs_for_frame(
     )
     persons_ids: list[str] = []
     items_ids: list[str] = []
-    if xlsx_path.exists():
+    if persons_override is not None:
+        persons_ids = [x for x in persons_override if x]
+        items_ids = []
+    elif xlsx_path.exists():
         try:
             from openpyxl import load_workbook  # ленивый импорт
             wb = load_workbook(xlsx_path, data_only=True, read_only=True)
@@ -435,6 +444,8 @@ async def _load_refs_for_frame(
     meta = getattr(project, "meta", None) or {}
     prod = meta.get("permanent_product") or {}
     prod_ref_path = prod.get("reference_image_path")
+    if persons_override is not None:
+        prod_ref_path = None
     if prod_ref_path and len(refs) < 2:
         prod_path = Path(prod_ref_path)
         if prod_path.exists():
@@ -1025,6 +1036,75 @@ async def _claim_shot1_batch(
     return claimed
 
 
+def _coverage_parent_uuid(frame: Frame) -> str:
+    attrs = dict(frame.attrs or {})
+    cs = attrs.get("camera_subdivide")
+    if not isinstance(cs, dict):
+        return ""
+    return str(cs.get("parent_uuid") or "").strip()
+
+
+async def _resolve_shot2_reference(
+    session: AsyncSession,
+    project_id: int,
+    out_dir: Path,
+    frame: Frame,
+) -> Path | None:
+    """Реф shot2: свой shot1, у ребёнка покрытия — PNG родителя."""
+    from app.services.vo_shot_expand import is_shot_child
+
+    parent_no: int | None = None
+    if is_shot_child(frame):
+        uid = _coverage_parent_uuid(frame)
+        if uid:
+            parent = (
+                await session.execute(
+                    select(Frame).where(
+                        Frame.project_id == project_id,
+                        Frame.uuid == uid,
+                    )
+                )
+            ).scalar_one_or_none()
+            if parent is not None:
+                parent_no = parent.number
+    return find_shot1_image(out_dir, parent_no if parent_no else frame.number)
+
+
+async def _coverage_parent_png(
+    session: AsyncSession,
+    project: Project,
+    frame: Frame,
+) -> Path | None:
+    """PNG K1 той же группы покрытия — layout-lock для K2/K3."""
+    from app.services.vo_shot_expand import (
+        find_coverage_parent_frame,
+        is_coverage_child,
+    )
+
+    if not is_coverage_child(frame):
+        return None
+    frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project.id)
+            .order_by(Frame.number)
+        )
+    ).scalars().all()
+    parent = find_coverage_parent_frame(list(frames), frame)
+    if parent is None or int(parent.number) == int(frame.number):
+        return None
+    scenes = project.data_dir / "scenes"
+    path = find_shot1_image(scenes, parent.number)
+    if path is None:
+        logger.warning(
+            "[#{}] frame {}: coverage child без PNG родителя #{}",
+            project.id,
+            frame.number,
+            parent.number,
+        )
+    return path
+
+
 async def _claim_shot2_batch(
     session: AsyncSession,
     project_id: int,
@@ -1130,7 +1210,11 @@ async def _run_claimed_batch(
         fr = claimed[0]
         try:
             ref = (
-                find_shot1_image(out_dir, fr.number) if shot == 2 else None
+                await _resolve_shot2_reference(
+                    session, project.id, out_dir, fr
+                )
+                if shot == 2
+                else None
             )
             if shot == 2 and ref is None:
                 logger.error(
@@ -1168,7 +1252,11 @@ async def _run_claimed_batch(
     await session.commit()
     jobs = []
     for fr in claimed:
-        ref = find_shot1_image(out_dir, fr.number) if shot == 2 else None
+        ref = (
+            await _resolve_shot2_reference(session, project.id, out_dir, fr)
+            if shot == 2
+            else None
+        )
         if shot == 2 and ref is None:
             from app.db import SessionLocal
 
@@ -1269,12 +1357,28 @@ async def _init_shot2_queue(
     out_dir: Path,
     xlsx_path: Path,
 ) -> int:
-    """Подготовить очередь shot_02 из xlsx → ``frame.attrs``."""
+    """Подготовить очередь shot_02: xlsx + дети покрытия из DB."""
+    from app.services.vo_shot_expand import is_shot_child
+
     by_num = read_shot2_columns(xlsx_path)
     queued = 0
     for fr in frames:
-        info = by_num.get(fr.number)
         attrs = dict(fr.attrs or {})
+        if str(attrs.get(SHOT2_STATUS_ATTR) or "") == "skipped":
+            continue
+        if is_shot_child(fr):
+            prompt = str(attrs.get(SHOT2_PROMPT_ATTR) or "").strip()
+            if is_skippable_empty_prompt(prompt):
+                continue
+            if disk_has_shot2_image(out_dir, fr.number):
+                attrs[SHOT2_STATUS_ATTR] = "image_generated"
+                fr.attrs = attrs
+                continue
+            attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
+            fr.attrs = attrs
+            queued += 1
+            continue
+        info = by_num.get(fr.number)
         if info is None or not info.has_shot2:
             if SHOT2_PROMPT_ATTR in attrs or SHOT2_STATUS_ATTR in attrs:
                 attrs.pop(SHOT2_PROMPT_ATTR, None)
@@ -1504,11 +1608,27 @@ async def _generate_and_send(
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] xlsx write_frame(gen_id) failed: {}", project.id, e)
 
-    # Референсы: shot_02 — всегда PNG shot_01 той же колонки; shot_01 — персонажи/предметы из xlsx.
+    # Референсы: shot_02 — PNG shot_01 той же колонки; дочерний кадр покрытия
+    # (K2/K3) — PNG родителя K1 как layout lock, затем персонаж (лимит 2).
     if is_shot2:
         refs: list[Path] = [shot1_reference] if shot1_reference else []
     else:
+        from app.services.vo_shot_expand import (
+            merge_parent_scene_refs,
+            with_parent_scene_lock,
+        )
+
         refs = await _load_refs_for_frame(session, project, frame.number)
+        parent_png = await _coverage_parent_png(session, project, frame)
+        refs = merge_parent_scene_refs(
+            parent_png, refs, max_refs=_OUTSEE_MAX_REFS
+        )
+        if parent_png is not None:
+            prompt_text = with_parent_scene_lock(
+                prompt_text,
+                has_parent_ref=True,
+                has_char_ref=len(refs) > 1,
+            )
     if refs:
         logger.info(
             "[#{}] frame {}: {} ref(ов) подгружено: {}",

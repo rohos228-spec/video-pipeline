@@ -60,6 +60,57 @@ def test_img_pr_db_context_picks_scene_grammar_keys() -> None:
     assert "shot01_bg" in ctx["field_map"]
 
 
+def test_img_pr_db_context_embeds_coverage_parent_from_other_batch() -> None:
+    parent = SimpleNamespace(
+        number=1,
+        uuid="p" * 24,
+        voiceover_text="у ворот канцелярии",
+        meaning="",
+        animation_prompt="",
+        image_prompt="Москва, приёмная канцелярии, дубовый стол, шкаф с делами",
+        attrs={
+            "place": "канцелярия",
+            "shot01_bg": "дубовый стол, шкаф",
+            "shot01_action": "разворачивает жалобу",
+            "lighting": "окно слева",
+            "персонажи": "c01",
+            "кадры": [{"id": "1-K1", "порядок": 1}],
+            "camera_subdivide": {"role": "vo_parent", "shot_id": "1-K1"},
+        },
+    )
+    child = SimpleNamespace(
+        number=2,
+        uuid="c" * 24,
+        voiceover_text="пишет отказ",
+        meaning="",
+        animation_prompt="",
+        image_prompt="",
+        attrs={
+            "place": "канцелярия",
+            "shot01_bg": "край стола",
+            "shot01_action": "перо по бумаге",
+            "shot01_description": "крупный план руки",
+            "кадры": [{"id": "1-K2", "порядок": 1}],
+            "camera_subdivide": {"role": "vo_parent", "shot_id": "1-K2"},
+        },
+    )
+    ctx = build_img_pr_db_context(
+        project_id=60,
+        slug="x",
+        frames=[child],
+        characters=[],
+        all_frames=[parent, child],
+    )
+    row = ctx["frames"][0]
+    assert row["coverage_role"] == "child"
+    assert row["shot_id"] == "1-K2"
+    snap = row["coverage_parent"]
+    assert snap["number"] == 1
+    assert snap["shot_id"] == "1-K1"
+    assert snap["place"] == "канцелярия"
+    assert "дубовый стол" in snap["image_prompt_head"]
+
+
 def test_img_pr_db_context_skips_frames_without_uuid() -> None:
     bad = SimpleNamespace(number=2, uuid="", voiceover_text="x", meaning="", attrs={})
     ctx = build_img_pr_db_context(

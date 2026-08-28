@@ -546,6 +546,9 @@ _IMG_PR_DB_HINT = (
     "lighting/scene_lighting → accent → scene_sense → scene_feature → "
     "shot01_description/props → place/время → STYLE. "
     "accent/scene_sense/scene_feature — отдельные строки. "
+    "Если у кадра есть coverage_parent — это K2/K3 ТОЙ ЖЕ сцены: первый абзац "
+    "Preserve/Change (Image 1 = still родителя). Не выдумывай новую локацию, "
+    "не добавляй людей сверх состава родителя, не подменяй картину/предмет. "
     "В промт_картинки пиши ПОЛНЫЙ промт: сцена + STYLE LOCK / Final style "
     "lock / Negative из мастера. Оркестратор НИЧЕГО не дописывает. "
     "characters[] Entity. Не копируй voiceover_text.\n"
@@ -571,7 +574,7 @@ async def _load_img_pr_context(
     *,
     only_uuids: set[str] | None = None,
     skip_uuids: set[str] | None = None,
-) -> tuple[list[Frame], list[dict], str]:
+) -> tuple[list[Frame], list[dict], str, list[Frame]]:
     """Кадры + Entity cards + general_plan для img_pr."""
     from app.db import SessionLocal
     from app.models import Entity
@@ -617,7 +620,7 @@ async def _load_img_pr_context(
         if (fr.image_prompt or "").strip():
             continue
         selected.append(fr)
-    return selected, cards, general_plan
+    return selected, cards, general_plan, frames
 
 
 def _write_img_pr_db_frames_for(
@@ -629,6 +632,7 @@ def _write_img_pr_db_frames_for(
     *,
     batch_tag: str = "",
     include_characters: bool = True,
+    all_frames: list[Frame] | None = None,
 ) -> Path:
     import json
 
@@ -642,6 +646,7 @@ def _write_img_pr_db_frames_for(
         general_plan=general_plan if include_characters else "",
         include_characters=include_characters,
         include_field_map=include_characters,
+        all_frames=all_frames,
     )
     name = f"db_frames{('_' + batch_tag) if batch_tag else ''}.json"
     out = tmp_dir / name
@@ -662,9 +667,9 @@ def _write_img_pr_db_frames_for(
 
 async def _write_img_pr_db_frames(project: Project, tmp_dir: Path) -> Path:
     """Пишет полный db_frames.json (smoke / legacy)."""
-    frames, cards, general_plan = await _load_img_pr_context(project)
+    frames, cards, general_plan, all_frames = await _load_img_pr_context(project)
     return _write_img_pr_db_frames_for(
-        project, tmp_dir, frames, cards, general_plan
+        project, tmp_dir, frames, cards, general_plan, all_frames=all_frames
     )
 
 
@@ -733,7 +738,7 @@ async def run_img_pr_xlsx(
     done_set = set(done_uuids)
 
     # НЕ пишем в DB по батчам (SQLite lock). Чекпоинт на диске → apply один раз в конце.
-    frames, cards, general_plan = await _load_img_pr_context(
+    frames, cards, general_plan, all_frames = await _load_img_pr_context(
         project, skip_uuids=done_set or None
     )
     if not frames:
@@ -751,7 +756,7 @@ async def run_img_pr_xlsx(
                 ops_applied_inline=False,
             )
         # Уже всё в DB с прошлого успешного прогона.
-        frames_db, _, _ = await _load_img_pr_context(project)
+        frames_db, _, _, _ = await _load_img_pr_context(project)
         if not frames_db:
             logger.info("img_pr_db: nothing to do — all frames already have prompts")
             return XlsxRoundtripResult(
@@ -809,6 +814,7 @@ async def run_img_pr_xlsx(
             general_plan,
             batch_tag=batch_tag,
             include_characters=True,
+            all_frames=all_frames,
         )
         uuid_lines = "\n".join(
             f"кадр {fr.number} = {fr.uuid}" for fr in batch if fr.uuid
