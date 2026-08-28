@@ -48,7 +48,7 @@ class GroupNodeSpec:
     dx: float  # смещение от якоря вставки (колонка)
     dy: float  # смещение по вертикали относительно центра группы
     marker: str | None = None  # data.sd_agent
-    prompt_variant: str | None = None  # файл в 05_excel_gpt (sd_<агент>)
+    prompt_variant: str | None = None  # группа: node_groups/<id>/; иначе 05_excel_gpt
     slot_overflow: bool = False  # data.slotOverflow — вне enrich-слотов 1..5
     # Конфиг «Работы с GPT» → meta.excel_gpt_nodes[node_id] (проверки и т.п.)
     operator_config: dict[str, Any] | None = None
@@ -346,6 +346,8 @@ def _script_frames_qc_group() -> NodeGroupDef:
         description=(
             "Сценарист: целый закадр → 1 seed → биты → проверка → "
             "главное действие → кадры по шаблонам T/X → промпты → QC. "
+            "Промты только в templates/node_groups/script_frames_qc/ "
+            "(не в общем списке «Работа с GPT»). "
             "Разбивка на ячейки — хвостом группы (vo_shot_expand)."
         ),
         category="planning",

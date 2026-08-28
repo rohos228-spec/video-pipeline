@@ -59,6 +59,7 @@ def test_scenes_to_frames_resolves_v8_template() -> None:
     from app.services.prompt_library import (
         SCRIPT_FRAMES_QC_PROMPT_NAMES,
         list_excel_gpt_prompts,
+        list_group_owned_prompts,
     )
 
     path = resolve_excel_gpt_prompt_path("scenes_to_frames_ru")
@@ -69,3 +70,28 @@ def test_scenes_to_frames_resolves_v8_template() -> None:
     listed = list_excel_gpt_prompts()
     for name in SCRIPT_FRAMES_QC_PROMPT_NAMES:
         assert name not in listed
+    grouped = list_group_owned_prompts("script_frames_qc")
+    assert grouped is not None
+    assert "scenes_to_frames_ru" in grouped
+    assert list_group_owned_prompts("scene_design_fanout") is None
+
+
+def test_write_group_prompt_stays_out_of_excel_gpt(
+    tmp_path, monkeypatch
+) -> None:
+    from app.services import prompt_library as pl
+
+    group_dir = tmp_path / "templates" / "node_groups" / "script_frames_qc"
+    group_dir.mkdir(parents=True)
+    excel_dir = tmp_path / "prompts" / "05_excel_gpt"
+    excel_dir.mkdir(parents=True)
+    monkeypatch.setattr("app.project_root.find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(pl, "PROMPTS_ROOT", tmp_path / "prompts")
+
+    pl.write_prompt("excel_gpt", "scenes_to_frames_ru", "GROUP BODY\n")
+    group = group_dir / "scenes_to_frames_ru.md"
+    common = excel_dir / "scenes_to_frames_ru.md"
+    assert group.read_text(encoding="utf-8") == "GROUP BODY\n"
+    assert not common.exists()
+    assert "scenes_to_frames_ru" not in pl.list_excel_gpt_prompts()
+    assert pl.resolve_excel_gpt_prompt_path("scenes_to_frames_ru") == group

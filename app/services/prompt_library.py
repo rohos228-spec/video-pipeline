@@ -139,6 +139,32 @@ def node_group_prompts_dir(group_id: str) -> Path:
     return find_project_root() / "templates" / "node_groups" / group_id
 
 
+def is_script_frames_qc_prompt(name: str) -> bool:
+    """Имя принадлежит изолированным промтам группы script_frames_qc."""
+    clean = (name or "").strip()
+    if clean.lower().endswith(".md"):
+        clean = clean[:-3].rstrip()
+    return clean in SCRIPT_FRAMES_QC_PROMPT_NAMES
+
+
+def script_frames_qc_group_id(group_id: str | None) -> str | None:
+    """Базовый id группы (без суффикса инстанса ``#2``)."""
+    if not group_id:
+        return None
+    base = str(group_id).split("#", 1)[0].strip()
+    return base if base == "script_frames_qc" else None
+
+
+def list_group_owned_prompts(group_id: str | None) -> list[str] | None:
+    """Промты изолированной группы. None — использовать общий список."""
+    if script_frames_qc_group_id(group_id) is None:
+        return None
+    d = node_group_prompts_dir("script_frames_qc")
+    return sorted(
+        n for n in SCRIPT_FRAMES_QC_PROMPT_NAMES if (d / f"{n}.md").is_file()
+    )
+
+
 def _group_prompt_path(name: str) -> Path | None:
     """Изолированный промт группы (не общий 05_excel_gpt)."""
     clean = name.strip()
@@ -162,35 +188,6 @@ def excel_gpt_prompt_exists(name: str) -> bool:
         except ValueError:
             continue
     return False
-
-
-# Локальная копия 05_excel_gpt устарела → брать git-шаблон группы.
-_STALE_EXCEL_GPT_MARKERS: dict[str, tuple[str, ...]] = {
-    "scenes_to_frames_ru": (
-        "Как в кино: покрытие сцены",
-        "v6 — покрытие",
-        "v7 — покрытие",
-        "Не плоди покрытие",
-    ),
-}
-
-
-def _excel_gpt_local_is_stale(name: str, path: Path) -> bool:
-    """Устаревший файл в 05_excel_gpt при наличии свежего группового SoT."""
-    markers = _STALE_EXCEL_GPT_MARKERS.get(name)
-    group = _group_prompt_path(name)
-    if not markers or not path.is_file() or group is None:
-        return False
-    try:
-        head = path.read_text(encoding="utf-8")[:1600]
-        tmpl_head = group.read_text(encoding="utf-8")[:400]
-    except OSError:
-        return False
-    if "шаблоны T/X" in head or "v8 — шаблоны" in head:
-        return False
-    if "шаблоны T/X" not in tmpl_head and "v8 — шаблоны" not in tmpl_head:
-        return False
-    return any(m in head for m in markers)
 
 
 def resolve_excel_gpt_prompt_path(name: str) -> Path:
@@ -383,6 +380,12 @@ def read_prompt(step_code: str, name: str) -> str:
 
 def write_prompt(step_code: str, name: str, content: str) -> Path:
     if is_excel_gpt_prompt_step(step_code):
+        clean = _clean_variant_name(name) if name else ""
+        if clean in SCRIPT_FRAMES_QC_PROMPT_NAMES:
+            p = node_group_prompts_dir("script_frames_qc") / f"{clean}.md"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8")
+            return p
         step_code = EXCEL_GPT_UNIFIED_STEP
     p = prompt_path(step_code, name)
     p.write_text(content, encoding="utf-8")
@@ -395,6 +398,10 @@ def delete_prompt(step_code: str, name: str) -> bool:
     Возвращает True если файл был удалён."""
     if name == DEFAULT_NAME:
         raise ValueError("default удалять нельзя")
+    if is_script_frames_qc_prompt(name):
+        raise ValueError(
+            "промт группы script_frames_qc нельзя удалить из общей библиотеки"
+        )
     if is_excel_gpt_prompt_step(step_code):
         p = resolve_excel_gpt_prompt_path(name)
         if not p.is_file():

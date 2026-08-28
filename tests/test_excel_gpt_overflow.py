@@ -199,7 +199,7 @@ def test_detect_qc_prompt_body_is_not_frame_fill() -> None:
     )
 
     for candidate in (
-        Path("prompts/05_excel_gpt/prompts_qc_continuity_ru.md"),
+        Path("templates/node_groups/script_frames_qc/prompts_qc_continuity_ru.md"),
         Path("templates/excel_gpt_agents/prompts_qc_continuity_ru.md"),
     ):
         if candidate.is_file():
