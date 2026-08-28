@@ -68,6 +68,67 @@ def planned_shots_from_attrs(frame: Any) -> list[dict[str, Any]]:
     return [item for item in raw if isinstance(item, dict)]
 
 
+def kadry_are_scene_shots(planned: list[dict[str, Any]] | None) -> bool:
+    """Настоящие кадры сцен (T/X: шаблон / план+место), не заглушки Bnn-K1."""
+    for item in planned or []:
+        if not isinstance(item, dict):
+            continue
+        template = str(item.get("шаблон") or item.get("template") or "").strip()
+        tid = template.upper()
+        if tid[:1] in {"T", "X"} and any(ch.isdigit() for ch in tid):
+            return True
+        plan = str(item.get("план") or item.get("plan") or "").strip()
+        place = str(item.get("место") or item.get("place") or "").strip()
+        angle = str(item.get("ракурс") or item.get("angle") or "").strip()
+        if plan and (place or angle):
+            return True
+    return False
+
+
+def frame_has_scene_shots(frame: Any) -> bool:
+    return kadry_are_scene_shots(planned_shots_from_attrs(frame))
+
+
+def main_action_text(frame: Any) -> str:
+    attrs = getattr(frame, "attrs", None)
+    if not isinstance(attrs, dict):
+        return ""
+    return str(
+        attrs.get("главное_действие") or attrs.get("main_action") or ""
+    ).strip()
+
+
+def collect_bits_for_reseed(frames: list[Any]) -> list[dict[str, Any]]:
+    """Биты с самой длинной ячейки; если везде по одному — склеить по порядку."""
+    per_cell: list[list[dict[str, Any]]] = []
+    for fr in frames:
+        found = bits_from_attrs(fr)
+        if found:
+            per_cell.append(found)
+    if not per_cell:
+        return []
+    longest = max(per_cell, key=len)
+    if len(longest) >= 2:
+        return longest
+    merged: list[dict[str, Any]] = []
+    for found in per_cell:
+        merged.extend(found)
+    return merged
+
+
+def strip_non_scene_kadry(frame: Any) -> bool:
+    """Снять фейковые Bnn-K1, чтобы shots GPT писал T/X с нуля."""
+    planned = planned_shots_from_attrs(frame)
+    if not planned or kadry_are_scene_shots(planned):
+        return False
+    attrs = dict(getattr(frame, "attrs", None) or {})
+    attrs.pop("кадры", None)
+    attrs.pop("shots", None)
+    frame.attrs = attrs
+    _flag_attrs(frame)
+    return True
+
+
 def coverage_shot_id(frame: Any) -> str:
     """id шота покрытия: ``кадры[0].id`` или ``camera_subdivide.shot_id``."""
     planned = planned_shots_from_attrs(frame)
@@ -847,7 +908,11 @@ async def reseed_vo_cells_without_kadry(
     session: AsyncSession,
     project: Project,
 ) -> dict[str, Any]:
-    """Несколько ячеек без кадры[], склейка = целый закадр → снова 1 seed + биты."""
+    """Несколько ячеек без T/X кадры[] → снова 1 seed + биты.
+
+    Заглушки Bnn-K1 не считаются кадрами сцен: их снимаем и схлопываем.
+    Склейка split-ячеек не требуется — SoT закадра = script_text.
+    """
     from sqlalchemy import select as sel
 
     from app.services import db_v2
@@ -865,21 +930,28 @@ async def reseed_vo_cells_without_kadry(
         .all()
     )
     work = [fr for fr in frames if _is_pipeline_frame(fr)]
-    if len(work) <= 1 or not full:
-        return {"reseeding": False, "cells": len(work)}
-    if any(planned_shots_from_attrs(fr) for fr in work):
-        return {"reseeding": False, "cells": len(work), "reason": "has_kadry"}
-    joined = " ".join(
-        " ".join((getattr(fr, "voiceover_text", None) or "").split()) for fr in work
-    )
-    if joined != full:
-        return {"reseeding": False, "cells": len(work), "reason": "join_mismatch"}
-    bits: list[Any] = []
-    for fr in work:
-        found = bits_from_attrs(fr)
-        if found:
-            bits = found
-            break
+    if not full:
+        return {"reseeding": False, "cells": len(work), "reason": "no_vo"}
+    if any(frame_has_scene_shots(fr) for fr in work):
+        return {"reseeding": False, "cells": len(work), "reason": "has_tx"}
+    stripped = sum(1 for fr in work if strip_non_scene_kadry(fr))
+    bits = collect_bits_for_reseed(work)
+    if len(work) <= 1:
+        if work:
+            seed = work[0]
+            attrs = dict(getattr(seed, "attrs", None) or {})
+            if bits:
+                attrs["биты"] = bits
+            seed.attrs = attrs
+            _flag_attrs(seed)
+            await session.flush()
+        return {
+            "reseeding": False,
+            "cells": len(work),
+            "stripped": stripped,
+            "bits": len(bits),
+            "reason": "already_one",
+        }
     seed = await db_v2.ensure_single_seed_vo_cell(session, project, full)
     attrs = dict(getattr(seed, "attrs", None) or {})
     if bits:
@@ -888,12 +960,18 @@ async def reseed_vo_cells_without_kadry(
     _flag_attrs(seed)
     await session.flush()
     logger.info(
-        "[#{}] reseed VO without кадры[]: cells {}→1 bits={}",
+        "[#{}] reseed VO without T/X кадры[]: cells {}→1 bits={} stripped={}",
         project.id,
         len(work),
         len(bits),
+        stripped,
     )
-    return {"reseeding": True, "cells_before": len(work), "bits": len(bits)}
+    return {
+        "reseeding": True,
+        "cells_before": len(work),
+        "bits": len(bits),
+        "stripped": stripped,
+    }
 
 
 async def apply_shot_coverage_to_vo_cells(

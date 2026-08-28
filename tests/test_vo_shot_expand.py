@@ -97,6 +97,124 @@ def test_resolve_shot_plan_falls_back_without_kadrы() -> None:
     assert parts == [vo]
 
 
+def test_kadry_are_scene_shots_tx_not_bit_stubs() -> None:
+    from app.services.vo_shot_expand import kadry_are_scene_shots
+
+    stubs = [
+        {"id": "B01-K1", "parent_id": None, "порядок": 1, "действие": "ищут"},
+        {"id": "B02-K1", "parent_id": None, "порядок": 2, "действие": "рождается"},
+    ]
+    assert kadry_are_scene_shots(stubs) is False
+    assert kadry_are_scene_shots([]) is False
+    tx = [
+        {
+            "id": "1-K1",
+            "шаблон": "T2",
+            "план": "ОБЩИЙ",
+            "ракурс": "фронт",
+            "место": "следственный отдел",
+            "действие": "к доске крепят карточку",
+        }
+    ]
+    assert kadry_are_scene_shots(tx) is True
+    plan_only = [{"план": "СРЕДНИЙ", "место": "комната Ткача"}]
+    assert kadry_are_scene_shots(plan_only) is True
+
+
+def test_strip_non_scene_kadry_keeps_tx() -> None:
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import (
+        frame_has_scene_shots,
+        strip_non_scene_kadry,
+    )
+
+    stub = SimpleNamespace(
+        attrs={"кадры": [{"id": "B01-K1", "действие": "ищут"}]}
+    )
+    assert strip_non_scene_kadry(stub) is True
+    assert "кадры" not in stub.attrs
+    tx = SimpleNamespace(
+        attrs={
+            "кадры": [
+                {
+                    "id": "1-K1",
+                    "шаблон": "T3",
+                    "план": "ОБЩИЙ",
+                    "место": "архив",
+                }
+            ]
+        }
+    )
+    assert strip_non_scene_kadry(tx) is False
+    assert frame_has_scene_shots(tx) is True
+
+
+def test_collect_bits_for_reseed_merges_one_per_cell() -> None:
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import collect_bits_for_reseed
+
+    cells = [
+        SimpleNamespace(attrs={"биты": [{"порядок": 1, "глагол": "a"}]}),
+        SimpleNamespace(attrs={"биты": [{"порядок": 2, "глагол": "b"}]}),
+    ]
+    merged = collect_bits_for_reseed(cells)
+    assert [b["глагол"] for b in merged] == ["a", "b"]
+    long = SimpleNamespace(
+        attrs={
+            "биты": [
+                {"порядок": 1, "глагол": "x"},
+                {"порядок": 2, "глагол": "y"},
+            ]
+        }
+    )
+    short = SimpleNamespace(attrs={"биты": [{"порядок": 1, "глагол": "z"}]})
+    assert collect_bits_for_reseed([long, short])[0]["глагол"] == "x"
+
+
+def test_canvas_four_node_has_no_fw_shots() -> None:
+    from types import SimpleNamespace
+
+    from app.orchestrator.steps.enrich_xlsx import _canvas_has_fw_shots
+
+    four = SimpleNamespace(
+        meta={
+            "canvas_graph": {
+                "nodes": [
+                    {"id": "n_excel_gpt_fw_script"},
+                    {"id": "n_excel_gpt_fw_check_script"},
+                    {"id": "n_excel_gpt_fw_frames"},
+                    {"id": "n_excel_gpt_fw_qc"},
+                ]
+            }
+        }
+    )
+    six = SimpleNamespace(
+        meta={
+            "canvas_graph": {
+                "nodes": [
+                    {"id": "n_excel_gpt_fw_script"},
+                    {"id": "n_excel_gpt_fw_action"},
+                    {"id": "n_excel_gpt_fw_shots"},
+                    {"id": "n_excel_gpt_fw_frames"},
+                ]
+            }
+        }
+    )
+    assert _canvas_has_fw_shots(four) is False
+    assert _canvas_has_fw_shots(six) is True
+
+
+def test_group_prompts_for_four_node_markup_exist() -> None:
+    from app.orchestrator.steps.enrich_xlsx import _load_script_frames_qc_prompt
+
+    action = _load_script_frames_qc_prompt("main_action_from_bits_ru")
+    shots = _load_script_frames_qc_prompt("scenes_to_frames_ru")
+    assert "главное_действие" in action
+    assert "select" in shots.casefold() or "шаблон" in shots
+
+
 def test_kadry_from_bits_covers_full_vo() -> None:
     from app.services.vo_shot_expand import kadry_from_bits
 
