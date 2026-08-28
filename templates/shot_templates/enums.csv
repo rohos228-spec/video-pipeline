@@ -1,0 +1,10 @@
+﻿key;values
+plan;ОБЩИЙ|СРЕДНИЙ|КРУПНЫЙ|ДЕТАЛЬ|ДАЛЬНИЙ
+angle;фронт|с_плеча|3/4|макро|следование|—
+axis;нет|180_фиксирована|eyeline
+parent;null|master|master_or_null|T4-K1|T6-K1|side_of_face|prev_location_master|null_if_new_meaning
+role;alone|master|side_A|side_B|insert|reaction|action|enter|eyeline_out|eyeline_object|eyeline_back|start|travel|arrive|before|hit|world|anchor|point|exit|continue|master_A|master_B
+required;"1=нельзя выкинуть при сжатии; 0=можно выкинуть по drop_order"
+drop_order;порядок удаления кадров слева направо, пока текст короткий
+when;"условия через ;  альтернативы через |"
+slots;{место}{кто}{A}{B}{предмет}{откуда}{куда}{путь}{объект}{удар}{жест}{состояние}{быт}{якорь}{действие}
