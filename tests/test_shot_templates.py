@@ -56,7 +56,16 @@ def test_neighbor_place_hints_prev() -> None:
 
 
 def test_scenes_to_frames_resolves_v8_template() -> None:
+    from app.services.prompt_library import (
+        SCRIPT_FRAMES_QC_PROMPT_NAMES,
+        list_excel_gpt_prompts,
+    )
+
     path = resolve_excel_gpt_prompt_path("scenes_to_frames_ru")
+    assert "node_groups/script_frames_qc" in str(path).replace("\\", "/")
     text = path.read_text(encoding="utf-8")
     assert "v8 — шаблоны" in text or "шаблоны T/X" in text
     assert "drop_order" in text
+    listed = list_excel_gpt_prompts()
+    for name in SCRIPT_FRAMES_QC_PROMPT_NAMES:
+        assert name not in listed

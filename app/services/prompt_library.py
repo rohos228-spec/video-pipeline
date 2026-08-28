@@ -120,25 +120,51 @@ def excel_gpt_source_steps() -> tuple[str, ...]:
     return (EXCEL_GPT_UNIFIED_STEP, *(f"enrich_{i}" for i in range(1, 6)))
 
 
+# Промты группы script_frames_qc — только templates/node_groups/…,
+# не в общем списке «Работа с GPT» / prompts/05_excel_gpt.
+SCRIPT_FRAMES_QC_PROMPT_NAMES: frozenset[str] = frozenset(
+    {
+        "script_writer_ru",
+        "main_action_from_bits_ru",
+        "scenes_to_frames_ru",
+        "frame_prompts_continuity_ru",
+        "prompts_qc_continuity_ru",
+    }
+)
+
+
+def node_group_prompts_dir(group_id: str) -> Path:
+    from app.project_root import find_project_root
+
+    return find_project_root() / "templates" / "node_groups" / group_id
+
+
+def _group_prompt_path(name: str) -> Path | None:
+    """Изолированный промт группы (не общий 05_excel_gpt)."""
+    clean = name.strip()
+    if clean in SCRIPT_FRAMES_QC_PROMPT_NAMES:
+        p = node_group_prompts_dir("script_frames_qc") / f"{clean}.md"
+        if p.is_file():
+            return p
+    return None
+
+
 def excel_gpt_prompt_exists(name: str) -> bool:
     clean = _clean_variant_name(name) if name else ""
     if not clean:
         return False
+    if _group_prompt_path(clean) is not None:
+        return True
     for code in excel_gpt_source_steps():
         try:
             if prompt_path(code, clean).exists():
                 return True
         except ValueError:
             continue
-    try:
-        if _excel_gpt_template_path(clean).is_file():
-            return True
-    except Exception:
-        pass
     return False
 
 
-# Локальная копия 05_excel_gpt устарела → брать git-шаблон.
+# Локальная копия 05_excel_gpt устарела → брать git-шаблон группы.
 _STALE_EXCEL_GPT_MARKERS: dict[str, tuple[str, ...]] = {
     "scenes_to_frames_ru": (
         "Как в кино: покрытие сцены",
@@ -149,20 +175,15 @@ _STALE_EXCEL_GPT_MARKERS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _excel_gpt_template_path(name: str) -> Path:
-    from app.project_root import find_project_root
-
-    return find_project_root() / "templates" / "excel_gpt_agents" / f"{name}.md"
-
-
 def _excel_gpt_local_is_stale(name: str, path: Path) -> bool:
+    """Устаревший файл в 05_excel_gpt при наличии свежего группового SoT."""
     markers = _STALE_EXCEL_GPT_MARKERS.get(name)
-    tmpl = _excel_gpt_template_path(name)
-    if not markers or not path.is_file() or not tmpl.is_file():
+    group = _group_prompt_path(name)
+    if not markers or not path.is_file() or group is None:
         return False
     try:
         head = path.read_text(encoding="utf-8")[:1600]
-        tmpl_head = tmpl.read_text(encoding="utf-8")[:400]
+        tmpl_head = group.read_text(encoding="utf-8")[:400]
     except OSError:
         return False
     if "шаблоны T/X" in head or "v8 — шаблоны" in head:
@@ -173,16 +194,17 @@ def _excel_gpt_local_is_stale(name: str, path: Path) -> bool:
 
 
 def resolve_excel_gpt_prompt_path(name: str) -> Path:
-    """Читать из 05_excel_gpt, legacy enrich_* или templates/excel_gpt_agents."""
+    """Групповые промты → templates/node_groups; иначе 05_excel_gpt / enrich_*."""
     clean = _sanitize_name(name) if not is_valid_prompt_name(name) else name
     if not clean:
         raise ValueError(f"некорректное имя промта: {name!r}")
+    # Имена группы — только из templates/node_groups/script_frames_qc/
+    if clean in SCRIPT_FRAMES_QC_PROMPT_NAMES:
+        group = _group_prompt_path(clean)
+        if group is not None:
+            return group
+        return node_group_prompts_dir("script_frames_qc") / f"{clean}.md"
     primary = step_dir(EXCEL_GPT_UNIFIED_STEP) / f"{clean}.md"
-    tmpl = _excel_gpt_template_path(clean)
-    if primary.is_file() and not _excel_gpt_local_is_stale(clean, primary):
-        return primary
-    if tmpl.is_file():
-        return tmpl
     if primary.is_file():
         return primary
     for code in (f"enrich_{i}" for i in range(1, 6)):
@@ -316,10 +338,12 @@ def list_prompts(step_code: str) -> list[str]:
 
 
 def list_excel_gpt_prompts() -> list[str]:
-    """Все .md для «Работа с GPT» — единый список из 05_excel_gpt + legacy enrich_*."""
+    """Общий список «Работа с GPT». Промты групп (script_frames_qc) сюда не входят."""
     merged: dict[str, None] = {}
     for code in excel_gpt_source_steps():
         for n in _list_prompts_in_dir(code):
+            if n in SCRIPT_FRAMES_QC_PROMPT_NAMES:
+                continue
             merged.setdefault(n, None)
     names = sorted(merged.keys())
     if DEFAULT_NAME in names:
