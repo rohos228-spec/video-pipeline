@@ -228,6 +228,11 @@ FIELD_ALIASES: dict[str, str] = {
     "логика_перехода_shot02": "shot02_transition",
     "shot02_notes": "shot02_notes",
     "shot02_status": "shot02_status",
+    # script_frames_qc: биты / кадры живут в Frame.attrs (не строки Excel).
+    "биты": "биты",
+    "bits": "биты",
+    "кадры": "кадры",
+    "shots": "кадры",
 }
 
 # Поля, которые живут в Frame.attrs (не колонки Frame.*).
@@ -235,7 +240,10 @@ _ATTR_FIELD_KEYS = frozenset(_ATTR_EXCEL_ROWS) | {
     "characters",
     "image_prompt_shot2",
     "animation_prompt_shot2",
+    "биты",
+    "кадры",
 }
+_STRUCTURED_ATTR_KEYS = frozenset({"биты", "кадры"})
 
 PROJECT_FIELD_ALIASES: dict[str, str] = {
     "general_plan": "general_plan",
@@ -257,6 +265,27 @@ class ApplyOpsError(ValueError):
 def _canon_key(raw: str, aliases: dict[str, str]) -> str | None:
     key = str(raw).strip().lower().replace(" ", "_")
     return aliases.get(key)
+
+
+def _coerce_structured_attr(value: Any) -> Any:
+    """Биты/кадры — JSON-массив или объект, не строка Excel."""
+    if value is None:
+        return []
+    if isinstance(value, (list, dict)):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text[0] in "[{":
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                return text
+            if isinstance(parsed, (list, dict)):
+                return parsed
+        return text
+    return value
 
 
 def normalize_fields(raw: dict, aliases: dict[str, str], *, scope: str) -> dict:
@@ -1288,6 +1317,10 @@ async def apply_ops(
             attrs["characters"] = persons
             attrs["persons"] = persons
             attrs["персонажи"] = persons
+        for attr_key in _STRUCTURED_ATTR_KEYS:
+            if attr_key not in fields:
+                continue
+            attrs[attr_key] = _coerce_structured_attr(fields[attr_key])
         for attr_key in _ATTR_EXCEL_ROWS:
             if attr_key in fields:
                 attrs[attr_key] = str(fields[attr_key] or "")

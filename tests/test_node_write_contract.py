@@ -197,6 +197,33 @@ def test_excel_gpt_drops_replace_frames() -> None:
     assert out[0]["fields"]["место"] == "двор"
 
 
+def test_excel_gpt_script_keeps_only_bits() -> None:
+    ops = [
+        {
+            "frame_uuid": "aa",
+            "fields": {
+                "биты": [{"порядок": 1, "суть": "было"}],
+                "закадр": "НЕЛЬЗЯ",
+                "voiceover_text": "НЕЛЬЗЯ",
+                "промт_картинки": "NO",
+                "место": "кухня",
+                "действие": "не это",
+            },
+        },
+        {"target": "replace_frames", "frames": [{"закадр": "нет"}]},
+    ]
+    out = filter_ops_for_node(ops, node_kind="excel_gpt_script")
+    assert len(out) == 1
+    assert out[0]["fields"] == {"биты": [{"порядок": 1, "суть": "было"}]}
+
+
+def test_excel_gpt_script_keeps_bits_alias() -> None:
+    ops = [{"frame_uuid": "aa", "fields": {"bits": [{"порядок": 1}], "место": "нет"}}]
+    out = filter_ops_for_node(ops, node_kind="excel_gpt_script")
+    assert out[0]["fields"]["bits"] == [{"порядок": 1}]
+    assert "место" not in out[0]["fields"]
+
+
 def test_excel_gpt_no_prompts_strips_voiceover() -> None:
     ops = [
         {

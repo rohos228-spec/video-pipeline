@@ -92,3 +92,32 @@ def test_resolve_full_voiceover_empty() -> None:
     p = Project(slug="vo-empty", topic="t", status=None)  # type: ignore[arg-type]
     p.script_text = ""
     assert db_v2.resolve_full_voiceover_text(p) == ""
+
+
+@pytest.mark.asyncio
+async def test_apply_ops_script_kind_writes_bits(session: AsyncSession) -> None:
+    from app.services.db_apply import apply_ops
+
+    full = "Целый закадр для разметки битов одним куском."
+    p = await _mk_project(session, script=full)
+    fr = await db_v2.ensure_single_seed_vo_cell(session, p, full)
+    bits = [{"порядок": 1, "суть": "было"}, {"порядок": 2, "суть": "стало"}]
+    await apply_ops(
+        session,
+        p,
+        [
+            {
+                "frame_uuid": fr.uuid,
+                "fields": {
+                    "биты": bits,
+                    "закадр": "нельзя",
+                    "промт_картинки": "нет",
+                },
+            }
+        ],
+        node_kind="excel_gpt_script",
+    )
+    await session.refresh(fr)
+    assert fr.voiceover_text == full
+    assert fr.image_prompt in (None, "")
+    assert fr.attrs["биты"] == bits
