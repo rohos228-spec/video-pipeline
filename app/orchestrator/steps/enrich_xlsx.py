@@ -534,7 +534,7 @@ async def _ensure_four_node_scene_shots(
             f"#{project.id} {node_key}: нет битов — сначала прогони "
             "ноду «Сценарист», потом снова ▶ промты кадров"
         )
-    need_action = force_full or not any(
+    need_action = not any(
         looks_like_scene_chain(main_action_text(fr)) for fr in parents
     )
     need_shots = force_full or not any(frame_has_scene_shots(fr) for fr in parents)
@@ -585,7 +585,14 @@ async def _ensure_four_node_scene_shots(
     if need_shots:
         catalog = format_shot_templates_catalog()
         neighbors = neighbor_place_hints(parents)
-        extra = f"\n\n{neighbors}" if neighbors else ""
+        from app.services.shot_templates import format_when_assignments
+
+        when_plan = format_when_assignments(parents)
+        extra = ""
+        if neighbors:
+            extra += f"\n\n{neighbors}"
+        if when_plan:
+            extra += f"\n\n{when_plan}"
         await _run_four_node_markup_pass(
             session,
             project,
@@ -600,8 +607,11 @@ async def _ensure_four_node_scene_shots(
                 "# DB SoT\n"
                 "Файл db_frames.json — VO-ячейки (uuid + voiceover_text + "
                 "главное_действие). Пиши только fields.кадры. "
-                "Выбери шаблон T/X из каталога ниже, раскрой shots, "
-                "подставь слоты, сожми по drop_order (required=1 не трогай). "
+                "На каждую сцену главное_действие — свой select T/X, "
+                "не один шаблон на всю ячейку. T8 только на прыжок "
+                "жизни/новое место. Одно место — лестница планов. "
+                "Раскрой shots, подставь слоты, сожми по drop_order "
+                "(required=1 не трогай). "
                 "Не пиши закадр, биты, главное_действие.\n\n"
                 f"{catalog}{extra}"
             ),

@@ -6,11 +6,60 @@ from types import SimpleNamespace
 
 from app.services.prompt_library import resolve_excel_gpt_prompt_path
 from app.services.shot_templates import (
+    assign_templates_for_action,
+    avoid_repeat_template,
     clear_shot_templates_cache,
+    coverage_template_reason,
     format_shot_templates_catalog,
     load_shot_templates,
     neighbor_place_hints,
+    template_max_shots,
 )
+
+
+def test_template_max_shots_from_catalog() -> None:
+    clear_shot_templates_cache()
+    assert template_max_shots("T0") == 1
+    assert template_max_shots("T5") == 4
+    assert template_max_shots("T3") == 2
+
+
+def test_avoid_repeat_template_except_t0() -> None:
+    assert avoid_repeat_template("T5", "T5", same_place=True) != "T5"
+    assert avoid_repeat_template("T0", "T0", same_place=True) == "T0"
+    assert avoid_repeat_template("T3", "T5", same_place=False) == "T3"
+
+
+def test_assign_templates_does_not_repeat_t() -> None:
+    action = (
+        "1. кабинет следствия — раскладывают дело\n(один)\n"
+        "2. кабинет следствия — листают протоколы\n(два)\n"
+        "3. кабинет следствия — отмечают схему\n(три)\n"
+    )
+    assigned = assign_templates_for_action(action)
+    vals = [assigned[i] for i in sorted(assigned)]
+    for a, b in zip(vals, vals[1:]):
+        if a != "T0":
+            assert a != b
+
+
+def test_coverage_template_reason_lengthen() -> None:
+    shots = [
+        {
+            "сцена": 1,
+            "шаблон": "T0",
+            "план": "СРЕДНИЙ",
+            "место": "титр",
+        },
+        {
+            "сцена": 1,
+            "шаблон": "T0",
+            "план": "ОБЩИЙ",
+            "место": "титр",
+        },
+    ]
+    reason = coverage_template_reason(shots, "aa" * 4)
+    assert reason and "удлинили" in reason
 
 
 def test_load_shot_templates_has_t1_and_select() -> None:

@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from app.project_root import find_project_root
+
+_SCENE_SPLIT = re.compile(r"\n(?=\d+\.\s)")
+_SCENE_HEAD = re.compile(r"^(\d+)\.\s*(.+)$")
+
+
+def _has(pat: str, text: str) -> bool:
+    return bool(re.search(pat, text, flags=re.IGNORECASE))
 
 _REL = Path("templates") / "shot_templates" / "shot_templates.json"
 
@@ -36,6 +44,225 @@ def clear_shot_templates_cache() -> None:
     load_shot_templates.cache_clear()
 
 
+def parse_scene_chain(action: str) -> list[dict[str, Any]]:
+    """Сцены из главное_действие: N. место — действие + (закадр)."""
+    text = (action or "").strip()
+    if not text:
+        return []
+    scenes: list[dict[str, Any]] = []
+    for raw in _SCENE_SPLIT.split(text):
+        raw = raw.strip()
+        if not raw:
+            continue
+        lines = raw.split("\n", 1)
+        head = lines[0].strip()
+        vo = lines[1].strip() if len(lines) > 1 else ""
+        m = _SCENE_HEAD.match(head)
+        if not m:
+            continue
+        rest = m.group(2).strip()
+        if " — " in rest:
+            place, act = rest.split(" — ", 1)
+        elif " - " in rest:
+            place, act = rest.split(" - ", 1)
+        else:
+            place, act = "", rest
+        scenes.append(
+            {
+                "n": int(m.group(1)),
+                "place": place.strip(),
+                "action": act.strip(),
+                "vo": vo,
+                "blob": f"{place} {act} {vo}",
+            }
+        )
+    return scenes
+
+
+def select_template_when(scene: dict[str, Any], prev_place: str = "") -> str:
+    """Первое «да» по when / Выбор. X1 если место не сменилось."""
+    blob = str(scene.get("blob") or "")
+    place = str(scene.get("place") or "").strip().casefold()
+    prev = (prev_place or "").strip().casefold()
+    same = bool(place and prev and place == prev)
+    if _has(r"титр|имя появляется", blob) and not same:
+        return "T0"
+    if _has(r"говор(ят|ит)|спор(ят|ит)|спрашив", blob):
+        return "T1"
+    if _has(r"нашёл|нашел|взял|прочитал|достал", blob) and (
+        (not same) or _has(r"папк|документ|книг|схем", blob)
+    ):
+        return "T2"
+    if same:
+        if _has(r"смотр|наблюд|взгляд|видит", blob):
+            return "T4"
+        if _has(
+            r"листа|пишет|моет|режет|счита|отпечат|схем|отмеча|"
+            r"оформл|расклад|упаков|доказател",
+            blob,
+        ):
+            return "T5"
+        if _has(r"уход|покид|пустое место|закрывает", blob):
+            return "T10"
+        if _has(r"услышал|понял|получил|вопрос на доске|появляется вопрос", blob):
+            return "T7"
+        return "X1"
+    if _has(r"родил|служб[аеуы]|арми|1980|а потом|друг(ая|ой) жизн", blob):
+        return "T8"
+    if _has(r"идёт|едет|вышел из|приехал|поезд", blob) and _has(
+        r"из |в |к |от |до ", blob
+    ):
+        return "T6"
+    if place:
+        return "T3"
+    if _has(r"уход|покид|пустое", blob):
+        return "T10"
+    return "T0"
+
+
+def normalize_template_id(tid: str) -> str:
+    raw = (tid or "").strip().upper()
+    match = re.match(r"^([TX]\d+)", raw)
+    return match.group(1) if match else raw
+
+
+def template_max_shots(tid: str) -> int:
+    """Сколько строк shots у шаблона. 0 если id нет в каталоге."""
+    base = normalize_template_id(tid)
+    if not base:
+        return 0
+    rows = [
+        row
+        for row in (load_shot_templates().get("shots") or [])
+        if normalize_template_id(str(row.get("template_id") or "")) == base
+    ]
+    return len(rows)
+
+
+_ALT_SAME = {
+    "T5": "T4",
+    "T4": "T7",
+    "T7": "T9",
+    "T9": "X1",
+    "T2": "T5",
+    "T3": "X1",
+    "T10": "X1",
+    "T1": "T4",
+    "T6": "T10",
+    "T8": "X1",
+    "X1": "T4",
+    "X2": "T3",
+}
+_ALT_NEW = {
+    "T3": "T8",
+    "T8": "T3",
+    "T2": "T3",
+    "T6": "T3",
+    "T0": "T3",
+    "T5": "T3",
+    "T4": "T3",
+}
+
+
+def avoid_repeat_template(tid: str, prev: str, *, same_place: bool) -> str:
+    """Соседние сцены не могут нести один T*, кроме T0."""
+    cur = normalize_template_id(tid)
+    last = normalize_template_id(prev)
+    if not last or cur != last or cur == "T0":
+        return cur or tid
+    alt = (_ALT_SAME if same_place else _ALT_NEW).get(cur) or ("X1" if same_place else "T3")
+    if alt == last:
+        alt = "T0"
+    return alt
+
+
+def assign_templates_for_action(action: str) -> dict[int, str]:
+    assigned: dict[int, str] = {}
+    prev_place = ""
+    prev_tid = ""
+    for scene in parse_scene_chain(action):
+        tid = select_template_when(scene, prev_place)
+        place = str(scene.get("place") or "").strip()
+        same = bool(place and prev_place and place.casefold() == prev_place.casefold())
+        tid = avoid_repeat_template(tid, prev_tid, same_place=same)
+        assigned[int(scene["n"])] = tid
+        if place:
+            prev_place = place
+        prev_tid = tid
+    return assigned
+
+
+def coverage_template_reason(shots: list[dict[str, Any]], uid: str = "") -> str | None:
+    """Один T на сцену, без удлинения и без одинаковых T подряд (кроме T0)."""
+    prefix = f"uuid {uid[:8]}: " if uid else ""
+    blocks: list[tuple[str, str, int]] = []
+    for shot in shots:
+        if not isinstance(shot, dict):
+            continue
+        sc = shot.get("сцена")
+        place = str(shot.get("место") or shot.get("place") or "").strip().casefold()
+        key = str(sc) if sc not in (None, "") else f"p:{place}"
+        tid = normalize_template_id(str(shot.get("шаблон") or shot.get("template") or ""))
+        if not blocks or blocks[-1][0] != key:
+            blocks.append((key, tid, 1))
+            continue
+        prev_key, prev_tid, n = blocks[-1]
+        if tid and prev_tid and tid != prev_tid:
+            return f"{prefix}сцена {key}: два шаблона {prev_tid} и {tid}"
+        blocks[-1] = (prev_key, prev_tid or tid, n + 1)
+    prev_tid = ""
+    for key, tid, n in blocks:
+        if tid and prev_tid and tid == prev_tid and tid != "T0":
+            return f"{prefix}шаблон {tid} подряд на соседних сценах — смени T*"
+        if tid:
+            limit = template_max_shots(tid)
+            if limit and n > limit:
+                return (
+                    f"{prefix}сцена {key}: {tid} удлинили до {n} кадров "
+                    f"(в таблице {limit})"
+                )
+        if tid:
+            prev_tid = tid
+    return None
+
+
+def format_when_assignments(frames: list[Any]) -> str:
+    """Готовый select по when — GPT не выбирает шаблон сам."""
+    lines = [
+        "# SELECT ПО when (обязательно, id не менять)",
+        "Столбец when из таблицы шаблонов. Первое подходящее → T*/X*.",
+        "То же место, что у предыдущей сцены → X1, если нет более точного when.",
+    ]
+    any_row = False
+    for fr in frames:
+        attrs = getattr(fr, "attrs", None)
+        if attrs is None and isinstance(fr, dict):
+            attrs = fr.get("attrs") or fr
+        if not isinstance(attrs, dict):
+            continue
+        action = str(
+            attrs.get("главное_действие") or attrs.get("main_action") or ""
+        ).strip()
+        if not action:
+            continue
+        assigned = assign_templates_for_action(action)
+        by_id = {
+            str(t.get("id")): t
+            for t in (load_shot_templates().get("templates") or [])
+        }
+        for scene in parse_scene_chain(action):
+            tid = assigned.get(int(scene["n"])) or select_template_when(scene, "")
+            when = (by_id.get(tid) or {}).get("when") or ""
+            lines.append(
+                f"сцена {scene['n']} | {scene['place'] or '—'} | "
+                f"{scene['action'][:80]} | when={when} → {tid}"
+            )
+            any_row = True
+    if not any_row:
+        return ""
+    return "\n".join(lines).strip() + "\n"
+
+
 def format_shot_templates_catalog(*, max_chars: int = 12000) -> str:
     """Компактный каталог для accompanying ноды shots."""
     data = load_shot_templates()
@@ -45,6 +272,13 @@ def format_shot_templates_catalog(*, max_chars: int = 12000) -> str:
         "K = кадр внутри типа. required=1 нельзя выкинуть.",
         "drop_order = порядок удаления при коротком закадре.",
         "axis: нет | keep_sides | look_chain — см. rules ниже.",
+        "select — на КАЖДУЮ сцену главное_действие, не на ячейку целиком.",
+        "T8 = один ОБЩИЙ на один новый мир/жизнь. То же место после T8 → X1/T5/T9.",
+        "Одно место: меняй план и ракурс по лестнице. Нельзя все ОБЩИЙ/фронт.",
+        "ЗАПРЕЩЕНО: удлинять T* сверх строк shots. T5 = макс 4, T3 = макс 2, T0 = 1.",
+        "ЗАПРЕЩЕНО: один и тот же T* на соседних сценах (кроме T0). Бери X1 / другой T.",
+        "У каждого кадра свой дословный закадр. Пустой закадр запрещён.",
+        "Кадров больше, чем клауз — удаляй по drop_order, не оставляй пустой закадр.",
         "",
         "## select (первое совпадение)",
     ]

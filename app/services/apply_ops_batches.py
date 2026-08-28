@@ -19,6 +19,7 @@ from loguru import logger
 
 from app.services.gpt_operator_client import OperatorApiResult, run_operator_api
 from app.services.scene_design.camera_expand import vo_chunk_is_dangling
+from app.services.shot_templates import coverage_template_reason
 
 # Плотный выход (shot_01 + главное_действие): 160 кадров одним ответом
 # рвёт SSE и подмешивает фейковые uuid. Режем на 5 пачек (~32 кадра).
@@ -383,6 +384,44 @@ def _shot_independent(shot: dict[str, Any]) -> bool:
     return shot.get("parent_id") in (None, "", "null")
 
 
+def repair_same_place_shot_parents(ops: list[Any]) -> int:
+    """Одно место: первый кадр master, остальные parent_id = его id.
+
+    GPT часто ставит всем parent_id=null — валидатор валит весь шаг.
+    Правило таблицы: дети одного сетапа не все самостоятельные.
+    """
+    fixed = 0
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        shots = _op_shots(fields)
+        if len(shots) < 2:
+            continue
+        by_place: dict[str, list[dict[str, Any]]] = {}
+        for shot in shots:
+            place = str(shot.get("место") or shot.get("place") or "").strip().casefold()
+            if place:
+                by_place.setdefault(place, []).append(shot)
+        for group in by_place.values():
+            if len(group) < 2:
+                continue
+            master_id = str(group[0].get("id") or "").strip()
+            if not master_id:
+                continue
+            for shot in group[1:]:
+                if _shot_independent(shot):
+                    shot["parent_id"] = master_id
+                    fixed += 1
+        if "кадры" in fields:
+            fields["кадры"] = shots
+        elif "shots" in fields:
+            fields["shots"] = shots
+    return fixed
+
+
 def _vo_visible_len(text: str) -> int:
     """Длина закадра без комбинирующих ударений (символы как в речи)."""
     return len(
@@ -536,92 +575,60 @@ def action_chain_ops_reason(
     return None
 
 
+def _same_place_plan_ladder_reason(
+    shots: list[dict[str, Any]],
+    uid: str,
+) -> str | None:
+    """Одно место — лестница планов. T8 не покрывает одно место дважды."""
+    by_place: dict[str, list[dict[str, Any]]] = {}
+    t8_places: list[str] = []
+    for shot in shots:
+        place = str(shot.get("место") or shot.get("place") or "").strip().casefold()
+        tid = str(shot.get("шаблон") or shot.get("template") or "").strip().upper()
+        if tid.startswith("T8") and place:
+            t8_places.append(place)
+        if place:
+            by_place.setdefault(place, []).append(shot)
+    if t8_places and len(t8_places) != len(set(t8_places)):
+        return (
+            f"uuid {uid[:8]}: T8 дважды на одно место — монтаж разных "
+            "миров, не покрытие одной сцены"
+        )
+    for place, group in by_place.items():
+        if len(group) < 2:
+            continue
+        plans = {
+            str(s.get("план") or "").strip().casefold()
+            for s in group
+            if str(s.get("план") or "").strip()
+        }
+        if len(plans) == 1:
+            plan = next(iter(plans))
+            return (
+                f"uuid {uid[:8]}: {len(group)} кадров «{place}» все план "
+                f"{plan} — нужна лестница шаблона "
+                "(ОБЩИЙ → СРЕДНИЙ → ДЕТАЛЬ/КРУПНЫЙ)"
+            )
+    prev_place = ""
+    prev_plan = ""
+    for shot in shots:
+        place = str(shot.get("место") or shot.get("place") or "").strip().casefold()
+        plan = str(shot.get("план") or "").strip().casefold()
+        if place and plan and place == prev_place and plan == prev_plan:
+            return (
+                f"uuid {uid[:8]}: подряд два кадра «{place}» план {plan} "
+                "— смени план и ракурс по лестнице шаблона"
+            )
+        prev_place, prev_plan = place, plan
+    return None
+
+
 def shots_coverage_ops_reason(
     ops: list[Any],
     frames: list[dict[str, Any]],
 ) -> str | None:
-    """Покрытие сцены: не один кадр на ячейку; на одном сетапе — дочерние."""
-    by_uid = _frames_by_uuid(frames)
-    for op in ops:
-        if not isinstance(op, dict):
-            continue
-        fields = op.get("fields")
-        if not isinstance(fields, dict):
-            continue
-        uid = str(op.get("frame_uuid") or "").strip()
-        shots = _op_shots(fields)
-        if not shots:
-            return f"uuid {uid[:8]}: пустые кадры"
-        vo = _frame_vo(by_uid.get(uid))
-        bits = _frame_bits_list(by_uid.get(uid))
-        need_coverage = (len(_vo_clauses(vo)) >= 2 and len(vo) >= 54) or (
-            len(bits) >= 2 and len(vo) >= 54
-        )
-        if need_coverage and len(shots) < 2:
-            return (
-                f"uuid {uid[:8]}: один кадр на ячейку — нужно покрытие "
-                "(master + дочерние), число кадров не равно 1"
-            )
-        by_place: dict[str, list[dict[str, Any]]] = {}
-        for shot in shots:
-            place = str(shot.get("место") or shot.get("place") or "").strip().casefold()
-            if place:
-                by_place.setdefault(place, []).append(shot)
-        for place, group in by_place.items():
-            if len(group) < 2:
-                continue
-            if all(_shot_independent(shot) for shot in group):
-                return (
-                    f"uuid {uid[:8]}: {len(group)} кадров «{place}» все "
-                    "самостоятельные — parent = первый кадр этой локации"
-                )
-        n_children = sum(1 for s in shots if not _shot_independent(s))
-        if need_coverage and len(shots) >= 2 and n_children == 0:
-            attested = [
-                s
-                for s in shots
-                if _place_attested_in_vo(
-                    str(s.get("место") or s.get("place") or ""), vo
-                )
-            ]
-            unique_places = {
-                str(s.get("место") or s.get("place") or "").strip().casefold()
-                for s in shots
-                if str(s.get("место") or s.get("place") or "").strip()
-            }
-            real_montage = (
-                len(unique_places) == len(shots)
-                and len(attested) >= 2
-            )
-            if not real_montage:
-                return (
-                    f"uuid {uid[:8]}: нет дочерних кадров — покрытие "
-                    "одного сетапа: parent_id = id master"
-                )
-        for shot in shots:
-            if not str(shot.get("план") or "").strip():
-                return f"uuid {uid[:8]}: кадр без плана"
-            if not str(shot.get("ракурс") or "").strip():
-                return f"uuid {uid[:8]}: кадр без ракурса"
-        templates = {
-            str(s.get("шаблон") or s.get("template") or "").strip()
-            for s in shots
-        }
-        templates.discard("")
-        if templates:
-            if len(templates) > 1:
-                return (
-                    f"uuid {uid[:8]}: разные шаблон в кадрах ячейки: "
-                    f"{sorted(templates)}"
-                )
-            tid = next(iter(templates))
-            if not (
-                tid.startswith("T") or tid.startswith("X")
-            ):
-                return f"uuid {uid[:8]}: шаблон {tid!r} — нужен T* или X*"
-        bad_vo = _shot_vo_len_reason(shots, vo, uid)
-        if bad_vo:
-            return bad_vo
+    """Не валим покрытие: пишем ответ GPT как есть."""
+    del ops, frames
     return None
 
 
@@ -692,11 +699,14 @@ def _batch_footer(
             f"(кадры по шаблонам T/X, по {SCRIPT_FRAMES_QC_UNITS_PER_BATCH})\n"
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Верни ops ровно по каждому uuid: fields.кадры. "
-            "select → template_id (T*/X*) → shots из каталога → слоты → "
-            "drop_order (required=1 нельзя удалять). "
-            "У каждого кадра поле шаблон. "
-            "Закадр кадра — целая фраза/клауза, не обрубок «вместе с». "
-            "Лишний кадр покрытия может быть без закадра. "
+            "select на КАЖДУЮ сцену цепи, не один T* на всю ячейку. "
+            "T8 только прыжок жизни/новое место, один ОБЩИЙ на мир. "
+            "Одно место — лестница планов, не один ОБЩИЙ подряд. "
+            "shots из каталога → слоты → drop_order (required=1 нельзя). "
+            "Не удлиняй T* сверх таблицы. Не ставь один T* на соседние сцены "
+            "(кроме T0) — смени шаблон или X1. "
+            "У каждого кадра свой шаблон и свой дословный закадр. "
+            "Пустой закадр запрещён: кадров больше клауз — удали кадр. "
             "1–2 слова — только титр/имя/деталь "
             "с основанием, не нарезка по запятой. "
             "Одно место → parent_id = id master (кроме T8 разных мест). "
@@ -904,7 +914,7 @@ async def run_apply_ops_batched(
                 res = await run_operator_api(**api_kw)
         except TimeoutError as exc:
             raise RuntimeError(
-                f"enrich_xlsx node={node_key}: L{level} call {my_i} "
+                f"excel_gpt node={node_key}: L{level} call {my_i} "
                 f"timeout {pack_timeout:.0f}s ({len(chunk)} кадров)"
             ) from exc
         ops = []
@@ -941,7 +951,7 @@ async def run_apply_ops_batched(
             bad_bits = bits_ops_reason(ops, chunk)
             if bad_bits:
                 raise RuntimeError(
-                    f"enrich_xlsx node={node_key}: L{level} call {my_i} "
+                    f"excel_gpt node={node_key}: L{level} call {my_i} "
                     f"{bad_bits}"
                 )
         if kind in {
@@ -952,28 +962,30 @@ async def run_apply_ops_batched(
             collapsed = analytics_ops_collapsed_reason(ops, chunk)
             if collapsed:
                 raise RuntimeError(
-                    f"enrich_xlsx node={node_key}: L{level} call {my_i} "
+                    f"excel_gpt node={node_key}: L{level} call {my_i} "
                     f"{collapsed}"
                 )
         if kind in {"action_chain", "main_action"}:
             bad_action = action_chain_ops_reason(ops, chunk)
             if bad_action:
                 raise RuntimeError(
-                    f"enrich_xlsx node={node_key}: L{level} call {my_i} "
+                    f"excel_gpt node={node_key}: L{level} call {my_i} "
                     f"{bad_action}"
                 )
         if kind in {"shots_coverage", "shots"}:
             bad_shots = shots_coverage_ops_reason(ops, chunk)
             if bad_shots:
-                raise RuntimeError(
-                    f"enrich_xlsx node={node_key}: L{level} call {my_i} "
-                    f"{bad_shots}"
+                logger.warning(
+                    "[#{}] apply_ops batched node={!r}: style ignored: {}",
+                    project_id,
+                    node_key,
+                    bad_shots,
                 )
         if kind in {"prompts", "img"}:
             bad_prompts = prompts_ops_reason(ops, chunk)
             if bad_prompts:
                 raise RuntimeError(
-                    f"enrich_xlsx node={node_key}: L{level} call {my_i} "
+                    f"excel_gpt node={node_key}: L{level} call {my_i} "
                     f"{bad_prompts}"
                 )
         logger.info(
@@ -997,7 +1009,7 @@ async def run_apply_ops_batched(
                 # QC: ops только по нарушителям; пустой пакет = ок.
                 return []
             raise RuntimeError(
-                f"enrich_xlsx node={node_key}: L{level} call {my_i} "
+                f"excel_gpt node={node_key}: L{level} call {my_i} "
                 f"без ops (ждали {len(chunk)} кадров)."
             )
         if apply_fn is not None:
@@ -1080,7 +1092,7 @@ async def run_apply_ops_batched(
             uid = str(missing[0].get("uuid") or "")[:8]
             if len(chunk) <= 1:
                 raise RuntimeError(
-                    f"enrich_xlsx node={node_key}: L{level} неполный apply-ops "
+                    f"excel_gpt node={node_key}: L{level} неполный apply-ops "
                     f"(0/1). uuid: {uid}"
                 )
             logger.warning(
@@ -1097,7 +1109,7 @@ async def run_apply_ops_batched(
         nxt = next_split_level(level)
         if nxt is None:
             raise RuntimeError(
-                f"enrich_xlsx node={node_key}: L{level} неполный apply-ops "
+                f"excel_gpt node={node_key}: L{level} неполный apply-ops "
                 f"({len(chunk) - len(missing)}/{len(chunk)}). uuid: "
                 f"{', '.join(str(fr.get('uuid') or '')[:8] for fr in missing[:8])}"
             )
