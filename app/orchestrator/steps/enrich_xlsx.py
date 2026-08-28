@@ -1224,8 +1224,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     )
                 ).scalars().all()
             )
-            if (not script_writer) and _is_script_frames_qc_group_node(
-                variant, master, node_key
+            if (
+                (not script_writer)
+                and _is_script_frames_qc_group_node(variant, master, node_key)
+                and _canvas_has_fw_shots(project)
             ):
                 from app.services.vo_shot_expand import (
                     collapse_flattened_coverage_cells,

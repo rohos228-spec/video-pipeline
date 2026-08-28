@@ -120,7 +120,28 @@ def test_kadry_from_bits_covers_full_vo() -> None:
     joined = " ".join(item["закадр"] for item in planned)
     assert joined.split() == vo.split()
     assert planned[0]["id"] == "B01-K1"
-    assert planned[1]["parent_id"] == "B01-K1"
+    assert planned[1]["id"] == "B02-K1"
+    assert planned[1]["parent_id"] is None
+
+
+def test_bit_kadry_do_not_collapse_as_coverage() -> None:
+    from app.services.vo_shot_expand import (
+        flattened_coverage_groups,
+        kadry_from_bits,
+    )
+
+    vo = "Первая фраза целиком. Вторая тоже на месте. Третья закрывает."
+    bits = [
+        {"порядок": 1, "якорь": "Первая фраза"},
+        {"порядок": 2, "якорь": "Вторая тоже"},
+        {"порядок": 3, "якорь": "Третья закрывает"},
+    ]
+    planned = kadry_from_bits(vo, bits)
+    frames = [_kadry_frame(i + 1, planned[i]["id"]) for i in range(3)]
+    for fr, shot in zip(frames, planned, strict=True):
+        fr.voiceover_text = shot["закадр"]
+        fr.attrs["кадры"][0]["закадр"] = shot["закадр"]
+    assert flattened_coverage_groups(frames) == {}
 
 
 def test_repair_glues_fragments_back_to_parent() -> None:
@@ -529,6 +550,7 @@ def test_enrich_xlsx_coverage_hook_includes_shots_frames_qc() -> None:
     assert 'endswith(("_fw_shots", "_fw_frames", "_fw_qc"))' in src
     assert "apply_shot_coverage_to_vo_cells" in src
     assert "collapse_flattened_coverage_cells" in src
+    assert "_canvas_has_fw_shots(project)" in src
 
 
 def _kadry_frame(number: int, shot_id: str, **extra):

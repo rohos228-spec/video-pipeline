@@ -364,15 +364,15 @@ def kadry_from_bits(full_vo: str, bits: list[dict[str, Any]]) -> list[dict[str, 
 def _kadry_rows(
     bits: list[dict[str, Any]], parts: list[str]
 ) -> list[dict[str, Any]]:
+    """1 бит = самостоятельная VO-ячейка ``Bnn-K1``, не покрытие ``B01-K2``."""
     rows: list[dict[str, Any]] = []
-    master = "B01-K1"
     for i, (item, piece) in enumerate(zip(bits, parts, strict=False)):
-        sid = f"B01-K{i + 1}"
+        sid = f"B{i + 1:02d}-K1"
         rows.append(
             {
                 "id": sid,
                 "порядок": i + 1,
-                "parent_id": None if i == 0 else master,
+                "parent_id": None,
                 "закадр": piece,
                 "действие": str(
                     item.get("изменение") or item.get("глагол") or ""
