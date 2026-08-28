@@ -271,3 +271,17 @@ async def list_outsee_create_history(
                         return out[:limit]
 
     return out[:limit]
+
+
+@router.delete("/history")
+async def delete_outsee_create_history_item(
+    path: str | None = Query(None),
+    item_id: str | None = Query(None),
+) -> dict[str, Any]:
+    """Удалить файл генерации из локальной истории Create."""
+    from app.services.generation_storage import delete_generation_item
+
+    ok = delete_generation_item(path=path, item_id=item_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Файл генерации не найден")
+    return {"ok": True, "deleted": True}

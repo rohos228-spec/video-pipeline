@@ -21,6 +21,7 @@ import {
   ImageIcon,
   Link2,
   Loader2,
+  Maximize2,
   Music,
   Paperclip,
   Search,
@@ -105,6 +106,104 @@ function formatElapsedMinSec(totalSec: number | null | undefined): string {
   return `${m} мин ${s} сек`;
 }
 
+export const STYLE_PRESETS = [
+  { id: "none", label: "Без стиля", icon: "", suffix: "" },
+  {
+    id: "photo",
+    label: "Фото",
+    icon: "📸",
+    suffix: ", professional 8k photography, hyperrealistic, sharp focus, natural lighting, highly detailed",
+  },
+  {
+    id: "cinematic",
+    label: "Кино",
+    icon: "🎬",
+    suffix: ", cinematic still, 35mm film, atmospheric lighting, dramatic depth of field, blockbuster movie aesthetic",
+  },
+  {
+    id: "3d",
+    label: "3D",
+    icon: "🎨",
+    suffix: ", 3d render, unreal engine 5, octane render, smooth lighting, volumetric raytracing, 8k",
+  },
+  {
+    id: "anime",
+    label: "Аниме",
+    icon: "🍙",
+    suffix: ", anime art style, vibrant colors, detailed line art, aesthetic masterpiece",
+  },
+  {
+    id: "oil",
+    label: "Живопись",
+    icon: "🖌️",
+    suffix: ", oil painting, masterwork, rich brushstrokes, expressive texture, classical fine art",
+  },
+  {
+    id: "cyberpunk",
+    label: "Киберпанк",
+    icon: "🌆",
+    suffix: ", cyberpunk aesthetic, neon glow, futuristic city, reflections, high-tech dark atmosphere",
+  },
+  {
+    id: "fantasy",
+    label: "Фэнтези",
+    icon: "🌌",
+    suffix: ", epic fantasy digital art, magical glowing atmosphere, ethereal lighting, mythical",
+  },
+];
+
+async function downloadMediaFile(
+  url: string,
+  filename: string,
+  format: "png" | "jpg" | "webp" = "png",
+) {
+  try {
+    const res = await fetch(url);
+    const blob = await res.blob();
+    if (blob.type.includes("video") || blob.type.includes("audio")) {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      a.click();
+      return;
+    }
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    const objectUrl = URL.createObjectURL(blob);
+    img.src = objectUrl;
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas context error");
+    ctx.drawImage(img, 0, 0);
+    const mimeType =
+      format === "jpg" ? "image/jpeg" : format === "webp" ? "image/webp" : "image/png";
+    canvas.toBlob(
+      (convertedBlob) => {
+        if (!convertedBlob) return;
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(convertedBlob);
+        const cleanName = filename.replace(/\.[^/.]+$/, "");
+        a.download = `${cleanName}.${format}`;
+        a.click();
+        URL.revokeObjectURL(objectUrl);
+      },
+      mimeType,
+      0.95,
+    );
+  } catch {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+  }
+}
+
 export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) {
   const qc = useQueryClient();
   const [mediaType, setMediaType] = useState<OutseeMediaType>("image");
@@ -122,19 +221,28 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   const [motionQuality, setMotionQuality] = useState("std");
   const [instrumental, setInstrumental] = useState(false);
   const [prompt, setPrompt] = useState("");
+  const [stylePreset, setStylePreset] = useState("none");
+  const [negativePrompt, setNegativePrompt] = useState("");
+  const [showNegativePrompt, setShowNegativePrompt] = useState(false);
+  const [downloadFormat, setDownloadFormat] = useState<"png" | "jpg" | "webp">("png");
   const [soraSize, setSoraSize] = useState<"small" | "large">("small");
   const [firstFrameDataUrl, setFirstFrameDataUrl] = useState<string | null>(null);
   const [lastFrameDataUrl, setLastFrameDataUrl] = useState<string | null>(null);
   const [firstFrameName, setFirstFrameName] = useState<string | null>(null);
   const [lastFrameName, setLastFrameName] = useState<string | null>(null);
+  const [referenceImages, setReferenceImages] = useState<
+    { id: string; url: string; name: string }[]
+  >([]);
   const [modelOpen, setModelOpen] = useState(false);
   const [openChip, setOpenChip] = useState<OutseeChip | null>(null);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
   const [kieValues, setKieValues] = useState<Record<string, unknown>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [settingsHydrated, setSettingsHydrated] = useState(false);
   const modelRef = useRef<HTMLDivElement>(null);
   const firstFrameInputRef = useRef<HTMLInputElement>(null);
   const lastFrameInputRef = useRef<HTMLInputElement>(null);
+  const multiRefInputRef = useRef<HTMLInputElement>(null);
 
   const settingsQ = useQuery({
     queryKey: ["outsee-create-settings"],
@@ -247,6 +355,12 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   const videoModel = getVideoModel(videoSlug);
   const audioModel = getAudioModel(audioSlug);
   const dockChips = dockChipsForModel(activeSlug, mediaType);
+  const maxReferences = useMemo(() => {
+    if (mediaType !== "image") return 0;
+    const slug = activeSlug.toLowerCase();
+    if (slug.includes("z-image")) return 0;
+    return 8;
+  }, [mediaType, activeSlug]);
 
   // ---- KIE: модель выбрана из общего пикера (slug "kie:<id>") ----
   const kieModels = useMemo(
@@ -447,6 +561,48 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     }
   };
 
+  const addReferenceFromHistory = async (item: HistoryItem) => {
+    if (maxReferences <= 0) return;
+    if (referenceImages.length >= maxReferences) {
+      toast.error(`Достигнут лимит референсов (${maxReferences})`);
+      return;
+    }
+    const httpUrl = item.raw_url && item.raw_url.startsWith("http") ? item.raw_url : null;
+    if (httpUrl) {
+      setReferenceImages((prev) => [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          url: httpUrl,
+          name: item.label || "история",
+        },
+      ]);
+      toast.success("Референс взят из истории");
+      return;
+    }
+    if (!item.preview_url) {
+      toast.error("Нет URL картинки для референса");
+      return;
+    }
+    try {
+      const res = await fetch(item.preview_url);
+      const blob = await res.blob();
+      const file = new File([blob], `${item.id}.png`, { type: blob.type || "image/png" });
+      const dataUrl = await readFileAsDataUrl(file);
+      setReferenceImages((prev) => [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          url: dataUrl,
+          name: item.label || item.id,
+        },
+      ]);
+      toast.success("Референс добавлен из истории");
+    } catch {
+      toast.error("Не удалось взять референс из истории");
+    }
+  };
+
   const applyModelDefaults = (slug: string, kind: OutseeMediaType) => {
     if (kind === "image") {
       const m = getImageModel(slug);
@@ -549,6 +705,17 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
+  const deleteItem = useMutation({
+    mutationFn: (item: HistoryItem) =>
+      api.deleteOutseeCreateHistoryItem({ path: item.path || undefined, itemId: item.id }),
+    onSuccess: (_, item) => {
+      toast.success("Удалено из истории");
+      if (selectedId === item.id) setSelectedId(null);
+      qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
+    },
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
+
   const [trackingJobs, setTrackingJobs] = useState<
     { provider: "grsai" | "outsee" | "kie"; jobId: string; historyId: string }[]
   >([]);
@@ -601,7 +768,14 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
 
   const createGenerate = useMutation({
     mutationFn: async () => {
-      const text = prompt.trim();
+      const preset = STYLE_PRESETS.find((p) => p.id === stylePreset);
+      let text = prompt.trim();
+      if (text && mediaType === "image" && preset?.suffix) {
+        text += preset.suffix;
+      }
+      if (text && mediaType === "image" && negativePrompt.trim()) {
+        text += `\nAvoid: ${negativePrompt.trim()}`;
+      }
       // ---- KIE: динамическая модель из каталога kie.ai ----
       if (kieActive && kieModel) {
         if (!kieConfigured) {
@@ -609,6 +783,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
         }
         const vals: Record<string, unknown> = { ...kieValues };
         if (kieTextField) vals[kieTextField] = text;
+        if (negativePrompt.trim()) {
+          const negField = kieModel.fields.find((f) => f.name.toLowerCase().includes("neg"));
+          if (negField) vals[negField.name] = negativePrompt.trim();
+        }
         const missing = kieModel.fields
           .filter((f) => f.required)
           .filter((f) => {
@@ -697,7 +875,13 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
               model: imageSlug,
               aspect,
               resolution,
-              first_frame_url: firstFrameDataUrl,
+              first_frame_url: referenceImages.length > 0 ? referenceImages[0].url : firstFrameDataUrl,
+              reference_images:
+                referenceImages.length > 0
+                  ? referenceImages.map((r) => r.url)
+                  : firstFrameDataUrl
+                    ? [firstFrameDataUrl]
+                    : undefined,
               project_id: projectId,
             });
       return { ...enqueued, provider: "outsee" as const };
@@ -999,6 +1183,30 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                           <div className="truncate text-[8px] text-white/45">{item.project_slug}</div>
                         )}
                       </div>
+                      {item.preview_url && !pending && (
+                        <div className="absolute top-1.5 right-1.5 z-20 flex items-center gap-1 opacity-0 transition group-hover:opacity-100">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deleteItem.mutate(item);
+                            }}
+                            className="flex h-6 w-6 items-center justify-center rounded-md bg-black/75 text-white/70 backdrop-blur transition hover:bg-red-600 hover:text-white shadow-md"
+                            title="Удалить из истории"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                          <a
+                            href={item.raw_url || item.preview_url}
+                            download={item.label || "generation"}
+                            onClick={(e) => e.stopPropagation()}
+                            className="flex h-6 w-6 items-center justify-center rounded-md bg-black/75 text-white/80 backdrop-blur transition hover:bg-[#22d3ee] hover:text-black shadow-md"
+                            title="Скачать файл"
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                          </a>
+                        </div>
+                      )}
                     </button>
                   );
                 })}
@@ -1015,26 +1223,37 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
             <div className="h-60 w-60 rounded-full bg-purple-500/10 blur-[90px]" />
           </div>
 
-          <div className="relative z-10 flex items-center justify-between px-4 pb-1 pt-3 lg:px-6">
-            <h2 className="flex items-center gap-2 text-sm font-bold text-white lg:text-base">
-              <Sparkles className="h-4 w-4" style={{ color: OUTSEE_ACCENT }} />
+          {/* Header - float top-left so media starts at the very top */}
+          <div className="pointer-events-none absolute top-3 left-4 z-20 flex flex-col gap-0.5 lg:left-6">
+            <h2 className="text-sm font-bold text-white lg:text-base">
               Результат генерации
-              {selected &&
-                (selected.elapsed_label ||
-                  (selected.elapsed_sec != null && selected.elapsed_sec >= 0)) && (
-                  <span className="text-[12px] font-medium text-white/55">
-                    ·{" "}
-                    {selected.elapsed_label ||
-                      formatElapsedMinSec(selected.elapsed_sec)}
-                  </span>
-                )}
             </h2>
+            {selected && (
+              <div className="flex flex-col text-[11px] font-medium text-white/50">
+                {selected.elapsed_label ||
+                (selected.elapsed_sec != null && selected.elapsed_sec >= 0) ? (
+                  <div>
+                    Время генерации:{" "}
+                    <span className="font-mono font-semibold text-[#22d3ee]">
+                      {selected.elapsed_label || formatElapsedMinSec(selected.elapsed_sec)}
+                    </span>
+                  </div>
+                ) : null}
+                {selected.model && (
+                  <div className="text-white/45">
+                    Модель:{" "}
+                    <span className="font-mono font-semibold text-white/75">{selected.model}</span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
-          <div className="relative z-10 flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-4 pb-[230px] lg:px-6">
+
+          <div className="relative z-10 flex min-h-0 flex-1 flex-col items-center justify-start px-4 pt-2 pb-[260px] lg:px-6">
             {selected?.preview_url &&
             selected.status !== "queued" &&
             selected.status !== "processing" ? (
-              <>
+              <div className="group relative flex max-h-[calc(100vh-320px)] max-w-full items-center justify-center">
                 {selected.kind === "video" ? (
                   <video
                     src={selected.preview_url}
@@ -1052,74 +1271,22 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   <img
                     src={selected.preview_url}
                     alt=""
-                    className="max-h-[calc(100vh-320px)] max-w-full rounded-2xl border border-white/15 bg-black/80 object-contain shadow-[0_20px_50px_rgba(0,0,0,0.8)]"
+                    onClick={() => setLightboxOpen(true)}
+                    className="max-h-[calc(100vh-320px)] max-w-full cursor-zoom-in rounded-2xl border border-white/15 bg-black/80 object-contain shadow-[0_20px_50px_rgba(0,0,0,0.8)] transition hover:brightness-105"
                   />
                 )}
-
-                {/* Toolbar for result */}
-                <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
-                  {selected.preview_url && (
-                    <a
-                      href={selected.raw_url || selected.preview_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      download
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-white/15 bg-white/[0.05] px-3 py-1.5 text-[11px] font-medium text-white/80 transition hover:border-[#22d3ee]/40 hover:bg-[#22d3ee]/10 hover:text-white"
-                    >
-                      <Download className="h-3.5 w-3.5" />
-                      Скачать
-                    </a>
-                  )}
-                  {selected.prompt && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        navigator.clipboard.writeText(selected.prompt || "");
-                        toast.success("Промпт скопирован");
-                      }}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-white/15 bg-white/[0.05] px-3 py-1.5 text-[11px] font-medium text-white/80 transition hover:border-white/30 hover:bg-white/[0.09] hover:text-white"
-                    >
-                      <Copy className="h-3.5 w-3.5" />
-                      Копировать промпт
-                    </button>
-                  )}
-                  {mediaType === "video" &&
-                    videoModel.chips.includes("image-input") &&
-                    selected.kind === "image" &&
-                    selected.status === "done" && (
-                      <>
-                        <button
-                          type="button"
-                          className="rounded-xl border border-[#22d3ee]/40 bg-[#22d3ee]/10 px-3 py-1.5 text-[11px] font-semibold text-[#22d3ee] transition hover:bg-[#22d3ee]/20"
-                          onClick={() => void applyFrameFromHistory(selected, "first")}
-                        >
-                          → Старт
-                        </button>
-                        <button
-                          type="button"
-                          className="rounded-xl border border-white/15 bg-white/[0.04] px-3 py-1.5 text-[11px] font-medium text-white/75 transition hover:border-white/30 hover:bg-white/[0.08]"
-                          onClick={() => void applyFrameFromHistory(selected, "last")}
-                        >
-                          → Финиш
-                        </button>
-                      </>
-                    )}
-                </div>
-
-                <div className="text-[12px] font-medium text-white/70">
-                  Результат ·{" "}
-                  {selected.elapsed_label ||
-                    formatElapsedMinSec(selected.elapsed_sec)}
-                </div>
-                {selected.path && (
-                  <div
-                    className="max-w-full truncate px-2 font-mono text-[10px] text-white/35"
-                    title={selected.path}
+                {selected.kind !== "audio" && (
+                  <button
+                    type="button"
+                    onClick={() => setLightboxOpen(true)}
+                    className="absolute top-3 right-3 z-30 flex items-center gap-1.5 rounded-xl border border-white/20 bg-black/70 px-3 py-1.5 text-[11px] font-medium text-white/90 opacity-0 backdrop-blur-md transition hover:scale-105 hover:border-[#22d3ee]/60 hover:bg-[#22d3ee]/20 hover:text-white group-hover:opacity-100 shadow-2xl"
+                    title="Во весь экран"
                   >
-                    {selected.path}
-                  </div>
+                    <Maximize2 className="h-3.5 w-3.5" />
+                    <span>Во весь экран</span>
+                  </button>
                 )}
-              </>
+              </div>
             ) : selected &&
               (selected.status === "queued" || selected.status === "processing") ? (
               <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-2xl border border-white/15 bg-[#121216]/90 px-6 py-12 text-center backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
@@ -1218,121 +1385,283 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     </span>
                   </div>
                 )}
-                {/* Явная зона вложений — как на outsee.io (не прятать в чипах) */}
+                {/* Зона вложений — динамически под модель */}
                 {!kieActive &&
                   (mediaType === "video"
                     ? videoModel.chips.includes("image-input")
-                    : mediaType === "image" && imageModel.chips.includes("image-input")) && (
+                    : mediaType === "image" && maxReferences > 0) && (
                   <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.08] px-3 py-2.5 lg:px-4">
-                    <input
-                      ref={firstFrameInputRef}
-                      type="file"
-                      accept="image/png,image/jpeg,image/webp"
-                      className="hidden"
-                      onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (!f) return;
-                        void readFileAsDataUrl(f).then((dataUrl) => {
-                          setFirstFrameDataUrl(dataUrl);
-                          setFirstFrameName(f.name);
-                          toast.success(
-                            mediaType === "video" ? "Стартовый кадр" : "Референс добавлен",
-                          );
-                        });
-                        e.target.value = "";
-                      }}
-                    />
-                    {mediaType === "video" ? (
-                      <input
-                        ref={lastFrameInputRef}
-                        type="file"
-                        accept="image/png,image/jpeg,image/webp"
-                        className="hidden"
-                        onChange={(e) => {
-                          const f = e.target.files?.[0];
-                          if (!f) return;
-                          void readFileAsDataUrl(f).then((dataUrl) => {
-                            setLastFrameDataUrl(dataUrl);
-                            setLastFrameName(f.name);
-                            toast.success("Конечный кадр");
-                          });
-                          e.target.value = "";
-                        }}
-                      />
-                    ) : null}
+                    {mediaType === "image" ? (
+                      <>
+                        <input
+                          ref={multiRefInputRef}
+                          type="file"
+                          multiple
+                          accept="image/png,image/jpeg,image/webp"
+                          className="hidden"
+                          onChange={async (e) => {
+                            const files = Array.from(e.target.files || []);
+                            if (!files.length) return;
+                            const remaining = maxReferences - referenceImages.length;
+                            if (remaining <= 0) {
+                              toast.error(`Достигнут лимит референсов (${maxReferences})`);
+                              return;
+                            }
+                            const toAdd = files.slice(0, remaining);
+                            const newRefs: { id: string; url: string; name: string }[] = [];
+                            for (const f of toAdd) {
+                              const dataUrl = await readFileAsDataUrl(f);
+                              newRefs.push({
+                                id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                                url: dataUrl,
+                                name: f.name,
+                              });
+                            }
+                            setReferenceImages((prev) => [...prev, ...newRefs]);
+                            toast.success(`Добавлено ${newRefs.length} референс(ов)`);
+                            e.target.value = "";
+                          }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => multiRefInputRef.current?.click()}
+                          disabled={referenceImages.length >= maxReferences}
+                          className={cn(
+                            "inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-[11px] font-bold uppercase tracking-wider transition",
+                            referenceImages.length > 0
+                              ? "border-[#22d3ee]/40 bg-[#22d3ee]/10 text-[#22d3ee]"
+                              : "border-dashed border-white/20 bg-white/[0.03] text-white/70 hover:border-white/40 hover:text-white",
+                          )}
+                        >
+                          <Paperclip className="h-3.5 w-3.5" />
+                          <span>+ Референс</span>
+                          <span className="rounded-md bg-white/10 px-1.5 py-0.5 font-mono text-[10px]">
+                            {referenceImages.length}/{maxReferences}
+                          </span>
+                        </button>
+                        {referenceImages.map((ref, idx) => (
+                          <div
+                            key={ref.id}
+                            className="group flex items-center gap-1.5 rounded-xl border border-white/15 bg-white/[0.05] py-1 pl-1 pr-2 text-[11px] text-white/90"
+                          >
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={ref.url}
+                              alt=""
+                              className="h-6 w-6 rounded-lg object-cover ring-1 ring-white/15"
+                            />
+                            <span className="max-w-[90px] truncate font-mono text-[10px] text-white/75">
+                              {ref.name || `Реф #${idx + 1}`}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setReferenceImages((prev) => prev.filter((r) => r.id !== ref.id))}
+                              className="ml-0.5 text-white/40 transition hover:text-red-400"
+                              title="Удалить"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </div>
+                        ))}
+                        {maxReferences > 0 &&
+                          selected?.kind === "image" &&
+                          selected.status === "done" &&
+                          referenceImages.length < maxReferences && (
+                            <button
+                              type="button"
+                              onClick={() => void addReferenceFromHistory(selected)}
+                              className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-[#22d3ee]/40 bg-[#22d3ee]/10 px-3 text-[11px] font-semibold text-[#22d3ee] transition hover:bg-[#22d3ee]/20"
+                              title="Добавить текущий результат в референсы"
+                            >
+                              + В референсы ({referenceImages.length}/{maxReferences})
+                            </button>
+                          )}
+                      </>
+                    ) : (
+                      <>
+                        <input
+                          ref={firstFrameInputRef}
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp"
+                          className="hidden"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (!f) return;
+                            void readFileAsDataUrl(f).then((dataUrl) => {
+                              setFirstFrameDataUrl(dataUrl);
+                              setFirstFrameName(f.name);
+                              toast.success("Стартовый кадр добавлен");
+                            });
+                            e.target.value = "";
+                          }}
+                        />
+                        <input
+                          ref={lastFrameInputRef}
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp"
+                          className="hidden"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (!f) return;
+                            void readFileAsDataUrl(f).then((dataUrl) => {
+                              setLastFrameDataUrl(dataUrl);
+                              setLastFrameName(f.name);
+                              toast.success("Конечный кадр добавлен");
+                            });
+                            e.target.value = "";
+                          }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => firstFrameInputRef.current?.click()}
+                          className={cn(
+                            "inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-[11px] font-bold uppercase tracking-wider transition",
+                            firstFrameDataUrl
+                              ? "border-[#22d3ee]/40 bg-[#22d3ee]/10 text-[#22d3ee]"
+                              : "border-dashed border-white/20 bg-white/[0.03] text-white/70 hover:border-white/40 hover:text-white",
+                          )}
+                        >
+                          {firstFrameDataUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={firstFrameDataUrl}
+                              alt=""
+                              className="h-6 w-6 rounded-lg object-cover ring-1 ring-white/15"
+                            />
+                          ) : (
+                            <Paperclip className="h-3.5 w-3.5" />
+                          )}
+                          <span>Стартовый кадр</span>
+                          {firstFrameDataUrl && (
+                            <span
+                              className="text-white/45 hover:text-white"
+                              onClick={(ev) => {
+                                ev.stopPropagation();
+                                setFirstFrameDataUrl(null);
+                                setFirstFrameName(null);
+                              }}
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </span>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => lastFrameInputRef.current?.click()}
+                          className={cn(
+                            "inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-[11px] font-bold uppercase tracking-wider transition",
+                            lastFrameDataUrl
+                              ? "border-[#22d3ee]/40 bg-[#22d3ee]/10 text-[#22d3ee]"
+                              : "border-dashed border-white/20 bg-white/[0.03] text-white/70 hover:border-white/40 hover:text-white",
+                          )}
+                        >
+                          {lastFrameDataUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={lastFrameDataUrl}
+                              alt=""
+                              className="h-6 w-6 rounded-lg object-cover ring-1 ring-white/15"
+                            />
+                          ) : (
+                            <Paperclip className="h-3.5 w-3.5" />
+                          )}
+                          <span>Конечный кадр</span>
+                          {lastFrameDataUrl && (
+                            <span
+                              className="text-white/45 hover:text-white"
+                              onClick={(ev) => {
+                                ev.stopPropagation();
+                                setLastFrameDataUrl(null);
+                                setLastFrameName(null);
+                              }}
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </span>
+                          )}
+                        </button>
+                        {mediaType === "video" &&
+                          videoModel.chips.includes("image-input") &&
+                          selected?.kind === "image" &&
+                          selected.status === "done" && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => void applyFrameFromHistory(selected, "first")}
+                                className="inline-flex h-9 items-center gap-1 rounded-xl border border-[#22d3ee]/40 bg-[#22d3ee]/10 px-2.5 text-[11px] font-semibold text-[#22d3ee] transition hover:bg-[#22d3ee]/20"
+                                title="Текущее фото → Стартовый кадр"
+                              >
+                                → В старт
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void applyFrameFromHistory(selected, "last")}
+                                className="inline-flex h-9 items-center gap-1 rounded-xl border border-white/20 bg-white/[0.04] px-2.5 text-[11px] font-medium text-white/75 transition hover:border-white/30 hover:bg-white/[0.08]"
+                                title="Текущее фото → Конечный кадр"
+                              >
+                                → В финиш
+                              </button>
+                            </>
+                          )}
+                      </>
+                    )}
+                    <span className="text-[10px] text-white/35">
+                      файл с диска или выбор из истории слева
+                    </span>
+                  </div>
+                )}
+                {/* Style Presets and Negative Prompt for image mode */}
+                {mediaType === "image" && (
+                  <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-white/[0.06] bg-white/[0.015] px-3 py-1.5 lg:px-4">
+                    <div className="flex items-center gap-1 overflow-x-auto py-0.5 no-scrollbar">
+                      <span className="mr-1 shrink-0 font-mono text-[10px] font-semibold uppercase text-white/40">
+                        Стиль:
+                      </span>
+                      {STYLE_PRESETS.map((p) => {
+                        const active = stylePreset === p.id;
+                        return (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => setStylePreset(p.id)}
+                            className={cn(
+                              "inline-flex shrink-0 items-center gap-1 rounded-lg px-2 py-0.5 text-[11px] font-medium transition",
+                              active
+                                ? "bg-[#22d3ee]/20 font-semibold text-[#22d3ee] ring-1 ring-[#22d3ee]/40"
+                                : "bg-white/[0.04] text-white/60 hover:bg-white/[0.08] hover:text-white",
+                            )}
+                          >
+                            <span>{p.icon}</span>
+                            <span>{p.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
                     <button
                       type="button"
-                      onClick={() => firstFrameInputRef.current?.click()}
+                      onClick={() => setShowNegativePrompt((v) => !v)}
                       className={cn(
-                        "inline-flex h-10 items-center gap-2 rounded-xl border px-3 text-[12px] font-medium transition",
-                        firstFrameDataUrl
-                          ? "border-[#22d3ee]/40 bg-[#22d3ee]/10 text-[#22d3ee]"
-                          : "border-dashed border-white/25 bg-white/[0.03] text-white/70 hover:border-white/40",
+                        "inline-flex shrink-0 items-center gap-1 rounded-lg px-2 py-0.5 font-mono text-[10px] transition",
+                        showNegativePrompt || negativePrompt
+                          ? "bg-purple-500/20 text-purple-300 ring-1 ring-purple-500/30"
+                          : "bg-white/[0.04] text-white/45 hover:text-white",
                       )}
                     >
-                      {firstFrameDataUrl ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={firstFrameDataUrl}
-                          alt=""
-                          className="h-7 w-7 rounded-md object-cover ring-1 ring-white/15"
-                        />
-                      ) : (
-                        <Paperclip className="h-4 w-4" />
-                      )}
-                      {mediaType === "video" ? "Стартовый кадр" : "Референс"}
-                      {firstFrameDataUrl ? (
-                        <span
-                          className="text-white/45 hover:text-white"
-                          onClick={(ev) => {
-                            ev.stopPropagation();
-                            setFirstFrameDataUrl(null);
-                            setFirstFrameName(null);
-                          }}
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </span>
-                      ) : null}
+                      <span>⛔ Негативный промпт</span>
+                      {negativePrompt && <span className="h-1.5 w-1.5 rounded-full bg-purple-400" />}
                     </button>
-                    {mediaType === "video" ? (
-                      <button
-                        type="button"
-                        onClick={() => lastFrameInputRef.current?.click()}
-                        className={cn(
-                          "inline-flex h-10 items-center gap-2 rounded-xl border px-3 text-[12px] font-medium transition",
-                          lastFrameDataUrl
-                            ? "border-[#22d3ee]/40 bg-[#22d3ee]/10 text-[#22d3ee]"
-                            : "border-dashed border-white/25 bg-white/[0.03] text-white/70 hover:border-white/40",
-                        )}
-                      >
-                        {lastFrameDataUrl ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={lastFrameDataUrl}
-                            alt=""
-                            className="h-7 w-7 rounded-md object-cover ring-1 ring-white/15"
-                          />
-                        ) : (
-                          <Paperclip className="h-4 w-4" />
-                        )}
-                        Конечный кадр
-                        {lastFrameDataUrl ? (
-                          <span
-                            className="text-white/45 hover:text-white"
-                            onClick={(ev) => {
-                              ev.stopPropagation();
-                              setLastFrameDataUrl(null);
-                              setLastFrameName(null);
-                            }}
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </span>
-                        ) : null}
-                      </button>
-                    ) : null}
-                    <span className="text-[10px] text-white/35">
-                      файл или картинка из истории → кнопки под превью
-                    </span>
+                  </div>
+                )}
+
+                {/* Expandable Negative Prompt input */}
+                {mediaType === "image" && showNegativePrompt && (
+                  <div className="border-b border-white/[0.06] bg-black/20 px-3 py-2 lg:px-4">
+                    <input
+                      type="text"
+                      value={negativePrompt}
+                      onChange={(e) => setNegativePrompt(e.target.value)}
+                      placeholder="Отрицательный промпт: чего НЕ должно быть на картинке (напр. размытие, лишние пальцы, текст, мусор)..."
+                      className="w-full rounded-lg border border-white/10 bg-[#16161b] px-3 py-1.5 text-[12px] text-white placeholder-white/30 focus:border-purple-400 focus:outline-none"
+                    />
                   </div>
                 )}
                 {(!kieActive || kieTextField) && (
@@ -1353,6 +1682,16 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       rows={3}
                       className="w-full resize-none bg-transparent text-[13px] leading-relaxed text-white/90 placeholder:text-white/30 focus:outline-none"
                     />
+                    {mediaType === "image" && stylePreset !== "none" && (
+                      <div className="mt-1 flex items-center gap-1.5 rounded-lg border border-[#22d3ee]/25 bg-[#22d3ee]/5 px-2.5 py-1 text-[11px] text-[#22d3ee]/90">
+                        <span className="font-semibold">
+                          Стиль «{STYLE_PRESETS.find((p) => p.id === stylePreset)?.label}»:
+                        </span>
+                        <span className="truncate font-mono text-[10px] text-white/60">
+                          {STYLE_PRESETS.find((p) => p.id === stylePreset)?.suffix}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 )}
                 {kieActive && kieModel && !kieTextField && (
@@ -1672,6 +2011,93 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
           </div>
         </section>
       </div>
+
+      {/* Lightbox full screen modal */}
+      {lightboxOpen && selected?.preview_url && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 p-2 backdrop-blur-2xl animate-in fade-in duration-200"
+          onClick={() => setLightboxOpen(false)}
+        >
+          <div
+            className="relative flex items-center justify-center max-h-[96vh] max-w-[98vw]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Close & Action floating buttons */}
+            <div className="absolute top-3 right-3 z-50 flex items-center gap-2">
+              <div className="inline-flex items-center rounded-xl border border-white/20 bg-black/80 p-0.5 backdrop-blur-md shadow-2xl">
+                <button
+                  type="button"
+                  onClick={() =>
+                    void downloadMediaFile(
+                      selected.raw_url || selected.preview_url!,
+                      selected.label || "generation",
+                      downloadFormat,
+                    )
+                  }
+                  className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-semibold text-white/90 transition hover:bg-white/[0.12] hover:text-white"
+                >
+                  <Download className="h-4 w-4 text-[#22d3ee]" />
+                  Скачать
+                </button>
+                {selected.kind === "image" && (
+                  <div className="flex items-center border-l border-white/20 pl-1 pr-1 font-mono text-[11px]">
+                    {(["png", "jpg", "webp"] as const).map((fmt) => (
+                      <button
+                        key={fmt}
+                        type="button"
+                        onClick={() => setDownloadFormat(fmt)}
+                        className={cn(
+                          "rounded px-2 py-0.5 uppercase transition",
+                          downloadFormat === fmt
+                            ? "bg-[#22d3ee]/25 font-bold text-[#22d3ee]"
+                            : "text-white/50 hover:text-white",
+                        )}
+                      >
+                        {fmt}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setLightboxOpen(false);
+                  deleteItem.mutate(selected);
+                }}
+                className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-red-500/30 bg-black/80 px-3 text-[12px] font-medium text-red-400 backdrop-blur transition hover:border-red-500/50 hover:bg-red-500/20 hover:text-red-300 shadow-2xl"
+                title="Удалить из истории"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>Удалить</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setLightboxOpen(false)}
+                className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/20 bg-black/80 text-white/80 backdrop-blur transition hover:bg-white/20 hover:text-white shadow-2xl"
+                title="Закрыть"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            {selected.kind === "video" ? (
+              <video
+                src={selected.preview_url}
+                controls
+                autoPlay
+                className="max-h-[96vh] max-w-[98vw] rounded-xl border border-white/15 bg-black object-contain shadow-[0_0_80px_rgba(0,0,0,0.9)]"
+              />
+            ) : (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={selected.preview_url}
+                alt=""
+                className="max-h-[96vh] max-w-[98vw] rounded-xl border border-white/15 bg-black object-contain shadow-[0_0_80px_rgba(0,0,0,0.9)]"
+              />
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1930,15 +2356,18 @@ function ChipButton({
   children,
   onClick,
   active,
+  title,
 }: {
   children: React.ReactNode;
   onClick: () => void;
   active?: boolean;
+  title?: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      title={title}
       className={cn(
         "inline-flex h-9 items-center gap-1.5 rounded-xl border px-3 text-[12px] font-medium transition-all duration-200",
         active
@@ -1980,13 +2409,10 @@ function OptionDropdown({
 
   return (
     <div className="relative" ref={ref}>
-      <div className="flex flex-col gap-0.5">
-        <span className="hidden px-0.5 text-[10px] text-white/40 lg:block">{label}</span>
-        <ChipButton active={open} onClick={() => onOpenChange(!open)}>
-          <span className={cn(mono && "font-mono tabular-nums")}>{value}</span>
-          <ChevronDown className="h-3 w-3 opacity-60" />
-        </ChipButton>
-      </div>
+      <ChipButton active={open} onClick={() => onOpenChange(!open)} title={label}>
+        <span className={cn(mono && "font-mono tabular-nums")}>{value}</span>
+        <ChevronDown className="h-3 w-3 opacity-60" />
+      </ChipButton>
       {open && (
         <div
           className="absolute bottom-full left-0 z-[1000] mb-2 max-h-60 overflow-y-auto rounded-xl border border-white/15 bg-[#121216]/95 backdrop-blur-2xl p-1.5 shadow-[0_15px_40px_rgba(0,0,0,0.85)] ring-1 ring-white/10"

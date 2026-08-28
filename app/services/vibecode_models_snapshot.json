@@ -341,17 +341,6 @@
     }
   },
   {
-    "display_name": "Nano Banana Pro (1K/2K/4K)",
-    "id": "nano-banana-pro",
-    "is_image": true,
-    "object": "model",
-    "owned_by": "vibecode",
-    "pricing": {
-      "currency": "usd",
-      "usd_per_image": 0.059049
-    }
-  },
-  {
     "display_name": "Nano Banana 2 Lite",
     "id": "nano-banana-2-lite",
     "is_image": true,
