@@ -65,16 +65,11 @@ export const GRSAI_WIRED_SLUGS = new Set([
   "gpt-image-2-vip",
   "nano-banana-2",
   "nano-banana-2-lite",
-  "nano-banana-pro",
   "nano-banana-fast",
   "nano-banana",
-  "nano-banana-pro-vt",
-  "nano-banana-pro-cl",
   "nano-banana-2-cl",
   "nano-banana-2-2k-cl",
   "nano-banana-2-4k-cl",
-  "nano-banana-pro-vip",
-  "nano-banana-pro-4k-vip",
 ]);
 
 /** Video: Grsai Sora2 / Veo docs — в picker с «+». */
@@ -195,25 +190,13 @@ export const OUTSEE_ACCENT = "#22d3ee";
  */
 export const OUTSEE_IMAGE_MODELS: OutseeImageModel[] = [
   {
-    slug: "nano-banana-pro",
-    studioId: "nano_banana_pro",
-    displayName: "Nano Banana Pro",
-    description: "Grsai · лучшая banana для любых задач.",
-    icon: `${OUTSEE_ORIGIN}/imagemobilepreview/1.jpg`,
-    price: "3",
-    isTop: true,
-    hidden: true,
-    grsaiWired: true,
-    chips: ["aspect", "resolution", "image-input"],
-    defaults: { aspectRatio: "16:9", imageResolution: "2K" },
-  },
-  {
     slug: "nano-banana-2",
     studioId: "nano_banana_2",
     displayName: "Nano Banana 2",
     description: "Grsai · самая новая версия Nano Banana.",
     icon: `${OUTSEE_ORIGIN}/imagemobilepreview/1.jpg`,
     price: "3",
+    isTop: true,
     grsaiWired: true,
     chips: ["aspect", "resolution", "image-input"],
     defaults: { aspectRatio: "16:9", imageResolution: "2K" },

@@ -1668,6 +1668,15 @@ export const api = {
     >(
       `/api/outsee-create/history?kind=${kind}&scope=${opts?.scope ?? "create"}&limit=${opts?.limit ?? 60}`,
     ),
+  deleteOutseeCreateHistoryItem: (params: { path?: string; itemId?: string }) => {
+    const q = new URLSearchParams();
+    if (params.path) q.set("path", params.path);
+    if (params.itemId) q.set("item_id", params.itemId);
+    return http<{ ok: boolean; deleted: boolean }>(
+      `/api/outsee-create/history?${q.toString()}`,
+      { method: "DELETE" },
+    );
+  },
 
   getGrsaiStatus: () =>
     http<{
@@ -1823,6 +1832,7 @@ export const api = {
     project_id?: number | null;
     first_frame_url?: string | null;
     last_frame_url?: string | null;
+    reference_images?: string[] | null;
   }) =>
     http<{
       ok: boolean;
