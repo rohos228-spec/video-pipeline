@@ -297,12 +297,106 @@ async def collapse_flattened_coverage_cells(
 def resolve_shot_plan(
     original_vo: str, planned: list[dict[str, Any]]
 ) -> tuple[int, list[str]]:
-    """Сколько шотов: из кадры[]. Текст — клаузы ячейки, не GPT-нарезка 27–54."""
+    """Сколько шотов: только из кадры[]. Без плана не выдумывать нарезку."""
+    text = (original_vo or "").strip()
     if planned:
+        partition = kadry_vo_partition(text, planned)
+        if partition:
+            return len(partition), partition
         need = max(1, len(planned))
-        return need, split_text_into_parts(original_vo, need)
-    need = shots_needed_for_vo(original_vo)
-    return need, split_text_into_parts(original_vo, need)
+        return need, split_text_into_parts(text, need)
+    return 1, [text] if text else [""]
+
+
+def bits_from_attrs(frame: Any) -> list[dict[str, Any]]:
+    attrs = getattr(frame, "attrs", None)
+    if not isinstance(attrs, dict):
+        return []
+    raw = attrs.get("биты") or attrs.get("bits")
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def kadry_from_bits(full_vo: str, bits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """1 бит → 1 кадр. Склейка закадр = весь текст ячейки, без хвостов."""
+    text = " ".join((full_vo or "").split())
+    ordered = sorted(
+        (item for item in bits if isinstance(item, dict)),
+        key=lambda item: int(item.get("порядок") or 0),
+    )
+    if not text or not ordered:
+        return []
+    starts: list[int] = []
+    cursor = 0
+    for i, item in enumerate(ordered):
+        anchor = " ".join(str(item.get("якорь") or "").split())
+        idx = -1
+        if anchor:
+            idx = text.find(anchor, cursor)
+            if idx < 0:
+                idx = text.lower().find(anchor.lower(), cursor)
+        if idx < 0:
+            parts = split_text_into_parts(text, len(ordered))
+            while parts and not str(parts[-1] or "").strip():
+                parts.pop()
+            if " ".join(" ".join(parts).split()) != text:
+                return []
+            return _kadry_rows(ordered[: len(parts)], parts)
+        starts.append(0 if i == 0 else idx)
+        cursor = idx + max(len(anchor), 1)
+    parts: list[str] = []
+    for i, start in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else len(text)
+        if end < start:
+            end = start
+        parts.append(text[start:end].strip())
+    if " ".join(" ".join(parts).split()) != text:
+        parts = split_text_into_parts(text, len(ordered))
+        while parts and not str(parts[-1] or "").strip():
+            parts.pop()
+        if " ".join(" ".join(parts).split()) != text:
+            return []
+        ordered = ordered[: len(parts)]
+    return _kadry_rows(ordered, parts)
+
+
+def _kadry_rows(
+    bits: list[dict[str, Any]], parts: list[str]
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    master = "B01-K1"
+    for i, (item, piece) in enumerate(zip(bits, parts, strict=False)):
+        sid = f"B01-K{i + 1}"
+        rows.append(
+            {
+                "id": sid,
+                "порядок": i + 1,
+                "parent_id": None if i == 0 else master,
+                "закадр": piece,
+                "действие": str(
+                    item.get("изменение") or item.get("глагол") or ""
+                ).strip(),
+            }
+        )
+    return rows
+
+
+def ensure_kadry_from_bits(frame: Any) -> int:
+    """Если кадры[] пустые, а биты есть — собрать покрытие по якорям."""
+    if planned_shots_from_attrs(frame):
+        return 0
+    bits = bits_from_attrs(frame)
+    full = (getattr(frame, "voiceover_text", None) or "").strip()
+    planned = kadry_from_bits(full, bits)
+    if not planned:
+        return 0
+    attrs = dict(getattr(frame, "attrs", None) or {})
+    attrs["кадры"] = planned
+    attrs["vo_cell_full"] = " ".join(full.split())
+    frame.attrs = attrs
+    _flag_attrs(frame)
+    return len(planned)
 
 
 _SCENE_CHAIN_RE = re.compile(r"(?m)^\s*\d+\.\s+\S")
@@ -747,6 +841,59 @@ async def rebuild_vo_cells_from_shots(
         len(work),
     )
     return ordered, report
+
+
+async def reseed_vo_cells_without_kadry(
+    session: AsyncSession,
+    project: Project,
+) -> dict[str, Any]:
+    """Несколько ячеек без кадры[], склейка = целый закадр → снова 1 seed + биты."""
+    from sqlalchemy import select as sel
+
+    from app.services import db_v2
+
+    full = " ".join((db_v2.resolve_full_voiceover_text(project) or "").split())
+    frames = list(
+        (
+            await session.execute(
+                sel(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    work = [fr for fr in frames if _is_pipeline_frame(fr)]
+    if len(work) <= 1 or not full:
+        return {"reseeding": False, "cells": len(work)}
+    if any(planned_shots_from_attrs(fr) for fr in work):
+        return {"reseeding": False, "cells": len(work), "reason": "has_kadry"}
+    joined = " ".join(
+        " ".join((getattr(fr, "voiceover_text", None) or "").split()) for fr in work
+    )
+    if joined != full:
+        return {"reseeding": False, "cells": len(work), "reason": "join_mismatch"}
+    bits: list[Any] = []
+    for fr in work:
+        found = bits_from_attrs(fr)
+        if found:
+            bits = found
+            break
+    seed = await db_v2.ensure_single_seed_vo_cell(session, project, full)
+    attrs = dict(getattr(seed, "attrs", None) or {})
+    if bits:
+        attrs["биты"] = bits
+    seed.attrs = attrs
+    _flag_attrs(seed)
+    await session.flush()
+    logger.info(
+        "[#{}] reseed VO without кадры[]: cells {}→1 bits={}",
+        project.id,
+        len(work),
+        len(bits),
+    )
+    return {"reseeding": True, "cells_before": len(work), "bits": len(bits)}
 
 
 async def apply_shot_coverage_to_vo_cells(

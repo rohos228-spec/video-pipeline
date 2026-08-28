@@ -93,8 +93,34 @@ def test_resolve_shot_plan_falls_back_without_kadrы() -> None:
 
     vo = "Первая фраза тут. Вторая фраза здесь."
     need, parts = resolve_shot_plan(vo, [])
-    assert need == 2
-    assert len(parts) == 2
+    assert need == 1
+    assert parts == [vo]
+
+
+def test_kadry_from_bits_covers_full_vo() -> None:
+    from app.services.vo_shot_expand import kadry_from_bits
+
+    vo = (
+        "Сергей Ткач Самый страшный парадокс этой истории заключается в том, "
+        "что Сергея Ткача искали по тем же правилам. "
+        "Для следствия он оставался неизвестным преступником. "
+        "Ткач родился в Киселёвске."
+    )
+    bits = [
+        {"порядок": 1, "глагол": "раскрывает", "якорь": "искали по тем же правилам"},
+        {
+            "порядок": 2,
+            "глагол": "противопоставляет",
+            "якорь": "оставался неизвестным преступником",
+        },
+        {"порядок": 3, "глагол": "рождается", "якорь": "Ткач родился в Киселёвске"},
+    ]
+    planned = kadry_from_bits(vo, bits)
+    assert len(planned) == 3
+    joined = " ".join(item["закадр"] for item in planned)
+    assert joined.split() == vo.split()
+    assert planned[0]["id"] == "B01-K1"
+    assert planned[1]["parent_id"] == "B01-K1"
 
 
 def test_repair_glues_fragments_back_to_parent() -> None:

@@ -306,20 +306,12 @@ def _frame_action_text(fr) -> str:
 
 
 def _frame_prompts_and_action_ready(fr) -> bool:
-    from app.services.vo_shot_expand import is_shot_child
-
-    if is_shot_child(fr):
-        return True
     img = (getattr(fr, "image_prompt", None) or "").strip()
     anim = (getattr(fr, "animation_prompt", None) or "").strip()
     return bool(img and anim and _frame_action_text(fr))
 
 
 def _frame_camera_menu_ready(fr) -> bool:
-    from app.services.vo_shot_expand import is_shot_child
-
-    if is_shot_child(fr):
-        return True
     attrs = getattr(fr, "attrs", None) or {}
     if isinstance(fr, dict):
         attrs = fr.get("attrs") if isinstance(fr.get("attrs"), dict) else {}
@@ -364,14 +356,21 @@ def _clear_excel_gpt_ui_force_full(project) -> bool:
     return changed
 
 
+def _canvas_has_fw_shots(project) -> bool:
+    graph = (getattr(project, "meta", None) or {})
+    if not isinstance(graph, dict):
+        return False
+    canvas = graph.get("canvas_graph") or {}
+    for node in canvas.get("nodes") or []:
+        if str(node.get("id") or "").endswith("_fw_shots"):
+            return True
+    return False
+
+
 def _select_fw_frames_for_gpt(frames_for_map, *, force_full: bool):
     """Какие кадры слать в GPT на fw_frames. force_full — все uuid, без skip."""
-    from app.services.vo_shot_expand import is_shot_child
-
     uuid_frames = [
-        fr
-        for fr in (frames_for_map or [])
-        if getattr(fr, "uuid", None) and not is_shot_child(fr)
+        fr for fr in (frames_for_map or []) if getattr(fr, "uuid", None)
     ]
     if force_full:
         return list(uuid_frames), False
@@ -1253,8 +1252,42 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         collapsed,
                     )
             if str(node_key or "").endswith("_fw_frames"):
-                from app.services.vo_shot_expand import expand_vo_cells_into_shots
+                from app.services.vo_shot_expand import (
+                    apply_shot_coverage_to_vo_cells,
+                    ensure_kadry_from_bits,
+                    expand_vo_cells_into_shots,
+                    is_shot_child,
+                    reseed_vo_cells_without_kadry,
+                )
 
+                if not _canvas_has_fw_shots(project):
+                    reseed = await reseed_vo_cells_without_kadry(session, project)
+                    if reseed.get("reseeding"):
+                        frames_for_map = list(
+                            (
+                                await session.execute(
+                                    _select(Frame)
+                                    .where(Frame.project_id == project.id)
+                                    .order_by(Frame.sort_key, Frame.number)
+                                )
+                            ).scalars().all()
+                        )
+                        logger.info(
+                            "[#{}] fw_frames reseed without кадры {}",
+                            project.id,
+                            reseed,
+                        )
+                    n_kadry = 0
+                    for fr in frames_for_map:
+                        if not is_shot_child(fr):
+                            n_kadry += ensure_kadry_from_bits(fr)
+                    if n_kadry:
+                        await session.flush()
+                        logger.info(
+                            "[#{}] fw_frames кадры from bits n={}",
+                            project.id,
+                            n_kadry,
+                        )
                 frames_for_map, exp = await expand_vo_cells_into_shots(
                     session, project, frames_for_map
                 )
@@ -1264,6 +1297,26 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     project.id,
                     exp,
                 )
+                if not _canvas_has_fw_shots(project):
+                    rebuilt = await apply_shot_coverage_to_vo_cells(
+                        session, project
+                    )
+                    await session.flush()
+                    frames_for_map = list(
+                        (
+                            await session.execute(
+                                _select(Frame)
+                                .where(Frame.project_id == project.id)
+                                .order_by(Frame.sort_key, Frame.number)
+                            )
+                        ).scalars().all()
+                    )
+                    logger.info(
+                        "[#{}] fw_frames flatten before GPT cells={} expand={}",
+                        project.id,
+                        rebuilt.get("cells"),
+                        rebuilt.get("expand"),
+                    )
             ents = list(
                 (
                     await session.execute(
@@ -1654,42 +1707,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         new_op["fields"] = kept
                         cleaned.append(new_op)
                     ops = cleaned
-                    if str(node_key or "").endswith(("_fw_frames", "_fw_qc")):
-                        from app.services.vo_shot_expand import is_shot_child
-
-                        child_ids = {
-                            str(getattr(fr, "uuid", "") or "").strip()
-                            for fr in frames_for_map
-                            if is_shot_child(fr)
-                        }
-                        if child_ids:
-                            stripped: list[dict] = []
-                            for op in ops:
-                                uid = str(op.get("frame_uuid") or "").strip()
-                                if uid not in child_ids:
-                                    stripped.append(op)
-                                    continue
-                                fields = op.get("fields")
-                                if not isinstance(fields, dict):
-                                    continue
-                                kept = {
-                                    k: v
-                                    for k, v in fields.items()
-                                    if str(k).strip().lower().replace(" ", "_")
-                                    not in {
-                                        "image_prompt",
-                                        "animation_prompt",
-                                        "промт_картинки",
-                                        "промт_видео",
-                                        "промпт_картинки",
-                                        "промпт_видео",
-                                    }
-                                }
-                                if kept:
-                                    new_op = dict(op)
-                                    new_op["fields"] = kept
-                                    stripped.append(new_op)
-                            ops = stripped
                     if not ops:
                         logger.warning(
                             "[#{}] enrich_xlsx node={!r}: apply-ops пустой "
