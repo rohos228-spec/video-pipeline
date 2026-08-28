@@ -206,6 +206,17 @@ def test_canvas_four_node_has_no_fw_shots() -> None:
     assert _canvas_has_fw_shots(six) is True
 
 
+def test_safe_upload_node_key_strips_windows_colon(tmp_path) -> None:
+    from app.orchestrator.steps.enrich_xlsx import _safe_upload_node_key
+
+    safe = _safe_upload_node_key("n_excel_gpt_fw_frames:action_chain")
+    assert ":" not in safe
+    assert _safe_upload_node_key("n_excel_gpt_fw_frames") == "n_excel_gpt_fw_frames"
+    p = tmp_path / safe
+    p.mkdir(parents=True, exist_ok=True)
+    assert p.is_dir()
+
+
 def test_group_prompts_for_four_node_markup_exist() -> None:
     from app.orchestrator.steps.enrich_xlsx import _load_script_frames_qc_prompt
 

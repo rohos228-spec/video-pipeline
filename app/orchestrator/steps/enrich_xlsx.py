@@ -356,6 +356,17 @@ def _clear_excel_gpt_ui_force_full(project) -> bool:
     return changed
 
 
+_WIN_PATH_BAD = frozenset('<>:"/\\|?*')
+
+
+def _safe_upload_node_key(node_key: str) -> str:
+    """Имя папки excel_gpt_uploads: Windows не принимает ':' и др."""
+    cleaned = "".join(
+        "_" if ch in _WIN_PATH_BAD else ch for ch in str(node_key or "")
+    )
+    return cleaned.strip(" .") or "node"
+
+
 def _canvas_has_fw_shots(project) -> bool:
     graph = (getattr(project, "meta", None) or {})
     if not isinstance(graph, dict):
@@ -412,7 +423,8 @@ async def _run_four_node_markup_pass(
         characters=entity_cards_for_gpt(ents),
         full_vo=True,
     )
-    ctx_dir = project.data_dir / "excel_gpt_uploads" / str(node_key)
+    upload_key = _safe_upload_node_key(node_key)
+    ctx_dir = project.data_dir / "excel_gpt_uploads" / upload_key
     ctx_dir.mkdir(parents=True, exist_ok=True)
     ctx_path = ctx_dir / f"db_frames_{footer_kind}.json"
     ctx_path.write_text(
@@ -450,7 +462,7 @@ async def _run_four_node_markup_pass(
     )
     await run_apply_ops_batched(
         project_dir=project.data_dir,
-        node_key=f"{node_key}:{footer_kind}",
+        node_key=upload_key,
         role=role,
         output_mode="project_file",
         prompt=prompt,
