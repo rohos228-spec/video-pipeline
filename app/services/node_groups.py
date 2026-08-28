@@ -1074,6 +1074,60 @@ def upgrade_script_frames_qc_graph(meta: dict[str, Any]) -> bool:
     return True
 
 
+def restore_script_frames_qc_four_node_graph(meta: dict[str, Any]) -> bool:
+    """Убрать автодобавленные action+shots, вернуть check → frames."""
+    graph = canvas_graph_from_meta(meta)
+    if graph is None:
+        return False
+    action_id = "n_excel_gpt_fw_action"
+    shots_id = "n_excel_gpt_fw_shots"
+    check_id = "n_excel_gpt_fw_check_script"
+    frames_id = "n_excel_gpt_fw_frames"
+    drop = {action_id, shots_id}
+    nodes = [n for n in graph["nodes"] if str(n.get("id")) not in drop]
+    by_id = {str(n.get("id")): n for n in nodes}
+    if action_id not in {str(n.get("id")) for n in graph["nodes"]} and (
+        shots_id not in {str(n.get("id")) for n in graph["nodes"]}
+    ):
+        return False
+    if check_id not in by_id or frames_id not in by_id:
+        return False
+    edges = [
+        e
+        for e in graph["edges"]
+        if str(e.get("source")) not in drop and str(e.get("target")) not in drop
+    ]
+    have = {(str(e.get("source")), str(e.get("target"))) for e in edges}
+    if (check_id, frames_id) not in have:
+        edges.append(
+            {
+                "id": f"e_{check_id}_{frames_id}",
+                "source": check_id,
+                "target": frames_id,
+                "sourceHandle": "out",
+                "targetHandle": "in",
+                "label": "Ок",
+                "data": {"kind": "pass", "label": "Ок"},
+            }
+        )
+    variants = meta.get("prompt_slot_variants")
+    variants = dict(variants) if isinstance(variants, dict) else {}
+    variants.pop(action_id, None)
+    variants.pop(shots_id, None)
+    meta["prompt_slot_variants"] = variants
+    egn = meta.get("excel_gpt_nodes")
+    egn = dict(egn) if isinstance(egn, dict) else {}
+    egn.pop(action_id, None)
+    egn.pop(shots_id, None)
+    meta["excel_gpt_nodes"] = egn
+    meta["canvas_graph"] = build_canvas_graph_payload(
+        workflow_id=int(graph.get("workflow_id") or 0),
+        nodes=nodes,
+        edges=edges,
+    )
+    return True
+
+
 async def insert_node_group(
     session: AsyncSession,
     project: Project,
@@ -1092,23 +1146,6 @@ async def insert_node_group(
         raise ValueError(
             f"неизвестная группа {group_id!r}; есть: {sorted(all_groups())}"
         )
-    if group_id == "script_frames_qc":
-        meta0 = dict(project.meta or {})
-        if upgrade_script_frames_qc_graph(meta0):
-            project.meta = meta0
-            await session.flush()
-            await sync_run_snapshot_from_canvas_graph(session, project, force=True)
-            await session.commit()
-            logger.info("[#{}] upgrade script_frames_qc: +action +shots", project.id)
-            return {
-                "group": group_id,
-                "upgraded": True,
-                "nodes": [
-                    "n_excel_gpt_fw_action",
-                    "n_excel_gpt_fw_shots",
-                ],
-            }
-
     from sqlalchemy import select
 
     from app.models import Workflow

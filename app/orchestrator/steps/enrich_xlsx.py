@@ -753,22 +753,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         node_key,
         prompt_step_code,
     )
-    if node_key and any(
-        str(node_key).endswith(s) for s in _SCRIPT_FRAMES_QC_SUFFIXES
-    ):
-        from sqlalchemy.orm.attributes import flag_modified
-
-        from app.services.node_groups import upgrade_script_frames_qc_graph
-
-        meta_up = dict(project.meta or {})
-        if upgrade_script_frames_qc_graph(meta_up):
-            project.meta = meta_up
-            flag_modified(project, "meta")
-            await session.flush()
-            logger.info(
-                "[#{}] enrich_xlsx: upgrade script_frames_qc +action +shots",
-                project.id,
-            )
 
     await session.refresh(project)
 

@@ -647,3 +647,71 @@ async def test_group_from_canvas_and_reinsert(mem_db) -> None:
     ]
     assert sorted(set(copies)) == ["moya_svyazka", "moya_svyazka#2"]
     assert res2["nodes"] != res["nodes"]  # id с суффиксами
+
+
+def test_restore_script_frames_qc_four_node_graph() -> None:
+    meta = {
+        "canvas_graph": {
+            "workflow_id": 1,
+            "nodes": [
+                {
+                    "id": "n_excel_gpt_fw_check_script",
+                    "type": "excel_gpt",
+                    "position": {"x": 0, "y": 0},
+                    "data": {},
+                },
+                {
+                    "id": "n_excel_gpt_fw_action",
+                    "type": "excel_gpt",
+                    "position": {"x": 100, "y": 0},
+                    "data": {},
+                },
+                {
+                    "id": "n_excel_gpt_fw_shots",
+                    "type": "excel_gpt",
+                    "position": {"x": 200, "y": 0},
+                    "data": {},
+                },
+                {
+                    "id": "n_excel_gpt_fw_frames",
+                    "type": "excel_gpt",
+                    "position": {"x": 300, "y": 0},
+                    "data": {},
+                },
+            ],
+            "edges": [
+                {
+                    "source": "n_excel_gpt_fw_check_script",
+                    "target": "n_excel_gpt_fw_action",
+                    "data": {"kind": "pass"},
+                },
+                {
+                    "source": "n_excel_gpt_fw_action",
+                    "target": "n_excel_gpt_fw_shots",
+                    "data": {"kind": "after"},
+                },
+                {
+                    "source": "n_excel_gpt_fw_shots",
+                    "target": "n_excel_gpt_fw_frames",
+                    "data": {"kind": "after"},
+                },
+            ],
+        },
+        "prompt_slot_variants": {
+            "n_excel_gpt_fw_action": {"main": "main_action_from_bits_ru"},
+            "n_excel_gpt_fw_shots": {"main": "scenes_to_frames_ru"},
+        },
+        "excel_gpt_nodes": {
+            "n_excel_gpt_fw_action": {},
+            "n_excel_gpt_fw_shots": {},
+        },
+    }
+    assert ng.restore_script_frames_qc_four_node_graph(meta) is True
+    ids = {n["id"] for n in meta["canvas_graph"]["nodes"]}
+    assert ids == {"n_excel_gpt_fw_check_script", "n_excel_gpt_fw_frames"}
+    pairs = {
+        (e["source"], e["target"]) for e in meta["canvas_graph"]["edges"]
+    }
+    assert ("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_frames") in pairs
+    assert "n_excel_gpt_fw_action" not in meta["prompt_slot_variants"]
+    assert "n_excel_gpt_fw_shots" not in meta["excel_gpt_nodes"]
