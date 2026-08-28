@@ -1195,6 +1195,24 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             from app.services.excel_characters import entity_cards_for_gpt
 
             await db_v2.backfill_project_v2(session, project)
+            if script_writer:
+                full_vo = db_v2.resolve_full_voiceover_text(project)
+                if not full_vo:
+                    raise RuntimeError(
+                        f"#{project.id} {node_key}: нет целого закадра "
+                        "(script_text / voiceover.txt) для seed-ячейки"
+                    )
+                seed = await db_v2.ensure_single_seed_vo_cell(
+                    session, project, full_vo
+                )
+                await session.flush()
+                logger.info(
+                    "[#{}] {} seed VO cell uuid={} chars={}",
+                    project.id,
+                    node_key,
+                    seed.uuid,
+                    len(full_vo),
+                )
             frames_for_map = list(
                 (
                     await session.execute(
@@ -1204,7 +1222,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     )
                 ).scalars().all()
             )
-            if _is_script_frames_qc_group_node(variant, master, node_key):
+            if (not script_writer) and _is_script_frames_qc_group_node(
+                variant, master, node_key
+            ):
                 from app.services.vo_shot_expand import (
                     collapse_flattened_coverage_cells,
                 )
@@ -1452,12 +1472,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     accompanying = (
                         f"{accompanying}\n\n"
                         "# DB SoT\n"
-                        "Файл db_frames.json — VO-ячейки из базы (uuid + number + "
-                        "voiceover_text). voiceover_text — ГОТОВЫЙ закадр: "
-                        "не пиши, не меняй, не сокращай его. Твоя единственная "
-                        "работа — разметить в нём биты. "
-                        "Пайплайн сам запишет твой JSON в базу. "
-                        "Excel не используется. Отвечай только JSON apply-ops."
+                        "Файл db_frames.json — ОДНА seed-ячейка = весь целый закадр "
+                        "(uuid + number + voiceover_text). Это неразделённый "
+                        "script_text / voiceover.txt: не пиши, не меняй, не режь "
+                        "его на ячейки. Твоя единственная работа — разметить в нём "
+                        "биты (fields.биты). Разбивку на ячейки сделает пайплайн "
+                        "позже. Excel не используется. Отвечай только JSON apply-ops."
                     ).strip()
                 elif main_action_node:
                     accompanying = (

@@ -297,7 +297,7 @@ def _script_frames_qc_group() -> NodeGroupDef:
     script = _work_spec(
         "script",
         "GPT: сценарист",
-        "Тема/план → закадр существующих VO-ячеек (без replace_frames)",
+        "Целый закадр → 1 seed-ячейка → биты (разбивка ячеек — хвостом группы)",
         _STEP_X,
         "script_writer_ru",
     )
@@ -330,9 +330,10 @@ def _script_frames_qc_group() -> NodeGroupDef:
         group_id="script_frames_qc",
         title="Сценарий → промпты кадров + QC",
         description=(
-            "Сценарист (закадр существующих ячеек, без разбивки) → проверка (Ок/Не ок) → "
-            "конвертер промптов continuity (картинка+видео на кадр) → "
-            "QC промптов (чинит нарушения). Промты *_ru из 05_excel_gpt."
+            "Сценарист: целый закадр (script_text/voiceover.txt) → 1 seed → биты → "
+            "проверка (Ок/Не ок) → промпты continuity → QC. "
+            "Разбивка на ячейки — хвостом группы (vo_shot_expand). "
+            "Промты *_ru из 05_excel_gpt."
         ),
         category="planning",
         default_after_type="plan",
