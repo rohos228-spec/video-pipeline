@@ -130,6 +130,11 @@ def excel_gpt_prompt_exists(name: str) -> bool:
                 return True
         except ValueError:
             continue
+    try:
+        if _excel_gpt_template_path(clean).is_file():
+            return True
+    except Exception:
+        pass
     return False
 
 
