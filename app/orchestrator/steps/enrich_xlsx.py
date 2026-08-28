@@ -191,7 +191,9 @@ def _is_scenes_to_frames_node(
 ) -> bool:
     nk = str(node_key or "")
     # Промт картинок цитирует «сцены → кадры» в шапке — это не нода покрытия.
-    if nk.endswith(("_fw_frames", "_fw_qc", "_fw_script", "_fw_action")):
+    if nk.endswith(
+        ("_fw_frames", "_fw_qc", "_fw_script", "_fw_action", "_fw_check_script")
+    ):
         return False
     if nk.endswith("_fw_shots"):
         return True
@@ -216,6 +218,7 @@ def _is_vo_cell_markup_node(
 
 _SCRIPT_FRAMES_QC_SUFFIXES = (
     "_fw_script",
+    "_fw_check_script",
     "_fw_action",
     "_fw_shots",
     "_fw_frames",
@@ -750,6 +753,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         node_key,
         prompt_step_code,
     )
+    if node_key and any(
+        str(node_key).endswith(s) for s in _SCRIPT_FRAMES_QC_SUFFIXES
+    ):
+        from sqlalchemy.orm.attributes import flag_modified
+
+        from app.services.node_groups import upgrade_script_frames_qc_graph
+
+        meta_up = dict(project.meta or {})
+        if upgrade_script_frames_qc_graph(meta_up):
+            project.meta = meta_up
+            flag_modified(project, "meta")
+            await session.flush()
+            logger.info(
+                "[#{}] enrich_xlsx: upgrade script_frames_qc +action +shots",
+                project.id,
+            )
 
     await session.refresh(project)
 
@@ -1351,7 +1370,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     frames=gpt_frames,
                     characters=entity_cards_for_gpt(ents),
                     strip_prompts=bool(force_full),
-                    full_vo=vo_markup,
+                    full_vo=vo_markup
+                    or _is_script_frames_qc_group_node(variant, master, node_key),
                 )
                 if vo_markup:
                     overlay = {

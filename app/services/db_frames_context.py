@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 # Поля постановки кадра после scene_grammar v1.6 (whitelist — не тащим весь attrs).
@@ -43,22 +44,29 @@ _IMG_PR_ATTR_KEYS: tuple[str, ...] = (
 )
 
 
-def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, str]:
-    import json as _json
-
+def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, Any]:
     src = attrs if isinstance(attrs, dict) else {}
-    out: dict[str, str] = {}
+    out: dict[str, Any] = {}
     for key in _IMG_PR_ATTR_KEYS:
         val = src.get(key)
         if val is None:
             continue
-        # Биты и прочие структуры — компактным JSON, не repr.
+        # Биты/кадры — как JSON-массив в db_frames, не строка «[{…}]».
         if isinstance(val, (list, dict)):
-            text = _json.dumps(val, ensure_ascii=False, separators=(",", ":"))
-        else:
-            text = str(val).strip()
-        if text:
-            out[key] = text
+            out[key] = val
+            continue
+        text = str(val).strip()
+        if not text:
+            continue
+        if key in _NO_CLIP_ATTRS and text[:1] in "[{":
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, (list, dict)):
+                out[key] = parsed
+                continue
+        out[key] = text
     # Русский алиас для персонажей кадра (агенты часто ждут «персонажи»).
     if "characters" in out and "персонажи" not in out:
         out["персонажи"] = out["characters"]
@@ -95,12 +103,15 @@ def _clip(text: str, n: int) -> str:
     return t if len(t) <= n else t[: n - 1] + "…"
 
 
-def slim_attrs_for_excel_gpt(attrs: dict[str, Any] | None) -> dict[str, str]:
+def slim_attrs_for_excel_gpt(attrs: dict[str, Any] | None) -> dict[str, Any]:
     picked = _pick_attrs(attrs)
-    return {
-        k: v if k in _NO_CLIP_ATTRS else _clip(v, _ATTR_MAX)
-        for k, v in picked.items()
-    }
+    out: dict[str, Any] = {}
+    for k, v in picked.items():
+        if k in _NO_CLIP_ATTRS or not isinstance(v, str):
+            out[k] = v
+        else:
+            out[k] = _clip(v, _ATTR_MAX)
+    return out
 
 
 def _camera_subdivide_from(obj: Any) -> dict[str, Any]:
@@ -211,9 +222,9 @@ def build_excel_gpt_db_context(
             row["voiceover_text"] = vo.strip() if full_vo else _clip(vo, _EXCEL_GPT_VO_MAX)
         vo_shot = str(_camera_subdivide_from(fr).get("vo_shot") or "").strip()
         if vo_shot:
-            clipped_shot = _clip(vo_shot, _EXCEL_GPT_VO_MAX)
-            row["vo_shot"] = clipped_shot
-            row["закадр_шота"] = clipped_shot
+            shot_text = vo_shot if full_vo else _clip(vo_shot, _EXCEL_GPT_VO_MAX)
+            row["vo_shot"] = shot_text
+            row["закадр_шота"] = shot_text
         meaning = str(getattr(fr, "meaning", None) or "").strip()
         if meaning:
             row["meaning"] = _clip(meaning, _ATTR_MAX)
@@ -282,6 +293,7 @@ def build_excel_gpt_check_context(
         slug=slug,
         frames=frames,
         characters=characters,
+        full_vo=True,
     )
     ctx["scene_registry"] = list(scene_registry or [])
     return ctx

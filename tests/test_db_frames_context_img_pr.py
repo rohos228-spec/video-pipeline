@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 
 from app.services.db_frames_context import (
+    build_excel_gpt_check_context,
     build_excel_gpt_db_context,
     build_img_pr_db_context,
     collapse_script_writer_frames,
@@ -164,7 +165,7 @@ def test_excel_gpt_check_context_is_slim_with_scene_registry() -> None:
     assert "noise" not in row
     assert row["place"] == "коридор"
     assert row["shot01_bg"] == "лампа"
-    assert len(row["voiceover_text"]) <= 400
+    assert row["voiceover_text"] == ("закадр " * 200).strip()
     assert len(row["meaning"]) <= 500
     assert len(json.dumps(ctx)) < 20_000
 
@@ -242,3 +243,55 @@ def test_excel_gpt_db_context_exposes_image_prompt_for_skip() -> None:
     )
     assert ctx["frames"][0]["image_prompt"].startswith("already")
     assert "image_prompt" not in ctx["frames"][1]
+
+
+def test_check_context_keeps_full_vo_and_bits_array() -> None:
+    vo = "А" * 500
+    bits = [{"порядок": 1, "суть": "было"}, {"порядок": 2, "суть": "стало"}]
+    fr = SimpleNamespace(
+        number=1,
+        uuid="c" * 24,
+        voiceover_text=vo,
+        meaning="",
+        image_prompt="",
+        attrs={"биты": bits, "camera_subdivide": {"vo_shot": vo}},
+    )
+    ctx = build_excel_gpt_check_context(
+        project_id=29, slug="tkach", frames=[fr], characters=[]
+    )
+    row = ctx["frames"][0]
+    assert row["voiceover_text"] == vo
+    assert "…" not in row["voiceover_text"]
+    assert row["биты"] == bits
+    assert isinstance(row["биты"], list)
+
+
+def test_excel_gpt_full_vo_flag_does_not_clip() -> None:
+    vo = "Б" * 450
+    fr = SimpleNamespace(
+        number=1,
+        uuid="d" * 24,
+        voiceover_text=vo,
+        meaning="",
+        image_prompt="",
+        attrs={},
+    )
+    clipped = build_excel_gpt_db_context(
+        project_id=1, slug="x", frames=[fr], characters=[], full_vo=False
+    )
+    full = build_excel_gpt_db_context(
+        project_id=1, slug="x", frames=[fr], characters=[], full_vo=True
+    )
+    assert clipped["frames"][0]["voiceover_text"].endswith("…")
+    assert full["frames"][0]["voiceover_text"] == vo
+
+
+def test_check_script_node_is_not_scenes_to_frames() -> None:
+    from app.orchestrator.steps.enrich_xlsx import (
+        _is_scenes_to_frames_node,
+        _is_script_frames_qc_group_node,
+    )
+
+    nk = "n_excel_gpt_fw_check_script"
+    assert _is_scenes_to_frames_node("scenes_to_frames_ru", "", nk) is False
+    assert _is_script_frames_qc_group_node("scenes_to_frames_ru", "", nk) is True

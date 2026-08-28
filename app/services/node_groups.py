@@ -1058,6 +1058,8 @@ def upgrade_script_frames_qc_graph(meta: dict[str, Any]) -> bool:
     variants = dict(variants) if isinstance(variants, dict) else {}
     variants[action_id] = {"main": "main_action_from_bits_ru"}
     variants[shots_id] = {"main": "scenes_to_frames_ru"}
+    # check — универсальный агент, не scenes_to_frames.
+    variants.pop(check_id, None)
     meta["prompt_slot_variants"] = variants
     egn = meta.get("excel_gpt_nodes")
     egn = dict(egn) if isinstance(egn, dict) else {}
