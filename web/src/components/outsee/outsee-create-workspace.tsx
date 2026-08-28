@@ -11,18 +11,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Check,
   ChevronDown,
   Coins,
+  Copy,
+  Download,
+  ExternalLink,
   History,
   ImageIcon,
   Link2,
   Loader2,
   Music,
   Paperclip,
+  Search,
   Sparkles,
+  Trash2,
   Video,
   X,
-  ExternalLink,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -756,31 +761,31 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
 
   return (
     <div className="fixed inset-0 z-[80] flex flex-col bg-[#0a0a0a] text-white">
-      <header className="flex h-[52px] shrink-0 items-center justify-between border-b border-white/[0.06] bg-[#0f0f0f] px-4">
+      <header className="flex h-[52px] shrink-0 items-center justify-between border-b border-white/10 bg-[#0d0d11]/90 px-4 backdrop-blur-xl">
         <div className="flex items-center gap-3">
           <button
             type="button"
             onClick={() => onOpenChange(false)}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] text-white/70 hover:bg-white/[0.08]"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] text-white/70 transition hover:bg-white/[0.08] hover:text-white"
           >
             <X className="h-4 w-4" />
           </button>
           <div className="flex items-center gap-2">
             <Sparkles className="h-4 w-4" style={{ color: OUTSEE_ACCENT }} />
             <div className="leading-tight">
-              <div className="text-sm font-semibold tracking-tight">Генерация</div>
-              <div className="text-[10px] uppercase tracking-[0.16em] text-white/35">
+              <div className="text-sm font-bold tracking-tight text-white/95">Генерация</div>
+              <div className="text-[10px] uppercase tracking-[0.16em] text-white/40">
                 outsee create · глобально
               </div>
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2.5">
           <span className="hidden text-[11px] text-white/40 sm:inline">
             настройки и история общие для Studio
           </span>
           {projectId != null && (
-            <span className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 font-mono text-[10px] text-white/45">
+            <span className="rounded-full border border-[#22d3ee]/30 bg-[#22d3ee]/10 px-2.5 py-0.5 font-mono text-[10px] font-semibold text-[#22d3ee]">
               проект #{projectId}
             </span>
           )}
@@ -788,7 +793,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
             href={outseeCreateUrl(mediaType, activeSlug)}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-2.5 py-1.5 text-[11px] text-white/55 hover:text-white"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-[11px] text-white/60 transition hover:border-white/25 hover:bg-white/[0.07] hover:text-white"
           >
             outsee.io
             <ExternalLink className="h-3 w-3" />
@@ -798,15 +803,15 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
 
       <div className="flex min-h-0 flex-1">
         {/* History + feed filter */}
-        <aside className="flex w-[240px] shrink-0 flex-col border-r border-white/[0.06] bg-[#0c0c0c] lg:w-[280px]">
-          <div className="flex items-center gap-2 border-b border-white/[0.06] px-3 py-2.5">
-            <History className="h-3.5 w-3.5 text-white/40" />
-            <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/40">
+        <aside className="flex w-[250px] shrink-0 flex-col border-r border-white/10 bg-[#0a0a0d]/95 backdrop-blur-xl lg:w-[290px]">
+          <div className="flex items-center gap-2 border-b border-white/[0.08] px-3.5 py-2.5">
+            <History className="h-3.5 w-3.5 text-white/50" />
+            <span className="text-[11px] font-bold uppercase tracking-[0.14em] text-white/50">
               История
             </span>
             {queueCount > 0 && (
               <span
-                className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-black"
+                className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider text-black shadow-sm"
                 style={{ backgroundColor: OUTSEE_ACCENT }}
                 title={`В работе ${runningJobs.length}/${maxParallel}, ожидание ${waitingJobs.length}`}
               >
@@ -814,13 +819,13 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 {runningJobs.length}·{waitingJobs.length}
               </span>
             )}
-            <span className="ml-auto font-mono text-[10px] text-white/30">
+            <span className="ml-auto font-mono text-[10px] text-white/40 font-semibold">
               {historyItems.length}
             </span>
           </div>
-          <div className="space-y-2 border-b border-white/[0.06] px-2 py-2">
+          <div className="space-y-2 border-b border-white/[0.08] px-2.5 py-2.5">
             <div>
-              <div className="mb-1 px-1 text-[9px] font-semibold uppercase tracking-wider text-white/40">
+              <div className="mb-1.5 px-1 text-[9px] font-bold uppercase tracking-wider text-white/40">
                 В работе · {runningJobs.length}/{maxParallel}
               </div>
               {runningJobs.length === 0 ? (
@@ -828,23 +833,22 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   нет активных
                 </div>
               ) : (
-                <div className="space-y-1">
+                <div className="space-y-1.5">
                   {runningJobs.map((j) => (
                     <button
                       key={j.job_id}
                       type="button"
                       onClick={() => j.history_id && setSelectedId(j.history_id)}
-                      className="flex w-full items-center gap-2 rounded-lg border border-[rgba(209,254,23,0.25)] bg-[rgba(209,254,23,0.06)] px-2 py-1.5 text-left"
+                      className="flex w-full items-center gap-2 rounded-xl border border-[#22d3ee]/40 bg-[#22d3ee]/10 px-2.5 py-2 text-left shadow-[0_0_15px_rgba(34,211,238,0.15)] transition"
                     >
                       <Loader2
-                        className="h-3 w-3 shrink-0 animate-spin"
-                        style={{ color: OUTSEE_ACCENT }}
+                        className="h-3.5 w-3.5 shrink-0 animate-spin text-[#22d3ee]"
                       />
                       <div className="min-w-0 flex-1">
-                        <div className="truncate font-mono text-[10px] text-white/80">
+                        <div className="truncate font-mono text-[10px] font-semibold text-white/90">
                           {j.model || j.media}
                         </div>
-                        <div className="truncate text-[9px] text-white/40">
+                        <div className="truncate text-[9px] text-white/50">
                           {j.prompt_preview || "генерация…"}
                         </div>
                       </div>
@@ -854,7 +858,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
               )}
             </div>
             <div>
-              <div className="mb-1 px-1 text-[9px] font-semibold uppercase tracking-wider text-white/40">
+              <div className="mb-1.5 px-1 text-[9px] font-bold uppercase tracking-wider text-white/40">
                 Ожидание · {waitingJobs.length}
               </div>
               {waitingJobs.length === 0 ? (
@@ -862,22 +866,22 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   очередь пуста
                 </div>
               ) : (
-                <div className="space-y-1">
+                <div className="space-y-1.5">
                   {waitingJobs.map((j) => (
                     <button
                       key={j.job_id}
                       type="button"
                       onClick={() => j.history_id && setSelectedId(j.history_id)}
-                      className="flex w-full items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1.5 text-left"
+                      className="flex w-full items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-2.5 py-2 text-left transition hover:border-white/20 hover:bg-white/[0.06]"
                     >
-                      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-white/10 font-mono text-[9px] text-white/60">
+                      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-white/10 font-mono text-[9px] font-bold text-white/70">
                         #{j.queue_position ?? "—"}
                       </span>
                       <div className="min-w-0 flex-1">
-                        <div className="truncate font-mono text-[10px] text-white/70">
+                        <div className="truncate font-mono text-[10px] font-semibold text-white/80">
                           {j.model || j.media}
                         </div>
-                        <div className="truncate text-[9px] text-white/35">
+                        <div className="truncate text-[9px] text-white/40">
                           {j.prompt_preview || "в очереди"}
                         </div>
                       </div>
@@ -887,19 +891,18 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
               )}
             </div>
           </div>
-          <div className="flex flex-wrap gap-1 border-b border-white/[0.06] p-2">
+          <div className="flex flex-wrap gap-1 border-b border-white/[0.08] p-2">
             {OUTSEE_FEED_TABS.map((t) => (
               <button
                 key={t.id}
                 type="button"
                 onClick={() => setFeedKind(t.id)}
                 className={cn(
-                  "rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-wider transition",
+                  "rounded-lg px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider transition-all duration-150",
                   feedKind === t.id
-                    ? "text-black"
-                    : "bg-white/[0.04] text-white/45 hover:text-white/80",
+                    ? "bg-[#22d3ee] text-black font-extrabold shadow-[0_0_15px_rgba(34,211,238,0.3)]"
+                    : "bg-white/[0.04] text-white/50 hover:bg-white/[0.08] hover:text-white",
                 )}
-                style={feedKind === t.id ? { backgroundColor: OUTSEE_ACCENT } : undefined}
               >
                 {t.label}
               </button>
@@ -917,7 +920,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 <span className="font-mono text-white/50">data/generations/</span>
               </div>
             ) : (
-              <div className="grid grid-cols-2 gap-1.5">
+              <div className="grid grid-cols-2 gap-2">
                 {historyItems.map((item) => {
                   const active = selected?.id === item.id;
                   const isVideo = item.kind === "video";
@@ -942,10 +945,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       type="button"
                       onClick={() => setSelectedId(item.id)}
                       className={cn(
-                        "group relative aspect-square overflow-hidden rounded-lg border bg-[#141414]",
+                        "group relative aspect-square overflow-hidden rounded-xl border bg-[#121216] transition-all duration-200",
                         active
-                          ? "border-[rgba(209,254,23,0.55)] ring-1 ring-[rgba(209,254,23,0.35)]"
-                          : "border-white/[0.06] hover:border-white/20",
+                          ? "border-[#22d3ee] ring-2 ring-[#22d3ee]/40 shadow-[0_0_20px_rgba(34,211,238,0.25)]"
+                          : "border-white/[0.08] hover:border-white/25 hover:bg-[#18181f]",
                       )}
                       title={`${item.label}${item.project_slug ? ` · ${item.project_slug}` : ""}`}
                     >
@@ -976,8 +979,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                         <div className="flex h-full flex-col items-center justify-center gap-1.5 px-2 text-center">
                           {pending ? (
                             <Loader2
-                              className="h-5 w-5 animate-spin"
-                              style={{ color: OUTSEE_ACCENT }}
+                              className="h-5 w-5 animate-spin text-[#22d3ee]"
                             />
                           ) : failed ? (
                             <span className="text-[10px] font-semibold text-red-400">ошибка</span>
@@ -991,10 +993,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                           )}
                         </div>
                       )}
-                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent px-1.5 py-1">
-                        <div className="truncate font-mono text-[9px] text-white/70">{item.label}</div>
+                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent px-2 py-1.5">
+                        <div className="truncate font-mono text-[9px] font-semibold text-white/80">{item.label}</div>
                         {item.project_slug && (
-                          <div className="truncate text-[8px] text-white/40">{item.project_slug}</div>
+                          <div className="truncate text-[8px] text-white/45">{item.project_slug}</div>
                         )}
                       </div>
                     </button>
@@ -1007,7 +1009,13 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
 
         {/* Result + dock */}
         <section className="relative flex min-w-0 flex-1 flex-col">
-          <div className="flex items-center justify-between px-4 pb-1 pt-3 lg:px-6">
+          {/* Ambient glow backlight */}
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center -z-0">
+            <div className="h-80 w-80 rounded-full bg-[#22d3ee]/10 blur-[110px]" />
+            <div className="h-60 w-60 rounded-full bg-purple-500/10 blur-[90px]" />
+          </div>
+
+          <div className="relative z-10 flex items-center justify-between px-4 pb-1 pt-3 lg:px-6">
             <h2 className="flex items-center gap-2 text-sm font-bold text-white lg:text-base">
               <Sparkles className="h-4 w-4" style={{ color: OUTSEE_ACCENT }} />
               Результат генерации
@@ -1022,7 +1030,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 )}
             </h2>
           </div>
-          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 pb-[230px] lg:px-6">
+          <div className="relative z-10 flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-4 pb-[230px] lg:px-6">
             {selected?.preview_url &&
             selected.status !== "queued" &&
             selected.status !== "processing" ? (
@@ -1031,12 +1039,12 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   <video
                     src={selected.preview_url}
                     controls
-                    className="max-h-[calc(100vh-320px)] max-w-full rounded-xl border border-white/[0.06] bg-black"
+                    className="max-h-[calc(100vh-320px)] max-w-full rounded-2xl border border-white/15 bg-black/80 shadow-[0_20px_50px_rgba(0,0,0,0.8)]"
                   />
                 ) : selected.kind === "audio" ? (
-                  <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-2xl border border-white/[0.06] bg-white/[0.02] p-8">
-                    <Music className="h-8 w-8 text-white/40" />
-                    <div className="text-sm text-white/70">{selected.label}</div>
+                  <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-2xl border border-white/15 bg-[#121216]/90 p-8 backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
+                    <Music className="h-8 w-8 text-[#22d3ee]" />
+                    <div className="text-sm font-semibold text-white/85">{selected.label}</div>
                     <audio src={selected.preview_url} controls className="w-full" />
                   </div>
                 ) : (
@@ -1044,30 +1052,60 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   <img
                     src={selected.preview_url}
                     alt=""
-                    className="max-h-[calc(100vh-320px)] max-w-full rounded-xl border border-white/[0.06] object-contain"
+                    className="max-h-[calc(100vh-320px)] max-w-full rounded-2xl border border-white/15 bg-black/80 object-contain shadow-[0_20px_50px_rgba(0,0,0,0.8)]"
                   />
                 )}
-                {mediaType === "video" &&
-                  videoModel.chips.includes("image-input") &&
-                  selected.kind === "image" &&
-                  selected.status === "done" && (
-                    <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
-                      <button
-                        type="button"
-                        className="rounded-xl border border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.10)] px-3 py-1.5 text-[11px] font-medium"
-                        onClick={() => void applyFrameFromHistory(selected, "first")}
-                      >
-                        → Старт
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-xl border border-white/15 bg-white/[0.04] px-3 py-1.5 text-[11px] font-medium text-white/75"
-                        onClick={() => void applyFrameFromHistory(selected, "last")}
-                      >
-                        → Финиш
-                      </button>
-                    </div>
+
+                {/* Toolbar for result */}
+                <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+                  {selected.preview_url && (
+                    <a
+                      href={selected.raw_url || selected.preview_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      download
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-white/15 bg-white/[0.05] px-3 py-1.5 text-[11px] font-medium text-white/80 transition hover:border-[#22d3ee]/40 hover:bg-[#22d3ee]/10 hover:text-white"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      Скачать
+                    </a>
                   )}
+                  {selected.prompt && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(selected.prompt || "");
+                        toast.success("Промпт скопирован");
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-white/15 bg-white/[0.05] px-3 py-1.5 text-[11px] font-medium text-white/80 transition hover:border-white/30 hover:bg-white/[0.09] hover:text-white"
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                      Копировать промпт
+                    </button>
+                  )}
+                  {mediaType === "video" &&
+                    videoModel.chips.includes("image-input") &&
+                    selected.kind === "image" &&
+                    selected.status === "done" && (
+                      <>
+                        <button
+                          type="button"
+                          className="rounded-xl border border-[#22d3ee]/40 bg-[#22d3ee]/10 px-3 py-1.5 text-[11px] font-semibold text-[#22d3ee] transition hover:bg-[#22d3ee]/20"
+                          onClick={() => void applyFrameFromHistory(selected, "first")}
+                        >
+                          → Старт
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-xl border border-white/15 bg-white/[0.04] px-3 py-1.5 text-[11px] font-medium text-white/75 transition hover:border-white/30 hover:bg-white/[0.08]"
+                          onClick={() => void applyFrameFromHistory(selected, "last")}
+                        >
+                          → Финиш
+                        </button>
+                      </>
+                    )}
+                </div>
+
                 <div className="text-[12px] font-medium text-white/70">
                   Результат ·{" "}
                   {selected.elapsed_label ||
@@ -1084,28 +1122,27 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
               </>
             ) : selected &&
               (selected.status === "queued" || selected.status === "processing") ? (
-              <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-6 py-12 text-center">
+              <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-2xl border border-white/15 bg-[#121216]/90 px-6 py-12 text-center backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
                 <Loader2
-                  className="h-9 w-9 animate-spin"
-                  style={{ color: OUTSEE_ACCENT }}
+                  className="h-9 w-9 animate-spin text-[#22d3ee]"
                 />
-                <div className="text-sm font-semibold text-white/85">
+                <div className="text-sm font-bold text-white/90">
                   {selected.status === "queued" ? "В очереди" : "Генерация…"}
                 </div>
-                <div className="text-[12px] text-white/45">
+                <div className="text-[12px] text-white/50">
                   {selected.model || selected.label}
                   {queueCount > 1 ? ` · очередь ${queueCount}` : ""}
                 </div>
                 {selected.prompt && (
-                  <div className="line-clamp-3 max-w-full text-[11px] text-white/35">
+                  <div className="line-clamp-3 max-w-full text-[11px] text-white/40">
                     {selected.prompt}
                   </div>
                 )}
               </div>
             ) : selected?.status === "failed" ? (
-              <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-2xl border border-red-500/30 bg-red-500/5 px-6 py-10 text-center">
-                <div className="text-sm font-semibold text-red-300">Ошибка генерации</div>
-                <div className="text-[12px] text-white/50">
+              <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-2xl border border-red-500/30 bg-red-500/10 px-6 py-10 text-center backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
+                <div className="text-sm font-bold text-red-300">Ошибка генерации</div>
+                <div className="text-[12px] text-white/60">
                   {selected.error || "Не удалось получить файл"}
                 </div>
                 <div className="text-[12px] font-medium text-white/55">
@@ -1115,12 +1152,12 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 </div>
               </div>
             ) : (
-              <div className="flex w-full max-w-xs flex-col items-center gap-4 rounded-2xl border border-white/[0.06] bg-white/[0.02] px-6 py-10 text-center">
+              <div className="flex w-full max-w-xs flex-col items-center gap-4 rounded-2xl border border-white/10 bg-[#121216]/70 px-6 py-10 text-center backdrop-blur-xl">
                 <ImageIcon className="h-8 w-8 text-white/30" />
-                <div className="text-sm text-white/70">Нет результата</div>
+                <div className="text-sm font-medium text-white/70">Нет результата</div>
                 <div className="text-[12px] text-white/40">
                   Файлы пишутся в{" "}
-                  <span className="font-mono text-white/55">data/generations/</span> на этом
+                  <span className="font-mono text-white/60">data/generations/</span> на этом
                   компьютере.
                 </div>
               </div>
@@ -1145,10 +1182,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       }}
                       aria-pressed={active}
                       className={cn(
-                        "flex min-w-[72px] flex-col items-center gap-1 rounded-xl border px-2.5 py-2.5 transition",
+                        "flex min-w-[76px] flex-col items-center gap-1.5 rounded-xl border px-3 py-2.5 transition-all duration-200",
                         active
-                          ? "border-[rgba(209,254,23,0.45)] bg-[rgba(209,254,23,0.12)] text-[rgba(209,254,23,1)]"
-                          : "border-white/10 bg-[#171717] text-white/45 hover:text-white/80",
+                          ? "border-[#22d3ee] bg-[#22d3ee]/15 text-[#22d3ee] shadow-[0_0_18px_rgba(34,211,238,0.25)]"
+                          : "border-white/10 bg-[#16161b]/90 text-white/45 hover:border-white/20 hover:bg-[#1e1e24] hover:text-white",
                       )}
                     >
                       <TypeIcon id={t.id} />
@@ -1161,12 +1198,11 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
               </div>
 
               <div
-                className="min-w-0 flex-1 border border-white/[0.08] bg-[#171717] shadow-[0_12px_40px_rgba(0,0,0,0.55)]"
-                style={{ borderRadius: 16 }}
+                className="min-w-0 flex-1 rounded-2xl border border-white/15 bg-[#121216]/95 backdrop-blur-2xl shadow-[0_20px_60px_rgba(0,0,0,0.85)] ring-1 ring-white/10"
               >
                 {/* KIE: вложения из схемы модели (загрузка в kie / URL) */}
                 {kieActive && kieModel && kieFileFields(kieModel).length > 0 && (
-                  <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.06] px-3 py-2.5 lg:px-4">
+                  <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.08] px-3 py-2.5 lg:px-4">
                     {kieFileFields(kieModel).map((f) => (
                       <KieAttachButton
                         key={f.name}
@@ -1187,7 +1223,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   (mediaType === "video"
                     ? videoModel.chips.includes("image-input")
                     : mediaType === "image" && imageModel.chips.includes("image-input")) && (
-                  <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.06] px-3 py-2.5 lg:px-4">
+                  <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.08] px-3 py-2.5 lg:px-4">
                     <input
                       ref={firstFrameInputRef}
                       type="file"
@@ -1228,9 +1264,9 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       type="button"
                       onClick={() => firstFrameInputRef.current?.click()}
                       className={cn(
-                        "inline-flex h-10 items-center gap-2 rounded-xl border px-3 text-[12px] font-medium",
+                        "inline-flex h-10 items-center gap-2 rounded-xl border px-3 text-[12px] font-medium transition",
                         firstFrameDataUrl
-                          ? "border-[rgba(209,254,23,0.45)] bg-[rgba(209,254,23,0.12)]"
+                          ? "border-[#22d3ee]/40 bg-[#22d3ee]/10 text-[#22d3ee]"
                           : "border-dashed border-white/25 bg-white/[0.03] text-white/70 hover:border-white/40",
                       )}
                     >
@@ -1247,7 +1283,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       {mediaType === "video" ? "Стартовый кадр" : "Референс"}
                       {firstFrameDataUrl ? (
                         <span
-                          className="text-white/45"
+                          className="text-white/45 hover:text-white"
                           onClick={(ev) => {
                             ev.stopPropagation();
                             setFirstFrameDataUrl(null);
@@ -1263,9 +1299,9 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                         type="button"
                         onClick={() => lastFrameInputRef.current?.click()}
                         className={cn(
-                          "inline-flex h-10 items-center gap-2 rounded-xl border px-3 text-[12px] font-medium",
+                          "inline-flex h-10 items-center gap-2 rounded-xl border px-3 text-[12px] font-medium transition",
                           lastFrameDataUrl
-                            ? "border-[rgba(209,254,23,0.45)] bg-[rgba(209,254,23,0.12)]"
+                            ? "border-[#22d3ee]/40 bg-[#22d3ee]/10 text-[#22d3ee]"
                             : "border-dashed border-white/25 bg-white/[0.03] text-white/70 hover:border-white/40",
                         )}
                       >
@@ -1282,7 +1318,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                         Конечный кадр
                         {lastFrameDataUrl ? (
                           <span
-                            className="text-white/45"
+                            className="text-white/45 hover:text-white"
                             onClick={(ev) => {
                               ev.stopPropagation();
                               setLastFrameDataUrl(null);
@@ -1334,7 +1370,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   </div>
                 )}
 
-                <div className="flex flex-wrap items-end gap-2 border-t border-white/[0.06] px-3 py-2.5 lg:px-4">
+                <div className="flex flex-wrap items-end gap-2 border-t border-white/[0.08] px-3 py-2.5 lg:px-4">
                   <div className="relative" ref={modelRef}>
                     <ChipButton
                       active={modelOpen}
@@ -1353,13 +1389,13 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                           className="h-[18px] w-[18px] shrink-0 rounded-md object-cover ring-1 ring-white/10"
                         />
                       ) : (
-                        <span className="inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-md bg-[rgba(120,170,255,0.2)] font-mono text-[10px] font-bold text-[rgba(120,170,255,1)] ring-1 ring-white/10">
+                        <span className="inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-md bg-[#38bdf8]/20 font-mono text-[10px] font-bold text-[#38bdf8] ring-1 ring-white/10">
                           K
                         </span>
                       )}
                       <span className="font-medium">
                         {currentWired ? (
-                          <span className="mr-1 font-mono text-[rgba(209,254,23,1)]">+</span>
+                          <span className="mr-1 font-mono text-[#22d3ee]">+</span>
                         ) : null}
                         {currentName}
                       </span>
@@ -1383,17 +1419,17 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   </div>
 
                   {!kieActive && mediaType === "video" && videoModel.chips.includes("orientation") && (
-                    <div className="inline-flex gap-0.5 rounded-full border border-white/10 bg-[#1a1a1a] p-0.5">
+                    <div className="inline-flex gap-0.5 rounded-full border border-white/10 bg-[#16161b] p-0.5">
                       {(["video", "image"] as const).map((o) => (
                         <button
                           key={o}
                           type="button"
                           onClick={() => setOrientation(o)}
                           className={cn(
-                            "rounded-full px-2.5 py-1 text-[11px] font-medium",
+                            "rounded-full px-2.5 py-1 text-[11px] font-medium transition",
                             orientation === o
-                              ? "bg-[rgba(209,254,23,0.15)] text-[rgba(209,254,23,1)]"
-                              : "text-white/45",
+                              ? "bg-[#22d3ee]/20 text-[#22d3ee] font-semibold"
+                              : "text-white/45 hover:text-white",
                           )}
                         >
                           {o === "video" ? "По видео" : "По картинке"}
@@ -1403,17 +1439,17 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   )}
 
                   {!kieActive && mediaType === "video" && videoModel.chips.includes("quality") && (
-                    <div className="inline-flex gap-0.5 rounded-full border border-white/10 bg-[#1a1a1a] p-0.5">
+                    <div className="inline-flex gap-0.5 rounded-full border border-white/10 bg-[#16161b] p-0.5">
                       {chipOptions(videoSlug, "quality").map((q) => (
                         <button
                           key={q}
                           type="button"
                           onClick={() => setMotionQuality(q)}
                           className={cn(
-                            "rounded-full px-2.5 py-1 font-mono text-[11px] uppercase",
+                            "rounded-full px-2.5 py-1 font-mono text-[11px] uppercase transition",
                             motionQuality === q
-                              ? "bg-[rgba(209,254,23,0.15)] text-[rgba(209,254,23,1)]"
-                              : "text-white/45",
+                              ? "bg-[#22d3ee]/20 text-[#22d3ee] font-semibold"
+                              : "text-white/45 hover:text-white",
                           )}
                         >
                           {q}
@@ -1430,10 +1466,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                           type="button"
                           onClick={() => setGenerateAudio((v) => !v)}
                           className={cn(
-                            "inline-flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] font-medium",
+                            "inline-flex h-9 items-center gap-1.5 rounded-xl border px-3 text-[12px] font-medium transition",
                             generateAudio
-                              ? "border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.10)]"
-                              : "border-white/10 bg-[#222] text-white/70",
+                              ? "border-[#22d3ee]/40 bg-[#22d3ee]/15 text-[#22d3ee]"
+                              : "border-white/10 bg-[#16161b] text-white/70 hover:border-white/20 hover:text-white",
                           )}
                           title={generateAudio ? "Со звуком" : "Без звука"}
                         >
@@ -1445,7 +1481,6 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       );
                     }
                     if (chip === "image-input") {
-                      // Вложения — отдельная полоса над промптом, не дублируем в чипах
                       return null;
                     }
                     if (chip === "instrumental") {
@@ -1455,10 +1490,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                           type="button"
                           onClick={() => setInstrumental((v) => !v)}
                           className={cn(
-                            "inline-flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] font-medium",
+                            "inline-flex h-9 items-center gap-1.5 rounded-xl border px-3 text-[12px] font-medium transition",
                             !instrumental
-                              ? "border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.10)]"
-                              : "border-white/10 bg-[#222] text-white/70",
+                              ? "border-[#22d3ee]/40 bg-[#22d3ee]/15 text-[#22d3ee]"
+                              : "border-white/10 bg-[#16161b] text-white/70 hover:border-white/20 hover:text-white",
                           )}
                           title="Вокал on = не instrumental"
                         >
@@ -1537,17 +1572,17 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       (videoSlug === "sora-2" ||
                         videoSlug === "sora2-portrait" ||
                         videoSlug === "sora2-landscape") && (
-                        <div className="inline-flex gap-0.5 rounded-xl border border-white/10 bg-[#1a1a1a] p-0.5">
+                        <div className="inline-flex gap-0.5 rounded-xl border border-white/10 bg-[#16161b] p-0.5">
                           {(["small", "large"] as const).map((sz) => (
                             <button
                               key={sz}
                               type="button"
                               onClick={() => setSoraSize(sz)}
                               className={cn(
-                                "rounded-lg px-2.5 py-1.5 font-mono text-[10px] uppercase",
+                                "rounded-lg px-2.5 py-1.5 font-mono text-[10px] uppercase transition",
                                 soraSize === sz
-                                  ? "bg-[rgba(209,254,23,0.15)] text-[rgba(209,254,23,1)]"
-                                  : "text-white/40",
+                                  ? "bg-[#22d3ee]/20 text-[#22d3ee] font-semibold"
+                                  : "text-white/40 hover:text-white",
                               )}
                             >
                               {sz}
@@ -1559,7 +1594,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       type="button"
                       disabled={saveGlobal.isPending}
                       onClick={() => saveGlobal.mutate()}
-                      className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2.5 text-[11px] font-medium text-white/70 hover:bg-white/[0.08] disabled:opacity-40"
+                      className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[11px] font-medium text-white/70 transition hover:border-white/25 hover:bg-white/[0.08] hover:text-white disabled:opacity-40"
                     >
                       {saveGlobal.isPending ? "…" : "Сохранить"}
                     </button>
@@ -1568,7 +1603,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                         type="button"
                         disabled={applyToProject.isPending || projectId == null}
                         onClick={() => applyToProject.mutate()}
-                        className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2.5 text-[11px] font-medium text-white/70 hover:bg-white/[0.08] disabled:opacity-40"
+                        className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[11px] font-medium text-white/70 transition hover:border-white/25 hover:bg-white/[0.08] hover:text-white disabled:opacity-40"
                         title="Скопировать глобальные настройки в выбранный проект"
                       >
                         В проект
@@ -1576,21 +1611,21 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     )}
                     {kieActive && kieCreditsQ.data?.credits != null && (
                       <div
-                        className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#1a1a1a] px-2.5 font-mono text-[11px] text-white/50"
+                        className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#16161b] px-2.5 font-mono text-[11px] text-white/60"
                         title="Баланс kie.ai"
                       >
                         {kieCreditsQ.data.credits.toFixed(0)} кр
                       </div>
                     )}
                     <div
-                      className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#1a1a1a] px-2.5 font-mono text-[11px] text-white/75"
+                      className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#16161b] px-2.5 font-mono text-[11px] text-white/80"
                       title={
                         kieActive
                           ? "kie.ai: 1 кр = $0.005. Цена за выбранные параметры."
                           : "1 токен = $0.10 (10¢). Цена за выбранные параметры."
                       }
                     >
-                      <Coins className="h-3 w-3 text-[rgba(209,254,23,0.85)]" strokeWidth={2.5} />
+                      <Coins className="h-3 w-3 text-[#22d3ee]" strokeWidth={2.5} />
                       <span>{priceLabel}</span>
                     </div>
                     <button
@@ -1607,8 +1642,9 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                         if (createGenerate.isPending) return;
                         createGenerate.mutate();
                       }}
-                      className="inline-flex min-w-[140px] items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-[12px] font-semibold text-black transition hover:brightness-110 disabled:opacity-40"
-                      style={{ backgroundColor: OUTSEE_ACCENT }}
+                      className={cn(
+                        "inline-flex min-w-[145px] items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#22d3ee] to-[#0ea5e9] px-4 py-2 text-[12px] font-extrabold uppercase tracking-wider text-black shadow-[0_0_20px_rgba(34,211,238,0.3)] transition-all duration-200 hover:brightness-110 hover:shadow-[0_0_25px_rgba(34,211,238,0.45)] disabled:opacity-40 disabled:pointer-events-none",
+                      )}
                       title={
                         createGenerate.isPending
                           ? "Уже ставится в очередь…"
@@ -1620,10 +1656,13 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       {createGenerate.isPending ? (
                         <>
                           <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          …
+                          <span>Запуск…</span>
                         </>
                       ) : (
-                        "Генерировать"
+                        <>
+                          <Sparkles className="h-3.5 w-3.5" />
+                          <span>Генерировать</span>
+                        </>
                       )}
                     </button>
                   </div>
@@ -1669,10 +1708,10 @@ function KieFieldChip({
         onClick={() => onChange(field.name, !on)}
         title={field.desc || field.label}
         className={cn(
-          "inline-flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] font-medium",
+          "inline-flex h-9 items-center gap-1.5 rounded-xl border px-3 text-[12px] font-medium transition",
           on
-            ? "border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.10)]"
-            : "border-white/10 bg-[#222] text-white/70",
+            ? "border-[#22d3ee]/40 bg-[#22d3ee]/15 text-[#22d3ee]"
+            : "border-white/10 bg-[#16161b] text-white/70 hover:border-white/20 hover:text-white",
         )}
       >
         {field.label}
@@ -1682,14 +1721,13 @@ function KieFieldChip({
   }
 
   if (field.kind === "select") {
-    // inline-чипы (как orientation/quality у outsee): popover в scroll-зоне клинит
     return (
       <div
         className="inline-flex flex-col gap-0.5"
         title={field.desc || field.label}
       >
-        <span className="px-0.5 text-[10px] text-gray-400">{field.label}</span>
-        <div className="inline-flex flex-wrap gap-0.5 rounded-full border border-white/10 bg-[#1a1a1a] p-0.5">
+        <span className="px-0.5 text-[10px] text-white/40">{field.label}</span>
+        <div className="inline-flex flex-wrap gap-0.5 rounded-full border border-white/10 bg-[#16161b] p-0.5">
           {(field.options || []).map((o) => {
             const activeOpt = String(v ?? "") === o;
             return (
@@ -1698,10 +1736,10 @@ function KieFieldChip({
                 type="button"
                 onClick={() => onChange(field.name, o)}
                 className={cn(
-                  "rounded-full px-2.5 py-1 font-mono text-[11px]",
+                  "rounded-full px-2.5 py-1 font-mono text-[11px] transition",
                   activeOpt
-                    ? "bg-[rgba(209,254,23,0.15)] text-[rgba(209,254,23,1)]"
-                    : "text-white/45 hover:text-white/75",
+                    ? "bg-[#22d3ee]/20 text-[#22d3ee] font-semibold"
+                    : "text-white/45 hover:text-white",
                 )}
               >
                 {o || "—"}
@@ -1716,7 +1754,7 @@ function KieFieldChip({
   if (field.kind === "number") {
     return (
       <div
-        className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#222] px-2.5"
+        className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#16161b] px-2.5"
         title={field.desc || field.label}
       >
         <span className="text-[11px] text-white/55">{field.label}</span>
@@ -1738,7 +1776,7 @@ function KieFieldChip({
   // text
   return (
     <div
-      className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#222] px-2.5"
+      className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#16161b] px-2.5"
       title={field.desc || field.label}
     >
       <span className="text-[11px] text-white/55">{field.label}</span>
@@ -1795,7 +1833,7 @@ function KieAttachButton({
       {items.map((u, i) => (
         <span
           key={`${u}-${i}`}
-          className="inline-flex h-10 items-center gap-2 rounded-xl border border-[rgba(209,254,23,0.45)] bg-[rgba(209,254,23,0.12)] px-3 text-[12px] font-medium"
+          className="inline-flex h-10 items-center gap-2 rounded-xl border border-[#22d3ee]/40 bg-[#22d3ee]/10 px-3 text-[12px] font-medium text-[#22d3ee]"
         >
           {field.kind === "images" ? (
             // eslint-disable-next-line @next/next/no-img-element
@@ -1803,7 +1841,7 @@ function KieAttachButton({
           ) : (
             <Paperclip className="h-4 w-4" />
           )}
-          <span className="max-w-[120px] truncate font-mono text-[10px] text-white/60">
+          <span className="max-w-[120px] truncate font-mono text-[10px] text-white/70">
             {u.split("/").pop()}
           </span>
           <span
@@ -1841,10 +1879,10 @@ function KieAttachButton({
             disabled={busy}
             onClick={() => inputRef.current?.click()}
             title={field.desc || field.label}
-            className="inline-flex h-10 items-center gap-2 rounded-xl border border-dashed border-white/25 bg-white/[0.03] px-3 text-[12px] font-medium text-white/70 hover:border-white/40 disabled:opacity-50"
+            className="inline-flex h-10 items-center gap-2 rounded-xl border border-dashed border-white/25 bg-white/[0.03] px-3 text-[12px] font-medium text-white/70 transition hover:border-white/40 hover:text-white disabled:opacity-50"
           >
             {busy ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <Loader2 className="h-4 w-4 animate-spin text-[#22d3ee]" />
             ) : (
               <Paperclip className="h-4 w-4" />
             )}
@@ -1855,7 +1893,7 @@ function KieAttachButton({
             type="button"
             onClick={() => setUrlMode((v) => !v)}
             title="Вставить URL вместо загрузки"
-            className="inline-flex h-10 w-8 items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-white/50 hover:text-white"
+            className="inline-flex h-10 w-8 items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-white/50 transition hover:border-white/25 hover:text-white"
           >
             <Link2 className="h-3.5 w-3.5" />
           </button>
@@ -1871,12 +1909,12 @@ function KieAttachButton({
                   }
                 }}
                 placeholder="https://…"
-                className="h-10 w-48 rounded-xl border border-white/10 bg-white/[0.03] px-2.5 text-[11px] text-white/80 outline-none placeholder:text-white/25 focus:border-white/25"
+                className="h-10 w-48 rounded-xl border border-white/10 bg-black/40 px-2.5 text-[11px] text-white/80 outline-none placeholder:text-white/25 focus:border-[#22d3ee]/50"
               />
               <button
                 type="button"
                 onClick={addUrl}
-                className="h-10 rounded-xl border border-white/10 px-2.5 text-[11px] text-white/60 hover:text-white"
+                className="h-10 rounded-xl border border-white/10 px-2.5 text-[11px] text-white/60 transition hover:border-white/25 hover:text-white"
               >
                 +
               </button>
@@ -1902,10 +1940,10 @@ function ChipButton({
       type="button"
       onClick={onClick}
       className={cn(
-        "inline-flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] transition",
+        "inline-flex h-9 items-center gap-1.5 rounded-xl border px-3 text-[12px] font-medium transition-all duration-200",
         active
-          ? "border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.10)] text-white"
-          : "border-white/10 bg-[#222] text-white/85 hover:border-white/20",
+          ? "border-[#22d3ee] bg-[#22d3ee]/15 text-[#22d3ee] shadow-[0_0_15px_rgba(34,211,238,0.2)]"
+          : "border-white/10 bg-[#16161b] text-white/80 hover:border-white/20 hover:bg-[#1f1f26] hover:text-white",
       )}
     >
       {children}
@@ -1943,7 +1981,7 @@ function OptionDropdown({
   return (
     <div className="relative" ref={ref}>
       <div className="flex flex-col gap-0.5">
-        <span className="hidden px-0.5 text-[10px] text-gray-400 lg:block">{label}</span>
+        <span className="hidden px-0.5 text-[10px] text-white/40 lg:block">{label}</span>
         <ChipButton active={open} onClick={() => onOpenChange(!open)}>
           <span className={cn(mono && "font-mono tabular-nums")}>{value}</span>
           <ChevronDown className="h-3 w-3 opacity-60" />
@@ -1951,8 +1989,8 @@ function OptionDropdown({
       </div>
       {open && (
         <div
-          className="absolute bottom-full left-0 z-[1000] mb-1 max-h-56 overflow-y-auto rounded-xl border p-1.5 shadow-2xl"
-          style={{ backgroundColor: "#1a1a1a", borderColor: "rgba(255,255,255,0.1)", minWidth: 140 }}
+          className="absolute bottom-full left-0 z-[1000] mb-2 max-h-60 overflow-y-auto rounded-xl border border-white/15 bg-[#121216]/95 backdrop-blur-2xl p-1.5 shadow-[0_15px_40px_rgba(0,0,0,0.85)] ring-1 ring-white/10"
+          style={{ minWidth: 140 }}
         >
           {options.map((opt) => {
             const active = opt.id === value || opt.label === value;
@@ -1964,14 +2002,15 @@ function OptionDropdown({
                   onSelect(opt.id);
                   onOpenChange(false);
                 }}
-                className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-[12px] hover:bg-white/[0.06]"
-                style={{
-                  background: active ? "rgba(209,254,23,0.10)" : undefined,
-                  color: active ? OUTSEE_ACCENT : "white",
-                }}
+                className={cn(
+                  "flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-[12px] transition",
+                  active
+                    ? "bg-[#22d3ee]/15 text-[#22d3ee] font-semibold"
+                    : "text-white/80 hover:bg-white/[0.08] hover:text-white",
+                )}
               >
                 <span className={cn(mono && "font-mono")}>{opt.label}</span>
-                {opt.hint && <span className="text-[10px] text-white/35">{opt.hint}</span>}
+                {opt.hint && <span className="text-[10px] text-white/40">{opt.hint}</span>}
               </button>
             );
           })}
@@ -1994,6 +2033,7 @@ function ModelPickerPopover({
   creditUsd?: number;
   onSelect: (slug: string) => void;
 }) {
+  const [search, setSearch] = useState("");
   const title =
     mediaType === "image"
       ? "Модели изображений"
@@ -2002,168 +2042,230 @@ function ModelPickerPopover({
         : "Модели аудио";
   const models = pickerModelsForType(mediaType);
   const kieForType = kieModels.filter((m) => {
-    const media = m.media || (m.category === "video" ? "video" : m.category === "image" ? "image" : "audio");
+    const media =
+      m.media || (m.category === "video" ? "video" : m.category === "image" ? "image" : "audio");
     return media === mediaType;
   });
 
+  const q = search.trim().toLowerCase();
+
+  const filteredModels = useMemo(() => {
+    if (!q) return models;
+    return models.filter(
+      (m) =>
+        m.displayName.toLowerCase().includes(q) ||
+        m.description.toLowerCase().includes(q) ||
+        m.slug.toLowerCase().includes(q),
+    );
+  }, [models, q]);
+
+  const filteredKie = useMemo(() => {
+    if (!q) return kieForType;
+    return kieForType.filter(
+      (m) =>
+        m.label.toLowerCase().includes(q) ||
+        (m.desc || "").toLowerCase().includes(q) ||
+        (m.hint || "").toLowerCase().includes(q) ||
+        m.id.toLowerCase().includes(q),
+    );
+  }, [kieForType, q]);
+
+  const totalCount = filteredModels.length + filteredKie.length;
+
   return (
     <div
-      className="absolute bottom-full left-0 z-50 mb-3.5 flex max-h-[82vh] flex-col overflow-hidden rounded-2xl border border-white/10 shadow-2xl"
+      className="absolute bottom-full left-0 z-50 mb-3 flex max-h-[76vh] flex-col overflow-hidden rounded-2xl border border-white/15 bg-[#121216]/95 backdrop-blur-2xl shadow-[0_25px_70px_rgba(0,0,0,0.85)] ring-1 ring-white/10"
       style={{
-        backgroundColor: "#141414",
-        width: mediaType === "video" ? 580 : mediaType === "audio" ? 420 : 460,
+        width: mediaType === "video" ? 600 : mediaType === "audio" ? 440 : 500,
       }}
       role="dialog"
       aria-label={title}
       onPointerDown={(e) => e.stopPropagation()}
     >
-      <div className="border-b border-white/[0.06] px-3 py-2.5">
-        <span className="text-[12px] font-semibold text-white/80">{title}</span>
-        <span className="ml-2 font-mono text-[10px] text-white/35">
-          {models.length + kieForType.length}
-        </span>
-      </div>
-      {models.length > 0 && (
-      <div
-        className="grid gap-1.5 overflow-y-auto p-2"
-        style={{
-          gridTemplateColumns: mediaType === "audio" ? "1fr" : "repeat(2, minmax(0, 1fr))",
-          minHeight: 0,
-        }}
-      >
-        {models.map((m) => {
-          const active = m.slug === selectedSlug;
-          const wired = "grsaiWired" in m && Boolean(m.grsaiWired);
-          const badge = m.isTop
-            ? { tone: "top" as const, label: "ТОП" }
-            : m.isNew
-              ? { tone: "new" as const, label: "НОВОЕ" }
-              : null;
-          return (
-            <button
-              key={m.slug}
-              type="button"
-              onClick={() => onSelect(m.slug)}
-              className={cn(
-                "relative flex items-start gap-2.5 rounded-xl border px-2.5 py-2.5 text-left transition",
-                active
-                  ? "border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.08)]"
-                  : "border-white/[0.06] bg-white/[0.03] hover:bg-white/[0.06]",
-              )}
-            >
-              {wired && (
-                <span
-                  className="absolute -top-1.5 left-2 z-10 rounded-md px-1.5 py-0.5 font-mono text-[11px] font-bold leading-none text-black"
-                  style={{ backgroundColor: OUTSEE_ACCENT }}
-                  title="Временно подключено через Grsai"
-                >
-                  +
-                </span>
-              )}
-              {badge && (
-                <span
-                  className={cn(
-                    "absolute -top-1.5 right-2 z-10 rounded-md px-1.5 py-0.5 text-[9px] font-bold text-black",
-                    badge.tone === "top" ? "bg-[rgba(209,254,23,1)]" : "bg-blue-400",
-                  )}
-                >
-                  {badge.label}
-                </span>
-              )}
-              <div className="flex shrink-0 flex-col items-center">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={m.icon}
-                  alt={m.displayName}
-                  className="h-10 w-10 rounded-lg object-cover ring-1 ring-white/10"
-                />
-                {m.price && (
-                  <span className="mt-1 inline-flex items-center gap-0.5 font-mono text-[10px] text-white/55">
-                    <Coins className="h-2.5 w-2.5" strokeWidth={2.5} />
-                    {m.price}
-                  </span>
-                )}
-              </div>
-              <div className="min-w-0 flex-1">
-                <p
-                  className="truncate text-[12px] font-medium"
-                  style={{ color: active ? OUTSEE_ACCENT : "white" }}
-                >
-                  {wired ? (
-                    <span className="mr-1 font-mono text-[rgba(209,254,23,1)]">+</span>
-                  ) : null}
-                  {m.displayName}
-                </p>
-                <p className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-white/45">
-                  {m.description}
-                </p>
-              </div>
-            </button>
-          );
-        })}
-      </div>
-      )}
-      {kieForType.length > 0 && (
-        <>
-          <div className="border-y border-white/[0.06] px-3 py-2">
-            <span className="text-[12px] font-semibold text-white/80">KIE · kie.ai</span>
-            <span className="ml-2 font-mono text-[10px] text-white/35">
-              {kieForType.length}
+      {/* Sticky Header with Search */}
+      <div className="shrink-0 border-b border-white/[0.08] bg-[#16161b]/95 p-3 space-y-2.5">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-[13px] font-bold tracking-tight text-white/90">{title}</span>
+            <span className="rounded-full bg-white/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-[#22d3ee]">
+              {totalCount}
             </span>
           </div>
-          <div
-            className="grid gap-1.5 overflow-y-auto p-2"
-            style={{
-              gridTemplateColumns:
-                mediaType === "audio" ? "1fr" : "repeat(2, minmax(0, 1fr))",
-              minHeight: 0,
-            }}
-          >
-            {kieForType.map((m) => {
-              const slug = `kie:${m.id}`;
-              const active = slug === selectedSlug;
-              const est = estimateKie(m, {}, creditUsd);
-              return (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => onSelect(slug)}
-                  className={cn(
-                    "relative flex items-start gap-2.5 rounded-xl border px-2.5 py-2.5 text-left transition",
-                    active
-                      ? "border-[rgba(120,170,255,0.45)] bg-[rgba(120,170,255,0.10)]"
-                      : "border-white/[0.06] bg-white/[0.03] hover:bg-white/[0.06]",
-                  )}
-                >
-                  <span className="absolute -top-1.5 left-2 z-10 rounded-md bg-[rgba(120,170,255,0.9)] px-1.5 py-0.5 font-mono text-[9px] font-bold leading-none text-black">
-                    KIE
-                  </span>
-                  <div className="flex shrink-0 flex-col items-center">
-                    <span className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-[rgba(120,170,255,0.15)] font-mono text-[14px] font-bold text-[rgba(120,170,255,1)] ring-1 ring-white/10">
-                      {m.label.slice(0, 1)}
-                    </span>
-                    <span className="mt-1 inline-flex items-center gap-0.5 font-mono text-[10px] text-white/55">
-                      <Coins className="h-2.5 w-2.5" strokeWidth={2.5} />
-                      {est.usd > 0 ? `$${est.usd.toFixed(3)}` : "—"}
-                    </span>
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p
-                      className="truncate text-[12px] font-medium"
-                      style={{ color: active ? "rgba(120,170,255,1)" : "white" }}
-                    >
-                      {m.label}
-                    </p>
-                    <p className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-white/45">
-                      {m.hint || m.desc}
-                    </p>
-                  </div>
-                </button>
-              );
-            })}
+        </div>
+        <div className="relative flex items-center">
+          <Search className="absolute left-2.5 h-3.5 w-3.5 text-white/40" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Быстрый поиск модели (Kling, Nano, Flux, Veo, Sora...)"
+            className="h-8 w-full rounded-xl border border-white/10 bg-black/40 pl-8 pr-7 text-[11px] text-white/90 placeholder:text-white/30 transition focus:border-[#22d3ee]/60 focus:outline-none focus:ring-1 focus:ring-[#22d3ee]/30"
+          />
+          {search && (
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              className="absolute right-2 text-white/40 hover:text-white"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Unified single scrollable body */}
+      <div className="flex-1 overflow-y-auto p-3 space-y-4">
+        {/* Section 1: Base Outsee / Grsai models */}
+        {filteredModels.length > 0 && (
+          <div>
+            <div className="mb-2 flex items-center gap-1.5 px-1 text-[10px] font-bold uppercase tracking-[0.14em] text-white/45">
+              <span>Базовые модели</span>
+              <span className="font-mono text-white/25">({filteredModels.length})</span>
+            </div>
+            <div
+              className="grid gap-2"
+              style={{
+                gridTemplateColumns: mediaType === "audio" ? "1fr" : "repeat(2, minmax(0, 1fr))",
+              }}
+            >
+              {filteredModels.map((m) => {
+                const active = m.slug === selectedSlug;
+                const wired = "grsaiWired" in m && Boolean(m.grsaiWired);
+                const badge = m.isTop
+                  ? { tone: "top" as const, label: "ТОП" }
+                  : m.isNew
+                    ? { tone: "new" as const, label: "НОВОЕ" }
+                    : null;
+                return (
+                  <button
+                    key={m.slug}
+                    type="button"
+                    onClick={() => onSelect(m.slug)}
+                    className={cn(
+                      "group relative flex items-start gap-2.5 rounded-xl border p-2.5 text-left transition-all duration-200",
+                      active
+                        ? "border-[#22d3ee] bg-[#22d3ee]/10 text-white shadow-[0_0_20px_rgba(34,211,238,0.2)]"
+                        : "border-white/[0.08] bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.06]",
+                    )}
+                  >
+                    {badge && (
+                      <span
+                        className={cn(
+                          "absolute top-2 right-2 rounded-md px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider shadow-sm",
+                          badge.tone === "top"
+                            ? "bg-[#22d3ee] text-black font-extrabold"
+                            : "bg-purple-500 text-white",
+                        )}
+                      >
+                        {badge.label}
+                      </span>
+                    )}
+                    {wired && !badge && (
+                      <span className="absolute top-2 right-2 rounded-md bg-[#22d3ee]/20 px-1.5 py-0.5 font-mono text-[9px] font-bold text-[#22d3ee]">
+                        +GRSAI
+                      </span>
+                    )}
+                    <div className="flex shrink-0 flex-col items-center">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={m.icon}
+                        alt={m.displayName}
+                        className="h-10 w-10 rounded-lg object-cover ring-1 ring-white/10 transition group-hover:ring-[#22d3ee]/40"
+                      />
+                      {m.price && (
+                        <span className="mt-1 inline-flex items-center gap-0.5 font-mono text-[10px] text-white/60">
+                          <Coins className="h-2.5 w-2.5 text-[#22d3ee]" strokeWidth={2.5} />
+                          {m.price}
+                        </span>
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1 pr-7">
+                      <p
+                        className={cn(
+                          "truncate text-[12px] font-semibold",
+                          active ? "text-[#22d3ee]" : "text-white/90 group-hover:text-white",
+                        )}
+                      >
+                        {m.displayName}
+                      </p>
+                      <p className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-white/45 transition group-hover:text-white/65">
+                        {m.description}
+                      </p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        </>
-      )}
+        )}
+
+        {/* Section 2: KIE Market models */}
+        {filteredKie.length > 0 && (
+          <div>
+            <div className="mb-2 flex items-center gap-1.5 px-1 text-[10px] font-bold uppercase tracking-[0.14em] text-white/45">
+              <span>KIE Market · kie.ai</span>
+              <span className="font-mono text-white/25">({filteredKie.length})</span>
+            </div>
+            <div
+              className="grid gap-2"
+              style={{
+                gridTemplateColumns: mediaType === "audio" ? "1fr" : "repeat(2, minmax(0, 1fr))",
+              }}
+            >
+              {filteredKie.map((m) => {
+                const slug = `kie:${m.id}`;
+                const active = slug === selectedSlug;
+                const est = estimateKie(m, {}, creditUsd);
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => onSelect(slug)}
+                    className={cn(
+                      "group relative flex items-start gap-2.5 rounded-xl border p-2.5 text-left transition-all duration-200",
+                      active
+                        ? "border-[#38bdf8] bg-[#38bdf8]/10 text-white shadow-[0_0_20px_rgba(56,189,248,0.2)]"
+                        : "border-white/[0.08] bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.06]",
+                    )}
+                  >
+                    <span className="absolute top-2 right-2 rounded-md bg-[#38bdf8]/20 px-1.5 py-0.5 font-mono text-[9px] font-bold text-[#38bdf8]">
+                      KIE
+                    </span>
+                    <div className="flex shrink-0 flex-col items-center">
+                      <span className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-[#38bdf8]/15 font-mono text-[14px] font-bold text-[#38bdf8] ring-1 ring-white/10 transition group-hover:ring-[#38bdf8]/40">
+                        {m.label.slice(0, 1)}
+                      </span>
+                      <span className="mt-1 inline-flex items-center gap-0.5 font-mono text-[10px] text-white/60">
+                        <Coins className="h-2.5 w-2.5 text-[#38bdf8]" strokeWidth={2.5} />
+                        {est.usd > 0 ? `$${est.usd.toFixed(3)}` : "—"}
+                      </span>
+                    </div>
+                    <div className="min-w-0 flex-1 pr-7">
+                      <p
+                        className={cn(
+                          "truncate text-[12px] font-semibold",
+                          active ? "text-[#38bdf8]" : "text-white/90 group-hover:text-white",
+                        )}
+                      >
+                        {m.label}
+                      </p>
+                      <p className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-white/45 transition group-hover:text-white/65">
+                        {m.hint || m.desc}
+                      </p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {filteredModels.length === 0 && filteredKie.length === 0 && (
+          <div className="py-12 text-center text-[12px] text-white/40">
+            Модели по запросу «<span className="text-white/70">{search}</span>» не найдены
+          </div>
+        )}
+      </div>
     </div>
   );
 }
