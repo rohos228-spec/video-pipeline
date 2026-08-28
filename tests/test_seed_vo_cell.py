@@ -121,3 +121,41 @@ async def test_apply_ops_script_kind_writes_bits(session: AsyncSession) -> None:
     assert fr.voiceover_text == full
     assert fr.image_prompt in (None, "")
     assert fr.attrs["биты"] == bits
+
+
+@pytest.mark.asyncio
+async def test_apply_ops_prompts_kind_writes_camera_menu(session: AsyncSession) -> None:
+    from app.services.db_apply import apply_ops
+
+    p = await _mk_project(session, script="Закадр для меню съёмки.")
+    fr = await db_v2.ensure_single_seed_vo_cell(session, p, p.script_text or "")
+    fr.attrs = {"camera_subdivide": {"role": "vo_parent", "parent_uuid": fr.uuid}}
+    await session.flush()
+    await apply_ops(
+        session,
+        p,
+        [
+            {
+                "frame_uuid": fr.uuid,
+                "fields": {
+                    "промт_картинки": "кадр",
+                    "промт_видео": "движение",
+                    "действие": "открывает папку",
+                    "крупность": "Средний план",
+                    "движение": "наезд",
+                    "набор": "SET_01",
+                    "место": "нельзя",
+                },
+            }
+        ],
+        node_kind="excel_gpt_prompts",
+    )
+    await session.refresh(fr)
+    assert fr.image_prompt == "кадр"
+    assert fr.animation_prompt == "движение"
+    cs = fr.attrs.get("camera_subdivide") or {}
+    assert cs["крупность"] == "Средний план"
+    assert cs["движение"] == "наезд"
+    assert cs["набор"] == "SET_01"
+    assert cs["role"] == "vo_parent"
+    assert "place" not in (fr.attrs or {})

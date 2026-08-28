@@ -233,6 +233,19 @@ FIELD_ALIASES: dict[str, str] = {
     "bits": "биты",
     "кадры": "кадры",
     "shots": "кадры",
+    # Меню съёмки → attrs.camera_subdivide (fw_frames / добор).
+    "крупность": "крупность",
+    "size": "крупность",
+    "shot_size": "крупность",
+    "krupnost": "крупность",
+    "движение": "движение",
+    "движение_камеры": "движение",
+    "move": "движение",
+    "shot_move": "движение",
+    "набор": "набор",
+    "set": "набор",
+    "shot_set": "набор",
+    "camera_subdivide": "camera_subdivide",
 }
 
 # Поля, которые живут в Frame.attrs (не колонки Frame.*).
@@ -242,8 +255,43 @@ _ATTR_FIELD_KEYS = frozenset(_ATTR_EXCEL_ROWS) | {
     "animation_prompt_shot2",
     "биты",
     "кадры",
+    "крупность",
+    "движение",
+    "набор",
+    "camera_subdivide",
 }
 _STRUCTURED_ATTR_KEYS = frozenset({"биты", "кадры"})
+_CAMERA_MENU_ATTR_KEYS = ("крупность", "движение", "набор")
+
+
+def _merge_camera_subdivide(attrs: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
+    """Крупность/движение/набор → attrs.camera_subdivide, не затирая role/parent."""
+    raw_cs = attrs.get("camera_subdivide")
+    cs = dict(raw_cs) if isinstance(raw_cs, dict) else {}
+    nested = fields.get("camera_subdivide")
+    if isinstance(nested, dict):
+        for key in _CAMERA_MENU_ATTR_KEYS:
+            val = nested.get(key)
+            if val is None:
+                val = nested.get(
+                    {"крупность": "size", "движение": "move", "набор": "set"}[key]
+                )
+            text = str(val or "").strip()
+            if text:
+                cs[key] = text
+    elif isinstance(nested, str) and nested.strip():
+        parsed = _coerce_structured_attr(nested)
+        if isinstance(parsed, dict):
+            return _merge_camera_subdivide(attrs, {**fields, "camera_subdivide": parsed})
+    for key in _CAMERA_MENU_ATTR_KEYS:
+        if key not in fields:
+            continue
+        text = str(fields[key] or "").strip()
+        if text:
+            cs[key] = text
+    if cs:
+        attrs["camera_subdivide"] = cs
+    return attrs
 
 PROJECT_FIELD_ALIASES: dict[str, str] = {
     "general_plan": "general_plan",
@@ -1317,6 +1365,8 @@ async def apply_ops(
             attrs["characters"] = persons
             attrs["persons"] = persons
             attrs["персонажи"] = persons
+        if any(k in fields for k in (*_CAMERA_MENU_ATTR_KEYS, "camera_subdivide")):
+            attrs = _merge_camera_subdivide(attrs, fields)
         for attr_key in _STRUCTURED_ATTR_KEYS:
             if attr_key not in fields:
                 continue

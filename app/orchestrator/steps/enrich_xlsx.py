@@ -1690,6 +1690,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                                     new_op["fields"] = kept
                                     stripped.append(new_op)
                             ops = stripped
+                    if not ops:
+                        logger.warning(
+                            "[#{}] enrich_xlsx node={!r}: apply-ops пустой "
+                            "после фильтра kind={} camera_menu_only={}",
+                            project.id,
+                            node_key,
+                            apply_kind,
+                            fw_camera_menu_only,
+                        )
+                        return
                     await _db_apply.apply_ops(
                         session,
                         project,
