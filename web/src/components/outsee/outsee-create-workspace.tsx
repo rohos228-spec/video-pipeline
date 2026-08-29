@@ -15,6 +15,7 @@ import {
   ChevronDown,
   Coins,
   Copy,
+  Dices,
   Download,
   ExternalLink,
   History,
@@ -28,6 +29,7 @@ import {
   Sparkles,
   Trash2,
   Video,
+  Wand2,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -152,56 +154,78 @@ export const STYLE_PRESETS = [
   },
 ];
 
-async function downloadMediaFile(
+export const RANDOM_PROMPTS = [
+  "A majestic ancient Japanese temple surrounded by blooming pink cherry blossoms, serene koi pond with reflections of soft golden morning rays, hyperrealistic photography",
+  "Futuristic cyberpunk Tokyo street at midnight, neon holographic advertisements reflecting on wet asphalt, volumetric steam, cinematic depth of field, 8k octane render",
+  "Cozy warm coffee shop on a rainy autumn day in Paris, steam rising from ceramic cup, wooden table by rain-streaked window with view of street lamps, photorealistic",
+  "Epic fantasy dragon perched atop a towering snowy mountain peak during a dramatic sunset, golden sunlight through clouds, intricate scales, mythological masterpiece",
+  "Close-up macro photography of an iridescent hummingbird drinking nectar from a vibrant exotic flower, dewdrops, shallow depth of field, sharp focus, 8k",
+  "Interior of a luxurious futuristic space station greenhouse with view of planet Earth in background, bioluminescent plants, architectural elegance, unreal engine 5",
+  "Cinematic portrait of a wise old Nordic blacksmith with braided beard, glowing forge embers, sparks flying, textured leather apron, dramatic Rembrandt lighting",
+  "A breathtaking turquoise alpine lake nestled inside granite mountains, wildflower meadow in foreground, crisp morning air, National Geographic award-winning photography",
+  "Steampunk airship soaring through fluffy cumulus clouds at golden hour, brass gears, copper detailing, propellers spinning, adventure aesthetic",
+  "An ancient library with towering mahogany bookshelves reaching into shadows, floating glowing magical dust motes, stained glass window casting colorful light",
+  "Sleek modern sports car speeding along a winding coastal highway at dusk, motion blur, taillight trails, sunset reflection on metallic paint",
+  "Enchanted bioluminescent forest at night, glowing mushrooms, ethereal spirits floating among giant mossy ancient trees, fantasy concept art",
+  "A cyberpunk samurai warrior standing in the rain on a skyscraper rooftop, glowing katana, neon city skyline in background, cinematic wide shot",
+  "Minimalist architectural desert villa with an infinity pool reflecting the starry night sky and Milky Way, warm interior ambient lights, 8k architectural render",
+  "Cute fluffy baby red panda playing in fresh autumn leaves, soft natural lighting, high detail fur, adorable expression, professional wildlife photography",
+  "A colossal ancient stone titan half-buried in sand dunes, ancient glyphs glowing faintly, desert wind blowing sand, epic cinematic landscape",
+  "A majestic white stag with glowing crystalline antlers standing in an ethereal moonlit clearing, mist swirling around hooves, fantasy masterwork",
+  "A futuristic hypercar prototype parked inside a minimalist concrete hangar, dramatic studio lighting, carbon fiber body, aerodynamic curves",
+  "Makoto Shinkai aesthetic anime scene of two friends standing on a hillside overlooking a coastal Japanese town under a starry night sky with falling meteors",
+  "A mysterious masked alchemist brewing glowing purple potions in a cluttered medieval apothecary filled with dried herbs, glass retorts, and ancient grimoires",
+  "Dramatic ocean storm at sunset, towering turquoise waves crashing against rugged black volcanic cliffs, golden sea spray, long exposure photography",
+  "A cozy Scandinavian log cabin surrounded by deep pine snowdrifts, warm amber light glowing from windows, vibrant green northern lights aurora borealis above",
+  "A cybernetic geisha with delicate porcelain faceplates and intricate glowing gold circuits, wearing a high-fashion holographic kimono, studio portrait",
+  "A breathtaking underwater coral reef teeming with vibrant tropical fish, sea turtles gliding through crystal clear sunlit water, wide angle photography",
+  "An opulent Venetian masquerade ballroom at midnight, grand crystal chandeliers, masked dancers in elaborate baroque gowns, golden reflections on marble floor",
+  "A lone astronaut discovering an ancient alien monolith glowing with violet hieroglyphs on Mars, red dust storm swirling, double moons on horizon",
+  "A mystical waterfall cascading into a crystal clear hidden grotto illuminated by glowing azure crystals, lush ferns, ethereal fantasy environment",
+  "Vintage 1960s Italian cafe terrace in Positano overlooking the Amalfi coastline, espresso cup on marble table, blooming bougainvillea, warm Mediterranean sunlight",
+  "A fierce Viking shieldmaiden with braided blonde hair and war paint standing on the prow of a dragon longship in a misty fjord, cinematic film still",
+  "A futuristic solar punk city with vertical botanical gardens covering skyscrapers, elevated glass sky trains, clean solar canals, bright optimistic daylight",
+  "A macro photograph of an intricate mechanical watch movement, exposed tourbillon, polished ruby jewels, Damascus steel bridges, extreme sharp detail",
+  "A whimsical treehouse village connected by glowing rope bridges nestled in colossal redwood trees at dusk, fairy lights, lanterns, magical fantasy vibe",
+  "A hyperrealistic portrait of an Ethiopian woman wearing traditional beaded silver jewelry and embroidered scarf, warm golden hour sunlight, sharp eye focus",
+  "A dramatic volcanic eruption at night, glowing red lava rivers flowing down black basalt slopes into the sea, thunderous ash cloud with lightning bolts",
+  "A cyberpunk hacker workstation surrounded by floating transparent holographic screens, neon blue and magenta reflections, cables, coffee cup, nighttime room",
+  "An enchanted crystal cave with giant luminous amethyst clusters growing from cavern walls, reflective underground river, ethereal dreamlike atmosphere",
+  "A sleek luxury yacht sailing through turquoise Caribbean waters near secluded white sand island, aerial drone view, sun glinting on clear water",
+  "A formidable knight in ornate black and gold armor standing guard in a gothic throne room, sunlight streaming through tall archways, cinematic dust motes",
+  "A hyper-detailed slice of artisan strawberry shortcake on a vintage porcelain plate, whipped cream, glazed berries, fork, warm bakery background",
+  "A futuristic mech warrior standing in a ruined battlefield covered in snow, weathered steel armor, glowing blue optics, smoke rising from vents",
+  "A peaceful zen rock garden at sunrise, perfectly raked sand patterns, bonsai pine tree, dewdrops on smooth river stones, soft tranquil morning light",
+  "A dark fantasy necromancer summoning green spectral flames from an ancient tomb, glowing runic circle on stone floor, cinematic shadows and mist",
+  "A vibrant bustling Moroccan bazaar at twilight, hanging brass lanterns casting intricate shadows, colorful spice pyramids, woven carpets, rich textures",
+  "A majestic bald eagle soaring over the Grand Canyon at sunrise, golden sunbeams piercing deep red rock canyons, crisp photographic detail",
+  "A futuristic orbital space elevator extending from an ocean platform into the starry cosmos, aurora borealis curving around Earth horizon",
+  "A romantic cobblestone street in old Prague at blue hour after rain, glowing streetlamps reflecting in puddles, Gothic church spires in background",
+  "A stunning studio portrait of a silver-haired elf queen with intricate diamond crown, delicate ear cuffs, deep sapphire velvet gown, soft cinematic lighting",
+  "A whimsical greenhouse conservatory filled with glowing giant mushrooms, miniature floating jellyfish plants, brass Victorian framing, magical realism",
+  "An epic science fiction starship armada dropping out of warp speed near a ringed gas giant planet, engine plasma trails, immense cosmic scale",
+  "A cute fluffy kitten sleeping curled up inside a wizard hat surrounded by glowing spell books and spilled star glitter, warm candlelight, cozy fantasy art"
+];
+
+function downloadMediaFile(
   url: string,
   filename: string,
-  format: "png" | "jpg" | "webp" = "png",
+  format: "png" | "jpg" | "webp" | "mp4" | "mp3" | string = "png",
+  path?: string | null,
 ) {
-  try {
-    const res = await fetch(url);
-    const blob = await res.blob();
-    if (blob.type.includes("video") || blob.type.includes("audio")) {
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = filename;
-      a.click();
-      return;
-    }
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    const objectUrl = URL.createObjectURL(blob);
-    img.src = objectUrl;
-    await new Promise((resolve, reject) => {
-      img.onload = resolve;
-      img.onerror = reject;
-    });
-    const canvas = document.createElement("canvas");
-    canvas.width = img.naturalWidth;
-    canvas.height = img.naturalHeight;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("Canvas context error");
-    ctx.drawImage(img, 0, 0);
-    const mimeType =
-      format === "jpg" ? "image/jpeg" : format === "webp" ? "image/webp" : "image/png";
-    canvas.toBlob(
-      (convertedBlob) => {
-        if (!convertedBlob) return;
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(convertedBlob);
-        const cleanName = filename.replace(/\.[^/.]+$/, "");
-        a.download = `${cleanName}.${format}`;
-        a.click();
-        URL.revokeObjectURL(objectUrl);
-      },
-      mimeType,
-      0.95,
-    );
-  } catch {
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.click();
-  }
+  const params = new URLSearchParams();
+  if (path) params.set("path", path);
+  if (url) params.set("url", url);
+  params.set("format", format);
+  params.set("filename", filename);
+
+  const downloadUrl = `/api/outsee-create/download?${params.toString()}`;
+  const a = document.createElement("a");
+  a.href = downloadUrl;
+  a.download = `${filename.replace(/\.[^/.]+$/, "")}.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 }
 
 export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) {
@@ -225,6 +249,8 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   const [negativePrompt, setNegativePrompt] = useState("");
   const [showNegativePrompt, setShowNegativePrompt] = useState(false);
   const [downloadFormat, setDownloadFormat] = useState<"png" | "jpg" | "webp">("png");
+  const [batchCount, setBatchCount] = useState<1 | 2 | 4>(1);
+  const [isEnhancingPrompt, setIsEnhancingPrompt] = useState(false);
   const [soraSize, setSoraSize] = useState<"small" | "large">("small");
   const [firstFrameDataUrl, setFirstFrameDataUrl] = useState<string | null>(null);
   const [lastFrameDataUrl, setLastFrameDataUrl] = useState<string | null>(null);
@@ -234,7 +260,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     { id: string; url: string; name: string }[]
   >([]);
   const [modelOpen, setModelOpen] = useState(false);
-  const [openChip, setOpenChip] = useState<OutseeChip | null>(null);
+  const [openChip, setOpenChip] = useState<string | null>(null);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [kieValues, setKieValues] = useState<Record<string, unknown>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -489,7 +515,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     staleTime: 5_000,
   });
 
-  const priceLabel = kieActive
+  const basePriceLabel = kieActive
     ? kiePrice
       ? `$${kiePrice.usd.toFixed(3)} · ${kiePrice.credits} кр`
       : "—"
@@ -502,6 +528,16 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
         size: soraSize,
         catalogPrice: currentCatalogPrice,
       }).label;
+
+  const priceLabel = useMemo(() => {
+    if (mediaType === "image" && batchCount > 1) {
+      if (kieActive && kiePrice) {
+        return `$${(kiePrice.usd * batchCount).toFixed(3)} · ${kiePrice.credits * batchCount} кр`;
+      }
+      return `${basePriceLabel} (x${batchCount})`;
+    }
+    return basePriceLabel;
+  }, [basePriceLabel, mediaType, batchCount, kieActive, kiePrice]);
 
   useEffect(() => {
     if (mediaType === "image") {
@@ -766,6 +802,36 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     };
   }, [trackingJobs, qc]);
 
+  const handleRandomPrompt = () => {
+    const available = RANDOM_PROMPTS.filter((p) => p !== prompt);
+    const chosen = available[Math.floor(Math.random() * available.length)];
+    setPrompt(chosen);
+    toast.success("Случайный промпт подставлен 🎲");
+  };
+
+  const handleEnhancePrompt = async () => {
+    const text = prompt.trim();
+    if (!text) {
+      toast.error("Сначала напишите краткую идею в поле ввода");
+      return;
+    }
+    setIsEnhancingPrompt(true);
+    try {
+      const res = await api.enhanceOutseeCreatePrompt({
+        prompt: text,
+        style: stylePreset !== "none" ? stylePreset : undefined,
+      });
+      if (res?.enhanced_prompt) {
+        setPrompt(res.enhanced_prompt);
+        toast.success("Промпт улучшен ИИ ✨");
+      }
+    } catch {
+      toast.error("Не удалось улучшить промпт");
+    } finally {
+      setIsEnhancingPrompt(false);
+    }
+  };
+
   const createGenerate = useMutation({
     mutationFn: async () => {
       const preset = STYLE_PRESETS.find((p) => p.id === stylePreset);
@@ -776,117 +842,150 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
       if (text && mediaType === "image" && negativePrompt.trim()) {
         text += `\nAvoid: ${negativePrompt.trim()}`;
       }
-      // ---- KIE: динамическая модель из каталога kie.ai ----
-      if (kieActive && kieModel) {
-        if (!kieConfigured) {
-          throw new Error("KIE_API_KEY не задан в .env");
+
+      const executeSingle = async (index: number) => {
+        const nonce = `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`;
+        // ---- KIE: динамическая модель из каталога kie.ai ----
+        if (kieActive && kieModel) {
+          if (!kieConfigured) {
+            throw new Error("KIE_API_KEY не задан в .env");
+          }
+          const vals: Record<string, unknown> = { ...kieValues, _nonce: nonce };
+          if (kieTextField) vals[kieTextField] = text;
+          if (negativePrompt.trim()) {
+            const negField = kieModel.fields.find((f) => f.name.toLowerCase().includes("neg"));
+            if (negField) vals[negField.name] = negativePrompt.trim();
+          }
+          const missing = kieModel.fields
+            .filter((f) => f.required)
+            .filter((f) => {
+              const v = vals[f.name] ?? f.default;
+              if (v === undefined || v === null) return true;
+              if (typeof v === "string") return v.trim() === "";
+              if (Array.isArray(v)) return v.length === 0;
+              return false;
+            });
+          if (missing.length) {
+            throw new Error(`Заполни: ${missing.map((f) => f.label).join(", ")}`);
+          }
+          const res = await api.kieGenerate({ model_id: kieModel.id, values: vals });
+          return {
+            job_id: res.job.job_id,
+            history_id: res.job.history_id,
+            status: res.job.status,
+            queue_position: res.job.queue_position,
+            provider: "kie" as const,
+          };
         }
-        const vals: Record<string, unknown> = { ...kieValues };
-        if (kieTextField) vals[kieTextField] = text;
-        if (negativePrompt.trim()) {
-          const negField = kieModel.fields.find((f) => f.name.toLowerCase().includes("neg"));
-          if (negField) vals[negField.name] = negativePrompt.trim();
+        if (!text) throw new Error("Введите промпт");
+        if (mediaType === "audio") {
+          if (projectId == null) {
+            throw new Error("Аудио — через шаг пайплайна: выберите проект");
+          }
+          await api.putOutseeCreateSettings(settingsPayload());
+          await applyToProject.mutateAsync();
+          // Suno (Create «АУДИО») → music; иначе TTS/voice → audio.
+          const step =
+            String(audioSlug || "").toLowerCase().includes("suno") ? "music" : "audio";
+          return api.runProjectStep(projectId, step);
         }
-        const missing = kieModel.fields
-          .filter((f) => f.required)
-          .filter((f) => {
-            const v = vals[f.name] ?? f.default;
-            if (v === undefined || v === null) return true;
-            if (typeof v === "string") return v.trim() === "";
-            if (Array.isArray(v)) return v.length === 0;
-            return false;
-          });
-        if (missing.length) {
-          throw new Error(`Заполни: ${missing.map((f) => f.label).join(", ")}`);
+        const provider = autoProvider;
+        if (!provider) {
+          throw new Error(
+            "Нет API-ключа: задайте OUTSEE_API_KEY или GRSAI_API_KEY в .env и перезапустите Studio",
+          );
         }
-        const res = await api.kieGenerate({ model_id: kieModel.id, values: vals });
-        return {
-          job_id: res.job.job_id,
-          history_id: res.job.history_id,
-          status: res.job.status,
-          queue_position: res.job.queue_position,
-          provider: "kie" as const,
-        };
-      }
-      if (!text) throw new Error("Введите промпт");
-      if (mediaType === "audio") {
-        if (projectId == null) {
-          throw new Error("Аудио — через шаг пайплайна: выберите проект");
+        // Settings не блокируют enqueue: параллельные клики иначе ломаются
+        // на гонке записи outsee_create_settings.json.
+        void api.putOutseeCreateSettings(settingsPayload()).catch(() => undefined);
+        if (provider === "grsai") {
+          if (!grsaiConfigured) {
+            throw new Error("GRSAI_API_KEY не задан в .env");
+          }
+          const enqueued =
+            mediaType === "video"
+              ? await api.grsaiGenerate({
+                  prompt: text,
+                  model: toGrsaiVideoModel(videoSlug),
+                  aspect,
+                  media: "video",
+                  duration: Number(duration) || 10,
+                  size: soraSize,
+                })
+              : await api.grsaiGenerate({
+                  prompt: text,
+                  model: imageSlug,
+                  aspect,
+                  resolution,
+                  media: "image",
+                });
+          return { ...enqueued, provider: "grsai" as const };
         }
-        await api.putOutseeCreateSettings(settingsPayload());
-        await applyToProject.mutateAsync();
-        // Suno (Create «АУДИО») → music; иначе TTS/voice → audio.
-        const step =
-          String(audioSlug || "").toLowerCase().includes("suno") ? "music" : "audio";
-        return api.runProjectStep(projectId, step);
-      }
-      const provider = autoProvider;
-      if (!provider) {
-        throw new Error(
-          "Нет API-ключа: задайте OUTSEE_API_KEY или GRSAI_API_KEY в .env и перезапустите Studio",
-        );
-      }
-      // Settings не блокируют enqueue: параллельные клики иначе ломаются
-      // на гонке записи outsee_create_settings.json.
-      void api.putOutseeCreateSettings(settingsPayload()).catch(() => undefined);
-      if (provider === "grsai") {
-        if (!grsaiConfigured) {
-          throw new Error("GRSAI_API_KEY не задан в .env");
+        if (!outseeConfigured) {
+          throw new Error("OUTSEE_API_KEY не задан в .env");
         }
         const enqueued =
           mediaType === "video"
-            ? await api.grsaiGenerate({
+            ? await api.outseeGenerate({
                 prompt: text,
-                model: toGrsaiVideoModel(videoSlug),
-                aspect,
                 media: "video",
-                duration: Number(duration) || 10,
-                size: soraSize,
+                model: videoSlug,
+                aspect,
+                resolution: videoResolution,
+                duration: Number(duration) || 5,
+                generate_audio: videoModel.chips.includes("audio") ? generateAudio : null,
+                first_frame_url: firstFrameDataUrl,
+                last_frame_url: lastFrameDataUrl,
+                project_id: projectId,
               })
-            : await api.grsaiGenerate({
+            : await api.outseeGenerate({
                 prompt: text,
+                media: "image",
                 model: imageSlug,
                 aspect,
                 resolution,
-                media: "image",
+                first_frame_url: referenceImages.length > 0 ? referenceImages[0].url : firstFrameDataUrl,
+                reference_images:
+                  referenceImages.length > 0
+                    ? referenceImages.map((r) => r.url)
+                    : firstFrameDataUrl
+                      ? [firstFrameDataUrl]
+                      : undefined,
+                project_id: projectId,
               });
-        return { ...enqueued, provider: "grsai" as const };
+        return { ...enqueued, provider: "outsee" as const };
+      };
+
+      const count = mediaType === "image" ? batchCount : 1;
+      if (count > 1) {
+        const results = await Promise.all(
+          Array.from({ length: count }, (_, i) => executeSingle(i))
+        );
+        return { batch: true, count, results };
       }
-      if (!outseeConfigured) {
-        throw new Error("OUTSEE_API_KEY не задан в .env");
-      }
-      const enqueued =
-        mediaType === "video"
-          ? await api.outseeGenerate({
-              prompt: text,
-              media: "video",
-              model: videoSlug,
-              aspect,
-              resolution: videoResolution,
-              duration: Number(duration) || 5,
-              generate_audio: videoModel.chips.includes("audio") ? generateAudio : null,
-              first_frame_url: firstFrameDataUrl,
-              last_frame_url: lastFrameDataUrl,
-              project_id: projectId,
-            })
-          : await api.outseeGenerate({
-              prompt: text,
-              media: "image",
-              model: imageSlug,
-              aspect,
-              resolution,
-              first_frame_url: referenceImages.length > 0 ? referenceImages[0].url : firstFrameDataUrl,
-              reference_images:
-                referenceImages.length > 0
-                  ? referenceImages.map((r) => r.url)
-                  : firstFrameDataUrl
-                    ? [firstFrameDataUrl]
-                    : undefined,
-              project_id: projectId,
-            });
-      return { ...enqueued, provider: "outsee" as const };
+      return executeSingle(0);
     },
     onSuccess: (res) => {
+      if (res && typeof res === "object" && "batch" in res && Array.isArray((res as any).results)) {
+        const batchRes = (res as any).results as any[];
+        const newTrackers: { provider: "grsai" | "outsee" | "kie"; jobId: string; historyId: string }[] = [];
+        let firstHistId: string | null = null;
+        for (const r of batchRes) {
+          if (r && typeof r === "object" && "job_id" in r && r.job_id) {
+            if (!firstHistId && r.history_id) firstHistId = r.history_id;
+            newTrackers.push({ provider: r.provider, jobId: r.job_id, historyId: r.history_id });
+          }
+        }
+        if (firstHistId) setSelectedId(firstHistId);
+        setTrackingJobs((prev) => [
+          ...prev.filter((x) => !newTrackers.some((n) => n.jobId === x.jobId)),
+          ...newTrackers,
+        ]);
+        qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
+        qc.invalidateQueries({ queryKey: ["create-queue"] });
+        toast.success(`Запущено ${batchRes.length} генерации 🚀`);
+        return;
+      }
       if (res && typeof res === "object" && "job_id" in res && res.job_id) {
         const r = res as {
           job_id: string;
@@ -1196,15 +1295,22 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>
-                          <a
-                            href={item.raw_url || item.preview_url}
-                            download={item.label || "generation"}
-                            onClick={(e) => e.stopPropagation()}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              downloadMediaFile(
+                                item.preview_url || item.raw_url || "",
+                                item.label || "generation",
+                                item.kind === "video" ? "mp4" : item.kind === "audio" ? "mp3" : "png",
+                                item.path,
+                              );
+                            }}
                             className="flex h-6 w-6 items-center justify-center rounded-md bg-black/75 text-white/80 backdrop-blur transition hover:bg-[#22d3ee] hover:text-black shadow-md"
                             title="Скачать файл"
                           >
                             <Download className="h-3.5 w-3.5" />
-                          </a>
+                          </button>
                         </div>
                       )}
                     </button>
@@ -1636,19 +1742,44 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                         );
                       })}
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setShowNegativePrompt((v) => !v)}
-                      className={cn(
-                        "inline-flex shrink-0 items-center gap-1 rounded-lg px-2 py-0.5 font-mono text-[10px] transition",
-                        showNegativePrompt || negativePrompt
-                          ? "bg-purple-500/20 text-purple-300 ring-1 ring-purple-500/30"
-                          : "bg-white/[0.04] text-white/45 hover:text-white",
-                      )}
-                    >
-                      <span>⛔ Негативный промпт</span>
-                      {negativePrompt && <span className="h-1.5 w-1.5 rounded-full bg-purple-400" />}
-                    </button>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={handleRandomPrompt}
+                        className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[11px] font-medium text-white/70 transition hover:border-[#22d3ee]/40 hover:bg-[#22d3ee]/10 hover:text-white"
+                        title="Подставить готовый красивый пример промпта"
+                      >
+                        <Dices className="h-3 w-3 text-[#22d3ee]" />
+                        <span>Случайный</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isEnhancingPrompt}
+                        onClick={handleEnhancePrompt}
+                        className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[#22d3ee]/30 bg-[#22d3ee]/10 px-2 py-0.5 text-[11px] font-semibold text-[#22d3ee] transition hover:bg-[#22d3ee]/20 disabled:opacity-50"
+                        title="Улучшить и детализировать текущий промпт с помощью ИИ"
+                      >
+                        {isEnhancingPrompt ? (
+                          <Loader2 className="h-3 w-3 animate-spin text-[#22d3ee]" />
+                        ) : (
+                          <Wand2 className="h-3 w-3 text-[#22d3ee]" />
+                        )}
+                        <span>{isEnhancingPrompt ? "Улучшаем…" : "Улучшить"}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowNegativePrompt((v) => !v)}
+                        className={cn(
+                          "inline-flex shrink-0 items-center gap-1 rounded-lg px-2 py-0.5 font-mono text-[10px] transition",
+                          showNegativePrompt || negativePrompt
+                            ? "bg-purple-500/20 text-purple-300 ring-1 ring-purple-500/30"
+                            : "bg-white/[0.04] text-white/45 hover:text-white",
+                        )}
+                      >
+                        <span>⛔ Негативный</span>
+                        {negativePrompt && <span className="h-1.5 w-1.5 rounded-full bg-purple-400" />}
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -1670,14 +1801,11 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       value={prompt}
                       onChange={(e) => setPrompt(e.target.value)}
                       placeholder={
-                        kieActive && kieModel
-                          ? kieModel.fields.find((f) => f.name === kieTextField)
-                              ?.label || "Опишите…"
-                          : mediaType === "audio"
-                            ? "Текст / описание трека…"
-                            : mediaType === "video"
-                              ? "Опишите видео…"
-                              : "Опишите изображение…"
+                        mediaType === "audio"
+                          ? "Текст / описание трека…"
+                          : mediaType === "video"
+                            ? "Опишите видео…"
+                            : "Опишите изображение…"
                       }
                       rows={3}
                       className="w-full resize-none bg-transparent text-[13px] leading-relaxed text-white/90 placeholder:text-white/30 focus:outline-none"
@@ -1698,13 +1826,6 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   <div className="px-3 pt-3 lg:px-4">
                     <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] px-3 py-2.5 text-[12px] leading-relaxed text-white/60">
                       {kieModel.hint || kieModel.desc}
-                    </div>
-                  </div>
-                )}
-                {kieActive && kieModel?.hint && kieTextField && (
-                  <div className="px-3 pt-1 lg:px-4">
-                    <div className="text-[10px] leading-snug text-white/35">
-                      {kieModel.hint}
                     </div>
                   </div>
                 )}
@@ -1889,22 +2010,23 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   })}
 
                   {/* KIE: динамические настройки модели из каталога */}
-                  {kieActive && kieModel && (
-                    <div className="flex max-h-[180px] w-full flex-wrap items-end gap-2 overflow-y-auto">
-                      {kieChipFields(kieModel)
-                        .filter((f) => kieFieldVisible(f, kieValues))
-                        .map((f) => (
-                          <KieFieldChip
-                            key={f.name}
-                            field={f}
-                            values={kieValues}
-                            onChange={(name, v) =>
-                              setKieValues((prev) => ({ ...prev, [name]: v }))
-                            }
-                          />
-                        ))}
-                    </div>
-                  )}
+                  {kieActive &&
+                    kieModel &&
+                    kieChipFields(kieModel)
+                      .filter((f) => kieFieldVisible(f, kieValues))
+                      .map((f) => (
+                        <KieFieldChip
+                          key={f.name}
+                          field={f}
+                          values={kieValues}
+                          openChip={openChip}
+                          setOpenChip={setOpenChip}
+                          setModelOpen={setModelOpen}
+                          onChange={(name, v) =>
+                            setKieValues((prev) => ({ ...prev, [name]: v }))
+                          }
+                        />
+                      ))}
 
                   <div className="ml-auto flex flex-wrap items-center gap-2">
                     {!kieActive && mediaType === "video" &&
@@ -1967,6 +2089,28 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       <Coins className="h-3 w-3 text-[#22d3ee]" strokeWidth={2.5} />
                       <span>{priceLabel}</span>
                     </div>
+                    {mediaType === "image" && (
+                      <div
+                        className="inline-flex h-9 items-center gap-0.5 rounded-xl border border-white/10 bg-[#16161b] p-0.5"
+                        title="Пакетная генерация: количество изображений (1, 2 или 4)"
+                      >
+                        {([1, 2, 4] as const).map((cnt) => (
+                          <button
+                            key={cnt}
+                            type="button"
+                            onClick={() => setBatchCount(cnt)}
+                            className={cn(
+                              "rounded-lg px-2 py-1 font-mono text-[11px] font-bold transition",
+                              batchCount === cnt
+                                ? "bg-[#22d3ee]/20 text-[#22d3ee] ring-1 ring-[#22d3ee]/40"
+                                : "text-white/45 hover:text-white",
+                            )}
+                          >
+                            {cnt}x
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <button
                       type="button"
                       disabled={
@@ -1989,7 +2133,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                           ? "Уже ставится в очередь…"
                           : !canApiDirect && mediaType !== "audio"
                             ? "Нужен OUTSEE_API_KEY или GRSAI_API_KEY в .env"
-                            : `Сгенерировать (можно несколько параллельно, лимит ${maxParallel}) · ${priceLabel}`
+                            : `Сгенерировать (${mediaType === "image" && batchCount > 1 ? `${batchCount} фото` : "1 шт"}, лимит ${maxParallel}) · ${priceLabel}`
                       }
                     >
                       {createGenerate.isPending ? (
@@ -2000,7 +2144,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       ) : (
                         <>
                           <Sparkles className="h-3.5 w-3.5" />
-                          <span>Генерировать</span>
+                          <span>
+                            Генерировать
+                            {mediaType === "image" && batchCount > 1 ? ` (${batchCount}x)` : ""}
+                          </span>
                         </>
                       )}
                     </button>
@@ -2029,9 +2176,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   type="button"
                   onClick={() =>
                     void downloadMediaFile(
-                      selected.raw_url || selected.preview_url!,
+                      selected.preview_url || selected.raw_url || "",
                       selected.label || "generation",
                       downloadFormat,
+                      selected.path,
                     )
                   }
                   className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-semibold text-white/90 transition hover:bg-white/[0.12] hover:text-white"
@@ -2118,10 +2266,16 @@ function kieFieldVisible(f: KieField, values: Record<string, unknown>): boolean 
 function KieFieldChip({
   field,
   values,
+  openChip,
+  setOpenChip,
+  setModelOpen,
   onChange,
 }: {
   field: KieField;
   values: Record<string, unknown>;
+  openChip?: string | null;
+  setOpenChip?: (v: string | null) => void;
+  setModelOpen?: (v: boolean) => void;
   onChange: (name: string, v: unknown) => void;
 }) {
   const v = values[field.name] ?? field.default;
@@ -2147,33 +2301,21 @@ function KieFieldChip({
   }
 
   if (field.kind === "select") {
+    const options = (field.options || []).map((o) => ({ id: o, label: o }));
+    const currentVal = String(v ?? field.options?.[0] ?? "—");
     return (
-      <div
-        className="inline-flex flex-col gap-0.5"
-        title={field.desc || field.label}
-      >
-        <span className="px-0.5 text-[10px] text-white/40">{field.label}</span>
-        <div className="inline-flex flex-wrap gap-0.5 rounded-full border border-white/10 bg-[#16161b] p-0.5">
-          {(field.options || []).map((o) => {
-            const activeOpt = String(v ?? "") === o;
-            return (
-              <button
-                key={o}
-                type="button"
-                onClick={() => onChange(field.name, o)}
-                className={cn(
-                  "rounded-full px-2.5 py-1 font-mono text-[11px] transition",
-                  activeOpt
-                    ? "bg-[#22d3ee]/20 text-[#22d3ee] font-semibold"
-                    : "text-white/45 hover:text-white",
-                )}
-              >
-                {o || "—"}
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      <OptionDropdown
+        label={field.label}
+        value={currentVal}
+        open={openChip === field.name}
+        onOpenChange={(isOpen) => {
+          if (setOpenChip) setOpenChip(isOpen ? field.name : null);
+          if (isOpen && setModelOpen) setModelOpen(false);
+        }}
+        options={options}
+        onSelect={(optId) => onChange(field.name, optId)}
+        mono
+      />
     );
   }
 
@@ -2210,7 +2352,7 @@ function KieFieldChip({
         value={String(v ?? "")}
         onChange={(e) => onChange(field.name, e.target.value)}
         placeholder="—"
-        className="w-32 bg-transparent text-[12px] text-white/90 outline-none placeholder:text-white/25"
+        className="w-28 bg-transparent text-[12px] text-white/90 outline-none placeholder:text-white/25"
       />
     </div>
   );
