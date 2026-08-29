@@ -105,6 +105,8 @@ def _job_fingerprint(
     params: dict[str, Any] | None,
 ) -> str:
     p = params or {}
+    values = p.get("values") if isinstance(p.get("values"), dict) else {}
+    nonce = str(p.get("nonce") or p.get("batch_index") or values.get("_nonce") or "")
     return "|".join(
         [
             (provider or "").strip().lower(),
@@ -117,6 +119,7 @@ def _job_fingerprint(
             str(bool(p.get("generate_audio"))),
             str(bool(p.get("has_first_frame"))),
             str(bool(p.get("has_last_frame"))),
+            nonce,
         ]
     )
 

@@ -1677,6 +1677,11 @@ export const api = {
       { method: "DELETE" },
     );
   },
+  enhanceOutseeCreatePrompt: (data: { prompt: string; style?: string }) =>
+    http<{ ok: boolean; enhanced_prompt: string }>(`/api/outsee-create/enhance-prompt`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
 
   getGrsaiStatus: () =>
     http<{
