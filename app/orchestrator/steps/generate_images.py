@@ -562,11 +562,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             wipe_stats,
         )
         await session.flush()
-        session.expire_all()
+        project_id = int(project.id)
         frames = (
             await session.execute(
                 select(Frame)
-                .where(Frame.project_id == project.id)
+                .where(Frame.project_id == project_id)
                 .order_by(Frame.number)
             )
         ).scalars().all()
