@@ -132,3 +132,71 @@ def test_claim_shot1_batch_marks_inflight(tmp_path: Path, monkeypatch: pytest.Mo
         gi._claim_shot1_batch(_Sess(), 1, out, project=p, limit=2)
     )
     assert batch2 == []
+
+
+def test_claim_shot1_waits_for_cell_parent_png(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """K2 не в батч, пока PNG K1 этой ячейки нет на диске."""
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path / "data")
+    out = tmp_path / "scenes"
+    out.mkdir()
+    p = Project(slug="c", topic="t", status=ProjectStatus.generating_images, meta={})
+    p.id = 1
+    parent = Frame(
+        id=10,
+        project_id=1,
+        number=13,
+        uuid="parent-13",
+        image_prompt="style watercolor archival noir vo parent k1",
+        status=FrameStatus.image_prompt_ready,
+        attrs={"camera_subdivide": {"role": "vo_parent", "shot_id": "5-K1"}},
+    )
+    child = Frame(
+        id=11,
+        project_id=1,
+        number=14,
+        uuid="child-14",
+        image_prompt="style watercolor archival noir shot child k2",
+        status=FrameStatus.image_prompt_ready,
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "shot_id": "5-K2",
+                "parent_uuid": "parent-13",
+                "coverage_parent_id": "2-K1",
+            }
+        },
+    )
+    frames = [parent, child]
+
+    class _R:
+        def scalars(self):
+            return MagicMock(all=lambda: frames)
+
+    class _Sess:
+        async def execute(self, *_a, **_k):
+            return _R()
+
+        async def flush(self):
+            return None
+
+    monkeypatch.setattr(gi, "frame_needs_shot1_image", lambda fr, d: True)
+    monkeypatch.setattr(
+        "app.services.vision_check_loop.scene_regen_allows",
+        lambda *_a, **_k: None,
+    )
+
+    batch = asyncio.run(
+        gi._claim_shot1_batch(_Sess(), 1, out, project=p, limit=4)
+    )
+    assert [f.number for f in batch] == [13]
+    assert (child.attrs or {}).get(INFLIGHT_ATTR) is None
+
+    (out / "frame_013_parent.png").write_bytes(
+        b"\x89PNG\r\n\x1a\n" + b"x" * 200_000
+    )
+    batch_ready = asyncio.run(
+        gi._claim_shot1_batch(_Sess(), 1, out, project=p, limit=4)
+    )
+    assert [f.number for f in batch_ready] == [14]

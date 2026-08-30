@@ -1134,6 +1134,29 @@ def test_shot_child_locks_to_vo_parent_not_cross_scene_id() -> None:
     assert find_coverage_parent_frame([wrong, k1, k4], k4) is k1
 
 
+def test_vo_parent_with_x1_parent_id_is_not_shot_child() -> None:
+    """K1 новой ячейки с coverage_parent_id — не дочка: PNG-lock не вешаем."""
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import is_coverage_child, is_shot_child
+
+    k1 = SimpleNamespace(
+        number=13,
+        uuid="u13",
+        attrs={
+            "кадры": [{"id": "5-K1", "parent_id": "2-K1"}],
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "shot_id": "5-K1",
+                "coverage_parent_id": "2-K1",
+                "scene_split": 1,
+            },
+        },
+    )
+    assert is_coverage_child(k1) is True
+    assert is_shot_child(k1) is False
+
+
 def test_merge_flattened_coverage_rebuilds_kadry() -> None:
     from app.services.vo_shot_expand import (
         flattened_coverage_groups,

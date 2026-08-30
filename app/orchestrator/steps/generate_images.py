@@ -995,8 +995,16 @@ async def _claim_shot1_batch(
     project: Project | None = None,
     limit: int = 1,
 ) -> list[Frame]:
-    """Забрать до ``limit`` кадров под генерацию (lease через attrs)."""
+    """Забрать до ``limit`` кадров под генерацию (lease через attrs).
+
+    Сначала K1 ячеек; K2/K3 — только когда PNG родителя уже на диске,
+    иначе параллельный батч генерит дочек без lock / в чужой сетап.
+    """
     from app.services.vision_check_loop import scene_regen_allows
+    from app.services.vo_shot_expand import (
+        find_coverage_parent_frame,
+        is_shot_child,
+    )
 
     if limit < 1:
         return []
@@ -1008,23 +1016,37 @@ async def _claim_shot1_batch(
         )
     ).scalars().all()
     claimed: list[Frame] = []
-    for fr in frames:
-        if project is not None:
-            allow = scene_regen_allows(project, fr.number, 1)
-            if allow is False:
-                continue
-        if not frame_needs_shot1_image(fr, out_dir):
-            continue
-        attrs = dict(fr.attrs or {})
-        if attrs.get(INFLIGHT_ATTR):
-            continue
-        attrs[INFLIGHT_ATTR] = True
-        fr.attrs = attrs
-        if fr.status is not FrameStatus.image_prompt_ready:
-            fr.status = FrameStatus.image_prompt_ready
-        claimed.append(fr)
+    for prefer_child in (False, True):
         if len(claimed) >= limit:
             break
+        for fr in frames:
+            if fr in claimed:
+                continue
+            if project is not None:
+                allow = scene_regen_allows(project, fr.number, 1)
+                if allow is False:
+                    continue
+            if not frame_needs_shot1_image(fr, out_dir):
+                continue
+            child = is_shot_child(fr)
+            if child != prefer_child:
+                continue
+            if child:
+                parent = find_coverage_parent_frame(list(frames), fr)
+                if parent is not None and not disk_has_valid_frame_image(
+                    out_dir, int(parent.number)
+                ):
+                    continue
+            attrs = dict(fr.attrs or {})
+            if attrs.get(INFLIGHT_ATTR):
+                continue
+            attrs[INFLIGHT_ATTR] = True
+            fr.attrs = attrs
+            if fr.status is not FrameStatus.image_prompt_ready:
+                fr.status = FrameStatus.image_prompt_ready
+            claimed.append(fr)
+            if len(claimed) >= limit:
+                break
     if claimed:
         await session.flush()
     return claimed
@@ -1050,13 +1072,17 @@ async def _coverage_parent_png(
     project: Project,
     frame: Frame,
 ) -> Path | None:
-    """PNG K1 той же группы покрытия — layout-lock для K2/K3."""
+    """PNG K1 ЭТОЙ ячейки — layout-lock только для K2/K3.
+
+    K1 новой VO-ячейки (даже с coverage_parent_id на другую сцену / X1)
+    не вешаем на чужой still: иначе #13 становится копией камеры #4.
+    """
     from app.services.vo_shot_expand import (
         find_coverage_parent_frame,
-        is_coverage_child,
+        is_shot_child,
     )
 
-    if not is_coverage_child(frame):
+    if not is_shot_child(frame):
         return None
     frames = (
         await session.execute(
