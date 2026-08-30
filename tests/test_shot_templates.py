@@ -205,22 +205,25 @@ SALTYKOVA_ACTION = (
 
 
 def test_saltykova_scenes_do_not_collapse_into_t5() -> None:
-    """Взаимодействие двоих → T1, предмет → T2, объект взгляда → T4,
-    перечисление владений → T8; T5 — только длительная работа руками."""
+    """T1 — только речь; предмет → T2, объект взгляда → T4, слом → T7,
+    перечисление владений → T8; T5 — только длительная работа руками.
+    В narration без диалогов T1 не выбирается вообще — это норма."""
     clear_shot_templates_cache()
     assigned = assign_templates_for_action(SALTYKOVA_ACTION)
     vals = [assigned[i] for i in sorted(assigned)]
-    assert vals[0] == "T1"  # приносят жалобы чиновнику
-    assert vals[1] == "T1"  # передают прошения
+    assert vals[0] == "T2"  # приносят жалобы (предмет, новое место)
+    assert vals[1] == "T2"  # передают прошения (предмет)
     assert vals[2] == "T2"  # раскрывает и читает жалобы
     assert vals[3] == "T4"  # указывают на дом
-    assert vals[4] == "T1"  # приказывает крестьянам
+    assert vals[4] == "T7"  # получил возврат + приказ (слом)
     assert vals[5] == "T5"  # подписывает дело — процесс
     assert vals[6] == "T5"  # раскладывает/записывает — процесс
-    assert vals[7] == "T1"  # протягивают + судья отворачивается
+    assert vals[7] == "T2"  # протягивают прошения (предмет)
     assert vals[8] == "T8"  # перечисление владений
-    assert vals[9] == "T1"  # принимает кольцо от Глеба
-    # Распределение разнообразное: T5 не доминирует.
+    assert vals[9] == "T2"  # принимает кольцо (предмет, новое место)
+    # Распределение разнообразное: ни один шаблон не доминирует,
+    # T1 (диалог) в narration без реплик не выбирается.
+    assert vals.count("T1") == 0
     assert vals.count("T5") <= 2
     assert len(set(vals)) >= 4
 
@@ -261,7 +264,7 @@ def test_catalog_mentions_questions_examples_compression() -> None:
     text = format_shot_templates_catalog()
     assert "ШАБЛОНЫ СЦЕНА→КАДРЫ" in text
     assert "ВЫБОР" in text
-    assert "ВЗАИМОДЕЙСТВУЮТ" in text  # вопрос дерева, не машинный ключ
+    assert "ГОВОРЯТ друг с другом" in text  # вопрос дерева, не машинный ключ
     assert "эталон" in text
     assert "T1-c2" in text  # именованный вариант сжатия
     assert "keep_sides" in text
