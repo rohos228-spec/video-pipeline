@@ -28,6 +28,17 @@ def test_template_max_shots_from_catalog() -> None:
     assert template_max_shots("T8") == 0
 
 
+def test_template_required_shots_minimum() -> None:
+    from app.services.shot_templates import template_required_shots
+
+    clear_shot_templates_cache()
+    assert template_required_shots("T1") == 2  # K2+K3 (стороны диалога)
+    assert template_required_shots("T2") == 2  # K2+K3 (взял + деталь)
+    assert template_required_shots("T4") == 2  # K1+K2 (смотрит + объект)
+    assert template_required_shots("T5") == 1  # K1 (жест)
+    assert template_required_shots("T8") == 0  # динамика по местам
+
+
 # Пример пользователя: герой идёт в полицию и пишет заявление о краже.
 POLICE_ACTION = (
     "1. улица — Михаил идёт к зданию полиции\n(Михаил пришёл к отделению полиции,)\n"
@@ -154,6 +165,82 @@ def test_coverage_template_reason_repeat_t_allowed() -> None:
     assert coverage_template_reason(shots_t3) is None
 
 
+def test_coverage_template_reason_minimum_ladder() -> None:
+    """Сцену нельзя сжать ниже required=1 кадров лестницы (T1 минимум 2)."""
+    too_few = [{"сцена": 1, "шаблон": "T1", "план": "СРЕДНИЙ", "место": "кабинет"}]
+    reason = coverage_template_reason(too_few)
+    assert reason and "минимум" in reason
+    t1_c2 = [
+        {"сцена": 1, "шаблон": "T1", "план": "СРЕДНИЙ", "место": "кабинет"},
+        {"сцена": 1, "шаблон": "T1", "план": "СРЕДНИЙ", "место": "кабинет"},
+    ]
+    assert coverage_template_reason(t1_c2) is None
+    t5_min = [{"сцена": 1, "шаблон": "T5", "план": "СРЕДНИЙ", "место": "кухня"}]
+    assert coverage_template_reason(t5_min) is None
+
+
+# Сцены в стиле отчёта «Салтыкова»: выбор не должен схлопываться в T5.
+SALTYKOVA_ACTION = (
+    "1. приказная палата — крестьяне приносят две жалобы\n"
+    "(История Дарьи Салтыковой началась с двух крестьянских жалоб.)\n"
+    "2. приказная палата — Савелий и Ермолай передают чиновнику прошения\n"
+    "(Их подали Савелий Мартынов и Ермолай Ильин.)\n"
+    "3. приказная палата — чиновник раскрывает и читает жалобы\n"
+    "(Чиновник раскрыл прошения и прочитал их.)\n"
+    "4. приказная палата — крестьяне указывают на господский дом за окном\n"
+    "(Для них это был последний способ рассказать о происходившем там.)\n"
+    "5. усадьба — управляющий получает возвращённое прошение и приказывает усилить наказание\n"
+    "(Прошения возвращали тем, на кого жаловались, и наказание становилось страшнее.)\n"
+    "6. архив — служащий подписывает дело именем Салтычихи\n"
+    "(Сегодня её помнят под прозвищем Салтычиха.)\n"
+    "7. архив — следователь раскладывает документы и записывает показания\n"
+    "(Всё начиналось с документов и свидетельских показаний.)\n"
+    "8. приказная палата — крепостные протягивают прошения, судья отворачивается\n"
+    "(Почему крепостные так долго оставались без защиты?)\n"
+    "9. усадьба — Дарья отмечает в реестре владения\n"
+    "(Ей принадлежали московский дом, усадьба Троицкое и сотни крепостных.)\n"
+    "10. дворянский дом — Дарья принимает обручальное кольцо от Глеба\n"
+    "(После брака с Глебом Салтыковым её положение стало прочнее.)\n"
+)
+
+
+def test_saltykova_scenes_do_not_collapse_into_t5() -> None:
+    """Взаимодействие двоих → T1, предмет → T2, объект взгляда → T4,
+    перечисление владений → T8; T5 — только длительная работа руками."""
+    clear_shot_templates_cache()
+    assigned = assign_templates_for_action(SALTYKOVA_ACTION)
+    vals = [assigned[i] for i in sorted(assigned)]
+    assert vals[0] == "T1"  # приносят жалобы чиновнику
+    assert vals[1] == "T1"  # передают прошения
+    assert vals[2] == "T2"  # раскрывает и читает жалобы
+    assert vals[3] == "T4"  # указывают на дом
+    assert vals[4] == "T1"  # приказывает крестьянам
+    assert vals[5] == "T5"  # подписывает дело — процесс
+    assert vals[6] == "T5"  # раскладывает/записывает — процесс
+    assert vals[7] == "T1"  # протягивают + судья отворачивается
+    assert vals[8] == "T8"  # перечисление владений
+    assert vals[9] == "T1"  # принимает кольцо от Глеба
+    # Распределение разнообразное: T5 не доминирует.
+    assert vals.count("T5") <= 2
+    assert len(set(vals)) >= 4
+
+
+def test_when_assignments_warns_on_repeat_template() -> None:
+    """3+ одинаковых T* в цепи → предупреждение перепроверить дерево."""
+    clear_shot_templates_cache()
+    action = (
+        "1. архив — пишет отчёт\n(один.)\n"
+        "2. канцелярия — листает реестр\n(два.)\n"
+        "3. приёмная — подписывает бумаги\n(три.)\n"
+        "4. кабинет — заполняет журнал\n(четыре.)\n"
+    )
+    frames = [
+        SimpleNamespace(uuid="dd" * 8, number=1, attrs={"главное_действие": action})
+    ]
+    text = format_when_assignments(frames)
+    assert "T5 выбран 4 раз" in text
+
+
 def test_load_shot_templates_has_t1_and_select() -> None:
     clear_shot_templates_cache()
     data = load_shot_templates()
@@ -174,7 +261,7 @@ def test_catalog_mentions_questions_examples_compression() -> None:
     text = format_shot_templates_catalog()
     assert "ШАБЛОНЫ СЦЕНА→КАДРЫ" in text
     assert "ВЫБОР" in text
-    assert "Двое говорят" in text  # вопрос дерева, не машинный ключ
+    assert "ВЗАИМОДЕЙСТВУЮТ" in text  # вопрос дерева, не машинный ключ
     assert "эталон" in text
     assert "T1-c2" in text  # именованный вариант сжатия
     assert "keep_sides" in text
