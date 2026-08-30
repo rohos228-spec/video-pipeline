@@ -1,9 +1,12 @@
-"""Покрытие кадры[] → ячейки закадра 1:1.
+"""Покрытие кадры[] → ячейки закадра по сценам (родитель + дочерние шоты).
 
 После нод shots / frames / QC группа script_frames_qc вызывает
 ``apply_shot_coverage_to_vo_cells``: недостающие шоты вставляются, затем
-каждый кадр становится своей VO-ячейкой. Текст режется по клаузам
-(``split_text_into_parts``), не по квоте 27–54 из GPT ``кадры[].закадр``.
+каждая СЦЕНА (``кадры[].сцена``) становится своей VO-ячейкой: первый кадр
+сцены — родитель (полная лестница в ``кадры[]``), остальные кадры сцены —
+дочерние шоты (``role="shot"``, ``parent_uuid`` на родителя). Текст режется
+по клаузам (``split_text_into_parts``), не по квоте 27–54 из GPT
+``кадры[].закадр``.
 """
 
 from __future__ import annotations
@@ -147,14 +150,29 @@ def parse_coverage_shot(shot_id: str) -> tuple[str, int] | None:
 
 
 def is_coverage_child(frame: Any) -> bool:
-    """K2/K3 после flatten (role=vo_parent) или настоящий shot-ребёнок."""
+    """Дочерний кадр покрытия: shot-ребёнок или есть родитель по T/X."""
     if is_shot_child(frame):
         return True
-    parsed = parse_coverage_shot(coverage_shot_id(frame))
-    return parsed is not None and parsed[1] >= 2
+    return bool(coverage_parent_shot_id(frame))
 
 
 def coverage_parent_shot_id(frame: Any) -> str:
+    """Родитель покрытия: явный parent_id из таблицы T/X, иначе prefix-K1.
+
+    В scene-split структуре ``parent_id=null`` = новое место → референса
+    нет (кадр самостоятельный), эвристика prefix-K1 не применяется.
+    """
+    cs = _cs(frame)
+    explicit = str(cs.get("coverage_parent_id") or "").strip()
+    if explicit:
+        return explicit
+    planned = planned_shots_from_attrs(frame)
+    if planned:
+        pid = str(planned[0].get("parent_id") or "").strip()
+        if pid:
+            return pid
+    if cs.get("scene_split"):
+        return ""
     parsed = parse_coverage_shot(coverage_shot_id(frame))
     if parsed is None or parsed[1] < 2:
         return ""
@@ -311,6 +329,9 @@ async def collapse_flattened_coverage_cells(
         .scalars()
         .all()
     )
+    if any(_cs(fr).get("scene_split") for fr in frames):
+        # Уже разбито по сценам (родитель + дочерние шоты) — нечего склеивать.
+        return {"groups": 0, "deleted": 0, "skipped": "scene_split"}
     groups = flattened_coverage_groups(frames)
     extra: list[Any] = []
     merged = 0
@@ -727,16 +748,29 @@ def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
     return updated
 
 
-def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
-    """Каждый кадр покрытия → своя ячейка закадра.
+def _scene_group_key(shot: dict[str, Any] | None, solo: str) -> str:
+    """Ключ сцены шота: ``кадры[].сцена``; без неё — соло-группа (старое 1:1)."""
+    if isinstance(shot, dict):
+        sc = shot.get("сцена")
+        if sc not in (None, ""):
+            return f"s:{sc}"
+    return solo
 
-    Текст исходной ячейки режется по числу ``кадры[]``. ``parent_uuid`` =
-    uuid самого кадра. Лишние дети сверх ``кадры[]`` — на удаление.
+
+def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
+    """Кадры[] → ячейки по СЦЕНАМ: K1 = VO-родитель, K2+ = дочерние шоты.
+
+    Сцена (``кадры[].сцена``) = одна ячейка заказа: родитель несёт полную
+    лестницу кадров сцены (``parent_id`` по таблице T/X) и кусок закадра
+    своего кадра, дочерние шоты — ``role="shot"`` с ``parent_uuid`` на
+    родителя и своими кусками. Склейка кусков всех ячеек = закадр исходной
+    ячейки. Лишние слоты сверх ``кадры[]`` — на удаление.
     """
     from app.services.plan_shot2 import (
         SHOT2_PROMPT_ATTR,
         SHOT2_VIDEO_PROMPT_ATTR,
     )
+    from app.services.shot_templates import parse_scene_chain
 
     updated = 0
     extra: list[Any] = []
@@ -755,57 +789,131 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
         if n > len(members):
             # Expand ещё не создал слоты — не отбрасываем хвост закадра.
             n = len(members)
-        parts = split_text_into_parts(full, n)
+        # Сначала — дословные фрагменты кадры[].закадр от GPT (склейка =
+        # вся ячейка); слепая нарезка по клаузам — только фолбэк.
+        parts = kadry_vo_partition(full, planned) or split_text_into_parts(full, n)
         while len(parts) > 1 and not str(parts[-1] or "").strip():
             parts.pop()
         n = max(1, len(parts))
         keep = members[:n]
         extra.extend(members[n:])
-        for i, fr in enumerate(keep):
-            piece = parts[i] if i < len(parts) else ""
-            shot = copy.deepcopy(planned[i]) if i < len(planned) else None
-            if isinstance(shot, dict):
-                shot["закадр"] = piece
-                shot["порядок"] = 1
-                shot["parent_id"] = None
-            uid = str(getattr(fr, "uuid", "") or "")
-            attrs = dict(getattr(fr, "attrs", None) or {})
-            attrs["vo_cell_full"] = piece
-            if shot:
-                attrs["кадры"] = [shot]
-            s2 = str(attrs.get(SHOT2_PROMPT_ATTR) or attrs.get("промт_картинки_2") or "").strip()
-            v2 = str(
-                attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or attrs.get("animation_prompt_shot2") or ""
-            ).strip()
-            if not str(getattr(fr, "image_prompt", None) or "").strip() and s2:
-                fr.image_prompt = s2
-            if not str(getattr(fr, "animation_prompt", None) or "").strip() and v2:
-                fr.animation_prompt = v2
-            attrs.pop(SHOT2_PROMPT_ATTR, None)
-            attrs.pop("промт_картинки_2", None)
-            attrs.pop(SHOT2_VIDEO_PROMPT_ATTR, None)
-            attrs.pop("промты_детей", None)
-            attrs.pop("child_prompts", None)
-            if i > 0:
-                attrs.pop("биты", None)
-                attrs.pop("bits", None)
-                attrs.pop("главное_действие", None)
-                attrs.pop("main_action", None)
-            fr.attrs = attrs
-            _flag_attrs(fr)
-            if (getattr(fr, "voiceover_text", None) or "") != piece:
-                fr.voiceover_text = piece
-            fr.duration_seconds = vo_duration_sec(piece, shots=1)
-            _set_cs(
-                fr,
-                role="vo_parent",
-                parent_uuid=uid,
-                shot_index=1,
-                shots_in_beat=1,
-                **{_VO_SHOT_KEY: piece},
-            )
-            _apply_shot_meta(fr, shot)
-            updated += 1
+
+        # Группы шотов по сценам (порядок = порядок кадров в кадры[]).
+        scene_order: list[str] = []
+        scene_idxs: dict[str, list[int]] = {}
+        for i in range(n):
+            shot = planned[i] if i < len(planned) else None
+            key = _scene_group_key(shot, f"_solo_{i}")
+            if key not in scene_idxs:
+                scene_idxs[key] = []
+                scene_order.append(key)
+            scene_idxs[key].append(i)
+
+        # Цепь сцен ячейки → своя строка главное_действие на каждую сцену.
+        chain = {sc["n"]: sc for sc in parse_scene_chain(main_action_text(parent))}
+
+        for g_i, key in enumerate(scene_order):
+            idxs = scene_idxs[key]
+            scene_cells = [keep[i] for i in idxs]
+            scene_parent = scene_cells[0]
+            pieces = [parts[i] for i in idxs]
+            scene_chunk = " ".join(p for p in pieces if p).strip()
+            shots: list[dict[str, Any]] = []
+            shot_ids: set[str] = set()
+            for i in idxs:
+                raw = planned[i] if i < len(planned) else None
+                sid = str(raw.get("id") or "").strip() if isinstance(raw, dict) else ""
+                if sid:
+                    shot_ids.add(sid)
+            for pos, i in enumerate(idxs):
+                shot = copy.deepcopy(planned[i]) if i < len(planned) else None
+                if not isinstance(shot, dict):
+                    shot = {}
+                sid = str(shot.get("id") or "").strip()
+                shot["порядок"] = pos + 1
+                shot["закадр"] = pieces[pos]
+                pid = str(shot.get("parent_id") or "").strip()
+                if pos == 0 and (not pid or pid == sid or pid in shot_ids):
+                    # Первый кадр сцены — master: parent только кросс-ячеечный
+                    # (X1: master этой локации из прошлой ячейки).
+                    shot["parent_id"] = None
+                shots.append(shot)
+            scene_n: int | None = None
+            try:
+                scene_n = int(shots[0].get("сцена")) if shots else None
+            except (TypeError, ValueError):
+                scene_n = None
+            for pos, fr in enumerate(scene_cells):
+                piece = pieces[pos]
+                shot = shots[pos] if pos < len(shots) else None
+                uid = str(getattr(fr, "uuid", "") or "")
+                attrs = dict(getattr(fr, "attrs", None) or {})
+                if fr is scene_parent:
+                    attrs["кадры"] = shots
+                    attrs["vo_cell_full"] = scene_chunk or piece
+                    sc = chain.get(scene_n) if scene_n is not None else None
+                    if sc:
+                        head = f"{sc['n']}. {sc['place']} — {sc['action']}".rstrip(" —")
+                        vo_line = str(sc.get("vo") or "").strip()
+                        attrs["главное_действие"] = (
+                            f"{head}\n{vo_line}" if vo_line else head
+                        )
+                    s2 = str(
+                        attrs.get(SHOT2_PROMPT_ATTR) or attrs.get("промт_картинки_2") or ""
+                    ).strip()
+                    v2 = str(
+                        attrs.get(SHOT2_VIDEO_PROMPT_ATTR)
+                        or attrs.get("animation_prompt_shot2")
+                        or ""
+                    ).strip()
+                    if not str(getattr(fr, "image_prompt", None) or "").strip() and s2:
+                        fr.image_prompt = s2
+                    if not str(getattr(fr, "animation_prompt", None) or "").strip() and v2:
+                        fr.animation_prompt = v2
+                    attrs.pop(SHOT2_PROMPT_ATTR, None)
+                    attrs.pop("промт_картинки_2", None)
+                    attrs.pop(SHOT2_VIDEO_PROMPT_ATTR, None)
+                    attrs.pop("промты_детей", None)
+                    attrs.pop("child_prompts", None)
+                    if g_i > 0:
+                        attrs.pop("биты", None)
+                        attrs.pop("bits", None)
+                else:
+                    # Дочерний шот сцены: свой кадр, свой кусок закадра.
+                    # shot2-промт не трогаем — картинка из PNG родителя.
+                    attrs["кадры"] = [shot] if shot else []
+                    attrs["vo_cell_full"] = piece
+                    attrs.pop("биты", None)
+                    attrs.pop("bits", None)
+                    attrs.pop("главное_действие", None)
+                    attrs.pop("main_action", None)
+                fr.attrs = attrs
+                _flag_attrs(fr)
+                if (getattr(fr, "voiceover_text", None) or "") != piece:
+                    fr.voiceover_text = piece
+                fr.duration_seconds = vo_duration_sec(piece, shots=1)
+                if fr is scene_parent:
+                    _set_cs(
+                        fr,
+                        role="vo_parent",
+                        parent_uuid=uid,
+                        shot_index=1,
+                        shots_in_beat=len(idxs),
+                        scene_split=1,
+                        **{_VO_SHOT_KEY: piece},
+                    )
+                else:
+                    _set_cs(
+                        fr,
+                        role="shot",
+                        parent_uuid=str(getattr(scene_parent, "uuid", "") or ""),
+                        shot_index=pos + 1,
+                        shots_in_beat=len(idxs),
+                        scene_split=1,
+                        **{_VO_SHOT_KEY: piece},
+                    )
+                _apply_shot_meta(fr, shot)
+                updated += 1
     return updated, extra
 
 
