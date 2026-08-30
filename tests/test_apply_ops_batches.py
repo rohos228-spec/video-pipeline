@@ -813,6 +813,32 @@ def test_action_chain_accepts_numbered() -> None:
     assert action_chain_ops_reason(ops, []) is None
 
 
+def test_plan_ladder_allows_t1_c2_two_medium_shots() -> None:
+    """T1-c2: два СРЕДНИХ с плеча на одном месте — норма по Excel, не брак."""
+    from app.services.apply_ops_batches import _same_place_plan_ladder_reason
+
+    shots = [
+        {"сцена": 1, "шаблон": "T1", "план": "СРЕДНИЙ", "место": "кабинет"},
+        {"сцена": 1, "шаблон": "T1", "план": "СРЕДНИЙ", "место": "кабинет"},
+    ]
+    assert _same_place_plan_ladder_reason(shots, "aa" * 4) is None
+
+
+def test_plan_ladder_flags_all_wide_or_three_same_plan() -> None:
+    from app.services.apply_ops_batches import _same_place_plan_ladder_reason
+
+    all_wide = [
+        {"сцена": 1, "шаблон": "T9", "план": "ОБЩИЙ", "место": "кухня"},
+        {"сцена": 1, "шаблон": "T9", "план": "ОБЩИЙ", "место": "кухня"},
+    ]
+    assert "лестница" in (_same_place_plan_ladder_reason(all_wide, "aa" * 4) or "")
+    three_mid = [
+        {"сцена": 1, "шаблон": "T5", "план": "СРЕДНИЙ", "место": "кухня"}
+        for _ in range(3)
+    ]
+    assert "лестница" in (_same_place_plan_ladder_reason(three_mid, "aa" * 4) or "")
+
+
 def test_repair_same_place_parents_makes_coverage_valid() -> None:
     from app.services.apply_ops_batches import (
         repair_same_place_shot_parents,

@@ -579,7 +579,12 @@ def _same_place_plan_ladder_reason(
     shots: list[dict[str, Any]],
     uid: str,
 ) -> str | None:
-    """Одно место — лестница планов. T8 не покрывает одно место дважды."""
+    """Одно место — лестница планов (Excel: «нельзя все ОБЩИЙ/фронт»).
+
+    Два СРЕДНИХ с плеча в диалоге (T1-c2) — норма, не брак. Брак: всё
+    покрытие места в одном плане — все ОБЩИЕ (любое число) или 3+ кадров
+    одного плана без лестницы. T8 не покрывает одно место дважды.
+    """
     by_place: dict[str, list[dict[str, Any]]] = {}
     t8_places: list[str] = []
     for shot in shots:
@@ -602,24 +607,15 @@ def _same_place_plan_ladder_reason(
             for s in group
             if str(s.get("план") or "").strip()
         }
-        if len(plans) == 1:
-            plan = next(iter(plans))
+        if len(plans) != 1:
+            continue
+        plan = next(iter(plans))
+        if plan.startswith("общ") or len(group) >= 3:
             return (
                 f"uuid {uid[:8]}: {len(group)} кадров «{place}» все план "
                 f"{plan} — нужна лестница шаблона "
                 "(ОБЩИЙ → СРЕДНИЙ → ДЕТАЛЬ/КРУПНЫЙ)"
             )
-    prev_place = ""
-    prev_plan = ""
-    for shot in shots:
-        place = str(shot.get("место") or shot.get("place") or "").strip().casefold()
-        plan = str(shot.get("план") or "").strip().casefold()
-        if place and plan and place == prev_place and plan == prev_plan:
-            return (
-                f"uuid {uid[:8]}: подряд два кадра «{place}» план {plan} "
-                "— смени план и ракурс по лестнице шаблона"
-            )
-        prev_place, prev_plan = place, plan
     return None
 
 
@@ -627,8 +623,22 @@ def shots_coverage_ops_reason(
     ops: list[Any],
     frames: list[dict[str, Any]],
 ) -> str | None:
-    """Не валим покрытие: пишем ответ GPT как есть."""
-    del ops, frames
+    """Не валим покрытие: пишем ответ GPT как есть, но логируем брак T/X."""
+    del frames
+    for op in ops or []:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields") or {}
+        shots = fields.get("кадры") or fields.get("shots")
+        if not isinstance(shots, list):
+            continue
+        uid = str(op.get("frame_uuid") or "")
+        reason = coverage_template_reason(shots, uid)
+        if reason:
+            logger.warning("shots coverage T/X: {}", reason)
+        ladder = _same_place_plan_ladder_reason(shots, uid)
+        if ladder:
+            logger.warning("shots coverage ladder: {}", ladder)
     return None
 
 
@@ -699,12 +709,14 @@ def _batch_footer(
             f"(кадры по шаблонам T/X, по {SCRIPT_FRAMES_QC_UNITS_PER_BATCH})\n"
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Верни ops ровно по каждому uuid: fields.кадры. "
-            "select на КАЖДУЮ сцену цепи, не один T* на всю ячейку. "
+            "Дерево ВЫБОР на КАЖДУЮ сцену цепи, не один T* на всю ячейку. "
+            "T3 = «только смена места»: руки/взгляд/путь/удар — свои T*. "
             "T8 только прыжок жизни/новое место, один ОБЩИЙ на мир. "
             "Одно место — лестница планов, не один ОБЩИЙ подряд. "
             "shots из каталога → слоты → drop_order (required=1 нельзя). "
-            "Не удлиняй T* сверх таблицы. Не ставь один T* на соседние сцены "
-            "(кроме T0) — смени шаблон или X1. "
+            "Не удлиняй T* сверх таблицы. То же место, что у прошлой сцены — "
+            "сжатие без нового ОБЩЕГО (T1-c2 / T5 без K0), шаблон не менять "
+            "ради чередования (T8>T8>T8 на разных местах — норма). "
             "У каждого кадра свой шаблон и свой дословный закадр. "
             "Пустой закадр запрещён: кадров больше клауз — удали кадр. "
             "1–2 слова — только титр/имя/деталь "

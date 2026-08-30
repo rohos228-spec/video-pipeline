@@ -1,4 +1,9 @@
-"""Шаблоны сцена → кадры (T0–T10, X1/X2) для ноды script_frames_qc / shots."""
+"""Шаблоны сцена → кадры (T0–T10, X1/X2) для ноды script_frames_qc / shots.
+
+SoT — ``templates/shot_templates/shot_templates.json`` (v2: вопросы выбора,
+эталоны, именованные варианты сжатия, цепи, parent-сводка — по таблице
+«Сцены кадры база.xlsx»).
+"""
 
 from __future__ import annotations
 
@@ -16,6 +21,7 @@ _SCENE_HEAD = re.compile(r"^(\d+)\.\s*(.+)$")
 
 def _has(pat: str, text: str) -> bool:
     return bool(re.search(pat, text, flags=re.IGNORECASE))
+
 
 _REL = Path("templates") / "shot_templates" / "shot_templates.json"
 
@@ -79,45 +85,129 @@ def parse_scene_chain(action: str) -> list[dict[str, Any]]:
     return scenes
 
 
+# Паттерны дерева «Выбор». Префиксные (re.search, без якорей): «счита»
+# ловит «считает/считал», «говор(и|ю)» — говорит/говорят/говорил.
+_RE_T0_TITR = r"титр|имя появляется"
+_RE_T1 = (
+    r"говор(и|ю)|спор(и|ят)|спрашива|отвеча|диалог|бесед|допрашива|допрос|"
+    r"расспрашива|объясня|обща|здорова|переговар|шепч|совеща|рассказыва|рассказал"
+)
+_RE_T2_VERB = (
+    r"нашёл|нашел|нашла|взял|взяла|прочитал|прочла|достал|доста(ёт|ет|ют)|"
+    r"открыл|открыла|раскрыл|поднял|вытащил|изуча|изучил"
+)
+_RE_T2_ITEM = (
+    r"папк|документ|книг|схем|письм|дневник|фото|дело|архив|улик|карт|"
+    r"журнал|протокол|запис"
+)
+_RE_T8 = (
+    r"родил|вырос|служб|арми|годы|годами|спустя|а потом|друг(ая|ой) жизн|"
+    r"эпох|в\s(18|19|20)\d\d|детств|юност|молодост|карьер"
+)
+_RE_T4 = (
+    r"смотр|наблюд|взгляд|видит|увидел|замеча|заметил|высматрив|следит|"
+    r"разглядыв"
+)
+_RE_T5 = (
+    r"пиш[еу]|писа|моет|мы(ет|л)|режет|резал|счита|листа|отпечат|схем|отмеча|"
+    r"оформл|расклад|упаков|доказател|заполня|заполнил|подпис|печата|собира|"
+    r"разбира|чистит|чистил|стира|рисует|рисовал|клеит|шь(ёт|ет)|готовит|"
+    r"готовил|перебира|сортиру|фотографиру|мастерит|ремонтир"
+)
+_RE_T6_VERB = (
+    r"идёт|идет|шёл|шел|шла|едет|поехал|шагает|добира|вышел из|вышла из|"
+    r"у(шёл|шел|шла) из|приехал|подходит к|подош(ёл|ел) к|подошла к|направля|"
+    r"возвраща|бежит|бежал|мчит|мчал|летит|летел|плыв|переезж|дорог|путь|коридор"
+)
+_RE_T6_DIR = r"\s(из|в|во|к|ко|от|до|между|через|вдоль|мимо)\s"
+_RE_T7 = (
+    r"услыша|понял|поняла|получи|узнал|узнала|звонок|звонит|приговор|удар|"
+    r"шок|оглуш|осозна|дошло|поразил"
+)
+_RE_T9 = (
+    r"сидит|сидел|ждёт|ждет|ждал|ожида|одиночеств|быт|пь(ёт|ет) чай|ужина|"
+    r"завтрака|ложится|просыпа|молчит|у окна"
+)
+_RE_T10 = (
+    r"уход|покид|уехал|отъехал|уезжа|пустое место|пустой стол|пустая комнат|"
+    r"закрывает|закрыл|конча|финал|ушёл|ушел|ушла"
+)
+
+
 def select_template_when(scene: dict[str, Any], prev_place: str = "") -> str:
-    """Первое «да» по when / Выбор. X1 если место не сменилось."""
+    """Первое «да» по листу «Выбор» (Excel SoT).
+
+    Порядок проверок = дереву вопросов, но T3 («ТОЛЬКО смена места»)
+    срабатывает последним из содержательных: его вопрос содержит «только»,
+    т.е. все остальные ответы — «нет». Раньше ``if place → T3`` шёл до
+    проверок T4/T5/T7/T9/T10, и любая сцена с местом («пишет заявление»,
+    «смотрит на экран») становилась T3 — главный баг выбора.
+
+    Совпадение места с предыдущей сценой НЕ меняет шаблон — оно меняет
+    сжатие (см. :func:`compression_hint_for`). X1/X2 здесь не выбираются:
+    это стыки ячеек, а не сцен внутри ячейки.
+    """
     blob = str(scene.get("blob") or "")
     place = str(scene.get("place") or "").strip().casefold()
     prev = (prev_place or "").strip().casefold()
     same = bool(place and prev and place == prev)
-    if _has(r"титр|имя появляется", blob) and not same:
+    if _has(_RE_T0_TITR, blob) and not same:
         return "T0"
-    if _has(r"говор(ят|ит)|спор(ят|ит)|спрашив", blob):
+    # 1. Двое говорят / слушают друг друга?
+    if _has(_RE_T1, blob):
         return "T1"
-    if _has(r"нашёл|нашел|взял|прочитал|достал", blob) and (
-        (not same) or _has(r"папк|документ|книг|схем", blob)
-    ):
+    # 2. Пришёл в новое место и нашёл / взял / прочитал?
+    if _has(_RE_T2_VERB, blob) and ((not same) or _has(_RE_T2_ITEM, blob)):
         return "T2"
-    if same:
-        if _has(r"смотр|наблюд|взгляд|видит", blob):
-            return "T4"
-        if _has(
-            r"листа|пишет|моет|режет|счита|отпечат|схем|отмеча|"
-            r"оформл|расклад|упаков|доказател",
-            blob,
-        ):
-            return "T5"
-        if _has(r"уход|покид|пустое место|закрывает", blob):
-            return "T10"
-        if _has(r"услышал|понял|получил|вопрос на доске|появляется вопрос", blob):
-            return "T7"
-        return "X1"
-    if _has(r"родил|служб[аеуы]|арми|1980|а потом|друг(ая|ой) жизн", blob):
+    # 8. Годы / «а потом» / другая жизнь? Раньше T6: «поехал служить
+    # в армию» — это мир/жизнь (T8), не разовый путь.
+    if _has(_RE_T8, blob):
         return "T8"
-    if _has(r"идёт|едет|вышел из|приехал|поезд", blob) and _has(
-        r"из |в |к |от |до ", blob
-    ):
+    # 4. Смысл в том, на что смотрит?
+    if _has(_RE_T4, blob):
+        return "T4"
+    # 5. Руки делают работу?
+    if _has(_RE_T5, blob):
+        return "T5"
+    # 6. Идёт / едет из A в B?
+    if _has(_RE_T6_VERB, blob) and _has(_RE_T6_DIR, blob):
         return "T6"
+    # 7. Короткий удар: услышал, понял, получил?
+    if _has(_RE_T7, blob):
+        return "T7"
+    # 9. Один в комнате, быт или ожидание?
+    if _has(_RE_T9, blob):
+        return "T9"
+    # 10. Уходит / сцена кончилась?
+    if _has(_RE_T10, blob):
+        return "T10"
+    # 3. ТОЛЬКО смена места, без находки и без работы рук.
     if place:
         return "T3"
-    if _has(r"уход|покид|пустое", blob):
-        return "T10"
     return "T0"
+
+
+_SAME_PLACE_HINT = {
+    "T1": "T1-c2: место уже было → только K2+K3, без нового ОБЩЕГО",
+    "T2": "T2-c3: место знакомо → без K1, старт с K2",
+    "T3": "T3-c0: место уже мелькало → T0 средний, без нового ОБЩЕГО",
+    "T4": "место то же → K1 parent = master места, T3-K1 не вставлять",
+    "T5": "место знакомо → без K0",
+    "T6": "место то же → только K3 (прибытие), без нового ОБЩЕГО",
+    "T7": "место то же → parent = master, без нового ОБЩЕГО",
+    "T9": "T9-c1: то же место, одно действие → T0, без нового ОБЩЕГО",
+    "T10": "место то же → K1 parent = master",
+}
+
+
+def compression_hint_for(tid: str, *, same_place: bool) -> str:
+    """То же место, что у прошлой сцены → вариант сжатия «место уже было»."""
+    if not same_place:
+        return ""
+    base = normalize_template_id(tid)
+    return _SAME_PLACE_HINT.get(
+        base, "то же место → без нового ОБЩЕГО, parent = master локации"
+    )
 
 
 def normalize_template_id(tid: str) -> str:
@@ -126,10 +216,14 @@ def normalize_template_id(tid: str) -> str:
     return match.group(1) if match else raw
 
 
+_DYNAMIC_LEN = {"T8"}  # лестница = числу мест в закадре, фикс. лимита нет
+
+
 def template_max_shots(tid: str) -> int:
-    """Сколько строк shots у шаблона. 0 если id нет в каталоге."""
+    """Сколько строк shots у шаблона. 0 если id нет в каталоге или лимит
+    динамический (T8: сколько мест назвал закадр — столько кадров)."""
     base = normalize_template_id(tid)
-    if not base:
+    if not base or base in _DYNAMIC_LEN:
         return 0
     rows = [
         row
@@ -139,63 +233,58 @@ def template_max_shots(tid: str) -> int:
     return len(rows)
 
 
-_ALT_SAME = {
-    "T5": "T4",
-    "T4": "T7",
-    "T7": "T9",
-    "T9": "X1",
-    "T2": "T5",
-    "T3": "X1",
-    "T10": "X1",
-    "T1": "T4",
-    "T6": "T10",
-    "T8": "X1",
-    "X1": "T4",
-    "X2": "T3",
-}
-_ALT_NEW = {
-    "T3": "T8",
-    "T8": "T3",
-    "T2": "T3",
-    "T6": "T3",
-    "T0": "T3",
-    "T5": "T3",
-    "T4": "T3",
-}
+def _select_keys() -> dict[str, str]:
+    """template_id → короткий ключ вопроса (select.if)."""
+    return {
+        str(r.get("then_template") or ""): str(r.get("if") or "")
+        for r in (load_shot_templates().get("select") or [])
+    }
 
 
-def avoid_repeat_template(tid: str, prev: str, *, same_place: bool) -> str:
-    """Соседние сцены не могут нести один T*, кроме T0."""
-    cur = normalize_template_id(tid)
-    last = normalize_template_id(prev)
-    if not last or cur != last or cur == "T0":
-        return cur or tid
-    alt = (_ALT_SAME if same_place else _ALT_NEW).get(cur) or ("X1" if same_place else "T3")
-    if alt == last:
-        alt = "T0"
-    return alt
+def plan_templates_for_action(action: str) -> list[dict[str, Any]]:
+    """Предвыбор T/X по дереву «Выбор» + подсказка сжатия на том же месте.
+
+    Повтор одного T* на соседних сценах разрешён (Excel «Цепи»:
+    T8>T8>T8 для биографии) — шаблон отвечает на вопрос дерева, а не
+    чередуется ради разнообразия.
+    """
+    plan: list[dict[str, Any]] = []
+    prev_place = ""
+    keys = _select_keys()
+    for scene in parse_scene_chain(action):
+        place = str(scene.get("place") or "").strip()
+        same = bool(
+            place and prev_place and place.casefold() == prev_place.casefold()
+        )
+        tid = select_template_when(scene, prev_place)
+        plan.append(
+            {
+                "n": int(scene["n"]),
+                "place": place,
+                "action": str(scene.get("action") or ""),
+                "template": tid,
+                "reason": keys.get(tid, ""),
+                "same_place": same,
+                "compression": compression_hint_for(tid, same_place=same),
+            }
+        )
+        if place:
+            prev_place = place
+    return plan
 
 
 def assign_templates_for_action(action: str) -> dict[int, str]:
-    assigned: dict[int, str] = {}
-    prev_place = ""
-    prev_tid = ""
-    for scene in parse_scene_chain(action):
-        tid = select_template_when(scene, prev_place)
-        place = str(scene.get("place") or "").strip()
-        same = bool(place and prev_place and place.casefold() == prev_place.casefold())
-        tid = avoid_repeat_template(tid, prev_tid, same_place=same)
-        assigned[int(scene["n"])] = tid
-        if place:
-            prev_place = place
-        prev_tid = tid
-    return assigned
+    """Сцена → template_id (краткий вид plan_templates_for_action)."""
+    return {row["n"]: row["template"] for row in plan_templates_for_action(action)}
 
 
 def coverage_template_reason(shots: list[dict[str, Any]], uid: str = "") -> str | None:
-    """Один T на сцену, без удлинения и без одинаковых T подряд (кроме T0)."""
+    """Один T на сцену, без удлинения лестницы, T8 — один кадр на место.
+
+    Повтор одного T* на соседних сценах НЕ брак (Excel «Цепи»: T8>T8>T8).
+    """
     prefix = f"uuid {uid[:8]}: " if uid else ""
-    blocks: list[tuple[str, str, int]] = []
+    blocks: list[tuple[str, str, int, list[str]]] = []
     for shot in shots:
         if not isinstance(shot, dict):
             continue
@@ -204,34 +293,44 @@ def coverage_template_reason(shots: list[dict[str, Any]], uid: str = "") -> str 
         key = str(sc) if sc not in (None, "") else f"p:{place}"
         tid = normalize_template_id(str(shot.get("шаблон") or shot.get("template") or ""))
         if not blocks or blocks[-1][0] != key:
-            blocks.append((key, tid, 1))
+            blocks.append((key, tid, 1, [place]))
             continue
-        prev_key, prev_tid, n = blocks[-1]
+        prev_key, prev_tid, n, places = blocks[-1]
         if tid and prev_tid and tid != prev_tid:
             return f"{prefix}сцена {key}: два шаблона {prev_tid} и {tid}"
-        blocks[-1] = (prev_key, prev_tid or tid, n + 1)
-    prev_tid = ""
-    for key, tid, n in blocks:
-        if tid and prev_tid and tid == prev_tid and tid != "T0":
-            return f"{prefix}шаблон {tid} подряд на соседних сценах — смени T*"
-        if tid:
-            limit = template_max_shots(tid)
-            if limit and n > limit:
+        places.append(place)
+        blocks[-1] = (prev_key, prev_tid or tid, n + 1, places)
+    for key, tid, n, places in blocks:
+        if not tid:
+            continue
+        if tid == "T8":
+            seen = [p for p in places if p]
+            if len(seen) != len(set(seen)):
                 return (
-                    f"{prefix}сцена {key}: {tid} удлинили до {n} кадров "
-                    f"(в таблице {limit})"
+                    f"{prefix}сцена {key}: T8 покрывает одно место дважды — "
+                    "один ОБЩИЙ на мир, не плоди покрытие"
                 )
-        if tid:
-            prev_tid = tid
+            continue
+        limit = template_max_shots(tid)
+        if limit and n > limit:
+            return (
+                f"{prefix}сцена {key}: {tid} удлинили до {n} кадров "
+                f"(в таблице {limit})"
+            )
     return None
 
 
 def format_when_assignments(frames: list[Any]) -> str:
-    """Готовый select по when — GPT не выбирает шаблон сам."""
+    """Предвыбор T/X по дереву + сжатие. GPT может поправить с select_fix."""
     lines = [
-        "# SELECT ПО when (обязательно, id не менять)",
-        "Столбец when из таблицы шаблонов. Первое подходящее → T*/X*.",
-        "То же место, что у предыдущей сцены → X1, если нет более точного when.",
+        "# ПРЕДВЫБОР T/X ПО ДЕРЕВУ (по каждой сцене главное_действие)",
+        "Строка: сцена | место | действие → T* (ключ вопроса) · сжатие.",
+        "Это предвыбор по листу «Выбор». Если он явно противоречит сцене "
+        "(стоит T3, а в сцене двое говорят) — возьми правильный шаблон по "
+        "дереву и пометь первый кадр сцены полем «select_fix»: "
+        "«T3→T1: двое говорят».",
+        "То же место, что у прошлой сцены → сжатие «место уже было»; "
+        "шаблон НЕ менять ради чередования (T8>T8>T8 — норма).",
     ]
     any_row = False
     for fr in frames:
@@ -245,57 +344,68 @@ def format_when_assignments(frames: list[Any]) -> str:
         ).strip()
         if not action:
             continue
-        assigned = assign_templates_for_action(action)
-        by_id = {
-            str(t.get("id")): t
-            for t in (load_shot_templates().get("templates") or [])
-        }
-        for scene in parse_scene_chain(action):
-            tid = assigned.get(int(scene["n"])) or select_template_when(scene, "")
-            when = (by_id.get(tid) or {}).get("when") or ""
-            lines.append(
-                f"сцена {scene['n']} | {scene['place'] or '—'} | "
-                f"{scene['action'][:80]} | when={when} → {tid}"
+        for row in plan_templates_for_action(action):
+            line = (
+                f"сцена {row['n']} | {row['place'] or '—'} | "
+                f"{row['action'][:80]} → {row['template']}"
             )
+            if row["reason"]:
+                line += f" ({row['reason']})"
+            if row["compression"]:
+                line += f" · сжатие: {row['compression']}"
+            lines.append(line)
             any_row = True
     if not any_row:
         return ""
     return "\n".join(lines).strip() + "\n"
 
 
-def format_shot_templates_catalog(*, max_chars: int = 12000) -> str:
-    """Компактный каталог для accompanying ноды shots."""
+def format_shot_templates_catalog(*, max_chars: int = 24000) -> str:
+    """Компактный каталог v2 для accompanying ноды shots."""
     data = load_shot_templates()
     lines: list[str] = [
-        "# ШАБЛОНЫ СЦЕНА→КАДРЫ (SoT)",
-        "T = тип сцены. X = стык со следующей ячейкой.",
-        "K = кадр внутри типа. required=1 нельзя выкинуть.",
-        "drop_order = порядок удаления при коротком закадре.",
-        "axis: нет | keep_sides | look_chain — см. rules ниже.",
+        "# ШАБЛОНЫ СЦЕНА→КАДРЫ (SoT v2)",
+        "T = тип сцены · X = стык двух ячеек закадра · K = кадр внутри типа.",
         "select — на КАЖДУЮ сцену главное_действие, не на ячейку целиком.",
-        "T8 = один ОБЩИЙ на один новый мир/жизнь. То же место после T8 → X1/T5/T9.",
-        "Одно место: меняй план и ракурс по лестнице. Нельзя все ОБЩИЙ/фронт.",
-        "ЗАПРЕЩЕНО: удлинять T* сверх строк shots. T5 = макс 4, T3 = макс 2, T0 = 1.",
-        "ЗАПРЕЩЕНО: один и тот же T* на соседних сценах (кроме T0). Бери X1 / другой T.",
-        "У каждого кадра свой дословный закадр. Пустой закадр запрещён.",
-        "Кадров больше, чем клауз — удаляй по drop_order, не оставляй пустой закадр.",
         "",
-        "## select (первое совпадение)",
+        "## Общие правила",
     ]
+    for rule in data.get("rules_general") or []:
+        lines.append(f"- {rule}")
+    lines.append("")
+    lines.append("## ВЫБОР шаблона (первое «да» → шаблон)")
     for row in data.get("select") or []:
-        lines.append(
-            f"{row.get('step')}. if={row.get('if')} → {row.get('then_template')}"
-        )
+        step = row.get("step")
+        prefix = "—" if str(step) == "99" else f"{step}."
+        lines.append(f"{prefix} {row.get('question') or row.get('if')} → {row.get('then_template')}")
+    for note in data.get("select_notes") or []:
+        lines.append(f"! {note}")
     lines.append("")
-    lines.append("## templates")
+    lines.append("## КАТАЛОГ T/X (когда · лестница · сжатие · эталон)")
     for row in data.get("templates") or []:
-        lines.append(
-            f"{row.get('id')} | {row.get('name')} | when={row.get('when')} | "
-            f"axis={row.get('axis')} | shots={row.get('shots_full')} | "
-            f"drop={row.get('drop_order') or '—'} | parent={row.get('parent_default')}"
+        head = (
+            f"{row.get('id')} {row.get('name')} | axis={row.get('axis')} | "
+            f"parent={row.get('parent_default')}"
         )
+        lines.append(head)
+        lines.append(f"  когда: {row.get('when')}")
+        ladder = str(row.get("shots_full") or "")
+        if row.get("drop_order"):
+            ladder += f" · drop={row.get('drop_order')}"
+        lines.append(f"  лестница: {ladder}")
+        comp = [
+            f"{c.get('variant')} ({c.get('when')}) → {c.get('keep')}"
+            for c in (row.get("compression") or [])
+            if str(c.get("variant") or "") != "полная"
+        ]
+        if comp:
+            lines.append("  сжатие: " + " · ".join(comp))
+        if row.get("note"):
+            lines.append(f"  parent/ось: {row.get('note')}")
+        if row.get("example"):
+            lines.append(f"  эталон: {row.get('example')}")
     lines.append("")
-    lines.append("## shots (строка кадра)")
+    lines.append("## SHOTS (строки кадров: подставь слоты, структуру не выдумывай)")
     lines.append(
         "template_id|shot_id|n|plan|angle|place|who|action|parent|role|required"
     )
@@ -312,6 +422,29 @@ def format_shot_templates_catalog(*, max_chars: int = 12000) -> str:
         lines.append(
             f"[{row.get('тема')}={row.get('значение')}] {row.get('команда_для_ии')}"
         )
+    chains = data.get("chains") or []
+    if chains:
+        lines.append("")
+        lines.append("## ЦЕПИ (как склеивать шаблоны в ролике)")
+        for row in chains:
+            what = f" — {row.get('what')}" if row.get("what") else ""
+            lines.append(f"{row.get('chain')}{what}")
+    parent_rules = data.get("parent_rules") or []
+    if parent_rules:
+        lines.append("")
+        lines.append("## PARENT (сводка)")
+        for row in parent_rules:
+            lines.append(f"- {row.get('situation')} → {row.get('parent')}")
+    examples = data.get("example_chains") or []
+    if examples:
+        lines.append("")
+        lines.append("## ЭТАЛОННАЯ ЦЕПЬ (пример разбора)")
+        for ex in examples:
+            lines.append(f"закадр: «{ex.get('vo')}»")
+            for sc in ex.get("scenes") or []:
+                lines.append(f"  {sc}")
+            if ex.get("note"):
+                lines.append(f"  ! {ex.get('note')}")
     text = "\n".join(lines).strip() + "\n"
     if len(text) > max_chars:
         return text[: max_chars - 20].rstrip() + "\n…(обрезано)\n"

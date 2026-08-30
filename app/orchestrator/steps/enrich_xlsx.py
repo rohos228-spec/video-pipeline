@@ -607,9 +607,11 @@ async def _ensure_four_node_scene_shots(
                 "# DB SoT\n"
                 "Файл db_frames.json — VO-ячейки (uuid + voiceover_text + "
                 "главное_действие). Пиши только fields.кадры. "
-                "На каждую сцену главное_действие — свой select T/X, "
-                "не один шаблон на всю ячейку. T8 только на прыжок "
-                "жизни/новое место. Одно место — лестница планов. "
+                "На каждую сцену главное_действие — свой вопрос дерева "
+                "ВЫБОР, не один шаблон на всю ячейку. T3 = «только смена "
+                "места»; руки/взгляд/путь/удар — свои T*. T8 только на "
+                "прыжок жизни/новое место, один ОБЩИЙ на мир. То же место — "
+                "сжатие без нового ОБЩЕГО, лестница планов. "
                 "Раскрой shots, подставь слоты, сожми по drop_order "
                 "(required=1 не трогай). "
                 "Не пиши закадр, биты, главное_действие.\n\n"
@@ -1817,23 +1819,31 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 elif scenes_to_frames:
                     from app.services.shot_templates import (
                         format_shot_templates_catalog,
+                        format_when_assignments,
                         neighbor_place_hints,
                     )
 
                     catalog = format_shot_templates_catalog()
                     neighbors = neighbor_place_hints(gpt_frames)
+                    when_plan = format_when_assignments(gpt_frames)
                     accompanying = (
                         f"{accompanying}\n\n"
                         "# DB SoT\n"
                         "Файл db_frames.json — VO-ячейки (uuid + voiceover_text + "
                         "главное_действие). Пиши только fields.кадры. "
-                        "Выбери шаблон T/X из каталога ниже, раскрой shots, "
-                        "подставь слоты, сожми по drop_order (required=1 не трогай). "
+                        "На каждую сцену главное_действие — свой вопрос дерева "
+                        "ВЫБОР, не один шаблон на всю ячейку. T3 = «только смена "
+                        "места»; руки/взгляд/путь/удар — свои T*. T8 только на "
+                        "прыжок жизни/новое место. То же место — сжатие без "
+                        "нового ОБЩЕГО. Раскрой shots, подставь слоты, сожми "
+                        "по drop_order (required=1 не трогай). "
                         "Не пиши закадр, биты, главное_действие.\n\n"
                         f"{catalog}"
                     ).strip()
                     if neighbors:
                         accompanying = f"{accompanying}\n\n{neighbors}".strip()
+                    if when_plan:
+                        accompanying = f"{accompanying}\n\n{when_plan}".strip()
                 elif _is_frame_prompts_prompt(variant, master) or str(
                     node_key or ""
                 ).endswith("_fw_frames"):
