@@ -824,6 +824,17 @@ def test_plan_ladder_allows_t1_c2_two_medium_shots() -> None:
     assert _same_place_plan_ladder_reason(shots, "aa" * 4) is None
 
 
+def test_parent_repair_wired_into_shots_apply() -> None:
+    """repair_same_place_shot_parents подключён к пути shots_coverage."""
+    from pathlib import Path
+
+    src = Path("app/services/apply_ops_batches.py").read_text(encoding="utf-8")
+    marker = 'if kind in {"shots_coverage", "shots"}:'
+    assert marker in src
+    tail = src.split(marker, 1)[1]
+    assert "repair_same_place_shot_parents(ops)" in tail.split("shots_coverage_ops_reason")[0]
+
+
 def test_plan_ladder_flags_all_wide_or_three_same_plan() -> None:
     from app.services.apply_ops_batches import _same_place_plan_ladder_reason
 

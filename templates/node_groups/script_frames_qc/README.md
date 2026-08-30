@@ -14,4 +14,7 @@
 | `frame_prompts_continuity_ru.md` | fw_frames |
 | `prompts_qc_continuity_ru.md` | fw_qc |
 
+Проверка без своего файла (правила — с промта источника, checkMode):
+`fw_check_script` (после fw_script).
+
 Каталог кадров T/X: `templates/shot_templates/shot_templates.json`.

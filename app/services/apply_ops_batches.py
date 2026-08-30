@@ -985,6 +985,15 @@ async def run_apply_ops_batched(
                     f"{bad_action}"
                 )
         if kind in {"shots_coverage", "shots"}:
+            repaired_parents = repair_same_place_shot_parents(ops)
+            if repaired_parents:
+                logger.info(
+                    "[#{}] apply_ops batched node={!r}: parent_id проставлен "
+                    "по таблице у {} кадров (GPT оставил null)",
+                    project_id,
+                    node_key,
+                    repaired_parents,
+                )
             bad_shots = shots_coverage_ops_reason(ops, chunk)
             if bad_shots:
                 logger.warning(
