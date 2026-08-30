@@ -15,7 +15,7 @@
   блок 16–29 / есть промт:
   3. После завершения фазы A — для каждой сцены с shot_02 генерит
      ``frame_NNN_s2_<uuid>.png`` с референсом = PNG shot_01 той же колонки
-     (у дочернего кадра покрытия — PNG родителя).
+     (реф = PNG shot_01 ЭТОГО кадра; layout-lock K2/K3 на K1 — в shot1).
 
   HITL-карточки шлются, но воркер не ждёт approve между кадрами.
 """
@@ -72,8 +72,6 @@ from app.services.plan_shot2 import (
 from app.services.scan_frames import (
     disk_has_valid_frame_image,
     frame_needs_shot1_image,
-    is_valid_scene_image,
-    newest_frame_image_path,
 )
 from app.services.img_streams import (
     INFLIGHT_ATTR,
@@ -550,28 +548,31 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] project_sheet ensure_frame_columns failed: {}", project.id, e)
 
-    # Очередь: источник истины — валидный PNG на диске, не статус в БД.
-    # Иначе image_generated без файла / без outsee → шаг «завершён», кадры
-    # так и не генерировались.
+    # Запуск ноды = генерация. PNG на диске не скип (кроме точечного
+    # vision-regen). Старые файлы — в old/scenes/, затем очередь Outsee.
+    from app.services.vision_check_loop import get_scene_check_regen
+
+    if not get_scene_check_regen(project):
+        from app.services.reset_step import _wipe_images
+
+        wipe_stats = await _wipe_images(session, project)
+        logger.info(
+            "[#{}] generate_images: wipe перед прогоном (файлы ≠ скип): {}",
+            project.id,
+            wipe_stats,
+        )
+        await session.flush()
+        session.expire_all()
+        frames = (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.number)
+            )
+        ).scalars().all()
+
     queued = 0
     for fr in frames:
-        if disk_has_valid_frame_image(out_dir, fr.number):
-            if fr.status not in (
-                FrameStatus.image_approved,
-                FrameStatus.image_generated,
-            ):
-                fr.status = FrameStatus.image_generated
-            continue
-        bad = newest_frame_image_path(out_dir, fr.number)
-        if bad is not None and not is_valid_scene_image(bad):
-            logger.warning(
-                "[#{}] frame {}: на диске невалидная картинка {} ({} B) — "
-                "в outsee",
-                project.id,
-                fr.number,
-                bad.name,
-                bad.stat().st_size,
-            )
         if not frame_needs_shot1_image(fr, out_dir):
             continue
         fr.status = FrameStatus.image_prompt_ready
@@ -613,13 +614,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             raise RuntimeError(
                 f"в БД есть промты, на диске нет картинок, но очередь outsee=0 "
                 f"(без PNG: {missing}). Проверь scenes/ и статусы кадров"
-            )
-        if not missing and on_disk >= with_prompt:
-            logger.info(
-                "[#{}] generate_images: все {} кадров с промтом уже на диске — "
-                "outsee не нужен",
-                project.id,
-                with_prompt,
             )
 
     # Снять зависшие lease с прошлого обрыва.
@@ -1036,82 +1030,19 @@ async def _claim_shot1_batch(
     return claimed
 
 
-def _coverage_parent_uuid(frame: Frame) -> str:
-    attrs = dict(frame.attrs or {})
-    cs = attrs.get("camera_subdivide")
-    if not isinstance(cs, dict):
-        return ""
-    return str(cs.get("parent_uuid") or "").strip()
-
-
 async def _resolve_shot2_reference(
     session: AsyncSession,
     project_id: int,
     out_dir: Path,
     frame: Frame,
 ) -> Path | None:
-    """Реф shot2: свой shot1, у ребёнка покрытия — PNG родителя.
+    """Реф shot2: PNG shot1 ЭТОГО кадра (продолжение того же шота).
 
-    Scene-split: явный ``parent_id`` из таблицы T/X ведёт на кадр-родитель
-    (может быть в другой сцене — X1 / сжатие «место уже было»). Пустой
-    parent_id + другое место = самостоятельный кадр (новое место) —
-    генерируется без референса, layout-lock не применяется.
+    Layout-lock K2/K3 на K1 ячейки — в shot1 (``_coverage_parent_png``).
+    Не подставлять PNG чужой сцены и не подменять still дочки PNG родителя.
     """
-    from app.services.vo_shot_expand import (
-        coverage_parent_shot_id,
-        find_coverage_parent_frame,
-        is_shot_child,
-    )
-
-    parent_no: int | None = None
-    if is_shot_child(frame):
-        attrs = dict(frame.attrs or {})
-        cs = attrs.get("camera_subdivide")
-        cs = cs if isinstance(cs, dict) else {}
-        if cs.get("scene_split"):
-            frames = list(
-                (
-                    await session.execute(
-                        select(Frame)
-                        .where(Frame.project_id == project_id)
-                        .order_by(Frame.number)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            if coverage_parent_shot_id(frame):
-                ref = find_coverage_parent_frame(frames, frame)
-                if ref is not None and int(ref.number) != int(frame.number):
-                    parent_no = int(ref.number)
-            else:
-                uid = _coverage_parent_uuid(frame)
-                parent = next(
-                    (f for f in frames if str(f.uuid or "") == uid), None
-                )
-                if parent is not None:
-                    child_place = str(cs.get("место") or "").strip().casefold()
-                    p_attrs = parent.attrs if isinstance(parent.attrs, dict) else {}
-                    p_cs = p_attrs.get("camera_subdivide")
-                    p_cs = p_cs if isinstance(p_cs, dict) else {}
-                    parent_place = str(p_cs.get("место") or "").strip().casefold()
-                    if not child_place or not parent_place or child_place == parent_place:
-                        parent_no = int(parent.number)
-                    # Место другое и parent_id пуст — новое место: без рефа.
-        else:
-            uid = _coverage_parent_uuid(frame)
-            if uid:
-                parent = (
-                    await session.execute(
-                        select(Frame).where(
-                            Frame.project_id == project_id,
-                            Frame.uuid == uid,
-                        )
-                    )
-                ).scalar_one_or_none()
-                if parent is not None:
-                    parent_no = parent.number
-    return find_shot1_image(out_dir, parent_no if parent_no else frame.number)
+    del session, project_id
+    return find_shot1_image(out_dir, frame.number)
 
 
 async def _coverage_parent_png(

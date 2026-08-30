@@ -1091,6 +1091,49 @@ def test_coverage_child_detects_flattened_k2() -> None:
     assert locked.endswith("сцена")
 
 
+def test_shot_child_locks_to_vo_parent_not_cross_scene_id() -> None:
+    """K2/K3 ячейки 5-* не берут PNG чужого 2-K1 из coverage_parent_id."""
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import find_coverage_parent_frame
+
+    k1 = SimpleNamespace(
+        number=13,
+        uuid="parent-5k1",
+        attrs={
+            "кадры": [{"id": "5-K1"}],
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "shot_id": "5-K1",
+                "parent_uuid": "parent-5k1",
+            },
+        },
+    )
+    wrong = SimpleNamespace(
+        number=4,
+        uuid="other-2k1",
+        attrs={
+            "кадры": [{"id": "2-K1"}],
+            "camera_subdivide": {"role": "vo_parent", "shot_id": "2-K1"},
+        },
+    )
+    k4 = SimpleNamespace(
+        number=16,
+        uuid="child-5k4",
+        attrs={
+            "кадры": [{"id": "5-K4", "parent_id": "2-K1"}],
+            "camera_subdivide": {
+                "role": "shot",
+                "shot_id": "5-K4",
+                "parent_uuid": "parent-5k1",
+                "coverage_parent_id": "2-K1",
+                "scene_split": 1,
+            },
+        },
+    )
+    assert find_coverage_parent_frame([wrong, k1, k4], k4) is k1
+
+
 def test_merge_flattened_coverage_rebuilds_kadry() -> None:
     from app.services.vo_shot_expand import (
         flattened_coverage_groups,
