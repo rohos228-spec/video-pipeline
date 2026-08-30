@@ -478,7 +478,16 @@ def format_shot_templates_catalog(*, max_chars: int = 24000) -> str:
         lines.append("")
         lines.append("## PARENT (сводка)")
         for row in parent_rules:
-            lines.append(f"- {row.get('situation')} → {row.get('parent')}")
+            line = f"- {row.get('situation')} → {row.get('parent')}"
+            if row.get("дочерний"):
+                line += f" · дочерний: {row.get('дочерний')}"
+            lines.append(line)
+    child_rules = data.get("child_rules") or []
+    if child_rules:
+        lines.append("")
+        lines.append("## ДОЧЕРНИЕ КАДРЫ (когда используются)")
+        for rule in child_rules:
+            lines.append(f"- {rule}")
     examples = data.get("example_chains") or []
     if examples:
         lines.append("")

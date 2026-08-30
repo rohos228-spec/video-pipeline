@@ -693,6 +693,40 @@ def kadry_vo_partition(full: str, planned: list[dict[str, Any]]) -> list[str] | 
     return parts
 
 
+def kadry_vo_partition_aligned(
+    full: str, planned: list[dict[str, Any]]
+) -> list[str] | None:
+    """Фрагменты кадры[].закадр, выровненные по тексту последовательно.
+
+    Терпим к мелким расхождениям GPT (пунктуация/пробелы между кусками):
+    каждый фрагмент ищется в остатке текста; промежутки приклеиваются к
+    предыдущему куску, хвост — к последнему. Склейка = весь текст.
+    None — если фрагмент не нашёлся по порядку (тогда слепая нарезка).
+    """
+    text = " ".join((full or "").split())
+    frags = [" ".join(str(item.get("закадр") or "").split()) for item in planned]
+    if not text or not frags or any(not f for f in frags):
+        return None
+    lower = text.lower()
+    starts: list[int] = []
+    cursor = 0
+    for frag in frags:
+        idx = lower.find(frag.lower(), cursor)
+        if idx < 0:
+            return None
+        starts.append(idx)
+        cursor = idx + max(len(frag), 1)
+    parts: list[str] = []
+    for i, start in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else len(text)
+        parts.append(text[start:end].strip())
+    if starts[0] > 0:
+        parts[0] = f"{text[: starts[0]].strip()} {parts[0]}".strip()
+    if any(vo_chunk_is_dangling(p) for p in parts):
+        return None
+    return parts
+
+
 def _cell_full_text(parent: Any, members: list[Any]) -> str:
     attrs = getattr(parent, "attrs", None) or {}
     full = str(attrs.get("vo_cell_full") or "").strip() if isinstance(attrs, dict) else ""
@@ -790,11 +824,18 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
             # Expand ещё не создал слоты — не отбрасываем хвост закадра.
             n = len(members)
         # Сначала — дословные фрагменты кадры[].закадр от GPT (склейка =
-        # вся ячейка); слепая нарезка по клаузам — только фолбэк.
-        parts = kadry_vo_partition(full, planned) or split_text_into_parts(full, n)
-        while len(parts) > 1 and not str(parts[-1] or "").strip():
-            parts.pop()
-        n = max(1, len(parts))
+        # вся ячейка), затем выровненные по тексту; слепая нарезка по
+        # клаузам — последний фолбэк. Кадры лестницы НЕ удаляем из-за
+        # короткого закадра: кадр без своего куска — дочернее покрытие.
+        planned = planned[:n]
+        parts = (
+            kadry_vo_partition(full, planned)
+            or kadry_vo_partition_aligned(full, planned)
+            or split_text_into_parts(full, n)
+        )
+        if len(parts) < n:
+            parts = [*parts, *([""] * (n - len(parts)))]
+        parts = parts[:n]
         keep = members[:n]
         extra.extend(members[n:])
 
@@ -935,7 +976,9 @@ async def rebuild_vo_cells_from_shots(
         if id(fr) in seen or not getattr(fr, "id", None):
             continue
         vo = (getattr(fr, "voiceover_text", None) or "").strip()
-        if not _is_pipeline_frame(fr) or not vo:
+        # Дочерний шот без своего куска закадра — легитимное покрытие
+        # (лестница длиннее клауз): не удаляем. Пустой родитель — мусор.
+        if not _is_pipeline_frame(fr) or (not vo and not is_shot_child(fr)):
             drop.append(fr)
             seen.add(id(fr))
     drop_ids = [int(fr.id) for fr in drop]

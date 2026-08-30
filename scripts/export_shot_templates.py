@@ -110,10 +110,20 @@ def _chain_rows(data: dict) -> list[list[str]]:
 
 
 def _parent_rows(data: dict) -> list[list[str]]:
-    return [
-        [str(p.get("situation") or ""), str(p.get("parent") or "")]
+    rows = [
+        [
+            str(p.get("situation") or ""),
+            str(p.get("parent") or ""),
+            str(p.get("дочерний") or ""),
+        ]
         for p in data.get("parent_rules") or []
     ]
+    child_rules = data.get("child_rules") or []
+    if child_rules:
+        rows.append(["", "", ""])
+        rows.append(["ДОЧЕРНИЕ КАДРЫ — когда используются", "", ""])
+        rows.extend([str(r), "", ""] for r in child_rules)
+    return rows
 
 
 def _rules_rows(data: dict) -> list[list[str]]:
@@ -181,7 +191,7 @@ def _build_sheets(data: dict) -> list[tuple[str, list[str], list[list[str]]]]:
         ),
         ("Выбор", ["Шаг", "Вопрос (первое «да»)", "Шаблон"], _select_rows(data)),
         ("Цепи", ["История", "Цепь шаблонов", "Что происходит"], _chain_rows(data)),
-        ("Parent", ["Ситуация", "Parent"], _parent_rows(data)),
+        ("Parent", ["Ситуация", "Parent", "Дочерний?"], _parent_rows(data)),
         ("rules_ai", ["тема", "значение", "как понять", "команда_для_ии"], _rules_rows(data)),
     ]
 

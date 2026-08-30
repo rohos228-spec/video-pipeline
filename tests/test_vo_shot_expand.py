@@ -805,6 +805,74 @@ def test_promote_scene_split_is_idempotent() -> None:
     assert [s["id"] for s in parent.attrs["кадры"]] == ["1-K1", "1-K2"]
 
 
+def test_promote_never_drops_ladder_frames_on_short_vo() -> None:
+    """Клауз меньше, чем кадров лестницы — дочерние НЕ удаляются."""
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import promote_shots_to_vo_cells
+
+    pu = "aa" * 12
+    full = "Короткая фраза. Вторая."
+    kadry = [
+        {"id": "1-K1", "сцена": 1, "шаблон": "T2", "место": "архив",
+         "действие": "вошёл", "parent_id": None},
+        {"id": "1-K2", "сцена": 1, "шаблон": "T2", "место": "архив",
+         "действие": "тянет папку", "parent_id": "1-K1"},
+        {"id": "1-K3", "сцена": 1, "шаблон": "T2", "место": "архив",
+         "действие": "обложка крупно", "parent_id": "1-K1"},
+        {"id": "1-K4", "сцена": 1, "шаблон": "T2", "место": "архив",
+         "действие": "лицо понял", "parent_id": "1-K1"},
+    ]
+    parent = SimpleNamespace(
+        uuid=pu, voiceover_text=full, image_prompt="", animation_prompt="",
+        duration_seconds=4.0,
+        attrs={"кадры": [dict(s) for s in kadry], "vo_cell_full": full,
+               "camera_subdivide": {"role": "vo_parent", "parent_uuid": pu,
+                                    "shot_index": 1}},
+    )
+    children = [
+        SimpleNamespace(
+            uuid=f"{i:02x}" * 12, voiceover_text="", image_prompt="",
+            animation_prompt="", duration_seconds=1.0,
+            attrs={"camera_subdivide": {"role": "shot", "parent_uuid": pu,
+                                        "shot_index": i + 1}},
+        )
+        for i in range(1, 4)
+    ]
+    n, extra = promote_shots_to_vo_cells([parent, *children])
+    assert extra == []  # лестница не режется из-за короткого закадра
+    assert n == 4
+    roles = [f.attrs["camera_subdivide"]["role"] for f in [parent, *children]]
+    assert roles == ["vo_parent", "shot", "shot", "shot"]
+    assert len(parent.attrs["кадры"]) == 4
+    joined = " ".join(
+        (f.voiceover_text or "") for f in [parent, *children]
+    )
+    assert " ".join(joined.split()) == " ".join(full.split())
+
+
+def test_kadry_vo_partition_aligned_recovers_gpt_drift() -> None:
+    """Фрагменты GPT без запятых исходника — выравнивание режет по ним."""
+    from app.services.vo_shot_expand import (
+        kadry_vo_partition,
+        kadry_vo_partition_aligned,
+    )
+
+    full = ("Михаил пришёл к отделению полиции, зашёл внутрь, "
+            "рассказал дежурному о краже и написал заявление.")
+    planned = [
+        {"закадр": "Михаил пришёл к отделению полиции"},
+        {"закадр": "зашёл внутрь"},
+        {"закадр": "рассказал дежурному о краже"},
+        {"закадр": "и написал заявление."},
+    ]
+    # Точная склейка ломается о запятые («полиции» vs «полиции,»).
+    assert kadry_vo_partition(full, planned) is None
+    parts = kadry_vo_partition_aligned(full, planned)
+    assert parts is not None and len(parts) == 4
+    assert " ".join(" ".join(parts).split()) == " ".join(full.split())
+
+
 def test_coverage_parent_prefers_explicit_parent_id() -> None:
     from types import SimpleNamespace
 
