@@ -207,3 +207,43 @@ async def test_poll_fail_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(kk.KieKlingError) as ei:
         await kk._poll_task("t", timeout_s=5)
     assert ei.value.context.get("provider_code") == 501
+
+
+def test_kie_api_key_falls_back_to_gpt_on_vps(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("KIE_API_KEY", raising=False)
+    monkeypatch.delenv("GPT_API_KEY", raising=False)
+    monkeypatch.setattr(kk.settings, "kie_api_key", "")
+    monkeypatch.setattr(kk.settings, "gpt_api_key", "kie-from-gpt")
+    monkeypatch.setattr(kk.settings, "gpt_base_url", "https://gpt.video-pipeline.work")
+    monkeypatch.setattr(kk.settings, "gpt_relay_token", "relay-secret")
+    monkeypatch.setattr(
+        "app.services.env_file.last_nonempty_dotenv_value",
+        lambda *_a, **_k: "",
+    )
+    assert kk.kie_api_key() == "kie-from-gpt"
+    assert kk.kie_api_key_source() == "GPT_API_KEY"
+
+
+def test_kie_skips_relay_token_as_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KIE_API_KEY", "relay-secret")
+    monkeypatch.setattr(kk.settings, "kie_api_key", "relay-secret")
+    monkeypatch.setattr(kk.settings, "gpt_relay_token", "relay-secret")
+    monkeypatch.setattr(kk.settings, "gpt_api_key", "real-kie-key")
+    monkeypatch.delenv("GPT_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "app.services.env_file.last_nonempty_dotenv_value",
+        lambda *_a, **_k: "",
+    )
+    assert kk.kie_api_key() == "real-kie-key"
+
+
+def test_kie_create_goes_through_vps(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(kk.settings, "kie_api_base_url", "https://api.kie.ai")
+    monkeypatch.setattr(kk.settings, "gpt_relay_token", "relay-secret")
+    monkeypatch.setattr(kk.settings, "gpt_base_url", "https://gpt.example.com")
+    monkeypatch.setattr(kk, "kie_api_key", lambda: "kie-key")
+    assert kk.kie_api_base_url() == "https://gpt.example.com"
+    assert kk.kie_uses_vps_relay() is True
+    headers = kk.kie_auth_headers()
+    assert headers["Authorization"] == "Bearer kie-key"
+    assert headers["X-VP-Relay-Token"] == "relay-secret"
