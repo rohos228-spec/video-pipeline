@@ -93,6 +93,46 @@ def test_police_catalog_fills_sequential_ladders() -> None:
     assert len(by_scene[3]) >= 2  # диалог K2+K3
     assert len(by_scene[4]) >= 1  # пишет, без нового ОБЩЕГО
     assert not any("{" in str(sh.get("действие") or "") for sh in filled)
+    assert all(sh.get("сцена") not in (None, "") for sh in filled)
+    nonempty_vo = [str(sh.get("закадр") or "").strip() for sh in filled if str(sh.get("закадр") or "").strip()]
+    assert nonempty_vo
+    joined = " ".join(nonempty_vo)
+    assert "Михаил пришёл" in joined
+    assert "зашёл внутрь" in joined
+
+
+def test_fill_kadry_stamps_scene_when_gpt_forgot() -> None:
+    from app.services.shot_templates import fill_kadry_from_catalog
+
+    clear_shot_templates_cache()
+    skinny = [
+        {"шаблон": "T6", "действие": "идёт к полиции"},
+        {"шаблон": "T3", "действие": "заходит"},
+        {"шаблон": "T1", "действие": "говорит с дежурным"},
+        {"шаблон": "T5", "действие": "пишет заявление"},
+    ]
+    filled = fill_kadry_from_catalog(skinny, POLICE_ACTION, cell_number=1)
+    assert {int(sh["сцена"]) for sh in filled} == {1, 2, 3, 4}
+
+
+def test_fill_kadry_does_not_dump_all_vo_on_k1() -> None:
+    from app.services.shot_templates import fill_kadry_from_catalog
+
+    clear_shot_templates_cache()
+    action = (
+        "1. двор — входит и снимает кепку\n"
+        "(Фраза один про двор. Фраза два про двор.)\n"
+    )
+    filled = fill_kadry_from_catalog(
+        [{"сцена": 1, "шаблон": "T3", "действие": "входит"}],
+        action,
+        cell_number=1,
+    )
+    assert len(filled) >= 2
+    assert all(int(sh["сцена"]) == 1 for sh in filled)
+    vos = [str(sh.get("закадр") or "").strip() for sh in filled]
+    assert vos[0]
+    assert any(vos[1:])  # не только первый кадр несёт весь закадр сцены
 
 
 def test_t8_does_not_steal_years_in_same_place() -> None:

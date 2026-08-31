@@ -519,7 +519,48 @@ async def _wipe_excel_gpt(session: AsyncSession, project: Project) -> dict[str, 
     if nk and nk in graph._by_id:
         slot = slot_index_from_node(graph._by_id[nk])
         cleared = await clear_slot_completion_meta(session, project, slot, node_key=nk)
-    return {"override_cleared": had, "node_key": nk or None, **cleared}
+    group: dict[str, Any] = {}
+    try:
+        from app.services.node_groups import canvas_has_script_frames_qc
+        from app.services.vo_shot_expand import (
+            clear_script_frames_qc_prompts,
+            restore_script_frames_qc_seed,
+        )
+
+        if canvas_has_script_frames_qc(project) and nk:
+            if str(nk).endswith("_fw_script"):
+                group = await restore_script_frames_qc_seed(
+                    session,
+                    project,
+                    keep_bits=False,
+                    keep_action=False,
+                    keep_kadry=False,
+                )
+            elif str(nk).endswith(("_fw_check_script", "_fw_action")):
+                group = await restore_script_frames_qc_seed(
+                    session,
+                    project,
+                    keep_bits=True,
+                    keep_action=False,
+                    keep_kadry=False,
+                )
+            elif str(nk).endswith("_fw_shots"):
+                group = await restore_script_frames_qc_seed(
+                    session,
+                    project,
+                    keep_bits=True,
+                    keep_action=True,
+                    keep_kadry=False,
+                )
+            elif str(nk).endswith(("_fw_frames", "_fw_qc")):
+                group = await clear_script_frames_qc_prompts(session, project)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "[#{}] wipe excel_gpt: не удалось стереть поля группы {}",
+            project.id,
+            nk,
+        )
+    return {"override_cleared": had, "node_key": nk or None, **cleared, **group}
 
 
 async def _wipe_img_pr(session: AsyncSession, project: Project) -> dict[str, Any]:

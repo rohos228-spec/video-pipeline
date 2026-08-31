@@ -354,6 +354,9 @@ async def start_step(
         cleared.append("user_stop")
     if meta.pop("mass_lane_user_stop", None) is not None:
         cleared.append("mass_lane_user_stop")
+    if step_code == "excel_gpt" and node_key:
+        meta["active_excel_gpt_node_key"] = str(node_key)
+        project.meta = meta
     if cleared:
         project.meta = meta
         logger.info(
