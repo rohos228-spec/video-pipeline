@@ -389,6 +389,17 @@ def test_kadry_partition_requires_full_cover() -> None:
     )
     assert ok == ["Первая фраза целиком.", "Вторая тоже на месте."]
     assert kadry_vo_partition(full, [{"закадр": "Первая фраза целиком."}]) is None
+    with_tail = kadry_vo_partition(
+        full,
+        [
+            {"закадр": "Первая фраза целиком."},
+            {"закадр": ""},
+            {"закадр": "Вторая тоже на месте."},
+            {"закадр": ""},
+        ],
+    )
+    assert with_tail is not None
+    assert " ".join(p for p in with_tail if p).split() == full.split()
 
 
 def test_apply_shot_voiceover_uses_clauses_not_word_split() -> None:
@@ -522,7 +533,8 @@ def test_distribute_coverage_prompts_fills_child_shot2() -> None:
     assert parent.attrs[SHOT2_STATUS_ATTR] == "skipped"
 
 
-def test_promote_shots_makes_one_cell_per_kadr() -> None:
+def test_promote_shots_keeps_ladder_without_scene_number() -> None:
+    """Без номера сцены вся лестница — одна ячейка, K2 остаётся ребёнком."""
     from types import SimpleNamespace
 
     from app.services.vo_shot_expand import promote_shots_to_vo_cells
@@ -582,20 +594,19 @@ def test_promote_shots_makes_one_cell_per_kadr() -> None:
         },
     )
     n, extra = promote_shots_to_vo_cells([parent, child, spare])
-    assert n == 2
     assert extra == [spare]
+    assert n == 2
     assert parent.voiceover_text.startswith("Первая фраза")
     assert child.voiceover_text.startswith("Вторая")
-    assert parent.attrs["vo_cell_full"] == parent.voiceover_text
-    assert child.attrs["vo_cell_full"] == child.voiceover_text
+    assert parent.attrs["vo_cell_full"] == full
     assert parent.attrs["camera_subdivide"]["parent_uuid"] == pu
-    assert child.attrs["camera_subdivide"]["parent_uuid"] == cu
+    assert child.attrs["camera_subdivide"]["parent_uuid"] == pu
     assert parent.attrs["camera_subdivide"]["role"] == "vo_parent"
-    assert child.attrs["camera_subdivide"]["role"] == "vo_parent"
-    assert child.image_prompt == "closer"
+    assert child.attrs["camera_subdivide"]["role"] == "shot"
+    assert "биты" in parent.attrs
     assert "биты" not in child.attrs
-    assert len(parent.attrs["кадры"]) == 1
-    assert len(child.attrs["кадры"]) == 1
+    assert [s["id"] for s in parent.attrs["кадры"]] == ["1-K1", "1-K2"]
+    assert all(int(s["сцена"]) == 1 for s in parent.attrs["кадры"])
     assert " ".join(
         (parent.voiceover_text + " " + child.voiceover_text).split()
     ) == " ".join(full.split())
@@ -649,7 +660,8 @@ def test_promote_is_idempotent_on_flat_cells() -> None:
     assert n2 == 2
     assert (parent.voiceover_text, child.voiceover_text) == first
     assert parent.attrs["camera_subdivide"]["parent_uuid"] == pu
-    assert child.attrs["camera_subdivide"]["parent_uuid"] == cu
+    assert child.attrs["camera_subdivide"]["parent_uuid"] == pu
+    assert child.attrs["camera_subdivide"]["role"] == "shot"
 
 
 def test_promote_keeps_full_vo_without_child_slots() -> None:
@@ -682,6 +694,7 @@ def test_promote_keeps_full_vo_without_child_slots() -> None:
     assert extra == []
     assert n == 1
     assert parent.voiceover_text == full
+    assert len(parent.attrs["кадры"]) == 2
 
 
 def test_enrich_xlsx_coverage_hook_includes_shots_frames_qc() -> None:
@@ -1193,3 +1206,94 @@ def test_merge_flattened_coverage_rebuilds_kadry() -> None:
     assert "двор целиком" in parent.voiceover_text
     assert "жест рук" in parent.voiceover_text
     assert kadry[1]["закадр"] == "жест рук, две бумаги жалоб."
+
+
+async def test_restore_seed_after_scene_split_keeps_bits_drops_action(mem_db) -> None:
+    import uuid as _uuid
+
+    from sqlalchemy import select
+
+    from app.models import Frame, Project, ProjectStatus
+    from app.services.vo_shot_expand import restore_script_frames_qc_seed
+
+    full = "Первая фраза целиком. Вторая тоже на месте."
+    async with mem_db() as session:
+        project = Project(
+            slug=f"reseed-{_uuid.uuid4().hex[:8]}",
+            topic="t",
+            status=ProjectStatus.new,
+            script_text=full,
+            meta={
+                "canvas_graph": {
+                    "nodes": [
+                        {"id": "n_excel_gpt_fw_action"},
+                        {"id": "n_excel_gpt_fw_shots"},
+                    ]
+                }
+            },
+        )
+        session.add(project)
+        await session.flush()
+        session.add(
+            Frame(
+                project_id=project.id,
+                number=1,
+                sort_key=1.0,
+                uuid="aa" * 12,
+                voiceover_text="Первая фраза целиком.",
+                attrs={
+                    "биты": [{"порядок": 1, "глагол": "идёт"}],
+                    "главное_действие": "1. улица — идёт\n(Первая фраза целиком.)",
+                    "кадры": [{"id": "1-K1", "сцена": 1}],
+                    "camera_subdivide": {
+                        "role": "vo_parent",
+                        "scene_split": 1,
+                        "parent_uuid": "aa" * 12,
+                    },
+                },
+            )
+        )
+        session.add(
+            Frame(
+                project_id=project.id,
+                number=2,
+                sort_key=2.0,
+                uuid="bb" * 12,
+                voiceover_text="Вторая тоже на месте.",
+                attrs={
+                    "главное_действие": "2. отделение — пишет\n(Вторая тоже на месте.)",
+                    "кадры": [{"id": "1-K2", "сцена": 2}],
+                    "camera_subdivide": {
+                        "role": "vo_parent",
+                        "scene_split": 1,
+                        "parent_uuid": "bb" * 12,
+                    },
+                },
+            )
+        )
+        await session.flush()
+        out = await restore_script_frames_qc_seed(
+            session,
+            project,
+            keep_bits=True,
+            keep_action=False,
+            keep_kadry=False,
+        )
+        assert out.get("bits") == 1
+        frames = list(
+            (
+                await session.execute(
+                    select(Frame)
+                    .where(Frame.project_id == project.id)
+                    .order_by(Frame.number)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(frames) == 1
+        seed = frames[0]
+        assert " ".join((seed.voiceover_text or "").split()) == " ".join(full.split())
+        assert seed.attrs.get("биты")
+        assert not seed.attrs.get("главное_действие")
+        assert not seed.attrs.get("кадры")

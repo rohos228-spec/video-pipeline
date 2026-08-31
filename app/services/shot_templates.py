@@ -352,6 +352,77 @@ def _fill_slot_text(text: str, *, place: str, action: str) -> str:
     return " ".join(raw.split())
 
 
+def unwrap_scene_vo(vo: str) -> str:
+    """Скобки вокруг куска закадра в главное_действие — не часть текста."""
+    text = str(vo or "").strip()
+    if len(text) >= 2 and text[0] == "(" and text[-1] == ")" and text.count("(") == 1:
+        return text[1:-1].strip()
+    return text
+
+
+def stamp_kadry_scene_numbers(
+    shots: list[dict[str, Any]],
+    action: str = "",
+) -> list[dict[str, Any]]:
+    """Номер сцены на каждом кадре. Без номера лестница распадается на соло-ячейки."""
+    chain = parse_scene_chain(action)
+    incoming = [dict(s) for s in shots if isinstance(s, dict)]
+    if not incoming:
+        return []
+
+    def _scene_n(item: dict[str, Any]) -> int | None:
+        try:
+            return int(item.get("сцена"))
+        except (TypeError, ValueError):
+            return None
+
+    missing_all = all(_scene_n(s) is None for s in incoming)
+    if missing_all and chain and len(incoming) == len(chain):
+        for i, item in enumerate(incoming):
+            item["сцена"] = int(chain[i]["n"])
+        return incoming
+    if missing_all and not chain:
+        for item in incoming:
+            item["сцена"] = 1
+        return incoming
+    prev: int | None = None
+    for i, item in enumerate(incoming):
+        n = _scene_n(item)
+        if n is not None:
+            prev = n
+            continue
+        if prev is not None:
+            item["сцена"] = prev
+        elif chain and i < len(chain):
+            item["сцена"] = int(chain[i]["n"])
+            prev = int(item["сцена"])
+        else:
+            item["сцена"] = 1
+            prev = 1
+    return incoming
+
+
+def _scene_vo_parts(vo: str, n_shots: int, existing: list[dict[str, Any]]) -> list[str]:
+    """Кусок закадра сцены — на каждый кадр лестницы, не только на K1."""
+    from app.services.scene_design.camera_expand import split_text_into_parts
+
+    text = unwrap_scene_vo(vo)
+    if not text and existing:
+        text = unwrap_scene_vo(str(existing[0].get("закадр") or ""))
+    n = max(1, int(n_shots))
+    have = [unwrap_scene_vo(str(s.get("закадр") or "")) for s in existing]
+    if (
+        existing
+        and len(existing) == n
+        and all(have)
+        and " ".join(have).split() == text.split()
+    ):
+        return have
+    if not text:
+        return [""] * n
+    return split_text_into_parts(text, n)
+
+
 def fill_kadry_from_catalog(
     shots: list[Any],
     action: str,
@@ -366,18 +437,13 @@ def fill_kadry_from_catalog(
     chain = parse_scene_chain(action)
     plan = plan_templates_for_action(action)
     plan_by_n = {int(row["n"]): row for row in plan}
-    incoming = [dict(s) for s in shots if isinstance(s, dict)]
+    incoming = stamp_kadry_scene_numbers(
+        [dict(s) for s in shots if isinstance(s, dict)],
+        action,
+    )
     by_scene: dict[int, list[dict[str, Any]]] = {}
     for sh in incoming:
-        try:
-            n = int(sh.get("сцена"))
-        except (TypeError, ValueError):
-            continue
-        by_scene.setdefault(n, []).append(sh)
-    if not by_scene and incoming and chain:
-        for i, sh in enumerate(incoming):
-            if i < len(chain):
-                by_scene.setdefault(int(chain[i]["n"]), []).append(sh)
+        by_scene.setdefault(int(sh["сцена"]), []).append(sh)
     scenes = chain or [
         {"n": 1, "place": "", "action": "", "vo": "", "blob": action}
     ]
@@ -387,7 +453,7 @@ def fill_kadry_from_catalog(
         prow = plan_by_n.get(n) or {}
         place = str(scene.get("place") or prow.get("place") or "").strip()
         act = str(scene.get("action") or prow.get("action") or "").strip()
-        vo = str(scene.get("vo") or "").strip()
+        vo = unwrap_scene_vo(str(scene.get("vo") or ""))
         same = bool(prow.get("same_place"))
         existing = by_scene.get(n) or []
         tid = ""
@@ -399,17 +465,26 @@ def fill_kadry_from_catalog(
             tid = str(prow.get("template") or select_template_when(scene, ""))
         rows = catalog_shot_rows(tid, same_place=same)
         if not rows:
-            if existing:
-                out.extend(existing)
+            parts = _scene_vo_parts(vo, len(existing), existing) if existing else []
+            for i, sh in enumerate(existing):
+                sh.setdefault("сцена", n)
+                if i < len(parts):
+                    sh["закадр"] = parts[i]
+                out.append(sh)
             continue
         required = sum(1 for r in rows if r.get("required") == 1)
         if existing and len(existing) >= max(len(rows), required, 1):
-            for sh in existing:
+            parts = _scene_vo_parts(vo, len(existing), existing)
+            for i, sh in enumerate(existing):
                 sh.setdefault("шаблон", tid)
-                sh.setdefault("сцена", n)
+                sh["сцена"] = n
+                sh["закадр"] = parts[i] if i < len(parts) else sh.get("закадр") or ""
                 out.append(sh)
             continue
         seed = existing[0] if existing else {}
+        if not vo:
+            vo = unwrap_scene_vo(str(seed.get("закадр") or ""))
+        parts = _scene_vo_parts(vo, len(rows), existing)
         master_id = f"{cell_number}-S{n}-K1"
         for i, row in enumerate(rows):
             sid = f"{cell_number}-S{n}-K{i + 1}"
@@ -428,10 +503,8 @@ def fill_kadry_from_catalog(
                 "ракурс": angle if angle != "—" else "",
                 "место": place,
                 "действие": action_text,
-                "закадр": vo if i == 0 else "",
+                "закадр": parts[i] if i < len(parts) else "",
             }
-            if i == 0 and seed.get("закадр"):
-                shot["закадр"] = str(seed.get("закадр") or "")
             if i == 0 and seed.get("действие"):
                 shot["действие"] = str(seed.get("действие") or action_text)
             out.append(shot)

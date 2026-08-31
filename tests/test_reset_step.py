@@ -751,3 +751,63 @@ async def test_soft_resume_anim_pr_does_not_deactivate_prompt_versions(session):
     await session.refresh(pv)
     assert fr.animation_prompt == "keep anim"
     assert pv.is_active is True
+
+
+@pytest.mark.asyncio
+async def test_wipe_excel_gpt_action_clears_old_generation(session):
+    """▶ действия в группе: биты остаются, действие/кадры и обрезки — нет."""
+    from app.services.reset_step import _wipe_excel_gpt
+
+    full = "Первая фраза целиком. Вторая тоже на месте."
+    p = await _mkproject(session, slug="wipe-fw-action")
+    p.script_text = full
+    p.meta = {
+        "active_excel_gpt_node_key": "n_excel_gpt_fw_action",
+        "canvas_graph": {
+            "nodes": [
+                {"id": "n_excel_gpt_fw_script", "type": "excel_gpt"},
+                {"id": "n_excel_gpt_fw_action", "type": "excel_gpt"},
+                {"id": "n_excel_gpt_fw_shots", "type": "excel_gpt"},
+            ],
+            "edges": [],
+        },
+    }
+    f1 = await _mkframe(
+        session,
+        p,
+        1,
+        uuid="aa" * 12,
+        attrs={
+            "биты": [{"порядок": 1, "глагол": "идёт"}],
+            "главное_действие": "1. улица — идёт",
+            "кадры": [{"id": "1-K1", "сцена": 1}],
+            "camera_subdivide": {"role": "vo_parent", "scene_split": 1},
+        },
+    )
+    f1.voiceover_text = "Первая фраза целиком."
+    f2 = await _mkframe(
+        session,
+        p,
+        2,
+        uuid="bb" * 12,
+        attrs={
+            "главное_действие": "2. отделение — пишет",
+            "кадры": [{"id": "1-K2", "сцена": 2}],
+            "camera_subdivide": {"role": "vo_parent", "scene_split": 1},
+        },
+    )
+    f2.voiceover_text = "Вторая тоже на месте."
+    await session.flush()
+
+    out = await _wipe_excel_gpt(session, p)
+    assert out.get("node_key") == "n_excel_gpt_fw_action"
+
+    frames = (
+        await session.execute(select(Frame).where(Frame.project_id == p.id))
+    ).scalars().all()
+    assert len(frames) == 1
+    seed = frames[0]
+    assert " ".join((seed.voiceover_text or "").split()) == " ".join(full.split())
+    assert seed.attrs.get("биты")
+    assert not (seed.attrs or {}).get("главное_действие")
+    assert not (seed.attrs or {}).get("кадры")

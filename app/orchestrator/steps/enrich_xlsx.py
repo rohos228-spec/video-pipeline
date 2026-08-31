@@ -1514,12 +1514,35 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             ):
                 from app.services.vo_shot_expand import (
                     collapse_flattened_coverage_cells,
+                    restore_script_frames_qc_seed,
                 )
 
-                collapsed = await collapse_flattened_coverage_cells(
-                    session, project
-                )
-                if collapsed.get("deleted"):
+                nk = str(node_key or "")
+                restored: dict = {}
+                collapsed: dict = {}
+                if _is_main_action_node(variant, master, node_key) or nk.endswith(
+                    "_fw_check_script"
+                ):
+                    restored = await restore_script_frames_qc_seed(
+                        session,
+                        project,
+                        keep_bits=True,
+                        keep_action=False,
+                        keep_kadry=False,
+                    )
+                elif _is_scenes_to_frames_node(variant, master, node_key):
+                    restored = await restore_script_frames_qc_seed(
+                        session,
+                        project,
+                        keep_bits=True,
+                        keep_action=True,
+                        keep_kadry=False,
+                    )
+                else:
+                    collapsed = await collapse_flattened_coverage_cells(
+                        session, project
+                    )
+                if restored.get("restored") or collapsed.get("deleted"):
                     await session.flush()
                     frames_for_map = list(
                         (
@@ -1531,9 +1554,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         ).scalars().all()
                     )
                     logger.info(
-                        "[#{}] {} collapse flattened coverage {}",
+                        "[#{}] {} restore/collapse coverage restored={} collapsed={}",
                         project.id,
                         node_key,
+                        restored,
                         collapsed,
                     )
             ents = list(
