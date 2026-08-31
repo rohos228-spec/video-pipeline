@@ -66,6 +66,7 @@ from app.services.plan_shot2 import (
     SHOT2_PROMPT_ATTR,
     SHOT2_STATUS_ATTR,
     disk_has_shot2_image,
+    find_shot1_image,
     find_shot2_reference_image,
     read_shot2_columns,
 )
@@ -1047,26 +1048,103 @@ async def _resolve_shot2_reference(
     out_dir: Path,
     frame: Frame,
 ) -> Path | None:
-    """Реф shot2: свой shot1, у ребёнка покрытия — PNG родителя."""
-    from app.services.vo_shot_expand import is_shot_child
+    """Реф shot2: свой shot1, у ребёнка покрытия — PNG родителя.
+
+    Scene-split: явный ``parent_id`` из таблицы T/X ведёт на кадр-родитель
+    (может быть в другой сцене — X1 / сжатие «место уже было»). Пустой
+    parent_id + другое место = самостоятельный кадр (новое место) —
+    генерируется без референса, layout-lock не применяется.
+    """
+    from app.services.vo_shot_expand import (
+        coverage_parent_shot_id,
+        find_coverage_parent_frame,
+        is_shot_child,
+    )
 
     parent_no: int | None = None
     if is_shot_child(frame):
-        uid = _coverage_parent_uuid(frame)
-        if uid:
-            parent = (
-                await session.execute(
-                    select(Frame).where(
-                        Frame.project_id == project_id,
-                        Frame.uuid == uid,
+        attrs = dict(frame.attrs or {})
+        cs = attrs.get("camera_subdivide")
+        cs = cs if isinstance(cs, dict) else {}
+        if cs.get("scene_split"):
+            frames = list(
+                (
+                    await session.execute(
+                        select(Frame)
+                        .where(Frame.project_id == project_id)
+                        .order_by(Frame.number)
                     )
                 )
-            ).scalar_one_or_none()
-            if parent is not None:
-                parent_no = parent.number
-    return find_shot2_reference_image(
-        out_dir, frame.number, parent_frame_number=parent_no
+                .scalars()
+                .all()
+            )
+            if coverage_parent_shot_id(frame):
+                ref = find_coverage_parent_frame(frames, frame)
+                if ref is not None and int(ref.number) != int(frame.number):
+                    parent_no = int(ref.number)
+            else:
+                uid = _coverage_parent_uuid(frame)
+                parent = next(
+                    (f for f in frames if str(f.uuid or "") == uid), None
+                )
+                if parent is not None:
+                    child_place = str(cs.get("место") or "").strip().casefold()
+                    p_attrs = parent.attrs if isinstance(parent.attrs, dict) else {}
+                    p_cs = p_attrs.get("camera_subdivide")
+                    p_cs = p_cs if isinstance(p_cs, dict) else {}
+                    parent_place = str(p_cs.get("место") or "").strip().casefold()
+                    if not child_place or not parent_place or child_place == parent_place:
+                        parent_no = int(parent.number)
+                    # Место другое и parent_id пуст — новое место: без рефа.
+        else:
+            uid = _coverage_parent_uuid(frame)
+            if uid:
+                parent = (
+                    await session.execute(
+                        select(Frame).where(
+                            Frame.project_id == project_id,
+                            Frame.uuid == uid,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if parent is not None:
+                    parent_no = parent.number
+    return find_shot1_image(out_dir, parent_no if parent_no else frame.number)
+
+
+async def _coverage_parent_png(
+    session: AsyncSession,
+    project: Project,
+    frame: Frame,
+) -> Path | None:
+    """PNG K1 той же группы покрытия — layout-lock для K2/K3."""
+    from app.services.vo_shot_expand import (
+        find_coverage_parent_frame,
+        is_coverage_child,
     )
+
+    if not is_coverage_child(frame):
+        return None
+    frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project.id)
+            .order_by(Frame.number)
+        )
+    ).scalars().all()
+    parent = find_coverage_parent_frame(list(frames), frame)
+    if parent is None or int(parent.number) == int(frame.number):
+        return None
+    scenes = project.data_dir / "scenes"
+    path = find_shot1_image(scenes, parent.number)
+    if path is None:
+        logger.warning(
+            "[#{}] frame {}: coverage child без PNG родителя #{}",
+            project.id,
+            frame.number,
+            parent.number,
+        )
+    return path
 
 
 async def _claim_shot2_batch(
@@ -1572,12 +1650,27 @@ async def _generate_and_send(
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] xlsx write_frame(gen_id) failed: {}", project.id, e)
 
-    # Референсы: shot_02 — PNG shot_01 той же колонки; дочерний кадр —
-    # PNG родителя; shot_01 родителя — персонажи/предметы.
+    # Референсы: shot_02 — PNG shot_01 той же колонки; дочерний кадр покрытия
+    # (K2/K3) — PNG родителя K1 как layout lock, затем персонаж (лимит 2).
     if is_shot2:
         refs: list[Path] = [shot1_reference] if shot1_reference else []
     else:
+        from app.services.vo_shot_expand import (
+            merge_parent_scene_refs,
+            with_parent_scene_lock,
+        )
+
         refs = await _load_refs_for_frame(session, project, frame.number)
+        parent_png = await _coverage_parent_png(session, project, frame)
+        refs = merge_parent_scene_refs(
+            parent_png, refs, max_refs=_OUTSEE_MAX_REFS
+        )
+        if parent_png is not None:
+            prompt_text = with_parent_scene_lock(
+                prompt_text,
+                has_parent_ref=True,
+                has_char_ref=len(refs) > 1,
+            )
     if refs:
         logger.info(
             "[#{}] frame {}: {} ref(ов) подгружено: {}",

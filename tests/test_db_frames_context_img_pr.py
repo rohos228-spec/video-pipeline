@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 
 from app.services.db_frames_context import (
+    build_excel_gpt_check_context,
     build_excel_gpt_db_context,
     build_img_pr_db_context,
     collapse_script_writer_frames,
@@ -58,6 +59,57 @@ def test_img_pr_db_context_picks_scene_grammar_keys() -> None:
     assert "noise" not in row
     assert ctx["characters"][0]["id"] == "c01"
     assert "shot01_bg" in ctx["field_map"]
+
+
+def test_img_pr_db_context_embeds_coverage_parent_from_other_batch() -> None:
+    parent = SimpleNamespace(
+        number=1,
+        uuid="p" * 24,
+        voiceover_text="у ворот канцелярии",
+        meaning="",
+        animation_prompt="",
+        image_prompt="Москва, приёмная канцелярии, дубовый стол, шкаф с делами",
+        attrs={
+            "place": "канцелярия",
+            "shot01_bg": "дубовый стол, шкаф",
+            "shot01_action": "разворачивает жалобу",
+            "lighting": "окно слева",
+            "персонажи": "c01",
+            "кадры": [{"id": "1-K1", "порядок": 1}],
+            "camera_subdivide": {"role": "vo_parent", "shot_id": "1-K1"},
+        },
+    )
+    child = SimpleNamespace(
+        number=2,
+        uuid="c" * 24,
+        voiceover_text="пишет отказ",
+        meaning="",
+        animation_prompt="",
+        image_prompt="",
+        attrs={
+            "place": "канцелярия",
+            "shot01_bg": "край стола",
+            "shot01_action": "перо по бумаге",
+            "shot01_description": "крупный план руки",
+            "кадры": [{"id": "1-K2", "порядок": 1}],
+            "camera_subdivide": {"role": "vo_parent", "shot_id": "1-K2"},
+        },
+    )
+    ctx = build_img_pr_db_context(
+        project_id=60,
+        slug="x",
+        frames=[child],
+        characters=[],
+        all_frames=[parent, child],
+    )
+    row = ctx["frames"][0]
+    assert row["coverage_role"] == "child"
+    assert row["shot_id"] == "1-K2"
+    snap = row["coverage_parent"]
+    assert snap["number"] == 1
+    assert snap["shot_id"] == "1-K1"
+    assert snap["place"] == "канцелярия"
+    assert "дубовый стол" in snap["image_prompt_head"]
 
 
 def test_img_pr_db_context_skips_frames_without_uuid() -> None:
@@ -113,7 +165,7 @@ def test_excel_gpt_check_context_is_slim_with_scene_registry() -> None:
     assert "noise" not in row
     assert row["place"] == "коридор"
     assert row["shot01_bg"] == "лампа"
-    assert len(row["voiceover_text"]) <= 400
+    assert row["voiceover_text"] == ("закадр " * 200).strip()
     assert len(row["meaning"]) <= 500
     assert len(json.dumps(ctx)) < 20_000
 
@@ -175,8 +227,7 @@ def test_excel_gpt_db_context_exposes_image_prompt_for_skip() -> None:
             voiceover_text="vo",
             meaning="",
             image_prompt="already filled prompt",
-            animation_prompt="already filled anim",
-            attrs={"shot01_action": "шаг"},
+            attrs={},
         ),
         SimpleNamespace(
             number=2,
@@ -184,7 +235,6 @@ def test_excel_gpt_db_context_exposes_image_prompt_for_skip() -> None:
             voiceover_text="vo2",
             meaning="",
             image_prompt="",
-            animation_prompt="",
             attrs={},
         ),
     ]
@@ -192,110 +242,56 @@ def test_excel_gpt_db_context_exposes_image_prompt_for_skip() -> None:
         project_id=60, slug="x", frames=frames, characters=[]
     )
     assert ctx["frames"][0]["image_prompt"].startswith("already")
-    assert ctx["frames"][0]["animation_prompt"].startswith("already")
-    assert ctx["frames"][0]["shot01_action"] == "шаг"
     assert "image_prompt" not in ctx["frames"][1]
-    from app.services.apply_ops_batches import (
-        SKIP_PROMPTS_AND_ACTION,
-        _pending_frames,
-    )
-
-    pending = _pending_frames(
-        ctx["frames"], dense=False, skip_if_field=SKIP_PROMPTS_AND_ACTION
-    )
-    assert [f["uuid"] for f in pending] == ["b" * 24]
 
 
-def test_excel_gpt_force_full_strips_old_prompts_keeps_vo() -> None:
-    """Ручной ▶ не должен кормить GPT старыми image/anim — иначе копия 1-в-1."""
+def test_check_context_keeps_full_vo_and_bits_array() -> None:
+    vo = "А" * 500
+    bits = [{"порядок": 1, "суть": "было"}, {"порядок": 2, "суть": "стало"}]
     fr = SimpleNamespace(
         number=1,
-        uuid="a" * 24,
-        voiceover_text="у ворот канцелярии толпа",
+        uuid="c" * 24,
+        voiceover_text=vo,
         meaning="",
-        image_prompt="Москва, середина XVIII века, приёмная канцелярии",
-        animation_prompt="камера медленно наезжает на стол",
-        attrs={
-            "shot01_action": "рука раскладывает две жалобы",
-            "place": "канцелярия",
-            "camera_subdivide": {
-                "role": "shot",
-                "vo_shot": "у ворот канцелярии толпа",
-            },
-        },
+        image_prompt="",
+        attrs={"биты": bits, "camera_subdivide": {"vo_shot": vo}},
     )
-    ctx = build_excel_gpt_db_context(
-        project_id=60, slug="x", frames=[fr], characters=[], strip_prompts=True
+    ctx = build_excel_gpt_check_context(
+        project_id=29, slug="tkach", frames=[fr], characters=[]
     )
     row = ctx["frames"][0]
-    assert "image_prompt" not in row
-    assert "animation_prompt" not in row
-    assert "shot01_action" not in row
-    assert "place" not in row
-    assert row["voiceover_text"] == "у ворот канцелярии толпа"
-    assert row["vo_shot"] == "у ворот канцелярии толпа"
+    assert row["voiceover_text"] == vo
+    assert "…" not in row["voiceover_text"]
+    assert row["биты"] == bits
+    assert isinstance(row["биты"], list)
 
 
-def test_excel_gpt_keeps_bits_action_shots_and_full_vo() -> None:
-    long_vo = "А" * 450
-    chain = "1. двор — бегает\n(кусок один,)\n" + ("x" * 80)
-    shots = [
-        {"id": "1-K1", "parent_id": None, "порядок": 1, "закадр": "кусок один,"},
-        {"id": "1-K2", "parent_id": "1-K1", "порядок": 2, "закадр": "кусок два."},
-    ]
+def test_excel_gpt_full_vo_flag_does_not_clip() -> None:
+    vo = "Б" * 450
     fr = SimpleNamespace(
         number=1,
         uuid="d" * 24,
-        voiceover_text=long_vo,
-        meaning="",
-        image_prompt="old",
-        animation_prompt="old-mov",
-        attrs={
-            "биты": [{"порядок": 1, "глагол": "бегает"}],
-            "main_action": chain,
-            "кадры": shots,
-            "place": "двор",
-        },
-    )
-    ctx = build_excel_gpt_db_context(
-        project_id=60,
-        slug="x",
-        frames=[fr],
-        characters=[],
-        strip_prompts=True,
-        full_vo=True,
-    )
-    row = ctx["frames"][0]
-    assert row["voiceover_text"] == long_vo
-    assert "image_prompt" not in row
-    assert "place" not in row
-    bits = json.loads(row["биты"])
-    assert bits[0]["глагол"] == "бегает"
-    assert row["main_action"] == chain
-    stored = json.loads(row["кадры"])
-    assert stored[1]["id"] == "1-K2"
-
-
-def test_excel_gpt_exposes_vo_shot_copy_not_as_voiceover() -> None:
-    fr = SimpleNamespace(
-        number=2,
-        uuid="c" * 24,
-        voiceover_text="",
+        voiceover_text=vo,
         meaning="",
         image_prompt="",
-        animation_prompt="",
-        attrs={
-            "camera_subdivide": {
-                "role": "shot",
-                "parent_uuid": "p" * 24,
-                "vo_shot": "фрагмент шота из копии",
-            }
-        },
+        attrs={},
     )
-    ctx = build_excel_gpt_db_context(
-        project_id=60, slug="x", frames=[fr], characters=[]
+    clipped = build_excel_gpt_db_context(
+        project_id=1, slug="x", frames=[fr], characters=[], full_vo=False
     )
-    row = ctx["frames"][0]
-    assert "voiceover_text" not in row
-    assert row["vo_shot"] == "фрагмент шота из копии"
-    assert row["закадр_шота"] == "фрагмент шота из копии"
+    full = build_excel_gpt_db_context(
+        project_id=1, slug="x", frames=[fr], characters=[], full_vo=True
+    )
+    assert clipped["frames"][0]["voiceover_text"].endswith("…")
+    assert full["frames"][0]["voiceover_text"] == vo
+
+
+def test_check_script_node_is_not_scenes_to_frames() -> None:
+    from app.orchestrator.steps.enrich_xlsx import (
+        _is_scenes_to_frames_node,
+        _is_script_frames_qc_group_node,
+    )
+
+    nk = "n_excel_gpt_fw_check_script"
+    assert _is_scenes_to_frames_node("scenes_to_frames_ru", "", nk) is False
+    assert _is_script_frames_qc_group_node("scenes_to_frames_ru", "", nk) is True

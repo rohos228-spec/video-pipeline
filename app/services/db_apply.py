@@ -117,8 +117,6 @@ FIELD_ALIASES: dict[str, str] = {
     "voiceover": "voiceover_text",
     "закадр": "voiceover_text",
     "закадровый_текст": "voiceover_text",
-    "закадровый": "voiceover_text",
-    "закадровый_text": "voiceover_text",
     "реплика": "voiceover_text",
     "image_prompt": "image_prompt",
     "img_prompt": "image_prompt",
@@ -137,13 +135,6 @@ FIELD_ALIASES: dict[str, str] = {
     "meaning": "meaning",
     "смысл": "meaning",
     "описание_кадра": "meaning",
-    # Биты сценария (смысловые части «было → стало») → Frame.attrs["биты"].
-    "биты": "биты",
-    "смысловые_части": "биты",
-    "beats": "биты",
-    "кадры": "кадры",
-    "shots": "кадры",
-    "разбивка_кадров": "кадры",
     "duration_seconds": "duration_seconds",
     "длительность": "duration_seconds",
     "время": "duration_seconds",
@@ -152,8 +143,6 @@ FIELD_ALIASES: dict[str, str] = {
     "img_prompt_2": "image_prompt_shot2",
     "промт_картинки_2": "image_prompt_shot2",
     "промпт_картинки_2": "image_prompt_shot2",
-    "child_prompts": "child_prompts",
-    "промты_детей": "child_prompts",
     "animation_prompt_shot2": "animation_prompt_shot2",
     "video_prompt_2": "animation_prompt_shot2",
     "промт_видео_2": "animation_prompt_shot2",
@@ -215,17 +204,6 @@ FIELD_ALIASES: dict[str, str] = {
     "предметы": "shot01_props",
     "shot01_action": "shot01_action",
     "действие": "shot01_action",
-    # Меню съёмки (группа script_frames_qc): крупность / движение / SET.
-    "shot_size": "shot_size",
-    "крупность": "shot_size",
-    "size": "shot_size",
-    "shot_move": "shot_move",
-    "движение": "shot_move",
-    "движение_камеры": "shot_move",
-    "move": "shot_move",
-    "shot_set": "shot_set",
-    "набор": "shot_set",
-    "set": "shot_set",
     "shot01_description": "shot01_description",
     "описание_shot01": "shot01_description",
     "shot01_transition": "shot01_transition",
@@ -250,6 +228,24 @@ FIELD_ALIASES: dict[str, str] = {
     "логика_перехода_shot02": "shot02_transition",
     "shot02_notes": "shot02_notes",
     "shot02_status": "shot02_status",
+    # script_frames_qc: биты / кадры живут в Frame.attrs (не строки Excel).
+    "биты": "биты",
+    "bits": "биты",
+    "кадры": "кадры",
+    "shots": "кадры",
+    # Меню съёмки → attrs.camera_subdivide (fw_frames / добор).
+    "крупность": "крупность",
+    "size": "крупность",
+    "shot_size": "крупность",
+    "krupnost": "крупность",
+    "движение": "движение",
+    "движение_камеры": "движение",
+    "move": "движение",
+    "shot_move": "движение",
+    "набор": "набор",
+    "set": "набор",
+    "shot_set": "набор",
+    "camera_subdivide": "camera_subdivide",
 }
 
 # Поля, которые живут в Frame.attrs (не колонки Frame.*).
@@ -257,8 +253,45 @@ _ATTR_FIELD_KEYS = frozenset(_ATTR_EXCEL_ROWS) | {
     "characters",
     "image_prompt_shot2",
     "animation_prompt_shot2",
-    "child_prompts",
+    "биты",
+    "кадры",
+    "крупность",
+    "движение",
+    "набор",
+    "camera_subdivide",
 }
+_STRUCTURED_ATTR_KEYS = frozenset({"биты", "кадры"})
+_CAMERA_MENU_ATTR_KEYS = ("крупность", "движение", "набор")
+
+
+def _merge_camera_subdivide(attrs: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
+    """Крупность/движение/набор → attrs.camera_subdivide, не затирая role/parent."""
+    raw_cs = attrs.get("camera_subdivide")
+    cs = dict(raw_cs) if isinstance(raw_cs, dict) else {}
+    nested = fields.get("camera_subdivide")
+    if isinstance(nested, dict):
+        for key in _CAMERA_MENU_ATTR_KEYS:
+            val = nested.get(key)
+            if val is None:
+                val = nested.get(
+                    {"крупность": "size", "движение": "move", "набор": "set"}[key]
+                )
+            text = str(val or "").strip()
+            if text:
+                cs[key] = text
+    elif isinstance(nested, str) and nested.strip():
+        parsed = _coerce_structured_attr(nested)
+        if isinstance(parsed, dict):
+            return _merge_camera_subdivide(attrs, {**fields, "camera_subdivide": parsed})
+    for key in _CAMERA_MENU_ATTR_KEYS:
+        if key not in fields:
+            continue
+        text = str(fields[key] or "").strip()
+        if text:
+            cs[key] = text
+    if cs:
+        attrs["camera_subdivide"] = cs
+    return attrs
 
 PROJECT_FIELD_ALIASES: dict[str, str] = {
     "general_plan": "general_plan",
@@ -280,6 +313,27 @@ class ApplyOpsError(ValueError):
 def _canon_key(raw: str, aliases: dict[str, str]) -> str | None:
     key = str(raw).strip().lower().replace(" ", "_")
     return aliases.get(key)
+
+
+def _coerce_structured_attr(value: Any) -> Any:
+    """Биты/кадры — JSON-массив или объект, не строка Excel."""
+    if value is None:
+        return []
+    if isinstance(value, (list, dict)):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text[0] in "[{":
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                return text
+            if isinstance(parsed, (list, dict)):
+                return parsed
+        return text
+    return value
 
 
 def normalize_fields(raw: dict, aliases: dict[str, str], *, scope: str) -> dict:
@@ -1306,46 +1360,20 @@ async def apply_ops(
 
         if "animation_prompt_shot2" in fields:
             attrs[SHOT2_VIDEO_PROMPT_ATTR] = str(fields["animation_prompt_shot2"] or "")
-        if "child_prompts" in fields:
-            raw_kids = fields["child_prompts"]
-            attrs["промты_детей"] = (
-                raw_kids if isinstance(raw_kids, list) else []
-            )
         if "characters" in fields:
             persons = str(fields["characters"] or "").strip()
             attrs["characters"] = persons
             attrs["persons"] = persons
             attrs["персонажи"] = persons
-        if "биты" in fields:
-            # Список битов храним как есть (JSON), не str().
-            bits_raw = fields["биты"]
-            attrs["биты"] = bits_raw if isinstance(bits_raw, list) else str(
-                bits_raw or ""
-            )
-        if "кадры" in fields:
-            shots_raw = fields["кадры"]
-            attrs["кадры"] = shots_raw if isinstance(shots_raw, list) else str(
-                shots_raw or ""
-            )
+        if any(k in fields for k in (*_CAMERA_MENU_ATTR_KEYS, "camera_subdivide")):
+            attrs = _merge_camera_subdivide(attrs, fields)
+        for attr_key in _STRUCTURED_ATTR_KEYS:
+            if attr_key not in fields:
+                continue
+            attrs[attr_key] = _coerce_structured_attr(fields[attr_key])
         for attr_key in _ATTR_EXCEL_ROWS:
             if attr_key in fields:
                 attrs[attr_key] = str(fields[attr_key] or "")
-        cs_raw = attrs.get("camera_subdivide")
-        cs = dict(cs_raw) if isinstance(cs_raw, dict) else {}
-        _cs_map = (
-            ("shot_size", "крупность"),
-            ("shot_move", "движение"),
-            ("shot_set", "набор"),
-        )
-        wrote_cs = False
-        for canon, cs_key in _cs_map:
-            if canon in fields and str(fields[canon] or "").strip():
-                cs[cs_key] = str(fields[canon]).strip()
-                wrote_cs = True
-        if wrote_cs:
-            attrs["camera_subdivide"] = cs
-            if cs.get("набор"):
-                attrs["place"] = cs["набор"]
         fr.attrs = attrs
         updated += 1
 
@@ -1375,9 +1403,7 @@ async def apply_ops(
 
     await session.flush()
 
-    # Детали из scenes[].shots[] → Frame.attrs только если ЭТОТ apply
-    # реально обновил scenes. Иначе старый scene_registry затирает
-    # свежие frame ops (место/смысл после повторного ▶ excel_gpt).
+    # Детали из scenes[].shots[] → Frame.attrs (place/действие/описание…).
     all_frames = list(
         (
             await session.execute(
@@ -1388,13 +1414,11 @@ async def apply_ops(
         ).scalars()
     )
     meta_now = project.meta if isinstance(project.meta, dict) else {}
-    expanded = 0
-    if scenes_n > 0:
-        expanded = expand_scene_registry_onto_frames(
-            all_frames, meta_now.get("scene_registry")
-        )
-        if expanded:
-            await session.flush()
+    expanded = expand_scene_registry_onto_frames(
+        all_frames, meta_now.get("scene_registry")
+    )
+    if expanded:
+        await session.flush()
 
     exported = None
     if export_xlsx:

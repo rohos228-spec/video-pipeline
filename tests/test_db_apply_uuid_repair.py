@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.services import db_apply
-from app.services.db_apply import coerce_duration_seconds
+from app.services.db_apply import coerce_duration_seconds, normalize_fields
 
 
 def test_coerce_duration_seconds_numeric_and_human() -> None:
@@ -93,3 +93,24 @@ def test_extract_apply_ops_json_uses_partial_salvage() -> None:
     assert data.get("_salvaged_partial") is True
     assert len(data["ops"]) == 1
     assert data["ops"][0]["frame_uuid"] == "f1"
+
+
+def test_normalize_fields_accepts_bits_and_shots() -> None:
+    from app.services.db_apply import FIELD_ALIASES
+
+    out = normalize_fields(
+        {"биты": [{"порядок": 1}], "bits": [{"порядок": 2}], "shots": []},
+        FIELD_ALIASES,
+        scope="кадр x",
+    )
+    assert out["биты"] == [{"порядок": 2}]
+    assert out["кадры"] == []
+
+
+def test_coerce_structured_attr_parses_json_list() -> None:
+    from app.services.db_apply import _coerce_structured_attr
+
+    assert _coerce_structured_attr([{"порядок": 1}]) == [{"порядок": 1}]
+    assert _coerce_structured_attr('[{"порядок":1}]') == [{"порядок": 1}]
+    assert _coerce_structured_attr("") == []
+    assert _coerce_structured_attr(None) == []

@@ -120,78 +120,94 @@ def excel_gpt_source_steps() -> tuple[str, ...]:
     return (EXCEL_GPT_UNIFIED_STEP, *(f"enrich_{i}" for i in range(1, 6)))
 
 
-def excel_gpt_template_dir() -> Path:
-    """Git SoT промтов excel_gpt (prompts/05_excel_gpt часто gitignored)."""
+# Промты группы script_frames_qc — только templates/node_groups/…,
+# не в общем списке «Работа с GPT» / prompts/05_excel_gpt.
+SCRIPT_FRAMES_QC_PROMPT_NAMES: frozenset[str] = frozenset(
+    {
+        "script_writer_ru",
+        "main_action_from_bits_ru",
+        "scenes_to_frames_ru",
+        "frame_prompts_continuity_ru",
+        "prompts_qc_continuity_ru",
+    }
+)
+
+
+def node_group_prompts_dir(group_id: str) -> Path:
     from app.project_root import find_project_root
 
-    return find_project_root() / "templates" / "excel_gpt_agents"
+    return find_project_root() / "templates" / "node_groups" / group_id
+
+
+def is_script_frames_qc_prompt(name: str) -> bool:
+    """Имя принадлежит изолированным промтам группы script_frames_qc."""
+    clean = (name or "").strip()
+    if clean.lower().endswith(".md"):
+        clean = clean[:-3].rstrip()
+    return clean in SCRIPT_FRAMES_QC_PROMPT_NAMES
+
+
+def script_frames_qc_group_id(group_id: str | None) -> str | None:
+    """Базовый id группы (без суффикса инстанса ``#2``)."""
+    if not group_id:
+        return None
+    base = str(group_id).split("#", 1)[0].strip()
+    return base if base == "script_frames_qc" else None
+
+
+def list_group_owned_prompts(group_id: str | None) -> list[str] | None:
+    """Промты изолированной группы. None — использовать общий список."""
+    if script_frames_qc_group_id(group_id) is None:
+        return None
+    d = node_group_prompts_dir("script_frames_qc")
+    return sorted(
+        n for n in SCRIPT_FRAMES_QC_PROMPT_NAMES if (d / f"{n}.md").is_file()
+    )
+
+
+def _group_prompt_path(name: str) -> Path | None:
+    """Изолированный промт группы (не общий 05_excel_gpt)."""
+    clean = name.strip()
+    if clean in SCRIPT_FRAMES_QC_PROMPT_NAMES:
+        p = node_group_prompts_dir("script_frames_qc") / f"{clean}.md"
+        if p.is_file():
+            return p
+    return None
 
 
 def excel_gpt_prompt_exists(name: str) -> bool:
     clean = _clean_variant_name(name) if name else ""
     if not clean:
         return False
+    if _group_prompt_path(clean) is not None:
+        return True
     for code in excel_gpt_source_steps():
         try:
             if prompt_path(code, clean).exists():
                 return True
         except ValueError:
             continue
-    return (excel_gpt_template_dir() / f"{clean}.md").is_file()
-
-
-# Локальная копия 05_excel_gpt иногда остаётся v1 (пишет закадр) или
-# «1 сцена = 1 кадр». Git-шаблон — SoT для цепочки script_frames_qc.
-_STALE_EXCEL_GPT_MARKERS: dict[str, tuple[str, ...]] = {
-    "script_writer_ru": (
-        "Агент: сценарист закадра",
-    ),
-    "scenes_to_frames_ru": (
-        "Не плоди покрытие",
-        "одна сцена, одно действие",
-    ),
-    "frame_prompts_continuity_ru": (
-        '"frame_uuid": "u002"',
-    ),
-}
-
-
-def _excel_gpt_local_is_stale(name: str, path: Path) -> bool:
-    markers = _STALE_EXCEL_GPT_MARKERS.get(name)
-    if not markers or not path.is_file():
-        return False
-    try:
-        head = path.read_text(encoding="utf-8")[:1200]
-    except OSError:
-        return False
-    return any(m in head for m in markers)
+    return False
 
 
 def resolve_excel_gpt_prompt_path(name: str) -> Path:
-    """Читать из 05_excel_gpt, legacy enrich_* или templates/excel_gpt_agents."""
+    """Групповые промты → templates/node_groups; иначе 05_excel_gpt / enrich_*."""
     clean = _sanitize_name(name) if not is_valid_prompt_name(name) else name
     if not clean:
         raise ValueError(f"некорректное имя промта: {name!r}")
+    # Имена группы — только из templates/node_groups/script_frames_qc/
+    if clean in SCRIPT_FRAMES_QC_PROMPT_NAMES:
+        group = _group_prompt_path(clean)
+        if group is not None:
+            return group
+        return node_group_prompts_dir("script_frames_qc") / f"{clean}.md"
     primary = step_dir(EXCEL_GPT_UNIFIED_STEP) / f"{clean}.md"
-    tmpl = excel_gpt_template_dir() / f"{clean}.md"
-    if primary.is_file() and not (
-        tmpl.is_file() and _excel_gpt_local_is_stale(clean, primary)
-    ):
+    if primary.is_file():
         return primary
-    if tmpl.is_file() and _excel_gpt_local_is_stale(clean, primary):
-        logger.warning(
-            "excel_gpt {}: локальный {} устарел, берём git-шаблон {}",
-            clean,
-            primary,
-            tmpl,
-        )
-        return tmpl
     for code in (f"enrich_{i}" for i in range(1, 6)):
         legacy = step_dir(code) / f"{clean}.md"
         if legacy.is_file():
             return legacy
-    if tmpl.is_file():
-        return tmpl
     return primary
 
 # Макс. длина имени варианта на диске (UTF-8 байты). Раньше было 40 из‑за TG callback_data;
@@ -319,15 +335,14 @@ def list_prompts(step_code: str) -> list[str]:
 
 
 def list_excel_gpt_prompts() -> list[str]:
-    """Список «Работа с GPT»: 05_excel_gpt + git-шаблоны excel_gpt_agents."""
-    names = _list_prompts_in_dir(EXCEL_GPT_UNIFIED_STEP)
-    seen = set(names)
-    tmpl = excel_gpt_template_dir()
-    if tmpl.is_dir():
-        for extra in sorted(p.stem for p in tmpl.glob("*.md")):
-            if extra not in seen:
-                names.append(extra)
-                seen.add(extra)
+    """Общий список «Работа с GPT». Промты групп (script_frames_qc) сюда не входят."""
+    merged: dict[str, None] = {}
+    for code in excel_gpt_source_steps():
+        for n in _list_prompts_in_dir(code):
+            if n in SCRIPT_FRAMES_QC_PROMPT_NAMES:
+                continue
+            merged.setdefault(n, None)
+    names = sorted(merged.keys())
     if DEFAULT_NAME in names:
         names.remove(DEFAULT_NAME)
         names.insert(0, DEFAULT_NAME)
@@ -365,6 +380,12 @@ def read_prompt(step_code: str, name: str) -> str:
 
 def write_prompt(step_code: str, name: str, content: str) -> Path:
     if is_excel_gpt_prompt_step(step_code):
+        clean = _clean_variant_name(name) if name else ""
+        if clean in SCRIPT_FRAMES_QC_PROMPT_NAMES:
+            p = node_group_prompts_dir("script_frames_qc") / f"{clean}.md"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8")
+            return p
         step_code = EXCEL_GPT_UNIFIED_STEP
     p = prompt_path(step_code, name)
     p.write_text(content, encoding="utf-8")
@@ -377,6 +398,10 @@ def delete_prompt(step_code: str, name: str) -> bool:
     Возвращает True если файл был удалён."""
     if name == DEFAULT_NAME:
         raise ValueError("default удалять нельзя")
+    if is_script_frames_qc_prompt(name):
+        raise ValueError(
+            "промт группы script_frames_qc нельзя удалить из общей библиотеки"
+        )
     if is_excel_gpt_prompt_step(step_code):
         p = resolve_excel_gpt_prompt_path(name)
         if not p.is_file():
@@ -534,13 +559,10 @@ def resolve_project_prompt_with_source(
                     return clean, "override"
         # Слоты проекта (в т.ч. унаследованные ребёнком) важнее global —
         # иначе active_variants.json с «default» перекрывает выбор родителя.
-        # Если node_key уже задан и у этой ноды слота нет — не воровать
-        # вариант соседней ноды (QC last-wins перекрывал check_script).
-        if not node_key:
-            for key in excel_gpt_source_steps():
-                from_meta = _variant_from_studio_meta(meta, key)
-                if from_meta:
-                    return from_meta, "slot"
+        for key in excel_gpt_source_steps():
+            from_meta = _variant_from_studio_meta(meta, key)
+            if from_meta:
+                return from_meta, "slot"
         from app.services.prompt_active_global import get_global_active
 
         global_name = get_global_active(EXCEL_GPT_UNIFIED_STEP)
@@ -577,7 +599,10 @@ def read_resolved_project_prompt(
     name, source = resolve_project_prompt_with_source(
         overrides, step_code, meta=meta, node_key=node_key, slot_id=slot_id
     )
-    path = prompt_path(step_code, name)
+    if is_excel_gpt_prompt_step(step_code):
+        path = resolve_excel_gpt_prompt_path(name)
+    else:
+        path = prompt_path(step_code, name)
     text = read_prompt(step_code, name)
     from app.services.gpt_text_builder import inject_topic_placeholders
 
