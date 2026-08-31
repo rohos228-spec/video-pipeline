@@ -71,7 +71,6 @@ export function PromptFilesPanel({
   preferredFile,
   activeVariant,
   activeVariantSourceLabel,
-  promptGroupId,
   onActivateVariant,
   activating = false,
   onPromptRenamed,
@@ -83,8 +82,6 @@ export function PromptFilesPanel({
   preferredFile?: string;
   activeVariant?: string;
   activeVariantSourceLabel?: string;
-  /** Изолированные промты группы (не общий 05_excel_gpt). */
-  promptGroupId?: string;
   onActivateVariant?: (variant: string) => void;
   activating?: boolean;
   onPromptRenamed?: (oldName: string, newName: string) => void;
@@ -97,13 +94,11 @@ export function PromptFilesPanel({
   const [dirty, setDirty] = useState(false);
   const [previewVersion, setPreviewVersion] = useState<PromptVersionInfo | null>(null);
 
-  const cacheKey = slotId
-    ? `${stepCode}::${slotId}::${promptGroupId ?? ""}`
-    : `${stepCode}::${promptGroupId ?? ""}`;
+  const cacheKey = slotId ? `${stepCode}::${slotId}` : stepCode;
 
   const files = useQuery({
     queryKey: ["prompt-files", cacheKey],
-    queryFn: () => api.listPromptFiles(stepCode, promptGroupId),
+    queryFn: () => api.listPromptFiles(stepCode),
     enabled: Boolean(stepCode),
     refetchInterval: POLL_INTERVAL_MS,
   });
@@ -113,7 +108,7 @@ export function PromptFilesPanel({
   // и выбор «прыгает» обратно на active/preferred.
   useEffect(() => {
     userPickedRef.current = false;
-  }, [stepCode, slotId, promptGroupId]);
+  }, [stepCode, slotId]);
 
   // Список файлов: не сбрасывать ручной выбор на preferred/первый при каждом poll.
   useEffect(() => {
@@ -146,7 +141,7 @@ export function PromptFilesPanel({
 
   const content = useQuery({
     queryKey: ["prompt-file", cacheKey, selectedName],
-    queryFn: () => api.getPromptFile(stepCode, selectedName!, promptGroupId),
+    queryFn: () => api.getPromptFile(stepCode, selectedName!),
     enabled: Boolean(stepCode) && Boolean(selectedName),
     refetchInterval: () => (dirty ? false : POLL_INTERVAL_MS),
   });
@@ -324,11 +319,10 @@ export function PromptFilesPanel({
 
   const fileList = files.data ?? [];
 
-  const folderLabel = useMemo(() => {
-    if (folderHint?.startsWith("templates/")) return folderHint;
-    if (folderHint) return `prompts/${folderHint}`;
-    return `prompts/${stepCode}`;
-  }, [folderHint, stepCode]);
+  const folderLabel = useMemo(
+    () => (folderHint ? `prompts/${folderHint}` : `prompts/${stepCode}`),
+    [folderHint, stepCode],
+  );
 
   return (
     <section className="rounded-xl border border-white/10 bg-white/[0.02] p-3">

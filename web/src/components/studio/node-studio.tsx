@@ -134,15 +134,6 @@ export function NodeStudio({
     project.data?.generation_active,
   );
 
-  const nodeGroupId = useMemo(() => {
-    const meta = (project.data?.meta || {}) as {
-      canvas_graph?: { nodes?: { id?: string; data?: { groupId?: string } }[] };
-    };
-    const n = (meta.canvas_graph?.nodes || []).find((x) => x.id === nodeKey);
-    const raw = String(n?.data?.groupId || "").trim();
-    return raw.split("#")[0] || undefined;
-  }, [project.data?.meta, nodeKey]);
-
   const excelGptConfig = useMemo((): ExcelGptNodeConfig => {
     if (!nodeKey || !isExcelGptNode(nodeType)) return {};
     const meta = (project.data?.meta || {}) as {
@@ -954,18 +945,11 @@ export function NodeStudio({
                       slotId={activeSlot?.id}
                       projectId={projectId ?? undefined}
                       preferredFile={preferredFile}
-                      promptGroupId={
-                        nodeGroupId === "script_frames_qc"
-                          ? nodeGroupId
-                          : undefined
-                      }
                       folderHint={
-                        nodeGroupId === "script_frames_qc"
-                          ? "templates/node_groups/script_frames_qc"
-                          : legacyPromptFolder(promptStepCode) ??
-                            (activeSlot?.stepCode && activeSlot.stepCode !== stepCode
-                              ? activeSlot.stepCode
-                              : (promptPaths.legacyDir ?? promptStepCode))
+                        legacyPromptFolder(promptStepCode) ??
+                        (activeSlot?.stepCode && activeSlot.stepCode !== stepCode
+                          ? activeSlot.stepCode
+                          : (promptPaths.legacyDir ?? promptStepCode))
                       }
                       activeVariant={activeVariant}
                       activeVariantSourceLabel={activeVariantSourceLabel}
