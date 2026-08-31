@@ -67,6 +67,31 @@ def test_police_example_same_place_compression() -> None:
     assert "K0" in by_n[4]["compression"]
 
 
+def test_t8_does_not_steal_years_in_same_place() -> None:
+    """«долгие годы» / «служба» в кабинете — не прыжок жизни, не T8."""
+    clear_shot_templates_cache()
+    assert (
+        select_template_when(
+            {
+                "blob": "кабинет следствия наблюдает за подозреваемым долгие годы",
+                "place": "кабинет следствия",
+            },
+            "",
+        )
+        == "T4"
+    )
+    assert (
+        select_template_when(
+            {
+                "blob": "кабинет следствия листает протоколы годы службы",
+                "place": "кабинет следствия",
+            },
+            "",
+        )
+        == "T5"
+    )
+
+
 def test_t8_chain_repeat_allowed() -> None:
     """Биография «жил → служил → работал»: T8>T8>T8 — норма, не брак."""
     clear_shot_templates_cache()
@@ -369,6 +394,12 @@ def test_write_group_prompt_stays_out_of_excel_gpt(
     assert (
         pl.resolve_excel_gpt_prompt_path(
             "scenes_to_frames_ru", group_id="script_frames_qc"
+        )
+        == group
+    )
+    assert (
+        pl.resolve_excel_gpt_prompt_path(
+            "scenes_to_frames_ru", node_key="n_excel_gpt_fw_shots"
         )
         == group
     )

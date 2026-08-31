@@ -160,6 +160,63 @@ def script_frames_qc_group_id(group_id: str | None) -> str | None:
     return base if base == "script_frames_qc" else None
 
 
+# Ноды группы на канвасе: раннер обязан брать
+# templates/node_groups/script_frames_qc/, не excel_gpt_agents (main v6).
+_SCRIPT_FRAMES_QC_NODE_SUFFIXES = (
+    "_fw_script",
+    "_fw_check_script",
+    "_fw_action",
+    "_fw_shots",
+    "_fw_frames",
+    "_fw_qc",
+)
+
+
+def _group_id_from_canvas_node(project: Any, node_key: str | None) -> str | None:
+    if not node_key:
+        return None
+    meta = getattr(project, "meta", None) if project is not None else None
+    if not isinstance(meta, dict):
+        return None
+    graph = meta.get("canvas_graph") or {}
+    if not isinstance(graph, dict):
+        return None
+    for node in graph.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("id") or "") != str(node_key):
+            continue
+        data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        raw = str((data or {}).get("groupId") or "").strip()
+        return raw.split("#", 1)[0] or None
+    return None
+
+
+def uses_script_frames_qc_prompts(
+    *,
+    group_id: str | None = None,
+    project: Any = None,
+    node_key: str | None = None,
+) -> bool:
+    """Промты группы — только если группа на канвасе / это нода группы.
+
+    Иначе ``scenes_to_frames_ru`` и соседние имена резолвятся в main
+    ``templates/excel_gpt_agents`` (v6 «одна сцена = один кадр»).
+    """
+    if script_frames_qc_group_id(group_id) is not None:
+        return True
+    if script_frames_qc_group_id(_group_id_from_canvas_node(project, node_key)):
+        return True
+    nk = str(node_key or "")
+    if any(nk.endswith(s) for s in _SCRIPT_FRAMES_QC_NODE_SUFFIXES):
+        return True
+    if project is not None:
+        from app.services.node_groups import canvas_has_script_frames_qc
+
+        return canvas_has_script_frames_qc(project)
+    return False
+
+
 def list_group_owned_prompts(group_id: str | None) -> list[str] | None:
     """Промты группы. None — общий список «Работа с GPT»."""
     if script_frames_qc_group_id(group_id) is None:
@@ -230,16 +287,27 @@ def _excel_gpt_local_is_stale(name: str, path: Path) -> bool:
 
 
 def resolve_excel_gpt_prompt_path(
-    name: str, *, group_id: str | None = None
+    name: str,
+    *,
+    group_id: str | None = None,
+    project: Any = None,
+    node_key: str | None = None,
 ) -> Path:
     """Общий excel_gpt — 05_excel_gpt / excel_gpt_agents.
 
-    Промты группы script_frames_qc — только если передан group_id группы.
+    Промты группы script_frames_qc — если группа на канвасе, нода ``_fw_*``,
+    или явно передан ``group_id``. Раннер должен передать project/node_key:
+    без них те же имена молча берутся из main (v6).
     """
     clean = _sanitize_name(name) if not is_valid_prompt_name(name) else name
     if not clean:
         raise ValueError(f"некорректное имя промта: {name!r}")
-    if script_frames_qc_group_id(group_id) is not None and clean in SCRIPT_FRAMES_QC_PROMPT_NAMES:
+    if (
+        uses_script_frames_qc_prompts(
+            group_id=group_id, project=project, node_key=node_key
+        )
+        and clean in SCRIPT_FRAMES_QC_PROMPT_NAMES
+    ):
         group = _group_prompt_path(clean)
         if group is not None:
             return group
@@ -391,15 +459,22 @@ def list_prompts(step_code: str) -> list[str]:
 
 
 def list_excel_gpt_prompts() -> list[str]:
-    """Список «Работа с GPT»: 05_excel_gpt + git-шаблоны excel_gpt_agents."""
+    """Список «Работа с GPT»: 05_excel_gpt + git-шаблоны excel_gpt_agents.
+
+    Имена группы script_frames_qc сюда не входят — даже если копии лежат
+    в excel_gpt_agents (main v6). Их список только по group_id.
+    """
     names = _list_prompts_in_dir(EXCEL_GPT_UNIFIED_STEP)
     seen = set(names)
     tmpl = excel_gpt_template_dir()
     if tmpl.is_dir():
         for extra in sorted(p.stem for p in tmpl.glob("*.md")):
+            if extra in SCRIPT_FRAMES_QC_PROMPT_NAMES:
+                continue
             if extra not in seen:
                 names.append(extra)
                 seen.add(extra)
+    names = [n for n in names if n not in SCRIPT_FRAMES_QC_PROMPT_NAMES]
     if DEFAULT_NAME in names:
         names.remove(DEFAULT_NAME)
         names.insert(0, DEFAULT_NAME)
@@ -423,9 +498,18 @@ def prompt_path(step_code: str, name: str) -> Path:
     return step_dir(step_code) / f"{clean}.md"
 
 
-def read_prompt(step_code: str, name: str) -> str:
+def read_prompt(
+    step_code: str,
+    name: str,
+    *,
+    group_id: str | None = None,
+    project: Any = None,
+    node_key: str | None = None,
+) -> str:
     if is_excel_gpt_prompt_step(step_code):
-        p = resolve_excel_gpt_prompt_path(name)
+        p = resolve_excel_gpt_prompt_path(
+            name, group_id=group_id, project=project, node_key=node_key
+        )
         if not p.is_file():
             raise FileNotFoundError(f"prompt file not found: {p}")
         return p.read_text(encoding="utf-8")
@@ -655,8 +739,17 @@ def read_resolved_project_prompt(
     name, source = resolve_project_prompt_with_source(
         overrides, step_code, meta=meta, node_key=node_key, slot_id=slot_id
     )
-    path = prompt_path(step_code, name)
-    text = read_prompt(step_code, name)
+    gid = _group_id_from_canvas_node(project, node_key)
+    if is_excel_gpt_prompt_step(step_code):
+        path = resolve_excel_gpt_prompt_path(
+            name, group_id=gid, project=project, node_key=node_key
+        )
+        text = read_prompt(
+            step_code, name, group_id=gid, project=project, node_key=node_key
+        )
+    else:
+        path = prompt_path(step_code, name)
+        text = read_prompt(step_code, name)
     from app.services.gpt_text_builder import inject_topic_placeholders
 
     topic = str(getattr(project, "topic", None) or "")
