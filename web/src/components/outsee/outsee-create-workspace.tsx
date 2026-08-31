@@ -391,6 +391,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     return kieModels.find((m) => m.id === activeSlug.slice(4)) ?? null;
   }, [activeSlug, kieModels]);
   const kieActive = kieModel != null;
+  const kiePath = activeSlug.startsWith("kie:");
   const kieTextField = kieModel ? kieMainTextField(kieModel) : null;
   const kiePrice = useMemo(() => {
     if (!kieModel || !kieCatalogQ.data) return null;
@@ -434,7 +435,6 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
         : audioModel.displayName;
   const currentWired = false;
   const outseeConfigured = Boolean(outseeStatusQ.data?.configured);
-  const kieConfigured = Boolean(kieCatalogQ.data?.configured);
 
   const autoProvider: "outsee" | null = useMemo(() => {
     if (kieActive) return null;
@@ -447,8 +447,6 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     autoProvider === "outsee"
       ? (createQueueQ.data?.max_parallel_outsee ?? 5)
       : (createQueueQ.data?.max_parallel ?? 5);
-
-  const canApiDirect = kieActive ? kieConfigured : autoProvider != null;
   const currentIcon = kieActive
     ? null
     : mediaType === "image"
@@ -792,9 +790,9 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
       const executeSingle = async (index: number) => {
         const nonce = `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`;
         // ---- KIE: динамическая модель из каталога kie.ai ----
-        if (kieActive && kieModel) {
-          if (!kieConfigured) {
-            throw new Error("KIE_API_KEY не задан в .env");
+        if (kiePath) {
+          if (!kieModel) {
+            throw new Error("Каталог моделей ещё грузится — нажми ещё раз через секунду");
           }
           const vals: Record<string, unknown> = { ...kieValues, _nonce: nonce };
           if (kieTextField) vals[kieTextField] = text;
@@ -2035,25 +2033,24 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       type="button"
                       disabled={
                         createGenerate.isPending ||
-                        (kieActive
-                          ? (kieTextField && !prompt.trim()) || !kieConfigured
-                          : !prompt.trim() ||
-                            (mediaType === "audio" && projectId == null) ||
-                            (mediaType !== "audio" && !canApiDirect))
+                        ((kiePath ? Boolean(kieTextField) : true) && !prompt.trim()) ||
+                        (!kiePath && mediaType === "audio" && projectId == null)
                       }
                       onClick={() => {
                         if (createGenerate.isPending) return;
                         createGenerate.mutate();
                       }}
                       className={cn(
-                        "inline-flex min-w-[145px] items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#22d3ee] to-[#0ea5e9] px-4 py-2 text-[12px] font-extrabold uppercase tracking-wider text-black shadow-[0_0_20px_rgba(34,211,238,0.3)] transition-all duration-200 hover:brightness-110 hover:shadow-[0_0_25px_rgba(34,211,238,0.45)] disabled:opacity-40 disabled:pointer-events-none",
+                        "inline-flex min-w-[145px] items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#22d3ee] to-[#0ea5e9] px-4 py-2 text-[12px] font-extrabold uppercase tracking-wider text-black shadow-[0_0_20px_rgba(34,211,238,0.3)] transition-all duration-200 hover:brightness-110 hover:shadow-[0_0_25px_rgba(34,211,238,0.45)] disabled:opacity-40",
                       )}
                       title={
                         createGenerate.isPending
                           ? "Уже ставится в очередь…"
-                          : !canApiDirect && mediaType !== "audio"
-                            ? "Нужен OUTSEE_API_KEY или KIE_API_KEY в .env"
-                            : `Сгенерировать (${batchCount > 1 ? `${batchCount} шт` : "1 шт"}, лимит ${maxParallel}) · ${priceLabel}`
+                          : (kiePath ? Boolean(kieTextField) : true) && !prompt.trim()
+                            ? "Сначала напиши промпт"
+                            : !kiePath && mediaType === "audio" && projectId == null
+                              ? "Сначала открой проект"
+                              : `Сгенерировать (${batchCount > 1 ? `${batchCount} шт` : "1 шт"}, лимит ${maxParallel}) · ${priceLabel}`
                       }
                     >
                       {createGenerate.isPending ? (
@@ -2072,6 +2069,13 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       )}
                     </button>
                   </div>
+                  {(kiePath ? Boolean(kieTextField) : true) &&
+                    !prompt.trim() &&
+                    !createGenerate.isPending && (
+                      <p className="mt-1 text-right text-[11px] text-amber-300/90">
+                        Напиши промпт — без него кнопка не нажимается
+                      </p>
+                    )}
                 </div>
               </div>
             </div>
