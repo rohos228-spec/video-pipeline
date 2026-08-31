@@ -152,11 +152,9 @@ class Settings(BaseSettings):
 
     @property
     def text_llm_label(self) -> str:
-        """Человекочитаемая метка для UI/логов (не «GPT», если это Kimi)."""
+        """Человекочитаемая метка для UI/логов."""
         if self.text_llm_is_tokenrouter:
-            model = (self.tokenrouter_model or "moonshotai/kimi-k3-free").strip()
-            short = model.split("/")[-1] if "/" in model else model
-            return f"Kimi K3 · TokenRouter ({short})"
+            return "Kimi K3"
         if self.text_llm_is_vibecode:
             from app.services.text_llm_catalog import (
                 catalog_item,
@@ -164,13 +162,8 @@ class Settings(BaseSettings):
             )
 
             item = catalog_item(resolve_active_model_id(self))
-            api_model = (item or {}).get("api_model") or "gpt-5.6-sol"
-            pretty = (item or {}).get("label") or "GPT"
-            return f"{pretty} · vibecode.moe ({api_model})"
-        model = (self.gpt_model or "gpt").strip()
-        base = (self.gpt_base_url or "").strip().lower()
-        host = "kie.ai" if "kie.ai" in base else "API"
-        return f"GPT · {host} ({model})"
+            return (item or {}).get("label") or "GPT 5.6 Sol"
+        return "GPT (kie.ai)"
 
     @property
     def gpt_api_effective_key(self) -> str:
