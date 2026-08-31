@@ -527,7 +527,7 @@ function Test-StudioAsrBackendNvidia {
             return ($val.ToLower() -eq "nvidia")
         }
     }
-    return $true
+    return $false
 }
 
 function Set-StudioNvidiaEnv {
