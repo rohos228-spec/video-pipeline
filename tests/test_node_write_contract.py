@@ -32,23 +32,26 @@ def test_excel_gpt_prompts_keeps_image_and_anim():
     assert "voiceover_text" not in out[0]["fields"]
 
 
-def test_excel_gpt_prompts_keeps_camera_menu_fields():
+def test_excel_gpt_prompts_keeps_camera_menu():
     ops = [
         {
             "frame_uuid": "aa",
             "fields": {
+                "промт_картинки": "YES",
                 "крупность": "Средний план",
                 "движение": "наезд",
-                "набор": "SET_08",
-                "закадр": "НЕЛЬЗЯ",
+                "набор": "SET_01",
+                "место": "кухня",
             },
         }
     ]
     out = filter_ops_for_node(ops, node_kind="excel_gpt_prompts")
-    assert out[0]["fields"]["крупность"] == "Средний план"
-    assert out[0]["fields"]["движение"] == "наезд"
-    assert out[0]["fields"]["набор"] == "SET_08"
-    assert "закадр" not in out[0]["fields"]
+    fields = out[0]["fields"]
+    assert fields["крупность"] == "Средний план"
+    assert fields["движение"] == "наезд"
+    assert fields["набор"] == "SET_01"
+    assert fields["промт_картинки"] == "YES"
+    assert "место" not in fields
 
 
 def test_excel_gpt_strips_prompt_fields():
@@ -216,21 +219,31 @@ def test_excel_gpt_drops_replace_frames() -> None:
     assert out[0]["fields"]["место"] == "двор"
 
 
-def test_excel_gpt_no_prompts_keeps_shots_list() -> None:
+def test_excel_gpt_script_keeps_only_bits() -> None:
     ops = [
         {
             "frame_uuid": "aa",
             "fields": {
-                "кадры": [{"порядок": 1, "действие": "бегает"}],
+                "биты": [{"порядок": 1, "суть": "было"}],
                 "закадр": "НЕЛЬЗЯ",
+                "voiceover_text": "НЕЛЬЗЯ",
                 "промт_картинки": "NO",
+                "место": "кухня",
+                "действие": "не это",
             },
-        }
+        },
+        {"target": "replace_frames", "frames": [{"закадр": "нет"}]},
     ]
-    out = filter_ops_for_node(ops, node_kind="excel_gpt_no_prompts")
-    assert out[0]["fields"]["кадры"][0]["действие"] == "бегает"
-    assert "закадр" not in out[0]["fields"]
-    assert "промт_картинки" not in out[0]["fields"]
+    out = filter_ops_for_node(ops, node_kind="excel_gpt_script")
+    assert len(out) == 1
+    assert out[0]["fields"] == {"биты": [{"порядок": 1, "суть": "было"}]}
+
+
+def test_excel_gpt_script_keeps_bits_alias() -> None:
+    ops = [{"frame_uuid": "aa", "fields": {"bits": [{"порядок": 1}], "место": "нет"}}]
+    out = filter_ops_for_node(ops, node_kind="excel_gpt_script")
+    assert out[0]["fields"]["bits"] == [{"порядок": 1}]
+    assert "место" not in out[0]["fields"]
 
 
 def test_excel_gpt_no_prompts_strips_voiceover() -> None:

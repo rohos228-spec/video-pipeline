@@ -26,13 +26,12 @@ ANIM_PROMPT_FIELDS = frozenset({"animation_prompt", "animation_prompt_shot2"})
 CHARACTER_FIELDS = frozenset({"characters"})
 # Действие кадра — группа script_frames_qc (fw_frames), не закадр.
 ACTION_FIELDS = frozenset({"shot01_action", "main_action"})
-# План / движение камеры / SET — строки меню съёмки.
-CAMERA_MENU_FIELDS = frozenset({"shot_size", "shot_move", "shot_set"})
+# Меню съёмки: fw_frames пишет вместе с промтами (footer prompts + добор).
+CAMERA_MENU_FIELDS = frozenset({"крупность", "движение", "набор", "camera_subdivide"})
 # Закадр пишет только split / n_script / человек. excel_gpt не генерирует текст.
 VO_FIELDS = frozenset({"voiceover_text", "meaning"})
-# Биты сценария («было → стало») — единственное, что пишет нода сценария
-# группы script_frames_qc. Текст она не генерирует вообще.
-BEAT_FIELDS = frozenset({"биты"})
+# Сценарист (fw_script): только смысловые биты на seed-ячейке.
+BITS_FIELDS = frozenset({"биты"})
 
 _NODE_KINDS = frozenset(
     {
@@ -65,9 +64,9 @@ def _alias_set(canons: frozenset[str]) -> frozenset[str]:
 
 _PROMPT_KEYS = _alias_set(PROMPT_FIELDS)
 _VO_KEYS = _alias_set(VO_FIELDS)
-_BEAT_KEYS = _alias_set(BEAT_FIELDS)
 _ACTION_KEYS = _alias_set(ACTION_FIELDS)
 _CAMERA_MENU_KEYS = _alias_set(CAMERA_MENU_FIELDS)
+_BITS_KEYS = _alias_set(BITS_FIELDS)
 _IMG_PR_KEYS = _alias_set(IMAGE_PROMPT_FIELDS) | _alias_set(CHARACTER_FIELDS)
 _ANIM_PR_KEYS = _alias_set(ANIM_PROMPT_FIELDS)
 
@@ -76,8 +75,7 @@ def _keep_field(key: str, node_kind: str) -> bool:
     norm = _norm_key(key)
     canon = _canon_field(key)
     if node_kind == "excel_gpt_script":
-        # Сценарий = только разметка битов по готовому закадру. Текст не пишет.
-        return canon in BEAT_FIELDS or norm in _BEAT_KEYS
+        return canon in BITS_FIELDS or norm in _BITS_KEYS
     if node_kind == "excel_gpt_prompts":
         return (
             canon in PROMPT_FIELDS
@@ -131,9 +129,7 @@ def filter_ops_for_node(
         if isinstance(fields, dict):
             kept = {k: v for k, v in fields.items() if _keep_field(str(k), kind)}
             new_op["fields"] = kept
-            # Op с полностью отфильтрованными полями бессмысленен при любом
-            # target (в db_apply пустые fields — ошибка).
-            if not kept:
+            if str(new_op.get("target") or "frame") == "frame" and not kept:
                 continue
         out.append(new_op)
     return out

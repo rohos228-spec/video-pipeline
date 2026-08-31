@@ -62,6 +62,117 @@ def new_frame_uuid() -> str:
     return _uuid_mod.uuid4().hex[:24]
 
 
+def resolve_full_voiceover_text(project: Project) -> str:
+    """Целый закадр: script_text, иначе актуальный voiceover.txt."""
+    text = (project.script_text or "").strip()
+    if text:
+        return " ".join(text.split())
+    try:
+        from app.services.chatgpt_xlsx import ensure_current_voiceover
+
+        path = ensure_current_voiceover(project)
+    except Exception:  # noqa: BLE001
+        path = None
+    if path is not None and path.is_file():
+        try:
+            body = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            body = ""
+        if body:
+            return " ".join(body.split())
+    return ""
+
+
+async def ensure_single_seed_vo_cell(
+    session: AsyncSession,
+    project: Project,
+    full_vo: str,
+) -> Frame:
+    """Одна seed-ячейка = весь закадр (для fw_script до разбивки хвостом группы).
+
+    Игнорирует текущие split-ячейки: при необходимости сносит все Frame и
+    создаёт ровно одну с ``voiceover_text = full_vo``. Идемпотентно, если
+    уже ровно одна ячейка с тем же текстом.
+    """
+    from sqlalchemy import delete, update
+
+    vo = " ".join((full_vo or "").split())
+    if not vo:
+        raise ValueError("ensure_single_seed_vo_cell: пустой закадр")
+
+    existing = list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if len(existing) == 1:
+        cur = " ".join((existing[0].voiceover_text or "").split())
+        if cur == vo:
+            if not existing[0].uuid:
+                existing[0].uuid = new_frame_uuid()
+                await session.flush()
+            return existing[0]
+
+    await session.execute(
+        update(Artifact)
+        .where(Artifact.project_id == project.id)
+        .values(frame_id=None)
+    )
+    await session.execute(
+        delete(FrameEdge).where(FrameEdge.project_id == project.id)
+    )
+    old_ids = [f.id for f in existing if f.id is not None]
+    if old_ids:
+        await session.execute(
+            delete(PromptVersion).where(PromptVersion.frame_id.in_(old_ids))
+        )
+        await session.execute(
+            delete(FrameText).where(FrameText.frame_id.in_(old_ids))
+        )
+        await session.execute(delete(Frame).where(Frame.project_id == project.id))
+    await session.flush()
+
+    scene = (
+        await session.execute(
+            select(Scene).where(Scene.project_id == project.id).order_by(Scene.sort_key)
+        )
+    ).scalars().first()
+    if scene is None:
+        scene = Scene(project_id=project.id, sort_key=_SORT_STEP, title="main")
+        session.add(scene)
+        await session.flush()
+
+    dur = max(2.0, round(len(vo) / 14.0, 2))
+    fr = Frame(
+        project_id=project.id,
+        number=1,
+        voiceover_text=vo,
+        meaning=None,
+        duration_seconds=dur,
+        uuid=new_frame_uuid(),
+        sort_key=_SORT_STEP,
+        scene_id=scene.id,
+        status=FrameStatus.planned,
+        attrs={},
+    )
+    session.add(fr)
+    await session.flush()
+    await backfill_project_v2(session, project)
+    logger.info(
+        "[#{}] ensure_single_seed_vo_cell: 1 ячейка ({} симв, было {})",
+        project.id,
+        len(vo),
+        len(existing),
+    )
+    return fr
+
+
 async def replace_all_frames(
     session: AsyncSession,
     project: Project,

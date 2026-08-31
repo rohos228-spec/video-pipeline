@@ -74,6 +74,24 @@ def test_message_text_mapping() -> None:
     assert describe_error(Exception("database is locked"))[0] == "infra_db_locked"
 
 
+def test_enrich_xlsx_step_error_is_not_excel_file() -> None:
+    """Имя шага enrich_xlsx не должно краситься в «Некорректный xlsx»."""
+    err = RuntimeError(
+        "enrich_xlsx node=n_excel_gpt_fw_frames: L1 call 1 uuid 4f458359: "
+        "4 кадров «кабинет следствия» все самостоятельные — "
+        "parent = первый кадр этой локации"
+    )
+    code, msg = describe_error(err)
+    assert code != "xlsx_invalid"
+    assert "Некорректный xlsx" not in msg
+    assert "кабинет следствия" in msg
+
+
+def test_real_xlsx_file_error_still_maps() -> None:
+    assert describe_error(Exception("xlsx-sync: листы не совпали"))[0] == "xlsx_invalid"
+    assert describe_error(Exception("project.xlsx не открывается"))[0] == "xlsx_corrupt"
+
+
 def test_unknown_fallback() -> None:
     code, msg = describe_error(Exception("что-то странное"))
     assert code == "unknown"

@@ -66,6 +66,7 @@ from app.services.plan_shot2 import (
     SHOT2_PROMPT_ATTR,
     SHOT2_STATUS_ATTR,
     disk_has_shot2_image,
+    find_shot1_image,
     find_shot2_reference_image,
     read_shot2_columns,
 )
@@ -998,8 +999,17 @@ async def _claim_shot1_batch(
     project: Project | None = None,
     limit: int = 1,
 ) -> list[Frame]:
-    """Забрать до ``limit`` кадров под генерацию (lease через attrs)."""
+    """Забрать до ``limit`` кадров под генерацию (lease через attrs).
+
+    С группой script_frames_qc: сначала K1 ячеек; K2/K3 — когда PNG
+    родителя уже на диске.
+    """
+    from app.services.node_groups import canvas_has_script_frames_qc
     from app.services.vision_check_loop import scene_regen_allows
+    from app.services.vo_shot_expand import (
+        find_coverage_parent_frame,
+        is_shot_child,
+    )
 
     if limit < 1:
         return []
@@ -1010,24 +1020,41 @@ async def _claim_shot1_batch(
             .order_by(Frame.number)
         )
     ).scalars().all()
+    group_lock = bool(project is not None and canvas_has_script_frames_qc(project))
     claimed: list[Frame] = []
-    for fr in frames:
-        if project is not None:
-            allow = scene_regen_allows(project, fr.number, 1)
-            if allow is False:
-                continue
-        if not frame_needs_shot1_image(fr, out_dir):
-            continue
-        attrs = dict(fr.attrs or {})
-        if attrs.get(INFLIGHT_ATTR):
-            continue
-        attrs[INFLIGHT_ATTR] = True
-        fr.attrs = attrs
-        if fr.status is not FrameStatus.image_prompt_ready:
-            fr.status = FrameStatus.image_prompt_ready
-        claimed.append(fr)
+    prefer_passes = (False, True) if group_lock else (False,)
+    for prefer_child in prefer_passes:
         if len(claimed) >= limit:
             break
+        for fr in frames:
+            if fr in claimed:
+                continue
+            if project is not None:
+                allow = scene_regen_allows(project, fr.number, 1)
+                if allow is False:
+                    continue
+            if not frame_needs_shot1_image(fr, out_dir):
+                continue
+            if group_lock:
+                child = is_shot_child(fr)
+                if child != prefer_child:
+                    continue
+                if child:
+                    parent = find_coverage_parent_frame(list(frames), fr)
+                    if parent is not None and not disk_has_valid_frame_image(
+                        out_dir, int(parent.number)
+                    ):
+                        continue
+            attrs = dict(fr.attrs or {})
+            if attrs.get(INFLIGHT_ATTR):
+                continue
+            attrs[INFLIGHT_ATTR] = True
+            fr.attrs = attrs
+            if fr.status is not FrameStatus.image_prompt_ready:
+                fr.status = FrameStatus.image_prompt_ready
+            claimed.append(fr)
+            if len(claimed) >= limit:
+                break
     if claimed:
         await session.flush()
     return claimed
@@ -1046,9 +1073,19 @@ async def _resolve_shot2_reference(
     project_id: int,
     out_dir: Path,
     frame: Frame,
+    *,
+    project: Project | None = None,
 ) -> Path | None:
-    """Реф shot2: свой shot1, у ребёнка покрытия — PNG родителя."""
+    """Реф shot2.
+
+    Глобально: свой shot1, у ребёнка покрытия — PNG родителя.
+    С группой script_frames_qc: shot2 = PNG shot1 ЭТОГО кадра.
+    """
+    from app.services.node_groups import canvas_has_script_frames_qc
     from app.services.vo_shot_expand import is_shot_child
+
+    if project is not None and canvas_has_script_frames_qc(project):
+        return find_shot1_image(out_dir, frame.number)
 
     parent_no: int | None = None
     if is_shot_child(frame):
@@ -1067,6 +1104,41 @@ async def _resolve_shot2_reference(
     return find_shot2_reference_image(
         out_dir, frame.number, parent_frame_number=parent_no
     )
+
+
+async def _coverage_parent_png(
+    session: AsyncSession,
+    project: Project,
+    frame: Frame,
+) -> Path | None:
+    """PNG K1 ЭТОЙ ячейки — layout-lock только для K2/K3 группы."""
+    from app.services.vo_shot_expand import (
+        find_coverage_parent_frame,
+        is_shot_child,
+    )
+
+    if not is_shot_child(frame):
+        return None
+    frames = (
+        await session.execute(
+            select(Frame)
+            .where(Frame.project_id == project.id)
+            .order_by(Frame.number)
+        )
+    ).scalars().all()
+    parent = find_coverage_parent_frame(list(frames), frame)
+    if parent is None or int(parent.number) == int(frame.number):
+        return None
+    scenes = project.data_dir / "scenes"
+    path = find_shot1_image(scenes, parent.number)
+    if path is None:
+        logger.warning(
+            "[#{}] frame {}: coverage child без PNG родителя #{}",
+            project.id,
+            frame.number,
+            parent.number,
+        )
+    return path
 
 
 async def _claim_shot2_batch(
@@ -1175,7 +1247,7 @@ async def _run_claimed_batch(
         try:
             ref = (
                 await _resolve_shot2_reference(
-                    session, project.id, out_dir, fr
+                    session, project.id, out_dir, fr, project=project
                 )
                 if shot == 2
                 else None
@@ -1217,7 +1289,9 @@ async def _run_claimed_batch(
     jobs = []
     for fr in claimed:
         ref = (
-            await _resolve_shot2_reference(session, project.id, out_dir, fr)
+            await _resolve_shot2_reference(
+                session, project.id, out_dir, fr, project=project
+            )
             if shot == 2
             else None
         )
@@ -1572,12 +1646,29 @@ async def _generate_and_send(
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] xlsx write_frame(gen_id) failed: {}", project.id, e)
 
-    # Референсы: shot_02 — PNG shot_01 той же колонки; дочерний кадр —
-    # PNG родителя; shot_01 родителя — персонажи/предметы.
+    # Референсы: shot_02 — PNG shot_01 той же колонки.
+    # Группа script_frames_qc: K2/K3 lock на K1 своей ячейки, не чужой still.
     if is_shot2:
         refs: list[Path] = [shot1_reference] if shot1_reference else []
     else:
+        from app.services.node_groups import canvas_has_script_frames_qc
+        from app.services.vo_shot_expand import (
+            merge_parent_scene_refs,
+            with_parent_scene_lock,
+        )
+
         refs = await _load_refs_for_frame(session, project, frame.number)
+        if canvas_has_script_frames_qc(project):
+            parent_png = await _coverage_parent_png(session, project, frame)
+            refs = merge_parent_scene_refs(
+                parent_png, refs, max_refs=_OUTSEE_MAX_REFS
+            )
+            if parent_png is not None:
+                prompt_text = with_parent_scene_lock(
+                    prompt_text,
+                    has_parent_ref=True,
+                    has_char_ref=len(refs) > 1,
+                )
     if refs:
         logger.info(
             "[#{}] frame {}: {} ref(ов) подгружено: {}",

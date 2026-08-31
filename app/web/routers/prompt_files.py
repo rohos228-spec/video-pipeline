@@ -32,7 +32,9 @@ from app.services.prompt_library import (
     delete_prompt,
     get_prompt_saved_at,
     is_excel_gpt_prompt_step,
+    is_script_frames_qc_prompt,
     is_valid_prompt_name,
+    list_group_owned_prompts,
     list_prompts,
     prompt_path,
     read_prompt,
@@ -116,19 +118,29 @@ def _ensure_name(name: str) -> None:
         raise HTTPException(status_code=400, detail=f"invalid prompt name: {name!r}")
 
 
-def _disk_prompt_path(step_code: str, name: str) -> Path:
+def _disk_prompt_path(
+    step_code: str, name: str, *, group_id: str | None = None
+) -> Path:
     """Путь к .md на диске (для excel_gpt — unified + legacy enrich_*)."""
     if is_excel_gpt_prompt_step(step_code):
-        return resolve_excel_gpt_prompt_path(name)
+        return resolve_excel_gpt_prompt_path(name, group_id=group_id)
     return prompt_path(step_code, name)
 
 
 def _library_prompt_path(step_code: str, name: str) -> str:
+    if is_script_frames_qc_prompt(name):
+        return f"templates/node_groups/script_frames_qc/{name}.md"
     return (Path("prompts") / STEP_FOLDERS[step_code] / f"{name}.md").as_posix()
 
 
 def _prompt_modified(step_code: str, name: str, p: Path) -> float | None:
-    return get_prompt_saved_at(step_code, name)
+    meta = get_prompt_saved_at(step_code, name)
+    if meta is not None:
+        return meta
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return None
 
 
 @router.get("/{step_code}/resolve", response_model=PromptResolveInfo)
@@ -154,7 +166,7 @@ async def resolve_prompt_for_project(
         node_key=node_key,
         slot_id=slot_id,
     )
-    p = prompt_path(step_code, name)
+    p = _disk_prompt_path(step_code, name)
     return PromptResolveInfo(
         name=name,
         source=source,
@@ -164,15 +176,24 @@ async def resolve_prompt_for_project(
 
 
 @router.get("/{step_code}", response_model=list[PromptFileInfo])
-async def list_prompt_files(step_code: str) -> list[PromptFileInfo]:
-    """Список .md-файлов в `prompts/<step>/` (как до overlay)."""
+async def list_prompt_files(
+    step_code: str,
+    group_id: str | None = Query(None),
+) -> list[PromptFileInfo]:
+    """Список .md. Для group_id=script_frames_qc — только промты группы."""
     _ensure_step(step_code)
     bootstrap_saved_at_from_history(step_code)
     folder = step_dir(step_code)
     out: list[PromptFileInfo] = []
-    for name in list_prompts(step_code):
+    group_names = (
+        list_group_owned_prompts(group_id)
+        if is_excel_gpt_prompt_step(step_code)
+        else None
+    )
+    names = group_names if group_names is not None else list_prompts(step_code)
+    for name in names:
         if is_excel_gpt_prompt_step(step_code):
-            p = resolve_excel_gpt_prompt_path(name)
+            p = resolve_excel_gpt_prompt_path(name, group_id=group_id)
         else:
             p = folder / f"{name}.md"
         if not p.is_file():
@@ -191,15 +212,19 @@ async def list_prompt_files(step_code: str) -> list[PromptFileInfo]:
 
 
 @router.get("/{step_code}/{name}/content", response_model=PromptFileContent)
-async def get_prompt_file(step_code: str, name: str) -> PromptFileContent:
+async def get_prompt_file(
+    step_code: str,
+    name: str,
+    group_id: str | None = Query(None),
+) -> PromptFileContent:
     _ensure_step(step_code)
     _ensure_name(name)
-    p = _disk_prompt_path(step_code, name)
+    p = _disk_prompt_path(step_code, name, group_id=group_id)
     if not p.is_file():
         raise HTTPException(status_code=404, detail="prompt file not found")
     try:
-        body = read_prompt(step_code, name)
-    except FileNotFoundError as e:
+        body = p.read_text(encoding="utf-8")
+    except OSError as e:
         raise HTTPException(status_code=404, detail="prompt file not found") from e
     stat = p.stat()
     return PromptFileContent(
@@ -253,7 +278,7 @@ async def save_prompt_file(
 
     await sync_step_prompt_to_db(session, step_code, payload.content)
     await session.commit()
-    p = prompt_path(step_code, name)
+    p = _disk_prompt_path(step_code, name)
     stat = p.stat()
     return PromptFileContent(
         name=name,
@@ -350,7 +375,7 @@ async def restore_prompt_file_history(
         raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    p = prompt_path(step_code, name)
+    p = _disk_prompt_path(step_code, name)
     stat = p.stat()
     return PromptFileContent(
         name=name,
@@ -376,7 +401,7 @@ async def rename_prompt_file_route(
         raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    p = prompt_path(step_code, final)
+    p = _disk_prompt_path(step_code, final)
     stat = p.stat()
     return PromptFileInfo(
         name=final,
@@ -441,7 +466,7 @@ async def upload_prompt_file(
 
     await sync_step_prompt_to_db(session, step_code, text)
     await session.commit()
-    p = prompt_path(step_code, raw_name)
+    p = _disk_prompt_path(step_code, raw_name)
     stat = p.stat()
     return PromptFileInfo(
         name=raw_name,

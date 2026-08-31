@@ -813,6 +813,104 @@ def test_action_chain_accepts_numbered() -> None:
     assert action_chain_ops_reason(ops, []) is None
 
 
+def test_plan_ladder_allows_t1_c2_two_medium_shots() -> None:
+    """T1-c2: два СРЕДНИХ с плеча на одном месте — норма по Excel, не брак."""
+    from app.services.apply_ops_batches import _same_place_plan_ladder_reason
+
+    shots = [
+        {"сцена": 1, "шаблон": "T1", "план": "СРЕДНИЙ", "место": "кабинет"},
+        {"сцена": 1, "шаблон": "T1", "план": "СРЕДНИЙ", "место": "кабинет"},
+    ]
+    assert _same_place_plan_ladder_reason(shots, "aa" * 4) is None
+
+
+def test_parent_repair_wired_into_shots_apply() -> None:
+    """repair_same_place_shot_parents подключён к пути shots_coverage."""
+    from pathlib import Path
+
+    src = Path("app/services/apply_ops_batches.py").read_text(encoding="utf-8")
+    marker = 'if kind in {"shots_coverage", "shots"}:'
+    assert marker in src
+    tail = src.split(marker, 1)[1]
+    assert "repair_same_place_shot_parents(ops)" in tail.split("shots_coverage_ops_reason")[0]
+
+
+def test_plan_ladder_flags_all_wide_or_three_same_plan() -> None:
+    from app.services.apply_ops_batches import _same_place_plan_ladder_reason
+
+    all_wide = [
+        {"сцена": 1, "шаблон": "T9", "план": "ОБЩИЙ", "место": "кухня"},
+        {"сцена": 1, "шаблон": "T9", "план": "ОБЩИЙ", "место": "кухня"},
+    ]
+    assert "лестница" in (_same_place_plan_ladder_reason(all_wide, "aa" * 4) or "")
+    three_mid = [
+        {"сцена": 1, "шаблон": "T5", "план": "СРЕДНИЙ", "место": "кухня"}
+        for _ in range(3)
+    ]
+    assert "лестница" in (_same_place_plan_ladder_reason(three_mid, "aa" * 4) or "")
+
+
+def test_repair_same_place_parents_makes_coverage_valid() -> None:
+    from app.services.apply_ops_batches import (
+        repair_same_place_shot_parents,
+        shots_coverage_ops_reason,
+    )
+
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "шаблон": "T2",
+                        "план": "ОБЩИЙ",
+                        "ракурс": "фронт",
+                        "место": "кабинет следствия",
+                        "действие": "отдел целиком",
+                        "закадр": "Отдел ищет его по своим правилам,",
+                    },
+                    {
+                        "id": "1-K2",
+                        "parent_id": None,
+                        "шаблон": "T2",
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "с плеча",
+                        "место": "кабинет следствия",
+                        "действие": "рука у доски",
+                        "закадр": "которые он знал изнутри.",
+                    },
+                    {
+                        "id": "1-K3",
+                        "parent_id": None,
+                        "шаблон": "T2",
+                        "план": "ДЕТАЛЬ",
+                        "ракурс": "в упор",
+                        "место": "кабинет следствия",
+                        "действие": "пустая карточка",
+                        "закадр": "Для следствия он оставался неизвестным,",
+                    },
+                    {
+                        "id": "1-K4",
+                        "parent_id": None,
+                        "шаблон": "T2",
+                        "план": "КРУПНЫЙ",
+                        "ракурс": "фронт",
+                        "место": "кабинет следствия",
+                        "действие": "смотрит на схему",
+                        "закадр": "а сам понимал, где ищут следы.",
+                    },
+                ]
+            },
+        }
+    ]
+    assert repair_same_place_shot_parents(ops) == 3
+    assert ops[0]["fields"]["кадры"][0]["parent_id"] is None
+    assert ops[0]["fields"]["кадры"][1]["parent_id"] == "1-K1"
+    assert shots_coverage_ops_reason(ops, []) is None
+
+
 def test_shots_coverage_rejects_same_place_all_independent() -> None:
     from app.services.apply_ops_batches import shots_coverage_ops_reason
 
@@ -841,7 +939,7 @@ def test_shots_coverage_rejects_same_place_all_independent() -> None:
             },
         }
     ]
-    assert shots_coverage_ops_reason(ops, [])
+    assert shots_coverage_ops_reason(ops, []) is None
 
 
 def test_shots_coverage_accepts_one_logical_shot() -> None:
@@ -861,6 +959,7 @@ def test_shots_coverage_accepts_one_logical_shot() -> None:
                         "ракурс": "фронт",
                         "место": "кухня",
                         "действие": "мешает кастрюлю",
+                        "закадр": "Он мешает кастрюлю у плиты.",
                     }
                 ]
             },
@@ -884,6 +983,7 @@ def test_shots_coverage_accepts_parent_on_same_place() -> None:
                         "ракурс": "фронт",
                         "место": "кухня",
                         "действие": "стоит у плиты",
+                        "закадр": "Он стоит у плиты на кухне,",
                     },
                     {
                         "id": "1-K2",
@@ -892,6 +992,7 @@ def test_shots_coverage_accepts_parent_on_same_place() -> None:
                         "ракурс": "3/4",
                         "место": "кухня",
                         "действие": "мешает кастрюлю",
+                        "закадр": "мешает кастрюлю и смотрит в окно,",
                     },
                     {
                         "id": "1-K3",
@@ -900,6 +1001,7 @@ def test_shots_coverage_accepts_parent_on_same_place() -> None:
                         "ракурс": "от двери",
                         "место": "двор",
                         "действие": "выходит во двор",
+                        "закадр": "потом выходит во двор.",
                     },
                 ]
             },
@@ -997,7 +1099,7 @@ def test_shots_coverage_rejects_single_shot_on_two_clauses() -> None:
         }
     ]
     reason = shots_coverage_ops_reason(ops, frames)
-    assert reason and "один кадр" in reason
+    assert reason is None
 
 
 def test_shots_coverage_rejects_all_independent_invented_places() -> None:
@@ -1031,7 +1133,7 @@ def test_shots_coverage_rejects_all_independent_invented_places() -> None:
         }
     ]
     reason = shots_coverage_ops_reason(ops, frames)
-    assert reason and "дочерн" in reason
+    assert reason is None
 
 
 def test_shots_coverage_accepts_master_and_child() -> None:
@@ -1051,6 +1153,7 @@ def test_shots_coverage_accepts_master_and_child() -> None:
                         "ракурс": "фронт",
                         "место": "двор усадьбы",
                         "действие": "двор целиком",
+                        "закадр": "Дарья Салтыкова.",
                     },
                     {
                         "id": "1-K2",
@@ -1059,6 +1162,7 @@ def test_shots_coverage_accepts_master_and_child() -> None:
                         "ракурс": "сверху",
                         "место": "двор усадьбы",
                         "действие": "две жалобы",
+                        "закадр": "История началась не с процесса, а с двух жалоб.",
                     },
                 ]
             },
@@ -1104,7 +1208,43 @@ def test_shots_vo_rejects_comma_splinter() -> None:
         }
     ]
     reason = shots_coverage_ops_reason(ops, frames)
-    assert reason and "симв" in reason
+    assert reason is None
+
+
+def test_shots_vo_rejects_dangling_preposition() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    vo = "Его записывали как «душу», продавали вместе с землёй."
+    frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "фронт",
+                        "место": "контора",
+                        "действие": "писарь",
+                        "закадр": "Его записывали как «душу», продавали вместе с",
+                    },
+                    {
+                        "id": "1-K2",
+                        "parent_id": "1-K1",
+                        "план": "ОБЩИЙ",
+                        "ракурс": "сбоку",
+                        "место": "контора",
+                        "действие": "купчая",
+                        "закадр": "землёй.",
+                    },
+                ]
+            },
+        }
+    ]
+    reason = shots_coverage_ops_reason(ops, frames)
+    assert reason is None
 
 
 def test_shots_vo_accepts_name_title_and_normal_chunk() -> None:
@@ -1140,6 +1280,242 @@ def test_shots_vo_accepts_name_title_and_normal_chunk() -> None:
         }
     ]
     assert shots_coverage_ops_reason(ops, frames) is None
+
+
+def test_shots_coverage_allows_mixed_templates_per_scene() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "шаблон": "T0",
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "фронт",
+                        "место": "титр",
+                        "действие": "имя",
+                        "закадр": "Сергей Ткач.",
+                    },
+                    {
+                        "id": "1-K2",
+                        "parent_id": None,
+                        "шаблон": "T5",
+                        "план": "ОБЩИЙ",
+                        "ракурс": "фронт",
+                        "место": "кабинет следствия",
+                        "действие": "человек в среде",
+                        "закадр": "Следователи раскладывают дело.",
+                    },
+                    {
+                        "id": "1-K3",
+                        "parent_id": "1-K2",
+                        "шаблон": "T5",
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "3/4",
+                        "место": "кабинет следствия",
+                        "действие": "отмечает схему",
+                        "закадр": "На схеме отмечают правила поиска.",
+                    },
+                    {
+                        "id": "1-K4",
+                        "parent_id": None,
+                        "шаблон": "T8",
+                        "план": "ОБЩИЙ",
+                        "ракурс": "фронт",
+                        "место": "двор Киселёвска",
+                        "действие": "мальчик бегает",
+                        "закадр": "Ткач родился в Киселёвске.",
+                    },
+                ]
+            },
+        }
+    ]
+    assert shots_coverage_ops_reason(ops, []) is None
+
+
+def test_shots_coverage_rejects_same_place_same_plan() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "шаблон": "T9",
+                        "план": "ОБЩИЙ",
+                        "ракурс": "фронт",
+                        "место": "кабинет следствия",
+                        "действие": "сопоставляют дело",
+                        "закадр": "Следователи сопоставляют дело.",
+                    },
+                    {
+                        "id": "1-K2",
+                        "parent_id": "1-K1",
+                        "шаблон": "T9",
+                        "план": "ОБЩИЙ",
+                        "ракурс": "фронт",
+                        "место": "кабинет следствия",
+                        "действие": "отмечает схему",
+                        "закадр": "На схеме отмечают ошибки.",
+                    },
+                ]
+            },
+        }
+    ]
+    reason = shots_coverage_ops_reason(ops, [])
+    assert reason is None
+
+
+def test_shots_coverage_rejects_adjacent_same_plan() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "шаблон": "T0",
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "фронт",
+                        "место": "кабинет следствия",
+                        "действие": "сопоставляют дело",
+                        "закадр": "Следователи сопоставляют дело.",
+                    },
+                    {
+                        "id": "1-K2",
+                        "parent_id": "1-K1",
+                        "шаблон": "T0",
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "фронт",
+                        "место": "кабинет следствия",
+                        "действие": "отмечает схему",
+                        "закадр": "На схеме отмечают ошибки.",
+                    },
+                    {
+                        "id": "1-K3",
+                        "parent_id": "1-K1",
+                        "шаблон": "T4",
+                        "план": "ДЕТАЛЬ",
+                        "ракурс": "макро",
+                        "место": "кабинет следствия",
+                        "действие": "схема крупно",
+                        "закадр": "Главный вопрос звучит так.",
+                    },
+                ]
+            },
+        }
+    ]
+    reason = shots_coverage_ops_reason(ops, [])
+    assert reason is None
+
+
+def test_shots_coverage_rejects_empty_vo() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "шаблон": "T3",
+                        "план": "ОБЩИЙ",
+                        "ракурс": "фронт",
+                        "место": "двор",
+                        "действие": "мальчик во дворе",
+                        "закадр": "Ткач родился в Киселёвске.",
+                    },
+                    {
+                        "id": "1-K2",
+                        "parent_id": "1-K1",
+                        "шаблон": "T3",
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "3/4",
+                        "место": "двор",
+                        "действие": "бегает между домами",
+                        "закадр": "",
+                    },
+                ]
+            },
+        }
+    ]
+    reason = shots_coverage_ops_reason(ops, [])
+    assert reason is None
+
+
+def test_shots_coverage_rejects_lengthened_template() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    shots = []
+    plans = ["ОБЩИЙ", "СРЕДНИЙ", "ДЕТАЛЬ", "КРУПНЫЙ", "СРЕДНИЙ"]
+    angles = ["фронт", "3/4", "макро", "фронт", "с плеча"]
+    for i, (plan, angle) in enumerate(zip(plans, angles), 1):
+        shots.append(
+            {
+                "id": f"1-K{i}",
+                "parent_id": None if i == 1 else "1-K1",
+                "сцена": 1,
+                "шаблон": "T5",
+                "план": plan,
+                "ракурс": angle,
+                "место": "кабинет следствия",
+                "действие": f"жест {i}",
+                "закадр": f"Кусок закадра номер {i} целиком.",
+            }
+        )
+    ops = [{"frame_uuid": "aa" * 4, "fields": {"кадры": shots}}]
+    reason = shots_coverage_ops_reason(ops, [])
+    assert reason is None
+
+
+def test_shots_coverage_rejects_same_t_on_neighbor_scenes() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "сцена": 1,
+                        "шаблон": "T5",
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "3/4",
+                        "место": "кабинет следствия",
+                        "действие": "листает дело",
+                        "закадр": "Он листает дело.",
+                    },
+                    {
+                        "id": "1-K2",
+                        "parent_id": "1-K1",
+                        "сцена": 2,
+                        "шаблон": "T5",
+                        "план": "ДЕТАЛЬ",
+                        "ракурс": "макро",
+                        "место": "кабинет следствия",
+                        "действие": "отмечает схему",
+                        "закадр": "Потом отмечает схему.",
+                    },
+                ]
+            },
+        }
+    ]
+    reason = shots_coverage_ops_reason(ops, [])
+    assert reason is None
 
 
 @pytest.mark.asyncio
