@@ -180,11 +180,22 @@ def coverage_parent_shot_id(frame: Any) -> str:
 
 
 def find_coverage_parent_frame(frames: list[Any], child: Any) -> Any | None:
-    """Родитель покрытия: тот же group-K1. Не предыдущий K2 для K3."""
+    """Родитель покрытия: K1 ЭТОЙ ячейки. Не предыдущий K2 и не чужой 2-K1.
+
+    У ``role=shot`` якорь — ``parent_uuid`` (VO-родитель ячейки). Явный
+    ``coverage_parent_id`` с другой сцены (X1 / «место уже было») не должен
+    подменять PNG K1 этой же ячейки: иначе K2/K3 уезжают в чужой сетап.
+    """
+    child_uid = str(getattr(child, "uuid", "") or "")
+    if is_shot_child(child):
+        uid = str(_cs(child).get("parent_uuid") or "").strip()
+        if uid and uid != child_uid:
+            for fr in frames:
+                if str(getattr(fr, "uuid", "") or "") == uid:
+                    return fr
     parent_sid = coverage_parent_shot_id(child)
     if not parent_sid:
         return None
-    child_uid = str(getattr(child, "uuid", "") or "")
     for fr in frames:
         if coverage_shot_id(fr) != parent_sid:
             continue

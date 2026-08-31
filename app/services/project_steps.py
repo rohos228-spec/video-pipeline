@@ -362,9 +362,11 @@ async def start_step(
             ", ".join(cleared),
         )
     try:
-        # Soft ▶ anim_pr / img / video: не wipe готовые пачки.
-        # Явный ▶ img_pr — всегда пересобрать промты (иначе skip «already in DB»).
-        force_wipe = bool(explicit_ui_start and step_code == "img_pr")
+        # Явный ▶ img_pr — пересобрать промты. Явный ▶ img — перегенерить PNG
+        # (файлы на диске не скип: нода обязана сработать).
+        force_wipe = bool(
+            explicit_ui_start and step_code in ("img_pr", "img")
+        )
         # ▶ одной sd_agent-ноды: invalidate_agent уже сбросил чекпоинт.
         # Полный wipe scene_d удаляет meta.scene_design целиком — вместе с
         # only_agent → worker prepare без only_agent зажигает весь веер.

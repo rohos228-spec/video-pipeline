@@ -474,6 +474,29 @@ async def test_clear_step_outputs_for_rerun_img_pr_force_wipe_clears(session):
 
 
 @pytest.mark.asyncio
+async def test_clear_step_outputs_img_force_wipe_removes_png(session):
+    """Явный ▶ img: PNG не скип — бэкап и удаление, кадры снова в очередь."""
+    p = await _mkproject(session)
+    fr = await _mkframe(
+        session,
+        p,
+        1,
+        image_prompt="still prompt",
+        status=FrameStatus.image_generated,
+    )
+    scenes = p.data_dir / "scenes"
+    scenes.mkdir(parents=True, exist_ok=True)
+    png = scenes / "frame_001_abcd1234.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 1000)
+
+    summary = await clear_step_outputs_for_rerun(session, p, "img", force_wipe=True)
+    assert "img" in summary
+    assert not png.exists()
+    await session.refresh(fr)
+    assert fr.status is FrameStatus.image_prompt_ready
+
+
+@pytest.mark.asyncio
 async def test_clear_step_outputs_for_rerun_anim_pr_preserves(session, tmp_path: Path):
     """Повторный запуск anim_pr: не стираем animation_prompt (догонка с xlsx)."""
     p = await _mkproject(session)
