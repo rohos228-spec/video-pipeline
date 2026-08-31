@@ -50,6 +50,34 @@ def test_duration_from_vo_when_seconds_missing() -> None:
     assert cells[0]["shots"][0]["duration_sec"] > 0
 
 
+def test_camera_subdivide_fills_size_move_set() -> None:
+    frames = [
+        {
+            "id": 1,
+            "number": 1,
+            "uuid": "a" * 24,
+            "voiceover_text": "фрагмент",
+            "duration_seconds": 3,
+            "attrs": {
+                "shot01_action": "кладёт жалобу",
+                "camera_subdivide": {
+                    "role": "vo_parent",
+                    "parent_uuid": "a" * 24,
+                    "крупность": "Средний план",
+                    "движение": "статика",
+                    "набор": "SET_08",
+                },
+            },
+        }
+    ]
+    cells = group_vo_cells(frames)
+    fields = cells[0]["shots"][0]["fields"]
+    assert fields["action"] == "кладёт жалобу"
+    assert fields["size"] == "Средний план"
+    assert fields["move"] == "статика"
+    assert "SET_08" in fields["set"]
+
+
 def test_empty_vo_shots_attach_to_parent_cell() -> None:
     frames = [
         {
@@ -576,4 +604,48 @@ def test_display_vo_split_does_not_mutate_frames() -> None:
     assert frames[1]["voiceover_text"] == ""
     assert cells[0]["shots"][1]["voiceover_in_shot"] != "—"
     assert cells[0]["shots"][1]["voiceover_in_shot"] != ""
+
+
+def test_menu_uses_vo_shot_copy_not_split_column() -> None:
+    cell = "Первая фраза целиком. Вторая фраза целиком."
+    frames = [
+        {
+            "id": 1,
+            "number": 1,
+            "sort_key": 10,
+            "uuid": "p1",
+            "voiceover_text": cell,
+            "duration_seconds": 2,
+            "attrs": {
+                "camera_subdivide": {
+                    "role": "vo_parent",
+                    "parent_uuid": "p1",
+                    "shot_index": 1,
+                    "vo_shot": "Первая фраза целиком.",
+                }
+            },
+        },
+        {
+            "id": 2,
+            "number": 2,
+            "sort_key": 20,
+            "uuid": "c1",
+            "voiceover_text": "",
+            "duration_seconds": 2,
+            "attrs": {
+                "camera_subdivide": {
+                    "role": "shot",
+                    "parent_uuid": "p1",
+                    "shot_index": 2,
+                    "vo_shot": "Вторая фраза целиком.",
+                }
+            },
+        },
+    ]
+    cells = group_vo_cells(frames)
+    assert frames[0]["voiceover_text"] == cell
+    assert frames[1]["voiceover_text"] == ""
+    assert cells[0]["voiceover"] == cell
+    assert cells[0]["shots"][0]["voiceover_in_shot"] == "Первая фраза целиком."
+    assert cells[0]["shots"][1]["voiceover_in_shot"] == "Вторая фраза целиком."
 

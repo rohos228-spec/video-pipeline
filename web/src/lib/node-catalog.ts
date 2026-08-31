@@ -82,7 +82,7 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
   topic: {
     type: "topic",
     label: "Тема ролика",
-    description: "Тема, с которой начинается ролик (как в боте перед планом).",
+    description: "Тема задаёт направление всего ролика.",
     category: "planning",
     accent: "25 45% 72%",
     iconKey: "plan",

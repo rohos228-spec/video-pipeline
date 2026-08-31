@@ -81,9 +81,10 @@ async def send_hitl_text(
     payload: dict | None = None,
     frame_id: int | None = None,
 ) -> HITLRequest:
-    import html as _html
-
-    req = await create_hitl(session, project, kind, payload=payload, frame_id=frame_id)
+    p = dict(payload or {})
+    if "text" not in p and text:
+        p["text"] = text
+    req = await create_hitl(session, project, kind, payload=p, frame_id=frame_id)
     if not settings.telegram_active:
         await publish_hitl_event(
             project.id,
@@ -242,6 +243,8 @@ async def send_hitl_video(
 ) -> HITLRequest:
     from aiogram.types import FSInputFile
 
+    payload = dict(payload or {})
+    payload.setdefault("video_path", video_path)
     req = await create_hitl(session, project, kind, payload=payload, frame_id=frame_id)
     if not settings.telegram_active:
         await publish_hitl_event(

@@ -48,16 +48,16 @@ IMAGE_GENERATORS: list[OptionChoice] = [
         "Outsee · быстрая/дешёвая Banana 2",
     ),
     OptionChoice(
-        "nano_banana_pro", "+ Nano Banana Pro", "nano-banana-pro",
-        "Grsai · Лучшая модель на рынке (TOP)",
+        "nano_banana_pro", "Nano Banana Pro", "nano-banana-pro",
+        "Google · Nano Banana Pro",
     ),
     OptionChoice(
-        "nano_banana_fast", "+ Nano Banana Fast", "nano-banana-fast",
-        "Grsai · быстрый Nano Banana",
+        "nano_banana_fast", "Nano Banana Fast", "nano-banana-fast",
+        "Google · быстрый Nano Banana",
     ),
     OptionChoice(
-        "nano_banana", "+ Nano Banana", "nano-banana",
-        "Grsai · быстрая и точная",
+        "nano_banana", "Nano Banana", "nano-banana",
+        "Google · Nano Banana",
     ),
     OptionChoice(
         "gpt_image_2_vip", "+ GPT Image 2", "gpt-image-2-vip",
@@ -174,20 +174,16 @@ def clamp_image_resolution_id(
 
 VIDEO_GENERATORS: list[OptionChoice] = [
     OptionChoice(
-        "sora_2", "+ Sora 2", "sora-2",
-        "Grsai · OpenAI Sora 2 (10/15с, звук)",
-    ),
-    OptionChoice(
         "veo_3_1_lite", "+ Veo 3.1 Lite", "veo-3-1-lite",
-        "Outsee · Veo 3.1 Lite",
+        "Outsee · Google Veo 3.1 Lite",
     ),
     OptionChoice(
         "veo_3_1_fast", "+ Veo 3.1 Fast", "veo-3-1-fast",
-        "Grsai · veo3.1-fast",
+        "Outsee · Google Veo 3.1 Fast",
     ),
     OptionChoice(
         "veo_3_fast", "+ Veo 3 Fast", "veo-3-fast",
-        "Grsai · alias veo3.1-fast (исторический id)",
+        "Outsee · Google Veo 3.1 Fast (alias)",
     ),
     OptionChoice(
         "kling_3", "Kling 3.0", "kling-3-0",

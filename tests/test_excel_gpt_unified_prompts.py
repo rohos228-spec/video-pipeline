@@ -28,14 +28,14 @@ def prompts_root(tmp_path, monkeypatch):
     return root
 
 
-def test_list_merges_excel_gpt_and_legacy_enrich(prompts_root):
+def test_list_only_unified_excel_gpt_folder(prompts_root):
     write_prompt("enrich_1", "from_slot1", "a")
     write_prompt("excel_gpt", "from_unified", "b")
-    write_prompt("enrich_2", "legacy_only", "c")
+    (prompts_root / "05b_enrich_2" / "legacy_only.md").write_text("c", encoding="utf-8")
     names = list_excel_gpt_prompts()
-    assert "from_slot1" in names
     assert "from_unified" in names
-    assert "legacy_only" in names
+    assert "from_slot1" in names  # write_prompt камнями кладёт в unified
+    assert "legacy_only" not in names
     assert list_prompts("enrich_3") == names
 
 

@@ -1,7 +1,12 @@
+﻿<#
+Return-PromptsFromStash
+#>
+param(
+    [Parameter(Mandatory = $true)
+
 # Shared helper: after git reset --hard, put dirty prompts/* back from a studio stash.
 # No data/ copy, no overlay. Call: powershell -File Return-PromptsFromStash.ps1 -Root ... -StashRef ...
-param(
-    [Parameter(Mandatory = $true)]
+]
     [string]$Root,
     [string]$StashRef = "stash@{0}",
     [switch]$Quiet

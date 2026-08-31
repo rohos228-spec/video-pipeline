@@ -85,6 +85,48 @@ def _find_shot2_video(videos_dir: Path, frame_number: int) -> Path | None:
     return candidates[0]
 
 
+def _person_ids_from_attrs(attrs: dict[str, Any] | None) -> list[str]:
+    src = attrs if isinstance(attrs, dict) else {}
+    raw = (
+        src.get("characters")
+        or src.get("персонажи")
+        or src.get("persons")
+        or ""
+    )
+    return _parse_ref_ids(raw)
+
+
+def _character_refs_for_ids(
+    person_ids: list[str],
+    *,
+    chars_dir: Path,
+    names: dict[str, str],
+) -> list[dict[str, str | None]]:
+    refs: list[dict[str, str | None]] = []
+    for ref_id in person_ids:
+        image_path = _find_ref_file_any(chars_dir, ref_id)
+        refs.append(
+            {
+                "id": ref_id,
+                "name": names.get(ref_id.lower(), ref_id),
+                "image_url": _preview_url(image_path),
+            }
+        )
+    return refs
+
+
+def _names_from_excel_cells(excel_by_frame: dict[int, dict[str, Any]]) -> dict[str, str]:
+    names: dict[str, str] = {}
+    for ex in excel_by_frame.values():
+        for ref in ex.get("character_refs") or []:
+            if not isinstance(ref, dict):
+                continue
+            rid = str(ref.get("id") or "").strip()
+            if rid:
+                names[rid.lower()] = str(ref.get("name") or rid)
+    return names
+
+
 def _character_name_map(xlsx_path: Path) -> dict[str, str]:
     try:
         chars = parse_persons_sheet(xlsx_path)
@@ -132,16 +174,9 @@ def _read_plan_excel_cells_uncached(
             frame_num = col - 2
             if frame_num < 1:
                 continue
-            character_refs: list[dict[str, str | None]] = []
-            for ref_id in person_ids:
-                image_path = _find_ref_file_any(chars_dir, ref_id)
-                character_refs.append(
-                    {
-                        "id": ref_id,
-                        "name": names.get(ref_id.lower(), ref_id),
-                        "image_url": _preview_url(image_path),
-                    }
-                )
+            character_refs = _character_refs_for_ids(
+                person_ids, chars_dir=chars_dir, names=names
+            )
             out[frame_num] = {
                 "characters": ", ".join(person_ids),
                 "voiceover_excel": voice,
@@ -556,6 +591,16 @@ async def build_montage_board(
         shot2_timeline_start = shot1_timeline_end
         shot2_timeline_end = vo_end if has_shot2 else None
         prompts = prompts_by_frame.get(fr.number) or {}
+        db_ids = _person_ids_from_attrs(fr.attrs)
+        if db_ids:
+            char_names = _names_from_excel_cells(excel_by_frame)
+            characters = ", ".join(db_ids)
+            character_refs = _character_refs_for_ids(
+                db_ids, chars_dir=chars_dir, names=char_names
+            )
+        else:
+            characters = ex.get("characters") or ""
+            character_refs = ex.get("character_refs") or []
 
         rows.append(
             {
@@ -563,8 +608,8 @@ async def build_montage_board(
                 "number": fr.number,
                 "voiceover_text": fr.voiceover_text,
                 "voiceover_excel": ex.get("voiceover_excel") or "",
-                "characters": ex.get("characters") or "",
-                "character_refs": ex.get("character_refs") or [],
+                "characters": characters,
+                "character_refs": character_refs,
                 "start_ts": fr.start_ts,
                 "end_ts": fr.end_ts,
                 "duration_seconds": fr.duration_seconds,

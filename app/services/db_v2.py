@@ -652,11 +652,14 @@ async def project_graph(session: AsyncSession, project: Project) -> dict[str, An
     # URL превью картинок кадров (scenes/frame_NNN_*.png) — для «Хронологии»
     # в «Базе»: фильм-стрип с реальными кадрами, как на доске монтажа.
     from app.services.montage_board import _preview_url  # lazy: против циклов
-    from app.services.plan_shot2 import find_shot1_image
+    from app.services.plan_shot2 import find_shot1_image, find_shot2_image
 
     scenes_dir = project.data_dir / "scenes"
 
     def frame_dto(fr: Frame) -> dict[str, Any]:
+        img = find_shot1_image(scenes_dir, fr.number) or find_shot2_image(
+            scenes_dir, fr.number
+        )
         return {
             "id": fr.id,
             "uuid": fr.uuid,
@@ -669,7 +672,7 @@ async def project_graph(session: AsyncSession, project: Project) -> dict[str, An
             "meaning": fr.meaning,
             "image_prompt": fr.image_prompt,
             "animation_prompt": fr.animation_prompt,
-            "image_url": _preview_url(find_shot1_image(scenes_dir, fr.number)),
+            "image_url": _preview_url(img),
             "attrs": fr.attrs or {},
             "texts": [
                 {

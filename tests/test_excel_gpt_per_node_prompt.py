@@ -62,6 +62,39 @@ def test_excel_gpt_without_node_key_falls_back_to_override() -> None:
     assert source == "override"
 
 
+def test_excel_gpt_missing_node_slot_does_not_steal_qc() -> None:
+    """check_script без своего слота не должен брать last-wins QC соседней ноды."""
+    meta = {
+        "prompt_slot_variants": {
+            "n_excel_gpt_fw_script": {"main": "script_writer_ru"},
+            "n_excel_gpt_fw_frames": {"main": "frame_prompts_continuity_ru"},
+            "n_excel_gpt_fw_qc": {"main": "prompts_qc_continuity_ru"},
+        }
+    }
+    with patch(
+        "app.services.prompt_library.excel_gpt_prompt_exists",
+        side_effect=lambda name: name
+        in {
+            "script_writer_ru",
+            "frame_prompts_continuity_ru",
+            "prompts_qc_continuity_ru",
+            "default",
+        },
+    ), patch(
+        "app.services.prompt_active_global.get_global_active",
+        return_value=None,
+    ):
+        name, source = resolve_project_prompt_with_source(
+            {},
+            "excel_gpt",
+            meta=meta,
+            node_key="n_excel_gpt_fw_check_script",
+            slot_id="main",
+        )
+    assert name != "prompts_qc_continuity_ru"
+    assert source in {"default", "global"}
+
+
 def test_excel_gpt_node_key_defaults_slot_to_main() -> None:
     meta = {"prompt_slot_variants": {"n_excel_gpt_2": {"main": "only_slot2"}}}
     with patch(

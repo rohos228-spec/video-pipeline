@@ -141,7 +141,22 @@ def test_claim_shot1_waits_for_cell_parent_png(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path / "data")
     out = tmp_path / "scenes"
     out.mkdir()
-    p = Project(slug="c", topic="t", status=ProjectStatus.generating_images, meta={})
+    p = Project(
+        slug="c",
+        topic="t",
+        status=ProjectStatus.generating_images,
+        meta={
+            "canvas_graph": {
+                "nodes": [
+                    {
+                        "id": "n_excel_gpt_fw_shots",
+                        "data": {"groupId": "script_frames_qc"},
+                    }
+                ],
+                "edges": [],
+            }
+        },
+    )
     p.id = 1
     parent = Frame(
         id=10,

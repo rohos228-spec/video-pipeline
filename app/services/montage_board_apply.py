@@ -12,8 +12,10 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 from collections import defaultdict
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Awaitable, Callable
 
 from loguru import logger
@@ -32,7 +34,12 @@ from app.services.montage_board_meta import (
     set_montage_meta,
     touch_applied,
 )
-from app.services.montage_ai_change import rewrite_prompt_via_gpt
+from app.services.montage_ai_change import (
+    character_ids_from_prompt,
+    load_img_pr_master,
+    rewrite_prompt_via_gpt,
+    write_ai_change_db_card,
+)
 from app.services.montage_board_regen import (
     _frame_by_number,
     execute_image_regen,
@@ -41,7 +48,6 @@ from app.services.montage_board_regen import (
     finalize_video_regen,
     prepare_image_regen,
     prepare_video_regen,
-    resolve_image_prompt,
 )
 
 
@@ -264,8 +270,11 @@ async def _run_op_with_short_sessions(
     shot = int(op.get("shot") or 1)
 
     ai_kind: str | None = None
-    ai_image_prompt = ""
     ai_voiceover = ""
+    ai_img_pr_path = None
+    ai_img_pr_variant = ""
+    ai_db_card_path: Path | None = None
+    ai_project: Any = None
     prep: Any = None
 
     async with session_scope() as session:
@@ -278,8 +287,17 @@ async def _run_op_with_short_sessions(
             if fr is None:
                 raise RuntimeError(f"кадр {frame_number} не найден")
             ai_kind = "image" if op_type == "image_ai_change" else "video"
-            ai_image_prompt = await resolve_image_prompt(session, project, fr, shot)
             ai_voiceover = fr.voiceover_text or ""
+            ai_img_pr_path, ai_img_pr_variant = load_img_pr_master(project)
+            ai_db_card_path = write_ai_change_db_card(
+                project,
+                fr,
+                Path(tempfile.mkdtemp(prefix="ai_change_db_")),
+            )
+            ai_project = SimpleNamespace(
+                id=project.id,
+                meta=getattr(project, "meta", None),
+            )
         elif op_type in (
             "image_regen",
             "image_regen_prompt",
@@ -318,10 +336,13 @@ async def _run_op_with_short_sessions(
 
     if ai_kind is not None:
         new_prompt = await rewrite_prompt_via_gpt(
-            image_prompt=ai_image_prompt,
             voiceover_text=ai_voiceover,
             kind=ai_kind,  # type: ignore[arg-type]
             project_id=project_id,
+            project=ai_project,
+            img_pr_path=ai_img_pr_path,
+            img_pr_variant=ai_img_pr_variant,
+            db_card_path=ai_db_card_path,
         )
 
         async def _prepare_after_gpt():
@@ -339,6 +360,7 @@ async def _run_op_with_short_sessions(
                         new_prompt=new_prompt,
                         correction="",
                         board=board,
+                        ref_person_ids=character_ids_from_prompt(new_prompt),
                     )
                 return await prepare_video_regen(
                     session,

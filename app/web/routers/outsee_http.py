@@ -148,7 +148,10 @@ async def outsee_generate(body: OutseeGenerateBody) -> dict[str, Any]:
             run=run,
         )
     else:
-        model = oh.studio_id_to_outsee_image_slug(body.model)
+        try:
+            model = oh.studio_id_to_outsee_image_slug(body.model)
+        except oh.NanoBananaProOutseeBannedError as e:
+            raise HTTPException(status_code=400, detail=str(e.reason)) from e
 
         async def run(out_path):
             return await oh.generate_image(

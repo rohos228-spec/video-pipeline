@@ -112,7 +112,7 @@ function PlanScriptFields({
       </div>
       <Button
         size="sm"
-        className="w-fit gap-1.5"
+        className="w-fit self-start h-8 px-5 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-500 border border-cyan-400/50 shadow-md shadow-cyan-500/20 rounded-xl transition-all disabled:opacity-50"
         disabled={saving}
         onClick={() => {
           const trimmed = durDraft.trim();
@@ -121,7 +121,7 @@ function PlanScriptFields({
           });
         }}
       >
-        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
         Сохранить
       </Button>
     </section>
@@ -174,7 +174,7 @@ function AudioFields({
       </label>
       <Button
         size="sm"
-        className="w-fit gap-1.5"
+        className="w-fit self-start h-8 px-5 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-500 border border-cyan-400/50 shadow-md shadow-cyan-500/20 rounded-xl transition-all disabled:opacity-50"
         disabled={saving}
         onClick={() =>
           onSave({
@@ -182,7 +182,7 @@ function AudioFields({
           })
         }
       >
-        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
         Сохранить
       </Button>
     </section>
@@ -323,13 +323,13 @@ function AssembleFields({
         </span>
         <span
           className={cn(
-            "mt-0.5 h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors",
-            sendToMain ? "bg-primary" : "bg-muted",
+            "mt-0.5 h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors border shadow-inner",
+            sendToMain ? "bg-primary border-primary" : "bg-zinc-700/90 border-zinc-500/80",
           )}
         >
           <span
             className={cn(
-              "block h-4 w-4 rounded-full bg-white shadow transition-transform",
+              "block h-4 w-4 rounded-full bg-white shadow-md transition-transform",
               sendToMain && "translate-x-4",
             )}
           />
@@ -352,13 +352,13 @@ function AssembleFields({
         </span>
         <span
           className={cn(
-            "mt-0.5 h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors",
-            subsOn ? "bg-primary" : "bg-muted",
+            "mt-0.5 h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors border shadow-inner",
+            subsOn ? "bg-primary border-primary" : "bg-zinc-700/90 border-zinc-500/80",
           )}
         >
           <span
             className={cn(
-              "block h-4 w-4 rounded-full bg-white shadow transition-transform",
+              "block h-4 w-4 rounded-full bg-white shadow-md transition-transform",
               subsOn && "translate-x-4",
             )}
           />
@@ -388,13 +388,13 @@ function AssembleFields({
         </span>
         <span
           className={cn(
-            "mt-0.5 h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors",
-            skipIntroOn ? "bg-primary" : "bg-muted",
+            "mt-0.5 h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors border shadow-inner",
+            skipIntroOn ? "bg-primary border-primary" : "bg-zinc-700/90 border-zinc-500/80",
           )}
         >
           <span
             className={cn(
-              "block h-4 w-4 rounded-full bg-white shadow transition-transform",
+              "block h-4 w-4 rounded-full bg-white shadow-md transition-transform",
               skipIntroOn && "translate-x-4",
             )}
           />
@@ -492,7 +492,7 @@ function SplitFields({
       </div>
       <Button
         size="sm"
-        className="w-fit gap-1.5"
+        className="w-fit self-start h-8 px-5 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-500 border border-cyan-400/50 shadow-md shadow-cyan-500/20 rounded-xl transition-all disabled:opacity-50"
         disabled={saving}
         onClick={() =>
           onSave({
@@ -503,9 +503,81 @@ function SplitFields({
           })
         }
       >
-        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
         Сохранить
       </Button>
+    </section>
+  );
+}
+
+function MediaStreamsFields({
+  metaRecord,
+  onSave,
+  saving,
+  nodeType,
+}: {
+  metaRecord: Record<string, unknown>;
+  onSave: (metaPatch: Record<string, unknown>) => void;
+  saving: boolean;
+  nodeType: "images" | "videos";
+}) {
+  const currentStreams = Number(
+    metaRecord.outsee_streams ?? metaRecord.img_streams ?? 2,
+  );
+  const [streams, setStreams] = useState<number>(currentStreams);
+
+  useEffect(() => {
+    setStreams(
+      Number(metaRecord.outsee_streams ?? metaRecord.img_streams ?? 2),
+    );
+  }, [metaRecord.outsee_streams, metaRecord.img_streams]);
+
+  const handleSelect = (val: number) => {
+    setStreams(val);
+    onSave({
+      ...metaRecord,
+      img_streams: val,
+      outsee_streams: val,
+    });
+  };
+
+  return (
+    <section className="flex flex-col gap-3 rounded-lg border border-white/10 bg-white/[0.02] p-4">
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">
+          Параллельные потоки генерации
+        </h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Количество одновременных задач в Outsee API для генерации {nodeType === "images" ? "картинок" : "видео"}.
+        </p>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 pt-1">
+        {[1, 2, 3, 4].map((num) => (
+          <Button
+            key={num}
+            type="button"
+            size="sm"
+            variant={streams === num ? "default" : "outline"}
+            disabled={saving}
+            className={cn(
+              "h-8 px-3.5 text-xs",
+              streams === num
+                ? "bg-primary text-black font-semibold shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+            onClick={() => handleSelect(num)}
+          >
+            {num} {num === 1 ? "поток" : num < 5 ? "потока" : "потоков"}
+            {num === 2 && <span className="ml-1 opacity-60 text-[10px]">(дефолт)</span>}
+            {num === 4 && <span className="ml-1 opacity-60 text-[10px]">(макс)</span>}
+          </Button>
+        ))}
+      </div>
+
+      <p className="text-[11px] text-muted-foreground">
+        💡 При выборе 3 или 4 потоков генерация кадров завершается быстрее, если ваш API-токен поддерживает параллельные запросы.
+      </p>
     </section>
   );
 }
@@ -523,7 +595,9 @@ export function NodeStepParamsPanel({
     nodeType === "script" ||
     nodeType === "split" ||
     nodeType === "audio" ||
-    nodeType === "assemble"
+    nodeType === "assemble" ||
+    nodeType === "images" ||
+    nodeType === "videos"
       ? nodeType
       : null;
 
@@ -555,12 +629,17 @@ export function NodeStepParamsPanel({
   const persist = (
     patch: PlanScriptStepParams | SplitStepParams | AudioStepParams | AssembleStepParams,
   ) => {
+    if (step === "images" || step === "videos" || !step) return;
     save.mutate({ meta: withNodeStepParams(metaRecord, step, patch) });
+  };
+
+  const persistMeta = (metaPatch: Record<string, unknown>) => {
+    save.mutate({ meta: metaPatch });
   };
 
   return (
     <div className="flex flex-col gap-4">
-      {step !== "audio" && step !== "assemble" ? (
+      {step !== "audio" && step !== "assemble" && step !== "images" && step !== "videos" ? (
         <p className="text-xs text-muted-foreground">
           Эти параметры автоматически добавляются в конец сопроводительного текста для генератора
           (вкладка «Промпты»).
@@ -601,6 +680,14 @@ export function NodeStepParamsPanel({
           metaRecord={metaRecord}
           onSave={persist}
           saving={save.isPending}
+        />
+      ) : null}
+      {step === "images" || step === "videos" ? (
+        <MediaStreamsFields
+          metaRecord={metaRecord}
+          onSave={persistMeta}
+          saving={save.isPending}
+          nodeType={step}
         />
       ) : null}
     </div>

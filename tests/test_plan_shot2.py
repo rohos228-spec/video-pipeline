@@ -94,3 +94,20 @@ def test_shot1_and_shot2_disk_helpers(tmp_path: Path) -> None:
     assert find_shot1_image(scenes, 1).name == "frame_001_abc12345.png"
     assert disk_has_shot2_image(scenes, 1)
     assert not disk_has_shot2_image(scenes, 2)
+
+
+def test_shot2_reference_falls_back_to_parent_png(tmp_path: Path) -> None:
+    from app.services.plan_shot2 import find_shot2_reference_image
+
+    scenes = tmp_path / "scenes"
+    scenes.mkdir()
+    (scenes / "frame_001_abc12345.png").write_bytes(b"parent")
+    (scenes / "frame_002_s2_old.png").write_bytes(b"child-s2")
+
+    assert find_shot2_reference_image(scenes, 2) is None
+    got = find_shot2_reference_image(scenes, 2, parent_frame_number=1)
+    assert got is not None
+    assert got.name == "frame_001_abc12345.png"
+    own = find_shot2_reference_image(scenes, 1, parent_frame_number=99)
+    assert own is not None
+    assert own.name == "frame_001_abc12345.png"

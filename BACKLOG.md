@@ -19,7 +19,59 @@
 
 ---
 
+## 🔮 БЭКЛОГ БУДУЩИХ ЭТАПОВ (ПЛАНИРУЕТСЯ К РЕАЛИЗАЦИИ)
+
+### 🌟 ЭТАП 9: Интеллектуальный ИИ-Продюсер (Orchestrator Copilot с памятью и Agentic Tool Calling)
+- [ ] **PRODUCER-01:** Создать движок креативного ИИ-Продюсера (`app/services/orchestrator_producer.py`) с глубоким пониманием драматургии, режиссуры, таймингов и полным доступом к контексту проекта (текущая тема, список кадров, тайминги, персонажи, предметы).
+- [ ] **PRODUCER-02:** Реализовать долгосрочную память диалога по проекту в SQLite (`CopilotMessage` / история сессий) с контекстным сжатием.
+- [ ] **PRODUCER-03:** Реализовать систему вызова функций (Agentic Tools):
+  - `set_topic`: установка/изменение темы проекта
+  - `update_script_frame`: точечная корректировка закадрового текста / параметров кадра
+  - `create_character` / `create_item`: прямое добавление сущностей в БД
+  - `trigger_node_run`: запуск или перезапуск любой ноды конвейера
+  - `diagnose_node_error`: чтение логов и автолечение сбоев генераторов
+- [ ] **PRODUCER-04:** Реализовать FastAPI SSE-роутер `/api/producer/chat` для потокового вывода мыслей в реальном времени.
+- [ ] **PRODUCER-05:** Создать UI-панель **«🎬 ИИ-Продюсер»** на канвасе с быстрыми чипами, карточками интерактивных действий (*«Применить в проект»*, *«Запустить ноду»*) и поддержкой Markdown.
+
+---
+
 ## ✅ ВЫПОЛНЕННЫЕ ЭТАПЫ И ЗАДАЧИ (ПОЛНАЯ ХРОНОЛОГИЯ)
+
+### 🌟 ЭТАП 11: Полная очистка кодовой базы от Grsai и унификация на Outsee & KIE (31 Августа 2026)
+- [x] **GRSAI-01:** Полностью удалены неиспользуемые модули бэкенда Grsai: `app/bots/grsai.py`, `app/services/grsai_pricing.py`, `app/web/routers/grsai.py`, а также устаревшие тесты `tests/test_grsai_client.py`, `tests/test_grsai_pricing.py`.
+- [x] **GRSAI-02:** Очищены настройки `app/settings.py` (удалены `GRSAI_API_KEY`, `GRSAI_BASE_URL`, `GRSAI_DEFAULT_*`, `CREATE_MAX_PARALLEL_GRSAI`), провайдеры по умолчанию переведены строго на `outsee` и `kie`.
+- [x] **GRSAI-03:** Очищены пайплайн-шаги генерации (`generate_hero.py`, `generate_images.py`, `generate_videos.py`, `outsee_retry.py`, `montage_board_regen.py`, `img_streams.py`, `create_jobs.py`, `error_catalog.py`, `text_llm_catalog.py`, `vibecode_catalog.py`).
+- [x] **GRSAI-04:** Очищен фронтенд (`outsee-create-workspace.tsx`, `api.ts`, `node-model-catalog.ts`, `node-model-picker.tsx`, `outsee-catalog.ts`, `create-pricing.ts`, `assemble-montage-board.tsx`), удалены устаревшие запросы котировок Grsai, бейджи `+GRSAI` и подсказки.
+- [x] **GRSAI-05:** Очищены конфигурационные файлы `.env`, `.env.example`, `ai-pack/03_config/env.example`.
+- [x] **VERIFY-01:** Проведено комплексное тестирование: полная сборка Next.js `npm run build` завершена со 100% успехом (0 errors), все целевые unit-тесты `pytest` пройдены успешно.
+
+---
+
+### 🌟 ЭТАП 10: Комплексный бенчмарк видео-моделей, реорганизация каталога и валидация файлов (31 Августа 2026)
+- [x] **BENCH-01:** Завершено 100% живое тестирование 20 конфигураций видео-генераторов (Text-to-Video, Image-to-Video, Audio-Native, Lipsync, Topaz Video AI). Создан бенчмарк-отчёт `video_models_benchmark_report.md` с точными замерами времени, стоимости и веса роликов.
+- [x] **CATALOG-01:** Полностью переработана структура каталога моделей в Create Workspace (`outsee-create-workspace.tsx`): вместо деления по бэкендам введено деление на **«🔥 ТОП МОДЕЛИ»** и **«ДРУГИЕ И СПЕЦИАЛЬНЫЕ МОДЕЛИ»**.
+- [x] **CATALOG-02:** Обновлены описания всех моделей в `app/services/kie_catalog.py` и `web/src/lib/outsee-catalog.ts` на понятный русский язык с указанием разработчиков (Google, ByteDance, Alibaba, MiniMax, Kuaishou), бейджей (`ТОП`, `⚡ 45с`, `🔊 Звук`, `1080p`, `2K/4K`).
+- [x] **CATALOG-03:** Настроены бейджи и группировка ТОП моделей для раздела генерации картинок (`Nano Banana 2`, `GPT Image 2`, `Flux 2 Pro`).
+- [x] **VALIDATION-01:** Добавлена клиентская валидация загружаемых файлов в дропзоне (`KieAttachButton`): проверка на 0 байт, минимальный размер аудио (от 1 КБ) и видео, исключающая сбои 400/422 при генерации аватаров и апскейле.
+
+---
+
+### 🌟 ЭТАП 8: Интерактивный просмотр результатов нод и полировка Студии (23 Августа 2026)
+- [x] **RESULTS-01:** Вкладка «Результаты» в `node-studio.tsx` переведена на компонент `NodeResultViewBody` с отображением сгенерированных промптов кадров (`FramePromptsView`) вместо сообщения «Артефактов пока нет».
+- [x] **UI-23:** Убрана дублирующая кнопка «Excel таблица» из подвкладок «Промпты» в `node-studio.tsx` для устранения визуального шума.
+- [x] **UI-24:** Исправлена контрастность активного состояния кнопки «Сопроводительный текст» (задан чёткий тёмный шрифт `text-black font-semibold`).
+- [x] **UI-25:** Переименована кнопка «Сбросить override» $\rightarrow$ «Сбросить» в `gpt-text-panel.tsx`.
+
+---
+
+### 🌟 ЭТАП 7: Мета-Агент — Интеллектуальный конструктор системных промптов (22 Августа 2026)
+- [x] **META-01:** Создан сервис `app/services/meta_prompt_compiler.py` с базой знаний всех нод пайплайна (`excel_gpt`, `scene_d`, `hero_style`, `items`, `img_pr`, `anim_pr`, `plan`, `script`), поддержкой No-Chat guards, плейсхолдеров и Few-Shot синтеза.
+- [x] **META-02:** Создан FastAPI роутер `app/web/routers/meta_agent.py` (`POST /api/meta-agent/compile`, `POST /api/meta-agent/save-and-activate`).
+- [x] **META-03:** Создан UI-компонент `MetaPromptDialog` (`web/src/components/studio/meta-prompt-dialog.tsx`) с быстрыми шаблонами под каждый шаг, живой статистикой валидации и сохранением.
+- [x] **META-04:** Кнопка **«✨ Создать с Агентом»** интегрирована во все панели промптов Студии (`PromptFilesPanel` / `node-studio.tsx`).
+- [x] **TEST-11:** Добавлен пакет тестов `tests/test_meta_prompt_compiler.py` (3 теста, 100% GREEN).
+
+---
 
 ### 🌟 ЭТАП 6: Ручной ввод предметов, исправление генератора и полировка канваса (21 Августа 2026)
 - [x] **ITEMS-01:** Создан компонент `ItemsConfigPanel` (`web/src/components/canvas/items-config-panel.tsx`) для ручного ввода описаний предметов (количество 1..5, валидация, сохранение в `project.item_descriptions`).

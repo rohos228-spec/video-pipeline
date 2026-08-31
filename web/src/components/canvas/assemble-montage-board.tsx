@@ -845,21 +845,21 @@ function DualRangeSlider({
   if (fileMax <= 0) return null;
 
   return (
-    <div className="relative isolate mt-2 overflow-hidden pt-1">
+    <div className="relative isolate mt-2 px-1 py-2">
       <div
         ref={trackRef}
-        className="relative mx-2 h-2 rounded-full bg-white/10"
+        className="relative mx-1.5 h-2.5 rounded-full bg-white/15"
         role="presentation"
       >
         <div
-          className="absolute top-0 h-2 rounded-full bg-amber-500/70"
+          className="absolute top-0 h-2.5 rounded-full bg-amber-500/80 shadow-sm"
           style={{ left: `${startPct}%`, width: `${Math.max(0, endPct - startPct)}%` }}
         />
         <button
           type="button"
           className={cn(
-            "absolute top-1/2 z-10 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-amber-400 bg-amber-200 shadow",
-            active === "start" && "scale-110",
+            "absolute top-1/2 z-10 h-4.5 w-4.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-amber-400 bg-amber-200 shadow-md transition-transform",
+            active === "start" && "scale-125 ring-2 ring-amber-400/50",
           )}
           style={{ left: `${startPct}%` }}
           aria-label="Начало фрагмента"
@@ -871,8 +871,8 @@ function DualRangeSlider({
         <button
           type="button"
           className={cn(
-            "absolute top-1/2 z-10 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-amber-400 bg-amber-200 shadow",
-            active === "end" && "scale-110",
+            "absolute top-1/2 z-10 h-4.5 w-4.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-amber-400 bg-amber-200 shadow-md transition-transform",
+            active === "end" && "scale-125 ring-2 ring-amber-400/50",
           )}
           style={{ left: `${endPct}%` }}
           aria-label="Конец фрагмента"
@@ -899,7 +899,7 @@ function VideoTrimSlider({
 }) {
   if (sceneUse == null) {
     return (
-      <p className="mt-2 text-[10px] text-muted-foreground">
+      <p className="mt-2 text-xs text-muted-foreground">
         Нет меток озвучки для расчёта длительности сцены
       </p>
     );
@@ -910,12 +910,12 @@ function VideoTrimSlider({
   const usedLen = Math.max(0, current.end - current.start);
 
   return (
-    <div className="mt-2 rounded-lg border border-white/10 bg-black/25 p-2">
-      <p className="text-[11px] text-foreground">
+    <div className="mt-2 rounded-xl border border-zinc-800 bg-zinc-950/70 p-2.5 pb-3 shadow-inner">
+      <p className="text-xs text-zinc-300 font-medium">
         В сцене:{" "}
-        <span className="font-mono font-semibold text-white">{formatSecShort(usedLen)}</span>{" "}
-        с из{" "}
-        <span className="font-mono font-semibold text-white">{formatSecShort(sceneUse)}</span> с
+        <span className="font-mono font-bold text-amber-300">{formatSecShort(usedLen)}</span>{" "}
+        из{" "}
+        <span className="font-mono font-bold text-zinc-100">{formatSecShort(sceneUse)}</span> с
       </p>
       <DualRangeSlider
         fileMax={fileMax}
@@ -1174,6 +1174,7 @@ export function AssembleMontageBoard({
   const lastApplyToastKeyRef = useRef("");
   /** Не принимать done/error, пока хотя бы раз не увидели running (гонка stale meta). */
   const applySeenRunningRef = useRef(false);
+  const lastPatchedPathRef = useRef("");
   const lastMontageToastKeyRef = useRef("");
   const lastRecoverToastKeyRef = useRef("");
 
@@ -1187,9 +1188,8 @@ export function AssembleMontageBoard({
     enabled: open && projectId != null,
     retry: 2,
     retryDelay: (n) => Math.min(1000 * 2 ** n, 4000),
-    // Не долбить API+ffprobe при каждом открытии панели (150+ клипов).
-    refetchOnMount: false,
-    staleTime: 60_000,
+    refetchOnMount: "always",
+    staleTime: 0,
     // НЕ placeholderData/keepPreviousData: иначе очередь/кадры чужого проекта
     // остаются на кнопке «Применить правки» при переключении.
   });
@@ -1372,7 +1372,7 @@ export function AssembleMontageBoard({
     mutationFn: () => {
       const ops = pendingOpsRef.current;
       if (ops.length > 0) {
-        toast.message(`Генерация: ${ops.length} операций… (Outsee/Grsai API)`);
+        toast.message(`Генерация: ${ops.length} операций… (Outsee API)`);
       }
       return api.applyMontageBoard(projectId!, {
         video_trims: trims,
@@ -1393,6 +1393,7 @@ export function AssembleMontageBoard({
         pendingOpsRef.current = [];
         setFailedHighlights([]);
         applySeenRunningRef.current = false;
+        lastPatchedPathRef.current = "";
         setApplyRunning(true);
         lastApplyToastKeyRef.current = "";
         toast.message(res.message || `Генерация ${queued} операций через API…`);
@@ -1734,14 +1735,35 @@ export function AssembleMontageBoard({
         if (status === "running") {
           applySeenRunningRef.current = true;
           if (typeof doneOps === "number" && typeof totalOps === "number") {
-            // Не invalidate доски на каждый тик — иначе UI лагает (ffprobe/xlsx).
-            // Обновление кадров приходит по WS (refresh_board).
             if (doneOps !== lastDone) {
               lastDone = doneOps;
               startTransition(() => {
                 setApplyProgress({ done: doneOps, total: totalOps });
               });
             }
+          }
+          // WS может не дойти — подменяем превью из apply-status.
+          const lastPath = st.job?.last_path;
+          const lastHl = st.job?.last_highlight;
+          const lastFr = Number(st.job?.last_frame_number);
+          const lastShot: 1 | 2 = Number(st.job?.last_shot) === 2 ? 2 : 1;
+          if (
+            typeof lastPath === "string" &&
+            lastPath &&
+            lastPath !== lastPatchedPathRef.current &&
+            typeof lastHl === "string" &&
+            lastHl &&
+            Number.isFinite(lastFr) &&
+            lastFr >= 1
+          ) {
+            lastPatchedPathRef.current = lastPath;
+            queryClient.setQueryData<MontageBoardDTO>(
+              ["montage-board", projectId],
+              (old) =>
+                old
+                  ? patchBoardFrameMedia(old, lastFr, lastShot, lastPath, lastHl)
+                  : old,
+            );
           }
           return;
         }
@@ -2346,17 +2368,38 @@ export function AssembleMontageBoard({
                               <span>{row.label}</span>
                             </button>
                           </td>
-                          {frames.map((fr) => (
+                          {frames.map((fr) => {
+                            const isMediaRow =
+                              row.key.startsWith("image") || row.key.startsWith("video");
+                            const mediaUrl =
+                              row.key === "image1"
+                                ? fr.image_shot1_url
+                                : row.key === "image2"
+                                  ? fr.image_shot2_url
+                                  : row.key === "video1"
+                                    ? fr.video_shot1_url
+                                    : row.key === "video2"
+                                      ? fr.video_shot2_url
+                                      : "";
+                            return (
                             <td
-                              key={`${fr.frame_id}-${row.key}`}
+                              key={
+                                isMediaRow
+                                  ? `${fr.frame_id}-${row.key}-${mediaUrl || ""}`
+                                  : `${fr.frame_id}-${row.key}`
+                              }
                               className={cn(
                                 "relative isolate overflow-hidden px-3 py-2 align-top",
                                 FRAME_COL_CLASS,
                               )}
-                              style={{
-                                contentVisibility: "auto",
-                                containIntrinsicSize: "240px 180px",
-                              }}
+                              style={
+                                isMediaRow
+                                  ? undefined
+                                  : {
+                                      contentVisibility: "auto",
+                                      containIntrinsicSize: "240px 180px",
+                                    }
+                              }
                             >
                               {collapsed ? (
                                 <div className="h-8 rounded-md bg-black/10" />
@@ -2538,7 +2581,8 @@ export function AssembleMontageBoard({
                                 />
                               )}
                             </td>
-                          ))}
+                            );
+                          })}
                         </tr>
                       );
                     })}

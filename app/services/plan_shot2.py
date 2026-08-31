@@ -166,6 +166,27 @@ def find_shot1_image(scenes_dir: Path, frame_number: int) -> Path | None:
     return candidates[0]
 
 
+def find_shot2_reference_image(
+    scenes_dir: Path,
+    frame_number: int,
+    *,
+    parent_frame_number: int | None = None,
+) -> Path | None:
+    """Реф для shot_02: свой shot1, иначе PNG родителя (дочерний кадр покрытия)."""
+    own = find_shot1_image(scenes_dir, frame_number)
+    if own is not None:
+        return own
+    if parent_frame_number is None:
+        return None
+    try:
+        parent_no = int(parent_frame_number)
+    except (TypeError, ValueError):
+        return None
+    if parent_no == int(frame_number):
+        return None
+    return find_shot1_image(scenes_dir, parent_no)
+
+
 def effective_shot_from_artifact(
     meta: dict | None, path: str | Path
 ) -> int:

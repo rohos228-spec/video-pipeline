@@ -15,7 +15,6 @@ def test_require_gpt_api_raises_without_key(monkeypatch) -> None:
     from app.settings import settings
 
     monkeypatch.setattr(settings, "gpt_api_key", "")
-    monkeypatch.setattr(settings, "grsai_api_key", "")
     with pytest.raises(GptApiUnavailable):
         require_gpt_api()
 

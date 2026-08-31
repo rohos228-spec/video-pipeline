@@ -504,40 +504,40 @@ export function ProjectSidebar({
       />
       <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] px-3.5 py-3.5">
         <div className="flex min-w-0 items-center gap-2.5">
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.03] shadow-sm">
-            <FolderOpen className="h-3.5 w-3.5 text-muted-foreground/80" strokeWidth={1.5} />
+          <div className="flex h-8 w-8 items-center justify-center rounded-xl border border-zinc-700/60 bg-zinc-800/60 shadow-sm">
+            <FolderOpen className="h-4 w-4 text-zinc-300" strokeWidth={1.75} />
           </div>
           <div className="min-w-0">
-            <span className="block text-[11px] font-normal tracking-[0.14em] text-muted-foreground/90 uppercase">
+            <span className="block text-xs font-bold tracking-wider text-zinc-200 uppercase">
               Проекты
             </span>
             {projects.data && (
-              <span className="text-[10px] text-muted-foreground/55">
-                {roots.length} {roots.length === 1 ? "проект" : "проектов"}
+              <span className="text-xs text-zinc-400 font-medium">
+                {roots.length} {roots.length === 1 ? "проект" : roots.length > 1 && roots.length < 5 ? "проекта" : "проектов"}
               </span>
             )}
           </div>
         </div>
-        <div className="flex items-center gap-0.5 rounded-lg border border-white/[0.06] bg-white/[0.02] p-0.5">
+        <div className="flex items-center gap-1">
           <Button
             type="button"
             size="icon"
             variant="ghost"
-            className="h-7 w-7 rounded-md text-muted-foreground hover:bg-white/[0.06] hover:text-foreground"
+            className="h-8 w-8 rounded-lg bg-zinc-800/80 text-zinc-300 hover:bg-zinc-700 hover:text-white border border-zinc-700/60 shadow-sm"
             title="Новая папка"
             onClick={() => setNewFolderOpen(true)}
           >
-            <FolderPlus className="h-3.5 w-3.5" strokeWidth={1.5} />
+            <FolderPlus className="h-4 w-4" strokeWidth={1.75} />
           </Button>
           <Button
             type="button"
             size="icon"
             variant="ghost"
-            className="h-7 w-7 rounded-md text-muted-foreground hover:bg-white/[0.06] hover:text-foreground"
+            className="h-8 w-8 rounded-lg bg-zinc-800/80 text-zinc-300 hover:bg-zinc-700 hover:text-white border border-zinc-700/60 shadow-sm"
             title="Скрыть панель"
             onClick={onToggleCollapsed}
           >
-            <PanelLeftClose className="h-3.5 w-3.5" strokeWidth={1.5} />
+            <PanelLeftClose className="h-4 w-4" strokeWidth={1.75} />
           </Button>
           <NewProjectWizard
             folderId={activeFolderId}
@@ -545,10 +545,10 @@ export function ProjectSidebar({
               <Button
                 size="icon"
                 variant="ghost"
-                className="h-7 w-7 rounded-md text-muted-foreground hover:bg-white/[0.06] hover:text-foreground"
+                className="h-8 w-8 rounded-lg bg-emerald-600/90 text-white hover:bg-emerald-500 border border-emerald-400/50 shadow-sm shadow-emerald-500/20"
                 title="Новый проект"
               >
-                <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+                <Plus className="h-4 w-4" strokeWidth={2} />
               </Button>
             }
             onCreated={(p) => onSelect(p.id)}
@@ -557,13 +557,13 @@ export function ProjectSidebar({
       </div>
 
       {newFolderOpen && (
-        <div className="flex items-center gap-1.5 border-b border-white/[0.06] bg-white/[0.02] px-3 py-2.5">
+        <div className="flex items-center gap-1.5 border-b border-white/[0.06] bg-zinc-900/60 px-3 py-2.5">
           <Input
             autoFocus
             placeholder="Название папки…"
             value={newFolderName}
             onChange={(e) => setNewFolderName(e.target.value)}
-            className="h-8 border-white/[0.08] bg-background/40 text-xs font-light placeholder:text-muted-foreground/50"
+            className="h-8.5 border-zinc-700 bg-zinc-950/80 text-xs font-medium text-zinc-100 placeholder:text-zinc-500"
             onKeyDown={(e) => {
               if (e.key === "Enter" && newFolderName.trim()) {
                 createFolderMutation.mutate(newFolderName.trim());
@@ -573,7 +573,7 @@ export function ProjectSidebar({
           />
           <Button
             size="sm"
-            className="h-8 shrink-0 px-3 text-xs font-normal"
+            className="h-8.5 shrink-0 px-3 text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500"
             disabled={!newFolderName.trim() || createFolderMutation.isPending}
             onClick={() => createFolderMutation.mutate(newFolderName.trim())}
           >
@@ -585,14 +585,14 @@ export function ProjectSidebar({
       <div className="border-b border-white/[0.06] px-3 py-2.5">
         <div className="relative">
           <Search
-            className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/45"
-            strokeWidth={1.5}
+            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400"
+            strokeWidth={1.75}
           />
           <Input
             placeholder="Поиск проектов…"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            className="h-9 rounded-lg border-white/[0.08] bg-white/[0.03] pl-9 text-xs font-light placeholder:text-muted-foreground/45 focus-visible:ring-1 focus-visible:ring-white/10"
+            className="h-9.5 rounded-xl border-zinc-800 bg-zinc-950/70 pl-9.5 text-xs font-medium text-zinc-100 placeholder:text-zinc-400 focus-visible:ring-1 focus-visible:ring-zinc-600"
           />
         </div>
       </div>
@@ -1079,16 +1079,16 @@ function ProjectRow({
               </button>
             </div>
           </div>
-          <div className="mt-2 flex items-center justify-between gap-2">
-            <div className="flex min-w-0 items-center gap-1.5">
+          <div className="mt-2.5 flex items-center justify-between gap-2">
+            <div className="flex shrink-0 items-center gap-1.5 overflow-visible">
               <StatusPill status={project.status} />
               {badge && (
-                <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-px text-[9px] font-normal text-muted-foreground/70">
+                <span className="shrink-0 whitespace-nowrap rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-medium text-zinc-300">
                   {badge}
                 </span>
               )}
             </div>
-            <span className="shrink-0 text-[10px] font-light text-muted-foreground/50 tabular-nums">
+            <span className="shrink-0 text-xs font-medium text-zinc-400 tabular-nums">
               {formatRelativeTime(project.updated_at)}
             </span>
           </div>
@@ -1103,7 +1103,7 @@ function StatusPill({ status }: { status: ProjectStatus }) {
   return (
     <Badge
       variant={variant}
-      className="h-[18px] border-white/[0.06] px-1.5 text-[9px] font-normal tracking-normal normal-case shadow-none"
+      className="inline-flex shrink-0 whitespace-nowrap h-auto py-0.5 px-2.5 border-white/10 text-xs font-semibold tracking-normal normal-case shadow-none"
     >
       {formatProjectStatus(status)}
     </Badge>

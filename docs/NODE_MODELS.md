@@ -100,7 +100,7 @@ Kimi с ноды ≠ Kimi в шапке. Нода: vibecode `kimi-k3` + `VIBECOD
 | GPT Image 2 | `gpt-image-2-vip` | `gpt_image_2_vip` | **`OUTSEE_API_KEY`** |
 | Nano Banana | `nano-banana` | `nano_banana` | `IMAGE_PROVIDER` |
 | Nano Banana 2 (1K/2K/4K) | `nano-banana-2` | `nano_banana_2` | **`OUTSEE_API_KEY`** |
-| Nano Banana Pro (1K/2K/4K) | `nano-banana-pro` | `nano_banana_pro` | `IMAGE_PROVIDER` |
+| Nano Banana Pro (1K/2K/4K) | `nano-banana-pro` | `nano_banana_pro` | **только Grsai** — через Outsee запрещена навсегда |
 | Nano Banana 2 Lite | `nano-banana-2-lite` | `nano_banana_2_lite` | **`OUTSEE_API_KEY`** |
 
 Старый id `gpt-image-2` (Slow) с ноды мапится на `gpt-image-2-vip`.

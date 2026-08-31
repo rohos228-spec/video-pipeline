@@ -36,6 +36,7 @@ from app.services.gpt_client import get_gpt_client
 from app.services.montage_board_assets import (
     finalize_scene_image,
     finalize_scene_video,
+    frame_shot_character_ids,
 )
 from app.services.montage_board_meta import (
     clear_stale_video,
@@ -44,6 +45,7 @@ from app.services.montage_board_meta import (
     trim_key,
 )
 from app.services.outsee_retry import generate_image_with_retries, generate_video_with_retries
+from app.services.vibecode_catalog import resolve_node_media_settings
 from app.services.plan_shot2 import (
     MIN_SHOT2_VIDEO_PROMPT_LEN,
     SHOT2_PROMPT_ATTR,
@@ -86,23 +88,18 @@ class VideoRegenPrep:
 
 
 def _image_api_enabled() -> bool:
-    """Montage image: любой HTTP-путь (grsai / outsee API). Chrome не используем."""
-    from app.bots.grsai import grsai_enabled
+    """Montage image: Outsee HTTP API. Chrome не используем."""
     from app.bots.outsee_http import outsee_api_configured, outsee_api_enabled_for_image
 
-    return bool(
-        grsai_enabled() or outsee_api_enabled_for_image() or outsee_api_configured()
-    )
+    return bool(outsee_api_enabled_for_image() or outsee_api_configured())
 
 
 def _video_api_enabled() -> bool:
-    """Montage video: любой HTTP-путь. Chrome не используем."""
-    from app.bots.grsai import grsai_video_enabled
+    """Montage video: Outsee HTTP API. Chrome не используем."""
     from app.bots.outsee_http import outsee_api_configured, outsee_api_enabled_for_video
 
     return bool(
-        grsai_video_enabled()
-        or outsee_api_enabled_for_video()
+        outsee_api_enabled_for_video()
         or outsee_api_configured()
     )
 
@@ -112,12 +109,12 @@ class _ApiOnlyOutseeStub:
 
     async def generate_image(self, *args: Any, **kwargs: Any) -> Any:
         raise RuntimeError(
-            "montage regen: CDP отключён — нужен OUTSEE_API_KEY / GRSAI_API_KEY"
+            "montage regen: CDP отключён — нужен OUTSEE_API_KEY"
         )
 
     async def generate_video(self, *args: Any, **kwargs: Any) -> Any:
         raise RuntimeError(
-            "montage regen: CDP отключён — нужен OUTSEE_API_KEY / GRSAI_API_KEY"
+            "montage regen: CDP отключён — нужен OUTSEE_API_KEY"
         )
 
     async def retry_image_download(self, *args: Any, **kwargs: Any) -> Any:
@@ -299,6 +296,7 @@ async def prepare_image_regen(
     correction: str | None = None,
     board: dict | None = None,
     pinned_prompt: str | None = None,
+    ref_person_ids: list[str] | None = None,
 ) -> ImageRegenPrep:
     fr = await _frame_by_number(session, project.id, frame_number)
     if fr is None:
@@ -315,7 +313,17 @@ async def prepare_image_regen(
         prompt_text = text
         refs: list[Path] = []
         if shot == 1:
-            refs = await _load_refs_for_frame(session, project, frame_number)
+            if ref_person_ids is not None:
+                override = ref_person_ids
+            else:
+                db_ids = frame_shot_character_ids(fr, 1)
+                override = db_ids if db_ids else None
+            refs = await _load_refs_for_frame(
+                session,
+                project,
+                frame_number,
+                persons_override=override,
+            )
     elif mode == "correction":
         text = (correction or "").strip()
         if not text:
@@ -340,7 +348,13 @@ async def prepare_image_regen(
                 f"нет промта картинки в БД/Excel (кадр {frame_number}, shot {shot})"
             )
         if shot == 1:
-            refs = await _load_refs_for_frame(session, project, frame_number)
+            db_ids = frame_shot_character_ids(fr, 1)
+            refs = await _load_refs_for_frame(
+                session,
+                project,
+                frame_number,
+                persons_override=db_ids if db_ids else None,
+            )
         elif shot == 2:
             ref1 = find_shot1_image(scenes_dir, frame_number)
             refs = [ref1] if ref1 is not None else []
@@ -357,12 +371,19 @@ async def prepare_image_regen(
         file_path = scenes_dir / f"frame_{frame_number:03d}_{short_uuid}.png"
         prompt_id_prefix = build_gen_id_prefix(project.id, frame_number, short_uuid)
 
-    img_gen = IMAGE_GENERATORS_BY_ID.get(project.image_generator or DEFAULTS["image_generator"])
-    ar = ASPECT_RATIOS_BY_ID.get(project.aspect_ratio or DEFAULTS["aspect_ratio"])
-    ir = IMAGE_RESOLUTIONS_BY_ID.get(
-        clamp_image_resolution_id(
-            project.image_generator, project.image_resolution
-        )
+    live = await session.get(Project, project.id)
+    if live is not None:
+        await session.refresh(live, attribute_names=["meta", "image_generator"])
+        project = live
+    media = resolve_node_media_settings(project, node_type="images")
+    img_gid = media["image_generator_id"]
+    img_gen = IMAGE_GENERATORS_BY_ID.get(img_gid)
+    model_slug = img_gen.outsee_slug if img_gen else None
+    logger.info(
+        "montage regen image #{}: модель с ноды images {} ({})",
+        project.id,
+        model_slug,
+        img_gid,
     )
 
     return ImageRegenPrep(
@@ -374,20 +395,19 @@ async def prepare_image_regen(
         refs=refs,
         prompt_id_prefix=prompt_id_prefix,
         gen_id=gen_id,
-        aspect_slug=ar.outsee_slug if ar else "9:16",
-        model_slug=img_gen.outsee_slug if img_gen else None,
-        res_slug=ir.outsee_slug if ir else None,
-        quality_slug=resolve_image_quality_slug(project.image_generator, project.image_quality),
+        aspect_slug=media["aspect_slug"] or "9:16",
+        model_slug=model_slug,
+        res_slug=media["resolution_slug"],
+        quality_slug=media["quality_slug"],
         image_relax=bool(project.image_relax),
     )
 
 
 async def execute_image_regen(prep: ImageRegenPrep) -> Path:
-    """Только HTTP API (Outsee/Grsai). Chrome CDP для монтажа отключён."""
+    """Только HTTP API (Outsee). Chrome CDP для монтажа отключён."""
     if not _image_api_enabled():
         raise RuntimeError(
-            "montage regen image: нет HTTP API — задайте OUTSEE_API_KEY "
-            "(IMAGE_PROVIDER=outsee) или GRSAI_API_KEY (IMAGE_PROVIDER=grsai). "
+            "montage regen image: нет HTTP API — задайте OUTSEE_API_KEY. "
             "Chrome CDP больше не используется."
         )
     preview = (prep.prompt_text or "").replace("\n", " ")[:160]
@@ -402,25 +422,28 @@ async def execute_image_regen(prep: ImageRegenPrep) -> Path:
         prep.prompt_id_prefix,
         preview,
     )
+    from app.services.llm_override import bind_generation_llm
+
     gpt = get_gpt_client()
     try:
-        result = await generate_image_with_retries(
-            _ApiOnlyOutseeStub(),  # type: ignore[arg-type]
-            gpt,
-            prompt=prep.prompt_text,
-            out_path=prep.file_path,
-            max_attempts_per_prompt=3,
-            gpt_rewrite=True,
-            aspect_ratio=prep.aspect_slug,
-            gen_id=prep.gen_id or uuid.uuid4().hex,
-            model_slug=prep.model_slug,
-            resolution=prep.res_slug,
-            quality=prep.quality_slug,
-            relax=prep.image_relax,
-            prompt_id_prefix=prep.prompt_id_prefix,
-            reference_image=prep.refs if prep.refs else None,
-            project_id=prep.project_id,
-        )
+        with bind_generation_llm(None, node_type="image_prompts"):
+            result = await generate_image_with_retries(
+                _ApiOnlyOutseeStub(),  # type: ignore[arg-type]
+                gpt,
+                prompt=prep.prompt_text,
+                out_path=prep.file_path,
+                max_attempts_per_prompt=3,
+                gpt_rewrite=True,
+                aspect_ratio=prep.aspect_slug,
+                gen_id=prep.gen_id or uuid.uuid4().hex,
+                model_slug=prep.model_slug,
+                resolution=prep.res_slug,
+                quality=prep.quality_slug,
+                relax=prep.image_relax,
+                prompt_id_prefix=prep.prompt_id_prefix,
+                reference_image=prep.refs if prep.refs else None,
+                project_id=prep.project_id,
+            )
         return Path(result.file_path)
     except Exception as exc:  # noqa: BLE001
         if _ready_regen_file(prep.file_path):
@@ -539,11 +562,10 @@ async def prepare_video_regen(
 
 
 async def execute_video_regen(prep: VideoRegenPrep) -> Path:
-    """Только HTTP API (Outsee/Grsai). Chrome CDP для монтажа отключён."""
+    """Только HTTP API (Outsee/Kie). Chrome CDP для монтажа отключён."""
     if not _video_api_enabled():
         raise RuntimeError(
-            "montage regen video: нет HTTP API — задайте OUTSEE_API_KEY "
-            "(VIDEO_PROVIDER=outsee) или GRSAI_API_KEY (VIDEO_PROVIDER=grsai). "
+            "montage regen video: нет HTTP API — задайте OUTSEE_API_KEY или KIE_API_KEY. "
             "Chrome CDP больше не используется."
         )
     logger.info(
@@ -553,6 +575,8 @@ async def execute_video_regen(prep: VideoRegenPrep) -> Path:
         prep.shot,
         len(prep.prompt_text),
     )
+    from app.services.llm_override import bind_generation_llm
+
     gpt = get_gpt_client()
     videos_dir = prep.file_path.parent
     if prep.shot == 2:
@@ -566,23 +590,24 @@ async def execute_video_regen(prep: VideoRegenPrep) -> Path:
     duplicate_check_paths = list(
         dict.fromkeys(p.resolve() for p in dup_globs if p.is_file())
     )
-    result = await generate_video_with_retries(
-        _ApiOnlyOutseeStub(),  # type: ignore[arg-type]
-        gpt,
-        prompt=prep.prompt_text,
-        out_path=prep.file_path,
-        max_attempts_per_prompt=3,
-        gpt_rewrite=True,
-        project_id=prep.project_id,
-        start_frame=prep.start_frame,
-        aspect_ratio=prep.aspect_slug,
-        timeout=1200,
-        model_slug=prep.video_model_slug,
-        resolution=prep.video_res_slug,
-        relax=prep.video_relax,
-        prompt_id_prefix=prep.prompt_id_prefix,
-        duplicate_check_paths=duplicate_check_paths,
-    )
+    with bind_generation_llm(None, node_type="image_prompts"):
+        result = await generate_video_with_retries(
+            _ApiOnlyOutseeStub(),  # type: ignore[arg-type]
+            gpt,
+            prompt=prep.prompt_text,
+            out_path=prep.file_path,
+            max_attempts_per_prompt=3,
+            gpt_rewrite=True,
+            project_id=prep.project_id,
+            start_frame=prep.start_frame,
+            aspect_ratio=prep.aspect_slug,
+            timeout=1200,
+            model_slug=prep.video_model_slug,
+            resolution=prep.video_res_slug,
+            relax=prep.video_relax,
+            prompt_id_prefix=prep.prompt_id_prefix,
+            duplicate_check_paths=duplicate_check_paths,
+        )
     return Path(result.file_path)
 
 

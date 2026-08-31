@@ -70,8 +70,11 @@ def nvidia_asr_available() -> bool:
     """Проверка NeMo без import nemo (import тянет transformers → HF temp manifest)."""
     import importlib.util
 
-    configure_nvidia_asr_environment(force=True)
-    return importlib.util.find_spec("nemo.collections.asr") is not None
+    try:
+        configure_nvidia_asr_environment(force=True)
+        return importlib.util.find_spec("nemo.collections.asr") is not None
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _cache_root() -> Path:

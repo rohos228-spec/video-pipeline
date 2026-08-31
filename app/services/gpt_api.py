@@ -218,7 +218,7 @@ def _headers() -> dict[str, str]:
                 context={"error_kind": "no_key", "provider": "tokenrouter"},
             )
         raise GptApiError(
-            "GPT_API_KEY пуст (и GRSAI_API_KEY тоже) — задай ключ в .env",
+            "GPT_API_KEY пуст — задай ключ в .env",
             context={"error_kind": "no_key", "provider": "kie"},
         )
     headers = {
@@ -248,7 +248,10 @@ def _chat_url(model: str) -> str:
     if not _RELAY_BASE_LOGGED:
         vps = _vps_relay_base()
         if vps:
-            logger.info("GPT API: VPS-relay {} (proxy=off)", vps)
+            logger.warning(
+                "🔒 SECURITY NOTICE: GPT API направлен через VPS-relay {} (трафик текстовых LLM проксируется через внешний VPS). Для прямого подключения очистите GPT_RELAY_TOKEN в .env",
+                vps,
+            )
         elif "kie.ai" not in base.lower():
             logger.info("GPT API: base_url={} (non-kie host, no VPS-relay)", base)
         _RELAY_BASE_LOGGED = True
@@ -1007,7 +1010,16 @@ def _check_provider_envelope(payload: dict[str, Any]) -> None:
     retryable = code_int in _RETRY_STATUS or code_int >= 500
     hint = ""
     low = msg.lower()
-    if "not authorized" in low or "apikey" in low or code_int in (401, 403):
+    if (
+        code_int == 402
+        or "credits insufficient" in low
+        or "top up" in low
+        or "balance isn't enough" in low
+        or "balance isn" in low
+    ):
+        hint = " — на счёте GPT кончились кредиты, пополни баланс у провайдера"
+        retryable = False
+    elif "not authorized" in low or "apikey" in low or code_int in (401, 403):
         hint = " — ключ не авторизован на эту модель (проверь GPT_API_KEY/модель у провайдера)"
     raise GptApiError(
         f"GPT провайдер code={code_int}: {msg}{hint}",
@@ -1133,6 +1145,22 @@ def parse_responses_sse_lines(
     Если stream оборвался после дельт / ``output_text.done``, но до
     целого ``response.completed`` — берём уже накопленный текст (salvage).
     """
+    cleaned: list[str] = []
+    for ln in lines:
+        piece = (ln or "").strip()
+        if piece.startswith("data:"):
+            piece = piece[5:].strip()
+        if piece and piece != "[DONE]":
+            cleaned.append(piece)
+    blob = "\n".join(cleaned)
+    if blob.startswith("{") and "code" in blob:
+        try:
+            payload = json.loads(blob)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict) and payload.get("code") is not None:
+            _check_provider_envelope(payload)
+
     delta_parts: list[str] = []
     done_text = ""
     response_id = ""

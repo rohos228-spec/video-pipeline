@@ -82,24 +82,6 @@ export function StudioVersionBadge() {
         {displayLabel}
         {uiStale ? " !" : null}
       </span>
-      {llmLabel ? (
-        <span
-          className={cn(
-            "inline-flex max-w-[220px] truncate items-center rounded border px-1.5 py-px text-[10px] leading-none tracking-normal normal-case",
-            isKimi
-              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
-              : "border-border/60 bg-muted/40 text-muted-foreground",
-            server?.text_llm_enabled === false && "opacity-50",
-          )}
-          title={
-            server?.text_llm_enabled === false
-              ? `${llmLabel} — ключ не задан (TOKENROUTER_API_KEY / GPT_API_KEY)`
-              : `${llmLabel} · model=${server?.text_llm_model || "?"}`
-          }
-        >
-          {isKimi ? "Kimi K3" : "GPT"}
-        </span>
-      ) : null}
     </span>
   );
 }

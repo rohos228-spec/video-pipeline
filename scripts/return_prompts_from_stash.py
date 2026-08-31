@@ -155,6 +155,27 @@ def _head_blob(repo: Path, rel: str) -> bytes | None:
     return raw.stdout
 
 
+# «Работа с GPT» / enrich_* — только локальные загрузки. Старые stash
+# после git rm иначе снова кладут библиотеку на диск при старте Studio.
+_STASH_SKIP_PREFIXES = (
+    "prompts/05_excel_gpt/",
+    "prompts/05a_enrich_1/",
+    "prompts/05b_enrich_2/",
+    "prompts/05c_enrich_3/",
+    "prompts/05d_enrich_4/",
+    "prompts/05e_enrich_5/",
+)
+
+
+def _skip_stash_restore(rel: str) -> bool:
+    path = rel.replace("\\", "/")
+    return any(path.startswith(prefix) for prefix in _STASH_SKIP_PREFIXES)
+
+
+def _norm_newlines(data: bytes) -> bytes:
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
 def _should_write_prompt(repo: Path, rel: str, content: bytes) -> bool:
     dest = repo / rel
     if not dest.is_file():
@@ -163,10 +184,10 @@ def _should_write_prompt(repo: Path, rel: str, content: bytes) -> bool:
         disk = dest.read_bytes()
     except OSError:
         return True
-    if disk == content:
+    if _norm_newlines(disk) == _norm_newlines(content):
         return False
     head = _head_blob(repo, rel)
-    if head is not None and disk != head:
+    if head is not None and _norm_newlines(disk) != _norm_newlines(head):
         return False
     return True
 
@@ -195,6 +216,9 @@ def return_prompts_from_stash(
     errors: list[str] = []
 
     def _apply(rel: str, *, untracked_flag: bool) -> None:
+        if _skip_stash_restore(rel):
+            skipped.append(rel)
+            return
         if safe:
             blob = _blob_from_stash(repo, stash_ref, rel, untracked=untracked_flag)
             if blob is None:
@@ -314,8 +338,9 @@ def backup_prompts_aside(repo: Path, *, aside: Path | None = None) -> dict[str, 
         repo_rel = f"prompts/{rel}"
         disk_hash = _sha256_file(src)
         head = _head_blob(repo, repo_rel)
-        head_hash = _sha256_bytes(head) if head is not None else None
-        is_user = head_hash is None or head_hash != disk_hash
+        disk_norm = _norm_newlines(src.read_bytes())
+        head_norm = _norm_newlines(head) if head is not None else None
+        is_user = head_norm is None or head_norm != disk_norm
         entries[rel] = {"sha256": disk_hash, "user": is_user}
         if is_user:
             report["user_files"] = int(report["user_files"]) + 1

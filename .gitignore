@@ -56,14 +56,9 @@ prompts/*
 !prompts/.gitkeep
 # Промпты scene_design — часть кода ноды, без них load_prompt падает: держим в git
 !prompts/scene_design/
-# Промпты scene-агентов веера (группа «Сцены: веер агентов») — часть пресета,
-# наследуются всеми ПК: держим в git
-!prompts/05_excel_gpt/
-!prompts/05_excel_gpt/sd_*.md
-# Агенты цепочки «Сценарий → промпты + QC» и дефолтный мастер разбивки —
-# инфраструктура (пустой default = GPT режет закадр как попало): держим в git
-!prompts/05_excel_gpt/script_writer_ru.md
-!prompts/05_excel_gpt/frame_prompts_continuity_ru.md
-!prompts/05_excel_gpt/prompts_qc_continuity_ru.md
+!prompts/02_script/
+!prompts/02_script/default.md
 !prompts/03_razbivka/
 !prompts/03_razbivka/default.md
+!prompts/07_animation/
+!prompts/07_animation/default.md

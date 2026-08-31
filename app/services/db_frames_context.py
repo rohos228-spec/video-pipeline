@@ -67,6 +67,12 @@ def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, Any]:
                 out[key] = parsed
                 continue
         out[key] = text
+    if "main_action" not in out:
+        raw = src.get("главное_действие")
+        if raw is not None and str(raw).strip():
+            out["main_action"] = str(raw).strip()
+    if "main_action" in out and "главное_действие" not in out:
+        out["главное_действие"] = out["main_action"]
     # Русский алиас для персонажей кадра (агенты часто ждут «персонажи»).
     if "characters" in out and "персонажи" not in out:
         out["персонажи"] = out["characters"]
@@ -286,14 +292,18 @@ def build_excel_gpt_check_context(
     frames: list[Any],
     characters: list[dict[str, Any]],
     scene_registry: list[Any] | None = None,
+    full_vo: bool = False,
 ) -> dict[str, Any]:
-    """Снимок для checkMode db_check.json: slim attrs + scene_registry."""
+    """Снимок для checkMode db_check.json: slim attrs + scene_registry.
+
+    ``full_vo`` — только группа script_frames_qc (проверка читает целый закадр).
+    """
     ctx = build_excel_gpt_db_context(
         project_id=project_id,
         slug=slug,
         frames=frames,
         characters=characters,
-        full_vo=True,
+        full_vo=full_vo,
     )
     ctx["scene_registry"] = list(scene_registry or [])
     return ctx

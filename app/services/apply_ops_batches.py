@@ -19,7 +19,7 @@ from loguru import logger
 
 from app.services.gpt_operator_client import OperatorApiResult, run_operator_api
 from app.services.scene_design.camera_expand import vo_chunk_is_dangling
-from app.services.shot_templates import coverage_template_reason
+from app.services.shot_templates import coverage_template_reason, fill_kadry_from_catalog
 
 # Плотный выход (shot_01 + главное_действие): 160 кадров одним ответом
 # рвёт SSE и подмешивает фейковые uuid. Режем на 5 пачек (~32 кадра).
@@ -422,6 +422,47 @@ def repair_same_place_shot_parents(ops: list[Any]) -> int:
     return fixed
 
 
+def fill_kadry_ops_from_catalog(
+    ops: list[Any], frames: list[dict[str, Any]]
+) -> int:
+    """Дописать fields.кадры до лестницы каталога (полиция T6→T3→T1→T5)."""
+    by_uid = {
+        str(fr.get("uuid") or "").strip(): fr
+        for fr in (frames or [])
+        if isinstance(fr, dict) and str(fr.get("uuid") or "").strip()
+    }
+    added = 0
+    for op in ops or []:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        shots = fields.get("кадры") or fields.get("shots")
+        if not isinstance(shots, list):
+            continue
+        uid = str(op.get("frame_uuid") or "").strip()
+        fr = by_uid.get(uid) or {}
+        attrs = fr.get("attrs") if isinstance(fr.get("attrs"), dict) else {}
+        action = str(
+            fr.get("главное_действие")
+            or fr.get("main_action")
+            or attrs.get("главное_действие")
+            or attrs.get("main_action")
+            or ""
+        ).strip()
+        try:
+            cell_n = int(fr.get("number") or 1)
+        except (TypeError, ValueError):
+            cell_n = 1
+        filled = fill_kadry_from_catalog(shots, action, cell_number=cell_n)
+        added += max(0, len(filled) - len(shots))
+        fields["кадры"] = filled
+        if "shots" in fields:
+            fields["shots"] = filled
+    return added
+
+
 def _vo_visible_len(text: str) -> int:
     """Длина закадра без комбинирующих ударений (символы как в речи)."""
     return len(
@@ -714,11 +755,12 @@ def _batch_footer(
             "T8 только прыжок жизни/новое место, один ОБЩИЙ на мир. "
             "Одно место — лестница планов, не один ОБЩИЙ подряд. "
             "shots из каталога → слоты → drop_order (required=1 нельзя). "
+            "Полная лестница шаблона, не один кадр на сцену. "
+            "Пустой закадр у дочернего кадра покрытия — норма, кадр не удаляй. "
             "Не удлиняй T* сверх таблицы. То же место, что у прошлой сцены — "
             "сжатие без нового ОБЩЕГО (T1-c2 / T5 без K0), шаблон не менять "
             "ради чередования (T8>T8>T8 на разных местах — норма). "
-            "У каждого кадра свой шаблон и свой дословный закадр. "
-            "Пустой закадр запрещён: кадров больше клауз — удали кадр. "
+            "У каждого кадра свой шаблон. "
             "1–2 слова — только титр/имя/деталь "
             "с основанием, не нарезка по запятой. "
             "Одно место → parent_id = id master (кроме T8 разных мест). "
@@ -994,6 +1036,16 @@ async def run_apply_ops_batched(
                     node_key,
                     repaired_parents,
                 )
+            filled = fill_kadry_ops_from_catalog(ops, chunk)
+            if filled:
+                logger.info(
+                    "[#{}] apply_ops batched node={!r}: лестница T/X "
+                    "дописана из каталога +{} кадров",
+                    project_id,
+                    node_key,
+                    filled,
+                )
+            repaired_parents = repair_same_place_shot_parents(ops)
             bad_shots = shots_coverage_ops_reason(ops, chunk)
             if bad_shots:
                 logger.warning(

@@ -1,10 +1,15 @@
-﻿# Остановить бэкенд Studio (порт 8765 + python + окна run-backend)
-# Launcher вызывает без паузы. Вручную: .\stop-backend.cmd
-
+﻿<#
+stop-backend
+#>
 param(
     [switch]$Quiet,
     [int]$WaitSec = 0
 )
+
+# Остановить бэкенд Studio (порт 8765 + python + окна run-backend)
+# Launcher вызывает без паузы. Вручную: .\stop-backend.cmd
+
+
 
 $ErrorActionPreference = "Continue"
 if ($env:VP_REPO_ROOT) {

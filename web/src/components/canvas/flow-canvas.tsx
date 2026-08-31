@@ -58,6 +58,7 @@ import {
   workflowStructureKey,
 } from "@/lib/node-run-status";
 import { errorMessageFromUnknown } from "@/lib/error-message";
+import { shouldShowStopBar } from "@/lib/project-running";
 import { nodeTypeFromKey } from "@/lib/node-key";
 import {
   isEditableTarget,
@@ -151,7 +152,8 @@ export function FlowCanvas({
     queryKey: ["project", projectId],
     queryFn: () => api.getProject(projectId!),
     enabled: projectId != null,
-    refetchInterval: 4000,
+    refetchInterval: (q) =>
+      shouldShowStopBar(q.state.data?.status, q.state.data?.generation_active) ? 1000 : 2500,
   });
 
   const run = useQuery({
@@ -1094,7 +1096,6 @@ export function FlowCanvas({
         {onCanvasZoom ? <ViewportZoomReporter onZoom={onCanvasZoom} /> : null}
         <GroupFrames />
         <EdgeKindControls edges={edges} onEdgesLocal={setEdges} />
-        <Controls position="bottom-right" showInteractive={false} />
         <MiniMap
           pannable
           zoomable
@@ -1226,7 +1227,6 @@ export function FlowCanvas({
         project={project.data ?? null}
         workflow={workflow.data ?? null}
         run={run.data ?? null}
-        runStepNodeKey={runStepNodeKey ?? selectedNodeKey}
         onRunCreated={() => run.refetch()}
       />
     </>
@@ -1277,20 +1277,17 @@ function WorkflowToolbar({
 
   return (
     <div className="pointer-events-none absolute left-4 top-4 z-10 flex max-w-[calc(100%-2rem)] flex-wrap gap-2">
-      <div className="pointer-events-auto flex flex-wrap items-center gap-1 rounded-lg border border-border bg-card/80 p-1 backdrop-blur-sm">
+      <div className="pointer-events-auto flex flex-wrap items-center gap-1.5 rounded-lg border border-white/10 bg-card/90 p-1 backdrop-blur-md shadow-md">
         <NodePalette
           projectId={projectId ?? null}
           onAddNode={onAddNode}
           getSelectedNodeIds={getSelectedNodeIds}
         />
-        <Button size="sm" variant="ghost" className="h-8 gap-1 text-xs" onClick={onSave} disabled={saving}>
-          {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-          Сохранить граф
-        </Button>
+        <div className="h-4 w-px bg-white/10" />
         <Button
           size="sm"
           variant="ghost"
-          className="h-8 gap-1 text-xs"
+          className="h-8 gap-1 text-xs hover:bg-white/5"
           onClick={onCopy}
           title="Копировать выделенные ноды (Ctrl+C)"
         >
@@ -1300,7 +1297,7 @@ function WorkflowToolbar({
         <Button
           size="sm"
           variant="ghost"
-          className="h-8 gap-1 text-xs"
+          className="h-8 gap-1 text-xs hover:bg-white/5"
           onClick={onPaste}
           disabled={!canPaste}
           title="Вставить скопированные ноды (Ctrl+V) — работает и в другом проекте"
@@ -1308,40 +1305,41 @@ function WorkflowToolbar({
           <ClipboardPaste className="h-3.5 w-3.5" />
           Вставить
         </Button>
+        <div className="h-4 w-px bg-white/10" />
         <Button
           size="sm"
           variant="ghost"
-          className="h-8 gap-1 text-xs"
+          className="h-8 px-2 text-xs hover:bg-white/5"
           onClick={onDuplicateBelow}
           title="Дублировать весь граф ниже (массовые потоки)"
         >
-          <Copy className="h-3.5 w-3.5 opacity-60" />
+          <Copy className="h-3.5 w-3.5 text-muted-foreground" />
         </Button>
         <Button
           size="sm"
           variant="ghost"
-          className="h-8 gap-1 text-xs"
+          className="h-8 px-2 text-xs hover:bg-white/5"
           onClick={onAddExcelFeed}
           title="Источник Excel для массовой генерации"
         >
-          <FileSpreadsheet className="h-3.5 w-3.5" />
+          <FileSpreadsheet className="h-3.5 w-3.5 text-muted-foreground" />
         </Button>
         {workflowId != null && (
           <Button
             size="sm"
             variant="ghost"
-            className="h-8 gap-1 text-xs"
+            className="h-8 gap-1 px-2 text-xs hover:bg-white/5"
             onClick={() => void duplicateWf()}
             title="Сохранить копию workflow на сервере"
           >
-            <Copy className="h-3.5 w-3.5 opacity-60" />
-            WF
+            <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="text-[10px] text-muted-foreground">WF</span>
           </Button>
         )}
         <Button
           size="sm"
           variant="ghost"
-          className="h-8 gap-1 text-xs text-destructive"
+          className="h-8 px-2 text-xs text-destructive/80 hover:bg-destructive/10 hover:text-destructive"
           onClick={onDelete}
           disabled={!canDelete}
           title="Удалить выделенные ноды (Delete)"
@@ -1373,28 +1371,24 @@ function RunOverlay({
   project,
   workflow,
   run,
-  runStepNodeKey,
   onRunCreated,
 }: {
   projectId: number;
   project: import("@/lib/types").ProjectDetail | null;
   workflow: WorkflowDetail | null;
   run: WorkflowRunDetail | null;
-  runStepNodeKey: string | null;
   onRunCreated: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [pausing, setPausing] = useState(false);
-  const [finishBusy, setFinishBusy] = useState<"images" | "videos" | "animation_prompts" | null>(
-    null,
-  );
   const qc = useQueryClient();
 
   if (!workflow) return null;
 
-  const nodeType = nodeTypeFromKey(runStepNodeKey);
-  const stepCode = stepCodeForNodeType(nodeType);
-  const stepLabel = stepCode ? formatStepCode(stepCode) : null;
+  const isRunning = shouldShowStopBar(
+    project?.status,
+    project?.generation_active,
+  );
 
   const handlePause = async () => {
     setPausing(true);
@@ -1418,7 +1412,7 @@ function RunOverlay({
       } else if (r.action === "resumed") {
         toast.success("Проект продолжен");
       } else {
-        toast.message("Нет шага для автопродвижения — запустите шаг вручную");
+        toast.message("Нет шага для автопродвижения — запустите шаг в ноде");
       }
       onRunCreated();
     } catch (e) {
@@ -1446,244 +1440,78 @@ function RunOverlay({
     }
   };
 
-  const handleFinishImages = async () => {
-    setFinishBusy("images");
-    try {
-      const r = await api.finishMissingImages(projectId);
-      if (r.queued > 0) toast.success(r.message);
-      else toast.message(r.message);
-      qc.invalidateQueries({ queryKey: ["project", projectId] });
-      onRunCreated();
-    } catch (e) {
-      toast.error(errorMessageFromUnknown(e));
-    } finally {
-      setFinishBusy(null);
-    }
-  };
-
-  const handleFinishVideos = async () => {
-    setFinishBusy("videos");
-    try {
-      const r = await api.finishMissingVideos(projectId);
-      if (r.queued > 0) toast.success(r.message);
-      else toast.message(r.message);
-      qc.invalidateQueries({ queryKey: ["project", projectId] });
-      onRunCreated();
-    } catch (e) {
-      toast.error(errorMessageFromUnknown(e));
-    } finally {
-      setFinishBusy(null);
-    }
-  };
-
-  const handleFinishAnimationPrompts = async () => {
-    setFinishBusy("animation_prompts");
-    try {
-      const r = await api.finishMissingAnimationPrompts(projectId);
-      if (r.queued > 0) toast.success(r.message);
-      else toast.message(r.message);
-      qc.invalidateQueries({ queryKey: ["project", projectId] });
-      onRunCreated();
-    } catch (e) {
-      toast.error(errorMessageFromUnknown(e));
-    } finally {
-      setFinishBusy(null);
-    }
-  };
-
-  const handleCancelRun = async () => {
-    if (!run) return;
-    setBusy(true);
-    try {
-      await api.stopProject(projectId);
-      await api.cancelRun(run.id);
-      toast.success("Run остановлен (task.cancel)");
-      qc.invalidateQueries({ queryKey: ["project-run", projectId] });
-      qc.invalidateQueries({ queryKey: ["project", projectId] });
-      await qc.refetchQueries({ queryKey: ["project", projectId] });
-      await qc.refetchQueries({ queryKey: ["project-run", projectId] });
-      onRunCreated();
-    } catch (e) {
-      toast.error(errorMessageFromUnknown(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleResetStep = async () => {
-    if (!stepCode) {
-      toast.error("У выбранной ноды нет шага для сброса");
-      return;
-    }
-    setBusy(true);
-    try {
-      await api.resetProjectStep(projectId, stepCode);
-      toast.success(`Шаг «${formatStepCode(stepCode)}» сброшен`);
-      onRunCreated();
-    } catch (e) {
-      toast.error(errorMessageFromUnknown(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleStart = async () => {
-    if (!stepCode) {
-      toast.error("Выберите ноду с шагом пайплайна");
-      return;
-    }
-    setBusy(true);
-    try {
-      const created = await api.startRunFromWorkflow(workflow.id, {
-        project_id: projectId,
-      });
-      await api.runProjectStep(projectId, stepCode, {
-        nodeKey: runStepNodeKey ?? undefined,
-      });
-      onRunCreated();
-      toast.success(`Run #${created.id} · шаг «${formatStepCode(stepCode)}» запущен`, {
-        description: "Воркер подхватит шаг — HITL в веб-UI",
-      });
-    } catch (e) {
-      toast.error(`Не получилось запустить: ${errorMessageFromUnknown(e)}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <>
-    {/* Отдельно от Run-кнопок: при running ноде бар раздувается и раньше
-        перехватывал/давил тумблер; z-40 выше канваса и панелей. */}
-    {project ? (
-      <div className="pointer-events-none absolute right-4 top-3 z-40">
-        <div className="pointer-events-auto min-w-[200px] max-w-[260px] shadow-sm">
-          <AutoAdvanceToggle project={project} />
+      {/* Тумблер Автопродвижения */}
+      {project ? (
+        <div className="pointer-events-none absolute right-4 top-3 z-40">
+          <div className="pointer-events-auto min-w-[200px] max-w-[260px] shadow-sm">
+            <AutoAdvanceToggle project={project} />
+          </div>
         </div>
-      </div>
-    ) : null}
-    <div className="pointer-events-none absolute right-4 top-[5.5rem] z-30 flex max-w-[min(100%,640px)] flex-wrap items-center justify-end gap-2">
-      <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs shadow-sm backdrop-blur-sm">
-        <span className="text-muted-foreground">Run:</span>
-        <span className="font-medium">
-          {run ? `#${run.id} · ${formatRunStatus(run.status)}` : "не запущен"}
-        </span>
-      </div>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={busy || finishBusy !== null}
-            className="pointer-events-auto gap-1 text-xs"
-          >
-            {finishBusy ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <ChevronDown className="h-3.5 w-3.5 opacity-60" />
+      ) : null}
+
+      {/* Верхняя компактная панель управления процессом */}
+      <div className="pointer-events-none absolute right-4 top-[5.5rem] z-30 flex max-w-[min(100%,640px)] flex-wrap items-center justify-end gap-2">
+        <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs shadow-sm backdrop-blur-sm">
+          <span className="text-muted-foreground">Run:</span>
+          <span className="font-medium">
+            {run ? `#${run.id} · ${formatRunStatus(run.status)}` : "не запущен"}
+          </span>
+        </div>
+
+        {isRunning ? (
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handlePause}
+              disabled={pausing}
+              className="pointer-events-auto gap-1 text-xs border-white/20 bg-zinc-800/80 hover:bg-zinc-700"
+            >
+              {pausing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+              Пауза
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={handleStopProject}
+              disabled={busy}
+              className="pointer-events-auto gap-1.5 text-xs font-semibold shadow-lg shadow-red-500/25 bg-red-600 hover:bg-red-500 text-white"
+              title="Остановить выполнение текущего шага"
+            >
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3 w-3 fill-current" />}
+              Остановить шаг
+            </Button>
+          </>
+        ) : (
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={handleResume}
+              disabled={pausing}
+              className="pointer-events-auto transition-all duration-200 gap-2 h-9 px-4 font-semibold text-xs text-white bg-gradient-to-r from-emerald-500 via-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 active:scale-[0.98] shadow-lg shadow-emerald-500/35 border border-emerald-300/40 rounded-xl backdrop-blur-md"
+              title="Продолжить выполнение пайплайна (переход к следующему шагу)"
+            >
+              {pausing ? <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-200" /> : <Play className="h-3.5 w-3.5 fill-current" />}
+              Продолжить
+            </Button>
+            {project?.status && project.status !== "new" && project.status !== "published" && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleStopProject}
+                disabled={busy}
+                className="pointer-events-auto gap-1 text-xs border-white/10 text-muted-foreground hover:border-red-500/40 hover:bg-red-500/10 hover:text-red-400"
+                title="Остановить процесс / сбросить активность"
+              >
+                {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Square className="h-3 w-3 fill-current text-destructive/80" />}
+                Остановить
+              </Button>
             )}
-            Доделка
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-52">
-          <DropdownMenuItem
-            disabled={finishBusy !== null}
-            onSelect={(e) => {
-              e.preventDefault();
-              void handleFinishImages();
-            }}
-          >
-            <ImageIcon className="mr-2 h-4 w-4" />
-            Доделка картинок
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={finishBusy !== null}
-            onSelect={(e) => {
-              e.preventDefault();
-              void handleFinishVideos();
-            }}
-          >
-            <Video className="mr-2 h-4 w-4" />
-            Доделка видео
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={finishBusy !== null}
-            onSelect={(e) => {
-              e.preventDefault();
-              void handleFinishAnimationPrompts();
-            }}
-          >
-            <Film className="mr-2 h-4 w-4" />
-            Доделка промтов анимации
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <Button
-        size="sm"
-        variant="outline"
-        onClick={handlePause}
-        disabled={pausing}
-        className="pointer-events-auto gap-1 text-xs"
-      >
-        {pausing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-        Пауза
-      </Button>
-      <Button
-        size="sm"
-        variant="outline"
-        onClick={handleResume}
-        disabled={pausing}
-        className="pointer-events-auto text-xs"
-      >
-        Продолжить
-      </Button>
-      <Button
-        size="sm"
-        variant="destructive"
-        onClick={handleStopProject}
-        disabled={busy}
-        className="pointer-events-auto gap-1.5 text-xs font-semibold"
-        title="Откат running-шага; автопродвижение не сбрасывается"
-      >
-        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <span>🛑</span>}
-        Остановить текущий шаг
-      </Button>
-      {run && (
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={handleCancelRun}
-          disabled={busy}
-          className="pointer-events-auto gap-1 text-xs text-destructive"
-        >
-          Отмена run
-        </Button>
-      )}
-      <Button
-        size="sm"
-        variant="ghost"
-        onClick={handleResetStep}
-        disabled={busy}
-        className="pointer-events-auto text-xs"
-      >
-        Сброс шага
-      </Button>
-      <Button
-        size="sm"
-        onClick={handleStart}
-        disabled={busy || !stepCode}
-        className="pointer-events-auto gap-1.5"
-        title={
-          stepLabel
-            ? `Запустить шаг «${stepLabel}» для ноды ${formatNodeKeyLabel(runStepNodeKey ?? "")}`
-            : "Выберите ноду с шагом пайплайна"
-        }
-      >
-        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-        {run ? "Перезапустить" : "Создать Run"}
-        {stepLabel ? ` · ${stepLabel}` : ""}
-      </Button>
-    </div>
+          </div>
+        )}
+      </div>
     </>
   );
 }

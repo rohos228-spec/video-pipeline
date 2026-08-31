@@ -11,18 +11,26 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Check,
   ChevronDown,
   Coins,
+  Copy,
+  Dices,
+  Download,
+  ExternalLink,
   History,
   ImageIcon,
   Link2,
   Loader2,
+  Maximize2,
   Music,
   Paperclip,
+  Search,
   Sparkles,
+  Trash2,
   Video,
+  Wand2,
   X,
-  ExternalLink,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -42,11 +50,9 @@ import {
   getAudioModel,
   getImageModel,
   getVideoModel,
-  isGrsaiWiredSlug,
   outseeCreateUrl,
   pickerModelsForType,
   slugToStudioId,
-  toGrsaiVideoModel,
   type OutseeChip,
   type OutseeFeedKind,
   type OutseeMediaType,
@@ -100,6 +106,126 @@ function formatElapsedMinSec(totalSec: number | null | undefined): string {
   return `${m} мин ${s} сек`;
 }
 
+export const STYLE_PRESETS = [
+  { id: "none", label: "Без стиля", icon: "", suffix: "" },
+  {
+    id: "photo",
+    label: "Фото",
+    icon: "📸",
+    suffix: ", professional 8k photography, hyperrealistic, sharp focus, natural lighting, highly detailed",
+  },
+  {
+    id: "cinematic",
+    label: "Кино",
+    icon: "🎬",
+    suffix: ", cinematic still, 35mm film, atmospheric lighting, dramatic depth of field, blockbuster movie aesthetic",
+  },
+  {
+    id: "3d",
+    label: "3D",
+    icon: "🎨",
+    suffix: ", 3d render, unreal engine 5, octane render, smooth lighting, volumetric raytracing, 8k",
+  },
+  {
+    id: "anime",
+    label: "Аниме",
+    icon: "🍙",
+    suffix: ", anime art style, vibrant colors, detailed line art, aesthetic masterpiece",
+  },
+  {
+    id: "oil",
+    label: "Живопись",
+    icon: "🖌️",
+    suffix: ", oil painting, masterwork, rich brushstrokes, expressive texture, classical fine art",
+  },
+  {
+    id: "cyberpunk",
+    label: "Киберпанк",
+    icon: "🌆",
+    suffix: ", cyberpunk aesthetic, neon glow, futuristic city, reflections, high-tech dark atmosphere",
+  },
+  {
+    id: "fantasy",
+    label: "Фэнтези",
+    icon: "🌌",
+    suffix: ", epic fantasy digital art, magical glowing atmosphere, ethereal lighting, mythical",
+  },
+];
+
+export const RANDOM_PROMPTS = [
+  "A majestic ancient Japanese temple surrounded by blooming pink cherry blossoms, serene koi pond with reflections of soft golden morning rays, hyperrealistic photography",
+  "Futuristic cyberpunk Tokyo street at midnight, neon holographic advertisements reflecting on wet asphalt, volumetric steam, cinematic depth of field, 8k octane render",
+  "Cozy warm coffee shop on a rainy autumn day in Paris, steam rising from ceramic cup, wooden table by rain-streaked window with view of street lamps, photorealistic",
+  "Epic fantasy dragon perched atop a towering snowy mountain peak during a dramatic sunset, golden sunlight through clouds, intricate scales, mythological masterpiece",
+  "Close-up macro photography of an iridescent hummingbird drinking nectar from a vibrant exotic flower, dewdrops, shallow depth of field, sharp focus, 8k",
+  "Interior of a luxurious futuristic space station greenhouse with view of planet Earth in background, bioluminescent plants, architectural elegance, unreal engine 5",
+  "Cinematic portrait of a wise old Nordic blacksmith with braided beard, glowing forge embers, sparks flying, textured leather apron, dramatic Rembrandt lighting",
+  "A breathtaking turquoise alpine lake nestled inside granite mountains, wildflower meadow in foreground, crisp morning air, National Geographic award-winning photography",
+  "Steampunk airship soaring through fluffy cumulus clouds at golden hour, brass gears, copper detailing, propellers spinning, adventure aesthetic",
+  "An ancient library with towering mahogany bookshelves reaching into shadows, floating glowing magical dust motes, stained glass window casting colorful light",
+  "Sleek modern sports car speeding along a winding coastal highway at dusk, motion blur, taillight trails, sunset reflection on metallic paint",
+  "Enchanted bioluminescent forest at night, glowing mushrooms, ethereal spirits floating among giant mossy ancient trees, fantasy concept art",
+  "A cyberpunk samurai warrior standing in the rain on a skyscraper rooftop, glowing katana, neon city skyline in background, cinematic wide shot",
+  "Minimalist architectural desert villa with an infinity pool reflecting the starry night sky and Milky Way, warm interior ambient lights, 8k architectural render",
+  "Cute fluffy baby red panda playing in fresh autumn leaves, soft natural lighting, high detail fur, adorable expression, professional wildlife photography",
+  "A colossal ancient stone titan half-buried in sand dunes, ancient glyphs glowing faintly, desert wind blowing sand, epic cinematic landscape",
+  "A majestic white stag with glowing crystalline antlers standing in an ethereal moonlit clearing, mist swirling around hooves, fantasy masterwork",
+  "A futuristic hypercar prototype parked inside a minimalist concrete hangar, dramatic studio lighting, carbon fiber body, aerodynamic curves",
+  "Makoto Shinkai aesthetic anime scene of two friends standing on a hillside overlooking a coastal Japanese town under a starry night sky with falling meteors",
+  "A mysterious masked alchemist brewing glowing purple potions in a cluttered medieval apothecary filled with dried herbs, glass retorts, and ancient grimoires",
+  "Dramatic ocean storm at sunset, towering turquoise waves crashing against rugged black volcanic cliffs, golden sea spray, long exposure photography",
+  "A cozy Scandinavian log cabin surrounded by deep pine snowdrifts, warm amber light glowing from windows, vibrant green northern lights aurora borealis above",
+  "A cybernetic geisha with delicate porcelain faceplates and intricate glowing gold circuits, wearing a high-fashion holographic kimono, studio portrait",
+  "A breathtaking underwater coral reef teeming with vibrant tropical fish, sea turtles gliding through crystal clear sunlit water, wide angle photography",
+  "An opulent Venetian masquerade ballroom at midnight, grand crystal chandeliers, masked dancers in elaborate baroque gowns, golden reflections on marble floor",
+  "A lone astronaut discovering an ancient alien monolith glowing with violet hieroglyphs on Mars, red dust storm swirling, double moons on horizon",
+  "A mystical waterfall cascading into a crystal clear hidden grotto illuminated by glowing azure crystals, lush ferns, ethereal fantasy environment",
+  "Vintage 1960s Italian cafe terrace in Positano overlooking the Amalfi coastline, espresso cup on marble table, blooming bougainvillea, warm Mediterranean sunlight",
+  "A fierce Viking shieldmaiden with braided blonde hair and war paint standing on the prow of a dragon longship in a misty fjord, cinematic film still",
+  "A futuristic solar punk city with vertical botanical gardens covering skyscrapers, elevated glass sky trains, clean solar canals, bright optimistic daylight",
+  "A macro photograph of an intricate mechanical watch movement, exposed tourbillon, polished ruby jewels, Damascus steel bridges, extreme sharp detail",
+  "A whimsical treehouse village connected by glowing rope bridges nestled in colossal redwood trees at dusk, fairy lights, lanterns, magical fantasy vibe",
+  "A hyperrealistic portrait of an Ethiopian woman wearing traditional beaded silver jewelry and embroidered scarf, warm golden hour sunlight, sharp eye focus",
+  "A dramatic volcanic eruption at night, glowing red lava rivers flowing down black basalt slopes into the sea, thunderous ash cloud with lightning bolts",
+  "A cyberpunk hacker workstation surrounded by floating transparent holographic screens, neon blue and magenta reflections, cables, coffee cup, nighttime room",
+  "An enchanted crystal cave with giant luminous amethyst clusters growing from cavern walls, reflective underground river, ethereal dreamlike atmosphere",
+  "A sleek luxury yacht sailing through turquoise Caribbean waters near secluded white sand island, aerial drone view, sun glinting on clear water",
+  "A formidable knight in ornate black and gold armor standing guard in a gothic throne room, sunlight streaming through tall archways, cinematic dust motes",
+  "A hyper-detailed slice of artisan strawberry shortcake on a vintage porcelain plate, whipped cream, glazed berries, fork, warm bakery background",
+  "A futuristic mech warrior standing in a ruined battlefield covered in snow, weathered steel armor, glowing blue optics, smoke rising from vents",
+  "A peaceful zen rock garden at sunrise, perfectly raked sand patterns, bonsai pine tree, dewdrops on smooth river stones, soft tranquil morning light",
+  "A dark fantasy necromancer summoning green spectral flames from an ancient tomb, glowing runic circle on stone floor, cinematic shadows and mist",
+  "A vibrant bustling Moroccan bazaar at twilight, hanging brass lanterns casting intricate shadows, colorful spice pyramids, woven carpets, rich textures",
+  "A majestic bald eagle soaring over the Grand Canyon at sunrise, golden sunbeams piercing deep red rock canyons, crisp photographic detail",
+  "A futuristic orbital space elevator extending from an ocean platform into the starry cosmos, aurora borealis curving around Earth horizon",
+  "A romantic cobblestone street in old Prague at blue hour after rain, glowing streetlamps reflecting in puddles, Gothic church spires in background",
+  "A stunning studio portrait of a silver-haired elf queen with intricate diamond crown, delicate ear cuffs, deep sapphire velvet gown, soft cinematic lighting",
+  "A whimsical greenhouse conservatory filled with glowing giant mushrooms, miniature floating jellyfish plants, brass Victorian framing, magical realism",
+  "An epic science fiction starship armada dropping out of warp speed near a ringed gas giant planet, engine plasma trails, immense cosmic scale",
+  "A cute fluffy kitten sleeping curled up inside a wizard hat surrounded by glowing spell books and spilled star glitter, warm candlelight, cozy fantasy art"
+];
+
+function downloadMediaFile(
+  url: string,
+  filename: string,
+  format: "png" | "jpg" | "webp" | "mp4" | "mp3" | string = "png",
+  path?: string | null,
+) {
+  const params = new URLSearchParams();
+  if (path) params.set("path", path);
+  if (url) params.set("url", url);
+  params.set("format", format);
+  params.set("filename", filename);
+
+  const downloadUrl = `/api/outsee-create/download?${params.toString()}`;
+  const a = document.createElement("a");
+  a.href = downloadUrl;
+  a.download = `${filename.replace(/\.[^/.]+$/, "")}.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
 export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) {
   const qc = useQueryClient();
   const [mediaType, setMediaType] = useState<OutseeMediaType>("image");
@@ -117,31 +243,35 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   const [motionQuality, setMotionQuality] = useState("std");
   const [instrumental, setInstrumental] = useState(false);
   const [prompt, setPrompt] = useState("");
+  const [stylePreset, setStylePreset] = useState("none");
+  const [negativePrompt, setNegativePrompt] = useState("");
+  const [showNegativePrompt, setShowNegativePrompt] = useState(false);
+  const [downloadFormat, setDownloadFormat] = useState<"png" | "jpg" | "webp">("png");
+  const [batchCount, setBatchCount] = useState<1 | 2 | 4>(1);
+  const [isEnhancingPrompt, setIsEnhancingPrompt] = useState(false);
   const [soraSize, setSoraSize] = useState<"small" | "large">("small");
   const [firstFrameDataUrl, setFirstFrameDataUrl] = useState<string | null>(null);
   const [lastFrameDataUrl, setLastFrameDataUrl] = useState<string | null>(null);
   const [firstFrameName, setFirstFrameName] = useState<string | null>(null);
   const [lastFrameName, setLastFrameName] = useState<string | null>(null);
+  const [referenceImages, setReferenceImages] = useState<
+    { id: string; url: string; name: string }[]
+  >([]);
   const [modelOpen, setModelOpen] = useState(false);
-  const [openChip, setOpenChip] = useState<OutseeChip | null>(null);
+  const [openChip, setOpenChip] = useState<string | null>(null);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
   const [kieValues, setKieValues] = useState<Record<string, unknown>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [settingsHydrated, setSettingsHydrated] = useState(false);
   const modelRef = useRef<HTMLDivElement>(null);
   const firstFrameInputRef = useRef<HTMLInputElement>(null);
   const lastFrameInputRef = useRef<HTMLInputElement>(null);
+  const multiRefInputRef = useRef<HTMLInputElement>(null);
 
   const settingsQ = useQuery({
     queryKey: ["outsee-create-settings"],
     queryFn: api.getOutseeCreateSettings,
     enabled: open,
-  });
-
-  const grsaiStatusQ = useQuery({
-    queryKey: ["grsai-status"],
-    queryFn: api.getGrsaiStatus,
-    enabled: open,
-    staleTime: 30_000,
   });
 
   const outseeStatusQ = useQuery({
@@ -200,7 +330,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     setDetail(String(s.image_quality || "medium"));
     setVideoResolution(String(s.video_resolution || "1080p"));
     setDuration(String(s.duration || "5"));
-    setGenerateAudio(Boolean(s.generate_audio));
+    const restoredVideo = String(s.video_slug || "kling-3-0");
+    setGenerateAudio(
+      restoredVideo === "veo-3-1-lite" ? false : Boolean(s.generate_audio),
+    );
     setOrientation(s.orientation === "image" ? "image" : "video");
     setMotionQuality(String(s.motion_quality || "std"));
     setInstrumental(Boolean(s.instrumental));
@@ -239,6 +372,12 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   const videoModel = getVideoModel(videoSlug);
   const audioModel = getAudioModel(audioSlug);
   const dockChips = dockChipsForModel(activeSlug, mediaType);
+  const maxReferences = useMemo(() => {
+    if (mediaType !== "image") return 0;
+    const slug = activeSlug.toLowerCase();
+    if (slug.includes("z-image")) return 0;
+    return 8;
+  }, [mediaType, activeSlug]);
 
   // ---- KIE: модель выбрана из общего пикера (slug "kie:<id>") ----
   const kieModels = useMemo(
@@ -291,38 +430,21 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
       : mediaType === "video"
         ? videoModel.displayName
         : audioModel.displayName;
-  const currentWired = !kieActive && isGrsaiWiredSlug(activeSlug, mediaType);
+  const currentWired = false;
   const outseeConfigured = Boolean(outseeStatusQ.data?.configured);
-  const grsaiConfigured = Boolean(grsaiStatusQ.data?.configured);
   const kieConfigured = Boolean(kieCatalogQ.data?.configured);
 
-  /** Без UI-переключателя: ключ Outsee → Outsee; Sora/Kling → Grsai; иначе Grsai. */
-  const autoProvider: "outsee" | "grsai" | null = useMemo(() => {
+  const autoProvider: "outsee" | null = useMemo(() => {
     if (kieActive) return null;
     if (mediaType === "audio") return null;
-    const slug = activeSlug.toLowerCase();
-    if (mediaType === "image") {
-      if (outseeConfigured) return "outsee";
-      if (grsaiConfigured) return "grsai";
-      return null;
-    }
-    // video
-    if (slug.includes("sora") || slug.includes("kling")) {
-      if (grsaiConfigured) return "grsai";
-      return null;
-    }
-    if (outseeConfigured && slug.includes("veo")) return "outsee";
-    if (grsaiConfigured) return "grsai";
     if (outseeConfigured) return "outsee";
     return null;
-  }, [kieActive, mediaType, activeSlug, outseeConfigured, grsaiConfigured]);
+  }, [kieActive, mediaType, outseeConfigured]);
 
   const maxParallel =
     autoProvider === "outsee"
       ? (createQueueQ.data?.max_parallel_outsee ?? 5)
-      : autoProvider === "grsai"
-        ? (createQueueQ.data?.max_parallel_grsai ?? 10)
-        : (createQueueQ.data?.max_parallel ?? 5);
+      : (createQueueQ.data?.max_parallel ?? 5);
 
   const canApiDirect = kieActive ? kieConfigured : autoProvider != null;
   const currentIcon = kieActive
@@ -339,47 +461,28 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
         ? videoModel.price
         : audioModel.price;
 
-  const quoteModel =
-    mediaType === "video" && autoProvider === "grsai"
-      ? toGrsaiVideoModel(videoSlug)
-      : activeSlug;
-
-  const quoteQ = useQuery({
-    queryKey: [
-      "grsai-quote",
-      mediaType,
-      quoteModel,
-      resolution,
-      duration,
-      soraSize,
-      currentCatalogPrice,
-    ],
-    queryFn: () =>
-      api.grsaiQuote({
-        media: mediaType,
-        model: quoteModel,
-        resolution,
-        duration: Number(duration) || 10,
-        size: soraSize,
-        catalog_price: currentCatalogPrice,
-      }),
-    enabled: open && !kieActive,
-    staleTime: 5_000,
-  });
-
-  const priceLabel = kieActive
+  const basePriceLabel = kieActive
     ? kiePrice
       ? `$${kiePrice.usd.toFixed(3)} · ${kiePrice.credits} кр`
       : "—"
-    : quoteQ.data?.label ||
-      estimateCreatePrice({
+    : estimateCreatePrice({
         media: mediaType,
-        model: quoteModel,
+        model: activeSlug,
         resolution,
         duration: Number(duration) || 10,
         size: soraSize,
         catalogPrice: currentCatalogPrice,
       }).label;
+
+  const priceLabel = useMemo(() => {
+    if ((mediaType === "image" || mediaType === "video") && batchCount > 1) {
+      if (kieActive && kiePrice) {
+        return `$${(kiePrice.usd * batchCount).toFixed(3)} · ${kiePrice.credits * batchCount} кр`;
+      }
+      return `${basePriceLabel} (x${batchCount})`;
+    }
+    return basePriceLabel;
+  }, [basePriceLabel, mediaType, batchCount, kieActive, kiePrice]);
 
   useEffect(() => {
     if (mediaType === "image") {
@@ -436,6 +539,48 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
       toast.success(slot === "first" ? "Стартовый кадр" : "Конечный кадр");
     } catch {
       toast.error("Не удалось взять кадр из истории");
+    }
+  };
+
+  const addReferenceFromHistory = async (item: HistoryItem) => {
+    if (maxReferences <= 0) return;
+    if (referenceImages.length >= maxReferences) {
+      toast.error(`Достигнут лимит референсов (${maxReferences})`);
+      return;
+    }
+    const httpUrl = item.raw_url && item.raw_url.startsWith("http") ? item.raw_url : null;
+    if (httpUrl) {
+      setReferenceImages((prev) => [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          url: httpUrl,
+          name: item.label || "история",
+        },
+      ]);
+      toast.success("Референс взят из истории");
+      return;
+    }
+    if (!item.preview_url) {
+      toast.error("Нет URL картинки для референса");
+      return;
+    }
+    try {
+      const res = await fetch(item.preview_url);
+      const blob = await res.blob();
+      const file = new File([blob], `${item.id}.png`, { type: blob.type || "image/png" });
+      const dataUrl = await readFileAsDataUrl(file);
+      setReferenceImages((prev) => [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          url: dataUrl,
+          name: item.label || item.id,
+        },
+      ]);
+      toast.success("Референс добавлен из истории");
+    } catch {
+      toast.error("Не удалось взять референс из истории");
     }
   };
 
@@ -497,9 +642,8 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     motion_quality: motionQuality,
     instrumental,
     prompt,
-    // провайдер выбирается автоматически при Generate — в UI не показываем
-    image_provider: autoProvider === "outsee" ? "outsee" : "grsai",
-    video_provider: autoProvider === "outsee" ? "outsee" : "grsai",
+    image_provider: "outsee",
+    video_provider: "outsee",
     sora_size: soraSize,
   });
 
@@ -541,8 +685,19 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
+  const deleteItem = useMutation({
+    mutationFn: (item: HistoryItem) =>
+      api.deleteOutseeCreateHistoryItem({ path: item.path || undefined, itemId: item.id }),
+    onSuccess: (_, item) => {
+      toast.success("Удалено из истории");
+      if (selectedId === item.id) setSelectedId(null);
+      qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
+    },
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
+
   const [trackingJobs, setTrackingJobs] = useState<
-    { provider: "grsai" | "outsee" | "kie"; jobId: string; historyId: string }[]
+    { provider: "outsee" | "kie"; jobId: string; historyId: string }[]
   >([]);
 
   useEffect(() => {
@@ -591,110 +746,161 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     };
   }, [trackingJobs, qc]);
 
+  const handleRandomPrompt = () => {
+    const available = RANDOM_PROMPTS.filter((p) => p !== prompt);
+    const chosen = available[Math.floor(Math.random() * available.length)];
+    setPrompt(chosen);
+    toast.success("Случайный промпт подставлен 🎲");
+  };
+
+  const handleEnhancePrompt = async () => {
+    const text = prompt.trim();
+    if (!text) {
+      toast.error("Сначала напишите краткую идею в поле ввода");
+      return;
+    }
+    setIsEnhancingPrompt(true);
+    try {
+      const res = await api.enhanceOutseeCreatePrompt({
+        prompt: text,
+        style: stylePreset !== "none" ? stylePreset : undefined,
+      });
+      if (res?.enhanced_prompt) {
+        setPrompt(res.enhanced_prompt);
+        toast.success("Промпт улучшен ИИ ✨");
+      }
+    } catch {
+      toast.error("Не удалось улучшить промпт");
+    } finally {
+      setIsEnhancingPrompt(false);
+    }
+  };
+
   const createGenerate = useMutation({
     mutationFn: async () => {
-      const text = prompt.trim();
-      // ---- KIE: динамическая модель из каталога kie.ai ----
-      if (kieActive && kieModel) {
-        if (!kieConfigured) {
-          throw new Error("KIE_API_KEY не задан в .env");
-        }
-        const vals: Record<string, unknown> = { ...kieValues };
-        if (kieTextField) vals[kieTextField] = text;
-        const missing = kieModel.fields
-          .filter((f) => f.required)
-          .filter((f) => {
-            const v = vals[f.name] ?? f.default;
-            if (v === undefined || v === null) return true;
-            if (typeof v === "string") return v.trim() === "";
-            if (Array.isArray(v)) return v.length === 0;
-            return false;
-          });
-        if (missing.length) {
-          throw new Error(`Заполни: ${missing.map((f) => f.label).join(", ")}`);
-        }
-        const res = await api.kieGenerate({ model_id: kieModel.id, values: vals });
-        return {
-          job_id: res.job.job_id,
-          history_id: res.job.history_id,
-          status: res.job.status,
-          queue_position: res.job.queue_position,
-          provider: "kie" as const,
-        };
+      const preset = STYLE_PRESETS.find((p) => p.id === stylePreset);
+      let text = prompt.trim();
+      if (text && mediaType === "image" && preset?.suffix) {
+        text += preset.suffix;
       }
-      if (!text) throw new Error("Введите промпт");
-      if (mediaType === "audio") {
-        if (projectId == null) {
-          throw new Error("Аудио — через шаг пайплайна: выберите проект");
-        }
-        await api.putOutseeCreateSettings(settingsPayload());
-        await applyToProject.mutateAsync();
-        // Suno (Create «АУДИО») → music; иначе TTS/voice → audio.
-        const step =
-          String(audioSlug || "").toLowerCase().includes("suno") ? "music" : "audio";
-        return api.runProjectStep(projectId, step);
+      if (text && mediaType === "image" && negativePrompt.trim()) {
+        text += `\nAvoid: ${negativePrompt.trim()}`;
       }
-      const provider = autoProvider;
-      if (!provider) {
-        throw new Error(
-          "Нет API-ключа: задайте OUTSEE_API_KEY или GRSAI_API_KEY в .env и перезапустите Studio",
-        );
-      }
-      // Settings не блокируют enqueue: параллельные клики иначе ломаются
-      // на гонке записи outsee_create_settings.json.
-      void api.putOutseeCreateSettings(settingsPayload()).catch(() => undefined);
-      if (provider === "grsai") {
-        if (!grsaiConfigured) {
-          throw new Error("GRSAI_API_KEY не задан в .env");
+
+      const executeSingle = async (index: number) => {
+        const nonce = `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`;
+        // ---- KIE: динамическая модель из каталога kie.ai ----
+        if (kieActive && kieModel) {
+          if (!kieConfigured) {
+            throw new Error("KIE_API_KEY не задан в .env");
+          }
+          const vals: Record<string, unknown> = { ...kieValues, _nonce: nonce };
+          if (kieTextField) vals[kieTextField] = text;
+          if (negativePrompt.trim()) {
+            const negField = kieModel.fields.find((f) => f.name.toLowerCase().includes("neg"));
+            if (negField) vals[negField.name] = negativePrompt.trim();
+          }
+          const missing = kieModel.fields
+            .filter((f) => f.required)
+            .filter((f) => {
+              const v = vals[f.name] ?? f.default;
+              if (v === undefined || v === null) return true;
+              if (typeof v === "string") return v.trim() === "";
+              if (Array.isArray(v)) return v.length === 0;
+              return false;
+            });
+          if (missing.length) {
+            throw new Error(`Заполни: ${missing.map((f) => f.label).join(", ")}`);
+          }
+          const res = await api.kieGenerate({ model_id: kieModel.id, values: vals });
+          return {
+            job_id: res.job.job_id,
+            history_id: res.job.history_id,
+            status: res.job.status,
+            queue_position: res.job.queue_position,
+            provider: "kie" as const,
+          };
         }
+        if (!text) throw new Error("Введите промпт");
+        if (mediaType === "audio") {
+          if (projectId == null) {
+            throw new Error("Аудио — через шаг пайплайна: выберите проект");
+          }
+          await api.putOutseeCreateSettings(settingsPayload());
+          await applyToProject.mutateAsync();
+          // Suno (Create «АУДИО») → music; иначе TTS/voice → audio.
+          const step =
+            String(audioSlug || "").toLowerCase().includes("suno") ? "music" : "audio";
+          return api.runProjectStep(projectId, step);
+        }
+        if (!outseeConfigured) {
+          throw new Error("OUTSEE_API_KEY не задан в .env");
+        }
+        // Settings не блокируют enqueue: параллельные клики иначе ломаются
+        // на гонке записи outsee_create_settings.json.
+        void api.putOutseeCreateSettings(settingsPayload()).catch(() => undefined);
         const enqueued =
           mediaType === "video"
-            ? await api.grsaiGenerate({
+            ? await api.outseeGenerate({
                 prompt: text,
-                model: toGrsaiVideoModel(videoSlug),
-                aspect,
                 media: "video",
-                duration: Number(duration) || 10,
-                size: soraSize,
+                model: videoSlug,
+                aspect,
+                resolution: videoResolution,
+                duration: Number(duration) || 5,
+                generate_audio: videoModel.chips.includes("audio") ? generateAudio : null,
+                first_frame_url: firstFrameDataUrl,
+                last_frame_url: lastFrameDataUrl,
+                project_id: projectId,
               })
-            : await api.grsaiGenerate({
+            : await api.outseeGenerate({
                 prompt: text,
+                media: "image",
                 model: imageSlug,
                 aspect,
                 resolution,
-                media: "image",
+                first_frame_url: referenceImages.length > 0 ? referenceImages[0].url : firstFrameDataUrl,
+                reference_images:
+                  referenceImages.length > 0
+                    ? referenceImages.map((r) => r.url)
+                    : firstFrameDataUrl
+                      ? [firstFrameDataUrl]
+                      : undefined,
+                project_id: projectId,
               });
-        return { ...enqueued, provider: "grsai" as const };
+        return { ...enqueued, provider: "outsee" as const };
+      };
+
+      const count = (mediaType === "image" || mediaType === "video") ? batchCount : 1;
+      if (count > 1) {
+        const results = await Promise.all(
+          Array.from({ length: count }, (_, i) => executeSingle(i))
+        );
+        return { batch: true, count, results };
       }
-      if (!outseeConfigured) {
-        throw new Error("OUTSEE_API_KEY не задан в .env");
-      }
-      const enqueued =
-        mediaType === "video"
-          ? await api.outseeGenerate({
-              prompt: text,
-              media: "video",
-              model: videoSlug,
-              aspect,
-              resolution: videoResolution,
-              duration: Number(duration) || 5,
-              generate_audio: videoModel.chips.includes("audio") ? generateAudio : null,
-              first_frame_url: firstFrameDataUrl,
-              last_frame_url: lastFrameDataUrl,
-              project_id: projectId,
-            })
-          : await api.outseeGenerate({
-              prompt: text,
-              media: "image",
-              model: imageSlug,
-              aspect,
-              resolution,
-              first_frame_url: firstFrameDataUrl,
-              project_id: projectId,
-            });
-      return { ...enqueued, provider: "outsee" as const };
+      return executeSingle(0);
     },
     onSuccess: (res) => {
+      if (res && typeof res === "object" && "batch" in res && Array.isArray((res as any).results)) {
+        const batchRes = (res as any).results as any[];
+        const newTrackers: { provider: "outsee" | "kie"; jobId: string; historyId: string }[] = [];
+        let firstHistId: string | null = null;
+        for (const r of batchRes) {
+          if (r && typeof r === "object" && "job_id" in r && r.job_id) {
+            if (!firstHistId && r.history_id) firstHistId = r.history_id;
+            newTrackers.push({ provider: r.provider, jobId: r.job_id, historyId: r.history_id });
+          }
+        }
+        if (firstHistId) setSelectedId(firstHistId);
+        setTrackingJobs((prev) => [
+          ...prev.filter((x) => !newTrackers.some((n) => n.jobId === x.jobId)),
+          ...newTrackers,
+        ]);
+        qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
+        qc.invalidateQueries({ queryKey: ["create-queue"] });
+        toast.success(`Запущено ${batchRes.length} генерации 🚀`);
+        return;
+      }
       if (res && typeof res === "object" && "job_id" in res && res.job_id) {
         const r = res as {
           job_id: string;
@@ -704,7 +910,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
           running_count?: number;
           status?: string;
           queue_position?: number | null;
-          provider: "grsai" | "outsee" | "kie";
+          provider: "outsee" | "kie";
         };
         if (r.history_id) setSelectedId(r.history_id);
         setTrackingJobs((prev) => [
@@ -753,31 +959,31 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
 
   return (
     <div className="fixed inset-0 z-[80] flex flex-col bg-[#0a0a0a] text-white">
-      <header className="flex h-[52px] shrink-0 items-center justify-between border-b border-white/[0.06] bg-[#0f0f0f] px-4">
+      <header className="flex h-[52px] shrink-0 items-center justify-between border-b border-white/10 bg-[#0d0d11]/90 px-4 backdrop-blur-xl">
         <div className="flex items-center gap-3">
           <button
             type="button"
             onClick={() => onOpenChange(false)}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] text-white/70 hover:bg-white/[0.08]"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] text-white/70 transition hover:bg-white/[0.08] hover:text-white"
           >
             <X className="h-4 w-4" />
           </button>
           <div className="flex items-center gap-2">
             <Sparkles className="h-4 w-4" style={{ color: OUTSEE_ACCENT }} />
             <div className="leading-tight">
-              <div className="text-sm font-semibold tracking-tight">Генерация</div>
-              <div className="text-[10px] uppercase tracking-[0.16em] text-white/35">
+              <div className="text-sm font-bold tracking-tight text-white/95">Генерация</div>
+              <div className="text-[10px] uppercase tracking-[0.16em] text-white/40">
                 outsee create · глобально
               </div>
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2.5">
           <span className="hidden text-[11px] text-white/40 sm:inline">
             настройки и история общие для Studio
           </span>
           {projectId != null && (
-            <span className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 font-mono text-[10px] text-white/45">
+            <span className="rounded-full border border-[#22d3ee]/30 bg-[#22d3ee]/10 px-2.5 py-0.5 font-mono text-[10px] font-semibold text-[#22d3ee]">
               проект #{projectId}
             </span>
           )}
@@ -785,7 +991,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
             href={outseeCreateUrl(mediaType, activeSlug)}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-2.5 py-1.5 text-[11px] text-white/55 hover:text-white"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-[11px] text-white/60 transition hover:border-white/25 hover:bg-white/[0.07] hover:text-white"
           >
             outsee.io
             <ExternalLink className="h-3 w-3" />
@@ -795,15 +1001,15 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
 
       <div className="flex min-h-0 flex-1">
         {/* History + feed filter */}
-        <aside className="flex w-[240px] shrink-0 flex-col border-r border-white/[0.06] bg-[#0c0c0c] lg:w-[280px]">
-          <div className="flex items-center gap-2 border-b border-white/[0.06] px-3 py-2.5">
-            <History className="h-3.5 w-3.5 text-white/40" />
-            <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/40">
+        <aside className="flex w-[250px] shrink-0 flex-col border-r border-white/10 bg-[#0a0a0d]/95 backdrop-blur-xl lg:w-[290px]">
+          <div className="flex items-center gap-2 border-b border-white/[0.08] px-3.5 py-2.5">
+            <History className="h-3.5 w-3.5 text-white/50" />
+            <span className="text-[11px] font-bold uppercase tracking-[0.14em] text-white/50">
               История
             </span>
             {queueCount > 0 && (
               <span
-                className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-black"
+                className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider text-black shadow-sm"
                 style={{ backgroundColor: OUTSEE_ACCENT }}
                 title={`В работе ${runningJobs.length}/${maxParallel}, ожидание ${waitingJobs.length}`}
               >
@@ -811,13 +1017,13 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 {runningJobs.length}·{waitingJobs.length}
               </span>
             )}
-            <span className="ml-auto font-mono text-[10px] text-white/30">
+            <span className="ml-auto font-mono text-[10px] text-white/40 font-semibold">
               {historyItems.length}
             </span>
           </div>
-          <div className="space-y-2 border-b border-white/[0.06] px-2 py-2">
+          <div className="space-y-2 border-b border-white/[0.08] px-2.5 py-2.5">
             <div>
-              <div className="mb-1 px-1 text-[9px] font-semibold uppercase tracking-wider text-white/40">
+              <div className="mb-1.5 px-1 text-[9px] font-bold uppercase tracking-wider text-white/40">
                 В работе · {runningJobs.length}/{maxParallel}
               </div>
               {runningJobs.length === 0 ? (
@@ -825,23 +1031,22 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   нет активных
                 </div>
               ) : (
-                <div className="space-y-1">
+                <div className="space-y-1.5">
                   {runningJobs.map((j) => (
                     <button
                       key={j.job_id}
                       type="button"
                       onClick={() => j.history_id && setSelectedId(j.history_id)}
-                      className="flex w-full items-center gap-2 rounded-lg border border-[rgba(209,254,23,0.25)] bg-[rgba(209,254,23,0.06)] px-2 py-1.5 text-left"
+                      className="flex w-full items-center gap-2 rounded-xl border border-[#22d3ee]/40 bg-[#22d3ee]/10 px-2.5 py-2 text-left shadow-[0_0_15px_rgba(34,211,238,0.15)] transition"
                     >
                       <Loader2
-                        className="h-3 w-3 shrink-0 animate-spin"
-                        style={{ color: OUTSEE_ACCENT }}
+                        className="h-3.5 w-3.5 shrink-0 animate-spin text-[#22d3ee]"
                       />
                       <div className="min-w-0 flex-1">
-                        <div className="truncate font-mono text-[10px] text-white/80">
+                        <div className="truncate font-mono text-[10px] font-semibold text-white/90">
                           {j.model || j.media}
                         </div>
-                        <div className="truncate text-[9px] text-white/40">
+                        <div className="truncate text-[9px] text-white/50">
                           {j.prompt_preview || "генерация…"}
                         </div>
                       </div>
@@ -851,7 +1056,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
               )}
             </div>
             <div>
-              <div className="mb-1 px-1 text-[9px] font-semibold uppercase tracking-wider text-white/40">
+              <div className="mb-1.5 px-1 text-[9px] font-bold uppercase tracking-wider text-white/40">
                 Ожидание · {waitingJobs.length}
               </div>
               {waitingJobs.length === 0 ? (
@@ -859,22 +1064,22 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   очередь пуста
                 </div>
               ) : (
-                <div className="space-y-1">
+                <div className="space-y-1.5">
                   {waitingJobs.map((j) => (
                     <button
                       key={j.job_id}
                       type="button"
                       onClick={() => j.history_id && setSelectedId(j.history_id)}
-                      className="flex w-full items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1.5 text-left"
+                      className="flex w-full items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-2.5 py-2 text-left transition hover:border-white/20 hover:bg-white/[0.06]"
                     >
-                      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-white/10 font-mono text-[9px] text-white/60">
+                      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-white/10 font-mono text-[9px] font-bold text-white/70">
                         #{j.queue_position ?? "—"}
                       </span>
                       <div className="min-w-0 flex-1">
-                        <div className="truncate font-mono text-[10px] text-white/70">
+                        <div className="truncate font-mono text-[10px] font-semibold text-white/80">
                           {j.model || j.media}
                         </div>
-                        <div className="truncate text-[9px] text-white/35">
+                        <div className="truncate text-[9px] text-white/40">
                           {j.prompt_preview || "в очереди"}
                         </div>
                       </div>
@@ -884,19 +1089,18 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
               )}
             </div>
           </div>
-          <div className="flex flex-wrap gap-1 border-b border-white/[0.06] p-2">
+          <div className="flex flex-wrap gap-1 border-b border-white/[0.08] p-2">
             {OUTSEE_FEED_TABS.map((t) => (
               <button
                 key={t.id}
                 type="button"
                 onClick={() => setFeedKind(t.id)}
                 className={cn(
-                  "rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-wider transition",
+                  "rounded-lg px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider transition-all duration-150",
                   feedKind === t.id
-                    ? "text-black"
-                    : "bg-white/[0.04] text-white/45 hover:text-white/80",
+                    ? "bg-[#22d3ee] text-black font-extrabold shadow-[0_0_15px_rgba(34,211,238,0.3)]"
+                    : "bg-white/[0.04] text-white/50 hover:bg-white/[0.08] hover:text-white",
                 )}
-                style={feedKind === t.id ? { backgroundColor: OUTSEE_ACCENT } : undefined}
               >
                 {t.label}
               </button>
@@ -914,7 +1118,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 <span className="font-mono text-white/50">data/generations/</span>
               </div>
             ) : (
-              <div className="grid grid-cols-2 gap-1.5">
+              <div className="grid grid-cols-2 gap-2">
                 {historyItems.map((item) => {
                   const active = selected?.id === item.id;
                   const isVideo = item.kind === "video";
@@ -939,10 +1143,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       type="button"
                       onClick={() => setSelectedId(item.id)}
                       className={cn(
-                        "group relative aspect-square overflow-hidden rounded-lg border bg-[#141414]",
+                        "group relative aspect-square overflow-hidden rounded-xl border bg-[#121216] transition-all duration-200",
                         active
-                          ? "border-[rgba(209,254,23,0.55)] ring-1 ring-[rgba(209,254,23,0.35)]"
-                          : "border-white/[0.06] hover:border-white/20",
+                          ? "border-[#22d3ee] ring-2 ring-[#22d3ee]/40 shadow-[0_0_20px_rgba(34,211,238,0.25)]"
+                          : "border-white/[0.08] hover:border-white/25 hover:bg-[#18181f]",
                       )}
                       title={`${item.label}${item.project_slug ? ` · ${item.project_slug}` : ""}`}
                     >
@@ -973,8 +1177,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                         <div className="flex h-full flex-col items-center justify-center gap-1.5 px-2 text-center">
                           {pending ? (
                             <Loader2
-                              className="h-5 w-5 animate-spin"
-                              style={{ color: OUTSEE_ACCENT }}
+                              className="h-5 w-5 animate-spin text-[#22d3ee]"
                             />
                           ) : failed ? (
                             <span className="text-[10px] font-semibold text-red-400">ошибка</span>
@@ -988,12 +1191,43 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                           )}
                         </div>
                       )}
-                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent px-1.5 py-1">
-                        <div className="truncate font-mono text-[9px] text-white/70">{item.label}</div>
+                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent px-2 py-1.5">
+                        <div className="truncate font-mono text-[9px] font-semibold text-white/80">{item.label}</div>
                         {item.project_slug && (
-                          <div className="truncate text-[8px] text-white/40">{item.project_slug}</div>
+                          <div className="truncate text-[8px] text-white/45">{item.project_slug}</div>
                         )}
                       </div>
+                      {item.preview_url && !pending && (
+                        <div className="absolute top-1.5 right-1.5 z-20 flex items-center gap-1 opacity-0 transition group-hover:opacity-100">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deleteItem.mutate(item);
+                            }}
+                            className="flex h-6 w-6 items-center justify-center rounded-md bg-black/75 text-white/70 backdrop-blur transition hover:bg-red-600 hover:text-white shadow-md"
+                            title="Удалить из истории"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              downloadMediaFile(
+                                item.preview_url || item.raw_url || "",
+                                item.label || "generation",
+                                item.kind === "video" ? "mp4" : item.kind === "audio" ? "mp3" : "png",
+                                item.path,
+                              );
+                            }}
+                            className="flex h-6 w-6 items-center justify-center rounded-md bg-black/75 text-white/80 backdrop-blur transition hover:bg-[#22d3ee] hover:text-black shadow-md"
+                            title="Скачать файл"
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      )}
                     </button>
                   );
                 })}
@@ -1004,36 +1238,53 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
 
         {/* Result + dock */}
         <section className="relative flex min-w-0 flex-1 flex-col">
-          <div className="flex items-center justify-between px-4 pb-1 pt-3 lg:px-6">
-            <h2 className="flex items-center gap-2 text-sm font-bold text-white lg:text-base">
-              <Sparkles className="h-4 w-4" style={{ color: OUTSEE_ACCENT }} />
-              Результат генерации
-              {selected &&
-                (selected.elapsed_label ||
-                  (selected.elapsed_sec != null && selected.elapsed_sec >= 0)) && (
-                  <span className="text-[12px] font-medium text-white/55">
-                    ·{" "}
-                    {selected.elapsed_label ||
-                      formatElapsedMinSec(selected.elapsed_sec)}
-                  </span>
-                )}
-            </h2>
+          {/* Ambient glow backlight */}
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center -z-0">
+            <div className="h-80 w-80 rounded-full bg-[#22d3ee]/10 blur-[110px]" />
+            <div className="h-60 w-60 rounded-full bg-purple-500/10 blur-[90px]" />
           </div>
-          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 pb-[230px] lg:px-6">
+
+          {/* Header - float top-left so media starts at the very top */}
+          <div className="pointer-events-none absolute top-3 left-4 z-20 flex flex-col gap-0.5 lg:left-6">
+            <h2 className="text-sm font-bold text-white lg:text-base">
+              Результат генерации
+            </h2>
+            {selected && (
+              <div className="flex flex-col text-[11px] font-medium text-white/50">
+                {selected.elapsed_label ||
+                (selected.elapsed_sec != null && selected.elapsed_sec >= 0) ? (
+                  <div>
+                    Время генерации:{" "}
+                    <span className="font-mono font-semibold text-[#22d3ee]">
+                      {selected.elapsed_label || formatElapsedMinSec(selected.elapsed_sec)}
+                    </span>
+                  </div>
+                ) : null}
+                {selected.model && (
+                  <div className="text-white/45">
+                    Модель:{" "}
+                    <span className="font-mono font-semibold text-white/75">{selected.model}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="relative z-10 flex min-h-0 flex-1 flex-col items-center justify-start px-4 pt-2 pb-[260px] lg:px-6">
             {selected?.preview_url &&
             selected.status !== "queued" &&
             selected.status !== "processing" ? (
-              <>
+              <div className="group relative flex max-h-[calc(100vh-320px)] max-w-full items-center justify-center">
                 {selected.kind === "video" ? (
                   <video
                     src={selected.preview_url}
                     controls
-                    className="max-h-[calc(100vh-320px)] max-w-full rounded-xl border border-white/[0.06] bg-black"
+                    className="max-h-[calc(100vh-320px)] max-w-full rounded-2xl border border-white/15 bg-black/80 shadow-[0_20px_50px_rgba(0,0,0,0.8)]"
                   />
                 ) : selected.kind === "audio" ? (
-                  <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-2xl border border-white/[0.06] bg-white/[0.02] p-8">
-                    <Music className="h-8 w-8 text-white/40" />
-                    <div className="text-sm text-white/70">{selected.label}</div>
+                  <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-2xl border border-white/15 bg-[#121216]/90 p-8 backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
+                    <Music className="h-8 w-8 text-[#22d3ee]" />
+                    <div className="text-sm font-semibold text-white/85">{selected.label}</div>
                     <audio src={selected.preview_url} controls className="w-full" />
                   </div>
                 ) : (
@@ -1041,68 +1292,45 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   <img
                     src={selected.preview_url}
                     alt=""
-                    className="max-h-[calc(100vh-320px)] max-w-full rounded-xl border border-white/[0.06] object-contain"
+                    onClick={() => setLightboxOpen(true)}
+                    className="max-h-[calc(100vh-320px)] max-w-full cursor-zoom-in rounded-2xl border border-white/15 bg-black/80 object-contain shadow-[0_20px_50px_rgba(0,0,0,0.8)] transition hover:brightness-105"
                   />
                 )}
-                {mediaType === "video" &&
-                  videoModel.chips.includes("image-input") &&
-                  selected.kind === "image" &&
-                  selected.status === "done" && (
-                    <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
-                      <button
-                        type="button"
-                        className="rounded-xl border border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.10)] px-3 py-1.5 text-[11px] font-medium"
-                        onClick={() => void applyFrameFromHistory(selected, "first")}
-                      >
-                        → Старт
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-xl border border-white/15 bg-white/[0.04] px-3 py-1.5 text-[11px] font-medium text-white/75"
-                        onClick={() => void applyFrameFromHistory(selected, "last")}
-                      >
-                        → Финиш
-                      </button>
-                    </div>
-                  )}
-                <div className="text-[12px] font-medium text-white/70">
-                  Результат ·{" "}
-                  {selected.elapsed_label ||
-                    formatElapsedMinSec(selected.elapsed_sec)}
-                </div>
-                {selected.path && (
-                  <div
-                    className="max-w-full truncate px-2 font-mono text-[10px] text-white/35"
-                    title={selected.path}
+                {selected.kind !== "audio" && (
+                  <button
+                    type="button"
+                    onClick={() => setLightboxOpen(true)}
+                    className="absolute top-3 right-3 z-30 flex items-center gap-1.5 rounded-xl border border-white/20 bg-black/70 px-3 py-1.5 text-[11px] font-medium text-white/90 opacity-0 backdrop-blur-md transition hover:scale-105 hover:border-[#22d3ee]/60 hover:bg-[#22d3ee]/20 hover:text-white group-hover:opacity-100 shadow-2xl"
+                    title="Во весь экран"
                   >
-                    {selected.path}
-                  </div>
+                    <Maximize2 className="h-3.5 w-3.5" />
+                    <span>Во весь экран</span>
+                  </button>
                 )}
-              </>
+              </div>
             ) : selected &&
               (selected.status === "queued" || selected.status === "processing") ? (
-              <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-2xl border border-white/[0.08] bg-white/[0.03] px-6 py-12 text-center">
+              <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-2xl border border-white/15 bg-[#121216]/90 px-6 py-12 text-center backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
                 <Loader2
-                  className="h-9 w-9 animate-spin"
-                  style={{ color: OUTSEE_ACCENT }}
+                  className="h-9 w-9 animate-spin text-[#22d3ee]"
                 />
-                <div className="text-sm font-semibold text-white/85">
+                <div className="text-sm font-bold text-white/90">
                   {selected.status === "queued" ? "В очереди" : "Генерация…"}
                 </div>
-                <div className="text-[12px] text-white/45">
+                <div className="text-[12px] text-white/50">
                   {selected.model || selected.label}
                   {queueCount > 1 ? ` · очередь ${queueCount}` : ""}
                 </div>
                 {selected.prompt && (
-                  <div className="line-clamp-3 max-w-full text-[11px] text-white/35">
+                  <div className="line-clamp-3 max-w-full text-[11px] text-white/40">
                     {selected.prompt}
                   </div>
                 )}
               </div>
             ) : selected?.status === "failed" ? (
-              <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-2xl border border-red-500/30 bg-red-500/5 px-6 py-10 text-center">
-                <div className="text-sm font-semibold text-red-300">Ошибка генерации</div>
-                <div className="text-[12px] text-white/50">
+              <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-2xl border border-red-500/30 bg-red-500/10 px-6 py-10 text-center backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
+                <div className="text-sm font-bold text-red-300">Ошибка генерации</div>
+                <div className="text-[12px] text-white/60">
                   {selected.error || "Не удалось получить файл"}
                 </div>
                 <div className="text-[12px] font-medium text-white/55">
@@ -1112,12 +1340,12 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 </div>
               </div>
             ) : (
-              <div className="flex w-full max-w-xs flex-col items-center gap-4 rounded-2xl border border-white/[0.06] bg-white/[0.02] px-6 py-10 text-center">
+              <div className="flex w-full max-w-xs flex-col items-center gap-4 rounded-2xl border border-white/10 bg-[#121216]/70 px-6 py-10 text-center backdrop-blur-xl">
                 <ImageIcon className="h-8 w-8 text-white/30" />
-                <div className="text-sm text-white/70">Нет результата</div>
+                <div className="text-sm font-medium text-white/70">Нет результата</div>
                 <div className="text-[12px] text-white/40">
                   Файлы пишутся в{" "}
-                  <span className="font-mono text-white/55">data/generations/</span> на этом
+                  <span className="font-mono text-white/60">data/generations/</span> на этом
                   компьютере.
                 </div>
               </div>
@@ -1142,10 +1370,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       }}
                       aria-pressed={active}
                       className={cn(
-                        "flex min-w-[72px] flex-col items-center gap-1 rounded-xl border px-2.5 py-2.5 transition",
+                        "flex min-w-[76px] flex-col items-center gap-1.5 rounded-xl border px-3 py-2.5 transition-all duration-200",
                         active
-                          ? "border-[rgba(209,254,23,0.45)] bg-[rgba(209,254,23,0.12)] text-[rgba(209,254,23,1)]"
-                          : "border-white/10 bg-[#171717] text-white/45 hover:text-white/80",
+                          ? "border-[#22d3ee] bg-[#22d3ee]/15 text-[#22d3ee] shadow-[0_0_18px_rgba(34,211,238,0.25)]"
+                          : "border-white/10 bg-[#16161b]/90 text-white/45 hover:border-white/20 hover:bg-[#1e1e24] hover:text-white",
                       )}
                     >
                       <TypeIcon id={t.id} />
@@ -1158,12 +1386,11 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
               </div>
 
               <div
-                className="min-w-0 flex-1 border border-white/[0.08] bg-[#171717] shadow-[0_12px_40px_rgba(0,0,0,0.55)]"
-                style={{ borderRadius: 16 }}
+                className="min-w-0 flex-1 rounded-2xl border border-white/15 bg-[#121216]/95 backdrop-blur-2xl shadow-[0_20px_60px_rgba(0,0,0,0.85)] ring-1 ring-white/10"
               >
                 {/* KIE: вложения из схемы модели (загрузка в kie / URL) */}
                 {kieActive && kieModel && kieFileFields(kieModel).length > 0 && (
-                  <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.06] px-3 py-2.5 lg:px-4">
+                  <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.08] px-3 py-2.5 lg:px-4">
                     {kieFileFields(kieModel).map((f) => (
                       <KieAttachButton
                         key={f.name}
@@ -1179,121 +1406,308 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     </span>
                   </div>
                 )}
-                {/* Явная зона вложений — как на outsee.io (не прятать в чипах) */}
+                {/* Зона вложений — динамически под модель */}
                 {!kieActive &&
                   (mediaType === "video"
                     ? videoModel.chips.includes("image-input")
-                    : mediaType === "image" && imageModel.chips.includes("image-input")) && (
-                  <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.06] px-3 py-2.5 lg:px-4">
-                    <input
-                      ref={firstFrameInputRef}
-                      type="file"
-                      accept="image/png,image/jpeg,image/webp"
-                      className="hidden"
-                      onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (!f) return;
-                        void readFileAsDataUrl(f).then((dataUrl) => {
-                          setFirstFrameDataUrl(dataUrl);
-                          setFirstFrameName(f.name);
-                          toast.success(
-                            mediaType === "video" ? "Стартовый кадр" : "Референс добавлен",
-                          );
-                        });
-                        e.target.value = "";
-                      }}
-                    />
-                    {mediaType === "video" ? (
-                      <input
-                        ref={lastFrameInputRef}
-                        type="file"
-                        accept="image/png,image/jpeg,image/webp"
-                        className="hidden"
-                        onChange={(e) => {
-                          const f = e.target.files?.[0];
-                          if (!f) return;
-                          void readFileAsDataUrl(f).then((dataUrl) => {
-                            setLastFrameDataUrl(dataUrl);
-                            setLastFrameName(f.name);
-                            toast.success("Конечный кадр");
-                          });
-                          e.target.value = "";
-                        }}
-                      />
-                    ) : null}
-                    <button
-                      type="button"
-                      onClick={() => firstFrameInputRef.current?.click()}
-                      className={cn(
-                        "inline-flex h-10 items-center gap-2 rounded-xl border px-3 text-[12px] font-medium",
-                        firstFrameDataUrl
-                          ? "border-[rgba(209,254,23,0.45)] bg-[rgba(209,254,23,0.12)]"
-                          : "border-dashed border-white/25 bg-white/[0.03] text-white/70 hover:border-white/40",
-                      )}
-                    >
-                      {firstFrameDataUrl ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={firstFrameDataUrl}
-                          alt=""
-                          className="h-7 w-7 rounded-md object-cover ring-1 ring-white/15"
-                        />
-                      ) : (
-                        <Paperclip className="h-4 w-4" />
-                      )}
-                      {mediaType === "video" ? "Стартовый кадр" : "Референс"}
-                      {firstFrameDataUrl ? (
-                        <span
-                          className="text-white/45"
-                          onClick={(ev) => {
-                            ev.stopPropagation();
-                            setFirstFrameDataUrl(null);
-                            setFirstFrameName(null);
+                    : mediaType === "image" && maxReferences > 0) && (
+                  <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.08] px-3 py-2.5 lg:px-4">
+                    {mediaType === "image" ? (
+                      <>
+                        <input
+                          ref={multiRefInputRef}
+                          type="file"
+                          multiple
+                          accept="image/png,image/jpeg,image/webp"
+                          className="hidden"
+                          onChange={async (e) => {
+                            const files = Array.from(e.target.files || []);
+                            if (!files.length) return;
+                            const remaining = maxReferences - referenceImages.length;
+                            if (remaining <= 0) {
+                              toast.error(`Достигнут лимит референсов (${maxReferences})`);
+                              return;
+                            }
+                            const toAdd = files.slice(0, remaining);
+                            const newRefs: { id: string; url: string; name: string }[] = [];
+                            for (const f of toAdd) {
+                              const dataUrl = await readFileAsDataUrl(f);
+                              newRefs.push({
+                                id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                                url: dataUrl,
+                                name: f.name,
+                              });
+                            }
+                            setReferenceImages((prev) => [...prev, ...newRefs]);
+                            toast.success(`Добавлено ${newRefs.length} референс(ов)`);
+                            e.target.value = "";
                           }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => multiRefInputRef.current?.click()}
+                          disabled={referenceImages.length >= maxReferences}
+                          className={cn(
+                            "inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-[11px] font-bold uppercase tracking-wider transition",
+                            referenceImages.length > 0
+                              ? "border-[#22d3ee]/40 bg-[#22d3ee]/10 text-[#22d3ee]"
+                              : "border-dashed border-white/20 bg-white/[0.03] text-white/70 hover:border-white/40 hover:text-white",
+                          )}
                         >
-                          <X className="h-3.5 w-3.5" />
-                        </span>
-                      ) : null}
-                    </button>
-                    {mediaType === "video" ? (
+                          <Paperclip className="h-3.5 w-3.5" />
+                          <span>+ Референс</span>
+                          <span className="rounded-md bg-white/10 px-1.5 py-0.5 font-mono text-[10px]">
+                            {referenceImages.length}/{maxReferences}
+                          </span>
+                        </button>
+                        {referenceImages.map((ref, idx) => (
+                          <div
+                            key={ref.id}
+                            className="group flex items-center gap-1.5 rounded-xl border border-white/15 bg-white/[0.05] py-1 pl-1 pr-2 text-[11px] text-white/90"
+                          >
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={ref.url}
+                              alt=""
+                              className="h-6 w-6 rounded-lg object-cover ring-1 ring-white/15"
+                            />
+                            <span className="max-w-[90px] truncate font-mono text-[10px] text-white/75">
+                              {ref.name || `Реф #${idx + 1}`}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setReferenceImages((prev) => prev.filter((r) => r.id !== ref.id))}
+                              className="ml-0.5 text-white/40 transition hover:text-red-400"
+                              title="Удалить"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </div>
+                        ))}
+                        {maxReferences > 0 &&
+                          selected?.kind === "image" &&
+                          selected.status === "done" &&
+                          referenceImages.length < maxReferences && (
+                            <button
+                              type="button"
+                              onClick={() => void addReferenceFromHistory(selected)}
+                              className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-[#22d3ee]/40 bg-[#22d3ee]/10 px-3 text-[11px] font-semibold text-[#22d3ee] transition hover:bg-[#22d3ee]/20"
+                              title="Добавить текущий результат в референсы"
+                            >
+                              + В референсы ({referenceImages.length}/{maxReferences})
+                            </button>
+                          )}
+                      </>
+                    ) : (
+                      <>
+                        <input
+                          ref={firstFrameInputRef}
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp"
+                          className="hidden"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (!f) return;
+                            void readFileAsDataUrl(f).then((dataUrl) => {
+                              setFirstFrameDataUrl(dataUrl);
+                              setFirstFrameName(f.name);
+                              toast.success("Стартовый кадр добавлен");
+                            });
+                            e.target.value = "";
+                          }}
+                        />
+                        <input
+                          ref={lastFrameInputRef}
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp"
+                          className="hidden"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (!f) return;
+                            void readFileAsDataUrl(f).then((dataUrl) => {
+                              setLastFrameDataUrl(dataUrl);
+                              setLastFrameName(f.name);
+                              toast.success("Конечный кадр добавлен");
+                            });
+                            e.target.value = "";
+                          }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => firstFrameInputRef.current?.click()}
+                          className={cn(
+                            "inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-[11px] font-bold uppercase tracking-wider transition",
+                            firstFrameDataUrl
+                              ? "border-[#22d3ee]/40 bg-[#22d3ee]/10 text-[#22d3ee]"
+                              : "border-dashed border-white/20 bg-white/[0.03] text-white/70 hover:border-white/40 hover:text-white",
+                          )}
+                        >
+                          {firstFrameDataUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={firstFrameDataUrl}
+                              alt=""
+                              className="h-6 w-6 rounded-lg object-cover ring-1 ring-white/15"
+                            />
+                          ) : (
+                            <Paperclip className="h-3.5 w-3.5" />
+                          )}
+                          <span>Стартовый кадр</span>
+                          {firstFrameDataUrl && (
+                            <span
+                              className="text-white/45 hover:text-white"
+                              onClick={(ev) => {
+                                ev.stopPropagation();
+                                setFirstFrameDataUrl(null);
+                                setFirstFrameName(null);
+                              }}
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </span>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => lastFrameInputRef.current?.click()}
+                          className={cn(
+                            "inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-[11px] font-bold uppercase tracking-wider transition",
+                            lastFrameDataUrl
+                              ? "border-[#22d3ee]/40 bg-[#22d3ee]/10 text-[#22d3ee]"
+                              : "border-dashed border-white/20 bg-white/[0.03] text-white/70 hover:border-white/40 hover:text-white",
+                          )}
+                        >
+                          {lastFrameDataUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={lastFrameDataUrl}
+                              alt=""
+                              className="h-6 w-6 rounded-lg object-cover ring-1 ring-white/15"
+                            />
+                          ) : (
+                            <Paperclip className="h-3.5 w-3.5" />
+                          )}
+                          <span>Конечный кадр</span>
+                          {lastFrameDataUrl && (
+                            <span
+                              className="text-white/45 hover:text-white"
+                              onClick={(ev) => {
+                                ev.stopPropagation();
+                                setLastFrameDataUrl(null);
+                                setLastFrameName(null);
+                              }}
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </span>
+                          )}
+                        </button>
+                        {mediaType === "video" &&
+                          videoModel.chips.includes("image-input") &&
+                          selected?.kind === "image" &&
+                          selected.status === "done" && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => void applyFrameFromHistory(selected, "first")}
+                                className="inline-flex h-9 items-center gap-1 rounded-xl border border-[#22d3ee]/40 bg-[#22d3ee]/10 px-2.5 text-[11px] font-semibold text-[#22d3ee] transition hover:bg-[#22d3ee]/20"
+                                title="Текущее фото → Стартовый кадр"
+                              >
+                                → В старт
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void applyFrameFromHistory(selected, "last")}
+                                className="inline-flex h-9 items-center gap-1 rounded-xl border border-white/20 bg-white/[0.04] px-2.5 text-[11px] font-medium text-white/75 transition hover:border-white/30 hover:bg-white/[0.08]"
+                                title="Текущее фото → Конечный кадр"
+                              >
+                                → В финиш
+                              </button>
+                            </>
+                          )}
+                      </>
+                    )}
+                    <span className="text-[10px] text-white/35">
+                      файл с диска или выбор из истории слева
+                    </span>
+                  </div>
+                )}
+                {/* Style Presets and Negative Prompt for image mode */}
+                {mediaType === "image" && (
+                  <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-white/[0.06] bg-white/[0.015] px-3 py-1.5 lg:px-4">
+                    <div className="flex items-center gap-1 overflow-x-auto py-0.5 no-scrollbar">
+                      <span className="mr-1 shrink-0 font-mono text-[10px] font-semibold uppercase text-white/40">
+                        Стиль:
+                      </span>
+                      {STYLE_PRESETS.map((p) => {
+                        const active = stylePreset === p.id;
+                        return (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => setStylePreset(p.id)}
+                            className={cn(
+                              "inline-flex shrink-0 items-center gap-1 rounded-lg px-2 py-0.5 text-[11px] font-medium transition",
+                              active
+                                ? "bg-[#22d3ee]/20 font-semibold text-[#22d3ee] ring-1 ring-[#22d3ee]/40"
+                                : "bg-white/[0.04] text-white/60 hover:bg-white/[0.08] hover:text-white",
+                            )}
+                          >
+                            <span>{p.icon}</span>
+                            <span>{p.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
                       <button
                         type="button"
-                        onClick={() => lastFrameInputRef.current?.click()}
+                        onClick={handleRandomPrompt}
+                        className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[11px] font-medium text-white/70 transition hover:border-[#22d3ee]/40 hover:bg-[#22d3ee]/10 hover:text-white"
+                        title="Подставить готовый красивый пример промпта"
+                      >
+                        <Dices className="h-3 w-3 text-[#22d3ee]" />
+                        <span>Случайный</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isEnhancingPrompt}
+                        onClick={handleEnhancePrompt}
+                        className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[#22d3ee]/30 bg-[#22d3ee]/10 px-2 py-0.5 text-[11px] font-semibold text-[#22d3ee] transition hover:bg-[#22d3ee]/20 disabled:opacity-50"
+                        title="Улучшить и детализировать текущий промпт с помощью ИИ"
+                      >
+                        {isEnhancingPrompt ? (
+                          <Loader2 className="h-3 w-3 animate-spin text-[#22d3ee]" />
+                        ) : (
+                          <Wand2 className="h-3 w-3 text-[#22d3ee]" />
+                        )}
+                        <span>{isEnhancingPrompt ? "Улучшаем…" : "Улучшить"}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowNegativePrompt((v) => !v)}
                         className={cn(
-                          "inline-flex h-10 items-center gap-2 rounded-xl border px-3 text-[12px] font-medium",
-                          lastFrameDataUrl
-                            ? "border-[rgba(209,254,23,0.45)] bg-[rgba(209,254,23,0.12)]"
-                            : "border-dashed border-white/25 bg-white/[0.03] text-white/70 hover:border-white/40",
+                          "inline-flex shrink-0 items-center gap-1 rounded-lg px-2 py-0.5 font-mono text-[10px] transition",
+                          showNegativePrompt || negativePrompt
+                            ? "bg-purple-500/20 text-purple-300 ring-1 ring-purple-500/30"
+                            : "bg-white/[0.04] text-white/45 hover:text-white",
                         )}
                       >
-                        {lastFrameDataUrl ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={lastFrameDataUrl}
-                            alt=""
-                            className="h-7 w-7 rounded-md object-cover ring-1 ring-white/15"
-                          />
-                        ) : (
-                          <Paperclip className="h-4 w-4" />
-                        )}
-                        Конечный кадр
-                        {lastFrameDataUrl ? (
-                          <span
-                            className="text-white/45"
-                            onClick={(ev) => {
-                              ev.stopPropagation();
-                              setLastFrameDataUrl(null);
-                              setLastFrameName(null);
-                            }}
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </span>
-                        ) : null}
+                        <span>⛔ Негативный</span>
+                        {negativePrompt && <span className="h-1.5 w-1.5 rounded-full bg-purple-400" />}
                       </button>
-                    ) : null}
-                    <span className="text-[10px] text-white/35">
-                      файл или картинка из истории → кнопки под превью
-                    </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Expandable Negative Prompt input */}
+                {mediaType === "image" && showNegativePrompt && (
+                  <div className="border-b border-white/[0.06] bg-black/20 px-3 py-2 lg:px-4">
+                    <input
+                      type="text"
+                      value={negativePrompt}
+                      onChange={(e) => setNegativePrompt(e.target.value)}
+                      placeholder="Отрицательный промпт: чего НЕ должно быть на картинке (напр. размытие, лишние пальцы, текст, мусор)..."
+                      className="w-full rounded-lg border border-white/10 bg-[#16161b] px-3 py-1.5 text-[12px] text-white placeholder-white/30 focus:border-purple-400 focus:outline-none"
+                    />
                   </div>
                 )}
                 {(!kieActive || kieTextField) && (
@@ -1302,18 +1716,25 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       value={prompt}
                       onChange={(e) => setPrompt(e.target.value)}
                       placeholder={
-                        kieActive && kieModel
-                          ? kieModel.fields.find((f) => f.name === kieTextField)
-                              ?.label || "Опишите…"
-                          : mediaType === "audio"
-                            ? "Текст / описание трека…"
-                            : mediaType === "video"
-                              ? "Опишите видео…"
-                              : "Опишите изображение…"
+                        mediaType === "audio"
+                          ? "Текст / описание трека…"
+                          : mediaType === "video"
+                            ? "Опишите видео…"
+                            : "Опишите изображение…"
                       }
                       rows={3}
                       className="w-full resize-none bg-transparent text-[13px] leading-relaxed text-white/90 placeholder:text-white/30 focus:outline-none"
                     />
+                    {mediaType === "image" && stylePreset !== "none" && (
+                      <div className="mt-1 flex items-center gap-1.5 rounded-lg border border-[#22d3ee]/25 bg-[#22d3ee]/5 px-2.5 py-1 text-[11px] text-[#22d3ee]/90">
+                        <span className="font-semibold">
+                          Стиль «{STYLE_PRESETS.find((p) => p.id === stylePreset)?.label}»:
+                        </span>
+                        <span className="truncate font-mono text-[10px] text-white/60">
+                          {STYLE_PRESETS.find((p) => p.id === stylePreset)?.suffix}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 )}
                 {kieActive && kieModel && !kieTextField && (
@@ -1323,15 +1744,8 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     </div>
                   </div>
                 )}
-                {kieActive && kieModel?.hint && kieTextField && (
-                  <div className="px-3 pt-1 lg:px-4">
-                    <div className="text-[10px] leading-snug text-white/35">
-                      {kieModel.hint}
-                    </div>
-                  </div>
-                )}
 
-                <div className="flex flex-wrap items-end gap-2 border-t border-white/[0.06] px-3 py-2.5 lg:px-4">
+                <div className="flex flex-wrap items-end gap-2 border-t border-white/[0.08] px-3 py-2.5 lg:px-4">
                   <div className="relative" ref={modelRef}>
                     <ChipButton
                       active={modelOpen}
@@ -1350,13 +1764,13 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                           className="h-[18px] w-[18px] shrink-0 rounded-md object-cover ring-1 ring-white/10"
                         />
                       ) : (
-                        <span className="inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-md bg-[rgba(120,170,255,0.2)] font-mono text-[10px] font-bold text-[rgba(120,170,255,1)] ring-1 ring-white/10">
+                        <span className="inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-md bg-[#38bdf8]/20 font-mono text-[10px] font-bold text-[#38bdf8] ring-1 ring-white/10">
                           K
                         </span>
                       )}
                       <span className="font-medium">
                         {currentWired ? (
-                          <span className="mr-1 font-mono text-[rgba(209,254,23,1)]">+</span>
+                          <span className="mr-1 font-mono text-[#22d3ee]">+</span>
                         ) : null}
                         {currentName}
                       </span>
@@ -1380,17 +1794,17 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   </div>
 
                   {!kieActive && mediaType === "video" && videoModel.chips.includes("orientation") && (
-                    <div className="inline-flex gap-0.5 rounded-full border border-white/10 bg-[#1a1a1a] p-0.5">
+                    <div className="inline-flex gap-0.5 rounded-full border border-white/10 bg-[#16161b] p-0.5">
                       {(["video", "image"] as const).map((o) => (
                         <button
                           key={o}
                           type="button"
                           onClick={() => setOrientation(o)}
                           className={cn(
-                            "rounded-full px-2.5 py-1 text-[11px] font-medium",
+                            "rounded-full px-2.5 py-1 text-[11px] font-medium transition",
                             orientation === o
-                              ? "bg-[rgba(209,254,23,0.15)] text-[rgba(209,254,23,1)]"
-                              : "text-white/45",
+                              ? "bg-[#22d3ee]/20 text-[#22d3ee] font-semibold"
+                              : "text-white/45 hover:text-white",
                           )}
                         >
                           {o === "video" ? "По видео" : "По картинке"}
@@ -1400,17 +1814,17 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   )}
 
                   {!kieActive && mediaType === "video" && videoModel.chips.includes("quality") && (
-                    <div className="inline-flex gap-0.5 rounded-full border border-white/10 bg-[#1a1a1a] p-0.5">
+                    <div className="inline-flex gap-0.5 rounded-full border border-white/10 bg-[#16161b] p-0.5">
                       {chipOptions(videoSlug, "quality").map((q) => (
                         <button
                           key={q}
                           type="button"
                           onClick={() => setMotionQuality(q)}
                           className={cn(
-                            "rounded-full px-2.5 py-1 font-mono text-[11px] uppercase",
+                            "rounded-full px-2.5 py-1 font-mono text-[11px] uppercase transition",
                             motionQuality === q
-                              ? "bg-[rgba(209,254,23,0.15)] text-[rgba(209,254,23,1)]"
-                              : "text-white/45",
+                              ? "bg-[#22d3ee]/20 text-[#22d3ee] font-semibold"
+                              : "text-white/45 hover:text-white",
                           )}
                         >
                           {q}
@@ -1427,10 +1841,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                           type="button"
                           onClick={() => setGenerateAudio((v) => !v)}
                           className={cn(
-                            "inline-flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] font-medium",
+                            "inline-flex h-9 items-center gap-1.5 rounded-xl border px-3 text-[12px] font-medium transition",
                             generateAudio
-                              ? "border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.10)]"
-                              : "border-white/10 bg-[#222] text-white/70",
+                              ? "border-[#22d3ee]/40 bg-[#22d3ee]/15 text-[#22d3ee]"
+                              : "border-white/10 bg-[#16161b] text-white/70 hover:border-white/20 hover:text-white",
                           )}
                           title={generateAudio ? "Со звуком" : "Без звука"}
                         >
@@ -1442,7 +1856,6 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       );
                     }
                     if (chip === "image-input") {
-                      // Вложения — отдельная полоса над промптом, не дублируем в чипах
                       return null;
                     }
                     if (chip === "instrumental") {
@@ -1452,10 +1865,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                           type="button"
                           onClick={() => setInstrumental((v) => !v)}
                           className={cn(
-                            "inline-flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] font-medium",
+                            "inline-flex h-9 items-center gap-1.5 rounded-xl border px-3 text-[12px] font-medium transition",
                             !instrumental
-                              ? "border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.10)]"
-                              : "border-white/10 bg-[#222] text-white/70",
+                              ? "border-[#22d3ee]/40 bg-[#22d3ee]/15 text-[#22d3ee]"
+                              : "border-white/10 bg-[#16161b] text-white/70 hover:border-white/20 hover:text-white",
                           )}
                           title="Вокал on = не instrumental"
                         >
@@ -1512,39 +1925,40 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   })}
 
                   {/* KIE: динамические настройки модели из каталога */}
-                  {kieActive && kieModel && (
-                    <div className="flex max-h-[180px] w-full flex-wrap items-end gap-2 overflow-y-auto">
-                      {kieChipFields(kieModel)
-                        .filter((f) => kieFieldVisible(f, kieValues))
-                        .map((f) => (
-                          <KieFieldChip
-                            key={f.name}
-                            field={f}
-                            values={kieValues}
-                            onChange={(name, v) =>
-                              setKieValues((prev) => ({ ...prev, [name]: v }))
-                            }
-                          />
-                        ))}
-                    </div>
-                  )}
+                  {kieActive &&
+                    kieModel &&
+                    kieChipFields(kieModel)
+                      .filter((f) => kieFieldVisible(f, kieValues))
+                      .map((f) => (
+                        <KieFieldChip
+                          key={f.name}
+                          field={f}
+                          values={kieValues}
+                          openChip={openChip}
+                          setOpenChip={setOpenChip}
+                          setModelOpen={setModelOpen}
+                          onChange={(name, v) =>
+                            setKieValues((prev) => ({ ...prev, [name]: v }))
+                          }
+                        />
+                      ))}
 
                   <div className="ml-auto flex flex-wrap items-center gap-2">
                     {!kieActive && mediaType === "video" &&
                       (videoSlug === "sora-2" ||
                         videoSlug === "sora2-portrait" ||
                         videoSlug === "sora2-landscape") && (
-                        <div className="inline-flex gap-0.5 rounded-xl border border-white/10 bg-[#1a1a1a] p-0.5">
+                        <div className="inline-flex gap-0.5 rounded-xl border border-white/10 bg-[#16161b] p-0.5">
                           {(["small", "large"] as const).map((sz) => (
                             <button
                               key={sz}
                               type="button"
                               onClick={() => setSoraSize(sz)}
                               className={cn(
-                                "rounded-lg px-2.5 py-1.5 font-mono text-[10px] uppercase",
+                                "rounded-lg px-2.5 py-1.5 font-mono text-[10px] uppercase transition",
                                 soraSize === sz
-                                  ? "bg-[rgba(209,254,23,0.15)] text-[rgba(209,254,23,1)]"
-                                  : "text-white/40",
+                                  ? "bg-[#22d3ee]/20 text-[#22d3ee] font-semibold"
+                                  : "text-white/40 hover:text-white",
                               )}
                             >
                               {sz}
@@ -1556,7 +1970,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       type="button"
                       disabled={saveGlobal.isPending}
                       onClick={() => saveGlobal.mutate()}
-                      className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2.5 text-[11px] font-medium text-white/70 hover:bg-white/[0.08] disabled:opacity-40"
+                      className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[11px] font-medium text-white/70 transition hover:border-white/25 hover:bg-white/[0.08] hover:text-white disabled:opacity-40"
                     >
                       {saveGlobal.isPending ? "…" : "Сохранить"}
                     </button>
@@ -1565,7 +1979,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                         type="button"
                         disabled={applyToProject.isPending || projectId == null}
                         onClick={() => applyToProject.mutate()}
-                        className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2.5 text-[11px] font-medium text-white/70 hover:bg-white/[0.08] disabled:opacity-40"
+                        className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[11px] font-medium text-white/70 transition hover:border-white/25 hover:bg-white/[0.08] hover:text-white disabled:opacity-40"
                         title="Скопировать глобальные настройки в выбранный проект"
                       >
                         В проект
@@ -1573,23 +1987,47 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     )}
                     {kieActive && kieCreditsQ.data?.credits != null && (
                       <div
-                        className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#1a1a1a] px-2.5 font-mono text-[11px] text-white/50"
+                        className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#16161b] px-2.5 font-mono text-[11px] text-white/60"
                         title="Баланс kie.ai"
                       >
                         {kieCreditsQ.data.credits.toFixed(0)} кр
                       </div>
                     )}
                     <div
-                      className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#1a1a1a] px-2.5 font-mono text-[11px] text-white/75"
+                      className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#16161b] px-2.5 font-mono text-[11px] text-white/80"
                       title={
                         kieActive
                           ? "kie.ai: 1 кр = $0.005. Цена за выбранные параметры."
                           : "1 токен = $0.10 (10¢). Цена за выбранные параметры."
                       }
                     >
-                      <Coins className="h-3 w-3 text-[rgba(209,254,23,0.85)]" strokeWidth={2.5} />
+                      <Coins className="h-3 w-3 text-[#22d3ee]" strokeWidth={2.5} />
                       <span>{priceLabel}</span>
                     </div>
+                    {(mediaType === "image" || mediaType === "video") && (
+                      <div
+                        className="inline-flex h-9 items-center gap-0.5 rounded-xl border border-white/10 bg-[#16161b] p-0.5"
+                        title={`Пакетная генерация: ${mediaType === "image" ? "1, 2 или 4 фото" : "1 или 2 видео"}`}
+                      >
+                        {(mediaType === "image" ? ([1, 2, 4] as const) : ([1, 2] as const)).map(
+                          (cnt) => (
+                            <button
+                              key={cnt}
+                              type="button"
+                              onClick={() => setBatchCount(cnt)}
+                              className={cn(
+                                "rounded-lg px-2 py-1 font-mono text-[11px] font-bold transition",
+                                batchCount === cnt
+                                  ? "bg-[#22d3ee]/20 text-[#22d3ee] ring-1 ring-[#22d3ee]/40"
+                                  : "text-white/45 hover:text-white",
+                              )}
+                            >
+                              {cnt}x
+                            </button>
+                          ),
+                        )}
+                      </div>
+                    )}
                     <button
                       type="button"
                       disabled={
@@ -1604,23 +2042,30 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                         if (createGenerate.isPending) return;
                         createGenerate.mutate();
                       }}
-                      className="inline-flex min-w-[140px] items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-[12px] font-semibold text-black transition hover:brightness-110 disabled:opacity-40"
-                      style={{ backgroundColor: OUTSEE_ACCENT }}
+                      className={cn(
+                        "inline-flex min-w-[145px] items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#22d3ee] to-[#0ea5e9] px-4 py-2 text-[12px] font-extrabold uppercase tracking-wider text-black shadow-[0_0_20px_rgba(34,211,238,0.3)] transition-all duration-200 hover:brightness-110 hover:shadow-[0_0_25px_rgba(34,211,238,0.45)] disabled:opacity-40 disabled:pointer-events-none",
+                      )}
                       title={
                         createGenerate.isPending
                           ? "Уже ставится в очередь…"
                           : !canApiDirect && mediaType !== "audio"
-                            ? "Нужен OUTSEE_API_KEY или GRSAI_API_KEY в .env"
-                            : `Сгенерировать (можно несколько параллельно, лимит ${maxParallel}) · ${priceLabel}`
+                            ? "Нужен OUTSEE_API_KEY или KIE_API_KEY в .env"
+                            : `Сгенерировать (${batchCount > 1 ? `${batchCount} шт` : "1 шт"}, лимит ${maxParallel}) · ${priceLabel}`
                       }
                     >
                       {createGenerate.isPending ? (
                         <>
                           <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          …
+                          <span>Запуск…</span>
                         </>
                       ) : (
-                        "Генерировать"
+                        <>
+                          <Sparkles className="h-3.5 w-3.5" />
+                          <span>
+                            Генерировать
+                            {batchCount > 1 ? ` (${batchCount}x)` : ""}
+                          </span>
+                        </>
                       )}
                     </button>
                   </div>
@@ -1630,6 +2075,94 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
           </div>
         </section>
       </div>
+
+      {/* Lightbox full screen modal */}
+      {lightboxOpen && selected?.preview_url && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 p-2 backdrop-blur-2xl animate-in fade-in duration-200"
+          onClick={() => setLightboxOpen(false)}
+        >
+          <div
+            className="relative flex items-center justify-center max-h-[96vh] max-w-[98vw]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Close & Action floating buttons */}
+            <div className="absolute top-3 right-3 z-50 flex items-center gap-2">
+              <div className="inline-flex items-center rounded-xl border border-white/20 bg-black/80 p-0.5 backdrop-blur-md shadow-2xl">
+                <button
+                  type="button"
+                  onClick={() =>
+                    void downloadMediaFile(
+                      selected.preview_url || selected.raw_url || "",
+                      selected.label || "generation",
+                      downloadFormat,
+                      selected.path,
+                    )
+                  }
+                  className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-semibold text-white/90 transition hover:bg-white/[0.12] hover:text-white"
+                >
+                  <Download className="h-4 w-4 text-[#22d3ee]" />
+                  Скачать
+                </button>
+                {selected.kind === "image" && (
+                  <div className="flex items-center border-l border-white/20 pl-1 pr-1 font-mono text-[11px]">
+                    {(["png", "jpg", "webp"] as const).map((fmt) => (
+                      <button
+                        key={fmt}
+                        type="button"
+                        onClick={() => setDownloadFormat(fmt)}
+                        className={cn(
+                          "rounded px-2 py-0.5 uppercase transition",
+                          downloadFormat === fmt
+                            ? "bg-[#22d3ee]/25 font-bold text-[#22d3ee]"
+                            : "text-white/50 hover:text-white",
+                        )}
+                      >
+                        {fmt}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setLightboxOpen(false);
+                  deleteItem.mutate(selected);
+                }}
+                className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-red-500/30 bg-black/80 px-3 text-[12px] font-medium text-red-400 backdrop-blur transition hover:border-red-500/50 hover:bg-red-500/20 hover:text-red-300 shadow-2xl"
+                title="Удалить из истории"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>Удалить</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setLightboxOpen(false)}
+                className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/20 bg-black/80 text-white/80 backdrop-blur transition hover:bg-white/20 hover:text-white shadow-2xl"
+                title="Закрыть"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            {selected.kind === "video" ? (
+              <video
+                src={selected.preview_url}
+                controls
+                autoPlay
+                className="max-h-[96vh] max-w-[98vw] rounded-xl border border-white/15 bg-black object-contain shadow-[0_0_80px_rgba(0,0,0,0.9)]"
+              />
+            ) : (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={selected.preview_url}
+                alt=""
+                className="max-h-[96vh] max-w-[98vw] rounded-xl border border-white/15 bg-black object-contain shadow-[0_0_80px_rgba(0,0,0,0.9)]"
+              />
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1650,10 +2183,16 @@ function kieFieldVisible(f: KieField, values: Record<string, unknown>): boolean 
 function KieFieldChip({
   field,
   values,
+  openChip,
+  setOpenChip,
+  setModelOpen,
   onChange,
 }: {
   field: KieField;
   values: Record<string, unknown>;
+  openChip?: string | null;
+  setOpenChip?: (v: string | null) => void;
+  setModelOpen?: (v: boolean) => void;
   onChange: (name: string, v: unknown) => void;
 }) {
   const v = values[field.name] ?? field.default;
@@ -1666,10 +2205,10 @@ function KieFieldChip({
         onClick={() => onChange(field.name, !on)}
         title={field.desc || field.label}
         className={cn(
-          "inline-flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] font-medium",
+          "inline-flex h-9 items-center gap-1.5 rounded-xl border px-3 text-[12px] font-medium transition",
           on
-            ? "border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.10)]"
-            : "border-white/10 bg-[#222] text-white/70",
+            ? "border-[#22d3ee]/40 bg-[#22d3ee]/15 text-[#22d3ee]"
+            : "border-white/10 bg-[#16161b] text-white/70 hover:border-white/20 hover:text-white",
         )}
       >
         {field.label}
@@ -1679,41 +2218,28 @@ function KieFieldChip({
   }
 
   if (field.kind === "select") {
-    // inline-чипы (как orientation/quality у outsee): popover в scroll-зоне клинит
+    const options = (field.options || []).map((o) => ({ id: o, label: o }));
+    const currentVal = String(v ?? field.options?.[0] ?? "—");
     return (
-      <div
-        className="inline-flex flex-col gap-0.5"
-        title={field.desc || field.label}
-      >
-        <span className="px-0.5 text-[10px] text-gray-400">{field.label}</span>
-        <div className="inline-flex flex-wrap gap-0.5 rounded-full border border-white/10 bg-[#1a1a1a] p-0.5">
-          {(field.options || []).map((o) => {
-            const activeOpt = String(v ?? "") === o;
-            return (
-              <button
-                key={o}
-                type="button"
-                onClick={() => onChange(field.name, o)}
-                className={cn(
-                  "rounded-full px-2.5 py-1 font-mono text-[11px]",
-                  activeOpt
-                    ? "bg-[rgba(209,254,23,0.15)] text-[rgba(209,254,23,1)]"
-                    : "text-white/45 hover:text-white/75",
-                )}
-              >
-                {o || "—"}
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      <OptionDropdown
+        label={field.label}
+        value={currentVal}
+        open={openChip === field.name}
+        onOpenChange={(isOpen) => {
+          if (setOpenChip) setOpenChip(isOpen ? field.name : null);
+          if (isOpen && setModelOpen) setModelOpen(false);
+        }}
+        options={options}
+        onSelect={(optId) => onChange(field.name, optId)}
+        mono
+      />
     );
   }
 
   if (field.kind === "number") {
     return (
       <div
-        className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#222] px-2.5"
+        className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#16161b] px-2.5"
         title={field.desc || field.label}
       >
         <span className="text-[11px] text-white/55">{field.label}</span>
@@ -1735,7 +2261,7 @@ function KieFieldChip({
   // text
   return (
     <div
-      className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#222] px-2.5"
+      className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-[#16161b] px-2.5"
       title={field.desc || field.label}
     >
       <span className="text-[11px] text-white/55">{field.label}</span>
@@ -1743,7 +2269,7 @@ function KieFieldChip({
         value={String(v ?? "")}
         onChange={(e) => onChange(field.name, e.target.value)}
         placeholder="—"
-        className="w-32 bg-transparent text-[12px] text-white/90 outline-none placeholder:text-white/25"
+        className="w-28 bg-transparent text-[12px] text-white/90 outline-none placeholder:text-white/25"
       />
     </div>
   );
@@ -1792,7 +2318,7 @@ function KieAttachButton({
       {items.map((u, i) => (
         <span
           key={`${u}-${i}`}
-          className="inline-flex h-10 items-center gap-2 rounded-xl border border-[rgba(209,254,23,0.45)] bg-[rgba(209,254,23,0.12)] px-3 text-[12px] font-medium"
+          className="inline-flex h-10 items-center gap-2 rounded-xl border border-[#22d3ee]/40 bg-[#22d3ee]/10 px-3 text-[12px] font-medium text-[#22d3ee]"
         >
           {field.kind === "images" ? (
             // eslint-disable-next-line @next/next/no-img-element
@@ -1800,7 +2326,7 @@ function KieAttachButton({
           ) : (
             <Paperclip className="h-4 w-4" />
           )}
-          <span className="max-w-[120px] truncate font-mono text-[10px] text-white/60">
+          <span className="max-w-[120px] truncate font-mono text-[10px] text-white/70">
             {u.split("/").pop()}
           </span>
           <span
@@ -1821,6 +2347,21 @@ function KieAttachButton({
             onChange={(e) => {
               const f = e.target.files?.[0];
               if (!f) return;
+              if (f.size === 0) {
+                toast.error("Выбран пустой файл (0 байт)");
+                e.target.value = "";
+                return;
+              }
+              if (field.kind === "audios" && f.size < 1000) {
+                toast.error("Файл слишком мал или не содержит аудиоданных (минимум 1 КБ)");
+                e.target.value = "";
+                return;
+              }
+              if (field.kind === "videos" && f.size < 2000) {
+                toast.error("Файл слишком мал или не содержит видеоданных");
+                e.target.value = "";
+                return;
+              }
               setBusy(true);
               api
                 .kieUpload(f)
@@ -1838,10 +2379,10 @@ function KieAttachButton({
             disabled={busy}
             onClick={() => inputRef.current?.click()}
             title={field.desc || field.label}
-            className="inline-flex h-10 items-center gap-2 rounded-xl border border-dashed border-white/25 bg-white/[0.03] px-3 text-[12px] font-medium text-white/70 hover:border-white/40 disabled:opacity-50"
+            className="inline-flex h-10 items-center gap-2 rounded-xl border border-dashed border-white/25 bg-white/[0.03] px-3 text-[12px] font-medium text-white/70 transition hover:border-white/40 hover:text-white disabled:opacity-50"
           >
             {busy ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <Loader2 className="h-4 w-4 animate-spin text-[#22d3ee]" />
             ) : (
               <Paperclip className="h-4 w-4" />
             )}
@@ -1852,7 +2393,7 @@ function KieAttachButton({
             type="button"
             onClick={() => setUrlMode((v) => !v)}
             title="Вставить URL вместо загрузки"
-            className="inline-flex h-10 w-8 items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-white/50 hover:text-white"
+            className="inline-flex h-10 w-8 items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-white/50 transition hover:border-white/25 hover:text-white"
           >
             <Link2 className="h-3.5 w-3.5" />
           </button>
@@ -1868,12 +2409,12 @@ function KieAttachButton({
                   }
                 }}
                 placeholder="https://…"
-                className="h-10 w-48 rounded-xl border border-white/10 bg-white/[0.03] px-2.5 text-[11px] text-white/80 outline-none placeholder:text-white/25 focus:border-white/25"
+                className="h-10 w-48 rounded-xl border border-white/10 bg-black/40 px-2.5 text-[11px] text-white/80 outline-none placeholder:text-white/25 focus:border-[#22d3ee]/50"
               />
               <button
                 type="button"
                 onClick={addUrl}
-                className="h-10 rounded-xl border border-white/10 px-2.5 text-[11px] text-white/60 hover:text-white"
+                className="h-10 rounded-xl border border-white/10 px-2.5 text-[11px] text-white/60 transition hover:border-white/25 hover:text-white"
               >
                 +
               </button>
@@ -1889,20 +2430,23 @@ function ChipButton({
   children,
   onClick,
   active,
+  title,
 }: {
   children: React.ReactNode;
   onClick: () => void;
   active?: boolean;
+  title?: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      title={title}
       className={cn(
-        "inline-flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-[12px] transition",
+        "inline-flex h-9 items-center gap-1.5 rounded-xl border px-3 text-[12px] font-medium transition-all duration-200",
         active
-          ? "border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.10)] text-white"
-          : "border-white/10 bg-[#222] text-white/85 hover:border-white/20",
+          ? "border-[#22d3ee] bg-[#22d3ee]/15 text-[#22d3ee] shadow-[0_0_15px_rgba(34,211,238,0.2)]"
+          : "border-white/10 bg-[#16161b] text-white/80 hover:border-white/20 hover:bg-[#1f1f26] hover:text-white",
       )}
     >
       {children}
@@ -1939,17 +2483,14 @@ function OptionDropdown({
 
   return (
     <div className="relative" ref={ref}>
-      <div className="flex flex-col gap-0.5">
-        <span className="hidden px-0.5 text-[10px] text-gray-400 lg:block">{label}</span>
-        <ChipButton active={open} onClick={() => onOpenChange(!open)}>
-          <span className={cn(mono && "font-mono tabular-nums")}>{value}</span>
-          <ChevronDown className="h-3 w-3 opacity-60" />
-        </ChipButton>
-      </div>
+      <ChipButton active={open} onClick={() => onOpenChange(!open)} title={label}>
+        <span className={cn(mono && "font-mono tabular-nums")}>{value}</span>
+        <ChevronDown className="h-3 w-3 opacity-60" />
+      </ChipButton>
       {open && (
         <div
-          className="absolute bottom-full left-0 z-[1000] mb-1 max-h-56 overflow-y-auto rounded-xl border p-1.5 shadow-2xl"
-          style={{ backgroundColor: "#1a1a1a", borderColor: "rgba(255,255,255,0.1)", minWidth: 140 }}
+          className="absolute bottom-full left-0 z-[1000] mb-2 max-h-60 overflow-y-auto rounded-xl border border-white/15 bg-[#121216]/95 backdrop-blur-2xl p-1.5 shadow-[0_15px_40px_rgba(0,0,0,0.85)] ring-1 ring-white/10"
+          style={{ minWidth: 140 }}
         >
           {options.map((opt) => {
             const active = opt.id === value || opt.label === value;
@@ -1961,14 +2502,15 @@ function OptionDropdown({
                   onSelect(opt.id);
                   onOpenChange(false);
                 }}
-                className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-[12px] hover:bg-white/[0.06]"
-                style={{
-                  background: active ? "rgba(209,254,23,0.10)" : undefined,
-                  color: active ? OUTSEE_ACCENT : "white",
-                }}
+                className={cn(
+                  "flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-[12px] transition",
+                  active
+                    ? "bg-[#22d3ee]/15 text-[#22d3ee] font-semibold"
+                    : "text-white/80 hover:bg-white/[0.08] hover:text-white",
+                )}
               >
                 <span className={cn(mono && "font-mono")}>{opt.label}</span>
-                {opt.hint && <span className="text-[10px] text-white/35">{opt.hint}</span>}
+                {opt.hint && <span className="text-[10px] text-white/40">{opt.hint}</span>}
               </button>
             );
           })}
@@ -1991,6 +2533,7 @@ function ModelPickerPopover({
   creditUsd?: number;
   onSelect: (slug: string) => void;
 }) {
+  const [search, setSearch] = useState("");
   const title =
     mediaType === "image"
       ? "Модели изображений"
@@ -1999,168 +2542,251 @@ function ModelPickerPopover({
         : "Модели аудио";
   const models = pickerModelsForType(mediaType);
   const kieForType = kieModels.filter((m) => {
-    const media = m.media || (m.category === "video" ? "video" : m.category === "image" ? "image" : "audio");
+    const media =
+      m.media || (m.category === "video" ? "video" : m.category === "image" ? "image" : "audio");
     return media === mediaType;
   });
 
+  const q = search.trim().toLowerCase();
+
+  const filteredModels = useMemo(() => {
+    if (!q) return models;
+    return models.filter(
+      (m) =>
+        m.displayName.toLowerCase().includes(q) ||
+        m.description.toLowerCase().includes(q) ||
+        m.slug.toLowerCase().includes(q),
+    );
+  }, [models, q]);
+
+  const filteredKie = useMemo(() => {
+    if (!q) return kieForType;
+    return kieForType.filter(
+      (m) =>
+        m.label.toLowerCase().includes(q) ||
+        (m.desc || "").toLowerCase().includes(q) ||
+        (m.hint || "").toLowerCase().includes(q) ||
+        m.id.toLowerCase().includes(q),
+    );
+  }, [kieForType, q]);
+
+  const unifiedItems = useMemo(() => {
+    const baseItems = filteredModels.map((m) => ({
+      slug: m.slug,
+      label: m.displayName,
+      desc: m.description,
+      icon: m.icon,
+      letter: null as string | null,
+      isKie: false,
+      isTop: Boolean(m.isTop || m.slug === "veo-3-1-lite"),
+      badge: m.isTop ? "ТОП" : m.isNew ? "НОВОЕ" : undefined,
+      priceLabel: m.price ? m.price : null,
+      priceUsd: null as number | null,
+    }));
+    const kieItems = filteredKie.map((m) => {
+      const est = estimateKie(m, {}, creditUsd);
+      return {
+        slug: `kie:${m.id}`,
+        label: m.label,
+        desc: m.hint || m.desc,
+        icon: null as string | null,
+        letter: m.label.slice(0, 1),
+        isKie: true,
+        isTop: Boolean(m.is_top || m.isTop),
+        badge: m.badge || (m.is_top || m.isTop ? "ТОП" : "KIE"),
+        priceLabel: null as string | null,
+        priceUsd: est.usd > 0 ? est.usd : null,
+      };
+    });
+    return [...baseItems, ...kieItems];
+  }, [filteredModels, filteredKie, creditUsd]);
+
+  const topItems = useMemo(() => unifiedItems.filter((i) => i.isTop), [unifiedItems]);
+  const otherItems = useMemo(() => unifiedItems.filter((i) => !i.isTop), [unifiedItems]);
+
+  const totalCount = unifiedItems.length;
+
+  const renderCard = (item: (typeof unifiedItems)[0]) => {
+    const active = item.slug === selectedSlug;
+    const isTopCard = item.isTop;
+    return (
+      <button
+        key={item.slug}
+        type="button"
+        onClick={() => onSelect(item.slug)}
+        className={cn(
+          "group relative flex items-start gap-2.5 rounded-xl border p-2.5 text-left transition-all duration-200",
+          active
+            ? isTopCard
+              ? "border-[#22d3ee] bg-[#22d3ee]/15 text-white shadow-[0_0_22px_rgba(34,211,238,0.25)] ring-1 ring-[#22d3ee]/50"
+              : "border-[#38bdf8] bg-[#38bdf8]/10 text-white shadow-[0_0_20px_rgba(56,189,248,0.2)]"
+            : isTopCard
+              ? "border-[#22d3ee]/25 bg-[#22d3ee]/[0.03] hover:border-[#22d3ee]/50 hover:bg-[#22d3ee]/[0.08]"
+              : "border-white/[0.08] bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.06]",
+        )}
+      >
+        {item.badge && (
+          <span
+            className={cn(
+              "absolute top-2 right-2 rounded-md px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider shadow-sm",
+              item.badge === "ТОП"
+                ? "bg-[#22d3ee] text-black font-extrabold"
+                : item.badge === "1080p" || item.badge === "2K/4K"
+                  ? "bg-indigo-500 text-white"
+                  : item.badge.includes("Звук")
+                    ? "bg-purple-500 text-white"
+                    : item.badge.includes("с")
+                      ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                      : "bg-white/10 text-white/60",
+            )}
+          >
+            {item.badge}
+          </span>
+        )}
+        <div className="flex shrink-0 flex-col items-center">
+          {item.icon ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={item.icon}
+              alt={item.label}
+              className="h-10 w-10 rounded-lg object-cover ring-1 ring-white/10 transition group-hover:ring-[#22d3ee]/40"
+            />
+          ) : (
+            <span
+              className={cn(
+                "inline-flex h-10 w-10 items-center justify-center rounded-lg font-mono text-[14px] font-bold ring-1 transition",
+                isTopCard
+                  ? "bg-[#22d3ee]/15 text-[#22d3ee] ring-[#22d3ee]/30 group-hover:ring-[#22d3ee]/60"
+                  : "bg-[#38bdf8]/15 text-[#38bdf8] ring-white/10 group-hover:ring-[#38bdf8]/40",
+              )}
+            >
+              {item.letter || item.label.slice(0, 1)}
+            </span>
+          )}
+          {item.priceLabel && (
+            <span className="mt-1 inline-flex items-center gap-0.5 font-mono text-[10px] text-white/60">
+              <Coins className="h-2.5 w-2.5 text-[#22d3ee]" strokeWidth={2.5} />
+              {item.priceLabel}
+            </span>
+          )}
+          {item.priceUsd !== null && item.priceUsd !== undefined && (
+            <span className="mt-1 inline-flex items-center gap-0.5 font-mono text-[10px] text-white/60">
+              <Coins className="h-2.5 w-2.5 text-[#38bdf8]" strokeWidth={2.5} />
+              {`$${item.priceUsd.toFixed(3)}`}
+            </span>
+          )}
+        </div>
+        <div className="min-w-0 flex-1 pr-7">
+          <p
+            className={cn(
+              "truncate text-[12px] font-semibold",
+              active
+                ? "text-[#22d3ee]"
+                : isTopCard
+                  ? "text-white font-medium group-hover:text-[#22d3ee]"
+                  : "text-white/90 group-hover:text-white",
+            )}
+          >
+            {item.label}
+          </p>
+          <p className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-white/45 transition group-hover:text-white/70">
+            {item.desc}
+          </p>
+        </div>
+      </button>
+    );
+  };
+
   return (
     <div
-      className="absolute bottom-full left-0 z-50 mb-3.5 flex max-h-[82vh] flex-col overflow-hidden rounded-2xl border border-white/10 shadow-2xl"
+      className="absolute bottom-full left-0 z-50 mb-3 flex max-h-[76vh] flex-col overflow-hidden rounded-2xl border border-white/15 bg-[#121216]/95 backdrop-blur-2xl shadow-[0_25px_70px_rgba(0,0,0,0.85)] ring-1 ring-white/10"
       style={{
-        backgroundColor: "#141414",
-        width: mediaType === "video" ? 580 : mediaType === "audio" ? 420 : 460,
+        width: mediaType === "video" ? 620 : mediaType === "audio" ? 450 : 520,
       }}
       role="dialog"
       aria-label={title}
       onPointerDown={(e) => e.stopPropagation()}
     >
-      <div className="border-b border-white/[0.06] px-3 py-2.5">
-        <span className="text-[12px] font-semibold text-white/80">{title}</span>
-        <span className="ml-2 font-mono text-[10px] text-white/35">
-          {models.length + kieForType.length}
-        </span>
-      </div>
-      {models.length > 0 && (
-      <div
-        className="grid gap-1.5 overflow-y-auto p-2"
-        style={{
-          gridTemplateColumns: mediaType === "audio" ? "1fr" : "repeat(2, minmax(0, 1fr))",
-          minHeight: 0,
-        }}
-      >
-        {models.map((m) => {
-          const active = m.slug === selectedSlug;
-          const wired = "grsaiWired" in m && Boolean(m.grsaiWired);
-          const badge = m.isTop
-            ? { tone: "top" as const, label: "ТОП" }
-            : m.isNew
-              ? { tone: "new" as const, label: "НОВОЕ" }
-              : null;
-          return (
-            <button
-              key={m.slug}
-              type="button"
-              onClick={() => onSelect(m.slug)}
-              className={cn(
-                "relative flex items-start gap-2.5 rounded-xl border px-2.5 py-2.5 text-left transition",
-                active
-                  ? "border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.08)]"
-                  : "border-white/[0.06] bg-white/[0.03] hover:bg-white/[0.06]",
-              )}
-            >
-              {wired && (
-                <span
-                  className="absolute -top-1.5 left-2 z-10 rounded-md px-1.5 py-0.5 font-mono text-[11px] font-bold leading-none text-black"
-                  style={{ backgroundColor: OUTSEE_ACCENT }}
-                  title="Временно подключено через Grsai"
-                >
-                  +
-                </span>
-              )}
-              {badge && (
-                <span
-                  className={cn(
-                    "absolute -top-1.5 right-2 z-10 rounded-md px-1.5 py-0.5 text-[9px] font-bold text-black",
-                    badge.tone === "top" ? "bg-[rgba(209,254,23,1)]" : "bg-blue-400",
-                  )}
-                >
-                  {badge.label}
-                </span>
-              )}
-              <div className="flex shrink-0 flex-col items-center">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={m.icon}
-                  alt={m.displayName}
-                  className="h-10 w-10 rounded-lg object-cover ring-1 ring-white/10"
-                />
-                {m.price && (
-                  <span className="mt-1 inline-flex items-center gap-0.5 font-mono text-[10px] text-white/55">
-                    <Coins className="h-2.5 w-2.5" strokeWidth={2.5} />
-                    {m.price}
-                  </span>
-                )}
-              </div>
-              <div className="min-w-0 flex-1">
-                <p
-                  className="truncate text-[12px] font-medium"
-                  style={{ color: active ? OUTSEE_ACCENT : "white" }}
-                >
-                  {wired ? (
-                    <span className="mr-1 font-mono text-[rgba(209,254,23,1)]">+</span>
-                  ) : null}
-                  {m.displayName}
-                </p>
-                <p className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-white/45">
-                  {m.description}
-                </p>
-              </div>
-            </button>
-          );
-        })}
-      </div>
-      )}
-      {kieForType.length > 0 && (
-        <>
-          <div className="border-y border-white/[0.06] px-3 py-2">
-            <span className="text-[12px] font-semibold text-white/80">KIE · kie.ai</span>
-            <span className="ml-2 font-mono text-[10px] text-white/35">
-              {kieForType.length}
+      {/* Sticky Header with Search */}
+      <div className="shrink-0 border-b border-white/[0.08] bg-[#16161b]/95 p-3 space-y-2.5">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-[13px] font-bold tracking-tight text-white/90">{title}</span>
+            <span className="rounded-full bg-white/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-[#22d3ee]">
+              {totalCount}
             </span>
           </div>
-          <div
-            className="grid gap-1.5 overflow-y-auto p-2"
-            style={{
-              gridTemplateColumns:
-                mediaType === "audio" ? "1fr" : "repeat(2, minmax(0, 1fr))",
-              minHeight: 0,
-            }}
-          >
-            {kieForType.map((m) => {
-              const slug = `kie:${m.id}`;
-              const active = slug === selectedSlug;
-              const est = estimateKie(m, {}, creditUsd);
-              return (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => onSelect(slug)}
-                  className={cn(
-                    "relative flex items-start gap-2.5 rounded-xl border px-2.5 py-2.5 text-left transition",
-                    active
-                      ? "border-[rgba(120,170,255,0.45)] bg-[rgba(120,170,255,0.10)]"
-                      : "border-white/[0.06] bg-white/[0.03] hover:bg-white/[0.06]",
-                  )}
-                >
-                  <span className="absolute -top-1.5 left-2 z-10 rounded-md bg-[rgba(120,170,255,0.9)] px-1.5 py-0.5 font-mono text-[9px] font-bold leading-none text-black">
-                    KIE
-                  </span>
-                  <div className="flex shrink-0 flex-col items-center">
-                    <span className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-[rgba(120,170,255,0.15)] font-mono text-[14px] font-bold text-[rgba(120,170,255,1)] ring-1 ring-white/10">
-                      {m.label.slice(0, 1)}
-                    </span>
-                    <span className="mt-1 inline-flex items-center gap-0.5 font-mono text-[10px] text-white/55">
-                      <Coins className="h-2.5 w-2.5" strokeWidth={2.5} />
-                      {est.usd > 0 ? `$${est.usd.toFixed(3)}` : "—"}
-                    </span>
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p
-                      className="truncate text-[12px] font-medium"
-                      style={{ color: active ? "rgba(120,170,255,1)" : "white" }}
-                    >
-                      {m.label}
-                    </p>
-                    <p className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-white/45">
-                      {m.hint || m.desc}
-                    </p>
-                  </div>
-                </button>
-              );
-            })}
+        </div>
+        <div className="relative flex items-center">
+          <Search className="absolute left-2.5 h-3.5 w-3.5 text-white/40" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Быстрый поиск модели (Kling, Nano, Flux, Veo, Sora...)"
+            className="h-8 w-full rounded-xl border border-white/10 bg-black/40 pl-8 pr-7 text-[11px] text-white/90 placeholder:text-white/30 transition focus:border-[#22d3ee]/60 focus:outline-none focus:ring-1 focus:ring-[#22d3ee]/30"
+          />
+          {search && (
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              className="absolute right-2 text-white/40 hover:text-white"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Unified single scrollable body */}
+      <div className="flex-1 overflow-y-auto p-3 space-y-4">
+        {/* Section 1: TOP Models */}
+        {topItems.length > 0 && (
+          <div>
+            <div className="mb-2 flex items-center gap-1.5 px-1 text-[11px] font-bold uppercase tracking-[0.14em] text-[#22d3ee]">
+              <span className="flex items-center gap-1">
+                <span>🔥</span>
+                <span>ТОП МОДЕЛИ</span>
+              </span>
+              <span className="rounded-full bg-[#22d3ee]/15 px-1.5 py-0.5 font-mono text-[9px] font-bold text-[#22d3ee]">
+                {topItems.length}
+              </span>
+            </div>
+            <div
+              className="grid gap-2"
+              style={{
+                gridTemplateColumns: mediaType === "audio" ? "1fr" : "repeat(2, minmax(0, 1fr))",
+              }}
+            >
+              {topItems.map((item) => renderCard(item))}
+            </div>
           </div>
-        </>
-      )}
+        )}
+
+        {/* Section 2: Other Models */}
+        {otherItems.length > 0 && (
+          <div>
+            <div className="mb-2 flex items-center gap-1.5 px-1 text-[10px] font-bold uppercase tracking-[0.14em] text-white/45">
+              <span>Другие и специальные модели</span>
+              <span className="font-mono text-white/25">({otherItems.length})</span>
+            </div>
+            <div
+              className="grid gap-2"
+              style={{
+                gridTemplateColumns: mediaType === "audio" ? "1fr" : "repeat(2, minmax(0, 1fr))",
+              }}
+            >
+              {otherItems.map((item) => renderCard(item))}
+            </div>
+          </div>
+        )}
+
+        {unifiedItems.length === 0 && (
+          <div className="py-12 text-center text-[12px] text-white/40">
+            Модели по запросу «<span className="text-white/70">{search}</span>» не найдены
+          </div>
+        )}
+      </div>
     </div>
   );
 }

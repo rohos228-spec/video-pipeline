@@ -1,7 +1,8 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Info, FileText, Hash, Folder, ExternalLink } from "lucide-react";
+import { Info, FileText, Hash, Folder, ExternalLink, Copy, Sparkles } from "lucide-react";
+import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -67,8 +68,12 @@ export function Inspector({
                 )}
               {project.data ? <MontageHandoffCard project={project.data} /> : null}
               {onOpenNodeStudio && nodeTypeFromKey(selectedNodeKey) !== "topic" && (
-                <Button size="sm" variant="default" className="w-full" onClick={onOpenNodeStudio}>
-                  Открыть студию ноды (GPT)
+                <Button
+                  size="sm"
+                  className="w-full h-10 text-xs font-semibold text-white bg-gradient-to-r from-violet-600 via-purple-600 to-indigo-600 hover:from-violet-500 hover:via-purple-500 hover:to-indigo-500 active:scale-[0.98] border border-purple-400/40 shadow-lg shadow-purple-600/30 rounded-xl backdrop-blur-md transition-all duration-200"
+                  onClick={onOpenNodeStudio}
+                >
+                  Открыть ноду
                 </Button>
               )}
             </div>
@@ -76,23 +81,40 @@ export function Inspector({
           {projectId != null && !selectedNodeKey && project.data && (
             <div className="flex flex-col gap-4">
               <OutseeGenPanel project={project.data} />
-              <div>
-                <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Название</div>
-                <div className="mt-1 text-sm font-medium leading-snug">
+              <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3.5 shadow-sm">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Проект
+                </div>
+                <div className="mt-1 text-sm font-semibold leading-snug text-foreground">
                   {projectDisplayName(project.data)}
                 </div>
-              </div>
-              <div>
-                <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Тема ролика</div>
-                <div className="mt-1 text-sm leading-snug text-muted-foreground">
-                  {project.data.topic?.trim() || "— не задана (нода «Тема ролика»)"}
+                {project.data.topic && project.data.title && project.data.topic.trim() !== project.data.title.trim() && (
+                  <div className="mt-1.5 text-[11px] text-muted-foreground">
+                    <span className="text-zinc-500">Тема: </span>{project.data.topic.trim()}
+                  </div>
+                )}
+                <div className="mt-2.5 flex items-center justify-between border-t border-white/5 pt-2">
+                  <span className="font-mono text-xs font-medium text-emerald-400">
+                    #{project.data.id}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (project.data?.slug) {
+                        void navigator.clipboard.writeText(project.data.slug);
+                        toast.success("Slug скопирован в буфер");
+                      }
+                    }}
+                    className="flex items-center gap-1 font-mono text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                    title="Кликните, чтобы скопировать slug"
+                  >
+                    <span className="truncate max-w-[170px]">{project.data.slug}</span>
+                    <Copy className="h-3 w-3 shrink-0 opacity-60" />
+                  </button>
                 </div>
               </div>
-              <Row icon={<Hash className="h-3.5 w-3.5" />} label="ID / slug">
-                #{project.data.id} · <span className="font-mono text-xs">{project.data.slug}</span>
-              </Row>
-              <Row icon={<Folder className="h-3.5 w-3.5" />} label="Статус">
-                <Badge variant="default">{formatProjectStatus(project.data.status)}</Badge>
+              <Row icon={<Folder className="h-3.5 w-3.5 text-zinc-400" />} label="Статус">
+                <Badge variant="default" className="text-xs font-semibold px-2 py-0.5">{formatProjectStatus(project.data.status)}</Badge>
               </Row>
               <Row label="Главный герой">{formatHeroMode(project.data.hero_mode)}</Row>
               <Row label="Создан">{formatRelativeTime(project.data.created_at)}</Row>
@@ -100,13 +122,13 @@ export function Inspector({
               <MontageHandoffCard project={project.data} />
               <ProjectSettingsPanel project={project.data} />
               {project.data.general_plan && (
-                <div>
-                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                <div className="mt-3">
+                  <div className="text-xs font-bold uppercase tracking-wider text-zinc-300">
                     Сценарий
                   </div>
-                  <p className="mt-1 whitespace-pre-wrap rounded-md bg-muted/40 p-2.5 font-mono text-[11px] leading-relaxed text-foreground">
+                  <div className="mt-2 whitespace-pre-wrap rounded-xl border border-zinc-800 bg-zinc-950/80 p-3.5 font-sans text-[13.5px] leading-relaxed text-zinc-100 shadow-inner">
                     {project.data.general_plan}
-                  </p>
+                  </div>
                 </div>
               )}
               {frames.data && frames.data.length > 0 && (
@@ -186,6 +208,9 @@ function NodeInspector({
 }) {
   const type = nodeTypeFromKey(nodeKey);
   const spec = getNodeSpec(type);
+  if (type === "topic" && projectId != null) {
+    return <TopicEditor projectId={projectId} />;
+  }
   return (
     <div className="flex flex-col gap-3">
       <div>
@@ -193,15 +218,9 @@ function NodeInspector({
         <div className="mt-1 text-base font-semibold">{spec.label}</div>
         <div className="mt-1 text-[12px] text-muted-foreground">{spec.description}</div>
       </div>
-      {type === "topic" && projectId != null ? (
-        <TopicEditor projectId={projectId} />
-      ) : (
-        <>
-          <Row label="Тип">{humanizeSlug(spec.type)}</Row>
-          <Row label="Категория">{formatNodeCategory(spec.category)}</Row>
-          <Row label="Ключ">{formatNodeKeyLabel(nodeKey)}</Row>
-        </>
-      )}
+      <Row label="Тип">{humanizeSlug(spec.type)}</Row>
+      <Row label="Категория">{formatNodeCategory(spec.category)}</Row>
+      <Row label="Ключ">{formatNodeKeyLabel(nodeKey)}</Row>
     </div>
   );
 }
@@ -217,11 +236,11 @@ function Row({
 }) {
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+      <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-400">
         {icon}
         {label}
       </div>
-      <div className="text-[12px]">{children}</div>
+      <div className="text-[13px] font-medium text-zinc-100">{children}</div>
     </div>
   );
 }

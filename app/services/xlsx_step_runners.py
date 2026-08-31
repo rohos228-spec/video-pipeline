@@ -33,10 +33,15 @@ from app.storage import for_project as _sheet_for_project
 
 # Должен совпадать со строкой 4 в web/STUDIO_VERSION. Если в логе make_plan
 # нет «xlsx_step_runners» — на диске старый make_plan.py (текст 30k в ask).
-XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v84-img-pr-sem"
-# Сколько живых GPT-стримов img_pr держать одновременно (как gpt_api pack).
-_IMG_PR_LIVE_STREAMS = 3
+XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v85-img-pr-check-streams"
 _EMPTY_OPS_BACKOFF_S = (5.0, 10.0, 15.0)
+
+
+def img_pr_live_streams(project: Project | None) -> int:
+    """Параллель GPT для img_pr = «текстовые модели» справа (check_streams)."""
+    from app.services.check_streams import get_check_streams
+
+    return max(1, get_check_streams(project))
 
 
 def _plan_empty_error(xlsx_path: Path, *, plan_len: int) -> RuntimeError:
@@ -780,7 +785,8 @@ async def run_img_pr_xlsx(
     from app.services.output_batch_plan import pack_frames_img_pr
     from app.services.step_cancel import raise_if_cancelled, sleep_cancellable
 
-    # Старт: N батчей в волне, живых стримов не больше _IMG_PR_LIVE_STREAMS.
+    # Старт: N батчей в волне; живых стримов = check_streams справа.
+    live_n = img_pr_live_streams(project)
     parts = pack_frames_img_pr(frames, n_batches=n_batches)
     work: deque[tuple[list, int]] = deque((part, 1) for part in parts)
     logger.info(
@@ -788,7 +794,7 @@ async def run_img_pr_xlsx(
         len(frames),
         len(parts),
         [len(p) for p in parts],
-        _IMG_PR_LIVE_STREAMS,
+        live_n,
         len(done_set),
     )
 
@@ -876,7 +882,7 @@ async def run_img_pr_xlsx(
                 attempt,
                 [fr.number for fr in batch],
                 [p.name for p in attach],
-                _IMG_PR_LIVE_STREAMS,
+                live_n,
                 db_path.stat().st_size,
             )
             last_reply = await gpt_local.ask_with_files(
@@ -932,11 +938,11 @@ async def run_img_pr_xlsx(
             wave = list(work)
             work.clear()
             batch_n = bi_seq + len(wave)
-            sem = asyncio.Semaphore(_IMG_PR_LIVE_STREAMS)
+            sem = asyncio.Semaphore(live_n)
             logger.info(
                 "img_pr_db: parallel wave size={} live={} levels={} sizes={}",
                 len(wave),
-                _IMG_PR_LIVE_STREAMS,
+                live_n,
                 [lvl for _, lvl in wave],
                 [len(b) for b, _ in wave],
             )

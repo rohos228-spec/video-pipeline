@@ -68,7 +68,7 @@ const BASE: Record<string, NodePromptSlot[]> = {
   ],
   excel_gpt: [
     { id: "excel", title: "Excel", kind: "excel", stepCode: "excel_gpt" },
-    { id: "main", title: "Промт GPT", kind: "gpt", stepCode: "excel_gpt" },
+    { id: "main", title: "Промты", kind: "gpt", stepCode: "excel_gpt" },
   ],
   image_prompts: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "img_pr" },
@@ -108,11 +108,9 @@ const BASE: Record<string, NodePromptSlot[]> = {
   ],
   assemble: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "assemble" },
-    { id: "ffmpeg", title: "Сборка FFmpeg", kind: "gpt" },
   ],
   publish: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "publish" },
-    { id: "social", title: "Публикация", kind: "gpt" },
   ],
 };
 
@@ -257,7 +255,7 @@ function applyExcelGptNodeContext(
             ? s.title
             : s.custom
               ? s.title
-              : "Промт GPT",
+              : "Промты",
       };
     }
     if (!s.stepCode) return { ...s, stepCode: enrichStep };

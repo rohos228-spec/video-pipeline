@@ -9,8 +9,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from app.bots.elevenlabs import ElevenLabsBot
-from app.models import Frame, Project
+from app.services.elevenlabs_api import synthesize_speech, elevenlabs_api_configured
 from app.services.elevenlabs_voices import resolve_elevenlabs_voice_id
 from app.services.mapper import map_frames
 from app.services.media_probe import probe_duration
@@ -472,7 +471,7 @@ async def _extract_mp3_segment(
     await _run_ffmpeg(cmd)
 
 async def synthesize_per_frame_audio(
-    el: ElevenLabsBot,
+    el: Any | None = None,
     *,
     project: Project,
     frames: list[Frame],
@@ -482,7 +481,7 @@ async def synthesize_per_frame_audio(
     whisper_model: str = "large-v3",
     language: str = "ru",
 ) -> tuple[list[FrameAudioClip], Path, list[WordTS]]:
-    """Озвучка: весь voiceover одним запросом в 11Labs, тайминги — Whisper."""
+    """Озвучка: весь voiceover одним запросом в 11Labs через прямой API, тайминги — Whisper."""
     audio_dir.mkdir(parents=True, exist_ok=True)
     # Только frame_NNN.mp3 от прошлого 11Labs — не трогаем voice_full/voice*.wav
     delete_frame_audio_files(audio_dir)
@@ -509,13 +508,22 @@ async def synthesize_per_frame_audio(
     )
     voice_id = resolve_elevenlabs_voice_id(project)
     logger.info("[#{}] frame_audio: 11Labs voice_id={}", project.id, voice_id)
-    await el.tts(
-        full_text,
-        full_path,
-        timeout=tts_timeout,
-        voice_id=voice_id,
-        project_id=project.id,
-    )
+
+    if elevenlabs_api_configured() or el is None:
+        await synthesize_speech(
+            full_text,
+            full_path,
+            voice_id=voice_id,
+            timeout=tts_timeout,
+        )
+    else:
+        await el.tts(
+            full_text,
+            full_path,
+            timeout=tts_timeout,
+            voice_id=voice_id,
+            project_id=project.id,
+        )
 
     master = await probe_duration(full_path)
     words = transcribe_words(

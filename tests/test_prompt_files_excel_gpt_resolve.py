@@ -1,4 +1,4 @@
-"""excel_gpt list merges legacy enrich_* — content must resolve the same way."""
+"""excel_gpt list — общий каталог main; группа — только по group_id."""
 
 from __future__ import annotations
 
@@ -29,17 +29,32 @@ def prompts_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-def test_get_excel_gpt_content_resolves_legacy_folder(prompts_root: Path) -> None:
+def test_get_excel_gpt_list_hides_legacy_enrich_folder(prompts_root: Path) -> None:
     client = TestClient(create_app())
     listed = client.get("/api/prompt-files/excel_gpt")
     assert listed.status_code == 200
     names = {row["name"] for row in listed.json()}
-    assert "legacy_only" in names
-    assert "scenes_to_frames_ru" not in names
+    assert "legacy_only" not in names
+    assert "default" in names
 
     r = client.get("/api/prompt-files/excel_gpt/legacy_only/content")
     assert r.status_code == 200, r.text
     assert r.json()["content"] == "from enrich_3"
+
+
+def test_stale_local_script_writer_uses_git_template(
+    prompts_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (prompts_root / "05_excel_gpt" / "script_writer_ru.md").write_text(
+        "# Агент: сценарист закадра RU (v1)\nпишет script_text\n",
+        encoding="utf-8",
+    )
+    tmpl = tmp_path / "tmpl"
+    tmpl.mkdir()
+    (tmpl / "script_writer_ru.md").write_text("# биты v3\n", encoding="utf-8")
+    monkeypatch.setattr(pl, "excel_gpt_template_dir", lambda: tmpl)
+    path = pl.resolve_excel_gpt_prompt_path("script_writer_ru")
+    assert path == tmpl / "script_writer_ru.md"
 
 
 def test_list_script_frames_qc_group_prompts_isolated(
@@ -68,6 +83,72 @@ def test_list_script_frames_qc_group_prompts_isolated(
     assert group_names == {"scenes_to_frames_ru"}
     assert "common_one" not in group_names
 
-    body = client.get("/api/prompt-files/excel_gpt/scenes_to_frames_ru/content")
+    body = client.get(
+        "/api/prompt-files/excel_gpt/scenes_to_frames_ru/content"
+        "?group_id=script_frames_qc"
+    )
     assert body.status_code == 200
     assert body.json()["content"] == "GROUP V8\n"
+
+
+def test_global_list_hides_group_names_even_from_agents() -> None:
+    names = pl.list_excel_gpt_prompts()
+    hidden = {
+        "script_writer_ru",
+        "main_action_from_bits_ru",
+        "scenes_to_frames_ru",
+        "frame_prompts_continuity_ru",
+        "prompts_qc_continuity_ru",
+    }
+    assert hidden.isdisjoint(names)
+
+
+def test_fw_shots_runner_reads_group_not_main_agents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prompts_root: Path
+) -> None:
+    """Баг: раннер без group_id брал excel_gpt_agents v6 («1 сцена = 1 кадр»)."""
+    from types import SimpleNamespace
+
+    group = tmp_path / "templates" / "node_groups" / "script_frames_qc"
+    group.mkdir(parents=True)
+    agents = tmp_path / "templates" / "excel_gpt_agents"
+    agents.mkdir(parents=True)
+    (group / "scenes_to_frames_ru.md").write_text(
+        "GROUP V13 LADDER\n", encoding="utf-8"
+    )
+    (agents / "scenes_to_frames_ru.md").write_text(
+        "MAIN V6 ONE SCENE\n", encoding="utf-8"
+    )
+    monkeypatch.setattr("app.project_root.find_project_root", lambda: tmp_path)
+
+    bare = pl.resolve_excel_gpt_prompt_path("scenes_to_frames_ru")
+    assert "MAIN V6" in bare.read_text(encoding="utf-8")
+
+    grouped = pl.resolve_excel_gpt_prompt_path(
+        "scenes_to_frames_ru", node_key="n_excel_gpt_fw_shots"
+    )
+    assert "GROUP V13" in grouped.read_text(encoding="utf-8")
+
+    project = SimpleNamespace(
+        topic="",
+        prompt_overrides={"excel_gpt": "scenes_to_frames_ru"},
+        meta={
+            "prompt_slot_variants": {
+                "n_excel_gpt_fw_shots": {"main": "scenes_to_frames_ru"},
+            },
+            "canvas_graph": {
+                "nodes": [
+                    {
+                        "id": "n_excel_gpt_fw_shots",
+                        "data": {"groupId": "script_frames_qc"},
+                    }
+                ]
+            },
+        },
+    )
+    _name, path, text, _src = pl.read_resolved_project_prompt(
+        project, "excel_gpt", node_key="n_excel_gpt_fw_shots", slot_id="main"
+    )
+    assert "GROUP V13" in text
+    assert "MAIN V6" not in text
+    assert "node_groups/script_frames_qc" in str(path).replace("\\", "/")

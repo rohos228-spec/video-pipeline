@@ -33,6 +33,42 @@ from app.services.canvas_graph import (
 from app.services.excel_gpt_node import sd_agent_marker
 
 _STEP_X = 290.0  # как в default_graph
+SCRIPT_FRAMES_QC_GROUP_ID = "script_frames_qc"
+_SCRIPT_FRAMES_QC_NODE_SUFFIXES = (
+    "_fw_script",
+    "_fw_check_script",
+    "_fw_action",
+    "_fw_shots",
+    "_fw_frames",
+    "_fw_qc",
+)
+
+
+def canvas_has_script_frames_qc(project_or_meta: Any) -> bool:
+    """Группа script_frames_qc вставлена на канвас проекта.
+
+    Глобальный пайплайн (без группы) не включает T/X-лестницу, lock K1
+    и промты ``templates/node_groups/script_frames_qc/``.
+    """
+    meta = project_or_meta
+    if meta is not None and not isinstance(meta, dict):
+        meta = getattr(meta, "meta", None)
+    if not isinstance(meta, dict):
+        return False
+    graph = canvas_graph_from_meta(meta)
+    if graph is None:
+        return False
+    for node in graph.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        gid = str((data or {}).get("groupId") or "").split("#", 1)[0].strip()
+        if gid == SCRIPT_FRAMES_QC_GROUP_ID:
+            return True
+        nid = str(node.get("id") or "")
+        if any(nid.endswith(suf) for suf in _SCRIPT_FRAMES_QC_NODE_SUFFIXES):
+            return True
+    return False
 _FAN_DY = 145.0
 
 
@@ -1125,6 +1161,23 @@ def restore_script_frames_qc_four_node_graph(meta: dict[str, Any]) -> bool:
         nodes=nodes,
         edges=edges,
     )
+    return True
+
+
+async def upgrade_script_frames_qc_on_project(
+    session: AsyncSession, project: Project
+) -> bool:
+    """Обновить старую цепочку группы на канвасе проекта. True если писали."""
+    meta = dict(project.meta or {}) if isinstance(project.meta, dict) else {}
+    if not upgrade_script_frames_qc_graph(meta):
+        return False
+    from sqlalchemy.orm.attributes import flag_modified
+
+    project.meta = meta
+    flag_modified(project, "meta")
+    await session.flush()
+    await sync_run_snapshot_from_canvas_graph(session, project, force=True)
+    logger.info("[#{}] upgrade script_frames_qc: +action +shots", project.id)
     return True
 
 

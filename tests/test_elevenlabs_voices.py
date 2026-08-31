@@ -15,10 +15,10 @@ def test_resolve_from_meta():
     p = Project(topic="t")
     p.meta = {
         "node_step_params": {
-            "audio": {"elevenlabs_voice_id": "TUQNWEvVPBLzMBSVDPUA"},
+            "audio": {"elevenlabs_voice_id": "JBFqnCBsd6RMkjVDRZzb"},
         },
     }
-    assert resolve_elevenlabs_voice_id(p) == "TUQNWEvVPBLzMBSVDPUA"
+    assert resolve_elevenlabs_voice_id(p) == "JBFqnCBsd6RMkjVDRZzb"
 
 
 def test_resolve_invalid_falls_back():

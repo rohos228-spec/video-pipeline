@@ -1,3 +1,8 @@
+﻿<#
+Update-Hotfix-FromGitHub
+#>
+param([string]$Start)
+
 # Скачать исправления с GitHub без git pull (PowerShell 5.1, ASCII).
 # Запуск из корня репозитория:
 #   powershell -ExecutionPolicy Bypass -File scripts\Update-Hotfix-FromGitHub.ps1
@@ -50,7 +55,7 @@ $Files = @(
 )
 
 function Get-RepoRoot {
-    param([string]$Start)
+    
     $dir = $Start
     for ($i = 0; $i -lt 12; $i++) {
         if (Test-Path (Join-Path $dir "pyproject.toml")) {

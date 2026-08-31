@@ -153,7 +153,7 @@ def write_sidecar(
     params: dict[str, Any] | None = None,
     raw_url: str | None = None,
     quote: dict[str, Any] | None = None,
-    provider: str = "grsai",
+    provider: str = "outsee",
     status: str = "done",
     job_id: str | None = None,
     error: str | None = None,
@@ -545,3 +545,42 @@ def _scan_generation_files(*, kind: str, limit: int) -> list[dict[str, Any]]:
     for it in items:
         it.pop("mtime", None)
     return items[:limit]
+
+
+def delete_generation_item(
+    *,
+    path: str | Path | None = None,
+    item_id: str | None = None,
+) -> bool:
+    """Удалить файл генерации и его JSON-паспорт с диска."""
+    root = generations_root()
+    target_media: Path | None = None
+
+    if path:
+        p = Path(path)
+        if p.is_file():
+            target_media = p
+        elif (root / path).is_file():
+            target_media = root / path
+
+    if target_media is None and item_id:
+        clean_name = item_id.removeprefix("gen-")
+        if clean_name:
+            for fp in root.rglob(clean_name):
+                if fp.is_file():
+                    target_media = fp
+                    break
+
+    if target_media is None:
+        return False
+
+    try:
+        side = target_media.with_suffix(".json")
+        if side.is_file():
+            side.unlink(missing_ok=True)
+        if target_media.is_file():
+            target_media.unlink(missing_ok=True)
+        invalidate_generation_list_cache()
+        return True
+    except Exception:  # noqa: BLE001
+        return False

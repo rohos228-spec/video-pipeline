@@ -195,7 +195,7 @@ export function HitlModal({
         {current.kind === "approve_images" || current.kind === "approve_videos" ? (
           <VisualHitlGallery hitl={current} onDecided={() => onOpenChange(false)} />
         ) : (
-          <HitlPreview hitl={current} />
+          <HitlPreview hitl={current} projectId={projectId} />
         )}
 
         {(current.kind === "approve_images" || current.kind === "approve_videos") ? null : editMode ? (
@@ -215,23 +215,20 @@ export function HitlModal({
         ) : null}
 
         {(current.kind === "approve_images" || current.kind === "approve_videos") ? null : (
-        <DialogFooter className="!justify-between sm:!justify-between">
+        <DialogFooter className="!justify-between sm:!justify-between pt-2">
           {!editMode ? (
             <>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => setEditMode(true)}
                   disabled={submit.isPending}
-                  className="gap-1.5"
+                  className="gap-1.5 h-9 px-3.5 text-xs font-semibold text-cyan-200 bg-cyan-950/40 hover:bg-cyan-900/60 border border-cyan-500/40 shadow-sm rounded-xl transition-all"
                 >
-                  <PenLine className="h-3.5 w-3.5" />
+                  <PenLine className="h-3.5 w-3.5 text-cyan-400" />
                   Изменить промт
                 </Button>
-                <span className="hidden text-[10px] text-muted-foreground md:inline">
-                  Enter · одобрить
-                </span>
               </div>
               <div className="flex items-center gap-2">
                 <Button
@@ -239,9 +236,9 @@ export function HitlModal({
                   size="sm"
                   onClick={() => decide("reject")}
                   disabled={submit.isPending}
-                  className="gap-1.5 text-destructive hover:text-destructive"
+                  className="gap-1.5 h-9 px-3.5 text-xs font-semibold text-red-300 hover:text-red-200 bg-red-950/30 hover:bg-red-900/50 border border-red-500/30 shadow-sm rounded-xl transition-all"
                 >
-                  <XCircle className="h-3.5 w-3.5" />
+                  <XCircle className="h-3.5 w-3.5 text-red-400" />
                   Отклонить
                 </Button>
                 <Button
@@ -249,19 +246,19 @@ export function HitlModal({
                   size="sm"
                   onClick={() => decide("regenerate")}
                   disabled={submit.isPending}
-                  className="gap-1.5"
+                  className="gap-1.5 h-9 px-3.5 text-xs font-semibold text-amber-200 bg-amber-950/40 hover:bg-amber-900/60 border border-amber-500/40 shadow-sm rounded-xl transition-all"
                 >
-                  <RefreshCw className="h-3.5 w-3.5" />
+                  <RefreshCw className="h-3.5 w-3.5 text-amber-400" />
                   Перегенерировать
                 </Button>
                 <Button
                   size="sm"
                   onClick={() => decide("approve")}
                   disabled={submit.isPending}
-                  className="gap-1.5"
+                  className="gap-2 h-9 px-4 font-semibold text-xs text-white bg-gradient-to-r from-emerald-500 via-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 active:scale-[0.98] shadow-lg shadow-emerald-500/35 border border-emerald-300/40 rounded-xl backdrop-blur-md transition-all"
                 >
                   {submit.isPending ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-200" />
                   ) : (
                     <CheckCircle2 className="h-3.5 w-3.5" />
                   )}
@@ -276,6 +273,7 @@ export function HitlModal({
                 size="sm"
                 onClick={() => setEditMode(false)}
                 disabled={submit.isPending}
+                className="rounded-xl"
               >
                 Отмена
               </Button>
@@ -283,7 +281,7 @@ export function HitlModal({
                 size="sm"
                 onClick={() => decide("edit_prompt", editedPrompt)}
                 disabled={submit.isPending || !editedPrompt.trim()}
-                className="gap-1.5"
+                className="gap-1.5 h-9 px-4 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-500 border border-cyan-400/50 shadow-md shadow-cyan-500/20 rounded-xl transition-all"
               >
                 {submit.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                 Применить правки
@@ -297,29 +295,45 @@ export function HitlModal({
   );
 }
 
-function HitlPreview({ hitl }: { hitl: HITLDTO }) {
-  // Пытаемся понять что показать на основе payload и kind.
-  const photoPath = (hitl.payload?.photo_path as string | undefined) ?? null;
-  const videoPath = (hitl.payload?.video_path as string | undefined) ?? null;
+function HitlPreview({
+  hitl,
+  projectId,
+}: {
+  hitl: HITLDTO;
+  projectId?: number | null;
+}) {
+  const pId = projectId ?? hitl.project_id;
+  const projQuery = useQuery({
+    queryKey: ["project", pId],
+    queryFn: () => api.getProject(pId!),
+    enabled: Boolean(pId),
+  });
+  const proj = projQuery.data;
+
+  const photoPath =
+    (hitl.payload?.photo_path as string | undefined) ??
+    (hitl.payload?.image_path as string | undefined) ??
+    null;
+  const videoPath =
+    (hitl.payload?.video_path as string | undefined) ??
+    (hitl.payload?.file_path as string | undefined) ??
+    (hitl.payload?.path as string | undefined) ??
+    null;
   const text =
     (hitl as { text?: string | null }).text ??
     (hitl.payload?.text as string | undefined) ??
+    (hitl.kind === "approve_plan" ? proj?.general_plan : null) ??
+    (hitl.kind === "approve_script" ? proj?.script_text : null) ??
     null;
 
-  // Артефакты на диске показывать через GET /api/artifacts/<uuid>/file —
-  // но в payload путь файловый, не uuid. Пока показываем как preview-стаб.
-
   if (photoPath) {
-    // Файл на диске; в SaaS-варианте — через signed URL.
-    // Локально просто показываем имя файла; интеграция с GET artifact-file
-    // будет когда payload будет содержать artifact_uuid.
     return (
-      <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/30 p-3">
+      <div className="flex flex-col gap-2 rounded-xl border border-white/10 bg-black/30 p-3.5">
         <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
           <ImageIcon className="h-3 w-3" />
           Превью картинки
         </div>
-        <div className="overflow-hidden rounded">
+        <div className="overflow-hidden rounded-lg">
           <img
             src={`/api/files?path=${encodeURIComponent(photoPath)}`}
             alt="HITL preview"
@@ -336,31 +350,35 @@ function HitlPreview({ hitl }: { hitl: HITLDTO }) {
 
   if (videoPath) {
     return (
-      <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/30 p-3">
+      <div className="flex flex-col gap-2 rounded-xl border border-white/10 bg-black/30 p-3.5">
         <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
           <Video className="h-3 w-3" />
           Превью видео
         </div>
-        <video
-          controls
-          className="max-h-72 w-full rounded"
-          src={`/api/files?path=${encodeURIComponent(videoPath)}`}
-        />
-        <div className="font-mono text-[10px] text-muted-foreground">{videoPath}</div>
+        <div className="flex max-h-[380px] w-full items-center justify-center overflow-hidden rounded-lg bg-black/60">
+          <video
+            controls
+            className="max-h-[380px] w-auto max-w-full rounded-lg object-contain shadow-md"
+            src={`/api/files?path=${encodeURIComponent(videoPath)}`}
+          />
+        </div>
+        <div className="truncate font-mono text-[10px] text-muted-foreground" title={videoPath}>
+          {videoPath}
+        </div>
       </div>
     );
   }
 
   if (text) {
     return (
-      <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/30 p-3">
+      <div className="flex flex-col gap-2 rounded-xl border border-white/10 bg-black/40 p-4">
         <div className="flex items-center justify-between gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
-          <span className="flex items-center gap-1.5">
-            <FileText className="h-3 w-3" />
+          <span className="flex items-center gap-1.5 text-cyan-300 font-medium">
+            <FileText className="h-3.5 w-3.5 text-cyan-400" />
             Содержимое ({text.length.toLocaleString("ru-RU")} симв.)
           </span>
         </div>
-        <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap font-mono text-[11.5px] leading-relaxed">
+        <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap font-mono text-[12px] leading-relaxed text-zinc-100 bg-black/30 p-3 rounded-lg border border-white/5">
           {text}
         </pre>
       </div>
@@ -368,7 +386,7 @@ function HitlPreview({ hitl }: { hitl: HITLDTO }) {
   }
 
   return (
-    <div className="rounded-md border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
+    <div className="rounded-xl border border-dashed border-white/15 bg-white/[0.02] p-5 text-center text-xs text-muted-foreground">
       Превью недоступно — открой папку проекта или дождись артефакта.
     </div>
   );

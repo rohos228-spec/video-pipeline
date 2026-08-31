@@ -75,6 +75,7 @@ async def start_step(
     skip_queue_guard: bool = False,
     require_node_fsm: bool = False,
     explicit_ui_start: bool = False,
+    force_wipe: bool | None = None,
 ) -> ProjectStatus:
     """Перевести проект в running-статус шага — воркер подхватит."""
     # Ноды «Работа с GPT» с маркером data.sd_agent — scene-агенты: их ▶
@@ -362,11 +363,12 @@ async def start_step(
             ", ".join(cleared),
         )
     try:
-        # Явный ▶ img_pr — пересобрать промты. Явный ▶ img — перегенерить PNG
-        # (файлы на диске не скип: нода обязана сработать).
-        force_wipe = bool(
-            explicit_ui_start and step_code in ("img_pr", "img")
-        )
+        # Если force_wipe не задан явно:
+        # Для ручного UI старта: по умолчанию force_wipe=True (полный перезапуск с 1-го кадра),
+        # Для автоматического продвижения воркером: force_wipe=False (мягкий догон).
+        if force_wipe is None:
+            force_wipe = bool(explicit_ui_start)
+
         # ▶ одной sd_agent-ноды: invalidate_agent уже сбросил чекпоинт.
         # Полный wipe scene_d удаляет meta.scene_design целиком — вместе с
         # only_agent → worker prepare без only_agent зажигает весь веер.
@@ -540,10 +542,20 @@ async def start_step(
 
     prepare_key = node_key
     if step_code == "excel_gpt":
-        meta = project.meta if isinstance(project.meta, dict) else {}
+        meta = dict(project.meta if isinstance(project.meta, dict) else {})
         prepare_key = str(
             node_key or meta.get("active_excel_gpt_node_key") or ""
         ) or None
+        # Ручной ▶: GPT обязан отработать, даже если поля уже заполнены.
+        if explicit_ui_start and prepare_key:
+            meta["excel_gpt_ui_force_full"] = True
+            meta["excel_gpt_force_full_rerun"] = prepare_key
+            project.meta = meta
+            logger.info(
+                "[#{}] start_step excel_gpt: UI ▶ force_full GPT node={}",
+                project.id,
+                prepare_key,
+            )
 
     await prepare_node_for_step_start(
         session,

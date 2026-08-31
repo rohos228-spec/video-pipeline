@@ -67,6 +67,59 @@ def test_police_example_same_place_compression() -> None:
     assert "K0" in by_n[4]["compression"]
 
 
+def test_police_catalog_fills_sequential_ladders() -> None:
+    """Эталон задачи: 1 кадр/сцена от GPT → лестницы T6 T3 T1 T5."""
+    from app.services.shot_templates import fill_kadry_from_catalog
+
+    clear_shot_templates_cache()
+    skinny = [
+        {"сцена": 1, "шаблон": "T6", "действие": "идёт к полиции", "закадр": "пришёл"},
+        {"сцена": 2, "шаблон": "T3", "действие": "заходит", "закадр": "зашёл"},
+        {"сцена": 3, "шаблон": "T1", "действие": "говорит с дежурным", "закадр": "рассказал"},
+        {"сцена": 4, "шаблон": "T5", "действие": "пишет заявление", "закадр": "написал"},
+    ]
+    filled = fill_kadry_from_catalog(skinny, POLICE_ACTION, cell_number=1)
+    by_scene: dict[int, list] = {}
+    for sh in filled:
+        by_scene.setdefault(int(sh["сцена"]), []).append(sh)
+    assert [by_scene[i][0]["шаблон"] for i in (1, 2, 3, 4)] == [
+        "T6",
+        "T3",
+        "T1",
+        "T5",
+    ]
+    assert len(by_scene[1]) >= 2  # путь
+    assert len(by_scene[2]) >= 1  # вход
+    assert len(by_scene[3]) >= 2  # диалог K2+K3
+    assert len(by_scene[4]) >= 1  # пишет, без нового ОБЩЕГО
+    assert not any("{" in str(sh.get("действие") or "") for sh in filled)
+
+
+def test_t8_does_not_steal_years_in_same_place() -> None:
+    """«долгие годы» / «служба» в кабинете — не прыжок жизни, не T8."""
+    clear_shot_templates_cache()
+    assert (
+        select_template_when(
+            {
+                "blob": "кабинет следствия наблюдает за подозреваемым долгие годы",
+                "place": "кабинет следствия",
+            },
+            "",
+        )
+        == "T4"
+    )
+    assert (
+        select_template_when(
+            {
+                "blob": "кабинет следствия листает протоколы годы службы",
+                "place": "кабинет следствия",
+            },
+            "",
+        )
+        == "T5"
+    )
+
+
 def test_t8_chain_repeat_allowed() -> None:
     """Биография «жил → служил → работал»: T8>T8>T8 — норма, не брак."""
     clear_shot_templates_cache()
@@ -333,20 +386,15 @@ def test_neighbor_place_hints_prev() -> None:
 
 
 def test_scenes_to_frames_resolves_v8_template() -> None:
-    from app.services.prompt_library import (
-        SCRIPT_FRAMES_QC_PROMPT_NAMES,
-        list_excel_gpt_prompts,
-        list_group_owned_prompts,
-    )
+    from app.services.prompt_library import list_group_owned_prompts
 
-    path = resolve_excel_gpt_prompt_path("scenes_to_frames_ru")
+    path = resolve_excel_gpt_prompt_path(
+        "scenes_to_frames_ru", group_id="script_frames_qc"
+    )
     assert "node_groups/script_frames_qc" in str(path).replace("\\", "/")
     text = path.read_text(encoding="utf-8")
     assert "v8 — шаблоны" in text or "шаблоны T/X" in text
     assert "drop_order" in text
-    listed = list_excel_gpt_prompts()
-    for name in SCRIPT_FRAMES_QC_PROMPT_NAMES:
-        assert name not in listed
     grouped = list_group_owned_prompts("script_frames_qc")
     assert grouped is not None
     assert "scenes_to_frames_ru" in grouped
@@ -371,4 +419,15 @@ def test_write_group_prompt_stays_out_of_excel_gpt(
     assert group.read_text(encoding="utf-8") == "GROUP BODY\n"
     assert not common.exists()
     assert "scenes_to_frames_ru" not in pl.list_excel_gpt_prompts()
-    assert pl.resolve_excel_gpt_prompt_path("scenes_to_frames_ru") == group
+    assert (
+        pl.resolve_excel_gpt_prompt_path(
+            "scenes_to_frames_ru", group_id="script_frames_qc"
+        )
+        == group
+    )
+    assert (
+        pl.resolve_excel_gpt_prompt_path(
+            "scenes_to_frames_ru", node_key="n_excel_gpt_fw_shots"
+        )
+        == group
+    )

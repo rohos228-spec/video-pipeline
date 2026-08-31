@@ -1,9 +1,14 @@
+﻿<#
+StudioUpdateCore
+#>
+param([string]$StartDir = (Get-Location)
+
 # PowerShell 5.1 - ASCII only (no em-dash / unicode quotes)
 $script:StudioUpdateBranch = "devin/windows-installer"
 $script:StudioUpdateCoreId = "studio-update-core-v9"
 
 function Get-StudioRepoRoot {
-    param([string]$StartDir = (Get-Location).Path)
+    .Path)
     $dir = $StartDir
     for ($i = 0; $i -lt 12; $i++) {
         if (Test-Path (Join-Path $dir "pyproject.toml")) {

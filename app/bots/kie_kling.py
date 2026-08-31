@@ -52,7 +52,7 @@ def kie_api_key() -> str:
     base = (settings.gpt_base_url or "").strip().lower()
     if "kie.ai" in base:
         return (settings.gpt_api_key or "").strip()
-    return (settings.gpt_api_key or "").strip()
+    return ""
 
 
 def kie_api_base_url() -> str:

@@ -91,6 +91,7 @@ class ProjectDetail(ProjectSummary):
 
 class CreateProjectRequest(BaseModel):
     title: str
+    topic: str | None = None
     hero_mode: str = "auto"  # hero | no_hero | auto
     workflow_id: int | None = None  # если None — берём дефолтный
     auto_mode: bool = False

@@ -1907,6 +1907,8 @@ class OutseeBot:
             return None
         try:
             return await oh.generate_image(**kwargs)
+        except oh.NanoBananaProOutseeBannedError:
+            raise
         except oh.OutseeHttpAuthError as e:
             if not getattr(st, "outsee_http_fallback_cdp", True):
                 raise
@@ -2005,6 +2007,18 @@ class OutseeBot:
         from app.services.step_cancel import abort_if_cancelled, await_with_cancel
 
         abort_if_cancelled(project_id)
+        from app.services.media_route import is_nano_banana_pro
+
+        if is_nano_banana_pro(model_slug):
+            from app.bots.outsee_http import (
+                NANO_BANANA_PRO_OUTSEE_BAN,
+                NanoBananaProOutseeBannedError,
+            )
+
+            raise NanoBananaProOutseeBannedError(
+                NANO_BANANA_PRO_OUTSEE_BAN,
+                context={"model": model_slug, "provider": "outsee", "banned": True},
+            )
         gen_id = gen_id or _uuid.uuid4().hex
 
         # 1) HTTP API outsee.io/create (cookies из Chrome /profile)

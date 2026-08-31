@@ -270,6 +270,12 @@ def _vo_text(frame: dict[str, Any]) -> str:
     return frame_field(frame, "voiceover_text", "закадр")
 
 
+def _vo_shot_copy(frame: dict[str, Any]) -> str:
+    """Нарезка-дубликат ячейки. Frame.voiceover_text не читаем как фрагмент."""
+    cs = _camera_subdivide(frame)
+    return _text(cs.get("vo_shot"), cs.get("закадр_шота"), frame.get("vo_shot"))
+
+
 def _active_prompt(frame: dict[str, Any], kind: str, fallback_key: str) -> str:
     prompts = frame.get("prompts")
     if isinstance(prompts, list):
@@ -401,9 +407,9 @@ def group_vo_cells(
 ) -> list[dict[str, Any]]:
     """Ячейка = сцена: кадры одной VO-ячейки группируются по parent_uuid
     (camera_subdivide). Без метки — старое правило: непустой закадр = новая
-    ячейка, пустой VO присоединяется как шот. Текст ячейки = сумма фрагментов
-    её кадров. Нарезка VO по шотам здесь только в DTO (длина кадра в ленте),
-    в Frame.voiceover_text не пишем."""
+    ячейка, пустой VO присоединяется как шот. Текст ячейки = voiceover_text
+    родителя (разбивка). По шотам показываем vo_shot — дубликат, который
+    режет expand. Frame.voiceover_text не пишем."""
     from app.services.scene_design.camera_expand import split_text_into_parts
 
     cells: list[dict[str, Any]] = []
@@ -422,9 +428,13 @@ def group_vo_cells(
         if not sid and scene_order and cell_index - 1 < len(scene_order):
             sid = scene_order[cell_index - 1]
         plan_rows = plan_index.get(sid) or []
+        copies = [_vo_shot_copy(fr) for fr in current_frames]
         vos = [_vo_text(fr) for fr in current_frames]
         nonempty = [v for v in vos if v]
-        if len(current_frames) > 1 and len(nonempty) == 1:
+        parent_vo = _vo_text(parent)
+        if copies and all(copies):
+            vo_parts = copies
+        elif len(current_frames) > 1 and len(nonempty) == 1:
             vo_parts = split_text_into_parts(nonempty[0], len(current_frames))
         else:
             vo_parts = vos
@@ -438,7 +448,11 @@ def group_vo_cells(
             )
             for i, fr in enumerate(current_frames, start=1)
         ]
-        vo = " ".join(t for t in vo_parts if t).strip()
+        vo = (
+            parent_vo.strip()
+            if parent_vo and not any(vos[1:])
+            else " ".join(t for t in vo_parts if t).strip()
+        )
         duration = round(sum(s["duration_sec"] for s in shots), 2)
         loc = shots[0]["fields"]["set"] if shots else _shot_set(parent)
         items = frame_field(parent, "shot01_props", "items")

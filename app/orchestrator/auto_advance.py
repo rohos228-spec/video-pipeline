@@ -782,6 +782,9 @@ async def _commit_running_after_prepare(
     )
     if not prepared:
         return False
+    from app.services.step_replace import replace_step_outputs_on_enter
+
+    await replace_step_outputs_on_enter(session, project, nxt)
     project.status = nxt
     return True
 

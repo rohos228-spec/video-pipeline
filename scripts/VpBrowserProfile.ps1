@@ -1,7 +1,12 @@
+﻿<#
+VpBrowserProfile
+#>
+param([string]$StartDir = $PSScriptRoot)
+
 # Chrome profile for video-pipeline (ChatGPT, outsee). Logins: %USERPROFILE%\.vp_browser_data
 
 function Get-VpRepoRoot {
-    param([string]$StartDir = $PSScriptRoot)
+    
     $dir = $StartDir
     while ($dir) {
         if (Test-Path (Join-Path $dir "pyproject.toml")) { return $dir }

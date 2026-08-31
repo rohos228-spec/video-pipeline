@@ -118,10 +118,12 @@ def _ensure_name(name: str) -> None:
         raise HTTPException(status_code=400, detail=f"invalid prompt name: {name!r}")
 
 
-def _disk_prompt_path(step_code: str, name: str) -> Path:
+def _disk_prompt_path(
+    step_code: str, name: str, *, group_id: str | None = None
+) -> Path:
     """Путь к .md на диске (для excel_gpt — unified + legacy enrich_*)."""
     if is_excel_gpt_prompt_step(step_code):
-        return resolve_excel_gpt_prompt_path(name)
+        return resolve_excel_gpt_prompt_path(name, group_id=group_id)
     return prompt_path(step_code, name)
 
 
@@ -191,7 +193,7 @@ async def list_prompt_files(
     names = group_names if group_names is not None else list_prompts(step_code)
     for name in names:
         if is_excel_gpt_prompt_step(step_code):
-            p = resolve_excel_gpt_prompt_path(name)
+            p = resolve_excel_gpt_prompt_path(name, group_id=group_id)
         else:
             p = folder / f"{name}.md"
         if not p.is_file():
@@ -210,15 +212,19 @@ async def list_prompt_files(
 
 
 @router.get("/{step_code}/{name}/content", response_model=PromptFileContent)
-async def get_prompt_file(step_code: str, name: str) -> PromptFileContent:
+async def get_prompt_file(
+    step_code: str,
+    name: str,
+    group_id: str | None = Query(None),
+) -> PromptFileContent:
     _ensure_step(step_code)
     _ensure_name(name)
-    p = _disk_prompt_path(step_code, name)
+    p = _disk_prompt_path(step_code, name, group_id=group_id)
     if not p.is_file():
         raise HTTPException(status_code=404, detail="prompt file not found")
     try:
-        body = read_prompt(step_code, name)
-    except FileNotFoundError as e:
+        body = p.read_text(encoding="utf-8")
+    except OSError as e:
         raise HTTPException(status_code=404, detail="prompt file not found") from e
     stat = p.stat()
     return PromptFileContent(

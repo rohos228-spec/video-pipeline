@@ -368,6 +368,7 @@ def _safe_upload_node_key(node_key: str) -> str:
 
 
 def _canvas_has_fw_shots(project) -> bool:
+    """На канвасе есть нода T/X (не путать с «группа вставлена»)."""
     graph = (getattr(project, "meta", None) or {})
     if not isinstance(graph, dict):
         return False
@@ -379,9 +380,9 @@ def _canvas_has_fw_shots(project) -> bool:
 
 
 def _load_script_frames_qc_prompt(name: str) -> str:
-    from app.services.prompt_library import resolve_excel_gpt_prompt_path
+    from app.services.prompt_library import resolve_script_frames_qc_prompt_path
 
-    path = resolve_excel_gpt_prompt_path(name)
+    path = resolve_script_frames_qc_prompt_path(name)
     if not path.is_file():
         raise RuntimeError(f"нет промта группы script_frames_qc: {path}")
     return path.read_text(encoding="utf-8")
@@ -1284,6 +1285,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             meta = project.meta if isinstance(project.meta, dict) else {}
             from app.services.db_frames_context import build_excel_gpt_check_context
 
+            from app.services.node_groups import canvas_has_script_frames_qc
+
             db_check = build_excel_gpt_check_context(
                 project_id=project.id,
                 slug=project.slug,
@@ -1298,6 +1301,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     for e in ents
                 ],
                 scene_registry=meta.get("scene_registry") or [],
+                full_vo=canvas_has_script_frames_qc(project),
             )
             ctx_dir = project.data_dir / "excel_gpt_uploads" / str(node_key)
             ctx_dir.mkdir(parents=True, exist_ok=True)

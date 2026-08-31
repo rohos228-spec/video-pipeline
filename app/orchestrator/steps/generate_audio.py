@@ -15,8 +15,6 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bots.browser import browser_session
-from app.bots.elevenlabs import ElevenLabsBot
 from app.models import (
     Artifact,
     ArtifactKind,
@@ -190,7 +188,7 @@ async def _finalize_audio_ready(
 async def run(
     session: AsyncSession,
     project: Project,
-    bot: Bot,
+    bot: Bot | None = None,
     *,
     force_full_asr: bool = False,
 ) -> None:
@@ -300,7 +298,13 @@ async def run(
             "положите готовый mp3/wav в audio/ или заполните текст"
         )
 
-    if not settings.audio_use_elevenlabs_fallback:
+    import os
+    use_11labs = (
+        getattr(settings, "audio_use_elevenlabs_fallback", False)
+        or os.environ.get("AUDIO_USE_ELEVENLABS_FALLBACK", "").strip() in ("1", "true", "True")
+        or bool(getattr(settings, "elevenlabs_api_key", None))
+    )
+    if not use_11labs:
         audio_hint = project.data_dir / "audio"
         raise RuntimeError(
             f"[#{project.id}] нет озвучки в {audio_hint} — положите voice.mp3 или "
@@ -308,16 +312,13 @@ async def run(
             "11Labs отключён: AUDIO_USE_ELEVENLABS_FALLBACK=0"
         )
 
-    async with browser_session() as bs:
-        el = ElevenLabsBot(bs)
-        clips, full_audio_path, words = await synthesize_per_frame_audio(
-            el,
-            project=project,
-            frames=timeline_frames,
-            cells=cells,
-            audio_dir=audio_dir,
-            whisper_model=settings.whisper_model,
-        )
+    clips, full_audio_path, words = await synthesize_per_frame_audio(
+        project=project,
+        frames=timeline_frames,
+        cells=cells,
+        audio_dir=audio_dir,
+        whisper_model=settings.whisper_model,
+    )
 
     await _persist_audio_results(
         session,

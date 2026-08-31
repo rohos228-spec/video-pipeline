@@ -1,10 +1,13 @@
-﻿# Единый лаунчер Video Pipeline Studio (меню на русском)
-# Вызывается из STUDIO.cmd в корне репозитория.
-
+﻿<#
+Video Pipeline Studio Launcher
+#>
 param(
     [ValidateSet("1", "2", "3", "4", "5", "6", "7", "")]
     [string]$Action = ""
 )
+
+# Единый лаунчер Video Pipeline Studio (меню на русском)
+# Вызывается из STUDIO.cmd в корне репозитория.
 
 $ErrorActionPreference = "Continue"
 if ($env:VP_REPO_ROOT) {
@@ -16,7 +19,8 @@ if ($env:VP_REPO_ROOT) {
 }
 Set-Location -LiteralPath $Root
 
-# Ветки (выбор при первом запуске / [5] -> data/studio-pc-branch + .env)
+# Ветки (выбор при первом запуске / [5] -> только data/studio-pc-branch).
+# Лаунчер никогда не пишет .env.
 # [4] всегда тянет origin/<сохранённая>, не хардкод main.
 $script:PcBranches = @("housepc", "tompc", "strangepc", "workpc", "main")
 $script:PcBranchFile = Join-Path $Root "data\studio-pc-branch"
@@ -44,76 +48,6 @@ function Read-StudioPcBranchFromEnv {
     return ""
 }
 
-function Sync-StudioPcBranchToEnv {
-    param([Parameter(Mandatory = $true)][string]$Branch)
-    if (-not (Test-StudioPcBranchName $Branch)) { return $false }
-    $env:ORCHESTRATOR_GIT_BRANCH = $Branch
-    $lines = @()
-    $found = $false
-    if (Test-Path -LiteralPath $EnvFile) {
-        $lines = @(Get-Content -LiteralPath $EnvFile -Encoding UTF8 -ErrorAction SilentlyContinue)
-        for ($i = 0; $i -lt $lines.Count; $i++) {
-            if ($lines[$i] -match '^\s*ORCHESTRATOR_GIT_BRANCH\s*=') {
-                $lines[$i] = "ORCHESTRATOR_GIT_BRANCH=$Branch"
-                $found = $true
-                break
-            }
-        }
-    }
-    if (-not $found) {
-        $lines += "ORCHESTRATOR_GIT_BRANCH=$Branch"
-    }
-    $dir = Split-Path -Parent $EnvFile
-    if ($dir -and -not (Test-Path -LiteralPath $dir)) {
-        New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    }
-    Set-Content -LiteralPath $EnvFile -Value $lines -Encoding UTF8
-    return $true
-}
-
-function Get-StudioEnvValue {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$Key
-    )
-    if (-not (Test-Path -LiteralPath $Path)) { return "" }
-    $rx = "^\s*$([regex]::Escape($Key))\s*=\s*(.*)\s*$"
-    foreach ($line in Get-Content -LiteralPath $Path -Encoding UTF8 -ErrorAction SilentlyContinue) {
-        if ($line -match $rx) {
-            return $Matches[1].Trim().Trim('"').Trim("'")
-        }
-    }
-    return ""
-}
-
-function Sync-VibecodeApiKeyToEnv {
-    # Существующий .env на ПК не перезаписывается из example при git pull.
-    # Если ключ пустой - взять из .env.example.
-    $example = Join-Path $Root ".env.example"
-    $want = Get-StudioEnvValue -Path $example -Key "VIBECODE_API_KEY"
-    if (-not $want) { return $false }
-    $have = Get-StudioEnvValue -Path $EnvFile -Key "VIBECODE_API_KEY"
-    if ($have) { return $false }
-    $lines = @()
-    $found = $false
-    if (Test-Path -LiteralPath $EnvFile) {
-        $lines = @(Get-Content -LiteralPath $EnvFile -Encoding UTF8 -ErrorAction SilentlyContinue)
-        for ($i = 0; $i -lt $lines.Count; $i++) {
-            if ($lines[$i] -match '^\s*VIBECODE_API_KEY\s*=') {
-                $lines[$i] = "VIBECODE_API_KEY=$want"
-                $found = $true
-                break
-            }
-        }
-    }
-    if (-not $found) {
-        $lines += "VIBECODE_API_KEY=$want"
-    }
-    Set-Content -LiteralPath $EnvFile -Value $lines -Encoding UTF8
-    Write-StudioMsg "OK: в .env записан VIBECODE_API_KEY (из .env.example)" "Green"
-    return $true
-}
-
 function Save-StudioPcBranch {
     param([Parameter(Mandatory = $true)][string]$Branch)
     if (-not (Test-StudioPcBranchName $Branch)) { return $false }
@@ -122,7 +56,7 @@ function Save-StudioPcBranch {
         New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
     }
     Set-Content -LiteralPath $script:PcBranchFile -Value $Branch -Encoding UTF8 -NoNewline
-    Sync-StudioPcBranchToEnv -Branch $Branch | Out-Null
+    $env:ORCHESTRATOR_GIT_BRANCH = $Branch
     $script:StudioBranch = $Branch
     return $true
 }
@@ -137,7 +71,7 @@ function Get-StudioPcBranch {
     }
     $fromEnv = Read-StudioPcBranchFromEnv
     if ($fromEnv) {
-        # Миграция: .env уже задан - зафиксировать в data/studio-pc-branch
+        # Миграция: ветка из .env / процесса -> только data/studio-pc-branch, .env не трогаем.
         Save-StudioPcBranch -Branch $fromEnv | Out-Null
         return $fromEnv
     }
@@ -493,18 +427,14 @@ function Invoke-StudioRecoverPromptsFromAllStashes {
 
 function Invoke-StudioStart {
     Write-StudioMsg "=== [1] Запуск студии ===" "Cyan"
-    Sync-VibecodeApiKeyToEnv | Out-Null
     if (-not (Test-Path (Join-Path $Root "web\out\index.html"))) {
         Write-StudioMsg "ВНИМАНИЕ: web/out отсутствует. Сначала [6] Починить установку." "Yellow"
     }
-    # Если прошлый [4] оставил кастомные промты в stash - вернуть до старта бэкенда.
     Invoke-StudioRecoverPromptsFromAllStashes
     Stop-StudioBackend
     Set-StudioNvidiaEnv
     Invoke-StudioPredownloadNemo | Out-Null
-    Start-StudioChromeCdp
-    # Одна вкладка UI: ждём health в Start-StudioBackendWindow, потом Open-StudioBrowser.
-    # (раньше фоновый job дублировал открытие URL)
+    # Запуск бэкенда и открытие веб-интерфейса в браузере (все сервисы работают через прямой HTTP API)
     if (-not (Start-StudioBackendWindow)) {
         return $false
     }
@@ -775,7 +705,12 @@ function Invoke-StudioUpdateAndStart {
         if (-not (Invoke-StudioRepairWeb)) { return $false }
     }
     Stop-StudioBackend
-    return (Invoke-StudioStart)
+    # После git reset в памяти может остаться старый studio.ps1 — стартуем файл с диска.
+    $ps1 = if ($PSCommandPath) { $PSCommandPath } else { Join-Path $Root "scripts\studio.ps1" }
+    $exe = if (Get-Command pwsh -ErrorAction SilentlyContinue) { "pwsh" } else { "powershell.exe" }
+    Write-StudioMsg "Запуск с диска (не из памяти старого лаунчера)" "DarkGray"
+    & $exe -NoProfile -ExecutionPolicy Bypass -File $ps1 -Action 1
+    return ($LASTEXITCODE -eq 0)
 }
 
 function Invoke-StudioRepairWeb {
@@ -980,9 +915,9 @@ function Show-StudioMenu {
     Write-Host "  launcher $stamp | ветка ПК: $brLabel" -ForegroundColor Yellow
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "  [1] Запустить студию (бэкенд + Chrome CDP + http://127.0.0.1:8765)"
-    Write-Host "  [2] Остановить всё (бэкенд :8765; Chrome с ИИ не закрывать)"
-    Write-Host "  [3] Браузер с ИИ (Chrome CDP :29229, outsee.io + chatgpt.com)"
+    Write-Host "  [1] Запустить студию (бэкенд API + веб-интерфейс http://127.0.0.1:8765)"
+    Write-Host "  [2] Остановить всё (бэкенд :8765)"
+    Write-Host "  [3] Открыть внешний браузер с ИИ (Chrome CDP :29229 — опционально)"
     Write-Host "  [4] Обновить и запустить (git origin/$brLabel + зависимости + запуск)"
     Write-Host "  [5] Ветка ПК ($brLabel): сменить"
     Write-Host "  [6] Починить установку (pip, web, Playwright, FFmpeg)"

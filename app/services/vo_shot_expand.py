@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Frame, Project
 from app.services.db_v2 import insert_frame_after
 from app.services.scene_design.camera_expand import (
+    already_subdivided,
     renumber_frames_by_sort_key,
     split_text_into_parts,
     vo_chunk_is_dangling,
@@ -1287,7 +1288,120 @@ async def expand_vo_cells_into_shots(
     project: Project,
     frames: list[Frame],
 ) -> tuple[list[Frame], dict[str, Any]]:
-    """Вставить недостающие шоты по кадры[] / эвристике. Уже раскрытые ячейки не трогаем."""
+    """Шоты внутри ячейки.
+
+    Без группы на канвасе — глобальный путь main (режем копию закадра).
+    С ``script_frames_qc`` — ячейка = сцена, дети = лестница T/X.
+    """
+    from app.services.node_groups import canvas_has_script_frames_qc
+
+    if canvas_has_script_frames_qc(project):
+        return await _expand_vo_cells_into_shots_group(session, project, frames)
+    return await _expand_vo_cells_into_shots_default(session, project, frames)
+
+
+async def _expand_vo_cells_into_shots_default(
+    session: AsyncSession,
+    project: Project,
+    frames: list[Frame],
+) -> tuple[list[Frame], dict[str, Any]]:
+    """Глобальный пайплайн: закадр разбивки не меняем, режем копию."""
+    report: dict[str, Any] = {
+        "skipped": False,
+        "parents": 0,
+        "inserted": 0,
+        "repaired_vo": 0,
+        "vo_shot_cuts": 0,
+        "frames_before": len(frames),
+        "frames_after": len(frames),
+    }
+    if already_subdivided(frames):
+        report["skipped"] = True
+        report["repaired_vo"] = repair_split_vo_on_parents(frames)
+        report["vo_shot_cuts"] = apply_vo_shot_cuts(frames)
+        return frames, report
+
+    parents = [f for f in frames if f.uuid]
+    parents.sort(key=lambda f: (f.sort_key is None, f.sort_key or 0.0, f.number or 0))
+    inserted = 0
+    for parent in reversed(parents):
+        original_vo = parent.voiceover_text or ""
+        planned = planned_shots_from_attrs(parent)
+        need, vo_parts = resolve_shot_plan(original_vo, planned)
+        total_sec = vo_duration_sec(original_vo, shots=need)
+        part_sec = round(total_sec / need, 2)
+        start_ts = parent.start_ts
+        end_ts = parent.end_ts
+        parent_uuid = parent.uuid
+        if need <= 1:
+            _set_cs(
+                parent,
+                role="vo_parent",
+                parent_uuid=parent_uuid,
+                shot_index=1,
+                shots_in_beat=1,
+                vo_shot=vo_parts[0] if vo_parts else original_vo,
+            )
+            _apply_shot_meta(parent, planned[0] if planned else None)
+            if not parent.duration_seconds:
+                parent.duration_seconds = part_sec
+            continue
+
+        children: list[Frame] = []
+        after_id = parent.id
+        for _ in range(need - 1):
+            child = await insert_frame_after(
+                session, project, after_frame_id=after_id
+            )
+            children.append(child)
+            after_id = child.id
+            inserted += 1
+
+        group = [parent, *children]
+        parent.voiceover_text = original_vo
+        for i, fr in enumerate(group):
+            if i == 0:
+                fr.start_ts = start_ts
+                fr.end_ts = end_ts
+            else:
+                fr.start_ts = None
+                fr.end_ts = None
+                fr.voiceover_text = ""
+            fr.duration_seconds = part_sec
+            _set_cs(
+                fr,
+                role="vo_parent" if i == 0 else "shot",
+                parent_uuid=parent_uuid,
+                shot_index=i + 1,
+                shots_in_beat=need,
+                vo_shot=vo_parts[i] if i < len(vo_parts) else "",
+            )
+            _apply_shot_meta(fr, planned[i] if i < len(planned) else None)
+
+    await session.flush()
+    ordered = await renumber_frames_by_sort_key(session, project)
+    report["parents"] = len(parents)
+    report["inserted"] = inserted
+    report["vo_shot_cuts"] = apply_vo_shot_cuts(ordered)
+    report["frames_after"] = len(ordered)
+    logger.info(
+        "[#{}] vo_shot_expand: parents={} inserted={} vo_shot_cuts={} frames {}→{}",
+        project.id,
+        report["parents"],
+        inserted,
+        report["vo_shot_cuts"],
+        report["frames_before"],
+        report["frames_after"],
+    )
+    return ordered, report
+
+
+async def _expand_vo_cells_into_shots_group(
+    session: AsyncSession,
+    project: Project,
+    frames: list[Frame],
+) -> tuple[list[Frame], dict[str, Any]]:
+    """Группа script_frames_qc: ячейка = сцена, дети = лестница T/X."""
     report: dict[str, Any] = {
         "skipped": False,
         "parents": 0,

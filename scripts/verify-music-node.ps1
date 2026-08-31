@@ -1,4 +1,4 @@
-# Verify music node UI + API. Run after BUILD-WEB.cmd and backend restart.
+﻿# Verify music node UI + API. Run after BUILD-WEB.cmd and backend restart.
 $ErrorActionPreference = "Continue"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root

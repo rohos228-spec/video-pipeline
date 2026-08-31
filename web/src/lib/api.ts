@@ -73,6 +73,9 @@ export interface KieModelSpec {
   desc: string;
   /** Понятное объяснение «как работает» (для утилит/звуков) */
   hint?: string;
+  is_top?: boolean;
+  isTop?: boolean;
+  badge?: string;
   result: "video" | "image" | "audio" | "text";
   fields: KieField[];
   pricing: {
@@ -662,6 +665,7 @@ export const api = {
   getProject: (id: number) => http<ProjectDetail>(`/api/projects/${id}`),
   createProject: (body: {
     title: string;
+    topic?: string;
     hero_mode?: string;
     auto_mode?: boolean;
     sidebar_folder_id?: string | null;
@@ -753,11 +757,13 @@ export const api = {
   runProjectStep: (
     projectId: number,
     stepCode: string,
-    opts?: { dryRun?: boolean; nodeKey?: string },
+    opts?: { dryRun?: boolean; nodeKey?: string; mode?: "full" | "resume"; forceWipe?: boolean },
   ) => {
     const params = new URLSearchParams();
     if (opts?.dryRun) params.set("dry_run", "true");
     if (opts?.nodeKey) params.set("node_key", opts.nodeKey);
+    if (opts?.mode) params.set("mode", opts.mode);
+    if (opts?.forceWipe != null) params.set("force_wipe", String(opts.forceWipe));
     const q = params.toString() ? `?${params.toString()}` : "";
     return http<ProjectDetail>(`/api/projects/${projectId}/steps/${stepCode}/run${q}`, {
       method: "POST",
@@ -1046,6 +1052,10 @@ export const api = {
         error?: string | null;
         total_ops?: number;
         done_ops?: number;
+        last_path?: string;
+        last_frame_number?: number;
+        last_shot?: number;
+        last_highlight?: string;
         results?: Array<{
           ok?: boolean;
           error?: string;
@@ -1661,131 +1671,20 @@ export const api = {
     >(
       `/api/outsee-create/history?kind=${kind}&scope=${opts?.scope ?? "create"}&limit=${opts?.limit ?? 60}`,
     ),
-
-  getGrsaiStatus: () =>
-    http<{
-      enabled: boolean;
-      video_enabled: boolean;
-      audio_enabled: boolean;
-      configured: boolean;
-      provider: string;
-      video_provider: string;
-      base_url: string;
-      default_model: string;
-      default_video_model: string;
-      key_suffix: string | null;
-      wired_models: string[];
-      wired_video_models: string[];
-      wired_audio_models: string[];
-      audio_note?: string | null;
-    }>(`/api/grsai/status`),
-  listGrsaiModels: () =>
-    http<{
-      models: {
-        slug: string;
-        display_name: string;
-        wired: boolean;
-        family: string;
-        media: string;
-        resolutions: string[];
-        aspects: string[];
-        durations: number[];
-        sizes: string[];
-        badge: string;
-      }[];
-      video_models: {
-        slug: string;
-        display_name: string;
-        wired: boolean;
-        family: string;
-        media: string;
-        resolutions: string[];
-        aspects: string[];
-        durations: number[];
-        sizes: string[];
-        badge: string;
-      }[];
-      audio_models: {
-        slug: string;
-        display_name: string;
-        wired: boolean;
-        family: string;
-        media: string;
-        badge: string;
-      }[];
-    }>(`/api/grsai/models`),
-  grsaiQuote: (params: {
-    media: "image" | "video" | "audio";
-    model: string;
-    resolution?: string;
-    duration?: number;
-    size?: string;
-    catalog_price?: string;
-  }) => {
-    const q = new URLSearchParams({
-      media: params.media,
-      model: params.model,
-    });
-    if (params.resolution) q.set("resolution", params.resolution);
-    if (params.duration != null) q.set("duration", String(params.duration));
-    if (params.size) q.set("size", params.size);
-    if (params.catalog_price) q.set("catalog_price", params.catalog_price);
-    return http<{
-      media: string;
-      model: string;
-      tokens: number;
-      usd: number;
-      token_usd: number;
-      label: string;
-      label_short: string;
-      usd_label: string;
-      grsai_credits: number | null;
-      source: string;
-    }>(`/api/grsai/quote?${q.toString()}`);
+  deleteOutseeCreateHistoryItem: (params: { path?: string; itemId?: string }) => {
+    const q = new URLSearchParams();
+    if (params.path) q.set("path", params.path);
+    if (params.itemId) q.set("item_id", params.itemId);
+    return http<{ ok: boolean; deleted: boolean }>(
+      `/api/outsee-create/history?${q.toString()}`,
+      { method: "DELETE" },
+    );
   },
-  grsaiGenerate: (body: {
-    prompt: string;
-    model?: string;
-    aspect?: string;
-    resolution?: string;
-    media?: "image" | "video" | "audio";
-    duration?: number;
-    size?: string;
-  }) =>
-    http<{
-      ok: boolean;
-      job_id: string;
-      status: string;
-      media: string;
-      model: string;
-      path: string;
-      history_id: string;
-      preview_url?: string | null;
-      raw_url?: string | null;
-      bytes?: number;
-      queue?: number;
-      quote?: {
-        tokens: number;
-        usd: number;
-        label: string;
-      };
-    }>(`/api/grsai/generate`, {
+  enhanceOutseeCreatePrompt: (data: { prompt: string; style?: string }) =>
+    http<{ ok: boolean; enhanced_prompt: string }>(`/api/outsee-create/enhance-prompt`, {
       method: "POST",
-      body: JSON.stringify(body),
+      body: JSON.stringify(data),
     }),
-
-  grsaiJob: (jobId: string) =>
-    http<{
-      job_id: string;
-      status: string;
-      media: string;
-      model: string;
-      path: string;
-      history_id: string;
-      preview_url?: string | null;
-      error?: string | null;
-      bytes?: number;
-    }>(`/api/grsai/jobs/${encodeURIComponent(jobId)}`),
 
   outseeStatus: () =>
     http<{
@@ -1816,6 +1715,7 @@ export const api = {
     project_id?: number | null;
     first_frame_url?: string | null;
     last_frame_url?: string | null;
+    reference_images?: string[] | null;
   }) =>
     http<{
       ok: boolean;
@@ -1858,7 +1758,6 @@ export const api = {
     http<{
       max_parallel: number;
       max_parallel_outsee?: number;
-      max_parallel_grsai?: number;
       running_count: number;
       waiting_count: number;
       total_active: number;
@@ -2056,12 +1955,8 @@ export const api = {
   // ── Prompt files (prompts/<step>/*.md на диске) ────────────────────
   getGlobalActivePrompts: () =>
     http<Record<string, string>>("/api/prompt-files/global-active"),
-  listPromptFiles: (stepCode: string, groupId?: string) => {
-    const q = groupId
-      ? `?group_id=${encodeURIComponent(groupId)}`
-      : "";
-    return http<PromptFileInfo[]>(`/api/prompt-files/${stepCode}${q}`);
-  },
+  listPromptFiles: (stepCode: string) =>
+    http<PromptFileInfo[]>(`/api/prompt-files/${stepCode}`),
   getPromptFile: (stepCode: string, name: string) =>
     http<PromptFileContent>(
       `/api/prompt-files/${stepCode}/${encodeURIComponent(name)}/content`,
@@ -2261,6 +2156,49 @@ export const api = {
       `/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}/save-voiceover`,
       { method: "POST", body: JSON.stringify(body) },
     ),
+  compileMetaPrompt: (body: {
+    step_code: string;
+    user_intent: string;
+    project_id?: number | null;
+    target_name?: string | null;
+  }) =>
+    http<{
+      ok: boolean;
+      step_code: string;
+      name: string;
+      compiled_prompt: string;
+      stats: {
+        length_chars: number;
+        lines_count: number;
+        has_schema: boolean;
+        has_guards: boolean;
+      };
+    }>(
+      "/api/meta-agent/compile",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+      120_000,
+    ),
+  saveAndActivateMetaPrompt: (body: {
+    step_code: string;
+    name: string;
+    content: string;
+    project_id?: number | null;
+    activate?: boolean;
+  }) =>
+    http<{
+      ok: boolean;
+      step_code: string;
+      name: string;
+      file_name: string;
+      file_path: string;
+      activated: boolean;
+    }>("/api/meta-agent/save-and-activate", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
 
 export type GptWorkspaceSessionSummary = {

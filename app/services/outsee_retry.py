@@ -46,6 +46,7 @@ Caller'ы:
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 # Должен быть ≥ timeout в gpt.ask_fresh, иначе сжатие обрывается раньше ответа.
@@ -135,8 +136,25 @@ def _gpt_moderation_rewrite_meta(body_limit: int) -> str:
     )
 
 
-def _hard_truncate_prompt(text: str, body_limit: int) -> str:
-    """Обрезка тела промта по лимиту (по пробелу, если есть)."""
+# STYLE / Final style lock / Negative — не отдаём в GPT-сжатие и не режем с хвоста.
+_STYLE_LOCK_LINE_RE = re.compile(
+    r"(?im)^(?:\*\*)?(?:STYLE|Final style lock|Negative)\b"
+)
+
+
+def _split_style_lock(text: str) -> tuple[str, str]:
+    """Сцена и блок стиля. Стиль не сжимаем."""
+    raw = text or ""
+    match = _STYLE_LOCK_LINE_RE.search(raw)
+    start = match.start() if match else -1
+    if start < 0:
+        start = raw.find("STYLE:")
+    if start < 0:
+        return raw, ""
+    return raw[:start].rstrip(), raw[start:].strip()
+
+
+def _cut_at_space(text: str, body_limit: int) -> str:
     if len(text) <= body_limit:
         return text
     cut = text[:body_limit]
@@ -144,6 +162,30 @@ def _hard_truncate_prompt(text: str, body_limit: int) -> str:
     if sp > int(body_limit * 0.85):
         cut = cut[:sp]
     return cut
+
+
+def _join_scene_style(scene: str, style: str) -> str:
+    scene = (scene or "").rstrip()
+    style = (style or "").strip()
+    if scene and style:
+        return f"{scene}\n\n{style}"
+    return scene or style
+
+
+def _hard_truncate_prompt(text: str, body_limit: int) -> str:
+    """Обрезка тела: режем сцену, STYLE/Negative оставляем."""
+    if len(text) <= body_limit:
+        return text
+    scene, style = _split_style_lock(text)
+    if not style:
+        return _cut_at_space(text, body_limit)
+    sep_len = 2 if scene else 0
+    scene_limit = body_limit - len(style) - sep_len
+    if scene_limit < 40:
+        if len(style) <= body_limit:
+            return style
+        return _cut_at_space(style, body_limit)
+    return _join_scene_style(_cut_at_space(scene, scene_limit), style)
 
 # Fallback для rewrite не из-за модерации (редко — второй раунд после других сбоев).
 _GPT_REWRITE_META = (
@@ -401,30 +443,24 @@ def _target_body_chars_from_error(
     return None
 
 
-async def _compress_prompt_for_outsee(
+async def _gpt_shrink_text(
     gpt: Any,
-    prompt_body: str,
+    text: str,
+    max_chars: int,
     *,
-    prefix: str | None = None,
     project_id: int | None = None,
-    max_body: int | None = None,
+    meta: str,
 ) -> str | None:
-    """Сжимает тело промта до лимита outsee (как hero-flow в generate_hero)."""
-    max_body = max_body if max_body is not None else _max_body_for_prefix(prefix)
-    last = prompt_body.strip()
-    if len(last) <= max_body:
+    """GPT-сжатие одного куска текста до max_chars."""
+    last = text.strip()
+    if len(last) <= max_chars:
         return last
-    meta = (
-        f"Сожми промт для outsee.io до ≤{max_body} символов (включая пробелы). "
-        "Убери повторы и воду, оставь суть и визуальные детали. "
-        "Верни ТОЛЬКО новый текст без пояснений."
-    )
     for attempt in range(1, 4):
         if attempt == 1:
             ask = f"{meta}\n\n{last}"
         else:
             ask = (
-                f"Прошлый ответ был {len(last)} символов — нужно ≤{max_body}. "
+                f"Прошлый ответ был {len(last)} символов — нужно ≤{max_chars}. "
                 f"Сожми ещё сильнее, сохрани суть. Верни ТОЛЬКО текст.\n\n"
                 f"Прошлый промт:\n\n{last}"
             )
@@ -434,7 +470,7 @@ async def _compress_prompt_for_outsee(
             attempt,
             3,
             len(ask),
-            max_body,
+            max_chars,
         )
         try:
             reply = await asyncio.wait_for(
@@ -456,17 +492,92 @@ async def _compress_prompt_for_outsee(
         last = strip_prompt_id_lines((reply or "").strip())
         if len(last) < _MIN_REWRITE_LEN:
             continue
-        if len(last) <= max_body:
-            logger.info(
-                "outsee_retry: GPT-сжатие OK: {} → {} симв (лимит {})",
-                len(prompt_body), len(last), max_body,
-            )
+        if len(last) <= max_chars:
             return last
         logger.warning(
             "outsee_retry: GPT-сжатие attempt {}: {} симв (нужно ≤{})",
-            attempt, len(last), max_body,
+            attempt, len(last), max_chars,
         )
     return None
+
+
+async def _compress_prompt_for_outsee(
+    gpt: Any,
+    prompt_body: str,
+    *,
+    prefix: str | None = None,
+    project_id: int | None = None,
+    max_body: int | None = None,
+) -> str | None:
+    """Сжимает тело промта до лимита outsee. STYLE/Negative не отдаём в GPT."""
+    max_body = max_body if max_body is not None else _max_body_for_prefix(prefix)
+    last = prompt_body.strip()
+    if len(last) <= max_body:
+        return last
+    scene, style = _split_style_lock(last)
+    if style:
+        scene_limit = max_body - len(style) - (2 if scene else 0)
+        if scene_limit < 40:
+            joined = _hard_truncate_prompt(last, max_body)
+            logger.info(
+                "outsee_retry: STYLE {} симв почти весь лимит {} — сцена обрезана",
+                len(style),
+                max_body,
+            )
+            return joined
+        if len(scene) <= scene_limit:
+            joined = _join_scene_style(scene, style)
+            if len(joined) <= max_body:
+                logger.info(
+                    "outsee_retry: сцена уже влезает, STYLE не сжимал: {} → {}",
+                    len(last),
+                    len(joined),
+                )
+                return joined
+        meta = (
+            f"Сожми ТОЛЬКО сцену кадра до ≤{scene_limit} символов. "
+            "Убери повторы и воду, оставь визуальные детали. "
+            "Не пиши STYLE / Final style lock / Negative — их добавлю сам. "
+            "Верни ТОЛЬКО сжатую сцену без пояснений."
+        )
+        shrunk = await _gpt_shrink_text(
+            gpt, scene, scene_limit, project_id=project_id, meta=meta
+        )
+        if not shrunk:
+            return None
+        scene_only, leaked_style = _split_style_lock(shrunk)
+        if leaked_style:
+            logger.warning(
+                "outsee_retry: GPT вернул STYLE в сжатии — отбросил, "
+                "оставил исходный lock {} симв",
+                len(style),
+            )
+        joined = _join_scene_style(scene_only or shrunk, style)
+        if len(joined) > max_body:
+            joined = _hard_truncate_prompt(joined, max_body)
+        logger.info(
+            "outsee_retry: GPT-сжатие OK: {} → {} симв (лимит {}, STYLE {} сохранён)",
+            len(prompt_body),
+            len(joined),
+            max_body,
+            len(style),
+        )
+        return joined
+
+    meta = (
+        f"Сожми промт для outsee.io до ≤{max_body} символов (включая пробелы). "
+        "Убери повторы и воду, оставь суть и визуальные детали. "
+        "Верни ТОЛЬКО новый текст без пояснений."
+    )
+    shrunk = await _gpt_shrink_text(
+        gpt, last, max_body, project_id=project_id, meta=meta
+    )
+    if shrunk:
+        logger.info(
+            "outsee_retry: GPT-сжатие OK: {} → {} симв (лимит {})",
+            len(prompt_body), len(shrunk), max_body,
+        )
+    return shrunk
 
 
 # HTTP API /api/v1/videos/generate жёстко режет на 4096; CDP textarea — 4900.
@@ -769,8 +880,6 @@ async def generate_image_with_retries(
     `prompt_id_prefix` один на весь кадр (все retry и GPT-rewrite) —
     формат `[ID: P12-F3-a7f2b01c]`, где `a7f2b01c` = gen_id этой генерации.
     """
-    from app.bots.grsai import generate_image as grsai_generate_image
-    from app.bots.grsai import studio_id_to_grsai_slug, grsai_key_configured
     from app.bots.outsee_http import (
         generate_image as outsee_api_generate_image,
         outsee_api_configured,
@@ -783,12 +892,10 @@ async def generate_image_with_retries(
         _settings, "outsee_default_image_model", None
     )
     backend = image_provider_for(str(raw_slug) if raw_slug else None)
-    use_grsai = backend == "grsai" and grsai_key_configured()
     use_outsee_api = backend == "outsee" and outsee_api_configured()
-    if backend == "outsee" and not outsee_api_configured():
+    if backend == "outsee" and not outsee_api_configured() and outsee is None:
         raise OutseeImageError(
-            "OUTSEE_API_KEY пуст — GPT Image 2 / Nano Banana 2 / Veo 3.1 Lite "
-            "идут через ключ Outsee",
+            "OUTSEE_API_KEY пуст — генерация идёт через ключ Outsee",
             context={"error_kind": "no_key", "provider": "outsee"},
         )
     last_err: OutseeImageError | None = None
@@ -817,61 +924,6 @@ async def generate_image_with_retries(
                     else None,
                     project_id=pid if isinstance(pid, int) else None,
                 )
-                if use_grsai:
-                    from app.bots.grsai import GRSAI_WIRED_IMAGE_MODELS
-
-                    raw_slug = attempt_kwargs.get("model_slug") or getattr(
-                        _settings, "grsai_default_image_model", None
-                    )
-                    slug = studio_id_to_grsai_slug(
-                        str(raw_slug) if raw_slug else None
-                    )
-                    if slug not in GRSAI_WIRED_IMAGE_MODELS:
-                        slug = studio_id_to_grsai_slug(
-                            getattr(_settings, "grsai_default_image_model", None)
-                        )
-                    ar = attempt_kwargs.get("aspect_ratio") or "9:16"
-                    res = attempt_kwargs.get("resolution") or attempt_kwargs.get(
-                        "image_resolution"
-                    )
-                    result = await grsai_generate_image(
-                        send_prompt,
-                        out_path,
-                        model_slug=slug,
-                        aspect_ratio=str(ar).replace("_", ":"),
-                        resolution=str(res) if res else "1K",
-                        reference_image=attempt_kwargs.get("reference_image"),
-                        timeout=float(attempt_kwargs.get("timeout") or 600),
-                        gen_id=attempt_kwargs.get("gen_id"),
-                        project_id=pid if isinstance(pid, int) else None,
-                    )
-                    # Метаданные рядом с файлом на диске (папка проекта уже создана)
-                    try:
-                        from app.services.generation_storage import write_sidecar
-                        from app.services.grsai_pricing import quote_generation
-
-                        write_sidecar(
-                            result.file_path,
-                            media="image",
-                            model=slug,
-                            prompt=send_prompt,
-                            params={
-                                "aspect": str(ar).replace("_", ":"),
-                                "resolution": str(res) if res else "1K",
-                                "project_id": pid,
-                                "gen_id": attempt_kwargs.get("gen_id"),
-                            },
-                            raw_url=result.raw_url,
-                            quote=quote_generation(
-                                media="image",
-                                model=slug,
-                                resolution=str(res) if res else "1K",
-                            ),
-                            provider="grsai",
-                        )
-                    except Exception:  # noqa: BLE001
-                        logger.debug("grsai sidecar write skipped", exc_info=True)
-                    return result
                 if use_outsee_api:
                     refs = attempt_kwargs.get("reference_image")
                     ref_list: list[Any] | None = None
@@ -1139,9 +1191,6 @@ async def generate_video_with_retries(
     base_prompt_id = kwargs.get("prompt_id_prefix")
     primary_kwargs = dict(kwargs)
     primary_slug = str(primary_kwargs.get("model_slug") or "veo")
-
-    from app.bots.grsai import grsai_video_enabled, generate_video as grsai_generate_video
-    from app.bots.grsai import studio_id_to_grsai_video_slug, grsai_key_configured
     from app.bots.kie_kling import (
         generate_video as kie_kling_generate_video,
         kie_api_configured,
@@ -1156,12 +1205,11 @@ async def generate_video_with_retries(
     from app.settings import settings as _settings
 
     primary_backend = video_provider_for(primary_slug)
-    use_grsai_video = primary_backend == "grsai" and grsai_key_configured()
     use_outsee_api_video = primary_backend == "outsee" and outsee_api_configured()
     primary_is_kling = primary_backend == "kie"
-    if primary_backend == "outsee" and not outsee_api_configured():
+    if primary_backend == "outsee" and not outsee_api_configured() and outsee is None:
         raise OutseeImageError(
-            "OUTSEE_API_KEY пуст — Veo 3.1 Lite идёт через ключ Outsee",
+            "OUTSEE_API_KEY пуст — генерация идёт через ключ Outsee",
             context={"error_kind": "no_key", "provider": "outsee"},
         )
 
@@ -1258,54 +1306,6 @@ async def generate_video_with_retries(
                 )
             except Exception:  # noqa: BLE001
                 logger.debug("kie video sidecar skipped", exc_info=True)
-            return result
-        if use_grsai_video:
-            raw_slug = attempt_kwargs.get("model_slug") or getattr(
-                _settings, "grsai_default_video_model", None
-            )
-            slug = studio_id_to_grsai_video_slug(str(raw_slug) if raw_slug else None)
-            ar = attempt_kwargs.get("aspect_ratio") or "9:16"
-            res = attempt_kwargs.get("resolution") or "720p"
-            dur = attempt_kwargs.get("duration") or 5
-            result = await grsai_generate_video(
-                send_prompt,
-                out_path,
-                model_slug=slug,
-                aspect_ratio=str(ar).replace("_", ":"),
-                resolution=str(res),
-                duration=int(dur) if dur else 5,
-                timeout=float(attempt_kwargs.get("timeout") or 900),
-                gen_id=attempt_kwargs.get("gen_id"),
-                project_id=project_id,
-                start_frame=attempt_kwargs.get("start_frame"),
-            )
-            try:
-                from app.services.generation_storage import write_sidecar
-                from app.services.grsai_pricing import quote_generation
-
-                write_sidecar(
-                    result.file_path,
-                    media="video",
-                    model=slug,
-                    prompt=send_prompt,
-                    params={
-                        "aspect": str(ar).replace("_", ":"),
-                        "resolution": str(res),
-                        "duration": dur,
-                        "project_id": project_id,
-                        "ladder": "primary",
-                    },
-                    raw_url=result.raw_url,
-                    quote=quote_generation(
-                        media="video",
-                        model=slug,
-                        resolution=str(res),
-                        duration=int(dur) if dur else 5,
-                    ),
-                    provider="grsai",
-                )
-            except Exception:  # noqa: BLE001
-                logger.debug("grsai video sidecar skipped", exc_info=True)
             return result
         if use_outsee_api_video:
             raw_slug = attempt_kwargs.get("model_slug") or getattr(
@@ -1424,11 +1424,7 @@ async def generate_video_with_retries(
         provider_label = (
             "kie-kling"
             if use_kling
-            else (
-                "grsai"
-                if use_grsai_video
-                else ("outsee-api" if use_outsee_api_video else "outsee-cdp")
-            )
+            else ("outsee-api" if use_outsee_api_video else "outsee-cdp")
         )
         logger.info(
             "outsee_retry: video [{}] попытка {}/{} model={} provider={} {}",

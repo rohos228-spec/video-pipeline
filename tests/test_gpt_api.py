@@ -248,6 +248,27 @@ def test_parse_responses_sse_lines_prefers_longer_deltas_over_stub_completed() -
     assert status == "completed"
 
 
+def test_parse_responses_sse_lines_raises_on_json_402_credits() -> None:
+    body = json.dumps(
+        {
+            "code": 402,
+            "msg": "Credits insufficient : Your current balance isn’t enough to run this request. Please top up to continue.",
+            "data": None,
+        }
+    )
+    with pytest.raises(GptApiError, match="code=402") as exc:
+        parse_responses_sse_lines([body])
+    assert exc.value.retryable is False
+    assert "кредит" in str(exc.value).lower()
+
+
+def test_parse_responses_sse_lines_raises_on_sse_wrapped_402() -> None:
+    body = json.dumps({"code": 402, "msg": "Credits insufficient", "data": None})
+    with pytest.raises(GptApiError, match="code=402") as exc:
+        parse_responses_sse_lines([f"data: {body}"])
+    assert exc.value.retryable is False
+
+
 @pytest.mark.asyncio
 async def test_chat_responses_salvages_after_stream_disconnect(monkeypatch) -> None:
     """RemoteProtocolError после дельт → текст salvage, не новая пустая ошибка."""

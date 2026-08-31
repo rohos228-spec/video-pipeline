@@ -211,6 +211,12 @@ def test_canvas_four_node_has_no_fw_shots() -> None:
     assert _canvas_has_fw_shots(four) is False
     assert _canvas_has_fw_shots(six) is True
 
+    from app.services.node_groups import canvas_has_script_frames_qc
+
+    assert canvas_has_script_frames_qc(four) is True
+    assert canvas_has_script_frames_qc(six) is True
+    assert canvas_has_script_frames_qc(SimpleNamespace(meta={"canvas_graph": {"nodes": []}})) is False
+
 
 def test_safe_upload_node_key_strips_windows_colon(tmp_path) -> None:
     from app.orchestrator.steps.enrich_xlsx import _safe_upload_node_key

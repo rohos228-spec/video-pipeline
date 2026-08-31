@@ -34,11 +34,14 @@ _DEFAULT_BASE = "https://outsee.io"
 _POLL_INTERVAL_S = 2.5
 _DEFAULT_TIMEOUT_S = 600.0
 
-# Живой каталог /api/v1/models (image)
+# Живой каталог /api/v1/models (image). Nano Banana Pro запрещена навсегда.
 OUTSEE_WIRED_IMAGE_MODELS: tuple[str, ...] = (
     "nano-banana-2",
-    "nano-banana-pro",
     "gpt-image-2",
+)
+
+NANO_BANANA_PRO_OUTSEE_BAN = (
+    "Nano Banana Pro запрещена на Outsee — нельзя генерировать этой моделью через Outsee"
 )
 # Живой каталог /api/v1/models (video)
 OUTSEE_WIRED_VIDEO_MODELS: tuple[str, ...] = ("veo-3-1-lite",)
@@ -46,6 +49,10 @@ OUTSEE_WIRED_VIDEO_MODELS: tuple[str, ...] = ("veo-3-1-lite",)
 
 class OutseeApiError(OutseeImageError):
     """Ошибка Outsee Developer API (совместима с outsee_retry)."""
+
+
+class NanoBananaProOutseeBannedError(OutseeApiError):
+    """Жёсткий запрет: Nano Banana Pro через Outsee нельзя никогда."""
 
 
 # Обратная совместимость с cookie-era hooks в OutseeBot
@@ -97,10 +104,25 @@ def _headers() -> dict[str, str]:
     }
 
 
+def assert_not_nano_banana_pro_on_outsee(slug: str | None) -> None:
+    from app.services.media_route import is_nano_banana_pro
+
+    if is_nano_banana_pro(slug):
+        raise NanoBananaProOutseeBannedError(
+            NANO_BANANA_PRO_OUTSEE_BAN,
+            context={"model": slug, "provider": "outsee", "banned": True},
+        )
+
+
 def studio_id_to_outsee_image_slug(studio_id: str | None) -> str:
+    from app.services.media_route import is_nano_banana_pro
+
     default = settings.outsee_default_image_model or "gpt-image-2"
+    if is_nano_banana_pro(default):
+        default = "gpt-image-2"
     if not studio_id:
         return default
+    assert_not_nano_banana_pro_on_outsee(studio_id)
     s = studio_id.strip()
     if s in OUTSEE_WIRED_IMAGE_MODELS:
         return s
@@ -109,8 +131,6 @@ def studio_id_to_outsee_image_slug(studio_id: str | None) -> str:
         "gpt-image-2": "gpt-image-2",
         "nano_banana_2": "nano-banana-2",
         "nano-banana-2": "nano-banana-2",
-        "nano_banana_pro": "nano-banana-pro",
-        "nano-banana-pro": "nano-banana-pro",
         "gpt_image_1_5": "gpt-image-2",
         "nano_banana_2_lite": "nano-banana-2",
         "nano-banana-2-lite": "nano-banana-2",
@@ -120,6 +140,7 @@ def studio_id_to_outsee_image_slug(studio_id: str | None) -> str:
         "nano-banana": "nano-banana-2",
     }
     mapped = mapping.get(s, s.replace("_", "-"))
+    assert_not_nano_banana_pro_on_outsee(mapped)
     if mapped in OUTSEE_WIRED_IMAGE_MODELS:
         return mapped
     return default
@@ -171,13 +192,32 @@ def _raise_api(resp: httpx.Response, *, where: str) -> None:
     )
 
 
+def _strip_banned_outsee_image_models(data: dict[str, Any]) -> dict[str, Any]:
+    from app.services.media_route import is_nano_banana_pro
+
+    def keep(item: Any) -> bool:
+        if isinstance(item, dict):
+            slug = str(item.get("id") or item.get("slug") or item.get("model") or "")
+            return not is_nano_banana_pro(slug)
+        if isinstance(item, str):
+            return not is_nano_banana_pro(item)
+        return True
+
+    out = dict(data)
+    for key, val in list(out.items()):
+        if isinstance(val, list):
+            out[key] = [x for x in val if keep(x)]
+    return out
+
+
 async def fetch_models() -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.get(f"{_base_url()}/api/v1/models", headers=_headers())
         if r.status_code >= 400:
             _raise_api(r, where="models")
         data = r.json()
-        return data if isinstance(data, dict) else {}
+        payload = data if isinstance(data, dict) else {}
+        return _strip_banned_outsee_image_models(payload)
 
 
 async def fetch_balance() -> dict[str, Any]:
@@ -189,34 +229,80 @@ async def fetch_balance() -> dict[str, Any]:
         return data if isinstance(data, dict) else {}
 
 
+_CONCURRENCY_MARKERS = (
+    "лимит одновремен",
+    "одновременных генерац",
+    "дождитесь завершения текущих",
+    "too many concurrent",
+    "concurrent generation",
+    "concurrency limit",
+)
+_CONCURRENCY_MAX_WAITS = 24
+_CONCURRENCY_BACKOFF_S = (15.0, 30.0, 45.0, 75.0, 120.0)
+
+
+def _is_concurrency_api_error(err: BaseException) -> bool:
+    if not isinstance(err, OutseeApiError):
+        return False
+    code = str((err.context or {}).get("code") or "").lower()
+    if code in {"concurrency_limit", "rate_limit", "too_many_requests"}:
+        return True
+    blob = str(err).lower()
+    return any(m in blob for m in _CONCURRENCY_MARKERS)
+
+
+def _concurrency_backoff_s(wait_n: int) -> float:
+    idx = max(0, min(wait_n - 1, len(_CONCURRENCY_BACKOFF_S) - 1))
+    return _CONCURRENCY_BACKOFF_S[idx]
+
+
 async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            r = await client.post(
-                f"{_base_url()}{path}", headers=_headers(), json=body
-            )
-            if r.status_code >= 400:
-                _raise_api(r, where=path)
-            data = r.json()
-            if not isinstance(data, dict) or data.get("id") is None:
-                raise OutseeApiError(
-                    "Outsee generate: нет id",
-                    context={"path": path, "body": data},
+    waits = 0
+    last_err: BaseException | None = None
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                r = await client.post(
+                    f"{_base_url()}{path}", headers=_headers(), json=body
                 )
-            logger.info(
-                "outsee_api.submitted path={} id={} status={}",
+                if r.status_code >= 400:
+                    _raise_api(r, where=path)
+                data = r.json()
+                if not isinstance(data, dict) or data.get("id") is None:
+                    raise OutseeApiError(
+                        "Outsee generate: нет id",
+                        context={"path": path, "body": data},
+                    )
+                logger.info(
+                    "outsee_api.submitted path={} id={} status={}",
+                    path,
+                    data.get("id"),
+                    data.get("status"),
+                )
+                return data
+        except OutseeApiError as e:
+            if not _is_concurrency_api_error(e):
+                raise
+            last_err = e
+            waits += 1
+            if waits > _CONCURRENCY_MAX_WAITS:
+                raise
+            delay = _concurrency_backoff_s(waits)
+            logger.warning(
+                "outsee_api: concurrency_limit {} — жду {:.0f}с (wait {}/{})",
                 path,
-                data.get("id"),
-                data.get("status"),
+                delay,
+                waits,
+                _CONCURRENCY_MAX_WAITS,
             )
-            return data
-    except OutseeApiError:
-        raise
-    except (httpx.HTTPError, OSError) as e:
-        raise OutseeApiError(
-            f"Outsee API network {path}: {e}",
-            context={"path": path, "network": True},
-        ) from e
+            await asyncio.sleep(delay)
+            continue
+        except (httpx.HTTPError, OSError) as e:
+            raise OutseeApiError(
+                f"Outsee API network {path}: {e}",
+                context={"path": path, "network": True},
+            ) from e
+    raise last_err or OutseeApiError("Outsee generate: concurrency exhausted")
 
 
 async def _poll_generation(
@@ -925,9 +1011,11 @@ async def generate_image(
     Рефы → публичные URL в поле ``image_urls`` (не ``reference_images``:
     каталог models врёт max_reference_images, generate это поле игнорит).
     """
+    assert_not_nano_banana_pro_on_outsee(model_slug)
     if prompt_id_prefix:
         prompt = prepend_gen_id(prompt, prompt_id_prefix)
     model = studio_id_to_outsee_image_slug(model_slug)
+    assert_not_nano_banana_pro_on_outsee(model)
     body: dict[str, Any] = {
         "prompt": prompt,
         "model": model,
@@ -1118,15 +1206,6 @@ async def generate_video(
             )
     frame_source = frame  # data: или исходный http — для rehost при fetch-fail Outsee
     frame = await ensure_public_image_url(frame)
-    if frame:
-        # Outsee Developer API: стартовый кадр = image_url (first_frame_url молча игнорит!)
-        body["image_url"] = frame
-    elif want_start:
-        # Раньше молча уходили в text→video без рефа — клипы «не похожи» на кадр.
-        raise OutseeApiError(
-            "стартовый кадр передан, но image_url не получен (upload/host)",
-            context={"project_id": project_id},
-        )
 
     want_end = bool(last_frame_url) or last_frame_image is not None
     last = last_frame_url
@@ -1155,30 +1234,39 @@ async def generate_video(
                 f"конечный кадр: неподдерживаемый тип {type(last_frame_image).__name__}",
                 context={"project_id": project_id},
             )
+    last_source = last
     last = await ensure_public_image_url(last)
-    if last:
-        # конечный кадр в каталоге не заявлен; пробуем end_image_url
-        body["end_image_url"] = last
-    elif want_end:
+    if want_start and not frame:
         raise OutseeApiError(
-            "конечный кадр передан, но end_image_url не получен (upload/host)",
+            "стартовый кадр передан, но image_url не получен (upload/host)",
             context={"project_id": project_id},
         )
+    if want_end and not last:
+        raise OutseeApiError(
+            "конечный кадр передан, но URL не получен (upload/host)",
+            context={"project_id": project_id},
+        )
+    if frame and last:
+        # Один image_url = только старт. Два кадра — как картинки: image_urls.
+        body["image_urls"] = [frame, last]
+    elif frame:
+        body["image_url"] = frame
 
     skip_hosts: set[str] = set()
     submitted: dict[str, Any] | None = None
     last_submit_err: BaseException | None = None
     for host_try in range(1, 4):
+        urls = list(body.get("image_urls") or [])
         logger.info(
             "outsee_api.video model={} aspect={} res={} dur={} audio={} "
-            "image_url={} end={} project={} host_try={}",
+            "image_url={} image_urls={} project={} host_try={}",
             model,
             body.get("aspect_ratio"),
             body.get("resolution"),
             body.get("duration_sec"),
             body.get("generate_audio"),
             bool(body.get("image_url")),
-            bool(body.get("end_image_url")),
+            len(urls),
             project_id,
             host_try,
         )
@@ -1189,33 +1277,61 @@ async def generate_video(
             last_submit_err = exc
             if (
                 not _is_outsee_image_fetch_error(exc)
-                or not frame_source
+                or not (frame_source or last_source)
                 or host_try >= 3
             ):
                 raise
-            bad = _host_name_from_url(str(body.get("image_url") or ""))
+            hosted = list(body.get("image_urls") or [])
+            bad = _host_name_from_url(
+                str(body.get("image_url") or (hosted[0] if hosted else "") or "")
+            )
             # yandex не баним: следующий try зальёт новый объект в бакет.
             if bad and bad != "yandex":
                 skip_hosts.add(bad)
             logger.warning(
-                "outsee_api.video: Outsee не скачал image_url (host={}) — "
+                "outsee_api.video: Outsee не скачал кадр (host={}) — "
                 "rehost skip={} try {}/3",
                 bad or "?",
                 sorted(skip_hosts),
                 host_try,
                 3,
             )
-            # Rehost из исходного data:/файла, не из мёртвого catbox URL.
-            rehosted = await ensure_public_image_url(
-                frame_source if str(frame_source).startswith("data:") else frame_source,
-                skip_hosts=skip_hosts,
-                force_rehost=bool(
-                    str(frame_source).startswith(("http://", "https://"))
-                ),
-            )
-            if not rehosted or rehosted == body.get("image_url"):
+            changed = False
+            new_start = body.get("image_url")
+            new_end = None
+            pair = list(body.get("image_urls") or [])
+            if pair:
+                new_start, new_end = pair[0], pair[1] if len(pair) > 1 else None
+            if frame_source:
+                rehosted = await ensure_public_image_url(
+                    frame_source,
+                    skip_hosts=skip_hosts,
+                    force_rehost=bool(
+                        str(frame_source).startswith(("http://", "https://"))
+                    ),
+                )
+                if rehosted and rehosted != new_start:
+                    new_start = rehosted
+                    changed = True
+            if last_source:
+                rehosted_last = await ensure_public_image_url(
+                    last_source,
+                    skip_hosts=skip_hosts,
+                    force_rehost=bool(
+                        str(last_source).startswith(("http://", "https://"))
+                    ),
+                )
+                if rehosted_last and rehosted_last != new_end:
+                    new_end = rehosted_last
+                    changed = True
+            if not changed:
                 raise
-            body["image_url"] = rehosted
+            if new_start and new_end:
+                body.pop("image_url", None)
+                body["image_urls"] = [new_start, new_end]
+            elif new_start:
+                body.pop("image_urls", None)
+                body["image_url"] = new_start
     if submitted is None:
         raise last_submit_err or OutseeApiError("video generate: no submit")
     task_id = submitted["id"]

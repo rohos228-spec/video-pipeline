@@ -22,7 +22,7 @@ VIDEO_NODE_TYPES = frozenset({"videos", "hitl_videos"})
 DEFAULT_TEXT_MODEL_ID = "gpt-5.6-sol"
 DEFAULT_IMAGE_MODEL_ID = "gpt-image-2-vip"
 DEFAULT_VIDEO_MODEL_ID = "veo-3-1-lite"
-HIDDEN_IMAGE_IDS = frozenset({"gpt-image-2"})
+HIDDEN_IMAGE_IDS = frozenset({"gpt-image-2", "nano-banana-pro"})
 IMAGE_MODEL_ALIASES = {"gpt-image-2": "gpt-image-2-vip"}
 
 IMAGE_MODEL_TO_GENERATOR: dict[str, str] = {
@@ -32,11 +32,26 @@ IMAGE_MODEL_TO_GENERATOR: dict[str, str] = {
     "nano-banana-2": "nano_banana_2",
     "nano-banana-pro": "nano_banana_pro",
     "nano-banana-2-lite": "nano_banana_2_lite",
+    "nano-banana-fast": "nano_banana_fast",
 }
 VIDEO_MODEL_TO_GENERATOR: dict[str, str] = {
     "veo-3-1-lite": "veo_3_1_lite",
+    "veo-3-1-fast": "veo_3_1_fast",
+    "veo-3-fast": "veo_3_1_fast",
     "kling-2-6": "kling_2_6",
+    "sora-2": "sora_2",
 }
+
+IMAGE_CATALOG_EXTRA: list[dict[str, Any]] = [
+    {
+        "id": "nano-banana-fast",
+        "display_name": "Nano Banana Fast",
+        "is_image": True,
+        "is_video": False,
+        "owned_by": "google",
+        "pricing": {"currency": "usd", "usd_per_image": 0.03},
+    },
+]
 
 VENDOR_ORDER = ("anthropic", "openai", "gemini", "xai", "moonshot", "images", "video")
 VENDOR_META: dict[str, dict[str, str]] = {
@@ -189,6 +204,7 @@ def models_for_channel(
     channel: str | None = None,
 ) -> list[dict[str, Any]]:
     src = list(raw_models if raw_models is not None else load_snapshot())
+    src.extend(IMAGE_CATALOG_EXTRA)
     src.extend(VIDEO_CATALOG_RAW)
     out: list[dict[str, Any]] = []
     seen: set[str] = set()

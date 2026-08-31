@@ -49,8 +49,9 @@ async def serve_data_file(
     kwargs: dict = {
         "media_type": mime or "application/octet-stream",
         "headers": {
-            # Превью истории Create: не качать одни и те же PNG на каждый poll.
-            "Cache-Control": "private, max-age=86400, immutable",
+            # v=mtime в URL — ключ кэша. immutable ломал превью монтажа:
+            # после regen браузер держал старый PNG.
+            "Cache-Control": "private, max-age=60, must-revalidate",
         },
     }
     if download:

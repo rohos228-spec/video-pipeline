@@ -15,7 +15,7 @@
   блок 16–29 / есть промт:
   3. После завершения фазы A — для каждой сцены с shot_02 генерит
      ``frame_NNN_s2_<uuid>.png`` с референсом = PNG shot_01 той же колонки
-     (реф = PNG shot_01 ЭТОГО кадра; layout-lock K2/K3 на K1 — в shot1).
+     (у дочернего кадра покрытия — PNG родителя).
 
   HITL-карточки шлются, но воркер не ждёт approve между кадрами.
 """
@@ -67,11 +67,14 @@ from app.services.plan_shot2 import (
     SHOT2_STATUS_ATTR,
     disk_has_shot2_image,
     find_shot1_image,
+    find_shot2_reference_image,
     read_shot2_columns,
 )
 from app.services.scan_frames import (
     disk_has_valid_frame_image,
     frame_needs_shot1_image,
+    is_valid_scene_image,
+    newest_frame_image_path,
 )
 from app.services.img_streams import (
     INFLIGHT_ATTR,
@@ -89,13 +92,10 @@ from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
 def _img_http_primary() -> bool:
-    """Outsee/Grsai HTTP — без Chrome CDP (как excel_hero)."""
-    from app.bots.grsai import grsai_enabled
+    """Outsee HTTP — без Chrome CDP (как excel_hero)."""
     from app.bots.outsee_http import outsee_api_configured, outsee_api_enabled_for_image
 
-    return bool(
-        grsai_enabled() or outsee_api_enabled_for_image() or outsee_api_configured()
-    )
+    return bool(outsee_api_enabled_for_image() or outsee_api_configured())
 
 
 @asynccontextmanager
@@ -548,31 +548,28 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] project_sheet ensure_frame_columns failed: {}", project.id, e)
 
-    # Запуск ноды = генерация. PNG на диске не скип (кроме точечного
-    # vision-regen). Старые файлы — в old/scenes/, затем очередь Outsee.
-    from app.services.vision_check_loop import get_scene_check_regen
-
-    if not get_scene_check_regen(project):
-        from app.services.reset_step import _wipe_images
-
-        wipe_stats = await _wipe_images(session, project)
-        logger.info(
-            "[#{}] generate_images: wipe перед прогоном (файлы ≠ скип): {}",
-            project.id,
-            wipe_stats,
-        )
-        await session.flush()
-        project_id = int(project.id)
-        frames = (
-            await session.execute(
-                select(Frame)
-                .where(Frame.project_id == project_id)
-                .order_by(Frame.number)
-            )
-        ).scalars().all()
-
+    # Очередь: источник истины — валидный PNG на диске, не статус в БД.
+    # Иначе image_generated без файла / без outsee → шаг «завершён», кадры
+    # так и не генерировались.
     queued = 0
     for fr in frames:
+        if disk_has_valid_frame_image(out_dir, fr.number):
+            if fr.status not in (
+                FrameStatus.image_approved,
+                FrameStatus.image_generated,
+            ):
+                fr.status = FrameStatus.image_generated
+            continue
+        bad = newest_frame_image_path(out_dir, fr.number)
+        if bad is not None and not is_valid_scene_image(bad):
+            logger.warning(
+                "[#{}] frame {}: на диске невалидная картинка {} ({} B) — "
+                "в outsee",
+                project.id,
+                fr.number,
+                bad.name,
+                bad.stat().st_size,
+            )
         if not frame_needs_shot1_image(fr, out_dir):
             continue
         fr.status = FrameStatus.image_prompt_ready
@@ -614,6 +611,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             raise RuntimeError(
                 f"в БД есть промты, на диске нет картинок, но очередь outsee=0 "
                 f"(без PNG: {missing}). Проверь scenes/ и статусы кадров"
+            )
+        if not missing and on_disk >= with_prompt:
+            logger.info(
+                "[#{}] generate_images: все {} кадров с промтом уже на диске — "
+                "outsee не нужен",
+                project.id,
+                with_prompt,
             )
 
     # Снять зависшие lease с прошлого обрыва.
@@ -997,9 +1001,10 @@ async def _claim_shot1_batch(
 ) -> list[Frame]:
     """Забрать до ``limit`` кадров под генерацию (lease через attrs).
 
-    Сначала K1 ячеек; K2/K3 — только когда PNG родителя уже на диске,
-    иначе параллельный батч генерит дочек без lock / в чужой сетап.
+    С группой script_frames_qc: сначала K1 ячеек; K2/K3 — когда PNG
+    родителя уже на диске.
     """
+    from app.services.node_groups import canvas_has_script_frames_qc
     from app.services.vision_check_loop import scene_regen_allows
     from app.services.vo_shot_expand import (
         find_coverage_parent_frame,
@@ -1015,8 +1020,10 @@ async def _claim_shot1_batch(
             .order_by(Frame.number)
         )
     ).scalars().all()
+    group_lock = bool(project is not None and canvas_has_script_frames_qc(project))
     claimed: list[Frame] = []
-    for prefer_child in (False, True):
+    prefer_passes = (False, True) if group_lock else (False,)
+    for prefer_child in prefer_passes:
         if len(claimed) >= limit:
             break
         for fr in frames:
@@ -1028,15 +1035,16 @@ async def _claim_shot1_batch(
                     continue
             if not frame_needs_shot1_image(fr, out_dir):
                 continue
-            child = is_shot_child(fr)
-            if child != prefer_child:
-                continue
-            if child:
-                parent = find_coverage_parent_frame(list(frames), fr)
-                if parent is not None and not disk_has_valid_frame_image(
-                    out_dir, int(parent.number)
-                ):
+            if group_lock:
+                child = is_shot_child(fr)
+                if child != prefer_child:
                     continue
+                if child:
+                    parent = find_coverage_parent_frame(list(frames), fr)
+                    if parent is not None and not disk_has_valid_frame_image(
+                        out_dir, int(parent.number)
+                    ):
+                        continue
             attrs = dict(fr.attrs or {})
             if attrs.get(INFLIGHT_ATTR):
                 continue
@@ -1052,19 +1060,50 @@ async def _claim_shot1_batch(
     return claimed
 
 
+def _coverage_parent_uuid(frame: Frame) -> str:
+    attrs = dict(frame.attrs or {})
+    cs = attrs.get("camera_subdivide")
+    if not isinstance(cs, dict):
+        return ""
+    return str(cs.get("parent_uuid") or "").strip()
+
+
 async def _resolve_shot2_reference(
     session: AsyncSession,
     project_id: int,
     out_dir: Path,
     frame: Frame,
+    *,
+    project: Project | None = None,
 ) -> Path | None:
-    """Реф shot2: PNG shot1 ЭТОГО кадра (продолжение того же шота).
+    """Реф shot2.
 
-    Layout-lock K2/K3 на K1 ячейки — в shot1 (``_coverage_parent_png``).
-    Не подставлять PNG чужой сцены и не подменять still дочки PNG родителя.
+    Глобально: свой shot1, у ребёнка покрытия — PNG родителя.
+    С группой script_frames_qc: shot2 = PNG shot1 ЭТОГО кадра.
     """
-    del session, project_id
-    return find_shot1_image(out_dir, frame.number)
+    from app.services.node_groups import canvas_has_script_frames_qc
+    from app.services.vo_shot_expand import is_shot_child
+
+    if project is not None and canvas_has_script_frames_qc(project):
+        return find_shot1_image(out_dir, frame.number)
+
+    parent_no: int | None = None
+    if is_shot_child(frame):
+        uid = _coverage_parent_uuid(frame)
+        if uid:
+            parent = (
+                await session.execute(
+                    select(Frame).where(
+                        Frame.project_id == project_id,
+                        Frame.uuid == uid,
+                    )
+                )
+            ).scalar_one_or_none()
+            if parent is not None:
+                parent_no = parent.number
+    return find_shot2_reference_image(
+        out_dir, frame.number, parent_frame_number=parent_no
+    )
 
 
 async def _coverage_parent_png(
@@ -1072,11 +1111,7 @@ async def _coverage_parent_png(
     project: Project,
     frame: Frame,
 ) -> Path | None:
-    """PNG K1 ЭТОЙ ячейки — layout-lock только для K2/K3.
-
-    K1 новой VO-ячейки (даже с coverage_parent_id на другую сцену / X1)
-    не вешаем на чужой still: иначе #13 становится копией камеры #4.
-    """
+    """PNG K1 ЭТОЙ ячейки — layout-lock только для K2/K3 группы."""
     from app.services.vo_shot_expand import (
         find_coverage_parent_frame,
         is_shot_child,
@@ -1212,7 +1247,7 @@ async def _run_claimed_batch(
         try:
             ref = (
                 await _resolve_shot2_reference(
-                    session, project.id, out_dir, fr
+                    session, project.id, out_dir, fr, project=project
                 )
                 if shot == 2
                 else None
@@ -1254,7 +1289,9 @@ async def _run_claimed_batch(
     jobs = []
     for fr in claimed:
         ref = (
-            await _resolve_shot2_reference(session, project.id, out_dir, fr)
+            await _resolve_shot2_reference(
+                session, project.id, out_dir, fr, project=project
+            )
             if shot == 2
             else None
         )
@@ -1609,27 +1646,29 @@ async def _generate_and_send(
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] xlsx write_frame(gen_id) failed: {}", project.id, e)
 
-    # Референсы: shot_02 — PNG shot_01 той же колонки; дочерний кадр покрытия
-    # (K2/K3) — PNG родителя K1 как layout lock, затем персонаж (лимит 2).
+    # Референсы: shot_02 — PNG shot_01 той же колонки.
+    # Группа script_frames_qc: K2/K3 lock на K1 своей ячейки, не чужой still.
     if is_shot2:
         refs: list[Path] = [shot1_reference] if shot1_reference else []
     else:
+        from app.services.node_groups import canvas_has_script_frames_qc
         from app.services.vo_shot_expand import (
             merge_parent_scene_refs,
             with_parent_scene_lock,
         )
 
         refs = await _load_refs_for_frame(session, project, frame.number)
-        parent_png = await _coverage_parent_png(session, project, frame)
-        refs = merge_parent_scene_refs(
-            parent_png, refs, max_refs=_OUTSEE_MAX_REFS
-        )
-        if parent_png is not None:
-            prompt_text = with_parent_scene_lock(
-                prompt_text,
-                has_parent_ref=True,
-                has_char_ref=len(refs) > 1,
+        if canvas_has_script_frames_qc(project):
+            parent_png = await _coverage_parent_png(session, project, frame)
+            refs = merge_parent_scene_refs(
+                parent_png, refs, max_refs=_OUTSEE_MAX_REFS
             )
+            if parent_png is not None:
+                prompt_text = with_parent_scene_lock(
+                    prompt_text,
+                    has_parent_ref=True,
+                    has_char_ref=len(refs) > 1,
+                )
     if refs:
         logger.info(
             "[#{}] frame {}: {} ref(ов) подгружено: {}",

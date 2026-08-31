@@ -253,6 +253,7 @@ _ATTR_FIELD_KEYS = frozenset(_ATTR_EXCEL_ROWS) | {
     "characters",
     "image_prompt_shot2",
     "animation_prompt_shot2",
+    "child_prompts",
     "биты",
     "кадры",
     "крупность",

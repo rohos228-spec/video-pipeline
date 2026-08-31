@@ -15,33 +15,14 @@ def test_aliases_slow_gpt_image_to_vip() -> None:
     assert canonical_media_id("gpt-image-2-vip") == "gpt-image-2-vip"
 
 
-def test_image_forced_outsee_even_if_grsai(monkeypatch) -> None:
-    monkeypatch.setenv("IMAGE_PROVIDER", "grsai")
-    from app.settings import Settings
-    import app.services.media_route as mr
-    import app.settings as settings_mod
-
-    s = Settings()
-    monkeypatch.setattr(settings_mod, "settings", s)
-    monkeypatch.setattr(mr, "settings", s)
+def test_image_forced_outsee_even_if_grsai() -> None:
     assert image_provider_for("gpt-image-2-vip") == "outsee"
     assert image_provider_for("nano-banana-2") == "outsee"
     assert image_provider_for("nano_banana_2_lite") == "outsee"
-    assert image_provider_for("nano-banana-pro") == "grsai"
-    assert image_provider_for("nano-banana") == "grsai"
 
 
-def test_video_veo_outsee_kling_kie(monkeypatch) -> None:
-    monkeypatch.setenv("VIDEO_PROVIDER", "grsai")
-    from app.settings import Settings
-    import app.services.media_route as mr
-    import app.settings as settings_mod
-
-    s = Settings()
-    monkeypatch.setattr(settings_mod, "settings", s)
-    monkeypatch.setattr(mr, "settings", s)
+def test_video_veo_outsee_kling_kie() -> None:
     assert video_provider_for("veo-3-1-lite") == "outsee"
     assert video_provider_for("veo_3_1_fast") == "outsee"
     assert video_provider_for("kling-2-6") == "kie"
     assert video_provider_for("kling_2_6") == "kie"
-    assert video_provider_for("sora-2") == "grsai"

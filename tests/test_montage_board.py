@@ -93,6 +93,40 @@ async def test_montage_board_reads_excel_voiceover_and_characters(
 
 
 @pytest.mark.asyncio
+async def test_montage_board_prefers_db_characters_over_excel(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    xlsx = montage_project.data_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    persons_row = _XLSX_ROWS_PERSONS[0]
+    ws.cell(row=persons_row, column=3, value="c01")
+    ws.cell(row=ROW_VOICEOVER_V8, column=3, value="vo")
+    wb.save(xlsx)
+    chars_dir = montage_project.data_dir / "characters"
+    chars_dir.mkdir(parents=True, exist_ok=True)
+    (chars_dir / "c05.png").write_bytes(b"png5")
+
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="vo",
+        status="planned",
+        attrs={"characters": "c05", "персонажи": "c05", "persons": "c05"},
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    row = board["frames"][0]
+    assert row["characters"] == "c05"
+    assert row["character_refs"][0]["id"] == "c05"
+
+
+@pytest.mark.asyncio
 async def test_montage_board_exposes_source_prompts_from_excel(
     montage_project: Project,
     session: AsyncSession,

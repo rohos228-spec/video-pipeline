@@ -1,3 +1,13 @@
+﻿<#
+Recover-VoiceoverFromRecycleBin
+#>
+param(
+    [switch]$DryRun,
+    [switch]$SkipDb,
+    [string]$RepoRoot = "",
+    [string]$DataDir = ""
+)
+
 # ВОССТАНОВЛЕНИЕ voiceover.txt ИЗ КОРЗИНЫ WINDOWS (все диски).
 # Копирует $R* файлы напрямую в data\videos\<slug>\voiceover.txt
 # (не полагается на InvokeVerb RESTORE).
@@ -5,12 +15,7 @@
 # ОДНА КОМАНДА из корня репозитория:
 #   powershell -ExecutionPolicy Bypass -File scripts\Recover-VoiceoverFromRecycleBin.ps1
 #
-param(
-    [switch]$DryRun,
-    [switch]$SkipDb,
-    [string]$RepoRoot = "",
-    [string]$DataDir = ""
-)
+
 
 $ErrorActionPreference = "Continue"
 

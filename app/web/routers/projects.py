@@ -148,6 +148,11 @@ async def get_project(
         raise HTTPException(status_code=404, detail="project not found")
     # Свежий meta (user_stop) — иначе stale recompute затирает ⏹ и снова крутит ноду.
     await session.refresh(p)
+    from app.services.node_groups import upgrade_script_frames_qc_on_project
+
+    if await upgrade_script_frames_qc_on_project(session, p):
+        await session.commit()
+        await session.refresh(p)
     await recompute_status(session, p, log_prefix="recompute(web_get)")
     await session.commit()
     await session.refresh(p)
@@ -177,7 +182,7 @@ async def create_project(
     p = Project(
         slug=slug,
         title=display_title,
-        topic="",
+        topic=(body.topic.strip() if body.topic and body.topic.strip() else ""),
         hero_mode=body.hero_mode,
         status=ProjectStatus.new,
         auto_mode=auto_mode,
@@ -469,9 +474,14 @@ async def run_project_step(
     step_code: str,
     dry_run: bool = False,
     node_key: str | None = None,
+    mode: str = Query("full", pattern="^(full|resume)$"),
+    force_wipe: bool | None = None,
     session: AsyncSession = Depends(get_session),
 ) -> Project:
-    """Запустить шаг: статус → running, воркер выполнит advance_project."""
+    """Запустить шаг: статус → running, воркер выполнит advance_project.
+    mode='full' (по умолчанию) — полный чистый перезапуск шага с нуля (force_wipe=True).
+    mode='resume' — мягкое продолжение/доделка недостающих кадров (force_wipe=False).
+    """
     p = await session.get(Project, project_id)
     if p is None:
         raise HTTPException(status_code=404, detail="project not found")
@@ -488,6 +498,7 @@ async def run_project_step(
             payload=payload,
         )
         return p
+    resolved_force_wipe = force_wipe if force_wipe is not None else (mode != "resume")
     try:
         await start_step(
             session,
@@ -496,6 +507,7 @@ async def run_project_step(
             node_key=node_key,
             require_node_fsm=True,
             explicit_ui_start=True,
+            force_wipe=resolved_force_wipe,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

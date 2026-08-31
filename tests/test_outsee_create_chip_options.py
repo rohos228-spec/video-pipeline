@@ -189,3 +189,12 @@ def test_kling_durations_and_audio_chip():
     ]
     assert VIDEO_DURATIONS["veo-3-1-lite"] == [4, 6, 8]
     assert VIDEO_RESOLUTIONS["veo-3-1-lite"] == ["720p"]
+
+
+def test_veo_lite_audio_chip_defaults_off() -> None:
+    from pathlib import Path
+
+    src = Path("web/src/lib/outsee-catalog.ts").read_text(encoding="utf-8")
+    block = src.split('slug: "veo-3-1-lite"', 1)[1].split("},", 1)[0]
+    assert "generateAudio: false" in block
+    assert "generateAudio: true" not in block

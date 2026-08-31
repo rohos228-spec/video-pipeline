@@ -64,3 +64,65 @@ def test_bind_skeleton_click_uses_gpt_55_not_default_56() -> None:
     }
     with bind_project_llm(_P(meta), ProjectStatus.scene_designing):
         assert current_text_model_id() == "gpt-5.5"
+
+
+def test_bind_generation_llm_always_vibecode_even_if_header_is_kie() -> None:
+    from app.services.llm_override import bind_generation_llm, current_override
+
+    with bind_generation_llm(None, node_type="image_prompts"):
+        ov = current_override()
+        assert ov is not None
+        assert ov.kind == "text"
+        assert ov.provider == "vibecode"
+        assert ov.model_id == "gpt-5.6-sol"
+
+
+def test_bind_generation_llm_uses_image_prompts_node_model() -> None:
+    from app.services.llm_override import bind_generation_llm, current_override
+
+    meta = {
+        "canvas_graph": {
+            "nodes": [
+                {
+                    "id": "n_img_pr",
+                    "type": "image_prompts",
+                    "data": {"modelId": "gpt-5.5"},
+                }
+            ]
+        }
+    }
+    with bind_generation_llm(_P(meta), node_type="image_prompts"):
+        ov = current_override()
+        assert ov is not None
+        assert ov.provider == "vibecode"
+        assert ov.model_id == "gpt-5.5"
+
+
+def test_bind_generation_llm_routes_chat_to_vibecode_not_kie(
+    monkeypatch, tmp_path
+) -> None:
+    import app.services.gpt_api as gpt_api
+    import app.settings as settings_mod
+    from app.services.llm_override import bind_generation_llm
+    from app.settings import Settings
+
+    monkeypatch.setenv("TEXT_LLM_PROVIDER", "kie")
+    monkeypatch.setenv("GPT_API_KEY", "kie-key")
+    monkeypatch.setenv("GPT_BASE_URL", "https://gpt.example.com")
+    monkeypatch.setenv("GPT_CHAT_PATH", "/codex/v1/responses")
+    monkeypatch.setenv("GPT_RELAY_TOKEN", "relay-secret")
+    monkeypatch.setenv("VIBECODE_API_KEY", "vk-test")
+    monkeypatch.setenv("VIBECODE_BASE_URL", "https://vibecode.moe/v1")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    s = Settings()
+    monkeypatch.setattr(settings_mod, "settings", s)
+    monkeypatch.setattr(gpt_api, "settings", s)
+
+    assert gpt_api._chat_url("gpt-5-6-sol").startswith("https://gpt.example.com")
+    with bind_generation_llm(None, node_type="image_prompts"):
+        assert gpt_api.is_responses_mode() is False
+        assert gpt_api._chat_url("gpt-5.6-sol") == (
+            "https://vibecode.moe/v1/chat/completions"
+        )
+        assert gpt_api._headers()["Authorization"] == "Bearer vk-test"
+        assert "X-VP-Relay-Token" not in gpt_api._headers()

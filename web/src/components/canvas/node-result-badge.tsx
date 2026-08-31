@@ -1,7 +1,7 @@
 "use client";
 
 import type { MouseEvent } from "react";
-import { Circle, Package } from "lucide-react";
+import { Circle, Check, User, X, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { NodeResultSnapshot } from "@/lib/node-result-resolver";
 
@@ -15,15 +15,19 @@ function parseHeroId(content: string | undefined, projectId: number | undefined,
 export function NodeResultBadge({
   snapshot,
   nodeType,
+  nodeStatus,
   projectId,
   onClick,
 }: {
   snapshot: NodeResultSnapshot;
   nodeType?: string;
+  nodeStatus?: string;
   projectId?: number | null;
   onClick: (e: MouseEvent) => void;
 }) {
-  const ready = snapshot.hasResult;
+  const isFailed = nodeStatus === "failed";
+  const isRunning = nodeStatus === "running";
+  const ready = snapshot.hasResult && !isFailed;
   const isHero = nodeType === "hero" || nodeType === "hitl_hero";
   const heroItem = isHero ? snapshot.items.find((i) => i.previewUrl || i.content) : null;
 
@@ -40,7 +44,13 @@ export function NodeResultBadge({
         <div
           className={cn(
             "pointer-events-none absolute -bottom-5 left-1/2 z-10 h-5 w-px -translate-x-1/2 border-l-2 border-dashed",
-            ready ? "border-emerald-500/60" : "border-muted-foreground/40",
+            isFailed
+              ? "border-red-500/60"
+              : isRunning
+                ? "border-amber-500/60"
+                : ready
+                  ? "border-emerald-500/60"
+                  : "border-muted-foreground/40",
           )}
         />
         <button
@@ -49,9 +59,13 @@ export function NodeResultBadge({
           onMouseDown={(e) => e.stopPropagation()}
           className={cn(
             "nodrag nopan absolute -bottom-[4.25rem] left-1/2 z-20 flex h-14 w-[min(280px,calc(100%+2rem))] -translate-x-1/2 overflow-hidden rounded-xl border-2 shadow-lg transition hover:scale-[1.02] hover:brightness-110",
-            ready
-              ? "border-emerald-500/60 bg-card/95"
-              : "border-muted-foreground/40 bg-muted/90",
+            isFailed
+              ? "border-red-500/60 bg-red-950/40"
+              : isRunning
+                ? "border-amber-500/60 bg-amber-950/40"
+                : ready
+                  ? "border-emerald-500/60 bg-card/95"
+                  : "border-muted-foreground/40 bg-muted/90",
           )}
           title={`Персонаж · ${heroId} — нажмите для просмотра`}
         >
@@ -63,7 +77,7 @@ export function NodeResultBadge({
                 className="h-full w-full object-cover object-top"
               />
             ) : (
-              <Package className="h-5 w-5 text-muted-foreground" />
+              <User className="h-5 w-5 text-muted-foreground" />
             )}
           </div>
           <div className="flex min-w-0 flex-1 flex-col justify-center px-2 py-1 text-left">
@@ -75,14 +89,18 @@ export function NodeResultBadge({
     );
   }
 
-  const Icon = ready ? Package : Circle;
-
   return (
     <>
       <div
         className={cn(
           "pointer-events-none absolute -bottom-5 left-1/2 z-10 h-5 w-px -translate-x-1/2 border-l-2 border-dashed",
-          ready ? "border-emerald-500/60" : "border-muted-foreground/40",
+          isFailed
+            ? "border-red-500/60"
+            : isRunning
+              ? "border-amber-500/60"
+              : ready
+                ? "border-emerald-500/60"
+                : "border-muted-foreground/40",
         )}
       />
       <button
@@ -91,17 +109,33 @@ export function NodeResultBadge({
         onMouseDown={(e) => e.stopPropagation()}
         className={cn(
           "nodrag nopan absolute -bottom-12 left-1/2 z-20 flex h-7 w-7 -translate-x-1/2 items-center justify-center rounded-full border-2 shadow-md transition hover:scale-110 hover:brightness-110",
-          ready
-            ? "border-emerald-500/70 bg-emerald-500/25 text-emerald-400"
-            : "border-muted-foreground/40 bg-muted/80 text-muted-foreground",
+          isFailed
+            ? "border-red-500/80 bg-red-500/20 text-red-400 shadow-[0_0_12px_rgba(239,68,68,0.3)]"
+            : isRunning
+              ? "border-amber-500/80 bg-amber-500/20 text-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.3)]"
+              : ready
+                ? "border-emerald-500/80 bg-emerald-500/20 text-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.3)]"
+                : "border-muted-foreground/40 bg-muted/80 text-muted-foreground",
         )}
         title={
-          ready
-            ? `Результат: ${snapshot.summary} — нажмите для просмотра`
-            : "Результата пока нет — нажмите для деталей"
+          isFailed
+            ? "Ошибка на шаге — нажмите для деталей"
+            : isRunning
+              ? "Шаг в работе..."
+              : ready
+                ? `Результат: ${snapshot.summary} — нажмите для просмотра`
+                : "Результата пока нет — нажмите для деталей"
         }
       >
-        <Icon className="h-3.5 w-3.5" />
+        {isFailed ? (
+          <X className="h-4 w-4 stroke-[2.5]" />
+        ) : isRunning ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : ready ? (
+          <Check className="h-4 w-4 stroke-[2.5]" />
+        ) : (
+          <Circle className="h-3.5 w-3.5" />
+        )}
       </button>
     </>
   );
