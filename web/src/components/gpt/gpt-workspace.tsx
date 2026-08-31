@@ -304,13 +304,6 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
       setSessionId(s.id);
       void qc.invalidateQueries({ queryKey: ["gpt-workspace", "sessions"] });
       void qc.invalidateQueries({ queryKey: ["gpt-workspace", "session", s.id] });
-      for (const f of s.outputs) {
-        if (/^reply_\d/i.test(f.name) || /\.html?$/i.test(f.name)) continue;
-        const key = `${s.id}:${f.name}:${f.size}`;
-        if (knownOutputsRef.current.has(key)) continue;
-        knownOutputsRef.current.add(key);
-        triggerDownload(f);
-      }
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
@@ -629,31 +622,61 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
 
               {/* Model Picker Popover Menu */}
               {modelPickerOpen && (
-                <div className="absolute right-0 top-full mt-2 z-50 w-72 rounded-2xl border border-white/15 bg-[#16161b]/98 p-2 shadow-2xl backdrop-blur-2xl animate-in fade-in zoom-in-95 duration-150">
-                  <div className="px-2.5 py-1.5 text-[11px] font-bold uppercase tracking-wider text-white/40 border-b border-white/[0.08] mb-1">
-                    Выберите ИИ модель
+                <div className="absolute right-0 top-full mt-2 z-50 w-80 rounded-2xl border border-white/15 bg-[#16161b]/98 p-2.5 shadow-2xl backdrop-blur-2xl animate-in fade-in zoom-in-95 duration-150 ring-1 ring-white/10">
+                  <div className="px-2.5 py-1.5 text-[11px] font-bold uppercase tracking-wider text-[#22d3ee] border-b border-white/[0.08] mb-1 flex items-center justify-between">
+                    <span>Выберите ИИ модель</span>
+                    <span className="text-[10px] text-white/40 font-mono">vibecode / kie</span>
                   </div>
-                  <div className="max-h-80 overflow-y-auto space-y-1">
-                    {textLlmQ.data?.models?.map((m: any) => {
-                      const active = m.active;
+                  <div className="max-h-96 overflow-y-auto space-y-2 pr-1">
+                    {["OpenAI", "Google", "DeepSeek", "KIE"].map((groupName) => {
+                      const groupModels = (textLlmQ.data?.models || []).filter(
+                        (m: any) => (m.group || (m.provider === "kie" ? "KIE" : "OpenAI")) === groupName
+                      );
+                      if (!groupModels.length) return null;
                       return (
-                        <button
-                          key={m.id}
-                          type="button"
-                          onClick={() => selectModelMut.mutate({ provider: m.provider, modelId: m.id })}
-                          className={cn(
-                            "flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs transition outline-none",
-                            active
-                              ? "bg-[#22d3ee]/15 text-[#22d3ee] font-semibold border border-[#22d3ee]/30"
-                              : "text-white/80 hover:bg-white/[0.06] hover:text-white border border-transparent"
-                          )}
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="truncate font-medium">{m.label}</div>
-                            <div className="text-[10px] text-white/40">{m.site}</div>
+                        <div key={groupName} className="space-y-0.5">
+                          <div className="px-2.5 pt-1.5 pb-1 font-mono text-[10px] font-bold uppercase tracking-wider text-white/35">
+                            {groupName === "Google"
+                              ? "✨ Google Gemini"
+                              : groupName === "DeepSeek"
+                                ? "🧠 DeepSeek"
+                                : groupName === "OpenAI"
+                                  ? "⚡ OpenAI (GPT 5.6)"
+                                  : "🌐 KIE API"}
                           </div>
-                          {active && <Check className="h-4 w-4 text-[#22d3ee] shrink-0 ml-2" />}
-                        </button>
+                          {groupModels.map((m: any) => {
+                            const active = m.active;
+                            return (
+                              <button
+                                key={m.id}
+                                type="button"
+                                onClick={() => {
+                                  selectModelMut.mutate({ provider: m.provider, modelId: m.id });
+                                  setModelPickerOpen(false);
+                                }}
+                                className={cn(
+                                  "flex w-full items-center justify-between rounded-xl px-2.5 py-1.5 text-left text-xs transition outline-none",
+                                  active
+                                    ? "bg-[#22d3ee]/15 text-[#22d3ee] font-semibold border border-[#22d3ee]/35 shadow-[0_0_12px_rgba(34,211,238,0.15)]"
+                                    : "text-white/80 hover:bg-white/[0.06] hover:text-white border border-transparent"
+                                )}
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate font-medium flex items-center gap-1.5">
+                                    <span>{m.label}</span>
+                                    {m.id.includes("3.7") && (
+                                      <span className="rounded bg-[#22d3ee] px-1 py-0.2 font-mono text-[9px] font-extrabold text-black">
+                                        NEW
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="text-[10px] text-white/40">{m.site}</div>
+                                </div>
+                                {active && <Check className="h-4 w-4 text-[#22d3ee] shrink-0 ml-2" />}
+                              </button>
+                            );
+                          })}
+                        </div>
                       );
                     })}
                   </div>

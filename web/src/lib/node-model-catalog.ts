@@ -7,8 +7,8 @@ export type ModelVendorId =
   | "anthropic"
   | "openai"
   | "gemini"
+  | "deepseek"
   | "xai"
-  | "moonshot"
   | "images"
   | "video"
   | "other";
@@ -80,8 +80,8 @@ export const VENDOR_META: Record<
   anthropic: { id: "anthropic", label: "Anthropic", icon: "A" },
   openai: { id: "openai", label: "OpenAI", icon: "hex" },
   gemini: { id: "gemini", label: "Gemini", icon: "spark" },
+  deepseek: { id: "deepseek", label: "DeepSeek", icon: "D" },
   xai: { id: "xai", label: "xAI", icon: "X" },
-  moonshot: { id: "moonshot", label: "Moonshot", icon: "moon" },
   images: { id: "images", label: "Изображения", icon: "image" },
   video: { id: "video", label: "Видео", icon: "image" },
 };
@@ -90,8 +90,8 @@ const VENDOR_ORDER: Exclude<ModelVendorId, "other">[] = [
   "anthropic",
   "openai",
   "gemini",
+  "deepseek",
   "xai",
-  "moonshot",
   "images",
   "video",
 ];
@@ -104,8 +104,8 @@ function vendorOf(id: string, isImage: boolean, isVideo = false): ModelVendorId 
   const mid = id.toLowerCase();
   if (mid.startsWith("claude")) return "anthropic";
   if (mid.startsWith("gemini")) return "gemini";
+  if (mid.startsWith("deepseek")) return "deepseek";
   if (mid.startsWith("grok")) return "xai";
-  if (mid.startsWith("kimi")) return "moonshot";
   return "openai";
 }
 
