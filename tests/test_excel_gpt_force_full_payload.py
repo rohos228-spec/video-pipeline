@@ -85,3 +85,20 @@ def test_excel_gpt_ui_force_full_flag_roundtrip() -> None:
     assert _clear_excel_gpt_ui_force_full(project) is True
     assert _excel_gpt_ui_force_full(project) is False
     assert "excel_gpt_force_full_rerun" not in project.meta
+
+
+def test_force_full_strip_keys_by_node() -> None:
+    from app.services.db_frames_context import force_full_strip_output_keys
+
+    assert force_full_strip_output_keys("n_excel_gpt_fw_script") == ("биты",)
+    assert force_full_strip_output_keys("n_excel_gpt_fw_action") == (
+        "main_action",
+        "главное_действие",
+    )
+    assert force_full_strip_output_keys("n_excel_gpt_fw_shots") == ("кадры",)
+    assert force_full_strip_output_keys(
+        "n_excel_gpt_fw_frames", footer_kind="action_chain"
+    ) == ("main_action", "главное_действие")
+    assert force_full_strip_output_keys(
+        None, footer_kind="shots_coverage"
+    ) == ("кадры",)

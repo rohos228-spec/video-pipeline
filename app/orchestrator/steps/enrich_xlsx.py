@@ -412,7 +412,10 @@ async def _run_four_node_markup_pass(
         run_apply_ops_batched,
     )
     from app.services import db_apply as _db_apply
-    from app.services.db_frames_context import build_excel_gpt_db_context
+    from app.services.db_frames_context import (
+        build_excel_gpt_db_context,
+        force_full_strip_output_keys,
+    )
     from app.services.excel_characters import entity_cards_for_gpt
     from app.services.node_write_contract import filter_ops_for_node
 
@@ -422,6 +425,10 @@ async def _run_four_node_markup_pass(
         slug=project.slug,
         frames=frames,
         characters=entity_cards_for_gpt(ents),
+        strip_prompts=True,
+        strip_output_keys=force_full_strip_output_keys(
+            node_key, footer_kind=footer_kind
+        ),
         full_vo=True,
     )
     upload_key = _safe_upload_node_key(node_key)
@@ -535,7 +542,7 @@ async def _ensure_four_node_scene_shots(
             f"#{project.id} {node_key}: нет битов — сначала прогони "
             "ноду «Сценарист», потом снова ▶ промты кадров"
         )
-    need_action = not any(
+    need_action = force_full or not any(
         looks_like_scene_chain(main_action_text(fr)) for fr in parents
     )
     need_shots = force_full or not any(frame_has_scene_shots(fr) for fr in parents)
@@ -1476,7 +1483,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
             from app.models import Entity
             from app.services import db_apply, db_v2
-            from app.services.db_frames_context import build_excel_gpt_db_context
+            from app.services.db_frames_context import (
+                build_excel_gpt_db_context,
+                force_full_strip_output_keys,
+            )
             from app.services.excel_characters import entity_cards_for_gpt
 
             await db_v2.backfill_project_v2(session, project)
@@ -1682,6 +1692,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     frames=gpt_frames,
                     characters=entity_cards_for_gpt(ents),
                     strip_prompts=bool(force_full),
+                    strip_output_keys=(
+                        force_full_strip_output_keys(node_key)
+                        if force_full
+                        else ()
+                    ),
                     full_vo=vo_markup
                     or _is_script_frames_qc_group_node(variant, master, node_key),
                 )

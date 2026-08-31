@@ -202,6 +202,34 @@ def collapse_script_writer_frames(
     return out
 
 
+def force_full_strip_output_keys(
+    node_key: str | None = None,
+    *,
+    footer_kind: str | None = None,
+) -> tuple[str, ...]:
+    """Поля ЭТОЙ ноды, которые нельзя кормить GPT на ручном ▶.
+
+    strip_prompts оставляет биты/действие/кадры как вход следующих нод.
+    Если перезапускаем саму ноду — старый выход надо выкинуть, иначе
+    модель копирует 1-в-1 и «результат тот же».
+    """
+    kind = str(footer_kind or "").strip()
+    if kind == "bits":
+        return ("биты",)
+    if kind == "action_chain":
+        return ("main_action", "главное_действие")
+    if kind == "shots_coverage":
+        return ("кадры",)
+    nk = str(node_key or "")
+    if nk.endswith("_fw_script"):
+        return ("биты",)
+    if nk.endswith("_fw_action"):
+        return ("main_action", "главное_действие")
+    if nk.endswith("_fw_shots"):
+        return ("кадры",)
+    return ()
+
+
 def build_excel_gpt_db_context(
     *,
     project_id: int,
@@ -210,12 +238,17 @@ def build_excel_gpt_db_context(
     characters: list[dict[str, str]],
     strip_prompts: bool = False,
     full_vo: bool = False,
+    strip_output_keys: tuple[str, ...] | list[str] | None = None,
 ) -> dict[str, Any]:
     """Снимок для excel_gpt: whitelist attrs + короткий закадр, без сырого attrs.
 
-    ``strip_prompts``: не отдавать уже заполненные image/anim/действие.
+    ``strip_prompts``: не отдавать уже заполненные image/anim/shot01.
     Нужен на ручном ▶ (force_full), иначе модель копирует старые промты
     и «результат тот же», хотя GPT формально отработал.
+
+    ``strip_output_keys``: дополнительно выкинуть выход самой ноды
+    (биты / главное_действие / кадры), чтобы ▶ fw_action не копировал
+    старую цепь сцен.
     """
     rows: list[dict[str, Any]] = []
     for fr in frames:
@@ -247,6 +280,7 @@ def build_excel_gpt_db_context(
         if strip_prompts:
             # Ручной ▶: не кормить старую аналитику/действие — модель копирует.
             # Биты / цепь сцен / кадры — вход следующих нод, не «старый промт».
+            # Выход самой ноды снимает strip_output_keys (▶ fw_action/shots/script).
             keep: dict[str, str] = {}
             for key in (
                 "characters",
@@ -259,7 +293,15 @@ def build_excel_gpt_db_context(
                 if val:
                     keep[key] = val
             slim = keep
+        drop = tuple(strip_output_keys or ())
+        if drop:
+            for key in drop:
+                slim.pop(key, None)
+                row.pop(key, None)
         row.update(slim)
+        if drop:
+            for key in drop:
+                row.pop(key, None)
         cs = _camera_subdivide_from(fr)
         if cs:
             row["camera_subdivide"] = {

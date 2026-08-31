@@ -280,6 +280,115 @@ def test_excel_gpt_keeps_bits_action_shots_and_full_vo() -> None:
     assert stored[1]["id"] == "1-K2"
 
 
+def test_force_full_action_strips_old_main_action_keeps_bits() -> None:
+    """▶ fw_action: биты — вход, старая цепь сцен не должна попасть в GPT."""
+    from app.services.db_frames_context import force_full_strip_output_keys
+
+    fr = SimpleNamespace(
+        number=1,
+        uuid="e" * 24,
+        voiceover_text="После брака с Глебом Салтыковым",
+        meaning="",
+        image_prompt="",
+        animation_prompt="",
+        attrs={
+            "биты": [{"порядок": 1, "глагол": "женится"}],
+            "main_action": "1. двор — бегает\n(старая цепь,)",
+            "кадры": [{"id": "1-K1", "порядок": 1}],
+        },
+    )
+    keys = force_full_strip_output_keys("n_excel_gpt_fw_action")
+    ctx = build_excel_gpt_db_context(
+        project_id=60,
+        slug="x",
+        frames=[fr],
+        characters=[],
+        strip_prompts=True,
+        strip_output_keys=keys,
+        full_vo=True,
+    )
+    row = ctx["frames"][0]
+    assert "main_action" not in row
+    assert "главное_действие" not in row
+    bits = row["биты"]
+    if isinstance(bits, str):
+        bits = json.loads(bits)
+    assert bits[0]["глагол"] == "женится"
+    stored = row["кадры"]
+    if isinstance(stored, str):
+        stored = json.loads(stored)
+    assert stored[0]["id"] == "1-K1"
+
+
+def test_force_full_shots_strips_old_kadry_keeps_action() -> None:
+    from app.services.db_frames_context import force_full_strip_output_keys
+
+    fr = SimpleNamespace(
+        number=1,
+        uuid="f" * 24,
+        voiceover_text="После брака с Глебом Салтыковым",
+        meaning="",
+        image_prompt="",
+        animation_prompt="",
+        attrs={
+            "биты": [{"порядок": 1, "глагол": "женится"}],
+            "main_action": "1. церковь — венчание с Глебом\n(После брака)",
+            "кадры": [{"id": "1-K1", "порядок": 1, "шаблон": "T0"}],
+        },
+    )
+    keys = force_full_strip_output_keys("n_excel_gpt_fw_shots")
+    ctx = build_excel_gpt_db_context(
+        project_id=60,
+        slug="x",
+        frames=[fr],
+        characters=[],
+        strip_prompts=True,
+        strip_output_keys=keys,
+        full_vo=True,
+    )
+    row = ctx["frames"][0]
+    assert "кадры" not in row
+    assert row["main_action"].startswith("1. церковь")
+    bits = row["биты"]
+    if isinstance(bits, str):
+        bits = json.loads(bits)
+    assert bits[0]["глагол"] == "женится"
+
+
+def test_force_full_script_strips_old_bits() -> None:
+    from app.services.db_frames_context import force_full_strip_output_keys
+
+    fr = SimpleNamespace(
+        number=1,
+        uuid="g" * 24,
+        voiceover_text="После брака с Глебом",
+        meaning="",
+        image_prompt="",
+        animation_prompt="",
+        attrs={"биты": [{"порядок": 1, "глагол": "старый"}]},
+    )
+    keys = force_full_strip_output_keys("n_excel_gpt_fw_script")
+    ctx = build_excel_gpt_db_context(
+        project_id=60,
+        slug="x",
+        frames=[fr],
+        characters=[],
+        strip_prompts=True,
+        strip_output_keys=keys,
+        full_vo=True,
+    )
+    row = ctx["frames"][0]
+    assert "биты" not in row
+    assert row["voiceover_text"] == "После брака с Глебом"
+
+
+def test_force_full_frames_keeps_shots_strips_prompts() -> None:
+    from app.services.db_frames_context import force_full_strip_output_keys
+
+    assert force_full_strip_output_keys("n_excel_gpt_fw_frames") == ()
+    assert force_full_strip_output_keys("n_excel_gpt_fw_qc") == ()
+
+
 def test_excel_gpt_exposes_vo_shot_copy_not_as_voiceover() -> None:
     fr = SimpleNamespace(
         number=2,
