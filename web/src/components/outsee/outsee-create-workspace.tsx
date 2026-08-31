@@ -50,11 +50,9 @@ import {
   getAudioModel,
   getImageModel,
   getVideoModel,
-  isGrsaiWiredSlug,
   outseeCreateUrl,
   pickerModelsForType,
   slugToStudioId,
-  toGrsaiVideoModel,
   type OutseeChip,
   type OutseeFeedKind,
   type OutseeMediaType,
@@ -276,13 +274,6 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     enabled: open,
   });
 
-  const grsaiStatusQ = useQuery({
-    queryKey: ["grsai-status"],
-    queryFn: api.getGrsaiStatus,
-    enabled: open,
-    staleTime: 30_000,
-  });
-
   const outseeStatusQ = useQuery({
     queryKey: ["outsee-status"],
     queryFn: api.outseeStatus,
@@ -439,38 +430,21 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
       : mediaType === "video"
         ? videoModel.displayName
         : audioModel.displayName;
-  const currentWired = !kieActive && isGrsaiWiredSlug(activeSlug, mediaType);
+  const currentWired = false;
   const outseeConfigured = Boolean(outseeStatusQ.data?.configured);
-  const grsaiConfigured = Boolean(grsaiStatusQ.data?.configured);
   const kieConfigured = Boolean(kieCatalogQ.data?.configured);
 
-  /** Без UI-переключателя: ключ Outsee → Outsee; Sora/Kling → Grsai; иначе Grsai. */
-  const autoProvider: "outsee" | "grsai" | null = useMemo(() => {
+  const autoProvider: "outsee" | null = useMemo(() => {
     if (kieActive) return null;
     if (mediaType === "audio") return null;
-    const slug = activeSlug.toLowerCase();
-    if (mediaType === "image") {
-      if (outseeConfigured) return "outsee";
-      if (grsaiConfigured) return "grsai";
-      return null;
-    }
-    // video
-    if (slug.includes("sora") || slug.includes("kling")) {
-      if (grsaiConfigured) return "grsai";
-      return null;
-    }
-    if (outseeConfigured && slug.includes("veo")) return "outsee";
-    if (grsaiConfigured) return "grsai";
     if (outseeConfigured) return "outsee";
     return null;
-  }, [kieActive, mediaType, activeSlug, outseeConfigured, grsaiConfigured]);
+  }, [kieActive, mediaType, outseeConfigured]);
 
   const maxParallel =
     autoProvider === "outsee"
       ? (createQueueQ.data?.max_parallel_outsee ?? 5)
-      : autoProvider === "grsai"
-        ? (createQueueQ.data?.max_parallel_grsai ?? 10)
-        : (createQueueQ.data?.max_parallel ?? 5);
+      : (createQueueQ.data?.max_parallel ?? 5);
 
   const canApiDirect = kieActive ? kieConfigured : autoProvider != null;
   const currentIcon = kieActive
@@ -487,42 +461,13 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
         ? videoModel.price
         : audioModel.price;
 
-  const quoteModel =
-    mediaType === "video" && autoProvider === "grsai"
-      ? toGrsaiVideoModel(videoSlug)
-      : activeSlug;
-
-  const quoteQ = useQuery({
-    queryKey: [
-      "grsai-quote",
-      mediaType,
-      quoteModel,
-      resolution,
-      duration,
-      soraSize,
-      currentCatalogPrice,
-    ],
-    queryFn: () =>
-      api.grsaiQuote({
-        media: mediaType,
-        model: quoteModel,
-        resolution,
-        duration: Number(duration) || 10,
-        size: soraSize,
-        catalog_price: currentCatalogPrice,
-      }),
-    enabled: open && !kieActive,
-    staleTime: 5_000,
-  });
-
   const basePriceLabel = kieActive
     ? kiePrice
       ? `$${kiePrice.usd.toFixed(3)} · ${kiePrice.credits} кр`
       : "—"
-    : quoteQ.data?.label ||
-      estimateCreatePrice({
+    : estimateCreatePrice({
         media: mediaType,
-        model: quoteModel,
+        model: activeSlug,
         resolution,
         duration: Number(duration) || 10,
         size: soraSize,
@@ -530,7 +475,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
       }).label;
 
   const priceLabel = useMemo(() => {
-    if (mediaType === "image" && batchCount > 1) {
+    if ((mediaType === "image" || mediaType === "video") && batchCount > 1) {
       if (kieActive && kiePrice) {
         return `$${(kiePrice.usd * batchCount).toFixed(3)} · ${kiePrice.credits * batchCount} кр`;
       }
@@ -697,9 +642,8 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     motion_quality: motionQuality,
     instrumental,
     prompt,
-    // провайдер выбирается автоматически при Generate — в UI не показываем
-    image_provider: autoProvider === "outsee" ? "outsee" : "grsai",
-    video_provider: autoProvider === "outsee" ? "outsee" : "grsai",
+    image_provider: "outsee",
+    video_provider: "outsee",
     sora_size: soraSize,
   });
 
@@ -753,7 +697,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   });
 
   const [trackingJobs, setTrackingJobs] = useState<
-    { provider: "grsai" | "outsee" | "kie"; jobId: string; historyId: string }[]
+    { provider: "outsee" | "kie"; jobId: string; historyId: string }[]
   >([]);
 
   useEffect(() => {
@@ -889,41 +833,12 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
             String(audioSlug || "").toLowerCase().includes("suno") ? "music" : "audio";
           return api.runProjectStep(projectId, step);
         }
-        const provider = autoProvider;
-        if (!provider) {
-          throw new Error(
-            "Нет API-ключа: задайте OUTSEE_API_KEY или GRSAI_API_KEY в .env и перезапустите Studio",
-          );
+        if (!outseeConfigured) {
+          throw new Error("OUTSEE_API_KEY не задан в .env");
         }
         // Settings не блокируют enqueue: параллельные клики иначе ломаются
         // на гонке записи outsee_create_settings.json.
         void api.putOutseeCreateSettings(settingsPayload()).catch(() => undefined);
-        if (provider === "grsai") {
-          if (!grsaiConfigured) {
-            throw new Error("GRSAI_API_KEY не задан в .env");
-          }
-          const enqueued =
-            mediaType === "video"
-              ? await api.grsaiGenerate({
-                  prompt: text,
-                  model: toGrsaiVideoModel(videoSlug),
-                  aspect,
-                  media: "video",
-                  duration: Number(duration) || 10,
-                  size: soraSize,
-                })
-              : await api.grsaiGenerate({
-                  prompt: text,
-                  model: imageSlug,
-                  aspect,
-                  resolution,
-                  media: "image",
-                });
-          return { ...enqueued, provider: "grsai" as const };
-        }
-        if (!outseeConfigured) {
-          throw new Error("OUTSEE_API_KEY не задан в .env");
-        }
         const enqueued =
           mediaType === "video"
             ? await api.outseeGenerate({
@@ -956,7 +871,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
         return { ...enqueued, provider: "outsee" as const };
       };
 
-      const count = mediaType === "image" ? batchCount : 1;
+      const count = (mediaType === "image" || mediaType === "video") ? batchCount : 1;
       if (count > 1) {
         const results = await Promise.all(
           Array.from({ length: count }, (_, i) => executeSingle(i))
@@ -968,7 +883,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     onSuccess: (res) => {
       if (res && typeof res === "object" && "batch" in res && Array.isArray((res as any).results)) {
         const batchRes = (res as any).results as any[];
-        const newTrackers: { provider: "grsai" | "outsee" | "kie"; jobId: string; historyId: string }[] = [];
+        const newTrackers: { provider: "outsee" | "kie"; jobId: string; historyId: string }[] = [];
         let firstHistId: string | null = null;
         for (const r of batchRes) {
           if (r && typeof r === "object" && "job_id" in r && r.job_id) {
@@ -995,7 +910,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
           running_count?: number;
           status?: string;
           queue_position?: number | null;
-          provider: "grsai" | "outsee" | "kie";
+          provider: "outsee" | "kie";
         };
         if (r.history_id) setSelectedId(r.history_id);
         setTrackingJobs((prev) => [
@@ -2089,26 +2004,28 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       <Coins className="h-3 w-3 text-[#22d3ee]" strokeWidth={2.5} />
                       <span>{priceLabel}</span>
                     </div>
-                    {mediaType === "image" && (
+                    {(mediaType === "image" || mediaType === "video") && (
                       <div
                         className="inline-flex h-9 items-center gap-0.5 rounded-xl border border-white/10 bg-[#16161b] p-0.5"
-                        title="Пакетная генерация: количество изображений (1, 2 или 4)"
+                        title={`Пакетная генерация: ${mediaType === "image" ? "1, 2 или 4 фото" : "1 или 2 видео"}`}
                       >
-                        {([1, 2, 4] as const).map((cnt) => (
-                          <button
-                            key={cnt}
-                            type="button"
-                            onClick={() => setBatchCount(cnt)}
-                            className={cn(
-                              "rounded-lg px-2 py-1 font-mono text-[11px] font-bold transition",
-                              batchCount === cnt
-                                ? "bg-[#22d3ee]/20 text-[#22d3ee] ring-1 ring-[#22d3ee]/40"
-                                : "text-white/45 hover:text-white",
-                            )}
-                          >
-                            {cnt}x
-                          </button>
-                        ))}
+                        {(mediaType === "image" ? ([1, 2, 4] as const) : ([1, 2] as const)).map(
+                          (cnt) => (
+                            <button
+                              key={cnt}
+                              type="button"
+                              onClick={() => setBatchCount(cnt)}
+                              className={cn(
+                                "rounded-lg px-2 py-1 font-mono text-[11px] font-bold transition",
+                                batchCount === cnt
+                                  ? "bg-[#22d3ee]/20 text-[#22d3ee] ring-1 ring-[#22d3ee]/40"
+                                  : "text-white/45 hover:text-white",
+                              )}
+                            >
+                              {cnt}x
+                            </button>
+                          ),
+                        )}
                       </div>
                     )}
                     <button
@@ -2132,8 +2049,8 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                         createGenerate.isPending
                           ? "Уже ставится в очередь…"
                           : !canApiDirect && mediaType !== "audio"
-                            ? "Нужен OUTSEE_API_KEY или GRSAI_API_KEY в .env"
-                            : `Сгенерировать (${mediaType === "image" && batchCount > 1 ? `${batchCount} фото` : "1 шт"}, лимит ${maxParallel}) · ${priceLabel}`
+                            ? "Нужен OUTSEE_API_KEY или KIE_API_KEY в .env"
+                            : `Сгенерировать (${batchCount > 1 ? `${batchCount} шт` : "1 шт"}, лимит ${maxParallel}) · ${priceLabel}`
                       }
                     >
                       {createGenerate.isPending ? (
@@ -2146,7 +2063,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                           <Sparkles className="h-3.5 w-3.5" />
                           <span>
                             Генерировать
-                            {mediaType === "image" && batchCount > 1 ? ` (${batchCount}x)` : ""}
+                            {batchCount > 1 ? ` (${batchCount}x)` : ""}
                           </span>
                         </>
                       )}
@@ -2430,6 +2347,21 @@ function KieAttachButton({
             onChange={(e) => {
               const f = e.target.files?.[0];
               if (!f) return;
+              if (f.size === 0) {
+                toast.error("Выбран пустой файл (0 байт)");
+                e.target.value = "";
+                return;
+              }
+              if (field.kind === "audios" && f.size < 1000) {
+                toast.error("Файл слишком мал или не содержит аудиоданных (минимум 1 КБ)");
+                e.target.value = "";
+                return;
+              }
+              if (field.kind === "videos" && f.size < 2000) {
+                toast.error("Файл слишком мал или не содержит видеоданных");
+                e.target.value = "";
+                return;
+              }
               setBusy(true);
               api
                 .kieUpload(f)
@@ -2638,13 +2570,138 @@ function ModelPickerPopover({
     );
   }, [kieForType, q]);
 
-  const totalCount = filteredModels.length + filteredKie.length;
+  const unifiedItems = useMemo(() => {
+    const baseItems = filteredModels.map((m) => ({
+      slug: m.slug,
+      label: m.displayName,
+      desc: m.description,
+      icon: m.icon,
+      letter: null as string | null,
+      isKie: false,
+      isTop: Boolean(m.isTop || m.slug === "veo-3-1-lite"),
+      badge: m.isTop ? "ТОП" : m.isNew ? "НОВОЕ" : undefined,
+      priceLabel: m.price ? m.price : null,
+      priceUsd: null as number | null,
+    }));
+    const kieItems = filteredKie.map((m) => {
+      const est = estimateKie(m, {}, creditUsd);
+      return {
+        slug: `kie:${m.id}`,
+        label: m.label,
+        desc: m.hint || m.desc,
+        icon: null as string | null,
+        letter: m.label.slice(0, 1),
+        isKie: true,
+        isTop: Boolean(m.is_top || m.isTop),
+        badge: m.badge || (m.is_top || m.isTop ? "ТОП" : "KIE"),
+        priceLabel: null as string | null,
+        priceUsd: est.usd > 0 ? est.usd : null,
+      };
+    });
+    return [...baseItems, ...kieItems];
+  }, [filteredModels, filteredKie, creditUsd]);
+
+  const topItems = useMemo(() => unifiedItems.filter((i) => i.isTop), [unifiedItems]);
+  const otherItems = useMemo(() => unifiedItems.filter((i) => !i.isTop), [unifiedItems]);
+
+  const totalCount = unifiedItems.length;
+
+  const renderCard = (item: (typeof unifiedItems)[0]) => {
+    const active = item.slug === selectedSlug;
+    const isTopCard = item.isTop;
+    return (
+      <button
+        key={item.slug}
+        type="button"
+        onClick={() => onSelect(item.slug)}
+        className={cn(
+          "group relative flex items-start gap-2.5 rounded-xl border p-2.5 text-left transition-all duration-200",
+          active
+            ? isTopCard
+              ? "border-[#22d3ee] bg-[#22d3ee]/15 text-white shadow-[0_0_22px_rgba(34,211,238,0.25)] ring-1 ring-[#22d3ee]/50"
+              : "border-[#38bdf8] bg-[#38bdf8]/10 text-white shadow-[0_0_20px_rgba(56,189,248,0.2)]"
+            : isTopCard
+              ? "border-[#22d3ee]/25 bg-[#22d3ee]/[0.03] hover:border-[#22d3ee]/50 hover:bg-[#22d3ee]/[0.08]"
+              : "border-white/[0.08] bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.06]",
+        )}
+      >
+        {item.badge && (
+          <span
+            className={cn(
+              "absolute top-2 right-2 rounded-md px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider shadow-sm",
+              item.badge === "ТОП"
+                ? "bg-[#22d3ee] text-black font-extrabold"
+                : item.badge === "1080p" || item.badge === "2K/4K"
+                  ? "bg-indigo-500 text-white"
+                  : item.badge.includes("Звук")
+                    ? "bg-purple-500 text-white"
+                    : item.badge.includes("с")
+                      ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                      : "bg-white/10 text-white/60",
+            )}
+          >
+            {item.badge}
+          </span>
+        )}
+        <div className="flex shrink-0 flex-col items-center">
+          {item.icon ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={item.icon}
+              alt={item.label}
+              className="h-10 w-10 rounded-lg object-cover ring-1 ring-white/10 transition group-hover:ring-[#22d3ee]/40"
+            />
+          ) : (
+            <span
+              className={cn(
+                "inline-flex h-10 w-10 items-center justify-center rounded-lg font-mono text-[14px] font-bold ring-1 transition",
+                isTopCard
+                  ? "bg-[#22d3ee]/15 text-[#22d3ee] ring-[#22d3ee]/30 group-hover:ring-[#22d3ee]/60"
+                  : "bg-[#38bdf8]/15 text-[#38bdf8] ring-white/10 group-hover:ring-[#38bdf8]/40",
+              )}
+            >
+              {item.letter || item.label.slice(0, 1)}
+            </span>
+          )}
+          {item.priceLabel && (
+            <span className="mt-1 inline-flex items-center gap-0.5 font-mono text-[10px] text-white/60">
+              <Coins className="h-2.5 w-2.5 text-[#22d3ee]" strokeWidth={2.5} />
+              {item.priceLabel}
+            </span>
+          )}
+          {item.priceUsd !== null && item.priceUsd !== undefined && (
+            <span className="mt-1 inline-flex items-center gap-0.5 font-mono text-[10px] text-white/60">
+              <Coins className="h-2.5 w-2.5 text-[#38bdf8]" strokeWidth={2.5} />
+              {`$${item.priceUsd.toFixed(3)}`}
+            </span>
+          )}
+        </div>
+        <div className="min-w-0 flex-1 pr-7">
+          <p
+            className={cn(
+              "truncate text-[12px] font-semibold",
+              active
+                ? "text-[#22d3ee]"
+                : isTopCard
+                  ? "text-white font-medium group-hover:text-[#22d3ee]"
+                  : "text-white/90 group-hover:text-white",
+            )}
+          >
+            {item.label}
+          </p>
+          <p className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-white/45 transition group-hover:text-white/70">
+            {item.desc}
+          </p>
+        </div>
+      </button>
+    );
+  };
 
   return (
     <div
       className="absolute bottom-full left-0 z-50 mb-3 flex max-h-[76vh] flex-col overflow-hidden rounded-2xl border border-white/15 bg-[#121216]/95 backdrop-blur-2xl shadow-[0_25px_70px_rgba(0,0,0,0.85)] ring-1 ring-white/10"
       style={{
-        width: mediaType === "video" ? 600 : mediaType === "audio" ? 440 : 500,
+        width: mediaType === "video" ? 620 : mediaType === "audio" ? 450 : 520,
       }}
       role="dialog"
       aria-label={title}
@@ -2683,12 +2740,17 @@ function ModelPickerPopover({
 
       {/* Unified single scrollable body */}
       <div className="flex-1 overflow-y-auto p-3 space-y-4">
-        {/* Section 1: Base Outsee / Grsai models */}
-        {filteredModels.length > 0 && (
+        {/* Section 1: TOP Models */}
+        {topItems.length > 0 && (
           <div>
-            <div className="mb-2 flex items-center gap-1.5 px-1 text-[10px] font-bold uppercase tracking-[0.14em] text-white/45">
-              <span>Базовые модели</span>
-              <span className="font-mono text-white/25">({filteredModels.length})</span>
+            <div className="mb-2 flex items-center gap-1.5 px-1 text-[11px] font-bold uppercase tracking-[0.14em] text-[#22d3ee]">
+              <span className="flex items-center gap-1">
+                <span>🔥</span>
+                <span>ТОП МОДЕЛИ</span>
+              </span>
+              <span className="rounded-full bg-[#22d3ee]/15 px-1.5 py-0.5 font-mono text-[9px] font-bold text-[#22d3ee]">
+                {topItems.length}
+              </span>
             </div>
             <div
               className="grid gap-2"
@@ -2696,83 +2758,17 @@ function ModelPickerPopover({
                 gridTemplateColumns: mediaType === "audio" ? "1fr" : "repeat(2, minmax(0, 1fr))",
               }}
             >
-              {filteredModels.map((m) => {
-                const active = m.slug === selectedSlug;
-                const wired = "grsaiWired" in m && Boolean(m.grsaiWired);
-                const badge = m.isTop
-                  ? { tone: "top" as const, label: "ТОП" }
-                  : m.isNew
-                    ? { tone: "new" as const, label: "НОВОЕ" }
-                    : null;
-                return (
-                  <button
-                    key={m.slug}
-                    type="button"
-                    onClick={() => onSelect(m.slug)}
-                    className={cn(
-                      "group relative flex items-start gap-2.5 rounded-xl border p-2.5 text-left transition-all duration-200",
-                      active
-                        ? "border-[#22d3ee] bg-[#22d3ee]/10 text-white shadow-[0_0_20px_rgba(34,211,238,0.2)]"
-                        : "border-white/[0.08] bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.06]",
-                    )}
-                  >
-                    {badge && (
-                      <span
-                        className={cn(
-                          "absolute top-2 right-2 rounded-md px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider shadow-sm",
-                          badge.tone === "top"
-                            ? "bg-[#22d3ee] text-black font-extrabold"
-                            : "bg-purple-500 text-white",
-                        )}
-                      >
-                        {badge.label}
-                      </span>
-                    )}
-                    {wired && !badge && (
-                      <span className="absolute top-2 right-2 rounded-md bg-[#22d3ee]/20 px-1.5 py-0.5 font-mono text-[9px] font-bold text-[#22d3ee]">
-                        +GRSAI
-                      </span>
-                    )}
-                    <div className="flex shrink-0 flex-col items-center">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={m.icon}
-                        alt={m.displayName}
-                        className="h-10 w-10 rounded-lg object-cover ring-1 ring-white/10 transition group-hover:ring-[#22d3ee]/40"
-                      />
-                      {m.price && (
-                        <span className="mt-1 inline-flex items-center gap-0.5 font-mono text-[10px] text-white/60">
-                          <Coins className="h-2.5 w-2.5 text-[#22d3ee]" strokeWidth={2.5} />
-                          {m.price}
-                        </span>
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1 pr-7">
-                      <p
-                        className={cn(
-                          "truncate text-[12px] font-semibold",
-                          active ? "text-[#22d3ee]" : "text-white/90 group-hover:text-white",
-                        )}
-                      >
-                        {m.displayName}
-                      </p>
-                      <p className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-white/45 transition group-hover:text-white/65">
-                        {m.description}
-                      </p>
-                    </div>
-                  </button>
-                );
-              })}
+              {topItems.map((item) => renderCard(item))}
             </div>
           </div>
         )}
 
-        {/* Section 2: KIE Market models */}
-        {filteredKie.length > 0 && (
+        {/* Section 2: Other Models */}
+        {otherItems.length > 0 && (
           <div>
             <div className="mb-2 flex items-center gap-1.5 px-1 text-[10px] font-bold uppercase tracking-[0.14em] text-white/45">
-              <span>KIE Market · kie.ai</span>
-              <span className="font-mono text-white/25">({filteredKie.length})</span>
+              <span>Другие и специальные модели</span>
+              <span className="font-mono text-white/25">({otherItems.length})</span>
             </div>
             <div
               className="grid gap-2"
@@ -2780,55 +2776,12 @@ function ModelPickerPopover({
                 gridTemplateColumns: mediaType === "audio" ? "1fr" : "repeat(2, minmax(0, 1fr))",
               }}
             >
-              {filteredKie.map((m) => {
-                const slug = `kie:${m.id}`;
-                const active = slug === selectedSlug;
-                const est = estimateKie(m, {}, creditUsd);
-                return (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => onSelect(slug)}
-                    className={cn(
-                      "group relative flex items-start gap-2.5 rounded-xl border p-2.5 text-left transition-all duration-200",
-                      active
-                        ? "border-[#38bdf8] bg-[#38bdf8]/10 text-white shadow-[0_0_20px_rgba(56,189,248,0.2)]"
-                        : "border-white/[0.08] bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.06]",
-                    )}
-                  >
-                    <span className="absolute top-2 right-2 rounded-md bg-[#38bdf8]/20 px-1.5 py-0.5 font-mono text-[9px] font-bold text-[#38bdf8]">
-                      KIE
-                    </span>
-                    <div className="flex shrink-0 flex-col items-center">
-                      <span className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-[#38bdf8]/15 font-mono text-[14px] font-bold text-[#38bdf8] ring-1 ring-white/10 transition group-hover:ring-[#38bdf8]/40">
-                        {m.label.slice(0, 1)}
-                      </span>
-                      <span className="mt-1 inline-flex items-center gap-0.5 font-mono text-[10px] text-white/60">
-                        <Coins className="h-2.5 w-2.5 text-[#38bdf8]" strokeWidth={2.5} />
-                        {est.usd > 0 ? `$${est.usd.toFixed(3)}` : "—"}
-                      </span>
-                    </div>
-                    <div className="min-w-0 flex-1 pr-7">
-                      <p
-                        className={cn(
-                          "truncate text-[12px] font-semibold",
-                          active ? "text-[#38bdf8]" : "text-white/90 group-hover:text-white",
-                        )}
-                      >
-                        {m.label}
-                      </p>
-                      <p className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-white/45 transition group-hover:text-white/65">
-                        {m.hint || m.desc}
-                      </p>
-                    </div>
-                  </button>
-                );
-              })}
+              {otherItems.map((item) => renderCard(item))}
             </div>
           </div>
         )}
 
-        {filteredModels.length === 0 && filteredKie.length === 0 && (
+        {unifiedItems.length === 0 && (
           <div className="py-12 text-center text-[12px] text-white/40">
             Модели по запросу «<span className="text-white/70">{search}</span>» не найдены
           </div>

@@ -153,7 +153,7 @@ def write_sidecar(
     params: dict[str, Any] | None = None,
     raw_url: str | None = None,
     quote: dict[str, Any] | None = None,
-    provider: str = "grsai",
+    provider: str = "outsee",
     status: str = "done",
     job_id: str | None = None,
     error: str | None = None,

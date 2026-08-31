@@ -1,9 +1,9 @@
-"""Фоновые jobs Create (Outsee / Grsai): очередь ожидания + параллельный пул.
+"""Фоновые jobs Create (Outsee / Kie): очередь ожидания + параллельный пул.
 
 Каждый Generate → отдельный job_id.
 status=queued пока ждёт слот семафора провайдера;
 status=processing когда реально ушёл в API
-(Outsee ≤ CREATE_MAX_PARALLEL_OUTSEE, Grsai ≤ CREATE_MAX_PARALLEL_GRSAI).
+(Outsee ≤ CREATE_MAX_PARALLEL_OUTSEE).
 """
 
 from __future__ import annotations
@@ -84,12 +84,12 @@ class CreateJob:
 
 _JOBS: dict[str, CreateJob] = {}
 _LOCK = asyncio.Lock()
-# Сильные ссылки на tasks — иначе GC может убить pending create_task.
+# Сильные ссылки на tasks.
 _TASKS: set[asyncio.Task[Any]] = set()
-# Отдельный семафор на провайдера: Outsee и Grsai не делят один пул.
+# Отдельный семафор на провайдера.
 _SEMS: dict[str, asyncio.Semaphore] = {}
 _SEM_SIZES: dict[str, int] = {}
-# Анти-даблклик: одинаковый запрос за <N сек → вернуть уже поставленный job.
+# Анти-даблклик.
 _RECENT_FP: dict[str, tuple[str, float]] = {}
 _DEDUP_WINDOW_S = 2.5
 
@@ -130,15 +130,8 @@ def max_parallel(provider: str | None = None) -> int:
     fallback = int(getattr(settings, "create_max_parallel", 5) or 5)
     if p == "outsee":
         n = int(getattr(settings, "create_max_parallel_outsee", fallback) or fallback)
-    elif p == "grsai":
-        n = int(getattr(settings, "create_max_parallel_grsai", fallback) or fallback)
     else:
-        # Сводка без фильтра: верхняя граница среди известных провайдеров.
-        n = max(
-            int(getattr(settings, "create_max_parallel_outsee", fallback) or fallback),
-            int(getattr(settings, "create_max_parallel_grsai", fallback) or fallback),
-            fallback,
-        )
+        n = fallback
     return max(1, min(n, _MAX_PARALLEL_CAP))
 
 
@@ -190,7 +183,6 @@ def queue_snapshot(*, provider: str | None = None) -> dict[str, Any]:
     return {
         "max_parallel": max_parallel(provider),
         "max_parallel_outsee": max_parallel("outsee"),
-        "max_parallel_grsai": max_parallel("grsai"),
         "running_count": len(running),
         "waiting_count": len(waiting),
         "total_active": len(active),

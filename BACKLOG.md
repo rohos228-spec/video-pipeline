@@ -37,6 +37,25 @@
 
 ## ✅ ВЫПОЛНЕННЫЕ ЭТАПЫ И ЗАДАЧИ (ПОЛНАЯ ХРОНОЛОГИЯ)
 
+### 🌟 ЭТАП 11: Полная очистка кодовой базы от Grsai и унификация на Outsee & KIE (31 Августа 2026)
+- [x] **GRSAI-01:** Полностью удалены неиспользуемые модули бэкенда Grsai: `app/bots/grsai.py`, `app/services/grsai_pricing.py`, `app/web/routers/grsai.py`, а также устаревшие тесты `tests/test_grsai_client.py`, `tests/test_grsai_pricing.py`.
+- [x] **GRSAI-02:** Очищены настройки `app/settings.py` (удалены `GRSAI_API_KEY`, `GRSAI_BASE_URL`, `GRSAI_DEFAULT_*`, `CREATE_MAX_PARALLEL_GRSAI`), провайдеры по умолчанию переведены строго на `outsee` и `kie`.
+- [x] **GRSAI-03:** Очищены пайплайн-шаги генерации (`generate_hero.py`, `generate_images.py`, `generate_videos.py`, `outsee_retry.py`, `montage_board_regen.py`, `img_streams.py`, `create_jobs.py`, `error_catalog.py`, `text_llm_catalog.py`, `vibecode_catalog.py`).
+- [x] **GRSAI-04:** Очищен фронтенд (`outsee-create-workspace.tsx`, `api.ts`, `node-model-catalog.ts`, `node-model-picker.tsx`, `outsee-catalog.ts`, `create-pricing.ts`, `assemble-montage-board.tsx`), удалены устаревшие запросы котировок Grsai, бейджи `+GRSAI` и подсказки.
+- [x] **GRSAI-05:** Очищены конфигурационные файлы `.env`, `.env.example`, `ai-pack/03_config/env.example`.
+- [x] **VERIFY-01:** Проведено комплексное тестирование: полная сборка Next.js `npm run build` завершена со 100% успехом (0 errors), все целевые unit-тесты `pytest` пройдены успешно.
+
+---
+
+### 🌟 ЭТАП 10: Комплексный бенчмарк видео-моделей, реорганизация каталога и валидация файлов (31 Августа 2026)
+- [x] **BENCH-01:** Завершено 100% живое тестирование 20 конфигураций видео-генераторов (Text-to-Video, Image-to-Video, Audio-Native, Lipsync, Topaz Video AI). Создан бенчмарк-отчёт `video_models_benchmark_report.md` с точными замерами времени, стоимости и веса роликов.
+- [x] **CATALOG-01:** Полностью переработана структура каталога моделей в Create Workspace (`outsee-create-workspace.tsx`): вместо деления по бэкендам введено деление на **«🔥 ТОП МОДЕЛИ»** и **«ДРУГИЕ И СПЕЦИАЛЬНЫЕ МОДЕЛИ»**.
+- [x] **CATALOG-02:** Обновлены описания всех моделей в `app/services/kie_catalog.py` и `web/src/lib/outsee-catalog.ts` на понятный русский язык с указанием разработчиков (Google, ByteDance, Alibaba, MiniMax, Kuaishou), бейджей (`ТОП`, `⚡ 45с`, `🔊 Звук`, `1080p`, `2K/4K`).
+- [x] **CATALOG-03:** Настроены бейджи и группировка ТОП моделей для раздела генерации картинок (`Nano Banana 2`, `GPT Image 2`, `Flux 2 Pro`).
+- [x] **VALIDATION-01:** Добавлена клиентская валидация загружаемых файлов в дропзоне (`KieAttachButton`): проверка на 0 байт, минимальный размер аудио (от 1 КБ) и видео, исключающая сбои 400/422 при генерации аватаров и апскейле.
+
+---
+
 ### 🌟 ЭТАП 8: Интерактивный просмотр результатов нод и полировка Студии (23 Августа 2026)
 - [x] **RESULTS-01:** Вкладка «Результаты» в `node-studio.tsx` переведена на компонент `NodeResultViewBody` с отображением сгенерированных промптов кадров (`FramePromptsView`) вместо сообщения «Артефактов пока нет».
 - [x] **UI-23:** Убрана дублирующая кнопка «Excel таблица» из подвкладок «Промпты» в `node-studio.tsx` для устранения визуального шума.

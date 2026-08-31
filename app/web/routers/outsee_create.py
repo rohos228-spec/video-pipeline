@@ -38,9 +38,9 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "motion_quality": "std",
     "instrumental": False,
     "prompt": "",
-    # grsai | outsee — для кнопки «Генерировать» в Create
-    "image_provider": "grsai",
-    "video_provider": "grsai",
+    # outsee | kie — для кнопки «Генерировать» в Create
+    "image_provider": "outsee",
+    "video_provider": "outsee",
     "sora_size": "small",
 }
 

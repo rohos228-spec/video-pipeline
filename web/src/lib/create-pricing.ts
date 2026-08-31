@@ -1,6 +1,5 @@
 /**
- * Клиентский fallback цены Create: 1 токен = $0.10.
- * Основной источник — GET /api/grsai/quote; это на случай офлайна UI.
+ * Клиентский расчет цены Create: 1 токен = $0.10.
  */
 
 export const TOKEN_USD = 0.1;

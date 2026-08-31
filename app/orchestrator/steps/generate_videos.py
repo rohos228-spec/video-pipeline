@@ -18,13 +18,11 @@ from app.bots.outsee import OutseeBot
 
 
 def _video_http_primary() -> bool:
-    """Outsee/Grsai HTTP video — без Chrome CDP."""
-    from app.bots.grsai import grsai_video_enabled
+    """Outsee HTTP video — без Chrome CDP."""
     from app.bots.outsee_http import outsee_api_configured, outsee_api_enabled_for_video
 
     return bool(
-        grsai_video_enabled()
-        or outsee_api_enabled_for_video()
+        outsee_api_enabled_for_video()
         or outsee_api_configured()
     )
 

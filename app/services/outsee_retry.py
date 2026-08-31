@@ -880,29 +880,22 @@ async def generate_image_with_retries(
     `prompt_id_prefix` один на весь кадр (все retry и GPT-rewrite) —
     формат `[ID: P12-F3-a7f2b01c]`, где `a7f2b01c` = gen_id этой генерации.
     """
-    from app.bots.grsai import generate_image as grsai_generate_image
-    from app.bots.grsai import studio_id_to_grsai_slug, grsai_key_configured
     from app.bots.outsee_http import (
         generate_image as outsee_api_generate_image,
         outsee_api_configured,
         studio_id_to_outsee_image_slug,
     )
-    from app.services.media_route import image_provider_for, is_nano_banana_pro
+    from app.services.media_route import image_provider_for
     from app.settings import settings as _settings
 
     raw_slug = kwargs.get("model_slug") or getattr(
         _settings, "outsee_default_image_model", None
     )
-    if is_nano_banana_pro(str(raw_slug) if raw_slug else None):
-        backend = "grsai"
-    else:
-        backend = image_provider_for(str(raw_slug) if raw_slug else None)
-    use_grsai = backend == "grsai" and grsai_key_configured()
+    backend = image_provider_for(str(raw_slug) if raw_slug else None)
     use_outsee_api = backend == "outsee" and outsee_api_configured()
     if backend == "outsee" and not outsee_api_configured() and outsee is None:
         raise OutseeImageError(
-            "OUTSEE_API_KEY пуст — GPT Image 2 / Nano Banana 2 / Veo 3.1 Lite "
-            "идут через ключ Outsee",
+            "OUTSEE_API_KEY пуст — генерация идёт через ключ Outsee",
             context={"error_kind": "no_key", "provider": "outsee"},
         )
     last_err: OutseeImageError | None = None
@@ -931,61 +924,6 @@ async def generate_image_with_retries(
                     else None,
                     project_id=pid if isinstance(pid, int) else None,
                 )
-                if use_grsai:
-                    from app.bots.grsai import GRSAI_WIRED_IMAGE_MODELS
-
-                    raw_slug = attempt_kwargs.get("model_slug") or getattr(
-                        _settings, "grsai_default_image_model", None
-                    )
-                    slug = studio_id_to_grsai_slug(
-                        str(raw_slug) if raw_slug else None
-                    )
-                    if slug not in GRSAI_WIRED_IMAGE_MODELS:
-                        slug = studio_id_to_grsai_slug(
-                            getattr(_settings, "grsai_default_image_model", None)
-                        )
-                    ar = attempt_kwargs.get("aspect_ratio") or "9:16"
-                    res = attempt_kwargs.get("resolution") or attempt_kwargs.get(
-                        "image_resolution"
-                    )
-                    result = await grsai_generate_image(
-                        send_prompt,
-                        out_path,
-                        model_slug=slug,
-                        aspect_ratio=str(ar).replace("_", ":"),
-                        resolution=str(res) if res else "1K",
-                        reference_image=attempt_kwargs.get("reference_image"),
-                        timeout=float(attempt_kwargs.get("timeout") or 600),
-                        gen_id=attempt_kwargs.get("gen_id"),
-                        project_id=pid if isinstance(pid, int) else None,
-                    )
-                    # Метаданные рядом с файлом на диске (папка проекта уже создана)
-                    try:
-                        from app.services.generation_storage import write_sidecar
-                        from app.services.grsai_pricing import quote_generation
-
-                        write_sidecar(
-                            result.file_path,
-                            media="image",
-                            model=slug,
-                            prompt=send_prompt,
-                            params={
-                                "aspect": str(ar).replace("_", ":"),
-                                "resolution": str(res) if res else "1K",
-                                "project_id": pid,
-                                "gen_id": attempt_kwargs.get("gen_id"),
-                            },
-                            raw_url=result.raw_url,
-                            quote=quote_generation(
-                                media="image",
-                                model=slug,
-                                resolution=str(res) if res else "1K",
-                            ),
-                            provider="grsai",
-                        )
-                    except Exception:  # noqa: BLE001
-                        logger.debug("grsai sidecar write skipped", exc_info=True)
-                    return result
                 if use_outsee_api:
                     refs = attempt_kwargs.get("reference_image")
                     ref_list: list[Any] | None = None
@@ -1253,9 +1191,6 @@ async def generate_video_with_retries(
     base_prompt_id = kwargs.get("prompt_id_prefix")
     primary_kwargs = dict(kwargs)
     primary_slug = str(primary_kwargs.get("model_slug") or "veo")
-
-    from app.bots.grsai import grsai_video_enabled, generate_video as grsai_generate_video
-    from app.bots.grsai import studio_id_to_grsai_video_slug, grsai_key_configured
     from app.bots.kie_kling import (
         generate_video as kie_kling_generate_video,
         kie_api_configured,
@@ -1270,12 +1205,11 @@ async def generate_video_with_retries(
     from app.settings import settings as _settings
 
     primary_backend = video_provider_for(primary_slug)
-    use_grsai_video = primary_backend == "grsai" and grsai_key_configured()
     use_outsee_api_video = primary_backend == "outsee" and outsee_api_configured()
     primary_is_kling = primary_backend == "kie"
-    if primary_backend == "outsee" and not outsee_api_configured():
+    if primary_backend == "outsee" and not outsee_api_configured() and outsee is None:
         raise OutseeImageError(
-            "OUTSEE_API_KEY пуст — Veo 3.1 Lite идёт через ключ Outsee",
+            "OUTSEE_API_KEY пуст — генерация идёт через ключ Outsee",
             context={"error_kind": "no_key", "provider": "outsee"},
         )
 
@@ -1372,54 +1306,6 @@ async def generate_video_with_retries(
                 )
             except Exception:  # noqa: BLE001
                 logger.debug("kie video sidecar skipped", exc_info=True)
-            return result
-        if use_grsai_video:
-            raw_slug = attempt_kwargs.get("model_slug") or getattr(
-                _settings, "grsai_default_video_model", None
-            )
-            slug = studio_id_to_grsai_video_slug(str(raw_slug) if raw_slug else None)
-            ar = attempt_kwargs.get("aspect_ratio") or "9:16"
-            res = attempt_kwargs.get("resolution") or "720p"
-            dur = attempt_kwargs.get("duration") or 5
-            result = await grsai_generate_video(
-                send_prompt,
-                out_path,
-                model_slug=slug,
-                aspect_ratio=str(ar).replace("_", ":"),
-                resolution=str(res),
-                duration=int(dur) if dur else 5,
-                timeout=float(attempt_kwargs.get("timeout") or 900),
-                gen_id=attempt_kwargs.get("gen_id"),
-                project_id=project_id,
-                start_frame=attempt_kwargs.get("start_frame"),
-            )
-            try:
-                from app.services.generation_storage import write_sidecar
-                from app.services.grsai_pricing import quote_generation
-
-                write_sidecar(
-                    result.file_path,
-                    media="video",
-                    model=slug,
-                    prompt=send_prompt,
-                    params={
-                        "aspect": str(ar).replace("_", ":"),
-                        "resolution": str(res),
-                        "duration": dur,
-                        "project_id": project_id,
-                        "ladder": "primary",
-                    },
-                    raw_url=result.raw_url,
-                    quote=quote_generation(
-                        media="video",
-                        model=slug,
-                        resolution=str(res),
-                        duration=int(dur) if dur else 5,
-                    ),
-                    provider="grsai",
-                )
-            except Exception:  # noqa: BLE001
-                logger.debug("grsai video sidecar skipped", exc_info=True)
             return result
         if use_outsee_api_video:
             raw_slug = attempt_kwargs.get("model_slug") or getattr(
@@ -1538,11 +1424,7 @@ async def generate_video_with_retries(
         provider_label = (
             "kie-kling"
             if use_kling
-            else (
-                "grsai"
-                if use_grsai_video
-                else ("outsee-api" if use_outsee_api_video else "outsee-cdp")
-            )
+            else ("outsee-api" if use_outsee_api_video else "outsee-cdp")
         )
         logger.info(
             "outsee_retry: video [{}] попытка {}/{} model={} provider={} {}",

@@ -34,7 +34,6 @@ async def test_generate_with_reference_uses_http_api_refs(
         return body
 
     monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
-    monkeypatch.setattr("app.bots.grsai.grsai_key_configured", lambda: False)
     monkeypatch.setattr(
         "app.bots.outsee_http.outsee_api_configured", lambda: True
     )

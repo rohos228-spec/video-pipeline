@@ -123,12 +123,14 @@ MODELS: list[dict[str, Any]] = [
     # ============================ ВИДЕО ============================
     {
         "id": "veo-3-1",
-        "label": "Veo 3.1 (Lite / Fast / Quality)",
+        "is_top": True,
+        "badge": "ТОП",
+        "label": "Google Veo 3.1",
         "category": "video",
         "api": "veo",
         "endpoint": "/api/v1/veo/generate",
         "result": "video",
-        "desc": "Google Veo 3.1: text→video, image→video (1–2 кадра), reference→video (1–3 картинки, Fast/Lite). Звук по умолчанию.",
+        "desc": "Флагман Google: кинематографичный свет, реалистичная физика, мягкий кино-пролёт камеры.",
         "fields": [
             _prompt(),
             _f("model", "Режим", "select", options=["veo3_lite", "veo3_fast", "veo3"], default="veo3_lite",
@@ -164,12 +166,14 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "seedance-2-5",
-        "label": "Seedance 2.5",
+        "is_top": True,
+        "badge": "ТОП",
+        "label": "Seedance 2.5 (ByteDance)",
         "category": "video",
         "api": "jobs",
         "model": "bytedance/seedance-2-5",
         "result": "video",
-        "desc": "ByteDance: до 30 сек, мультимодальные референсы (до 30 картинок / 10 видео / 10 аудио), первый+последний кадр.",
+        "desc": "Топовый флагман ByteDance: многоплановые пролёты, сложные взаимодействия, до 30 сек.",
         "fields": [
             _prompt(),
             _f("first_frame_url", "Первый кадр", "images", max_items=1),
@@ -304,12 +308,14 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "seedance-1-5-pro",
+        "is_top": True,
+        "badge": "⚡ 45с",
         "label": "Seedance 1.5 Pro",
         "category": "video",
         "api": "jobs",
         "model": "bytedance/seedance-1.5-pro",
         "result": "video",
-        "desc": "Прошлое поколение Pro: стабильный, дешевле 2.x.",
+        "desc": "Сверхбыстрый и экономный рендер (45 сек): идеален для массовой раскадровки сцен.",
         "fields": [
             _prompt(),
             _f("image_urls", "Кадры (1–2)", "images", max_items=2),
@@ -334,12 +340,14 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "kling-3-0",
-        "label": "Kling 3.0",
+        "is_top": True,
+        "badge": "1080p",
+        "label": "Kling 3.0 Pro (1080p + звук)",
         "category": "video",
         "api": "jobs",
         "model": "kling-3.0/video",
         "result": "video",
-        "desc": "Kling 3.0: std/pro/4K, мульти-шоты, первый/последний кадр, 3–15 сек.",
+        "desc": "Премиум качество Full HD 1080p с автогенерацией звуковых эффектов и мульти-планов.",
         "fields": [
             _prompt(),
             _f("mode", "Режим", "select", options=["std", "pro", "4K"], default="std",
@@ -366,12 +374,14 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "kling-v3-turbo-t2v",
+        "is_top": True,
+        "badge": "ТОП",
         "label": "Kling 3.0 Turbo (текст)",
         "category": "video",
         "api": "jobs",
         "model": "kling/v3-turbo-text-to-video",
         "result": "video",
-        "desc": "Быстрый Kling 3.0 из текста, 3–15 сек.",
+        "desc": "Генерация за 1 минуту: сложные сцены, высокая детализация, непревзойдённая динамика.",
         "fields": [
             _prompt(),
             _duration(5, 3, 15),
@@ -390,12 +400,14 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "kling-v3-turbo-i2v",
-        "label": "Kling 3.0 Turbo (картинка)",
+        "is_top": True,
+        "badge": "ТОП",
+        "label": "Kling 3.0 Turbo (оживление фото)",
         "category": "video",
         "api": "jobs",
         "model": "kling/v3-turbo-image-to-video",
         "result": "video",
-        "desc": "Быстрый Kling 3.0 из стартового кадра.",
+        "desc": "Мгновенное и естественное оживление фото и артов за 60 секунд.",
         "fields": [
             _prompt(),
             _f("image_urls", "Стартовый кадр", "images", max_items=1, required=True),
@@ -414,12 +426,14 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "kling-3-0-omni-t2v",
-        "label": "Kling 3.0 Omni (текст)",
+        "is_top": True,
+        "badge": "🔊 Звук",
+        "label": "Kling 3.0 Omni (со звуком)",
         "category": "video",
         "api": "jobs",
         "model": "kling-3.0-omni/text-to-video",
         "result": "video",
-        "desc": "Omni: нативный звук, мульти-шоты, 3–15 сек, до 4K.",
+        "desc": "Мульти-планы со встроенным синхронным звуком окружения (шум волн, шелест ветра).",
         "fields": [
             _prompt(),
             _f("audio", "Нативный звук", "toggle", default=False),
@@ -470,12 +484,13 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "kling-2-6-i2v",
-        "label": "Kling 2.6 (картинка)",
+        "badge": "1080p",
+        "label": "Kling 2.6 (фото в 1080p)",
         "category": "video",
         "api": "jobs",
         "model": "kling-2.6/image-to-video",
         "result": "video",
-        "desc": "Kling 2.6 HD из стартового кадра, 5/10 сек.",
+        "desc": "Оживление картинок в честном разрешении Full HD без малейшей потери чёткости.",
         "fields": [
             _prompt(),
             _f("image_urls", "Стартовый кадр", "images", max_items=1, required=True),
@@ -526,7 +541,7 @@ MODELS: list[dict[str, Any]] = [
         "api": "jobs",
         "model": "grok-imagine/text-to-video",
         "result": "video",
-        "desc": "xAI Grok Imagine: 6–30 сек, режимы fun/normal/spicy.",
+        "desc": "Стильные контрастные цвета и художественная выразительность от xAI Илона Маска.",
         "fields": [
             _prompt(),
             _aspect(["2:3", "3:2", "1:1", "16:9", "9:16"], "2:3"),
@@ -573,12 +588,14 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "hailuo-2-3-i2v",
-        "label": "Hailuo 2.3 (картинка)",
+        "is_top": True,
+        "badge": "ТОП",
+        "label": "MiniMax Hailuo 2.3 (фото)",
         "category": "video",
         "api": "jobs",
         "model": "hailuo/2-3-image-to-video-pro",
         "result": "video",
-        "desc": "MiniMax Hailuo 2.3: оживление картинки, Standard/Pro, 6/10 сек.",
+        "desc": "Непревзойдённая естественная органика и пластика движений человека при оживлении фото.",
         "fields": [
             _prompt(),
             _f("image_url", "Стартовый кадр", "images", max_items=1, required=True),
@@ -602,12 +619,14 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "wan-2-7-t2v",
-        "label": "WAN 2.7 (текст)",
+        "is_top": True,
+        "badge": "ТОП",
+        "label": "Alibaba WAN 2.7 (текст)",
         "category": "video",
         "api": "jobs",
         "model": "wan/2-7-text-to-video",
         "result": "video",
-        "desc": "WAN 2.7: негатив-промпт, своё аудио, seed, 2–15 сек.",
+        "desc": "Идеальные плавные пролёты дрона, кинематографичные пейзажи и непрерывная камера.",
         "fields": [
             _prompt(),
             _f("negative_prompt", "Негатив-промпт", "textarea"),
@@ -690,12 +709,14 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "pixverse-v6-t2v",
+        "is_top": True,
+        "badge": "⚡ 45с",
         "label": "PixVerse V6 (текст)",
         "category": "video",
         "api": "jobs",
         "model": "pixverse-v6/text-to-video",
         "result": "video",
-        "desc": "PixVerse V6: 1–15 сек, 8 соотношений, мульти-клип.",
+        "desc": "Абсолютный рекордсмен по скорости генерации (45 сек), поддержка 8 форматов кадра.",
         "fields": [
             _prompt(),
             _aspect(["16:9", "4:3", "1:1", "3:4", "9:16", "2:3", "3:2", "21:9"], "16:9"),
@@ -760,7 +781,7 @@ MODELS: list[dict[str, Any]] = [
         "api": "jobs",
         "model": "minimax-h3/text-to-video",
         "result": "video",
-        "desc": "MiniMax H3: 4–15 сек, до 2K.",
+        "desc": "Компактный видеопоток с четким выразительным стилем и разрешением до 2K.",
         "fields": [
             _prompt(),
             _aspect(["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"], "16:9"),
@@ -784,7 +805,7 @@ MODELS: list[dict[str, Any]] = [
         "api": "runway",
         "endpoint": "/api/v1/runway/generate",
         "result": "video",
-        "desc": "Runway: 5/10 сек, 720p/1080p.",
+        "desc": "Голливудский кинематографичный стиль и художественная эстетика Runway.",
         "fields": [
             _prompt(),
             _f("imageUrl", "Стартовый кадр", "images", max_items=1),
@@ -838,7 +859,7 @@ MODELS: list[dict[str, Any]] = [
         "api": "jobs",
         "model": "infinitalk/from-audio",
         "result": "video",
-        "desc": "Оживляет фото под аудио (липсинк), до 15 сек.",
+        "desc": "Липсинк фотопортрета под аудиозапись голоса за считанные секунды.",
         "fields": [
             _prompt(),
             _f("image_url", "Фото лица", "images", max_items=1, required=True),
@@ -864,7 +885,7 @@ MODELS: list[dict[str, Any]] = [
         "api": "jobs",
         "model": "kling/ai-avatar-standard",
         "result": "video",
-        "desc": "Говорящий аватар из фото + аудио, до 15 сек.",
+        "desc": "Говорящий человек: точная синхронизация губ и мимики под аудиозапись речи.",
         "fields": [
             _prompt("Промпт", required=False),
             _f("image_url", "Фото", "images", max_items=1, required=True),
@@ -959,6 +980,8 @@ MODELS: list[dict[str, Any]] = [
     # ============================ КАРТИНКИ ============================
     {
         "id": "nano-banana-2",
+        "is_top": True,
+        "badge": "ТОП",
         "label": "Nano Banana 2",
         "category": "image",
         "api": "jobs",
@@ -985,6 +1008,8 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "gpt-image-2",
+        "is_top": True,
+        "badge": "ТОП",
         "label": "GPT Image 2",
         "category": "image",
         "api": "jobs",
@@ -1011,6 +1036,8 @@ MODELS: list[dict[str, Any]] = [
     },
     {
         "id": "flux-2-pro",
+        "is_top": True,
+        "badge": "ТОП",
         "label": "Flux 2 Pro",
         "category": "image",
         "api": "jobs",
@@ -1340,13 +1367,15 @@ MODELS: list[dict[str, Any]] = [
     # ============================ АПСКЕЙЛ / УТИЛИТЫ ============================
     {
         "id": "topaz-video-upscale",
-        "hint": "Как работает: загружаешь своё видео (например 720p из Seedance) → выбираешь кратность → получаешь то же видео в ×2 (≈2K) или ×4 (≈4K). Цена — за секунду исходника.",
-        "label": "Topaz — апскейл видео",
+        "is_top": True,
+        "badge": "2K/4K",
+        "hint": "Загрузите любое видео (720p/1080p) → выберите кратность → получите ролик в 2K или 4K с удалением артефактов.",
+        "label": "Topaz Video AI (апскейл)",
         "category": "tools",
         "api": "jobs",
         "model": "topaz/video-upscale",
         "result": "video",
-        "desc": "Topaz Video AI: апскейл ×1/×2/×4 (720p→2K/4K).",
+        "desc": "Нейросетевое увеличение разрешения в 2K/4K и устранение шума и артефактов сжатия.",
         "fields": [
             _f("video_url", "Видео", "videos", max_items=1, required=True),
             _f("upscale_factor", "Кратность", "select", options=["1", "2", "4"], default="2"),
@@ -1697,6 +1726,9 @@ def catalog_for_ui() -> dict[str, Any]:
                 "media": _media_of(m),
                 "desc": m.get("desc") or "",
                 "hint": m.get("hint") or "",
+                "is_top": bool(m.get("is_top", False)),
+                "isTop": bool(m.get("is_top", False)),
+                "badge": m.get("badge") or "",
                 "result": m.get("result"),
                 "fields": m.get("fields") or [],
                 "pricing": m.get("pricing") or {},

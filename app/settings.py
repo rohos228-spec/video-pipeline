@@ -65,21 +65,15 @@ class Settings(BaseSettings):
     create_max_parallel: int = Field(5, alias="CREATE_MAX_PARALLEL")
     # Outsee API concurrency_limit=4 — не ставить выше 4.
     create_max_parallel_outsee: int = Field(4, alias="CREATE_MAX_PARALLEL_OUTSEE")
-    create_max_parallel_grsai: int = Field(10, alias="CREATE_MAX_PARALLEL_GRSAI")
     # Пайплайн img: параллельные кадры 0..4 (0=не генерить; дефолт для проектов).
     img_max_streams: int = Field(2, alias="IMG_MAX_STREAMS")
     # Vision checkMode: параллельные GPT-батчи 0..10 (каждый батч ≤8 PNG).
     check_max_streams: int = Field(2, alias="CHECK_MAX_STREAMS")
 
-    # Grsai API (https://grsai.com / https://grsaiapi.com) — image/video без CDP
-    grsai_api_key: str = Field("", alias="GRSAI_API_KEY")
-    grsai_base_url: str = Field("https://grsaiapi.com", alias="GRSAI_BASE_URL")
-    # outsee | grsai — кто рисует img/hero/items
-    image_provider: str = Field("grsai", alias="IMAGE_PROVIDER")
-    # outsee | grsai — кто генерит video в Create / (опц.) пайплайн
-    video_provider: str = Field("grsai", alias="VIDEO_PROVIDER")
-    grsai_default_image_model: str = Field("gpt-image-2", alias="GRSAI_DEFAULT_IMAGE_MODEL")
-    grsai_default_video_model: str = Field("sora-2", alias="GRSAI_DEFAULT_VIDEO_MODEL")
+    # outsee | kie — кто рисует img/hero/items
+    image_provider: str = Field("outsee", alias="IMAGE_PROVIDER")
+    # outsee | kie — кто генерит video в Create / пайплайн
+    video_provider: str = Field("outsee", alias="VIDEO_PROVIDER")
 
     # Текстовый LLM: GPT (kie) по умолчанию. Kimi K3 (TokenRouter) — доп. модель.
     # Переключение: Studio UI / data/text_llm_choice.json / TEXT_LLM_PROVIDER.
@@ -175,7 +169,7 @@ class Settings(BaseSettings):
             return f"{pretty} · vibecode.moe ({api_model})"
         model = (self.gpt_model or "gpt").strip()
         base = (self.gpt_base_url or "").strip().lower()
-        host = "kie.ai" if "kie.ai" in base else ("grsai" if "grsai" in base else "API")
+        host = "kie.ai" if "kie.ai" in base else "API"
         return f"GPT · {host} ({model})"
 
     @property
@@ -188,7 +182,7 @@ class Settings(BaseSettings):
             )
         if self.text_llm_is_vibecode:
             return (self.vibecode_api_key or "").strip()
-        return (self.gpt_api_key or "").strip() or (self.grsai_api_key or "").strip()
+        return (self.gpt_api_key or "").strip()
 
     @property
     def vps_relay_base_url(self) -> str | None:
@@ -217,7 +211,7 @@ class Settings(BaseSettings):
         vps = self.vps_relay_base_url
         if vps:
             return vps
-        base = (self.gpt_base_url or "").strip() or (self.grsai_base_url or "").strip()
+        base = (self.gpt_base_url or "").strip()
         return base.rstrip("/")
 
     @property

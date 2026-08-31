@@ -91,13 +91,10 @@ from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
 def _img_http_primary() -> bool:
-    """Outsee/Grsai HTTP — без Chrome CDP (как excel_hero)."""
-    from app.bots.grsai import grsai_enabled
+    """Outsee HTTP — без Chrome CDP (как excel_hero)."""
     from app.bots.outsee_http import outsee_api_configured, outsee_api_enabled_for_image
 
-    return bool(
-        grsai_enabled() or outsee_api_enabled_for_image() or outsee_api_configured()
-    )
+    return bool(outsee_api_enabled_for_image() or outsee_api_configured())
 
 
 @asynccontextmanager
