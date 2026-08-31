@@ -34,8 +34,10 @@ KLING_T2V_MODEL = "kling-2.6/text-to-video"
 _CREATE_PATH = "/api/v1/jobs/createTask"
 _DETAIL_PATH = "/api/v1/jobs/recordInfo"
 _DEFAULT_BASE = "https://api.kie.ai"
+_DIRECT_KIE_HOSTS = frozenset({"https://api.kie.ai", "http://api.kie.ai"})
 _POLL_INTERVAL_S = 4.0
 _POLL_MAX_S = 900.0
+_ROUTE_LOGGED = False
 
 
 class KieKlingError(OutseeImageError):
@@ -46,70 +48,121 @@ def kie_api_configured() -> bool:
     return bool(kie_api_key() and kie_api_base_url())
 
 
+def _relay_token() -> str:
+    return (getattr(settings, "gpt_relay_token", None) or "").strip()
+
+
+def _usable_kie_key(key: str) -> bool:
+    """Не слать в kie пароль VPS и ключ vibecode — оттуда 401 на модель."""
+    text = (key or "").strip()
+    if not text:
+        return False
+    if text.lower().startswith("vk-"):
+        return False
+    relay = _relay_token()
+    if relay and text == relay:
+        return False
+    return True
+
+
+def _iter_kie_keys() -> list[tuple[str, str]]:
+    """Пары (источник, ключ) в порядке приоритета, только пригодные."""
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def _add(source: str, raw: str | None) -> None:
+        key = (raw or "").strip()
+        if not _usable_kie_key(key) or key in seen:
+            return
+        seen.add(key)
+        found.append((source, key))
+
+    _add("KIE_API_KEY", os.environ.get("KIE_API_KEY"))
+    _add("KIE_API_KEY", getattr(settings, "kie_api_key", None))
+    try:
+        from app.project_root import find_project_root
+        from app.services.env_file import last_nonempty_dotenv_value
+
+        env_path = find_project_root() / ".env"
+        _add("KIE_API_KEY", last_nonempty_dotenv_value(env_path, "KIE_API_KEY", "KIEAI_API_KEY"))
+        _add("GPT_API_KEY", os.environ.get("GPT_API_KEY"))
+        _add("GPT_API_KEY", getattr(settings, "gpt_api_key", None))
+        _add("GPT_API_KEY", last_nonempty_dotenv_value(env_path, "GPT_API_KEY"))
+    except Exception:
+        _add("GPT_API_KEY", os.environ.get("GPT_API_KEY"))
+        _add("GPT_API_KEY", getattr(settings, "gpt_api_key", None))
+    return found
+
+
 def kie_api_key_source() -> str:
     """Откуда взят ключ Market/Create (без самого секрета)."""
-    if (os.environ.get("KIE_API_KEY") or "").strip() or (
-        getattr(settings, "kie_api_key", None) or ""
-    ).strip():
-        return "KIE_API_KEY"
-    if (os.environ.get("GPT_API_KEY") or "").strip() or (
-        settings.gpt_api_key or ""
-    ).strip():
-        return "GPT_API_KEY"
-    return ""
+    pairs = _iter_kie_keys()
+    return pairs[0][0] if pairs else ""
 
 
 def kie_api_key() -> str:
     """Ключ kie Market / вкладка «Генерация».
 
     1) KIE_API_KEY (процесс / settings / последний непустой в .env)
-    2) GPT_API_KEY — тот же аккаунт kie, даже если GPT_BASE_URL это VPS
-       (раньше fallback срабатывал только при базе *kie.ai*, и Create
-       «не видел» ключ на housepc).
+    2) GPT_API_KEY — тот же аккаунт kie, даже если GPT идёт через VPS.
+    Пароль VPS (GPT_RELAY_TOKEN) и ключ vibecode (vk-…) не берём.
     """
-    for raw in (
-        os.environ.get("KIE_API_KEY"),
-        getattr(settings, "kie_api_key", None),
-    ):
-        key = (raw or "").strip()
-        if key:
-            return key
-    try:
-        from app.project_root import find_project_root
-        from app.services.env_file import last_nonempty_dotenv_value
-
-        key = last_nonempty_dotenv_value(
-            find_project_root() / ".env", "KIE_API_KEY", "KIEAI_API_KEY"
-        )
-        if key:
-            return key
-    except Exception:
-        pass
-    for raw in (
-        os.environ.get("GPT_API_KEY"),
-        getattr(settings, "gpt_api_key", None),
-    ):
-        key = (raw or "").strip()
-        if key:
-            return key
-    try:
-        from app.project_root import find_project_root
-        from app.services.env_file import last_nonempty_dotenv_value
-
-        return last_nonempty_dotenv_value(find_project_root() / ".env", "GPT_API_KEY")
-    except Exception:
-        return ""
+    pairs = _iter_kie_keys()
+    return pairs[0][1] if pairs else ""
 
 
 def kie_api_base_url() -> str:
-    base = (getattr(settings, "kie_api_base_url", None) or "").strip()
-    if base:
-        return base.rstrip("/")
+    """Куда бить Market/Create.
+
+    Если настроен VPS (GPT_RELAY_TOKEN + GPT_BASE_URL не kie.ai) — туда же,
+    куда текст GPT. Иначе с ПК в api.kie.ai ключ часто ловит 401
+    «not authorized to use this model» (IP-фильтр на ключе kie).
+    Явный KIE_API_BASE_URL не api.kie.ai оставляем как есть.
+    """
+    explicit = (getattr(settings, "kie_api_base_url", None) or "").strip().rstrip("/")
+    vps = getattr(settings, "vps_relay_base_url", None)
+    if vps and (not explicit or explicit.lower() in _DIRECT_KIE_HOSTS):
+        return str(vps).rstrip("/")
+    if explicit:
+        return explicit
     gpt_base = (settings.gpt_base_url or "").strip().rstrip("/")
     if "kie.ai" in gpt_base.lower():
-        # GPT_BASE_URL может быть https://api.kie.ai — ок для jobs
         return gpt_base.split("/codex")[0].rstrip("/") or _DEFAULT_BASE
     return _DEFAULT_BASE
+
+
+def kie_uses_vps_relay() -> bool:
+    vps = getattr(settings, "vps_relay_base_url", None)
+    if not vps:
+        return False
+    return kie_api_base_url().rstrip("/").lower() == str(vps).rstrip("/").lower()
+
+
+def kie_auth_headers(*, content_json: bool = False) -> dict[str, str]:
+    """Bearer kie-ключа + пароль VPS, если Create идёт через relay."""
+    global _ROUTE_LOGGED
+    key = kie_api_key()
+    if not key:
+        raise KieKlingError(
+            "kie: нет API ключа (KIE_API_KEY / GPT_API_KEY)",
+            context={"provider_code": 401, "error_kind": "no_key"},
+        )
+    headers = {"Authorization": f"Bearer {key}"}
+    if content_json:
+        headers["Content-Type"] = "application/json"
+    if kie_uses_vps_relay():
+        relay = _relay_token()
+        if relay:
+            headers["X-VP-Relay-Token"] = relay
+    if not _ROUTE_LOGGED:
+        logger.info(
+            "kie Market: base={} via_vps={} key_source={}",
+            kie_api_base_url(),
+            kie_uses_vps_relay(),
+            kie_api_key_source() or "пусто",
+        )
+        _ROUTE_LOGGED = True
+    return headers
 
 
 def truncate_kling_prompt(prompt: str, *, max_chars: int = KIE_KLING_PROMPT_MAX_CHARS) -> str:
@@ -144,16 +197,7 @@ def map_kling_aspect(aspect: str | None) -> str:
 
 
 def _auth_headers() -> dict[str, str]:
-    key = kie_api_key()
-    if not key:
-        raise KieKlingError(
-            "kie Kling: нет API ключа (KIE_API_KEY / GPT_API_KEY)",
-            context={"provider_code": 401, "error_kind": "no_key"},
-        )
-    return {
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-    }
+    return kie_auth_headers(content_json=True)
 
 
 def _raise_from_kie_payload(

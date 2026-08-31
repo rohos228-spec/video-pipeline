@@ -228,3 +228,44 @@ def test_kie_api_key_prefers_direct_kie(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(kk.settings, "gpt_api_key", "gpt-key")
     assert kk.kie_api_key() == "direct-kie"
     assert kk.kie_api_key_source() == "KIE_API_KEY"
+
+
+def test_kie_skips_relay_token_and_vibecode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KIE_API_KEY", "relay-secret")
+    monkeypatch.setattr(kk.settings, "kie_api_key", "relay-secret")
+    monkeypatch.setattr(kk.settings, "gpt_relay_token", "relay-secret")
+    monkeypatch.setattr(kk.settings, "gpt_api_key", "real-kie-key")
+    monkeypatch.delenv("GPT_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "app.services.env_file.last_nonempty_dotenv_value",
+        lambda *_a, **_k: "",
+    )
+    assert kk.kie_api_key() == "real-kie-key"
+    assert kk.kie_api_key_source() == "GPT_API_KEY"
+    monkeypatch.setenv("KIE_API_KEY", "vk-vibecode")
+    monkeypatch.setattr(kk.settings, "kie_api_key", "vk-vibecode")
+    assert kk.kie_api_key() == "real-kie-key"
+
+
+def test_kie_create_goes_through_vps_not_direct_kie(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(kk.settings, "kie_api_base_url", "https://api.kie.ai")
+    monkeypatch.setattr(kk.settings, "gpt_relay_token", "relay-secret")
+    monkeypatch.setattr(kk.settings, "gpt_base_url", "https://gpt.example.com")
+    monkeypatch.setattr(kk, "kie_api_key", lambda: "kie-key")
+    assert kk.kie_api_base_url() == "https://gpt.example.com"
+    assert kk.kie_uses_vps_relay() is True
+    headers = kk.kie_auth_headers()
+    assert headers["Authorization"] == "Bearer kie-key"
+    assert headers["X-VP-Relay-Token"] == "relay-secret"
+
+
+def test_kie_keeps_custom_base_without_forcing_vps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(kk.settings, "kie_api_base_url", "https://other.example/kie")
+    monkeypatch.setattr(kk.settings, "gpt_relay_token", "relay-secret")
+    monkeypatch.setattr(kk.settings, "gpt_base_url", "https://gpt.example.com")
+    assert kk.kie_api_base_url() == "https://other.example/kie"
+    assert kk.kie_uses_vps_relay() is False

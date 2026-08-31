@@ -22,7 +22,14 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from app.bots.kie_kling import KieKlingError, kie_api_base_url, kie_api_key
+from app.bots.kie_kling import (
+    KieKlingError,
+    kie_api_base_url,
+    kie_api_key,
+    kie_api_key_source,
+    kie_auth_headers,
+    kie_uses_vps_relay,
+)
 from app.bots.outsee import GenerationResult
 from app.settings import settings
 
@@ -51,13 +58,7 @@ def kie_configured() -> bool:
 
 
 def _headers() -> dict[str, str]:
-    key = kie_api_key()
-    if not key:
-        raise KieHttpError(
-            "kie: нет API ключа (KIE_API_KEY / GPT_API_KEY)",
-            context={"provider_code": 401, "error_kind": "no_key"},
-        )
-    return {"Authorization": f"Bearer {key}"}
+    return kie_auth_headers()
 
 
 def _check(payload: Any, *, http_status: int, where: str) -> dict[str, Any]:
@@ -71,8 +72,16 @@ def _check(payload: Any, *, http_status: int, where: str) -> dict[str, Any]:
         return data
     msg = str(data.get("msg") or data.get("message") or where)
     if code_i == 401:
-        # Частая причина: в .env лежит relay/GPT токен вместо ключа kie.ai.
-        msg += " — проверь, что в .env задан KIE_API_KEY именно от kie.ai (не relay/GPT-токен)"
+        src = kie_api_key_source() or "нет"
+        via = "VPS" if kie_uses_vps_relay() else kie_api_base_url()
+        logger.warning(
+            "kie 401 {} key_source={} base={} via_vps={}",
+            where,
+            src,
+            kie_api_base_url(),
+            kie_uses_vps_relay(),
+        )
+        msg += f" — ключ {src}, запрос через {via}"
     raise KieHttpError(
         f"kie {where}: code={code_i} {msg}"[:400],
         context={"provider_code": code_i, "kie_msg": msg[:200]},
