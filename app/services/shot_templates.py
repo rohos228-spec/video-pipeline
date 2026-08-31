@@ -349,6 +349,25 @@ def coverage_template_reason(shots: list[dict[str, Any]], uid: str = "") -> str 
                 f"{prefix}сцена {key}: {tid} сжали до {n} кадров — "
                 f"минимум лестницы {required} (required=1 не удаляют)"
             )
+    # Кадры-вариации одной позы: одинаковое действие у кадров одной сцены.
+    by_scene: dict[str, set[str]] = {}
+    for shot in shots:
+        if not isinstance(shot, dict):
+            continue
+        sc = shot.get("сцена")
+        key = str(sc) if sc not in (None, "") else "?"
+        act = " ".join(
+            str(shot.get("действие") or shot.get("action") or "").split()
+        ).casefold()
+        if not act:
+            continue
+        seen_acts = by_scene.setdefault(key, set())
+        if act in seen_acts:
+            return (
+                f"{prefix}сцена {key}: два кадра с одинаковым действием "
+                f"«{act[:50]}» — вариации позы, а не шаги одного действия"
+            )
+        seen_acts.add(act)
     return None
 
 
