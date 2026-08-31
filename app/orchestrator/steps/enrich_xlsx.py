@@ -191,7 +191,9 @@ def _is_scenes_to_frames_node(
 ) -> bool:
     nk = str(node_key or "")
     # Промт картинок цитирует «сцены → кадры» в шапке — это не нода покрытия.
-    if nk.endswith(("_fw_frames", "_fw_qc", "_fw_script", "_fw_action")):
+    if nk.endswith(
+        ("_fw_frames", "_fw_qc", "_fw_script", "_fw_action", "_fw_check_script")
+    ):
         return False
     if nk.endswith("_fw_shots"):
         return True
@@ -216,6 +218,7 @@ def _is_vo_cell_markup_node(
 
 _SCRIPT_FRAMES_QC_SUFFIXES = (
     "_fw_script",
+    "_fw_check_script",
     "_fw_action",
     "_fw_shots",
     "_fw_frames",
@@ -303,20 +306,12 @@ def _frame_action_text(fr) -> str:
 
 
 def _frame_prompts_and_action_ready(fr) -> bool:
-    from app.services.vo_shot_expand import is_shot_child
-
-    if is_shot_child(fr):
-        return True
     img = (getattr(fr, "image_prompt", None) or "").strip()
     anim = (getattr(fr, "animation_prompt", None) or "").strip()
     return bool(img and anim and _frame_action_text(fr))
 
 
 def _frame_camera_menu_ready(fr) -> bool:
-    from app.services.vo_shot_expand import is_shot_child
-
-    if is_shot_child(fr):
-        return True
     attrs = getattr(fr, "attrs", None) or {}
     if isinstance(fr, dict):
         attrs = fr.get("attrs") if isinstance(fr.get("attrs"), dict) else {}
@@ -361,14 +356,301 @@ def _clear_excel_gpt_ui_force_full(project) -> bool:
     return changed
 
 
+_WIN_PATH_BAD = frozenset('<>:"/\\|?*')
+
+
+def _safe_upload_node_key(node_key: str) -> str:
+    """Имя папки excel_gpt_uploads: Windows не принимает ':' и др."""
+    cleaned = "".join(
+        "_" if ch in _WIN_PATH_BAD else ch for ch in str(node_key or "")
+    )
+    return cleaned.strip(" .") or "node"
+
+
+def _canvas_has_fw_shots(project) -> bool:
+    """На канвасе есть нода T/X (не путать с «группа вставлена»)."""
+    graph = (getattr(project, "meta", None) or {})
+    if not isinstance(graph, dict):
+        return False
+    canvas = graph.get("canvas_graph") or {}
+    for node in canvas.get("nodes") or []:
+        if str(node.get("id") or "").endswith("_fw_shots"):
+            return True
+    return False
+
+
+def _load_script_frames_qc_prompt(name: str) -> str:
+    from app.services.prompt_library import resolve_script_frames_qc_prompt_path
+
+    path = resolve_script_frames_qc_prompt_path(name)
+    if not path.is_file():
+        raise RuntimeError(f"нет промта группы script_frames_qc: {path}")
+    return path.read_text(encoding="utf-8")
+
+
+async def _run_four_node_markup_pass(
+    session: AsyncSession,
+    project: Project,
+    *,
+    node_key: str,
+    role: str,
+    frames,
+    ents,
+    prompt_name: str,
+    footer_kind: str,
+    accompanying: str,
+    apply_kind: str,
+    on_progress,
+) -> None:
+    """Внутренний GPT-проход 4 нод: действие или T/X кадры (без ноды на канвасе)."""
+    import json as _json
+
+    from app.services.apply_ops_batches import (
+        SCRIPT_FRAMES_QC_UNITS_PER_BATCH,
+        VO_PARALLEL_MAX,
+        VO_STAGGER_SEC,
+        run_apply_ops_batched,
+    )
+    from app.services import db_apply as _db_apply
+    from app.services.db_frames_context import build_excel_gpt_db_context
+    from app.services.excel_characters import entity_cards_for_gpt
+    from app.services.node_write_contract import filter_ops_for_node
+
+    prompt = _load_script_frames_qc_prompt(prompt_name)
+    db_ctx = build_excel_gpt_db_context(
+        project_id=project.id,
+        slug=project.slug,
+        frames=frames,
+        characters=entity_cards_for_gpt(ents),
+        full_vo=True,
+    )
+    upload_key = _safe_upload_node_key(node_key)
+    ctx_dir = project.data_dir / "excel_gpt_uploads" / upload_key
+    ctx_dir.mkdir(parents=True, exist_ok=True)
+    ctx_path = ctx_dir / f"db_frames_{footer_kind}.json"
+    ctx_path.write_text(
+        _json.dumps(db_ctx, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    async def _apply_batch(payload: dict) -> None:
+        raw_ops = list(payload.get("ops") or [])
+        ops = filter_ops_for_node(raw_ops, node_kind=apply_kind)
+        if not ops:
+            logger.warning(
+                "[#{}] four-node {} pass: ops пустые после фильтра kind={}",
+                project.id,
+                footer_kind,
+                apply_kind,
+            )
+            return
+        await _db_apply.apply_ops(
+            session,
+            project,
+            ops,
+            export_xlsx=False,
+            node_kind=apply_kind,
+        )
+        await session.commit()
+        await session.refresh(project)
+
+    logger.info(
+        "[#{}] four-node markup {} via {} frames={}",
+        project.id,
+        footer_kind,
+        prompt_name,
+        len(db_ctx.get("frames") or []),
+    )
+    await run_apply_ops_batched(
+        project_dir=project.data_dir,
+        node_key=upload_key,
+        role=role,
+        output_mode="project_file",
+        prompt=prompt,
+        accompanying=accompanying,
+        db_ctx=db_ctx,
+        ctx_path=ctx_path,
+        project_id=project.id,
+        dense=False,
+        apply_fn=_apply_batch,
+        force_full=True,
+        chunk_size=SCRIPT_FRAMES_QC_UNITS_PER_BATCH,
+        parallel_max=VO_PARALLEL_MAX,
+        stagger_sec=VO_STAGGER_SEC,
+        chunk_by_vo_unit=True,
+        footer_kind=footer_kind,
+        on_progress=on_progress,
+        allow_empty_ops=False,
+    )
+
+
+async def _ensure_four_node_scene_shots(
+    session: AsyncSession,
+    project: Project,
+    frames_for_map,
+    *,
+    node_key: str,
+    role: str,
+    force_full: bool,
+    ents,
+    on_progress,
+):
+    """4 ноды: внутри fw_frames прогнать действие + T/X кадры, потом expand."""
+    from sqlalchemy import select as _select
+
+    from app.services.shot_templates import (
+        format_shot_templates_catalog,
+        neighbor_place_hints,
+    )
+    from app.services.vo_shot_expand import (
+        bits_from_attrs,
+        frame_has_scene_shots,
+        is_shot_child,
+        looks_like_scene_chain,
+        main_action_text,
+        reseed_vo_cells_without_kadry,
+    )
+    reseed = await reseed_vo_cells_without_kadry(session, project)
+    if reseed.get("reseeding") or reseed.get("stripped"):
+        await session.flush()
+        logger.info("[#{}] four-node reseed {}", project.id, reseed)
+    frames_for_map = list(
+        (
+            await session.execute(
+                _select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    parents = [
+        fr
+        for fr in frames_for_map
+        if getattr(fr, "uuid", None) and not is_shot_child(fr)
+    ]
+    if not any(bits_from_attrs(fr) for fr in parents):
+        raise RuntimeError(
+            f"#{project.id} {node_key}: нет битов — сначала прогони "
+            "ноду «Сценарист», потом снова ▶ промты кадров"
+        )
+    need_action = not any(
+        looks_like_scene_chain(main_action_text(fr)) for fr in parents
+    )
+    need_shots = force_full or not any(frame_has_scene_shots(fr) for fr in parents)
+    if need_action:
+        await _run_four_node_markup_pass(
+            session,
+            project,
+            node_key=node_key,
+            role=role,
+            frames=parents,
+            ents=ents,
+            prompt_name="main_action_from_bits_ru",
+            footer_kind="action_chain",
+            accompanying=(
+                f"{_APPLY_OPS_HINT}\n"
+                "# DB SoT\n"
+                "Файл db_frames.json — VO-ячейки (uuid + voiceover_text + биты). "
+                "Пиши только fields.главное_действие. Даже одна строка закадра "
+                "= «1. место — действие» и следующая строка (весь кусок). "
+                "Слоган без номера = брак. Не пиши закадр и биты."
+            ),
+            apply_kind="excel_gpt_no_prompts",
+            on_progress=on_progress,
+        )
+        session.expire_all()
+        await session.refresh(project)
+        frames_for_map = list(
+            (
+                await session.execute(
+                    _select(Frame)
+                    .where(Frame.project_id == project.id)
+                    .order_by(Frame.sort_key, Frame.number)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        parents = [
+            fr
+            for fr in frames_for_map
+            if getattr(fr, "uuid", None) and not is_shot_child(fr)
+        ]
+        if not any(looks_like_scene_chain(main_action_text(fr)) for fr in parents):
+            raise RuntimeError(
+                f"#{project.id} {node_key}: внутренний проход «главное действие» "
+                "не записал цепь сцен"
+            )
+    if need_shots:
+        catalog = format_shot_templates_catalog()
+        neighbors = neighbor_place_hints(parents)
+        from app.services.shot_templates import format_when_assignments
+
+        when_plan = format_when_assignments(parents)
+        extra = ""
+        if neighbors:
+            extra += f"\n\n{neighbors}"
+        if when_plan:
+            extra += f"\n\n{when_plan}"
+        await _run_four_node_markup_pass(
+            session,
+            project,
+            node_key=node_key,
+            role=role,
+            frames=parents,
+            ents=ents,
+            prompt_name="scenes_to_frames_ru",
+            footer_kind="shots_coverage",
+            accompanying=(
+                f"{_APPLY_OPS_HINT}\n"
+                "# DB SoT\n"
+                "Файл db_frames.json — VO-ячейки (uuid + voiceover_text + "
+                "главное_действие). Пиши только fields.кадры. "
+                "На каждую сцену главное_действие — свой вопрос дерева "
+                "ВЫБОР, не один шаблон на всю ячейку. T3 = «только смена "
+                "места»; руки/взгляд/путь/удар — свои T*. T8 только на "
+                "прыжок жизни/новое место, один ОБЩИЙ на мир. То же место — "
+                "сжатие без нового ОБЩЕГО, лестница планов. "
+                "Раскрой shots, подставь слоты, сожми по drop_order "
+                "(required=1 не трогай). "
+                "Не пиши закадр, биты, главное_действие.\n\n"
+                f"{catalog}{extra}"
+            ),
+            apply_kind="excel_gpt_no_prompts",
+            on_progress=on_progress,
+        )
+        session.expire_all()
+        await session.refresh(project)
+        frames_for_map = list(
+            (
+                await session.execute(
+                    _select(Frame)
+                    .where(Frame.project_id == project.id)
+                    .order_by(Frame.sort_key, Frame.number)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        parents = [
+            fr
+            for fr in frames_for_map
+            if getattr(fr, "uuid", None) and not is_shot_child(fr)
+        ]
+        if not any(frame_has_scene_shots(fr) for fr in parents):
+            raise RuntimeError(
+                f"#{project.id} {node_key}: внутренний проход «сцены → кадры» "
+                "не записал T/X кадры[]"
+            )
+    return frames_for_map
+
+
 def _select_fw_frames_for_gpt(frames_for_map, *, force_full: bool):
     """Какие кадры слать в GPT на fw_frames. force_full — все uuid, без skip."""
-    from app.services.vo_shot_expand import is_shot_child
-
     uuid_frames = [
-        fr
-        for fr in (frames_for_map or [])
-        if getattr(fr, "uuid", None) and not is_shot_child(fr)
+        fr for fr in (frames_for_map or []) if getattr(fr, "uuid", None)
     ]
     if force_full:
         return list(uuid_frames), False
@@ -1003,6 +1285,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             meta = project.meta if isinstance(project.meta, dict) else {}
             from app.services.db_frames_context import build_excel_gpt_check_context
 
+            from app.services.node_groups import canvas_has_script_frames_qc
+
             db_check = build_excel_gpt_check_context(
                 project_id=project.id,
                 slug=project.slug,
@@ -1017,6 +1301,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     for e in ents
                 ],
                 scene_registry=meta.get("scene_registry") or [],
+                full_vo=canvas_has_script_frames_qc(project),
             )
             ctx_dir = project.data_dir / "excel_gpt_uploads" / str(node_key)
             ctx_dir.mkdir(parents=True, exist_ok=True)
@@ -1195,6 +1480,24 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             from app.services.excel_characters import entity_cards_for_gpt
 
             await db_v2.backfill_project_v2(session, project)
+            if script_writer:
+                full_vo = db_v2.resolve_full_voiceover_text(project)
+                if not full_vo:
+                    raise RuntimeError(
+                        f"#{project.id} {node_key}: нет целого закадра "
+                        "(script_text / voiceover.txt) для seed-ячейки"
+                    )
+                seed = await db_v2.ensure_single_seed_vo_cell(
+                    session, project, full_vo
+                )
+                await session.flush()
+                logger.info(
+                    "[#{}] {} seed VO cell uuid={} chars={}",
+                    project.id,
+                    node_key,
+                    seed.uuid,
+                    len(full_vo),
+                )
             frames_for_map = list(
                 (
                     await session.execute(
@@ -1204,9 +1507,69 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     )
                 ).scalars().all()
             )
-            if str(node_key or "").endswith("_fw_frames"):
-                from app.services.vo_shot_expand import expand_vo_cells_into_shots
+            if (
+                (not script_writer)
+                and _is_script_frames_qc_group_node(variant, master, node_key)
+                and _canvas_has_fw_shots(project)
+            ):
+                from app.services.vo_shot_expand import (
+                    collapse_flattened_coverage_cells,
+                )
 
+                collapsed = await collapse_flattened_coverage_cells(
+                    session, project
+                )
+                if collapsed.get("deleted"):
+                    await session.flush()
+                    frames_for_map = list(
+                        (
+                            await session.execute(
+                                _select(Frame)
+                                .where(Frame.project_id == project.id)
+                                .order_by(Frame.sort_key, Frame.number)
+                            )
+                        ).scalars().all()
+                    )
+                    logger.info(
+                        "[#{}] {} collapse flattened coverage {}",
+                        project.id,
+                        node_key,
+                        collapsed,
+                    )
+            ents = list(
+                (
+                    await session.execute(
+                        _select(Entity).where(Entity.project_id == project.id)
+                    )
+                ).scalars().all()
+            )
+            if str(node_key or "").endswith("_fw_frames"):
+                from app.services.vo_shot_expand import (
+                    apply_shot_coverage_to_vo_cells,
+                    expand_vo_cells_into_shots,
+                )
+
+                if not _canvas_has_fw_shots(project):
+                    async def _markup_progress(msg: str) -> None:
+                        from app.services.run_sync import (
+                            update_active_node_progress_text,
+                        )
+
+                        await update_active_node_progress_text(
+                            session, project, msg
+                        )
+                        await session.commit()
+
+                    frames_for_map = await _ensure_four_node_scene_shots(
+                        session,
+                        project,
+                        frames_for_map,
+                        node_key=str(node_key),
+                        role=role,
+                        force_full=force_full,
+                        ents=ents,
+                        on_progress=_markup_progress,
+                    )
                 frames_for_map, exp = await expand_vo_cells_into_shots(
                     session, project, frames_for_map
                 )
@@ -1216,13 +1579,26 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     project.id,
                     exp,
                 )
-            ents = list(
-                (
-                    await session.execute(
-                        _select(Entity).where(Entity.project_id == project.id)
+                if _canvas_has_fw_shots(project):
+                    rebuilt = await apply_shot_coverage_to_vo_cells(
+                        session, project
                     )
-                ).scalars().all()
-            )
+                    await session.flush()
+                    frames_for_map = list(
+                        (
+                            await session.execute(
+                                _select(Frame)
+                                .where(Frame.project_id == project.id)
+                                .order_by(Frame.sort_key, Frame.number)
+                            )
+                        ).scalars().all()
+                    )
+                    logger.info(
+                        "[#{}] fw_frames flatten before GPT cells={} expand={}",
+                        project.id,
+                        rebuilt.get("cells"),
+                        rebuilt.get("expand"),
+                    )
             # Компактный снимок DB (SoT). Excel в GPT не отдаём вообще.
             # scene_grammar: attrs не тащим — пишем с нуля.
             # character_registry: voiceover + текущие персонажи кадра + Entity.
@@ -1306,7 +1682,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     frames=gpt_frames,
                     characters=entity_cards_for_gpt(ents),
                     strip_prompts=bool(force_full),
-                    full_vo=vo_markup,
+                    full_vo=vo_markup
+                    or _is_script_frames_qc_group_node(variant, master, node_key),
                 )
                 if vo_markup:
                     overlay = {
@@ -1427,12 +1804,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     accompanying = (
                         f"{accompanying}\n\n"
                         "# DB SoT\n"
-                        "Файл db_frames.json — VO-ячейки из базы (uuid + number + "
-                        "voiceover_text). voiceover_text — ГОТОВЫЙ закадр: "
-                        "не пиши, не меняй, не сокращай его. Твоя единственная "
-                        "работа — разметить в нём биты. "
-                        "Пайплайн сам запишет твой JSON в базу. "
-                        "Excel не используется. Отвечай только JSON apply-ops."
+                        "Файл db_frames.json — ОДНА seed-ячейка = весь целый закадр "
+                        "(uuid + number + voiceover_text). Это неразделённый "
+                        "script_text / voiceover.txt: не пиши, не меняй, не режь "
+                        "его на ячейки. Твоя единственная работа — разметить в нём "
+                        "биты (fields.биты). Разбивку на ячейки сделает пайплайн "
+                        "позже. Excel не используется. Отвечай только JSON apply-ops."
                     ).strip()
                 elif main_action_node:
                     accompanying = (
@@ -1444,16 +1821,33 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         "Слоган без номера = брак. Не пиши закадр и биты."
                     ).strip()
                 elif scenes_to_frames:
+                    from app.services.shot_templates import (
+                        format_shot_templates_catalog,
+                        format_when_assignments,
+                        neighbor_place_hints,
+                    )
+
+                    catalog = format_shot_templates_catalog()
+                    neighbors = neighbor_place_hints(gpt_frames)
+                    when_plan = format_when_assignments(gpt_frames)
                     accompanying = (
                         f"{accompanying}\n\n"
                         "# DB SoT\n"
                         "Файл db_frames.json — VO-ячейки (uuid + voiceover_text + "
-                        "главное_действие). Пиши только fields.кадры по логике "
-                        "этой ячейки: одно место и несколько кадров → parent = "
-                        "первый кадр локации; новое место → parent_id null. "
-                        "Не копируй чужой сюжет. Не плоди планы ради схемы. "
-                        "Не пиши закадр, биты, главное_действие."
+                        "главное_действие). Пиши только fields.кадры. "
+                        "На каждую сцену главное_действие — свой вопрос дерева "
+                        "ВЫБОР, не один шаблон на всю ячейку. T3 = «только смена "
+                        "места»; руки/взгляд/путь/удар — свои T*. T8 только на "
+                        "прыжок жизни/новое место. То же место — сжатие без "
+                        "нового ОБЩЕГО. Раскрой shots, подставь слоты, сожми "
+                        "по drop_order (required=1 не трогай). "
+                        "Не пиши закадр, биты, главное_действие.\n\n"
+                        f"{catalog}"
                     ).strip()
+                    if neighbors:
+                        accompanying = f"{accompanying}\n\n{neighbors}".strip()
+                    if when_plan:
+                        accompanying = f"{accompanying}\n\n{when_plan}".strip()
                 elif _is_frame_prompts_prompt(variant, master) or str(
                     node_key or ""
                 ).endswith("_fw_frames"):
@@ -1596,42 +1990,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         new_op["fields"] = kept
                         cleaned.append(new_op)
                     ops = cleaned
-                    if str(node_key or "").endswith(("_fw_frames", "_fw_qc")):
-                        from app.services.vo_shot_expand import is_shot_child
-
-                        child_ids = {
-                            str(getattr(fr, "uuid", "") or "").strip()
-                            for fr in frames_for_map
-                            if is_shot_child(fr)
-                        }
-                        if child_ids:
-                            stripped: list[dict] = []
-                            for op in ops:
-                                uid = str(op.get("frame_uuid") or "").strip()
-                                if uid not in child_ids:
-                                    stripped.append(op)
-                                    continue
-                                fields = op.get("fields")
-                                if not isinstance(fields, dict):
-                                    continue
-                                kept = {
-                                    k: v
-                                    for k, v in fields.items()
-                                    if str(k).strip().lower().replace(" ", "_")
-                                    not in {
-                                        "image_prompt",
-                                        "animation_prompt",
-                                        "промт_картинки",
-                                        "промт_видео",
-                                        "промпт_картинки",
-                                        "промпт_видео",
-                                    }
-                                }
-                                if kept:
-                                    new_op = dict(op)
-                                    new_op["fields"] = kept
-                                    stripped.append(new_op)
-                            ops = stripped
+                    if not ops:
+                        logger.warning(
+                            "[#{}] enrich_xlsx node={!r}: apply-ops пустой "
+                            "после фильтра kind={} camera_menu_only={}",
+                            project.id,
+                            node_key,
+                            apply_kind,
+                            fw_camera_menu_only,
+                        )
+                        return
                     await _db_apply.apply_ops(
                         session,
                         project,
@@ -2056,37 +2424,52 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     "запись через Excel/TSV больше не поддерживается."
                 )
         nk_now = str(node_key or "")
-        if nk_now.endswith("_fw_frames") or nk_now.endswith("_fw_qc"):
-            from sqlalchemy import select as _sel_cov
+        if nk_now.endswith(("_fw_shots", "_fw_frames", "_fw_qc")) and _canvas_has_fw_shots(
+            project
+        ):
+            from app.services.vo_shot_expand import apply_shot_coverage_to_vo_cells
+
+            rebuilt = await apply_shot_coverage_to_vo_cells(session, project)
+            await session.flush()
+            logger.info(
+                "[#{}] {} coverage: cells={} camera={} child_prompts={} "
+                "deleted={} expand={}",
+                project.id,
+                nk_now,
+                rebuilt.get("cells"),
+                rebuilt.get("camera"),
+                rebuilt.get("dist"),
+                rebuilt.get("deleted"),
+                rebuilt.get("expand"),
+            )
+        elif nk_now.endswith(("_fw_frames", "_fw_qc")) and not _canvas_has_fw_shots(
+            project
+        ):
+            from sqlalchemy import select as _sel_dist
 
             from app.services.vo_shot_expand import (
-                apply_shot_voiceover_to_cells,
                 distribute_coverage_prompts,
                 inherit_camera_on_children,
             )
 
-            cov_frames = list(
+            leftover = list(
                 (
                     await session.execute(
-                        _sel_cov(Frame)
+                        _sel_dist(Frame)
                         .where(Frame.project_id == project.id)
                         .order_by(Frame.sort_key, Frame.number)
                     )
                 ).scalars().all()
             )
-            n_dist = distribute_coverage_prompts(cov_frames)
-            n_cam = inherit_camera_on_children(cov_frames)
-            n_vo = 0
-            if nk_now.endswith("_fw_qc"):
-                n_vo = apply_shot_voiceover_to_cells(cov_frames)
+            n_cam = inherit_camera_on_children(leftover)
+            n_dist = distribute_coverage_prompts(leftover)
             await session.flush()
             logger.info(
-                "[#{}] {} coverage: vo_cells={} child_prompts={} camera={}",
+                "[#{}] {} four-node distribute camera={} child_prompts={}",
                 project.id,
                 nk_now,
-                n_vo,
-                n_dist,
                 n_cam,
+                n_dist,
             )
         save_operator_result(
             project,

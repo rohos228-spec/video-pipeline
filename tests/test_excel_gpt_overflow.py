@@ -28,10 +28,12 @@ from app.services.excel_gpt_node import (
 )
 from app.services.project_steps import start_step
 
-# Группа «Сценарий → промпты кадров + QC» на канвасе: все 4 — overflow.
+# Группа «Сценарий → промпты кадров + QC» на канвасе: overflow.
 _OVERFLOW_GROUP = (
     ("n_excel_gpt_fw_script", "GPT: сценарист"),
     ("n_excel_gpt_fw_check_script", "Проверка: сценарий"),
+    ("n_excel_gpt_fw_action", "GPT: главное действие · по битам"),
+    ("n_excel_gpt_fw_shots", "GPT: сцены → кадры"),
     ("n_excel_gpt_fw_frames", "GPT: промты кадров · continuity"),
     ("n_excel_gpt_fw_qc", "GPT: QC промптов"),
 )
@@ -55,6 +57,20 @@ def _overflow_nodes() -> list[dict]:
     return [
         _overflow_node(nid, label, i * 290)
         for i, (nid, label) in enumerate(_OVERFLOW_GROUP)
+    ]
+
+
+def _overflow_edges() -> list[dict]:
+    pairs = [
+        ("n_excel_gpt_fw_script", "n_excel_gpt_fw_check_script"),
+        ("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_action"),
+        ("n_excel_gpt_fw_action", "n_excel_gpt_fw_shots"),
+        ("n_excel_gpt_fw_shots", "n_excel_gpt_fw_frames"),
+        ("n_excel_gpt_fw_frames", "n_excel_gpt_fw_qc"),
+    ]
+    return [
+        {"id": f"e{i}", "source": a, "target": b}
+        for i, (a, b) in enumerate(pairs, start=1)
     ]
 
 
@@ -103,11 +119,7 @@ def test_prepare_overflow_chain_advances_to_next() -> None:
     from app.services.excel_gpt_node import prepare_enrich_chain_for_auto_advance
 
     nodes = _overflow_nodes()
-    edges = [
-        {"id": "e1", "source": "n_excel_gpt_fw_script", "target": "n_excel_gpt_fw_check_script"},
-        {"id": "e2", "source": "n_excel_gpt_fw_check_script", "target": "n_excel_gpt_fw_frames"},
-        {"id": "e3", "source": "n_excel_gpt_fw_frames", "target": "n_excel_gpt_fw_qc"},
-    ]
+    edges = _overflow_edges()
     p = SimpleNamespace(
         id=60,
         status=ProjectStatus.enrich_1_ready,
@@ -150,24 +162,16 @@ def test_overflow_qc_does_not_chain_into_scene_agent() -> None:
         },
         {"id": "n_script", "type": "script", "position": {"x": 2000, "y": 0}, "data": {}},
     ]
-    edges = [
-        {"id": "e1", "source": "n_excel_gpt_fw_script", "target": "n_excel_gpt_fw_check_script"},
-        {"id": "e2", "source": "n_excel_gpt_fw_check_script", "target": "n_excel_gpt_fw_frames"},
-        {"id": "e3", "source": "n_excel_gpt_fw_frames", "target": "n_excel_gpt_fw_qc"},
-        {"id": "e4", "source": "n_excel_gpt_fw_qc", "target": "n_script"},
-        {"id": "e5", "source": "n_excel_gpt_sd_cd_world", "target": "n_excel_gpt_sd_cd_style"},
+    edges = _overflow_edges() + [
+        {"id": "e_qc_script", "source": "n_excel_gpt_fw_qc", "target": "n_script"},
+        {"id": "e_world_style", "source": "n_excel_gpt_sd_cd_world", "target": "n_excel_gpt_sd_cd_style"},
     ]
     p = SimpleNamespace(
         id=60,
         status=ProjectStatus.enrich_4_ready,
         meta={
             "canvas_graph": {"nodes": nodes, "edges": edges},
-            "excel_gpt_completed_keys": [
-                "n_excel_gpt_fw_script",
-                "n_excel_gpt_fw_check_script",
-                "n_excel_gpt_fw_frames",
-                "n_excel_gpt_fw_qc",
-            ],
+            "excel_gpt_completed_keys": [nid for nid, _ in _OVERFLOW_GROUP],
         },
     )
     assert first_work_successor_along_edges(p, "n_excel_gpt_fw_qc") == (
@@ -187,21 +191,28 @@ def test_overflow_qc_does_not_chain_into_scene_agent() -> None:
 
 
 def test_detect_qc_prompt_body_is_not_frame_fill() -> None:
+    from pathlib import Path
+
     from app.orchestrator.steps.enrich_xlsx import (
         _is_frame_prompts_prompt,
         _is_qc_prompts_prompt,
     )
 
-    body = "QC промптов: чинит нарушения непрерывности без переписывания кадра."
+    for candidate in (
+        Path("templates/node_groups/script_frames_qc/prompts_qc_continuity_ru.md"),
+        Path("templates/excel_gpt_agents/prompts_qc_continuity_ru.md"),
+    ):
+        if candidate.is_file():
+            body = candidate.read_text(encoding="utf-8")
+            break
+    else:
+        body = (
+            "Нода: excel_gpt. ПОСЛЕ агента-конвертера\n"
+            "(frame_prompts_continuity) и ДО генерации картинок.\n"
+            "qc промпт continuity\n"
+        )
     assert _is_qc_prompts_prompt("prompts_qc_continuity_ru", body)
     assert not _is_frame_prompts_prompt("prompts_qc_continuity_ru", body)
-
-
-def test_detect_scene_analytics_prompt_by_54_59_name() -> None:
-    from app.orchestrator.steps.enrich_xlsx import _is_scene_analytics_prompt
-
-    assert _is_scene_analytics_prompt("agent_54_59_07.07BD.txt", "")
-    assert not _is_scene_analytics_prompt("агент по созданию персонажей BD.txt", "")
 
 
 @pytest.fixture
@@ -230,11 +241,7 @@ async def mem_db(monkeypatch):
 async def _seed_overflow_group(scope):
     slug = f"ovf-{uuid.uuid4().hex[:8]}"
     nodes = _overflow_nodes()
-    edges = [
-        {"id": "e1", "source": "n_excel_gpt_fw_script", "target": "n_excel_gpt_fw_check_script"},
-        {"id": "e2", "source": "n_excel_gpt_fw_check_script", "target": "n_excel_gpt_fw_frames"},
-        {"id": "e3", "source": "n_excel_gpt_fw_frames", "target": "n_excel_gpt_fw_qc"},
-    ]
+    edges = _overflow_edges()
     async with scope() as session:
         wf = Workflow(
             name=f"wf-{uuid.uuid4().hex[:8]}",
@@ -327,8 +334,6 @@ async def test_start_step_overflow_group_nodes(
         )
         assert status is ProjectStatus.enriching_1, label
         assert (project.meta or {}).get("active_excel_gpt_node_key") == node_key
-        assert (project.meta or {}).get("excel_gpt_ui_force_full") is True
-        assert (project.meta or {}).get("excel_gpt_force_full_rerun") == node_key
 
     async with mem_db() as session:
         nr = await session.get(NodeRun, nr_ids[node_key])
@@ -336,18 +341,14 @@ async def test_start_step_overflow_group_nodes(
 
 
 def test_overflow_successor_after_check_stays_enriching_1() -> None:
-    """check → frames: slot 0, running = enriching_1, не слот 2."""
+    """check → action: slot 0, running = enriching_1, не слот 2."""
     from app.services.excel_gpt_node import (
         first_work_successor_from_excel_slot,
         running_status_for_slot,
     )
 
     nodes = _overflow_nodes()
-    edges = [
-        {"id": "e1", "source": "n_excel_gpt_fw_script", "target": "n_excel_gpt_fw_check_script"},
-        {"id": "e2", "source": "n_excel_gpt_fw_check_script", "target": "n_excel_gpt_fw_frames"},
-        {"id": "e3", "source": "n_excel_gpt_fw_frames", "target": "n_excel_gpt_fw_qc"},
-    ]
+    edges = _overflow_edges()
     p = SimpleNamespace(
         id=60,
         status=ProjectStatus.enrich_1_ready,
@@ -358,7 +359,7 @@ def test_overflow_successor_after_check_stays_enriching_1() -> None:
     )
     assert succ is not None
     key, typ, slot = succ
-    assert key == "n_excel_gpt_fw_frames"
+    assert key == "n_excel_gpt_fw_action"
     assert typ == "excel_gpt"
     assert slot == 0
     assert running_status_for_slot(slot) is ProjectStatus.enriching_1

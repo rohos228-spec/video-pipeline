@@ -1955,12 +1955,20 @@ export const api = {
   // ── Prompt files (prompts/<step>/*.md на диске) ────────────────────
   getGlobalActivePrompts: () =>
     http<Record<string, string>>("/api/prompt-files/global-active"),
-  listPromptFiles: (stepCode: string) =>
-    http<PromptFileInfo[]>(`/api/prompt-files/${stepCode}`),
-  getPromptFile: (stepCode: string, name: string) =>
-    http<PromptFileContent>(
-      `/api/prompt-files/${stepCode}/${encodeURIComponent(name)}/content`,
-    ),
+  listPromptFiles: (stepCode: string, groupId?: string) => {
+    const q = groupId
+      ? `?group_id=${encodeURIComponent(groupId)}`
+      : "";
+    return http<PromptFileInfo[]>(`/api/prompt-files/${stepCode}${q}`);
+  },
+  getPromptFile: (stepCode: string, name: string, groupId?: string) => {
+    const q = groupId
+      ? `?group_id=${encodeURIComponent(groupId)}`
+      : "";
+    return http<PromptFileContent>(
+      `/api/prompt-files/${stepCode}/${encodeURIComponent(name)}/content${q}`,
+    );
+  },
   downloadPromptFileUrl: (stepCode: string, name: string) =>
     `/api/prompt-files/${stepCode}/${encodeURIComponent(name)}/download`,
   savePromptFile: (stepCode: string, name: string, content: string) =>

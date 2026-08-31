@@ -269,10 +269,14 @@ def test_excel_gpt_keeps_bits_action_shots_and_full_vo() -> None:
     assert row["voiceover_text"] == long_vo
     assert "image_prompt" not in row
     assert "place" not in row
-    bits = json.loads(row["биты"])
+    bits = row["биты"]
+    if isinstance(bits, str):
+        bits = json.loads(bits)
     assert bits[0]["глагол"] == "бегает"
     assert row["main_action"] == chain
-    stored = json.loads(row["кадры"])
+    stored = row["кадры"]
+    if isinstance(stored, str):
+        stored = json.loads(stored)
     assert stored[1]["id"] == "1-K2"
 
 

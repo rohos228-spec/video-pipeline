@@ -61,14 +61,34 @@ def test_clamp_shots_to_duration():
 def test_split_text_into_parts():
     parts = split_text_into_parts("один два три четыре пять шесть", 3)
     assert len(parts) == 3
-    assert " ".join(parts).split() == [
-        "один",
-        "два",
-        "три",
-        "четыре",
-        "пять",
-        "шесть",
-    ]
+    assert parts[0] == "один два три четыре пять шесть"
+    assert parts[1:] == ["", ""]
+
+
+def test_split_text_into_parts_sum_equals_source():
+    """Сумма фрагментов = исходный закадр: слова не теряются и не дублируются."""
+    text = "Раз два три четыре пять шесть семь восемь девять десять."
+    for n in (1, 2, 3, 4, 7):
+        parts = split_text_into_parts(text, n)
+        assert len(parts) == n
+        assert " ".join(parts).split() == text.split()
+    # Слов меньше, чем кадров: хвост пустой, сумма сохраняется.
+    parts = split_text_into_parts("только два", 4)
+    assert parts == ["только", "два", "", ""]
+    assert " ".join(parts).split() == ["только", "два"]
+
+
+def test_split_text_into_parts_does_not_cut_preposition() -> None:
+    vo = (
+        "Его записывали как «душу», продавали вместе с землёй, "
+        "переселяли, наказывали и заставляли работать по воле хозяина."
+    )
+    from app.services.scene_design.camera_expand import vo_chunk_is_dangling
+
+    parts = split_text_into_parts(vo, 5)
+    assert not any(vo_chunk_is_dangling(p) for p in parts)
+    assert " ".join(p for p in parts if p).split() == vo.split()
+    assert any(p == "" for p in parts) or len([p for p in parts if p]) <= 5
 
 
 def test_split_text_into_parts_sum_equals_source():

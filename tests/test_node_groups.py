@@ -182,14 +182,14 @@ async def test_insert_fanout_after_split(mem_db) -> None:
         assert n["type"] == "excel_gpt"
         assert n["data"]["sd_agent"] == agent
         assert "slotIndex" not in n["data"]  # веер слоты enrich не занимает
-        assert n["position"]["x"] == split_x + 380.0
+        assert n["position"]["x"] == split_x + 290.0
         assert project.meta["prompt_slot_variants"][nid] == {"main": f"sd_{agent}"}
         # проверка агента — рядом, вне enrich-слотов, с тумблером «Проверка»
         chk = by_id[f"n_excel_gpt_sd_check_{agent}"]
         assert chk["type"] == "excel_gpt"
         assert "sd_agent" not in chk["data"]
         assert chk["data"]["slotOverflow"] is True
-        assert chk["position"]["x"] == split_x + 760.0
+        assert chk["position"]["x"] == split_x + 580.0
         assert chk["position"]["y"] == n["position"]["y"]
         cfg = project.meta["excel_gpt_nodes"][f"n_excel_gpt_sd_check_{agent}"]
         assert cfg["checkMode"] is True
@@ -199,10 +199,10 @@ async def test_insert_fanout_after_split(mem_db) -> None:
         assert f"n_excel_gpt_sd_check_{agent}" not in project.meta["prompt_slot_variants"]
     asm = by_id["n_excel_gpt_sd_asm"]
     assert asm["data"]["sd_agent"] == "assemble"
-    assert asm["position"]["x"] == split_x + 1140.0
+    assert asm["position"]["x"] == split_x + 870.0
     assert asm["position"]["y"] == split_y
     check_asm = by_id["n_excel_gpt_sd_check_asm"]
-    assert check_asm["position"]["x"] == split_x + 1520.0
+    assert check_asm["position"]["x"] == split_x + 1160.0
     assert check_asm["position"]["y"] == split_y
     assert project.meta["excel_gpt_nodes"]["n_excel_gpt_sd_check_asm"]["checkMode"] is True
 
@@ -255,20 +255,20 @@ async def test_insert_fanout_after_split(mem_db) -> None:
 
 
 async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
-    """Группа: сценарист → действие → кадры → frames → qc."""
+    """Группа «Сценарий → промпты кадров + QC»: вставка после plan, стиль веера."""
     async with mem_db() as session:
         project = await _mk_project(session)
         res = await insert_node_group(session, project, "script_frames_qc")
 
     assert res["after"] == "n_plan"
-    assert len(res["nodes"]) == 5
+    assert len(res["nodes"]) == 6
     cg = project.meta["canvas_graph"]
     by_id = {n["id"]: n for n in cg["nodes"]}
     plan_x = by_id["n_plan"]["position"]["x"]
 
     script = by_id["n_excel_gpt_fw_script"]
     assert script["type"] == "excel_gpt"
-    assert script["position"]["x"] == plan_x + 380.0
+    assert script["position"]["x"] == plan_x + 290.0
     assert script["data"]["groupId"] == "script_frames_qc"
     assert project.meta["prompt_slot_variants"]["n_excel_gpt_fw_script"] == {
         "main": "script_writer_ru"
@@ -278,8 +278,13 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
     assert cfg["outputMode"] == "project_file"
     assert cfg["transport"] == "api"
 
-    # ноды проверки сценария больше нет — сценарист сам выдаёт закадр + биты
-    assert "n_excel_gpt_fw_check_script" not in by_id
+    # проверка сценария — как в веере: checkMode, правила с промта источника
+    chk = by_id["n_excel_gpt_fw_check_script"]
+    assert chk["data"]["slotOverflow"] is True
+    ccfg = project.meta["excel_gpt_nodes"]["n_excel_gpt_fw_check_script"]
+    assert ccfg["checkMode"] is True
+    assert ccfg["checkPromptSource"] == "upstream"
+    assert "n_excel_gpt_fw_check_script" not in project.meta["prompt_slot_variants"]
 
     assert project.meta["prompt_slot_variants"]["n_excel_gpt_fw_action"] == {
         "main": "main_action_from_bits_ru"
@@ -297,85 +302,18 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
     pairs = {(e["source"], e["target"]) for e in cg["edges"]}
     assert ("n_plan", "n_script") not in pairs  # нет такого ребра
     assert ("n_plan", "n_excel_gpt_fw_script") in pairs
-    assert ("n_excel_gpt_fw_script", "n_excel_gpt_fw_action") in pairs
+    assert ("n_excel_gpt_fw_script", "n_excel_gpt_fw_check_script") in pairs
+    kinds = {
+        (e["source"], e["target"]): (e.get("data") or {}).get("kind")
+        for e in cg["edges"]
+    }
+    assert kinds[("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_action")] == "pass"
+    assert kinds[("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_script")] == "fail"
     assert ("n_excel_gpt_fw_action", "n_excel_gpt_fw_shots") in pairs
     assert ("n_excel_gpt_fw_shots", "n_excel_gpt_fw_frames") in pairs
     assert ("n_excel_gpt_fw_frames", "n_excel_gpt_fw_qc") in pairs
     # выход группы → старая цель plan (script)
     assert ("n_excel_gpt_fw_qc", "n_script") in pairs
-
-
-def test_upgrade_stale_script_frames_qc_inserts_action_and_shots() -> None:
-    from app.services.node_groups import upgrade_script_frames_qc_graph
-
-    meta = {
-        "prompt_slot_variants": {
-            "n_excel_gpt_fw_script": {"main": "script_writer_ru"},
-            "n_excel_gpt_fw_frames": {"main": "frame_prompts_continuity_ru"},
-            "n_excel_gpt_fw_qc": {"main": "prompts_qc_continuity_ru"},
-        },
-        "excel_gpt_nodes": {},
-        "canvas_graph": {
-            "workflow_id": 1,
-            "nodes": [
-                {
-                    "id": "n_plan",
-                    "type": "plan",
-                    "position": {"x": 0, "y": 0},
-                    "data": {},
-                },
-                {
-                    "id": "n_excel_gpt_fw_script",
-                    "type": "excel_gpt",
-                    "position": {"x": 380, "y": 0},
-                    "data": {"groupId": "script_frames_qc"},
-                },
-                {
-                    "id": "n_excel_gpt_fw_frames",
-                    "type": "excel_gpt",
-                    "position": {"x": 760, "y": 0},
-                    "data": {"groupId": "script_frames_qc"},
-                },
-                {
-                    "id": "n_excel_gpt_fw_qc",
-                    "type": "excel_gpt",
-                    "position": {"x": 1140, "y": 0},
-                    "data": {"groupId": "script_frames_qc"},
-                },
-            ],
-            "edges": [
-                {"id": "e1", "source": "n_plan", "target": "n_excel_gpt_fw_script"},
-                {
-                    "id": "e2",
-                    "source": "n_excel_gpt_fw_script",
-                    "target": "n_excel_gpt_fw_frames",
-                },
-                {
-                    "id": "e3",
-                    "source": "n_excel_gpt_fw_frames",
-                    "target": "n_excel_gpt_fw_qc",
-                },
-            ],
-        },
-    }
-    assert upgrade_script_frames_qc_graph(meta) is True
-    ids = {n["id"] for n in meta["canvas_graph"]["nodes"]}
-    assert "n_excel_gpt_fw_action" in ids
-    assert "n_excel_gpt_fw_shots" in ids
-    pairs = {
-        (e["source"], e["target"]) for e in meta["canvas_graph"]["edges"]
-    }
-    assert ("n_excel_gpt_fw_script", "n_excel_gpt_fw_action") in pairs
-    assert ("n_excel_gpt_fw_action", "n_excel_gpt_fw_shots") in pairs
-    assert ("n_excel_gpt_fw_shots", "n_excel_gpt_fw_frames") in pairs
-    assert ("n_excel_gpt_fw_script", "n_excel_gpt_fw_frames") not in pairs
-    assert meta["prompt_slot_variants"]["n_excel_gpt_fw_action"] == {
-        "main": "main_action_from_bits_ru"
-    }
-    assert meta["prompt_slot_variants"]["n_excel_gpt_fw_shots"] == {
-        "main": "scenes_to_frames_ru"
-    }
-    assert upgrade_script_frames_qc_graph(meta) is False
 
 
 async def test_insert_duplicate_raises(mem_db) -> None:
@@ -563,7 +501,7 @@ def test_group_detail_spec() -> None:
     cam = by_key["camera"]
     assert cam["prompt_variant"] == "sd_camera"
     assert cam["marker"] == "camera"
-    assert cam["dx"] == 380.0
+    assert cam["dx"] == 290.0
     chk = by_key["check_camera"]
     assert chk["slot_overflow"] is True
     assert chk["has_operator_config"] is True
@@ -709,3 +647,71 @@ async def test_group_from_canvas_and_reinsert(mem_db) -> None:
     ]
     assert sorted(set(copies)) == ["moya_svyazka", "moya_svyazka#2"]
     assert res2["nodes"] != res["nodes"]  # id с суффиксами
+
+
+def test_restore_script_frames_qc_four_node_graph() -> None:
+    meta = {
+        "canvas_graph": {
+            "workflow_id": 1,
+            "nodes": [
+                {
+                    "id": "n_excel_gpt_fw_check_script",
+                    "type": "excel_gpt",
+                    "position": {"x": 0, "y": 0},
+                    "data": {},
+                },
+                {
+                    "id": "n_excel_gpt_fw_action",
+                    "type": "excel_gpt",
+                    "position": {"x": 100, "y": 0},
+                    "data": {},
+                },
+                {
+                    "id": "n_excel_gpt_fw_shots",
+                    "type": "excel_gpt",
+                    "position": {"x": 200, "y": 0},
+                    "data": {},
+                },
+                {
+                    "id": "n_excel_gpt_fw_frames",
+                    "type": "excel_gpt",
+                    "position": {"x": 300, "y": 0},
+                    "data": {},
+                },
+            ],
+            "edges": [
+                {
+                    "source": "n_excel_gpt_fw_check_script",
+                    "target": "n_excel_gpt_fw_action",
+                    "data": {"kind": "pass"},
+                },
+                {
+                    "source": "n_excel_gpt_fw_action",
+                    "target": "n_excel_gpt_fw_shots",
+                    "data": {"kind": "after"},
+                },
+                {
+                    "source": "n_excel_gpt_fw_shots",
+                    "target": "n_excel_gpt_fw_frames",
+                    "data": {"kind": "after"},
+                },
+            ],
+        },
+        "prompt_slot_variants": {
+            "n_excel_gpt_fw_action": {"main": "main_action_from_bits_ru"},
+            "n_excel_gpt_fw_shots": {"main": "scenes_to_frames_ru"},
+        },
+        "excel_gpt_nodes": {
+            "n_excel_gpt_fw_action": {},
+            "n_excel_gpt_fw_shots": {},
+        },
+    }
+    assert ng.restore_script_frames_qc_four_node_graph(meta) is True
+    ids = {n["id"] for n in meta["canvas_graph"]["nodes"]}
+    assert ids == {"n_excel_gpt_fw_check_script", "n_excel_gpt_fw_frames"}
+    pairs = {
+        (e["source"], e["target"]) for e in meta["canvas_graph"]["edges"]
+    }
+    assert ("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_frames") in pairs
+    assert "n_excel_gpt_fw_action" not in meta["prompt_slot_variants"]
+    assert "n_excel_gpt_fw_shots" not in meta["excel_gpt_nodes"]

@@ -127,10 +127,72 @@ def excel_gpt_template_dir() -> Path:
     return find_project_root() / "templates" / "excel_gpt_agents"
 
 
+# Промты группы — только templates/node_groups/script_frames_qc/,
+# и только когда группа применена (group_id / нода группы).
+SCRIPT_FRAMES_QC_PROMPT_NAMES: frozenset[str] = frozenset(
+    {
+        "script_writer_ru",
+        "main_action_from_bits_ru",
+        "scenes_to_frames_ru",
+        "frame_prompts_continuity_ru",
+        "prompts_qc_continuity_ru",
+    }
+)
+
+
+def node_group_prompts_dir(group_id: str) -> Path:
+    from app.project_root import find_project_root
+
+    return find_project_root() / "templates" / "node_groups" / group_id
+
+
+def is_script_frames_qc_prompt(name: str) -> bool:
+    clean = (name or "").strip()
+    if clean.lower().endswith(".md"):
+        clean = clean[:-3].rstrip()
+    return clean in SCRIPT_FRAMES_QC_PROMPT_NAMES
+
+
+def script_frames_qc_group_id(group_id: str | None) -> str | None:
+    if not group_id:
+        return None
+    base = str(group_id).split("#", 1)[0].strip()
+    return base if base == "script_frames_qc" else None
+
+
+def list_group_owned_prompts(group_id: str | None) -> list[str] | None:
+    """Промты группы. None — общий список «Работа с GPT»."""
+    if script_frames_qc_group_id(group_id) is None:
+        return None
+    d = node_group_prompts_dir("script_frames_qc")
+    return sorted(
+        n for n in SCRIPT_FRAMES_QC_PROMPT_NAMES if (d / f"{n}.md").is_file()
+    )
+
+
+def resolve_script_frames_qc_prompt_path(name: str) -> Path:
+    """Промт группы — только templates/node_groups/script_frames_qc/."""
+    clean = (name or "").strip()
+    if clean.lower().endswith(".md"):
+        clean = clean[:-3].rstrip()
+    return node_group_prompts_dir("script_frames_qc") / f"{clean}.md"
+
+
+def _group_prompt_path(name: str) -> Path | None:
+    clean = name.strip()
+    if clean in SCRIPT_FRAMES_QC_PROMPT_NAMES:
+        p = node_group_prompts_dir("script_frames_qc") / f"{clean}.md"
+        if p.is_file():
+            return p
+    return None
+
+
 def excel_gpt_prompt_exists(name: str) -> bool:
     clean = _clean_variant_name(name) if name else ""
     if not clean:
         return False
+    if _group_prompt_path(clean) is not None:
+        return True
     for code in excel_gpt_source_steps():
         try:
             if prompt_path(code, clean).exists():
@@ -167,11 +229,21 @@ def _excel_gpt_local_is_stale(name: str, path: Path) -> bool:
     return any(m in head for m in markers)
 
 
-def resolve_excel_gpt_prompt_path(name: str) -> Path:
-    """Читать из 05_excel_gpt, legacy enrich_* или templates/excel_gpt_agents."""
+def resolve_excel_gpt_prompt_path(
+    name: str, *, group_id: str | None = None
+) -> Path:
+    """Общий excel_gpt — 05_excel_gpt / excel_gpt_agents.
+
+    Промты группы script_frames_qc — только если передан group_id группы.
+    """
     clean = _sanitize_name(name) if not is_valid_prompt_name(name) else name
     if not clean:
         raise ValueError(f"некорректное имя промта: {name!r}")
+    if script_frames_qc_group_id(group_id) is not None and clean in SCRIPT_FRAMES_QC_PROMPT_NAMES:
+        group = _group_prompt_path(clean)
+        if group is not None:
+            return group
+        return resolve_script_frames_qc_prompt_path(clean)
     primary = step_dir(EXCEL_GPT_UNIFIED_STEP) / f"{clean}.md"
     tmpl = excel_gpt_template_dir() / f"{clean}.md"
     if primary.is_file() and not (
@@ -365,6 +437,12 @@ def read_prompt(step_code: str, name: str) -> str:
 
 def write_prompt(step_code: str, name: str, content: str) -> Path:
     if is_excel_gpt_prompt_step(step_code):
+        clean = _clean_variant_name(name) if name else ""
+        if clean in SCRIPT_FRAMES_QC_PROMPT_NAMES:
+            p = resolve_script_frames_qc_prompt_path(clean)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8")
+            return p
         step_code = EXCEL_GPT_UNIFIED_STEP
     p = prompt_path(step_code, name)
     p.write_text(content, encoding="utf-8")
