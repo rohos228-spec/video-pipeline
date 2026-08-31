@@ -322,11 +322,11 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     const s = settingsQ.data;
     const mt = (s.media_type as OutseeMediaType) || "image";
     const rawImg = String(s.image_slug || "kie:nano-banana-2");
-    setImageSlug(rawImg.startsWith("kie:") ? rawImg : `kie:${rawImg}`);
+    setImageSlug(rawImg);
     const rawVid = String(s.video_slug || "kie:veo-3-1");
-    setVideoSlug(rawVid.startsWith("kie:") ? rawVid : `kie:${rawVid}`);
+    setVideoSlug(rawVid);
     const rawAud = String(s.audio_slug || "kie:suno-music");
-    setAudioSlug(rawAud.startsWith("kie:") ? rawAud : rawAud === "suno-5-5" ? "kie:suno-music" : `kie:${rawAud}`);
+    setAudioSlug(rawAud === "suno-5-5" ? "kie:suno-music" : rawAud);
     setAspect(String(s.aspect || "16:9"));
     setResolution(String(s.image_resolution || "2K"));
     setDetail(String(s.image_quality || "medium"));
@@ -403,28 +403,35 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     setKieValues({});
   }, [activeSlug]);
 
-  // Трим каталога Create: outsee — только GPT Image 2 / Nano Banana 2 /
-  // Veo 3.1 Lite; аудио — только KIE (Suno/ElevenLabs не дублируются).
+  // Не трогаем выбранную модель, пока каталог kie пустой — иначе всё
+  // сбрасывается в 2–3 слота и кажется, что «модели отвалились».
   useEffect(() => {
-    if (!kieCatalogQ.data) return;
-    const isKie = (s: string) => kieModels.some((m) => `kie:${m.id}` === s);
-    if (
-      mediaType === "image" &&
-      !isKie(imageSlug) &&
-      !["gpt-image-2", "nano-banana-2"].includes(imageSlug)
-    ) {
-      setImageSlug("gpt-image-2");
+    if (!kieModels.length) return;
+    const ids = new Set(kieModels.map((m) => m.id));
+    const outseeOk = new Set(["gpt-image-2", "nano-banana-2", "veo-3-1-lite"]);
+    const resolve = (slug: string, fallback: string) => {
+      const bare = slug.startsWith("kie:") ? slug.slice(4) : slug;
+      if (ids.has(bare)) return `kie:${bare}`;
+      if (outseeOk.has(bare)) return bare;
+      return fallback;
+    };
+    if (mediaType === "image") {
+      const next = resolve(imageSlug, "kie:nano-banana-2");
+      if (next !== imageSlug) setImageSlug(next);
     }
-    if (mediaType === "video" && !isKie(videoSlug) && videoSlug !== "veo-3-1-lite") {
-      setVideoSlug("veo-3-1-lite");
+    if (mediaType === "video") {
+      const next = resolve(videoSlug, "kie:veo-3-1");
+      if (next !== videoSlug) setVideoSlug(next);
     }
-    if (mediaType === "audio" && audioSlug === "kie:suno-sounds") {
-      // Suno Sounds Task поёт / делает петли — настоящий SFX это ElevenLabs.
-      setAudioSlug("kie:elevenlabs-sfx");
-    } else if (mediaType === "audio" && !isKie(audioSlug)) {
-      setAudioSlug("kie:suno-music");
+    if (mediaType === "audio") {
+      if (audioSlug === "kie:suno-sounds") {
+        setAudioSlug("kie:elevenlabs-sfx");
+      } else {
+        const next = resolve(audioSlug, "kie:suno-music");
+        if (next !== audioSlug) setAudioSlug(next);
+      }
     }
-  }, [kieCatalogQ.data, kieModels, mediaType, imageSlug, videoSlug, audioSlug]);
+  }, [kieModels, mediaType, imageSlug, videoSlug, audioSlug]);
 
   const currentName = kieActive
     ? (kieModel.label ?? kieModel.id)
@@ -2541,7 +2548,7 @@ function ModelPickerPopover({
       : mediaType === "video"
         ? "Модели видео"
         : "Модели аудио";
-  const models = pickerModelsForType(mediaType);
+  const models = pickerModelsForType(mediaType, { full: kieModels.length === 0 });
   const kieForType = kieModels.filter((m) => {
     const media =
       m.media || (m.category === "video" ? "video" : m.category === "image" ? "image" : "audio");

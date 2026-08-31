@@ -587,7 +587,17 @@ export function pickerAudioModels(): OutseeAudioModel[] {
   return [];
 }
 
-export function pickerModelsForType(type: OutseeMediaType) {
+export function pickerModelsForType(
+  type: OutseeMediaType,
+  opts?: { full?: boolean },
+) {
+  const full = Boolean(opts?.full);
+  // Каталог kie не пришёл — не оставляем 2 картинки и 1 видео.
+  if (full) {
+    if (type === "image") return OUTSEE_IMAGE_MODELS.filter((m) => !m.hidden);
+    if (type === "video") return OUTSEE_VIDEO_MODELS.filter((m) => !m.hidden);
+    return OUTSEE_AUDIO_MODELS;
+  }
   if (type === "image") return pickerImageModels();
   if (type === "video") return pickerVideoModelsAll();
   return pickerAudioModels();
