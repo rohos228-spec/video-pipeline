@@ -67,6 +67,12 @@ def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, Any]:
                 out[key] = parsed
                 continue
         out[key] = text
+    if "main_action" not in out:
+        raw = src.get("главное_действие")
+        if raw is not None and str(raw).strip():
+            out["main_action"] = str(raw).strip()
+    if "main_action" in out and "главное_действие" not in out:
+        out["главное_действие"] = out["main_action"]
     # Русский алиас для персонажей кадра (агенты часто ждут «персонажи»).
     if "characters" in out and "персонажи" not in out:
         out["персонажи"] = out["characters"]

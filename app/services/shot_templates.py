@@ -119,6 +119,7 @@ _RE_T8 = (
     r"карьер[ауиеы]|"
     r"принадлеж|владел|владения"
 )
+_RE_T8_HOLDINGS = r"принадлеж|владел|владения|перечисл"
 _RE_T4 = (
     r"смотр|наблюд|взгляд|видит|увидел|замеча|заметил|высматрив|следит|"
     r"разглядыв|указыва(ет|ют)|указал|показыва|показал|предъявля|тычет"
@@ -176,22 +177,25 @@ def select_template_when(scene: dict[str, Any], prev_place: str = "") -> str:
     # 2. Пришёл в новое место и нашёл / взял / прочитал?
     if _has(_RE_T2_VERB, blob) and ((not same) or _has(_RE_T2_ITEM, blob)):
         return "T2"
-    # 8. Прыжок жизни / новый мир (не «долгие годы» в том же кабинете).
-    # Раньше T6: «поехал служить в армию» — T8, не разовый путь.
-    if _has(_RE_T8, blob):
-        return "T8"
     # 4. Смысл в том, на что смотрит?
     if _has(_RE_T4, blob):
         return "T4"
-    # 5. Руки делают работу?
+    # 5. Руки делают работу? Реестр владений / «ей принадлежали» = T8.
     if _has(_RE_T5, blob):
+        if _has(_RE_T8_HOLDINGS, blob):
+            return "T8"
         return "T5"
-    # 6. Идёт / едет из A в B?
+    # 6. Идёт / едет из A в B? «поехал служить в армию» = T8 (шаг 8).
     if _has(_RE_T6_VERB, blob) and _has(_RE_T6_DIR, blob):
+        if _has(_RE_T8, blob):
+            return "T8"
         return "T6"
     # 7. Короткий удар: услышал, понял, получил?
     if _has(_RE_T7, blob):
         return "T7"
+    # 8. Прыжок жизни / новый мир (не «долгие годы» в том же кабинете).
+    if _has(_RE_T8, blob):
+        return "T8"
     # 9. Один в комнате, быт или ожидание?
     if _has(_RE_T9, blob):
         return "T9"
@@ -309,6 +313,129 @@ def plan_templates_for_action(action: str) -> list[dict[str, Any]]:
 def assign_templates_for_action(action: str) -> dict[int, str]:
     """Сцена → template_id (краткий вид plan_templates_for_action)."""
     return {row["n"]: row["template"] for row in plan_templates_for_action(action)}
+
+
+_SAME_PLACE_DROP = {
+    "T1": frozenset({"T1-K1"}),
+    "T2": frozenset({"T2-K1"}),
+    "T3": frozenset({"T3-K1"}),
+    "T5": frozenset({"T5-K0"}),
+    "T6": frozenset({"T6-K1", "T6-K2"}),
+}
+
+
+def catalog_shot_rows(tid: str, *, same_place: bool = False) -> list[dict[str, Any]]:
+    """Строки SHOTS шаблона. То же место — без нового ОБЩЕГО."""
+    base = normalize_template_id(tid)
+    if not base or base.startswith("X"):
+        return []
+    rows = [
+        dict(row)
+        for row in (load_shot_templates().get("shots") or [])
+        if normalize_template_id(str(row.get("template_id") or "")) == base
+    ]
+    rows.sort(key=lambda r: int(r.get("n") or 0))
+    if same_place:
+        drop = _SAME_PLACE_DROP.get(base) or frozenset()
+        kept = [r for r in rows if str(r.get("shot_id") or "") not in drop]
+        if kept:
+            return kept
+    return rows
+
+
+def _fill_slot_text(text: str, *, place: str, action: str) -> str:
+    raw = str(text or "")
+    raw = raw.replace("{место}", place).replace("{новое_место}", place)
+    raw = raw.replace("{действие}", action).replace("{жест}", action)
+    raw = raw.replace("{откуда}", place).replace("{куда}", place).replace("{путь}", place)
+    raw = re.sub(r"\{[^}]+\}", "", raw)
+    return " ".join(raw.split())
+
+
+def fill_kadry_from_catalog(
+    shots: list[Any],
+    action: str,
+    *,
+    cell_number: int = 1,
+) -> list[dict[str, Any]]:
+    """GPT написал 1 кадр на сцену → полная лестница T/X из таблицы.
+
+    Эталон: полиция T6→T3→T1→T5, дети = шаги одного действия.
+    X1/X2 из GPT на сценах внутри ячейки сбрасываются на дерево.
+    """
+    chain = parse_scene_chain(action)
+    plan = plan_templates_for_action(action)
+    plan_by_n = {int(row["n"]): row for row in plan}
+    incoming = [dict(s) for s in shots if isinstance(s, dict)]
+    by_scene: dict[int, list[dict[str, Any]]] = {}
+    for sh in incoming:
+        try:
+            n = int(sh.get("сцена"))
+        except (TypeError, ValueError):
+            continue
+        by_scene.setdefault(n, []).append(sh)
+    if not by_scene and incoming and chain:
+        for i, sh in enumerate(incoming):
+            if i < len(chain):
+                by_scene.setdefault(int(chain[i]["n"]), []).append(sh)
+    scenes = chain or [
+        {"n": 1, "place": "", "action": "", "vo": "", "blob": action}
+    ]
+    out: list[dict[str, Any]] = []
+    for scene in scenes:
+        n = int(scene["n"])
+        prow = plan_by_n.get(n) or {}
+        place = str(scene.get("place") or prow.get("place") or "").strip()
+        act = str(scene.get("action") or prow.get("action") or "").strip()
+        vo = str(scene.get("vo") or "").strip()
+        same = bool(prow.get("same_place"))
+        existing = by_scene.get(n) or []
+        tid = ""
+        if existing:
+            tid = normalize_template_id(
+                str(existing[0].get("шаблон") or existing[0].get("template") or "")
+            )
+        if not tid or tid.startswith("X"):
+            tid = str(prow.get("template") or select_template_when(scene, ""))
+        rows = catalog_shot_rows(tid, same_place=same)
+        if not rows:
+            if existing:
+                out.extend(existing)
+            continue
+        required = sum(1 for r in rows if r.get("required") == 1)
+        if existing and len(existing) >= max(len(rows), required, 1):
+            for sh in existing:
+                sh.setdefault("шаблон", tid)
+                sh.setdefault("сцена", n)
+                out.append(sh)
+            continue
+        seed = existing[0] if existing else {}
+        master_id = f"{cell_number}-S{n}-K1"
+        for i, row in enumerate(rows):
+            sid = f"{cell_number}-S{n}-K{i + 1}"
+            action_text = _fill_slot_text(
+                str(row.get("action") or ""), place=place, action=act
+            ) or act
+            plan = str(row.get("plan") or "").split("/")[0].strip()
+            angle = str(row.get("angle") or "").split("/")[0].strip()
+            shot = {
+                "id": sid,
+                "parent_id": None if i == 0 else master_id,
+                "порядок": i + 1,
+                "сцена": n,
+                "шаблон": tid,
+                "план": plan,
+                "ракурс": angle if angle != "—" else "",
+                "место": place,
+                "действие": action_text,
+                "закадр": vo if i == 0 else "",
+            }
+            if i == 0 and seed.get("закадр"):
+                shot["закадр"] = str(seed.get("закадр") or "")
+            if i == 0 and seed.get("действие"):
+                shot["действие"] = str(seed.get("действие") or action_text)
+            out.append(shot)
+    return out or [dict(s) for s in incoming]
 
 
 def coverage_template_reason(shots: list[dict[str, Any]], uid: str = "") -> str | None:

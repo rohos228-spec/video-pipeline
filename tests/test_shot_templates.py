@@ -67,6 +67,34 @@ def test_police_example_same_place_compression() -> None:
     assert "K0" in by_n[4]["compression"]
 
 
+def test_police_catalog_fills_sequential_ladders() -> None:
+    """Эталон задачи: 1 кадр/сцена от GPT → лестницы T6 T3 T1 T5."""
+    from app.services.shot_templates import fill_kadry_from_catalog
+
+    clear_shot_templates_cache()
+    skinny = [
+        {"сцена": 1, "шаблон": "T6", "действие": "идёт к полиции", "закадр": "пришёл"},
+        {"сцена": 2, "шаблон": "T3", "действие": "заходит", "закадр": "зашёл"},
+        {"сцена": 3, "шаблон": "T1", "действие": "говорит с дежурным", "закадр": "рассказал"},
+        {"сцена": 4, "шаблон": "T5", "действие": "пишет заявление", "закадр": "написал"},
+    ]
+    filled = fill_kadry_from_catalog(skinny, POLICE_ACTION, cell_number=1)
+    by_scene: dict[int, list] = {}
+    for sh in filled:
+        by_scene.setdefault(int(sh["сцена"]), []).append(sh)
+    assert [by_scene[i][0]["шаблон"] for i in (1, 2, 3, 4)] == [
+        "T6",
+        "T3",
+        "T1",
+        "T5",
+    ]
+    assert len(by_scene[1]) >= 2  # путь
+    assert len(by_scene[2]) >= 1  # вход
+    assert len(by_scene[3]) >= 2  # диалог K2+K3
+    assert len(by_scene[4]) >= 1  # пишет, без нового ОБЩЕГО
+    assert not any("{" in str(sh.get("действие") or "") for sh in filled)
+
+
 def test_t8_does_not_steal_years_in_same_place() -> None:
     """«долгие годы» / «служба» в кабинете — не прыжок жизни, не T8."""
     clear_shot_templates_cache()
