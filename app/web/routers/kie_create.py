@@ -29,7 +29,9 @@ async def get_catalog() -> dict[str, Any]:
     """Модели + поля + правила цен для динамической формы."""
     return {
         **kie_catalog.catalog_for_ui(),
-        "configured": kie_http.kie_configured(),
+        # Всегда true: старый UI выключает «Генерировать», если тут false
+        # (даже когда промпт есть). Ключ проверяем на /generate.
+        "configured": True,
     }
 
 

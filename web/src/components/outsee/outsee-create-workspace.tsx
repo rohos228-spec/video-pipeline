@@ -2031,13 +2031,18 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     )}
                     <button
                       type="button"
-                      disabled={
-                        createGenerate.isPending ||
-                        ((kiePath ? Boolean(kieTextField) : true) && !prompt.trim()) ||
-                        (!kiePath && mediaType === "audio" && projectId == null)
-                      }
+                      disabled={createGenerate.isPending}
                       onClick={() => {
                         if (createGenerate.isPending) return;
+                        const needPrompt = kiePath ? Boolean(kieTextField) : true;
+                        if (needPrompt && !prompt.trim()) {
+                          toast.error("Промпт пустой — напиши текст и нажми ещё раз");
+                          return;
+                        }
+                        if (!kiePath && mediaType === "audio" && projectId == null) {
+                          toast.error("Аудио — сначала открой проект");
+                          return;
+                        }
                         createGenerate.mutate();
                       }}
                       className={cn(
@@ -2046,11 +2051,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       title={
                         createGenerate.isPending
                           ? "Уже ставится в очередь…"
-                          : (kiePath ? Boolean(kieTextField) : true) && !prompt.trim()
-                            ? "Сначала напиши промпт"
-                            : !kiePath && mediaType === "audio" && projectId == null
-                              ? "Сначала открой проект"
-                              : `Сгенерировать (${batchCount > 1 ? `${batchCount} шт` : "1 шт"}, лимит ${maxParallel}) · ${priceLabel}`
+                          : `Сгенерировать (${batchCount > 1 ? `${batchCount} шт` : "1 шт"}, лимит ${maxParallel}) · ${priceLabel}`
                       }
                     >
                       {createGenerate.isPending ? (
@@ -2069,13 +2070,6 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       )}
                     </button>
                   </div>
-                  {(kiePath ? Boolean(kieTextField) : true) &&
-                    !prompt.trim() &&
-                    !createGenerate.isPending && (
-                      <p className="mt-1 text-right text-[11px] text-amber-300/90">
-                        Напиши промпт — без него кнопка не нажимается
-                      </p>
-                    )}
                 </div>
               </div>
             </div>

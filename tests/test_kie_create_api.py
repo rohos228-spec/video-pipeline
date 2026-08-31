@@ -27,6 +27,9 @@ def test_catalog_endpoint_lists_models() -> None:
     veo = next(m for m in data["models"] if m["id"] == "veo-3-1")
     assert any(f["name"] == "resolution" for f in veo["fields"])
     assert veo["pricing"]["rules"]
+    # Старый UI глушит кнопку, если configured=false — даже при живом промпте.
+    assert data["configured"] is True
+    assert data["configured"] is True
 
 
 def test_estimate_endpoint_dynamic() -> None:
