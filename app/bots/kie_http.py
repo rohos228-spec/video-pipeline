@@ -28,6 +28,7 @@ from app.bots.kie_kling import (
     kie_api_key,
     kie_api_key_source,
     kie_auth_headers,
+    kie_post_json,
     kie_uses_vps_relay,
 )
 from app.bots.outsee import GenerationResult
@@ -147,14 +148,7 @@ async def create_task(api: str, endpoint: str | None, body: dict[str, Any]) -> s
             # suno/runway требуют callBackUrl — мы поллим, колбэк-заглушка
             body = {**body, "callBackUrl": _CALLBACK_PLACEHOLDER}
     url = f"{kie_api_base_url()}{path}"
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        r = await client.post(
-            url, headers={**_headers(), "Content-Type": "application/json"}, json=body
-        )
-        try:
-            payload = r.json()
-        except Exception:  # noqa: BLE001
-            payload = {"msg": (r.text or "")[:300], "code": r.status_code}
+    r, payload, _src = await kie_post_json(url, body, timeout=120.0)
     data = _check(payload, http_status=r.status_code, where=f"create {path}")
     inner = data.get("data") if isinstance(data.get("data"), dict) else {}
     task_id = str(

@@ -37,6 +37,10 @@ _DIRECT_KIE_HOSTS = frozenset({"https://api.kie.ai", "http://api.kie.ai"})
 _POLL_INTERVAL_S = 4.0
 _POLL_MAX_S = 900.0
 _ROUTE_LOGGED = False
+# Старый KIE_API_KEY может смотреть кредиты, но kie отказывает ему на Market
+# (createTask 401 «not authorized to use this model»). Тогда берём GPT_API_KEY.
+_WORKING_KEY = ""
+_WORKING_SOURCE = ""
 
 
 class KieKlingError(OutseeImageError):
@@ -80,26 +84,78 @@ def _iter_kie_keys() -> list[tuple[str, str]]:
         from app.project_root import find_project_root
         from app.services.env_file import last_nonempty_dotenv_value
 
-        env_path = find_project_root() / ".env"
-        _add("KIE_API_KEY", last_nonempty_dotenv_value(env_path, "KIE_API_KEY", "KIEAI_API_KEY"))
+        root = find_project_root()
+        for env_name in (".env", ".env.env"):
+            env_path = root / env_name
+            _add("KIE_API_KEY", last_nonempty_dotenv_value(env_path, "KIE_API_KEY", "KIEAI_API_KEY"))
         _add("GPT_API_KEY", os.environ.get("GPT_API_KEY"))
         _add("GPT_API_KEY", getattr(settings, "gpt_api_key", None))
-        _add("GPT_API_KEY", last_nonempty_dotenv_value(env_path, "GPT_API_KEY"))
+        for env_name in (".env", ".env.env"):
+            _add("GPT_API_KEY", last_nonempty_dotenv_value(root / env_name, "GPT_API_KEY"))
     except Exception:
         _add("GPT_API_KEY", os.environ.get("GPT_API_KEY"))
         _add("GPT_API_KEY", getattr(settings, "gpt_api_key", None))
     return found
 
 
+def reset_working_kie_key() -> None:
+    """Сброс кэша рабочего ключа (тесты / смена .env без рестарта)."""
+    global _WORKING_KEY, _WORKING_SOURCE
+    _WORKING_KEY = ""
+    _WORKING_SOURCE = ""
+
+
+def _set_working_kie_key(source: str, key: str) -> None:
+    global _WORKING_KEY, _WORKING_SOURCE
+    key = (key or "").strip()
+    if not key or key == _WORKING_KEY:
+        return
+    _WORKING_KEY = key
+    _WORKING_SOURCE = source
+    logger.info("kie Market: рабочий ключ {}", source)
+
+
+def kie_key_candidates() -> list[tuple[str, str]]:
+    """Ключи по приоритету: уже сработавший, затем KIE_API_KEY, затем GPT_API_KEY."""
+    pairs = _iter_kie_keys()
+    if not _WORKING_KEY:
+        return pairs
+    rest = [(src, key) for src, key in pairs if key != _WORKING_KEY]
+    src = _WORKING_SOURCE or next(
+        (name for name, key in pairs if key == _WORKING_KEY), "cached"
+    )
+    return [(src, _WORKING_KEY), *rest]
+
+
 def kie_api_key_source() -> str:
+    if _WORKING_SOURCE:
+        return _WORKING_SOURCE
     pairs = _iter_kie_keys()
     return pairs[0][0] if pairs else ""
 
 
 def kie_api_key() -> str:
-    """KIE_API_KEY, иначе GPT_API_KEY (тот же kie), даже если GPT через VPS."""
+    """Рабочий ключ, иначе KIE_API_KEY, иначе GPT_API_KEY."""
+    if _WORKING_KEY:
+        return _WORKING_KEY
     pairs = _iter_kie_keys()
     return pairs[0][1] if pairs else ""
+
+
+def kie_payload_is_model_unauthorized(
+    payload: dict[str, Any] | None, http_status: int | None = None
+) -> bool:
+    """401 «ключ не имеет доступа к этой модели» — пробовать следующий ключ."""
+    data = payload if isinstance(payload, dict) else {}
+    code = data.get("code", http_status)
+    try:
+        code_i = int(code) if code is not None else http_status
+    except (TypeError, ValueError):
+        code_i = http_status
+    if code_i != 401:
+        return False
+    msg = str(data.get("msg") or data.get("message") or "").lower()
+    return "not authorized to use this model" in msg or "not authorized" in msg
 
 
 def kie_api_base_url() -> str:
@@ -123,21 +179,26 @@ def kie_uses_vps_relay() -> bool:
     return kie_api_base_url().rstrip("/").lower() == str(vps).rstrip("/").lower()
 
 
-def kie_auth_headers(*, content_json: bool = False) -> dict[str, str]:
-    global _ROUTE_LOGGED
-    key = kie_api_key()
-    if not key:
+def kie_auth_headers_for(key: str, *, content_json: bool = False) -> dict[str, str]:
+    text = (key or "").strip()
+    if not text:
         raise KieKlingError(
             "kie: нет API ключа (KIE_API_KEY / GPT_API_KEY)",
             context={"provider_code": 401, "error_kind": "no_key"},
         )
-    headers = {"Authorization": f"Bearer {key}"}
+    headers = {"Authorization": f"Bearer {text}"}
     if content_json:
         headers["Content-Type"] = "application/json"
     if kie_uses_vps_relay():
         relay = _relay_token()
         if relay:
             headers["X-VP-Relay-Token"] = relay
+    return headers
+
+
+def kie_auth_headers(*, content_json: bool = False) -> dict[str, str]:
+    global _ROUTE_LOGGED
+    headers = kie_auth_headers_for(kie_api_key(), content_json=content_json)
     if not _ROUTE_LOGGED:
         logger.info(
             "kie Market: base={} via_vps={} key_source={}",
@@ -147,6 +208,46 @@ def kie_auth_headers(*, content_json: bool = False) -> dict[str, str]:
         )
         _ROUTE_LOGGED = True
     return headers
+
+
+def _parse_kie_json(r: httpx.Response) -> dict[str, Any]:
+    try:
+        payload = r.json()
+    except Exception:  # noqa: BLE001
+        payload = {"msg": (r.text or "")[:300], "code": r.status_code}
+    return payload if isinstance(payload, dict) else {"msg": str(payload)[:300], "code": r.status_code}
+
+
+async def kie_post_json(
+    url: str, body: dict[str, Any], *, timeout: float = 120.0
+) -> tuple[httpx.Response, dict[str, Any], str]:
+    """POST JSON. При 401 на модель пробует следующий ключ и запоминает рабочий."""
+    last: tuple[httpx.Response, dict[str, Any], str] | None = None
+    tried: list[str] = []
+    for source, key in kie_key_candidates():
+        if key in tried:
+            continue
+        tried.append(key)
+        headers = kie_auth_headers_for(key, content_json=True)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.post(url, headers=headers, json=body)
+        payload = _parse_kie_json(r)
+        last = (r, payload, source)
+        if kie_payload_is_model_unauthorized(payload, r.status_code):
+            logger.warning(
+                "kie 401 model-auth key_source={} url={} — пробую следующий ключ",
+                source,
+                url.split("?")[0][-48:],
+            )
+            continue
+        _set_working_kie_key(source, key)
+        return r, payload, source
+    if last is None:
+        raise KieKlingError(
+            "kie: нет API ключа (KIE_API_KEY / GPT_API_KEY)",
+            context={"provider_code": 401, "error_kind": "no_key"},
+        )
+    return last
 
 
 def truncate_kling_prompt(prompt: str, *, max_chars: int = KIE_KLING_PROMPT_MAX_CHARS) -> str:
@@ -207,25 +308,20 @@ def _raise_from_kie_payload(
 
 async def _create_task(body: dict[str, Any]) -> str:
     url = f"{kie_api_base_url()}{_CREATE_PATH}"
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        r = await client.post(url, headers=_auth_headers(), json=body)
-        try:
-            payload = r.json()
-        except Exception:  # noqa: BLE001
-            payload = {"msg": (r.text or "")[:300], "code": r.status_code}
-        if r.status_code >= 400:
-            _raise_from_kie_payload(payload, http_status=r.status_code, where="createTask")
+    r, payload, _source = await kie_post_json(url, body, timeout=120.0)
+    if r.status_code >= 400:
         _raise_from_kie_payload(payload, http_status=r.status_code, where="createTask")
-        data = (payload or {}).get("data") if isinstance(payload, dict) else None
-        task_id = ""
-        if isinstance(data, dict):
-            task_id = str(data.get("taskId") or data.get("task_id") or "").strip()
-        if not task_id:
-            raise KieKlingError(
-                "kie Kling: createTask без taskId",
-                context={"provider_code": 500, "raw": str(payload)[:200]},
-            )
-        return task_id
+    _raise_from_kie_payload(payload, http_status=r.status_code, where="createTask")
+    data = (payload or {}).get("data") if isinstance(payload, dict) else None
+    task_id = ""
+    if isinstance(data, dict):
+        task_id = str(data.get("taskId") or data.get("task_id") or "").strip()
+    if not task_id:
+        raise KieKlingError(
+            "kie Kling: createTask без taskId",
+            context={"provider_code": 500, "raw": str(payload)[:200]},
+        )
+    return task_id
 
 
 async def _poll_task(task_id: str, *, timeout_s: float) -> dict[str, Any]:

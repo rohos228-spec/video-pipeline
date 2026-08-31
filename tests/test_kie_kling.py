@@ -237,6 +237,57 @@ def test_kie_skips_relay_token_as_key(monkeypatch: pytest.MonkeyPatch) -> None:
     assert kk.kie_api_key() == "real-kie-key"
 
 
+@pytest.mark.asyncio
+async def test_kie_post_json_retries_next_key_on_model_401(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kk.reset_working_kie_key()
+    monkeypatch.setattr(
+        kk,
+        "kie_key_candidates",
+        lambda: [("KIE_API_KEY", "dead-key"), ("GPT_API_KEY", "live-key")],
+    )
+    monkeypatch.setattr(kk, "kie_uses_vps_relay", lambda: False)
+    calls: list[str] = []
+
+    class FakeResp:
+        def __init__(self, payload: dict, status: int = 200) -> None:
+            self._payload = payload
+            self.status_code = status
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def __init__(self, **_k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def post(self, url, headers=None, json=None):
+            auth = (headers or {}).get("Authorization", "")
+            calls.append(auth)
+            if auth.endswith("dead-key"):
+                return FakeResp(
+                    {"code": 401, "msg": "The API key is not authorized to use this model."}
+                )
+            return FakeResp({"code": 200, "data": {"taskId": "ok-1"}})
+
+    monkeypatch.setattr(kk.httpx, "AsyncClient", FakeClient)
+    _r, payload, source = await kk.kie_post_json(
+        "https://api.kie.ai/api/v1/jobs/createTask", {"model": "x"}
+    )
+    assert source == "GPT_API_KEY"
+    assert payload["data"]["taskId"] == "ok-1"
+    assert calls == ["Bearer dead-key", "Bearer live-key"]
+    assert kk.kie_api_key() == "live-key"
+    kk.reset_working_kie_key()
+
+
 def test_kie_create_goes_through_vps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(kk.settings, "kie_api_base_url", "https://api.kie.ai")
     monkeypatch.setattr(kk.settings, "gpt_relay_token", "relay-secret")
