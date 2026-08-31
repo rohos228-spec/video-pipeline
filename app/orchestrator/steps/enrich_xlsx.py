@@ -2148,6 +2148,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             )
                         ).scalars().all()
                     )
+                    from app.services.vo_shot_expand import inherit_camera_on_children
+
+                    n_inh = inherit_camera_on_children(leftover)
+                    if n_inh:
+                        await session.flush()
+                        logger.info(
+                            "[#{}] fw_frames: inherit camera на {} кадров "
+                            "до добора GPT",
+                            project.id,
+                            n_inh,
+                        )
                     missing_cam = [
                         fr
                         for fr in leftover
@@ -2213,6 +2224,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                                 )
                             ).scalars().all()
                         )
+                        inherit_camera_on_children(leftover)
+                        await session.flush()
                         still = [
                             fr
                             for fr in leftover

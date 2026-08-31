@@ -245,6 +245,49 @@ def test_camera_menu_skip_requires_size_move_set() -> None:
     assert [f["uuid"] for f in pending] == ["b" * 24]
 
 
+def test_camera_menu_pending_includes_silent_coverage_child() -> None:
+    """K2/K3 без закадра всё равно должны попасть в добор движение/набор."""
+    from app.services.apply_ops_batches import SKIP_CAMERA_MENU
+
+    silent = {
+        "uuid": "c" * 24,
+        "voiceover_text": "",
+        "camera_subdivide": {
+            "role": "shot",
+            "parent_uuid": "p" * 24,
+            "shot_id": "1-S14-K2",
+            "крупность": "ДЕТАЛЬ",
+        },
+    }
+    pending = _pending_frames(
+        [silent],
+        dense=False,
+        skip_if_field=SKIP_CAMERA_MENU,
+    )
+    assert [f["uuid"] for f in pending] == ["c" * 24]
+
+
+def test_prompts_pending_includes_silent_coverage_child() -> None:
+    """Покрытие без vo_shot тоже нуждается в image/anim."""
+    from app.services.apply_ops_batches import SKIP_PROMPTS_AND_ACTION
+
+    silent = {
+        "uuid": "c" * 24,
+        "voiceover_text": "",
+        "camera_subdivide": {
+            "role": "shot",
+            "parent_uuid": "p" * 24,
+            "shot_id": "1-S13-K3",
+        },
+    }
+    pending = _pending_frames(
+        [silent],
+        dense=False,
+        skip_if_field=SKIP_PROMPTS_AND_ACTION,
+    )
+    assert [f["uuid"] for f in pending] == ["c" * 24]
+
+
 def test_prompt_footer_asks_shot_menu_fields() -> None:
     from app.services.apply_ops_batches import _batch_footer
 

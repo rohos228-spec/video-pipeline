@@ -988,9 +988,19 @@ async def rebuild_vo_cells_from_shots(
         if id(fr) in seen or not getattr(fr, "id", None):
             continue
         vo = (getattr(fr, "voiceover_text", None) or "").strip()
+        attrs = getattr(fr, "attrs", None) or {}
+        cell = ""
+        if isinstance(attrs, dict):
+            cell = str(attrs.get("vo_cell_full") or "").strip()
+        cs = _cs(fr)
+        has_vo = bool(
+            vo or cell or str(cs.get("vo_shot") or "").strip()
+        )
         # Дочерний шот без своего куска закадра — легитимное покрытие
-        # (лестница длиннее клауз): не удаляем. Пустой родитель — мусор.
-        if not _is_pipeline_frame(fr) or (not vo and not is_shot_child(fr)):
+        # (лестница длиннее клауз): не удаляем. Пустой родитель — мусор,
+        # но vo_shot / vo_cell_full считают ячейку живой (иначе K1
+        # пропадает, дети остаются сиротами без меню съёмки).
+        if not _is_pipeline_frame(fr) or (not has_vo and not is_shot_child(fr)):
             drop.append(fr)
             seen.add(id(fr))
     drop_ids = [int(fr.id) for fr in drop]
@@ -1254,29 +1264,49 @@ def distribute_coverage_prompts(frames: list[Any]) -> int:
 
 
 def inherit_camera_on_children(frames: list[Any]) -> int:
-    """Дети берут движение/набор с родителя; крупность уже из плана шота."""
+    """Дети берут движение/набор с родителя; крупность уже из плана шота.
+
+    Сирота (vo_parent нет в группе): набор из ``место``, движение — статика.
+    Иначе добор меню съёмки их не видит (нет закадра) и нода падает 50/52.
+    """
     updated = 0
     for members in _group_by_parent(frames).values():
         parent = next(
             (m for m in members if _cs(m).get("role") == "vo_parent"),
             None,
         )
-        if parent is None:
-            continue
-        pcs = _cs(parent)
+        pcs = _cs(parent) if parent is not None else {}
         move = str(pcs.get("движение") or pcs.get("move") or "").strip()
         nab = str(pcs.get("набор") or pcs.get("set") or "").strip()
-        if not move and not nab:
-            continue
+        if parent is None:
+            donor = next(
+                (
+                    m
+                    for m in members
+                    if str(_cs(m).get("движение") or "").strip()
+                    or str(_cs(m).get("набор") or "").strip()
+                ),
+                None,
+            )
+            if donor is not None:
+                dcs = _cs(donor)
+                move = str(dcs.get("движение") or dcs.get("move") or "").strip()
+                nab = str(dcs.get("набор") or dcs.get("set") or "").strip()
         for child in members:
-            if child is parent:
+            if parent is not None and child is parent:
                 continue
             extra: dict[str, Any] = {}
             ccs = _cs(child)
-            if move and not str(ccs.get("движение") or "").strip():
-                extra["движение"] = move
-            if nab and not str(ccs.get("набор") or "").strip():
-                extra["набор"] = nab
+            if not str(ccs.get("движение") or "").strip():
+                if move:
+                    extra["движение"] = move
+                elif parent is None:
+                    extra["движение"] = "статика"
+            if not str(ccs.get("набор") or "").strip():
+                place = str(ccs.get("место") or "").strip()
+                fill = nab or place
+                if fill:
+                    extra["набор"] = fill
             if extra:
                 _set_cs(child, **extra)
                 updated += 1

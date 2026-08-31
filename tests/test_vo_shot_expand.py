@@ -43,6 +43,63 @@ def test_apply_shot_meta_sets_action_when_empty() -> None:
     assert fr.attrs["shot01_action"] == "у доски сверяют папки"
 
 
+def test_inherit_camera_copies_move_set_to_child() -> None:
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import inherit_camera_on_children
+
+    pu = "p" * 24
+    parent = SimpleNamespace(
+        uuid=pu,
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": pu,
+                "крупность": "ОБЩИЙ",
+                "движение": "панорама",
+                "набор": "господский дом",
+            }
+        },
+    )
+    child = SimpleNamespace(
+        uuid="c" * 24,
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": pu,
+                "крупность": "ДЕТАЛЬ",
+            }
+        },
+    )
+    assert inherit_camera_on_children([parent, child]) == 1
+    cs = child.attrs["camera_subdivide"]
+    assert cs["движение"] == "панорама"
+    assert cs["набор"] == "господский дом"
+
+
+def test_inherit_camera_orphan_uses_place_as_set() -> None:
+    """Родитель удалён — набор из место, движение не оставляем пустым."""
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import inherit_camera_on_children
+
+    child = SimpleNamespace(
+        uuid="c" * 24,
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": "d" * 24,
+                "крупность": "ДЕТАЛЬ",
+                "место": "господский дом",
+            }
+        },
+    )
+    assert inherit_camera_on_children([child]) == 1
+    cs = child.attrs["camera_subdivide"]
+    assert cs["набор"] == "господский дом"
+    assert str(cs.get("движение") or "").strip()
+
+
 def test_shots_needed_splits_sentences() -> None:
     text = "Первая фраза тут. Вторая фраза здесь. Третья уже конец."
     assert shots_needed_for_vo(text) == 3

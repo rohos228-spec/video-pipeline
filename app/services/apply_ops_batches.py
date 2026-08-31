@@ -243,9 +243,28 @@ def _has_voiceover(frame: dict[str, Any]) -> bool:
         return True
     attrs = frame.get("attrs")
     if isinstance(attrs, dict):
+        if str(attrs.get("vo_cell_full") or "").strip():
+            return True
         cs = attrs.get("camera_subdivide")
         if isinstance(cs, dict) and str(cs.get("vo_shot") or "").strip():
             return True
+    blob = _camera_menu_attrs(frame, attrs if isinstance(attrs, dict) else {})
+    if str(blob.get("vo_shot") or "").strip():
+        return True
+    return False
+
+
+def _is_coverage_shot(frame: dict[str, Any]) -> bool:
+    """Визуальный шот лестницы — даже без своего куска закадра."""
+    attrs = frame.get("attrs") if isinstance(frame.get("attrs"), dict) else {}
+    blob = _camera_menu_attrs(frame, attrs)
+    role = str(blob.get("role") or "").strip()
+    if role in ("shot", "vo_parent"):
+        return True
+    if str(blob.get("parent_uuid") or "").strip():
+        return True
+    if str(blob.get("shot_id") or "").strip():
+        return True
     return False
 
 
@@ -260,7 +279,12 @@ def _pending_frames(
     for fr in frames:
         if not _has_uuid(fr):
             continue
-        if not _has_voiceover(fr):
+        # Меню съёмки и промты нужны и молчаливому покрытию (K3/K4 без vo_shot).
+        if (
+            skip_if_field != SKIP_CAMERA_MENU
+            and not _has_voiceover(fr)
+            and not _is_coverage_shot(fr)
+        ):
             continue
         if (not force_full) and _frame_complete(
             fr, dense=dense, skip_if_field=skip_if_field
