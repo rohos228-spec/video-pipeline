@@ -35,6 +35,9 @@ VO_UNITS_PER_BATCH = 9
 # всегда 30 отрезков закадра, до 6 пачек параллельно, сдвиг 1 с.
 SCRIPT_FRAMES_QC_UNITS_PER_BATCH = 30
 VO_PARALLEL_MAX = 6
+# fw_frames / fw_qc: 4 параллельные пачки — 30 VO в одном вызове
+# GPT не закрывает (48 кадров → 20 ops → каскад L2/L4 на часы).
+FW_FRAMES_PARALLEL_BATCHES = 4
 VO_STAGGER_SEC = 1.0
 SHOT_VO_MIN_CHARS = 27
 SHOT_VO_MAX_CHARS = 54
@@ -159,6 +162,21 @@ def split_vo_units(
         if pack:
             packs.append(pack)
     return packs or [list(frames)]
+
+
+def split_into_n_packs(frames: list[dict[str, Any]], n: int) -> list[list[dict[str, Any]]]:
+    """Ровно n пачек. VO-ячейка (родитель+шоты) не режется пополам."""
+    if not frames:
+        return []
+    n = max(1, int(n))
+    units = group_vo_units(frames)
+    if len(units) > 1:
+        n = min(n, len(units))
+        per = max(1, (len(units) + n - 1) // n)
+        return split_vo_units(frames, per)
+    n = min(n, len(frames))
+    per = max(1, (len(frames) + n - 1) // n)
+    return split_frames(frames, per)
 
 
 def _any_field(frame: dict[str, Any], attrs: dict[str, Any], keys: tuple[str, ...]) -> bool:
@@ -854,7 +872,6 @@ async def run_apply_ops_batched(
     """
     from app.services.adaptive_llm_batches import next_split_level, split_in_half
 
-    del target_batches
     all_frames = list(db_ctx.get("frames") or [])
     pending = select_frames_for_batches(
         all_frames,
@@ -877,7 +894,10 @@ async def run_apply_ops_batched(
         )
 
     size = int(chunk_size) if chunk_size and int(chunk_size) > 0 else 0
-    if size and chunk_by_vo_unit:
+    n_target = int(target_batches) if target_batches and int(target_batches) > 1 else 0
+    if n_target:
+        packs = split_into_n_packs(pending, n_target)
+    elif size and chunk_by_vo_unit:
         packs = split_vo_units(pending, size)
     elif size:
         packs = split_frames(pending, size)

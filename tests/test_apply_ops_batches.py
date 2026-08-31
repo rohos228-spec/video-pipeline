@@ -1578,3 +1578,44 @@ async def test_vo_chunk_size_30_packs(tmp_path, monkeypatch) -> None:
     )
     assert calls == [30, 30, 5]
     assert len(res.apply_ops["ops"]) == 65
+
+
+def test_split_into_n_packs_keeps_vo_units() -> None:
+    from app.services.apply_ops_batches import split_into_n_packs
+
+    frames = []
+    for cell in range(13):
+        parent = f"p{cell:02d}"
+        frames.append(
+            {
+                "uuid": parent,
+                "voiceover_text": f"cell {cell}",
+                "camera_subdivide": {"role": "vo_parent"},
+            }
+        )
+        for shot in range(3):
+            frames.append(
+                {
+                    "uuid": f"{parent}-s{shot}",
+                    "voiceover_text": f"shot {shot}",
+                    "camera_subdivide": {
+                        "role": "shot",
+                        "parent_uuid": parent,
+                    },
+                }
+            )
+    packs = split_into_n_packs(frames, 4)
+    assert len(packs) == 4
+    packed = [fr["uuid"] for pack in packs for fr in pack]
+    assert packed == [fr["uuid"] for fr in frames]
+    for pack in packs:
+        parents = {
+            fr["uuid"]
+            for fr in pack
+            if (fr.get("camera_subdivide") or {}).get("role") == "vo_parent"
+        }
+        for fr in pack:
+            cs = fr.get("camera_subdivide") or {}
+            if cs.get("role") == "shot":
+                assert cs.get("parent_uuid") in parents
+

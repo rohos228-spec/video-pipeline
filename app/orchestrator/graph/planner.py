@@ -334,25 +334,48 @@ class WorkflowGraph:
         finished_type = READY_TO_NODE_TYPE[ready_status]
         skipped = self.skipped_keys(project)
         start_keys = self.keys_of_type(finished_type)
-        if not start_keys and finished_type.startswith("enrich_"):
-            try:
-                slot = int(finished_type.removeprefix("enrich_"))
-            except ValueError:
-                slot = 0
-            if 1 <= slot <= 5:
-                start_keys = self.excel_gpt_keys_for_slot(slot)
-                # Несколько excel_gpt с одним slotIndex: BFS от всех ключей
-                # слота даёт ложный «следующий» шаг (например split после
-                # ранней slot=5). Сужаем до active / completed ключа слота.
-                meta = project.meta if isinstance(project.meta, dict) else {}
-                active = str(meta.get("active_excel_gpt_node_key") or "").strip()
-                if active and active in start_keys:
-                    start_keys = [active]
-                else:
-                    done_keys = completed_node_keys(project)
-                    narrowed = [k for k in start_keys if k in done_keys]
-                    if narrowed:
-                        start_keys = narrowed
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        active = str(meta.get("active_excel_gpt_node_key") or "").strip()
+        if finished_type.startswith("enrich_"):
+            # overflow-группа (slot 0) тоже заканчивается enrich_1_ready.
+            # BFS обязан стартовать с ноды, которая только что отработала
+            # (QC), а не с чужого excel_gpt slot=1 на том же канвасе —
+            # иначе после группы стартует «случайный» hero / img_pr.
+            overflow_from: str | None = None
+            if active:
+                n_act = self._by_id.get(active) or {}
+                if (
+                    str(n_act.get("type") or "") == EXCEL_GPT_NODE_TYPE
+                    and slot_index_from_node(n_act) == 0
+                ):
+                    overflow_from = active
+            if overflow_from is None:
+                for raw in reversed(list(meta.get("excel_gpt_completed_keys") or [])):
+                    k = str(raw or "").strip()
+                    n = self._by_id.get(k) or {}
+                    if str(n.get("type") or "") != EXCEL_GPT_NODE_TYPE:
+                        continue
+                    overflow_from = k if slot_index_from_node(n) == 0 else None
+                    break
+            if overflow_from:
+                start_keys = [overflow_from]
+            elif not start_keys:
+                try:
+                    slot = int(finished_type.removeprefix("enrich_"))
+                except ValueError:
+                    slot = 0
+                if 1 <= slot <= 5:
+                    start_keys = self.excel_gpt_keys_for_slot(slot)
+                    # Несколько excel_gpt с одним slotIndex: BFS от всех ключей
+                    # слота даёт ложный «следующий» шаг (например split после
+                    # ранней slot=5). Сужаем до active / completed ключа слота.
+                    if active and active in start_keys:
+                        start_keys = [active]
+                    else:
+                        done_keys = completed_node_keys(project)
+                        narrowed = [k for k in start_keys if k in done_keys]
+                        if narrowed:
+                            start_keys = narrowed
         if not start_keys:
             return None
 

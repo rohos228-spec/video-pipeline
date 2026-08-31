@@ -1461,8 +1461,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         db_ctx: dict | None = None
         ctx_path = None
         fw_camera_menu_only = False
-        force_full = True
-        if _excel_gpt_ui_force_full(project):
+        force_full = _excel_gpt_ui_force_full(project)
+        if force_full:
             logger.info(
                 "[#{}] enrich_xlsx node={!r}: UI ▶ — полный GPT, без skip filled",
                 project.id,
@@ -1901,6 +1901,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         ):
             from app.services.apply_ops_batches import (
                 CAMERA_MENU_UNITS_PER_BATCH,
+                FW_FRAMES_PARALLEL_BATCHES,
                 SCRIPT_FRAMES_QC_UNITS_PER_BATCH,
                 SKIP_CAMERA_MENU,
                 SKIP_PROMPTS_AND_ACTION,
@@ -2019,11 +2020,19 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 script_frames_qc = (not fw_camera_menu_only) and (
                     _is_script_frames_qc_group_node(variant, master, node_key)
                 )
+                fw_frames = frame_prompts and nk.endswith("_fw_frames")
+                fw_qc = qc_prompts and nk.endswith("_fw_qc")
+                four_parallel = (fw_frames or fw_qc) and not fw_camera_menu_only
                 if fw_camera_menu_only:
                     batch_label = (
                         f"меню съёмки по {CAMERA_MENU_UNITS_PER_BATCH}, "
                         f"параллельно {VO_PARALLEL_MAX}, "
                         f"сдвиг {VO_STAGGER_SEC:g}с"
+                    )
+                elif four_parallel:
+                    batch_label = (
+                        f"{FW_FRAMES_PARALLEL_BATCHES} параллельных пачек "
+                        f"(VO-ячейки целиком), сдвиг {VO_STAGGER_SEC:g}с"
                     )
                 elif script_frames_qc:
                     batch_label = (
@@ -2044,7 +2053,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     node_key,
                     batch_label,
                 )
-                fw_frames = frame_prompts and str(node_key or "").endswith("_fw_frames")
                 api_res = await run_apply_ops_batched(
                     project_dir=project.data_dir,
                     node_key=node_key,
@@ -2075,26 +2083,37 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             )
                         )
                     ),
+                    target_batches=(
+                        FW_FRAMES_PARALLEL_BATCHES if four_parallel else None
+                    ),
                     chunk_size=(
                         CAMERA_MENU_UNITS_PER_BATCH
                         if fw_camera_menu_only
                         else (
-                            SCRIPT_FRAMES_QC_UNITS_PER_BATCH
-                            if script_frames_qc
-                            else None
+                            None
+                            if four_parallel
+                            else (
+                                SCRIPT_FRAMES_QC_UNITS_PER_BATCH
+                                if script_frames_qc
+                                else None
+                            )
                         )
                     ),
                     parallel_max=(
-                        VO_PARALLEL_MAX
-                        if fw_camera_menu_only or script_frames_qc
-                        else None
+                        FW_FRAMES_PARALLEL_BATCHES
+                        if four_parallel
+                        else (
+                            VO_PARALLEL_MAX
+                            if fw_camera_menu_only or script_frames_qc
+                            else None
+                        )
                     ),
                     stagger_sec=(
                         VO_STAGGER_SEC
-                        if fw_camera_menu_only or script_frames_qc
+                        if fw_camera_menu_only or script_frames_qc or four_parallel
                         else None
                     ),
-                    chunk_by_vo_unit=bool(script_frames_qc),
+                    chunk_by_vo_unit=bool(script_frames_qc) and not four_parallel,
                     footer_kind=(
                         "camera_menu"
                         if fw_camera_menu_only
@@ -2144,11 +2163,20 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             len(leftover),
                         )
                         fw_camera_menu_only = True
+                        ents_fresh = list(
+                            (
+                                await session.execute(
+                                    _sel_fw(Entity).where(
+                                        Entity.project_id == project_id
+                                    )
+                                )
+                            ).scalars().all()
+                        )
                         cam_ctx = build_excel_gpt_db_context(
                             project_id=project.id,
                             slug=project.slug,
                             frames=missing_cam,
-                            characters=entity_cards_for_gpt(ents),
+                            characters=entity_cards_for_gpt(ents_fresh),
                         )
                         ctx_path.write_text(
                             _json.dumps(cam_ctx, ensure_ascii=False, indent=2),

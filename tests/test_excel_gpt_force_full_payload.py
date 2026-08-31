@@ -27,7 +27,7 @@ def _filled_frame(i: int, *, camera: bool = True) -> SimpleNamespace:
     )
 
 
-def test_fw_frames_select_skips_shot_children() -> None:
+def test_fw_frames_force_full_includes_shot_children() -> None:
     parent = _filled_frame(1)
     child = SimpleNamespace(
         uuid="u-child",
@@ -42,7 +42,7 @@ def test_fw_frames_select_skips_shot_children() -> None:
         },
     )
     gpt, camera_only = _select_fw_frames_for_gpt([parent, child], force_full=True)
-    assert [fr.uuid for fr in gpt] == ["u1"]
+    assert [fr.uuid for fr in gpt] == ["u1", "u-child"]
     assert camera_only is False
 
 

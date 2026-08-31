@@ -546,8 +546,9 @@ async def start_step(
         prepare_key = str(
             node_key or meta.get("active_excel_gpt_node_key") or ""
         ) or None
-        # Ручной ▶: GPT обязан отработать, даже если поля уже заполнены.
-        if explicit_ui_start and prepare_key:
+        # Ручной ▶ с wipe: GPT обязан отработать, даже если поля уже заполнены.
+        # mode=resume / force_wipe=False — skip filled, не переписывать всё.
+        if explicit_ui_start and prepare_key and force_wipe:
             meta["excel_gpt_ui_force_full"] = True
             meta["excel_gpt_force_full_rerun"] = prepare_key
             project.meta = meta
@@ -556,6 +557,10 @@ async def start_step(
                 project.id,
                 prepare_key,
             )
+        elif explicit_ui_start and prepare_key and not force_wipe:
+            meta.pop("excel_gpt_ui_force_full", None)
+            meta.pop("excel_gpt_force_full_rerun", None)
+            project.meta = meta
 
     await prepare_node_for_step_start(
         session,

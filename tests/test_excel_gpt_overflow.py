@@ -190,6 +190,62 @@ def test_overflow_qc_does_not_chain_into_scene_agent() -> None:
     assert resolve_excel_gpt_node_key_for_slot(p, 1) != "n_excel_gpt_sd_cd_style"
 
 
+def test_overflow_qc_does_not_start_stray_slot1_then_hero() -> None:
+    """После QC overflow-группы не хватать чужой excel_gpt slot=1 → hero.
+
+    Канвас #60: группа fw_* (slotOverflow) без исходящего ребра с QC,
+    плюс leftover n_excel_gpt_* slot=1 → персонажи → промты картинок.
+    enrich_1_ready раньше делал BFS от slot=1 и запускал hero.
+    """
+    from app.models import Project
+    from app.services.excel_gpt_node import prepare_enrich_chain_for_auto_advance
+
+    stray = "n_excel_gpt_1787849035232"
+    nodes = _overflow_nodes() + [
+        {
+            "id": stray,
+            "type": "excel_gpt",
+            "position": {"x": 0, "y": 200},
+            "data": {"slotIndex": 1, "label": "Работа с GPT"},
+        },
+        {
+            "id": "n_hero_1786493259413",
+            "type": "hero",
+            "position": {"x": 200, "y": 200},
+            "data": {"label": "Персонажи"},
+        },
+        {
+            "id": "n_image_prompts",
+            "type": "image_prompts",
+            "position": {"x": 400, "y": 200},
+            "data": {"label": "Промты картинок"},
+        },
+    ]
+    edges = _overflow_edges() + [
+        {"id": "e_stray_hero", "source": stray, "target": "n_hero_1786493259413"},
+        {
+            "id": "e_hero_imgpr",
+            "source": "n_hero_1786493259413",
+            "target": "n_image_prompts",
+        },
+    ]
+    g = WorkflowGraph(nodes, edges)
+    p = Project(
+        topic="t",
+        slug="t",
+        status=ProjectStatus.enrich_1_ready,
+        meta={
+            "canvas_graph": {"nodes": nodes, "edges": edges},
+            "active_excel_gpt_node_key": "n_excel_gpt_fw_qc",
+            "excel_gpt_completed_keys": [nid for nid, _ in _OVERFLOW_GROUP],
+        },
+    )
+    assert prepare_enrich_chain_for_auto_advance(p, ProjectStatus.enrich_1_ready) is None
+    found = g.next_work_node_after_ready(p, ProjectStatus.enrich_1_ready)
+    assert found is None, f"after overflow QC started {found}"
+    assert g.next_running_after_ready(p, ProjectStatus.enrich_1_ready) is None
+
+
 def test_detect_qc_prompt_body_is_not_frame_fill() -> None:
     from pathlib import Path
 
