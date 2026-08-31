@@ -48,7 +48,7 @@ IMAGE_CATALOG_EXTRA: list[dict[str, Any]] = [
         "display_name": "Nano Banana Fast",
         "is_image": True,
         "is_video": False,
-        "owned_by": "grsai",
+        "owned_by": "google",
         "pricing": {"currency": "usd", "usd_per_image": 0.03},
     },
 ]
@@ -74,27 +74,11 @@ VIDEO_CATALOG_RAW: list[dict[str, Any]] = [
         "pricing": {"currency": "usd"},
     },
     {
-        "id": "veo-3-1-fast",
-        "display_name": "Veo 3.1 Fast",
-        "is_image": False,
-        "is_video": True,
-        "owned_by": "grsai",
-        "pricing": {"currency": "usd"},
-    },
-    {
         "id": "kling-2-6",
         "display_name": "Kling 2.6",
         "is_image": False,
         "is_video": True,
         "owned_by": "kie",
-        "pricing": {"currency": "usd"},
-    },
-    {
-        "id": "sora-2",
-        "display_name": "Sora 2",
-        "is_image": False,
-        "is_video": True,
-        "owned_by": "grsai",
         "pricing": {"currency": "usd"},
     },
 ]

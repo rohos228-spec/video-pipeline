@@ -79,13 +79,10 @@ HERO_RELAX = True
 
 
 def _excel_hero_http_primary() -> bool:
-    """Outsee/Grsai HTTP — без Chrome CDP (параллельные волны не валятся)."""
-    from app.bots.grsai import grsai_enabled
+    """Outsee HTTP — без Chrome CDP (параллельные волны не валятся)."""
     from app.bots.outsee_http import outsee_api_configured, outsee_api_enabled_for_image
 
-    return bool(
-        grsai_enabled() or outsee_api_enabled_for_image() or outsee_api_configured()
-    )
+    return bool(outsee_api_enabled_for_image() or outsee_api_configured())
 
 
 @asynccontextmanager

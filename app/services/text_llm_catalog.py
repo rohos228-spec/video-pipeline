@@ -176,10 +176,8 @@ def catalog_status(cfg: Settings | None = None) -> dict[str, Any]:
             base = s.vibecode_base_url
         else:
             model = s.gpt_model
-            key_ok = bool(
-                (s.gpt_api_key or "").strip() or (s.grsai_api_key or "").strip()
-            )
-            base = s.gpt_base_url or s.grsai_base_url
+            key_ok = bool((s.gpt_api_key or "").strip())
+            base = s.gpt_base_url
         models.append(
             {
                 **item,

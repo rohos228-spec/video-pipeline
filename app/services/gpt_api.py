@@ -218,7 +218,7 @@ def _headers() -> dict[str, str]:
                 context={"error_kind": "no_key", "provider": "tokenrouter"},
             )
         raise GptApiError(
-            "GPT_API_KEY пуст (и GRSAI_API_KEY тоже) — задай ключ в .env",
+            "GPT_API_KEY пуст — задай ключ в .env",
             context={"error_kind": "no_key", "provider": "kie"},
         )
     headers = {

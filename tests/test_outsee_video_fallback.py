@@ -22,7 +22,6 @@ from app.services.video_error_policy import VideoLadderExhaustedError
 @pytest.fixture(autouse=True)
 def _force_cdp_video_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """Primary бьёт FakeOutsee; fallback — мок kie_kling."""
-    monkeypatch.setattr("app.bots.grsai.grsai_key_configured", lambda: False)
     monkeypatch.setattr(
         "app.bots.outsee_http.outsee_api_configured", lambda: False
     )

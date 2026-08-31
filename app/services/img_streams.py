@@ -65,11 +65,7 @@ def set_img_streams_meta(project: Project, streams: int) -> int:
 
 
 def image_provider_key() -> str:
-    """Ключ семафора: grsai | outsee."""
-    from app.bots.grsai import grsai_enabled
-
-    if grsai_enabled():
-        return "grsai"
+    """Ключ семафора: outsee."""
     return "outsee"
 
 
@@ -78,7 +74,7 @@ async def acquire_image_slot() -> AsyncIterator[None]:
     """Слот провайдера (общий: Create + img + video)."""
     from app.services.create_jobs import _semaphore
 
-    async with _semaphore(image_provider_key()):
+    async with _semaphore("outsee"):
         yield
 
 

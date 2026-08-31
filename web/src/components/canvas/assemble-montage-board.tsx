@@ -1372,7 +1372,7 @@ export function AssembleMontageBoard({
     mutationFn: () => {
       const ops = pendingOpsRef.current;
       if (ops.length > 0) {
-        toast.message(`Генерация: ${ops.length} операций… (Outsee/Grsai API)`);
+        toast.message(`Генерация: ${ops.length} операций… (Outsee API)`);
       }
       return api.applyMontageBoard(projectId!, {
         video_trims: trims,

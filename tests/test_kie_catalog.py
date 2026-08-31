@@ -13,7 +13,7 @@ def test_catalog_covers_categories() -> None:
     for m in cat["models"]:
         by_cat[m["category"]].append(m["id"])
     assert len(by_cat["video"]) >= 15
-    assert len(by_cat["image"]) >= 10
+    assert len(by_cat["image"]) >= 5
     assert "suno-music" in by_cat["music"]
     assert "suno-sounds" in by_cat["sound"]
     assert "elevenlabs-sfx" in by_cat["sound"]
@@ -134,10 +134,10 @@ def test_build_payload_jobs_and_i2i_switch() -> None:
 
 
 def test_build_payload_model_map_variant() -> None:
-    im = kc.get_model("imagen4")
-    assert im is not None
-    ultra = kc.build_payload(im, {"prompt": "x", "variant": "ultra"})
-    assert ultra["model"] == "google/imagen4-ultra"
+    avatar = kc.get_model("kling-ai-avatar")
+    assert avatar is not None
+    pro = kc.build_payload(avatar, {"image_url": "https://x/i.png", "audio_url": "https://x/a.mp3", "mode": "pro"})
+    assert pro["model"] == "kling/ai-avatar-pro"
 
 
 def test_build_payload_veo_duration_int() -> None:

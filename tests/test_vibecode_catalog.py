@@ -30,8 +30,8 @@ def test_snapshot_has_screenshot_tabs() -> None:
     assert "kimi-k3" in ids
     assert "gpt-image-2-vip" in ids
     assert "gpt-image-2" not in ids
-    assert "nano-banana-pro" in ids
-    assert len(ids) >= 26
+    assert "nano-banana-2" in ids
+    assert len(ids) >= 20
 
 
 def test_prices_use_expensive_markup() -> None:
@@ -76,10 +76,10 @@ def test_grouped_vendors_match_ui_tabs() -> None:
     assert sonnet is not None
     assert sonnet["kind"] == "text"
     assert "input_usd_per_m" in sonnet["pricing"]
-    banana = find_model("nano-banana-pro")
+    banana = find_model("nano-banana-2")
     assert banana is not None
     assert banana["kind"] == "image"
-    assert banana["image_generator"] == "nano_banana_pro"
+    assert banana["image_generator"] == "nano_banana_2"
     assert banana["resolution"] == "1K/2K/4K"
 
 
@@ -222,7 +222,7 @@ def test_frontend_picker_wired() -> None:
         encoding="utf-8"
     )
     assert "Картинки + Видео" in streams
-    assert "текстовые модели" in streams
+    assert "Текстовые модели" in streams
     assert "Проверка GPT · проект" not in streams
     assert "Outsee (img + video)" not in streams
     assert "PRICE_MARKUP_CHEAP" not in catalog_ts

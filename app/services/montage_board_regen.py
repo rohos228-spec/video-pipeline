@@ -88,23 +88,18 @@ class VideoRegenPrep:
 
 
 def _image_api_enabled() -> bool:
-    """Montage image: любой HTTP-путь (grsai / outsee API). Chrome не используем."""
-    from app.bots.grsai import grsai_enabled
+    """Montage image: Outsee HTTP API. Chrome не используем."""
     from app.bots.outsee_http import outsee_api_configured, outsee_api_enabled_for_image
 
-    return bool(
-        grsai_enabled() or outsee_api_enabled_for_image() or outsee_api_configured()
-    )
+    return bool(outsee_api_enabled_for_image() or outsee_api_configured())
 
 
 def _video_api_enabled() -> bool:
-    """Montage video: любой HTTP-путь. Chrome не используем."""
-    from app.bots.grsai import grsai_video_enabled
+    """Montage video: Outsee HTTP API. Chrome не используем."""
     from app.bots.outsee_http import outsee_api_configured, outsee_api_enabled_for_video
 
     return bool(
-        grsai_video_enabled()
-        or outsee_api_enabled_for_video()
+        outsee_api_enabled_for_video()
         or outsee_api_configured()
     )
 
@@ -114,12 +109,12 @@ class _ApiOnlyOutseeStub:
 
     async def generate_image(self, *args: Any, **kwargs: Any) -> Any:
         raise RuntimeError(
-            "montage regen: CDP отключён — нужен OUTSEE_API_KEY / GRSAI_API_KEY"
+            "montage regen: CDP отключён — нужен OUTSEE_API_KEY"
         )
 
     async def generate_video(self, *args: Any, **kwargs: Any) -> Any:
         raise RuntimeError(
-            "montage regen: CDP отключён — нужен OUTSEE_API_KEY / GRSAI_API_KEY"
+            "montage regen: CDP отключён — нужен OUTSEE_API_KEY"
         )
 
     async def retry_image_download(self, *args: Any, **kwargs: Any) -> Any:
@@ -409,11 +404,10 @@ async def prepare_image_regen(
 
 
 async def execute_image_regen(prep: ImageRegenPrep) -> Path:
-    """Только HTTP API (Outsee/Grsai). Chrome CDP для монтажа отключён."""
+    """Только HTTP API (Outsee). Chrome CDP для монтажа отключён."""
     if not _image_api_enabled():
         raise RuntimeError(
-            "montage regen image: нет HTTP API — задайте OUTSEE_API_KEY "
-            "(IMAGE_PROVIDER=outsee) или GRSAI_API_KEY (IMAGE_PROVIDER=grsai). "
+            "montage regen image: нет HTTP API — задайте OUTSEE_API_KEY. "
             "Chrome CDP больше не используется."
         )
     preview = (prep.prompt_text or "").replace("\n", " ")[:160]
@@ -568,11 +562,10 @@ async def prepare_video_regen(
 
 
 async def execute_video_regen(prep: VideoRegenPrep) -> Path:
-    """Только HTTP API (Outsee/Grsai). Chrome CDP для монтажа отключён."""
+    """Только HTTP API (Outsee/Kie). Chrome CDP для монтажа отключён."""
     if not _video_api_enabled():
         raise RuntimeError(
-            "montage regen video: нет HTTP API — задайте OUTSEE_API_KEY "
-            "(VIDEO_PROVIDER=outsee) или GRSAI_API_KEY (VIDEO_PROVIDER=grsai). "
+            "montage regen video: нет HTTP API — задайте OUTSEE_API_KEY или KIE_API_KEY. "
             "Chrome CDP больше не используется."
         )
     logger.info(
