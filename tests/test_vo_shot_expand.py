@@ -579,6 +579,62 @@ def test_distribute_coverage_prompts_fills_child_shot2() -> None:
     assert parent.attrs[SHOT2_STATUS_ATTR] == "skipped"
 
 
+def test_distribute_coverage_prompts_all_children_from_list() -> None:
+    """K2 и K3 равноправны: каждый берёт свой элемент промты_детей, не _2."""
+    from types import SimpleNamespace
+
+    from app.services.plan_shot2 import SHOT2_PROMPT_ATTR
+    from app.services.vo_shot_expand import distribute_coverage_prompts
+
+    pu = "aa" * 12
+    parent = SimpleNamespace(
+        uuid=pu,
+        image_prompt="master",
+        animation_prompt="",
+        attrs={
+            "промты_детей": [
+                {"промт_картинки": "k2 img", "промт_видео": "k2 vid"},
+                {"промт_картинки": "k3 img", "промт_видео": "k3 vid"},
+            ],
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": pu,
+                "shot_index": 1,
+            },
+        },
+    )
+    child2 = SimpleNamespace(
+        uuid="bb" * 12,
+        image_prompt="",
+        animation_prompt="",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": pu,
+                "shot_index": 2,
+            }
+        },
+    )
+    child3 = SimpleNamespace(
+        uuid="cc" * 12,
+        image_prompt="",
+        animation_prompt="",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": pu,
+                "shot_index": 3,
+            }
+        },
+    )
+    n = distribute_coverage_prompts([parent, child2, child3])
+    assert n == 2
+    assert child2.attrs[SHOT2_PROMPT_ATTR] == "k2 img"
+    assert child2.animation_prompt == "k2 vid"
+    assert child3.attrs[SHOT2_PROMPT_ATTR] == "k3 img"
+    assert child3.animation_prompt == "k3 vid"
+
+
 def test_promote_shots_makes_one_cell_per_kadr() -> None:
     from types import SimpleNamespace
 

@@ -297,6 +297,8 @@ def test_prompt_footer_asks_shot_menu_fields() -> None:
     assert "набор" in text
     assert "Не пиши кадры" in text
     assert "промты_детей" in text
+    assert "промт_картинки_2" in text
+    assert "не в промт_картинки_2" in text
     cam = _batch_footer(1, 1, 8, footer_kind="camera_menu")
     assert "крупность" in cam
     assert "Не пиши промт_картинки" in cam

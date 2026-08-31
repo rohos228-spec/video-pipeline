@@ -271,6 +271,8 @@ _STALE_EXCEL_GPT_MARKERS: dict[str, tuple[str, ...]] = {
     ),
     "frame_prompts_continuity_ru": (
         '"frame_uuid": "u002"',
+        "дубль первого",
+        "промт_картинки_2` / `промты_детей",
     ),
 }
 
