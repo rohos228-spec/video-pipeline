@@ -518,16 +518,35 @@ function Invoke-StudioGitUpdate {
     return $true
 }
 
-function Test-StudioAsrBackendNvidia {
+function Get-StudioEnvLastNonEmpty {
+    param([Parameter(Mandatory = $true)][string]$Name)
     $envFile = Join-Path $Root ".env"
-    if (Test-Path $envFile) {
-        $match = Select-String -Path $envFile -Pattern '^\s*ASR_BACKEND\s*=\s*(\S+)' | Select-Object -First 1
-        if ($match) {
-            $val = $match.Matches[0].Groups[1].Value.Trim().Trim('"').Trim("'")
-            return ($val.ToLower() -eq "nvidia")
+    if (-not (Test-Path $envFile)) { return $null }
+    $pattern = '^\s*' + [regex]::Escape($Name) + '\s*=\s*(.*)$'
+    $last = $null
+    Select-String -Path $envFile -Pattern $pattern | ForEach-Object {
+        $raw = $_.Matches[0].Groups[1].Value
+        if ($raw -notmatch "^[`"']") {
+            $raw = ($raw -split '#', 2)[0]
         }
+        $val = $raw.Trim().Trim('"').Trim("'")
+        if ($val) { $last = $val }
     }
-    return $true
+    return $last
+}
+
+function Test-StudioAsrBackendNvidia {
+    # Только явный ASR_BACKEND=nvidia. Нет строки / whisper / пусто — не nvidia.
+    # Раньше «нет строки» считалось nvidia и Studio [1] качала 2.5 ГБ Parakeet.
+    $val = Get-StudioEnvLastNonEmpty "ASR_BACKEND"
+    if (-not $val) { return $false }
+    return ($val.ToLower() -eq "nvidia")
+}
+
+function Test-StudioNvidiaPreloadOnStartup {
+    $val = Get-StudioEnvLastNonEmpty "NVIDIA_ASR_PRELOAD_ON_STARTUP"
+    if (-not $val) { return $false }
+    return @("1", "true", "yes", "on") -contains $val.ToLower()
 }
 
 function Set-StudioNvidiaEnv {
@@ -566,7 +585,14 @@ function Get-StudioNvidiaAsrModel {
 }
 
 function Invoke-StudioPredownloadNemo {
-    if (-not (Test-StudioAsrBackendNvidia)) { return $true }
+    if (-not (Test-StudioAsrBackendNvidia)) {
+        Write-StudioMsg "ASR_BACKEND не nvidia — Parakeet не качаю (это только монтаж «Аудио»)." "DarkGray"
+        return $true
+    }
+    if (-not (Test-StudioNvidiaPreloadOnStartup)) {
+        Write-StudioMsg "Parakeet не качаю при старте (NVIDIA_ASR_PRELOAD_ON_STARTUP=false). Модель подтянется на шаге «Аудио» или scripts/download_nvidia_asr.py" "DarkGray"
+        return $true
+    }
     Set-StudioNvidiaEnv
     $model = Get-StudioNvidiaAsrModel
     $slug = ($model -replace "/", "--")

@@ -8,7 +8,7 @@
 Плюс загрузка файлов: POST {upload_base}/api/file-stream-upload
 и баланс: GET /api/v1/chat/credit.
 
-Auth: Bearer KIE_API_KEY (или GPT_API_KEY при базе kie.ai) — как kie_kling.
+Auth: Bearer KIE_API_KEY (или GPT_API_KEY, даже через VPS) — как kie_kling.
 """
 
 from __future__ import annotations

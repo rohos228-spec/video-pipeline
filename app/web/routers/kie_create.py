@@ -35,14 +35,13 @@ async def get_catalog() -> dict[str, Any]:
 
 def _key_debug() -> dict[str, Any]:
     """Отпечаток ключа для диагностики 401 (маскированный, безопасно)."""
-    from app.bots.kie_kling import kie_api_key
-    from app.settings import settings
+    from app.bots.kie_kling import kie_api_key, kie_api_key_source
 
     key = kie_api_key()
-    direct = bool((getattr(settings, "kie_api_key", None) or "").strip())
+    src = kie_api_key_source() or ("пусто" if not key else "неизвестно")
     fp = f"{key[:4]}…{key[-4:]}" if len(key) >= 10 else ("пусто" if not key else "короткий!")
     return {
-        "key_source": "KIE_API_KEY" if direct else "GPT_API_KEY (fallback)",
+        "key_source": src,
         "key_fingerprint": fp,
         "base_url": kie_http.kie_api_base_url(),
     }

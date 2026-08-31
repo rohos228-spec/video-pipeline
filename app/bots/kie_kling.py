@@ -9,13 +9,15 @@ Models:
   - kling-2.6/image-to-video  (prompt, image_urls[1], sound, duration 5|10)
   - kling-2.6/text-to-video   (prompt, sound, aspect_ratio, duration 5|10)
 
-Auth: Bearer API key (KIE_API_KEY или GPT_API_KEY при базе kie.ai).
+Auth: Bearer API key (KIE_API_KEY; если пусто — GPT_API_KEY, в том числе
+когда GPT идёт через VPS, не api.kie.ai).
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -44,15 +46,59 @@ def kie_api_configured() -> bool:
     return bool(kie_api_key() and kie_api_base_url())
 
 
-def kie_api_key() -> str:
-    key = (getattr(settings, "kie_api_key", None) or "").strip()
-    if key:
-        return key
-    # Тот же ключ, что для GPT на kie.ai
-    base = (settings.gpt_base_url or "").strip().lower()
-    if "kie.ai" in base:
-        return (settings.gpt_api_key or "").strip()
+def kie_api_key_source() -> str:
+    """Откуда взят ключ Market/Create (без самого секрета)."""
+    if (os.environ.get("KIE_API_KEY") or "").strip() or (
+        getattr(settings, "kie_api_key", None) or ""
+    ).strip():
+        return "KIE_API_KEY"
+    if (os.environ.get("GPT_API_KEY") or "").strip() or (
+        settings.gpt_api_key or ""
+    ).strip():
+        return "GPT_API_KEY"
     return ""
+
+
+def kie_api_key() -> str:
+    """Ключ kie Market / вкладка «Генерация».
+
+    1) KIE_API_KEY (процесс / settings / последний непустой в .env)
+    2) GPT_API_KEY — тот же аккаунт kie, даже если GPT_BASE_URL это VPS
+       (раньше fallback срабатывал только при базе *kie.ai*, и Create
+       «не видел» ключ на housepc).
+    """
+    for raw in (
+        os.environ.get("KIE_API_KEY"),
+        getattr(settings, "kie_api_key", None),
+    ):
+        key = (raw or "").strip()
+        if key:
+            return key
+    try:
+        from app.project_root import find_project_root
+        from app.services.env_file import last_nonempty_dotenv_value
+
+        key = last_nonempty_dotenv_value(
+            find_project_root() / ".env", "KIE_API_KEY", "KIEAI_API_KEY"
+        )
+        if key:
+            return key
+    except Exception:
+        pass
+    for raw in (
+        os.environ.get("GPT_API_KEY"),
+        getattr(settings, "gpt_api_key", None),
+    ):
+        key = (raw or "").strip()
+        if key:
+            return key
+    try:
+        from app.project_root import find_project_root
+        from app.services.env_file import last_nonempty_dotenv_value
+
+        return last_nonempty_dotenv_value(find_project_root() / ".env", "GPT_API_KEY")
+    except Exception:
+        return ""
 
 
 def kie_api_base_url() -> str:

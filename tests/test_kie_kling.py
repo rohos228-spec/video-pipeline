@@ -207,3 +207,24 @@ async def test_poll_fail_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(kk.KieKlingError) as ei:
         await kk._poll_task("t", timeout_s=5)
     assert ei.value.context.get("provider_code") == 501
+
+
+def test_kie_api_key_falls_back_to_gpt_on_vps(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("KIE_API_KEY", raising=False)
+    monkeypatch.delenv("GPT_API_KEY", raising=False)
+    monkeypatch.setattr(kk.settings, "kie_api_key", "")
+    monkeypatch.setattr(kk.settings, "gpt_api_key", "kie-from-gpt")
+    monkeypatch.setattr(kk.settings, "gpt_base_url", "https://gpt.video-pipeline.work")
+    monkeypatch.setattr(
+        "app.services.env_file.last_nonempty_dotenv_value",
+        lambda *_a, **_k: "",
+    )
+    assert kk.kie_api_key() == "kie-from-gpt"
+    assert kk.kie_api_key_source() == "GPT_API_KEY"
+
+
+def test_kie_api_key_prefers_direct_kie(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KIE_API_KEY", "direct-kie")
+    monkeypatch.setattr(kk.settings, "gpt_api_key", "gpt-key")
+    assert kk.kie_api_key() == "direct-kie"
+    assert kk.kie_api_key_source() == "KIE_API_KEY"

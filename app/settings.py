@@ -11,7 +11,9 @@ _ROOT = find_project_root()
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=str(_ROOT / ".env"),
+        env_file_encoding="utf-8-sig",
         extra="ignore",
+        env_ignore_empty=True,
     )
 
     # Telegram (опционально — пустой токен = web-only, без бота)
@@ -377,7 +379,18 @@ class Settings(BaseSettings):
         object.__setattr__(self, "data_dir", resolve_project_path(self.data_dir))
         if self.bgm_path is not None:
             object.__setattr__(self, "bgm_path", resolve_project_path(self.bgm_path))
+        self._fill_empty_keys_from_dotenv()
         return self
+
+    def _fill_empty_keys_from_dotenv(self) -> None:
+        """Пустой дубль `KIE_API_KEY=` в .env не должен затирать ключ выше."""
+        from app.services.env_file import last_nonempty_dotenv_values
+
+        vals = last_nonempty_dotenv_values(_ROOT / ".env", ("KIE_API_KEY", "GPT_API_KEY"))
+        if not (self.kie_api_key or "").strip() and vals.get("KIE_API_KEY"):
+            object.__setattr__(self, "kie_api_key", vals["KIE_API_KEY"])
+        if not (self.gpt_api_key or "").strip() and vals.get("GPT_API_KEY"):
+            object.__setattr__(self, "gpt_api_key", vals["GPT_API_KEY"])
 
     @property
     def fleet_local_web_url(self) -> str:

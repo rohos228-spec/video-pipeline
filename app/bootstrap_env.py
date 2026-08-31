@@ -106,10 +106,12 @@ def set_hf_offline(*, offline: bool = True) -> None:
 
 
 def apply_if_nvidia_asr(*, force: bool = True) -> None:
-    backend = (os.environ.get("ASR_BACKEND") or "nvidia").strip().lower()
+    backend = (os.environ.get("ASR_BACKEND") or "").strip().lower()
     if backend == "nvidia":
         apply_nvidia_env(force=force)
 
 
-if sys.platform == "win32" or (os.environ.get("ASR_BACKEND") or "nvidia").strip().lower() == "nvidia":
+# Только явный ASR_BACKEND=nvidia. Не трогаем TEMP/HF на каждом Windows-старте
+# и не считаем «нет переменной» = nvidia (это не генерация, а монтаж).
+if (os.environ.get("ASR_BACKEND") or "").strip().lower() == "nvidia":
     apply_if_nvidia_asr(force=True)
