@@ -53,13 +53,13 @@ IMAGE_CATALOG_EXTRA: list[dict[str, Any]] = [
     },
 ]
 
-VENDOR_ORDER = ("anthropic", "openai", "gemini", "xai", "moonshot", "images", "video")
+VENDOR_ORDER = ("anthropic", "openai", "gemini", "deepseek", "xai", "images", "video")
 VENDOR_META: dict[str, dict[str, str]] = {
     "anthropic": {"id": "anthropic", "label": "Anthropic", "icon": "A"},
     "openai": {"id": "openai", "label": "OpenAI", "icon": "hex"},
     "gemini": {"id": "gemini", "label": "Gemini", "icon": "spark"},
+    "deepseek": {"id": "deepseek", "label": "DeepSeek", "icon": "D"},
     "xai": {"id": "xai", "label": "xAI", "icon": "X"},
-    "moonshot": {"id": "moonshot", "label": "Moonshot", "icon": "moon"},
     "images": {"id": "images", "label": "Изображения", "icon": "image"},
     "video": {"id": "video", "label": "Видео", "icon": "image"},
 }
@@ -94,6 +94,8 @@ def _vendor_of(model_id: str, is_image: bool, is_video: bool = False) -> str:
         return "anthropic"
     if mid.startswith("gemini"):
         return "gemini"
+    if mid.startswith("deepseek"):
+        return "deepseek"
     if mid.startswith("grok"):
         return "xai"
     if mid.startswith("kimi"):

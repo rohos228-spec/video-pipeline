@@ -17,9 +17,11 @@ from app.settings import Settings, settings
 _CHOICE_NAME = "text_llm_choice.json"
 
 CATALOG: list[dict[str, str]] = [
+    # OpenAI
     {
         "id": "gpt-5.6-sol-vibecode",
         "provider": "vibecode",
+        "group": "OpenAI",
         "label": "GPT 5.6 Sol",
         "site": "vibecode.moe",
         "api_model": "gpt-5.6-sol",
@@ -27,6 +29,7 @@ CATALOG: list[dict[str, str]] = [
     {
         "id": "gpt-5.6-terra-vibecode",
         "provider": "vibecode",
+        "group": "OpenAI",
         "label": "GPT 5.6 Terra",
         "site": "vibecode.moe",
         "api_model": "gpt-5.6-terra",
@@ -34,13 +37,58 @@ CATALOG: list[dict[str, str]] = [
     {
         "id": "gpt-5.6-luna-vibecode",
         "provider": "vibecode",
+        "group": "OpenAI",
         "label": "GPT 5.6 Luna",
         "site": "vibecode.moe",
         "api_model": "gpt-5.6-luna",
     },
+    # Google
+    {
+        "id": "gemini-3.7-flash-vibecode",
+        "provider": "vibecode",
+        "group": "Google",
+        "label": "Gemini 3.7 Flash",
+        "site": "vibecode.moe",
+        "api_model": "gemini-3.7-flash",
+    },
+    {
+        "id": "gemini-3.1-pro-vibecode",
+        "provider": "vibecode",
+        "group": "Google",
+        "label": "Gemini 3.1 Pro",
+        "site": "vibecode.moe",
+        "api_model": "gemini-3.1-pro-preview",
+    },
+    {
+        "id": "gemini-3-flash-vibecode",
+        "provider": "vibecode",
+        "group": "Google",
+        "label": "Gemini 3 Flash",
+        "site": "vibecode.moe",
+        "api_model": "gemini-3-flash-preview",
+    },
+    # DeepSeek
+    {
+        "id": "deepseek-v4-pro-vibecode",
+        "provider": "vibecode",
+        "group": "DeepSeek",
+        "label": "DeepSeek V4 Pro",
+        "site": "vibecode.moe",
+        "api_model": "deepseek-v4-pro",
+    },
+    {
+        "id": "deepseek-v4-flash-vibecode",
+        "provider": "vibecode",
+        "group": "DeepSeek",
+        "label": "DeepSeek V4 Flash",
+        "site": "vibecode.moe",
+        "api_model": "deepseek-v4-flash",
+    },
+    # KIE
     {
         "id": "gpt-kie",
         "provider": "kie",
+        "group": "KIE",
         "label": "GPT (kie.ai)",
         "site": "kie.ai",
     },
@@ -55,6 +103,18 @@ _MODEL_ALIASES = {
     "gpt-5.6-terra-vibecode": "gpt-5.6-terra-vibecode",
     "gpt-5.6-luna": "gpt-5.6-luna-vibecode",
     "gpt-5.6-luna-vibecode": "gpt-5.6-luna-vibecode",
+    "gemini-3.7-flash": "gemini-3.7-flash-vibecode",
+    "gemini-3.7-flash-vibecode": "gemini-3.7-flash-vibecode",
+    "gemini-3.1-pro": "gemini-3.1-pro-vibecode",
+    "gemini-3.1-pro-preview": "gemini-3.1-pro-vibecode",
+    "gemini-3.1-pro-vibecode": "gemini-3.1-pro-vibecode",
+    "gemini-3-flash": "gemini-3-flash-vibecode",
+    "gemini-3-flash-preview": "gemini-3-flash-vibecode",
+    "gemini-3-flash-vibecode": "gemini-3-flash-vibecode",
+    "deepseek-v4-pro": "deepseek-v4-pro-vibecode",
+    "deepseek-v4-pro-vibecode": "deepseek-v4-pro-vibecode",
+    "deepseek-v4-flash": "deepseek-v4-flash-vibecode",
+    "deepseek-v4-flash-vibecode": "deepseek-v4-flash-vibecode",
     "gpt-kie": "gpt-kie",
 }
 

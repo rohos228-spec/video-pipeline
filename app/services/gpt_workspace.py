@@ -1516,37 +1516,38 @@ async def ask(
         reply_path = out_dir / f"reply_{ts}.txt"
         reply_path.write_text(reply, encoding="utf-8")
 
-        # 1) Картинки / URL из ответа модели
-        try:
-            from app.services.gpt_api import ensure_correct_extension, materialize_reply_assets
+        # 1) Картинки / URL из ответа модели — ТОЛЬКО если пользователь явно запрашивал картинку/медиа
+        if _IMAGE_ASK_RE.search(text) or _DATA_URI_INLINE_RE.search(reply):
+            try:
+                from app.services.gpt_api import ensure_correct_extension, materialize_reply_assets
 
-            assets = await materialize_reply_assets(
-                reply,
-                out_dir,
-                prefix=f"gpt_{ts}",
-                timeout=90.0,
-            )
-            for p in assets:
-                p = ensure_correct_extension(p)
-                if p.is_file() and p.name not in saved_files:
-                    saved_files.append(p.name)
-            for p in list(out_dir.iterdir()):
-                if p.is_file() and p.suffix.lower() in {
-                    ".bin",
-                    ".dat",
-                    ".download",
-                    ".octet-stream",
-                }:
-                    from app.services.gpt_api import finalize_downloaded_file
-
-                    fixed = finalize_downloaded_file(p)
-                    if fixed.name not in saved_files and fixed.suffix.lower() not in {
+                assets = await materialize_reply_assets(
+                    reply,
+                    out_dir,
+                    prefix=f"gpt_{ts}",
+                    timeout=90.0,
+                )
+                for p in assets:
+                    p = ensure_correct_extension(p)
+                    if p.is_file() and p.name not in saved_files:
+                        saved_files.append(p.name)
+                for p in list(out_dir.iterdir()):
+                    if p.is_file() and p.suffix.lower() in {
                         ".bin",
+                        ".dat",
                         ".download",
+                        ".octet-stream",
                     }:
-                        saved_files.append(fixed.name)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("gpt_workspace: materialize assets: {}", e)
+                        from app.services.gpt_api import finalize_downloaded_file
+
+                        fixed = finalize_downloaded_file(p)
+                        if fixed.name not in saved_files and fixed.suffix.lower() not in {
+                            ".bin",
+                            ".download",
+                        }:
+                            saved_files.append(fixed.name)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("gpt_workspace: materialize assets: {}", e)
 
         saved_files = _filter_placeholder_images(out_dir, saved_files)
 
