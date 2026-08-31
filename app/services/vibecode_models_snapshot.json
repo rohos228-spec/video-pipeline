@@ -41,62 +41,7 @@
       "output_usd_per_m": 0.157463
     }
   },
-  {
-    "display_name": "GPT 5.5",
-    "id": "gpt-5.5",
-    "is_image": false,
-    "object": "model",
-    "owned_by": "vibecode",
-    "pricing": {
-      "cache_create_usd_per_m": 0.0,
-      "cache_read_usd_per_m": 0.042646,
-      "currency": "usd",
-      "input_usd_per_m": 0.426462,
-      "output_usd_per_m": 2.558774
-    }
-  },
-  {
-    "display_name": "GPT-5.5 OpenAI compact",
-    "id": "gpt-5.5-openai-compact",
-    "is_image": false,
-    "object": "model",
-    "owned_by": "vibecode",
-    "pricing": {
-      "cache_create_usd_per_m": 0.0,
-      "cache_read_usd_per_m": 0.06561,
-      "currency": "usd",
-      "input_usd_per_m": 0.656096,
-      "output_usd_per_m": 3.936576
-    }
-  },
-  {
-    "display_name": "GPT 5.4 Mini",
-    "id": "gpt-5.4-mini",
-    "is_image": false,
-    "object": "model",
-    "owned_by": "vibecode",
-    "pricing": {
-      "cache_create_usd_per_m": 0.0,
-      "cache_read_usd_per_m": 0.006397,
-      "currency": "usd",
-      "input_usd_per_m": 0.063969,
-      "output_usd_per_m": 0.383816
-    }
-  },
-  {
-    "display_name": "Codex Auto Review",
-    "id": "codex-auto-review",
-    "is_image": false,
-    "object": "model",
-    "owned_by": "vibecode",
-    "pricing": {
-      "cache_create_usd_per_m": 0.0,
-      "cache_read_usd_per_m": 0.021323,
-      "currency": "usd",
-      "input_usd_per_m": 0.213231,
-      "output_usd_per_m": 1.279387
-    }
-  },
+
   {
     "display_name": "Claude Fable 5",
     "id": "claude-fable-5",

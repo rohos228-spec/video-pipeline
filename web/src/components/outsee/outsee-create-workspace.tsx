@@ -321,16 +321,18 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     if (!open || !settingsQ.data || settingsHydrated) return;
     const s = settingsQ.data;
     const mt = (s.media_type as OutseeMediaType) || "image";
-    setMediaType(mt === "audio" || mt === "video" || mt === "image" ? mt : "image");
-    setImageSlug(String(s.image_slug || "gpt-image-2"));
-    setVideoSlug(String(s.video_slug || "kling-3-0"));
-    setAudioSlug(String(s.audio_slug || "suno-5-5"));
+    const rawImg = String(s.image_slug || "kie:nano-banana-2");
+    setImageSlug(rawImg.startsWith("kie:") ? rawImg : `kie:${rawImg}`);
+    const rawVid = String(s.video_slug || "kie:veo-3-1");
+    setVideoSlug(rawVid.startsWith("kie:") ? rawVid : `kie:${rawVid}`);
+    const rawAud = String(s.audio_slug || "kie:suno-music");
+    setAudioSlug(rawAud.startsWith("kie:") ? rawAud : rawAud === "suno-5-5" ? "kie:suno-music" : `kie:${rawAud}`);
     setAspect(String(s.aspect || "16:9"));
     setResolution(String(s.image_resolution || "2K"));
     setDetail(String(s.image_quality || "medium"));
     setVideoResolution(String(s.video_resolution || "1080p"));
     setDuration(String(s.duration || "5"));
-    const restoredVideo = String(s.video_slug || "kling-3-0");
+    const restoredVideo = rawVid;
     setGenerateAudio(
       restoredVideo === "veo-3-1-lite" ? false : Boolean(s.generate_audio),
     );
@@ -1723,7 +1725,8 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                             : "Опишите изображение…"
                       }
                       rows={3}
-                      className="w-full resize-none bg-transparent text-[13px] leading-relaxed text-white/90 placeholder:text-white/30 focus:outline-none"
+                      style={{ outline: "none" }}
+                      className="w-full resize-none bg-transparent text-[13px] leading-relaxed text-white/90 placeholder:text-white/30 border-0 outline-none ring-0 focus:border-0 focus:outline-none focus:ring-0"
                     />
                     {mediaType === "image" && stylePreset !== "none" && (
                       <div className="mt-1 flex items-center gap-1.5 rounded-lg border border-[#22d3ee]/25 bg-[#22d3ee]/5 px-2.5 py-1 text-[11px] text-[#22d3ee]/90">
@@ -2571,34 +2574,72 @@ function ModelPickerPopover({
   }, [kieForType, q]);
 
   const unifiedItems = useMemo(() => {
-    const baseItems = filteredModels.map((m) => ({
-      slug: m.slug,
-      label: m.displayName,
-      desc: m.description,
-      icon: m.icon,
-      letter: null as string | null,
-      isKie: false,
-      isTop: Boolean(m.isTop || m.slug === "veo-3-1-lite"),
-      badge: m.isTop ? "ТОП" : m.isNew ? "НОВОЕ" : undefined,
-      priceLabel: m.price ? m.price : null,
-      priceUsd: null as number | null,
-    }));
+    // Collect icons from base models for quick lookup
+    const iconBySlug = new Map<string, string>();
+    for (const m of filteredModels) {
+      if (m.icon) {
+        iconBySlug.set(m.slug.toLowerCase(), m.icon);
+        iconBySlug.set(m.slug.toLowerCase().replace(/[-_]/g, ""), m.icon);
+      }
+    }
+
+    // Build authoritative KIE items first
+    const kieModelIds = new Set<string>();
     const kieItems = filteredKie.map((m) => {
+      const rawId = m.id.toLowerCase();
+      const cleanId = rawId.replace(/[-_]/g, "");
+      kieModelIds.add(rawId);
+      kieModelIds.add(cleanId);
       const est = estimateKie(m, {}, creditUsd);
+
+      const icon =
+        iconBySlug.get(rawId) ||
+        iconBySlug.get(cleanId) ||
+        (rawId.includes("nano-banana") ? iconBySlug.get("nano-banana-2") : null) ||
+        (rawId.includes("gpt-image") ? iconBySlug.get("gpt-image-2") : null) ||
+        (rawId.includes("seedream") ? iconBySlug.get("seedream-5-pro") : null) ||
+        (rawId.includes("veo") ? iconBySlug.get("veo-3-1-lite") || iconBySlug.get("veo-3-1") : null) ||
+        (rawId.includes("kling") ? iconBySlug.get("kling-3-0") : null) ||
+        (rawId.includes("hailuo") ? iconBySlug.get("hailuo-02") : null) ||
+        (rawId.includes("topaz") ? iconBySlug.get("topaz-video-upscale") || iconBySlug.get("topaz-image-upscale") : null) ||
+        (rawId.includes("suno") ? iconBySlug.get("suno-5-5") : null) ||
+        null;
+
       return {
         slug: `kie:${m.id}`,
         label: m.label,
         desc: m.hint || m.desc,
-        icon: null as string | null,
+        icon,
         letter: m.label.slice(0, 1),
         isKie: true,
         isTop: Boolean(m.is_top || m.isTop),
-        badge: m.badge || (m.is_top || m.isTop ? "ТОП" : "KIE"),
+        badge: m.badge || (m.is_top || m.isTop ? "ТОП" : undefined),
         priceLabel: null as string | null,
         priceUsd: est.usd > 0 ? est.usd : null,
       };
     });
-    return [...baseItems, ...kieItems];
+
+    // Only include remaining base models that are NOT present in KIE
+    const remainingBaseItems = filteredModels
+      .filter((m) => {
+        const s = m.slug.toLowerCase();
+        const c = s.replace(/[-_]/g, "");
+        return !kieModelIds.has(s) && !kieModelIds.has(c);
+      })
+      .map((m) => ({
+        slug: m.slug,
+        label: m.displayName,
+        desc: m.description,
+        icon: m.icon,
+        letter: null as string | null,
+        isKie: false,
+        isTop: Boolean(m.isTop || m.slug === "veo-3-1-lite"),
+        badge: m.isTop ? "ТОП" : m.isNew ? "НОВОЕ" : undefined,
+        priceLabel: m.price ? m.price : null,
+        priceUsd: null as number | null,
+      }));
+
+    return [...kieItems, ...remainingBaseItems];
   }, [filteredModels, filteredKie, creditUsd]);
 
   const topItems = useMemo(() => unifiedItems.filter((i) => i.isTop), [unifiedItems]);

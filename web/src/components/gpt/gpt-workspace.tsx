@@ -1,25 +1,40 @@
 "use client";
 
 /**
- * Текстовый LLM Workspace — свободный чат через API
- * (GPT/kie или Kimi K3 / TokenRouter — см. TEXT_LLM_PROVIDER).
- * Сам по себе: история · вложения · результаты · скачивание.
+ * Премиальный Dark UI чат в едином бирюзовом стиле с вкладкой «Генерация»:
+ * - Мульти-сессии: история, переименование, удаление, фильтрация
+ * - Селектор моделей (GPT 5.6 Sol / Terra / Luna, GPT kie.ai, Kimi K3)
+ * - Полноценный Markdown с подсветкой синтаксиса и кнопкой копирования кода
+ * - Drag-and-drop вложений (картинки, docx, pdf, xlsx, txt)
+ * - Скачивание готовых сгенерированных файлов и ZIP архивов
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Archive,
   Bot,
+  Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
   Download,
+  Edit2,
+  FileCode,
+  FileSpreadsheet,
   FileText,
   FolderOutput,
-  History,
+  Image as ImageIcon,
   Loader2,
+  MessageSquare,
   Paperclip,
   Plus,
+  Search,
   Send,
   Trash2,
+  Upload,
+  User,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -28,18 +43,17 @@ import {
   type GptWorkspaceFile,
   type GptWorkspaceMessage,
   type GptWorkspaceSession,
+  type GptWorkspaceSessionSummary,
 } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { cn } from "@/lib/utils";
-
-const ACCENT = "#D1FE17";
+import { MarkdownRenderer } from "./markdown-renderer";
 
 function stemOf(name: string): string {
   const i = name.lastIndexOf(".");
   return i > 0 ? name.slice(0, i) : name;
 }
 
-/** Найти файл после sniff-rename (.bin → .png) по старому имени из сообщения. */
 function resolveFile(
   filesByName: Map<string, GptWorkspaceFile>,
   name: string,
@@ -69,12 +83,10 @@ function downloadHref(f: GptWorkspaceFile): string {
   return `${f.url}${f.url.includes("?") ? "&" : "?"}download=1`;
 }
 
-/** Сразу скачать файл (конвертированное имя с сервера через Content-Disposition). */
 function triggerDownload(f: GptWorkspaceFile): void {
   const a = document.createElement("a");
   a.href = downloadHref(f);
   a.rel = "noopener";
-  // без download= — иначе браузер форсит старое .bin имя
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -87,7 +99,20 @@ function formatBytes(n?: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** Убрать блок «Готовые файлы» / старые Studio-хвосты — карточки рисуем отдельно. */
+function getFileIcon(name: string) {
+  const ext = name.split(".").pop()?.toLowerCase() || "";
+  if (["png", "jpg", "jpeg", "webp", "gif", "svg"].includes(ext)) {
+    return <ImageIcon className="h-4 w-4 text-[#22d3ee]" />;
+  }
+  if (["xlsx", "xls", "csv", "tsv"].includes(ext)) {
+    return <FileSpreadsheet className="h-4 w-4 text-[#22d3ee]" />;
+  }
+  if (["py", "ts", "tsx", "js", "jsx", "html", "css", "json"].includes(ext)) {
+    return <FileCode className="h-4 w-4 text-[#38bdf8]" />;
+  }
+  return <FileText className="h-4 w-4 text-amber-400" />;
+}
+
 function stripFilesNotice(content: string): string {
   let t = (content || "").trim();
   t = t.replace(
@@ -98,152 +123,46 @@ function stripFilesNotice(content: string): string {
     /^(?:Studio положила файл[^\n]*(?:\n•[^\n]*)*|Studio вернула[\s\S]*|Готовые файлы:[\s\S]*)$/i,
     "",
   );
-  // сырые data:image в пузыре не показываем — картинка в карточках
   t = t.replace(/data:(?:image|application)\/[^;,\s]+;base64,[A-Za-z0-9+/=\s]+/gi, "");
   t = t.replace(/\n{3,}/g, "\n\n").trim();
   return t;
 }
 
-function ReadyFilesPanel({
-  names,
-  filesByName,
-}: {
-  names: string[];
-  filesByName: Map<string, GptWorkspaceFile>;
-}) {
-  if (names.length === 0) return null;
-  return (
-    <div
-      className="mt-3 overflow-hidden rounded-lg border"
-      style={{
-        borderColor: "rgba(209,254,23,0.28)",
-        background:
-          "linear-gradient(180deg, rgba(209,254,23,0.07) 0%, rgba(209,254,23,0.02) 100%)",
-      }}
-    >
-      <div
-        className="flex items-center gap-2 border-b px-3 py-2"
-        style={{ borderColor: "rgba(209,254,23,0.18)" }}
-      >
-        <FolderOutput className="h-3.5 w-3.5 shrink-0" style={{ color: ACCENT }} />
-        <span
-          className="text-[11px] font-semibold uppercase tracking-[0.12em]"
-          style={{ color: ACCENT }}
-        >
-          Готовые файлы · {names.length}
-        </span>
-      </div>
-      <ul className="flex flex-col gap-1.5 p-2">
-        {names.map((name) => {
-          const f = resolveFile(filesByName, name);
-          const label = f ? fileLabel(f) : name;
-          const image = isImageFile(f, name);
-          const size = formatBytes(f?.size);
-          return (
-            <li
-              key={name}
-              className="flex items-center gap-2 rounded-md border border-white/[0.08] bg-black/35 px-2.5 py-2"
-            >
-              {image && f ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={f.url}
-                  alt={label}
-                  className="h-10 w-10 shrink-0 rounded object-cover bg-black/50"
-                />
-              ) : (
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-white/[0.04]">
-                  <FileText className="h-4 w-4 text-white/45" />
-                </div>
-              )}
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-[13px] font-medium text-white/90" title={label}>
-                  {label}
-                </div>
-                {size ? (
-                  <div className="font-mono text-[10px] text-white/35">{size}</div>
-                ) : null}
-              </div>
-              {f ? (
-                <button
-                  type="button"
-                  onClick={() => triggerDownload(f)}
-                  className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-semibold text-black"
-                  style={{ backgroundColor: ACCENT }}
-                  title="Скачать"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  Скачать
-                </button>
-              ) : (
-                <span className="text-[10px] text-white/30">нет на диске</span>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  );
+/** Очистка названия модели от повторов, сайтов и скобок */
+function cleanModelTitle(label: string | undefined): string {
+  if (!label) return "GPT 5.6 Sol";
+  let t = label.trim();
+  // If format is like "GPT 5.6 Luna · vibecode.moe (gpt-5.6-luna)" -> extract "GPT 5.6 Luna"
+  if (t.includes("·")) {
+    t = t.split("·")[0].trim();
+  }
+  // Strip trailing (id)
+  t = t.replace(/\s*\([^)]*\)$/, "").trim();
+  return t || "GPT 5.6 Sol";
 }
 
-function FileChip({
-  file,
-  onToOutputs,
-  onDelete,
-}: {
-  file: GptWorkspaceFile;
-  onToOutputs?: () => void;
-  onDelete?: () => void;
-}) {
-  const label = fileLabel(file);
-  const image = isImageFile(file);
-  return (
-    <div className="inline-flex max-w-[220px] flex-col gap-1 rounded border border-white/[0.08] bg-white/[0.03] p-1.5">
-      {image ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={file.url}
-          alt={label}
-          className="max-h-28 w-full rounded object-contain bg-black/40"
-        />
-      ) : null}
-      <div className="flex items-center gap-1 text-[11px] text-white/70">
-        {image ? null : <Paperclip className="h-3 w-3 shrink-0" />}
-        <span className="min-w-0 flex-1 truncate" title={label}>
-          {label}
-        </span>
-        <button
-          type="button"
-          className="text-white/35 hover:text-white"
-          title="Скачать"
-          onClick={() => triggerDownload(file)}
-        >
-          <Download className="h-3 w-3" />
-        </button>
-        {onToOutputs && (
-          <button
-            type="button"
-            className="text-white/30 hover:text-white"
-            title="В Результаты"
-            onClick={onToOutputs}
-          >
-            <FolderOutput className="h-3 w-3" />
-          </button>
-        )}
-        {onDelete && (
-          <button
-            type="button"
-            className="text-white/30 hover:text-red-400"
-            title="Удалить"
-            onClick={onDelete}
-          >
-            <X className="h-3 w-3" />
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
+const STARTER_PROMPTS = [
+  {
+    icon: "🎬",
+    title: "Сценарий для видео",
+    prompt: "Напиши захватывающий сценарий для 30-секундного рекламного видеоролика. Раздели на 5 ключевых сцен с закадровым голосом и визуальным описанием кадров.",
+  },
+  {
+    icon: "📊",
+    title: "Анализ Excel / данных",
+    prompt: "Я хочу прикрепить таблицу. Разбери ключевые метрики, выдели закономерности и подготовь структурированный отчет с выводами.",
+  },
+  {
+    icon: "🎨",
+    title: "Промпты для визуала",
+    prompt: "Составь 5 детальных фотореалистичных промптов для генерации кадров в кинематографичном стиле 8k, с описанием света, композиции и камеры.",
+  },
+  {
+    icon: "💡",
+    title: "Креативные концепты",
+    prompt: "Предложи 3 вирусные креативные идеи для коротких вертикальных видео (Shorts/Reels), привлекающих внимание с первых 3 секунд.",
+  },
+];
 
 type Props = {
   open: boolean;
@@ -255,62 +174,53 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [withAttachments, setWithAttachments] = useState(true);
-  const [stripAttachOpen, setStripAttachOpen] = useState(false);
-  const [stripResultsOpen, setStripResultsOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [editingTitleId, setEditingTitleId] = useState<string | null>(null);
+  const [editTitleValue, setEditTitleValue] = useState("");
   const [dragOver, setDragOver] = useState(false);
-  const [llmTitle, setLlmTitle] = useState("Текст LLM");
-  const [llmSub, setLlmSub] = useState("api");
-  const fileRef = useRef<HTMLInputElement>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    fetch("/api/studio-version", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then(
-        (data: {
-          text_llm_provider?: string;
-          text_llm_label?: string;
-          text_llm_model?: string;
-        } | null) => {
-          if (cancelled || !data) return;
-          const isKimi = data.text_llm_provider === "tokenrouter";
-          setLlmTitle(isKimi ? "Kimi K3" : "GPT");
-          setLlmSub(
-            isKimi
-              ? "TokenRouter · не OpenAI"
-              : (data.text_llm_label || "api").slice(0, 40),
-          );
-        },
-      )
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [open]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const knownOutputsRef = useRef<Set<string>>(new Set());
+  const seededSessionRef = useRef<string | null>(null);
+
+  // Active Text LLM Status & Catalog
+  const textLlmQ = useQuery({
+    queryKey: ["text-llm-status"],
+    queryFn: () => fetch("/api/text-llm", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)),
+    enabled: open,
+    refetchInterval: 10_000,
+  });
 
   const sessionsQ = useQuery({
     queryKey: ["gpt-workspace", "sessions"],
     queryFn: () => api.gptListSessions(),
     enabled: open,
-    refetchInterval: open ? 8_000 : false,
+    refetchInterval: open ? 6_000 : false,
   });
 
   const sessionQ = useQuery({
     queryKey: ["gpt-workspace", "session", sessionId],
     queryFn: () => api.gptGetSession(sessionId!),
     enabled: open && !!sessionId,
-    refetchInterval: (q) =>
-      q.state.data?.status === "running" ? 1_500 : false,
+    refetchInterval: (q) => (q.state.data?.status === "running" ? 1_500 : false),
   });
 
   const session: GptWorkspaceSession | undefined = sessionQ.data;
+  const sessions: GptWorkspaceSessionSummary[] = sessionsQ.data?.sessions ?? [];
 
-  const [elapsedSec, setElapsedSec] = useState(0);
-  const knownOutputsRef = useRef<Set<string>>(new Set());
-  const seededSessionRef = useRef<string | null>(null);
+  // Auto select first session if none selected
+  useEffect(() => {
+    if (open && !sessionId && sessions.length > 0) {
+      setSessionId(sessions[0].id);
+    }
+  }, [open, sessionId, sessions]);
 
+  // Track outputs for auto-download if needed
   useEffect(() => {
     if (!session) return;
     if (seededSessionRef.current !== session.id) {
@@ -321,16 +231,38 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
     }
   }, [session]);
 
+  // Auto scroll to bottom
   useEffect(() => {
     if (!open) return;
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [open, session?.messages?.length]);
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [open, session?.messages?.length, session?.phase_detail]);
 
+  // Auto-resize textarea
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 180)}px`;
+    }
+  }, [draft]);
+
+  // Session Mutations
   const createMut = useMutation({
     mutationFn: () => api.gptCreateSession(),
     onSuccess: (s) => {
       setSessionId(s.id);
       void qc.invalidateQueries({ queryKey: ["gpt-workspace", "sessions"] });
+      setTimeout(() => textareaRef.current?.focus(), 100);
+    },
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
+
+  const renameMut = useMutation({
+    mutationFn: ({ id, title }: { id: string; title: string }) => api.gptRenameSession(id, title),
+    onSuccess: (s) => {
+      setEditingTitleId(null);
+      void qc.invalidateQueries({ queryKey: ["gpt-workspace", "sessions"] });
+      void qc.invalidateQueries({ queryKey: ["gpt-workspace", "session", s.id] });
+      toast.success("Чат переименован");
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
@@ -338,8 +270,12 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
   const deleteMut = useMutation({
     mutationFn: (id: string) => api.gptDeleteSession(id),
     onSuccess: (_, id) => {
-      if (sessionId === id) setSessionId(null);
+      if (sessionId === id) {
+        const remaining = sessions.filter((s) => s.id !== id);
+        setSessionId(remaining[0]?.id || null);
+      }
       void qc.invalidateQueries({ queryKey: ["gpt-workspace", "sessions"] });
+      toast.success("Чат удален");
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
@@ -355,7 +291,6 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
       const msg = draft.trim();
       if (!msg) throw new Error("Введите сообщение");
       setDraft("");
-      // пока ждём — опрашиваем phase
       const poll = window.setInterval(() => {
         void qc.invalidateQueries({ queryKey: ["gpt-workspace", "session", sid] });
       }, 1500);
@@ -369,10 +304,8 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
       setSessionId(s.id);
       void qc.invalidateQueries({ queryKey: ["gpt-workspace", "sessions"] });
       void qc.invalidateQueries({ queryKey: ["gpt-workspace", "session", s.id] });
-      // Новые результаты — сразу скачать уже с конвертированным именем
       for (const f of s.outputs) {
-        if (/^reply_\d/i.test(f.name)) continue;
-        if (/\.html?$/i.test(f.name)) continue;
+        if (/^reply_\d/i.test(f.name) || /\.html?$/i.test(f.name)) continue;
         const key = `${s.id}:${f.name}:${f.size}`;
         if (knownOutputsRef.current.has(key)) continue;
         knownOutputsRef.current.add(key);
@@ -397,32 +330,50 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
       void qc.invalidateQueries({ queryKey: ["gpt-workspace", "sessions"] });
       void qc.invalidateQueries({ queryKey: ["gpt-workspace", "session", sid] });
       const n = Array.isArray(result) ? result.length : 1;
-      toast.success(n > 1 ? `Прикреплено файлов: ${n}` : "Файл прикреплён");
+      toast.success(n > 1 ? `Прикреплено файлов: ${n}` : "Файл прикреплен");
+    },
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
+
+  const deleteAttachMut = useMutation({
+    mutationFn: ({ sid, name }: { sid: string; name: string }) => api.gptDeleteAttachment(sid, name),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["gpt-workspace", "session", sessionId] });
+      toast.success("Вложение удалено");
+    },
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
+
+  const selectModelMut = useMutation({
+    mutationFn: async ({ provider, modelId }: { provider: string; modelId: string }) => {
+      const r = await fetch("/api/text-llm", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, model_id: modelId }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["text-llm-status"] });
+      setModelPickerOpen(false);
+      toast.success("Модель успешно изменена");
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
   const busy = askMut.isPending || session?.status === "running";
-  const phaseLabel =
-    session?.phase_detail ||
-    (busy ? "GPT думает / ждём ответ…" : "");
+  const phaseLabel = session?.phase_detail || (busy ? "Генерация ответа…" : "");
 
+  const [elapsedSec, setElapsedSec] = useState(0);
   useEffect(() => {
     if (!busy) {
       setElapsedSec(0);
       return;
     }
-    setElapsedSec(0);
     const t = window.setInterval(() => setElapsedSec((s) => s + 1), 1000);
     return () => window.clearInterval(t);
   }, [busy]);
-
-  useEffect(() => {
-    if (!busy) return;
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [busy, phaseLabel]);
-
-  const sessions = sessionsQ.data?.sessions ?? [];
 
   const filesByName = useMemo(() => {
     const map = new Map<string, GptWorkspaceFile>();
@@ -431,326 +382,656 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
     return map;
   }, [session?.attachments, session?.outputs]);
 
+  const filteredSessions = useMemo(() => {
+    if (!searchQuery.trim()) return sessions;
+    const q = searchQuery.toLowerCase();
+    return sessions.filter((s) => (s.title || "").toLowerCase().includes(q));
+  }, [sessions, searchQuery]);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (!busy && (draft.trim() || (session?.attachments?.length ?? 0) > 0)) {
+        askMut.mutate();
+      }
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    if (e.dataTransfer.files?.length) {
+      const files = Array.from(e.dataTransfer.files);
+      uploadMut.mutate(files);
+    }
+  };
+
+  const copyToClipboard = async (text: string, msgId: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedMessageId(msgId);
+      setTimeout(() => setCopiedMessageId(null), 2000);
+    } catch {
+      // ignore
+    }
+  };
+
   if (!open) return null;
 
+  const activeModelDisplay = cleanModelTitle(textLlmQ.data?.active_label);
+
   return (
-    <div className="fixed inset-0 z-[80] flex flex-col bg-[#0a0a0a] text-white">
-      {/* header */}
-      <header className="flex h-12 shrink-0 items-center justify-between border-b border-white/[0.06] px-4">
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={() => onOpenChange(false)}
-            className="rounded-md p-1.5 text-white/50 hover:bg-white/[0.06] hover:text-white"
-            title="Закрыть"
-          >
-            <X className="h-4 w-4" />
-          </button>
-          <div className="flex items-center gap-2">
-            <Bot className="h-4 w-4" style={{ color: ACCENT }} />
-            <span className="text-sm font-semibold tracking-tight">{llmTitle}</span>
-            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-white/40">
-              {llmSub}
-            </span>
-          </div>
+    <div
+      className="fixed inset-0 z-[80] flex bg-[#0a0a0a] text-white font-sans backdrop-blur-2xl animate-in fade-in duration-200"
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={(e) => {
+        if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+        setDragOver(false);
+      }}
+      onDrop={handleDrop}
+    >
+      {/* Drag overlay */}
+      {dragOver && (
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-zinc-950/80 backdrop-blur-md border-2 border-dashed border-[#22d3ee]/80 animate-in fade-in">
+          <Upload className="h-12 w-12 text-[#22d3ee] animate-bounce mb-3" />
+          <h3 className="text-lg font-bold text-white">Перетащите файлы сюда</h3>
+          <p className="text-sm text-white/60">Изображения, таблицы Excel, документы PDF/Word, скрипты</p>
         </div>
-        <div className="flex items-center gap-2">
+      )}
+
+      {/* ─── LEFT SIDEBAR ─────────────────────────────────────────── */}
+      <aside
+        className={cn(
+          "flex flex-col border-r border-white/[0.08] bg-[#121216]/90 transition-all duration-200 ease-in-out shrink-0",
+          sidebarOpen ? "w-72" : "w-0 overflow-hidden border-r-0"
+        )}
+      >
+        {/* Sidebar Header */}
+        <div className="flex items-center justify-between border-b border-white/[0.08] p-3.5">
+          <div className="flex items-center gap-2">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#22d3ee]/15 border border-[#22d3ee]/30 text-[#22d3ee]">
+              <Bot className="h-4 w-4" />
+            </div>
+            <span className="text-sm font-bold tracking-tight text-white">ИИ Чат</span>
+          </div>
           <button
             type="button"
             onClick={() => createMut.mutate()}
             disabled={createMut.isPending}
-            className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-xs text-white/80 hover:bg-white/[0.06]"
+            className="flex items-center gap-1.5 rounded-lg border border-[#22d3ee]/40 bg-[#22d3ee]/10 px-2.5 py-1.5 text-xs font-semibold text-[#22d3ee] transition hover:bg-[#22d3ee]/20 shadow-sm outline-none focus:outline-none focus-visible:outline-none ring-0"
+            title="Создать новый диалог"
           >
             <Plus className="h-3.5 w-3.5" />
-            Новый чат
+            <span>Новый чат</span>
           </button>
         </div>
-      </header>
 
-      <div className="flex min-h-0 flex-1">
-        {/* history rail */}
-        <aside className="flex w-56 shrink-0 flex-col border-r border-white/[0.06] bg-black/40">
-          <div className="flex items-center gap-2 border-b border-white/[0.06] px-3 py-2 text-[10px] uppercase tracking-[0.16em] text-white/40">
-            <History className="h-3 w-3" />
-            История
+        {/* Search */}
+        <div className="p-3 border-b border-white/[0.06]">
+          <div className="relative">
+            <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-white/40" />
+            <input
+              type="text"
+              placeholder="Поиск диалогов..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="h-8 w-full rounded-lg border border-white/10 bg-white/[0.04] pl-8 pr-3 text-xs text-white placeholder:text-white/40 focus:border-[#22d3ee]/50 focus:outline-none focus:ring-1 focus:ring-[#22d3ee]/30 outline-none"
+            />
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-2">
-            {sessions.length === 0 && (
-              <p className="px-2 py-4 text-xs text-white/35">
-                Пока пусто. Напиши сообщение или создай чат.
-              </p>
-            )}
-            {sessions.map((s) => (
-              <div
-                key={s.id}
-                className={cn(
-                  "group mb-1 flex items-start gap-1 rounded-md border px-2 py-1.5",
-                  sessionId === s.id
-                    ? "border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.08)]"
-                    : "border-transparent hover:bg-white/[0.04]",
-                )}
-              >
-                <button
-                  type="button"
-                  className="min-w-0 flex-1 text-left"
-                  onClick={() => setSessionId(s.id)}
-                >
-                  <div className="truncate text-xs text-white/90">{s.title}</div>
-                  <div className="mt-0.5 font-mono text-[10px] text-white/35">
-                    {s.message_count} сообщ. · {s.status}
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  className="opacity-0 group-hover:opacity-100"
-                  title="Удалить"
-                  onClick={() => deleteMut.mutate(s.id)}
-                >
-                  <Trash2 className="h-3 w-3 text-white/40 hover:text-red-400" />
-                </button>
-              </div>
-            ))}
-          </div>
-        </aside>
+        </div>
 
-        {/* main */}
-        <div className="flex min-w-0 flex-1 flex-col">
-          {busy && (
-            <div
-              className="flex shrink-0 items-center gap-3 border-b border-[rgba(209,254,23,0.25)] bg-[rgba(209,254,23,0.08)] px-4 py-2.5"
-              role="status"
-              aria-live="polite"
-            >
-              <Loader2 className="h-4 w-4 shrink-0 animate-spin" style={{ color: ACCENT }} />
-              <div className="min-w-0 flex-1">
-                <div className="text-xs font-medium text-white/90">
-                  {phaseLabel || "GPT думает…"}
-                </div>
-                <div className="mt-0.5 font-mono text-[10px] text-white/45">
-                  идёт обдумывание · {elapsedSec} с
-                  {elapsedSec >= 30 ? " · vision/генерация может занять несколько минут" : ""}
-                </div>
-              </div>
+        {/* Sessions List */}
+        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+          {filteredSessions.length === 0 ? (
+            <div className="p-4 text-center text-xs text-white/40">
+              {searchQuery ? "Ничего не найдено" : "Пока нет диалогов. Создайте новый чат!"}
             </div>
-          )}
-          {/* messages */}
-          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
-            {!session && (
-              <div className="mx-auto mt-24 max-w-lg text-center">
-                <Bot className="mx-auto h-10 w-10 text-white/20" />
-                <h2 className="mt-4 text-lg font-semibold">Работа с GPT</h2>
-                <p className="mt-2 text-sm text-white/45">
-                  История, вложения и результаты живут только здесь — без связи
-                  с нодами пайплайна. Скачивай файлы ↓ или zip.
-                </p>
-              </div>
-            )}
-            {session?.messages.map((m) => (
-              <MessageBubble
-                key={m.id}
-                message={m}
-                filesByName={filesByName}
-              />
-            ))}
-            {busy && (
-              <div className="mb-4 flex items-center gap-2 text-xs text-white/50">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ color: ACCENT }} />
-                {phaseLabel || "GPT обрабатывает…"} · {elapsedSec} с
-              </div>
-            )}
-            <div ref={bottomRef} />
-          </div>
+          ) : (
+            filteredSessions.map((s) => {
+              const isSelected = s.id === sessionId;
+              const isEditing = editingTitleId === s.id;
 
-          {/* outputs + attachments strip */}
-          {session && (session.attachments.length > 0 || session.outputs.length > 0) && (
-            <div className="flex shrink-0 gap-4 border-t border-white/[0.06] bg-black/30 px-4 py-2">
-              {session.attachments.length > 0 && (
-                <div className="min-w-0 flex-1">
-                  <button
-                    type="button"
-                    onClick={() => setStripAttachOpen((v) => !v)}
-                    className="mb-1 flex w-full items-center gap-1 text-left text-[10px] uppercase tracking-[0.14em] text-white/35 hover:text-white/60"
-                  >
-                    <ChevronDown
-                      className={cn(
-                        "h-3 w-3 shrink-0 transition-transform",
-                        !stripAttachOpen && "-rotate-90",
-                      )}
-                    />
-                    Вложения · {session.attachments.length}
-                  </button>
-                  {stripAttachOpen && (
-                    <div className="flex flex-wrap gap-2">
-                      {session.attachments.map((f) => (
-                        <FileChip
-                          key={f.name}
-                          file={f}
-                          onToOutputs={() => {
-                            void api
-                              .gptAttachmentToOutputs(session.id, f.name)
-                              .then((out) => {
-                                toast.success(
-                                  `В Результаты → ${out.display_name || out.name || f.name}`,
-                                );
-                                const key = `${session.id}:${out.name}:${out.size}`;
-                                knownOutputsRef.current.add(key);
-                                triggerDownload(out);
-                                void qc.invalidateQueries({
-                                  queryKey: ["gpt-workspace", "session", session.id],
-                                });
-                              })
-                              .catch((e) => toast.error(errorMessageFromUnknown(e)));
-                          }}
-                          onDelete={() =>
-                            void api
-                              .gptDeleteAttachment(session.id, f.name)
-                              .then(() =>
-                                qc.invalidateQueries({
-                                  queryKey: ["gpt-workspace", "session", session.id],
-                                }),
-                              )
+              return (
+                <div
+                  key={s.id}
+                  onClick={() => {
+                    if (!isEditing) setSessionId(s.id);
+                  }}
+                  className={cn(
+                    "group relative flex items-center justify-between rounded-xl px-3 py-2.5 text-xs transition-all cursor-pointer outline-none",
+                    isSelected
+                      ? "bg-white/[0.08] text-white font-medium shadow-sm border border-white/15"
+                      : "text-white/60 hover:bg-white/[0.04] hover:text-white border border-transparent"
+                  )}
+                >
+                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                    <MessageSquare className={cn("h-3.5 w-3.5 shrink-0", isSelected ? "text-[#22d3ee]" : "text-white/40")} />
+                    {isEditing ? (
+                      <input
+                        type="text"
+                        autoFocus
+                        value={editTitleValue}
+                        onChange={(e) => setEditTitleValue(e.target.value)}
+                        onBlur={() => {
+                          if (editTitleValue.trim()) {
+                            renameMut.mutate({ id: s.id, title: editTitleValue.trim() });
+                          } else {
+                            setEditingTitleId(null);
                           }
-                        />
-                      ))}
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            if (editTitleValue.trim()) {
+                              renameMut.mutate({ id: s.id, title: editTitleValue.trim() });
+                            }
+                          } else if (e.key === "Escape") {
+                            setEditingTitleId(null);
+                          }
+                        }}
+                        className="h-6 w-full rounded border border-[#22d3ee] bg-[#16161b] px-1.5 text-xs text-white focus:outline-none outline-none ring-0"
+                      />
+                    ) : (
+                      <span className="truncate" title={s.title}>
+                        {s.title || "Диалог"}
+                      </span>
+                    )}
+                  </div>
+
+                  {!isEditing && (
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingTitleId(s.id);
+                          setEditTitleValue(s.title || "");
+                        }}
+                        className="rounded p-1 text-white/50 hover:bg-white/10 hover:text-white outline-none"
+                        title="Переименовать"
+                      >
+                        <Edit2 className="h-3 w-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (confirm("Удалить этот чат?")) {
+                            deleteMut.mutate(s.id);
+                          }
+                        }}
+                        className="rounded p-1 text-white/50 hover:bg-red-950/60 hover:text-red-400 outline-none"
+                        title="Удалить"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
                     </div>
                   )}
                 </div>
-              )}
-              {session.outputs.filter(
-                (f) => !/^reply_\d/i.test(f.name) && !/\.html?$/i.test(f.name),
-              ).length > 0 && (
-                <div className="min-w-0 flex-1">
-                  <button
-                    type="button"
-                    onClick={() => setStripResultsOpen((v) => !v)}
-                    className="mb-1 flex w-full items-center gap-1 text-left text-[10px] uppercase tracking-[0.14em] text-white/35 hover:text-white/60"
-                  >
-                    <ChevronDown
-                      className={cn(
-                        "h-3 w-3 shrink-0 transition-transform",
-                        !stripResultsOpen && "-rotate-90",
-                      )}
-                    />
-                    Результаты ·{" "}
-                    {
-                      session.outputs.filter(
-                        (f) =>
-                          !/^reply_\d/i.test(f.name) && !/\.html?$/i.test(f.name),
-                      ).length
-                    }
-                  </button>
-                  {stripResultsOpen && (
-                    <div className="flex flex-wrap gap-2">
-                      {session.outputs
-                        .filter(
-                          (f) =>
-                            !/^reply_\d/i.test(f.name) &&
-                            !/\.html?$/i.test(f.name),
-                        )
-                        .map((f) => (
-                          <FileChip key={f.name} file={f} />
-                        ))}
-                    </div>
-                  )}
+              );
+            })
+          )}
+        </div>
+
+        {/* Sidebar Footer */}
+        <div className="border-t border-white/[0.08] p-3 bg-[#121216] text-xs text-white/60 flex items-center justify-between">
+          <div className="flex items-center gap-2 truncate">
+            <span className="h-2 w-2 rounded-full bg-[#22d3ee] animate-pulse" />
+            <span className="truncate font-mono text-[11px] text-white/80">{activeModelDisplay}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSidebarOpen(false)}
+            className="rounded-lg p-1.5 text-white/50 hover:bg-white/10 hover:text-white outline-none"
+            title="Свернуть боковую панель"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+        </div>
+      </aside>
+
+      {/* ─── MAIN CHAT VIEW ───────────────────────────────────────── */}
+      <main className="flex flex-1 flex-col min-w-0 bg-[#0a0a0a]">
+        {/* Top Navigation Bar */}
+        <header className="flex h-14 shrink-0 items-center justify-between border-b border-white/[0.08] bg-[#121216]/80 px-4 backdrop-blur-xl">
+          <div className="flex items-center gap-3 min-w-0">
+            {!sidebarOpen && (
+              <button
+                type="button"
+                onClick={() => setSidebarOpen(true)}
+                className="rounded-lg border border-white/10 bg-white/[0.04] p-1.5 text-white/60 hover:bg-white/10 hover:text-white outline-none"
+                title="Развернуть историю"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            )}
+
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="truncate text-sm font-semibold text-white">
+                {session?.title || "Новый диалог"}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {/* Model Selector Dropdown Button (Clean, compact, no sparkles, turquoise style) */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setModelPickerOpen(!modelPickerOpen)}
+                className="flex items-center gap-2 rounded-xl border border-white/15 bg-[#16161b] px-3 py-1.5 text-xs font-semibold text-white transition hover:border-[#22d3ee]/50 hover:bg-white/[0.08] shadow-sm outline-none focus:outline-none focus-visible:outline-none ring-0"
+              >
+                <span>{activeModelDisplay}</span>
+                <ChevronDown className="h-3.5 w-3.5 text-white/50" />
+              </button>
+
+              {/* Model Picker Popover Menu */}
+              {modelPickerOpen && (
+                <div className="absolute right-0 top-full mt-2 z-50 w-72 rounded-2xl border border-white/15 bg-[#16161b]/98 p-2 shadow-2xl backdrop-blur-2xl animate-in fade-in zoom-in-95 duration-150">
+                  <div className="px-2.5 py-1.5 text-[11px] font-bold uppercase tracking-wider text-white/40 border-b border-white/[0.08] mb-1">
+                    Выберите ИИ модель
+                  </div>
+                  <div className="max-h-80 overflow-y-auto space-y-1">
+                    {textLlmQ.data?.models?.map((m: any) => {
+                      const active = m.active;
+                      return (
+                        <button
+                          key={m.id}
+                          type="button"
+                          onClick={() => selectModelMut.mutate({ provider: m.provider, modelId: m.id })}
+                          className={cn(
+                            "flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs transition outline-none",
+                            active
+                              ? "bg-[#22d3ee]/15 text-[#22d3ee] font-semibold border border-[#22d3ee]/30"
+                              : "text-white/80 hover:bg-white/[0.06] hover:text-white border border-transparent"
+                          )}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate font-medium">{m.label}</div>
+                            <div className="text-[10px] text-white/40">{m.site}</div>
+                          </div>
+                          {active && <Check className="h-4 w-4 text-[#22d3ee] shrink-0 ml-2" />}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </div>
+
+            {/* ZIP Download button if session has outputs */}
+            {(session?.outputs?.length ?? 0) > 0 && (
+              <a
+                href={api.gptOutputsZipUrl(session!.id)}
+                download
+                className="flex items-center gap-1.5 rounded-xl border border-white/15 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/[0.08] outline-none"
+                title="Скачать все сгенерированные файлы архивом"
+              >
+                <Archive className="h-3.5 w-3.5 text-[#22d3ee]" />
+                <span>ZIP ({session!.outputs.length})</span>
+              </a>
+            )}
+
+            {/* Close Button */}
+            <button
+              type="button"
+              onClick={() => onOpenChange(false)}
+              className="rounded-xl border border-white/10 bg-white/[0.04] p-2 text-white/60 transition hover:bg-white/10 hover:text-white outline-none"
+              title="Закрыть (Esc)"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </header>
+
+        {/* ─── MESSAGES SCROLL AREA ─────────────────────────────────── */}
+        <div className="flex-1 overflow-y-auto px-4 py-6 md:px-8 lg:px-16 space-y-6">
+          {/* If chat has no messages → Starter Prompts Screen */}
+          {(!session?.messages || session.messages.length === 0) ? (
+            <div className="flex flex-col items-center justify-center min-h-[50vh] text-center max-w-2xl mx-auto">
+              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-[#16161b] border border-white/15 shadow-2xl mb-5">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src="/icon.svg" alt="Studio" className="h-10 w-10 shrink-0 rounded-lg shadow-sm" />
+              </div>
+              <h2 className="text-2xl font-bold tracking-tight text-white mb-2">
+                Чем я могу помочь сегодня?
+              </h2>
+              <p className="text-xs text-white/50 mb-8 max-w-md leading-relaxed">
+                Свободный ИИ-чат для сценариев, идей, анализа Excel/PDF и генерации документов. Прикрепляйте файлы через скрепку или перетаскиванием.
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full">
+                {STARTER_PROMPTS.map((item, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => {
+                      setDraft(item.prompt);
+                      textareaRef.current?.focus();
+                    }}
+                    className="flex flex-col items-start rounded-2xl border border-white/10 bg-white/[0.02] p-4 text-left transition-all hover:border-[#22d3ee]/40 hover:bg-white/[0.05] hover:shadow-lg group outline-none"
+                  >
+                    <div className="text-xl mb-2">{item.icon}</div>
+                    <div className="text-xs font-bold text-white group-hover:text-[#22d3ee] transition-colors">
+                      {item.title}
+                    </div>
+                    <div className="text-[11px] text-white/45 line-clamp-2 mt-1">
+                      {item.prompt}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            /* Render message list */
+            session.messages.map((m, idx) => {
+              const isUser = m.role === "user";
+              const isSystem = m.role === "system";
+              const cleanContent = stripFilesNotice(m.content);
+              const hasOutputs = (m.output_files?.length ?? 0) > 0;
+
+              return (
+                <div
+                  key={m.id || idx}
+                  className={cn(
+                    "flex gap-3.5 max-w-4xl mx-auto",
+                    isUser ? "justify-end" : "justify-start"
+                  )}
+                >
+                  {/* Assistant Avatar */}
+                  {!isUser && (
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[#22d3ee]/15 border border-[#22d3ee]/30 text-[#22d3ee] shadow-sm mt-0.5">
+                      <Bot className="h-4 w-4" />
+                    </div>
+                  )}
+
+                  {/* Message Bubble Container */}
+                  <div
+                    className={cn(
+                      "flex flex-col min-w-0 max-w-[85%] rounded-2xl p-4 shadow-md",
+                      isUser
+                        ? "bg-[#164e63] text-white rounded-br-sm border border-[#22d3ee]/30"
+                        : isSystem
+                        ? "bg-red-950/40 border border-red-800/50 text-red-200"
+                        : "bg-[#16161b] border border-white/10 text-white rounded-bl-sm"
+                    )}
+                  >
+                    {/* User attachments tags */}
+                    {isUser && m.attachment_names && m.attachment_names.length > 0 && (
+                      <div className="mb-2.5 flex flex-wrap gap-1.5">
+                        {m.attachment_names.map((name) => {
+                          const f = resolveFile(filesByName, name);
+                          const isImg = isImageFile(f, name);
+                          return (
+                            <div
+                              key={name}
+                              className="flex items-center gap-1.5 rounded-lg bg-black/30 px-2.5 py-1 text-[11px] font-medium text-[#22d3ee] border border-white/10"
+                            >
+                              {isImg && f ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img src={f.url} alt="" className="h-3.5 w-3.5 rounded object-cover" />
+                              ) : (
+                                <Paperclip className="h-3 w-3 text-[#22d3ee]" />
+                              )}
+                              <span className="truncate max-w-[140px]">{name}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* Message Body */}
+                    {isUser ? (
+                      <div className="text-xs leading-relaxed whitespace-pre-wrap selection:bg-black/40 font-medium">
+                        {m.content}
+                      </div>
+                    ) : (
+                      <div className="text-xs leading-relaxed">
+                        <MarkdownRenderer content={cleanContent} />
+                      </div>
+                    )}
+
+                    {/* Generated Outputs File Cards */}
+                    {hasOutputs && (
+                      <div className="mt-3.5 pt-3 border-t border-white/10 space-y-2">
+                        <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-[#22d3ee]">
+                          <FolderOutput className="h-3.5 w-3.5" />
+                          <span>Сгенерированные файлы ({m.output_files!.length})</span>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {m.output_files!.map((name) => {
+                            const f = resolveFile(filesByName, name);
+                            const label = f ? fileLabel(f) : name;
+                            const size = formatBytes(f?.size);
+                            const isImg = isImageFile(f, name);
+
+                            return (
+                              <div
+                                key={name}
+                                className="flex items-center justify-between gap-2 rounded-xl border border-white/15 bg-black/40 p-2.5 shadow-sm"
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  {isImg && f ? (
+                                    // eslint-disable-next-line @next/next/no-img-element
+                                    <img src={f.url} alt="" className="h-8 w-8 rounded-lg object-cover bg-black" />
+                                  ) : (
+                                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.06]">
+                                      {getFileIcon(label)}
+                                    </div>
+                                  )}
+                                  <div className="min-w-0 flex-1">
+                                    <div className="truncate text-xs font-semibold text-white" title={label}>
+                                      {label}
+                                    </div>
+                                    {size && <div className="font-mono text-[10px] text-white/40">{size}</div>}
+                                  </div>
+                                </div>
+
+                                {f && (
+                                  <button
+                                    type="button"
+                                    onClick={() => triggerDownload(f)}
+                                    className="flex items-center gap-1 rounded-lg bg-[#22d3ee]/15 border border-[#22d3ee]/30 px-2 py-1 text-[11px] font-semibold text-[#22d3ee] hover:bg-[#22d3ee]/25 transition shadow-sm outline-none"
+                                    title="Скачать файл"
+                                  >
+                                    <Download className="h-3 w-3" />
+                                    <span>Скачать</span>
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Assistant Message Actions */}
+                    {!isUser && (
+                      <div className="mt-3 flex items-center justify-between pt-2 border-t border-white/[0.06] text-[11px] text-white/40">
+                        <span>{m.at ? new Date(m.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}</span>
+                        <button
+                          type="button"
+                          onClick={() => copyToClipboard(cleanContent, m.id || String(idx))}
+                          className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-white/60 hover:bg-white/10 hover:text-white transition outline-none"
+                          title="Скопировать текст ответа"
+                        >
+                          {copiedMessageId === (m.id || String(idx)) ? (
+                            <>
+                              <Check className="h-3 w-3 text-[#22d3ee]" />
+                              <span className="text-[#22d3ee]">Скопировано</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-3 w-3" />
+                              <span>Копировать</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* User Avatar */}
+                  {isUser && (
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-white/[0.08] border border-white/15 text-white shadow-sm mt-0.5">
+                      <User className="h-4 w-4" />
+                    </div>
+                  )}
+                </div>
+              );
+            })
           )}
 
-          {/* compose dock */}
-          <div className="shrink-0 border-t border-white/[0.06] bg-[#0d0d0d] px-4 py-3">
-            <div className="mx-auto flex max-w-3xl flex-col gap-2">
-              <div className="flex flex-wrap items-center gap-3 text-[11px] text-white/45">
-                <label className="inline-flex cursor-pointer items-center gap-1.5">
-                  <input
-                    type="checkbox"
-                    checked={withAttachments}
-                    onChange={(e) => setWithAttachments(e.target.checked)}
-                    className="accent-[color:var(--a)]"
-                    style={{ ["--a" as string]: ACCENT }}
-                  />
-                  С вложениями
-                </label>
-                {session && session.outputs.length > 0 && (
-                  <a
-                    href={api.gptOutputsZipUrl(session.id)}
-                    className="inline-flex items-center gap-1 hover:text-white"
-                    title="Скачать все Результаты"
-                  >
-                    <Download className="h-3 w-3" />
-                    Скачать всё (.zip)
-                  </a>
-                )}
+          {/* Thinking / Running Banner */}
+          {busy && (
+            <div className="flex gap-3.5 max-w-4xl mx-auto animate-in fade-in">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[#22d3ee]/15 border border-[#22d3ee]/30 text-[#22d3ee] animate-pulse">
+                <Bot className="h-4 w-4" />
               </div>
-              <div
-                className={cn(
-                  "rounded-lg border border-dashed px-2 py-1 transition-colors",
-                  dragOver
-                    ? "border-[rgba(209,254,23,0.55)] bg-[rgba(209,254,23,0.06)]"
-                    : "border-transparent",
-                )}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  setDragOver(true);
-                }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  setDragOver(false);
-                  const list = Array.from(e.dataTransfer.files || []);
-                  if (list.length) uploadMut.mutate(list.length === 1 ? list[0] : list);
-                }}
-              >
-                <div className="flex items-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => fileRef.current?.click()}
-                    disabled={uploadMut.isPending}
-                    className="rounded-md border border-white/[0.08] p-2.5 text-white/55 hover:bg-white/[0.05] hover:text-white"
-                    title="Прикрепить файлы (несколько)"
-                  >
-                    {uploadMut.isPending ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Paperclip className="h-4 w-4" />
-                    )}
-                  </button>
+              <div className="flex items-center gap-3 rounded-2xl border border-white/15 bg-[#16161b] px-4 py-3 shadow-md">
+                <Loader2 className="h-4 w-4 animate-spin text-[#22d3ee]" />
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-xs font-semibold text-white">{phaseLabel}</span>
+                  <span className="text-[10px] text-white/40 font-mono">Прошло: {elapsedSec} сек</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* ─── BOTTOM INPUT CONTAINER (Style like Generation workspace) ──────── */}
+        <div className="p-4 md:px-8 lg:px-16 border-t border-white/[0.08] bg-[#0a0a0a]">
+          <div className="max-w-4xl mx-auto flex flex-col gap-2">
+            {/* Attachment preview chips above input */}
+            {(session?.attachments?.length ?? 0) > 0 && (
+              <div className="flex flex-wrap gap-2 pb-1">
+                {session!.attachments.map((f) => {
+                  const isImg = isImageFile(f);
+                  const label = fileLabel(f);
+                  const size = formatBytes(f.size);
+
+                  return (
+                    <div
+                      key={f.name}
+                      className="group flex items-center gap-2 rounded-xl border border-white/15 bg-[#16161b] px-2.5 py-1.5 text-xs text-white shadow-sm"
+                    >
+                      {isImg ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={f.url} alt="" className="h-5 w-5 rounded object-cover bg-black" />
+                      ) : (
+                        getFileIcon(label)
+                      )}
+                      <span className="truncate max-w-[150px] font-medium" title={label}>
+                        {label}
+                      </span>
+                      {size && <span className="font-mono text-[10px] text-white/40">{size}</span>}
+                      <button
+                        type="button"
+                        onClick={() => deleteAttachMut.mutate({ sid: session!.id, name: f.name })}
+                        className="text-white/40 hover:text-red-400 transition outline-none"
+                        title="Удалить вложение"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Input Box Card (styled with smooth subtle borders, no glowing borders) */}
+            <div className="relative flex flex-col rounded-2xl border border-white/15 bg-[#121216]/95 backdrop-blur-2xl shadow-[0_20px_60px_rgba(0,0,0,0.85)] ring-1 ring-white/10 transition-all">
+              <textarea
+                ref={textareaRef}
+                value={draft}
+                disabled={busy}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={handleKeyDown}
+                rows={1}
+                style={{ outline: "none" }}
+                placeholder="Спросите что угодно или перетащите файл (Enter — отправить, Shift+Enter — перенос строки)..."
+                className="w-full resize-none bg-transparent px-4 pt-3.5 pb-2 text-xs text-white placeholder:text-white/40 border-0 outline-none ring-0 focus:outline-none focus:ring-0 focus:border-0 min-h-[44px] max-h-[180px] leading-relaxed"
+              />
+
+              {/* Bottom action bar inside container */}
+              <div className="flex items-center justify-between px-3 pb-2.5 pt-1 border-t border-white/[0.08]">
+                <div className="flex items-center gap-2">
+                  {/* Attach Button */}
                   <input
-                    ref={fileRef}
+                    ref={fileInputRef}
                     type="file"
                     multiple
                     className="hidden"
                     onChange={(e) => {
-                      const list = Array.from(e.target.files || []);
-                      if (list.length) uploadMut.mutate(list.length === 1 ? list[0] : list);
-                      e.target.value = "";
-                    }}
-                  />
-                  <textarea
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        if (!busy && draft.trim()) askMut.mutate();
+                      if (e.target.files?.length) {
+                        const files = Array.from(e.target.files);
+                        uploadMut.mutate(files);
+                        e.target.value = "";
                       }
                     }}
-                    rows={3}
-                    placeholder="Сообщение GPT… файлы: скрепка или drag&drop (Enter — отправить)"
-                    className="min-h-[72px] flex-1 resize-none rounded-lg border border-white/[0.08] bg-[#141414] px-3 py-2 text-sm text-white placeholder:text-white/30 focus:border-[rgba(209,254,23,0.4)] focus:outline-none"
                   />
                   <button
                     type="button"
-                    disabled={busy || !draft.trim()}
-                    onClick={() => askMut.mutate()}
-                    className="inline-flex h-[72px] w-12 items-center justify-center rounded-lg font-semibold text-black disabled:opacity-40"
-                    style={{ backgroundColor: ACCENT }}
-                    title="Отправить"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={busy || uploadMut.isPending}
+                    className="flex items-center gap-1.5 rounded-xl border border-white/15 bg-white/[0.04] px-2.5 py-1 text-xs font-medium text-white/80 hover:bg-white/10 hover:text-white transition shadow-sm outline-none"
+                    title="Прикрепить файлы (картинки, Excel, PDF, Word, скрипты)"
+                  >
+                    {uploadMut.isPending ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-[#22d3ee]" />
+                    ) : (
+                      <Paperclip className="h-3.5 w-3.5 text-[#22d3ee]" />
+                    )}
+                    <span>Прикрепить</span>
+                  </button>
+
+                  {/* With Attachments Toggle */}
+                  <button
+                    type="button"
+                    onClick={() => setWithAttachments(!withAttachments)}
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-xl px-2.5 py-1 text-[11px] font-medium transition outline-none",
+                      withAttachments
+                        ? "border border-[#22d3ee]/40 bg-[#22d3ee]/15 text-[#22d3ee]"
+                        : "border border-white/10 bg-white/[0.02] text-white/40"
+                    )}
+                    title="Передавать ли вложения в запрос модели"
+                  >
+                    <Check className={cn("h-3 w-3", withAttachments ? "opacity-100" : "opacity-0")} />
+                    <span>Вложения активны</span>
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-white/40 hidden sm:inline font-mono">
+                    Shift+Enter для переноса
+                  </span>
+
+                  {/* Send Button (styled in turquoise/cyan like Outsee Create primary button) */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!busy && (draft.trim() || (session?.attachments?.length ?? 0) > 0)) {
+                        askMut.mutate();
+                      }
+                    }}
+                    disabled={busy || (!draft.trim() && (session?.attachments?.length ?? 0) === 0)}
+                    className={cn(
+                      "flex h-8 w-8 items-center justify-center rounded-xl transition-all shadow-md outline-none",
+                      draft.trim() || (session?.attachments?.length ?? 0) > 0
+                        ? "bg-[#22d3ee] hover:bg-[#06b6d4] text-black shadow-[#22d3ee]/20 cursor-pointer scale-105 font-bold"
+                        : "bg-white/[0.06] text-white/30 cursor-not-allowed opacity-60"
+                    )}
+                    title="Отправить сообщение"
                   >
                     {busy ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <Loader2 className="h-4 w-4 animate-spin text-black" />
                     ) : (
-                      <Send className="h-4 w-4" />
+                      <Send className="h-3.5 w-3.5" />
                     )}
                   </button>
                 </div>
@@ -758,105 +1039,7 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
             </div>
           </div>
         </div>
-      </div>
-    </div>
-  );
-}
-
-function MessageBubble({
-  message,
-  filesByName,
-}: {
-  message: GptWorkspaceMessage;
-  filesByName: Map<string, GptWorkspaceFile>;
-}) {
-  const isUser = message.role === "user";
-  const isSystem = message.role === "system";
-  const attNames = message.attachment_names ?? [];
-  // reply_*.txt = копия текста ответа (уже в пузыре) — не показываем как «файл»
-  const outNames = (message.output_files ?? []).filter(
-    (n) => !/^reply_\d/.test(n) && !/\.html?$/i.test(n),
-  );
-  const [attsOpen, setAttsOpen] = useState(false);
-  const displayText = stripFilesNotice(message.content || "");
-  const showReady = !isUser && outNames.length > 0;
-
-  return (
-    <div
-      className={cn(
-        "mb-4 max-w-3xl rounded-lg border px-3 py-2.5",
-        isUser && "ml-auto border-white/[0.08] bg-white/[0.04]",
-        !isUser && !isSystem && "mr-auto border-white/[0.06] bg-[#121212]",
-        isSystem && "mx-auto border-red-500/20 bg-red-500/5 text-red-200/80",
-      )}
-    >
-      <div className="mb-1 flex items-center justify-between gap-2">
-        <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-white/35">
-          {message.role}
-        </span>
-      </div>
-      {displayText ? (
-        <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-white/90">
-          {displayText}
-        </pre>
-      ) : null}
-      {attNames.length > 0 && (
-        <div className="mt-2">
-          <button
-            type="button"
-            onClick={() => setAttsOpen((v) => !v)}
-            className="flex items-center gap-1 text-[10px] uppercase tracking-[0.14em] text-white/35 hover:text-white/60"
-          >
-            <ChevronDown
-              className={cn(
-                "h-3 w-3 shrink-0 transition-transform",
-                !attsOpen && "-rotate-90",
-              )}
-            />
-            Вложения · {attNames.length}
-          </button>
-          {attsOpen && (
-            <div className="mt-1.5 flex flex-wrap gap-2">
-              {attNames.map((name) => {
-                const f = resolveFile(filesByName, name);
-                const label = f ? fileLabel(f) : name;
-                return (
-                  <div
-                    key={name}
-                    className="rounded border border-white/[0.08] bg-black/30 p-1.5"
-                  >
-                    {f && isImageFile(f, name) ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={f.url}
-                        alt={label}
-                        className="mb-1 max-h-40 max-w-[220px] rounded object-contain"
-                      />
-                    ) : null}
-                    <div className="flex items-center gap-1.5 text-[10px] text-white/55">
-                      <Paperclip className="h-3 w-3" />
-                      <span className="max-w-[160px] truncate">{label}</span>
-                      {f && (
-                        <button
-                          type="button"
-                          onClick={() => triggerDownload(f)}
-                          className="text-white/40 hover:text-white"
-                          title="Скачать"
-                        >
-                          <Download className="h-3 w-3" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-      {showReady ? (
-        <ReadyFilesPanel names={outNames} filesByName={filesByName} />
-      ) : null}
+      </main>
     </div>
   );
 }

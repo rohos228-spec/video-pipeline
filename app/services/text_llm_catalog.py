@@ -25,11 +25,18 @@ CATALOG: list[dict[str, str]] = [
         "api_model": "gpt-5.6-sol",
     },
     {
-        "id": "gpt-5.5-vibecode",
+        "id": "gpt-5.6-terra-vibecode",
         "provider": "vibecode",
-        "label": "GPT 5.5",
+        "label": "GPT 5.6 Terra",
         "site": "vibecode.moe",
-        "api_model": "gpt-5.5",
+        "api_model": "gpt-5.6-terra",
+    },
+    {
+        "id": "gpt-5.6-luna-vibecode",
+        "provider": "vibecode",
+        "label": "GPT 5.6 Luna",
+        "site": "vibecode.moe",
+        "api_model": "gpt-5.6-luna",
     },
     {
         "id": "gpt-kie",
@@ -37,23 +44,18 @@ CATALOG: list[dict[str, str]] = [
         "label": "GPT (kie.ai)",
         "site": "kie.ai",
     },
-    {
-        "id": "kimi-k3-tokenrouter",
-        "provider": "tokenrouter",
-        "label": "Kimi K3 (TokenRouter)",
-        "site": "tokenrouter.com",
-    },
 ]
 
-_PROVIDERS = frozenset({"kie", "tokenrouter", "vibecode"})
+_PROVIDERS = frozenset({"kie", "vibecode"})
 _MODEL_ALIASES = {
-    "gpt-5.5": "gpt-5.5-vibecode",
-    "gpt-5.5-vibecode": "gpt-5.5-vibecode",
     "gpt-5.6-sol": "gpt-5.6-sol-vibecode",
     "gpt-5-6-sol": "gpt-5.6-sol-vibecode",
     "gpt-5.6-sol-vibecode": "gpt-5.6-sol-vibecode",
+    "gpt-5.6-terra": "gpt-5.6-terra-vibecode",
+    "gpt-5.6-terra-vibecode": "gpt-5.6-terra-vibecode",
+    "gpt-5.6-luna": "gpt-5.6-luna-vibecode",
+    "gpt-5.6-luna-vibecode": "gpt-5.6-luna-vibecode",
     "gpt-kie": "gpt-kie",
-    "kimi-k3-tokenrouter": "kimi-k3-tokenrouter",
 }
 
 
@@ -138,8 +140,6 @@ def resolve_active_provider(cfg: Settings | None = None) -> str:
     if raw_choice in {"kie", "gpt", "openai"}:
         return "kie"
     raw = (s.text_llm_provider or "kie").strip().lower()
-    if raw in {"tokenrouter", "kimi", "kimi-k3", "kimi_k3", "moonshot"}:
-        return "tokenrouter"
     if raw in {"vibecode", "vibe"}:
         return "vibecode"
     return "kie"
@@ -152,8 +152,6 @@ def resolve_active_model_id(cfg: Settings | None = None) -> str:
     if item:
         return item["id"]
     prov = resolve_active_provider(s)
-    if prov == "tokenrouter":
-        return "kimi-k3-tokenrouter"
     if prov == "vibecode":
         return "gpt-5.6-sol-vibecode"
     return "gpt-kie"
@@ -188,17 +186,14 @@ def catalog_status(cfg: Settings | None = None) -> dict[str, Any]:
             }
         )
     if active == "tokenrouter":
-        short = (s.tokenrouter_model or "kimi-k3").split("/")[-1]
-        label = f"Kimi K3 · TokenRouter ({short})"
+        label = "Kimi K3"
         active_model = s.tokenrouter_model
     elif active == "vibecode":
         item = catalog_item(active_id)
-        api_model = (item or {}).get("api_model") or "gpt-5.6-sol"
-        pretty = (item or {}).get("label") or "GPT"
-        label = f"{pretty} · vibecode.moe ({api_model})"
-        active_model = api_model
+        label = (item or {}).get("label") or "GPT 5.6 Sol"
+        active_model = (item or {}).get("api_model") or "gpt-5.6-sol"
     else:
-        label = f"GPT · kie.ai ({s.gpt_model})"
+        label = "GPT (kie.ai)"
         active_model = s.gpt_model
     return {
         "active_provider": active,

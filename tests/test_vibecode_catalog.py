@@ -71,7 +71,7 @@ def test_grouped_vendors_match_ui_tabs() -> None:
     assert counts["moonshot"] == 1
     assert counts["images"] == 5
     assert counts["video"] == 2
-    assert counts["openai"] >= 5
+    assert counts["openai"] == 3
     sonnet = find_model("claude-sonnet-5")
     assert sonnet is not None
     assert sonnet["kind"] == "text"

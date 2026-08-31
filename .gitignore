@@ -39,6 +39,7 @@ STUDIO-LOCAL.cmd
 # Data (артефакты проектов — не коммитим в git)
 data/
 browser_profile/
+scratch/
 
 # OS
 .DS_Store

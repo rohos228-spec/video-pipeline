@@ -37,6 +37,16 @@
 
 ## ✅ ВЫПОЛНЕННЫЕ ЭТАПЫ И ЗАДАЧИ (ПОЛНАЯ ХРОНОЛОГИЯ)
 
+### 🌟 ЭТАП 12: Полная модернизация вкладки Чат (ChatGPT / Cursor Style), обвязка файлов и аудит моделей Vibecode API (31 Августа 2026)
+- [x] **CHAT-01:** Полный редизайн интерфейса вкладки **«Чат»** (`web/src/components/gpt/gpt-workspace.tsx`) в премиальном стиле ChatGPT / Cursor (Dark UI, стеклянные эффекты, компактный сворачиваемый сайдбар истории диалогов, быстрый поиск и фильтрация, карточки стартовых промптов, авторасширяющийся инпут с клавиатурными шорткатами `Enter` / `Shift+Enter`).
+- [x] **CHAT-02:** Создан компонент `MarkdownRenderer` (`web/src/components/gpt/markdown-renderer.tsx`) с полноценным рендерингом заголовков, цитат, списков, таблиц и блоков кода с подсветкой синтаксиса, тегом языка и кнопкой **«Копировать код»**.
+- [x] **CHAT-03:** Реализована современная обвязка файлов и вложений: поддержка Drag-and-Drop вложений в любую часть чата, предпросмотр прикрепленных картинок/документов над инпутом, вывод карточек сгенерированных файлов (`.docx`, `.xlsx`, `.txt`, `.png`) прямо в пузырях ответов ИИ с мгновенным скачиванием в 1 клик и выгрузкой в ZIP.
+- [x] **CATALOG-04:** Очищен каталог OpenAI моделей в Vibecode (`vibecode-models-snapshot.ts` и `vibecode_models_snapshot.json`): удалены устаревшие и неактуальные модели (`Codex Auto Review`, `GPT-5.5`, `GPT-5.5 OpenAI compact`, `GPT 5.4 Mini`), оставлено чистое семейство **GPT 5.6** (`GPT 5.6 Sol`, `GPT 5.6 Terra`, `GPT 5.6 Luna`).
+- [x] **BENCH-02:** Проведено 100% живое тестирование линейки GPT 5.6 через Vibecode API (`gpt-5.6-sol`: 5.45с, `gpt-5.6-terra`: 3.71с, `gpt-5.6-luna`: 2.17с).
+- [x] **VERIFY-02:** Проверена полная сборка Next.js `npm run build` (100% SUCCESS, 0 errors) и регрессионный набор тестов `pytest` (54/54 PASSED).
+
+---
+
 ### 🌟 ЭТАП 11: Полная очистка кодовой базы от Grsai и унификация на Outsee & KIE (31 Августа 2026)
 - [x] **GRSAI-01:** Полностью удалены неиспользуемые модули бэкенда Grsai: `app/bots/grsai.py`, `app/services/grsai_pricing.py`, `app/web/routers/grsai.py`, а также устаревшие тесты `tests/test_grsai_client.py`, `tests/test_grsai_pricing.py`.
 - [x] **GRSAI-02:** Очищены настройки `app/settings.py` (удалены `GRSAI_API_KEY`, `GRSAI_BASE_URL`, `GRSAI_DEFAULT_*`, `CREATE_MAX_PARALLEL_GRSAI`), провайдеры по умолчанию переведены строго на `outsee` и `kie`.
