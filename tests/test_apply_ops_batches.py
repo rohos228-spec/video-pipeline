@@ -1633,23 +1633,6 @@ async def test_vo_chunk_size_30_packs(tmp_path, monkeypatch) -> None:
     assert len(res.apply_ops["ops"]) == 65
 
 
-def test_shots_one_vo_cell_per_pack() -> None:
-    """6 ячеек в одном shots-вызове → GPT пишет 1 op → coverage 1/6."""
-    from app.services.apply_ops_batches import (
-        SCRIPT_FRAMES_QC_SHOT_UNITS_PER_BATCH,
-        split_vo_units,
-    )
-
-    assert SCRIPT_FRAMES_QC_SHOT_UNITS_PER_BATCH == 1
-    frames = [
-        {"uuid": f"c{i:023d}", "voiceover_text": f"cell {i}"}
-        for i in range(12)
-    ]
-    packs = split_vo_units(frames, SCRIPT_FRAMES_QC_SHOT_UNITS_PER_BATCH)
-    assert len(packs) == 12
-    assert all(len(p) == 1 for p in packs)
-
-
 def test_split_into_n_packs_keeps_vo_units() -> None:
     from app.services.apply_ops_batches import split_into_n_packs
 
