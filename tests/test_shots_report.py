@@ -214,3 +214,71 @@ def test_report_keeps_every_kadry_scene() -> None:
     assert "Раскладывает улики" in html
     assert "when из таблицы" in html
     assert "Листы xlsx" in html
+
+
+def test_report_drops_stale_expand_ladder() -> None:
+    current = _frame(
+        number=7,
+        vo="Лимонный сок,",
+        action_chain="3. стол следствия — выкладывает улики\n(лимонный сок)\n",
+        kadry=[
+            {
+                "id": "1-S3-K1",
+                "parent_id": None,
+                "порядок": 1,
+                "сцена": 3,
+                "шаблон": "T9",
+                "план": "ОБЩИЙ",
+                "ракурс": "фронт",
+                "место": "стол следствия",
+                "действие": "Ставит сок.",
+                "закадр": "Лимонный сок,",
+            },
+            {
+                "id": "1-S3-K2",
+                "parent_id": "1-S3-K1",
+                "порядок": 2,
+                "сцена": 3,
+                "шаблон": "T9",
+                "план": "СРЕДНИЙ",
+                "ракурс": "3",
+                "место": "стол следствия",
+                "действие": "Двигает очки.",
+                "закадр": "забытые очки,",
+            },
+        ],
+        shot_id="1-S3-K1",
+        scene=3,
+        image="now",
+        video="vnow",
+    )
+    stale = _frame(
+        number=24,
+        vo="Лимонный сок,",
+        kadry=[
+            {
+                "id": "1-K7",
+                "parent_id": "1-K4",
+                "порядок": 1,
+                "сцена": 3,
+                "шаблон": "T9",
+                "план": "ОБЩИЙ",
+                "ракурс": "фронт",
+                "место": "стол следствия",
+                "действие": "Старый expand.",
+                "закадр": "Лимонный сок,",
+            }
+        ],
+        shot_id="1-K7",
+        scene=3,
+        image="old",
+        video="vold",
+        uuid="bbbbbbbbbbbbbbbbbbbbbbbb",
+    )
+    model = build_shots_report_model([current, stale])
+    shots = model["scenes"][0]["shots"]
+    ids = [s["id"] for s in shots]
+    assert ids == ["1-S3-K1", "1-S3-K2"]
+    html = render_shots_report_html(model, slug="x")
+    assert "1-K7" not in html
+    assert html.count("Лимонный сок,") == 1
