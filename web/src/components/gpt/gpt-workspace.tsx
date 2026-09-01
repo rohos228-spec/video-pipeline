@@ -1011,22 +1011,6 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
                     )}
                     <span>Прикрепить</span>
                   </button>
-
-                  {/* With Attachments Toggle */}
-                  <button
-                    type="button"
-                    onClick={() => setWithAttachments(!withAttachments)}
-                    className={cn(
-                      "flex items-center gap-1.5 rounded-xl px-2.5 py-1 text-[11px] font-medium transition outline-none",
-                      withAttachments
-                        ? "border border-[#22d3ee]/40 bg-[#22d3ee]/15 text-[#22d3ee]"
-                        : "border border-white/10 bg-white/[0.02] text-white/40"
-                    )}
-                    title="Передавать ли вложения в запрос модели"
-                  >
-                    <Check className={cn("h-3 w-3", withAttachments ? "opacity-100" : "opacity-0")} />
-                    <span>Вложения активны</span>
-                  </button>
                 </div>
 
                 <div className="flex items-center gap-2">

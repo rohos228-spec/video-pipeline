@@ -237,8 +237,8 @@ _CONCURRENCY_MARKERS = (
     "concurrent generation",
     "concurrency limit",
 )
-_CONCURRENCY_MAX_WAITS = 24
-_CONCURRENCY_BACKOFF_S = (15.0, 30.0, 45.0, 75.0, 120.0)
+_CONCURRENCY_MAX_WAITS = 3
+_CONCURRENCY_BACKOFF_S = (15.0, 30.0, 45.0)
 
 
 def _is_concurrency_api_error(err: BaseException) -> bool:
@@ -1022,7 +1022,7 @@ async def generate_image(
         "aspect_ratio": (aspect_ratio or "9:16").replace("_", ":"),
     }
     if resolution:
-        # Каталог /api/v1/models сейчас: все image-модели только "2K"
+        # Outsee /api/v1/images/generate строго требует "2K"
         body["resolution"] = "2K"
     if detail_level:
         dl = str(detail_level).strip().lower()
