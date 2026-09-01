@@ -706,8 +706,8 @@ def shots_coverage_ops_reason(
     ops: list[Any],
     frames: list[dict[str, Any]],
 ) -> str | None:
-    """Не валим покрытие: пишем ответ GPT как есть, но логируем брак T/X."""
-    del frames
+    """Пустой закадр и копипаст действия — стоп. Прочий брак T/X — в лог."""
+    by_uid = _frames_by_uuid(frames)
     for op in ops or []:
         if not isinstance(op, dict):
             continue
@@ -716,9 +716,27 @@ def shots_coverage_ops_reason(
         if not isinstance(shots, list):
             continue
         uid = str(op.get("frame_uuid") or "")
+        empty = [
+            str(s.get("id") or "?")
+            for s in shots
+            if isinstance(s, dict) and not _shot_vo_chunk(s)
+        ]
+        if empty:
+            return (
+                f"uuid {uid[:8]}: пустой закадр у кадров {', '.join(empty)} "
+                "— у каждого кадра свой кусок"
+            )
         reason = coverage_template_reason(shots, uid)
+        if reason and (
+            "одинаковым действием" in reason or "одним действием сцены" in reason
+        ):
+            return reason
         if reason:
             logger.warning("shots coverage T/X: {}", reason)
+        cell_vo = _frame_vo(by_uid.get(uid) or {})
+        vo_len = _shot_vo_len_reason(shots, cell_vo, uid)
+        if vo_len:
+            return vo_len
         ladder = _same_place_plan_ladder_reason(shots, uid)
         if ladder:
             logger.warning("shots coverage ladder: {}", ladder)
@@ -1099,11 +1117,9 @@ async def run_apply_ops_batched(
             repaired_parents = repair_same_place_shot_parents(ops)
             bad_shots = shots_coverage_ops_reason(ops, chunk)
             if bad_shots:
-                logger.warning(
-                    "[#{}] apply_ops batched node={!r}: style ignored: {}",
-                    project_id,
-                    node_key,
-                    bad_shots,
+                raise RuntimeError(
+                    f"excel_gpt node={node_key}: L{level} call {my_i} "
+                    f"{bad_shots}"
                 )
         if kind in {"prompts", "img"}:
             bad_prompts = prompts_ops_reason(ops, chunk)

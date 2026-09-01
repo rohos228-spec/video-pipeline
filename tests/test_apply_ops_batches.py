@@ -971,6 +971,7 @@ def test_shots_coverage_rejects_same_place_all_independent() -> None:
                         "ракурс": "фронт",
                         "место": "кухня",
                         "действие": "стоит у плиты",
+                        "закадр": "Она стоит у плиты,",
                     },
                     {
                         "id": "1-K2",
@@ -979,6 +980,7 @@ def test_shots_coverage_rejects_same_place_all_independent() -> None:
                         "ракурс": "3/4",
                         "место": "кухня",
                         "действие": "мешает кастрюлю",
+                        "закадр": "и мешает кастрюлю.",
                     },
                 ]
             },
@@ -1137,7 +1139,8 @@ def test_shots_coverage_rejects_single_shot_on_two_clauses() -> None:
                         "план": "СРЕДНИЙ",
                         "ракурс": "фронт",
                         "место": "двор",
-                        "действие": "стоит",
+                        "действие": "стоит у крыльца и смотрит на жалобы",
+                        "закадр": vo,
                     }
                 ]
             },
@@ -1164,6 +1167,7 @@ def test_shots_coverage_rejects_all_independent_invented_places() -> None:
                         "ракурс": "фронт",
                         "место": "двор усадьбы",
                         "действие": "стоит у крыльца",
+                        "закадр": "Дарья Салтыкова.",
                     },
                     {
                         "id": "1-K2",
@@ -1172,6 +1176,7 @@ def test_shots_coverage_rejects_all_independent_invented_places() -> None:
                         "ракурс": "3/4",
                         "место": "канцелярия",
                         "действие": "две жалобы на столе",
+                        "закадр": "История началась не с процесса, а с двух жалоб.",
                     },
                 ]
             },
@@ -1253,7 +1258,8 @@ def test_shots_vo_rejects_comma_splinter() -> None:
         }
     ]
     reason = shots_coverage_ops_reason(ops, frames)
-    assert reason is None
+    assert reason is not None
+    assert "1–2 слова" in reason or "закадр" in reason
 
 
 def test_shots_vo_rejects_dangling_preposition() -> None:
@@ -1289,7 +1295,8 @@ def test_shots_vo_rejects_dangling_preposition() -> None:
         }
     ]
     reason = shots_coverage_ops_reason(ops, frames)
-    assert reason is None
+    assert reason is not None
+    assert "обрубок" in reason or "закадр" in reason
 
 
 def test_shots_vo_accepts_name_title_and_normal_chunk() -> None:
@@ -1497,7 +1504,8 @@ def test_shots_coverage_rejects_empty_vo() -> None:
         }
     ]
     reason = shots_coverage_ops_reason(ops, [])
-    assert reason is None
+    assert reason is not None
+    assert "пустой закадр" in reason
 
 
 def test_shots_coverage_rejects_lengthened_template() -> None:

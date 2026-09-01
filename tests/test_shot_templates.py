@@ -88,10 +88,11 @@ def test_police_catalog_fills_sequential_ladders() -> None:
         "T1",
         "T5",
     ]
-    assert len(by_scene[1]) >= 2  # путь
-    assert len(by_scene[2]) >= 1  # вход
-    assert len(by_scene[3]) >= 2  # диалог K2+K3
-    assert len(by_scene[4]) >= 1  # пишет, без нового ОБЩЕГО
+    for shots in by_scene.values():
+        assert shots
+        assert all(str(s.get("закадр") or "").strip() for s in shots)
+        acts = [str(s.get("действие") or "").casefold() for s in shots]
+        assert len(acts) == len(set(acts))
     assert not any("{" in str(sh.get("действие") or "") for sh in filled)
     assert not any(" / " in str(sh.get("действие") or "") for sh in filled)
 
@@ -114,10 +115,13 @@ def test_catalog_fill_rewrites_slash_stub_into_full_action() -> None:
             }
         ],
         "1. приказная палата — Савелий и Ермолай передают две жалобы\n"
-        "(две крестьянские жалобы)\n",
+        "(В приказную палату принесли две крестьянские жалобы.)\n",
         cell_number=1,
     )
     assert filled
+    acts = [str(sh.get("действие") or "") for sh in filled]
+    assert len(acts) == len({a.casefold() for a in acts})
+    assert all(str(sh.get("закадр") or "").strip() for sh in filled)
     for sh in filled:
         act = str(sh.get("действие") or "")
         assert "понял / испугался" not in act
@@ -172,12 +176,17 @@ def test_catalog_fill_rewrites_child_slashes_when_ladder_already_full() -> None:
             },
         ],
         "1. приказная палата — Савелий и Ермолай передают две жалобы\n"
-        "(две крестьянские жалобы)\n",
+        "(В приказную палату принесли две крестьянские жалобы. "
+        "Чиновник взял свёртки со стола. На обложке дата и имя. "
+        "Савелий понял, что дело приняли.)\n",
         cell_number=1,
     )
-    assert len(filled) >= 4
+    assert filled
     k1 = str(filled[0].get("действие") or "")
     assert "сводами" in k1
+    acts = [str(sh.get("действие") or "") for sh in filled]
+    assert len(acts) == len({a.casefold() for a in acts})
+    assert all(str(sh.get("закадр") or "").strip() for sh in filled)
     for sh in filled[1:]:
         act = str(sh.get("действие") or "")
         assert "тянет / открывает" not in act
@@ -523,3 +532,48 @@ def test_write_group_prompt_stays_out_of_excel_gpt(
         )
         == group
     )
+
+
+def test_catalog_fill_keeps_unique_gpt_actions() -> None:
+    """Уникальные описания GPT не затираем штампом «место. сцена. план»."""
+    from app.services.shot_templates import fill_kadry_from_catalog
+
+    clear_shot_templates_cache()
+    k1 = (
+        "Пыльный архив с высокими стеллажами. Следователь входит с фонарём "
+        "и смотрит на корешки дел."
+    )
+    k2 = (
+        "Тот же архив, средний план. Следователь тянет с полки толстую папку: "
+        "рука на корешке, корпус к стеллажу."
+    )
+    filled = fill_kadry_from_catalog(
+        [
+            {
+                "id": "1-K1",
+                "сцена": 1,
+                "шаблон": "T2",
+                "план": "ОБЩИЙ",
+                "место": "архив",
+                "действие": k1,
+                "закадр": "Следователь вошёл в архив,",
+            },
+            {
+                "id": "1-K2",
+                "сцена": 1,
+                "шаблон": "T2",
+                "план": "СРЕДНИЙ",
+                "место": "архив",
+                "действие": k2,
+                "закадр": "снял папку с полки.",
+            },
+        ],
+        "1. архив — следователь достаёт папку из стеллажа\n"
+        "(Следователь вошёл в архив, снял папку с полки.)\n",
+        cell_number=1,
+    )
+    acts = [str(s.get("действие") or "") for s in filled]
+    assert k1 in acts[0]
+    assert len({a.casefold() for a in acts}) == len(acts)
+    assert all(str(s.get("закадр") or "").strip() for s in filled)
+    assert "Средний план по пояс" not in "".join(acts)

@@ -386,32 +386,44 @@ def compose_shot_action(
     plan: str,
     place: str,
     scene_action: str,
+    catalog_action: str = "",
 ) -> str:
-    """Полное действие кадра: место + поступок сцены + что видно на этом плане."""
+    """Действие ЭТОГО кадра: роль из каталога SHOTS, не копия сцены + штамп плана."""
     place_s = " ".join((place or "").split()) or "место сцены"
     act = " ".join((scene_action or "").split()) or "действие сцены"
+    role = (
+        _fill_slot_text(catalog_action, place=place_s, action=act)
+        if catalog_action
+        else ""
+    )
+    if role and not is_stub_shot_action(role):
+        return f"{place_s}. {role}"
     plan_u = (plan or "").upper()
     if "ДЕТАЛЬ" in plan_u:
-        extra = (
-            "Деталь: крупно руки или предмет — фактура, надпись, печать, "
-            "то, что меняет смысл, без лица целиком."
+        beat = (
+            role
+            or f"крупно предмет или руки в {place_s} во время «{act}»: "
+            "фактура, надпись, то что меняет смысл, без лица целиком"
         )
     elif "КРУПН" in plan_u:
-        extra = (
-            "Крупный план лица: эмоция читается без слов "
-            "(страх, злость, решимость, презрение), взгляд, рот, к кому обращён."
+        beat = (
+            role
+            or f"крупно лицо после «{act}» в {place_s}: "
+            "эмоция читается без слов, взгляд, рот, к кому обращён"
         )
     elif "СРЕДН" in plan_u:
-        extra = (
-            "Средний план по пояс: жест рук, поза, к кому стоит корпус, "
-            "один видимый поступок с началом и концом."
+        beat = (
+            role
+            or f"по пояс в {place_s}: «{act}» — жест рук, поза, "
+            "к кому стоит корпус, один видимый поступок"
         )
     else:
-        extra = (
-            "Общий план: видно всё помещение, кто в кадре, одежда, "
-            "расстояние между людьми и куда направлен взгляд."
+        beat = (
+            role
+            or f"общий план {place_s} в начале «{act}»: "
+            "всё помещение, кто в кадре, одежда, куда направлен взгляд"
         )
-    return f"{place_s}. {act}. {extra}"
+    return f"{place_s}. {beat}"
 
 
 def _fill_slot_text(text: str, *, place: str, action: str) -> str:
@@ -428,17 +440,55 @@ def _ensure_full_shot_action(
     *,
     place: str,
     scene_action: str,
-    force: bool = False,
+    catalog_action: str = "",
 ) -> None:
+    """Слоган каталога чиним. Уникальное описание GPT не затираем."""
     raw = str(shot.get("действие") or shot.get("action") or "")
-    if not force and not is_stub_shot_action(raw):
+    if not is_stub_shot_action(raw):
         return
     shot["действие"] = compose_shot_action(
         plan=str(shot.get("план") or shot.get("plan") or ""),
         place=str(shot.get("место") or shot.get("place") or place),
         scene_action=scene_action or raw,
+        catalog_action=catalog_action,
     )
     shot.pop("action", None)
+
+
+def _norm_vo_words(text: str) -> list[str]:
+    return " ".join((text or "").split()).split()
+
+
+def _assign_scene_vo(shots: list[dict[str, Any]], vo: str) -> list[dict[str, Any]]:
+    """Каждый кадр — свой кусок закадра. Пустой кадр выкидываем, не оставляем."""
+    vo = " ".join((vo or "").split())
+    if not shots:
+        return []
+    if not vo:
+        return []
+    existing = [" ".join(str(s.get("закадр") or "").split()) for s in shots]
+    if all(existing) and _norm_vo_words(" ".join(existing)) == _norm_vo_words(vo):
+        return shots
+    from app.services.scene_design.camera_expand import split_text_into_parts
+    from app.services.vo_shot_expand import (
+        kadry_vo_partition,
+        kadry_vo_partition_aligned,
+    )
+
+    parts = kadry_vo_partition(vo, shots) or kadry_vo_partition_aligned(vo, shots)
+    if not parts:
+        parts = split_text_into_parts(vo, len(shots))
+    kept: list[dict[str, Any]] = []
+    for sh, piece in zip(shots, parts):
+        piece = " ".join((piece or "").split())
+        if not piece:
+            continue
+        sh["закадр"] = piece
+        kept.append(sh)
+    if not kept:
+        shots[0]["закадр"] = vo
+        kept = [shots[0]]
+    return kept
 
 
 def fill_kadry_from_catalog(
@@ -489,30 +539,34 @@ def fill_kadry_from_catalog(
         rows = catalog_shot_rows(tid, same_place=same)
         if not rows:
             if existing:
-                for i, sh in enumerate(existing):
-                    _ensure_full_shot_action(
-                        sh, place=place, scene_action=act, force=i > 0
-                    )
-                out.extend(existing)
+                scene_acc = []
+                for sh in existing:
+                    _ensure_full_shot_action(sh, place=place, scene_action=act)
+                    scene_acc.append(sh)
+                out.extend(_assign_scene_vo(scene_acc, vo))
             continue
         required = sum(1 for r in rows if r.get("required") == 1)
         if existing and len(existing) >= max(len(rows), required, 1):
+            scene_acc = []
             for i, sh in enumerate(existing):
                 sh.setdefault("шаблон", tid)
                 sh.setdefault("сцена", n)
-                # K2+ всегда пишем сами: GPT копирует слоган каталога
-                # («тянет / открывает / берёт») даже при полной лестнице.
+                cat = str(rows[i].get("action") or "") if i < len(rows) else ""
                 _ensure_full_shot_action(
-                    sh, place=place, scene_action=act, force=i > 0
+                    sh, place=place, scene_action=act, catalog_action=cat
                 )
-                out.append(sh)
+                scene_acc.append(sh)
+            out.extend(_assign_scene_vo(scene_acc, vo))
             continue
         seed = existing[0] if existing else {}
+        incoming_vo = [str(s.get("закадр") or "").strip() for s in existing]
         master_id = f"{cell_number}-S{n}-K1"
+        scene_acc = []
         for i, row in enumerate(rows):
             sid = f"{cell_number}-S{n}-K{i + 1}"
             plan_name = str(row.get("plan") or "").split("/")[0].strip()
             angle = str(row.get("angle") or "").split("/")[0].strip()
+            cat = str(row.get("action") or "")
             shot = {
                 "id": sid,
                 "parent_id": None if i == 0 else master_id,
@@ -523,27 +577,38 @@ def fill_kadry_from_catalog(
                 "ракурс": angle if angle != "—" else "",
                 "место": place,
                 "действие": compose_shot_action(
-                    plan=plan_name, place=place, scene_action=act
+                    plan=plan_name,
+                    place=place,
+                    scene_action=act,
+                    catalog_action=cat,
                 ),
-                "закадр": vo if i == 0 else "",
+                "закадр": incoming_vo[i] if i < len(incoming_vo) else "",
             }
-            if i == 0 and seed.get("закадр"):
-                shot["закадр"] = str(seed.get("закадр") or "")
-            if i == 0 and seed.get("действие"):
-                shot["действие"] = str(seed.get("действие") or shot["действие"])
+            src = existing[i] if i < len(existing) else None
+            if src and src.get("закадр"):
+                shot["закадр"] = str(src.get("закадр") or shot.get("закадр") or "")
+            if src and not is_stub_shot_action(str(src.get("действие") or "")):
+                shot["действие"] = str(src.get("действие") or shot["действие"])
             _ensure_full_shot_action(
-                shot, place=place, scene_action=act, force=i > 0
+                shot, place=place, scene_action=act, catalog_action=cat
             )
-            out.append(shot)
+            scene_acc.append(shot)
+        out.extend(_assign_scene_vo(scene_acc, vo))
     if not out:
-        for i, sh in enumerate(incoming):
+        leftover: list[dict[str, Any]] = []
+        for sh in incoming:
             _ensure_full_shot_action(
                 sh,
                 place=str(sh.get("место") or sh.get("place") or ""),
                 scene_action=action,
-                force=i > 0,
             )
-            out.append(sh)
+            leftover.append(sh)
+        glue = " ".join(
+            str(s.get("закадр") or "").strip()
+            for s in leftover
+            if str(s.get("закадр") or "").strip()
+        )
+        out.extend(_assign_scene_vo(leftover, glue))
     return out
 
 
@@ -599,9 +664,9 @@ def coverage_template_reason(shots: list[dict[str, Any]], uid: str = "") -> str 
             continue
         sc = shot.get("сцена")
         key = str(sc) if sc not in (None, "") else "?"
-        act = " ".join(
-            str(shot.get("действие") or shot.get("action") or "").split()
-        ).casefold()
+        act = _action_stem(
+            str(shot.get("действие") or shot.get("action") or "")
+        )
         if not act:
             continue
         seen_acts = by_scene.setdefault(key, set())
@@ -612,6 +677,20 @@ def coverage_template_reason(shots: list[dict[str, Any]], uid: str = "") -> str 
             )
         seen_acts.add(act)
     return None
+
+
+_GENERIC_PLAN_RE = re.compile(
+    r"(деталь:\s*крупно руки|крупный план лица|средний план по пояс|"
+    r"общий план:\s*видно всё помещение).*$",
+    re.IGNORECASE,
+)
+
+
+def _action_stem(text: str) -> str:
+    """Срезает штамп плана, чтобы «место. сцена. Средний план…» = копия."""
+    t = " ".join((text or "").split()).casefold()
+    t = _GENERIC_PLAN_RE.sub("", t).strip(" .")
+    return t
 
 
 def format_when_assignments(frames: list[Any]) -> str:

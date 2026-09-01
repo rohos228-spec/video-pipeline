@@ -398,7 +398,12 @@ def resolve_shot_plan(
         if partition:
             return len(partition), partition
         need = max(1, len(planned))
-        return need, split_text_into_parts(text, need)
+        parts = split_text_into_parts(text, need)
+        while parts and not str(parts[-1] or "").strip():
+            parts.pop()
+        if not parts:
+            parts = [text] if text else [""]
+        return len(parts), parts
     return 1, [text] if text else [""]
 
 
@@ -1390,13 +1395,14 @@ async def _expand_vo_cells_into_shots_default(
         group = [parent, *children]
         parent.voiceover_text = original_vo
         for i, fr in enumerate(group):
+            piece = vo_parts[i] if i < len(vo_parts) else ""
             if i == 0:
                 fr.start_ts = start_ts
                 fr.end_ts = end_ts
             else:
                 fr.start_ts = None
                 fr.end_ts = None
-                fr.voiceover_text = ""
+                fr.voiceover_text = piece
             fr.duration_seconds = part_sec
             _set_cs(
                 fr,
@@ -1404,7 +1410,7 @@ async def _expand_vo_cells_into_shots_default(
                 parent_uuid=parent_uuid,
                 shot_index=i + 1,
                 shots_in_beat=need,
-                vo_shot=vo_parts[i] if i < len(vo_parts) else "",
+                vo_shot=piece,
             )
             _apply_shot_meta(fr, planned[i] if i < len(planned) else None)
 
@@ -1506,6 +1512,7 @@ async def _expand_vo_cells_into_shots_group(
         # лишние дети (have > need) остаются, но план — need слотов
         parent.voiceover_text = original_vo
         for i, fr in enumerate(group):
+            piece = vo_parts[i] if i < len(vo_parts) else ""
             if i == 0:
                 fr.start_ts = start_ts
                 fr.end_ts = end_ts
@@ -1514,7 +1521,7 @@ async def _expand_vo_cells_into_shots_group(
                 fr.start_ts = None
                 fr.end_ts = None
                 if i < need:
-                    fr.voiceover_text = ""
+                    fr.voiceover_text = piece
             if i < need:
                 fr.duration_seconds = part_sec
                 _set_cs(
@@ -1523,7 +1530,7 @@ async def _expand_vo_cells_into_shots_group(
                     parent_uuid=parent_uuid,
                     shot_index=i + 1,
                     shots_in_beat=need,
-                    vo_shot=vo_parts[i] if i < len(vo_parts) else "",
+                    vo_shot=piece,
                 )
                 _apply_shot_meta(fr, planned[i] if i < len(planned) else None)
 
