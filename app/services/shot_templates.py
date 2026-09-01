@@ -381,46 +381,58 @@ def is_stub_shot_action(text: str) -> bool:
     return _visible_len(t) < SHOT_ACTION_MIN_CHARS
 
 
+_ROLE_BEAT = {
+    "master": "вход: видно всё помещение, кто в кадре, одежда, куда идёт",
+    "action": "жест: руки, поза, к кому корпус, один видимый поступок",
+    "insert": "деталь предмета: фактура, надпись, пальцы на нём, без лица целиком",
+    "reaction": "лицо: какая эмоция после жеста, взгляд, рот, к кому смотрит",
+    "start": "выход: шаг от порога, одежда, куда смотрит",
+    "travel": "в пути: шаг, что по сторонам дороги, куда направлен корпус",
+    "arrive": "прибытие: новое место целиком, кто встречает, куда ставит ногу",
+}
+
+
 def compose_shot_action(
     *,
     plan: str,
     place: str,
     scene_action: str,
     catalog_action: str = "",
+    catalog_role: str = "",
 ) -> str:
     """Действие ЭТОГО кадра: роль из каталога SHOTS, не копия сцены + штамп плана."""
     place_s = " ".join((place or "").split()) or "место сцены"
     act = " ".join((scene_action or "").split()) or "действие сцены"
-    role = (
+    filled = (
         _fill_slot_text(catalog_action, place=place_s, action=act)
         if catalog_action
         else ""
     )
-    if role and not is_stub_shot_action(role):
-        return f"{place_s}. {role}"
+    if filled and not is_stub_shot_action(filled):
+        return f"{place_s}. {filled}"
+    role_key = (catalog_role or "").strip().casefold()
+    role_beat = _ROLE_BEAT.get(role_key, "")
+    if role_beat:
+        return f"{place_s}. {role_beat} во время «{act}»"
     plan_u = (plan or "").upper()
     if "ДЕТАЛЬ" in plan_u:
         beat = (
-            role
-            or f"крупно предмет или руки в {place_s} во время «{act}»: "
+            f"деталь предмета или рук в {place_s} во время «{act}»: "
             "фактура, надпись, то что меняет смысл, без лица целиком"
         )
     elif "КРУПН" in plan_u:
         beat = (
-            role
-            or f"крупно лицо после «{act}» в {place_s}: "
+            f"лицо после «{act}» в {place_s}: "
             "эмоция читается без слов, взгляд, рот, к кому обращён"
         )
     elif "СРЕДН" in plan_u:
         beat = (
-            role
-            or f"по пояс в {place_s}: «{act}» — жест рук, поза, "
+            f"жест в {place_s}: «{act}» — руки, поза, "
             "к кому стоит корпус, один видимый поступок"
         )
     else:
         beat = (
-            role
-            or f"общий план {place_s} в начале «{act}»: "
+            f"вход в {place_s} в начале «{act}»: "
             "всё помещение, кто в кадре, одежда, куда направлен взгляд"
         )
     return f"{place_s}. {beat}"
@@ -441,8 +453,13 @@ def _ensure_full_shot_action(
     place: str,
     scene_action: str,
     catalog_action: str = "",
+    catalog_role: str = "",
+    force: bool = False,
 ) -> None:
-    """Слоган каталога чиним. Уникальное описание GPT не затираем."""
+    """Слоган каталога чиним. Уникальное описание GPT не затираем.
+
+    ``force`` только для заглушек (попробовать ещё раз), не для полного текста.
+    """
     raw = str(shot.get("действие") or shot.get("action") or "")
     if not is_stub_shot_action(raw):
         return
@@ -451,6 +468,7 @@ def _ensure_full_shot_action(
         place=str(shot.get("место") or shot.get("place") or place),
         scene_action=scene_action or raw,
         catalog_action=catalog_action,
+        catalog_role=catalog_role,
     )
     shot.pop("action", None)
 
@@ -459,7 +477,69 @@ def _norm_vo_words(text: str) -> list[str]:
     return " ".join((text or "").split()).split()
 
 
-def _assign_scene_vo(shots: list[dict[str, Any]], vo: str) -> list[dict[str, Any]]:
+def _template_drop_ids(tid: str) -> list[str]:
+    base = normalize_template_id(tid)
+    for row in load_shot_templates().get("templates") or []:
+        if normalize_template_id(str(row.get("id") or "")) == base:
+            raw = str(row.get("drop_order") or "")
+            return [p.strip() for p in raw.split(";") if p.strip()]
+    return []
+
+
+def _drop_extra_shots(
+    shots: list[dict[str, Any]],
+    keep_n: int,
+    catalog_rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Лишние кадры: сначала drop_order / required=0, потом с конца."""
+    if keep_n >= len(shots) or not shots:
+        return shots
+    if keep_n < 1:
+        keep_n = 1
+    rows = list(catalog_rows or [])
+    tid = normalize_template_id(
+        str(shots[0].get("шаблон") or shots[0].get("template") or "")
+    )
+    order = _template_drop_ids(tid)
+    drop_set: set[int] = set()
+    need_drop = len(shots) - keep_n
+    # С конца: сначала required=0 (не трогаем K1 / master), потом drop_order.
+    for i in range(len(shots) - 1, 0, -1):
+        if need_drop <= 0:
+            break
+        row = rows[i] if i < len(rows) else {}
+        if row.get("required") == 1:
+            continue
+        drop_set.add(i)
+        need_drop -= 1
+    if need_drop > 0 and order:
+        for sid in reversed(order):
+            if need_drop <= 0:
+                break
+            for i, sh in enumerate(shots):
+                if i in drop_set or i == 0:
+                    continue
+                row = rows[i] if i < len(rows) else {}
+                if str(row.get("shot_id") or "") == sid:
+                    drop_set.add(i)
+                    need_drop -= 1
+                    break
+    if need_drop > 0:
+        for i in range(len(shots) - 1, 0, -1):
+            if need_drop <= 0:
+                break
+            if i not in drop_set:
+                drop_set.add(i)
+                need_drop -= 1
+    return [sh for i, sh in enumerate(shots) if i not in drop_set]
+
+
+def _assign_scene_vo(
+    shots: list[dict[str, Any]],
+    vo: str,
+    *,
+    catalog_rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Каждый кадр — свой кусок закадра. Пустой кадр выкидываем, не оставляем."""
     vo = " ".join((vo or "").split())
     if not shots:
@@ -478,6 +558,12 @@ def _assign_scene_vo(shots: list[dict[str, Any]], vo: str) -> list[dict[str, Any
     parts = kadry_vo_partition(vo, shots) or kadry_vo_partition_aligned(vo, shots)
     if not parts:
         parts = split_text_into_parts(vo, len(shots))
+    nonempty = [" ".join((p or "").split()) for p in parts if str(p or "").strip()]
+    if len(nonempty) < len(shots):
+        shots = _drop_extra_shots(shots, len(nonempty) or 1, catalog_rows)
+        parts = kadry_vo_partition(vo, shots) or kadry_vo_partition_aligned(vo, shots)
+        if not parts:
+            parts = split_text_into_parts(vo, len(shots))
     kept: list[dict[str, Any]] = []
     for sh, piece in zip(shots, parts):
         piece = " ".join((piece or "").split())
@@ -552,11 +638,16 @@ def fill_kadry_from_catalog(
                 sh.setdefault("шаблон", tid)
                 sh.setdefault("сцена", n)
                 cat = str(rows[i].get("action") or "") if i < len(rows) else ""
+                role = str(rows[i].get("role") or "") if i < len(rows) else ""
                 _ensure_full_shot_action(
-                    sh, place=place, scene_action=act, catalog_action=cat
+                    sh,
+                    place=place,
+                    scene_action=act,
+                    catalog_action=cat,
+                    catalog_role=role,
                 )
                 scene_acc.append(sh)
-            out.extend(_assign_scene_vo(scene_acc, vo))
+            out.extend(_assign_scene_vo(scene_acc, vo, catalog_rows=rows))
             continue
         seed = existing[0] if existing else {}
         incoming_vo = [str(s.get("закадр") or "").strip() for s in existing]
@@ -581,6 +672,7 @@ def fill_kadry_from_catalog(
                     place=place,
                     scene_action=act,
                     catalog_action=cat,
+                    catalog_role=str(row.get("role") or ""),
                 ),
                 "закадр": incoming_vo[i] if i < len(incoming_vo) else "",
             }
@@ -590,10 +682,14 @@ def fill_kadry_from_catalog(
             if src and not is_stub_shot_action(str(src.get("действие") or "")):
                 shot["действие"] = str(src.get("действие") or shot["действие"])
             _ensure_full_shot_action(
-                shot, place=place, scene_action=act, catalog_action=cat
+                shot,
+                place=place,
+                scene_action=act,
+                catalog_action=cat,
+                catalog_role=str(row.get("role") or ""),
             )
             scene_acc.append(shot)
-        out.extend(_assign_scene_vo(scene_acc, vo))
+        out.extend(_assign_scene_vo(scene_acc, vo, catalog_rows=rows))
     if not out:
         leftover: list[dict[str, Any]] = []
         for sh in incoming:

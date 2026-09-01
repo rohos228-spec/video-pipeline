@@ -388,6 +388,18 @@ async def collapse_flattened_coverage_cells(
     return report
 
 
+def _vo_parts_without_empty(text: str, n: int) -> list[str]:
+    """Нарезка без пустого хвоста: лишние слоты не оставляем пустыми."""
+    raw = (text or "").strip()
+    parts = split_text_into_parts(raw, max(1, int(n)))
+    while parts and not str(parts[-1] or "").strip():
+        parts.pop()
+    cleaned = [" ".join((p or "").split()) for p in parts if str(p or "").strip()]
+    if cleaned:
+        return cleaned
+    return [raw] if raw else []
+
+
 def resolve_shot_plan(
     original_vo: str, planned: list[dict[str, Any]]
 ) -> tuple[int, list[str]]:
@@ -398,11 +410,7 @@ def resolve_shot_plan(
         if partition:
             return len(partition), partition
         need = max(1, len(planned))
-        parts = split_text_into_parts(text, need)
-        while parts and not str(parts[-1] or "").strip():
-            parts.pop()
-        if not parts:
-            parts = [text] if text else [""]
+        parts = _vo_parts_without_empty(text, need)
         return len(parts), parts
     return 1, [text] if text else [""]
 
@@ -669,9 +677,11 @@ def apply_vo_shot_cuts(frames: list[Any]) -> int:
         original = (getattr(parent, "voiceover_text", None) or "").strip()
         if not original:
             continue
-        parts = split_text_into_parts(original, len(members))
+        parts = _vo_parts_without_empty(original, len(members))
         for i, fr in enumerate(members):
             piece = parts[i] if i < len(parts) else ""
+            if not piece:
+                continue
             if str(_cs(fr).get(_VO_SHOT_KEY) or "") == piece:
                 continue
             _set_cs(fr, **{_VO_SHOT_KEY: piece})
@@ -778,20 +788,24 @@ def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
         if not full:
             continue
         planned = planned_shots_from_attrs(parent)
-        parts = split_text_into_parts(full, len(members))
+        parts = _vo_parts_without_empty(full, len(members))
         attrs = dict(getattr(parent, "attrs", None) or {})
         attrs["vo_cell_full"] = full
         if planned:
             for i, item in enumerate(planned):
                 piece = parts[i] if i < len(parts) else ""
+                if not piece:
+                    continue
                 if str(item.get("закадр") or "") != piece:
                     item["закадр"] = piece
                     updated += 1
-            attrs["кадры"] = planned
+            attrs["кадры"] = [item for item, piece in zip(planned, parts) if piece] or planned[:1]
         parent.attrs = attrs
         _flag_attrs(parent)
         for i, fr in enumerate(members):
             piece = parts[i] if i < len(parts) else ""
+            if not piece:
+                continue
             if (getattr(fr, "voiceover_text", None) or "") != piece:
                 fr.voiceover_text = piece
                 updated += 1
@@ -842,16 +856,22 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
             n = len(members)
         # Сначала — дословные фрагменты кадры[].закадр от GPT (склейка =
         # вся ячейка), затем выровненные по тексту; слепая нарезка по
-        # клаузам — последний фолбэк. Кадры лестницы НЕ удаляем из-за
-        # короткого закадра: кадр без своего куска — дочернее покрытие.
+        # клаузам — последний фолбэк. Лишние слоты без куска закадра
+        # отбрасываем: пустой vo_shot запрещён.
         planned = planned[:n]
         parts = (
             kadry_vo_partition(full, planned)
             or kadry_vo_partition_aligned(full, planned)
-            or split_text_into_parts(full, n)
+            or _vo_parts_without_empty(full, n)
         )
-        if len(parts) < n:
-            parts = [*parts, *([""] * (n - len(parts)))]
+        while parts and not str(parts[-1] or "").strip():
+            parts.pop()
+        if not parts:
+            parts = [full] if full else [""]
+        n = min(n, len(parts), len(members))
+        if n < 1:
+            n = 1
+        planned = planned[:n]
         parts = parts[:n]
         keep = members[:n]
         extra.extend(members[n:])
@@ -1001,11 +1021,8 @@ async def rebuild_vo_cells_from_shots(
         has_vo = bool(
             vo or cell or str(cs.get("vo_shot") or "").strip()
         )
-        # Дочерний шот без своего куска закадра — легитимное покрытие
-        # (лестница длиннее клауз): не удаляем. Пустой родитель — мусор,
-        # но vo_shot / vo_cell_full считают ячейку живой (иначе K1
-        # пропадает, дети остаются сиротами без меню съёмки).
-        if not _is_pipeline_frame(fr) or (not has_vo and not is_shot_child(fr)):
+        # Кадр без закадра — мусор, в том числе дочернее покрытие.
+        if not _is_pipeline_frame(fr) or not has_vo:
             drop.append(fr)
             seen.add(id(fr))
     drop_ids = [int(fr.id) for fr in drop]
@@ -1396,6 +1413,8 @@ async def _expand_vo_cells_into_shots_default(
         parent.voiceover_text = original_vo
         for i, fr in enumerate(group):
             piece = vo_parts[i] if i < len(vo_parts) else ""
+            if not piece:
+                continue
             if i == 0:
                 fr.start_ts = start_ts
                 fr.end_ts = end_ts
@@ -1509,7 +1528,6 @@ async def _expand_vo_cells_into_shots_group(
                 continue
 
         group = [parent, *children]
-        # лишние дети (have > need) остаются, но план — need слотов
         parent.voiceover_text = original_vo
         for i, fr in enumerate(group):
             piece = vo_parts[i] if i < len(vo_parts) else ""
@@ -1520,9 +1538,9 @@ async def _expand_vo_cells_into_shots_group(
             else:
                 fr.start_ts = None
                 fr.end_ts = None
-                if i < need:
+                if piece:
                     fr.voiceover_text = piece
-            if i < need:
+            if piece:
                 fr.duration_seconds = part_sec
                 _set_cs(
                     fr,

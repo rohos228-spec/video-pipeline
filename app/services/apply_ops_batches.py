@@ -536,13 +536,19 @@ def _shot_vo_len_reason(
     cell_vo: str,
     uid: str,
 ) -> str | None:
+    for shot in shots:
+        chunk = _shot_vo_chunk(shot)
+        sid = str(shot.get("id") or "")
+        if not chunk:
+            return (
+                f"uuid {uid[:8]}: кадр {sid or '?'} пустой закадр "
+                "— у каждого кадра свой кусок"
+            )
     cell_n = _vo_visible_len(cell_vo)
     if cell_n < SHOT_VO_MIN_CHARS:
         return None
     for shot in shots:
         chunk = _shot_vo_chunk(shot)
-        if not chunk:
-            continue
         sid = str(shot.get("id") or "")
         plan = str(shot.get("план") or "")
         if vo_chunk_is_dangling(chunk):
@@ -824,7 +830,7 @@ def _batch_footer(
             "«тянет / открывает / берёт», «руки +». "
             "Закадр: не одно слово. Крупный/деталь от 13 символов, "
             "общий/средний от 20. "
-            "Пустой закадр у дочернего кадра покрытия — норма, кадр не удаляй. "
+            "Пустой закадр запрещён: выкинь кадр (drop_order), не оставляй покрытие без куска. "
             "Не удлиняй T* сверх таблицы. То же место, что у прошлой сцены — "
             "сжатие без нового ОБЩЕГО (T1-c2 / T5 без K0), шаблон не менять "
             "ради чередования (T8>T8>T8 на разных местах — норма). "

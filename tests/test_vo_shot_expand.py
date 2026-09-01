@@ -924,8 +924,8 @@ def test_promote_scene_split_is_idempotent() -> None:
     assert [s["id"] for s in parent.attrs["кадры"]] == ["1-K1", "1-K2"]
 
 
-def test_promote_never_drops_ladder_frames_on_short_vo() -> None:
-    """Клауз меньше, чем кадров лестницы — дочерние НЕ удаляются."""
+def test_promote_drops_extra_frames_without_vo() -> None:
+    """Клауз меньше кадров — лишние дети в extra, у оставшихся непустой VO."""
     from types import SimpleNamespace
 
     from app.services.vo_shot_expand import promote_shots_to_vo_cells
@@ -959,14 +959,12 @@ def test_promote_never_drops_ladder_frames_on_short_vo() -> None:
         for i in range(1, 4)
     ]
     n, extra = promote_shots_to_vo_cells([parent, *children])
-    assert extra == []  # лестница не режется из-за короткого закадра
-    assert n == 4
-    roles = [f.attrs["camera_subdivide"]["role"] for f in [parent, *children]]
-    assert roles == ["vo_parent", "shot", "shot", "shot"]
-    assert len(parent.attrs["кадры"]) == 4
-    joined = " ".join(
-        (f.voiceover_text or "") for f in [parent, *children]
-    )
+    assert extra
+    kept = [parent, *[c for c in children if c not in extra]]
+    assert n == len(kept)
+    assert all((f.voiceover_text or "").strip() for f in kept)
+    assert all(str(s.get("закадр") or "").strip() for s in parent.attrs["кадры"])
+    joined = " ".join((f.voiceover_text or "") for f in kept)
     assert " ".join(joined.split()) == " ".join(full.split())
 
 
