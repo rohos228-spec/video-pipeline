@@ -26,6 +26,7 @@ import { hideResultBadgeForNodeType } from "@/lib/xlsx-sheets";
 import { isHitlNodeType } from "@/lib/gpt-text-steps";
 import { ExcelFeedPanel } from "./excel-feed-panel";
 import { StoragePanel } from "./storage-panel";
+import { ShotsReportPanel } from "./shots-report-panel";
 import { HeroConfigPanel } from "./hero-config-panel";
 import { ItemsConfigPanel } from "./items-config-panel";
 import { AssembleMontageTrigger } from "./assemble-montage-board";
@@ -36,6 +37,7 @@ import { NodeModelPicker } from "./node-model-picker";
 import {
   excelGptAttachmentChipTitle,
   isExcelGptNode,
+  isShotsReportNode,
   workModeChip,
   type ExcelGptInputSource,
   type ExcelGptWorkMode,
@@ -190,7 +192,12 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 }}
               />
             )}
-            {actions && !isHitlNodeType(d.type) && !isExcelFeed && !isStorage && !isShotMenu && (
+            {actions &&
+              !isHitlNodeType(d.type) &&
+              !isExcelFeed &&
+              !isStorage &&
+              !isShotMenu &&
+              !isShotsReportNode(d.nodeKey) && (
               <VTrigger
                 open={!!vMenuOpen}
                 title={
@@ -204,7 +211,12 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 onToggle={() => actions.setVMenuNodeKey(vMenuOpen ? null : d.nodeKey)}
               />
             )}
-            {actions && !isHitlNodeType(d.type) && !isExcelFeed && !isStorage && !isShotMenu && (
+            {actions &&
+              !isHitlNodeType(d.type) &&
+              !isExcelFeed &&
+              !isStorage &&
+              !isShotMenu &&
+              !isShotsReportNode(d.nodeKey) && (
               <NodeVMenu
                 open={!!vMenuOpen}
                 anchorRef={anchorRef}
@@ -305,7 +317,13 @@ export function PipelineNode({ data, selected }: NodeProps) {
                     </span>
                   </div>
                 ) : null}
-                {!isSdAgent && isExcelGpt ? (
+                {!isSdAgent && isShotsReportNode(d.nodeKey) ? (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    <span className="rounded-full border border-sky-400/30 bg-sky-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-sky-200">
+                      HTML-отчёт
+                    </span>
+                  </div>
+                ) : !isSdAgent && isExcelGpt ? (
                   <div className="mt-2 flex flex-wrap gap-1.5">
                     <span className="rounded-full border border-violet-400/30 bg-violet-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-violet-200">
                       {d.role ? roleChip(d.role) : workModeChip(d.workMode)}
@@ -329,6 +347,9 @@ export function PipelineNode({ data, selected }: NodeProps) {
             {isStorage && actions?.projectId && (
               <StoragePanel projectId={actions.projectId} nodeKey={d.nodeKey} />
             )}
+            {isShotsReportNode(d.nodeKey) && actions?.projectId && (
+              <ShotsReportPanel projectId={actions.projectId} nodeKey={d.nodeKey} />
+            )}
             {isShotMenu && actions?.projectId && (
               <ShotMenuPanel
                 projectId={actions.projectId}
@@ -337,7 +358,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
             )}
             {isHero && actions?.projectId && <HeroConfigPanel projectId={actions.projectId} />}
             {isItems && actions?.projectId && <ItemsConfigPanel projectId={actions.projectId} />}
-            {isExcelGpt && actions?.projectId && (
+            {isExcelGpt && !isShotsReportNode(d.nodeKey) && actions?.projectId && (
               <GptOperatorCardPanel
                 projectId={actions.projectId}
                 nodeKey={d.nodeKey}
@@ -404,7 +425,10 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 </div>
               )}
 
-              {actions && !isHitlNodeType(d.type) && !isShotMenu && (
+              {actions &&
+                !isHitlNodeType(d.type) &&
+                !isShotMenu &&
+                !isShotsReportNode(d.nodeKey) && (
                 <button
                   type="button"
                   className={cn(
@@ -426,7 +450,10 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 </button>
               )}
 
-              {actions && !isHitlNodeType(d.type) && !isShotMenu && (
+              {actions &&
+                !isHitlNodeType(d.type) &&
+                !isShotMenu &&
+                !isShotsReportNode(d.nodeKey) && (
                 <NodeVMenu
                   open={!!vMenuOpen}
                   anchorRef={anchorRef}
@@ -511,7 +538,11 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 {running ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <StatusIcon className="h-2.5 w-2.5" />}
                 {statusConfig.label}
               </span>
-              {isExcelGptNode(d.type) ? (
+              {isShotsReportNode(d.nodeKey) ? (
+                <span className="mt-0.5 rounded-full border border-sky-400/25 bg-sky-500/10 px-1 py-0.5 text-[8px] font-medium text-sky-100/90">
+                  HTML-отчёт
+                </span>
+              ) : isExcelGptNode(d.type) ? (
                 <div className="mt-0.5 flex max-w-full flex-wrap justify-center gap-0.5">
                   <span className="rounded-full border border-violet-400/25 bg-violet-500/10 px-1 py-0.5 text-[8px] font-medium text-violet-100/90">
                     {d.role ? roleChip(d.role) : workModeChip(d.workMode)}

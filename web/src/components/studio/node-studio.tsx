@@ -38,6 +38,7 @@ import {
   excelGptAttachmentChipTitle,
   excelGptSlotIndex,
   isExcelGptNode,
+  isShotsReportNode,
   EXCEL_GPT_STEP_CODE,
   workModeLabel,
   type ExcelGptNodeConfig,
@@ -189,11 +190,13 @@ export function NodeStudio({
     return resolvePromptSlots(nodeType, null);
   }, [project.data?.meta, nodeKey, nodeType, promptSlotsProp]);
 
+  const isReportNode = isShotsReportNode(nodeKey);
   const showExcel =
-    nodeTypeRequiresExcel(nodeType) ||
-    allSlots.some((s) => s.kind === "excel") ||
-    tab === "excel" ||
-    isExcelGptNode(nodeType);
+    !isReportNode &&
+    (nodeTypeRequiresExcel(nodeType) ||
+      allSlots.some((s) => s.kind === "excel") ||
+      tab === "excel" ||
+      isExcelGptNode(nodeType));
 
   const xlsxSheetsMeta = useQuery({
     queryKey: ["xlsx-sheets", projectId, nodeKey ?? "live"],
@@ -241,12 +244,16 @@ export function NodeStudio({
 
   useEffect(() => {
     if (!open) return;
+    if (isShotsReportNode(nodeKey)) {
+      setTab(initialTab === "settings" ? "settings" : "results");
+      return;
+    }
     if (promptFocus) {
       setTab(promptFocus.kind === "excel" ? "excel" : "prompts");
       return;
     }
     setTab(initialTab);
-  }, [open, initialTab, promptFocus]);
+  }, [open, initialTab, promptFocus, nodeKey]);
 
   useEffect(() => {
     if (!open) return;
@@ -757,7 +764,22 @@ export function NodeStudio({
             )}
           </header>
 
-          {tab === "excel" && projectId ? (
+          {isReportNode && tab === "results" && projectId ? (
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-black">
+              {resultSnapshot && (resultSnapshot.hasResult || resultSnapshot.items.length > 0) ? (
+                <NodeResultViewBody
+                  projectId={projectId}
+                  nodeKey={nodeKey}
+                  nodeType={nodeType}
+                  snapshot={resultSnapshot}
+                />
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Отчёт ещё не собран. Запусти ноду «Отчёт: кадры + промты».
+                </p>
+              )}
+            </div>
+          ) : tab === "excel" && projectId ? (
             <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-5">
                   <div className="flex shrink-0 flex-wrap gap-2">
                     <Button size="sm" variant="outline" asChild>

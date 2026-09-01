@@ -40,7 +40,8 @@ export type NodeResultViewMode =
   | "frame_prompts"
   | "frame_images"
   | "frame_videos"
-  | "topic_edit";
+  | "topic_edit"
+  | "html_report";
 
 export interface NodeResultSnapshot {
   hasResult: boolean;
@@ -446,6 +447,7 @@ function computeNodeResult(
           ],
           "HTML-отчёт кадров + промты/QC",
           "none",
+          "html_report",
         );
       }
       const meta = project?.meta as

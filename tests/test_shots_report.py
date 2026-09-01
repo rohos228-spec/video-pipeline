@@ -89,6 +89,8 @@ def test_report_hides_uuid_role_shot_index() -> None:
     assert "vo_parent" not in html
     assert "shot_index" not in html
     assert "shots_in_beat" not in html
+    assert "background:#000" in html
+    assert "background:#fff" in html
 
 
 def test_report_aligns_prompt_and_qc_per_shot() -> None:

@@ -63,6 +63,11 @@ export function isExcelGptNode(nodeType: string): boolean {
   return nodeType === EXCEL_GPT_NODE_TYPE || nodeType.startsWith("enrich_");
 }
 
+/** Нода «Отчёт: кадры + промты» — HTML, не Excel. */
+export function isShotsReportNode(nodeKey?: string | null): boolean {
+  return Boolean(nodeKey?.endsWith("_fw_report"));
+}
+
 export function isImageUploadName(fileName?: string | null): boolean {
   if (!fileName) return false;
   return /\.(png|jpe?g|webp|gif)$/i.test(fileName);

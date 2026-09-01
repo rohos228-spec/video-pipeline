@@ -378,12 +378,13 @@ def render_shots_report_html(
     return f"""<!doctype html><html lang=ru><head><meta charset=utf-8>
 <title>Отчёт кадров · {html.escape(slug or 'проект')}</title>
 <style>
-body{{font:14px/1.45 system-ui,Segoe UI,sans-serif;margin:20px;color:#111}}
-h1{{font-size:22px;margin:0 0 6px}}
-h2{{font-size:16px;margin:24px 0 8px}}
-.meta{{color:#555;margin:0 0 16px}}
+html,body{{background:#000;margin:0}}
+body{{font:14px/1.45 system-ui,Segoe UI,sans-serif;padding:20px;color:#111}}
+h1{{font-size:22px;margin:0 0 6px;color:#f2f2f2}}
+h2{{font-size:16px;margin:24px 0 8px;color:#f2f2f2}}
+.meta{{color:#9a9a9a;margin:0 0 16px}}
 table{{border-collapse:collapse;width:100%}}
-th,td{{border:1px solid #ddd;vertical-align:top;padding:10px 12px}}
+th,td{{border:1px solid #ddd;vertical-align:top;padding:10px 12px;background:#fff}}
 th{{text-align:left;background:#f4f4f4;position:sticky;top:0}}
 th:first-child,td:first-child{{width:72px;text-align:center;color:#666;font-weight:650}}
 .vo-bit{{color:#444;margin-top:4px}}

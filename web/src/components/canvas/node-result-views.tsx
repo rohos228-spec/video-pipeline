@@ -50,7 +50,8 @@ export function NodeResultViewBody({
           nodeKey={nodeKey}
           nodeType={nodeType}
         />
-      );    case "frame_prompts":
+      );
+    case "frame_prompts":
       return <FramePromptsView items={snapshot.items} />;
     case "frame_images":
       return (
@@ -65,7 +66,12 @@ export function NodeResultViewBody({
       return <FrameVideosView items={snapshot.items} />;
     case "topic_edit":
       return <TopicEditView projectId={projectId} snapshot={snapshot} />;
+    case "html_report":
+      return <ShotsReportView snapshot={snapshot} />;
     default:
+      if (nodeKey?.endsWith("_fw_report")) {
+        return <ShotsReportView snapshot={snapshot} />;
+      }
       if (
         nodeType === "excel_gpt" ||
         Boolean(nodeType?.startsWith("enrich_"))
@@ -789,6 +795,27 @@ function TopicEditView({
         Для массовой генерации используйте Excel с колонкой «Название ролика».
       </p>
     </div>
+  );
+}
+
+function ShotsReportView({ snapshot }: { snapshot: NodeResultSnapshot }) {
+  const url =
+    snapshot.items.find((i) => i.previewUrl || i.downloadUrl)?.previewUrl ||
+    snapshot.items.find((i) => i.downloadUrl)?.downloadUrl ||
+    "";
+  if (!url) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        Отчёт ещё не собран. Запусти ноду «Отчёт: кадры + промты».
+      </p>
+    );
+  }
+  return (
+    <iframe
+      title="Отчёт кадров"
+      src={url}
+      className="h-full min-h-[70vh] w-full flex-1 border-0 bg-black"
+    />
   );
 }
 
