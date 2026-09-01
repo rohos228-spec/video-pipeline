@@ -759,13 +759,113 @@ def kadry_vo_partition_aligned(
     return parts
 
 
+_S_LADDER_RE = re.compile(r"^\d+-S(\d+)-K\d+$", re.I)
+
+
+def _scene_from_shot_id(shot_id: str) -> int | None:
+    m = _S_LADDER_RE.match((shot_id or "").strip())
+    return int(m.group(1)) if m else None
+
+
 def _scene_num(shot: dict[str, Any] | None) -> int | None:
     if not isinstance(shot, dict):
         return None
     try:
         return int(shot.get("сцена"))
     except (TypeError, ValueError):
-        return None
+        pass
+    return _scene_from_shot_id(str(shot.get("id") or ""))
+
+
+def frame_scene_number(frame: Any) -> int | None:
+    """Номер сцены кадра: camera_subdivide / кадры[0] / id ``1-S3-K1``."""
+    cs = _cs(frame)
+    try:
+        return int(cs.get("сцена"))
+    except (TypeError, ValueError):
+        pass
+    planned = planned_shots_from_attrs(frame)
+    if planned:
+        n = _scene_num(planned[0])
+        if n is not None:
+            return n
+    return _scene_from_shot_id(
+        str(cs.get("shot_id") or coverage_shot_id(frame) or "")
+    )
+
+
+def planned_for_parent_expand(
+    parent: Any, planned: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """После scene_split не разворачивать чужие сцены из полного кадры[].
+
+    Повторный apply-ops часто пишет всю лестницу ролика на первый
+    vo_parent. Без отсечения expand считает need=20 при have=2 и
+    вставляет вторую копию сцен 2…N рядом со старыми ячейками.
+    """
+    if not planned or not _cs(parent).get("scene_split"):
+        return list(planned)
+    own = frame_scene_number(parent)
+    if own is None:
+        return list(planned)
+    own_shots = [s for s in planned if _scene_num(s) == own]
+    return own_shots or list(planned)
+
+
+def _ladder_keep_key(members: list[Any], index: int) -> tuple[int, int, int]:
+    has_s = 0
+    max_id = 0
+    for fr in members:
+        sid = coverage_shot_id(fr)
+        if _S_LADDER_RE.match(sid or ""):
+            has_s = 1
+        raw = getattr(fr, "id", None)
+        try:
+            max_id = max(max_id, int(raw or 0))
+        except (TypeError, ValueError):
+            pass
+    return (has_s, max_id, -index)
+
+
+def duplicate_scene_ladder_frames(frames: list[Any]) -> list[Any]:
+    """Вторые лестницы той же сцены (``1-K7`` рядом с ``1-S3-K*``)."""
+    groups = _group_by_parent(frames)
+    seen: set[int] = set()
+    ladders: dict[int, list[tuple[int, list[Any]]]] = {}
+    idx = 0
+    for members in groups.values():
+        if not members:
+            continue
+        parent = next(
+            (m for m in members if str(_cs(m).get("role") or "") == "vo_parent"),
+            members[0],
+        )
+        sc = frame_scene_number(parent)
+        if sc is None:
+            continue
+        ladders.setdefault(sc, []).append((idx, list(members)))
+        idx += 1
+        for fr in members:
+            seen.add(id(fr))
+    for fr in frames:
+        if id(fr) in seen or not _is_pipeline_frame(fr) or is_shot_child(fr):
+            continue
+        sc = frame_scene_number(fr)
+        if sc is None:
+            continue
+        ladders.setdefault(sc, []).append((idx, [fr]))
+        idx += 1
+        seen.add(id(fr))
+    extra: list[Any] = []
+    for items in ladders.values():
+        if len(items) < 2:
+            continue
+        keep = max(items, key=lambda it: _ladder_keep_key(it[1], it[0]))
+        for item in items:
+            if item is keep:
+                continue
+            extra.extend(item[1])
+    return extra
 
 
 def partition_planned_by_scene_chain(
@@ -1048,6 +1148,12 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
                     )
                 _apply_shot_meta(fr, shot)
                 updated += 1
+    seen_extra = {id(fr) for fr in extra}
+    for fr in duplicate_scene_ladder_frames(frames):
+        if id(fr) in seen_extra:
+            continue
+        extra.append(fr)
+        seen_extra.add(id(fr))
     return updated, extra
 
 
@@ -1544,8 +1650,19 @@ async def _expand_vo_cells_into_shots_group(
         if parent not in members:
             members = [parent, *[m for m in members if m is not parent]]
         members.sort(key=lambda m: int(_cs(m).get("shot_index") or 0) or (m.number or 0))
+        planned = planned_for_parent_expand(
+            parent, planned_shots_from_attrs(parent)
+        )
         original_vo = _cell_full_text(parent, members)
-        planned = planned_shots_from_attrs(parent)
+        if _cs(parent).get("scene_split"):
+            joined = " ".join(
+                (getattr(m, "voiceover_text", None) or "").strip()
+                for m in members
+                if (getattr(m, "voiceover_text", None) or "").strip()
+            )
+            joined = " ".join(joined.split())
+            if joined:
+                original_vo = joined
         partition = partition_planned_by_scene_chain(
             planned, main_action_text(parent)
         ) or kadry_vo_partition(original_vo, planned)

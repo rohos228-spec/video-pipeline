@@ -1014,6 +1014,102 @@ def test_promote_does_not_give_next_scene_vo_to_shots() -> None:
     assert "жестокостью" not in uniq(1)
 
 
+def test_planned_for_parent_expand_keeps_only_own_scene() -> None:
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import planned_for_parent_expand
+
+    planned = [
+        {"id": "1-S1-K1", "сцена": 1},
+        {"id": "1-S1-K2", "сцена": 1},
+        {"id": "1-S2-K1", "сцена": 2},
+        {"id": "1-S3-K1", "сцена": 3},
+    ]
+    parent = SimpleNamespace(
+        attrs={
+            "кадры": [dict(s) for s in planned],
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "scene_split": 1,
+                "сцена": 1,
+                "shot_id": "1-S1-K1",
+            },
+        }
+    )
+    assert [s["id"] for s in planned_for_parent_expand(parent, planned)] == [
+        "1-S1-K1",
+        "1-S1-K2",
+    ]
+    parent.attrs["camera_subdivide"].pop("scene_split")
+    assert [s["id"] for s in planned_for_parent_expand(parent, planned)] == [
+        "1-S1-K1",
+        "1-S1-K2",
+        "1-S2-K1",
+        "1-S3-K1",
+    ]
+
+
+def test_promote_drops_stale_scene_ladder() -> None:
+    """1-S3-K* остаётся, хвост старого expand 1-K7/K8 уходит в extra."""
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import promote_shots_to_vo_cells
+
+    vo1, vo2 = "Лимонный сок,", "забытые очки."
+    scene_vo = f"{vo1} {vo2}"
+    chain = f"3. стол следствия — выкладывает улики\n({scene_vo})"
+
+    def cell(
+        uid: str,
+        shots: list[tuple[str, str]],
+        *,
+        db_id: int,
+        role: str = "vo_parent",
+        parent_uid: str = "",
+        shot_index: int = 1,
+    ):
+        kadry = [
+            {"id": sid, "сцена": 3, "шаблон": "T9", "закадр": piece}
+            for sid, piece in shots
+        ]
+        return SimpleNamespace(
+            id=db_id,
+            uuid=uid,
+            voiceover_text=shots[0][1],
+            image_prompt="",
+            animation_prompt="",
+            duration_seconds=2.0,
+            attrs={
+                "кадры": kadry if role == "vo_parent" else [kadry[0]],
+                "vo_cell_full": scene_vo if role == "vo_parent" else shots[0][1],
+                "главное_действие": chain if role == "vo_parent" else None,
+                "camera_subdivide": {
+                    "role": role,
+                    "parent_uuid": parent_uid or uid,
+                    "shot_index": shot_index,
+                    "shots_in_beat": len(shots) if role == "vo_parent" else 2,
+                    "scene_split": 1,
+                    "сцена": 3,
+                    "shot_id": shots[0][0],
+                },
+            },
+        )
+
+    current = cell("cc" * 12, [("1-S3-K1", vo1), ("1-S3-K2", vo2)], db_id=100)
+    current_c = cell(
+        "dd" * 12, [("1-S3-K2", vo2)], db_id=101, role="shot",
+        parent_uid=current.uuid, shot_index=2,
+    )
+    stale = cell("ee" * 12, [("1-K7", vo1), ("1-K8", vo2)], db_id=50)
+    stale_c = cell(
+        "ff" * 12, [("1-K8", vo2)], db_id=51, role="shot",
+        parent_uid=stale.uuid, shot_index=2,
+    )
+    _n, extra = promote_shots_to_vo_cells([current, current_c, stale, stale_c])
+    assert stale in extra and stale_c in extra
+    assert current not in extra and current_c not in extra
+
+
 def test_promote_scene_split_is_idempotent() -> None:
     from app.services.vo_shot_expand import promote_shots_to_vo_cells
 
@@ -1270,6 +1366,186 @@ async def test_apply_shot_coverage_splits_scenes_with_children(mem_db) -> None:
                 .order_by(Frame.number)
             )).scalars().all()
         )
+        assert len([f for f in frames2 if is_shot_child(f)]) == 2
+        assert len([f for f in frames2 if not is_shot_child(f)]) == 2
+
+
+async def test_group_rerun_drops_stale_ladder_without_second_copy(mem_db) -> None:
+    """Повторный fw_shots: не плодить сцену, удалить хвост 1-K7."""
+    import uuid as _uuid
+
+    from sqlalchemy import select
+
+    from app.models import Frame, Project, ProjectStatus
+    from app.services.vo_shot_expand import (
+        apply_shot_coverage_to_vo_cells,
+        coverage_shot_id,
+        is_shot_child,
+        planned_shots_from_attrs,
+    )
+
+    full = (
+        "Михаил идёт к зданию полиции. Он заходит внутрь. "
+        "Он рассказывает дежурному о краже. Он пишет заявление за столом."
+    )
+    chain = (
+        "1. улица — Михаил идёт к зданию полиции\n"
+        "(Михаил идёт к зданию полиции. Он заходит внутрь.)\n"
+        "2. отделение полиции — пишет заявление за столом\n"
+        "(Он рассказывает дежурному о краже. Он пишет заявление за столом.)"
+    )
+    kadry = [
+        {"id": "1-S1-K1", "сцена": 1, "шаблон": "T6", "план": "ОБЩИЙ",
+         "ракурс": "фронт", "место": "улица", "действие": "идёт к зданию",
+         "parent_id": None},
+        {"id": "1-S1-K2", "сцена": 1, "шаблон": "T6", "план": "ОБЩИЙ",
+         "ракурс": "фронт", "место": "улица",
+         "действие": "подходит к крыльцу", "parent_id": "1-S1-K1"},
+        {"id": "1-S2-K1", "сцена": 2, "шаблон": "T5", "план": "СРЕДНИЙ",
+         "ракурс": "3/4", "место": "отделение полиции",
+         "действие": "сидит, пишет", "parent_id": None},
+        {"id": "1-S2-K2", "сцена": 2, "шаблон": "T5", "план": "ДЕТАЛЬ",
+         "ракурс": "макро", "место": "отделение полиции",
+         "действие": "рука выводит строки", "parent_id": "1-S2-K1"},
+    ]
+    canvas = {
+        "canvas_graph": {
+            "nodes": [{
+                "id": "n_excel_gpt_fw_shots",
+                "data": {"groupId": "script_frames_qc"},
+            }],
+            "edges": [],
+        }
+    }
+    async with mem_db() as session:
+        project = Project(
+            slug=f"stale-lad-{_uuid.uuid4().hex[:8]}",
+            topic="t",
+            status=ProjectStatus.new,
+            meta=canvas,
+        )
+        session.add(project)
+        await session.flush()
+        seed = Frame(
+            project_id=project.id,
+            number=1,
+            sort_key=1.0,
+            uuid="aa" * 12,
+            voiceover_text=full,
+            duration_seconds=12.0,
+            attrs={
+                "кадры": [dict(s) for s in kadry],
+                "vo_cell_full": full,
+                "главное_действие": chain,
+                "биты": [{"порядок": 1}],
+                "camera_subdivide": {
+                    "role": "vo_parent",
+                    "parent_uuid": "aa" * 12,
+                    "shot_index": 1,
+                },
+            },
+        )
+        session.add(seed)
+        await session.flush()
+        first = await apply_shot_coverage_to_vo_cells(session, project)
+        assert first["pipeline"] == 4
+        frames = list(
+            (
+                await session.execute(
+                    select(Frame)
+                    .where(Frame.project_id == project.id)
+                    .order_by(Frame.sort_key, Frame.number)
+                )
+            ).scalars().all()
+        )
+        p1 = next(
+            f for f in frames
+            if not is_shot_child(f)
+            and any(s.get("id") == "1-S1-K1" for s in planned_shots_from_attrs(f))
+        )
+        from sqlalchemy.orm.attributes import flag_modified
+
+        p1.attrs = {
+            **dict(p1.attrs or {}),
+            "кадры": [dict(s) for s in kadry],
+        }
+        flag_modified(p1, "attrs")
+        await session.flush()
+        stale_uid = "ee" * 12
+        stale = Frame(
+            project_id=project.id,
+            number=90,
+            sort_key=900.0,
+            uuid=stale_uid,
+            voiceover_text="Он рассказывает дежурному о краже.",
+            duration_seconds=4.0,
+            attrs={
+                "кадры": [
+                    {"id": "1-K7", "сцена": 2, "шаблон": "T5",
+                     "parent_id": "1-K4", "закадр": "Он рассказывает дежурному о краже."},
+                    {"id": "1-K8", "сцена": 2, "шаблон": "T5",
+                     "parent_id": "1-K7", "закадр": "Он пишет заявление за столом."},
+                ],
+                "vo_cell_full": (
+                    "Он рассказывает дежурному о краже. "
+                    "Он пишет заявление за столом."
+                ),
+                "главное_действие": (
+                    "2. отделение полиции — пишет заявление за столом\n"
+                    "(Он рассказывает дежурному о краже. "
+                    "Он пишет заявление за столом.)"
+                ),
+                "camera_subdivide": {
+                    "role": "vo_parent",
+                    "parent_uuid": stale_uid,
+                    "shot_index": 1,
+                    "shots_in_beat": 2,
+                    "scene_split": 1,
+                    "сцена": 2,
+                    "shot_id": "1-K7",
+                },
+            },
+        )
+        session.add(stale)
+        await session.flush()
+        stale_c = Frame(
+            project_id=project.id,
+            number=91,
+            sort_key=910.0,
+            uuid="ff" * 12,
+            voiceover_text="Он пишет заявление за столом.",
+            duration_seconds=4.0,
+            attrs={
+                "кадры": [{"id": "1-K8", "сцена": 2, "шаблон": "T5"}],
+                "vo_cell_full": "Он пишет заявление за столом.",
+                "camera_subdivide": {
+                    "role": "shot",
+                    "parent_uuid": stale_uid,
+                    "shot_index": 2,
+                    "shots_in_beat": 2,
+                    "scene_split": 1,
+                    "сцена": 2,
+                    "shot_id": "1-K8",
+                },
+            },
+        )
+        session.add(stale_c)
+        await session.flush()
+        second = await apply_shot_coverage_to_vo_cells(session, project)
+        assert second["pipeline"] == 4
+        frames2 = list(
+            (
+                await session.execute(
+                    select(Frame)
+                    .where(Frame.project_id == project.id)
+                    .order_by(Frame.sort_key, Frame.number)
+                )
+            ).scalars().all()
+        )
+        ids = [coverage_shot_id(f) for f in frames2]
+        assert "1-K7" not in ids
+        assert "1-K8" not in ids
+        assert ids.count("1-S2-K1") == 1
         assert len([f for f in frames2 if is_shot_child(f)]) == 2
         assert len([f for f in frames2 if not is_shot_child(f)]) == 2
 

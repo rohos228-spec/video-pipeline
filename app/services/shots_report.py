@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import html
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -113,17 +112,6 @@ def _shot_id(shot: dict[str, Any]) -> str:
     return _get(shot, "id", "shot_id")
 
 
-_LADDER_ID = re.compile(r"^\d+-S\d+-K", re.I)
-
-
-def _drop_stale_ladders(shots: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Если есть актуальная лестница 1-S3-K*, не тащить хвост старого expand (1-K7)."""
-    if not shots:
-        return shots
-    current = {sid: shot for sid, shot in shots.items() if _LADDER_ID.match(sid)}
-    return current or shots
-
-
 def _collect_kadry(frames: list[Any]) -> dict[int, dict[str, dict[str, Any]]]:
     by_scene: dict[int, dict[str, dict[str, Any]]] = {}
     for fr in frames:
@@ -139,7 +127,7 @@ def _collect_kadry(frames: list[Any]) -> dict[int, dict[str, dict[str, Any]]]:
                 continue
             sid = _shot_id(shot) or f"S{n}-{len(by_scene.get(n) or {}) + 1}"
             by_scene.setdefault(n, {}).setdefault(sid, dict(shot))
-    return {n: _drop_stale_ladders(shots) for n, shots in by_scene.items()}
+    return by_scene
 
 
 def _overlay_index(frames: list[Any]) -> dict[str, Any]:

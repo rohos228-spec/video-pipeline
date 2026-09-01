@@ -216,7 +216,7 @@ def test_report_keeps_every_kadry_scene() -> None:
     assert "Листы xlsx" in html
 
 
-def test_report_drops_stale_expand_ladder() -> None:
+def test_report_lists_every_kadry_row() -> None:
     current = _frame(
         number=7,
         vo="Лимонный сок,",
@@ -278,7 +278,7 @@ def test_report_drops_stale_expand_ladder() -> None:
     model = build_shots_report_model([current, stale])
     shots = model["scenes"][0]["shots"]
     ids = [s["id"] for s in shots]
-    assert ids == ["1-S3-K1", "1-S3-K2"]
+    assert set(ids) == {"1-S3-K1", "1-S3-K2", "1-K7"}
     html = render_shots_report_html(model, slug="x")
-    assert "1-K7" not in html
-    assert html.count("Лимонный сок,") == 1
+    assert "1-K7" in html
+    assert "1-S3-K1" in html
