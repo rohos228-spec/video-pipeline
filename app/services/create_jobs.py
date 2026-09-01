@@ -91,6 +91,7 @@ _JOBS: dict[str, CreateJob] = {}
 _LOCK = asyncio.Lock()
 # Сильные ссылки на tasks.
 _TASKS: set[asyncio.Task[Any]] = set()
+_TASKS_BY_JOB: dict[str, asyncio.Task[Any]] = {}
 # Отдельный семафор на провайдера.
 _SEMS: dict[str, asyncio.Semaphore] = {}
 _SEM_SIZES: dict[str, int] = {}
@@ -276,8 +277,89 @@ async def enqueue_generation(
         name=f"create-job-{job_id}",
     )
     _TASKS.add(task)
-    task.add_done_callback(_TASKS.discard)
+    _TASKS_BY_JOB[job_id] = task
+
+    def _on_done(t: asyncio.Task[Any]) -> None:
+        _TASKS.discard(t)
+        _TASKS_BY_JOB.pop(job_id, None)
+
+    task.add_done_callback(_on_done)
     return job
+
+
+async def cancel_job(job_id: str) -> bool:
+    """Отменить выполнение или ожидание задачи Create по ID, history_id или имени файла."""
+    from app.services.generation_storage import (
+        generations_root,
+        invalidate_generation_list_cache,
+        update_sidecar,
+    )
+
+    clean = job_id.removeprefix("gen-").strip()
+    target_job: CreateJob | None = None
+    target_jid: str | None = None
+
+    async with _LOCK:
+        for jid, j in list(_JOBS.items()):
+            if (
+                jid == job_id
+                or jid == clean
+                or j.history_id == job_id
+                or j.history_id == f"gen-{clean}"
+                or j.path.name == clean
+                or j.path.stem == Path(clean).stem
+                or str(j.path) == job_id
+            ):
+                target_job = j
+                target_jid = jid
+                break
+
+    if target_job and target_jid:
+        task = _TASKS_BY_JOB.get(target_jid)
+        if task and not task.done():
+            task.cancel()
+
+        target_job.status = "failed"
+        target_job.error = "Генерация остановлена пользователем"
+        target_job.finished_at = (
+            datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+        )
+        update_sidecar(
+            target_job.path,
+            status="failed",
+            error=target_job.error,
+            finished_at=target_job.finished_at,
+        )
+        invalidate_generation_list_cache()
+        _refresh_queue_positions()
+        logger.info("create_job.cancelled id={} (matched job)", target_jid)
+        return True
+
+    # Если задачи нет в памяти (например, после перезапуска сервера), ищем sidecar на диске
+    root = generations_root()
+    found = False
+    stem = Path(clean).stem
+    for pattern in (f"{stem}*.json", f"{clean}*.json"):
+        for sp in root.rglob(pattern):
+            if sp.is_file():
+                try:
+                    update_sidecar(
+                        sp,
+                        status="failed",
+                        error="Генерация остановлена пользователем",
+                        finished_at=datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                    )
+                    found = True
+                except Exception:  # noqa: BLE001
+                    pass
+
+    if found:
+        invalidate_generation_list_cache()
+        _refresh_queue_positions()
+        logger.info("create_job.cancelled on disk: {}", job_id)
+        return True
+
+    return False
 
 
 async def _run_job(
@@ -376,6 +458,23 @@ async def _run_job(
                 job.path.stat().st_size,
                 format_elapsed_min_sec(job.elapsed_sec),
             )
+        except asyncio.CancelledError:
+            job.status = "failed"
+            job.error = "Генерация отменена пользователем"
+            job.finished_at = (
+                datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+            )
+            job.elapsed_sec = max(0, int(round(asyncio.get_running_loop().time() - t0)))
+            update_sidecar(
+                job.path,
+                status="failed",
+                error=job.error,
+                started_at=job.started_at,
+                finished_at=job.finished_at,
+                elapsed_sec=job.elapsed_sec,
+            )
+            logger.info("create_job.cancelled_handled id={}", job.id)
+            raise
         except Exception as e:  # noqa: BLE001
             job.status = "failed"
             job.error = str(getattr(e, "reason", None) or e)[:500]

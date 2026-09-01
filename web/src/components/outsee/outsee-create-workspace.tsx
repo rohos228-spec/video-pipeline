@@ -32,9 +32,11 @@ import {
   Play,
   Search,
   Send,
+  Square,
   Trash2,
   Video,
   X,
+  XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -801,6 +803,16 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
+  const cancelJobMut = useMutation({
+    mutationFn: (jobId: string) => api.cancelCreateJob(jobId),
+    onSuccess: () => {
+      toast.success("Генерация остановлена");
+      qc.invalidateQueries({ queryKey: ["create-queue"] });
+      qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
+    },
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
+
   const [trackingJobs, setTrackingJobs] = useState<
     { provider: "outsee" | "kie"; jobId: string; historyId: string }[]
   >([]);
@@ -1371,6 +1383,22 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                           <div className="truncate text-[8px] text-white/45">{item.project_slug}</div>
                         )}
                       </div>
+                      {pending && (item.job_id || item.id) && (
+                        <div className="absolute top-1.5 right-1.5 z-20 flex items-center gap-1 opacity-0 transition group-hover:opacity-100">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const jid = item.job_id || (item.id.startsWith("gen-") ? item.id.slice(4) : item.id);
+                              cancelJobMut.mutate(jid);
+                            }}
+                            className="flex h-6 w-6 items-center justify-center rounded-md bg-red-950/80 text-red-300 backdrop-blur transition hover:bg-red-600 hover:text-white shadow-md ring-1 ring-red-500/40"
+                            title="Остановить генерацию"
+                          >
+                            <XCircle className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      )}
                       {!pending && (
                         <div className="absolute top-1.5 right-1.5 z-20 flex items-center gap-1 opacity-0 transition group-hover:opacity-100">
                           <button
@@ -1535,6 +1563,19 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                     {selected.prompt}
                   </div>
                 )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const jid = selected.job_id || (selected.id.startsWith("gen-") ? selected.id.slice(4) : selected.id);
+                    cancelJobMut.mutate(jid);
+                  }}
+                  disabled={cancelJobMut.isPending}
+                  className="mt-2 inline-flex items-center gap-1.5 rounded-xl border border-red-500/40 bg-red-500/15 px-4 py-2 text-[12px] font-semibold text-red-300 backdrop-blur transition hover:border-red-500/60 hover:bg-red-500/30 hover:text-white disabled:opacity-50 shadow-lg"
+                  title="Остановить выполнение генерации"
+                >
+                  <XCircle className="h-4 w-4" />
+                  <span>{cancelJobMut.isPending ? "Останавливаем…" : "Остановить генерацию"}</span>
+                </button>
               </div>
             ) : selected?.status === "failed" ? (
               <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-2xl border border-red-500/30 bg-red-500/10 px-6 py-8 text-center backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8)]">

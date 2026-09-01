@@ -30,3 +30,13 @@ async def create_job_status(job_id: str) -> dict[str, Any]:
     if job is None:
         return {"job_id": job_id, "status": "unknown", "ok": False}
     return job.to_dict()
+
+
+@router.post("/jobs/{job_id}/cancel")
+@router.delete("/jobs/{job_id}")
+async def cancel_create_job(job_id: str) -> dict[str, Any]:
+    """Отменить выполнение или ожидание задачи Create."""
+    from app.services.create_jobs import cancel_job
+
+    ok = await cancel_job(job_id)
+    return {"ok": ok, "job_id": job_id}
