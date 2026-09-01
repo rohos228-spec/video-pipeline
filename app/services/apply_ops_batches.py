@@ -35,6 +35,8 @@ VO_UNITS_PER_BATCH = 9
 # сразу 6 параллельных пачек, добор хвоста; пачка по 30 — запасной нарез.
 SCRIPT_FRAMES_QC_UNITS_PER_BATCH = 30
 SCRIPT_FRAMES_QC_PARALLEL_BATCHES = 6
+# shots: 1 ячейка = 1 GPT-вызов. 5–6 ячеек в пачке → 1 op и «coverage 1/5».
+SCRIPT_FRAMES_QC_SHOT_UNITS_PER_BATCH = 1
 VO_PARALLEL_MAX = 6
 # fw_frames / fw_qc раньше были 4; вся группа теперь 6.
 FW_FRAMES_PARALLEL_BATCHES = 6

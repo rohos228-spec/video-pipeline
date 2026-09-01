@@ -407,6 +407,7 @@ async def _run_four_node_markup_pass(
 
     from app.services.apply_ops_batches import (
         SCRIPT_FRAMES_QC_PARALLEL_BATCHES,
+        SCRIPT_FRAMES_QC_SHOT_UNITS_PER_BATCH,
         VO_STAGGER_SEC,
         run_apply_ops_batched,
     )
@@ -480,10 +481,19 @@ async def _run_four_node_markup_pass(
         dense=False,
         apply_fn=_apply_batch,
         force_full=True,
-        target_batches=SCRIPT_FRAMES_QC_PARALLEL_BATCHES,
+        target_batches=(
+            None
+            if footer_kind in {"shots_coverage", "shots"}
+            else SCRIPT_FRAMES_QC_PARALLEL_BATCHES
+        ),
+        chunk_size=(
+            SCRIPT_FRAMES_QC_SHOT_UNITS_PER_BATCH
+            if footer_kind in {"shots_coverage", "shots"}
+            else None
+        ),
         parallel_max=SCRIPT_FRAMES_QC_PARALLEL_BATCHES,
         stagger_sec=VO_STAGGER_SEC,
-        chunk_by_vo_unit=False,
+        chunk_by_vo_unit=footer_kind in {"shots_coverage", "shots"},
         footer_kind=footer_kind,
         on_progress=on_progress,
         allow_empty_ops=False,
@@ -1926,6 +1936,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             from app.services.apply_ops_batches import (
                 CAMERA_MENU_UNITS_PER_BATCH,
                 SCRIPT_FRAMES_QC_PARALLEL_BATCHES,
+                SCRIPT_FRAMES_QC_SHOT_UNITS_PER_BATCH,
                 SKIP_CAMERA_MENU,
                 SKIP_PROMPTS_AND_ACTION,
                 VO_PARALLEL_MAX,
@@ -2046,10 +2057,33 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 fw_frames = frame_prompts and nk.endswith("_fw_frames")
                 fw_qc = qc_prompts and nk.endswith("_fw_qc")
                 group_parallel = bool(script_frames_qc) and not fw_camera_menu_only
+                apply_footer = (
+                    "camera_menu"
+                    if fw_camera_menu_only
+                    else (
+                        _script_frames_qc_footer_kind(variant, master, node_key)
+                        if script_frames_qc
+                        else (
+                            "prompts"
+                            if write_prompts
+                            else ("analytics" if scene_analytics else None)
+                        )
+                    )
+                )
+                shots_one_cell = (apply_footer or "") in {
+                    "shots_coverage",
+                    "shots",
+                }
                 if fw_camera_menu_only:
                     batch_label = (
                         f"меню съёмки по {CAMERA_MENU_UNITS_PER_BATCH}, "
                         f"параллельно {VO_PARALLEL_MAX}, "
+                        f"сдвиг {VO_STAGGER_SEC:g}с"
+                    )
+                elif shots_one_cell:
+                    batch_label = (
+                        f"shots 1 ячейка/вызов, параллельно "
+                        f"{SCRIPT_FRAMES_QC_PARALLEL_BATCHES}, "
                         f"сдвиг {VO_STAGGER_SEC:g}с"
                     )
                 elif group_parallel:
@@ -2102,18 +2136,26 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         )
                     ),
                     target_batches=(
-                        SCRIPT_FRAMES_QC_PARALLEL_BATCHES
-                        if group_parallel
-                        else None
+                        None
+                        if shots_one_cell
+                        else (
+                            SCRIPT_FRAMES_QC_PARALLEL_BATCHES
+                            if group_parallel
+                            else None
+                        )
                     ),
                     chunk_size=(
                         CAMERA_MENU_UNITS_PER_BATCH
                         if fw_camera_menu_only
-                        else None
+                        else (
+                            SCRIPT_FRAMES_QC_SHOT_UNITS_PER_BATCH
+                            if shots_one_cell
+                            else None
+                        )
                     ),
                     parallel_max=(
                         SCRIPT_FRAMES_QC_PARALLEL_BATCHES
-                        if group_parallel
+                        if group_parallel or shots_one_cell
                         else (
                             VO_PARALLEL_MAX
                             if fw_camera_menu_only
@@ -2122,25 +2164,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     ),
                     stagger_sec=(
                         VO_STAGGER_SEC
-                        if fw_camera_menu_only or group_parallel
+                        if fw_camera_menu_only or group_parallel or shots_one_cell
                         else None
                     ),
-                    chunk_by_vo_unit=False,
-                    footer_kind=(
-                        "camera_menu"
-                        if fw_camera_menu_only
-                        else (
-                            _script_frames_qc_footer_kind(
-                                variant, master, node_key
-                            )
-                            if script_frames_qc
-                            else (
-                                "prompts"
-                                if write_prompts
-                                else ("analytics" if scene_analytics else None)
-                            )
-                        )
-                    ),
+                    chunk_by_vo_unit=bool(shots_one_cell),
+                    footer_kind=apply_footer,
                     on_progress=_progress,
                     allow_empty_ops=qc_prompts,
                 )
