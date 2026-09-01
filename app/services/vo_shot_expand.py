@@ -4,9 +4,9 @@
 ``apply_shot_coverage_to_vo_cells``: недостающие шоты вставляются, затем
 каждая СЦЕНА (``кадры[].сцена``) становится своей VO-ячейкой: первый кадр
 сцены — родитель (полная лестница в ``кадры[]``), остальные кадры сцены —
-дочерние шоты (``role="shot"``, ``parent_uuid`` на родителя). Текст режется
-по клаузам (``split_text_into_parts``), не по квоте 27–54 из GPT
-``кадры[].закадр``.
+дочерние шоты (``role="shot"``, ``parent_uuid`` на родителя). Закадр кадра
+берётся из куска этой сцены в ``главное_действие``, не из нарезки всей
+ячейки по всем кадрам.
 """
 
 from __future__ import annotations
@@ -401,11 +401,16 @@ def _vo_parts_without_empty(text: str, n: int) -> list[str]:
 
 
 def resolve_shot_plan(
-    original_vo: str, planned: list[dict[str, Any]]
+    original_vo: str,
+    planned: list[dict[str, Any]],
+    action: str = "",
 ) -> tuple[int, list[str]]:
     """Сколько шотов: только из кадры[]. Без плана не выдумывать нарезку."""
     text = (original_vo or "").strip()
     if planned:
+        scene_parts = partition_planned_by_scene_chain(planned, action)
+        if scene_parts is not None:
+            return len(scene_parts), scene_parts
         partition = kadry_vo_partition(text, planned)
         if partition:
             return len(partition), partition
@@ -754,6 +759,57 @@ def kadry_vo_partition_aligned(
     return parts
 
 
+def _scene_num(shot: dict[str, Any] | None) -> int | None:
+    if not isinstance(shot, dict):
+        return None
+    try:
+        return int(shot.get("сцена"))
+    except (TypeError, ValueError):
+        return None
+
+
+def partition_planned_by_scene_chain(
+    planned: list[dict[str, Any]],
+    action: str,
+) -> list[str] | None:
+    """Нарезать закадр по сценам ``главное_действие``, не по всей ячейке."""
+    from app.services.shot_templates import parse_scene_chain, plain_scene_vo
+
+    chain = parse_scene_chain(action)
+    if not chain or not planned:
+        return None
+    if not any(_scene_num(shot) is not None for shot in planned):
+        return None
+    vo_by_n = {
+        int(sc["n"]): plain_scene_vo(str(sc.get("vo") or ""))
+        for sc in chain
+    }
+    if not any(vo_by_n.values()):
+        return None
+    groups: list[tuple[int | None, list[int]]] = []
+    for i, shot in enumerate(planned):
+        n = _scene_num(shot)
+        if not groups or groups[-1][0] != n:
+            groups.append((n, [i]))
+        else:
+            groups[-1][1].append(i)
+    out = [""] * len(planned)
+    for n, idxs in groups:
+        scene_vo = vo_by_n.get(n) if n is not None else ""
+        if not scene_vo:
+            return None
+        scene_shots = [planned[i] for i in idxs]
+        scene_parts = (
+            kadry_vo_partition(scene_vo, scene_shots)
+            or kadry_vo_partition_aligned(scene_vo, scene_shots)
+            or _vo_parts_without_empty(scene_vo, len(idxs))
+        )
+        for j, i in enumerate(idxs):
+            if j < len(scene_parts):
+                out[i] = " ".join((scene_parts[j] or "").split())
+    return out
+
+
 def _cell_full_text(parent: Any, members: list[Any]) -> str:
     attrs = getattr(parent, "attrs", None) or {}
     full = str(attrs.get("vo_cell_full") or "").strip() if isinstance(attrs, dict) else ""
@@ -854,12 +910,12 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
         if n > len(members):
             # Expand ещё не создал слоты — не отбрасываем хвост закадра.
             n = len(members)
-        # Сначала — дословные фрагменты кадры[].закадр от GPT (склейка =
-        # вся ячейка), затем выровненные по тексту; слепая нарезка по
-        # клаузам — последний фолбэк. Лишние слоты без куска закадра
-        # отбрасываем: пустой vo_shot запрещён.
+        # Сначала — кусок закадра ЭТОЙ сцены из главное_действие.
+        # Иначе GPT/склейка всей ячейки сдвигает VO на следующую сцену.
         planned = planned[:n]
-        parts = (
+        parts = partition_planned_by_scene_chain(
+            planned, main_action_text(parent)
+        ) or (
             kadry_vo_partition(full, planned)
             or kadry_vo_partition_aligned(full, planned)
             or _vo_parts_without_empty(full, n)
@@ -1379,7 +1435,9 @@ async def _expand_vo_cells_into_shots_default(
     for parent in reversed(parents):
         original_vo = parent.voiceover_text or ""
         planned = planned_shots_from_attrs(parent)
-        need, vo_parts = resolve_shot_plan(original_vo, planned)
+        need, vo_parts = resolve_shot_plan(
+            original_vo, planned, action=main_action_text(parent)
+        )
         total_sec = vo_duration_sec(original_vo, shots=need)
         part_sec = round(total_sec / need, 2)
         start_ts = parent.start_ts
@@ -1488,11 +1546,15 @@ async def _expand_vo_cells_into_shots_group(
         members.sort(key=lambda m: int(_cs(m).get("shot_index") or 0) or (m.number or 0))
         original_vo = _cell_full_text(parent, members)
         planned = planned_shots_from_attrs(parent)
-        partition = kadry_vo_partition(original_vo, planned)
+        partition = partition_planned_by_scene_chain(
+            planned, main_action_text(parent)
+        ) or kadry_vo_partition(original_vo, planned)
         if partition:
             need, vo_parts = len(partition), partition
         else:
-            need, vo_parts = resolve_shot_plan(original_vo, planned)
+            need, vo_parts = resolve_shot_plan(
+                original_vo, planned, action=main_action_text(parent)
+            )
         children = [m for m in members if m is not parent]
         have = 1 + len(children)
         parent_uuid = parent.uuid

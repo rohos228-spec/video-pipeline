@@ -86,6 +86,14 @@ def parse_scene_chain(action: str) -> list[dict[str, Any]]:
     return scenes
 
 
+def plain_scene_vo(raw: str) -> str:
+    """Кусок закадра сцены без обёртки ``(...)``."""
+    text = " ".join((raw or "").split())
+    if len(text) >= 2 and text[0] == "(" and text[-1] == ")":
+        return " ".join(text[1:-1].split())
+    return text
+
+
 # Паттерны дерева «Выбор». Префиксные (re.search, без якорей): «счита»
 # ловит «считает/считал», «говор(и|ю)» — говорит/говорят/говорил.
 # T1 = только РЕЧЬ (диалог/спор/допрос). Молчаливая передача предмета —
@@ -541,7 +549,7 @@ def _assign_scene_vo(
     catalog_rows: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Каждый кадр — свой кусок закадра. Пустой кадр выкидываем, не оставляем."""
-    vo = " ".join((vo or "").split())
+    vo = plain_scene_vo(vo)
     if not shots:
         return []
     if not vo:

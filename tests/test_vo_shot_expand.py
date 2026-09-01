@@ -902,6 +902,118 @@ def test_promote_splits_by_scene_keeps_children() -> None:
     assert " ".join(joined.split()) == " ".join(full.split())
 
 
+def test_promote_does_not_give_next_scene_vo_to_shots() -> None:
+    """Кадры сцены N берут только VO этой сцены, даже если GPT сдвинул закадр."""
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import promote_shots_to_vo_cells
+
+    s1 = "Самые странные преступления в истории"
+    s2 = (
+        "Некоторые преступления поражают не столько своей жестокостью, "
+        "сколько нелогичностью."
+    )
+    s3 = (
+        "Обычно мотив, план и поведение преступника складываются "
+        "в понятную цепочку."
+    )
+    full = f"{s1} {s2} {s3}"
+    # GPT склеил куски в полный VO, но сдвиг: S1 забрал начало S2, S2 — S3.
+    kadry = [
+        {
+            "id": "1-S1-K1",
+            "сцена": 1,
+            "шаблон": "T2",
+            "закадр": f"{s1} Некоторые преступления поражают не столько своей жестокостью,",
+        },
+        {
+            "id": "1-S2-K1",
+            "сцена": 2,
+            "шаблон": "T2",
+            "закадр": "сколько нелогичностью. Обычно мотив,",
+        },
+        {
+            "id": "1-S2-K2",
+            "сцена": 2,
+            "шаблон": "T2",
+            "закадр": "план и поведение преступника складываются в понятную цепочку.",
+        },
+        {
+            "id": "1-S3-K1",
+            "сцена": 3,
+            "шаблон": "T5",
+            "закадр": "хвост",
+        },
+    ]
+    chain = (
+        f"1. архив — раскладывает папки\n({s1})\n"
+        f"2. место преступления — фиксирует следы\n({s2})\n"
+        f"3. кабинет — соединяет карточки\n({s3})"
+    )
+    pu = "aa" * 12
+    parent = SimpleNamespace(
+        uuid=pu,
+        voiceover_text=full,
+        image_prompt="",
+        animation_prompt="",
+        duration_seconds=8.0,
+        attrs={
+            "кадры": [dict(s) for s in kadry],
+            "vo_cell_full": full,
+            "главное_действие": chain,
+            "биты": [{"порядок": 1}],
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": pu,
+                "shot_index": 1,
+            },
+        },
+    )
+    children = [
+        SimpleNamespace(
+            uuid=f"{i:02x}" * 12,
+            voiceover_text="",
+            image_prompt="",
+            animation_prompt="",
+            duration_seconds=2.0,
+            attrs={
+                "camera_subdivide": {
+                    "role": "shot",
+                    "parent_uuid": pu,
+                    "shot_index": i + 1,
+                }
+            },
+        )
+        for i in range(1, 4)
+    ]
+    promote_shots_to_vo_cells([parent, *children])
+    by_sc: dict[int, list[str]] = {}
+    for fr in [parent, *children]:
+        for s in fr.attrs.get("кадры") or []:
+            try:
+                n = int(s.get("сцена"))
+            except (TypeError, ValueError):
+                continue
+            vo = " ".join(str(s.get("закадр") or "").split())
+            if vo:
+                by_sc.setdefault(n, []).append(vo)
+    # уникальные куски по сцене (родитель держит всю лестницу)
+    def uniq(n: int) -> str:
+        seen: list[str] = []
+        for p in by_sc.get(n) or []:
+            if p not in seen:
+                seen.append(p)
+        return " ".join(seen)
+
+    assert s1 in uniq(1)
+    assert s2.split()[0] not in uniq(1).split() or uniq(1) == s1
+    assert " ".join(uniq(1).split()) == s1
+    assert " ".join(uniq(2).split()) == s2
+    assert " ".join(uniq(3).split()) == s3
+    assert "цепочку" not in uniq(2)
+    assert "жестокостью" not in uniq(1)
+
+
 def test_promote_scene_split_is_idempotent() -> None:
     from app.services.vo_shot_expand import promote_shots_to_vo_cells
 
