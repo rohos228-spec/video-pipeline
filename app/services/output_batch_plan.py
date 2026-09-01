@@ -18,14 +18,14 @@ from loguru import logger
 
 T = TypeVar("T")
 
-# img_pr: один GPT-вызов = не больше 10 кадров.
-IMG_PR_FRAMES_PER_BATCH = 10
+# img_pr: один GPT-вызов = не больше 8 кадров (быстрый ответ ~15с, никогда не рвёт max_tokens).
+IMG_PR_FRAMES_PER_BATCH = 8
 # Старые имена — только совместимость импортов, нарезку больше не крутят.
 IMG_PR_CHARS_PER_FRAME = 4_000
 IMG_PR_BATCH_CHAR_BUDGET = 228_000
 
-# Прочие ноды: один батч на каждые 3500 символов закадра.
-VO_CHARS_PER_BATCH = 3_500
+# Прочие ноды: один батч на каждые 2500 символов закадра.
+VO_CHARS_PER_BATCH = 2_500
 
 # Старое имя — оставляем для тестов/импортов.
 OUTPUT_TOKEN_BUDGET = IMG_PR_BATCH_CHAR_BUDGET

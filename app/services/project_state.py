@@ -570,6 +570,8 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
             item_descs = _nonempty_item_descriptions(project)
             if item_arts < len(item_descs):
                 return ProjectStatus.hero_ready
+        cur = getattr(project, "status", None)
+        if cur is ProjectStatus.items_ready or _status_ord(cur) >= _status_ord(ProjectStatus.items_ready):
             return ProjectStatus.items_ready
         return ProjectStatus.hero_ready
     elif hero_required:
@@ -608,6 +610,9 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
         return ProjectStatus.items_ready
     if hero_required:
         return ProjectStatus.hero_ready
+    cur = getattr(project, "status", None)
+    if cur in (ProjectStatus.hero_ready, ProjectStatus.items_ready):
+        return cur
     return frames_exit
 
 
