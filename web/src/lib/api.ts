@@ -1757,6 +1757,12 @@ export const api = {
       queue_position?: number | null;
     }>(`/api/outsee/jobs/${encodeURIComponent(jobId)}`),
 
+  cancelCreateJob: (jobId: string) =>
+    http<{ ok: boolean; job_id: string }>(
+      `/api/create/jobs/${encodeURIComponent(jobId)}/cancel`,
+      { method: "POST" },
+    ),
+
   createQueue: () =>
     http<{
       max_parallel: number;

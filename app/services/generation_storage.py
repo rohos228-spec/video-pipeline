@@ -407,10 +407,24 @@ def _scan_generation_files(*, kind: str, limit: int) -> list[dict[str, Any]]:
             status = "failed"
         if status in {"queued", "processing"} and not has_file:
             age_s = max(0.0, datetime.now(timezone.utc).timestamp() - mtime)
-            if age_s > 20 * 60:
+            # Проверяем, есть ли задача реально в живом пуле воркера
+            from app.services.create_jobs import get_job, list_active_jobs
+
+            job_id_meta = str(meta.get("job_id") or "")
+            active_jobs = list_active_jobs()
+            is_active_in_mem = any(
+                j.id == job_id_meta
+                or j.path.name == fp.name
+                or j.path.stem == fp.stem
+                or str(j.path) == str(fp)
+                for j in active_jobs
+            )
+
+            # Если задачи нет в памяти воркера и прошло >10с (или зависла >10 минут), помечаем failed
+            if (not is_active_in_mem and age_s > 10) or age_s > 10 * 60:
                 status = "failed"
                 if not meta.get("error"):
-                    err = "прервано (рестарт / сбой задачи)"
+                    err = "генерация остановлена (таймаут / рестарт)"
                     meta["error"] = err
                     try:
                         update_sidecar(fp, status="failed", error=err)

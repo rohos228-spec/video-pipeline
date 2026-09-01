@@ -190,3 +190,13 @@ async def outsee_generate(body: OutseeGenerateBody) -> dict[str, Any]:
     payload["running_count"] = snap["running_count"]
     payload["max_parallel"] = snap["max_parallel"]
     return payload
+
+
+@router.post("/jobs/{job_id}/cancel")
+@router.delete("/jobs/{job_id}")
+async def cancel_outsee_job(job_id: str) -> dict[str, Any]:
+    """Отменить выполнение задачи Outsee/Create."""
+    from app.services.create_jobs import cancel_job
+
+    ok = await cancel_job(job_id)
+    return {"ok": ok, "job_id": job_id}
