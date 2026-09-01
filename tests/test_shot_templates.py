@@ -125,6 +125,68 @@ def test_catalog_fill_rewrites_slash_stub_into_full_action() -> None:
         assert "приказная палата" in act.casefold() or "переда" in act.casefold()
 
 
+def test_catalog_fill_rewrites_child_slashes_when_ladder_already_full() -> None:
+    """GPT отдал все 4 T2, но K2–K4 — слоганы каталога: детей переписываем."""
+    from app.services.shot_templates import (
+        fill_kadry_from_catalog,
+        is_stub_shot_action,
+    )
+
+    clear_shot_templates_cache()
+    filled = fill_kadry_from_catalog(
+        [
+            {
+                "id": "1-K1",
+                "сцена": 1,
+                "шаблон": "T2",
+                "план": "ОБЩИЙ",
+                "место": "приказная палата",
+                "действие": (
+                    "Приказная палата XVIII века с высокими сводами. "
+                    "Савелий и Ермолай входят к столу чиновника с жалобами."
+                ),
+            },
+            {
+                "id": "1-K2",
+                "сцена": 1,
+                "шаблон": "T2",
+                "план": "СРЕДНИЙ",
+                "место": "приказная палата",
+                "действие": "тянет / открывает / берёт",
+            },
+            {
+                "id": "1-K3",
+                "сцена": 1,
+                "шаблон": "T2",
+                "план": "ДЕТАЛЬ",
+                "место": "приказная палата",
+                "действие": "крупно: обложка / дата / имя",
+            },
+            {
+                "id": "1-K4",
+                "сцена": 1,
+                "шаблон": "T2",
+                "план": "КРУПНЫЙ",
+                "место": "приказная палата",
+                "действие": "понял / испугался / решил",
+            },
+        ],
+        "1. приказная палата — Савелий и Ермолай передают две жалобы\n"
+        "(две крестьянские жалобы)\n",
+        cell_number=1,
+    )
+    assert len(filled) >= 4
+    k1 = str(filled[0].get("действие") or "")
+    assert "сводами" in k1
+    for sh in filled[1:]:
+        act = str(sh.get("действие") or "")
+        assert "тянет / открывает" not in act
+        assert "понял / испугался" not in act
+        assert "обложка / дата" not in act
+        assert not is_stub_shot_action(act)
+        assert "приказная палата" in act.casefold() or "переда" in act.casefold()
+
+
 def test_t8_does_not_steal_years_in_same_place() -> None:
     """«долгие годы» / «служба» в кабинете — не прыжок жизни, не T8."""
     clear_shot_templates_cache()

@@ -424,16 +424,21 @@ def _fill_slot_text(text: str, *, place: str, action: str) -> str:
 
 
 def _ensure_full_shot_action(
-    shot: dict[str, Any], *, place: str, scene_action: str
+    shot: dict[str, Any],
+    *,
+    place: str,
+    scene_action: str,
+    force: bool = False,
 ) -> None:
     raw = str(shot.get("действие") or shot.get("action") or "")
-    if not is_stub_shot_action(raw):
+    if not force and not is_stub_shot_action(raw):
         return
     shot["действие"] = compose_shot_action(
         plan=str(shot.get("план") or shot.get("plan") or ""),
         place=str(shot.get("место") or shot.get("place") or place),
         scene_action=scene_action or raw,
     )
+    shot.pop("action", None)
 
 
 def fill_kadry_from_catalog(
@@ -484,16 +489,22 @@ def fill_kadry_from_catalog(
         rows = catalog_shot_rows(tid, same_place=same)
         if not rows:
             if existing:
-                for sh in existing:
-                    _ensure_full_shot_action(sh, place=place, scene_action=act)
+                for i, sh in enumerate(existing):
+                    _ensure_full_shot_action(
+                        sh, place=place, scene_action=act, force=i > 0
+                    )
                 out.extend(existing)
             continue
         required = sum(1 for r in rows if r.get("required") == 1)
         if existing and len(existing) >= max(len(rows), required, 1):
-            for sh in existing:
+            for i, sh in enumerate(existing):
                 sh.setdefault("шаблон", tid)
                 sh.setdefault("сцена", n)
-                _ensure_full_shot_action(sh, place=place, scene_action=act)
+                # K2+ всегда пишем сами: GPT копирует слоган каталога
+                # («тянет / открывает / берёт») даже при полной лестнице.
+                _ensure_full_shot_action(
+                    sh, place=place, scene_action=act, force=i > 0
+                )
                 out.append(sh)
             continue
         seed = existing[0] if existing else {}
@@ -520,9 +531,20 @@ def fill_kadry_from_catalog(
                 shot["закадр"] = str(seed.get("закадр") or "")
             if i == 0 and seed.get("действие"):
                 shot["действие"] = str(seed.get("действие") or shot["действие"])
-            _ensure_full_shot_action(shot, place=place, scene_action=act)
+            _ensure_full_shot_action(
+                shot, place=place, scene_action=act, force=i > 0
+            )
             out.append(shot)
-    return out or [dict(s) for s in incoming]
+    if not out:
+        for i, sh in enumerate(incoming):
+            _ensure_full_shot_action(
+                sh,
+                place=str(sh.get("место") or sh.get("place") or ""),
+                scene_action=action,
+                force=i > 0,
+            )
+            out.append(sh)
+    return out
 
 
 def coverage_template_reason(shots: list[dict[str, Any]], uid: str = "") -> str | None:
