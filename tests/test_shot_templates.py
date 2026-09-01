@@ -93,6 +93,36 @@ def test_police_catalog_fills_sequential_ladders() -> None:
     assert len(by_scene[3]) >= 2  # диалог K2+K3
     assert len(by_scene[4]) >= 1  # пишет, без нового ОБЩЕГО
     assert not any("{" in str(sh.get("действие") or "") for sh in filled)
+    assert not any(" / " in str(sh.get("действие") or "") for sh in filled)
+
+
+def test_catalog_fill_rewrites_slash_stub_into_full_action() -> None:
+    """Каталог больше не пишет «понял / испугался / решил» в действие."""
+    from app.services.shot_templates import (
+        fill_kadry_from_catalog,
+        is_stub_shot_action,
+    )
+
+    clear_shot_templates_cache()
+    filled = fill_kadry_from_catalog(
+        [
+            {
+                "сцена": 1,
+                "шаблон": "T2",
+                "действие": "понял / испугался / решил",
+                "закадр": "две крестьянские жалобы",
+            }
+        ],
+        "1. приказная палата — Савелий и Ермолай передают две жалобы\n"
+        "(две крестьянские жалобы)\n",
+        cell_number=1,
+    )
+    assert filled
+    for sh in filled:
+        act = str(sh.get("действие") or "")
+        assert "понял / испугался" not in act
+        assert not is_stub_shot_action(act)
+        assert "приказная палата" in act.casefold() or "переда" in act.casefold()
 
 
 def test_t8_does_not_steal_years_in_same_place() -> None:

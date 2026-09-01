@@ -298,9 +298,9 @@ def split_text_into_parts(text: str, n: int) -> list[str]:
     if not words:
         return [""] * n
     if len(words) < n:
-        # Слов меньше кадров — по слову на кадр, хвост пустой: сумма = текст.
-        parts = list(words) + [""] * (n - len(words))
-        return parts[:n]
+        # Слов меньше кадров — весь текст на первом, хвост пустой.
+        # Не по слову на кадр («люди,» / «судов»).
+        return [" ".join(words)] + [""] * (n - 1)
 
     units = _sentence_units(" ".join(words))
     if len(units) < n:

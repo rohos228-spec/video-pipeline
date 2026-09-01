@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -343,6 +344,76 @@ def catalog_shot_rows(tid: str, *, same_place: bool = False) -> list[dict[str, A
     return rows
 
 
+_STUB_ACTION_RE = re.compile(
+    r"\s/\s|"
+    r"руки\s*\+|"
+    r"\{|"
+    r"лицо:\s*\(если|"
+    r"крупно:\s*обложка|"
+    r"понял\s*/\s*испугался|"
+    r"тянет\s*/\s*открывает|"
+    r"^реакция$|"
+    r"^вошёл\s*/\s*стоит$|"
+    r"^идёт\s*/\s*едет$|"
+    r"^смотрит$|"
+    r"^вышел$|"
+    r"^пришёл$|"
+    r"^лицо после$|"
+    r"^сам удар:",
+    re.IGNORECASE,
+)
+SHOT_ACTION_MIN_CHARS = 48
+
+
+def _visible_len(text: str) -> int:
+    return len(
+        "".join(c for c in (text or "") if unicodedata.category(c) != "Mn")
+    )
+
+
+def is_stub_shot_action(text: str) -> bool:
+    """Каталожный слоган / слишком короткое «действие», не описание кадра."""
+    t = " ".join((text or "").split())
+    if not t:
+        return True
+    if _STUB_ACTION_RE.search(t):
+        return True
+    return _visible_len(t) < SHOT_ACTION_MIN_CHARS
+
+
+def compose_shot_action(
+    *,
+    plan: str,
+    place: str,
+    scene_action: str,
+) -> str:
+    """Полное действие кадра: место + поступок сцены + что видно на этом плане."""
+    place_s = " ".join((place or "").split()) or "место сцены"
+    act = " ".join((scene_action or "").split()) or "действие сцены"
+    plan_u = (plan or "").upper()
+    if "ДЕТАЛЬ" in plan_u:
+        extra = (
+            "Деталь: крупно руки или предмет — фактура, надпись, печать, "
+            "то, что меняет смысл, без лица целиком."
+        )
+    elif "КРУПН" in plan_u:
+        extra = (
+            "Крупный план лица: эмоция читается без слов "
+            "(страх, злость, решимость, презрение), взгляд, рот, к кому обращён."
+        )
+    elif "СРЕДН" in plan_u:
+        extra = (
+            "Средний план по пояс: жест рук, поза, к кому стоит корпус, "
+            "один видимый поступок с началом и концом."
+        )
+    else:
+        extra = (
+            "Общий план: видно всё помещение, кто в кадре, одежда, "
+            "расстояние между людьми и куда направлен взгляд."
+        )
+    return f"{place_s}. {act}. {extra}"
+
+
 def _fill_slot_text(text: str, *, place: str, action: str) -> str:
     raw = str(text or "")
     raw = raw.replace("{место}", place).replace("{новое_место}", place)
@@ -350,6 +421,19 @@ def _fill_slot_text(text: str, *, place: str, action: str) -> str:
     raw = raw.replace("{откуда}", place).replace("{куда}", place).replace("{путь}", place)
     raw = re.sub(r"\{[^}]+\}", "", raw)
     return " ".join(raw.split())
+
+
+def _ensure_full_shot_action(
+    shot: dict[str, Any], *, place: str, scene_action: str
+) -> None:
+    raw = str(shot.get("действие") or shot.get("action") or "")
+    if not is_stub_shot_action(raw):
+        return
+    shot["действие"] = compose_shot_action(
+        plan=str(shot.get("план") or shot.get("plan") or ""),
+        place=str(shot.get("место") or shot.get("place") or place),
+        scene_action=scene_action or raw,
+    )
 
 
 def fill_kadry_from_catalog(
@@ -400,6 +484,8 @@ def fill_kadry_from_catalog(
         rows = catalog_shot_rows(tid, same_place=same)
         if not rows:
             if existing:
+                for sh in existing:
+                    _ensure_full_shot_action(sh, place=place, scene_action=act)
                 out.extend(existing)
             continue
         required = sum(1 for r in rows if r.get("required") == 1)
@@ -407,16 +493,14 @@ def fill_kadry_from_catalog(
             for sh in existing:
                 sh.setdefault("шаблон", tid)
                 sh.setdefault("сцена", n)
+                _ensure_full_shot_action(sh, place=place, scene_action=act)
                 out.append(sh)
             continue
         seed = existing[0] if existing else {}
         master_id = f"{cell_number}-S{n}-K1"
         for i, row in enumerate(rows):
             sid = f"{cell_number}-S{n}-K{i + 1}"
-            action_text = _fill_slot_text(
-                str(row.get("action") or ""), place=place, action=act
-            ) or act
-            plan = str(row.get("plan") or "").split("/")[0].strip()
+            plan_name = str(row.get("plan") or "").split("/")[0].strip()
             angle = str(row.get("angle") or "").split("/")[0].strip()
             shot = {
                 "id": sid,
@@ -424,16 +508,19 @@ def fill_kadry_from_catalog(
                 "порядок": i + 1,
                 "сцена": n,
                 "шаблон": tid,
-                "план": plan,
+                "план": plan_name,
                 "ракурс": angle if angle != "—" else "",
                 "место": place,
-                "действие": action_text,
+                "действие": compose_shot_action(
+                    plan=plan_name, place=place, scene_action=act
+                ),
                 "закадр": vo if i == 0 else "",
             }
             if i == 0 and seed.get("закадр"):
                 shot["закадр"] = str(seed.get("закадр") or "")
             if i == 0 and seed.get("действие"):
-                shot["действие"] = str(seed.get("действие") or action_text)
+                shot["действие"] = str(seed.get("действие") or shot["действие"])
+            _ensure_full_shot_action(shot, place=place, scene_action=act)
             out.append(shot)
     return out or [dict(s) for s in incoming]
 
@@ -604,7 +691,14 @@ def format_shot_templates_catalog(*, max_chars: int = 24000) -> str:
         if row.get("example"):
             lines.append(f"  эталон: {row.get('example')}")
     lines.append("")
-    lines.append("## SHOTS (строки кадров: подставь слоты, структуру не выдумывай)")
+    lines.append("## SHOTS (строки кадров: роль/план, структуру не выдумывай)")
+    lines.append(
+        "action в таблице — РОЛЬ кадра, не готовый текст. "
+        "В JSON поле «действие» = полное описание: помещение, кто в кадре, "
+        "одежда, эмоция если нужна, видимый поступок. "
+        "Копировать «понял / испугался / решил», «тянет / открывает / берёт», "
+        "«руки +», «лицо: (если есть в тексте)» — брак."
+    )
     lines.append(
         "template_id|shot_id|n|plan|angle|place|who|action|parent|role|required"
     )

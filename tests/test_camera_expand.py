@@ -74,7 +74,7 @@ def test_split_text_into_parts_sum_equals_source():
         assert " ".join(parts).split() == text.split()
     # Слов меньше, чем кадров: хвост пустой, сумма сохраняется.
     parts = split_text_into_parts("только два", 4)
-    assert parts == ["только", "два", "", ""]
+    assert parts == ["только два", "", "", ""]
     assert " ".join(parts).split() == ["только", "два"]
 
 
@@ -100,7 +100,7 @@ def test_split_text_into_parts_sum_equals_source():
         assert " ".join(parts).split() == text.split()
     # Слов меньше, чем кадров: хвост пустой, сумма сохраняется.
     parts = split_text_into_parts("только два", 4)
-    assert parts == ["только", "два", "", ""]
+    assert parts == ["только два", "", "", ""]
     assert " ".join(parts).split() == ["только", "два"]
 
 
