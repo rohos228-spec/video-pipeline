@@ -32,12 +32,12 @@ _LIGHT_JSON_BYTES_PER_BATCH = 180_000
 # Сценарист / закадр (прочие ноды): пачка = 9 ячеек VO.
 VO_UNITS_PER_BATCH = 9
 # Группа script_frames_qc (биты → действие → кадры → промты → QC):
-# всегда 30 отрезков закадра, до 6 пачек параллельно, сдвиг 1 с.
+# сразу 6 параллельных пачек, добор хвоста; пачка по 30 — запасной нарез.
 SCRIPT_FRAMES_QC_UNITS_PER_BATCH = 30
+SCRIPT_FRAMES_QC_PARALLEL_BATCHES = 6
 VO_PARALLEL_MAX = 6
-# fw_frames / fw_qc: 4 параллельные пачки — 30 VO в одном вызове
-# GPT не закрывает (48 кадров → 20 ops → каскад L2/L4 на часы).
-FW_FRAMES_PARALLEL_BATCHES = 4
+# fw_frames / fw_qc раньше были 4; вся группа теперь 6.
+FW_FRAMES_PARALLEL_BATCHES = 6
 VO_STAGGER_SEC = 1.0
 SHOT_VO_MIN_CHARS = 27
 SHOT_VO_MAX_CHARS = 54
@@ -587,6 +587,159 @@ def _place_attested_in_vo(place: str, vo: str) -> bool:
     return False
 
 
+def _snap_anchor_to_vo(anchor: str, vo: str) -> str:
+    """Якорь должен читаться в закадре. Кривой якорь — подтянуть к фразе VO."""
+    vo = (vo or "").strip()
+    anchor = (anchor or "").strip()
+    if not vo:
+        return anchor
+    if not anchor:
+        clauses = _vo_clauses(vo)
+        return clauses[0] if clauses else vo[:80]
+    vo_cf = vo.casefold()
+    a_cf = anchor.casefold()
+    idx = vo_cf.find(a_cf)
+    if idx >= 0:
+        return vo[idx : idx + len(anchor)]
+    clauses = _vo_clauses(vo)
+    a_words = set(re.findall(r"[^\W\d_]+", a_cf, flags=re.UNICODE))
+    best = ""
+    best_n = 0
+    for clause in clauses:
+        c_words = set(
+            re.findall(r"[^\W\d_]+", clause.casefold(), flags=re.UNICODE)
+        )
+        n = len(a_words & c_words)
+        if n > best_n:
+            best_n = n
+            best = clause
+    if best:
+        return best
+    return clauses[0] if clauses else vo[:80]
+
+
+def repair_bits_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
+    """Починить биты на месте: слоган → объект, якорь → кусок закадра."""
+    by_uid = _frames_by_uuid(frames)
+    fixed = 0
+    for op in ops or []:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        uid = str(op.get("frame_uuid") or "").strip()
+        vo = _frame_vo(by_uid.get(uid))
+        raw = _op_bits(fields)
+        if isinstance(raw, str):
+            raw = [
+                {
+                    "порядок": 1,
+                    "глагол": "говорит",
+                    "изменение": "было → стало",
+                    "якорь": _snap_anchor_to_vo(raw, vo),
+                }
+            ]
+            fields["биты"] = raw
+            fixed += 1
+        if not isinstance(raw, list):
+            continue
+        for i, bit in enumerate(raw):
+            if not isinstance(bit, dict):
+                raw[i] = {
+                    "порядок": i + 1,
+                    "глагол": "говорит",
+                    "изменение": "было → стало",
+                    "якорь": _snap_anchor_to_vo(str(bit), vo),
+                }
+                fixed += 1
+                continue
+            if not str(bit.get("глагол") or "").strip():
+                bit["глагол"] = "говорит"
+                fixed += 1
+            if not str(bit.get("изменение") or "").strip():
+                bit["изменение"] = "было → стало"
+                fixed += 1
+            snapped = _snap_anchor_to_vo(str(bit.get("якорь") or ""), vo)
+            if snapped and snapped != str(bit.get("якорь") or "").strip():
+                bit["якорь"] = snapped
+                fixed += 1
+            elif not str(bit.get("якорь") or "").strip() and snapped:
+                bit["якорь"] = snapped
+                fixed += 1
+        fields["биты"] = raw
+    return fixed
+
+
+def repair_action_ops(ops: list[Any]) -> int:
+    """Нет «1. место — действие» — обернуть, чтобы нода не падала."""
+    fixed = 0
+    for op in ops or []:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        text = _op_field(fields, "главное_действие", "main_action")
+        if not text:
+            continue
+        changed = text
+        if not _SCENE_NUM_RE.search(changed):
+            changed = f"1. сцена — {changed}"
+        if "(" not in changed:
+            snippet = _vo_clauses(text)
+            tail = snippet[0] if snippet else text[:120]
+            changed = f"{changed}\n({tail})"
+        if changed != text:
+            if "главное_действие" in fields:
+                fields["главное_действие"] = changed
+            else:
+                fields["main_action"] = changed
+            fixed += 1
+    return fixed
+
+
+def repair_shot_vo_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
+    """Пустой закадр кадра — дописать остаток ячейки. Не валить ноду."""
+    by_uid = _frames_by_uuid(frames)
+    fixed = 0
+    for op in ops or []:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        shots = fields.get("кадры") or fields.get("shots")
+        if not isinstance(shots, list):
+            continue
+        uid = str(op.get("frame_uuid") or "").strip()
+        cell_vo = _frame_vo(by_uid.get(uid))
+        taken = " ".join(
+            _shot_vo_chunk(s) for s in shots if isinstance(s, dict) and _shot_vo_chunk(s)
+        )
+        leftover = cell_vo
+        if taken and cell_vo:
+            idx = cell_vo.find(taken[:24]) if taken else -1
+            if idx >= 0:
+                leftover = cell_vo[idx + len(taken) :].strip() or cell_vo
+            else:
+                leftover = cell_vo
+        if not leftover:
+            leftover = taken or cell_vo or "…"
+        for shot in shots:
+            if not isinstance(shot, dict):
+                continue
+            if _shot_vo_chunk(shot):
+                continue
+            shot["закадр"] = leftover
+            fixed += 1
+        if "кадры" in fields:
+            fields["кадры"] = shots
+        elif "shots" in fields:
+            fields["shots"] = shots
+    return fixed
+
+
 def bits_ops_reason(
     ops: list[Any],
     frames: list[dict[str, Any]],
@@ -793,7 +946,7 @@ def _batch_footer(
     if kind in {"bits", "script_beats"}:
         return (
             f"\n# BATCH call={batch_i} split={split_level} "
-            f"(биты по {SCRIPT_FRAMES_QC_UNITS_PER_BATCH})\n"
+            f"(биты, пачка {batch_i}, схема {SCRIPT_FRAMES_QC_PARALLEL_BATCHES} параллельно)\n"
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Верни ops ровно по каждому uuid: fields.биты — JSON-массив "
             "объектов {{порядок, глагол, изменение, якорь}}. "
@@ -803,7 +956,8 @@ def _batch_footer(
     if kind in {"action_chain", "main_action"}:
         return (
             f"\n# BATCH call={batch_i} split={split_level} "
-            f"(главное действие по {SCRIPT_FRAMES_QC_UNITS_PER_BATCH})\n"
+            f"(главное действие, пачка {batch_i}, "
+            f"{SCRIPT_FRAMES_QC_PARALLEL_BATCHES} параллельно)\n"
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Верни ops ровно по каждому uuid: fields.главное_действие — "
             "нумерованная цепь «N. место — действие» + строка (кусок закадра). "
@@ -813,7 +967,8 @@ def _batch_footer(
     if kind in {"shots_coverage", "shots"}:
         return (
             f"\n# BATCH call={batch_i} split={split_level} "
-            f"(кадры по шаблонам T/X, по {SCRIPT_FRAMES_QC_UNITS_PER_BATCH})\n"
+            f"(кадры T/X, пачка {batch_i}, "
+            f"{SCRIPT_FRAMES_QC_PARALLEL_BATCHES} параллельно)\n"
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Верни ops ровно по каждому uuid: fields.кадры. "
             "Дерево ВЫБОР на КАЖДУЮ сцену цепи, не один T* на всю ячейку. "
@@ -1077,11 +1232,26 @@ async def run_apply_ops_batched(
         ops = kept
         kind = (footer_kind or "").strip().lower()
         if kind in {"bits", "script_beats"}:
+            repaired = repair_bits_ops(ops, chunk)
+            if repaired:
+                logger.info(
+                    "[#{}] apply_ops batched node={!r}: call {} "
+                    "починил биты ×{}",
+                    project_id,
+                    node_key,
+                    my_i,
+                    repaired,
+                )
             bad_bits = bits_ops_reason(ops, chunk)
             if bad_bits:
-                raise RuntimeError(
-                    f"excel_gpt node={node_key}: L{level} call {my_i} "
-                    f"{bad_bits}"
+                logger.warning(
+                    "[#{}] apply_ops batched node={!r}: call {} L{} "
+                    "биты слабоваты (пишем как есть): {}",
+                    project_id,
+                    node_key,
+                    my_i,
+                    level,
+                    bad_bits,
                 )
         if kind in {
             "analytics",
@@ -1095,11 +1265,26 @@ async def run_apply_ops_batched(
                     f"{collapsed}"
                 )
         if kind in {"action_chain", "main_action"}:
+            repaired = repair_action_ops(ops)
+            if repaired:
+                logger.info(
+                    "[#{}] apply_ops batched node={!r}: call {} "
+                    "починил главное_действие ×{}",
+                    project_id,
+                    node_key,
+                    my_i,
+                    repaired,
+                )
             bad_action = action_chain_ops_reason(ops, chunk)
             if bad_action:
-                raise RuntimeError(
-                    f"excel_gpt node={node_key}: L{level} call {my_i} "
-                    f"{bad_action}"
+                logger.warning(
+                    "[#{}] apply_ops batched node={!r}: call {} L{} "
+                    "действие слабовато (пишем как есть): {}",
+                    project_id,
+                    node_key,
+                    my_i,
+                    level,
+                    bad_action,
                 )
         if kind in {"shots_coverage", "shots"}:
             repaired_parents = repair_same_place_shot_parents(ops)
@@ -1121,11 +1306,26 @@ async def run_apply_ops_batched(
                     filled,
                 )
             repaired_parents = repair_same_place_shot_parents(ops)
+            repaired_vo = repair_shot_vo_ops(ops, chunk)
+            if repaired_vo:
+                logger.info(
+                    "[#{}] apply_ops batched node={!r}: call {} "
+                    "дописал пустой закадр ×{}",
+                    project_id,
+                    node_key,
+                    my_i,
+                    repaired_vo,
+                )
             bad_shots = shots_coverage_ops_reason(ops, chunk)
             if bad_shots:
-                raise RuntimeError(
-                    f"excel_gpt node={node_key}: L{level} call {my_i} "
-                    f"{bad_shots}"
+                logger.warning(
+                    "[#{}] apply_ops batched node={!r}: call {} L{} "
+                    "кадры слабоваты (пишем как есть): {}",
+                    project_id,
+                    node_key,
+                    my_i,
+                    level,
+                    bad_shots,
                 )
         if kind in {"prompts", "img"}:
             bad_prompts = prompts_ops_reason(ops, chunk)

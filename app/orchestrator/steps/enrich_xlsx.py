@@ -406,8 +406,7 @@ async def _run_four_node_markup_pass(
     import json as _json
 
     from app.services.apply_ops_batches import (
-        SCRIPT_FRAMES_QC_UNITS_PER_BATCH,
-        VO_PARALLEL_MAX,
+        SCRIPT_FRAMES_QC_PARALLEL_BATCHES,
         VO_STAGGER_SEC,
         run_apply_ops_batched,
     )
@@ -481,10 +480,10 @@ async def _run_four_node_markup_pass(
         dense=False,
         apply_fn=_apply_batch,
         force_full=True,
-        chunk_size=SCRIPT_FRAMES_QC_UNITS_PER_BATCH,
-        parallel_max=VO_PARALLEL_MAX,
+        target_batches=SCRIPT_FRAMES_QC_PARALLEL_BATCHES,
+        parallel_max=SCRIPT_FRAMES_QC_PARALLEL_BATCHES,
         stagger_sec=VO_STAGGER_SEC,
-        chunk_by_vo_unit=True,
+        chunk_by_vo_unit=False,
         footer_kind=footer_kind,
         on_progress=on_progress,
         allow_empty_ops=False,
@@ -1926,8 +1925,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         ):
             from app.services.apply_ops_batches import (
                 CAMERA_MENU_UNITS_PER_BATCH,
-                FW_FRAMES_PARALLEL_BATCHES,
-                SCRIPT_FRAMES_QC_UNITS_PER_BATCH,
+                SCRIPT_FRAMES_QC_PARALLEL_BATCHES,
                 SKIP_CAMERA_MENU,
                 SKIP_PROMPTS_AND_ACTION,
                 VO_PARALLEL_MAX,
@@ -2047,22 +2045,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 )
                 fw_frames = frame_prompts and nk.endswith("_fw_frames")
                 fw_qc = qc_prompts and nk.endswith("_fw_qc")
-                four_parallel = (fw_frames or fw_qc) and not fw_camera_menu_only
+                group_parallel = bool(script_frames_qc) and not fw_camera_menu_only
                 if fw_camera_menu_only:
                     batch_label = (
                         f"меню съёмки по {CAMERA_MENU_UNITS_PER_BATCH}, "
                         f"параллельно {VO_PARALLEL_MAX}, "
                         f"сдвиг {VO_STAGGER_SEC:g}с"
                     )
-                elif four_parallel:
+                elif group_parallel:
                     batch_label = (
-                        f"{FW_FRAMES_PARALLEL_BATCHES} параллельных пачек "
-                        f"(VO-ячейки целиком), сдвиг {VO_STAGGER_SEC:g}с"
-                    )
-                elif script_frames_qc:
-                    batch_label = (
-                        f"script_frames_qc по {SCRIPT_FRAMES_QC_UNITS_PER_BATCH} "
-                        f"отрезков закадра, параллельно {VO_PARALLEL_MAX}, "
+                        f"script_frames_qc {SCRIPT_FRAMES_QC_PARALLEL_BATCHES} "
+                        f"параллельных пачек + добор, "
                         f"сдвиг {VO_STAGGER_SEC:g}с"
                     )
                 elif write_prompts:
@@ -2109,36 +2102,30 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         )
                     ),
                     target_batches=(
-                        FW_FRAMES_PARALLEL_BATCHES if four_parallel else None
+                        SCRIPT_FRAMES_QC_PARALLEL_BATCHES
+                        if group_parallel
+                        else None
                     ),
                     chunk_size=(
                         CAMERA_MENU_UNITS_PER_BATCH
                         if fw_camera_menu_only
-                        else (
-                            None
-                            if four_parallel
-                            else (
-                                SCRIPT_FRAMES_QC_UNITS_PER_BATCH
-                                if script_frames_qc
-                                else None
-                            )
-                        )
+                        else None
                     ),
                     parallel_max=(
-                        FW_FRAMES_PARALLEL_BATCHES
-                        if four_parallel
+                        SCRIPT_FRAMES_QC_PARALLEL_BATCHES
+                        if group_parallel
                         else (
                             VO_PARALLEL_MAX
-                            if fw_camera_menu_only or script_frames_qc
+                            if fw_camera_menu_only
                             else None
                         )
                     ),
                     stagger_sec=(
                         VO_STAGGER_SEC
-                        if fw_camera_menu_only or script_frames_qc or four_parallel
+                        if fw_camera_menu_only or group_parallel
                         else None
                     ),
-                    chunk_by_vo_unit=bool(script_frames_qc) and not four_parallel,
+                    chunk_by_vo_unit=False,
                     footer_kind=(
                         "camera_menu"
                         if fw_camera_menu_only

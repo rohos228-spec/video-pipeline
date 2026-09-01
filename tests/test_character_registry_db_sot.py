@@ -50,9 +50,9 @@ def test_script_frames_qc_group_batches_of_30() -> None:
         _is_script_frames_qc_group_node,
         _script_frames_qc_footer_kind,
     )
-    from app.services.apply_ops_batches import SCRIPT_FRAMES_QC_UNITS_PER_BATCH
+    from app.services.apply_ops_batches import SCRIPT_FRAMES_QC_PARALLEL_BATCHES
 
-    assert SCRIPT_FRAMES_QC_UNITS_PER_BATCH == 30
+    assert SCRIPT_FRAMES_QC_PARALLEL_BATCHES == 6
     for key, kind in (
         ("n_excel_gpt_fw_script", "bits"),
         ("n_excel_gpt_fw_action", "action_chain"),

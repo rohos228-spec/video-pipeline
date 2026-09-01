@@ -1672,3 +1672,103 @@ def test_split_into_n_packs_keeps_vo_units() -> None:
             if cs.get("role") == "shot":
                 assert cs.get("parent_uuid") in parents
 
+
+@pytest.mark.asyncio
+async def test_shots_short_vo_writes_without_failing_node(tmp_path, monkeypatch) -> None:
+    """Короткий закадр — починить и записать, не валить ноду."""
+    import json
+
+    from app.services.gpt_operator_client import OperatorApiResult
+
+    async def fake_run(**kwargs):
+        path = kwargs["input_paths"][0]
+        frames = json.loads(path.read_text(encoding="utf-8"))["frames"]
+        return OperatorApiResult(
+            reply_text='{"ops":[]}',
+            output_paths=[path],
+            apply_ops={
+                "ops": [
+                    {
+                        "frame_uuid": frames[0]["uuid"],
+                        "fields": {
+                            "кадры": [
+                                {
+                                    "id": "1-S2-K1",
+                                    "parent_id": None,
+                                    "план": "СРЕДНИЙ",
+                                    "место": "двор",
+                                    "действие": "стоит во дворе",
+                                    "закадр": frames[0]["voiceover_text"],
+                                },
+                                {
+                                    "id": "1-S2-K2",
+                                    "parent_id": "1-S2-K1",
+                                    "план": "ДЕТАЛЬ",
+                                    "место": "двор",
+                                    "действие": "смотрит на землю",
+                                    "закадр": "судов",
+                                },
+                            ]
+                        },
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.services.apply_ops_batches.run_operator_api", fake_run
+    )
+    frames = [
+        {
+            "uuid": "a" * 24,
+            "voiceover_text": (
+                "почему крепостные так долго оставались без защиты, "
+                "несмотря на существование чиновников, судов и власти?"
+            ),
+        }
+    ]
+    ctx = tmp_path / "db_frames.json"
+    ctx.write_text("{}", encoding="utf-8")
+    res = await run_apply_ops_batched(
+        project_dir=tmp_path,
+        node_key="n_excel_gpt_fw_shots",
+        role="excel_gpt",
+        output_mode="project_file",
+        prompt="p",
+        accompanying="",
+        db_ctx={"frames": frames},
+        ctx_path=ctx,
+        project_id=1,
+        dense=True,
+        footer_kind="shots_coverage",
+        target_batches=6,
+        parallel_max=6,
+    )
+    assert res.apply_ops["ops"]
+    shots = res.apply_ops["ops"][0]["fields"]["кадры"]
+    assert all(str(s.get("закадр") or "").strip() for s in shots)
+
+
+def test_repair_bits_snaps_anchor_to_vo() -> None:
+    from app.services.apply_ops_batches import repair_bits_ops
+
+    vo = "Ткач родился в Киселёвске и пошёл в милицию."
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "биты": [
+                    {
+                        "порядок": 1,
+                        "глагол": "родился",
+                        "изменение": "нет → есть",
+                        "якорь": "мальчик появился в городе",
+                    }
+                ]
+            },
+        }
+    ]
+    frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
+    assert repair_bits_ops(ops, frames) >= 1
+    assert ops[0]["fields"]["биты"][0]["якорь"] in vo
+
