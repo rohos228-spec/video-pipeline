@@ -13,23 +13,27 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Check,
   ChevronDown,
+  Clock,
   Coins,
   Copy,
+  CornerDownLeft,
   Dices,
   Download,
   ExternalLink,
+  FileText,
   History,
   ImageIcon,
+  Layers,
   Link2,
   Loader2,
   Maximize2,
   Music,
   Paperclip,
+  Play,
   Search,
-  Sparkles,
+  Send,
   Trash2,
   Video,
-  Wand2,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -88,6 +92,13 @@ type HistoryItem = {
   model?: string | null;
   elapsed_sec?: number | null;
   elapsed_label?: string | null;
+  created_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  mtime?: number | null;
+  params?: Record<string, unknown> | null;
+  reference_images?: string[] | null;
+  first_frame_url?: string | null;
 };
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -321,10 +332,18 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     if (!open || !settingsQ.data || settingsHydrated) return;
     const s = settingsQ.data;
     const mt = (s.media_type as OutseeMediaType) || "image";
-    const rawImg = String(s.image_slug || "kie:nano-banana-2");
-    setImageSlug(rawImg.startsWith("kie:") ? rawImg : `kie:${rawImg}`);
-    const rawVid = String(s.video_slug || "kie:veo-3-1");
-    setVideoSlug(rawVid.startsWith("kie:") ? rawVid : `kie:${rawVid}`);
+    const rawImg = String(s.image_slug || "gpt-image-2").replace("kie:", "");
+    if (rawImg === "gpt-image-2" || rawImg === "nano-banana-2") {
+      setImageSlug(rawImg);
+    } else {
+      setImageSlug(rawImg.startsWith("kie:") ? rawImg : `kie:${rawImg}`);
+    }
+    const rawVid = String(s.video_slug || "veo-3-1-lite").replace("kie:", "");
+    if (rawVid === "veo-3-1-lite" || rawVid === "veo-3-1") {
+      setVideoSlug("veo-3-1-lite");
+    } else {
+      setVideoSlug(rawVid.startsWith("kie:") ? rawVid : `kie:${rawVid}`);
+    }
     const rawAud = String(s.audio_slug || "kie:suno-music");
     setAudioSlug(rawAud.startsWith("kie:") ? rawAud : rawAud === "suno-5-5" ? "kie:suno-music" : `kie:${rawAud}`);
     setAspect(String(s.aspect || "16:9"));
@@ -368,22 +387,82 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     };
   }, [modelOpen]);
 
+  const [nowTs, setNowTs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const getLiveElapsed = (
+    item?:
+      | HistoryItem
+      | {
+          id?: string;
+          job_id?: string | null;
+          created_at?: string | null;
+          started_at?: string | null;
+          elapsed_sec?: number | null;
+          elapsed_label?: string | null;
+          status?: string | null;
+        }
+      | null,
+  ) => {
+    if (!item) return "0 мин 00 сек";
+    const isPending = item.status === "queued" || item.status === "processing";
+    if (!isPending) {
+      if (item.elapsed_label) return item.elapsed_label;
+      if (item.elapsed_sec != null) return formatElapsedMinSec(item.elapsed_sec);
+    }
+    // Проверяем соответствующую задачу в активной очереди
+    const activeJob =
+      runningJobs.find(
+        (j) =>
+          (item.id && j.history_id === item.id) ||
+          (item.job_id && j.job_id === item.job_id),
+      ) ||
+      waitingJobs.find(
+        (j) =>
+          (item.id && j.history_id === item.id) ||
+          (item.job_id && j.job_id === item.job_id),
+      );
+    const iso =
+      activeJob?.created_at ||
+      activeJob?.started_at ||
+      item.created_at ||
+      item.started_at;
+    if (!iso) {
+      if (item.elapsed_sec != null && item.elapsed_sec > 0) {
+        return formatElapsedMinSec(item.elapsed_sec);
+      }
+      return "0 мин 01 сек";
+    }
+    try {
+      const t0 = new Date(iso).getTime();
+      const diffSec = Math.max(1, Math.floor((nowTs - t0) / 1000));
+      return formatElapsedMinSec(diffSec);
+    } catch {
+      return item.elapsed_label || (item.elapsed_sec != null ? formatElapsedMinSec(item.elapsed_sec) : "0 мин 01 сек");
+    }
+  };
+
   const activeSlug =
     mediaType === "image" ? imageSlug : mediaType === "video" ? videoSlug : audioSlug;
   const imageModel = getImageModel(imageSlug);
   const videoModel = getVideoModel(videoSlug);
   const audioModel = getAudioModel(audioSlug);
   const dockChips = dockChipsForModel(activeSlug, mediaType);
-  const maxReferences = useMemo(() => {
-    if (mediaType !== "image") return 0;
-    const slug = activeSlug.toLowerCase();
-    if (slug.includes("z-image")) return 0;
-    return 8;
-  }, [mediaType, activeSlug]);
 
   // ---- KIE: модель выбрана из общего пикера (slug "kie:<id>") ----
   const kieModels = useMemo(
-    () => kieCatalogQ.data?.models ?? [],
+    () =>
+      (kieCatalogQ.data?.models ?? []).filter((m) => {
+        const id = m.id.toLowerCase();
+        // GPT Image 2, Nano Banana 2, Veo 3.1 Lite — строго Outsee
+        if (id.includes("veo") || id.includes("gpt-image") || id.includes("banana")) {
+          return false;
+        }
+        return true;
+      }),
     [kieCatalogQ.data],
   );
   const kieModel = useMemo(() => {
@@ -392,14 +471,39 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   }, [activeSlug, kieModels]);
   const kieActive = kieModel != null;
   const kieTextField = kieModel ? kieMainTextField(kieModel) : null;
+
+  const maxReferences = useMemo(() => {
+    if (mediaType !== "image") return 0;
+    const slug = activeSlug.toLowerCase();
+    if (slug.includes("z-image")) return 0;
+    if (kieActive && kieModel) {
+      const refField = kieModel.fields.find(
+        (f) =>
+          f.kind === "images" ||
+          ["image_urls", "image_input", "imageUrls", "images", "image_url", "imageUrl"].includes(f.name),
+      );
+      if (refField) return refField.max_items || (refField.kind === "images" ? 8 : 1);
+      return 0;
+    }
+    return 8;
+  }, [mediaType, activeSlug, kieActive, kieModel]);
+
   const kiePrice = useMemo(() => {
     if (!kieModel || !kieCatalogQ.data) return null;
     const vals = { ...kieValues };
     if (kieTextField) vals[kieTextField] = prompt;
     return estimateKie(kieModel, vals, kieCatalogQ.data.credit_usd);
   }, [kieModel, kieValues, prompt, kieTextField, kieCatalogQ.data]);
+
   useEffect(() => {
-    setKieValues({});
+    // Сохраняем совместимые поля при смене модели KIE
+    setKieValues((prev) => {
+      const next: Record<string, unknown> = {};
+      if (prev.aspect_ratio) next.aspect_ratio = prev.aspect_ratio;
+      if (prev.resolution) next.resolution = prev.resolution;
+      if (prev.quality) next.quality = prev.quality;
+      return next;
+    });
   }, [activeSlug]);
 
   // Трим каталога Create: outsee — только GPT Image 2 / Nano Banana 2 /
@@ -592,16 +696,18 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
       const d = m.defaults;
       const aspects = chipOptions(slug, "aspect");
       const resolutions = chipOptions(slug, "resolution");
-      if (d.aspectRatio) setAspect(clampToOptions(d.aspectRatio, aspects, "16:9"));
-      if (d.imageResolution && resolutions.length) {
-        setResolution(clampToOptions(d.imageResolution, resolutions, "2K"));
+      if (aspects.length) {
+        setAspect((current) => clampToOptions(current, aspects, d.aspectRatio || "16:9"));
       }
-      if (m.chips.includes("detail")) setDetail(d.detailLevel || "medium");
+      if (resolutions.length) {
+        setResolution((current) => clampToOptions(current, resolutions, d.imageResolution || "2K"));
+      }
+      if (m.chips.includes("detail")) {
+        setDetail((current) => current || d.detailLevel || "medium");
+      }
       return;
     }
     if (kind === "audio") {
-      const m = getAudioModel(slug);
-      setInstrumental(Boolean(m.defaults.instrumental));
       return;
     }
     const m = getVideoModel(slug);
@@ -609,22 +715,19 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     const aspects = chipOptions(slug, "aspect");
     const resolutions = chipOptions(slug, "resolution");
     const durations = chipOptions(slug, "duration");
-    if (d.aspectRatio && aspects.length) {
-      setAspect(clampToOptions(d.aspectRatio, aspects, "16:9"));
+    if (aspects.length) {
+      setAspect((current) => clampToOptions(current, aspects, d.aspectRatio || "16:9"));
     }
-    if (d.resolution && resolutions.length) {
-      setVideoResolution(clampToOptions(d.resolution, resolutions, resolutions[0]));
+    if (resolutions.length) {
+      setVideoResolution((current) => clampToOptions(current, resolutions, d.resolution || resolutions[0]));
     }
-    if (d.duration != null && durations.length) {
-      setDuration(clampToOptions(String(d.duration), durations, durations[0]));
+    if (durations.length) {
+      setDuration((current) => clampToOptions(current, durations, d.duration != null ? String(d.duration) : durations[0]));
     }
-    if (m.chips.includes("audio")) setGenerateAudio(Boolean(d.generateAudio));
-    if (m.chips.includes("quality")) setMotionQuality(d.motionQuality || "std");
-    // Кадры привязаны к модели — сбрасываем при смене
-    setFirstFrameDataUrl(null);
-    setFirstFrameName(null);
-    setLastFrameDataUrl(null);
-    setLastFrameName(null);
+    if (m.chips.includes("quality")) {
+      setMotionQuality((current) => current || d.motionQuality || "std");
+    }
+    // Сохраняем вложения и референсы пользователя при смене моделей!
   };
 
   const settingsPayload = (): Record<string, unknown> => ({
@@ -802,6 +905,32 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
             const negField = kieModel.fields.find((f) => f.name.toLowerCase().includes("neg"));
             if (negField) vals[negField.name] = negativePrompt.trim();
           }
+          // Автоматическая передача референсов и стартовых кадров в поля модели KIE
+          const refUrls =
+            referenceImages.length > 0
+              ? referenceImages.map((r) => r.url)
+              : firstFrameDataUrl
+                ? [firstFrameDataUrl]
+                : [];
+          if (refUrls.length > 0) {
+            const imageField = kieModel.fields.find(
+              (f) =>
+                f.kind === "images" ||
+                ["image_urls", "image_input", "imageUrls", "images", "image_url", "imageUrl"].includes(f.name),
+            );
+            if (imageField) {
+              if (
+                imageField.kind === "images" ||
+                imageField.name.endsWith("s") ||
+                imageField.name === "image_input" ||
+                (imageField.max_items && imageField.max_items > 1)
+              ) {
+                vals[imageField.name] = refUrls.slice(0, imageField.max_items || 8);
+              } else {
+                vals[imageField.name] = refUrls[0];
+              }
+            }
+          }
           const missing = kieModel.fields
             .filter((f) => f.required)
             .filter((f) => {
@@ -854,6 +983,8 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 first_frame_url: firstFrameDataUrl,
                 last_frame_url: lastFrameDataUrl,
                 project_id: projectId,
+                nonce,
+                batch_index: index,
               })
             : await api.outseeGenerate({
                 prompt: text,
@@ -861,6 +992,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 model: imageSlug,
                 aspect,
                 resolution,
+                detail_level: imageModel.chips.includes("detail") ? detail : undefined,
                 first_frame_url: referenceImages.length > 0 ? referenceImages[0].url : firstFrameDataUrl,
                 reference_images:
                   referenceImages.length > 0
@@ -869,6 +1001,8 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       ? [firstFrameDataUrl]
                       : undefined,
                 project_id: projectId,
+                nonce,
+                batch_index: index,
               });
         return { ...enqueued, provider: "outsee" as const };
       };
@@ -946,10 +1080,27 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   );
 
   const selected = useMemo(() => {
+    let item: HistoryItem | null = null;
     if (!historyItems.length) return null;
-    if (selectedId) return historyItems.find((h) => h.id === selectedId) ?? historyItems[0]!;
-    return historyItems[0]!;
-  }, [historyItems, selectedId]);
+    if (selectedId) {
+      item = historyItems.find((h) => h.id === selectedId) ?? historyItems[0] ?? null;
+    } else {
+      item = historyItems[0] ?? null;
+    }
+    if (!item) return null;
+    const activeJob =
+      runningJobs.find((j) => j.history_id === item?.id || (item?.job_id && j.job_id === item.job_id)) ||
+      waitingJobs.find((j) => j.history_id === item?.id || (item?.job_id && j.job_id === item.job_id));
+    if (activeJob) {
+      return {
+        ...item,
+        status: activeJob.status || item.status,
+        created_at: activeJob.created_at || item.created_at,
+        started_at: activeJob.started_at || item.started_at,
+      };
+    }
+    return item;
+  }, [historyItems, selectedId, runningJobs, waitingJobs]);
 
   if (!open) return null;
 
@@ -971,7 +1122,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
             <X className="h-4 w-4" />
           </button>
           <div className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4" style={{ color: OUTSEE_ACCENT }} />
+            <Layers className="h-4 w-4" style={{ color: OUTSEE_ACCENT }} />
             <div className="leading-tight">
               <div className="text-sm font-bold tracking-tight text-white/95">Генерация</div>
               <div className="text-[10px] uppercase tracking-[0.16em] text-white/40">
@@ -1045,8 +1196,13 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                         className="h-3.5 w-3.5 shrink-0 animate-spin text-[#22d3ee]"
                       />
                       <div className="min-w-0 flex-1">
-                        <div className="truncate font-mono text-[10px] font-semibold text-white/90">
-                          {j.model || j.media}
+                        <div className="flex items-center justify-between gap-1">
+                          <div className="truncate font-mono text-[10px] font-semibold text-white/90">
+                            {j.model || j.media}
+                          </div>
+                          <span className="shrink-0 font-mono text-[9px] font-semibold text-[#22d3ee]">
+                            {getLiveElapsed(j)}
+                          </span>
                         </div>
                         <div className="truncate text-[9px] text-white/50">
                           {j.prompt_preview || "генерация…"}
@@ -1078,8 +1234,13 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                         #{j.queue_position ?? "—"}
                       </span>
                       <div className="min-w-0 flex-1">
-                        <div className="truncate font-mono text-[10px] font-semibold text-white/80">
-                          {j.model || j.media}
+                        <div className="flex items-center justify-between gap-1">
+                          <div className="truncate font-mono text-[10px] font-semibold text-white/80">
+                            {j.model || j.media}
+                          </div>
+                          <span className="shrink-0 font-mono text-[9px] font-medium text-white/50">
+                            {getLiveElapsed(j)}
+                          </span>
                         </div>
                         <div className="truncate text-[9px] text-white/40">
                           {j.prompt_preview || "в очереди"}
@@ -1187,10 +1348,21 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                             <span className="text-[9px] text-white/25">{item.kind}</span>
                           )}
                           {pending && (
-                            <span className="text-[9px] font-semibold uppercase tracking-wider text-white/55">
-                              {pendingLabel}
-                            </span>
+                            <div className="flex flex-col items-center gap-0.5">
+                              <span className="text-[9px] font-semibold uppercase tracking-wider text-white/55">
+                                {pendingLabel}
+                              </span>
+                              <span className="font-mono text-[9px] font-bold text-[#22d3ee]">
+                                {getLiveElapsed(item)}
+                              </span>
+                            </div>
                           )}
+                        </div>
+                      )}
+                      {((item.reference_images && item.reference_images.length > 0) || item.first_frame_url) && !pending && (
+                        <div className="absolute top-1.5 left-1.5 z-20 flex items-center gap-0.5 rounded-md bg-black/75 px-1.5 py-0.5 text-[8px] font-bold text-[#22d3ee] backdrop-blur">
+                          <Paperclip className="h-2.5 w-2.5" />
+                          <span>{item.reference_images?.length || 1}</span>
                         </div>
                       )}
                       <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent px-2 py-1.5">
@@ -1199,7 +1371,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                           <div className="truncate text-[8px] text-white/45">{item.project_slug}</div>
                         )}
                       </div>
-                      {item.preview_url && !pending && (
+                      {!pending && (
                         <div className="absolute top-1.5 right-1.5 z-20 flex items-center gap-1 opacity-0 transition group-hover:opacity-100">
                           <button
                             type="button"
@@ -1212,22 +1384,24 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              downloadMediaFile(
-                                item.preview_url || item.raw_url || "",
-                                item.label || "generation",
-                                item.kind === "video" ? "mp4" : item.kind === "audio" ? "mp3" : "png",
-                                item.path,
-                              );
-                            }}
-                            className="flex h-6 w-6 items-center justify-center rounded-md bg-black/75 text-white/80 backdrop-blur transition hover:bg-[#22d3ee] hover:text-black shadow-md"
-                            title="Скачать файл"
-                          >
-                            <Download className="h-3.5 w-3.5" />
-                          </button>
+                          {(item.preview_url || item.raw_url) && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                downloadMediaFile(
+                                  item.preview_url || item.raw_url || "",
+                                  item.label || "generation",
+                                  item.kind === "video" ? "mp4" : item.kind === "audio" ? "mp3" : "png",
+                                  item.path,
+                                );
+                              }}
+                              className="flex h-6 w-6 items-center justify-center rounded-md bg-black/75 text-white/80 backdrop-blur transition hover:bg-[#22d3ee] hover:text-black shadow-md"
+                              title="Скачать файл"
+                            >
+                              <Download className="h-3.5 w-3.5" />
+                            </button>
+                          )}
                         </div>
                       )}
                     </button>
@@ -1258,7 +1432,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   <div>
                     Время генерации:{" "}
                     <span className="font-mono font-semibold text-[#22d3ee]">
-                      {selected.elapsed_label || formatElapsedMinSec(selected.elapsed_sec)}
+                      {getLiveElapsed(selected)}
                     </span>
                   </div>
                 ) : null}
@@ -1276,48 +1450,81 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
             {selected?.preview_url &&
             selected.status !== "queued" &&
             selected.status !== "processing" ? (
-              <div className="group relative flex max-h-[calc(100vh-320px)] max-w-full items-center justify-center">
-                {selected.kind === "video" ? (
-                  <video
-                    src={selected.preview_url}
-                    controls
-                    className="max-h-[calc(100vh-320px)] max-w-full rounded-2xl border border-white/15 bg-black/80 shadow-[0_20px_50px_rgba(0,0,0,0.8)]"
-                  />
-                ) : selected.kind === "audio" ? (
-                  <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-2xl border border-white/15 bg-[#121216]/90 p-8 backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
-                    <Music className="h-8 w-8 text-[#22d3ee]" />
-                    <div className="text-sm font-semibold text-white/85">{selected.label}</div>
-                    <audio src={selected.preview_url} controls className="w-full" />
+              <div className="flex flex-col items-center">
+                <div className="group relative flex max-h-[calc(100vh-360px)] max-w-full items-center justify-center">
+                  {selected.kind === "video" ? (
+                    <video
+                      src={selected.preview_url}
+                      controls
+                      className="max-h-[calc(100vh-360px)] max-w-full rounded-2xl border border-white/15 bg-black/80 shadow-[0_20px_50px_rgba(0,0,0,0.8)]"
+                    />
+                  ) : selected.kind === "audio" ? (
+                    <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-2xl border border-white/15 bg-[#121216]/90 p-8 backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
+                      <Music className="h-8 w-8 text-[#22d3ee]" />
+                      <div className="text-sm font-semibold text-white/85">{selected.label}</div>
+                      <audio src={selected.preview_url} controls className="w-full" />
+                    </div>
+                  ) : (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={selected.preview_url}
+                      alt=""
+                      onClick={() => setLightboxOpen(true)}
+                      className="max-h-[calc(100vh-360px)] max-w-full cursor-zoom-in rounded-2xl border border-white/15 bg-black/80 object-contain shadow-[0_20px_50px_rgba(0,0,0,0.8)] transition hover:brightness-105"
+                    />
+                  )}
+                  {selected.kind !== "audio" && (
+                    <button
+                      type="button"
+                      onClick={() => setLightboxOpen(true)}
+                      className="absolute top-3 right-3 z-30 flex items-center gap-1.5 rounded-xl border border-white/20 bg-black/70 px-3 py-1.5 text-[11px] font-medium text-white/90 opacity-0 backdrop-blur-md transition hover:scale-105 hover:border-[#22d3ee]/60 hover:bg-[#22d3ee]/20 hover:text-white group-hover:opacity-100 shadow-2xl"
+                      title="Инспектор промпта / Во весь экран"
+                    >
+                      <Maximize2 className="h-3.5 w-3.5" />
+                      <span>Инспектор</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Отображение использованных референсов (если были) */}
+                {((selected.reference_images && selected.reference_images.length > 0) || selected.first_frame_url) && (
+                  <div className="mt-2.5 flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-black/50 px-3 py-1.5 backdrop-blur-md shadow-md">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-white/50">
+                      Использованные референсы ({selected.reference_images?.length || 1}):
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      {(selected.reference_images && selected.reference_images.length > 0
+                        ? selected.reference_images
+                        : [selected.first_frame_url!]
+                      ).map((u, i) => (
+                        <a
+                          key={i}
+                          href={u}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="group/ref relative block h-8 w-8 overflow-hidden rounded-lg border border-white/20 transition hover:scale-110 hover:border-[#22d3ee]"
+                          title="Открыть референс в новой вкладке"
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={u} alt="" className="h-full w-full object-cover" />
+                        </a>
+                      ))}
+                    </div>
                   </div>
-                ) : (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={selected.preview_url}
-                    alt=""
-                    onClick={() => setLightboxOpen(true)}
-                    className="max-h-[calc(100vh-320px)] max-w-full cursor-zoom-in rounded-2xl border border-white/15 bg-black/80 object-contain shadow-[0_20px_50px_rgba(0,0,0,0.8)] transition hover:brightness-105"
-                  />
-                )}
-                {selected.kind !== "audio" && (
-                  <button
-                    type="button"
-                    onClick={() => setLightboxOpen(true)}
-                    className="absolute top-3 right-3 z-30 flex items-center gap-1.5 rounded-xl border border-white/20 bg-black/70 px-3 py-1.5 text-[11px] font-medium text-white/90 opacity-0 backdrop-blur-md transition hover:scale-105 hover:border-[#22d3ee]/60 hover:bg-[#22d3ee]/20 hover:text-white group-hover:opacity-100 shadow-2xl"
-                    title="Во весь экран"
-                  >
-                    <Maximize2 className="h-3.5 w-3.5" />
-                    <span>Во весь экран</span>
-                  </button>
                 )}
               </div>
             ) : selected &&
               (selected.status === "queued" || selected.status === "processing") ? (
-              <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-2xl border border-white/15 bg-[#121216]/90 px-6 py-12 text-center backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
+              <div className="flex w-full max-w-sm flex-col items-center gap-3.5 rounded-2xl border border-white/15 bg-[#121216]/90 px-6 py-10 text-center backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
                 <Loader2
                   className="h-9 w-9 animate-spin text-[#22d3ee]"
                 />
                 <div className="text-sm font-bold text-white/90">
-                  {selected.status === "queued" ? "В очереди" : "Генерация…"}
+                  {selected.status === "queued" ? "В очереди ожидания" : "Идёт генерация…"}
+                </div>
+                <div className="inline-flex items-center gap-1.5 rounded-full border border-[#22d3ee]/30 bg-[#22d3ee]/10 px-3 py-1 font-mono text-[12px] font-bold text-[#22d3ee]">
+                  <Clock className="h-3.5 w-3.5" />
+                  <span>{getLiveElapsed(selected)}</span>
                 </div>
                 <div className="text-[12px] text-white/50">
                   {selected.model || selected.label}
@@ -1330,7 +1537,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 )}
               </div>
             ) : selected?.status === "failed" ? (
-              <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-2xl border border-red-500/30 bg-red-500/10 px-6 py-10 text-center backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
+              <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-2xl border border-red-500/30 bg-red-500/10 px-6 py-8 text-center backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
                 <div className="text-sm font-bold text-red-300">Ошибка генерации</div>
                 <div className="text-[12px] text-white/60">
                   {selected.error || "Не удалось получить файл"}
@@ -1340,6 +1547,15 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   {selected.elapsed_label ||
                     formatElapsedMinSec(selected.elapsed_sec)}
                 </div>
+                <button
+                  type="button"
+                  onClick={() => deleteItem.mutate(selected)}
+                  className="mt-2 inline-flex items-center gap-1.5 rounded-xl border border-red-500/30 bg-red-500/20 px-3.5 py-1.5 text-[11px] font-semibold text-red-300 backdrop-blur transition hover:border-red-500/50 hover:bg-red-500/30 hover:text-white shadow-lg"
+                  title="Удалить ошибочную запись из истории"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  <span>Удалить из истории</span>
+                </button>
               </div>
             ) : (
               <div className="flex w-full max-w-xs flex-col items-center gap-4 rounded-2xl border border-white/10 bg-[#121216]/70 px-6 py-10 text-center backdrop-blur-xl">
@@ -1390,29 +1606,38 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
               <div
                 className="min-w-0 flex-1 rounded-2xl border border-white/15 bg-[#121216]/95 backdrop-blur-2xl shadow-[0_20px_60px_rgba(0,0,0,0.85)] ring-1 ring-white/10"
               >
-                {/* KIE: вложения из схемы модели (загрузка в kie / URL) */}
-                {kieActive && kieModel && kieFileFields(kieModel).length > 0 && (
+                {/* KIE: вложения для аудио/видео (голос, донор движения, аудиофайл) */}
+                {kieActive &&
+                  kieModel &&
+                  kieFileFields(kieModel).filter((f) => f.kind !== "images").length > 0 && (
                   <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.08] px-3 py-2.5 lg:px-4">
-                    {kieFileFields(kieModel).map((f) => (
-                      <KieAttachButton
-                        key={f.name}
-                        field={f}
-                        values={kieValues}
-                        onChange={(name, items) =>
-                          setKieValues((prev) => ({ ...prev, [name]: items }))
-                        }
-                      />
-                    ))}
+                    {kieFileFields(kieModel)
+                      .filter((f) => f.kind !== "images")
+                      .map((f) => (
+                        <KieAttachButton
+                          key={f.name}
+                          field={f}
+                          values={kieValues}
+                          onChange={(name, items) =>
+                            setKieValues((prev) => ({ ...prev, [name]: items }))
+                          }
+                        />
+                      ))}
                     <span className="text-[10px] text-white/35">
                       файл грузится в kie → публичный URL; или вставь свой URL в поле
                     </span>
                   </div>
                 )}
-                {/* Зона вложений — динамически под модель */}
-                {!kieActive &&
-                  (mediaType === "video"
-                    ? videoModel.chips.includes("image-input")
-                    : mediaType === "image" && maxReferences > 0) && (
+                {/* Унифицированная зона вложений и референсов (Outsee + KIE) */}
+                {((mediaType === "video" &&
+                  (videoModel.chips.includes("image-input") ||
+                    (kieActive &&
+                      Boolean(
+                        kieModel?.fields.some(
+                          (f) => f.kind === "images" || f.name.toLowerCase().includes("image"),
+                        ),
+                      )))) ||
+                  (mediaType === "image" && maxReferences > 0)) && (
                   <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.08] px-3 py-2.5 lg:px-4">
                     {mediaType === "image" ? (
                       <>
@@ -1679,7 +1904,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                         {isEnhancingPrompt ? (
                           <Loader2 className="h-3 w-3 animate-spin text-[#22d3ee]" />
                         ) : (
-                          <Wand2 className="h-3 w-3 text-[#22d3ee]" />
+                          <FileText className="h-3 w-3 text-[#22d3ee]" />
                         )}
                         <span>{isEnhancingPrompt ? "Улучшаем…" : "Улучшить"}</span>
                       </button>
@@ -1888,15 +2113,19 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
 
                     let display = aspect;
                     let onSelect = setAspect;
+                    let selectedVal = aspect;
                     if (chip === "resolution") {
                       display = mediaType === "image" ? resolution : videoResolution;
                       onSelect = mediaType === "image" ? setResolution : setVideoResolution;
+                      selectedVal = display;
                     } else if (chip === "detail") {
-                      display = detailLabel(detail);
+                      display = `Детализация: ${detailLabel(detail)}`;
                       onSelect = setDetail;
+                      selectedVal = detail;
                     } else if (chip === "duration") {
                       display = `${duration}с`;
                       onSelect = setDuration;
+                      selectedVal = duration;
                     }
 
                     const options =
@@ -1915,6 +2144,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                         key={chip}
                         label={OUTSEE_CHIP_LABELS[chip] || chip}
                         value={display}
+                        selectedValue={selectedVal}
                         open={openChip === chip}
                         onOpenChange={(v) => {
                           setOpenChip(v ? chip : null);
@@ -2063,7 +2293,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                         </>
                       ) : (
                         <>
-                          <Sparkles className="h-3.5 w-3.5" />
+                          <Play className="h-3.5 w-3.5 fill-current" />
                           <span>
                             Генерировать
                             {batchCount > 1 ? ` (${batchCount}x)` : ""}
@@ -2079,18 +2309,18 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
         </section>
       </div>
 
-      {/* Lightbox full screen modal */}
+      {/* Lightbox full screen modal & Prompt Inspector */}
       {lightboxOpen && selected?.preview_url && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 p-2 backdrop-blur-2xl animate-in fade-in duration-200"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 p-3 md:p-6 backdrop-blur-2xl animate-in fade-in duration-200"
           onClick={() => setLightboxOpen(false)}
         >
           <div
-            className="relative flex items-center justify-center max-h-[96vh] max-w-[98vw]"
+            className="relative flex flex-col md:flex-row items-center justify-center max-h-[96vh] max-w-[98vw] gap-4 w-full"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Close & Action floating buttons */}
-            <div className="absolute top-3 right-3 z-50 flex items-center gap-2">
+            <div className="absolute top-2 right-2 z-50 flex items-center gap-2">
               <div className="inline-flex items-center rounded-xl border border-white/20 bg-black/80 p-0.5 backdrop-blur-md shadow-2xl">
                 <button
                   type="button"
@@ -2148,21 +2378,129 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 <X className="h-5 w-5" />
               </button>
             </div>
-            {selected.kind === "video" ? (
-              <video
-                src={selected.preview_url}
-                controls
-                autoPlay
-                className="max-h-[96vh] max-w-[98vw] rounded-xl border border-white/15 bg-black object-contain shadow-[0_0_80px_rgba(0,0,0,0.9)]"
-              />
-            ) : (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={selected.preview_url}
-                alt=""
-                className="max-h-[96vh] max-w-[98vw] rounded-xl border border-white/15 bg-black object-contain shadow-[0_0_80px_rgba(0,0,0,0.9)]"
-              />
-            )}
+
+            {/* Media Area */}
+            <div className="flex flex-1 items-center justify-center max-h-[88vh] max-w-full min-w-0">
+              {selected.kind === "video" ? (
+                <video
+                  src={selected.preview_url}
+                  controls
+                  autoPlay
+                  className="max-h-[88vh] max-w-full rounded-2xl border border-white/15 bg-black object-contain shadow-[0_0_80px_rgba(0,0,0,0.9)]"
+                />
+              ) : selected.kind === "audio" ? (
+                <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-2xl border border-white/15 bg-[#121216]/90 p-8 backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
+                  <Music className="h-10 w-10 text-[#22d3ee]" />
+                  <div className="text-base font-semibold text-white/90">{selected.label}</div>
+                  <audio src={selected.preview_url} controls className="w-full" />
+                </div>
+              ) : (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={selected.preview_url}
+                  alt=""
+                  className="max-h-[88vh] max-w-full rounded-2xl border border-white/15 bg-black object-contain shadow-[0_0_80px_rgba(0,0,0,0.9)]"
+                />
+              )}
+            </div>
+
+            {/* Prompt Inspector Panel */}
+            <div className="flex w-full md:w-84 shrink-0 flex-col gap-3 rounded-2xl border border-white/15 bg-[#121216]/95 p-4 backdrop-blur-2xl shadow-[0_20px_60px_rgba(0,0,0,0.9)] max-h-[88vh] overflow-y-auto ring-1 ring-white/10">
+              <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
+                <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[#22d3ee]">
+                  <FileText className="h-4 w-4" />
+                  <span>Инспектор</span>
+                </div>
+                {selected.model && (
+                  <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] text-white/70">
+                    {selected.model}
+                  </span>
+                )}
+              </div>
+
+              {/* Prompt Text Box */}
+              <div>
+                <div className="mb-1 text-[11px] font-semibold text-white/50">Промпт:</div>
+                <div className="max-h-52 overflow-y-auto rounded-xl border border-white/10 bg-black/40 p-3 text-[12px] leading-relaxed text-white/90 select-text">
+                  {selected.prompt || "Без текстового описания"}
+                </div>
+              </div>
+
+              {/* Quick Actions: Copy & Insert into Prompt Dock */}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selected.prompt) {
+                      void navigator.clipboard.writeText(selected.prompt);
+                      toast.success("Промпт скопирован в буфер 📋");
+                    }
+                  }}
+                  disabled={!selected.prompt}
+                  className="inline-flex h-9 items-center justify-center gap-1.5 rounded-xl border border-white/15 bg-white/[0.05] px-3 text-[11px] font-semibold text-white/85 transition hover:border-white/30 hover:bg-white/[0.1] hover:text-white disabled:opacity-40"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  <span>Скопировать</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selected.prompt) {
+                      setPrompt(selected.prompt);
+                      setLightboxOpen(false);
+                      toast.success("Промпт подставлен в поле ввода ✍️");
+                    }
+                  }}
+                  disabled={!selected.prompt}
+                  className="inline-flex h-9 items-center justify-center gap-1.5 rounded-xl border border-[#22d3ee]/40 bg-[#22d3ee]/15 px-3 text-[11px] font-bold text-[#22d3ee] transition hover:bg-[#22d3ee]/25 disabled:opacity-40"
+                >
+                  <CornerDownLeft className="h-3.5 w-3.5" />
+                  <span>Вставить в чат</span>
+                </button>
+              </div>
+
+              {/* References Strip (if any) */}
+              {((selected.reference_images && selected.reference_images.length > 0) || selected.first_frame_url) && (
+                <div className="border-t border-white/10 pt-2.5">
+                  <div className="mb-1.5 text-[11px] font-semibold text-white/50">
+                    Использованные референсы ({selected.reference_images?.length || 1}):
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(selected.reference_images && selected.reference_images.length > 0
+                      ? selected.reference_images
+                      : [selected.first_frame_url!]
+                    ).map((u, i) => (
+                      <a
+                        key={i}
+                        href={u}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="group/ref relative block h-12 w-12 overflow-hidden rounded-lg border border-white/20 transition hover:scale-105 hover:border-[#22d3ee]"
+                        title="Открыть референс в новой вкладке"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={u} alt="" className="h-full w-full object-cover" />
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Meta details */}
+              <div className="space-y-1 border-t border-white/10 pt-2.5 font-mono text-[10px] text-white/45">
+                {selected.elapsed_label || selected.elapsed_sec != null ? (
+                  <div>
+                    Время генерации:{" "}
+                    <span className="font-semibold text-white/70">
+                      {selected.elapsed_label || formatElapsedMinSec(selected.elapsed_sec)}
+                    </span>
+                  </div>
+                ) : null}
+                <div>
+                  ID: <span className="text-white/60">{selected.id}</span>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -2221,12 +2559,34 @@ function KieFieldChip({
   }
 
   if (field.kind === "select") {
-    const options = (field.options || []).map((o) => ({ id: o, label: o }));
+    const formatOption = (opt: string) => {
+      const fn = field.name.toLowerCase();
+      const o = opt.toLowerCase();
+      if (fn === "quality") {
+        if (o === "basic") return { label: "1K", hint: "Базовое" };
+        if (o === "high") return { label: "2K", hint: "Высокое" };
+        if (o === "std" || o === "standard") return { label: "Standard", hint: "720p" };
+        if (o === "pro") return { label: "Pro", hint: "1080p" };
+      }
+      if (fn === "output_format" || fn === "format") {
+        return { label: opt.toUpperCase() };
+      }
+      return { label: opt };
+    };
+
+    const options = (field.options || []).map((o) => {
+      const meta = formatOption(o);
+      return { id: o, label: meta.label, hint: meta.hint };
+    });
     const currentVal = String(v ?? field.options?.[0] ?? "—");
+    const selectedOpt = options.find((o) => o.id === currentVal);
+    const displayVal = selectedOpt ? selectedOpt.label : currentVal;
+
     return (
       <OptionDropdown
         label={field.label}
-        value={currentVal}
+        value={displayVal}
+        selectedValue={currentVal}
         open={openChip === field.name}
         onOpenChange={(isOpen) => {
           if (setOpenChip) setOpenChip(isOpen ? field.name : null);
@@ -2460,6 +2820,7 @@ function ChipButton({
 function OptionDropdown({
   label,
   value,
+  selectedValue,
   open,
   onOpenChange,
   options,
@@ -2468,6 +2829,7 @@ function OptionDropdown({
 }: {
   label: string;
   value: string;
+  selectedValue?: string;
   open: boolean;
   onOpenChange: (v: boolean) => void;
   options: { id: string; label: string; hint?: string }[];
@@ -2484,6 +2846,8 @@ function OptionDropdown({
     return () => window.removeEventListener("mousedown", onDown);
   }, [open, onOpenChange]);
 
+  const currentVal = selectedValue ?? value;
+
   return (
     <div className="relative" ref={ref}>
       <ChipButton active={open} onClick={() => onOpenChange(!open)} title={label}>
@@ -2496,7 +2860,7 @@ function OptionDropdown({
           style={{ minWidth: 140 }}
         >
           {options.map((opt) => {
-            const active = opt.id === value || opt.label === value;
+            const active = opt.id === currentVal || opt.label === currentVal || opt.id === value || opt.label === value;
             return (
               <button
                 key={opt.id}
@@ -2545,6 +2909,11 @@ function ModelPickerPopover({
         : "Модели аудио";
   const models = pickerModelsForType(mediaType);
   const kieForType = kieModels.filter((m) => {
+    const id = m.id.toLowerCase();
+    // GPT Image 2, Nano Banana 2, Veo 3.1 Lite — строго через Outsee!
+    if (id.includes("veo") || id.includes("gpt-image") || id.includes("banana")) {
+      return false;
+    }
     const media =
       m.media || (m.category === "video" ? "video" : m.category === "image" ? "image" : "audio");
     return media === mediaType;

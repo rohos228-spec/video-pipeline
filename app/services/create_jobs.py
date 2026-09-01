@@ -52,11 +52,16 @@ class CreateJob:
     queue_position: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        from app.services.generation_storage import format_elapsed_min_sec
+        from app.services.generation_storage import elapsed_from_iso, format_elapsed_min_sec
+
+        live_sec = self.elapsed_sec
+        if live_sec is None and self.status in {"queued", "processing"}:
+            start_iso = self.created_at or self.started_at
+            live_sec = elapsed_from_iso(start_iso, live=True)
 
         label = (
-            format_elapsed_min_sec(self.elapsed_sec)
-            if self.elapsed_sec is not None
+            format_elapsed_min_sec(live_sec)
+            if live_sec is not None
             else None
         )
         return {
@@ -75,7 +80,7 @@ class CreateJob:
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
-            "elapsed_sec": self.elapsed_sec,
+            "elapsed_sec": live_sec,
             "elapsed_label": label,
             "queue_position": self.queue_position,
             "prompt_preview": (self.prompt or "")[:120],

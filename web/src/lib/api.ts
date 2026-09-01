@@ -1708,6 +1708,7 @@ export const api = {
     model?: string;
     aspect?: string;
     resolution?: string;
+    detail_level?: string | null;
     duration?: number;
     title?: string;
     relax?: boolean;
@@ -1716,6 +1717,8 @@ export const api = {
     first_frame_url?: string | null;
     last_frame_url?: string | null;
     reference_images?: string[] | null;
+    nonce?: string | null;
+    batch_index?: number | null;
   }) =>
     http<{
       ok: boolean;
@@ -1770,6 +1773,11 @@ export const api = {
         prompt_preview?: string;
         queue_position?: number | null;
         provider: string;
+        created_at?: string | null;
+        started_at?: string | null;
+        finished_at?: string | null;
+        elapsed_sec?: number | null;
+        elapsed_label?: string | null;
       }[];
       waiting: {
         job_id: string;
@@ -1780,6 +1788,11 @@ export const api = {
         prompt_preview?: string;
         queue_position?: number | null;
         provider: string;
+        created_at?: string | null;
+        started_at?: string | null;
+        finished_at?: string | null;
+        elapsed_sec?: number | null;
+        elapsed_label?: string | null;
       }[];
       jobs: {
         job_id: string;
@@ -1790,6 +1803,11 @@ export const api = {
         prompt_preview?: string;
         queue_position?: number | null;
         provider: string;
+        created_at?: string | null;
+        started_at?: string | null;
+        finished_at?: string | null;
+        elapsed_sec?: number | null;
+        elapsed_label?: string | null;
       }[];
     }>(`/api/create/queue`),
 
