@@ -20,6 +20,7 @@ class OutseeGenerateBody(BaseModel):
     model: str | None = None
     aspect: str | None = "9:16"
     resolution: str | None = None
+    detail_level: str | None = None
     duration: int | None = 5
     title: str | None = None
     relax: bool = False
@@ -29,6 +30,8 @@ class OutseeGenerateBody(BaseModel):
     first_frame_url: str | None = None
     last_frame_url: str | None = None
     reference_images: list[str] | None = None
+    nonce: str | None = None
+    batch_index: int | None = None
 
 
 @router.get("/status")
@@ -117,6 +120,8 @@ async def outsee_generate(body: OutseeGenerateBody) -> dict[str, Any]:
         "generate_audio": body.generate_audio,
         "has_first_frame": bool(body.first_frame_url),
         "has_last_frame": bool(body.last_frame_url),
+        "nonce": body.nonce,
+        "batch_index": body.batch_index,
     }
 
     if media == "video":
@@ -160,6 +165,7 @@ async def outsee_generate(body: OutseeGenerateBody) -> dict[str, Any]:
                 model_slug=model,
                 aspect_ratio=(body.aspect or "9:16").replace("_", ":"),
                 resolution=body.resolution or "2K",
+                detail_level=body.detail_level,
                 reference_images=body.reference_images
                 or ([body.first_frame_url] if body.first_frame_url else None),
                 project_id=body.project_id,
@@ -184,3 +190,13 @@ async def outsee_generate(body: OutseeGenerateBody) -> dict[str, Any]:
     payload["running_count"] = snap["running_count"]
     payload["max_parallel"] = snap["max_parallel"]
     return payload
+
+
+@router.post("/jobs/{job_id}/cancel")
+@router.delete("/jobs/{job_id}")
+async def cancel_outsee_job(job_id: str) -> dict[str, Any]:
+    """Отменить выполнение задачи Outsee/Create."""
+    from app.services.create_jobs import cancel_job
+
+    ok = await cancel_job(job_id)
+    return {"ok": ok, "job_id": job_id}

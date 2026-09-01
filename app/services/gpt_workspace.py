@@ -6,13 +6,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 from urllib.parse import quote
 
 from loguru import logger
@@ -1237,6 +1238,7 @@ async def ask(
     message: str,
     *,
     with_attachments: bool = True,
+    on_delta: Any | None = None,
 ) -> dict[str, Any]:
     """Отправить сообщение в GPT API, сохранить ответ и файлы в outputs/.
 
@@ -1364,37 +1366,21 @@ async def ask(
 
         meta = _read_json(d / "meta.json", {})
         meta["phase"] = "thinking"
-        meta["phase_detail"] = "GPT думает / генерирует ответ (vision может занять минуты)…"
+        meta["phase_detail"] = "Ваш помощник анализирует вложения и готовит ответ…"
         meta["updated_at"] = _now()
         _write_json(d / "meta.json", meta)
 
         try:
-            # Studio chat: до 30 мин на ответ (Kimi free / длинные запросы).
-            # Без лишнего ретрая: 2×30 мин = час «зависания».
-            # PDF >~6k символов идёт по частям (kie 500/timeout на полном тексте).
             has_pdf = any(p.suffix.lower() == ".pdf" for p in files)
-            is_kimi = bool(getattr(settings, "text_llm_is_tokenrouter", False))
-            ask_timeout = 1800.0  # 30 минут
+            ask_timeout = 1800.0
             if has_pdf:
                 meta = _read_json(d / "meta.json", {})
-                meta["phase_detail"] = (
-                    "PDF: извлекаю текст и перевожу/обрабатываю по частям "
-                    "(провайдер падает на большом файле целиком)…"
-                )
-                meta["updated_at"] = _now()
-                _write_json(d / "meta.json", meta)
-            elif is_kimi:
-                meta = _read_json(d / "meta.json", {})
-                meta["phase_detail"] = (
-                    "Kimi (TokenRouter): жду ответ до 30 мин — не закрывай чат…"
-                )
+                meta["phase_detail"] = "Обрабатываю прикреплённые документы…"
                 meta["updated_at"] = _now()
                 _write_json(d / "meta.json", meta)
             else:
                 meta = _read_json(d / "meta.json", {})
-                meta["phase_detail"] = (
-                    "GPT думает / генерирует ответ (ожидание до 30 мин)…"
-                )
+                meta["phase_detail"] = "Ваш помощник думает над ответом…"
                 meta["updated_at"] = _now()
                 _write_json(d / "meta.json", meta)
             reply = await gpt.ask_with_files(
@@ -1406,6 +1392,7 @@ async def ask(
                 treat_txt_as_prompt=False,
                 system=_WORKSPACE_SYSTEM,
                 max_retries=0,
+                on_delta=on_delta,
             )
         except Exception as e:  # noqa: BLE001
             # Только явный запрос «пустой txt» — иначе empty_stream маскировался
@@ -1728,6 +1715,87 @@ async def ask(
         meta["updated_at"] = _now()
         _write_json(d / "meta.json", meta)
         _append_message(session_id, "system", f"Ошибка: {e}")
+        raise
+
+
+async def ask_stream(
+    session_id: str,
+    text: str,
+    *,
+    with_attachments: bool = True,
+) -> AsyncIterator[str]:
+    """Потоковая отправка запроса в GPT с передачей SSE-событий в реальном времени."""
+    d = _session_dir(session_id)
+    if not d.is_dir():
+        raise FileNotFoundError(f"сессия {session_id} не найдена")
+
+    queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+
+    async def on_delta(delta: str) -> None:
+        if delta:
+            await queue.put(("delta", delta))
+
+    yield f"data: {json.dumps({'type': 'phase', 'phase': 'thinking', 'phase_detail': 'Ваш помощник думает над ответом…'}, ensure_ascii=False)}\n\n"
+    await asyncio.sleep(0.02)
+
+    async def _runner() -> None:
+        try:
+            session = await ask(
+                session_id,
+                text,
+                with_attachments=with_attachments,
+                on_delta=on_delta,
+            )
+            messages = list(session.get("messages") or [])
+            last_msg = messages[-1] if messages else {}
+            await queue.put(("done", (session, last_msg)))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            await queue.put(("error", str(e)))
+
+    task = asyncio.create_task(_runner())
+
+    try:
+        saw_deltas = False
+        while True:
+            try:
+                kind, data = await asyncio.wait_for(queue.get(), timeout=0.35)
+                if kind == "delta":
+                    saw_deltas = True
+                    yield f"data: {json.dumps({'type': 'delta', 'delta': data}, ensure_ascii=False)}\n\n"
+                elif kind == "done":
+                    session, last_msg = data
+                    # Если провайдер не стримил дельты (non-streaming), передаём текст
+                    if not saw_deltas:
+                        reply_content = str(last_msg.get("content") or "")
+                        if reply_content:
+                            yield f"data: {json.dumps({'type': 'delta', 'delta': reply_content}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'done', 'session': session, 'message': last_msg}, ensure_ascii=False)}\n\n"
+                    break
+                elif kind == "error":
+                    yield f"data: {json.dumps({'type': 'error', 'error': data}, ensure_ascii=False)}\n\n"
+                    break
+            except asyncio.TimeoutError:
+                if task.done():
+                    exc = task.exception()
+                    if exc:
+                        yield f"data: {json.dumps({'type': 'error', 'error': str(exc)}, ensure_ascii=False)}\n\n"
+                    break
+                meta = _read_json(d / "meta.json", {})
+                phase = meta.get("phase", "thinking")
+                phase_detail = meta.get("phase_detail", "Генерация ответа…")
+                yield f"data: {json.dumps({'type': 'phase', 'phase': phase, 'phase_detail': phase_detail}, ensure_ascii=False)}\n\n"
+
+    except asyncio.CancelledError:
+        task.cancel()
+        meta = _read_json(d / "meta.json", {})
+        meta["status"] = "idle"
+        meta["phase"] = "cancelled"
+        meta["phase_detail"] = "Генерация прервана пользователем"
+        meta["updated_at"] = _now()
+        _write_json(d / "meta.json", meta)
+        yield f"data: {json.dumps({'type': 'error', 'error': 'Генерация прервана пользователем'}, ensure_ascii=False)}\n\n"
         raise
 
 

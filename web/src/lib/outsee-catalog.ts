@@ -234,8 +234,8 @@ export const OUTSEE_IMAGE_MODELS: OutseeImageModel[] = [
     icon: `${OUTSEE_ORIGIN}/videomobilepreview/gptimage.webp`,
     price: "от 0.03",
     isTop: true,
-    chips: ["aspect", "resolution", "image-input"],
-    defaults: { aspectRatio: "16:9", imageResolution: "1K" },
+    chips: ["aspect", "resolution", "detail", "image-input"],
+    defaults: { aspectRatio: "16:9", imageResolution: "2K", detailLevel: "medium" },
   },
   {
     slug: "gpt-image-2-vip",
@@ -611,7 +611,7 @@ export function chipOptions(slug: string, chip: OutseeChip): string[] {
     return ["std", "pro"];
   }
   if (chip === "orientation") return ["video", "image"];
-  if (chip === "detail") return slug === "gpt-image-2" ? ["low", "medium", "high"] : [];
+  if (chip === "detail") return slug.includes("gpt-image") ? ["low", "medium", "high"] : [];
 
   if (video) {
     if (chip === "aspect") {
@@ -637,18 +637,8 @@ export function chipOptions(slug: string, chip: OutseeChip): string[] {
       return [...SEEDREAM_ASPECTS];
     }
     if (chip === "resolution") {
-      if (slug === "gpt-image-2") return ["1K"];
-      if (slug === "gpt-image-2-vip") return ["1K", "2K", "4K"];
-      if (
-        slug === "nano-banana-2" ||
-        slug === "nano-banana-pro" ||
-        slug === "nano-banana-pro-vt"
-      ) {
-        return ["1K", "2K", "4K"];
-      }
-      if (slug === "nano-banana-2-lite" || slug === "nano-banana-fast" || slug === "nano-banana") {
-        return ["1K", "2K"];
-      }
+      if (slug === "gpt-image-2" || slug === "gpt-image-2-vip") return ["2K"];
+      if (slug.startsWith("nano-banana")) return ["2K"];
       if (slug === "seedream-4.5") return ["2K", "4K"];
       if (slug === "seedream-5-pro") return ["1K", "2K"];
       if (slug === "seedream-5-lite") return ["2K", "3K"];

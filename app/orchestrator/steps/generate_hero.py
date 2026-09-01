@@ -439,6 +439,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
 
     if project.hero_mode == "no_hero" or project.hero_count == 0:
+        meta = dict(project.meta or {})
+        meta["hero_skipped_empty"] = True
+        project.meta = meta
         logger.info(
             "[#{}] hero skipped (hero_mode={}, hero_count={})",
             project.id, project.hero_mode, project.hero_count,

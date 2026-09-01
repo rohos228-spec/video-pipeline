@@ -345,7 +345,23 @@ async def download_media(
     if not img_bytes:
         raise HTTPException(status_code=404, detail="Файл не найден для скачивания")
 
+    _MAX_CONVERT_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
+    if len(img_bytes) > _MAX_CONVERT_SIZE_BYTES:
+        logger.warning(
+            "download_media: размер {} байт превышает лимит 50 МБ для конвертации, отдача без перекодирования",
+            len(img_bytes),
+        )
+        return Response(
+            content=img_bytes,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{out_filename}"'},
+        )
+
     try:
+        # Защита от decompression bomb и поврежденных файлов
+        Image.MAX_IMAGE_PIXELS = 100_000_000
+        pil_img = Image.open(io.BytesIO(img_bytes))
+        pil_img.verify()
         pil_img = Image.open(io.BytesIO(img_bytes))
         out_buf = io.BytesIO()
 
@@ -448,6 +464,40 @@ def _smart_enhance_prompt(text: str, style: str | None = None) -> str:
     return f"A breathtaking cinematic visual of {scene_subject}, {style_part}"
 
 
+def _clean_llm_prompt_response(raw: str) -> str:
+    """Очистить ответ LLM от преамбул, постскриптумов, кавычек и markdown блоков."""
+    if not raw:
+        return ""
+    s = raw.strip()
+    # Убираем markdown блоки codeblock
+    if s.startswith("```"):
+        lines = s.split("\n")
+        if len(lines) >= 2:
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            s = "\n".join(lines).strip()
+
+    # Убираем типичные преамбулы LLM
+    patterns = [
+        r"^(here is (an?|the)? (enhanced|detailed|improved)? (prompt|version):?\s*)",
+        r"^(sure,? (here is|here's|i've enhanced|let's enhance|i have rewritten).*?:?\s*)",
+        r"^(certainly!?\s*(here is|here's)?.*?:?\s*)",
+        r"^(enhanced prompt:?\s*)",
+        r"^(prompt:?\s*)",
+        r"^(вот (улучшенный|детализированный|готовый)? (промпт|вариант):?\s*)",
+        r"^(улучшенный промпт:?\s*)",
+    ]
+    for pat in patterns:
+        s = re.sub(pat, "", s, flags=re.IGNORECASE).strip()
+
+    # Убираем хвостовые примечания
+    s = re.sub(r"\n+(Note|Notes|Hope this helps|Enjoy).*$", "", s, flags=re.IGNORECASE | re.DOTALL).strip()
+    s = s.strip('"\'`«»“”')
+    return s.strip()
+
+
 @router.post("/enhance-prompt")
 async def enhance_prompt_endpoint(req: EnhancePromptRequest) -> dict[str, Any]:
     """Улучшить промпт с помощью LLM (GPT / Kimi / Vibecode / Kie.ai) или интеллектуального расширителя."""
@@ -479,7 +529,7 @@ async def enhance_prompt_endpoint(req: EnhancePromptRequest) -> dict[str, Any]:
                 f"Enhanced prompt (in English):"
             )
             enhanced = await gpt.ask_fresh(full_prompt, timeout=30)
-            cleaned = enhanced.strip().strip('"').strip("'").strip("`")
+            cleaned = _clean_llm_prompt_response(enhanced)
             if cleaned and len(cleaned) > 10:
                 logger.info("AI prompt enhanced via ApiGptClient: {} -> {}", text[:30], cleaned[:60])
                 return {"ok": True, "enhanced_prompt": cleaned, "provider": "llm"}
@@ -511,14 +561,14 @@ async def enhance_prompt_endpoint(req: EnhancePromptRequest) -> dict[str, Any]:
                     choices = data.get("choices") or []
                     if choices and isinstance(choices, list):
                         msg = choices[0].get("message", {}).get("content", "")
-                        cleaned = msg.strip().strip('"').strip("'").strip("`")
+                        cleaned = _clean_llm_prompt_response(msg)
                         if cleaned and len(cleaned) > 10:
                             logger.info("AI prompt enhanced via Kie.ai chat: {} -> {}", text[:30], cleaned[:60])
                             return {"ok": True, "enhanced_prompt": cleaned, "provider": "kie-llm"}
     except Exception as e:
         logger.warning("Kie LLM prompt enhance fallback: {}", e)
 
-    # 3. Умный локальный генератор (если ключи LLM не заданы)
+    # 3. Умный локальный генератор (если ключи LLM не заданы или при сбое)
     fallback_prompt = _smart_enhance_prompt(text, req.style)
     return {"ok": True, "enhanced_prompt": fallback_prompt, "provider": "synthesizer"}
 

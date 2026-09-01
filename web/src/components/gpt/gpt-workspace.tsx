@@ -30,8 +30,10 @@ import {
   MessageSquare,
   Paperclip,
   Plus,
+  RotateCcw,
   Search,
   Send,
+  Square,
   Trash2,
   Upload,
   User,
@@ -176,11 +178,18 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
   const [withAttachments, setWithAttachments] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
+  const [msgSearchOpen, setMsgSearchOpen] = useState(false);
+  const [msgSearchQuery, setMsgSearchQuery] = useState("");
   const [editingTitleId, setEditingTitleId] = useState<string | null>(null);
   const [editTitleValue, setEditTitleValue] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+
+  const [streamingText, setStreamingText] = useState<string | null>(null);
+  const [streamingPhase, setStreamingPhase] = useState<string | null>(null);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -235,7 +244,7 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
   useEffect(() => {
     if (!open) return;
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [open, session?.messages?.length, session?.phase_detail]);
+  }, [open, session?.messages?.length, session?.phase_detail, streamingText, streamingPhase]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -280,33 +289,106 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
-  const askMut = useMutation({
-    mutationFn: async () => {
-      let sid = sessionId;
-      if (!sid) {
-        const s = await api.gptCreateSession();
-        sid = s.id;
-        setSessionId(sid);
+  const handleAsk = async (promptOverride?: string) => {
+    let sid = sessionId;
+    if (!sid) {
+      const s = await api.gptCreateSession();
+      sid = s.id;
+      setSessionId(sid);
+    }
+    const msg = (promptOverride !== undefined ? promptOverride : draft).trim();
+    if (!msg && (session?.attachments?.length ?? 0) === 0) return;
+    if (promptOverride === undefined) setDraft("");
+
+    abortControllerRef.current = new AbortController();
+    setIsStreaming(true);
+    setStreamingText("");
+    setStreamingPhase("Анализ запроса…");
+
+    try {
+      await api.gptAskStream(
+        sid,
+        msg,
+        withAttachments,
+        {
+          onDelta: (delta) => {
+            setStreamingText((prev) => (prev ?? "") + delta);
+          },
+          onPhase: (phase, phaseDetail) => {
+            setStreamingPhase(phaseDetail || phase);
+          },
+          onDone: async () => {
+            await qc.invalidateQueries({ queryKey: ["gpt-workspace", "session", sid] });
+            await qc.invalidateQueries({ queryKey: ["gpt-workspace", "sessions"] });
+            setStreamingText(null);
+            setStreamingPhase(null);
+            setIsStreaming(false);
+          },
+          onError: (err) => {
+            setStreamingText(null);
+            setStreamingPhase(null);
+            setIsStreaming(false);
+            toast.error(err);
+            void qc.invalidateQueries({ queryKey: ["gpt-workspace", "session", sid] });
+          },
+        },
+        abortControllerRef.current.signal,
+      );
+    } catch (e: any) {
+      if (e?.name === "AbortError") {
+        toast.info("Генерация остановлена");
+      } else {
+        toast.error(errorMessageFromUnknown(e));
       }
-      const msg = draft.trim();
-      if (!msg) throw new Error("Введите сообщение");
-      setDraft("");
-      const poll = window.setInterval(() => {
-        void qc.invalidateQueries({ queryKey: ["gpt-workspace", "session", sid] });
-      }, 1500);
-      try {
-        return await api.gptAsk(sid, msg, withAttachments);
-      } finally {
-        window.clearInterval(poll);
+      setStreamingText(null);
+      setStreamingPhase(null);
+      setIsStreaming(false);
+      void qc.invalidateQueries({ queryKey: ["gpt-workspace", "session", sid] });
+    }
+  };
+
+  const handleStop = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsStreaming(false);
+    setStreamingText(null);
+    setStreamingPhase(null);
+    toast.info("Генерация остановлена");
+    if (sessionId) {
+      void qc.invalidateQueries({ queryKey: ["gpt-workspace", "session", sessionId] });
+    }
+  };
+
+  const handleRegenerate = (msgIndex: number) => {
+    if (isStreaming || session?.status === "running") return;
+    const msgs = session?.messages || [];
+    let userPrompt = "";
+    for (let i = msgIndex - 1; i >= 0; i--) {
+      if (msgs[i]?.role === "user") {
+        userPrompt = msgs[i].content;
+        break;
       }
-    },
-    onSuccess: (s) => {
-      setSessionId(s.id);
-      void qc.invalidateQueries({ queryKey: ["gpt-workspace", "sessions"] });
-      void qc.invalidateQueries({ queryKey: ["gpt-workspace", "session", s.id] });
-    },
-    onError: (e) => toast.error(errorMessageFromUnknown(e)),
-  });
+    }
+    if (!userPrompt && msgs.length > 0) {
+      const lastUser = [...msgs].reverse().find((m) => m.role === "user");
+      if (lastUser) userPrompt = lastUser.content;
+    }
+    if (userPrompt) {
+      void handleAsk(userPrompt);
+    } else {
+      toast.error("Не найден предыдущий запрос пользователя");
+    }
+  };
+
+  const handleEditPrompt = (content: string) => {
+    setDraft(content);
+    setTimeout(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(content.length, content.length);
+    }, 50);
+  };
 
   const uploadMut = useMutation({
     mutationFn: async (fileOrFiles: File | File[]) => {
@@ -355,8 +437,8 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
-  const busy = askMut.isPending || session?.status === "running";
-  const phaseLabel = session?.phase_detail || (busy ? "Генерация ответа…" : "");
+  const busy = isStreaming || session?.status === "running";
+  const phaseLabel = streamingPhase || session?.phase_detail || (busy ? "Генерация ответа…" : "");
 
   const [elapsedSec, setElapsedSec] = useState(0);
   useEffect(() => {
@@ -381,11 +463,18 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
     return sessions.filter((s) => (s.title || "").toLowerCase().includes(q));
   }, [sessions, searchQuery]);
 
+  const messagesToRender = useMemo(() => {
+    const all = session?.messages || [];
+    if (!msgSearchQuery.trim()) return all;
+    const q = msgSearchQuery.toLowerCase();
+    return all.filter((m) => (m.content || "").toLowerCase().includes(q));
+  }, [session?.messages, msgSearchQuery]);
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (!busy && (draft.trim() || (session?.attachments?.length ?? 0) > 0)) {
-        askMut.mutate();
+        void handleAsk();
       }
     }
   };
@@ -684,6 +773,47 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
               )}
             </div>
 
+            {/* In-Chat Message Search */}
+            {msgSearchOpen ? (
+              <div className="flex items-center gap-1.5 rounded-xl border border-white/15 bg-[#16161b] px-2.5 py-1 text-xs animate-in fade-in">
+                <Search className="h-3.5 w-3.5 text-[#22d3ee] shrink-0" />
+                <input
+                  type="text"
+                  value={msgSearchQuery}
+                  onChange={(e) => setMsgSearchQuery(e.target.value)}
+                  placeholder="Поиск по сообщениям…"
+                  autoFocus
+                  className="w-32 sm:w-44 bg-transparent text-xs text-white placeholder:text-white/40 border-0 outline-none focus:outline-none ring-0"
+                />
+                {msgSearchQuery && (
+                  <span className="text-[10px] text-[#22d3ee] font-mono whitespace-nowrap">
+                    {messagesToRender.length} совп.
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMsgSearchQuery("");
+                    setMsgSearchOpen(false);
+                  }}
+                  className="text-white/40 hover:text-white transition outline-none p-0.5"
+                  title="Закрыть поиск"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setMsgSearchOpen(true)}
+                className="flex items-center gap-1.5 rounded-xl border border-white/15 bg-white/[0.04] px-2.5 py-1.5 text-xs font-semibold text-white/80 transition hover:bg-white/[0.08] hover:text-white outline-none"
+                title="Поиск сообщений в этом чате"
+              >
+                <Search className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Поиск</span>
+              </button>
+            )}
+
             {/* ZIP Download button if session has outputs */}
             {(session?.outputs?.length ?? 0) > 0 && (
               <a
@@ -711,6 +841,21 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
 
         {/* ─── MESSAGES SCROLL AREA ─────────────────────────────────── */}
         <div className="flex-1 overflow-y-auto px-4 py-6 md:px-8 lg:px-16 space-y-6">
+          {/* If chat has search active and 0 matches */}
+          {msgSearchQuery.trim() && messagesToRender.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <Search className="h-8 w-8 text-white/20 mb-2" />
+              <p className="text-xs text-white/50">По запросу «{msgSearchQuery}» ничего не найдено</p>
+              <button
+                type="button"
+                onClick={() => setMsgSearchQuery("")}
+                className="mt-3 text-xs text-[#22d3ee] underline underline-offset-2 hover:opacity-80"
+              >
+                Сбросить фильтр
+              </button>
+            </div>
+          )}
+
           {/* If chat has no messages → Starter Prompts Screen */}
           {(!session?.messages || session.messages.length === 0) ? (
             <div className="flex flex-col items-center justify-center min-h-[50vh] text-center max-w-2xl mx-auto">
@@ -749,7 +894,7 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
             </div>
           ) : (
             /* Render message list */
-            session.messages.map((m, idx) => {
+            messagesToRender.map((m, idx) => {
               const isUser = m.role === "user";
               const isSystem = m.role === "system";
               const cleanContent = stripFilesNotice(m.content);
@@ -873,23 +1018,70 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
                     {/* Assistant Message Actions */}
                     {!isUser && (
                       <div className="mt-3 flex items-center justify-between pt-2 border-t border-white/[0.06] text-[11px] text-white/40">
+                        <div className="flex items-center gap-2">
+                          <span>{m.at ? new Date(m.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}</span>
+                          {m.model && (
+                            <span className="rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[9px] text-white/60">
+                              {m.model}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleRegenerate(idx)}
+                            disabled={busy}
+                            className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-white/60 hover:bg-white/10 hover:text-[#22d3ee] transition outline-none disabled:opacity-40"
+                            title="Сгенерировать ответ заново"
+                          >
+                            <RotateCcw className="h-3 w-3" />
+                            <span>Регенерировать</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => copyToClipboard(cleanContent, m.id || String(idx))}
+                            className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-white/60 hover:bg-white/10 hover:text-white transition outline-none"
+                            title="Скопировать текст ответа"
+                          >
+                            {copiedMessageId === (m.id || String(idx)) ? (
+                              <>
+                                <Check className="h-3 w-3 text-[#22d3ee]" />
+                                <span className="text-[#22d3ee]">Скопировано</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="h-3 w-3" />
+                                <span>Копировать</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* User Message Actions */}
+                    {isUser && (
+                      <div className="mt-2 flex items-center justify-end gap-2 text-[10px] text-white/40">
                         <span>{m.at ? new Date(m.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}</span>
                         <button
                           type="button"
-                          onClick={() => copyToClipboard(cleanContent, m.id || String(idx))}
-                          className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-white/60 hover:bg-white/10 hover:text-white transition outline-none"
-                          title="Скопировать текст ответа"
+                          onClick={() => handleEditPrompt(m.content)}
+                          className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-white/50 hover:bg-white/10 hover:text-white transition outline-none"
+                          title="Редактировать запрос"
+                        >
+                          <Edit2 className="h-2.5 w-2.5" />
+                          <span>Редактировать</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => copyToClipboard(m.content, m.id || String(idx))}
+                          className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-white/50 hover:bg-white/10 hover:text-white transition outline-none"
+                          title="Копировать запрос"
                         >
                           {copiedMessageId === (m.id || String(idx)) ? (
-                            <>
-                              <Check className="h-3 w-3 text-[#22d3ee]" />
-                              <span className="text-[#22d3ee]">Скопировано</span>
-                            </>
+                            <Check className="h-2.5 w-2.5 text-[#22d3ee]" />
                           ) : (
-                            <>
-                              <Copy className="h-3 w-3" />
-                              <span>Копировать</span>
-                            </>
+                            <Copy className="h-2.5 w-2.5" />
                           )}
                         </button>
                       </div>
@@ -907,8 +1099,35 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
             })
           )}
 
-          {/* Thinking / Running Banner */}
-          {busy && (
+          {/* Streaming Live Bubble */}
+          {isStreaming && (
+            <div className="flex gap-3.5 max-w-4xl mx-auto animate-in fade-in">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[#22d3ee]/15 border border-[#22d3ee]/30 text-[#22d3ee] animate-pulse">
+                <Bot className="h-4 w-4" />
+              </div>
+              <div className="flex-1 rounded-2xl border border-[#22d3ee]/30 bg-[#16161b]/95 p-4 text-xs text-white shadow-lg backdrop-blur-xl">
+                {streamingPhase && (
+                  <div className="mb-2.5 flex items-center gap-2 text-[11px] text-[#22d3ee] font-medium border-b border-white/[0.08] pb-1.5">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    <span>{streamingPhase}</span>
+                    <span className="ml-auto font-mono text-[10px] text-white/40">{elapsedSec} сек</span>
+                  </div>
+                )}
+                {streamingText ? (
+                  <div className="text-xs leading-relaxed">
+                    <MarkdownRenderer content={streamingText} />
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1.5 py-1 text-white/40 text-xs italic animate-pulse">
+                    <span>Печатает ответ…</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Thinking / Running Banner (when not streaming via local state) */}
+          {!isStreaming && busy && (
             <div className="flex gap-3.5 max-w-4xl mx-auto animate-in fade-in">
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[#22d3ee]/15 border border-[#22d3ee]/30 text-[#22d3ee] animate-pulse">
                 <Bot className="h-4 w-4" />
@@ -1011,22 +1230,6 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
                     )}
                     <span>Прикрепить</span>
                   </button>
-
-                  {/* With Attachments Toggle */}
-                  <button
-                    type="button"
-                    onClick={() => setWithAttachments(!withAttachments)}
-                    className={cn(
-                      "flex items-center gap-1.5 rounded-xl px-2.5 py-1 text-[11px] font-medium transition outline-none",
-                      withAttachments
-                        ? "border border-[#22d3ee]/40 bg-[#22d3ee]/15 text-[#22d3ee]"
-                        : "border border-white/10 bg-white/[0.02] text-white/40"
-                    )}
-                    title="Передавать ли вложения в запрос модели"
-                  >
-                    <Check className={cn("h-3 w-3", withAttachments ? "opacity-100" : "opacity-0")} />
-                    <span>Вложения активны</span>
-                  </button>
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -1034,29 +1237,33 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
                     Shift+Enter для переноса
                   </span>
 
-                  {/* Send Button (styled in turquoise/cyan like Outsee Create primary button) */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!busy && (draft.trim() || (session?.attachments?.length ?? 0) > 0)) {
-                        askMut.mutate();
-                      }
-                    }}
-                    disabled={busy || (!draft.trim() && (session?.attachments?.length ?? 0) === 0)}
-                    className={cn(
-                      "flex h-8 w-8 items-center justify-center rounded-xl transition-all shadow-md outline-none",
-                      draft.trim() || (session?.attachments?.length ?? 0) > 0
-                        ? "bg-[#22d3ee] hover:bg-[#06b6d4] text-black shadow-[#22d3ee]/20 cursor-pointer scale-105 font-bold"
-                        : "bg-white/[0.06] text-white/30 cursor-not-allowed opacity-60"
-                    )}
-                    title="Отправить сообщение"
-                  >
-                    {busy ? (
-                      <Loader2 className="h-4 w-4 animate-spin text-black" />
-                    ) : (
+                  {/* Send or Stop Button */}
+                  {busy ? (
+                    <button
+                      type="button"
+                      onClick={handleStop}
+                      className="flex h-8 items-center gap-1.5 rounded-xl bg-red-600/90 hover:bg-red-500 text-white px-3 text-xs font-semibold transition-all shadow-md outline-none cursor-pointer scale-105 animate-pulse"
+                      title="Остановить генерацию"
+                    >
+                      <Square className="h-3.5 w-3.5 fill-current" />
+                      <span>Стоп</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => handleAsk()}
+                      disabled={!draft.trim() && (session?.attachments?.length ?? 0) === 0}
+                      className={cn(
+                        "flex h-8 w-8 items-center justify-center rounded-xl transition-all shadow-md outline-none",
+                        draft.trim() || (session?.attachments?.length ?? 0) > 0
+                          ? "bg-[#22d3ee] hover:bg-[#06b6d4] text-black shadow-[#22d3ee]/20 cursor-pointer scale-105 font-bold"
+                          : "bg-white/[0.06] text-white/30 cursor-not-allowed opacity-60"
+                      )}
+                      title="Отправить сообщение"
+                    >
                       <Send className="h-3.5 w-3.5" />
-                    )}
-                  </button>
+                    </button>
+                  )}
                 </div>
               </div>
             </div>

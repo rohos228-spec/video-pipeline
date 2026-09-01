@@ -146,6 +146,14 @@ async def ready_status_confirmed_by_data(
             if project.status is ready_status:
                 return True
 
+    # hero_ready / items_ready: если персонажи/предметы пропущены (no_hero / hero_skipped_empty) — подтверждаем статус
+    if ready_status in (ProjectStatus.hero_ready, ProjectStatus.items_ready):
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        if meta.get("hero_skipped_empty") or project.hero_mode == "no_hero" or project.hero_count == 0:
+            return True
+        if project.status is ready_status:
+            return True
+
     # Ручная озвучка voice_full.wav: compute_actual_status может быть ниже
     # (нет всех scene_image), но audio_ready уже законно — не откатывать.
     if ready_status in (ProjectStatus.audio_ready, ProjectStatus.music_ready):

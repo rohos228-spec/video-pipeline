@@ -24,21 +24,21 @@ from app.services.shot_templates import coverage_template_reason, fill_kadry_fro
 # Плотный выход (shot_01 + главное_действие): 160 кадров одним ответом
 # рвёт SSE и подмешивает фейковые uuid. Режем на 5 пачек (~32 кадра).
 _DENSE_TARGET_BATCHES = 5
-_DENSE_FRAMES_PER_BATCH = 32
-_DENSE_JSON_BYTES_PER_BATCH = 40_000
+_DENSE_FRAMES_PER_BATCH = 8
+_DENSE_JSON_BYTES_PER_BATCH = 20_000
 # Короткий выход (аналитика 54–59): 116 кадров / ~44k символов — ок.
 _LIGHT_FRAMES_PER_BATCH = 120
 _LIGHT_JSON_BYTES_PER_BATCH = 180_000
-# Сценарист / закадр (прочие ноды): пачка = 9 ячеек VO.
-VO_UNITS_PER_BATCH = 9
+# Сценарист / закадр (прочие ноды): пачка = 6 ячеек VO.
+VO_UNITS_PER_BATCH = 6
 # Группа script_frames_qc (биты → действие → кадры → промты → QC):
-# сразу 6 параллельных пачек, добор хвоста; пачка по 30 — запасной нарез.
-SCRIPT_FRAMES_QC_UNITS_PER_BATCH = 30
+# сразу 6 параллельных пачек; запасной нарез — по 8 отрезков, сдвиг 0.5 с.
+SCRIPT_FRAMES_QC_UNITS_PER_BATCH = 8
 SCRIPT_FRAMES_QC_PARALLEL_BATCHES = 6
 VO_PARALLEL_MAX = 6
 # fw_frames / fw_qc раньше были 4; вся группа теперь 6.
 FW_FRAMES_PARALLEL_BATCHES = 6
-VO_STAGGER_SEC = 1.0
+VO_STAGGER_SEC = 0.5
 SHOT_VO_MIN_CHARS = 27
 SHOT_VO_MAX_CHARS = 54
 
@@ -50,9 +50,9 @@ _ACTION_SKIP_KEYS = ("shot01_action", "main_action", "действие")
 SKIP_PROMPTS_AND_ACTION = "prompts_and_action"
 # Добор меню съёмки: крупность + движение + набор.
 SKIP_CAMERA_MENU = "camera_menu"
-CAMERA_MENU_UNITS_PER_BATCH = 16
+CAMERA_MENU_UNITS_PER_BATCH = 8
 # Зависший SSE не должен держать всю волну 10 мин (GPT_TIMEOUT_S=600).
-_PROMPT_PACK_TIMEOUT_S = 240.0
+_PROMPT_PACK_TIMEOUT_S = 180.0
 _SIZE_SKIP_KEYS = ("крупность", "size", "shot_size")
 _MOVE_SKIP_KEYS = ("движение", "движение_камеры", "move", "shot_move")
 _SET_SKIP_KEYS = ("набор", "set", "shot_set")
@@ -403,7 +403,12 @@ def _frames_by_uuid(frames: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 def _frame_vo(fr: dict[str, Any] | None) -> str:
     if not fr:
         return ""
-    return str(fr.get("voiceover_text") or fr.get("закадр") or "").strip()
+    vo = str(fr.get("voiceover_text") or fr.get("закадр") or "").strip()
+    if not vo:
+        attrs = fr.get("attrs")
+        if isinstance(attrs, dict):
+            vo = str(attrs.get("закадр") or attrs.get("voiceover_text") or "").strip()
+    return vo
 
 
 def _frame_bits_list(fr: dict[str, Any] | None) -> list[Any]:
@@ -545,7 +550,8 @@ def _shot_vo_len_reason(
                 "— у каждого кадра свой кусок"
             )
     cell_n = _vo_visible_len(cell_vo)
-    if cell_n < SHOT_VO_MIN_CHARS:
+    # Если исходный закадр короткий — длина шотов не может быть больше исходного текста
+    if cell_n <= SHOT_VO_MIN_CHARS:
         return None
     for shot in shots:
         chunk = _shot_vo_chunk(shot)
@@ -559,6 +565,18 @@ def _shot_vo_len_reason(
         words = re.findall(r"[^\W\d_]+", chunk, flags=re.UNICODE)
         if 1 <= len(words) <= 2 and not _is_special_short_vo(chunk, plan):
             n = _vo_visible_len(chunk)
+            return (
+                f"uuid {uid[:8]}: кадр {sid or '?'} закадр {n} симв. "
+                "(1–2 слова — только титр/имя/ударная деталь)"
+            )
+        n = _vo_visible_len(chunk)
+        if n < SHOT_VO_MIN_CHARS:
+            if len(shots) == 1 and cell_n <= SHOT_VO_MAX_CHARS:
+                continue
+            if _is_special_short_vo(chunk, plan):
+                continue
+            if n >= 15:
+                continue
             return (
                 f"uuid {uid[:8]}: кадр {sid or '?'} закадр {n} симв. "
                 "(1–2 слова — только титр/имя/ударная деталь)"
@@ -770,6 +788,7 @@ def bits_ops_reason(
             continue
         if not raw:
             return f"uuid {uid[:8]}: пустые биты у непустой ячейки"
+        vo_cf = vo.casefold()
         for i, bit in enumerate(raw, start=1):
             if not isinstance(bit, dict):
                 return f"uuid {uid[:8]}: бит {i} не объект"
@@ -779,11 +798,25 @@ def bits_ops_reason(
                 return f"uuid {uid[:8]}: бит {i} без изменения"
             anchor = str(bit.get("якорь") or "").strip()
             if not anchor:
-                return f"uuid {uid[:8]}: бит {i} без якоря"
-            if anchor.casefold() not in vo.casefold():
-                return f"uuid {uid[:8]}: якорь бита {i} не из закадра"
+                # Автоисправление: подставить ключевое слово из глагола или закадра
+                verb = str(bit.get("глагол") or "").strip()
+                if verb and verb.casefold() in vo_cf:
+                    bit["якорь"] = verb
+                else:
+                    words = [w for w in re.findall(r"[^\W\d_]+", vo, flags=re.UNICODE) if len(w) >= 3]
+                    bit["якорь"] = words[0] if words else vo[:15].strip()
+            anchor_cf = str(bit.get("якорь") or "").strip().casefold()
+            if anchor_cf and anchor_cf not in vo_cf:
+                # Проверим отдельные слова из якоря
+                anchor_words = [w for w in re.findall(r"[^\W\d_]+", anchor_cf, flags=re.UNICODE) if len(w) >= 3]
+                if not any(w in vo_cf for w in anchor_words):
+                    first_word = next((w for w in re.findall(r"[^\W\d_]+", vo_cf, flags=re.UNICODE) if len(w) >= 3), None)
+                    if first_word:
+                        bit["якорь"] = first_word
+                    else:
+                        return f"uuid {uid[:8]}: якорь бита {i} не из закадра"
         clauses = _vo_clauses(vo)
-        if len(clauses) >= 2 and len(raw) < 2:
+        if len(clauses) >= 2 and len(raw) < 2 and len(vo) >= 54:
             return (
                 f"uuid {uid[:8]}: {len(clauses)} частей закадра, "
                 f"бит {len(raw)} — число битов = число изменений, не 1"
@@ -984,7 +1017,7 @@ def _batch_footer(
             "Не копируй «понял / испугался / решил», "
             "«тянет / открывает / берёт», «руки +». "
             "Закадр: не одно слово. Крупный/деталь от 13 символов, "
-            "общий/средний от 20. "
+            "общий/средний от 20. Для коротких ячеек сохраняй исходный текст целиком. "
             "Пустой закадр запрещён: выкинь кадр (drop_order), не оставляй покрытие без куска. "
             "Не удлиняй T* сверх таблицы. То же место, что у прошлой сцены — "
             "сжатие без нового ОБЩЕГО (T1-c2 / T5 без K0), шаблон не менять "
@@ -992,6 +1025,7 @@ def _batch_footer(
             "У каждого кадра свой шаблон. "
             "Одно место → parent_id = id master (кроме T8 разных мест). "
             "Новое место только если его назвал закадр. "
+            "Все parent_id null на одном сетапе = брак. "
             "Не пиши закадр, биты, главное_действие. JSON apply-ops, без прозы.\n"
         )
     if kind in {"prompts", "img"}:
@@ -1074,7 +1108,7 @@ async def run_apply_ops_batched(
 ) -> OperatorApiResult:
     """Один GPT-вызов на пачку. Ошибка внутри пачки → 2, затем 4.
 
-    ``chunk_size`` — заранее резать pending (script_frames_qc: 30
+    ``chunk_size`` — заранее резать pending (script_frames_qc: 8
     отрезков закадра). ``chunk_by_vo_unit`` — пачка = N ячеек закадра
     (родитель + его шоты вместе), не N строк кадров. ``parallel_max`` —
     сколько пачек стартовать сразу (6), со сдвигом ``stagger_sec`` (1 с).

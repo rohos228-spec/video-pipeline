@@ -186,25 +186,52 @@ async def synthesize_speech(
         async with httpx.AsyncClient(**client_kwargs) as client:
             return await client.post(url, headers=headers, json=payload)
 
+    import asyncio
+
     resp: httpx.Response | None = None
-    try:
-        resp = await _do_post(proxy_url)
-    except (httpx.TimeoutException, httpx.RequestError, httpx.RemoteProtocolError) as exc:
-        if proxy_url:
-            logger.warning(
-                "11Labs API: ошибка через прокси ({}), выполняем прямой запрос без прокси...",
-                exc,
-            )
-            try:
-                resp = await _do_post(None)
-            except Exception as direct_exc:  # noqa: BLE001
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = await _do_post(proxy_url)
+        except (httpx.TimeoutException, httpx.RequestError, httpx.RemoteProtocolError) as exc:
+            if proxy_url:
+                logger.warning(
+                    "11Labs API: ошибка через прокси ({}), выполняем прямой запрос без прокси (попытка {}/{})...",
+                    exc,
+                    attempt,
+                    max_retries,
+                )
+                try:
+                    resp = await _do_post(None)
+                except Exception as direct_exc:  # noqa: BLE001
+                    if attempt < max_retries:
+                        await asyncio.sleep(2.0 * attempt)
+                        continue
+                    raise ElevenLabsApiError(
+                        f"11Labs API: ошибка сетевого соединения: {direct_exc}"
+                    ) from direct_exc
+            else:
+                if attempt < max_retries:
+                    await asyncio.sleep(2.0 * attempt)
+                    continue
                 raise ElevenLabsApiError(
-                    f"11Labs API: ошибка сетевого соединения: {direct_exc}"
-                ) from direct_exc
-        else:
-            raise ElevenLabsApiError(
-                f"11Labs API: ошибка сетевого соединения: {exc}"
-            ) from exc
+                    f"11Labs API: ошибка сетевого соединения: {exc}"
+                ) from exc
+
+        if resp is not None and resp.status_code in {429, 502, 503, 504}:
+            if attempt < max_retries:
+                wait_sec = 2.5 * attempt
+                logger.warning(
+                    "11Labs API: HTTP {} (Rate limit / upstream) — повтор через {:.1f}с ({}/{})",
+                    resp.status_code,
+                    wait_sec,
+                    attempt,
+                    max_retries,
+                )
+                await asyncio.sleep(wait_sec)
+                continue
+
+        break
 
     if resp is None:
         raise ElevenLabsApiError("11Labs API: не получен ответ от сервера.")
@@ -233,7 +260,7 @@ async def synthesize_speech(
             )
         if resp.status_code == 429:
             raise ElevenLabsApiError(
-                f"11Labs API: превышен лимит запросов Rate Limit (429) — {err_msg}"
+                f"11Labs API: превышен лимит запросов Rate Limit (429) после {max_retries} попыток — {err_msg}"
             )
 
         raise ElevenLabsApiError(f"11Labs API ошибка генерации: {err_msg}")

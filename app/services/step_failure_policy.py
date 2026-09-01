@@ -37,13 +37,21 @@ def sleep_minutes_for_error(error: Exception) -> int:
     msg = str(error)
     if "скачанный xlsx невалиден" in msg and "листы" in msg:
         return XLSX_SHEET_FORMAT_SLEEP_MINUTES
-    # Неполный TSV / prose без TSV — книга не тронута; не морозить 30 мин.
+    # Неполный TSV / prose без TSV / ошибки валидации LLM-ответов — не морозить 30 мин.
     if (
         "всё ещё неполный" in msg
         or "CONTINUE_XLSX" in msg
         or "не вернула TSV" in msg
         or "project.xlsx не изменён" in msg
         or "без writeback" in msg
+        or "якорь" in msg
+        or "биты" in msg
+        or "главное_действие" in msg
+        or "покрытие" in msg
+        or "один кадр на ячейку" in msg
+        or "закадр" in msg
+        or "apply-ops" in msg
+        or "apply_ops" in msg
     ):
         return XLSX_SHEET_FORMAT_SLEEP_MINUTES
     conn_markers = (

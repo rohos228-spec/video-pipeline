@@ -83,9 +83,10 @@ def resolve_item_elapsed(
 
     Для done/failed — только зафиксированные метки (никогда wall-clock now).
     """
+    terminal = status in {"done", "failed"}
     sec = meta.get("elapsed_sec")
     label = meta.get("elapsed_label")
-    if sec is not None:
+    if terminal and sec is not None:
         try:
             sec_i = int(sec)
         except (TypeError, ValueError):
@@ -94,8 +95,6 @@ def resolve_item_elapsed(
             if not label:
                 label = format_elapsed_min_sec(sec_i)
             return sec_i, label, False
-
-    terminal = status in {"done", "failed"}
     start = meta.get("started_at") or meta.get("created_at")
     end = meta.get("finished_at") or meta.get("updated_at")
     if terminal and not end and mtime is not None:
@@ -408,10 +407,24 @@ def _scan_generation_files(*, kind: str, limit: int) -> list[dict[str, Any]]:
             status = "failed"
         if status in {"queued", "processing"} and not has_file:
             age_s = max(0.0, datetime.now(timezone.utc).timestamp() - mtime)
-            if age_s > 20 * 60:
+            # Проверяем, есть ли задача реально в живом пуле воркера
+            from app.services.create_jobs import get_job, list_active_jobs
+
+            job_id_meta = str(meta.get("job_id") or "")
+            active_jobs = list_active_jobs()
+            is_active_in_mem = any(
+                j.id == job_id_meta
+                or j.path.name == fp.name
+                or j.path.stem == fp.stem
+                or str(j.path) == str(fp)
+                for j in active_jobs
+            )
+
+            # Если задачи нет в памяти воркера и прошло >10с (или зависла >10 минут), помечаем failed
+            if (not is_active_in_mem and age_s > 10) or age_s > 10 * 60:
                 status = "failed"
                 if not meta.get("error"):
-                    err = "прервано (рестарт / сбой задачи)"
+                    err = "генерация остановлена (таймаут / рестарт)"
                     meta["error"] = err
                     try:
                         update_sidecar(fp, status="failed", error=err)
@@ -439,6 +452,22 @@ def _scan_generation_files(*, kind: str, limit: int) -> list[dict[str, Any]]:
                 )
             except Exception:  # noqa: BLE001
                 pass
+        params = meta.get("params") or {}
+        ref_imgs = (
+            params.get("reference_images")
+            or params.get("image_urls")
+            or params.get("image_input")
+            or params.get("imageUrls")
+        )
+        if isinstance(ref_imgs, str):
+            ref_imgs = [ref_imgs]
+        elif not isinstance(ref_imgs, list):
+            ref_imgs = []
+        first_frame = (
+            params.get("first_frame_url")
+            or params.get("image_url")
+            or params.get("imageUrl")
+        )
         items.append(
             {
                 "id": key,
@@ -455,10 +484,16 @@ def _scan_generation_files(*, kind: str, limit: int) -> list[dict[str, Any]]:
                 "status": status,
                 "job_id": meta.get("job_id"),
                 "error": meta.get("error"),
+                "created_at": meta.get("created_at") or meta.get("started_at"),
+                "started_at": meta.get("started_at") or meta.get("created_at"),
+                "finished_at": meta.get("finished_at"),
                 "elapsed_sec": elapsed_sec,
                 "elapsed_label": elapsed_label,
                 "raw_url": meta.get("raw_url"),
                 "mtime": file_mtime,
+                "params": params,
+                "reference_images": [r for r in ref_imgs if r and isinstance(r, str)],
+                "first_frame_url": first_frame if isinstance(first_frame, str) else None,
             }
         )
 
@@ -552,34 +587,47 @@ def delete_generation_item(
     path: str | Path | None = None,
     item_id: str | None = None,
 ) -> bool:
-    """Удалить файл генерации и его JSON-паспорт с диска."""
+    """Удалить файл генерации и его JSON-паспорт с диска (включая ошибочные задачи)."""
     root = generations_root()
-    target_media: Path | None = None
+    found_files: list[Path] = []
 
     if path:
         p = Path(path)
         if p.is_file():
-            target_media = p
+            found_files.append(p)
+            side = p.with_suffix(".json")
+            if side.is_file():
+                found_files.append(side)
         elif (root / path).is_file():
-            target_media = root / path
+            found_files.append(root / path)
+            side = (root / path).with_suffix(".json")
+            if side.is_file():
+                found_files.append(side)
+        else:
+            # Если самого медиафайла нет (ошибка генерации), ищем sidecar .json по stem
+            stem = p.stem
+            if stem:
+                for fp in root.rglob(f"{stem}*"):
+                    if fp.is_file():
+                        found_files.append(fp)
 
-    if target_media is None and item_id:
+    if item_id:
         clean_name = item_id.removeprefix("gen-")
         if clean_name:
-            for fp in root.rglob(clean_name):
-                if fp.is_file():
-                    target_media = fp
-                    break
+            stem = Path(clean_name).stem
+            for pattern in (f"{stem}*", f"{clean_name}*"):
+                for fp in root.rglob(pattern):
+                    if fp.is_file():
+                        found_files.append(fp)
 
-    if target_media is None:
+    if not found_files:
         return False
 
     try:
-        side = target_media.with_suffix(".json")
-        if side.is_file():
-            side.unlink(missing_ok=True)
-        if target_media.is_file():
-            target_media.unlink(missing_ok=True)
+        for f in set(found_files):
+            f.unlink(missing_ok=True)
+            if f.suffix != ".json":
+                f.with_suffix(".json").unlink(missing_ok=True)
         invalidate_generation_list_cache()
         return True
     except Exception:  # noqa: BLE001

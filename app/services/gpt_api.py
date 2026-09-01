@@ -1517,6 +1517,7 @@ async def _chat_responses_stream(
     body: dict[str, Any],
     timeout: float,
     use_model: str,
+    on_delta: Any | None = None,
 ) -> GptChatResult:
     """POST Responses API с stream=true и сборкой текста из SSE.
 
@@ -1560,7 +1561,19 @@ async def _chat_responses_stream(
                         if not isinstance(ev, dict):
                             continue
                         et = str(ev.get("type") or "")
-                        if et == "response.output_text.done":
+                        if et == "response.output_text.delta":
+                            delta = str(ev.get("delta") or "")
+                            if delta and on_delta:
+                                try:
+                                    if asyncio.iscoroutinefunction(on_delta):
+                                        await on_delta(delta)
+                                    else:
+                                        res = on_delta(delta)
+                                        if asyncio.iscoroutine(res):
+                                            await res
+                                except Exception:
+                                    pass
+                        elif et == "response.output_text.done":
                             saw_text_done = True
                         elif et == "response.completed":
                             saw_completed = True
@@ -1752,6 +1765,7 @@ async def _chat_completions_stream(
     body: dict[str, Any],
     timeout: float,
     use_model: str,
+    on_delta: Any | None = None,
 ) -> GptChatResult:
     """POST chat/completions с stream=true (длинные ответы vibecode / OpenAI)."""
     stream_body = {**body, "stream": True}
@@ -1773,6 +1787,24 @@ async def _chat_completions_stream(
                     async for raw in resp.aiter_lines():
                         if raw:
                             lines.append(raw)
+                            if on_delta and raw.startswith("data:"):
+                                piece = raw[5:].strip()
+                                if piece and piece != "[DONE]":
+                                    try:
+                                        chunk_obj = json.loads(piece)
+                                        choices = chunk_obj.get("choices") or []
+                                        if choices and isinstance(choices, list):
+                                            delta_obj = choices[0].get("delta") or {}
+                                            content = delta_obj.get("content")
+                                            if content:
+                                                if asyncio.iscoroutinefunction(on_delta):
+                                                    await on_delta(content)
+                                                else:
+                                                    res = on_delta(content)
+                                                    if asyncio.iscoroutine(res):
+                                                        await res
+                                    except Exception:
+                                        pass
         except GptApiError:
             raise
         except BaseException as e:
@@ -1913,7 +1945,7 @@ async def _maybe_volume_complete_chat_result(
     )
 
 
-_LLM_PACK_PARALLEL = 3
+_LLM_PACK_PARALLEL = 4
 
 
 def _merge_packed_apply_ops(texts: list[str]) -> str:
@@ -2024,6 +2056,7 @@ async def _chat_adaptive_1_2_4(
     xlsx_write_contract: str,
     pack_kind: str | None,
     level: int = 1,
+    on_delta: Any | None = None,
 ) -> GptChatResult:
     """Сначала один вызов. Ошибка/обрез → этот кусок пополам (2). Снова → 4."""
     from app.services.adaptive_llm_batches import next_split_level
@@ -2044,6 +2077,7 @@ async def _chat_adaptive_1_2_4(
         volume_complete=False,
         auto_pack=False,
         pack_kind=pack_kind,
+        on_delta=on_delta,
     )
     try:
         result = await chat(**kwargs)
@@ -2105,6 +2139,7 @@ async def _chat_adaptive_1_2_4(
                 xlsx_write_contract=xlsx_write_contract,
                 pack_kind=pack_kind,
                 level=nxt,
+                on_delta=on_delta,
             )
             parts.append(part)
         merged = _merge_packed_apply_ops([p.text for p in parts])
@@ -2139,6 +2174,7 @@ async def chat(
     volume_complete: bool | None = None,
     auto_pack: bool = True,
     pack_kind: str | None = None,
+    on_delta: Any | None = None,
 ) -> GptChatResult:
     """Вызвать текстовый LLM (kie GPT / TokenRouter Kimi) с ретраями.
 
@@ -2161,6 +2197,7 @@ async def chat(
             max_retries=max_retries,
             xlsx_write_contract=xlsx_write_contract,
             pack_kind=pack_kind,
+            on_delta=on_delta,
         )
 
     headers = _headers()
@@ -2234,6 +2271,7 @@ async def chat(
                     body=body,
                     timeout=use_timeout,
                     use_model=use_model,
+                    on_delta=on_delta,
                 )
                 # Cloudflare/kie рвёт длинный SSE: дельты уже есть, но JSON
                 # незакрыт — добираем хвост коротким continue (без тяжёлых файлов).
@@ -2339,6 +2377,7 @@ async def chat(
                     body=body,
                     timeout=use_timeout,
                     use_model=use_model,
+                    on_delta=on_delta,
                 )
                 cont_round = 0
                 while cont_round < 2 and looks_truncated_llm_text(result.text):

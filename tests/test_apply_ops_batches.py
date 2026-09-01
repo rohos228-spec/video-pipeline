@@ -12,12 +12,12 @@ from app.services.apply_ops_batches import (
 )
 
 
-def test_dense_32_pending_stays_one_batch() -> None:
-    n, raw = 32, 24_000
+def test_dense_8_pending_stays_one_batch() -> None:
+    n, raw = 8, 6_000
     size = frames_per_batch(
         n_frames=n, json_bytes=raw, dense=True, target_batches=5
     )
-    assert size == 32
+    assert size == 8
     assert not should_batch_apply_ops(
         n_frames=n, json_bytes=raw, dense=True, target_batches=5
     )
@@ -100,7 +100,7 @@ def test_ui_force_full_sends_already_filled_frames() -> None:
     assert [f["uuid"] for f in pending] == ["a" * 24, "b" * 24]
 
 
-def test_dense_retry_skips_filled_and_keeps_one_tail_batch() -> None:
+def test_dense_retry_skips_filled_and_splits_tail() -> None:
     frames = []
     for i in range(160):
         row = {
@@ -118,9 +118,9 @@ def test_dense_retry_skips_filled_and_keeps_one_tail_batch() -> None:
     size = frames_per_batch(
         n_frames=len(selected), json_bytes=24_000, dense=True, target_batches=5
     )
-    assert size == 31
+    assert size == 7
     chunks = split_frames(selected, size)
-    assert [len(c) for c in chunks] == [31]
+    assert [len(c) for c in chunks] == [7, 7, 7, 7, 3]
 
 
 def test_pending_skips_filled_shot01() -> None:
@@ -1572,14 +1572,14 @@ def test_shots_coverage_rejects_same_t_on_neighbor_scenes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_vo_chunk_size_30_packs(tmp_path, monkeypatch) -> None:
-    """script_frames_qc: пачки по 30 отрезков закадра."""
+async def test_vo_chunk_size_8_packs(tmp_path, monkeypatch) -> None:
+    """script_frames_qc: пачки по 8 отрезков закадра."""
     import json
 
     from app.services.apply_ops_batches import SCRIPT_FRAMES_QC_UNITS_PER_BATCH
     from app.services.gpt_operator_client import OperatorApiResult
 
-    assert SCRIPT_FRAMES_QC_UNITS_PER_BATCH == 30
+    assert SCRIPT_FRAMES_QC_UNITS_PER_BATCH == 8
     calls: list[int] = []
 
     async def fake_run(**kwargs):
@@ -1629,7 +1629,7 @@ async def test_vo_chunk_size_30_packs(tmp_path, monkeypatch) -> None:
         parallel_max=1,
         footer_kind="bits",
     )
-    assert calls == [30, 30, 5]
+    assert calls == [8, 8, 8, 8, 8, 8, 8, 8, 1]
     assert len(res.apply_ops["ops"]) == 65
 
 
