@@ -109,11 +109,13 @@ export function ShotsReportPanel({
             <DialogTitle>shots-report.html</DialogTitle>
             <DialogDescription>Отчёт кадров · тот же HTML, чёрный фон</DialogDescription>
           </DialogHeader>
-          <iframe
-            title="Отчёт кадров"
-            src={url}
-            className="min-h-0 w-full flex-1 border-0 bg-black"
-          />
+          <div className="min-h-0 flex-1 overflow-auto bg-black">
+            <iframe
+              title="Отчёт кадров"
+              src={url}
+              className="block h-[calc(92vh-72px)] min-h-[70vh] w-full border-0 bg-black"
+            />
+          </div>
         </DialogContent>
       </Dialog>
     </div>

@@ -811,11 +811,13 @@ function ShotsReportView({ snapshot }: { snapshot: NodeResultSnapshot }) {
     );
   }
   return (
-    <iframe
-      title="Отчёт кадров"
-      src={url}
-      className="h-full min-h-[70vh] w-full flex-1 border-0 bg-black"
-    />
+    <div className="min-h-0 flex-1 overflow-auto bg-black">
+      <iframe
+        title="Отчёт кадров"
+        src={url}
+        className="block h-full min-h-[70vh] w-full border-0 bg-black"
+      />
+    </div>
   );
 }
 
