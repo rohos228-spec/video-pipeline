@@ -944,6 +944,17 @@ function DefaultResultView({
           ) : null}
         </div>
       )}
+      {item.kind === "file" && (item.previewUrl || item.downloadUrl) && (
+        <Button size="sm" variant="outline" asChild>
+          <a
+            href={item.previewUrl || item.downloadUrl || "#"}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Открыть отчёт
+          </a>
+        </Button>
+      )}
       {item.content && (
         <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-black/30 p-3 text-xs">
           {item.content}

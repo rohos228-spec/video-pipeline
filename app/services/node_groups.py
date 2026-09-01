@@ -41,6 +41,7 @@ _SCRIPT_FRAMES_QC_NODE_SUFFIXES = (
     "_fw_shots",
     "_fw_frames",
     "_fw_qc",
+    "_fw_report",
 )
 
 
@@ -376,19 +377,36 @@ def _script_frames_qc_group() -> NodeGroupDef:
         _STEP_X * 6,
         "prompts_qc_continuity_ru",
     )
+    report = GroupNodeSpec(
+        local_key="report",
+        node_type="excel_gpt",
+        label="Отчёт: кадры + промты",
+        description=(
+            "После группы: HTML-отчёт сцен и кадров; справа от кадра — "
+            "промты fw_frames и QC. Без GPT."
+        ),
+        preferred_id="n_excel_gpt_fw_report",
+        dx=_STEP_X * 7,
+        dy=0.0,
+        slot_overflow=True,
+        operator_config={
+            "outputMode": "artifact",
+            "transport": "code",
+        },
+    )
     return NodeGroupDef(
         group_id="script_frames_qc",
         title="Сценарий → промпты кадров + QC",
         description=(
             "Сценарист: целый закадр → 1 seed → биты → проверка → "
-            "главное действие → кадры по шаблонам T/X → промпты → QC. "
+            "главное действие → кадры по шаблонам T/X → промпты → QC → отчёт. "
             "Промты только в templates/node_groups/script_frames_qc/ "
             "(не в общем списке «Работа с GPT»). "
             "Разбивка на ячейки — хвостом группы (vo_shot_expand)."
         ),
         category="planning",
         default_after_type="plan",
-        nodes=(script, check_script, action, shots, frames, qc),
+        nodes=(script, check_script, action, shots, frames, qc, report),
         internal_edges=(
             ("script", "check_script", "after"),
             ("check_script", "action", "pass"),
@@ -396,9 +414,10 @@ def _script_frames_qc_group() -> NodeGroupDef:
             ("action", "shots", "after"),
             ("shots", "frames", "after"),
             ("frames", "qc", "after"),
+            ("qc", "report", "after"),
         ),
         entry_keys=("script",),
-        exit_key="qc",
+        exit_key="report",
         project_meta={},
         exit_edge_kind="after",
     )
@@ -1164,12 +1183,99 @@ def restore_script_frames_qc_four_node_graph(meta: dict[str, Any]) -> bool:
     return True
 
 
+def upgrade_script_frames_qc_report_graph(meta: dict[str, Any]) -> bool:
+    """После QC вставить ноду HTML-отчёта; выход группы → report."""
+    graph = canvas_graph_from_meta(meta)
+    if graph is None:
+        return False
+    nodes = [dict(n) for n in graph["nodes"]]
+    edges = [dict(e) for e in graph["edges"]]
+    by_id = {str(n.get("id")): n for n in nodes}
+    qc_id = "n_excel_gpt_fw_qc"
+    report_id = "n_excel_gpt_fw_report"
+    if qc_id not in by_id or report_id in by_id:
+        return False
+    if not canvas_has_script_frames_qc(meta):
+        return False
+    qc = by_id[qc_id]
+    qx = float((qc.get("position") or {}).get("x") or 0)
+    qy = float((qc.get("position") or {}).get("y") or 0)
+    group = _script_frames_qc_group()
+    spec = next(s for s in group.nodes if s.local_key == "report")
+    gid = str((qc.get("data") or {}).get("groupId") or "script_frames_qc")
+    gtitle = str((qc.get("data") or {}).get("groupTitle") or group.title)
+    nodes.append(
+        {
+            "id": report_id,
+            "type": spec.node_type,
+            "position": {"x": qx + _STEP_X, "y": qy},
+            "data": {
+                "label": spec.label,
+                "description": spec.description,
+                "slotOverflow": True,
+                "groupId": gid,
+                "groupTitle": gtitle,
+            },
+        }
+    )
+    outgoing = [
+        e
+        for e in edges
+        if str(e.get("source")) == qc_id and str(e.get("target")) != report_id
+    ]
+    keep = [e for e in edges if e not in outgoing]
+    keep.append(
+        {
+            "id": f"e_{qc_id}_{report_id}",
+            "source": qc_id,
+            "target": report_id,
+            "sourceHandle": "out",
+            "targetHandle": "in",
+            "data": {"kind": "after"},
+        }
+    )
+    have = {(str(e.get("source")), str(e.get("target"))) for e in keep}
+    for old in outgoing:
+        tgt = str(old.get("target") or "")
+        if not tgt or (report_id, tgt) in have:
+            continue
+        kind = str((old.get("data") or {}).get("kind") or "after")
+        edge: dict[str, Any] = {
+            "id": f"e_{report_id}_{tgt}",
+            "source": report_id,
+            "target": tgt,
+            "sourceHandle": "out",
+            "targetHandle": "in",
+            "data": {"kind": kind},
+        }
+        if old.get("label"):
+            edge["label"] = old.get("label")
+            edge["data"]["label"] = old.get("label")
+        keep.append(edge)
+        have.add((report_id, tgt))
+    egn = meta.get("excel_gpt_nodes")
+    egn = dict(egn) if isinstance(egn, dict) else {}
+    egn[report_id] = dict(spec.operator_config or {})
+    meta["excel_gpt_nodes"] = egn
+    meta["canvas_graph"] = build_canvas_graph_payload(
+        workflow_id=int(graph.get("workflow_id") or 0),
+        nodes=nodes,
+        edges=keep,
+    )
+    return True
+
+
 async def upgrade_script_frames_qc_on_project(
     session: AsyncSession, project: Project
 ) -> bool:
     """Обновить старую цепочку группы на канвасе проекта. True если писали."""
     meta = dict(project.meta or {}) if isinstance(project.meta, dict) else {}
-    if not upgrade_script_frames_qc_graph(meta):
+    changed = False
+    if upgrade_script_frames_qc_graph(meta):
+        changed = True
+    if upgrade_script_frames_qc_report_graph(meta):
+        changed = True
+    if not changed:
         return False
     from sqlalchemy.orm.attributes import flag_modified
 
@@ -1177,7 +1283,7 @@ async def upgrade_script_frames_qc_on_project(
     flag_modified(project, "meta")
     await session.flush()
     await sync_run_snapshot_from_canvas_graph(session, project, force=True)
-    logger.info("[#{}] upgrade script_frames_qc: +action +shots", project.id)
+    logger.info("[#{}] upgrade script_frames_qc: action/shots/report", project.id)
     return True
 
 

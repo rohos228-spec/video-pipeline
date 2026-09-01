@@ -261,7 +261,7 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
         res = await insert_node_group(session, project, "script_frames_qc")
 
     assert res["after"] == "n_plan"
-    assert len(res["nodes"]) == 6
+    assert len(res["nodes"]) == 7
     cg = project.meta["canvas_graph"]
     by_id = {n["id"]: n for n in cg["nodes"]}
     plan_x = by_id["n_plan"]["position"]["x"]
@@ -312,8 +312,11 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
     assert ("n_excel_gpt_fw_action", "n_excel_gpt_fw_shots") in pairs
     assert ("n_excel_gpt_fw_shots", "n_excel_gpt_fw_frames") in pairs
     assert ("n_excel_gpt_fw_frames", "n_excel_gpt_fw_qc") in pairs
+    assert ("n_excel_gpt_fw_qc", "n_excel_gpt_fw_report") in pairs
     # выход группы → старая цель plan (script)
-    assert ("n_excel_gpt_fw_qc", "n_script") in pairs
+    assert ("n_excel_gpt_fw_report", "n_script") in pairs
+    assert "n_excel_gpt_fw_report" not in project.meta["prompt_slot_variants"]
+    assert project.meta["excel_gpt_nodes"]["n_excel_gpt_fw_report"]["transport"] == "code"
 
 
 async def test_insert_duplicate_raises(mem_db) -> None:
@@ -647,6 +650,48 @@ async def test_group_from_canvas_and_reinsert(mem_db) -> None:
     ]
     assert sorted(set(copies)) == ["moya_svyazka", "moya_svyazka#2"]
     assert res2["nodes"] != res["nodes"]  # id с суффиксами
+
+
+def test_upgrade_script_frames_qc_report_graph() -> None:
+    meta = {
+        "canvas_graph": {
+            "workflow_id": 1,
+            "nodes": [
+                {
+                    "id": "n_excel_gpt_fw_qc",
+                    "type": "excel_gpt",
+                    "position": {"x": 400, "y": 10},
+                    "data": {
+                        "groupId": "script_frames_qc",
+                        "groupTitle": "Сценарий → промпты кадров + QC",
+                    },
+                },
+                {
+                    "id": "n_script",
+                    "type": "script",
+                    "position": {"x": 700, "y": 10},
+                    "data": {},
+                },
+            ],
+            "edges": [
+                {
+                    "id": "e_qc_script",
+                    "source": "n_excel_gpt_fw_qc",
+                    "target": "n_script",
+                    "data": {"kind": "after"},
+                }
+            ],
+        },
+        "excel_gpt_nodes": {},
+    }
+    assert ng.upgrade_script_frames_qc_report_graph(meta) is True
+    ids = {n["id"] for n in meta["canvas_graph"]["nodes"]}
+    assert "n_excel_gpt_fw_report" in ids
+    pairs = {(e["source"], e["target"]) for e in meta["canvas_graph"]["edges"]}
+    assert ("n_excel_gpt_fw_qc", "n_excel_gpt_fw_report") in pairs
+    assert ("n_excel_gpt_fw_report", "n_script") in pairs
+    assert ("n_excel_gpt_fw_qc", "n_script") not in pairs
+    assert ng.upgrade_script_frames_qc_report_graph(meta) is False
 
 
 def test_restore_script_frames_qc_four_node_graph() -> None:

@@ -1901,6 +1901,8 @@ export const api = {
       : "";
     return `/api/projects/${projectId}/xlsx${q}`;
   },
+  projectShotsReportUrl: (projectId: number) =>
+    `/api/projects/${projectId}/shots-report`,
   reloadProjectXlsx: (projectId: number) =>
     http<ProjectDetail>(`/api/projects/${projectId}/xlsx/reload`, { method: "POST" }),
   uploadProjectXlsx: async (

@@ -432,6 +432,22 @@ function computeNodeResult(
     case "enrich_4":
     case "enrich_5":
     case "enrich": {
+      if (nodeKey?.endsWith("_fw_report") && project?.id) {
+        const url = api.projectShotsReportUrl(project.id);
+        return ready(
+          [
+            {
+              id: "shots_report",
+              label: "Отчёт кадров",
+              kind: "file",
+              downloadUrl: url,
+              previewUrl: url,
+            },
+          ],
+          "HTML-отчёт кадров + промты/QC",
+          "none",
+        );
+      }
       const meta = project?.meta as
         | {
             xlsx_snapshots_by_node?: Record<string, { name?: string }>;

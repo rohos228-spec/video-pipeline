@@ -139,6 +139,48 @@ async def steps_catalog() -> list[dict[str, str]]:
     return list_step_codes()
 
 
+@router.get("/{project_id}/shots-report")
+async def project_shots_report(
+    project_id: int, session: AsyncSession = Depends(get_session)
+):
+    """HTML-отчёт группы script_frames_qc (кадры + промты/QC справа)."""
+    from fastapi.responses import HTMLResponse
+
+    from app.services.shots_report import (
+        build_shots_report_model,
+        render_shots_report_html,
+        report_paths,
+        write_shots_report,
+    )
+
+    p = await session.get(Project, project_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    frames = list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == p.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        ).scalars().all()
+    )
+    existing = next((path for path in report_paths(p) if path.is_file()), None)
+    if existing is None:
+        written = write_shots_report(p, frames)
+        existing = written[0]
+    else:
+        existing.write_text(
+            render_shots_report_html(
+                build_shots_report_model(frames),
+                slug=p.slug,
+                project_id=p.id,
+            ),
+            encoding="utf-8",
+        )
+    return HTMLResponse(existing.read_text(encoding="utf-8"))
+
+
 @router.get("/{project_id}", response_model=ProjectDetail)
 async def get_project(
     project_id: int, session: AsyncSession = Depends(get_session)

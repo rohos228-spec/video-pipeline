@@ -192,7 +192,14 @@ def _is_scenes_to_frames_node(
     nk = str(node_key or "")
     # Промт картинок цитирует «сцены → кадры» в шапке — это не нода покрытия.
     if nk.endswith(
-        ("_fw_frames", "_fw_qc", "_fw_script", "_fw_action", "_fw_check_script")
+        (
+            "_fw_frames",
+            "_fw_qc",
+            "_fw_report",
+            "_fw_script",
+            "_fw_action",
+            "_fw_check_script",
+        )
     ):
         return False
     if nk.endswith("_fw_shots"):
@@ -223,13 +230,14 @@ _SCRIPT_FRAMES_QC_SUFFIXES = (
     "_fw_shots",
     "_fw_frames",
     "_fw_qc",
+    "_fw_report",
 )
 
 
 def _is_script_frames_qc_group_node(
     variant: str | None, master: str | None, node_key: str | None
 ) -> bool:
-    """Группа script_frames_qc: биты → действие → кадры → промты → QC."""
+    """Группа script_frames_qc: биты → действие → кадры → промты → QC → отчёт."""
     nk = str(node_key or "")
     if any(nk.endswith(s) for s in _SCRIPT_FRAMES_QC_SUFFIXES):
         return True
@@ -252,6 +260,8 @@ def _script_frames_qc_footer_kind(
         return "shots_coverage"
     if nk.endswith(("_fw_frames", "_fw_qc")):
         return "prompts"
+    if nk.endswith("_fw_report"):
+        return "report"
     if _is_script_writer_node(variant, master, node_key):
         return "bits"
     if _is_main_action_node(variant, master, node_key):
@@ -1002,6 +1012,88 @@ def _get_accompanying_text(project: Project, step_code: str) -> str:
     return gtb.get_effective_text(project, step_code)
 
 
+async def _run_fw_report_node(
+    session: AsyncSession,
+    project: Project,
+    *,
+    node_key: str,
+    slot_idx: int,
+) -> None:
+    """Код-нода: HTML-отчёт сцен/кадров + промты/QC. GPT не зовём."""
+    from sqlalchemy import select
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.gpt_operator import save_operator_result
+    from app.services.run_sync import complete_excel_gpt_node_by_key
+    from app.services.shots_report import write_shots_report
+
+    running_status, ready_status, _code = _SLOT_MAP[slot_idx]
+    frames = list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        ).scalars().all()
+    )
+    paths = write_shots_report(project, frames, node_key=node_key)
+    save_operator_result(
+        project,
+        node_key,
+        input_paths=[],
+        output_paths=paths,
+        reply_text=f"отчёт кадров: {paths[0].name} · сцен/кадры собраны без GPT",
+        gate_status="pass",
+    )
+    meta = dict(project.meta or {})
+    completed = [
+        int(x) for x in (meta.get("enrich_completed_slots") or []) if str(x).isdigit()
+    ]
+    if slot_idx not in completed:
+        completed.append(slot_idx)
+        completed.sort()
+        meta["enrich_completed_slots"] = completed
+    done_keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
+    if node_key not in done_keys:
+        done_keys.append(node_key)
+        meta["excel_gpt_completed_keys"] = done_keys
+    meta.pop("active_excel_gpt_node_key", None)
+    meta["shots_report_path"] = str(paths[0])
+    project.meta = meta
+    flag_modified(project, "meta")
+    await session.flush()
+    try:
+        await complete_excel_gpt_node_by_key(
+            session, project, node_key, enrich_slot=slot_idx
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "[#{}] fw_report: complete_excel_gpt_node_by_key failed",
+            project.id,
+        )
+    if project.status is running_status:
+        _apply_enrich_ready_status(
+            project,
+            running_status=running_status,
+            ready_status=ready_status,
+        )
+        await session.flush()
+    logger.info(
+        "[#{}] fw_report wrote {} files → {}",
+        project.id,
+        len(paths),
+        paths[0],
+    )
+    await _after_excel_gpt_done(
+        session,
+        project,
+        node_key=node_key,
+        slot_idx=slot_idx,
+        ready_status=ready_status,
+    )
+
+
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     slot_idx = _resolve_slot_idx(project.status)
     if slot_idx is None:
@@ -1032,6 +1124,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             meta["active_excel_gpt_node_key"] = node_key
             project.meta = meta
             await session.flush()
+    if str(node_key or "").endswith("_fw_report"):
+        await _run_fw_report_node(
+            session, project, node_key=str(node_key), slot_idx=slot_idx
+        )
+        return
     prompt_step_code = EXCEL_GPT_STEP_CODE
     # Слот «main» в Node Studio → meta.prompt_slot_variants[node_key]["main"].
     # Без node_key все excel_gpt брали один prompt_overrides["excel_gpt"].

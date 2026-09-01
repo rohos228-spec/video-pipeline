@@ -169,6 +169,7 @@ _SCRIPT_FRAMES_QC_NODE_SUFFIXES = (
     "_fw_shots",
     "_fw_frames",
     "_fw_qc",
+    "_fw_report",
 )
 
 

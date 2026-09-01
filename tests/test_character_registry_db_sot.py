@@ -59,6 +59,7 @@ def test_script_frames_qc_group_batches_of_30() -> None:
         ("n_excel_gpt_fw_shots", "shots_coverage"),
         ("n_excel_gpt_fw_frames", "prompts"),
         ("n_excel_gpt_fw_qc", "prompts"),
+        ("n_excel_gpt_fw_report", "report"),
     ):
         assert _is_script_frames_qc_group_node(None, None, key)
         assert _script_frames_qc_footer_kind(None, None, key) == kind
