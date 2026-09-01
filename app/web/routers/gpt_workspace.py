@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -150,6 +150,33 @@ async def ask(session_id: str, body: AskBody) -> dict[str, Any]:
             session_id,
             body.message,
             with_attachments=body.with_attachments,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except GptApiUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(e)[:800]) from e
+
+
+@router.post("/sessions/{session_id}/ask-stream")
+async def ask_stream_endpoint(session_id: str, body: AskBody) -> StreamingResponse:
+    try:
+        gen = gw.ask_stream(
+            session_id,
+            body.message,
+            with_attachments=body.with_attachments,
+        )
+        return StreamingResponse(
+            gen,
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e

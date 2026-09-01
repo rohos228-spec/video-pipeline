@@ -2164,6 +2164,81 @@ export const api = {
       },
       1_800_000,
     ),
+  gptAskStream: async (
+    sessionId: string,
+    message: string,
+    withAttachments = true,
+    callbacks?: {
+      onDelta?: (delta: string) => void;
+      onPhase?: (phase: string, phaseDetail?: string) => void;
+      onDone?: (session: GptWorkspaceSession, message: any) => void;
+      onError?: (error: string) => void;
+    },
+    signal?: AbortSignal,
+  ) => {
+    let res: Response;
+    try {
+      res = await fetch(
+        `/api/gpt-workspace/sessions/${encodeURIComponent(sessionId)}/ask-stream`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message, with_attachments: withAttachments }),
+          signal,
+        },
+      );
+    } catch (e: any) {
+      if (e?.name === "AbortError" || signal?.aborted) return;
+      throw e;
+    }
+
+    if (!res.ok) {
+      const errTxt = await res.text();
+      throw new ApiError(res.status, errTxt);
+    }
+    if (!res.body) return;
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let doneReceived = false;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith("data:")) {
+            try {
+              const data = JSON.parse(trimmed.slice(5).trim());
+              if (data.type === "delta" && data.delta) {
+                callbacks?.onDelta?.(data.delta);
+              } else if (data.type === "phase") {
+                callbacks?.onPhase?.(data.phase, data.phase_detail);
+              } else if (data.type === "done") {
+                doneReceived = true;
+                callbacks?.onDone?.(data.session, data.message);
+              } else if (data.type === "error" && data.error) {
+                callbacks?.onError?.(data.error);
+              }
+            } catch {
+              // ignore JSON parse error
+            }
+          }
+        }
+      }
+    } catch (err: any) {
+      if (err?.name === "AbortError" || signal?.aborted || doneReceived) {
+        return;
+      }
+      throw err;
+    }
+  },
   gptSaveToProject: (
     sessionId: string,
     body: { project_id: number; output_name: string; as_name?: string },
@@ -2250,6 +2325,7 @@ export type GptWorkspaceMessage = {
   role: "user" | "assistant" | "system" | string;
   content: string;
   at?: string;
+  model?: string;
   attachment_names?: string[];
   output_files?: string[];
 };

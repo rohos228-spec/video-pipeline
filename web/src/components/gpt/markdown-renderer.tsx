@@ -23,17 +23,22 @@ export function CodeBlock({ language, code }: CodeBlockProps) {
   };
 
   const displayLang = (language || "text").toLowerCase();
+  const lines = code.split("\n");
+  const showLineNumbers = lines.length > 2;
 
   return (
-    <div className="my-3 overflow-hidden rounded-xl border border-white/[0.12] bg-[#121216]/95 shadow-lg">
+    <div className="my-3 overflow-hidden rounded-xl border border-white/[0.12] bg-[#121216]/95 shadow-lg group">
       <div className="flex items-center justify-between border-b border-white/[0.08] bg-white/[0.03] px-3.5 py-1.5 text-xs text-white/60">
-        <div className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-white/70">
+        <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-white/70">
           {displayLang === "bash" || displayLang === "sh" || displayLang === "shell" ? (
             <Terminal className="h-3.5 w-3.5 text-[#22d3ee]" />
           ) : (
             <FileCode className="h-3.5 w-3.5 text-[#38bdf8]" />
           )}
-          <span>{displayLang}</span>
+          <span className="font-semibold">{displayLang}</span>
+          <span className="text-[10px] text-white/30 lowercase font-normal">
+            ({lines.length} {lines.length === 1 ? "строка" : lines.length < 5 ? "строки" : "строк"})
+          </span>
         </div>
         <button
           type="button"
@@ -54,13 +59,24 @@ export function CodeBlock({ language, code }: CodeBlockProps) {
           ) : (
             <>
               <Copy className="h-3 w-3" />
-              <span>Копировать</span>
+              <span>Копировать код</span>
             </>
           )}
         </button>
       </div>
-      <div className="overflow-x-auto p-3.5 font-mono text-[13px] leading-relaxed text-white/90 selection:bg-[#22d3ee]/30">
-        <pre className="m-0 whitespace-pre">{code}</pre>
+      <div className="overflow-x-auto p-3.5 font-mono text-[12px] leading-relaxed text-white/90 selection:bg-[#22d3ee]/30">
+        {showLineNumbers ? (
+          <div className="flex">
+            <div className="select-none pr-3 text-right text-white/25 border-r border-white/[0.08] font-mono text-[12px] leading-relaxed">
+              {lines.map((_, i) => (
+                <div key={i}>{i + 1}</div>
+              ))}
+            </div>
+            <pre className="m-0 pl-3 whitespace-pre flex-1 font-mono text-[12px] leading-relaxed">{code}</pre>
+          </div>
+        ) : (
+          <pre className="m-0 whitespace-pre font-mono text-[12px] leading-relaxed">{code}</pre>
+        )}
       </div>
     </div>
   );
