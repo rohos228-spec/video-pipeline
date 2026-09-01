@@ -1945,7 +1945,7 @@ async def _maybe_volume_complete_chat_result(
     )
 
 
-_LLM_PACK_PARALLEL = 3
+_LLM_PACK_PARALLEL = 4
 
 
 def _merge_packed_apply_ops(texts: list[str]) -> str:
