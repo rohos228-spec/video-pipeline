@@ -32,6 +32,8 @@ VO_UNITS_PER_BATCH = 6
 # Группа script_frames_qc (биты → действие → кадры → промты → QC):
 # нормированные пачки по 8 отрезков закадра, до 6 пачек параллельно, сдвиг 0.5 с.
 SCRIPT_FRAMES_QC_UNITS_PER_BATCH = 8
+# fw_frames: нарезка ровно по 6 кадров (тяжёлые image + anim + action промты).
+FW_FRAMES_PER_BATCH = 6
 VO_PARALLEL_MAX = 6
 VO_STAGGER_SEC = 0.5
 SHOT_VO_MIN_CHARS = 27
@@ -72,7 +74,7 @@ def frames_per_batch(
         from math import ceil
 
         # Добор хвоста (≤32 кадра) — один вызов, не 5 крошечных пачек.
-        if dense and n <= _DENSE_FRAMES_PER_BATCH:
+        if dense and n <= 32:
             return n
         return max(1, int(ceil(n / int(target_batches))))
     avg = max(int(json_bytes), 0) / n if n else 0
@@ -990,8 +992,10 @@ async def run_apply_ops_batched(
         )
         if on_progress is not None:
             try:
+                total_target = len(pending)
+                total_applied = len(merged_ops) + len(ops)
                 await on_progress(
-                    f"пачка {my_i}/{len(packs)} · {len(ops)} ops"
+                    f"кадры {min(total_applied, total_target)}/{total_target} · вызов {my_i}"
                 )
             except Exception:
                 logger.debug("apply_ops progress callback failed", exc_info=True)
