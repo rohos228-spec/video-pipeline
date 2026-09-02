@@ -2023,6 +2023,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             from app.services.apply_ops_batches import (
                 CAMERA_MENU_UNITS_PER_BATCH,
                 SCRIPT_FRAMES_QC_PARALLEL_BATCHES,
+                SCRIPT_FRAMES_QC_UNITS_PER_BATCH,
                 SKIP_CAMERA_MENU,
                 SKIP_PROMPTS_AND_ACTION,
                 VO_PARALLEL_MAX,
@@ -2143,10 +2144,21 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 fw_frames = frame_prompts and nk.endswith("_fw_frames")
                 fw_qc = qc_prompts and nk.endswith("_fw_qc")
                 group_parallel = bool(script_frames_qc) and not fw_camera_menu_only
+                # Промты/QC — длинный JSON на кадр. 108 кадров в 6 пачках
+                # (~18/call) → GPT обрывает ответ, adaptive 1→2→4 раздувает
+                # «пачка 24/6» и нода часами не закрывается. Режем по 8, как img_pr.
+                prompt_chunk = group_parallel and (fw_frames or fw_qc)
                 if fw_camera_menu_only:
                     batch_label = (
                         f"меню съёмки по {CAMERA_MENU_UNITS_PER_BATCH}, "
                         f"параллельно {VO_PARALLEL_MAX}, "
+                        f"сдвиг {VO_STAGGER_SEC:g}с"
+                    )
+                elif prompt_chunk:
+                    batch_label = (
+                        f"script_frames_qc промты по "
+                        f"{SCRIPT_FRAMES_QC_UNITS_PER_BATCH}, "
+                        f"параллельно {SCRIPT_FRAMES_QC_PARALLEL_BATCHES}, "
                         f"сдвиг {VO_STAGGER_SEC:g}с"
                     )
                 elif group_parallel:
@@ -2199,14 +2211,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         )
                     ),
                     target_batches=(
-                        SCRIPT_FRAMES_QC_PARALLEL_BATCHES
-                        if group_parallel
-                        else None
+                        None
+                        if prompt_chunk
+                        else (
+                            SCRIPT_FRAMES_QC_PARALLEL_BATCHES
+                            if group_parallel
+                            else None
+                        )
                     ),
                     chunk_size=(
                         CAMERA_MENU_UNITS_PER_BATCH
                         if fw_camera_menu_only
-                        else None
+                        else (
+                            SCRIPT_FRAMES_QC_UNITS_PER_BATCH
+                            if prompt_chunk
+                            else None
+                        )
                     ),
                     parallel_max=(
                         SCRIPT_FRAMES_QC_PARALLEL_BATCHES
