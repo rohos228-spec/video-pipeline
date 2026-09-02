@@ -1507,6 +1507,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         ):
             from app.services.apply_ops_batches import (
                 CAMERA_MENU_UNITS_PER_BATCH,
+                FW_FRAMES_PER_BATCH,
                 SCRIPT_FRAMES_QC_UNITS_PER_BATCH,
                 SKIP_CAMERA_MENU,
                 SKIP_PROMPTS_AND_ACTION,
@@ -1711,9 +1712,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         CAMERA_MENU_UNITS_PER_BATCH
                         if fw_camera_menu_only
                         else (
-                            SCRIPT_FRAMES_QC_UNITS_PER_BATCH
-                            if script_frames_qc
-                            else None
+                            FW_FRAMES_PER_BATCH
+                            if fw_frames
+                            else (
+                                SCRIPT_FRAMES_QC_UNITS_PER_BATCH
+                                if script_frames_qc
+                                else None
+                            )
                         )
                     ),
                     parallel_max=(
@@ -1726,7 +1731,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         if fw_camera_menu_only or script_frames_qc
                         else None
                     ),
-                    chunk_by_vo_unit=bool(script_frames_qc),
+                    chunk_by_vo_unit=bool(script_frames_qc and not fw_frames),
                     footer_kind=(
                         "camera_menu"
                         if fw_camera_menu_only

@@ -1143,14 +1143,18 @@ def test_shots_vo_accepts_name_title_and_normal_chunk() -> None:
 
 
 @pytest.mark.asyncio
-async def test_vo_chunk_size_30_packs(tmp_path, monkeypatch) -> None:
-    """script_frames_qc: пачки по 30 отрезков закадра."""
+async def test_vo_chunk_size_8_packs(tmp_path, monkeypatch) -> None:
+    """script_frames_qc: пачки по 8 отрезков закадра."""
     import json
 
-    from app.services.apply_ops_batches import SCRIPT_FRAMES_QC_UNITS_PER_BATCH
+    from app.services.apply_ops_batches import (
+        FW_FRAMES_PER_BATCH,
+        SCRIPT_FRAMES_QC_UNITS_PER_BATCH,
+    )
     from app.services.gpt_operator_client import OperatorApiResult
 
-    assert SCRIPT_FRAMES_QC_UNITS_PER_BATCH == 30
+    assert SCRIPT_FRAMES_QC_UNITS_PER_BATCH == 8
+    assert FW_FRAMES_PER_BATCH == 6
     calls: list[int] = []
 
     async def fake_run(**kwargs):
@@ -1182,7 +1186,7 @@ async def test_vo_chunk_size_30_packs(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.apply_ops_batches.run_operator_api", fake_run
     )
-    frames = [_frame(i) for i in range(65)]
+    frames = [_frame(i) for i in range(20)]
     ctx = tmp_path / "db_frames.json"
     ctx.write_text("{}", encoding="utf-8")
     res = await run_apply_ops_batched(
@@ -1200,5 +1204,5 @@ async def test_vo_chunk_size_30_packs(tmp_path, monkeypatch) -> None:
         parallel_max=1,
         footer_kind="bits",
     )
-    assert calls == [30, 30, 5]
-    assert len(res.apply_ops["ops"]) == 65
+    assert calls == [8, 8, 4]
+    assert len(res.apply_ops["ops"]) == 20
