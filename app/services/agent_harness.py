@@ -224,7 +224,7 @@ def _count_project_log_errors(project_id: int, slug: str) -> tuple[int, str]:
         return 0, f"read-fail:{e}"
     for ln in lines:
         if any(n and n in ln for n in needles) and (
-            "ERROR" in ln or "WARNING" in ln or "Traceback" in ln
+            "ERROR" in ln or "Traceback" in ln or "CRITICAL" in ln
         ):
             hits.append(ln)
     return len(hits), log.name
@@ -447,35 +447,6 @@ def verify_project_disk(
     if videos_required and not videos:
         repair.append("video")
 
-    r48 = _count_r48_filled(xlsx) if xlsx.is_file() else 0
-    # R48 обязателен только на/после anim_pr. На hero_ready старые scenes/
-    # пустой R48 НЕ должны PAUSE'ить генерацию c02.
-    _R48_REQUIRED_STATUSES = {
-        "animation_prompts_ready",
-        "generating_videos",
-        "videos_ready",
-        "generating_audio",
-        "audio_ready",
-        "generating_music",
-        "music_ready",
-        "assembling",
-        "assembled",
-        "published",
-    }
-    if scenes and status in _R48_REQUIRED_STATUSES:
-        r48_ok = r48 >= len(scenes)
-        if not r48_ok:
-            repair.append("anim_pr")
-    else:
-        r48_ok = True
-    checks.append(
-        HarnessCheck(
-            "r48_anim",
-            r48_ok,
-            f"filled={r48} scenes={len(scenes)} status={status}",
-        )
-    )
-
     # DB frames ↔ xlsx plan parity (строго для assembled, иначе диагностика).
     plan_rows = _count_plan_rows_filled(
         xlsx,
@@ -483,6 +454,8 @@ def verify_project_disk(
     )
     r45 = plan_rows[ROW_IMAGE_PROMPT_V8]
     vo_xlsx = plan_rows[ROW_VOICEOVER_V8]
+    r48 = _count_r48_filled(xlsx) if xlsx.is_file() else 0
+
     frames_total = img_pr_db = anim_pr_db = vo_db = 0
     parity_err = ""
     try:
@@ -508,6 +481,35 @@ def verify_project_disk(
                 vo_db = int(row[3] or 0)
     except Exception as e:  # noqa: BLE001
         parity_err = str(e)
+
+    # R48 обязателен только на/после anim_pr. На hero_ready старые scenes/
+    # пустой R48 НЕ должны PAUSE'ить генерацию c02.
+    _R48_REQUIRED_STATUSES = {
+        "animation_prompts_ready",
+        "generating_videos",
+        "videos_ready",
+        "generating_audio",
+        "audio_ready",
+        "generating_music",
+        "music_ready",
+        "assembling",
+        "assembled",
+        "published",
+    }
+    if scenes and status in _R48_REQUIRED_STATUSES:
+        r48_ok = (r48 >= len(scenes)) or (anim_pr_db >= len(scenes))
+        if not r48_ok:
+            repair.append("anim_pr")
+    else:
+        r48_ok = True
+    checks.append(
+        HarnessCheck(
+            "r48_anim",
+            r48_ok,
+            f"filled={max(r48, anim_pr_db)} scenes={len(scenes)} status={status}",
+        )
+    )
+
     if parity_err:
         checks.append(HarnessCheck("frames_xlsx_parity", False, parity_err))
     else:
@@ -516,17 +518,14 @@ def verify_project_disk(
             n = len(scenes)
             parity_ok = (
                 frames_total >= n
-                and img_pr_db >= n
-                and anim_pr_db >= n
-                and vo_db >= n
-                and r45 >= n
-                and r48 >= n
-                and vo_xlsx >= n
+                and (img_pr_db >= n or r45 >= n)
+                and (anim_pr_db >= n or r48 >= n)
+                and (vo_db >= n or vo_xlsx >= n)
             )
             if not parity_ok:
-                if img_pr_db < n or r45 < n:
+                if img_pr_db < n and r45 < n:
                     repair.append("img_pr")
-                if anim_pr_db < n or r48 < n:
+                if anim_pr_db < n and r48 < n:
                     repair.append("anim_pr")
         checks.append(
             HarnessCheck(

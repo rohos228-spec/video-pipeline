@@ -1277,7 +1277,7 @@ async def list_project_assets(
         "items": ["items", "objects"],
         "images": ["scenes", "images"],
         "videos": ["videos", "clips"],
-        "audio": ["audio", "subs"],
+        "audio": ["audio", "subs", "music", "sfx"],
         "final": ["final"],
         "text": [],
     }

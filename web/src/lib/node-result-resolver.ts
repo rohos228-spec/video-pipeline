@@ -187,6 +187,13 @@ export function gateNodeResultVisibility(
   nodeStatus?: NodeRunStatus,
 ): NodeResultSnapshot {
   if (nodeStatus === "done" || nodeStatus === "waiting_hitl") {
+    if (!snapshot.hasResult) {
+      return {
+        ...snapshot,
+        hasResult: true,
+        summary: snapshot.summary || "Шаг завершён",
+      };
+    }
     return snapshot;
   }
   if (nodeType === "topic") {
@@ -626,9 +633,27 @@ function computeNodeResult(
 
     case "sfx_plan": {
       const meta = project?.meta as Record<string, unknown> | undefined;
-      const sfxPlan = meta?.sfx_plan || meta?.sound_plan;
-      if (sfxPlan) {
-        return ready([], "План звуков готов", "studio");
+      const aiJobs = meta?.ai_jobs as Record<string, unknown> | undefined;
+      const sfxPlan = meta?.sfx_plan || meta?.sound_plan || aiJobs?.sfx_plan;
+      const sfxPlanAsset = ctx.assets.find(
+        (a) => a.id === "sfx_plan.json" || a.kind === "sfx_plan" || a.path?.includes("sfx_plan.json"),
+      );
+      if (sfxPlan || sfxPlanAsset) {
+        return {
+          hasResult: true,
+          itemCount: 1,
+          summary: "План звуков готов",
+          items: [
+            {
+              id: "sfx_plan",
+              label: "План звуков (sfx_plan.json)",
+              kind: "file",
+              downloadUrl: sfxPlanAsset?.preview_url,
+            },
+          ],
+          replaceMode: "studio",
+          viewMode: "default",
+        };
       }
       return empty("План звуков ещё не составлен", "studio");
     }

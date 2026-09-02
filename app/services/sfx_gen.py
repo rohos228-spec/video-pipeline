@@ -222,6 +222,7 @@ async def generate_sfx_files(
                 continue
         ext = "mp3" if use_api else "wav"
         out_path = sfx_dir / f"sfx_{idx:02d}_{ev.kind}.{ext}"
+        actual_provider = "elevenlabs" if use_api else "local_synth"
         try:
             if use_api:
                 await _elevenlabs_sfx(ev.prompt, ev.duration, out_path)
@@ -239,6 +240,7 @@ async def generate_sfx_files(
             out_path = sfx_dir / f"sfx_{idx:02d}_{ev.kind}.wav"
             samples = _synth(ev.kind, ev.duration, seed=1000 + idx)
             _write_wav(out_path, samples)
+            actual_provider = "local_synth"
 
         errs = verify_audio_file(out_path, expect_duration=ev.duration, duration_tol=0.6)
         if errs:
@@ -255,7 +257,7 @@ async def generate_sfx_files(
                 "kind": ev.kind,
                 "gain": ev.gain,
                 "duck": ev.duck,
-                "provider": "elevenlabs" if use_api else "local_synth",
+                "provider": actual_provider,
             }
         )
 
