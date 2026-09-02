@@ -533,8 +533,24 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
                 return ProjectStatus.videos_ready
             # audio ✓
             if final_arts == 0:
-                has_sfx_gen = bool(meta_now.get("sfx_generated")) or bool(meta_now.get("sfx_ready"))
-                has_sfx_plan = bool(meta_now.get("sfx_plan"))
+                p_dir = getattr(project, "data_dir", None)
+                sfx_plan_file = bool(p_dir and (p_dir / "sfx_plan.json").is_file())
+                ai_jobs = meta_now.get("ai_jobs") if isinstance(meta_now.get("ai_jobs"), dict) else {}
+                has_sfx_plan = (
+                    bool(meta_now.get("sfx_plan"))
+                    or bool(ai_jobs.get("sfx_plan"))
+                    or sfx_plan_file
+                )
+                sfx_dir = p_dir / "sfx" if p_dir else None
+                has_sfx_files = bool(
+                    sfx_dir and sfx_dir.is_dir() and (any(sfx_dir.glob("*.mp3")) or any(sfx_dir.glob("*.wav")))
+                )
+                has_sfx_gen = (
+                    bool(meta_now.get("sfx_generated"))
+                    or bool(meta_now.get("sfx_ready"))
+                    or bool(ai_jobs.get("sfx_files"))
+                    or has_sfx_files
+                )
                 if has_sfx_gen:
                     return ProjectStatus.sfx_ready
                 if has_sfx_plan:

@@ -45,6 +45,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         raise RuntimeError("sfx_plan: нет кадров — сначала split")
 
     events = await plan_sfx_events(session, project, frames)
+    meta = dict(project.meta or {})
+    meta["sfx_plan"] = True
+    project.meta = meta
     project.status = ProjectStatus.sfx_plan_ready
     await session.flush()
     await session.commit()

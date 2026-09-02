@@ -1,7 +1,7 @@
 "use client";
 
 import type { MouseEvent } from "react";
-import { Circle, Check, User, X, Loader2 } from "lucide-react";
+import { Circle, Check, Minus, User, X, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { NodeResultSnapshot } from "@/lib/node-result-resolver";
 
@@ -27,7 +27,10 @@ export function NodeResultBadge({
 }) {
   const isFailed = nodeStatus === "failed";
   const isRunning = nodeStatus === "running";
-  const ready = snapshot.hasResult && !isFailed;
+  const isDone = nodeStatus === "done" || nodeStatus === "waiting_hitl";
+  const hasItems = snapshot.itemCount > 0;
+  const isDoneEmpty = isDone && !hasItems;
+  const ready = snapshot.hasResult && hasItems && !isFailed;
   const isHero = nodeType === "hero" || nodeType === "hitl_hero";
   const heroItem = isHero ? snapshot.items.find((i) => i.previewUrl || i.content) : null;
 
@@ -50,7 +53,9 @@ export function NodeResultBadge({
                 ? "border-amber-500/60"
                 : ready
                   ? "border-emerald-500/60"
-                  : "border-muted-foreground/40",
+                  : isDoneEmpty
+                    ? "border-zinc-500/50"
+                    : "border-muted-foreground/40",
           )}
         />
         <button
@@ -100,7 +105,9 @@ export function NodeResultBadge({
               ? "border-amber-500/60"
               : ready
                 ? "border-emerald-500/60"
-                : "border-muted-foreground/40",
+                : isDoneEmpty
+                  ? "border-zinc-500/50"
+                  : "border-muted-foreground/40",
         )}
       />
       <button
@@ -115,7 +122,9 @@ export function NodeResultBadge({
               ? "border-amber-500/80 bg-amber-500/20 text-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.3)]"
               : ready
                 ? "border-emerald-500/80 bg-emerald-500/20 text-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.3)]"
-                : "border-muted-foreground/40 bg-muted/80 text-muted-foreground",
+                : isDoneEmpty
+                  ? "border-zinc-600/80 bg-zinc-800/80 text-zinc-300 shadow-[0_0_8px_rgba(255,255,255,0.06)] hover:border-zinc-500 hover:text-white"
+                  : "border-muted-foreground/40 bg-muted/80 text-muted-foreground",
         )}
         title={
           isFailed
@@ -124,7 +133,9 @@ export function NodeResultBadge({
               ? "Шаг в работе..."
               : ready
                 ? `Результат: ${snapshot.summary} — нажмите для просмотра`
-                : "Результата пока нет — нажмите для деталей"
+                : isDoneEmpty
+                  ? `Шаг завершён · ${snapshot.summary || "0 объектов (не требуются)"}`
+                  : "Результата пока нет — нажмите для деталей"
         }
       >
         {isFailed ? (
@@ -133,6 +144,8 @@ export function NodeResultBadge({
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
         ) : ready ? (
           <Check className="h-4 w-4 stroke-[2.5]" />
+        ) : isDoneEmpty ? (
+          <Minus className="h-4 w-4 stroke-[2.5]" />
         ) : (
           <Circle className="h-3.5 w-3.5" />
         )}
