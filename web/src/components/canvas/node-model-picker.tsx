@@ -69,10 +69,10 @@ function VendorGlyph({ icon, className }: { icon: string; className?: string }) 
   return <span className={cn("font-semibold leading-none", className)}>{icon}</span>;
 }
 
-function patchNodeModel(nodeKey: string, patch: NodeMediaPatch) {
+function patchNodeModel(nodeKey: string, patch: NodeMediaPatch, isText?: boolean) {
   window.dispatchEvent(
     new CustomEvent("canvas-patch-node-data", {
-      detail: { nodeKey, patch },
+      detail: { nodeKey, patch, globalText: isText },
     }),
   );
   window.dispatchEvent(new CustomEvent("canvas-save-workflow"));
@@ -198,6 +198,7 @@ export function NodeModelPicker({
         open={open}
         onOpenChange={setOpen}
         nodeKey={nodeKey}
+        nodeType={nodeType}
         selectedId={selectedId}
         catalog={catalog}
         imageResolution={imageResolution}
@@ -212,6 +213,7 @@ function ModelCatalogDialog({
   open,
   onOpenChange,
   nodeKey,
+  nodeType,
   selectedId,
   catalog,
   imageResolution,
@@ -221,6 +223,7 @@ function ModelCatalogDialog({
   open: boolean;
   onOpenChange: (v: boolean) => void;
   nodeKey: string;
+  nodeType: string;
   selectedId: string;
   catalog: ModelCatalogPayload;
   imageResolution?: string | null;
@@ -303,9 +306,14 @@ function ModelCatalogDialog({
                 imageQuality={m.id === selectedId ? imageQuality : null}
                 aspectRatio={m.id === selectedId ? aspectRatio : null}
                 onApply={(patch) => {
-                  patchNodeModel(nodeKey, patch);
+                  const isText = m.kind === "text" || (!patch.imageResolution && !patch.aspectRatio && !patch.imageQuality);
+                  patchNodeModel(nodeKey, patch, isText);
                   onOpenChange(false);
-                  toast.success(`Модель: ${m.label}`);
+                  if (isText) {
+                    toast.success(`Модель «${m.label}» применена ко всем текстовым нодам`);
+                  } else {
+                    toast.success(`Модель: ${m.label}`);
+                  }
                 }}
               />
             ))}

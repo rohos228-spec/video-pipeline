@@ -447,6 +447,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             project.id, project.hero_mode, project.hero_count,
         )
         project.status = ProjectStatus.hero_ready
+        await session.flush()
         return
 
     # Конфиг героев из проекта.
@@ -487,6 +488,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     project.id,
                 )
                 project.status = ProjectStatus.hero_ready
+                await session.flush()
                 return
 
     # Определяем СЛЕДУЮЩУЮ пару (hero_idx, var_idx), которую надо сделать.
