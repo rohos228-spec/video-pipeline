@@ -24,6 +24,7 @@ async def sync_storage_after_step(
     и voiceover попадает в хранилище только позже через poll autoSync.
     """
     try:
+        await session.flush()
         await session.refresh(project)
     except Exception:  # noqa: BLE001
         logger.debug(

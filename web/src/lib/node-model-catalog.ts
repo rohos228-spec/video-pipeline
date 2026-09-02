@@ -70,6 +70,26 @@ export const DEFAULT_IMAGE_MODEL_ID = "gpt-image-2-vip";
 export const DEFAULT_VIDEO_MODEL_ID = "veo-3-1-lite";
 export const IMAGE_NODE_TYPES = new Set(["images", "hero", "items", "hitl_images"]);
 export const VIDEO_NODE_TYPES = new Set(["videos", "hitl_videos"]);
+export const MEDIA_NODE_TYPES = new Set([
+  "images",
+  "hero",
+  "items",
+  "hitl_images",
+  "videos",
+  "hitl_videos",
+  "audio",
+  "music",
+  "sfx_plan",
+  "sfx_gen",
+  "sfx",
+  "storage",
+  "topic",
+  "excel_feed",
+  "shot_menu",
+]);
+export function isTextNodeType(nodeType: string): boolean {
+  return !MEDIA_NODE_TYPES.has(nodeType);
+}
 export const IMAGE_MODEL_ALIASES: Record<string, string> = { "gpt-image-2": "gpt-image-2-vip" };
 export const HIDDEN_IMAGE_IDS = new Set(["gpt-image-2", "nano-banana-pro"]);
 

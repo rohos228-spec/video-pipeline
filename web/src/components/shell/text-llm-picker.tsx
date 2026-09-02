@@ -48,6 +48,11 @@ export function TextLlmPicker() {
       if (r.ok) {
         const data = (await r.json()) as TextLlmStatus;
         setStatus(data);
+        window.dispatchEvent(
+          new CustomEvent("canvas-patch-global-model", {
+            detail: { modelId },
+          }),
+        );
       }
     } finally {
       setBusy(false);

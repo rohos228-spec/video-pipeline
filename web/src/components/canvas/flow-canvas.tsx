@@ -80,7 +80,7 @@ import {
   readCanvasGraph,
 } from "@/lib/canvas-graph-storage";
 import { mergeGraphNodesWithRuntime } from "@/lib/canvas-node-merge";
-import { defaultModelIdForNodeType } from "@/lib/node-model-catalog";
+import { defaultModelIdForNodeType, isTextNodeType } from "@/lib/node-model-catalog";
 import { EdgeKindControls } from "./edge-kind-controls";
 import { SoftThreadEdge } from "./soft-thread-edge";
 import { edgeKindLabel } from "@/lib/gpt-operator";
@@ -357,6 +357,8 @@ export function FlowCanvas({
             progressText,
             error: nr.error ?? null,
             attempts: nr.attempts ?? 0,
+            startedAt: nr.started_at ?? null,
+            finishedAt: nr.finished_at ?? null,
           },
         };
       }),
@@ -600,21 +602,51 @@ export function FlowCanvas({
 
   useEffect(() => {
     const onPatch = (ev: Event) => {
-      const detail = (ev as CustomEvent<{ nodeKey: string; patch: Record<string, unknown> }>)
-        .detail;
+      const detail = (
+        ev as CustomEvent<{
+          nodeKey: string;
+          patch: Record<string, unknown>;
+          globalText?: boolean;
+        }>
+      ).detail;
       if (!detail?.nodeKey) return;
-      setNodes((prev) =>
-        prev.map((n) => {
-          if (n.id !== detail.nodeKey) return n;
-          return {
-            ...n,
-            data: {
-              ...(n.data as PipelineNodeData),
-              ...detail.patch,
-            },
-          };
-        }),
-      );
+      const patch = detail.patch;
+      const isTextModelChange =
+        detail.globalText ||
+        (patch.modelId != null &&
+          !patch.imageResolution &&
+          !patch.aspectRatio &&
+          !patch.imageQuality);
+
+      setNodes((prev) => {
+        const target = prev.find((n) => n.id === detail.nodeKey);
+        const targetType = (target?.data as PipelineNodeData)?.type || "";
+        const shouldApplyGlobally = Boolean(isTextModelChange && isTextNodeType(targetType));
+
+        return prev.map((n) => {
+          const nodeData = n.data as PipelineNodeData;
+          if (n.id === detail.nodeKey) {
+            return {
+              ...n,
+              data: {
+                ...nodeData,
+                ...patch,
+              },
+            };
+          }
+          if (shouldApplyGlobally && isTextNodeType(nodeData.type) && patch.modelId) {
+            return {
+              ...n,
+              data: {
+                ...nodeData,
+                modelId: patch.modelId as string,
+                modelChannel: (patch.modelChannel as "stable") || nodeData.modelChannel,
+              },
+            };
+          }
+          return n;
+        });
+      });
       if (
         detail.patch.modelId != null ||
         detail.patch.modelChannel != null ||
@@ -625,8 +657,33 @@ export function FlowCanvas({
         scheduleSaveWorkflow();
       }
     };
+    const onGlobalModel = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ modelId: string }>).detail;
+      if (!detail?.modelId) return;
+      setNodes((prev) =>
+        prev.map((n) => {
+          const nodeData = n.data as PipelineNodeData;
+          if (isTextNodeType(nodeData.type)) {
+            return {
+              ...n,
+              data: {
+                ...nodeData,
+                modelId: detail.modelId,
+              },
+            };
+          }
+          return n;
+        }),
+      );
+      scheduleSaveWorkflow();
+    };
+
     window.addEventListener("canvas-patch-node-data", onPatch);
-    return () => window.removeEventListener("canvas-patch-node-data", onPatch);
+    window.addEventListener("canvas-patch-global-model", onGlobalModel);
+    return () => {
+      window.removeEventListener("canvas-patch-node-data", onPatch);
+      window.removeEventListener("canvas-patch-global-model", onGlobalModel);
+    };
   }, [setNodes, scheduleSaveWorkflow]);
 
   useEffect(() => {
