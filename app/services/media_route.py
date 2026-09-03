@@ -15,6 +15,7 @@ from app.settings import settings
 OUTSEE_IMAGE_IDS = frozenset({
     "gpt-image-2-vip",
     "nano-banana-2",
+    "nano-banana-2-lite",
 })
 KIE_IMAGE_IDS = frozenset({
     "flux-2-pro",

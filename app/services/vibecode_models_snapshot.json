@@ -1,5 +1,19 @@
 [
   {
+    "display_name": "GPT 5.5",
+    "id": "gpt-5.5",
+    "is_image": false,
+    "object": "model",
+    "owned_by": "vibecode",
+    "pricing": {
+      "cache_create_usd_per_m": 0.0,
+      "cache_read_usd_per_m": 0.042646,
+      "currency": "usd",
+      "input_usd_per_m": 0.426462,
+      "output_usd_per_m": 2.558774
+    }
+  },
+  {
     "display_name": "GPT 5.6 Sol",
     "id": "gpt-5.6-sol",
     "is_image": false,
