@@ -365,15 +365,13 @@ def verify_project_disk(
     if xlsx.is_file():
         try:
             from app.services.excel_characters import (
-                is_polluted_character_field,
+                character_blocks_hero,
                 parse_persons_sheet,
             )
 
             excel_persons = parse_persons_sheet(xlsx)
             for ch in excel_persons:
-                if is_polluted_character_field(ch.name) or is_polluted_character_field(
-                    ch.look
-                ):
+                if character_blocks_hero(ch):
                     polluted.append(ch.id)
         except Exception as e:  # noqa: BLE001
             logger.debug("harness persons parse skip: {}", e)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from app.services.excel_characters import (
     ExcelCharacter,
     build_ref_variation_sheet_prompt,
+    character_blocks_hero,
     is_polluted_character_field,
 )
 
@@ -12,6 +13,42 @@ from app.services.excel_characters import (
 def test_polluted_character_name_detected() -> None:
     assert is_polluted_character_field("оставь формат неизменный")
     assert not is_polluted_character_field("Фридрих Ницше")
+
+
+def test_variation_marker_name_ok_when_parent_in_rules() -> None:
+    """Агент так помечает реф-вариацию: имя-маркер + правила = c01."""
+    variation = ExcelCharacter(
+        id="c07",
+        name="оставь формат неизменный",
+        look="осанка скованная",
+        clothes="тёмное платье без украшений",
+        rules="c01",
+        ref_ids=["c01"],
+    )
+    standalone = ExcelCharacter(
+        id="c09",
+        name="оставь формат неизменный",
+        look="мужчина",
+        ref_ids=[],
+    )
+    assert character_blocks_hero(variation) is False
+    assert character_blocks_hero(standalone) is True
+
+
+def test_ref_variation_prompt_omits_format_marker_name() -> None:
+    ch = ExcelCharacter(
+        id="c07",
+        name="оставь формат неизменный",
+        look="осанка скованная",
+        clothes="тёмное платье",
+        char="унижена",
+        ref_ids=["c01"],
+    )
+    text = build_ref_variation_sheet_prompt(ch, style="")
+    assert "оставь формат" not in text.lower()
+    assert "неизменн" not in text.lower()
+    assert "осанка скованная" in text or "Appearance:" in text
+    assert "c07" in text
 
 
 def test_ref_variation_prompt_forces_sheet_not_scene() -> None:

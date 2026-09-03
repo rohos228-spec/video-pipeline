@@ -1201,9 +1201,9 @@ async def _generate_one_excel_character(
             )
 
         # Сборка промта.
-        from app.services.excel_characters import is_polluted_character_field
+        from app.services.excel_characters import character_blocks_hero
 
-        if is_polluted_character_field(ch.name):
+        if character_blocks_hero(ch):
             raise RuntimeError(
                 f"excel_hero {ch.id}: в имени служебный текст агента "
                 f"(name={ch.name!r}). Исправь лист «Персонажи» и перезапусти hero."

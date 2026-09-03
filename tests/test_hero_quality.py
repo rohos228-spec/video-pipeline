@@ -77,3 +77,29 @@ def test_ref_empty_prompt_does_not_fail_harness(tmp_path: Path, monkeypatch) -> 
     checks = {c.name: c for c in collect_hero_quality_checks(1, tmp_path)}
     assert "hero_sheet_prompt" not in checks
     assert checks["hero_sheet_png"].ok is True
+
+
+def test_variation_marker_name_does_not_fail_fields_sane(tmp_path: Path, monkeypatch) -> None:
+    from app import settings as app_settings
+    from app.services import hero_quality as hq
+
+    monkeypatch.setattr(app_settings.settings, "sqlite_path", tmp_path / "missing.db")
+    monkeypatch.setattr(hq, "_latest_hero_artifacts", lambda _pid: {})
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = SHEET_PERSONS
+    ws.cell(ROW_ID, 2, "c01")
+    ws.cell(ROW_NAME, 2, "Дарья")
+    ws.cell(ROW_LOOK, 2, "дворянка")
+    ws.cell(ROW_CLOTHES, 2, "платье")
+    ws.cell(ROW_ID, 3, "c07")
+    ws.cell(ROW_NAME, 3, "оставь формат неизменный")
+    ws.cell(ROW_LOOK, 3, "позорный столб")
+    ws.cell(ROW_CLOTHES, 3, "цепи")
+    ws.cell(ROW_RULES, 3, "c01")
+    xlsx = tmp_path / "project.xlsx"
+    wb.save(xlsx)
+    wb.close()
+    checks = {c.name: c for c in collect_hero_quality_checks(1, tmp_path)}
+    assert checks["excel_hero_fields_sane"].ok is True

@@ -12,7 +12,7 @@ from typing import Any
 
 from app.services.agent_harness import HarnessCheck  # noqa: TC001
 from app.services.excel_characters import (
-    is_polluted_character_field,
+    character_blocks_hero,
     parse_persons_sheet,
 )
 
@@ -131,7 +131,7 @@ def collect_hero_quality_checks(
     bad_sheet: list[str] = []
 
     for ch in persons:
-        if is_polluted_character_field(ch.name) or is_polluted_character_field(ch.look):
+        if character_blocks_hero(ch):
             polluted.append(ch.id)
         png = data_dir / "characters" / f"{ch.id}.png"
         # Реф-вариация (rules=c01): пустой hero_prompt — НОРМА (картинка
