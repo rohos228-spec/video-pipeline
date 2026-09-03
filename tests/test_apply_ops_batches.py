@@ -627,6 +627,62 @@ async def test_incomplete_one_uuid_retries_that_frame(tmp_path, monkeypatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_incomplete_stream_salvage_retries_missing_without_splitting(
+    tmp_path, monkeypatch
+) -> None:
+    """Обрыв сокета дал 2/6 кадров → retry 4 оставшихся кадров без дробления на L2."""
+    import json
+    from app.services.gpt_operator_client import OperatorApiResult
+
+    calls: list[int] = []
+
+    async def fake_run(**kwargs):
+        path = kwargs["input_paths"][0]
+        frames = json.loads(path.read_text(encoding="utf-8"))["frames"]
+        calls.append(len(frames))
+        # На первой попытке (6 кадров) "обрыв стрима": возвращаем только первые 2 кадра
+        if len(frames) == 6:
+            keep = frames[:2]
+        else:
+            # На второй попытке дозапроса оставшихся 4 кадров: возвращаем все 4
+            keep = frames
+        return OperatorApiResult(
+            reply_text='{"ops":[]}',
+            output_paths=[path],
+            apply_ops={
+                "ops": [
+                    {"frame_uuid": fr["uuid"], "fields": {"закадр": "x"}}
+                    for fr in keep
+                ]
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.services.apply_ops_batches.run_operator_api", fake_run
+    )
+    frames = [_frame(i) for i in range(6)]
+    ctx = tmp_path / "db_frames.json"
+    ctx.write_text("{}", encoding="utf-8")
+    res = await run_apply_ops_batched(
+        project_dir=tmp_path,
+        node_key="n_excel_gpt_fw_frames",
+        role="excel_gpt",
+        output_mode="project_file",
+        prompt="p",
+        accompanying="",
+        db_ctx={"frames": frames},
+        ctx_path=ctx,
+        project_id=1,
+        dense=False,
+        chunk_size=6,
+        parallel_max=1,
+    )
+    # Должно быть ровно 2 вызова: [6, 4] без дробления 4 на [2, 2]!
+    assert calls == [6, 4]
+    assert len(res.apply_ops["ops"]) == 6
+
+
+@pytest.mark.asyncio
 async def test_qc_allow_empty_does_not_split_on_gpt_fail(tmp_path, monkeypatch) -> None:
     """QC: обрыв GPT не должен 1→2→4 крутить пачку до залипания."""
     import json
@@ -1144,7 +1200,7 @@ def test_shots_vo_accepts_name_title_and_normal_chunk() -> None:
 
 @pytest.mark.asyncio
 async def test_vo_chunk_size_8_packs(tmp_path, monkeypatch) -> None:
-    """script_frames_qc: пачки по 8 отрезков закадра."""
+    """script_frames_qc: пачки по 6 отрезков закадра."""
     import json
 
     from app.services.apply_ops_batches import (
@@ -1153,7 +1209,7 @@ async def test_vo_chunk_size_8_packs(tmp_path, monkeypatch) -> None:
     )
     from app.services.gpt_operator_client import OperatorApiResult
 
-    assert SCRIPT_FRAMES_QC_UNITS_PER_BATCH == 8
+    assert SCRIPT_FRAMES_QC_UNITS_PER_BATCH == 6
     assert FW_FRAMES_PER_BATCH == 6
     calls: list[int] = []
 
@@ -1204,5 +1260,83 @@ async def test_vo_chunk_size_8_packs(tmp_path, monkeypatch) -> None:
         parallel_max=1,
         footer_kind="bits",
     )
-    assert calls == [8, 8, 4]
+    assert calls == [6, 6, 6, 2]
     assert len(res.apply_ops["ops"]) == 20
+
+
+@pytest.mark.asyncio
+async def test_uuid_auto_repair_in_batch(tmp_path, monkeypatch) -> None:
+    """Проверка автопочинки near-miss и frame number в батчере."""
+    import json
+    from app.services.apply_ops_batches import run_apply_ops_batched
+    from app.services.gpt_operator_client import OperatorApiResult
+
+    frames = [
+        {"uuid": "11111111-2222-3333-4444-55555555555a", "number": 1, "voiceover_text": "Кадр один"},
+        {"uuid": "11111111-2222-3333-4444-55555555555b", "number": 2, "voiceover_text": "Кадр два"},
+    ]
+
+    async def fake_run(**kwargs):
+        path = kwargs["input_paths"][0]
+        # Модель возвращает 1 с опечаткой (near-miss 'c' вместо 'a') и 2 по номеру ('2' вместо uuid)
+        ops = [
+            {"frame_uuid": "11111111-2222-3333-4444-55555555555c", "fields": {"промт_картинки": "P1"}},
+            {"frame_uuid": "2", "fields": {"промт_картинки": "P2"}},
+        ]
+        return OperatorApiResult(
+            reply_text='{"ops":[]}',
+            output_paths=[path],
+            apply_ops={"ops": ops},
+        )
+
+    monkeypatch.setattr("app.services.apply_ops_batches.run_operator_api", fake_run)
+    ctx = tmp_path / "db_frames.json"
+    ctx.write_text("{}", encoding="utf-8")
+    res = await run_apply_ops_batched(
+        project_dir=tmp_path,
+        node_key="n_excel_gpt_prompts",
+        role="excel_gpt",
+        output_mode="project_file",
+        prompt="p",
+        accompanying="",
+        db_ctx={"frames": frames},
+        ctx_path=ctx,
+        project_id=1,
+        dense=False,
+        chunk_size=6,
+        parallel_max=1,
+        footer_kind="prompts",
+    )
+    # Оба кадра должны быть починены и сохранены!
+    applied_uuids = [op["frame_uuid"] for op in res.apply_ops["ops"]]
+    assert "11111111-2222-3333-4444-55555555555a" in applied_uuids
+    assert "11111111-2222-3333-4444-55555555555b" in applied_uuids
+
+
+def test_heavy_first_frame_isolated_in_split() -> None:
+    """Супер-жирный первый кадр должен уходить первой отдельной пачкой."""
+    from app.services.apply_ops_batches import split_frames, split_vo_units
+
+    heavy_frame = {
+        "uuid": "heavy_1",
+        "number": 1,
+        "voiceover_text": "Большой текст сценария " * 300,  # ~6600 символов
+    }
+    regular_frames = [
+        {"uuid": f"reg_{i}", "number": i, "voiceover_text": f"Короткий текст {i}"}
+        for i in range(2, 10)
+    ]
+    all_frames = [heavy_frame] + regular_frames
+
+    packs = split_frames(all_frames, 6)
+    assert len(packs[0]) == 1
+    assert packs[0][0]["uuid"] == "heavy_1"
+    assert len(packs[1]) == 6
+    assert len(packs[2]) == 2
+
+    vo_packs = split_vo_units(all_frames, 6)
+    assert len(vo_packs[0]) == 1
+    assert vo_packs[0][0]["uuid"] == "heavy_1"
+    assert len(vo_packs[1]) == 6
+    assert len(vo_packs[2]) == 2
+

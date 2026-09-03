@@ -301,7 +301,7 @@ def normalize_fields(raw: dict, aliases: dict[str, str], *, scope: str) -> dict:
 
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
-_HEX_UUID_RE = re.compile(r"^[0-9a-fA-F]+$")
+_HEX_UUID_RE = re.compile(r"^[0-9a-fA-F-]+$")
 
 
 def _hamming_distance(a: str, b: str) -> int:

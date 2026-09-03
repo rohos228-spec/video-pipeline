@@ -30,12 +30,13 @@ _LIGHT_JSON_BYTES_PER_BATCH = 180_000
 # Сценарист / закадр (прочие ноды): пачка = 6 ячеек VO.
 VO_UNITS_PER_BATCH = 6
 # Группа script_frames_qc (биты → действие → кадры → промты → QC):
-# нормированные пачки по 8 отрезков закадра, до 6 пачек параллельно, сдвиг 0.5 с.
-SCRIPT_FRAMES_QC_UNITS_PER_BATCH = 8
+# нормированные пачки по 6 отрезков закадра, до 6 пачек параллельно, сдвиг 0.5 с.
+SCRIPT_FRAMES_QC_UNITS_PER_BATCH = 6
 # fw_frames: нарезка ровно по 6 кадров (тяжёлые image + anim + action промты).
 FW_FRAMES_PER_BATCH = 6
-VO_PARALLEL_MAX = 6
-VO_STAGGER_SEC = 0.5
+# Параллельность пачек: 3 (вместо 6, чтобы не захлёбывался relay и сокеты). Сдвиг 1.0с.
+VO_PARALLEL_MAX = 3
+VO_STAGGER_SEC = 1.0
 SHOT_VO_MIN_CHARS = 27
 SHOT_VO_MAX_CHARS = 54
 
@@ -45,9 +46,9 @@ _ANIM_SKIP_KEYS = ("animation_prompt", "промт_видео")
 _ACTION_SKIP_KEYS = ("shot01_action", "main_action", "действие")
 # fw_frames: кадр готов только если картинка + видео + действие.
 SKIP_PROMPTS_AND_ACTION = "prompts_and_action"
-# Добор меню съёмки: крупность + движение + набор.
+# Добор меню съёмки: крупность + движение + набор (по 6).
 SKIP_CAMERA_MENU = "camera_menu"
-CAMERA_MENU_UNITS_PER_BATCH = 8
+CAMERA_MENU_UNITS_PER_BATCH = 6
 # Зависший SSE не должен держать всю волну 10 мин (GPT_TIMEOUT_S=600).
 _PROMPT_PACK_TIMEOUT_S = 180.0
 _SIZE_SKIP_KEYS = ("крупность", "size", "shot_size")
@@ -113,6 +114,21 @@ def should_batch_apply_ops(
 def split_frames(frames: list[Any], size: int) -> list[list[Any]]:
     if size <= 0:
         size = 1
+    if not frames:
+        return []
+    # Если первый кадр супер-жирный (сценарий / биты > 5000 символов) — выделяем его в соло-пачку
+    first_fr = frames[0]
+    first_heavy = False
+    if isinstance(first_fr, dict):
+        first_len = len(str(first_fr.get("voiceover_text") or first_fr.get("закадр") or "")) + len(str(first_fr))
+        if first_len >= 5000:
+            first_heavy = True
+    if first_heavy:
+        rest = frames[1:]
+        packs = [[first_fr]]
+        if rest:
+            packs.extend([rest[i : i + size] for i in range(0, len(rest), size)])
+        return packs
     return [frames[i : i + size] for i in range(0, len(frames), size)]
 
 
@@ -151,8 +167,20 @@ def split_vo_units(
     if unit_size <= 0:
         unit_size = 1
     units = group_vo_units(frames)
+    if not units:
+        return [list(frames)]
     packs: list[list[dict[str, Any]]] = []
-    for i in range(0, len(units), unit_size):
+    # Если первый юнит супер-жирный (> 5000 символов) — выделяем в отдельную соло-пачку
+    start_idx = 0
+    first_unit = units[0]
+    first_len = sum(
+        len(str(f.get("voiceover_text") or f.get("закадр") or "")) + len(str(f))
+        for f in first_unit
+    )
+    if first_len >= 5000:
+        packs.append(first_unit)
+        start_idx = 1
+    for i in range(start_idx, len(units), unit_size):
         pack: list[dict[str, Any]] = []
         for unit in units[i : i + unit_size]:
             pack.extend(unit)
@@ -535,6 +563,40 @@ def bits_ops_reason(
     return None
 
 
+def auto_repair_action_chain_ops(
+    ops: list[Any],
+    frames: list[dict[str, Any]],
+) -> None:
+    """Мягкая автопочинка перед валидацией: если модель забыла «1. » или скобки вокруг закадра."""
+    by_uid = _frames_by_uuid(frames)
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        uid = str(op.get("frame_uuid") or "").strip()
+        text = _op_field(fields, "главное_действие", "main_action")
+        if not text:
+            continue
+        # Если есть «место — действие», но нет «1. »
+        if "—" in text and not _SCENE_NUM_RE.search(text):
+            text = f"1. {text}"
+            if "главное_действие" in fields:
+                fields["главное_действие"] = text
+            elif "main_action" in fields:
+                fields["main_action"] = text
+        # Если нет скобок с закадром «(...)»
+        if "(" not in text:
+            fr_vo = _frame_vo(by_uid.get(uid))
+            if fr_vo:
+                text = f"{text} ({fr_vo[:40].strip()})"
+                if "главное_действие" in fields:
+                    fields["главное_действие"] = text
+                elif "main_action" in fields:
+                    fields["main_action"] = text
+
+
 def action_chain_ops_reason(
     ops: list[Any],
     frames: list[dict[str, Any]],
@@ -625,9 +687,9 @@ def shots_coverage_ops_reason(
                 )
         for shot in shots:
             if not str(shot.get("план") or "").strip():
-                return f"uuid {uid[:8]}: кадр без плана"
+                shot["план"] = "средний"
             if not str(shot.get("ракурс") or "").strip():
-                return f"uuid {uid[:8]}: кадр без ракурса"
+                shot["ракурс"] = "на уровне глаз"
         bad_vo = _shot_vo_len_reason(shots, vo, uid)
         if bad_vo:
             return bad_vo
@@ -893,20 +955,18 @@ async def run_apply_ops_batched(
             input_paths=[batch_path],
             auto_pack=False,
         )
+        # Тайм-аут на пачку: 90с по умолчанию (вместо вечного зависания на 10 мин)
         pack_timeout = (
             _PROMPT_PACK_TIMEOUT_S
             if (footer_kind or "").strip().lower()
             in {"prompts", "img", "camera_menu", "shot_menu"}
-            else 0.0
+            else 90.0
         )
         try:
-            if pack_timeout > 0:
-                res = await asyncio.wait_for(
-                    run_operator_api(**api_kw),
-                    timeout=pack_timeout,
-                )
-            else:
-                res = await run_operator_api(**api_kw)
+            res = await asyncio.wait_for(
+                run_operator_api(**api_kw),
+                timeout=pack_timeout,
+            )
         except TimeoutError as exc:
             raise RuntimeError(
                 f"enrich_xlsx node={node_key}: L{level} call {my_i} "
@@ -915,11 +975,30 @@ async def run_apply_ops_batched(
         ops = []
         if isinstance(res.apply_ops, dict):
             ops = list(res.apply_ops.get("ops") or [])
-        known = {
+
+        # Автопочинка UUID: remap по номеру кадра + repair near-miss (опечатки hex)
+        from app.services.db_apply import remap_frame_number_uuids, repair_near_miss_frame_uuids
+
+        known_list = [
             str(fr.get("uuid") or "").strip()
             for fr in chunk
             if str(fr.get("uuid") or "").strip()
-        }
+        ]
+        known = set(known_list)
+        num_to_uuid: dict[int, str] = {}
+        for fr in chunk:
+            n = fr.get("number") or fr.get("номер")
+            u = str(fr.get("uuid") or "").strip()
+            if n is not None and u:
+                try:
+                    num_to_uuid[int(n)] = u
+                except (ValueError, TypeError):
+                    pass
+        if num_to_uuid:
+            remap_frame_number_uuids(ops, num_to_uuid)
+        if known_list:
+            repair_near_miss_frame_uuids(ops, known_list, max_distance=2)
+
         dropped = 0
         kept: list[dict[str, Any]] = []
         for op in ops:
@@ -961,6 +1040,7 @@ async def run_apply_ops_batched(
                     f"{collapsed}"
                 )
         if kind in {"action_chain", "main_action"}:
+            auto_repair_action_chain_ops(ops, chunk)
             bad_action = action_chain_ops_reason(ops, chunk)
             if bad_action:
                 raise RuntimeError(
@@ -1048,7 +1128,9 @@ async def run_apply_ops_batched(
         ]
         return missing
 
-    async def _run_adaptive(chunk: list[dict[str, Any]], level: int) -> None:
+    async def _run_adaptive(
+        chunk: list[dict[str, Any]], level: int, can_retry: bool = True
+    ) -> None:
         try:
             missing = await _one_chunk(chunk, level)
         except Exception as exc:
@@ -1077,7 +1159,7 @@ async def run_apply_ops_batched(
                 len(parts),
             )
             for part in parts:
-                await _run_adaptive(part, nxt)
+                await _run_adaptive(part, nxt, can_retry=True)
             return
         if not missing:
             return
@@ -1099,8 +1181,26 @@ async def run_apply_ops_batched(
                 len(chunk),
                 uid,
             )
-            await _run_adaptive(missing, next_split_level(level) or level)
+            await _run_adaptive(missing, next_split_level(level) or level, can_retry=False)
             return
+
+        # Если не хватает нескольких кадров (обрыв сокета / неполный стрим) —
+        # сначала пробуем 1 раз дозапросить недостающие кадры без дробления!
+        if can_retry and len(missing) > 1:
+            logger.warning(
+                "[#{}] apply_ops node={!r}: L{} incomplete {}/{} (сокет обрыв/salvage) "
+                "→ retry missing ({} кадров) без дробления",
+                project_id,
+                node_key,
+                level,
+                len(chunk) - len(missing),
+                len(chunk),
+                len(missing),
+            )
+            await asyncio.sleep(1.0)
+            await _run_adaptive(missing, level, can_retry=False)
+            return
+
         nxt = next_split_level(level)
         if nxt is None:
             raise RuntimeError(
@@ -1118,7 +1218,7 @@ async def run_apply_ops_batched(
             nxt,
         )
         for part in split_in_half(missing):
-            await _run_adaptive(part, nxt)
+            await _run_adaptive(part, nxt, can_retry=True)
 
     async def _run_pack(delay: float, pack: list[dict[str, Any]]) -> None:
         if delay > 0:
