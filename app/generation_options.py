@@ -40,44 +40,28 @@ class OptionChoice:
 
 IMAGE_GENERATORS: list[OptionChoice] = [
     OptionChoice(
-        "nano_banana_2", "+ Nano Banana 2", "nano-banana-2",
-        "Outsee · Nano Banana 2",
+        "flux_2_pro", "Flux 2 Pro", "flux-2-pro",
+        "Kie · Black Forest Labs Flux 2 Pro",
     ),
     OptionChoice(
-        "nano_banana_2_lite", "+ Nano Banana 2 Lite", "nano-banana-2-lite",
-        "Outsee · быстрая/дешёвая Banana 2",
-    ),
-    OptionChoice(
-        "nano_banana_pro", "Nano Banana Pro", "nano-banana-pro",
-        "Google · Nano Banana Pro",
-    ),
-    OptionChoice(
-        "nano_banana_fast", "Nano Banana Fast", "nano-banana-fast",
-        "Google · быстрый Nano Banana",
-    ),
-    OptionChoice(
-        "nano_banana", "Nano Banana", "nano-banana",
-        "Google · Nano Banana",
+        "seedream_5_pro", "ByteDance Seedream 5 Pro", "seedream-5-pro",
+        "Kie · Seedream 5 Pro",
     ),
     OptionChoice(
         "gpt_image_2_vip", "+ GPT Image 2", "gpt-image-2-vip",
         "Outsee · GPT Image 2 (до 4K)",
     ),
     OptionChoice(
-        "seedream_4_5", "Seedream 4.5", "seedream-4.5",
-        "Outsee · TikTok Seedream 4K",
+        "nano_banana_2", "+ Nano Banana 2", "nano-banana-2",
+        "Outsee · Nano Banana 2",
     ),
     OptionChoice(
-        "seedream_5_0_lite", "Seedream 5.0 Lite", "seedream-5-lite",
-        "Outsee · Seedream 5 Lite",
+        "z_image", "Z-Image", "z-image",
+        "Kie · Z-Image (быстрая генерация)",
     ),
     OptionChoice(
-        "seedream_5_pro", "Seedream 5 Pro", "seedream-5-pro",
-        "Outsee · Seedream 5 Pro",
-    ),
-    OptionChoice(
-        "gpt_image_1_5", "GPT Image 1.5", "gpt-image-1.5",
-        "Outsee · GPT Image 1.5",
+        "qwen3_image", "Alibaba Qwen Image 3", "qwen3-image",
+        "Kie · Qwen Image 3",
     ),
 ]
 
@@ -174,60 +158,52 @@ def clamp_image_resolution_id(
 
 VIDEO_GENERATORS: list[OptionChoice] = [
     OptionChoice(
+        "seedance_2_5", "Seedance 2.5 (ByteDance)", "seedance-2-5",
+        "Kie · Флагман ByteDance Seedance 2.5",
+    ),
+    OptionChoice(
+        "seedance_1_5_pro", "Seedance 1.5 Pro", "seedance-1-5-pro",
+        "Kie · Seedance 1.5 Pro (баланс цены и качества)",
+    ),
+    OptionChoice(
+        "kling_3_0", "Kling 3.0 Pro (1080p + звук)", "kling-3-0",
+        "Kie · Kling 3.0 Pro (1080p + нативный звук)",
+    ),
+    OptionChoice(
+        "kling_v3_turbo_t2v", "Kling 3.0 Turbo (текст)", "kling-v3-turbo-t2v",
+        "Kie · Kling 3.0 Turbo Text-to-Video",
+    ),
+    OptionChoice(
+        "kling_v3_turbo_i2v", "Kling 3.0 Turbo (оживление фото)", "kling-v3-turbo-i2v",
+        "Kie · Kling 3.0 Turbo Image-to-Video",
+    ),
+    OptionChoice(
+        "kling_3_0_omni_t2v", "Kling 3.0 Omni (со звуком)", "kling-3-0-omni-t2v",
+        "Kie · Kling 3.0 Omni с аудиодорожкой",
+    ),
+    OptionChoice(
+        "hailuo_2_3_i2v", "MiniMax Hailuo 2.3 (фото)", "hailuo-2-3-i2v",
+        "Kie · MiniMax Hailuo 2.3 Image-to-Video",
+    ),
+    OptionChoice(
+        "wan_2_7_t2v", "Alibaba WAN 2.7 (текст)", "wan-2-7-t2v",
+        "Kie · Alibaba WAN 2.7 Text-to-Video",
+    ),
+    OptionChoice(
+        "pixverse_v6_t2v", "PixVerse V6 (текст)", "pixverse-v6-t2v",
+        "Kie · PixVerse V6 Text-to-Video",
+    ),
+    OptionChoice(
+        "topaz_video_upscale", "Topaz Video AI (апскейл)", "topaz-video-upscale",
+        "Kie · Topaz Video AI Апскейл",
+    ),
+    OptionChoice(
         "veo_3_1_lite", "+ Veo 3.1 Lite", "veo-3-1-lite",
         "Outsee · Google Veo 3.1 Lite",
     ),
     OptionChoice(
-        "veo_3_1_fast", "+ Veo 3.1 Fast", "veo-3-1-fast",
-        "Outsee · Google Veo 3.1 Fast",
-    ),
-    OptionChoice(
-        "veo_3_fast", "+ Veo 3 Fast", "veo-3-fast",
-        "Outsee · Google Veo 3.1 Fast (alias)",
-    ),
-    OptionChoice(
-        "kling_3", "Kling 3.0", "kling-3-0",
-        "Новейшая Kling (TOP). Гибкая длительность, нативное аудио, мультишот",
-    ),
-    OptionChoice(
         "kling_2_6", "Kling 2.6", "kling-2-6",
         "Kie · Kling 2.6 (KIE_API_KEY)",
-    ),
-    OptionChoice(
-        "kling_2_5_turbo", "Kling 2.5 Turbo", "kling-2-5-turbo",
-        "Хороший выбор для генерации по первому-последнему кадру",
-    ),
-    OptionChoice(
-        "kling_lip_sync", "Kling Lip Sync", "kling-lip-sync",
-        "Синхронизация губ под аудио",
-    ),
-    OptionChoice(
-        "kling_motion_2_6", "Kling Motion Control 2.6", "kling-motion-2-6",
-        "Контроль движения и эмоций по вашему референсу",
-    ),
-    OptionChoice(
-        "kling_motion_3_0", "Kling Motion Control 3.0", "kling-motion-3-0",
-        "Улучшенный контроль движения, лучшая консистентность лица",
-    ),
-    OptionChoice(
-        "seedance_2", "Seedance 2", "seedance-2",
-        "Лучшая видео-модель на рынке (ЭКСКЛЮЗИВ)",
-    ),
-    OptionChoice(
-        "seedance_pro_1_5", "Seedance Pro 1.5", "seedance-pro-1-5",
-        "Отличное соотношение цена-качество, идеально для базовых задач",
-    ),
-    OptionChoice(
-        "wan_2_6", "Wan 2.6", "wan-2-6",
-        "Последняя версия видео-модели от Alibaba. Универсальна",
-    ),
-    OptionChoice(
-        "hailuo_2_3_fast", "Hailuo 2.3 Fast", "hailuo-2-3-fast",
-        "Быстрая модель от MiniMax",
-    ),
-    OptionChoice(
-        "hailuo_2_3_pro", "Hailuo 2.3 Pro", "hailuo-2-3-pro",
-        "Продвинутая версия Hailuo",
     ),
 ]
 

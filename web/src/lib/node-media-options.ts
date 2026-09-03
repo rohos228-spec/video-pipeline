@@ -64,11 +64,55 @@ export function mediaOptionsForModel(modelId: string | null | undefined): NodeMe
     };
   }
 
-  if (id === "gpt-image-1.5") {
+  if (id === "flux-2-pro") {
+    return {
+      resolutions: ["1K", "2K"],
+      qualities: [],
+      aspects: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"],
+      defaultResolution: "2K",
+      defaultQuality: "medium",
+      defaultAspect: "16:9",
+    };
+  }
+
+  if (id === "z-image") {
+    return {
+      resolutions: ["1K", "2K"],
+      qualities: [],
+      aspects: ["16:9", "9:16", "1:1", "4:3", "3:4"],
+      defaultResolution: "1K",
+      defaultQuality: "medium",
+      defaultAspect: "16:9",
+    };
+  }
+
+  if (id === "qwen3-image") {
     return {
       resolutions: ["2K"],
-      qualities: NODE_IMAGE_QUALITY_OPTIONS,
-      aspects: [...GPT_IMAGE_ASPECTS],
+      qualities: [],
+      aspects: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"],
+      defaultResolution: "2K",
+      defaultQuality: "medium",
+      defaultAspect: "16:9",
+    };
+  }
+
+  if (id === "topaz-image-upscale") {
+    return {
+      resolutions: ["2K", "4K"],
+      qualities: [],
+      aspects: ["16:9", "9:16", "1:1"],
+      defaultResolution: "2K",
+      defaultQuality: "medium",
+      defaultAspect: "16:9",
+    };
+  }
+
+  if (id.startsWith("recraft")) {
+    return {
+      resolutions: ["1K", "2K"],
+      qualities: [],
+      aspects: ["16:9", "9:16", "1:1"],
       defaultResolution: "2K",
       defaultQuality: "medium",
       defaultAspect: "16:9",
@@ -76,28 +120,20 @@ export function mediaOptionsForModel(modelId: string | null | undefined): NodeMe
   }
 
   if (id.startsWith("nano-banana")) {
-    const resolutions =
-      id === "nano-banana-2" || id === "nano-banana-pro"
-        ? ["1K", "2K", "4K"]
-        : ["1K", "2K"];
+    const resolutions = ["1K", "2K", "4K"];
     return {
       resolutions,
       qualities: NODE_IMAGE_QUALITY_OPTIONS,
       aspects: [...NANO_BANANA_ASPECTS],
-      defaultResolution: resolutions.includes("2K") ? "2K" : resolutions[0]!,
+      defaultResolution: "2K",
       defaultQuality: "medium",
       defaultAspect: "16:9",
     };
   }
 
   if (id.startsWith("seedream")) {
-    const resolutions = id.includes("4.5")
-      ? ["2K", "4K"]
-      : id.includes("5-lite")
-        ? ["2K", "3K"]
-        : ["1K", "2K"];
     return {
-      resolutions,
+      resolutions: ["1K", "2K"],
       qualities: [],
       aspects: [...SEEDREAM_ASPECTS],
       defaultResolution: "2K",
@@ -117,29 +153,18 @@ export function mediaOptionsForModel(modelId: string | null | undefined): NodeMe
     };
   }
 
-  if (id === "veo-3-1-fast" || id === "veo-3-fast") {
-    return {
-      resolutions: ["720p", "1080p"],
-      qualities: [],
-      aspects: ["16:9", "9:16"],
-      defaultResolution: "1080p",
-      defaultQuality: "medium",
-      defaultAspect: "16:9",
-    };
-  }
-
   if (id === "kling-2-6") {
     return {
-      resolutions: [],
+      resolutions: ["720p", "1080p"],
       qualities: [],
       aspects: ["16:9", "9:16", "1:1"],
-      defaultResolution: "",
+      defaultResolution: "1080p",
       defaultQuality: "medium",
       defaultAspect: "16:9",
     };
   }
 
-  if (id === "kling-3-0" || id === "kling-3") {
+  if (id.startsWith("kling")) {
     return {
       resolutions: ["720p", "1080p"],
       qualities: [],
@@ -150,23 +175,34 @@ export function mediaOptionsForModel(modelId: string | null | undefined): NodeMe
     };
   }
 
-  if (id === "sora-2" || id.startsWith("sora")) {
+  if (id.startsWith("seedance")) {
     return {
       resolutions: ["720p", "1080p"],
       qualities: [],
-      aspects: ["16:9", "9:16"],
+      aspects: ["16:9", "9:16", "1:1", "21:9"],
+      defaultResolution: "1080p",
+      defaultQuality: "medium",
+      defaultAspect: "16:9",
+    };
+  }
+
+  if (id.startsWith("wan") || id.startsWith("hailuo") || id.startsWith("pixverse")) {
+    return {
+      resolutions: ["720p", "1080p"],
+      qualities: [],
+      aspects: ["16:9", "9:16", "1:1"],
       defaultResolution: "720p",
       defaultQuality: "medium",
       defaultAspect: "16:9",
     };
   }
 
-  if (id.startsWith("seedance") || id.startsWith("wan") || id.startsWith("hailuo")) {
+  if (id === "topaz-video-upscale") {
     return {
-      resolutions: ["720p", "1080p"],
+      resolutions: ["1080p", "4k"],
       qualities: [],
       aspects: ["16:9", "9:16"],
-      defaultResolution: "720p",
+      defaultResolution: "1080p",
       defaultQuality: "medium",
       defaultAspect: "16:9",
     };

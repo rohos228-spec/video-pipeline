@@ -466,8 +466,13 @@ function ModelCard({
         }
       >
         <div className="flex items-start justify-between gap-2">
-          <div className="truncate text-[13px] font-semibold tracking-tight text-white">
-            {model.label.replace(/\s*\(1K\/2K\/4K\)\s*$/i, "")}
+          <div className="flex items-center gap-1.5 truncate text-[13px] font-semibold tracking-tight text-white">
+            <span className="truncate">{model.label.replace(/\s*\(1K\/2K\/4K\)\s*$/i, "")}</span>
+            {model.is_top && (
+              <span className="inline-flex shrink-0 items-center rounded-md border border-[#b49bff]/40 bg-[#b49bff]/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-[#d9ccff]">
+                ТОП
+              </span>
+            )}
           </div>
           <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-emerald-400/25 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.9)]" />
