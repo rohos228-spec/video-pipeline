@@ -19,6 +19,14 @@ _CHOICE_NAME = "text_llm_choice.json"
 CATALOG: list[dict[str, str]] = [
     # OpenAI
     {
+        "id": "gpt-5.5-vibecode",
+        "provider": "vibecode",
+        "group": "OpenAI",
+        "label": "GPT 5.5",
+        "site": "vibecode.moe",
+        "api_model": "gpt-5.5",
+    },
+    {
         "id": "gpt-5.6-sol-vibecode",
         "provider": "vibecode",
         "group": "OpenAI",

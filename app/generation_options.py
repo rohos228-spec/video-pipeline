@@ -56,6 +56,10 @@ IMAGE_GENERATORS: list[OptionChoice] = [
         "Outsee · Nano Banana 2",
     ),
     OptionChoice(
+        "nano_banana_2_lite", "+ Nano Banana 2 Lite", "nano-banana-2-lite",
+        "Outsee · Nano Banana 2 Lite",
+    ),
+    OptionChoice(
         "z_image", "Z-Image", "z-image",
         "Kie · Z-Image (быстрая генерация)",
     ),
