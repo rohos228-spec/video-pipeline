@@ -364,3 +364,191 @@ async def run_generation(
     path = await download(urls[0], out_path)
     logger.info("kie_http: ok {} → {} ({} bytes)", task_id, path.name, path.stat().st_size)
     return GenerationResult(file_path=path, gen_id=task_id, raw_url=urls[0])
+
+
+# Маппинг генераторов видео на ID модели в kie_catalog
+VIDEO_GENERATOR_TO_KIE_ID: dict[str, str] = {
+    "seedance_2_5": "seedance-2-5",
+    "seedance-2-5": "seedance-2-5",
+    "seedance_1_5_pro": "seedance-1-5-pro",
+    "seedance-1-5-pro": "seedance-1-5-pro",
+    "kling_3_0": "kling-3-0",
+    "kling-3-0": "kling-3-0",
+    "kling_3": "kling-3-0",
+    "kling_v3_turbo_t2v": "kling-v3-turbo-t2v",
+    "kling-v3-turbo-t2v": "kling-v3-turbo-t2v",
+    "kling_v3_turbo_i2v": "kling-v3-turbo-i2v",
+    "kling-v3-turbo-i2v": "kling-v3-turbo-i2v",
+    "kling_3_0_omni_t2v": "kling-3-0-omni-t2v",
+    "kling-3-0-omni-t2v": "kling-3-0-omni-t2v",
+    "hailuo_2_3_i2v": "hailuo-2-3-i2v",
+    "hailuo-2-3-i2v": "hailuo-2-3-i2v",
+    "wan_2_7_t2v": "wan-2-7-t2v",
+    "wan-2-7-t2v": "wan-2-7-t2v",
+    "pixverse_v6_t2v": "pixverse-v6-t2v",
+    "pixverse-v6-t2v": "pixverse-v6-t2v",
+    "topaz_video_upscale": "topaz-video-upscale",
+    "topaz-video-upscale": "topaz-video-upscale",
+    "kling_2_6": "kling-2-6",
+    "kling-2-6": "kling-2-6",
+}
+
+# Маппинг генераторов картинок на ID модели в kie_catalog
+IMAGE_GENERATOR_TO_KIE_ID: dict[str, str] = {
+    "flux_2_pro": "flux-2-pro",
+    "flux-2-pro": "flux-2-pro",
+    "seedream_5_pro": "seedream-5-pro",
+    "seedream-5-pro": "seedream-5-pro",
+    "z_image": "z-image",
+    "z-image": "z-image",
+    "qwen3_image": "qwen3-image",
+    "qwen3-image": "qwen3-image",
+    "topaz_image_upscale": "topaz-image-upscale",
+    "topaz-image-upscale": "topaz-image-upscale",
+    "recraft_remove_bg": "recraft-remove-bg",
+    "recraft-remove-bg": "recraft-remove-bg",
+    "recraft_crisp_upscale": "recraft-crisp-upscale",
+    "recraft-crisp-upscale": "recraft-crisp-upscale",
+}
+
+
+async def generate_kie_video(
+    prompt: str,
+    out_path: Path,
+    *,
+    model_slug: str,
+    start_frame: Path | str | None = None,
+    aspect_ratio: str | None = "9:16",
+    resolution: str | None = "720p",
+    duration: int | float | None = 5,
+    generate_audio: bool = False,
+    timeout: float = 900.0,
+    project_id: int | None = None,
+    gen_id: str | None = None,
+) -> GenerationResult:
+    """Генерация видео через KIE для любой из поддерживаемых KIE-моделей."""
+    from app.bots.kie_kling import _frame_to_public_url
+    from app.services import kie_catalog
+
+    if not kie_configured():
+        raise KieHttpError(
+            f"kie {model_slug}: API не настроен (KIE_API_KEY / GPT_API_KEY)",
+            context={"provider_code": 401, "error_kind": "no_key"},
+        )
+
+    kie_id = VIDEO_GENERATOR_TO_KIE_ID.get(model_slug) or model_slug.replace("_", "-")
+    spec = kie_catalog.get_model(kie_id)
+    if not spec:
+        from app.bots.kie_kling import generate_video as kie_kling_generate_video
+
+        return await kie_kling_generate_video(
+            prompt,
+            out_path,
+            start_frame=start_frame,
+            aspect_ratio=aspect_ratio,
+            duration=duration,
+            generate_audio=generate_audio,
+            timeout=timeout,
+            project_id=project_id,
+            gen_id=gen_id,
+        )
+
+    image_url = await _frame_to_public_url(start_frame)
+    values: dict[str, Any] = {
+        "prompt": prompt,
+        "aspect_ratio": (aspect_ratio or "9:16").replace("_", ":"),
+        "duration": int(duration) if duration else 5,
+        "generate_audio": bool(generate_audio),
+    }
+    if resolution:
+        values["resolution"] = resolution.lower()
+
+    if image_url:
+        field_names = {f["name"] for f in spec.get("fields") or []}
+        if "first_frame_url" in field_names:
+            values["first_frame_url"] = image_url
+        elif "image_url" in field_names:
+            values["image_url"] = image_url
+        elif "image_urls" in field_names:
+            values["image_urls"] = [image_url]
+        elif "imageUrls" in field_names:
+            values["imageUrls"] = [image_url]
+        elif "input_image_url" in field_names:
+            values["input_image_url"] = image_url
+
+    payload = kie_catalog.build_payload(spec, values)
+    logger.info(
+        "kie_http: generate video {} (model={}) dur={} i2v={} project={}",
+        kie_id,
+        spec.get("model"),
+        values.get("duration"),
+        bool(image_url),
+        project_id,
+    )
+    return await run_generation(spec, payload, out_path, timeout_s=timeout)
+
+
+async def generate_kie_image(
+    prompt: str,
+    out_path: Path,
+    *,
+    model_slug: str,
+    aspect_ratio: str | None = "9:16",
+    resolution: str | None = "2K",
+    reference_images: list[Path] | None = None,
+    timeout: float = 600.0,
+    project_id: int | None = None,
+    gen_id: str | None = None,
+) -> GenerationResult:
+    """Генерация изображения через KIE."""
+    from app.bots.kie_kling import _frame_to_public_url
+    from app.services import kie_catalog
+
+    if not kie_configured():
+        raise KieHttpError(
+            f"kie {model_slug}: API не настроен (KIE_API_KEY / GPT_API_KEY)",
+            context={"provider_code": 401, "error_kind": "no_key"},
+        )
+
+    kie_id = IMAGE_GENERATOR_TO_KIE_ID.get(model_slug) or model_slug.replace("_", "-")
+    spec = kie_catalog.get_model(kie_id)
+    if not spec:
+        raise KieHttpError(
+            f"kie {model_slug}: спецификация модели {kie_id} не найдена в каталоге",
+            context={"provider_code": 404, "error_kind": "model_not_found"},
+        )
+
+    ref_urls: list[str] = []
+    if reference_images:
+        for ref in reference_images:
+            u = await _frame_to_public_url(ref)
+            if u:
+                ref_urls.append(u)
+
+    values: dict[str, Any] = {
+        "prompt": prompt,
+        "aspect_ratio": (aspect_ratio or "9:16").replace("_", ":"),
+    }
+    if resolution:
+        values["resolution"] = resolution.upper() if resolution.lower().endswith("k") else resolution
+
+    if ref_urls:
+        field_names = {f["name"] for f in spec.get("fields") or []}
+        if "image_urls" in field_names:
+            values["image_urls"] = ref_urls
+        elif "image_url" in field_names:
+            values["image_url"] = ref_urls[0]
+        elif "imageUrls" in field_names:
+            values["imageUrls"] = ref_urls
+
+    payload = kie_catalog.build_payload(spec, values)
+    logger.info(
+        "kie_http: generate image {} (model={}) aspect={} refs={} project={}",
+        kie_id,
+        spec.get("model"),
+        values.get("aspect_ratio"),
+        len(ref_urls),
+        project_id,
+    )
+    return await run_generation(spec, payload, out_path, timeout_s=timeout)
+

@@ -22,9 +22,10 @@ def test_batch_constants_standardized():
     assert SCRIPT_FRAMES_QC_UNITS_PER_BATCH == 8
 
 
-def test_fw_frames_108_packs_by_8_not_six_way():
-    """108 длинных промтов нельзя пихать в 6 пачек по ~18: GPT рвёт JSON."""
+def test_fw_frames_108_packs_by_6():
+    """fw_frames с main: пачки по 6 кадров, не 6 огромных кусков по ~18."""
     from app.services.apply_ops_batches import (
+        FW_FRAMES_PER_BATCH,
         SCRIPT_FRAMES_QC_PARALLEL_BATCHES,
         split_frames,
         split_into_n_packs,
@@ -34,9 +35,10 @@ def test_fw_frames_108_packs_by_8_not_six_way():
     six_way = split_into_n_packs(frames, SCRIPT_FRAMES_QC_PARALLEL_BATCHES)
     assert len(six_way) == 6
     assert max(len(p) for p in six_way) == 18
-    packs = split_frames(frames, SCRIPT_FRAMES_QC_UNITS_PER_BATCH)
-    assert len(packs) == 14
-    assert max(len(p) for p in packs) == 8
+    packs = split_frames(frames, FW_FRAMES_PER_BATCH)
+    assert FW_FRAMES_PER_BATCH == 6
+    assert len(packs) == 18
+    assert max(len(p) for p in packs) == 6
 
 
 

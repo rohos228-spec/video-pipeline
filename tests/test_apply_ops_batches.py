@@ -100,7 +100,7 @@ def test_ui_force_full_sends_already_filled_frames() -> None:
     assert [f["uuid"] for f in pending] == ["a" * 24, "b" * 24]
 
 
-def test_dense_retry_skips_filled_and_splits_tail() -> None:
+def test_dense_retry_skips_filled_and_keeps_one_tail_batch() -> None:
     frames = []
     for i in range(160):
         row = {
@@ -118,9 +118,9 @@ def test_dense_retry_skips_filled_and_splits_tail() -> None:
     size = frames_per_batch(
         n_frames=len(selected), json_bytes=24_000, dense=True, target_batches=5
     )
-    assert size == 7
+    assert size == 31
     chunks = split_frames(selected, size)
-    assert [len(c) for c in chunks] == [7, 7, 7, 7, 3]
+    assert [len(c) for c in chunks] == [31]
 
 
 def test_pending_skips_filled_shot01() -> None:
@@ -1576,10 +1576,14 @@ async def test_vo_chunk_size_8_packs(tmp_path, monkeypatch) -> None:
     """script_frames_qc: пачки по 8 отрезков закадра."""
     import json
 
-    from app.services.apply_ops_batches import SCRIPT_FRAMES_QC_UNITS_PER_BATCH
+    from app.services.apply_ops_batches import (
+        FW_FRAMES_PER_BATCH,
+        SCRIPT_FRAMES_QC_UNITS_PER_BATCH,
+    )
     from app.services.gpt_operator_client import OperatorApiResult
 
     assert SCRIPT_FRAMES_QC_UNITS_PER_BATCH == 8
+    assert FW_FRAMES_PER_BATCH == 6
     calls: list[int] = []
 
     async def fake_run(**kwargs):
@@ -1611,7 +1615,7 @@ async def test_vo_chunk_size_8_packs(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.apply_ops_batches.run_operator_api", fake_run
     )
-    frames = [_frame(i) for i in range(65)]
+    frames = [_frame(i) for i in range(20)]
     ctx = tmp_path / "db_frames.json"
     ctx.write_text("{}", encoding="utf-8")
     res = await run_apply_ops_batched(
@@ -1629,8 +1633,8 @@ async def test_vo_chunk_size_8_packs(tmp_path, monkeypatch) -> None:
         parallel_max=1,
         footer_kind="bits",
     )
-    assert calls == [8, 8, 8, 8, 8, 8, 8, 8, 1]
-    assert len(res.apply_ops["ops"]) == 65
+    assert calls == [8, 8, 4]
+    assert len(res.apply_ops["ops"]) == 20
 
 
 def test_split_into_n_packs_keeps_vo_units() -> None:
@@ -1771,4 +1775,3 @@ def test_repair_bits_snaps_anchor_to_vo() -> None:
     frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
     assert repair_bits_ops(ops, frames) >= 1
     assert ops[0]["fields"]["биты"][0]["якорь"] in vo
-

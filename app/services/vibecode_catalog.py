@@ -22,7 +22,15 @@ VIDEO_NODE_TYPES = frozenset({"videos", "hitl_videos"})
 DEFAULT_TEXT_MODEL_ID = "gpt-5.6-sol"
 DEFAULT_IMAGE_MODEL_ID = "gpt-image-2-vip"
 DEFAULT_VIDEO_MODEL_ID = "veo-3-1-lite"
-HIDDEN_IMAGE_IDS = frozenset({"gpt-image-2", "nano-banana-pro"})
+HIDDEN_IMAGE_IDS = frozenset({
+    "gpt-image-2",
+    "nano-banana-pro",
+    "nano-banana",
+    "nano-banana-2-lite",
+    "seedream-4.5",
+    "seedream-5-lite",
+    "gpt-image-1.5",
+})
 IMAGE_MODEL_ALIASES = {"gpt-image-2": "gpt-image-2-vip"}
 
 IMAGE_MODEL_TO_GENERATOR: dict[str, str] = {
@@ -31,25 +39,66 @@ IMAGE_MODEL_TO_GENERATOR: dict[str, str] = {
     "nano-banana": "nano_banana",
     "nano-banana-2": "nano_banana_2",
     "nano-banana-pro": "nano_banana_pro",
-    "nano-banana-2-lite": "nano_banana_2_lite",
     "nano-banana-fast": "nano_banana_fast",
+    "flux-2-pro": "flux_2_pro",
+    "seedream-5-pro": "seedream_5_pro",
+    "z-image": "z_image",
+    "qwen3-image": "qwen3_image",
+    "topaz-image-upscale": "topaz_image_upscale",
+    "recraft-remove-bg": "recraft_remove_bg",
+    "recraft-crisp-upscale": "recraft_crisp_upscale",
 }
 VIDEO_MODEL_TO_GENERATOR: dict[str, str] = {
     "veo-3-1-lite": "veo_3_1_lite",
-    "veo-3-1-fast": "veo_3_1_fast",
-    "veo-3-fast": "veo_3_1_fast",
+    "seedance-2-5": "seedance_2_5",
+    "seedance-1-5-pro": "seedance_1_5_pro",
+    "kling-3-0": "kling_3_0",
+    "kling-v3-turbo-t2v": "kling_v3_turbo_t2v",
+    "kling-v3-turbo-i2v": "kling_v3_turbo_i2v",
+    "kling-3-0-omni-t2v": "kling_3_0_omni_t2v",
+    "hailuo-2-3-i2v": "hailuo_2_3_i2v",
+    "wan-2-7-t2v": "wan_2_7_t2v",
+    "pixverse-v6-t2v": "pixverse_v6_t2v",
+    "topaz-video-upscale": "topaz_video_upscale",
     "kling-2-6": "kling_2_6",
-    "sora-2": "sora_2",
 }
 
 IMAGE_CATALOG_EXTRA: list[dict[str, Any]] = [
     {
-        "id": "nano-banana-fast",
-        "display_name": "Nano Banana Fast",
+        "id": "flux-2-pro",
+        "display_name": "Flux 2 Pro",
         "is_image": True,
         "is_video": False,
-        "owned_by": "google",
-        "pricing": {"currency": "usd", "usd_per_image": 0.03},
+        "owned_by": "kie",
+        "pricing": {"currency": "usd", "usd_per_image": 0.05},
+        "image_generator": "flux_2_pro",
+    },
+    {
+        "id": "seedream-5-pro",
+        "display_name": "ByteDance Seedream 5 Pro",
+        "is_image": True,
+        "is_video": False,
+        "owned_by": "kie",
+        "pricing": {"currency": "usd", "usd_per_image": 0.045},
+        "image_generator": "seedream_5_pro",
+    },
+    {
+        "id": "z-image",
+        "display_name": "Z-Image",
+        "is_image": True,
+        "is_video": False,
+        "owned_by": "kie",
+        "pricing": {"currency": "usd", "usd_per_image": 0.02},
+        "image_generator": "z_image",
+    },
+    {
+        "id": "qwen3-image",
+        "display_name": "Alibaba Qwen Image 3",
+        "is_image": True,
+        "is_video": False,
+        "owned_by": "kie",
+        "pricing": {"currency": "usd", "usd_per_image": 0.035},
+        "image_generator": "qwen3_image",
     },
 ]
 
@@ -66,19 +115,102 @@ VENDOR_META: dict[str, dict[str, str]] = {
 
 VIDEO_CATALOG_RAW: list[dict[str, Any]] = [
     {
+        "id": "seedance-2-5",
+        "display_name": "Seedance 2.5 (ByteDance)",
+        "is_image": False,
+        "is_video": True,
+        "owned_by": "kie",
+        "video_generator": "seedance_2_5",
+        "pricing": {"currency": "usd"},
+    },
+    {
+        "id": "seedance-1-5-pro",
+        "display_name": "Seedance 1.5 Pro",
+        "is_image": False,
+        "is_video": True,
+        "owned_by": "kie",
+        "video_generator": "seedance_1_5_pro",
+        "pricing": {"currency": "usd"},
+    },
+    {
+        "id": "kling-3-0",
+        "display_name": "Kling 3.0 Pro (1080p + звук)",
+        "is_image": False,
+        "is_video": True,
+        "owned_by": "kie",
+        "video_generator": "kling_3_0",
+        "pricing": {"currency": "usd"},
+    },
+    {
+        "id": "kling-v3-turbo-t2v",
+        "display_name": "Kling 3.0 Turbo (текст)",
+        "is_image": False,
+        "is_video": True,
+        "owned_by": "kie",
+        "video_generator": "kling_v3_turbo_t2v",
+        "pricing": {"currency": "usd"},
+    },
+    {
+        "id": "kling-v3-turbo-i2v",
+        "display_name": "Kling 3.0 Turbo (оживление фото)",
+        "is_image": False,
+        "is_video": True,
+        "owned_by": "kie",
+        "video_generator": "kling_v3_turbo_i2v",
+        "pricing": {"currency": "usd"},
+    },
+    {
+        "id": "kling-3-0-omni-t2v",
+        "display_name": "Kling 3.0 Omni (со звуком)",
+        "is_image": False,
+        "is_video": True,
+        "owned_by": "kie",
+        "video_generator": "kling_3_0_omni_t2v",
+        "pricing": {"currency": "usd"},
+    },
+    {
+        "id": "hailuo-2-3-i2v",
+        "display_name": "MiniMax Hailuo 2.3 (фото)",
+        "is_image": False,
+        "is_video": True,
+        "owned_by": "kie",
+        "video_generator": "hailuo_2_3_i2v",
+        "pricing": {"currency": "usd"},
+    },
+    {
+        "id": "wan-2-7-t2v",
+        "display_name": "Alibaba WAN 2.7 (текст)",
+        "is_image": False,
+        "is_video": True,
+        "owned_by": "kie",
+        "video_generator": "wan_2_7_t2v",
+        "pricing": {"currency": "usd"},
+    },
+    {
+        "id": "pixverse-v6-t2v",
+        "display_name": "PixVerse V6 (текст)",
+        "is_image": False,
+        "is_video": True,
+        "owned_by": "kie",
+        "video_generator": "pixverse_v6_t2v",
+        "pricing": {"currency": "usd"},
+    },
+    {
+        "id": "topaz-video-upscale",
+        "display_name": "Topaz Video AI (апскейл)",
+        "is_image": False,
+        "is_video": True,
+        "owned_by": "kie",
+        "video_generator": "topaz_video_upscale",
+        "pricing": {"currency": "usd"},
+    },
+    {
         "id": "veo-3-1-lite",
         "display_name": "Veo 3.1 Lite",
         "is_image": False,
         "is_video": True,
         "owned_by": "outsee",
-        "pricing": {"currency": "usd"},
-    },
-    {
-        "id": "kling-2-6",
-        "display_name": "Kling 2.6",
-        "is_image": False,
-        "is_video": True,
-        "owned_by": "kie",
+        "video_generator": "veo_3_1_lite",
         "pricing": {"currency": "usd"},
     },
 ]
@@ -180,7 +312,9 @@ def normalize_model(raw: dict[str, Any], *, channel: str | None = None) -> dict[
     pricing = apply_markup(raw.get("pricing") if isinstance(raw.get("pricing"), dict) else {}, channel=channel)
     provider = "vibecode"
     if is_video:
-        provider = "kie" if mid in {"kling-2-6"} else "outsee"
+        from app.services.media_route import video_provider_for
+
+        provider = video_provider_for(mid)
     elif is_image:
         from app.services.media_route import image_provider_for
 

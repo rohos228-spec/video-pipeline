@@ -1,6 +1,4 @@
-"use client";
-
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import {
   CheckCircle2,
@@ -15,7 +13,7 @@ import type { NodeRunStatus } from "@/lib/types";
 import { getNodeSpec, formatNodeTypeLabel, SD_AGENT_LABELS } from "@/lib/node-catalog";
 import { getNodeIcon } from "@/lib/node-icons";
 import { groupHue } from "@/lib/group-color";
-import { cn } from "@/lib/utils";
+import { cn, parseUtcDate } from "@/lib/utils";
 import {
   assetTrayKindForNodeType,
   useCanvasActionsOptional,
@@ -77,11 +75,99 @@ export interface PipelineNodeData extends Record<string, unknown> {
   progressText: string | null;
   error: string | null;
   attempts: number;
+  startedAt?: string | null;
+  finishedAt?: string | null;
 }
 
 /** Все ноды — прямоугольные карточки (старый стиль). */
 function needsWidePanel(_type: string): boolean {
   return true;
+}
+
+function NodeExecutionTimer({
+  status,
+  startedAt,
+  finishedAt,
+}: {
+  status: NodeRunStatus;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  const localStartRef = useRef<number | null>(null);
+  const localDurationRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (status === "running") {
+      if (!localStartRef.current) {
+        localStartRef.current = Date.now();
+      }
+      localDurationRef.current = null;
+      const timer = setInterval(() => {
+        setNow(Date.now());
+      }, 1000);
+      return () => clearInterval(timer);
+    } else if (status === "done" && localStartRef.current) {
+      localDurationRef.current = Math.max(1, Math.floor((Date.now() - localStartRef.current) / 1000));
+      localStartRef.current = null;
+    } else if (status !== "done") {
+      localStartRef.current = null;
+      localDurationRef.current = null;
+    }
+  }, [status]);
+
+  if (status === "running") {
+    let elapsed = 0;
+    if (startedAt) {
+      const parsed = parseUtcDate(startedAt).getTime();
+      if (!Number.isNaN(parsed) && parsed > 0) {
+        elapsed = Math.max(0, Math.floor((now - parsed) / 1000));
+      }
+    } else if (localStartRef.current) {
+      elapsed = Math.max(0, Math.floor((now - localStartRef.current) / 1000));
+    }
+    const m = Math.floor(elapsed / 60);
+    const s = elapsed % 60;
+    const timeStr = `${m}:${s.toString().padStart(2, "0")}`;
+    return (
+      <span
+        title="Время выполнения ноды"
+        className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full border border-amber-400/60 bg-[#17140e]/95 px-2.5 py-0.5 text-[11px] font-mono font-semibold text-amber-300 shadow-[0_0_18px_rgba(245,158,11,0.35)] backdrop-blur-md tabular-nums"
+      >
+        <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
+        ⏱ {timeStr}
+      </span>
+    );
+  }
+
+  if (status === "done") {
+    let durSec: number | null = null;
+    if (startedAt && finishedAt) {
+      const startMs = parseUtcDate(startedAt).getTime();
+      const finishMs = parseUtcDate(finishedAt).getTime();
+      if (!Number.isNaN(startMs) && !Number.isNaN(finishMs) && finishMs >= startMs) {
+        durSec = Math.max(1, Math.floor((finishMs - startMs) / 1000));
+      }
+    }
+    if (durSec == null && localDurationRef.current != null) {
+      durSec = localDurationRef.current;
+    }
+    if (durSec != null) {
+      const m = Math.floor(durSec / 60);
+      const s = durSec % 60;
+      const timeStr = m > 0 ? `${m}м ${s}с` : `${s}с`;
+      return (
+        <span
+          title={`Итоговое время выполнения: ${durSec}с`}
+          className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full border border-emerald-500/50 bg-[#0d1612]/95 px-2.5 py-0.5 text-[10.5px] font-mono font-medium text-emerald-300 shadow-[0_0_16px_rgba(16,185,129,0.25)] backdrop-blur-md tabular-nums"
+        >
+          ⏱ {timeStr}
+        </span>
+      );
+    }
+  }
+
+  return null;
 }
 
 export function PipelineNode({ data, selected }: NodeProps) {
@@ -381,6 +467,10 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 {truncate(d.error, 120)}
               </div>
             )}
+            {/* Таймер выполнения под нодой */}
+            <div className="pointer-events-none absolute -bottom-3.5 left-1/2 z-30 -translate-x-1/2">
+              <NodeExecutionTimer status={d.status} startedAt={d.startedAt} finishedAt={d.finishedAt} />
+            </div>
           </div>
         ) : (
           /* Canon C: circular orb + label */

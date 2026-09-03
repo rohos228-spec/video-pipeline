@@ -32,11 +32,11 @@ _LIGHT_JSON_BYTES_PER_BATCH = 180_000
 # Сценарист / закадр (прочие ноды): пачка = 6 ячеек VO.
 VO_UNITS_PER_BATCH = 6
 # Группа script_frames_qc (биты → действие → кадры → промты → QC):
-# биты/действие/кадры — сразу 6 пачек (короткий JSON).
-# fw_frames / fw_qc — по 8 кадров, параллельно 6 (длинный image+anim JSON;
-# 18 кадров в одном вызове рвёт GPT и adaptive раздувает «24/6»).
+# нормированные пачки по 8 отрезков закадра, до 6 пачек параллельно.
 SCRIPT_FRAMES_QC_UNITS_PER_BATCH = 8
 SCRIPT_FRAMES_QC_PARALLEL_BATCHES = 6
+# fw_frames: нарезка ровно по 6 кадров (тяжёлые image + anim + action промты).
+FW_FRAMES_PER_BATCH = 6
 VO_PARALLEL_MAX = 6
 # fw_frames / fw_qc раньше были 4; вся группа теперь 6.
 FW_FRAMES_PARALLEL_BATCHES = 6
@@ -79,7 +79,7 @@ def frames_per_batch(
         from math import ceil
 
         # Добор хвоста (≤32 кадра) — один вызов, не 5 крошечных пачек.
-        if dense and n <= _DENSE_FRAMES_PER_BATCH:
+        if dense and n <= 32:
             return n
         return max(1, int(ceil(n / int(target_batches))))
     avg = max(int(json_bytes), 0) / n if n else 0
@@ -1381,9 +1381,10 @@ async def run_apply_ops_batched(
         )
         if on_progress is not None:
             try:
+                total_target = len(pending)
+                total_applied = len(merged_ops) + len(ops)
                 await on_progress(
-                    f"вызов {my_i} · {len(ops)}/{len(chunk)} ops "
-                    f"(старт {len(packs)} пач.)"
+                    f"кадры {min(total_applied, total_target)}/{total_target} · вызов {my_i}"
                 )
             except Exception:
                 logger.debug("apply_ops progress callback failed", exc_info=True)

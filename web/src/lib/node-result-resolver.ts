@@ -91,7 +91,13 @@ function filterArtifacts(list: ArtifactDTO[], nodeType: string): ArtifactDTO[] {
   if (nodeType === "assemble" || nodeType === "hitl_final") {
     return list.filter((a) => a.kind.includes("final"));
   }
-  return list;
+  if (nodeType === "sfx" || nodeType === "sfx_gen") {
+    return list.filter((a) => a.kind.includes("sfx") || a.kind.includes("sound"));
+  }
+  if (nodeType === "sfx_plan") {
+    return list.filter((a) => a.kind.includes("sfx_plan"));
+  }
+  return [];
 }
 
 function mediaKind(path: string, kindHint: string): NodeResultItemKind {
@@ -182,6 +188,13 @@ export function gateNodeResultVisibility(
   nodeStatus?: NodeRunStatus,
 ): NodeResultSnapshot {
   if (nodeStatus === "done" || nodeStatus === "waiting_hitl") {
+    if (!snapshot.hasResult) {
+      return {
+        ...snapshot,
+        hasResult: true,
+        summary: snapshot.summary || "Шаг завершён",
+      };
+    }
     return snapshot;
   }
   if (nodeType === "topic") {
@@ -634,6 +647,48 @@ function computeNodeResult(
         return ready(items, `Музыка: ${items.length} файл(ов)`, "assets");
       }
       return empty("Музыка ещё не сгенерирована", "assets");
+    }
+
+    case "sfx_plan": {
+      const meta = project?.meta as Record<string, unknown> | undefined;
+      const aiJobs = meta?.ai_jobs as Record<string, unknown> | undefined;
+      const sfxPlan = meta?.sfx_plan || meta?.sound_plan || aiJobs?.sfx_plan;
+      const sfxPlanAsset = ctx.assets.find(
+        (a) => a.id === "sfx_plan.json" || a.kind === "sfx_plan" || a.path?.includes("sfx_plan.json"),
+      );
+      if (sfxPlan || sfxPlanAsset) {
+        return {
+          hasResult: true,
+          itemCount: 1,
+          summary: "План звуков готов",
+          items: [
+            {
+              id: "sfx_plan",
+              label: "План звуков (sfx_plan.json)",
+              kind: "file",
+              downloadUrl: sfxPlanAsset?.preview_url,
+            },
+          ],
+          replaceMode: "studio",
+          viewMode: "default",
+        };
+      }
+      return empty("План звуков ещё не составлен", "studio");
+    }
+
+    case "sfx":
+    case "sfx_gen": {
+      const sfxAssets = ctx.assets.filter(
+        (a) => a.kind === "sfx" || a.kind.includes("sound") || /[/\\]sfx[/\\]/i.test(a.path || ""),
+      );
+      const items = dedupeResultItems([
+        ...artifactItems(arts),
+        ...assetItems(sfxAssets),
+      ]);
+      if (items.length) {
+        return ready(items, `Звуки: ${items.length} файл(ов)`, "assets");
+      }
+      return empty("Звуки ещё не сгенерированы", "assets");
     }
 
     case "assemble":

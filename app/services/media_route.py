@@ -12,16 +12,30 @@ from __future__ import annotations
 
 from app.settings import settings
 
-# После нормализации (_ → -) и алиасов.
 OUTSEE_IMAGE_IDS = frozenset({
     "gpt-image-2-vip",
     "nano-banana-2",
-    "nano-banana-2-lite",
+})
+KIE_IMAGE_IDS = frozenset({
+    "flux-2-pro",
+    "seedream-5-pro",
+    "z-image",
+    "qwen3-image",
 })
 OUTSEE_VIDEO_IDS = frozenset({
     "veo-3-1-lite",
 })
 KIE_VIDEO_IDS = frozenset({
+    "seedance-2-5",
+    "seedance-1-5-pro",
+    "kling-3-0",
+    "kling-v3-turbo-t2v",
+    "kling-v3-turbo-i2v",
+    "kling-3-0-omni-t2v",
+    "hailuo-2-3-i2v",
+    "wan-2-7-t2v",
+    "pixverse-v6-t2v",
+    "topaz-video-upscale",
     "kling-2-6",
 })
 
@@ -30,7 +44,6 @@ _ALIASES = {
     "gpt-image-2": "gpt-image-2-vip",
     "gpt-image-2-vip": "gpt-image-2-vip",
     "nano-banana-2": "nano-banana-2",
-    "nano-banana-2-lite": "nano-banana-2-lite",
     "veo-3-1-lite": "veo-3-1-lite",
     "veo-3-1-fast": "veo-3-1-lite",
     "kling-2-6": "kling-2-6",
@@ -52,6 +65,8 @@ def is_nano_banana_pro(model_slug: str | None) -> bool:
 
 def image_provider_for(model_slug: str | None) -> str:
     cid = canonical_media_id(model_slug)
+    if cid in KIE_IMAGE_IDS:
+        return "kie"
     if cid in OUTSEE_IMAGE_IDS:
         return "outsee"
     return (getattr(settings, "image_provider", None) or "outsee").strip().lower() or "outsee"

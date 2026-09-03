@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, createContext, useContext } from "react";
-import { Sparkles, Activity, Network, Wand2, Bot, Database } from "lucide-react";
+import { Activity, Network, Film, Bot, Database } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { LogPanel } from "@/components/logs/log-panel";
 import { FramesGrid } from "@/components/frames/frames-grid";
@@ -66,7 +66,7 @@ export function Topbar({ children }: { children?: React.ReactNode }) {
             className="gap-2 text-xs font-semibold border-emerald-500/40 bg-emerald-950/40 text-emerald-300 hover:bg-emerald-900/50 hover:text-emerald-200 hover:border-emerald-400/60 shadow-sm shadow-emerald-950/50"
             title="Полный интерфейс генерации outsee"
           >
-            <Wand2 className="h-3.5 w-3.5 text-emerald-400" />
+            <Film className="h-3.5 w-3.5 text-emerald-400" />
             Генерация
           </Button>
           <Button
