@@ -32,6 +32,25 @@ def test_valid_png_on_disk_skips_generation(tmp_path: Path) -> None:
     assert frame_needs_shot1_image(fr, scenes) is False
 
 
+def test_shot_child_without_png_needs_own_image(tmp_path: Path) -> None:
+    """K2/K3 — отдельные кадры со своим куском закадра, не shot2 родителя."""
+    scenes = tmp_path / "scenes"
+    scenes.mkdir()
+    fr = _frame(2, FrameStatus.image_prompt_ready)
+    fr.attrs = {"camera_subdivide": {"role": "shot", "parent_uuid": "abc"}}
+    assert frame_needs_shot1_image(fr, scenes) is True
+
+
+def test_shot_child_with_png_skips_generation(tmp_path: Path) -> None:
+    scenes = tmp_path / "scenes"
+    scenes.mkdir()
+    png = scenes / "frame_002_abcd1234.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 250_000)
+    fr = _frame(2, FrameStatus.image_prompt_ready)
+    fr.attrs = {"camera_subdivide": {"role": "shot", "parent_uuid": "abc"}}
+    assert frame_needs_shot1_image(fr, scenes) is False
+
+
 def test_tiny_png_still_needs_generation(tmp_path: Path) -> None:
     scenes = tmp_path / "scenes"
     scenes.mkdir()

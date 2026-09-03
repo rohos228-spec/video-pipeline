@@ -81,11 +81,11 @@ def disk_has_valid_shot2_image(scenes_dir: Path, frame_number: int) -> bool:
 
 
 def frame_needs_shot1_image(fr: Frame, scenes_dir: Path) -> bool:
-    """Кадр должен пройти outsee: есть промт, нет валидного PNG на диске."""
-    from app.services.vo_shot_expand import is_shot_child
+    """Кадр должен пройти outsee: есть промт, нет валидного PNG на диске.
 
-    if is_shot_child(fr):
-        return False
+    Дочерние шоты (K2/K3) — отдельные кадры со своим куском закадра.
+    Им нужна своя картинка, не shot2 родителя.
+    """
     if is_skippable_empty_prompt(fr.image_prompt or ""):
         return False
     if fr.status is FrameStatus.image_approved:
@@ -123,11 +123,7 @@ async def scan_missing_frames(
     scenes_dir = project.data_dir / "scenes"
     missing: list[int] = []
     total_with_prompt = 0
-    from app.services.vo_shot_expand import is_shot_child
-
     for fr in frames:
-        if is_shot_child(fr):
-            continue
         if is_skippable_empty_prompt(fr.image_prompt or ""):
             continue
         total_with_prompt += 1

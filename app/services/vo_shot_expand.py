@@ -59,6 +59,7 @@ _CHAR_SHEET_LOCK = (
     "Image 2 is the character sheet: identity only (face/body/clothes). "
     "Do not copy the sheet pose or layout."
 )
+_IDENTITY_LOCK_PREFIX = "Image 1 is the identity reference of "
 
 
 def planned_shots_from_attrs(frame: Any) -> list[dict[str, Any]]:
@@ -242,6 +243,39 @@ def with_parent_scene_lock(
     if has_char_ref:
         parts.append(_CHAR_SHEET_LOCK)
     return "\n".join(parts) + "\n\n" + raw
+
+
+def with_character_sheet_lock(prompt: str, sheet_ids: list[str]) -> str:
+    """Image N = какой cXX. Без этого gpt-image-2 сливает два листа в одно лицо."""
+    raw = (prompt or "").strip()
+    ids = [str(x).strip() for x in sheet_ids if str(x).strip()]
+    if not ids:
+        return raw
+    if raw.startswith(_IDENTITY_LOCK_PREFIX) or raw.startswith(
+        "Image 1 is the previous coverage still"
+    ):
+        return raw
+    lines: list[str] = []
+    for i, rid in enumerate(ids, start=1):
+        lines.append(
+            f"Image {i} is the identity reference of {rid} — use this face, "
+            f"hair, beard, body and clothes for person {rid} only."
+        )
+    if len(ids) >= 2:
+        named = " and ".join(ids)
+        lines.append(
+            f"{named} are TWO different people from TWO different attached "
+            "images. The scene must show both as two distinct bodies with two "
+            "distinct faces — not twins, not one man copied twice, not a merge "
+            "of the two sheets. A character sheet grid repeats one person on "
+            "purpose; that is identity reference, not a twin instruction and "
+            "not a layout to copy."
+        )
+    else:
+        lines.append(
+            f"Exactly one body of {ids[0]}. Do not copy the sheet grid or pose."
+        )
+    return "\n".join(lines) + "\n\n" + raw
 
 
 def flattened_coverage_groups(

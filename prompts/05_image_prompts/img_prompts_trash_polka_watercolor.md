@@ -125,8 +125,11 @@ Continuity внутри одного `place`: один и тот же базов
 2. **где** в кадре стоит этот персонаж (зона: left/center/right,
    foreground/midground/background — из `shot01_description`);
 3. **что делает** (из `shot01_action` / `accent`) — одна конкретная поза/жест;
-4. референс = **только identity** этого одного человека (лицо/тело/одежда),
+4. референс = **только identity** этого человека (лицо/тело/одежда),
    не копировать позу/композицию character sheet.
+5. если кодов несколько — **с каждого референса ровно один персонаж,
+   своё лицо**; запрещено брать лицо с одного рефа и ставить на оба тела
+   (клоны/близнецы = брак). «No duplicate faces» НЕ значит «в кадре одно лицо».
 
 Нет кода персонажа → блок A **не пиши** (не выдумывай «reference»).
 
@@ -289,7 +292,7 @@ archival true-crime noir dossier poster + dark watercolor wash + grunge prison m
 Архивный нуарный grunge-досье постер: washed gray-blue, dirty cream, off-white, charcoal, dark gray, muted amber-gray; paper-absorbed watercolor pigment; ink-and-water stains; torn archive paper; worn newspaper fragments; distressed print; rough comic inking; realistic historical material surfaces softened by watercolor absorption. Коллажная энергия архива → **одна** постерная композиция, один фокус.
 
 **STYLE_LOCK_RULE (NOT — обязательно в prompt):**  
-not clean minimalist, not photorealism, not glossy 3D, not cute, not pastel, not bright cheerful colors, not dry flat digital color, not smooth vector gradient, not plastic digital paint, not neon cyberpunk, not separate collage panels, not multiple visual frames inside one image, not oil painting impasto, not airbrushed fantasy, not pure B&W without watercolor wash, not automatic detective board, not copper/brass basin, not washstand, not copied voiceover/закадр, not overlay/caption text, not twins, not clones, not duplicate identical faces, not mirrored double of the same character.
+not clean minimalist, not photorealism, not glossy 3D, not cute, not pastel, not bright cheerful colors, not dry flat digital color, not smooth vector gradient, not plastic digital paint, not neon cyberpunk, not separate collage panels, not multiple visual frames inside one image, not oil painting impasto, not airbrushed fantasy, not pure B&W without watercolor wash, not automatic detective board, not copper/brass basin, not washstand, not copied voiceover/закадр, not overlay/caption text, not cloning the same character id onto two bodies, not copying one reference face onto two bodies, not a mirrored double of the same id.
 
 **QUALITY_VECTOR:**  
 intense gritty archival cinematic impact, strong readable silhouette, unified historical dossier-poster composition, high visual tension, controlled chaotic archive energy, watercolor noir atmosphere, realistic historical-material grounding.
@@ -324,7 +327,7 @@ one unified scene (not literal collage); archival dossier montage energy → int
 
 ```
 [A — только если есть cXX]
-Reference: character sheet for [cXX / Name] — identity lock for this ONE person only. Place them in [ZONE from shot01_description: left/center/right, fore/mid/back]. They are doing [ACTION from shot01_action / accent]. Do not copy the sheet pose/layout. Exactly one body of this id — no twins, no clones, no duplicate face.
+Reference: character sheet for [cXX / Name] — identity lock for this person from this reference only. If two codes: Image 1 = first id, Image 2 = second id, two different faces. Place them in [ZONE from shot01_description: left/center/right, fore/mid/back]. They are doing [ACTION from shot01_action / accent]. Do not copy the sheet pose/layout. Exactly one body per referenced id — do not copy one reference face onto two bodies.
 
 [B] Background (detailed): [shot01_bg — surfaces, materials, colors, depth layers, what reads behind the subject].
 
@@ -338,18 +341,18 @@ Reference: character sheet for [cXX / Name] — identity lock for this ONE perso
 
 [G] Scene feature / shot scale: [scene_feature]; camera: [shot01_description — height, axis, framing; if empty use scene_feature].
 
-[H] Important details: props only [shot01_props]. Single unified scene, not collage panels. No invented clues/documents. No copied voiceover. Extras (if any) must look different from referenced character — no duplicate identical faces.
+[H] Important details: props only [shot01_props]. Single unified scene, not collage panels. No invented clues/documents. No copied voiceover. Extras (if any) must not reuse a referenced character's face. Two referenced ids must stay two different faces.
 
 [I] Place and time: [place]; [TIME_PERIOD / epoch from general_plan, short].
 
 [J — STYLE part]
 STYLE: Archival Noir Watercolor Grunge Dossier Poster Illustration. archival true-crime noir dossier poster + dark watercolor wash + grunge prison mystery illustration + distressed printmaking + noir comic graphic novel inking + high-contrast historical mixed media. Transparent watercolor washes, gray-blue wash layers, dirty cream pigment bleeding into paper, ink-and-water stains, raw brush smears, rough ink splashes, distressed/torn archive paper, worn newspaper texture, halftone dots, rough print imperfections, gritty comic inking, charcoal shadow masses. Palette: washed gray-blue, cold oceanic gray, off-white, dirty cream, charcoal, muted amber-gray, faded paper yellow, diluted ink black; rare distressed blood-red stress marks only. One unified poster frame. Improve only inside this style (stronger wash/silhouette/grain), never change medium.
 
-Final style lock: unified cinematic frame, Archival Noir Watercolor Grunge Dossier Poster Illustration, dark comic graphic novel inking, distressed printmaking, realistic historical texture via watercolor absorption, high-contrast mixed media, transparent washes, paper-absorbed pigment, washed gray-blue and dirty cream palette, ink-and-water stains, rough contour lines, heavy charcoal shadow masses, halftone grain, damaged archive-paper surface, raw brush smears, rough ink splashes, torn newspaper fragments, minimal distressed red stress marks only, no red circles/arrows, no photorealism, no glossy 3D, no clean vector, no pastel, no neon, no multi-panel collage, no automatic detective board, no large foreground props, no copper basin/washstand, no twins/clones/duplicate faces of the same character id, character id when present, no copied voiceover.
+Final style lock: unified cinematic frame, Archival Noir Watercolor Grunge Dossier Poster Illustration, dark comic graphic novel inking, distressed printmaking, realistic historical texture via watercolor absorption, high-contrast mixed media, transparent washes, paper-absorbed pigment, washed gray-blue and dirty cream palette, ink-and-water stains, rough contour lines, heavy charcoal shadow masses, halftone grain, damaged archive-paper surface, raw brush smears, rough ink splashes, torn newspaper fragments, minimal distressed red stress marks only, no red circles/arrows, no photorealism, no glossy 3D, no clean vector, no pastel, no neon, no multi-panel collage, no automatic detective board, no large foreground props, no copper basin/washstand, do not clone the same character id onto two bodies, character id when present, no copied voiceover.
 ```
 
 **Negative:** (обязательный хвост)  
-photorealism, glossy 3D render, clean minimalist, cute, pastel, bright cheerful colors, neon cyberpunk, flat digital color, smooth vector gradients, plastic digital paint, oil painting impasto, airbrushed fantasy, pure black-and-white without watercolor wash, multi-panel collage, separate collage panels, automatic detective board, evidence circles, red arrows, red outlines around clues, overlay text, captions, subtitles, watermark, floating text, copied voiceover, narration context, copper basin, brass basin, washstand, large foreground props, synonym duplicate scene, modern objects in historical scene, gore, twins, clones, duplicate identical faces, mirrored double of same character, style drift away from archival noir watercolor grunge dossier poster.
+photorealism, glossy 3D render, clean minimalist, cute, pastel, bright cheerful colors, neon cyberpunk, flat digital color, smooth vector gradients, plastic digital paint, oil painting impasto, airbrushed fantasy, pure black-and-white without watercolor wash, multi-panel collage, separate collage panels, automatic detective board, evidence circles, red arrows, red outlines around clues, overlay text, captions, subtitles, watermark, floating text, copied voiceover, narration context, copper basin, brass basin, washstand, large foreground props, synonym duplicate scene, modern objects in historical scene, gore, copying one reference face onto two bodies, cloning the same id, mirrored double of the same id, style drift away from archival noir watercolor grunge dossier poster.
 
 ---
 
@@ -358,7 +361,7 @@ photorealism, glossy 3D render, clean minimalist, cute, pastel, bright cheerful 
 Стиль = тот же lock; меняется только камера/план/акцент. Place/lighting/bg — те же.
 
 ```
-на основе референса, запрещено делать идентичную иллюстрацию без смены положения камеры; Reference [cXX]: one body only, no twins/clones; в кадре [зона + главный фокус: accent/действие/предмет]; [план shot_02]; [физическое действие]; [экстремальный ракурс ≠ shot_01]; фон/свет той же локации; ОБЯЗАТЕЛЬНО сохранить тот же Archival Noir Watercolor Grunge Dossier Poster Illustration: watercolor washes, washed gray-blue/dirty cream/charcoal palette, ink-and-water stains, distressed archive paper, halftone, comic inking, noir lighting through pigment bloom — стиль не менять, только камеру и композицию.
+на основе референса, запрещено делать идентичную иллюстрацию без смены положения камеры; Reference [cXX]: one body per referenced id, different face per reference; в кадре [зона + главный фокус: accent/действие/предмет]; [план shot_02]; [физическое действие]; [экстремальный ракурс ≠ shot_01]; фон/свет той же локации; ОБЯЗАТЕЛЬНО сохранить тот же Archival Noir Watercolor Grunge Dossier Poster Illustration: watercolor washes, washed gray-blue/dirty cream/charcoal palette, ink-and-water stains, distressed archive paper, halftone, comic inking, noir lighting through pigment bloom — стиль не менять, только камеру и композицию.
 ```
 
 ---
@@ -377,7 +380,7 @@ photorealism, glossy 3D render, clean minimalist, cute, pastel, bright cheerful 
 
 - [ ] Порядок: **A(ref?) → B фон → C действие → D свет → E accent → F scene_sense → G scene_feature → H детали → I место/время → J STYLE + Negative**  
 - [ ] `accent`, `scene_sense`, `scene_feature` — отдельные явные строки из Базы  
-- [ ] Если есть cXX: в A указано где стоит и что делает; **один** экземпляр, no clones  
+- [ ] Если есть cXX: в A указано где стоит и что делает; **один экземпляр на каждый id**; два id = два разных лица  
 - [ ] Фон подробный (`shot01_bg`), не одно слово  
 - [ ] В каждом `промт_картинки` блок J + Negative **дословно из §6**, не ужатый  
 - [ ] J одинаковый во всех ops этого ответа и не короче, чем в соседнем батче  

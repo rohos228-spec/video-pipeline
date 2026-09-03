@@ -1596,6 +1596,25 @@ def test_coverage_child_detects_flattened_k2() -> None:
     assert locked.endswith("сцена")
 
 
+def test_character_sheet_lock_maps_two_images() -> None:
+    from app.services.vo_shot_expand import with_character_sheet_lock
+
+    locked = with_character_sheet_lock("сцена", ["c02", "c03"])
+    assert locked.startswith("Image 1 is the identity reference of c02")
+    assert "Image 2 is the identity reference of c03" in locked
+    assert "TWO different people" in locked
+    assert locked.endswith("сцена")
+    again = with_character_sheet_lock(locked, ["c02", "c03"])
+    assert again == locked
+
+
+def test_character_sheet_lock_skips_when_parent_lock_present() -> None:
+    from app.services.vo_shot_expand import with_character_sheet_lock
+
+    raw = "Image 1 is the previous coverage still of the SAME scene\n\nсцена"
+    assert with_character_sheet_lock(raw, ["c02"]) == raw
+
+
 def test_shot_child_locks_to_vo_parent_not_cross_scene_id() -> None:
     """K2/K3 ячейки 5-* не берут PNG чужого 2-K1 из coverage_parent_id."""
     from types import SimpleNamespace

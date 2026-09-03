@@ -127,6 +127,42 @@ async def test_montage_board_prefers_db_characters_over_excel(
 
 
 @pytest.mark.asyncio
+async def test_montage_board_hides_character_refs_on_shot_children(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    """K2/K3 не показывают листы персонажей — реф только still родителя."""
+    xlsx = montage_project.data_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    wb.save(xlsx)
+    chars_dir = montage_project.data_dir / "characters"
+    chars_dir.mkdir(parents=True, exist_ok=True)
+    (chars_dir / "c02.png").write_bytes(b"png2")
+
+    child = Frame(
+        project_id=montage_project.id,
+        number=2,
+        voiceover_text="vo",
+        status="planned",
+        attrs={
+            "characters": "c02,c03",
+            "персонажи": "c02,c03",
+            "camera_subdivide": {"role": "shot", "parent_uuid": "p1"},
+        },
+    )
+    session.add(montage_project)
+    session.add(child)
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    row = board["frames"][0]
+    assert row["character_refs"] == []
+    assert row["characters"] == ""
+
+
+@pytest.mark.asyncio
 async def test_montage_board_exposes_source_prompts_from_excel(
     montage_project: Project,
     session: AsyncSession,

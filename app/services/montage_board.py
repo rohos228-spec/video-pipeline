@@ -21,6 +21,7 @@ from app.orchestrator.steps.generate_images import (
     _resolve_plan_sheet,
 )
 from app.services.excel_characters import parse_persons_sheet
+from app.services.vo_shot_expand import is_shot_child
 from app.services.montage_board_cache import (
     get_cached_plan_excel_cells,
     get_cached_source_prompts,
@@ -591,16 +592,20 @@ async def build_montage_board(
         shot2_timeline_start = shot1_timeline_end
         shot2_timeline_end = vo_end if has_shot2 else None
         prompts = prompts_by_frame.get(fr.number) or {}
-        db_ids = _person_ids_from_attrs(fr.attrs)
-        if db_ids:
-            char_names = _names_from_excel_cells(excel_by_frame)
-            characters = ", ".join(db_ids)
-            character_refs = _character_refs_for_ids(
-                db_ids, chars_dir=chars_dir, names=char_names
-            )
+        if is_shot_child(fr):
+            characters = ""
+            character_refs: list[dict[str, str | None]] = []
         else:
-            characters = ex.get("characters") or ""
-            character_refs = ex.get("character_refs") or []
+            db_ids = _person_ids_from_attrs(fr.attrs)
+            if db_ids:
+                char_names = _names_from_excel_cells(excel_by_frame)
+                characters = ", ".join(db_ids)
+                character_refs = _character_refs_for_ids(
+                    db_ids, chars_dir=chars_dir, names=char_names
+                )
+            else:
+                characters = ex.get("characters") or ""
+                character_refs = ex.get("character_refs") or []
 
         rows.append(
             {

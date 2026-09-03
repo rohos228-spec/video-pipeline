@@ -11,11 +11,9 @@
   1. Берёт следующий кадр в статусе image_prompt_ready.
   2. Генерит картинку в outsee, сохраняет ``frame_NNN_<uuid>.png``.
 
-  Фаза B — вторые кадры (shot_02, строка 46), только где enrich заполнил
-  блок 16–29 / есть промт:
-  3. После завершения фазы A — для каждой сцены с shot_02 генерит
-     ``frame_NNN_s2_<uuid>.png`` с референсом = PNG shot_01 той же колонки
-     (у дочернего кадра покрытия — PNG родителя).
+  Если кадры уже разрезаны по кускам закадра (дети покрытия / группа
+  script_frames_qc) — фазы shot_02 нет: один кадр = один кусок VO = одна
+  картинка. Иначе (старый лист: два ракурса в одной колонке) — фаза B.
 
   HITL-карточки шлются, но воркер не ждёт approve между кадрами.
 """
@@ -119,8 +117,19 @@ _XLSX_SHEET_PLAN = "план"
 _XLSX_ROWS_PERSONS = (8, 23, 38)   # «персонажи» — id c01..c05
 _XLSX_ROWS_ITEMS = (9, 24, 39)     # «предметы» — id i01 / predmet1
 _OUTSEE_MAX_REFS = 2  # лимит Outsee на одну генерацию картинки
+_REF_ONE_PERSON_LOCK = (
+    "ты обязан указать с каждого референса по 1 персонажу, "
+    "клоны, близнецы запрещены"
+)
 
 _REF_ID_RE = re.compile(r"^(c\d+|i\d+|predmet\d+)$", re.IGNORECASE)
+
+
+def _with_ref_one_person_lock(prompt: str) -> str:
+    raw = (prompt or "").strip()
+    if not raw or _REF_ONE_PERSON_LOCK in raw:
+        return raw
+    return _REF_ONE_PERSON_LOCK + "\n\n" + raw
 
 
 def normalize_ref_id(token: str) -> str | None:
@@ -168,6 +177,30 @@ def _parse_ref_ids(cell_value: object) -> list[str]:
         if norm:
             out.append(norm)
     return out
+
+
+_SHOT1_CHAR_KEYS = ("characters", "персонажи", "persons")
+
+
+def _person_ids_from_frame(frame: Any) -> list[str]:
+    """Id персонажей кадра из attrs (DB), не из Excel."""
+    attrs = getattr(frame, "attrs", None) or {}
+    if not isinstance(attrs, dict):
+        return []
+    for key in _SHOT1_CHAR_KEYS:
+        ids = _parse_ref_ids(attrs.get(key))
+        if ids:
+            return ids
+    return []
+
+
+def _character_sheet_ids_for_image(frame: Any) -> list[str]:
+    """Листы cNN только у VO-родителя. K2/K3 — still родителя, не герои."""
+    from app.services.vo_shot_expand import is_shot_child
+
+    if is_shot_child(frame):
+        return []
+    return _person_ids_from_frame(frame)
 
 
 def _resolve_plan_sheet(wb):  # noqa: ANN001
@@ -736,6 +769,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                                     project.id,
                                 )
                                 break
+                            if _skip_legacy_shot2(project, frames):
+                                logger.info(
+                                    "[#{}] generate_images: shot_02 пропущен — "
+                                    "каждый кадр = свой кусок закадра",
+                                    project.id,
+                                )
+                                break
                             xlsx_path = project.data_dir / "project.xlsx"
                             shot2_queued = await _init_shot2_queue(
                                 session, project, frames, out_dir, xlsx_path
@@ -783,8 +823,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                                 project.id,
                                 pending[:8],
                             )
+                            if _skip_legacy_shot2(project, frames):
+                                break
                             phase = "shot2"
                             continue
+                    elif _skip_legacy_shot2(project, frames):
+                        logger.info(
+                            "[#{}] generate_images: shot1 пуст, shot_02 нет — завершаю",
+                            project.id,
+                        )
+                        break
 
                     # phase == "shot2"
                     batch2 = await _claim_shot2_batch(
@@ -1388,6 +1436,16 @@ async def _all_frames_have_image_or_failed(
     return True
 
 
+def _skip_legacy_shot2(project: Project | None, frames: list[Frame]) -> bool:
+    """True — не генерить shot2: каждый кадр уже свой кусок закадра."""
+    from app.services.node_groups import canvas_has_script_frames_qc
+    from app.services.vo_shot_expand import is_shot_child
+
+    if project is not None and canvas_has_script_frames_qc(project):
+        return True
+    return any(is_shot_child(fr) for fr in frames)
+
+
 async def _init_shot2_queue(
     session: AsyncSession,
     project: Project,
@@ -1398,6 +1456,8 @@ async def _init_shot2_queue(
     """Подготовить очередь shot_02: xlsx + дети покрытия из DB."""
     from app.services.vo_shot_expand import is_shot_child
 
+    if _skip_legacy_shot2(project, frames):
+        return 0
     by_num = read_shot2_columns(xlsx_path)
     queued = 0
     for fr in frames:
@@ -1647,29 +1707,66 @@ async def _generate_and_send(
         logger.warning("[#{}] xlsx write_frame(gen_id) failed: {}", project.id, e)
 
     # Референсы: shot_02 — PNG shot_01 той же колонки.
-    # Группа script_frames_qc: K2/K3 lock на K1 своей ячейки, не чужой still.
+    # K2/K3: только still родителя. Листы персонажей — только у VO-родителя.
+    from app.services.hero_ref_prompt import rewrite_hero_ref_prompt
+
     if is_shot2:
         refs: list[Path] = [shot1_reference] if shot1_reference else []
     else:
         from app.services.node_groups import canvas_has_script_frames_qc
         from app.services.vo_shot_expand import (
+            is_shot_child,
             merge_parent_scene_refs,
             with_parent_scene_lock,
         )
 
-        refs = await _load_refs_for_frame(session, project, frame.number)
-        if canvas_has_script_frames_qc(project):
+        if is_shot_child(frame):
             parent_png = await _coverage_parent_png(session, project, frame)
-            refs = merge_parent_scene_refs(
-                parent_png, refs, max_refs=_OUTSEE_MAX_REFS
-            )
+            refs = [parent_png] if parent_png is not None else []
             if parent_png is not None:
                 prompt_text = with_parent_scene_lock(
                     prompt_text,
                     has_parent_ref=True,
-                    has_char_ref=len(refs) > 1,
+                    has_char_ref=False,
                 )
+        else:
+            db_ids = _character_sheet_ids_for_image(frame)
+            refs = await _load_refs_for_frame(
+                session,
+                project,
+                frame.number,
+                persons_override=db_ids or None,
+            )
+            if canvas_has_script_frames_qc(project):
+                parent_png = await _coverage_parent_png(session, project, frame)
+                refs = merge_parent_scene_refs(
+                    parent_png, refs, max_refs=_OUTSEE_MAX_REFS
+                )
+            if db_ids and refs:
+                from app.services.character_sheet_ref import identity_ref_from_sheet
+
+                crop_dir = project.data_dir / "tmp_gpt" / "ref_crops"
+                cropped: list[Path] = []
+                for src in refs:
+                    ident = identity_ref_from_sheet(src, crop_dir)
+                    if ident != src:
+                        logger.info(
+                            "[#{}] frame {}: sheet {} → identity crop {}",
+                            project.id,
+                            frame.number,
+                            src.name,
+                            ident.name,
+                        )
+                    cropped.append(ident)
+                refs = cropped
     if refs:
+        hero_ids = [] if is_shot2 else _character_sheet_ids_for_image(frame)
+        if hero_ids:
+            prompt_text = rewrite_hero_ref_prompt(
+                prompt_text, hero_ids[: len(refs)]
+            )
+        else:
+            prompt_text = rewrite_hero_ref_prompt(prompt_text, [], child=True)
         logger.info(
             "[#{}] frame {}: {} ref(ов) подгружено: {}",
             project.id, frame.number, len(refs), [str(r) for r in refs],
