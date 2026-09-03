@@ -416,6 +416,23 @@ def _sd_agent_wiper(step_code: str):
     return _wipe
 
 
+async def _resume_hero(session: AsyncSession, project: Project) -> dict[str, Any]:
+    """Soft ▶ hero: НЕ wipe characters/*.png — догнать только missing.
+
+    Регистрирует уже лежащие PNG. Не копирует ``old/characters`` обратно:
+    иначе reset hero + ▶ сразу откатывает wipe. Полный wipe — ``reset_step``
+    / force_wipe.
+    """
+    from app.services.artifact_recovery import recover_hero_references_from_disk
+
+    recovered = await recover_hero_references_from_disk(session, project)
+    return {
+        "mode": "soft_resume",
+        "artifacts_registered": len(recovered),
+        "excel_ids": recovered,
+    }
+
+
 async def _wipe_hero(session: AsyncSession, project: Project) -> dict[str, Any]:
     """Сброс шага 4a «Персонажи»: удалить hero_reference артефакты.
 
@@ -1004,6 +1021,7 @@ _STEP_WIPE_BY_CODE: dict[str, Any] = dict(_PIPELINE_RESET_LEVELS)
 _STEP_RERUN_BY_CODE: dict[str, Any] = {
     "script": _preserve_script_source_on_rerun,
     "split": _preserve_split_on_rerun,
+    "hero": _resume_hero,
     "img_pr": _resume_img_pr,
     "img": _resume_images,
     "anim_pr": _resume_anim_pr_from_xlsx,

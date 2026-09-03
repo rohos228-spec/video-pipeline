@@ -632,6 +632,72 @@ def _restore_hero_png_from_path(
     return dest
 
 
+async def recover_hero_references_from_disk(
+    session: AsyncSession, project: Project
+) -> list[str]:
+    """Зарегистрировать уже лежащие ``characters/*.png`` как hero_reference.
+
+    Не копирует ``old/characters`` обратно: иначе soft ▶ после wipe
+    откатит удаление и Outsee не догенерит недостающие id.
+    """
+    chars_dir = project.data_dir / "characters"
+    if not chars_dir.is_dir():
+        return []
+    rows = (
+        await session.execute(
+            select(Artifact)
+            .where(
+                Artifact.project_id == project.id,
+                Artifact.kind == ArtifactKind.hero_reference,
+            )
+            .order_by(desc(Artifact.id))
+        )
+    ).scalars().all()
+    by_id: dict[str, Artifact] = {}
+    for a in rows:
+        xid = (a.meta or {}).get("excel_id")
+        if not isinstance(xid, str) or not xid:
+            continue
+        key = xid.strip().lower()
+        if key and key not in by_id:
+            by_id[key] = a
+    registered: list[str] = []
+    for path in sorted(chars_dir.glob("*.png")):
+        try:
+            if not path.is_file() or path.stat().st_size < 1000:
+                continue
+        except OSError:
+            continue
+        cid = path.stem.strip().lower()
+        if not cid:
+            continue
+        art = by_id.get(cid)
+        if art is not None:
+            if art.path and Path(art.path).is_file():
+                continue
+            art.path = str(path.resolve())
+            registered.append(cid)
+            continue
+        session.add(
+            Artifact(
+                project_id=project.id,
+                kind=ArtifactKind.hero_reference,
+                uuid=uuid.uuid4().hex,
+                path=str(path.resolve()),
+                meta={"excel_id": cid, "recovered_from_disk": True},
+            )
+        )
+        registered.append(cid)
+    if registered:
+        await session.flush()
+        logger.info(
+            "[#{}] artifact_recovery: heroes с диска: {}",
+            project.id,
+            registered,
+        )
+    return registered
+
+
 async def recover_hero_references_from_old_dir(
     session: AsyncSession,
     project: Project,

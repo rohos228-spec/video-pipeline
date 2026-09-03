@@ -474,6 +474,66 @@ async def test_clear_step_outputs_for_rerun_img_pr_force_wipe_clears(session):
 
 
 @pytest.mark.asyncio
+async def test_clear_step_outputs_hero_soft_keeps_png(session, tmp_path: Path, monkeypatch):
+    """Soft ▶ hero не должен сносить уже готовые characters/*.png."""
+    from app import settings as app_settings
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path)
+    p = await _mkproject(session)
+    chars = p.data_dir / "characters"
+    chars.mkdir(parents=True, exist_ok=True)
+    png = chars / "c01.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 2000)
+    await _mkart(
+        session,
+        p,
+        ArtifactKind.hero_reference,
+        path=str(png),
+    )
+    arts = (
+        await session.execute(
+            select(Artifact).where(
+                Artifact.project_id == p.id,
+                Artifact.kind == ArtifactKind.hero_reference,
+            )
+        )
+    ).scalars().all()
+    arts[0].meta = {"excel_id": "c01"}
+    await session.flush()
+
+    summary = await clear_step_outputs_for_rerun(session, p, "hero", force_wipe=False)
+    assert summary.get("hero", {}).get("mode") == "soft_resume"
+    assert png.exists()
+    left = (
+        await session.execute(
+            select(Artifact).where(
+                Artifact.project_id == p.id,
+                Artifact.kind == ArtifactKind.hero_reference,
+            )
+        )
+    ).scalars().all()
+    assert len(left) == 1
+
+
+@pytest.mark.asyncio
+async def test_clear_step_outputs_hero_force_wipe_removes_png(session, tmp_path: Path, monkeypatch):
+    from app import settings as app_settings
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path)
+    p = await _mkproject(session)
+    chars = p.data_dir / "characters"
+    chars.mkdir(parents=True, exist_ok=True)
+    png = chars / "c01.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 2000)
+    await _mkart(session, p, ArtifactKind.hero_reference, path=str(png))
+    await session.flush()
+
+    summary = await clear_step_outputs_for_rerun(session, p, "hero", force_wipe=True)
+    assert "hero" in summary
+    assert not png.exists()
+
+
+@pytest.mark.asyncio
 async def test_clear_step_outputs_img_force_wipe_removes_png(session):
     """Явный ▶ img: PNG не скип — бэкап и удаление, кадры снова в очередь."""
     p = await _mkproject(session)

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from app.models import Project, ProjectStatus
@@ -17,6 +20,32 @@ def test_excel_batch_auto_flag() -> None:
     p.auto_mode = True
     p.meta = {}
     assert generate_hero._excel_batch_auto(p) is True
+
+
+@pytest.mark.asyncio
+async def test_excel_ids_with_artifact_counts_disk_png(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PNG на диске = готовый персонаж, даже без строки Artifact."""
+    from app import settings as app_settings
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path)
+    p = Project(id=1, topic="t", slug="t")
+    chars = p.data_dir / "characters"
+    chars.mkdir(parents=True)
+    (chars / "c01.png").write_bytes(b"\x89PNG" + b"x" * 2000)
+    (chars / "c07.png").write_bytes(b"tiny")
+
+    session = AsyncMock()
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = []
+    session.execute = AsyncMock(return_value=result)
+
+    ids = await generate_hero._excel_ids_with_artifact(session, p)
+    assert "c01" in ids
+    assert "c07" not in ids
+    assert generate_hero._excel_disk_png(p, "c01") is not None
+    assert generate_hero._excel_disk_png(p, "c07") is None
 
 
 def test_excel_ref_deps_batch_uses_generated() -> None:

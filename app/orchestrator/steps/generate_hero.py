@@ -212,10 +212,24 @@ async def _approved_excel_ids(
     return out
 
 
+def _excel_disk_png(project: Project, excel_id: str) -> Path | None:
+    """characters/<id>.png, если файл на диске уже есть."""
+    cid = (excel_id or "").strip()
+    if not cid:
+        return None
+    path = project.data_dir / "characters" / f"{cid}.png"
+    try:
+        if path.is_file() and path.stat().st_size >= 1000:
+            return path
+    except OSError:
+        return None
+    return None
+
+
 async def _excel_ids_with_artifact(
     session: AsyncSession, project: Project
 ) -> set[str]:
-    """ID персонажей, для которых уже есть hero_reference с файлом на диске."""
+    """ID персонажей, для которых уже есть PNG (артефакт или файл на диске)."""
     rows = (
         await session.execute(
             select(Artifact)
@@ -234,7 +248,27 @@ async def _excel_ids_with_artifact(
             continue
         if a.path and Path(a.path).is_file():
             out.add(xid)
+    chars_dir = project.data_dir / "characters"
+    if chars_dir.is_dir():
+        for png in chars_dir.glob("*.png"):
+            try:
+                if png.is_file() and png.stat().st_size >= 1000:
+                    out.add(png.stem.strip().lower())
+            except OSError:
+                continue
     return out
+
+
+async def _excel_png_for_id(
+    session: AsyncSession, project: Project, excel_id: str
+) -> Path | None:
+    """Путь к PNG рефа: артефакт, иначе characters/<id>.png."""
+    art = await _excel_artifact_for_id(session, project, excel_id)
+    if art is not None and art.path:
+        path = Path(art.path)
+        if path.is_file():
+            return path
+    return _excel_disk_png(project, excel_id)
 
 
 def _excel_batch_auto(project: Project) -> bool:
@@ -930,6 +964,7 @@ async def _run_excel(
     Реф-вариации ждут файл родителя, затем идут следующей волной.
     """
     from app.db import SessionLocal
+    from app.services.artifact_recovery import recover_hero_references_from_disk
     from app.services.hero_check_regen import META_IDS, get_hero_check_regen_ids
     from app.services.img_streams import get_img_streams
     from app.services.step_cancel import raise_if_cancelled
@@ -944,6 +979,8 @@ async def _run_excel(
         project.id,
         streams,
     )
+    await recover_hero_references_from_disk(session, project)
+
     if streams == 0:
         chars0 = _excel_characters_from_meta(cfg)
         generated0 = await _excel_ids_with_artifact(session, project)
@@ -1136,22 +1173,15 @@ async def _generate_one_excel_character(
     is_regen = await _is_regen_for_excel_id(session, project, ch.id)
     used_refs = bool(ch.ref_ids)
 
-    # Reference image(s): берём пути к одобренным артефактам каждого ref.
+    # Reference image(s): артефакт или characters/<id>.png на диске.
     ref_paths: list[Path] = []
     if used_refs:
         for rid in ch.ref_ids:
-            art = await _excel_artifact_for_id(session, project, rid)
-            if art is None or not art.path:
+            p = await _excel_png_for_id(session, project, rid)
+            if p is None:
                 logger.warning(
-                    "[#{}] excel_hero {}: ref {} артефакт не найден",
+                    "[#{}] excel_hero {}: ref {} файл не найден",
                     project.id, ch.id, rid,
-                )
-                continue
-            p = Path(art.path)
-            if not p.exists():
-                logger.warning(
-                    "[#{}] excel_hero {}: ref {} файл {} не существует",
-                    project.id, ch.id, rid, p,
                 )
                 continue
             ref_paths.append(p)
