@@ -1007,6 +1007,21 @@ export function NodeStudio({
                               className="mt-1 max-h-40 w-full rounded"
                               src={api.artifactFileUrl(a.uuid)}
                             />
+                          ) : a.path.match(/\.(mp3|wav|m4a|ogg|aac|flac)$/i) ? (
+                            <div className="mt-2 flex flex-col gap-1 rounded bg-black/40 p-2">
+                              <audio
+                                controls
+                                className="w-full"
+                                src={api.artifactFileUrl(a.uuid)}
+                              />
+                            </div>
+                          ) : a.path.match(/\.(json|txt|tsv|md|csv)$/i) ? (
+                            <div className="mt-1 flex max-h-40 flex-col overflow-auto rounded bg-black/40 p-2 text-[11px] font-mono text-zinc-300">
+                              <div className="text-[9px] text-zinc-500">
+                                {a.path.split(/[\\/]/).pop()}
+                              </div>
+                              <span className="mt-1 text-[10px] text-zinc-400">Текстовый артефакт (доступен для скачивания)</span>
+                            </div>
                           ) : (
                             <img
                               alt=""
