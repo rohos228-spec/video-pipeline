@@ -211,9 +211,24 @@ async def _lifespan(app: FastAPI):
         logger.exception("montage job reconcile failed (non-fatal)")
 
     try:
+        from app.project_db import auto_migrate_legacy_projects_if_needed
+
+        migrated_n = await auto_migrate_legacy_projects_if_needed()
+        if migrated_n > 0:
+            logger.info("web lifespan: auto-migrated {} legacy projects to project.db", migrated_n)
+    except Exception:  # noqa: BLE001
+        logger.exception("auto_migrate_legacy_projects failed (non-fatal)")
+
+    try:
         yield
     finally:
         logger.remove(live_log_sink)
+        try:
+            from app.project_db import close_all_project_engines
+
+            await close_all_project_engines()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def create_app() -> FastAPI:
