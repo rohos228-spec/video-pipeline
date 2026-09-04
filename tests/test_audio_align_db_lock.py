@@ -59,6 +59,9 @@ async def test_r15_written_even_if_db_locked(tmp_path: Path) -> None:
     session_cm = MagicMock()
     session = AsyncMock()
     session.get = AsyncMock(return_value=project)
+    mock_exec = MagicMock()
+    mock_exec.scalars.return_value.all.return_value = []
+    session.execute = AsyncMock(return_value=mock_exec)
     session_cm.__aenter__ = AsyncMock(return_value=session)
     session_cm.__aexit__ = AsyncMock(return_value=False)
 
@@ -80,10 +83,6 @@ async def test_r15_written_even_if_db_locked(tmp_path: Path) -> None:
             return_value=speech,
         ),
         patch(
-            "app.services.plan_timestamps.write_asr_timestamps_to_r15",
-            return_value=2,
-        ) as write_r15,
-        patch(
             "app.services.audio_align_run._persist_align_db_with_retry",
             side_effect=persist_boom,
         ),
@@ -92,9 +91,8 @@ async def test_r15_written_even_if_db_locked(tmp_path: Path) -> None:
             26, method="nemo_direct", force_asr=False, run_assemble=False
         )
 
-    assert summary["r15_written"] == 2
+    assert summary["r15_written"] == 0
     assert summary.get("done") is True
     assert "error" not in summary or not summary.get("error")
     assert "database is locked" in (summary.get("db_frames_error") or "")
-    write_r15.assert_called_once()
     assert persist_calls["n"] == 1

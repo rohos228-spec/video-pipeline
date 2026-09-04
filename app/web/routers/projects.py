@@ -203,6 +203,12 @@ async def create_project(
         hero_mode=p.hero_mode,
         status=p.status.value,
     )
+    from app.project_db import init_project_db
+    try:
+        await init_project_db(p.data_dir)
+    except Exception as exc:
+        from loguru import logger
+        logger.warning("create_project: init_project_db failed: {}", exc)
     await session.commit()
     await session.refresh(p)
     await publish_project_event(p.id, event_type="project_created", payload={
@@ -249,9 +255,11 @@ async def create_child_project(
     await session.refresh(child)
     try:
         await finalize_child_data_dir(parent, child)
+        from app.project_db import init_project_db
+        await init_project_db(child.data_dir)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "create_child #{}: data_dir copy failed after commit: {}",
+            "create_child #{}: data_dir copy/db init failed after commit: {}",
             child.id,
             exc,
         )
@@ -288,9 +296,22 @@ async def delete_project(
     p = await session.get(Project, project_id)
     if p is None:
         raise HTTPException(status_code=404, detail="project not found")
+    data_dir = p.data_dir
     remove_project_from_layout(project_id)
     await session.delete(p)
     await session.commit()
+    # Закрываем кэшированный engine для project.db
+    from app.project_db import _ENGINES, _SESSION_MAKERS, _LOCK, resolve_project_db_path
+    db_file = resolve_project_db_path(data_dir)
+    db_key = str(db_file.resolve())
+    async with _LOCK:
+        eng = _ENGINES.pop(db_key, None)
+        _SESSION_MAKERS.pop(db_key, None)
+        if eng is not None:
+            try:
+                await eng.dispose()
+            except Exception:
+                pass
     await publish_project_event(project_id, event_type="project_deleted")
 
 

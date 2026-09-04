@@ -336,6 +336,7 @@ async def run_audio_align_for_project(
     summary["clips_n"] = len(clips)
     # Excel R15 больше не пишем — таймкоды только в Frame (Export выгрузит).
     summary["r15_written"] = 0
+    written = 0
 
     words_path: Path | None = None
     if result.words and result.speech_source != "cache":

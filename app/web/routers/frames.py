@@ -7,7 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, FrameStatus
-from app.web.deps import get_session
+from app.project_db import register_frame_project
+from app.web.deps import get_project_session
 from app.web.schemas import FrameDTO, UpdateFrameRequest
 
 router = APIRouter(prefix="/projects/{project_id}/frames", tags=["frames"])
@@ -15,7 +16,7 @@ router = APIRouter(prefix="/projects/{project_id}/frames", tags=["frames"])
 
 @router.get("", response_model=list[FrameDTO])
 async def list_frames(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> list[Frame]:
     rows = (
         await session.execute(
@@ -24,16 +25,19 @@ async def list_frames(
             .order_by(Frame.number.asc())
         )
     ).scalars().all()
+    for fr in rows:
+        register_frame_project(fr.id, project_id)
     return list(rows)
 
 
 @router.get("/{frame_id}", response_model=FrameDTO)
 async def get_frame(
-    project_id: int, frame_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, frame_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> Frame:
     f = await session.get(Frame, frame_id)
     if f is None or f.project_id != project_id:
         raise HTTPException(status_code=404, detail="frame not found")
+    register_frame_project(f.id, project_id)
     return f
 
 
@@ -42,7 +46,7 @@ async def patch_frame(
     project_id: int,
     frame_id: int,
     payload: UpdateFrameRequest,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> Frame:
     f = await session.get(Frame, frame_id)
     if f is None or f.project_id != project_id:
@@ -57,4 +61,5 @@ async def patch_frame(
         setattr(f, k, v)
     await session.commit()
     await session.refresh(f)
+    register_frame_project(f.id, project_id)
     return f

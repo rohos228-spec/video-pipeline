@@ -99,6 +99,15 @@ async def _init_db() -> None:
         except Exception as e:  # noqa: BLE001
             logger.warning("migrate failed→new: {}", e)
 
+    try:
+        from app.project_db import auto_migrate_legacy_projects_if_needed
+
+        migrated_n = await auto_migrate_legacy_projects_if_needed()
+        if migrated_n > 0:
+            logger.info("main init_db: auto-migrated {} legacy projects to project.db", migrated_n)
+    except Exception:  # noqa: BLE001
+        logger.exception("auto_migrate_legacy_projects failed in main (non-fatal)")
+
 
 async def _backfill_from_disk() -> None:
     """ROOT FIX: подтягиваем project.xlsx и voiceover.txt в БД для всех
