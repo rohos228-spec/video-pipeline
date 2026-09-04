@@ -40,7 +40,23 @@ from app.services.xlsx_v8_import import (
     _cell_text,
     _resolve_plan_sheet,
 )
-from app.web.deps import get_session
+from app.project_db import (
+    get_project_sessionmaker,
+    register_edge_project,
+    register_entity_project,
+    register_frame_project,
+    register_scene_project,
+    resolve_project_db_path,
+)
+from app.web.deps import (
+    get_edge_session,
+    get_entity_session,
+    get_frame_session,
+    get_project_session,
+    get_prompt_session,
+    get_session,
+    get_text_session,
+)
 
 router = APIRouter(prefix="/db", tags=["db"])
 
@@ -53,6 +69,19 @@ _ROWS_ITEMS = (9, 24, 39)
 async def _project(session: AsyncSession, project_id: int) -> Project:
     p = await session.get(Project, project_id)
     if p is None:
+        from app.db import SessionLocal
+
+        async with SessionLocal() as master_sess:
+            p_master = await master_sess.get(Project, project_id)
+            if p_master is not None:
+                try:
+                    from app.project_db import sync_project_row_to_project_db
+
+                    await sync_project_row_to_project_db(p_master)
+                    p = await session.get(Project, project_id)
+                except Exception:
+                    p = p_master
+    if p is None:
         raise HTTPException(404, f"проект {project_id} не найден")
     return p
 
@@ -61,6 +90,7 @@ async def _frame(session: AsyncSession, frame_id: int) -> Frame:
     fr = await session.get(Frame, frame_id)
     if fr is None:
         raise HTTPException(404, f"кадр {frame_id} не найден")
+    register_frame_project(fr.id, fr.project_id)
     return fr
 
 
@@ -126,26 +156,73 @@ async def db_overview(session: AsyncSession = Depends(get_session)) -> dict:
     projects = list((await session.execute(select(Project).order_by(Project.id))).scalars())
     out = []
     for p in projects:
-        frames_n = (
-            await session.execute(
-                select(func.count(Frame.id)).where(Frame.project_id == p.id)
-            )
-        ).scalar_one()
-        scenes_n = (
-            await session.execute(
-                select(func.count(Scene.id)).where(Scene.project_id == p.id)
-            )
-        ).scalar_one()
-        entities_n = (
-            await session.execute(
-                select(func.count(Entity.id)).where(Entity.project_id == p.id)
-            )
-        ).scalar_one()
-        edges_n = (
-            await session.execute(
-                select(func.count(FrameEdge.id)).where(FrameEdge.project_id == p.id)
-            )
-        ).scalar_one()
+        db_file = resolve_project_db_path(p.data_dir)
+        if db_file.exists():
+            try:
+                sm = await get_project_sessionmaker(p.data_dir)
+                async with sm() as p_sess:
+                    frames_n = (
+                        await p_sess.execute(
+                            select(func.count(Frame.id)).where(Frame.project_id == p.id)
+                        )
+                    ).scalar_one()
+                    scenes_n = (
+                        await p_sess.execute(
+                            select(func.count(Scene.id)).where(Scene.project_id == p.id)
+                        )
+                    ).scalar_one()
+                    entities_n = (
+                        await p_sess.execute(
+                            select(func.count(Entity.id)).where(Entity.project_id == p.id)
+                        )
+                    ).scalar_one()
+                    edges_n = (
+                        await p_sess.execute(
+                            select(func.count(FrameEdge.id)).where(FrameEdge.project_id == p.id)
+                        )
+                    ).scalar_one()
+            except Exception:
+                frames_n = (
+                    await session.execute(
+                        select(func.count(Frame.id)).where(Frame.project_id == p.id)
+                    )
+                ).scalar_one()
+                scenes_n = (
+                    await session.execute(
+                        select(func.count(Scene.id)).where(Scene.project_id == p.id)
+                    )
+                ).scalar_one()
+                entities_n = (
+                    await session.execute(
+                        select(func.count(Entity.id)).where(Entity.project_id == p.id)
+                    )
+                ).scalar_one()
+                edges_n = (
+                    await session.execute(
+                        select(func.count(FrameEdge.id)).where(FrameEdge.project_id == p.id)
+                    )
+                ).scalar_one()
+        else:
+            frames_n = (
+                await session.execute(
+                    select(func.count(Frame.id)).where(Frame.project_id == p.id)
+                )
+            ).scalar_one()
+            scenes_n = (
+                await session.execute(
+                    select(func.count(Scene.id)).where(Scene.project_id == p.id)
+                )
+            ).scalar_one()
+            entities_n = (
+                await session.execute(
+                    select(func.count(Entity.id)).where(Entity.project_id == p.id)
+                )
+            ).scalar_one()
+            edges_n = (
+                await session.execute(
+                    select(func.count(FrameEdge.id)).where(FrameEdge.project_id == p.id)
+                )
+            ).scalar_one()
         out.append(
             {
                 "id": p.id,
@@ -164,7 +241,7 @@ async def db_overview(session: AsyncSession = Depends(get_session)) -> dict:
 
 @router.get("/projects/{project_id}/graph")
 async def db_graph(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> dict:
     project = await _project(session, project_id)
     # Backfill только если есть кадры без v2-полей — иначе UI «Базы» тормозит
@@ -185,6 +262,19 @@ async def db_graph(
         await db_v2.backfill_project_v2(session, project)
         await session.commit()
     graph = await db_v2.project_graph(session, project)
+    # Регистрируем кадры, сцены, сущности в кэше для роутинга
+    for fr in graph.get("frames") or []:
+        if isinstance(fr, dict) and "id" in fr:
+            register_frame_project(fr["id"], project.id)
+    for sc in graph.get("scenes") or []:
+        if isinstance(sc, dict) and "id" in sc:
+            register_scene_project(sc["id"], project.id)
+    for en in graph.get("entities") or []:
+        if isinstance(en, dict) and "id" in en:
+            register_entity_project(en["id"], project.id)
+    for ed in graph.get("edges") or []:
+        if isinstance(ed, dict) and "id" in ed:
+            register_edge_project(ed["id"], project.id)
     graph["excel_rows"] = _excel_rows_for_project(project)
     # Сводка последних проверок — чип «Проверки» в «Базе».
     from app.services.agent_harness import read_ops_telemetry
@@ -207,7 +297,7 @@ async def db_graph(
 
 @router.get("/projects/{project_id}/shot-menu")
 async def shot_menu(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> dict:
     """Лента меню съёмки: ячейки закадра + шоты, без склейки соседнего VO.
 
@@ -258,7 +348,7 @@ class ShotMenuCellEdit(BaseModel):
 async def shot_menu_edit_cell(
     project_id: int,
     body: ShotMenuCellEdit,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Правка закадра ячейки из меню съёмки."""
     from app.services.shot_menu import edit_cell_voiceover
@@ -279,7 +369,7 @@ class ShotMenuCellAdd(BaseModel):
 async def shot_menu_add_cell(
     project_id: int,
     body: ShotMenuCellAdd,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Новая ячейка перед N (или в конец) — дробный sort_key, без перенумерации."""
     from app.services.shot_menu import add_cell
@@ -298,7 +388,7 @@ class ShotMenuFieldEdit(BaseModel):
 async def shot_menu_edit_field(
     project_id: int,
     body: ShotMenuFieldEdit,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Правка поля шота (действие/персонажи/стык/промты…) из меню съёмки."""
     from app.services.shot_menu import edit_shot_field
@@ -312,7 +402,7 @@ async def shot_menu_edit_field(
 
 @router.post("/projects/{project_id}/export-xlsx")
 async def export_xlsx(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> dict:
     """Кнопка «Экспорт в Excel»: переписать строки листа «план» из DB."""
     project = await _project(session, project_id)
@@ -340,7 +430,7 @@ class SheetCellBody(BaseModel):
 async def patch_sheet_cell(
     project_id: int,
     body: SheetCellBody,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Точечная правка любой ячейки project.xlsx (+ sync известных полей в DB)."""
     from app.services.sheet_cell_edit import write_sheet_cell
@@ -380,7 +470,7 @@ class ApplyOpsBody(BaseModel):
 async def apply_ops(
     project_id: int,
     body: ApplyOpsBody,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Fail-closed запись от GPT: JSON-операции (логика в `services/db_apply`).
 
@@ -2299,7 +2389,7 @@ class OrchestratorChatBody(BaseModel):
 async def orchestrator_chat(
     project_id: int,
     body: OrchestratorChatBody,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Диалог с оркестратором по текущему проекту.
 
@@ -2777,7 +2867,7 @@ async def orchestrator_chat(
 async def orchestrator_feedback(
     project_id: int,
     limit: int = 50,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Хвост журнала диалогов оркестратора (для разбора/самообучения)."""
     import json as _json
@@ -2806,7 +2896,7 @@ class ConfirmRemoveBody(BaseModel):
 async def orchestrator_confirm_remove(
     project_id: int,
     body: ConfirmRemoveBody,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Подтверждённое удаление нод (кнопка «Подтвердить» в чате оркестратора)."""
     project = await _project(session, project_id)
@@ -2850,7 +2940,7 @@ class ConfirmGitPushBody(BaseModel):
 async def orchestrator_confirm_git_push(
     project_id: int,
     body: ConfirmGitPushBody,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Подтверждённый commit+push в origin/main (кнопка в чате оркестратора)."""
     await _project(session, project_id)  # auth / existence
@@ -2886,7 +2976,7 @@ class FramePatch(BaseModel):
 async def patch_frame(
     frame_id: int,
     body: FramePatch,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_frame_session),
 ) -> dict:
     fr = await _frame(session, frame_id)
     if body.status is not None:
@@ -2903,6 +2993,7 @@ async def patch_frame(
     if body.attrs is not None:
         fr.attrs = body.attrs
     await session.commit()
+    register_frame_project(fr.id, fr.project_id)
     return {"ok": True, "id": fr.id, "uuid": fr.uuid, "sort_key": fr.sort_key}
 
 
@@ -2915,7 +3006,7 @@ class InsertFrameBody(BaseModel):
 async def insert_frame(
     project_id: int,
     body: InsertFrameBody,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     project = await _project(session, project_id)
     try:
@@ -2928,6 +3019,7 @@ async def insert_frame(
     except ValueError as e:
         raise HTTPException(404, str(e)) from None
     await session.commit()
+    register_frame_project(fr.id, project_id)
     return {"id": fr.id, "uuid": fr.uuid, "sort_key": fr.sort_key, "scene_id": fr.scene_id}
 
 
@@ -2940,7 +3032,7 @@ class TextBody(BaseModel):
 async def add_text(
     frame_id: int,
     body: TextBody,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_frame_session),
 ) -> dict:
     fr = await _frame(session, frame_id)
     t = FrameText(
@@ -2948,12 +3040,13 @@ async def add_text(
     )
     session.add(t)
     await session.commit()
+    register_text_project(t.id, fr.project_id)
     return {"id": t.id, "kind": t.kind}
 
 
 @router.delete("/texts/{text_id}")
 async def delete_text(
-    text_id: int, session: AsyncSession = Depends(get_session)
+    text_id: int, session: AsyncSession = Depends(get_text_session)
 ) -> dict:
     t = await session.get(FrameText, text_id)
     if t is None:
@@ -2973,7 +3066,7 @@ class PromptBody(BaseModel):
 async def add_prompt(
     frame_id: int,
     body: PromptBody,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_frame_session),
 ) -> dict:
     fr = await _frame(session, frame_id)
     pv = await db_v2.add_prompt_version(
@@ -2989,12 +3082,13 @@ async def add_prompt(
     elif body.set_active and body.kind == "video":
         fr.animation_prompt = body.text
     await session.commit()
+    register_prompt_project(pv.id, fr.project_id)
     return {"id": pv.id, "version": pv.version, "is_active": pv.is_active}
 
 
 @router.post("/prompts/{prompt_id}/activate")
 async def activate_prompt(
-    prompt_id: int, session: AsyncSession = Depends(get_session)
+    prompt_id: int, session: AsyncSession = Depends(get_prompt_session)
 ) -> dict:
     pv = await session.get(PromptVersion, prompt_id)
     if pv is None:
@@ -3031,7 +3125,7 @@ class EntityBody(BaseModel):
 async def add_entity(
     project_id: int,
     body: EntityBody,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     project = await _project(session, project_id)
     max_key = (
@@ -3049,6 +3143,7 @@ async def add_entity(
     )
     session.add(en)
     await session.commit()
+    register_entity_project(en.id, project_id)
     return {"id": en.id}
 
 
@@ -3056,7 +3151,7 @@ async def add_entity(
 async def patch_entity(
     entity_id: int,
     body: EntityBody,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_entity_session),
 ) -> dict:
     en = await session.get(Entity, entity_id)
     if en is None:
@@ -3066,12 +3161,13 @@ async def patch_entity(
     en.name = body.name
     en.attrs = body.attrs
     await session.commit()
+    register_entity_project(en.id, en.project_id)
     return {"ok": True}
 
 
 @router.delete("/entities/{entity_id}")
 async def delete_entity(
-    entity_id: int, session: AsyncSession = Depends(get_session)
+    entity_id: int, session: AsyncSession = Depends(get_entity_session)
 ) -> dict:
     en = await session.get(Entity, entity_id)
     if en is None:
@@ -3090,7 +3186,7 @@ class EdgeBody(BaseModel):
 async def add_edge(
     frame_id: int,
     body: EdgeBody,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_frame_session),
 ) -> dict:
     fr = await _frame(session, frame_id)
     target = await _frame(session, body.to_frame_id)
@@ -3104,12 +3200,13 @@ async def add_edge(
     )
     session.add(e)
     await session.commit()
+    register_edge_project(e.id, fr.project_id)
     return {"id": e.id}
 
 
 @router.delete("/edges/{edge_id}")
 async def delete_edge(
-    edge_id: int, session: AsyncSession = Depends(get_session)
+    edge_id: int, session: AsyncSession = Depends(get_edge_session)
 ) -> dict:
     e = await session.get(FrameEdge, edge_id)
     if e is None:
@@ -3131,7 +3228,7 @@ class SceneBody(BaseModel):
 async def add_scene(
     project_id: int,
     body: SceneBody,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     project = await _project(session, project_id)
     scenes = list(
@@ -3161,4 +3258,5 @@ async def add_scene(
     )
     session.add(sc)
     await session.commit()
+    register_scene_project(sc.id, project_id)
     return {"id": sc.id, "sort_key": sc.sort_key}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronUp, Sparkles } from "lucide-react";
+import { Bot, ChevronDown, ChevronUp } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { isBranchingRole, roleChip } from "@/lib/gpt-operator";
@@ -38,7 +38,7 @@ export function GptOperatorCardPanel({
           setOpen((v) => !v);
         }}
       >
-        <Sparkles className="h-4 w-4 shrink-0 text-violet-400" />
+        <Bot className="h-4 w-4 shrink-0 text-violet-400" />
         <span className="min-w-0 flex-1">
           <span className="block text-xs sm:text-[13px] font-bold text-zinc-100">
             Пульт оператора GPT

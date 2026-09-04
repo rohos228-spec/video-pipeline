@@ -96,7 +96,6 @@ export const HIDDEN_IMAGE_IDS = new Set([
   "gpt-image-2",
   "nano-banana",
   "nano-banana-pro",
-  "nano-banana-2-lite",
   "seedream-4.5",
   "seedream-5-lite",
   "gpt-image-1.5",
