@@ -26,11 +26,14 @@ export function Providers({ children }: { children: React.ReactNode }) {
         <Toaster
           position="bottom-right"
           theme="dark"
+          className="!z-[2147483647]"
+          style={{ zIndex: 2147483647 }}
           toastOptions={{
             style: {
               background: "hsl(var(--card))",
               color: "hsl(var(--foreground))",
               border: "1px solid hsl(var(--border))",
+              zIndex: 2147483647,
             },
           }}
         />
