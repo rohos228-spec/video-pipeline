@@ -239,8 +239,7 @@ function MontageExtrasPopover({
       </PopoverTrigger>
       <PopoverContent
         align="end"
-        className="z-[10120] max-h-[min(80vh,640px)] w-[min(96vw,420px)] overflow-y-auto p-3"
-        style={{ zIndex: 10120 }}
+        className="z-[10060] max-h-[min(80vh,640px)] w-[min(96vw,420px)] overflow-y-auto p-3"
       >
         {open ? (
           <>
@@ -477,11 +476,7 @@ const MediaActionBar = memo(function MediaActionBar({
             Действия
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent
-          align="start"
-          className="z-[10120] min-w-[14rem]"
-          style={{ zIndex: 10120 }}
-        >
+        <DropdownMenuContent align="start" className="z-[10060] min-w-[14rem]">
           {actions.map((item) => (
             <DropdownMenuItem key={item.label} onSelect={item.action}>
               {item.label}
@@ -2145,8 +2140,8 @@ export function AssembleMontageBoard({
   return createPortal(
     <>
       <div className="fixed inset-0 z-[10050] flex flex-col bg-card">
-        <header className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-white/10 px-5 py-3">
-          <div className="flex min-w-0 items-center gap-3">
+        <header className="flex shrink-0 items-center justify-between border-b border-white/10 px-5 py-4">
+          <div className="flex items-center gap-3">
             <Clapperboard className="h-7 w-7 text-amber-400" />
             <div>
               <h2 className="text-base font-semibold">Панель монтажа</h2>
@@ -2181,7 +2176,7 @@ export function AssembleMontageBoard({
               )}
             </div>
           </div>
-          <div className="flex max-w-full flex-wrap items-center justify-end gap-2">
+          <div className="flex items-center gap-2">
             <Button
               type="button"
               size="sm"
