@@ -299,27 +299,62 @@ function FixedPortalMenu({
   );
 }
 
-function MontageExtrasToggle({
-  open,
-  onToggle,
+/** Своё состояние open — клик не перерисовывает всю таблицу кадров. */
+function MontageExtrasPopover({
+  projectId,
 }: {
-  open: boolean;
-  onToggle: () => void;
+  projectId: number | null | undefined;
 }) {
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
   return (
-    <Button
-      type="button"
-      size="sm"
-      variant="outline"
-      className={cn(
-        "h-9 gap-1.5 text-xs",
-        open && "border-amber-400/60 bg-amber-500/20 text-amber-100",
-      )}
-      onClick={onToggle}
-    >
-      <Settings2 className="h-4 w-4" />
-      Доп. функции
-    </Button>
+    <>
+      <Button
+        ref={btnRef}
+        type="button"
+        size="sm"
+        variant="outline"
+        className="h-9 gap-1.5 text-xs"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <Settings2 className="h-4 w-4" />
+        Доп. функции
+      </Button>
+      <FixedPortalMenu
+        open={open}
+        onClose={() => setOpen(false)}
+        anchorRef={btnRef}
+        align="end"
+        widthClass="w-[min(96vw,420px)] p-3"
+      >
+        <h3 className="mb-3 text-sm font-semibold">Настройки сборки</h3>
+        {projectId != null ? (
+          <>
+            <MontageMediaExtras
+              onVoiceUpload={async (file) => {
+                try {
+                  await api.uploadMontageVoice(projectId, file);
+                  toast.success("Озвучка загружена → audio/voice_full.*");
+                } catch (e) {
+                  toast.error(errorMessageFromUnknown(e));
+                }
+              }}
+              onMusicUpload={async (file) => {
+                try {
+                  await api.uploadMontageMusic(projectId, file);
+                  toast.success("Музыка загружена → music/bgm.*");
+                } catch (e) {
+                  toast.error(errorMessageFromUnknown(e));
+                }
+              }}
+            />
+            <NodeStepParamsPanel projectId={projectId} nodeType="assemble" />
+          </>
+        ) : (
+          <p className="text-xs text-muted-foreground">Проект не выбран</p>
+        )}
+      </FixedPortalMenu>
+    </>
   );
 }
 
@@ -1211,7 +1246,6 @@ export function AssembleMontageBoard({
 }) {
   const queryClient = useQueryClient();
   const [preview, setPreview] = useState<MediaPreview | null>(null);
-  const [extrasOpen, setExtrasOpen] = useState(true);
   const [collapsedRows, setCollapsedRows] = useState<Set<RowKey>>(new Set());
   const [trims, setTrims] = useState<Record<string, VideoTrim>>({});
   const [pendingOps, setPendingOps] = useState<MontagePendingOp[]>([]);
@@ -2305,10 +2339,7 @@ export function AssembleMontageBoard({
               )}
               Монтаж
             </Button>
-            <MontageExtrasToggle
-              open={extrasOpen}
-              onToggle={() => setExtrasOpen((v) => !v)}
-            />
+            <MontageExtrasPopover projectId={projectId} />
             <Button
               type="button"
               size="sm"
@@ -2334,37 +2365,6 @@ export function AssembleMontageBoard({
             </button>
           </div>
         </header>
-
-        {extrasOpen ? (
-          <div className="shrink-0 max-h-[42vh] overflow-y-auto border-b border-white/10 bg-black/25 px-4 py-3">
-            <h3 className="mb-3 text-sm font-semibold">Настройки сборки</h3>
-            {projectId != null ? (
-              <>
-                <MontageMediaExtras
-                  onVoiceUpload={async (file) => {
-                    try {
-                      await api.uploadMontageVoice(projectId, file);
-                      toast.success("Озвучка загружена → audio/voice_full.*");
-                    } catch (e) {
-                      toast.error(errorMessageFromUnknown(e));
-                    }
-                  }}
-                  onMusicUpload={async (file) => {
-                    try {
-                      await api.uploadMontageMusic(projectId, file);
-                      toast.success("Музыка загружена → music/bgm.*");
-                    } catch (e) {
-                      toast.error(errorMessageFromUnknown(e));
-                    }
-                  }}
-                />
-                <NodeStepParamsPanel projectId={projectId} nodeType="assemble" />
-              </>
-            ) : (
-              <p className="text-xs text-muted-foreground">Проект не выбран</p>
-            )}
-          </div>
-        ) : null}
 
         <div ref={contentScrollRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
           <div className="p-4 pb-2">
