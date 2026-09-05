@@ -10,7 +10,6 @@ import {
   useRef,
   useState,
   type DragEvent as ReactDragEvent,
-  type ReactNode,
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
@@ -34,6 +33,13 @@ import { errorMessageFromUnknown } from "@/lib/error-message";
 import type { MontageBoardDTO, MontageBoardFrame } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { NodeStepParamsPanel } from "@/components/studio/node-step-params-panel";
 import { AudioAlignPopover } from "@/components/studio/audio-align-dialog";
 
@@ -179,7 +185,7 @@ function PromptModalBody({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[2147483646] flex items-center justify-center bg-black/70 p-4"
+      className="fixed inset-0 z-[10110] flex items-center justify-center bg-black/70 p-4"
       onMouseDown={onClose}
     >
       <div
@@ -216,89 +222,6 @@ function PromptModalBody({
   );
 }
 
-/** Меню поверх полноэкранной панели монтажа — без Radix hide/z-index. */
-function FixedPortalMenu({
-  open,
-  onClose,
-  anchorRef,
-  align = "start",
-  widthClass = "min-w-[14rem] w-[min(96vw,18rem)]",
-  children,
-}: {
-  open: boolean;
-  onClose: () => void;
-  anchorRef: RefObject<HTMLElement | null>;
-  align?: "start" | "end";
-  widthClass?: string;
-  children: ReactNode;
-}) {
-  const [pos, setPos] = useState({ top: 8, left: 8 });
-
-  useLayoutEffect(() => {
-    if (!open) return;
-    const place = () => {
-      const el = anchorRef.current;
-      if (!el) return;
-      const r = el.getBoundingClientRect();
-      const approxH = Math.min(640, Math.round(window.innerHeight * 0.8));
-      const approxW = 320;
-      const top =
-        r.bottom + 8 + 240 > window.innerHeight && r.top > 240
-          ? Math.max(8, r.top - Math.min(approxH, r.top - 8))
-          : r.bottom + 6;
-      let left = align === "end" ? r.right - approxW : r.left;
-      left = Math.max(8, Math.min(left, window.innerWidth - approxW - 8));
-      setPos({ top, left });
-    };
-    place();
-    window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
-    return () => {
-      window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
-    };
-  }, [open, align, anchorRef]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.preventDefault();
-      e.stopPropagation();
-      onClose();
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [open, onClose]);
-
-  if (!open || typeof document === "undefined") return null;
-  return createPortal(
-    <>
-      <div
-        className="fixed inset-0"
-        style={{ zIndex: 2147483646 }}
-        onMouseDown={onClose}
-      />
-      <div
-        className={cn(
-          "fixed overflow-y-auto rounded-xl border border-white/15 bg-card p-1.5 text-popover-foreground shadow-2xl",
-          widthClass,
-        )}
-        style={{
-          zIndex: 2147483647,
-          top: pos.top,
-          left: pos.left,
-          maxHeight: "min(80vh, 640px)",
-        }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        {children}
-      </div>
-    </>,
-    document.body,
-  );
-}
-
 /** Своё состояние open — клик не перерисовывает всю таблицу кадров. */
 function MontageExtrasPopover({
   projectId,
@@ -306,55 +229,51 @@ function MontageExtrasPopover({
   projectId: number | null | undefined;
 }) {
   const [open, setOpen] = useState(false);
-  const btnRef = useRef<HTMLButtonElement>(null);
   return (
-    <>
-      <Button
-        ref={btnRef}
-        type="button"
-        size="sm"
-        variant="outline"
-        className="h-9 gap-1.5 text-xs"
-        onClick={() => setOpen((v) => !v)}
-      >
-        <Settings2 className="h-4 w-4" />
-        Доп. функции
-      </Button>
-      <FixedPortalMenu
-        open={open}
-        onClose={() => setOpen(false)}
-        anchorRef={btnRef}
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button type="button" size="sm" variant="outline" className="h-9 gap-1.5 text-xs">
+          <Settings2 className="h-4 w-4" />
+          Доп. функции
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
         align="end"
-        widthClass="w-[min(96vw,420px)] p-3"
+        className="z-[10120] max-h-[min(80vh,640px)] w-[min(96vw,420px)] overflow-y-auto p-3"
+        style={{ zIndex: 10120 }}
       >
-        <h3 className="mb-3 text-sm font-semibold">Настройки сборки</h3>
-        {projectId != null ? (
+        {open ? (
           <>
-            <MontageMediaExtras
-              onVoiceUpload={async (file) => {
-                try {
-                  await api.uploadMontageVoice(projectId, file);
-                  toast.success("Озвучка загружена → audio/voice_full.*");
-                } catch (e) {
-                  toast.error(errorMessageFromUnknown(e));
-                }
-              }}
-              onMusicUpload={async (file) => {
-                try {
-                  await api.uploadMontageMusic(projectId, file);
-                  toast.success("Музыка загружена → music/bgm.*");
-                } catch (e) {
-                  toast.error(errorMessageFromUnknown(e));
-                }
-              }}
-            />
-            <NodeStepParamsPanel projectId={projectId} nodeType="assemble" />
+            <h3 className="mb-3 text-sm font-semibold">Настройки сборки</h3>
+            {projectId != null ? (
+              <>
+                <MontageMediaExtras
+                  onVoiceUpload={async (file) => {
+                    try {
+                      await api.uploadMontageVoice(projectId, file);
+                      toast.success("Озвучка загружена → audio/voice_full.*");
+                    } catch (e) {
+                      toast.error(errorMessageFromUnknown(e));
+                    }
+                  }}
+                  onMusicUpload={async (file) => {
+                    try {
+                      await api.uploadMontageMusic(projectId, file);
+                      toast.success("Музыка загружена → music/bgm.*");
+                    } catch (e) {
+                      toast.error(errorMessageFromUnknown(e));
+                    }
+                  }}
+                />
+                <NodeStepParamsPanel projectId={projectId} nodeType="assemble" />
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground">Проект не выбран</p>
+            )}
           </>
-        ) : (
-          <p className="text-xs text-muted-foreground">Проект не выбран</p>
-        )}
-      </FixedPortalMenu>
-    </>
+        ) : null}
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -443,7 +362,7 @@ function MediaLightbox({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[2147483646] flex items-center justify-center bg-black/90 p-4"
+      className="fixed inset-0 z-[10100] flex items-center justify-center bg-black/90 p-4"
       onMouseDown={onClose}
     >
       <button
@@ -508,8 +427,6 @@ const MediaActionBar = memo(function MediaActionBar({
   swapBusy?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const menuBtnRef = useRef<HTMLButtonElement>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
   const imageActions = [
     { label: "Перегенерация без редакции", action: onRegen },
     { label: "Редактировать промт", action: onEditPrompt },
@@ -553,36 +470,25 @@ const MediaActionBar = memo(function MediaActionBar({
           )}
         </Button>
       )}
-      <Button
-        ref={menuBtnRef}
-        type="button"
-        variant="outline"
-        size="sm"
-        className="h-7 flex-1 px-2 text-[10px]"
-        onClick={() => setMenuOpen((v) => !v)}
-      >
-        <MoreHorizontal className="mr-1 h-3.5 w-3.5" />
-        Действия
-      </Button>
-      <FixedPortalMenu
-        open={menuOpen}
-        onClose={() => setMenuOpen(false)}
-        anchorRef={menuBtnRef}
-      >
-        {actions.map((item) => (
-          <button
-            key={item.label}
-            type="button"
-            className="flex w-full rounded-lg px-2.5 py-2 text-left text-sm hover:bg-accent"
-            onClick={() => {
-              setMenuOpen(false);
-              item.action();
-            }}
-          >
-            {item.label}
-          </button>
-        ))}
-      </FixedPortalMenu>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button type="button" variant="outline" size="sm" className="h-7 flex-1 px-2 text-[10px]">
+            <MoreHorizontal className="mr-1 h-3.5 w-3.5" />
+            Действия
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="start"
+          className="z-[10120] min-w-[14rem]"
+          style={{ zIndex: 10120 }}
+        >
+          {actions.map((item) => (
+            <DropdownMenuItem key={item.label} onSelect={item.action}>
+              {item.label}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
       <Button
         type="button"
         variant="outline"
