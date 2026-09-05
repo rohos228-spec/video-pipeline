@@ -21,7 +21,16 @@ from app.orchestrator.steps.generate_images import (
     _resolve_plan_sheet,
 )
 from app.services.excel_characters import parse_persons_sheet
-from app.services.vo_shot_expand import is_shot_child
+from app.services.node_groups import canvas_has_script_frames_qc
+from app.services.vo_shot_expand import (
+    coverage_parent_shot_id,
+    coverage_shot_id,
+    find_coverage_parent_frame,
+    is_shot_child,
+    kadry_are_scene_shots,
+    looks_like_scene_chain,
+    planned_shots_from_attrs,
+)
 from app.services.montage_board_cache import (
     get_cached_plan_excel_cells,
     get_cached_source_prompts,
@@ -218,6 +227,7 @@ class _FrameBoardSnapshot:
 
     id: int
     number: int
+    uuid: str = ""
     voiceover_text: str = ""
     start_ts: float | None = None
     end_ts: float | None = None
@@ -235,6 +245,7 @@ def _snapshot_frames(frames: list[Frame]) -> list[_FrameBoardSnapshot]:
             _FrameBoardSnapshot(
                 id=int(fr.id),
                 number=int(fr.number),
+                uuid=str(fr.uuid or ""),
                 voiceover_text=fr.voiceover_text or "",
                 start_ts=float(fr.start_ts) if fr.start_ts is not None else None,
                 end_ts=float(fr.end_ts) if fr.end_ts is not None else None,
@@ -450,6 +461,125 @@ def _json_safe_meta(meta: dict[str, Any]) -> dict[str, Any]:
         }
 
 
+def _first_text(*vals: Any) -> str:
+    for val in vals:
+        text = str(val or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _matching_kadry_item(frame: Any) -> dict[str, Any] | None:
+    planned = planned_shots_from_attrs(frame)
+    if not planned:
+        return None
+    shot_id = coverage_shot_id(frame)
+    if shot_id:
+        for item in planned:
+            if str(item.get("id") or "").strip() == shot_id:
+                return item
+    if len(planned) == 1:
+        return planned[0]
+    return None
+
+
+def _plan_for_frame(frame: Any) -> str:
+    attrs = getattr(frame, "attrs", None)
+    src = attrs if isinstance(attrs, dict) else {}
+    cs = src.get("camera_subdivide")
+    cs = cs if isinstance(cs, dict) else {}
+    found = _first_text(
+        src.get("крупность"),
+        cs.get("крупность"),
+        cs.get("план"),
+        cs.get("size"),
+        src.get("shot01_size"),
+    )
+    if found:
+        return found
+    item = _matching_kadry_item(frame)
+    if item:
+        return _first_text(item.get("план"), item.get("plan"))
+    return ""
+
+
+def _action_for_frame(frame: Any) -> str:
+    attrs = getattr(frame, "attrs", None)
+    src = attrs if isinstance(attrs, dict) else {}
+    found = _first_text(src.get("shot01_action"), src.get("действие"))
+    if found:
+        return found
+    item = _matching_kadry_item(frame)
+    if item:
+        found = _first_text(item.get("действие"), item.get("action"))
+        if found:
+            return found
+    main = _first_text(src.get("главное_действие"), src.get("main_action"))
+    if main and not looks_like_scene_chain(main):
+        return main
+    return ""
+
+
+def _shot_kind_payload(
+    frame: Any,
+    frames: list[Any],
+) -> tuple[str, int | None, str]:
+    """parent | child | "" + номер родителя + id шота родителя."""
+    parent = find_coverage_parent_frame(frames, frame)
+    if is_shot_child(frame) or (
+        parent is not None and int(parent.number) != int(frame.number)
+    ):
+        parent_number = int(parent.number) if parent is not None else None
+        parent_id = coverage_parent_shot_id(frame) or (
+            coverage_shot_id(parent) if parent is not None else ""
+        )
+        return "child", parent_number, parent_id
+    for other in frames:
+        if int(other.number) == int(frame.number):
+            continue
+        other_parent = find_coverage_parent_frame(frames, other)
+        if other_parent is not None and int(other_parent.number) == int(frame.number):
+            return "parent", None, coverage_shot_id(frame)
+    if (
+        _plan_for_frame(frame)
+        or _action_for_frame(frame)
+        or kadry_are_scene_shots(planned_shots_from_attrs(frame))
+    ):
+        return "parent", None, coverage_shot_id(frame)
+    return "", None, ""
+
+
+def _empty_coverage_fields() -> dict[str, Any]:
+    return {
+        "shot_plan": "",
+        "shot_action": "",
+        "shot_kind": "",
+        "shot_parent_number": None,
+        "shot_parent_id": "",
+    }
+
+
+def _coverage_fields_for_frames(
+    frames: list[_FrameBoardSnapshot],
+    *,
+    enabled: bool,
+) -> dict[int, dict[str, Any]]:
+    empty = _empty_coverage_fields()
+    if not enabled:
+        return {fr.number: dict(empty) for fr in frames}
+    out: dict[int, dict[str, Any]] = {}
+    for fr in frames:
+        kind, parent_number, parent_id = _shot_kind_payload(fr, frames)
+        out[fr.number] = {
+            "shot_plan": _plan_for_frame(fr),
+            "shot_action": _action_for_frame(fr),
+            "shot_kind": kind,
+            "shot_parent_number": parent_number,
+            "shot_parent_id": parent_id,
+        }
+    return out
+
+
 async def build_montage_board(
     session: AsyncSession,
     project: Project,
@@ -457,6 +587,7 @@ async def build_montage_board(
     # Project scalars / data_dir — до любого await, пока ORM ещё hot в запросе.
     project_id = int(project.id)
     data_dir = project.data_dir
+    show_coverage_rows = canvas_has_script_frames_qc(project)
     try:
         board_meta = _json_safe_meta(public_board_meta(montage_meta(project)))
     except Exception as e:  # noqa: BLE001
@@ -527,6 +658,9 @@ async def build_montage_board(
 
     # ORM только здесь; дальше — plain snapshots (to_thread не трогает Session).
     frames = _snapshot_frames(frames_orm)
+    coverage_by_number = _coverage_fields_for_frames(
+        frames, enabled=show_coverage_rows
+    )
 
     xlsx_path = data_dir / "project.xlsx"
     chars_dir = data_dir / "characters"
@@ -636,7 +770,13 @@ async def build_montage_board(
                 "animation_prompt_shot1": prompts.get("animation_prompt_shot1") or "",
                 "animation_prompt_shot2": prompts.get("animation_prompt_shot2") or "",
                 "plan_column": plan_column_for_frame(fr.number),
+                **(coverage_by_number.get(fr.number) or _empty_coverage_fields()),
             }
         )
 
-    return {"frames": rows, "frame_count": len(rows), "meta": board_meta}
+    return {
+        "frames": rows,
+        "frame_count": len(rows),
+        "meta": board_meta,
+        "show_coverage_rows": show_coverage_rows,
+    }

@@ -468,3 +468,143 @@ def test_load_montage_xlsx_bundle_survives_plan_open_failure(
     assert excel == {}
     assert prompts[1]["image_prompt_shot1"] == "DB IMG"
     assert shot2 == {}
+
+
+def _script_frames_qc_meta() -> dict:
+    return {
+        "canvas_graph": {
+            "nodes": [
+                {
+                    "id": "n_excel_gpt_fw_shots",
+                    "data": {"groupId": "script_frames_qc"},
+                }
+            ],
+            "edges": [],
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_montage_board_hides_coverage_rows_without_group(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    parent_uid = "aa" * 12
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        uuid=parent_uid,
+        voiceover_text="vo",
+        status="planned",
+        attrs={
+            "shot01_action": "сидит за столом",
+            "крупность": "ОБЩИЙ",
+            "кадры": [
+                {
+                    "id": "1-K1",
+                    "план": "ОБЩИЙ",
+                    "действие": "сидит за столом",
+                    "шаблон": "T5",
+                    "место": "офис",
+                }
+            ],
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "shot_id": "1-K1",
+                "план": "ОБЩИЙ",
+                "крупность": "ОБЩИЙ",
+            },
+        },
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    assert board["show_coverage_rows"] is False
+    row = board["frames"][0]
+    assert row["shot_kind"] == ""
+    assert row["shot_plan"] == ""
+    assert row["shot_action"] == ""
+
+
+@pytest.mark.asyncio
+async def test_montage_board_shows_plan_action_parent_child_with_group(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    montage_project.meta = _script_frames_qc_meta()
+    parent_uid = "bb" * 12
+    child_uid = "cc" * 12
+    parent = Frame(
+        project_id=montage_project.id,
+        number=1,
+        uuid=parent_uid,
+        voiceover_text="родительский закадр",
+        status="planned",
+        attrs={
+            "shot01_action": "сидит за столом",
+            "кадры": [
+                {
+                    "id": "1-K1",
+                    "план": "ОБЩИЙ",
+                    "действие": "сидит за столом",
+                    "шаблон": "T5",
+                    "место": "офис",
+                    "parent_id": None,
+                }
+            ],
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+                "shot_id": "1-K1",
+                "план": "ОБЩИЙ",
+                "крупность": "ОБЩИЙ",
+            },
+        },
+    )
+    child = Frame(
+        project_id=montage_project.id,
+        number=2,
+        uuid=child_uid,
+        voiceover_text="дочерний закадр",
+        status="planned",
+        attrs={
+            "shot01_action": "рука выводит строки",
+            "кадры": [
+                {
+                    "id": "1-K2",
+                    "план": "ДЕТАЛЬ",
+                    "действие": "рука выводит строки",
+                    "шаблон": "T5",
+                    "место": "офис",
+                    "parent_id": "1-K1",
+                }
+            ],
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "shot_id": "1-K2",
+                "coverage_parent_id": "1-K1",
+                "план": "ДЕТАЛЬ",
+                "крупность": "ДЕТАЛЬ",
+            },
+        },
+    )
+    session.add(montage_project)
+    session.add_all([parent, child])
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    assert board["show_coverage_rows"] is True
+    assert board["frame_count"] == 2
+    p_row, c_row = board["frames"]
+    assert p_row["shot_kind"] == "parent"
+    assert p_row["shot_plan"] == "ОБЩИЙ"
+    assert p_row["shot_action"] == "сидит за столом"
+    assert p_row["shot_parent_number"] is None
+    assert c_row["shot_kind"] == "child"
+    assert c_row["shot_plan"] == "ДЕТАЛЬ"
+    assert c_row["shot_action"] == "рука выводит строки"
+    assert c_row["shot_parent_number"] == 1
+    assert c_row["shot_parent_id"] == "1-K1"

@@ -308,6 +308,12 @@ export interface MontageBoardFrame {
   animation_prompt_shot1?: string;
   animation_prompt_shot2?: string;
   plan_column: number;
+  /** Покрытие script_frames_qc: крупность / действие / родитель-дочерний. */
+  shot_plan?: string;
+  shot_action?: string;
+  shot_kind?: "parent" | "child" | "";
+  shot_parent_number?: number | null;
+  shot_parent_id?: string;
 }
 
 export interface MontageBoardMeta {
@@ -331,6 +337,8 @@ export interface MontageBoardDTO {
   frames: MontageBoardFrame[];
   frame_count: number;
   meta: MontageBoardMeta;
+  /** Строки План / Действие / Кадр — только если на канвасе script_frames_qc. */
+  show_coverage_rows?: boolean;
 }
 
 export interface PromptDTO {
