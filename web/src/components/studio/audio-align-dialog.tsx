@@ -128,7 +128,8 @@ export function AudioAlignPopover({
         align="end"
         side="bottom"
         sideOffset={6}
-        className="z-[10060] w-[min(96vw,420px)] max-h-[min(80vh,560px)] overflow-y-auto p-3"
+        className="z-[10120] w-[min(96vw,420px)] max-h-[min(80vh,560px)] overflow-y-auto p-3"
+        style={{ zIndex: 10120 }}
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
         <h3 className="mb-1 text-sm font-semibold">Разбор речи → R15</h3>
