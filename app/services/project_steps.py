@@ -573,4 +573,14 @@ async def start_step(
     project.status = running_status
     project.updated_at = datetime.utcnow()
     await session.flush()
+    try:
+        from app.project_db import push_runtime_to_project_db
+
+        await push_runtime_to_project_db(session, project)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[#{}] start_step: push_runtime_to_project_db failed",
+            project.id,
+            exc_info=True,
+        )
     return project.status

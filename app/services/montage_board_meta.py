@@ -65,7 +65,7 @@ def clear_highlights(board: dict[str, Any]) -> None:
 
 
 def slot_key_from_op(op: dict[str, Any] | None) -> str | None:
-    """Ключ слота доски: image → ``N:imageS``, video → ``N:S``."""
+    """Ключ слота доски: image → ``N:imageS``, video → ``N:S``, coverage → ``N:plan|action|kind``."""
     if not isinstance(op, dict):
         return None
     t = str(op.get("type") or "")
@@ -83,6 +83,12 @@ def slot_key_from_op(op: dict[str, Any] | None) -> str | None:
         return f"{fr}:image{shot}"
     if t.startswith("video_"):
         return trim_key(fr, shot)
+    if t == "coverage_plan":
+        return f"{fr}:plan"
+    if t == "coverage_action":
+        return f"{fr}:action"
+    if t.startswith("coverage_"):
+        return f"{fr}:kind"
     return None
 
 

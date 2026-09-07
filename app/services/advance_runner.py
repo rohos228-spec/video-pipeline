@@ -43,6 +43,10 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
                     logger.warning("advance_project_job: повторное открытие #{} не удалось", project_id)
                     return AdvanceJobResult(project_id, "", None)
 
+            from app.project_db import pull_master_runtime_into_project
+
+            await pull_master_runtime_into_project(session, project)
+
             prev = project.status.value
             prev_status = project.status
             await advance_project(session, project, bot)
@@ -59,6 +63,14 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
                         m_proj = await master_sess.get(Project, project_id)
                         if m_proj:
                             m_proj.status = project.status
+                            from app.services.project_meta import merge_project_meta
+
+                            m_proj.meta = merge_project_meta(
+                                m_proj.meta if isinstance(m_proj.meta, dict) else {},
+                                project.meta if isinstance(project.meta, dict) else {},
+                                source="advance_job",
+                                project_id=project_id,
+                            )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("advance_project_job: sync status to master failed: {}", exc)
 

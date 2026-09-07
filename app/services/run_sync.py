@@ -899,7 +899,9 @@ async def complete_active_node_for_step(
     # excel_gpt auto-chain УЖЕ ставит active_excel_gpt_node_key на СЛЕДУЮЩУЮ
     # ноду до вызова complete (enriching_N → enriching_N+1). Брать active_key
     # первым = пометить next done и оставить prev running — UI врёт, xlsx
-    # следующего слота «применён» без работы. Всегда слот из prev_status.
+    # следующего слота «применён» без работы. При chain — слот из prev_status.
+    # Без chain (→ *_ready): overflow/точечный ▶ живёт в active_key или в
+    # excel_gpt_completed_keys; слот 1 иначе закрывает чужую pending-ноду.
     finished_key: str | None = None
     if only_agent and node_type == "sd_agent":
         try:
@@ -912,10 +914,30 @@ async def complete_active_node_for_step(
         slot = slot_from_running_status(prev_status)
         if slot is None:
             slot = slot_from_ready_status(new_status)
-        if slot is not None:
-            finished_key = resolve_excel_gpt_node_key_for_slot(project, slot)
+        slot_key = (
+            resolve_excel_gpt_node_key_for_slot(project, slot)
+            if slot is not None
+            else None
+        )
+        active_key = active_excel_gpt_node_key(project)
+        chaining = slot_from_running_status(new_status) is not None
+        last_done: str | None = None
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        for raw in reversed(list(meta.get("excel_gpt_completed_keys") or [])):
+            key = str(raw or "").strip()
+            if key:
+                last_done = key
+                break
+        if chaining:
+            finished_key = slot_key
+        elif active_key:
+            finished_key = active_key
+        elif last_done:
+            finished_key = last_done
+        else:
+            finished_key = slot_key
         if not finished_key:
-            finished_key = active_excel_gpt_node_key(project)
+            finished_key = active_key or slot_key
             if finished_key:
                 logger.warning(
                     "[#{}] complete_active_node: excel_gpt fallback active_key={} "

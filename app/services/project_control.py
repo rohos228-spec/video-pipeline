@@ -316,6 +316,17 @@ async def stop_project_running(
     project.updated_at = datetime.utcnow()
     await session.flush()
 
+    try:
+        from app.project_db import push_runtime_to_project_db
+
+        await push_runtime_to_project_db(session, project)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[#{}] STOP: push_runtime_to_project_db failed",
+            project.id,
+            exc_info=True,
+        )
+
     if not cascade:
         await halt_all_related_generation(session, project)
         await session.flush()

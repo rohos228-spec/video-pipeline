@@ -215,11 +215,19 @@ export interface MontagePendingOp {
     | "image_ai_change"
     | "video_regen"
     | "video_regen_prompt"
-    | "video_ai_change";
+    | "video_ai_change"
+    | "coverage_plan"
+    | "coverage_action"
+    | "coverage_kind"
+    | "coverage_delete";
   frame_number: number;
   shot: 1 | 2;
   prompt?: string;
   correction?: string;
+  plan?: string;
+  action?: string;
+  kind?: "parent" | "child";
+  parent_number?: number;
 }
 
 export interface XlsxPreview {

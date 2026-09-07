@@ -329,6 +329,10 @@ export interface MontageBoardMeta {
     shot?: number;
     prompt?: string;
     correction?: string;
+    plan?: string;
+    action?: string;
+    kind?: string;
+    parent_number?: number;
   }>;
   applied_at: string | null;
 }
@@ -339,6 +343,7 @@ export interface MontageBoardDTO {
   meta: MontageBoardMeta;
   /** Строки План / Действие / Кадр — только если на канвасе script_frames_qc. */
   show_coverage_rows?: boolean;
+  coverage_plan_choices?: string[];
 }
 
 export interface PromptDTO {

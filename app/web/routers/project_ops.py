@@ -770,8 +770,6 @@ async def montage_board_save_queue(
         if not isinstance(raw, dict):
             continue
         t = str(raw.get("type") or "")
-        if not t.startswith(("image_", "video_")):
-            continue
         try:
             fr = int(raw.get("frame_number"))
         except (TypeError, ValueError):
@@ -780,11 +778,25 @@ async def montage_board_save_queue(
             continue
         shot = 2 if raw.get("shot") == 2 else 1
         item: dict = {"type": t, "frame_number": fr, "shot": shot}
-        if isinstance(raw.get("prompt"), str) and raw["prompt"].strip():
-            item["prompt"] = raw["prompt"]
-        if isinstance(raw.get("correction"), str) and raw["correction"].strip():
-            item["correction"] = raw["correction"]
-        cleaned.append(item)
+        if t.startswith(("image_", "video_")):
+            if isinstance(raw.get("prompt"), str) and raw["prompt"].strip():
+                item["prompt"] = raw["prompt"]
+            if isinstance(raw.get("correction"), str) and raw["correction"].strip():
+                item["correction"] = raw["correction"]
+            cleaned.append(item)
+            continue
+        if t.startswith("coverage_"):
+            for key in ("plan", "action", "kind", "prompt", "correction"):
+                val = raw.get(key)
+                if isinstance(val, str) and val.strip():
+                    item[key] = val.strip()
+            parent_raw = raw.get("parent_number")
+            if parent_raw not in (None, ""):
+                try:
+                    item["parent_number"] = int(parent_raw)
+                except (TypeError, ValueError):
+                    pass
+            cleaned.append(item)
 
     board = montage_meta(p)
     existing = list(board.get("pending_ops") or [])

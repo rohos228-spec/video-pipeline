@@ -93,7 +93,11 @@ function trimKey(frameNumber: number, shot: 1 | 2): string {
 
 /** Ключ слота: image → `N:imageS`, video → `N:S`. */
 function slotKeyFromOp(op: Pick<MontagePendingOp, "type" | "frame_number" | "shot">): string {
-  if (String(op.type || "").startsWith("image_")) {
+  const t = String(op.type || "");
+  if (t === "coverage_plan") return `${op.frame_number}:plan`;
+  if (t === "coverage_action") return `${op.frame_number}:action`;
+  if (t.startsWith("coverage_")) return `${op.frame_number}:kind`;
+  if (t.startsWith("image_")) {
     return `${op.frame_number}:image${op.shot}`;
   }
   return trimKey(op.frame_number, op.shot);
@@ -150,6 +154,54 @@ function coverageKindLabel(fr: MontageBoardFrame): string {
   }
   if (fr.shot_kind === "parent") return "Родитель";
   return "—";
+}
+
+const DEFAULT_PLAN_CHOICES = ["ОБЩИЙ", "ДАЛЬНИЙ", "СРЕДНИЙ", "КРУПНЫЙ", "ДЕТАЛЬ"];
+
+const COVERAGE_QUEUE_TYPES = new Set([
+  "coverage_plan",
+  "coverage_action",
+  "coverage_kind",
+  "coverage_delete",
+]);
+
+function pendingCoverageForFrame(
+  ops: MontagePendingOp[],
+  frameNumber: number,
+): {
+  plan?: string;
+  action?: string;
+  kind?: "parent" | "child";
+  parent_number?: number;
+  deleted?: boolean;
+} {
+  const out: {
+    plan?: string;
+    action?: string;
+    kind?: "parent" | "child";
+    parent_number?: number;
+    deleted?: boolean;
+  } = {};
+  for (const op of ops) {
+    if (op.frame_number !== frameNumber) continue;
+    if (op.type === "coverage_plan" && op.plan) out.plan = op.plan;
+    if (op.type === "coverage_action" && op.action) out.action = op.action;
+    if (op.type === "coverage_kind") {
+      out.kind = op.kind;
+      out.parent_number = op.parent_number;
+    }
+    if (op.type === "coverage_delete") out.deleted = true;
+  }
+  return out;
+}
+
+function coverageCellClass(tone: SlotTone | undefined): string {
+  return cn(
+    "rounded-md p-1",
+    tone === "failed" && "ring-2 ring-rose-500/80",
+    tone === "pending" && "ring-2 ring-amber-400/70 bg-amber-500/10",
+    tone === "applied" && "ring-2 ring-emerald-400/60 bg-emerald-500/10",
+  );
 }
 
 function formatTs(sec: number | null | undefined): string {
@@ -1102,6 +1154,38 @@ function CharactersCell({
   );
 }
 
+function CoverageActionEditor({
+  value,
+  tone,
+  disabled,
+  onCommit,
+}: {
+  value: string;
+  tone?: SlotTone;
+  disabled?: boolean;
+  onCommit: (text: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+  return (
+    <div className={coverageCellClass(tone)}>
+      <textarea
+        className="min-h-[4.5rem] w-full resize-y rounded-md border border-white/15 bg-black/40 px-1.5 py-1 text-[11px] leading-snug text-foreground"
+        value={draft}
+        disabled={disabled}
+        placeholder="Своё действие кадра…"
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          const next = draft.trim();
+          if (next && next !== value.trim()) onCommit(next);
+        }}
+      />
+    </div>
+  );
+}
+
 function TimestampCell({ fr }: { fr: MontageBoardFrame }) {
   return (
     <div className="rounded-lg border border-white/10 bg-black/20 px-2.5 py-2">
@@ -1290,20 +1374,29 @@ export function AssembleMontageBoard({
         t !== "image_ai_change" &&
         t !== "video_regen" &&
         t !== "video_regen_prompt" &&
-        t !== "video_ai_change"
+        t !== "video_ai_change" &&
+        !COVERAGE_QUEUE_TYPES.has(t)
       ) {
         continue;
       }
       const frameNumber = Number(rec.frame_number);
       if (!Number.isFinite(frameNumber) || frameNumber < 1) continue;
       const shot = rec.shot === 2 ? 2 : 1;
-      restored.push({
-        type: t,
+      const item: MontagePendingOp = {
+        type: t as MontagePendingOp["type"],
         frame_number: frameNumber,
         shot,
-        prompt: typeof rec.prompt === "string" ? rec.prompt : undefined,
-        correction: typeof rec.correction === "string" ? rec.correction : undefined,
-      });
+      };
+      if (typeof rec.prompt === "string") item.prompt = rec.prompt;
+      if (typeof rec.correction === "string") item.correction = rec.correction;
+      if (typeof rec.plan === "string") item.plan = rec.plan;
+      if (typeof rec.action === "string") item.action = rec.action;
+      if (rec.kind === "parent" || rec.kind === "child") item.kind = rec.kind;
+      const parentNumber = Number(rec.parent_number);
+      if (Number.isFinite(parentNumber) && parentNumber >= 1) {
+        item.parent_number = parentNumber;
+      }
+      restored.push(item);
     }
     return restored;
   }, []);
@@ -1389,6 +1482,72 @@ export function AssembleMontageBoard({
       toast.message("Операция в очереди — нажмите «Применить правки»");
     },
     [persistQueue],
+  );
+
+  const queueCoverageAndRegen = useCallback(
+    (coverageOp: MontagePendingOp, regen: "ai" | "same" | "none") => {
+      localQueueDirtyRef.current = true;
+      setPendingOps((prev) => {
+        const frameNumber = coverageOp.frame_number;
+        let next = prev.filter(
+          (x) => !(x.frame_number === frameNumber && x.type === coverageOp.type),
+        );
+        if (coverageOp.type === "coverage_delete") {
+          next = next.filter(
+            (x) =>
+              !(
+                x.frame_number === frameNumber &&
+                (String(x.type).startsWith("image_") ||
+                  String(x.type).startsWith("coverage_"))
+              ),
+          );
+        }
+        next = [...next, coverageOp];
+        if (regen !== "none") {
+          next = next.filter(
+            (x) =>
+              !(
+                x.frame_number === frameNumber &&
+                x.shot === 1 &&
+                String(x.type).startsWith("image_")
+              ),
+          );
+          const fr = frames.find((f) => f.number === frameNumber);
+          const pending = pendingCoverageForFrame(next, frameNumber);
+          const plan = (
+            coverageOp.plan ||
+            pending.plan ||
+            fr?.shot_plan ||
+            ""
+          ).trim();
+          const action = (
+            coverageOp.action ||
+            pending.action ||
+            fr?.shot_action ||
+            ""
+          ).trim();
+          const imageOp: MontagePendingOp =
+            regen === "ai"
+              ? {
+                  type: "image_ai_change",
+                  frame_number: frameNumber,
+                  shot: 1,
+                  correction: `План: ${plan || "как в кадре"}. Действие: ${action || "как в кадре"}.`,
+                }
+              : {
+                  type: "image_regen",
+                  frame_number: frameNumber,
+                  shot: 1,
+                };
+          next = [...next, imageOp];
+        }
+        pendingOpsRef.current = next;
+        persistQueue(next);
+        return next;
+      });
+      toast.message("Операция в очереди — нажмите «Применить правки»");
+    },
+    [persistQueue, frames],
   );
 
   const applyMutation = useMutation({
@@ -2431,17 +2590,203 @@ export function AssembleMontageBoard({
                                   {voiceoverForFrame(fr) || "—"}
                                 </p>
                               ) : row.key === "shot_kind" ? (
-                                <p className="whitespace-pre-wrap text-xs leading-snug text-foreground/90">
-                                  {coverageKindLabel(fr)}
-                                </p>
+                                (() => {
+                                  const pending = pendingCoverageForFrame(
+                                    pendingOps,
+                                    fr.number,
+                                  );
+                                  const shownKind =
+                                    pending.kind ??
+                                    (fr.shot_kind === "child" || fr.shot_kind === "parent"
+                                      ? fr.shot_kind
+                                      : "");
+                                  const shownParent =
+                                    pending.parent_number ?? fr.shot_parent_number ?? "";
+                                  const busy = applyRunning || applyMutation.isPending;
+                                  return (
+                                    <div
+                                      className={cn(
+                                        "flex flex-col gap-1",
+                                        coverageCellClass(toneForSlot(`${fr.number}:kind`)),
+                                      )}
+                                    >
+                                      {pending.deleted ? (
+                                        <p className="text-[11px] text-amber-200">
+                                          Удалить дочерний
+                                        </p>
+                                      ) : null}
+                                      <select
+                                        className="w-full rounded-md border border-white/15 bg-black/40 px-1.5 py-1 text-[11px]"
+                                        disabled={busy}
+                                        value={shownKind}
+                                        title={coverageKindLabel(fr)}
+                                        onChange={(e) => {
+                                          const next = e.target.value as
+                                            | "parent"
+                                            | "child"
+                                            | "";
+                                          if (next === "parent") {
+                                            queueCoverageAndRegen(
+                                              {
+                                                type: "coverage_kind",
+                                                frame_number: fr.number,
+                                                shot: 1,
+                                                kind: "parent",
+                                              },
+                                              "same",
+                                            );
+                                            return;
+                                          }
+                                          if (next === "child") {
+                                            const fallback =
+                                              Number(shownParent) ||
+                                              frames.find((x) => x.number !== fr.number)
+                                                ?.number;
+                                            if (!fallback) {
+                                              toast.error("Нет другого кадра для связи");
+                                              return;
+                                            }
+                                            queueCoverageAndRegen(
+                                              {
+                                                type: "coverage_kind",
+                                                frame_number: fr.number,
+                                                shot: 1,
+                                                kind: "child",
+                                                parent_number: fallback,
+                                              },
+                                              "same",
+                                            );
+                                          }
+                                        }}
+                                      >
+                                        <option value="">—</option>
+                                        <option value="parent">Родитель</option>
+                                        <option value="child">Дочерний</option>
+                                      </select>
+                                      {shownKind === "child" ? (
+                                        <select
+                                          className="w-full rounded-md border border-white/15 bg-black/40 px-1.5 py-1 text-[11px]"
+                                          disabled={busy}
+                                          value={shownParent === "" ? "" : String(shownParent)}
+                                          onChange={(e) => {
+                                            const parentNumber = Number(e.target.value);
+                                            if (!Number.isFinite(parentNumber)) return;
+                                            queueCoverageAndRegen(
+                                              {
+                                                type: "coverage_kind",
+                                                frame_number: fr.number,
+                                                shot: 1,
+                                                kind: "child",
+                                                parent_number: parentNumber,
+                                              },
+                                              "same",
+                                            );
+                                          }}
+                                        >
+                                          <option value="">Связать с кадром…</option>
+                                          {frames
+                                            .filter((x) => x.number !== fr.number)
+                                            .map((x) => (
+                                              <option key={x.frame_id} value={x.number}>
+                                                #{x.number}
+                                                {x.shot_kind === "parent" ? " · род." : ""}
+                                              </option>
+                                            ))}
+                                        </select>
+                                      ) : null}
+                                      {shownKind === "child" ? (
+                                        <button
+                                          type="button"
+                                          className="inline-flex items-center justify-center gap-1 rounded-md border border-rose-400/40 px-1.5 py-1 text-[11px] text-rose-200 hover:bg-rose-500/15 disabled:opacity-40"
+                                          disabled={busy}
+                                          title="Удалить дочерний кадр"
+                                          onClick={() =>
+                                            queueCoverageAndRegen(
+                                              {
+                                                type: "coverage_delete",
+                                                frame_number: fr.number,
+                                                shot: 1,
+                                              },
+                                              "none",
+                                            )
+                                          }
+                                        >
+                                          <Trash2 className="h-3 w-3" />
+                                          Удалить
+                                        </button>
+                                      ) : null}
+                                    </div>
+                                  );
+                                })()
                               ) : row.key === "shot_plan" ? (
-                                <p className="whitespace-pre-wrap text-xs leading-snug text-foreground/90">
-                                  {fr.shot_plan?.trim() || "—"}
-                                </p>
+                                (() => {
+                                  const pending = pendingCoverageForFrame(
+                                    pendingOps,
+                                    fr.number,
+                                  );
+                                  const current = (pending.plan ?? fr.shot_plan ?? "").trim();
+                                  const choices = [
+                                    ...DEFAULT_PLAN_CHOICES,
+                                    ...(board.data?.coverage_plan_choices ?? []),
+                                  ];
+                                  const unique = Array.from(
+                                    new Set(
+                                      [...choices, current].map((x) => x.trim()).filter(Boolean),
+                                    ),
+                                  );
+                                  const busy = applyRunning || applyMutation.isPending;
+                                  return (
+                                    <div className={coverageCellClass(toneForSlot(`${fr.number}:plan`))}>
+                                      <select
+                                        className="w-full rounded-md border border-white/15 bg-black/40 px-1.5 py-1 text-[11px]"
+                                        disabled={busy}
+                                        value={current}
+                                        onChange={(e) => {
+                                          const plan = e.target.value.trim();
+                                          if (!plan || plan === (fr.shot_plan || "").trim())
+                                            return;
+                                          queueCoverageAndRegen(
+                                            {
+                                              type: "coverage_plan",
+                                              frame_number: fr.number,
+                                              shot: 1,
+                                              plan,
+                                            },
+                                            "ai",
+                                          );
+                                        }}
+                                      >
+                                        <option value="">План…</option>
+                                        {unique.map((opt) => (
+                                          <option key={opt} value={opt}>
+                                            {opt}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                  );
+                                })()
                               ) : row.key === "shot_action" ? (
-                                <p className="whitespace-pre-wrap text-xs leading-snug text-foreground/90">
-                                  {fr.shot_action?.trim() || "—"}
-                                </p>
+                                <CoverageActionEditor
+                                  value={(
+                                    pendingCoverageForFrame(pendingOps, fr.number).action ??
+                                    fr.shot_action ??
+                                    ""
+                                  ).trim()}
+                                  tone={toneForSlot(`${fr.number}:action`)}
+                                  disabled={applyRunning || applyMutation.isPending}
+                                  onCommit={(action) =>
+                                    queueCoverageAndRegen(
+                                      {
+                                        type: "coverage_action",
+                                        frame_number: fr.number,
+                                        shot: 1,
+                                        action,
+                                      },
+                                      "ai",
+                                    )
+                                  }
+                                />
                               ) : row.key === "characters" ? (
                                 <CharactersCell fr={fr} onPreview={showPreview} />
                               ) : row.key === "timestamps" ? (

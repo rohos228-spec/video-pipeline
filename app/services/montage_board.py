@@ -21,22 +21,14 @@ from app.orchestrator.steps.generate_images import (
     _resolve_plan_sheet,
 )
 from app.services.excel_characters import parse_persons_sheet
-from app.services.node_groups import canvas_has_script_frames_qc
-from app.services.vo_shot_expand import (
-    coverage_parent_shot_id,
-    coverage_shot_id,
-    find_coverage_parent_frame,
-    is_shot_child,
-    kadry_are_scene_shots,
-    looks_like_scene_chain,
-    planned_shots_from_attrs,
-)
 from app.services.montage_board_cache import (
     get_cached_plan_excel_cells,
     get_cached_source_prompts,
     probe_video_durations_parallel,
 )
 from app.services.montage_board_meta import montage_meta, public_board_meta
+from app.services.montage_coverage_ops import COVERAGE_PLAN_CHOICES
+from app.services.node_groups import canvas_has_script_frames_qc
 from app.services.plan_shot2 import (
     MIN_SHOT2_VIDEO_PROMPT_LEN,
     ROW_IMAGE_PROMPT_2_V8,
@@ -50,6 +42,15 @@ from app.services.plan_shot2 import (
     shot2_video_file_pattern,
 )
 from app.services.shot2_timeline import split_voiceover_duration
+from app.services.vo_shot_expand import (
+    coverage_parent_shot_id,
+    coverage_shot_id,
+    find_coverage_parent_frame,
+    is_shot_child,
+    kadry_are_scene_shots,
+    looks_like_scene_chain,
+    planned_shots_from_attrs,
+)
 from app.services.xlsx_v8_import import (
     ROW_IMAGE_PROMPT_V8,
     ROW_VIDEO_PROMPT_V8,
@@ -779,4 +780,5 @@ async def build_montage_board(
         "frame_count": len(rows),
         "meta": board_meta,
         "show_coverage_rows": show_coverage_rows,
+        "coverage_plan_choices": list(COVERAGE_PLAN_CHOICES),
     }

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.orm import selectinload
 from sqlalchemy.pool import NullPool
 
 from app.models import (
@@ -568,6 +570,194 @@ async def sync_project_row_to_project_db(
         from app.db import commit_with_retry
 
         await commit_with_retry(p_sess)
+
+
+_RUNTIME_META_KEYS = (
+    "active_excel_gpt_node_key",
+    "excel_gpt_ui_force_full",
+    "excel_gpt_force_full_rerun",
+    "enrich_auto_chain_to",
+    "enrich_completed_slots",
+    "excel_gpt_completed_keys",
+    "user_stop",
+    "mass_lane_user_stop",
+    "auto_await_manual_start",
+)
+_CLEAR_WHEN_MASTER_RUNNING = (
+    "user_stop",
+    "mass_lane_user_stop",
+    "auto_await_manual_start",
+)
+
+
+def _bind_url(session: AsyncSession) -> str:
+    bind = session.get_bind()
+    return str(getattr(bind, "url", "") or "").replace("\\", "/")
+
+
+async def push_runtime_to_project_db(
+    session: AsyncSession,
+    project: Project,
+) -> None:
+    """После ▶/⏹ на master: статус + runtime meta + NodeRuns → project.db.
+
+    Иначе воркер видит running в state.db, а advance открывает project.db
+    со старым *_ready и сразу выходит — нода «не продвигается».
+    Не копируем всю строку Project: в project.db контент может быть новее.
+    """
+    from app.db import commit_with_retry
+    from app.services.project_state import is_running_status
+
+    if "project.db" in _bind_url(session):
+        return
+    try:
+        dir_path = Path(project.data_dir)
+        if not dir_path.exists():
+            found = await get_project_data_dir(int(project.id))
+            if found is None:
+                logger.warning(
+                    "push_runtime_to_project_db: #{} no data_dir",
+                    project.id,
+                )
+                return
+            dir_path = found
+        sm = await get_project_sessionmaker(dir_path)
+        async with sm() as probe:
+            missing = await probe.get(Project, project.id) is None
+        if missing:
+            await sync_project_row_to_project_db(project, data_dir=dir_path)
+        async with sm() as p_sess:
+            existing = await p_sess.get(Project, project.id)
+            if existing is None:
+                logger.warning(
+                    "push_runtime_to_project_db: #{} row missing in project.db",
+                    project.id,
+                )
+                return
+            existing.status = project.status
+            existing.updated_at = project.updated_at or datetime.utcnow()
+            p_meta = dict(existing.meta) if isinstance(existing.meta, dict) else {}
+            m_meta = dict(project.meta) if isinstance(project.meta, dict) else {}
+            for key in _RUNTIME_META_KEYS:
+                if key in m_meta:
+                    p_meta[key] = m_meta[key]
+                elif (
+                    is_running_status(project.status)
+                    and key in _CLEAR_WHEN_MASTER_RUNNING
+                ):
+                    p_meta.pop(key, None)
+            existing.meta = p_meta
+            try:
+                await _copy_noderuns_from_master_into_session(
+                    session, p_sess, int(project.id)
+                )
+            except Exception as nexc:  # noqa: BLE001
+                logger.warning(
+                    "push_runtime_to_project_db: #{} NodeRuns skipped: {}",
+                    project.id,
+                    nexc,
+                )
+            await commit_with_retry(p_sess)
+        logger.info(
+            "push_runtime_to_project_db: #{} status={} → project.db",
+            project.id,
+            getattr(project.status, "value", project.status),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "push_runtime_to_project_db: #{} failed: {}",
+            project.id,
+            exc,
+        )
+
+
+async def pull_master_runtime_into_project(
+    session: AsyncSession,
+    project: Project,
+) -> bool:
+    """Перед advance: взять running-статус с master, если project.db отстал."""
+    from app.db import session_scope
+    from app.services.project_state import is_running_status
+
+    changed = False
+    async with session_scope() as master:
+        m = await master.get(Project, int(project.id))
+        if m is None:
+            return False
+        if m.status != project.status:
+            logger.warning(
+                "pull_master_runtime: #{} project.db={} master={} — берём master",
+                project.id,
+                getattr(project.status, "value", project.status),
+                getattr(m.status, "value", m.status),
+            )
+            project.status = m.status
+            changed = True
+        m_meta = m.meta if isinstance(m.meta, dict) else {}
+        p_meta = dict(project.meta) if isinstance(project.meta, dict) else {}
+        for key in _RUNTIME_META_KEYS:
+            if key in m_meta:
+                if p_meta.get(key) != m_meta.get(key):
+                    p_meta[key] = m_meta[key]
+                    changed = True
+            elif key in _CLEAR_WHEN_MASTER_RUNNING and key in p_meta and is_running_status(m.status):
+                p_meta.pop(key, None)
+                changed = True
+        if changed:
+            project.meta = p_meta
+        n = await _copy_noderuns_from_master_into_session(
+            master, session, int(project.id)
+        )
+        if n:
+            changed = True
+    if changed:
+        await session.flush()
+    return changed
+
+
+async def _copy_noderuns_from_master_into_session(
+    src_session: AsyncSession,
+    dest_session: AsyncSession,
+    project_id: int,
+) -> int:
+    src_run = (
+        await src_session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == project_id)
+            .options(selectinload(WorkflowRun.node_runs))
+        )
+    ).scalar_one_or_none()
+    dest_run = (
+        await dest_session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == project_id)
+            .options(selectinload(WorkflowRun.node_runs))
+        )
+    ).scalar_one_or_none()
+    if src_run is None or dest_run is None:
+        return 0
+    dest_by_key = {str(nr.node_key or ""): nr for nr in dest_run.node_runs}
+    updated = 0
+    for src in src_run.node_runs:
+        dest = dest_by_key.get(str(src.node_key or ""))
+        if dest is None:
+            continue
+        if (
+            dest.status == src.status
+            and dest.progress == src.progress
+            and (dest.error or None) == (src.error or None)
+        ):
+            continue
+        dest.status = src.status
+        dest.progress = src.progress
+        dest.progress_text = src.progress_text
+        dest.error = src.error
+        dest.started_at = src.started_at
+        dest.finished_at = src.finished_at
+        dest.attempts = src.attempts
+        dest.updated_at = src.updated_at
+        updated += 1
+    return updated
 
 
 async def init_project_db(

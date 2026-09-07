@@ -14,9 +14,10 @@ from __future__ import annotations
 import asyncio
 import tempfile
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,21 +25,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import session_scope
 from app.models import Project
 from app.services.img_streams import acquire_image_slot, get_img_streams
-from app.services.montage_board_meta import (
-    add_failed_highlight,
-    add_highlight,
-    clear_failed_highlight,
-    slot_key_from_op,
-    montage_meta,
-    public_board_meta,
-    set_montage_meta,
-    touch_applied,
-)
 from app.services.montage_ai_change import (
     character_ids_from_prompt,
     load_img_pr_master,
     rewrite_prompt_via_gpt,
     write_ai_change_db_card,
+)
+from app.services.montage_board_meta import (
+    add_failed_highlight,
+    add_highlight,
+    clear_failed_highlight,
+    montage_meta,
+    public_board_meta,
+    set_montage_meta,
+    slot_key_from_op,
+    touch_applied,
 )
 from app.services.montage_board_regen import (
     _frame_by_number,
@@ -49,7 +50,7 @@ from app.services.montage_board_regen import (
     prepare_image_regen,
     prepare_video_regen,
 )
-
+from app.services.montage_coverage_ops import COVERAGE_OP_TYPES, apply_coverage_op
 
 ProgressCb = Callable[[int, int, dict[str, Any]], Awaitable[None]]
 
@@ -140,13 +141,16 @@ def _op_frame_shot(op: dict[str, Any]) -> tuple[int, int]:
 
 
 def order_montage_pending_ops(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Картинки по (frame, shot) → видео по (frame, shot). Чужие типы — в конец."""
+    """Покрытие → картинки → видео. Чужие типы — в конец."""
+    coverage: list[dict[str, Any]] = []
     images: list[dict[str, Any]] = []
     videos: list[dict[str, Any]] = []
     other: list[dict[str, Any]] = []
     for op in ops:
         t = str(op.get("type") or "").strip()
-        if t in _IMAGE_OP_TYPES:
+        if t in COVERAGE_OP_TYPES:
+            coverage.append(op)
+        elif t in _IMAGE_OP_TYPES:
             images.append(op)
         elif t in _VIDEO_OP_TYPES:
             videos.append(op)
@@ -154,7 +158,7 @@ def order_montage_pending_ops(ops: list[dict[str, Any]]) -> list[dict[str, Any]]
             other.append(op)
     images.sort(key=_op_frame_shot)
     videos.sort(key=_op_frame_shot)
-    return images + videos + other
+    return coverage + images + videos + other
 
 
 def group_ops_by_frame(
@@ -281,6 +285,9 @@ async def _run_op_with_short_sessions(
         project = await session.get(Project, project_id)
         if project is None:
             raise RuntimeError(f"проект #{project_id} не найден")
+
+        if op_type in COVERAGE_OP_TYPES:
+            return await apply_coverage_op(session, project, op)
 
         if op_type in ("image_ai_change", "video_ai_change"):
             fr = await _frame_by_number(session, project.id, frame_number)
@@ -539,6 +546,9 @@ async def apply_montage_board(
     project_id = int(project.id)
     parallel = _montage_apply_parallel(project)
 
+    coverage_indices = [
+        i for i, o in enumerate(ops) if str(o.get("type") or "") in COVERAGE_OP_TYPES
+    ]
     image_indices = [
         i for i, o in enumerate(ops) if str(o.get("type") or "") in _IMAGE_OP_TYPES
     ]
@@ -550,11 +560,13 @@ async def apply_montage_board(
         for i, o in enumerate(ops)
         if str(o.get("type") or "") not in _IMAGE_OP_TYPES
         and str(o.get("type") or "") not in _VIDEO_OP_TYPES
+        and str(o.get("type") or "") not in COVERAGE_OP_TYPES
     ]
 
     logger.info(
-        "montage apply #{}: {} image + {} video + {} other, parallel={}",
+        "montage apply #{}: {} coverage + {} image + {} video + {} other, parallel={}",
         project_id,
+        len(coverage_indices),
         len(image_indices),
         len(video_indices),
         len(other_indices),
@@ -569,6 +581,18 @@ async def apply_montage_board(
 
     op_status: list[str | None] = [None] * len(ops)
 
+    await _run_ops_phase(
+        project_id=project_id,
+        phase_indices=coverage_indices,
+        all_ops=ops,
+        board=board,
+        parallel=1,
+        op_status=op_status,
+        results=results,
+        errors=errors,
+        on_progress=on_progress,
+        phase_label="coverage",
+    )
     await _run_ops_phase(
         project_id=project_id,
         phase_indices=image_indices,
