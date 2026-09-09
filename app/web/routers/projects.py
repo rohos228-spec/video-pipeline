@@ -27,7 +27,7 @@ from app.services.project_steps import list_step_codes, start_step
 from app.services.run_sync import ensure_run_for_project, sync_run_for_project, _get_default_workflow_id
 from app.storage import ProjectSheet
 from app.db import commit_with_retry
-from app.web.deps import get_session
+from app.web.deps import get_project_session, get_session
 from app.web.project_dto import project_to_detail, project_to_summary
 from app.web.schemas import CreateProjectRequest, ProjectDetail, ProjectSummary
 
@@ -141,7 +141,7 @@ async def steps_catalog() -> list[dict[str, str]]:
 
 @router.get("/{project_id}/shots-report")
 async def project_shots_report(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ):
     """HTML-отчёт группы script_frames_qc (кадры + промты/QC справа)."""
     from fastapi.responses import HTMLResponse
@@ -166,10 +166,12 @@ async def project_shots_report(
         ).scalars().all()
     )
     existing = next((path for path in report_paths(p) if path.is_file()), None)
+    # Кадры живут в project.db. Раньше GET шёл в state.db (0 кадров) и
+    # каждый просмотр затирал живой HTML пустышкой «кадров 0».
     if existing is None:
         written = write_shots_report(p, frames)
         existing = written[0]
-    else:
+    elif frames:
         existing.write_text(
             render_shots_report_html(
                 build_shots_report_model(frames),
@@ -183,7 +185,7 @@ async def project_shots_report(
 
 @router.get("/{project_id}", response_model=ProjectDetail)
 async def get_project(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> ProjectDetail:
     p = await session.get(Project, project_id)
     if p is None:
@@ -192,12 +194,20 @@ async def get_project(
     await session.refresh(p)
     from app.services.node_groups import upgrade_script_frames_qc_on_project
 
-    if await upgrade_script_frames_qc_on_project(session, p):
+    upgraded = await upgrade_script_frames_qc_on_project(session, p)
+    _old, _new, recomputed = await recompute_status(
+        session, p, log_prefix="recompute(web_get)"
+    )
+    if upgraded or recomputed:
         await session.commit()
         await session.refresh(p)
-    await recompute_status(session, p, log_prefix="recompute(web_get)")
-    await session.commit()
-    await session.refresh(p)
+    else:
+        # Poll GET не должен commit'ить stale snapshot: иначе ▶
+        # (enriching_*) затирается обратно в *_ready, воркер не берёт ноду.
+        await session.rollback()
+        p = await session.get(Project, project_id)
+        if p is None:
+            raise HTTPException(status_code=404, detail="project not found")
     return project_to_detail(p)
 
 
@@ -317,7 +327,7 @@ async def create_child_project(
 
 @router.post("/{project_id}/ensure-run")
 async def ensure_project_run(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> dict[str, int]:
     """Гарантирует WorkflowRun для проекта (связь с графом в БД)."""
     p = await session.get(Project, project_id)
@@ -361,7 +371,7 @@ async def delete_project(
 async def patch_project(
     project_id: int,
     payload: dict,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> Project:
     """Частичное обновление полей проекта (для inspector-панели)."""
     p = await session.get(Project, project_id)
@@ -486,6 +496,12 @@ async def patch_project(
     p.updated_at = datetime.utcnow()
     await commit_with_retry(session)
     await session.refresh(p)
+    try:
+        from app.project_db import sync_runtime_both_ways
+
+        await sync_runtime_both_ways(session, p)
+    except Exception:  # noqa: BLE001
+        pass
     await publish_project_event(project_id, event_type="project_updated")
     return p
 
@@ -494,7 +510,7 @@ async def patch_project(
 async def media_review(
     project_id: int,
     kind: str = Query("images", pattern="^(images|videos)$"),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> list[dict]:
     """Кадры с путями к последним scene_image / scene_video для визуального HITL."""
     artifact_kind = (
@@ -539,7 +555,7 @@ async def run_project_step(
     node_key: str | None = None,
     mode: str = Query("full", pattern="^(full|resume)$"),
     force_wipe: bool | None = None,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> Project:
     """Запустить шаг: статус → running, воркер выполнит advance_project.
     mode='full' (по умолчанию) — полный чистый перезапуск шага с нуля (force_wipe=True).
@@ -576,7 +592,13 @@ async def run_project_step(
         raise HTTPException(status_code=400, detail=str(e)) from e
     await session.commit()
     await session.refresh(p)
-    await sync_run_for_project(project_id)
+    await sync_run_for_project(project_id, session=session)
+    try:
+        from app.project_db import push_runtime_to_master
+
+        await push_runtime_to_master(session, p)
+    except Exception:  # noqa: BLE001
+        pass
     await publish_project_event(
         project_id,
         event_type="project_updated",

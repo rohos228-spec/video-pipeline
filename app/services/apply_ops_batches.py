@@ -21,9 +21,11 @@ from app.services.gpt_operator_client import OperatorApiResult, run_operator_api
 from app.services.scene_design.camera_expand import vo_chunk_is_dangling
 from app.services.shot_templates import coverage_template_reason, fill_kadry_from_catalog
 
-# Плотный выход (shot_01 + главное_действие): 160 кадров одним ответом
-# рвёт SSE и подмешивает фейковые uuid. Режем на 5 пачек (~32 кадра).
-_DENSE_TARGET_BATCHES = 5
+# Плотный выход (shot_01 + главное_действие): 102+ кадров одним ответом
+# рвёт SSE (~90с timeout) и подмешивает фейковые uuid. 10 пачек параллельно.
+DENSE_TARGET_BATCHES = 10
+DENSE_PARALLEL_MAX = 10
+_DENSE_TARGET_BATCHES = DENSE_TARGET_BATCHES
 _DENSE_FRAMES_PER_BATCH = 8
 _DENSE_JSON_BYTES_PER_BATCH = 20_000
 # Короткий выход (аналитика 54–59): 116 кадров / ~44k символов — ок.
@@ -32,14 +34,14 @@ _LIGHT_JSON_BYTES_PER_BATCH = 180_000
 # Сценарист / закадр (прочие ноды): пачка = 6 ячеек VO.
 VO_UNITS_PER_BATCH = 6
 # Группа script_frames_qc (биты → действие → кадры → промты → QC):
-# биты/действие/кадры — по 8 отрезков, до 6 пачек параллельно, сдвиг 0.5 с.
+# биты/действие/кадры — по 8 отрезков, до 10 пачек параллельно, сдвиг 0.5 с.
 # fw_frames — по 6 кадров (тяжёлые image+anim). Из main: соло-пачка
 # жирного K1, автопочинка UUID, не резать пачку на socket salvage.
 SCRIPT_FRAMES_QC_UNITS_PER_BATCH = 8
-SCRIPT_FRAMES_QC_PARALLEL_BATCHES = 6
+SCRIPT_FRAMES_QC_PARALLEL_BATCHES = 10
 FW_FRAMES_PER_BATCH = 6
-VO_PARALLEL_MAX = 6
-FW_FRAMES_PARALLEL_BATCHES = 6
+VO_PARALLEL_MAX = 10
+FW_FRAMES_PARALLEL_BATCHES = 10
 VO_STAGGER_SEC = 0.5
 SHOT_VO_MIN_CHARS = 27
 SHOT_VO_MAX_CHARS = 54
@@ -1179,8 +1181,8 @@ async def run_apply_ops_batched(
     ``chunk_size`` — заранее резать pending (script_frames_qc: 8
     отрезков закадра). ``chunk_by_vo_unit`` — пачка = N ячеек закадра
     (родитель + его шоты вместе), не N строк кадров. ``parallel_max`` —
-    сколько пачек стартовать сразу (6), со сдвигом ``stagger_sec`` (1 с).
-    Без chunk_size — сначала все pending, при ошибке 1→2→4.
+    сколько пачек стартовать сразу (10), со сдвигом ``stagger_sec`` (0.5 с).
+    Без chunk_size — ``target_batches`` (dense: 10) или все pending.
     """
     from app.services.adaptive_llm_batches import next_split_level, split_in_half
 

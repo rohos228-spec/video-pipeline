@@ -27,7 +27,7 @@ from app.services.run_sync import (
 from app.services.chatgpt_xlsx import sync_project_xlsx
 from app.settings import settings
 from app.storage import ProjectSheet
-from app.web.deps import get_session
+from app.web.deps import get_project_session, get_session
 from app.web.project_dto import project_to_detail
 from app.web.schemas import ProjectDetail
 
@@ -42,12 +42,12 @@ def _project_or_404(project: Project | None) -> Project:
 
 @router.post("/{project_id}/pause", response_model=ProjectDetail)
 async def pause_project(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> Project:
     p = _project_or_404(await session.get(Project, project_id))
     await pause_project_svc(session, p)
     await session.commit()
-    await sync_run_for_project(project_id)
+    await sync_run_for_project(project_id, session=session)
     await session.refresh(p)
     await publish_project_event(project_id, event_type="project_updated", payload={"paused": True})
     return p
@@ -55,7 +55,7 @@ async def pause_project(
 
 @router.post("/{project_id}/resume", response_model=ProjectDetail)
 async def resume_project(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> Project:
     p = _project_or_404(await session.get(Project, project_id))
     await resume_project_svc(session, p)
@@ -67,7 +67,7 @@ async def resume_project(
 
 @router.post("/{project_id}/continue")
 async def continue_project(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> dict:
     """Снять stop/паузу и продвинуть проект на следующий шаг (если *_ready)."""
     from app.orchestrator.auto_advance import continue_project_pipeline
@@ -86,7 +86,7 @@ async def continue_project(
 
 @router.post("/{project_id}/stop")
 async def stop_project(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> dict:
     # Сразу cancel advance/GPT — до любого ожидания SQLite (первый клик ⏹).
     from app.services.step_cancel import request_stop
@@ -97,7 +97,7 @@ async def stop_project(
     if not info["ok"]:
         raise HTTPException(status_code=400, detail=info["message"])
     await session.commit()
-    await sync_run_for_project(project_id)
+    await sync_run_for_project(project_id, session=session)
     await session.refresh(p)
     await publish_project_event(
         project_id,
@@ -114,7 +114,7 @@ async def stop_project(
 
 @router.post("/{project_id}/finish/images")
 async def finish_missing_images(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> dict:
     """Доделка картинок: frame_NNN_*.png без файла → generating_images."""
     from app.services.finish_missing import trigger_finish_missing_images
@@ -134,7 +134,7 @@ async def finish_missing_images(
 
 @router.post("/{project_id}/finish/animation-prompts")
 async def resume_animation_prompts(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> dict:
     """Догонка промтов анимации: plan R48 → БД → generating_animation_prompts."""
     from app.services.finish_missing import trigger_resume_animation_prompts
@@ -154,7 +154,7 @@ async def resume_animation_prompts(
 
 @router.post("/{project_id}/finish/videos")
 async def finish_missing_videos(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> dict:
     """Доделка видео: clip_NNN_*.mp4 без файла → generating_videos."""
     from app.services.finish_missing import trigger_finish_missing_videos
@@ -176,7 +176,7 @@ async def finish_missing_videos(
 async def parse_mass_topics_xlsx(
     project_id: int,
     file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Парсит любой xlsx (построчно темы) и сохраняет очередь на родителе (правило B)."""
     import tempfile
@@ -236,7 +236,7 @@ async def parse_mass_topics_xlsx(
 @router.get("/{project_id}/mass-factory/status")
 async def mass_factory_status_endpoint(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.mass_factory import mass_factory_status
 
@@ -248,7 +248,7 @@ async def mass_factory_status_endpoint(
 async def start_mass_lanes(
     project_id: int,
     payload: dict,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Очередь видео: родитель-шаблон, генерация в дочерних проектах."""
     from app.services.mass_factory import start_mass_queue
@@ -294,7 +294,7 @@ async def start_mass_lanes(
 async def reset_project_step(
     project_id: int,
     step_code: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> Project:
     p = _project_or_404(await session.get(Project, project_id))
     try:
@@ -305,12 +305,22 @@ async def reset_project_step(
         raise HTTPException(status_code=400, detail=str(summary["error"]))
     wf_id = await _get_default_workflow_id()
     if wf_id is not None:
-        await ensure_run_for_project(project_id, wf_id)
+        await ensure_run_for_project(project_id, wf_id, session=session)
     await reset_nodes_from_step(session, project_id, step_code)
     await session.flush()
     await session.commit()
     await session.refresh(p)
-    await sync_run_for_project(project_id)
+    await sync_run_for_project(project_id, session=session)
+    try:
+        from app.project_db import sync_runtime_both_ways
+
+        await sync_runtime_both_ways(session, p)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "reset_step #{}: runtime sync master↔project.db failed",
+            project_id,
+            exc_info=True,
+        )
     await session.refresh(p)
     await publish_project_event(
         project_id,
@@ -322,7 +332,7 @@ async def reset_project_step(
 
 @router.get("/{project_id}/excel-hero")
 async def get_excel_hero(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> dict:
     """Текущее состояние excel-hero в project.meta (если есть)."""
     p = _project_or_404(await session.get(Project, project_id))
@@ -334,7 +344,7 @@ async def get_excel_hero(
 
 @router.post("/{project_id}/excel-hero/load")
 async def load_excel_hero(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> dict:
     """Загрузить персонажей в meta['excel_hero']: Entity (SoT) → fallback Excel.
 
@@ -410,7 +420,7 @@ async def load_excel_hero(
 
 @router.delete("/{project_id}/excel-hero", status_code=204)
 async def clear_excel_hero(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> None:
     """Убрать excel_hero — hero пойдёт по обычной ветке (hero_descriptions)."""
     p = _project_or_404(await session.get(Project, project_id))
@@ -429,7 +439,7 @@ async def clear_excel_hero(
 async def download_xlsx(
     project_id: int,
     node_key: str | None = Query(None),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> FileResponse:
     p = _project_or_404(await session.get(Project, project_id))
     from app.services.node_xlsx_snapshot import resolve_display_xlsx_path
@@ -455,7 +465,7 @@ async def download_xlsx(
 
 @router.post("/{project_id}/xlsx/reload", response_model=ProjectDetail)
 async def reload_xlsx(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> Project:
     p = _project_or_404(await session.get(Project, project_id))
     xlsx = p.data_dir / "project.xlsx"
@@ -473,7 +483,7 @@ async def upload_xlsx(
     project_id: int,
     file: UploadFile = File(...),
     node_key: str | None = Query(None),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> Project:
     p = _project_or_404(await session.get(Project, project_id))
     if not file.filename or not file.filename.lower().endswith(".xlsx"):
@@ -555,7 +565,7 @@ async def preview_xlsx(
     row: int | None = Query(None, ge=1, le=5000),
     raw: bool = Query(False),
     node_key: str | None = Query(None),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     p = _project_or_404(await session.get(Project, project_id))
     from app.services.node_xlsx_snapshot import resolve_display_xlsx_path
@@ -722,7 +732,7 @@ async def preview_xlsx(
 @router.get("/{project_id}/montage-board")
 async def montage_board(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Сетка монтажа: озвучка, персонажи, shot1/2 картинки и видео по кадрам."""
     p = _project_or_404(await session.get(Project, project_id))
@@ -744,11 +754,96 @@ async def montage_board(
         ) from e
 
 
+@router.post("/{project_id}/montage-board/frames/insert")
+async def montage_board_insert_frame(
+    project_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    """Вставить кадр между колонками монтажа (дробный sort_key → перенумерация)."""
+    from app.services.montage_board_frames import insert_montage_frame
+
+    p = _project_or_404(await session.get(Project, project_id))
+    after_raw = body.get("after_frame_id")
+    after_id = int(after_raw) if after_raw not in (None, "") else None
+    voiceover = str(body.get("voiceover") or "")
+    try:
+        fr = await insert_montage_frame(
+            session,
+            p,
+            after_frame_id=after_id,
+            voiceover=voiceover,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"montage_frame_inserted": True, "frame_id": fr.id},
+    )
+    return {
+        "ok": True,
+        "id": fr.id,
+        "uuid": fr.uuid,
+        "number": fr.number,
+        "sort_key": fr.sort_key,
+        "voiceover_text": fr.voiceover_text or "",
+    }
+
+
+@router.patch("/{project_id}/montage-board/frames/{frame_id}/voiceover")
+async def montage_board_set_voiceover(
+    project_id: int,
+    frame_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    from app.services.montage_board_frames import set_montage_voiceover
+
+    p = _project_or_404(await session.get(Project, project_id))
+    try:
+        fr = await set_montage_voiceover(
+            session, p, frame_id, str(body.get("text") or "")
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    await session.commit()
+    return {
+        "ok": True,
+        "id": fr.id,
+        "number": fr.number,
+        "voiceover_text": fr.voiceover_text or "",
+    }
+
+
+@router.delete("/{project_id}/montage-board/frames/{frame_id}")
+async def montage_board_delete_frame(
+    project_id: int,
+    frame_id: int,
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    from app.services.montage_board_frames import delete_montage_frame
+
+    p = _project_or_404(await session.get(Project, project_id))
+    try:
+        result = await delete_montage_frame(session, p, frame_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"montage_frame_deleted": True, "frame_id": frame_id},
+    )
+    return result
+
+
 @router.post("/{project_id}/montage-board/queue")
 async def montage_board_save_queue(
     project_id: int,
     body: dict = Body(...),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Сохранить очередь pending_ops на сервер (без запуска apply).
 
@@ -832,7 +927,7 @@ async def montage_board_save_queue(
 async def montage_board_apply(
     project_id: int,
     body: dict = Body(...),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Сохранить trim и выполнить очередь regen (без remount)."""
     from app.services.montage_board import build_montage_board
@@ -905,7 +1000,7 @@ async def montage_board_apply(
 @router.get("/{project_id}/montage-board/apply-status")
 async def montage_board_apply_status(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.montage_board_apply_job import get_apply_job
 
@@ -916,7 +1011,7 @@ async def montage_board_apply_status(
 @router.post("/{project_id}/montage-board/montage")
 async def montage_board_montage(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Кнопка «Монтаж» — remount-video в фоне (озвучка + FFmpeg)."""
     import asyncio
@@ -940,7 +1035,7 @@ async def montage_board_montage(
 @router.get("/{project_id}/montage-board/montage-status")
 async def montage_board_montage_status(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.montage_board_montage_job import get_montage_job
 
@@ -951,7 +1046,7 @@ async def montage_board_montage_status(
 @router.post("/{project_id}/montage-board/recover-outsee")
 async def montage_board_recover_outsee(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Запускает фоновый скан Outsee → сохранение/замена кадров (кнопка не зависает)."""
     p = _project_or_404(await session.get(Project, project_id))
@@ -994,7 +1089,7 @@ async def montage_board_recover_outsee(
 @router.get("/{project_id}/montage-board/recover-outsee-status")
 async def montage_board_recover_outsee_status(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.montage_outsee_recover_job import get_recover_job
 
@@ -1007,7 +1102,7 @@ async def montage_board_swap_shots(
     project_id: int,
     frame_number: int = Query(..., ge=1),
     kind: str = Query("both", pattern="^(image|video|both)$"),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Поменять местами shot1 ↔ shot2 (картинки и/или видео + промты)."""
     from app.services.montage_board_assets import swap_shot_media
@@ -1033,7 +1128,7 @@ async def montage_board_swap_slots(
     a_shot: int = Query(..., ge=1, le=2),
     b_frame: int = Query(..., ge=1),
     b_shot: int = Query(..., ge=1, le=2),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Обмен двух слотов одного типа между любыми кадрами (кнопка↔кнопка в UI)."""
     from app.services.montage_board_assets import swap_media_slots
@@ -1064,7 +1159,7 @@ async def montage_board_move_image(
     from_shot: int = Query(..., ge=1, le=2),
     to_frame: int = Query(..., ge=1),
     to_shot: int = Query(..., ge=1, le=2),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Перенести картинку в другой слот (в т.ч. пустой); если цель занята — swap."""
     from app.services.montage_board_assets import move_scene_image
@@ -1092,7 +1187,7 @@ async def montage_board_delete_image(
     project_id: int,
     frame_number: int = Query(..., ge=1),
     shot: int = Query(1, ge=1, le=2),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.montage_board_assets import delete_scene_image
     from app.services.montage_board_meta import mark_stale_videos, montage_meta, set_montage_meta
@@ -1111,7 +1206,7 @@ async def montage_board_delete_video(
     project_id: int,
     frame_number: int = Query(..., ge=1),
     shot: int = Query(1, ge=1, le=2),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.montage_board_assets import delete_scene_video
 
@@ -1127,7 +1222,7 @@ async def montage_board_upload_image(
     frame_number: int = Query(..., ge=1),
     shot: int = Query(1, ge=1, le=2),
     file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.montage_board_assets import save_scene_image_upload
     from app.services.montage_board_meta import mark_stale_videos, montage_meta, set_montage_meta
@@ -1159,7 +1254,7 @@ async def montage_board_upload_video(
     frame_number: int = Query(..., ge=1),
     shot: int = Query(1, ge=1, le=2),
     file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.montage_board_assets import save_scene_video_upload
     from app.services.montage_board_meta import clear_stale_video, montage_meta, set_montage_meta
@@ -1189,7 +1284,7 @@ async def montage_board_upload_video(
 async def montage_board_upload_voice(
     project_id: int,
     file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Сохраняет озвучку как ``audio/voice_full.<ext>`` — так её видит монтаж/assemble."""
     from sqlalchemy.orm.attributes import flag_modified
@@ -1218,7 +1313,7 @@ async def montage_board_upload_voice(
 async def montage_board_upload_music(
     project_id: int,
     file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Сохраняет BGM как ``music/bgm.<ext>`` — канон для resolve_bgm."""
     from sqlalchemy.orm.attributes import flag_modified
@@ -1246,7 +1341,7 @@ async def montage_board_upload_music(
 async def list_project_assets(
     project_id: int,
     kind: str = Query("all", pattern="^(all|hero|items|images|videos|audio|final|text)$"),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> list[dict]:
     p = _project_or_404(await session.get(Project, project_id))
     out: list[dict] = []
@@ -1352,7 +1447,7 @@ async def replace_hero_image(
     project_id: int,
     file: UploadFile = File(...),
     replace_path: str | None = Query(None),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Заменить reference-картинку персонажа (файл в data/.../characters/)."""
     p = _project_or_404(await session.get(Project, project_id))
@@ -1414,7 +1509,7 @@ async def patch_excel_gpt_config(
     project_id: int,
     node_key: str,
     payload: dict,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from sqlalchemy.orm.attributes import flag_modified
 
@@ -1486,7 +1581,7 @@ async def patch_excel_gpt_config(
 async def gpt_operator_resolve(
     project_id: int,
     node_key: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.gpt_operator import resolve_operator
 
@@ -1499,7 +1594,7 @@ async def gpt_operator_patch(
     project_id: int,
     node_key: str,
     payload: dict,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     import asyncio
 
@@ -1548,7 +1643,7 @@ async def patch_canvas_edge_kind(
     project_id: int,
     edge_id: str,
     payload: dict,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from sqlalchemy.orm.attributes import flag_modified
 
@@ -1569,7 +1664,7 @@ async def upload_excel_gpt_file(
     project_id: int,
     node_key: str,
     file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from sqlalchemy.orm.attributes import flag_modified
 
@@ -1709,7 +1804,7 @@ async def upload_check_agent_file(
     project_id: int,
     node_key: str,
     file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Загрузить .txt/.md агента проверки (режим «Готовый агент»)."""
     from sqlalchemy.orm.attributes import flag_modified
@@ -1735,7 +1830,7 @@ async def upload_check_agent_file(
 async def delete_check_agent_file(
     project_id: int,
     node_key: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Сбросить загруженный агент → снова builtin из prompts/check_operator."""
     from sqlalchemy.orm.attributes import flag_modified
@@ -1753,7 +1848,7 @@ async def delete_check_agent_file(
 async def get_check_agent_file(
     project_id: int,
     node_key: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Текст агента проверки (свой файл или builtin) — кнопка «Просмотр» в Studio."""
     from app.services.gpt_operator import load_check_agent_view
@@ -1772,7 +1867,7 @@ async def get_check_agent_file(
 async def get_check_prompt_preview(
     project_id: int,
     node_key: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Финальный master-промт проверки ровно как при запуске — просмотр в Studio."""
     from pathlib import Path
@@ -1852,7 +1947,7 @@ async def get_gpt_operator_source_prompt(
     project_id: int,
     node_key: str,
     source: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Текст мастер-промта ноды-источника (критерии проверки) — просмотр в Studio."""
     from app.services.gpt_operator import collect_source_prompts
@@ -1878,7 +1973,7 @@ async def get_gpt_operator_source_prompt(
 async def remap_excel_gpt_keys(
     project_id: int,
     payload: dict,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from sqlalchemy.orm.attributes import flag_modified
 
@@ -1899,7 +1994,7 @@ async def remap_excel_gpt_keys(
 async def storage_resolve(
     project_id: int,
     node_key: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Прочитать/досинковать файлы хранилища без UPDATE projects (anti-lock)."""
     from app.services.storage_node import resolve_storage
@@ -1914,7 +2009,7 @@ async def storage_patch(
     project_id: int,
     node_key: str,
     payload: dict,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from sqlalchemy.orm.attributes import flag_modified
 
@@ -1932,7 +2027,7 @@ async def storage_patch(
 async def storage_sync(
     project_id: int,
     node_key: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Забрать файлы с входящих стрелок в папку этой ноды."""
     from sqlalchemy.orm.attributes import flag_modified
@@ -1951,7 +2046,7 @@ async def storage_upload(
     project_id: int,
     node_key: str,
     file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.storage_node import resolve_storage, save_upload
 
@@ -1972,7 +2067,7 @@ async def storage_upload(
 async def storage_clear_files(
     project_id: int,
     node_key: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.storage_node import clear_storage, resolve_storage
 
@@ -1985,7 +2080,7 @@ async def storage_clear_files(
 async def storage_download_zip(
     project_id: int,
     node_key: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ):
     """Скачать все файлы хранилища одним zip."""
     from fastapi.responses import FileResponse
@@ -2040,7 +2135,7 @@ async def audio_align_methods_list() -> dict:
 @router.get("/{project_id}/asr-words")
 async def project_asr_words(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Word-level транскрибация из БД (таблица asr_words)."""
     from app.services.asr_words_store import asr_words_to_dicts, load_project_asr_words
@@ -2065,7 +2160,7 @@ async def audio_align_start(
     method: str = Query("auto"),
     force_asr: bool = Query(False),
     run_assemble: bool = Query(True),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Кнопка «Разбор аудио» — выбранная методика → R15 → assemble в фоне."""
     from app.services.audio_align_job import get_audio_align_job, spawn_audio_align_job
@@ -2101,7 +2196,7 @@ async def audio_align_start(
 @router.get("/{project_id}/audio-align/status")
 async def audio_align_status(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.audio_align_job import get_audio_align_job
 
@@ -2116,7 +2211,7 @@ async def audio_align_status(
 async def remount_project_video(
     project_id: int,
     audio_only: bool = Query(False),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Перемонтаж: синхрон xlsx→кадры, Whisper по озвучке, новая сборка (видеоклипы не трогаем)."""
     from app.services.remount_video import remount_video
@@ -2167,7 +2262,7 @@ async def restore_project_voiceover(
     project_id: int,
     dry_run: bool = Query(False),
     force: bool = Query(False),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Восстановить исходный voiceover одного проекта."""
     from app.services.voiceover_recovery import restore_original_voiceover
@@ -2201,7 +2296,7 @@ async def restore_project_voiceover(
 @router.get("/{project_id}/original-voiceover-preview")
 async def preview_original_voiceover(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Показать, откуда будет взят исходный voiceover (без записи)."""
     from app.services.voiceover_recovery import find_original_voiceover
@@ -2235,7 +2330,7 @@ async def preview_original_voiceover(
 @router.get("/{project_id}/harness/status")
 async def harness_status(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Агентский снимок ops_telemetry + хвост events.jsonl."""
     from app.services.agent_harness import harness_status_payload
@@ -2249,7 +2344,7 @@ async def harness_verify(
     project_id: int,
     allow_repair: bool = Query(False),
     include_http: bool = Query(True),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Проверить disk/R48/node_runs + HTTP artifacts/assets/xlsx; опц. soft-start одного шага."""
     from app.services.agent_harness import HARNESS_FORBIDDEN_STEPS, run_harness_verify

@@ -299,7 +299,7 @@ async def test_run_op_video_ai_change_passes_gpt_prompt_to_prepare(
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
-    async def fake_scope():
+    async def fake_scope(*_a, **_k):
         yield session
 
     monkeypatch.setattr(

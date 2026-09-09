@@ -48,6 +48,14 @@ async def test_correction_mode_sends_only_user_text(
     async def _get_frame(*_a, **_k):
         return fr
 
+    async def _session_get(model, _ident):
+        return project if model is Project else None
+
+    async def _session_refresh(_obj, **_k):
+        return None
+
+    session.get = _session_get
+    session.refresh = _session_refresh
     monkeypatch.setattr(
         "app.services.montage_board_regen._frame_by_number",
         _get_frame,

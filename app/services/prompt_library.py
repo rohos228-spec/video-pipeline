@@ -580,6 +580,48 @@ def _clean_variant_name(raw: str) -> str:
 _STEP_PREFERRED_SLOT: dict[str, str] = {
     "hero_style": "style",
 }
+# Если в 04_hero нет default.md / туда скопировали агент реестра.
+_HERO_SHEET_FALLBACKS = (
+    "character_model_sheet_16x9",
+    "агент_лист_персонажа_со_всех_сторон.txt",
+)
+
+
+def _node_key_belongs_to_step(node_key: str, step_code: str) -> bool:
+    """Слот ноды excel_gpt не должен становиться промтом hero/img_pr/…"""
+    key = str(node_key or "").strip().lower()
+    if not key:
+        return False
+    sc = str(step_code or "").strip().lower()
+    if is_excel_gpt_prompt_step(step_code):
+        if "excel_gpt" in key:
+            return True
+        # enrich_1…5 на канвасе: n_enrich_1, не n_excel_gpt_*.
+    if sc == "hero_style":
+        return key == "n_hero" or key.startswith("n_hero_")
+    prefixes = [f"n_{sc}", sc]
+    if sc == "img_pr":
+        prefixes.extend(["n_image_prompts", "image_prompts"])
+    elif sc == "anim_pr":
+        prefixes.extend(["n_animation_prompts", "animation_prompts"])
+    elif sc == "img":
+        prefixes.extend(["n_images", "images"])
+    elif sc == "video":
+        prefixes.extend(["n_videos", "videos"])
+    try:
+        from app.orchestrator.node_registry import WORK_NODES
+
+        for spec in WORK_NODES.values():
+            if spec.step_code.lower() == sc or spec.node_type.lower() == sc:
+                prefixes.append(f"n_{spec.node_type}")
+                prefixes.append(spec.node_type)
+    except Exception:
+        pass
+    for prefix in prefixes:
+        pl = str(prefix).lower()
+        if key == pl or key.startswith(pl + "_"):
+            return True
+    return False
 
 
 def _variant_from_studio_meta(meta: dict | None, step_code: str) -> str | None:
@@ -588,6 +630,9 @@ def _variant_from_studio_meta(meta: dict | None, step_code: str) -> str | None:
     Зеркало `web/src/lib/prompt-slot-storage.ts` → `activeVariantForSlot`:
     для hero_style — слот `style`; иначе сначала `main`, потом любой
     существующий файл шага.
+
+    Только слоты нод этого шага: иначе excel_gpt «агент персонажей»
+    (копия файла в 04_hero/) подменяется в Hero и генерация падает.
     """
     if not meta or step_code not in STEP_FOLDERS:
         return None
@@ -598,8 +643,10 @@ def _variant_from_studio_meta(meta: dict | None, step_code: str) -> str | None:
     found_preferred: str | None = None
     found_main: str | None = None
     found_other: str | None = None
-    for slots in slot_variants.values():
+    for node_key, slots in slot_variants.items():
         if not isinstance(slots, dict):
+            continue
+        if not _node_key_belongs_to_step(str(node_key), step_code):
             continue
         for slot_id, variant in slots.items():
             clean = _clean_variant_name(str(variant or ""))
@@ -619,6 +666,79 @@ def _variant_from_studio_meta(meta: dict | None, step_code: str) -> str | None:
             elif found_other is None:
                 found_other = clean
     return found_preferred or found_main or found_other
+
+
+def _coerce_hero_sheet_variant(name: str, source: str) -> tuple[str, str]:
+    """Hero = turnaround sheet. Агент реестра / пустой default → лист 16:9."""
+    from app.services.hero_prompt_contract import (
+        hero_master_looks_like_registry_agent,
+        hero_master_looks_like_sheet,
+    )
+
+    def _ok(variant: str) -> bool:
+        path = prompt_path("hero", variant)
+        if not path.is_file():
+            return False
+        text = path.read_text(encoding="utf-8")
+        if hero_master_looks_like_registry_agent(text):
+            return False
+        return hero_master_looks_like_sheet(text)
+
+    clean = _clean_variant_name(name)
+    if clean and _ok(clean):
+        return clean, source
+    for fallback in _HERO_SHEET_FALLBACKS:
+        if _ok(fallback):
+            if clean and clean != fallback:
+                logger.warning(
+                    "hero: вариант {!r} (source={}) не лист генерации — {}",
+                    clean,
+                    source,
+                    fallback,
+                )
+            return fallback, "default"
+    return (clean or DEFAULT_NAME), source
+
+
+def _hero_style_file_ok(variant: str) -> bool:
+    from app.services.hero_prompt_contract import (
+        hero_style_looks_like_character_lock,
+        hero_style_looks_like_img_pr_template,
+    )
+
+    path = prompt_path("hero_style", variant)
+    if not path.is_file():
+        return False
+    text = path.read_text(encoding="utf-8")
+    if hero_style_looks_like_img_pr_template(text):
+        return False
+    return hero_style_looks_like_character_lock(text) or len(text.strip()) >= 80
+
+
+def _hero_style_fallback_names() -> list[str]:
+    """Сначала «ДЛЯ ПЕРСОНАЖА», потом любой лок в 04_hero_style/."""
+    names = _list_prompts_in_dir("hero_style")
+    preferred = [n for n in names if "персонаж" in n.lower()]
+    rest = [n for n in names if n not in preferred and n != DEFAULT_NAME]
+    return [*preferred, *rest]
+
+
+def _coerce_hero_style_variant(name: str, source: str) -> tuple[str, str]:
+    """Hero style = visual lock для листа. Шаблон кадров / пустой default → лок персонажа."""
+    clean = _clean_variant_name(name)
+    if clean and _hero_style_file_ok(clean):
+        return clean, source
+    for fallback in _hero_style_fallback_names():
+        if _hero_style_file_ok(fallback):
+            if clean and clean != fallback:
+                logger.warning(
+                    "hero_style: вариант {!r} (source={}) не лок персонажа — {}",
+                    clean,
+                    source,
+                    fallback,
+                )
+            return fallback, "default"
+    return (clean or DEFAULT_NAME), source
 
 
 def resolve_project_prompt_name(
@@ -654,6 +774,28 @@ def resolve_project_prompt_with_source(
     получают один prompt_overrides["excel_gpt"]. Node Studio пишет выбор в
     meta.prompt_slot_variants[node_key]["main"].
     """
+    name, source = _resolve_prompt_variant_raw(
+        overrides,
+        step_code,
+        meta=meta,
+        node_key=node_key,
+        slot_id=slot_id,
+    )
+    if str(step_code) == "hero":
+        return _coerce_hero_sheet_variant(name, source)
+    if str(step_code) == "hero_style":
+        return _coerce_hero_style_variant(name, source)
+    return name, source
+
+
+def _resolve_prompt_variant_raw(
+    overrides: dict | None,
+    step_code: str,
+    *,
+    meta: dict | None = None,
+    node_key: str | None = None,
+    slot_id: str | None = None,
+) -> tuple[str, str]:
     overrides = overrides or {}
     # Node Studio gpt-слот по умолчанию id=main.
     effective_slot = (slot_id or "").strip() or ("main" if node_key else None)

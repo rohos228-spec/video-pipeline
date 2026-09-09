@@ -67,6 +67,78 @@ async def _reset_matching_noderuns_after_rollback(
     return n
 
 
+async def _guard_one_project(
+    session: AsyncSession,
+    project: Project,
+    *,
+    now: str,
+    stats: dict[str, Any],
+    ready_statuses: set[ProjectStatus],
+) -> None:
+    from app.services.project_control import arm_auto_await_manual_start
+
+    meta = dict(project.meta or {})
+    changed = False
+
+    if is_running_status(project.status):
+        previous = project.status
+        rollback_to = _rollback_running_status(previous)
+        project.status = rollback_to
+        meta["startup_autorun_blocked"] = True
+        meta["startup_blocked_at"] = now
+        meta["startup_blocked_running_status"] = previous.value
+        meta["startup_rollback_to"] = rollback_to.value
+        meta.pop("enrich_auto_chain_to", None)
+        meta.pop("startup_auto_mode_disabled", None)
+        project.meta = meta
+        if arm_auto_await_manual_start(project):
+            stats["auto_await_manual_armed"] += 1
+        stats["running_projects_rolled_back"] += 1
+        changed = True
+        try:
+            await _reset_matching_noderuns_after_rollback(
+                session, project, previous
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[#{}] STARTUP GUARD: NodeRun reset after rollback failed",
+                project.id,
+                exc_info=True,
+            )
+        logger.warning(
+            "[#{}] STARTUP GUARD: rolled back {} -> {} (auto_mode={} сохранён)",
+            project.id,
+            previous.value,
+            rollback_to.value,
+            project.auto_mode,
+        )
+
+    elif project.auto_mode and project.status in ready_statuses:
+        if project.status in (
+            ProjectStatus.assembled,
+            ProjectStatus.publishing,
+            ProjectStatus.published,
+        ):
+            return
+        meta["startup_autorun_blocked"] = True
+        meta["startup_blocked_at"] = now
+        meta["startup_blocked_ready_status"] = project.status.value
+        meta.pop("startup_auto_mode_disabled", None)
+        project.meta = meta
+        if arm_auto_await_manual_start(project):
+            stats["auto_await_manual_armed"] += 1
+        changed = True
+        logger.info(
+            "[#{}] STARTUP GUARD: auto_mode сохранён at {} — ждём ▶",
+            project.id,
+            project.status.value,
+        )
+
+    if changed:
+        project.meta = dict(project.meta or {})
+        project.updated_at = datetime.utcnow()
+
+
 async def block_pipeline_autorun_on_startup(session: AsyncSession) -> dict[str, Any]:
     """Rollback running work on restart — but keep user's auto_mode preference.
 
@@ -91,73 +163,43 @@ async def block_pipeline_autorun_on_startup(session: AsyncSession) -> dict[str, 
     ready_statuses = set(TRANSITIONS.keys())
 
     for project in projects:
-        meta = dict(project.meta or {})
-        changed = False
+        isolated_ok = False
+        try:
+            from app.project_db import (
+                get_project_data_dir,
+                project_db_session_scope,
+                push_runtime_to_master,
+                resolve_project_db_path,
+            )
 
-        if is_running_status(project.status):
-            previous = project.status
-            rollback_to = _rollback_running_status(previous)
-            project.status = rollback_to
-            meta["startup_autorun_blocked"] = True
-            meta["startup_blocked_at"] = now
-            meta["startup_blocked_running_status"] = previous.value
-            meta["startup_rollback_to"] = rollback_to.value
-            meta.pop("enrich_auto_chain_to", None)
-            # Не гасим auto_mode — только ждём ручной ▶.
-            meta.pop("startup_auto_mode_disabled", None)
-            project.meta = meta
-            if arm_auto_await_manual_start(project):
-                stats["auto_await_manual_armed"] += 1
-            meta = dict(project.meta or {})
-            stats["running_projects_rolled_back"] += 1
-            changed = True
-            # Parity: NodeRun running/queued того же шага → pending,
-            # иначе reconcile пометит ложный failed.
-            try:
-                await _reset_matching_noderuns_after_rollback(
-                    session, project, previous
-                )
-            except Exception:  # noqa: BLE001
-                logger.debug(
-                    "[#{}] STARTUP GUARD: NodeRun reset after rollback failed",
-                    project.id,
-                    exc_info=True,
-                )
+            dir_path = await get_project_data_dir(int(project.id))
+            if dir_path is not None and resolve_project_db_path(dir_path).exists():
+                async with project_db_session_scope(int(project.id)) as ps:
+                    pp = await ps.get(Project, int(project.id))
+                    if pp is not None:
+                        await _guard_one_project(
+                            ps,
+                            pp,
+                            now=now,
+                            stats=stats,
+                            ready_statuses=ready_statuses,
+                        )
+                        await push_runtime_to_master(ps, pp)
+                        isolated_ok = True
+        except Exception:  # noqa: BLE001
             logger.warning(
-                "[#{}] STARTUP GUARD: rolled back {} -> {} (auto_mode={} сохранён)",
+                "[#{}] STARTUP GUARD: isolated project.db rollback failed",
                 project.id,
-                previous.value,
-                rollback_to.value,
-                project.auto_mode,
+                exc_info=True,
             )
-
-        elif project.auto_mode and project.status in ready_statuses:
-            # assembled/published — пайплайн уже у финала; не ставим «ждём ▶»
-            # (иначе на каждом рестарте снова auto_await + шум в worker).
-            if project.status in (
-                ProjectStatus.assembled,
-                ProjectStatus.publishing,
-                ProjectStatus.published,
-            ):
-                continue
-            # auto_mode оставляем; без ▶ ничего не стартует.
-            meta["startup_autorun_blocked"] = True
-            meta["startup_blocked_at"] = now
-            meta["startup_blocked_ready_status"] = project.status.value
-            meta.pop("startup_auto_mode_disabled", None)
-            project.meta = meta
-            if arm_auto_await_manual_start(project):
-                stats["auto_await_manual_armed"] += 1
-            changed = True
-            logger.info(
-                "[#{}] STARTUP GUARD: auto_mode сохранён at {} — ждём ▶",
-                project.id,
-                project.status.value,
+        if not isolated_ok:
+            await _guard_one_project(
+                session,
+                project,
+                now=now,
+                stats=stats,
+                ready_statuses=ready_statuses,
             )
-
-        if changed:
-            project.meta = dict(project.meta or {})
-            project.updated_at = datetime.utcnow()
 
     batches = (
         (await session.execute(select(BatchProject).where(BatchProject.status == BatchStatus.running)))

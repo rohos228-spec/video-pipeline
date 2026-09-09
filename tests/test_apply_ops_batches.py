@@ -12,6 +12,21 @@ from app.services.apply_ops_batches import (
 )
 
 
+def test_dense_102_splits_into_ten_packs() -> None:
+    from app.services.apply_ops_batches import (
+        DENSE_PARALLEL_MAX,
+        DENSE_TARGET_BATCHES,
+        split_into_n_packs,
+    )
+
+    frames = [{"uuid": f"{i:024d}"} for i in range(102)]
+    packs = split_into_n_packs(frames, DENSE_TARGET_BATCHES)
+    assert DENSE_TARGET_BATCHES == 10
+    assert DENSE_PARALLEL_MAX == 10
+    assert len(packs) == 10
+    assert sum(len(p) for p in packs) == 102
+
+
 def test_dense_8_pending_stays_one_batch() -> None:
     n, raw = 8, 6_000
     size = frames_per_batch(

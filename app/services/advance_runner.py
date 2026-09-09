@@ -58,22 +58,13 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
                     prev_status=prev_status,
                     new_status=project.status,
                 )
-                try:
-                    async with session_scope() as master_sess:
-                        m_proj = await master_sess.get(Project, project_id)
-                        if m_proj:
-                            m_proj.status = project.status
-                            from app.services.project_meta import merge_project_meta
+            try:
+                from app.project_db import push_runtime_to_master
 
-                            m_proj.meta = merge_project_meta(
-                                m_proj.meta if isinstance(m_proj.meta, dict) else {},
-                                project.meta if isinstance(project.meta, dict) else {},
-                                source="advance_job",
-                                project_id=project_id,
-                            )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("advance_project_job: sync status to master failed: {}", exc)
-
+                await push_runtime_to_master(session, project)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("advance_project_job: sync runtime to master failed: {}", exc)
+            if new != prev:
                 logger.debug(
                     "advance_project_job: #{} {} -> {}", project_id, prev, new
                 )

@@ -48,6 +48,40 @@ def hero_master_looks_like_sheet(text: str) -> bool:
     return sheet >= 2 and not hero_master_looks_like_registry_agent(text)
 
 
+_IMG_PR_STYLE_MARKERS = (
+    "промт_картинки_2",
+    "промт_картинки_3",
+    "поле `промт_картинки`",
+    "главные изменения v2.",
+    "часть 1. техническая часть",
+)
+
+_CHARACTER_LOCK_MARKERS = (
+    "character style lock",
+    "style_label",
+    "style_core",
+    "style only",
+    "inject this style lock",
+)
+
+
+def hero_style_looks_like_img_pr_template(text: str) -> bool:
+    """Глобальный hero_style часто = шаблон кадров (промт_картинки), не лок листа."""
+    t = (text or "").lower()
+    if not t.strip():
+        return False
+    hits = sum(1 for m in _IMG_PR_STYLE_MARKERS if m.lower() in t)
+    return hits >= 2 or "промт_картинки_2" in t
+
+
+def hero_style_looks_like_character_lock(text: str) -> bool:
+    t = (text or "").lower()
+    if not t.strip() or hero_style_looks_like_img_pr_template(t):
+        return False
+    hits = sum(1 for m in _CHARACTER_LOCK_MARKERS if m.lower() in t)
+    return hits >= 2
+
+
 def validate_hero_master_or_error(text: str, *, source_name: str = "") -> str | None:
     """None если ок; иначе человекочитаемая ошибка."""
     raw = (text or "").strip()

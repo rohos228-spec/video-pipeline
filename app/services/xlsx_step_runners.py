@@ -7,6 +7,8 @@ GPT-сессия (browser → new_conversation → ask_with_files → download) 
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -33,15 +35,22 @@ from app.storage import for_project as _sheet_for_project
 
 # Должен совпадать со строкой 4 в web/STUDIO_VERSION. Если в логе make_plan
 # нет «xlsx_step_runners» — на диске старый make_plan.py (текст 30k в ask).
-XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v85-img-pr-check-streams"
+XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v88-img-pr-parents-only"
 _EMPTY_OPS_BACKOFF_S = (5.0, 10.0, 15.0)
 
 
 def img_pr_live_streams(project: Project | None) -> int:
-    """Параллель GPT для img_pr = «текстовые модели» справа (check_streams)."""
+    """Параллель GPT для img_pr.
+
+    check_streams справа — верхняя граница; низ 8, иначе 102 кадра
+    при 2 потоках висят полчаса (волна gather ждёт всех).
+    """
     from app.services.check_streams import get_check_streams
 
-    return max(1, get_check_streams(project))
+    n = get_check_streams(project)
+    if n <= 0:
+        return 1
+    return max(8, n)
 
 
 def _plan_empty_error(xlsx_path: Path, *, plan_len: int) -> RuntimeError:
@@ -574,6 +583,27 @@ _PLASTILIN_IMG_PR_HINT = (
 )
 
 
+@asynccontextmanager
+async def _project_runtime_session(project: Project) -> AsyncIterator[AsyncSession]:
+    """Сессия SoT кадров img_pr: isolated project.db, не master state.db.
+
+    Wipe и валидатор шага уже ходят в project.db. Loader/apply на SessionLocal
+    видели чужие старые промты и пропускали GPT.
+    """
+    data_dir = getattr(project, "data_dir", None)
+    if data_dir:
+        from app.project_db import get_project_sessionmaker
+
+        sm = await get_project_sessionmaker(data_dir)
+        async with sm() as session:
+            yield session
+        return
+    from app.db import SessionLocal
+
+    async with SessionLocal() as session:
+        yield session
+
+
 async def _load_img_pr_context(
     project: Project,
     *,
@@ -581,12 +611,12 @@ async def _load_img_pr_context(
     skip_uuids: set[str] | None = None,
 ) -> tuple[list[Frame], list[dict], str, list[Frame]]:
     """Кадры + Entity cards + general_plan для img_pr."""
-    from app.db import SessionLocal
     from app.models import Entity
     from app.services import db_v2
     from app.services.excel_characters import entity_cards_for_gpt
+    from app.services.vo_shot_expand import is_shot_child
 
-    async with SessionLocal() as session:
+    async with _project_runtime_session(project) as session:
         proj = await session.get(Project, project.id)
         if proj is None:
             raise RuntimeError(f"project #{project.id} not found for img_pr db_frames")
@@ -611,6 +641,8 @@ async def _load_img_pr_context(
         cards = entity_cards_for_gpt(ents)
 
     selected: list[Frame] = []
+    n_parent = 0
+    n_child = 0
     for fr in frames:
         uuid = (fr.uuid or "").strip()
         if not uuid:
@@ -621,10 +653,21 @@ async def _load_img_pr_context(
             continue
         if not (fr.voiceover_text or "").strip():
             continue
+        if is_shot_child(fr):
+            n_child += 1
+            continue
         # Уже заполненные пропускаем (resume / soft retry).
         if (fr.image_prompt or "").strip():
             continue
+        n_parent += 1
         selected.append(fr)
+    if selected or n_child:
+        logger.info(
+            "img_pr_db: need prompts parent={} shot_child_skipped={} skip_ckpt={}",
+            n_parent,
+            n_child,
+            len(skip_uuids or ()),
+        )
     return selected, cards, general_plan, frames
 
 
@@ -688,10 +731,9 @@ async def _apply_img_pr_ops_now(
     """Сразу записать apply-ops батча в DB (Excel — только явный Export)."""
     if not ops:
         return
-    from app.db import SessionLocal
     from app.services import db_apply
 
-    async with SessionLocal() as session:
+    async with _project_runtime_session(project) as session:
         proj = await session.get(Project, project.id)
         if proj is None:
             raise RuntimeError(f"project #{project.id} gone during img_pr apply")
@@ -763,6 +805,11 @@ async def run_img_pr_xlsx(
         # Уже всё в DB с прошлого успешного прогона.
         frames_db, _, _, _ = await _load_img_pr_context(project)
         if not frames_db:
+            if n_frames:
+                raise RuntimeError(
+                    "img_pr: loader не видит пустые промты, хотя шаг ждёт "
+                    f"{n_frames} кадров (state.db vs project.db?)"
+                )
             logger.info("img_pr_db: nothing to do — all frames already have prompts")
             return XlsxRoundtripResult(
                 reply_text="(already in DB)",
@@ -933,45 +980,136 @@ async def run_img_pr_xlsx(
     async def _run_batches() -> None:
         nonlocal done_uuids, all_ops, done_set, api_batches
         bi_seq = 0
-        while work:
-            raise_if_cancelled(project.id)
-            wave = list(work)
-            work.clear()
-            batch_n = bi_seq + len(wave)
-            sem = asyncio.Semaphore(live_n)
-            logger.info(
-                "img_pr_db: parallel wave size={} live={} levels={} sizes={}",
-                len(wave),
-                live_n,
-                [lvl for _, lvl in wave],
-                [len(b) for b, _ in wave],
-            )
+        in_flight: dict[asyncio.Task, tuple[list, int, int]] = {}
+        any_ok = False
 
-            async def _one(idx: int, batch: list, level: int):
-                async with sem:
-                    raise_if_cancelled(project.id)
-                    bi = bi_seq + idx
-                    ops, reply = await _ask_batch_ops(
-                        bi=bi, batch_n=batch_n, batch=batch, level=level
+        def _enqueue_split(batch: list, level: int, *, why: str) -> bool:
+            nxt = next_split_level(level)
+            if nxt is not None and len(batch) >= 2:
+                for half in split_in_half(batch):
+                    work.append((half, nxt))
+                logger.warning(
+                    "img_pr_db: {} L{} frames={} → split {} (queue={})",
+                    why,
+                    level,
+                    len(batch),
+                    nxt,
+                    len(work),
+                )
+                return True
+            logger.warning(
+                "img_pr_db: {} L{} frames={} — stop split",
+                why,
+                level,
+                len(batch),
+            )
+            return False
+
+        def _ingest(
+            bi: int,
+            batch: list,
+            level: int,
+            batch_ops: list[dict],
+            last_reply: str,
+        ) -> None:
+            nonlocal api_batches, any_ok
+            replies.append(last_reply)
+            if not batch_ops:
+                if _enqueue_split(batch, level, why="no ops"):
+                    return
+                if all_ops:
+                    logger.error(
+                        "img_pr_db: batch {} L{} failed — partial ops={}",
+                        bi,
+                        level,
+                        len(all_ops),
                     )
-                    return bi, batch, level, ops, reply
-
-            gathered = await asyncio.gather(
-                *[
-                    _one(i, batch, level)
-                    for i, (batch, level) in enumerate(wave, start=1)
-                ],
-                return_exceptions=True,
+                    return
+                raise RuntimeError(
+                    f"img_pr batch {bi} L{level}: нет apply-ops "
+                    f"(reply_len={len(last_reply)}). "
+                    f"Смотри tmp_gpt/img_pr_rejected_b{bi}_*.txt"
+                )
+            api_batches += 1
+            any_ok = True
+            expected = {
+                (fr.uuid or "").strip()
+                for fr in batch
+                if (fr.uuid or "").strip()
+            }
+            got_uuids = {
+                ipb.uuid_of_op(op) for op in batch_ops if ipb.uuid_of_op(op)
+            } & expected
+            for u in sorted(got_uuids):
+                if u and u not in done_set:
+                    done_uuids.append(u)
+                    done_set.add(u)
+            kept_ops = [
+                op for op in batch_ops if ipb.uuid_of_op(op) in got_uuids
+            ]
+            all_ops.extend(kept_ops)
+            missing_uuids = expected - got_uuids
+            logger.info(
+                "img_pr_db: batch {} L{} ops=+{} total={} missing={} "
+                "(checkpoint, live={})",
+                bi,
+                level,
+                len(kept_ops),
+                len(all_ops),
+                len(missing_uuids),
+                live_n,
             )
-            bi_seq += len(wave)
-            any_ok = False
-            for item, (batch, level) in zip(gathered, wave):
-                if isinstance(item, BaseException):
+            if missing_uuids:
+                missing_frames = [
+                    fr
+                    for fr in batch
+                    if (fr.uuid or "").strip() in missing_uuids
+                ]
+                _enqueue_split(
+                    missing_frames,
+                    level,
+                    why=f"incomplete {len(got_uuids)}/{len(expected)}",
+                )
+            ipb.save_checkpoint(
+                project.data_dir, done_uuids=done_uuids, ops=all_ops
+            )
+
+        def _launch() -> None:
+            nonlocal bi_seq
+            while work and len(in_flight) < live_n:
+                batch, level = work.popleft()
+                bi_seq += 1
+                bi = bi_seq
+                batch_n = bi_seq + len(work) + len(in_flight)
+                task = asyncio.create_task(
+                    _ask_batch_ops(
+                        bi=bi, batch_n=max(batch_n, bi), batch=batch, level=level
+                    )
+                )
+                in_flight[task] = (batch, level, bi)
+
+        logger.info(
+            "img_pr_db: pool start queued={} live={}",
+            len(work),
+            live_n,
+        )
+        while work or in_flight:
+            raise_if_cancelled(project.id)
+            _launch()
+            if not in_flight:
+                break
+            done, _pending = await asyncio.wait(
+                set(in_flight), return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in done:
+                batch, level, bi = in_flight.pop(task)
+                exc = task.exception()
+                if exc is not None:
                     logger.error(
                         "img_pr_db: parallel batch L{} frames={} raised: {}",
                         level,
                         len(batch),
-                        item,
+                        exc,
                     )
                     nxt = next_split_level(level)
                     if nxt is not None and len(batch) >= 2:
@@ -980,94 +1118,14 @@ async def run_img_pr_xlsx(
                         continue
                     if all_ops:
                         continue
-                    raise item
-                bi, batch, level, batch_ops, last_reply = item
-                replies.append(last_reply)
-                if not batch_ops:
-                    nxt = next_split_level(level)
-                    if nxt is not None and len(batch) >= 2:
-                        for half in split_in_half(batch):
-                            work.append((half, nxt))
-                        logger.warning(
-                            "img_pr_db: no ops L{} frames={} → split {} "
-                            "(queue={})",
-                            level,
-                            len(batch),
-                            nxt,
-                            len(work),
-                        )
-                        continue
-                    if all_ops:
-                        logger.error(
-                            "img_pr_db: batch {} L{} failed — partial ops={}",
-                            bi,
-                            level,
-                            len(all_ops),
-                        )
-                        continue
-                    raise RuntimeError(
-                        f"img_pr batch {bi} L{level}: нет apply-ops "
-                        f"(reply_len={len(last_reply)}). "
-                        f"Смотри tmp_gpt/img_pr_rejected_b{bi}_*.txt"
-                    )
-                api_batches += 1
-                any_ok = True
-                expected = {
-                    (fr.uuid or "").strip()
-                    for fr in batch
-                    if (fr.uuid or "").strip()
-                }
-                got_uuids = {
-                    ipb.uuid_of_op(op) for op in batch_ops if ipb.uuid_of_op(op)
-                } & expected
-                for u in sorted(got_uuids):
-                    if u and u not in done_set:
-                        done_uuids.append(u)
-                        done_set.add(u)
-                kept_ops = [
-                    op for op in batch_ops if ipb.uuid_of_op(op) in got_uuids
-                ]
-                all_ops.extend(kept_ops)
-                missing_uuids = expected - got_uuids
-                logger.info(
-                    "img_pr_db: batch {} L{} ops=+{} total={} missing={} "
-                    "(checkpoint only, DB apply once at end)",
-                    bi,
-                    level,
-                    len(kept_ops),
-                    len(all_ops),
-                    len(missing_uuids),
-                )
-                if missing_uuids:
-                    missing_frames = [
-                        fr
-                        for fr in batch
-                        if (fr.uuid or "").strip() in missing_uuids
-                    ]
-                    nxt = next_split_level(level)
-                    if nxt is not None and len(missing_frames) >= 2:
-                        for half in split_in_half(missing_frames):
-                            work.append((half, nxt))
-                        logger.warning(
-                            "img_pr_db: incomplete {}/{} → split L{} (queue={})",
-                            len(got_uuids),
-                            len(expected),
-                            nxt,
-                            len(work),
-                        )
-                    else:
-                        logger.warning(
-                            "img_pr_db: still missing {} uuid L{} — stop split",
-                            len(missing_uuids),
-                            level,
-                        )
-            ipb.save_checkpoint(
-                project.data_dir, done_uuids=done_uuids, ops=all_ops
+                    raise exc
+                batch_ops, last_reply = task.result()
+                _ingest(bi, batch, level, batch_ops, last_reply or "")
+
+        if not any_ok and not all_ops:
+            raise RuntimeError(
+                "img_pr: все параллельные батчи провалились без ops"
             )
-            if not any_ok and not work and not all_ops:
-                raise RuntimeError(
-                    "img_pr: все параллельные батчи провалились без ops"
-                )
 
     await xgf.run_under_xlsx_lock(project.id, "img_pr", _run_batches)
 

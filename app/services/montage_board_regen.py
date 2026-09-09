@@ -31,7 +31,10 @@ from app.generation_options import (
     resolve_image_quality_slug,
 )
 from app.models import Frame, Project, PromptVersion
-from app.orchestrator.steps.generate_images import _load_refs_for_frame
+from app.orchestrator.steps.generate_images import (
+    _coverage_parent_png,
+    _load_refs_for_frame,
+)
 from app.services.gpt_client import get_gpt_client
 from app.services.montage_board_assets import (
     finalize_scene_image,
@@ -285,6 +288,41 @@ async def _persist_video_prompt(
         raise
 
 
+async def _montage_shot1_refs(
+    session: AsyncSession,
+    project: Project,
+    fr: Frame,
+    *,
+    ref_person_ids: list[str] | None = None,
+) -> tuple[list[Path], bool]:
+    """Shot1-рефы как у generate_images: K2/K3 → PNG VO-родителя, иначе листы."""
+    from app.services.vo_shot_expand import is_shot_child
+
+    if is_shot_child(fr):
+        parent_png = await _coverage_parent_png(session, project, fr)
+        if parent_png is None:
+            return [], False
+        logger.info(
+            "montage regen: child #{} ← parent still {}",
+            fr.number,
+            parent_png.name,
+        )
+        return [parent_png], True
+
+    if ref_person_ids is not None:
+        override = ref_person_ids
+    else:
+        db_ids = frame_shot_character_ids(fr, 1)
+        override = db_ids if db_ids else None
+    refs = await _load_refs_for_frame(
+        session,
+        project,
+        fr.number,
+        persons_override=override,
+    )
+    return refs, False
+
+
 async def prepare_image_regen(
     session: AsyncSession,
     project: Project,
@@ -313,17 +351,20 @@ async def prepare_image_regen(
         prompt_text = text
         refs: list[Path] = []
         if shot == 1:
-            if ref_person_ids is not None:
-                override = ref_person_ids
-            else:
-                db_ids = frame_shot_character_ids(fr, 1)
-                override = db_ids if db_ids else None
-            refs = await _load_refs_for_frame(
+            from app.services.vo_shot_expand import with_parent_scene_lock
+
+            refs, has_parent = await _montage_shot1_refs(
                 session,
                 project,
-                frame_number,
-                persons_override=override,
+                fr,
+                ref_person_ids=ref_person_ids,
             )
+            if has_parent:
+                prompt_text = with_parent_scene_lock(
+                    prompt_text,
+                    has_parent_ref=True,
+                    has_char_ref=False,
+                )
     elif mode == "correction":
         text = (correction or "").strip()
         if not text:
@@ -348,13 +389,15 @@ async def prepare_image_regen(
                 f"нет промта картинки в БД/Excel (кадр {frame_number}, shot {shot})"
             )
         if shot == 1:
-            db_ids = frame_shot_character_ids(fr, 1)
-            refs = await _load_refs_for_frame(
-                session,
-                project,
-                frame_number,
-                persons_override=db_ids if db_ids else None,
-            )
+            from app.services.vo_shot_expand import with_parent_scene_lock
+
+            refs, has_parent = await _montage_shot1_refs(session, project, fr)
+            if has_parent:
+                prompt_text = with_parent_scene_lock(
+                    prompt_text,
+                    has_parent_ref=True,
+                    has_char_ref=False,
+                )
         elif shot == 2:
             ref1 = find_shot1_image(scenes_dir, frame_number)
             refs = [ref1] if ref1 is not None else []

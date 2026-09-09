@@ -317,12 +317,12 @@ async def stop_project_running(
     await session.flush()
 
     try:
-        from app.project_db import push_runtime_to_project_db
+        from app.project_db import sync_runtime_both_ways
 
-        await push_runtime_to_project_db(session, project)
+        await sync_runtime_both_ways(session, project)
     except Exception:  # noqa: BLE001
         logger.warning(
-            "[#{}] STOP: push_runtime_to_project_db failed",
+            "[#{}] STOP: runtime sync master↔project.db failed",
             project.id,
             exc_info=True,
         )
@@ -358,6 +358,16 @@ async def pause_project(session: AsyncSession, project: Project) -> None:
     project.status = ProjectStatus.paused
     project.updated_at = datetime.utcnow()
     await session.flush()
+    try:
+        from app.project_db import sync_runtime_both_ways
+
+        await sync_runtime_both_ways(session, project)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[#{}] PAUSE: runtime sync master↔project.db failed",
+            project.id,
+            exc_info=True,
+        )
 
 
 async def resume_project(session: AsyncSession, project: Project) -> str:
@@ -372,6 +382,16 @@ async def resume_project(session: AsyncSession, project: Project) -> str:
         project.status = ProjectStatus.new
     project.updated_at = datetime.utcnow()
     await session.flush()
+    try:
+        from app.project_db import sync_runtime_both_ways
+
+        await sync_runtime_both_ways(session, project)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[#{}] RESUME: runtime sync master↔project.db failed",
+            project.id,
+            exc_info=True,
+        )
     return project.status.value
 
 

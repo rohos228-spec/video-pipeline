@@ -14,6 +14,7 @@ from app.project_db import (
     get_project_sessionmaker,
     init_project_db,
     pull_master_runtime_into_project,
+    push_runtime_to_master,
     push_runtime_to_project_db,
 )
 from app.services.project_steps import start_step
@@ -110,6 +111,56 @@ async def test_pull_master_runtime_overwrites_stale_ready(
 
 
 @pytest.mark.asyncio
+async def test_pull_master_runtime_skips_stale_paused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    master_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with master_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    master_factory = async_sessionmaker(master_engine, expire_on_commit=False)
+
+    async with master_factory() as ms:
+        ms.add(
+            Project(
+                id=780,
+                slug="pull-skip-paused",
+                title="pull",
+                topic="t",
+                status=ProjectStatus.paused,
+            )
+        )
+        await ms.commit()
+
+    @asynccontextmanager
+    async def master_scope():
+        async with master_factory() as s:
+            yield s
+
+    monkeypatch.setattr("app.db.session_scope", master_scope)
+
+    p = Project(
+        id=780,
+        slug="pull-skip-paused",
+        title="pull",
+        topic="t",
+        status=ProjectStatus.image_prompts_ready,
+    )
+    p.data_dir.mkdir(parents=True, exist_ok=True)
+    await init_project_db(p.data_dir, project=p)
+
+    sm = await get_project_sessionmaker(p.data_dir)
+    async with sm() as session:
+        row = await session.get(Project, 780)
+        assert row is not None
+        await pull_master_runtime_into_project(session, row)
+        assert row.status is ProjectStatus.image_prompts_ready
+        await session.commit()
+
+    await master_engine.dispose()
+    await close_all_project_engines()
+
+
+@pytest.mark.asyncio
 async def test_start_step_pushes_running_status_to_project_db() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
@@ -143,4 +194,69 @@ async def test_start_step_pushes_running_status_to_project_db() -> None:
             assert (row.meta or {}).get("keep_local") is True
 
     await engine.dispose()
+    await close_all_project_engines()
+
+
+@pytest.mark.asyncio
+async def test_push_runtime_to_master_copies_running_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    master_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with master_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    master_factory = async_sessionmaker(master_engine, expire_on_commit=False)
+
+    async with master_factory() as ms:
+        ms.add(
+            Project(
+                id=779,
+                slug="push-master",
+                title="push",
+                topic="t",
+                status=ProjectStatus.enrich_1_ready,
+                meta={"keep_local": True},
+            )
+        )
+        await ms.commit()
+
+    @asynccontextmanager
+    async def master_scope():
+        async with master_factory() as s:
+            yield s
+
+    monkeypatch.setattr("app.db.session_scope", master_scope)
+
+    p = Project(
+        id=779,
+        slug="push-master",
+        title="push",
+        topic="t",
+        status=ProjectStatus.enriching_1,
+        meta={
+            "active_excel_gpt_node_key": "n_excel_gpt_fw_report",
+            "keep_local": True,
+        },
+    )
+    p.data_dir.mkdir(parents=True, exist_ok=True)
+    await init_project_db(p.data_dir, project=p)
+
+    sm = await get_project_sessionmaker(p.data_dir)
+    async with sm() as session:
+        row = await session.get(Project, 779)
+        assert row is not None
+        row.status = ProjectStatus.enriching_1
+        row.meta = {
+            **(row.meta or {}),
+            "active_excel_gpt_node_key": "n_excel_gpt_fw_report",
+        }
+        await push_runtime_to_master(session, row)
+
+    async with master_factory() as ms:
+        m = await ms.get(Project, 779)
+        assert m is not None
+        assert m.status is ProjectStatus.enriching_1
+        assert (m.meta or {}).get("active_excel_gpt_node_key") == "n_excel_gpt_fw_report"
+        assert (m.meta or {}).get("keep_local") is True
+
+    await master_engine.dispose()
     await close_all_project_engines()

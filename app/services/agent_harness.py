@@ -230,10 +230,23 @@ def _count_project_log_errors(project_id: int, slug: str) -> tuple[int, str]:
     return len(hits), log.name
 
 
+def _attrs_is_shot_child(attrs_raw: str) -> bool:
+    try:
+        data = json.loads(attrs_raw) if (attrs_raw or "").strip() else {}
+    except Exception:  # noqa: BLE001
+        return False
+    if not isinstance(data, dict):
+        return False
+    cs = data.get("camera_subdivide")
+    if not isinstance(cs, dict):
+        return False
+    return str(cs.get("role") or "") == "shot"
+
+
 def _load_frame_prompt_rows(
     project_id: int,
-) -> tuple[list[tuple[int, str, str, str]], str]:
-    """Кадры: (number, voiceover, image_prompt, animation_prompt) + ошибка или ''."""
+) -> tuple[list[tuple[int, str, str, str, str]], str]:
+    """Кадры: (number, vo, image_prompt, animation_prompt, attrs) + ошибка или ''."""
     db_file = _db_path()
     if not db_file.is_file():
         return [], ""
@@ -243,17 +256,24 @@ def _load_frame_prompt_rows(
             "SELECT number, "
             "COALESCE(voiceover_text, ''), "
             "COALESCE(image_prompt, ''), "
-            "COALESCE(animation_prompt, '') "
+            "COALESCE(animation_prompt, ''), "
+            "COALESCE(attrs, '') "
             "FROM frames WHERE project_id=? ORDER BY number",
             (project_id,),
         ).fetchall()
         db.close()
     except Exception as e:  # noqa: BLE001
         return [], str(e)
-    rows: list[tuple[int, str, str, str]] = []
+    rows: list[tuple[int, str, str, str, str]] = []
     for r in raw:
         rows.append(
-            (int(r[0] or 0), str(r[1] or ""), str(r[2] or ""), str(r[3] or ""))
+            (
+                int(r[0] or 0),
+                str(r[1] or ""),
+                str(r[2] or ""),
+                str(r[3] or ""),
+                str(r[4] or ""),
+            )
         )
     return rows, ""
 
@@ -261,22 +281,28 @@ def _load_frame_prompt_rows(
 def _append_prompt_nn_checks(
     checks: list[HarnessCheck],
     repair: list[str],
-    frame_rows: list[tuple[int, str, str, str]],
+    frame_rows: list[tuple[int, str, str, str, str]],
     *,
     status: str,
     step: str | None,
 ) -> None:
-    """N/N по БД: img_pr — все VO с image_prompt; anim_pr — usable img → anim.
+    """N/N по БД: img_pr — VO-родители с image_prompt; anim_pr — usable img → anim.
 
-    Срабатывает по ``step`` (гейт до *_ready) и по уже выставленному status
-    (второй рубеж auto_advance). excel_gpt не требует image_prompt.
+    Shot-дети (K2/K3) не требуют отдельного GPT img_pr: картинка идёт с
+    промта родителя + Preserve/Change lock. Срабатывает по ``step``
+    (гейт до *_ready) и по уже выставленному status.
     """
     step_key = (step or "").strip().lower()
     want_img = step_key in _IMG_PR_STEPS or status == "image_prompts_ready"
     want_anim = step_key in _ANIM_PR_STEPS or status == "animation_prompts_ready"
     if want_img:
-        missing = [n for n, vo, img, _ in frame_rows if vo.strip() and not img.strip()]
-        vo_n = sum(1 for _, vo, _, _ in frame_rows if vo.strip())
+        parent_rows = [
+            (n, vo, img)
+            for n, vo, img, _, attrs in frame_rows
+            if not _attrs_is_shot_child(attrs)
+        ]
+        missing = [n for n, vo, img in parent_rows if vo.strip() and not img.strip()]
+        vo_n = sum(1 for _, vo, _ in parent_rows if vo.strip())
         img_n = vo_n - len(missing)
         ok = not missing
         checks.append(
@@ -293,11 +319,11 @@ def _append_prompt_nn_checks(
 
         missing = [
             n
-            for n, _, img, anim in frame_rows
+            for n, _, img, anim, _ in frame_rows
             if (not is_skippable_empty_prompt(img)) and is_skippable_empty_prompt(anim)
         ]
         usable = sum(
-            1 for _, _, img, _ in frame_rows if not is_skippable_empty_prompt(img)
+            1 for _, _, img, _, _ in frame_rows if not is_skippable_empty_prompt(img)
         )
         ok = not missing
         checks.append(

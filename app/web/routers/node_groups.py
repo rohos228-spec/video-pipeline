@@ -19,7 +19,7 @@ from app.services.node_groups import (
     save_custom_group,
     update_custom_group,
 )
-from app.web.deps import get_session
+from app.web.deps import get_project_session
 
 router = APIRouter(tags=["node-groups"])
 
@@ -89,7 +89,7 @@ async def remove_node_group(group_id: str) -> dict[str, Any]:
 @router.post("/projects/{project_id}/node-groups/from-selection")
 async def create_group_from_selection(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
     body: dict[str, Any] = Body(...),
 ) -> dict[str, Any]:
     """Сохранить выделенные ноды канваса как пользовательскую группу.
@@ -126,7 +126,7 @@ async def create_group_from_selection(
 async def add_group_to_canvas(
     project_id: int,
     group_id: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
     body: dict[str, Any] | None = Body(default=None),
 ) -> dict[str, Any]:
     """Вшить группу нод в канвас проекта (позиции, связи, промты, флаги)."""
@@ -140,6 +140,13 @@ async def add_group_to_canvas(
         result = await insert_node_group(session, project, group_id, after=after)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    await session.commit()
+    try:
+        from app.project_db import sync_runtime_both_ways
+
+        await sync_runtime_both_ways(session, project)
+    except Exception:  # noqa: BLE001
+        pass
     await publish_project_event(
         project_id,
         event_type="project_updated",

@@ -40,6 +40,28 @@ def is_shot_child(frame: Any) -> bool:
     return str(_cs(frame).get("role") or "") == "shot"
 
 
+def is_img_pr_vo_parent(frame: Any) -> bool:
+    """GPT img_pr пишет только VO-родителя ячейки, не K2/K3."""
+    if is_shot_child(frame):
+        return False
+    if not str(getattr(frame, "uuid", "") or "").strip():
+        return False
+    return bool(str(getattr(frame, "voiceover_text", "") or "").strip())
+
+
+def effective_image_prompt(frame: Any, frames: list[Any] | None = None) -> str:
+    """Промт для outsee: свой, иначе промт VO-родителя у shot-ребёнка."""
+    own = str(getattr(frame, "image_prompt", None) or "").strip()
+    if own:
+        return own
+    if not is_shot_child(frame) or not frames:
+        return ""
+    parent = find_coverage_parent_frame(list(frames), frame)
+    if parent is None:
+        return ""
+    return str(getattr(parent, "image_prompt", None) or "").strip()
+
+
 _COVERAGE_SHOT_RE = re.compile(r"^(.+)-K(\d+)$")
 _PARENT_SCENE_LOCK = (
     "Image 1 is the previous coverage still of the SAME scene "

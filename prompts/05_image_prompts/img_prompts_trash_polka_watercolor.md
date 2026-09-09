@@ -7,30 +7,9 @@
 Не пишет: `voiceover_text`/`закадр`, `промт_видео`, `промт_видео_2`,
 `длительность`, `общий_план`, паспорт сцены (place/lighting/shot01_*).
 
-Источник стиля: «треш полька акварель» v2.10.
-
-## ЖЁСТКОЕ ПРАВИЛО ОТВЕТА (важнее всего)
-
-Пиши **только полные** `промт_картинки`: сцена (A–I) + блок J
-(**STYLE** / Final style lock) + **Negative**.
-
-Цель: **один ответ = все uuid батча**, каждый `промт_картинки` полный.
-
-Не закрывай массив `ops`, пока нет полного op на каждый uuid.
-Частичный JSON (не все uuid) = провал, не успех.
-
-`{"ops":[]}` **запрещён.** Обрубок = брак.
-
-Запрещено:
-- сцена без STYLE;
-- сцена без Negative;
-- урезанный / «почти полный» обрубок;
-- пустой `{"ops":[]}`;
-- ужимать STYLE / Final style lock / Negative (в т.ч. до «no photorealism…»).
-
-Пиши полный J из §6. Пайплайн после ответа **заменит STYLE/Negative на один
-канонический блок** во всех ops — батчи не разъедутся по локу.
-Сцену не дописывает. Обрубок сцены = брак.
+Источник стиля: «треш полька акварель» v2.10 — **STYLE LOCK вшивает пайплайн**.
+В `промт_картинки` пиши **только сцену** (блоки A–I). Не копируй STYLE/Final
+style lock/Negative — оркестратор допишет их сам перед Outsee.
 
 ---
 
@@ -104,7 +83,41 @@
 | `characters` / `персонажи` | коды `c01…` на кадре | id в тексте + поле `персонажи` |
 | `characters[]` (корень файла) | Entity: id/имя/внешность/одежда | внешность в MAIN_SUBJECT |
 | `general_plan` | эпоха/конфликт проекта | TIME_PERIOD / мир — кратко, не копипаст |
+| `coverage_parent` | снимок K1 той же сцены | блок A0 Preserve/Change |
 | `voiceover_text` | закадр | **запрещено** копировать/пересказывать |
+
+**Вариация в `characters[]`:** если `имя` = `оставь формат неизменный` и
+`правила` = `c01` (ID основы) — в «Референс:» пиши имя основы + внешность/
+одежду основы, поверх только отличия карточки; id в промте = id вариации.
+Фразу «оставь формат неизменный» в промт не копируй.
+Нет кода в `персонажи` кадра → блока Референс нет (не выдумывай героя).
+
+### Блок A0 — CONTINUITY K2/K3 (`coverage_parent`)
+
+Если у кадра есть **`coverage_parent`** (id шота `*-K2` / `*-K3`) — это
+**следующая камера той же сцены**, не новая локация. GPT Image 2 держит
+геометрию только если явно разделены Preserve / Change и подписана роль
+референса (Image 1 = previous still).
+
+**Первый абзац промта** (до блока A персонажа), дословно по смыслу:
+
+```
+Image 1 is the previous coverage still of the SAME scene (layout / set / wardrobe / lighting / cast-count / prop-identity lock).
+Preserve: [place родителя], [shot01_bg родителя], [lighting родителя], [персонажи родителя — то же число тел], [key props: та же картина/папка/стол из coverage_parent, не замена].
+Change: camera position/framing from THIS shot01_description, action from THIS shot01_action / accent.
+Do not invent a new location or a new person. Same room, same furniture, same clothes, same light, same body count.
+If punching in on a painting/portrait/document, it is THE SAME object already in Image 1.
+```
+
+Дальше блоки B–I собирай из **этого** кадра, но фон/архитектуру/одежду/свет/
+**состав людей и экземпляры предметов** копируй узнаваемыми с родителя
+(`coverage_parent.place`, `shot01_bg`, `персонажи`, `image_prompt_head`).
+Меняется только камера и фаза действия.
+Брак: новый интерьер; другая мебель; другая одежда; другой свет;
+второй человек за столом, если в Image 1 сидел один; крупный план
+**другой** картины; «другая комната того же дворца».
+
+Нет `coverage_parent` → блок A0 **не пиши**.
 
 Continuity внутри одного `place`: один и тот же базовый фон и свет на соседних
 кадрах — **норма**. Различие кадров = `accent` + `shot01_action` + камера
@@ -116,6 +129,11 @@ Continuity внутри одного `place`: один и тот же базов
 
 Пиши текст промта **строго блоками сверху вниз**. Не собирай кадр
 «из головы» и не из закадра. Данные — только из `db_frames.json`.
+
+### Блок A0 — CONTINUITY (только если есть `coverage_parent`)
+
+См. §1. Первый абзац = Image 1 Preserve/Change. Без этого K2 выглядит
+как отдельная сцена.
 
 ### Блок A — РЕФЕРЕНС (только если в кадре есть `c01…`)
 
@@ -181,12 +199,12 @@ Continuity внутри одного `place`: один и тот же базов
 - место = `place` (конкретная локация);
 - время/эпоха = кратко из `general_plan` (год/эпоха/контекст), без копипаста абзацев.
 
-### Блок J — СТИЛЬ (ОБЯЗАТЕЛЕН в каждом `промт_картинки`)
+### Блок J — СТИЛЬ (НЕ пиши в JSON)
 
-Вшивай STYLE LOCK + Final style lock + Negative **прямо в JSON**
-(шаблон §5–§6). Не сокращай до «dark noir». Не выкидывай ради
-«экономии токенов» / крупного батча — режь сюжет/воду, **не** style.
-Пайплайн стиль **не** допишет.
+Пайплайн сам допишет STYLE LOCK к каждому `промт_картинки`.  
+В ответе GPT блок J **запрещён** (экономия токенов / крупные батчи).  
+Словарь стиля (§5–§6) — только справочно, чтобы тон сцены совпадал
+(watercolor noir, не фотореализм).
 
 ### Запрет двойников / клонов (в каждом промте)
 
@@ -264,6 +282,7 @@ eye-level · slight low angle · slight high angle · over-the-shoulder · profi
 10. Один кадр = **одна** unified scene (не коллаж, не мультипанель).
 11. Красный — редкий grunge-stress (мазки/пятна), не круги/стрелки/обводки улик.
 12. Не ломай continuity: тот же `place` → тот же базовый bg/lighting в промте.
+    K2/K3 с `coverage_parent` — **тот же сет**, что у родителя; меняется только камера.
 13. **Нет двойников/клонов:** no twins, no clone, no duplicate face of the same
     character id; extras must look different from referenced cXX.
 
@@ -276,11 +295,10 @@ eye-level · slight low angle · slight high angle · over-the-shoulder · profi
 
 ---
 
-## 5. STYLE LOCK — полный блок (вшивай целиком, не «почти»)
+## 5. STYLE LOCK — полный блок (вшивай почти целиком)
 
-Не сокращай до «dark noir» и не до короткого «no photorealism / no 3D».
-Копируй блок J из §6 **целиком и дословно** в каждый `промт_картинки`.
-Батч 2 и батч 3 — тот же J, не другой пересказ. Улучшения сцены ≠ урез лока.
+Не сокращай до «dark noir». Копируй векторы в каждый `промт_картинки`.
+Улучшения = усиление этих же векторов, не замена.
 
 **STYLE_LABEL** (обязательная фраза):  
 `Archival Noir Watercolor Grunge Dossier Poster Illustration`
@@ -288,7 +306,7 @@ eye-level · slight low angle · slight high angle · over-the-shoulder · profi
 **STYLE_CORE:**  
 archival true-crime noir dossier poster + dark watercolor wash + grunge prison mystery illustration + distressed printmaking + noir comic graphic novel inking + high-contrast historical mixed media.
 
-**STYLE_RU (смысл, полностью, не сжимать):**  
+**STYLE_RU (смысл, можно кратко рядом):**  
 Архивный нуарный grunge-досье постер: washed gray-blue, dirty cream, off-white, charcoal, dark gray, muted amber-gray; paper-absorbed watercolor pigment; ink-and-water stains; torn archive paper; worn newspaper fragments; distressed print; rough comic inking; realistic historical material surfaces softened by watercolor absorption. Коллажная энергия архива → **одна** постерная композиция, один фокус.
 
 **STYLE_LOCK_RULE (NOT — обязательно в prompt):**  
@@ -326,6 +344,9 @@ one unified scene (not literal collage); archival dossier montage energy → int
 `accent` / `scene_sense` / `scene_feature` — **отдельные строки**, не прячь в «details».
 
 ```
+[A0 — только если есть coverage_parent]
+Image 1 is the previous coverage still of the SAME scene (layout / set / wardrobe / lighting lock). Preserve: [coverage_parent.place], [coverage_parent.shot01_bg], [coverage_parent.lighting], [coverage_parent персонажи/одежда/key props from image_prompt_head]. Change: camera from THIS shot01_description, action from THIS shot01_action. Do not invent a new location.
+
 [A — только если есть cXX]
 Reference: character sheet for [cXX / Name] — identity lock for this person from this reference only. If two codes: Image 1 = first id, Image 2 = second id, two different faces. Place them in [ZONE from shot01_description: left/center/right, fore/mid/back]. They are doing [ACTION from shot01_action / accent]. Do not copy the sheet pose/layout. Exactly one body per referenced id — do not copy one reference face onto two bodies.
 
@@ -378,14 +399,14 @@ photorealism, glossy 3D render, clean minimalist, cute, pastel, bright cheerful 
 
 ## 9. Финальный чеклист перед JSON
 
-- [ ] Порядок: **A(ref?) → B фон → C действие → D свет → E accent → F scene_sense → G scene_feature → H детали → I место/время → J STYLE + Negative**  
+- [ ] Порядок: **A0(parent?) → A(ref?) → B фон → C действие → D свет → E accent → F scene_sense → G scene_feature → H детали → I место/время** (без J — стиль допишет пайплайн)  
+- [ ] Если есть `coverage_parent`: первый абзац Preserve/Change; фон/одежда/свет = родителя  
 - [ ] `accent`, `scene_sense`, `scene_feature` — отдельные явные строки из Базы  
 - [ ] Если есть cXX: в A указано где стоит и что делает; **один экземпляр на каждый id**; два id = два разных лица  
 - [ ] Фон подробный (`shot01_bg`), не одно слово  
-- [ ] В каждом `промт_картинки` блок J + Negative **дословно из §6**, не ужатый  
-- [ ] J одинаковый во всех ops этого ответа и не короче, чем в соседнем батче  
-- [ ] Один JSON на все uuid батча; частичный ответ = провал; `{"ops":[]}` запрещён
-- [ ] Только JSON apply-ops; uuid только из `db_frames.json` этого батча
+- [ ] В JSON нет копипасты STYLE LOCK / Final style lock  
+
+- [ ] Только JSON apply-ops; все uuid из `db_frames.json`  
 - [ ] id = `c01`… не `char_01`  
 - [ ] Камера из `shot01_description`  
 - [ ] `промт_картинки` ≤ 4900 (режь сюжет, не style)  

@@ -534,6 +534,27 @@ async def test_clear_step_outputs_hero_force_wipe_removes_png(session, tmp_path:
 
 
 @pytest.mark.asyncio
+async def test_clear_step_outputs_hero_force_wipe_removes_orphan_png(
+    session, tmp_path: Path, monkeypatch
+):
+    """force_wipe hero удаляет characters/*.png даже без Artifact в project.db."""
+    from app import settings as app_settings
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path)
+    p = await _mkproject(session)
+    chars = p.data_dir / "characters"
+    chars.mkdir(parents=True, exist_ok=True)
+    png = chars / "c01.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 2000)
+    await session.flush()
+
+    summary = await clear_step_outputs_for_rerun(session, p, "hero", force_wipe=True)
+    assert "hero" in summary
+    assert summary["hero"].get("orphan_character_files") == 1
+    assert not png.exists()
+
+
+@pytest.mark.asyncio
 async def test_clear_step_outputs_img_force_wipe_removes_png(session):
     """Явный ▶ img: PNG не скип — бэкап и удаление, кадры снова в очередь."""
     p = await _mkproject(session)

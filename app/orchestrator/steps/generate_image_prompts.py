@@ -13,19 +13,22 @@ from app.storage import for_project as _sheet_for_project
 
 
 def _frames_needing_image_prompt(frames: list[Frame]) -> list[Frame]:
+    from app.services.vo_shot_expand import is_img_pr_vo_parent
+
     return [
         fr
         for fr in frames
-        if (fr.voiceover_text or "").strip()
-        and not (fr.image_prompt or "").strip()
+        if is_img_pr_vo_parent(fr) and not (fr.image_prompt or "").strip()
     ]
 
 
 def _frames_with_image_prompt(frames: list[Frame]) -> list[Frame]:
+    from app.services.vo_shot_expand import is_img_pr_vo_parent
+
     return [
         fr
         for fr in frames
-        if (fr.voiceover_text or "").strip() and (fr.image_prompt or "").strip()
+        if is_img_pr_vo_parent(fr) and (fr.image_prompt or "").strip()
     ]
 
 
@@ -73,7 +76,7 @@ async def _finish_success(
         logger.warning("[#{}] clear img_pr checkpoint: {}", project.id, e)
 
     logger.info(
-        "[#{}] generate_image_prompts complete: {} промтов (DB)",
+        "[#{}] generate_image_prompts complete: {} промтов VO-родителей (DB)",
         project.id,
         len(filled),
     )
@@ -130,8 +133,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             cancelled = True
             break
         try:
-            from app.db import SessionLocal
-            from app.services import db_apply, xlsx_step_runners as xsr
+            from app.services import xlsx_step_runners as xsr
 
             result = await xsr.run_img_pr_xlsx(
                 project,
@@ -146,27 +148,19 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 ops = filter_ops_for_node(ops, node_kind="img_pr")
             if not ops and not result.ops_applied_inline:
                 raise RuntimeError("пустой apply-ops после GPT")
-            # Один apply в конце (не по батчам) — отдельная короткая сессия.
+            # Один apply в конце (не по батчам) — та же project.db, что wipe.
             if ops and not result.ops_applied_inline:
                 import asyncio
 
                 last_apply_err: Exception | None = None
                 for apply_try in range(1, 6):
                     try:
-                        async with SessionLocal() as apply_session:
-                            proj = await apply_session.get(Project, project.id)
-                            if proj is None:
-                                raise RuntimeError(
-                                    "project gone during img_pr apply"
-                                )
-                            await db_apply.apply_ops(
-                                apply_session,
-                                proj,
-                                ops,
-                                export_xlsx=False,
-                                node_kind="img_pr",
-                            )
-                            await apply_session.commit()
+                        await xsr._apply_img_pr_ops_now(
+                            project,
+                            ops,
+                            export_xlsx=False,
+                            label="final",
+                        )
                         last_apply_err = None
                         break
                     except Exception as apply_err:  # noqa: BLE001

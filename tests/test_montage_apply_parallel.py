@@ -96,7 +96,7 @@ async def test_apply_images_phase_before_videos(
     await session.flush()
 
     @asynccontextmanager
-    async def _scope():
+    async def _scope(*_a, **_k):
         yield session
 
     monkeypatch.setattr("app.services.montage_board_apply.session_scope", _scope)
@@ -159,7 +159,7 @@ async def test_apply_shot1_before_shot2_same_frame(
     await session.flush()
 
     @asynccontextmanager
-    async def _scope():
+    async def _scope(*_a, **_k):
         yield session
 
     monkeypatch.setattr("app.services.montage_board_apply.session_scope", _scope)

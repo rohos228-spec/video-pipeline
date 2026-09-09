@@ -14,7 +14,8 @@ from __future__ import annotations
 import asyncio
 import tempfile
 from collections import defaultdict
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -22,8 +23,8 @@ from typing import Any
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import session_scope
 from app.models import Project
+from app.project_db import project_db_session_scope as _isolated_project_scope
 from app.services.img_streams import acquire_image_slot, get_img_streams
 from app.services.montage_ai_change import (
     character_ids_from_prompt,
@@ -70,6 +71,22 @@ _IMAGE_OP_TYPES = frozenset(
 _VIDEO_OP_TYPES = frozenset(
     {"video_regen", "video_regen_prompt", "video_ai_change"}
 )
+
+
+@asynccontextmanager
+async def session_scope(project_id: int | None = None) -> AsyncIterator[AsyncSession]:
+    """Короткие сессии apply: изолированная project.db.
+
+    Тесты подменяют этот CM (игнор аргумента) на in-memory сессию.
+    """
+    if project_id is None:
+        from app.db import session_scope as _master_scope
+
+        async with _master_scope() as session:
+            yield session
+        return
+    async with _isolated_project_scope(project_id) as session:
+        yield session
 
 
 def _ready_local_asset(path: Path, *, min_bytes: int) -> bool:
@@ -204,7 +221,7 @@ async def _finalize_image_with_retry(
     last: BaseException | None = None
     for attempt in range(1, 8):
         try:
-            async with session_scope() as session:
+            async with session_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is None:
                     raise RuntimeError(f"проект #{project_id} не найден")
@@ -238,7 +255,7 @@ async def _finalize_video_with_retry(
     last: BaseException | None = None
     for attempt in range(1, 8):
         try:
-            async with session_scope() as session:
+            async with session_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is None:
                     raise RuntimeError(f"проект #{project_id} не найден")
@@ -281,7 +298,7 @@ async def _run_op_with_short_sessions(
     ai_project: Any = None
     prep: Any = None
 
-    async with session_scope() as session:
+    async with session_scope(project_id) as session:
         project = await session.get(Project, project_id)
         if project is None:
             raise RuntimeError(f"проект #{project_id} не найден")
@@ -353,7 +370,7 @@ async def _run_op_with_short_sessions(
         )
 
         async def _prepare_after_gpt():
-            async with session_scope() as session:
+            async with session_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is None:
                     raise RuntimeError(f"проект #{project_id} не найден")
@@ -484,7 +501,7 @@ async def _run_ops_phase(
                 if fail_key:
                     add_failed_highlight(board, fail_key)
             board["pending_ops"] = _pending_snapshot()
-            async with session_scope() as session:
+            async with session_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is not None:
                     set_montage_meta(project, board)

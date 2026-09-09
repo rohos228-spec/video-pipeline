@@ -460,6 +460,26 @@ async def _wipe_hero(session: AsyncSession, project: Project) -> dict[str, Any]:
             r.decision = HITLDecision.pending
             cleared += 1
     details["hitl_hero_reset"] = cleared
+    # PNG мог остаться без Artifact в project.db (запись ушла только в state.db).
+    # Тогда wipe 0 файлов → recover_hero сразу hero_ready без перегенерации.
+    chars_dir = project.data_dir / "characters"
+    orphan = 0
+    if chars_dir.is_dir():
+        for p in chars_dir.iterdir():
+            if not p.is_file() or p.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+                continue
+            try:
+                _backup_artifact_file_before_wipe(project, p)
+                p.unlink()
+                orphan += 1
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[#{}] wipe_hero: не смог удалить orphan {}: {}",
+                    project.id,
+                    p.name,
+                    e,
+                )
+    details["orphan_character_files"] = orphan
     return details
 
 

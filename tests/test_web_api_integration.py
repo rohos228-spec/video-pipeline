@@ -87,7 +87,7 @@ async def test_list_workflows(client) -> None:
 
 @pytest.mark.asyncio
 async def test_get_project_recompute_no_hero(client) -> None:
-    """no_hero + frame with prompts → не застревает на frames_ready."""
+    """no_hero + кадр с промтами: GET не прыгает вперёд с *_ready (sequential)."""
     c, pid, factory = client
     async with factory() as session:
         from app.models import Artifact, ArtifactKind
@@ -114,7 +114,7 @@ async def test_get_project_recompute_no_hero(client) -> None:
     assert r.status_code == 200
     body = r.json()
     assert body["hero_mode"] == "no_hero"
-    assert body["status"] != "frames_ready"
+    assert body["status"] == "frames_ready"
 
 
 @pytest.mark.asyncio
@@ -150,6 +150,17 @@ async def test_studio_version_endpoint(client) -> None:
     data = r.json()
     assert "build" in data
     assert "ui_stale" in data
+
+
+def test_get_project_poll_does_not_write_runtime_to_master() -> None:
+    """Poll GET не должен push/commit stale *_ready поверх ▶."""
+    import inspect
+
+    from app.web.routers import projects as projects_mod
+
+    src = inspect.getsource(projects_mod.get_project)
+    assert "push_runtime_to_master" not in src
+    assert "await session.rollback()" in src
 
 
 @pytest.mark.asyncio

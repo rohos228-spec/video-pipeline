@@ -2,6 +2,7 @@
 
 import {
   memo,
+  Fragment,
   startTransition,
   useCallback,
   useEffect,
@@ -21,6 +22,7 @@ import {
   Clapperboard,
   Loader2,
   MoreHorizontal,
+  Plus,
   RefreshCw,
   Settings2,
   Trash2,
@@ -47,6 +49,8 @@ import { AudioAlignPopover } from "@/components/studio/audio-align-dialog";
 const FRAME_COL_REM = 15;
 const FRAME_COL_CLASS = "w-[15rem] min-w-[15rem] max-w-[15rem]";
 const ROW_LABEL_CLASS = "w-[11rem] min-w-[11rem] max-w-[11rem]";
+const INSERT_GUTTER_REM = 1.25;
+const INSERT_GUTTER_CLASS = "w-5 min-w-5 max-w-5 p-0 align-middle";
 
 type RowKey =
   | "voiceover"
@@ -143,7 +147,7 @@ function slotToneRing(tone: SlotTone | undefined): string | false {
 }
 
 function voiceoverForFrame(fr: MontageBoardFrame): string {
-  return (fr.voiceover_excel || fr.voiceover_text || "").trim();
+  return (fr.voiceover_text || fr.voiceover_excel || "").trim();
 }
 
 function coverageKindLabel(fr: MontageBoardFrame): string {
@@ -279,6 +283,193 @@ function PromptModalBody({
             onClick={() => onSubmit(text.trim())}
           >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "В очередь"}
+          </Button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function InsertGutter({
+  as,
+  label,
+  onClick,
+  showIcon = true,
+}: {
+  as: "th" | "td";
+  label: string;
+  onClick: () => void;
+  showIcon?: boolean;
+}) {
+  const inner = (
+    <button
+      type="button"
+      title={label}
+      onClick={onClick}
+      className="group/add flex h-full min-h-[2.5rem] w-full items-center justify-center self-stretch text-white/25 transition hover:bg-white/5 hover:text-black"
+    >
+      <span
+        className={cn(
+          "flex h-7 w-4 items-center justify-center rounded-full border border-dashed transition",
+          showIcon
+            ? "border-white/20 bg-white/[0.03] group-hover/add:border-transparent group-hover/add:bg-[rgba(209,254,23,1)]"
+            : "border-transparent opacity-0 group-hover/add:opacity-100 group-hover/add:border-transparent group-hover/add:bg-[rgba(209,254,23,1)]",
+        )}
+      >
+        <Plus className="h-3 w-3" />
+      </span>
+    </button>
+  );
+  if (as === "th") {
+    return (
+      <th className={cn(INSERT_GUTTER_CLASS, "border-b border-white/10")}>{inner}</th>
+    );
+  }
+  return <td className={INSERT_GUTTER_CLASS}>{inner}</td>;
+}
+
+function VoiceoverCell({
+  frame,
+  busy,
+  onSave,
+  onDelete,
+}: {
+  frame: MontageBoardFrame;
+  busy: boolean;
+  onSave: (text: string) => Promise<void>;
+  onDelete: () => void;
+}) {
+  const source = voiceoverForFrame(frame);
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(source);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setText(source);
+  }, [source, frame.frame_id]);
+
+  const save = async () => {
+    const next = text.trim();
+    if (next === source) {
+      setEditing(false);
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave(next);
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <div className="flex flex-col gap-1.5">
+        <textarea
+          className="min-h-[88px] w-full rounded-md border border-white/15 bg-black/40 p-2 text-xs leading-snug"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          autoFocus
+          disabled={saving || busy}
+        />
+        <div className="flex justify-end gap-1">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 px-2 text-[11px]"
+            disabled={saving}
+            onClick={() => {
+              setText(source);
+              setEditing(false);
+            }}
+          >
+            Отмена
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            className="h-7 px-2 text-[11px]"
+            disabled={saving || busy}
+            onClick={() => void save()}
+          >
+            {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : "Сохранить"}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="group/vo flex items-start gap-1">
+      <button
+        type="button"
+        className="min-w-0 flex-1 whitespace-pre-wrap text-left text-xs leading-snug text-foreground/90 hover:text-white"
+        title="Клик — править закадр"
+        disabled={busy}
+        onClick={() => setEditing(true)}
+      >
+        {source || <span className="text-muted-foreground">— добавить закадр</span>}
+      </button>
+      <button
+        type="button"
+        className="shrink-0 rounded-md p-1 text-white/30 opacity-0 hover:bg-rose-500/15 hover:text-rose-200 group-hover/vo:opacity-100"
+        title="Удалить кадр"
+        disabled={busy}
+        onClick={onDelete}
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
+function AddFrameModal({
+  afterLabel,
+  busy,
+  onClose,
+  onSubmit,
+}: {
+  afterLabel: string;
+  busy: boolean;
+  onClose: () => void;
+  onSubmit: (voiceover: string) => void;
+}) {
+  const [text, setText] = useState("");
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[10110] flex items-center justify-center bg-black/70 p-4"
+      onMouseDown={onClose}
+    >
+      <div
+        className="w-full max-w-md rounded-xl border border-white/15 bg-card p-4 shadow-xl"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <h3 className="text-sm font-semibold">Новый кадр {afterLabel}</h3>
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          Кадр встанет между соседями. Закадр можно написать сразу или потом кликом по
+          тексту.
+        </p>
+        <textarea
+          className="mt-3 min-h-[88px] w-full rounded-lg border border-white/15 bg-black/30 p-3 text-sm"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="Закадр новой ячейки (можно пусто)"
+          autoFocus
+        />
+        <div className="mt-3 flex justify-end gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={onClose} disabled={busy}>
+            Отмена
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            disabled={busy}
+            onClick={() => onSubmit(text.trim())}
+          >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Добавить"}
           </Button>
         </div>
       </div>
@@ -1257,6 +1448,10 @@ export function AssembleMontageBoard({
   const [swapPick, setSwapPick] = useState<SwapSlotPick | null>(null);
   const [swapBusy, setSwapBusy] = useState(false);
   const [moveImageBusy, setMoveImageBusy] = useState(false);
+  const [frameEditBusy, setFrameEditBusy] = useState(false);
+  const [addFrame, setAddFrame] = useState<{ afterFrameId: number | null } | null>(
+    null,
+  );
   const [applyProgress, setApplyProgress] = useState<{ done: number; total: number } | null>(
     null,
   );
@@ -1999,6 +2194,57 @@ export function AssembleMontageBoard({
     void board.refetch();
   }, [board]);
 
+  const handleSaveVoiceover = async (frameId: number, text: string) => {
+    if (!projectId) return;
+    await api.setMontageVoiceover(projectId, frameId, text);
+    refreshBoard();
+    toast.success("Закадр сохранён");
+  };
+
+  const handleDeleteFrame = async (fr: MontageBoardFrame) => {
+    if (!projectId) return;
+    const ok = window.confirm(
+      `Удалить кадр #${fr.number}${fr.shot_kind === "parent" ? " и дочерние" : ""}?`,
+    );
+    if (!ok) return;
+    setFrameEditBusy(true);
+    try {
+      await api.deleteMontageFrame(projectId, fr.frame_id);
+      refreshBoard();
+      toast.success(`Кадр #${fr.number} удалён`);
+    } catch (e) {
+      toast.error(errorMessageFromUnknown(e));
+    } finally {
+      setFrameEditBusy(false);
+    }
+  };
+
+  const handleInsertFrame = async (voiceover: string) => {
+    if (!projectId || !addFrame) return;
+    setFrameEditBusy(true);
+    try {
+      const res = await api.insertMontageFrame(
+        projectId,
+        addFrame.afterFrameId,
+        voiceover,
+      );
+      setAddFrame(null);
+      refreshBoard();
+      toast.success(`Кадр #${res.number} добавлен`);
+    } catch (e) {
+      toast.error(errorMessageFromUnknown(e));
+    } finally {
+      setFrameEditBusy(false);
+    }
+  };
+
+  const addFrameLabel = (() => {
+    if (!addFrame) return "";
+    if (addFrame.afterFrameId == null) return "в начало ленты";
+    const n = frames.find((f) => f.frame_id === addFrame.afterFrameId)?.number;
+    return n != null ? `после #${n}` : "в ленту";
+  })();
+
   const handleDeleteImage = async (frameNumber: number, shot: 1 | 2) => {
     if (!projectId) return;
     try {
@@ -2261,7 +2507,9 @@ export function AssembleMontageBoard({
   const tableWidthPx = useMemo(() => {
     const rowLabel = 11 * 16;
     const col = FRAME_COL_REM * 16;
-    return rowLabel + frames.length * col;
+    const gutter = INSERT_GUTTER_REM * 16;
+    const gutters = frames.length > 0 ? frames.length + 1 : 0;
+    return rowLabel + frames.length * col + gutters * gutter;
   }, [frames.length]);
 
   const syncScrollLeft = useCallback((from: HTMLDivElement, to: HTMLDivElement) => {
@@ -2479,13 +2727,22 @@ export function AssembleMontageBoard({
               </div>
             )}
             {!board.isLoading && !board.isError && frames.length === 0 && (
-              <p className="text-sm text-muted-foreground">
-                Кадров нет — положите{" "}
-                <code className="text-[11px]">project.xlsx</code> или файлы{" "}
-                <code className="text-[11px]">scenes/frame_NNN_*.png</code> /{" "}
-                <code className="text-[11px]">videos/clip_NNN_*.mp4</code> в папку
-                проекта и обновите доску.
-              </p>
+              <div className="flex flex-col items-start gap-3">
+                <p className="text-sm text-muted-foreground">
+                  Кадров нет — добавьте первую ячейку закадра или положите{" "}
+                  <code className="text-[11px]">project.xlsx</code> / файлы{" "}
+                  <code className="text-[11px]">scenes/</code>.
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={frameEditBusy || projectId == null}
+                  onClick={() => setAddFrame({ afterFrameId: null })}
+                >
+                  <Plus className="mr-1 h-4 w-4" />
+                  Добавить кадр
+                </Button>
+              </div>
             )}
 
             {frames.length > 0 && (
@@ -2507,16 +2764,27 @@ export function AssembleMontageBoard({
                       >
                         Строка
                       </th>
+                      <InsertGutter
+                        as="th"
+                        label="Кадр в начало"
+                        onClick={() => setAddFrame({ afterFrameId: null })}
+                      />
                       {frames.map((fr) => (
-                        <th
-                          key={fr.frame_id}
-                          className={cn(
-                            "border-b border-white/10 px-2 py-2 text-center font-mono text-xs",
-                            FRAME_COL_CLASS,
-                          )}
-                        >
-                          #{fr.number}
-                        </th>
+                        <Fragment key={fr.frame_id}>
+                          <th
+                            className={cn(
+                              "border-b border-white/10 px-2 py-2 text-center font-mono text-xs",
+                              FRAME_COL_CLASS,
+                            )}
+                          >
+                            #{fr.number}
+                          </th>
+                          <InsertGutter
+                            as="th"
+                            label={`Кадр после #${fr.number}`}
+                            onClick={() => setAddFrame({ afterFrameId: fr.frame_id })}
+                          />
+                        </Fragment>
                       ))}
                     </tr>
                   </thead>
@@ -2550,6 +2818,12 @@ export function AssembleMontageBoard({
                               <span>{row.label}</span>
                             </button>
                           </td>
+                          <InsertGutter
+                            as="td"
+                            showIcon={false}
+                            label="Кадр в начало"
+                            onClick={() => setAddFrame({ afterFrameId: null })}
+                          />
                           {frames.map((fr) => {
                             const isMediaRow =
                               row.key.startsWith("image") || row.key.startsWith("video");
@@ -2564,18 +2838,18 @@ export function AssembleMontageBoard({
                                       ? fr.video_shot2_url
                                       : "";
                             return (
+                            <Fragment key={
+                              isMediaRow
+                                ? `${fr.frame_id}-${row.key}-${mediaUrl || ""}`
+                                : `${fr.frame_id}-${row.key}`
+                            }>
                             <td
-                              key={
-                                isMediaRow
-                                  ? `${fr.frame_id}-${row.key}-${mediaUrl || ""}`
-                                  : `${fr.frame_id}-${row.key}`
-                              }
                               className={cn(
                                 "relative isolate overflow-hidden px-3 py-2 align-top",
                                 FRAME_COL_CLASS,
                               )}
                               style={
-                                isMediaRow
+                                isMediaRow || row.key === "voiceover"
                                   ? undefined
                                   : {
                                       contentVisibility: "auto",
@@ -2586,9 +2860,12 @@ export function AssembleMontageBoard({
                               {collapsed ? (
                                 <div className="h-8 rounded-md bg-black/10" />
                               ) : row.key === "voiceover" ? (
-                                <p className="whitespace-pre-wrap text-xs leading-snug text-foreground/90">
-                                  {voiceoverForFrame(fr) || "—"}
-                                </p>
+                                <VoiceoverCell
+                                  frame={fr}
+                                  busy={frameEditBusy || applyRunning}
+                                  onSave={(text) => handleSaveVoiceover(fr.frame_id, text)}
+                                  onDelete={() => void handleDeleteFrame(fr)}
+                                />
                               ) : row.key === "shot_kind" ? (
                                 (() => {
                                   const pending = pendingCoverageForFrame(
@@ -2961,6 +3238,13 @@ export function AssembleMontageBoard({
                                 />
                               )}
                             </td>
+                            <InsertGutter
+                              as="td"
+                              showIcon={false}
+                              label={`Кадр после #${fr.number}`}
+                              onClick={() => setAddFrame({ afterFrameId: fr.frame_id })}
+                            />
+                            </Fragment>
                             );
                           })}
                         </tr>
@@ -2992,6 +3276,14 @@ export function AssembleMontageBoard({
         onSubmit={submitPromptModal}
         busy={applyMutation.isPending}
       />
+      {addFrame ? (
+        <AddFrameModal
+          afterLabel={addFrameLabel}
+          busy={frameEditBusy}
+          onClose={() => setAddFrame(null)}
+          onSubmit={(text) => void handleInsertFrame(text)}
+        />
+      ) : null}
     </>,
     document.body,
   );

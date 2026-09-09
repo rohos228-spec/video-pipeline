@@ -105,6 +105,64 @@ async def test_edit_prompt_writes_db_without_excel(
 
 
 @pytest.mark.asyncio
+async def test_edit_prompt_child_attaches_parent_still(
+    session: AsyncSession, project: Project
+) -> None:
+    session.add(project)
+    parent_uid = "aa" * 12
+    child_uid = "bb" * 12
+    parent = Frame(
+        project_id=project.id,
+        number=1,
+        uuid=parent_uid,
+        voiceover_text="vo",
+        image_prompt="parent prompt",
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+            },
+        },
+    )
+    child = Frame(
+        project_id=project.id,
+        number=2,
+        uuid=child_uid,
+        voiceover_text="кусок",
+        image_prompt="old child",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "coverage_parent_id": "1-K1",
+            },
+        },
+    )
+    session.add_all([parent, child])
+    await session.flush()
+    scenes = project.data_dir / "scenes"
+    scenes.mkdir(parents=True, exist_ok=True)
+    parent_png = scenes / "frame_001_parent01.png"
+    parent_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"p" * 1000)
+
+    prep = await prepare_image_regen(
+        session,
+        project,
+        2,
+        shot=1,
+        mode="edit_prompt",
+        new_prompt="крупный план руки",
+        ref_person_ids=["c01"],
+    )
+    await session.commit()
+    assert prep.refs == [parent_png]
+    assert prep.prompt_text.startswith("Image 1 is the previous coverage still")
+    assert "крупный план руки" in prep.prompt_text
+    fr2 = await session.get(Frame, child.id)
+    assert fr2 is not None and fr2.image_prompt == "крупный план руки"
+
+
+@pytest.mark.asyncio
 async def test_prepare_uses_images_node_model_not_sidecar(
     session: AsyncSession, project: Project
 ) -> None:

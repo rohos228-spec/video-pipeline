@@ -161,3 +161,33 @@ def test_normalize_refs_path(tmp_path: Path) -> None:
     assert refs is not None
     assert refs[0].startswith("data:image/png;base64,")
     assert refs[1].startswith("https://")
+
+
+@pytest.mark.asyncio
+async def test_generate_image_wraps_download_as_download_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from app.bots.outsee import OutseeDownloadError
+
+    async def fake_post(path: str, body: dict):
+        return {"id": "task-9", "status": "queued"}
+
+    async def fake_poll(task_id: str, timeout: float = 0):
+        return {
+            "status": "completed",
+            "result_url": "https://cdn.example/outsee-1.png",
+        }
+
+    async def fake_download(url: str, out_path: Path):
+        raise oh.OutseeApiError("All connection attempts failed", context={"url": url})
+
+    monkeypatch.setattr(oh, "assert_not_nano_banana_pro_on_outsee", lambda *_a, **_k: None)
+    monkeypatch.setattr(oh, "studio_id_to_outsee_image_slug", lambda *_a, **_k: "gpt-image-2")
+    monkeypatch.setattr(oh, "_post_generate", fake_post)
+    monkeypatch.setattr(oh, "_poll_generation", fake_poll)
+    monkeypatch.setattr(oh, "_download", fake_download)
+
+    with pytest.raises(OutseeDownloadError) as ei:
+        await oh.generate_image("scene", tmp_path / "a.png", model_slug="gpt-image-2")
+    assert ei.value.context.get("img_url") == "https://cdn.example/outsee-1.png"
+    assert ei.value.context.get("task_id") == "task-9"

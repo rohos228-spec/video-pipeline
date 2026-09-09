@@ -1,4 +1,9 @@
 {
-  "plan": "ПРОМТ_ДЛЯ_СОЗДАНИЯ_НАСЫЩЕННОГО_сценария2.txt",
-  "script": "У.Зинзер 12.05"
+  "plan": "промт сценарий 02.08_20260802_170430.txt",
+  "script": "У.Зинзер 12.05",
+  "split": "Агент разбивки 02.08.txt",
+  "hero_style": "треш полька акварель_20260802_200516.txt",
+  "hero": "character_model_sheet_16x9",
+  "img_pr": "img_prompts_trash_polka_watercolor",
+  "anim_pr": "anim_prompts_veo31_relax"
 }

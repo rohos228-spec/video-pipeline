@@ -904,7 +904,7 @@ async def generate_image_with_retries(
     rounds: list[tuple[str, str]] = [("original", current_prompt)]
     if gpt_rewrite and gpt is not None:
         rounds.append(("rewritten", ""))  # placeholder, заполним если дойдём
-    _DOWNLOAD_ONLY_RETRIES = 2
+    _DOWNLOAD_ONLY_RETRIES = 8
 
     for round_idx, (round_label, _) in enumerate(rounds):
         pid = kwargs.get("project_id")
@@ -1019,6 +1019,9 @@ async def generate_image_with_retries(
                     return await outsee.generate_image(
                         send_prompt, out_path, **attempt_kwargs
                     )
+                return await outsee.generate_image(
+                    send_prompt, out_path, **attempt_kwargs
+                )
             except StepCancelledError:
                 raise
             except OutseeDownloadError as e:
@@ -1033,12 +1036,23 @@ async def generate_image_with_retries(
                     if isinstance(raw_url, str) and raw_url
                     else raw_url
                 )
-                if isinstance(img_url, str) and img_url and gen_id:
+                if isinstance(img_url, str) and img_url:
                     for dl_try in range(1, _DOWNLOAD_ONLY_RETRIES + 1):
                         abort_if_cancelled(
                             pid if isinstance(pid, int) else None
                         )
                         try:
+                            if use_outsee_api:
+                                from app.bots.outsee_http import _download
+
+                                await _download(img_url, out_path)
+                                return GenerationResult(
+                                    file_path=out_path,
+                                    raw_url=img_url,
+                                    gen_id=gen_id or None,
+                                )
+                            if outsee is None:
+                                raise last_err or e
                             return await outsee.retry_image_download(
                                 img_url=img_url,
                                 out_path=out_path,
@@ -1049,7 +1063,7 @@ async def generate_image_with_retries(
                                 project_id=pid if isinstance(pid, int) else None,
                                 model_slug=attempt_kwargs.get("model_slug"),
                             )
-                        except OutseeDownloadError as dl_err:
+                        except OutseeImageError as dl_err:
                             last_err = dl_err
                             logger.warning(
                                 "outsee.retry_image_download [{}] {}/{}: {}",

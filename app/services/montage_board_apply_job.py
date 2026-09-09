@@ -8,7 +8,7 @@ from typing import Any
 
 from loguru import logger
 
-from app.db import session_scope
+from app.project_db import project_db_session_scope
 from app.models import Project
 from app.services.event_bus import publish_project_event
 from app.services.montage_board_apply import apply_montage_board
@@ -67,7 +67,7 @@ def spawn_apply_job(
 
         async def _on_progress(done: int, total: int, result: dict) -> None:
             try:
-                async with session_scope() as session:
+                async with project_db_session_scope(project_id) as session:
                     project = await session.get(Project, project_id)
                     if project is None:
                         return
@@ -98,7 +98,7 @@ def spawn_apply_job(
                 pass
 
         try:
-            async with session_scope() as session:
+            async with project_db_session_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is None:
                     return
@@ -117,7 +117,7 @@ def spawn_apply_job(
             await _publish(project_id, "running", extra={"total_ops": total_ops, "done_ops": 0})
 
             # Не держим одну session на весь Outsee Generate (sqlite locked).
-            async with session_scope() as session:
+            async with project_db_session_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is None:
                     return
@@ -157,7 +157,7 @@ def spawn_apply_job(
         except asyncio.CancelledError:
             logger.info("apply_job #{} cancelled", project_id)
             try:
-                async with session_scope() as session:
+                async with project_db_session_scope(project_id) as session:
                     project = await session.get(Project, project_id)
                     if project is not None:
                         # pending_ops уже сужается в apply_montage_board — не
@@ -177,7 +177,7 @@ def spawn_apply_job(
         except Exception as exc:  # noqa: BLE001
             logger.exception("apply_job #{} failed", project_id)
             try:
-                async with session_scope() as session:
+                async with project_db_session_scope(project_id) as session:
                     project = await session.get(Project, project_id)
                     if project is not None:
                         board = montage_meta(project)
@@ -207,7 +207,7 @@ async def cancel_apply_job(project_id: int) -> bool:
     if task is not None and not task.done():
         task.cancel()
     try:
-        async with session_scope() as session:
+        async with project_db_session_scope(project_id) as session:
             project = await session.get(Project, project_id)
             if project is None:
                 return task is not None

@@ -385,7 +385,11 @@ async def test_image_download_error_retries_download_only(monkeypatch, tmp_path:
     async def fake_prepare(gpt, body, prefix, *, project_id=None):
         return body
 
+    async def fake_sleep(*_a, **_k):
+        return None
+
     monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
+    monkeypatch.setattr(mod, "sleep_cancellable", fake_sleep)
     monkeypatch.setattr("app.bots.outsee_http.outsee_api_configured", lambda: False)
 
     result = await mod.generate_image_with_retries(
@@ -433,7 +437,11 @@ async def test_image_download_exhaustion_does_not_regenerate(
     async def fake_prepare(gpt, body, prefix, *, project_id=None):
         return body
 
+    async def fake_sleep(*_a, **_k):
+        return None
+
     monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
+    monkeypatch.setattr(mod, "sleep_cancellable", fake_sleep)
     monkeypatch.setattr("app.bots.outsee_http.outsee_api_configured", lambda: False)
 
     with pytest.raises(OutseeDownloadError):
@@ -448,7 +456,58 @@ async def test_image_download_exhaustion_does_not_regenerate(
             model_slug="nano-banana",
         )
     assert len(gen_calls) == 1
-    assert dl_calls == 2
+    assert dl_calls == 8
+
+
+@pytest.mark.asyncio
+async def test_http_download_error_retries_http_download(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """HTTP API: download-ошибка → повтор _download, не CDP и не новый Generate."""
+    gen_calls: list[str] = []
+    dl_calls: list[str] = []
+    out = tmp_path / "frame.png"
+
+    async def fake_api_gen(prompt: str, out_path, **kwargs):
+        gen_calls.append(prompt)
+        raise OutseeDownloadError(
+            "Outsee download failed after retries",
+            context={
+                "gen_id": "http-gen",
+                "img_url": "https://cdn.example/result.png",
+            },
+        )
+
+    async def fake_download(url: str, out_path):
+        dl_calls.append(url)
+        out_path.write_bytes(b"x" * 100)
+        return out_path
+
+    async def fake_prepare(gpt, body, prefix, *, project_id=None):
+        return body
+
+    async def fake_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
+    monkeypatch.setattr(mod, "sleep_cancellable", fake_sleep)
+    monkeypatch.setattr("app.bots.outsee_http.outsee_api_configured", lambda: True)
+    monkeypatch.setattr("app.bots.outsee_http.generate_image", fake_api_gen)
+    monkeypatch.setattr("app.bots.outsee_http._download", fake_download)
+
+    result = await mod.generate_image_with_retries(
+        None,
+        None,
+        prompt="scene prompt for http download retry",
+        out_path=out,
+        max_attempts_per_prompt=3,
+        gpt_rewrite=False,
+        project_id=1,
+        model_slug="nano-banana-2",
+    )
+    assert result.file_path == out
+    assert len(gen_calls) == 1
+    assert dl_calls == ["https://cdn.example/result.png"]
 
 
 _STYLE = (

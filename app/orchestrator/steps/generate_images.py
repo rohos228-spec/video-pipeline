@@ -70,6 +70,7 @@ from app.services.plan_shot2 import (
 )
 from app.services.scan_frames import (
     disk_has_valid_frame_image,
+    frame_image_prompt_text,
     frame_needs_shot1_image,
     is_valid_scene_image,
     newest_frame_image_path,
@@ -501,6 +502,31 @@ async def _load_refs_for_frame(
     return refs[:_OUTSEE_MAX_REFS]
 
 
+def requeue_failed_frames_without_png(
+    frames: list[Frame],
+    out_dir: Path,
+    *,
+    project_id: int | None = None,
+) -> int:
+    """failed без валидного PNG снова в очередь — иначе resume их пропускает."""
+    n = 0
+    for fr in frames:
+        if fr.status is FrameStatus.failed and not disk_has_valid_frame_image(
+            out_dir, fr.number
+        ):
+            logger.warning(
+                "[#{}] frame {}: failed без PNG — обратно в очередь",
+                project_id if project_id is not None else "?",
+                fr.number,
+            )
+            fr.status = FrameStatus.image_prompt_ready
+            attrs = dict(fr.attrs or {})
+            attrs.pop("fail_reason", None)
+            fr.attrs = attrs
+            n += 1
+    return n
+
+
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_images:
         return
@@ -546,10 +572,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             "(кнопка Import / excel_io.import_project_xlsx)."
         )
 
+    from app.services.vo_shot_expand import is_shot_child
+
     missing_prompts = [
         fr.number
         for fr in frames
-        if is_skippable_empty_prompt(fr.image_prompt or "")
+        if not is_shot_child(fr)
+        and is_skippable_empty_prompt(frame_image_prompt_text(fr, frames))
     ]
 
     if missing_prompts:
@@ -585,6 +614,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     # Иначе image_generated без файла / без outsee → шаг «завершён», кадры
     # так и не генерировались.
     queued = 0
+    requeue_failed_frames_without_png(frames, out_dir, project_id=project.id)
     for fr in frames:
         if disk_has_valid_frame_image(out_dir, fr.number):
             if fr.status not in (
@@ -603,7 +633,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 bad.name,
                 bad.stat().st_size,
             )
-        if not frame_needs_shot1_image(fr, out_dir):
+        if not frame_needs_shot1_image(fr, out_dir, frames):
             continue
         fr.status = FrameStatus.image_prompt_ready
         queued += 1
@@ -620,7 +650,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         with_prompt = sum(
             1
             for fr in frames
-            if not is_skippable_empty_prompt(fr.image_prompt or "")
+            if not is_skippable_empty_prompt(frame_image_prompt_text(fr, frames))
         )
         missing = await scan_missing_frames(session, project)
         on_disk = sum(
@@ -671,7 +701,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         missing_png = [
             fr.number
             for fr in frames
-            if not is_skippable_empty_prompt(fr.image_prompt or "")
+            if not is_skippable_empty_prompt(frame_image_prompt_text(fr, frames))
             and not disk_has_valid_frame_image(out_dir, fr.number)
             and fr.status is not FrameStatus.failed
         ]
@@ -1014,7 +1044,7 @@ async def _pending_shot1_numbers(
             allow = scene_regen_allows(project, fr.number, 1)
             if allow is False:
                 continue
-        if frame_needs_shot1_image(fr, out_dir):
+        if frame_needs_shot1_image(fr, out_dir, frames):
             out.append(fr.number)
     return out
 
@@ -1081,7 +1111,7 @@ async def _claim_shot1_batch(
                 allow = scene_regen_allows(project, fr.number, 1)
                 if allow is False:
                     continue
-            if not frame_needs_shot1_image(fr, out_dir):
+            if not frame_needs_shot1_image(fr, out_dir, frames):
                 continue
             if group_lock:
                 child = is_shot_child(fr)
@@ -1242,13 +1272,19 @@ async def _generate_frame_job(
     gpt: Any,
 ) -> None:
     """Один кадр в отдельной DB-сессии + слот провайдера (для streams>1)."""
-    from app.db import SessionLocal
+    from app.project_db import project_db_session_scope
 
     async with acquire_image_slot():
-        async with SessionLocal() as session:
+        async with project_db_session_scope(project_id) as session:
             project = await session.get(Project, project_id)
             frame = await session.get(Frame, frame_id)
             if project is None or frame is None:
+                logger.error(
+                    "[#{}] generate_images: job session miss project={} frame_id={}",
+                    project_id,
+                    project is not None,
+                    frame_id,
+                )
                 return
             try:
                 await _generate_and_send(
@@ -1344,9 +1380,9 @@ async def _run_claimed_batch(
             else None
         )
         if shot == 2 and ref is None:
-            from app.db import SessionLocal
+            from app.project_db import project_db_session_scope
 
-            async with SessionLocal() as s:
+            async with project_db_session_scope(project.id) as s:
                 f2 = await s.get(Frame, fr.id)
                 if f2 is not None:
                     attrs = dict(f2.attrs or {})
@@ -1403,7 +1439,7 @@ async def _all_frames_have_image_or_failed(
             allow = scene_regen_allows(project, fr.number, 1)
             if allow is False:
                 continue
-            if is_skippable_empty_prompt(fr.image_prompt or ""):
+            if is_skippable_empty_prompt(frame_image_prompt_text(fr, frames)):
                 continue
             if fr.status is FrameStatus.failed:
                 continue
@@ -1424,7 +1460,7 @@ async def _all_frames_have_image_or_failed(
             allow = scene_regen_allows(project, fr.number, 1)
             if allow is False:
                 continue
-        if is_skippable_empty_prompt(fr.image_prompt or ""):
+        if is_skippable_empty_prompt(frame_image_prompt_text(fr, frames)):
             continue
         if fr.status is FrameStatus.failed:
             continue
@@ -1614,6 +1650,13 @@ async def _generate_and_send(
         prompt_text = (attrs.get(SHOT2_PROMPT_ATTR) or "").strip()
     else:
         prompt_text = (frame.image_prompt or "").strip()
+        if is_skippable_empty_prompt(prompt_text):
+            siblings = (
+                await session.execute(
+                    select(Frame).where(Frame.project_id == project.id)
+                )
+            ).scalars().all()
+            prompt_text = frame_image_prompt_text(frame, list(siblings))
     if is_skippable_empty_prompt(prompt_text):
         logger.warning(
             "[#{}] frame {} shot_{}: пустой промт — skip",

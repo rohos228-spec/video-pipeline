@@ -80,13 +80,25 @@ def disk_has_valid_shot2_image(scenes_dir: Path, frame_number: int) -> bool:
     return path is not None and is_valid_scene_image(path)
 
 
-def frame_needs_shot1_image(fr: Frame, scenes_dir: Path) -> bool:
+def frame_image_prompt_text(
+    fr: Frame, frames: list[Frame] | None = None
+) -> str:
+    """Промт кадра для outsee: свой, иначе промт VO-родителя у K2/K3."""
+    from app.services.vo_shot_expand import effective_image_prompt
+
+    return effective_image_prompt(fr, frames)
+
+
+def frame_needs_shot1_image(
+    fr: Frame, scenes_dir: Path, frames: list[Frame] | None = None
+) -> bool:
     """Кадр должен пройти outsee: есть промт, нет валидного PNG на диске.
 
     Дочерние шоты (K2/K3) — отдельные кадры со своим куском закадра.
-    Им нужна своя картинка, не shot2 родителя.
+    Им нужна своя картинка, не shot2 родителя. Пустой свой image_prompt
+    не отменяет очередь, если у родителя промт уже есть.
     """
-    if is_skippable_empty_prompt(fr.image_prompt or ""):
+    if is_skippable_empty_prompt(frame_image_prompt_text(fr, frames)):
         return False
     if fr.status is FrameStatus.image_approved:
         return False
@@ -124,7 +136,7 @@ async def scan_missing_frames(
     missing: list[int] = []
     total_with_prompt = 0
     for fr in frames:
-        if is_skippable_empty_prompt(fr.image_prompt or ""):
+        if is_skippable_empty_prompt(frame_image_prompt_text(fr, frames)):
             continue
         total_with_prompt += 1
         if not disk_has_valid_frame_image(scenes_dir, fr.number):

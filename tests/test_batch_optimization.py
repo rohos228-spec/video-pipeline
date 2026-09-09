@@ -23,7 +23,7 @@ def test_batch_constants_standardized():
 
 
 def test_fw_frames_108_packs_by_6():
-    """fw_frames с main: пачки по 6 кадров, не 6 огромных кусков по ~18."""
+    """fw_frames: пачки по 6 кадров; параллельный план — 10 кусков."""
     from app.services.apply_ops_batches import (
         FW_FRAMES_PER_BATCH,
         SCRIPT_FRAMES_QC_PARALLEL_BATCHES,
@@ -32,9 +32,10 @@ def test_fw_frames_108_packs_by_6():
     )
 
     frames = [{"uuid": f"u{i:03d}"} for i in range(108)]
-    six_way = split_into_n_packs(frames, SCRIPT_FRAMES_QC_PARALLEL_BATCHES)
-    assert len(six_way) == 6
-    assert max(len(p) for p in six_way) == 18
+    ten_way = split_into_n_packs(frames, SCRIPT_FRAMES_QC_PARALLEL_BATCHES)
+    assert SCRIPT_FRAMES_QC_PARALLEL_BATCHES == 10
+    assert len(ten_way) == 10
+    assert max(len(p) for p in ten_way) == 11
     packs = split_frames(frames, FW_FRAMES_PER_BATCH)
     assert FW_FRAMES_PER_BATCH == 6
     assert len(packs) == 18

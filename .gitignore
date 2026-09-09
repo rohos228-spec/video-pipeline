@@ -49,5 +49,10 @@ Thumbs.db
 *.log
 /logs/
 
+# API Tracker local DB
+api-tracker/*.db
+api-tracker/*.db-shm
+api-tracker/*.db-wal
+
 # Локальная история версий промтов (не коммитим)
 prompts/**/.history/

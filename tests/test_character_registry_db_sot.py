@@ -30,6 +30,27 @@ def test_detect_character_registry_prompt() -> None:
     assert _is_scene_grammar_prompt("scene_grammar_unified_agent_v1", None)
 
 
+def test_detect_character_registry_personaji_db_and_07_07() -> None:
+    """Studio slot personajiDB / 07.07 — не dense shot-fill."""
+    header = (
+        "ПРОМТ ДЛЯ АГЕНТА РЕЕСТРА ПЕРСОНАЖЕЙ (DB / apply-ops)\n\n"
+        "Ты — агент реестра персонажей проекта.\n"
+    )
+    assert _is_character_registry_prompt("personajiDB", header)
+    assert _is_character_registry_prompt(
+        "агент по созданию персонажей 07.07.txt", header
+    )
+    long_tail = ("правило.\n" * 120) + (
+        "Агент: character_registry_db_agent_v2_web_verified\n"
+    )
+    assert len(long_tail) > 800
+    assert _is_character_registry_prompt("personajiDB", long_tail)
+    assert not _is_character_registry_prompt(
+        "заполнение эксель строк 3 этап (3).txt",
+        "Создать внутренний character_registry.\n",
+    )
+
+
 def test_detect_script_writer_prompt() -> None:
     assert _is_script_writer_prompt("script_writer_ru.md", None)
     assert _is_script_writer_prompt(None, "Ты — сценарист закадра.\n")
@@ -52,7 +73,7 @@ def test_script_frames_qc_group_batches_of_30() -> None:
     )
     from app.services.apply_ops_batches import SCRIPT_FRAMES_QC_PARALLEL_BATCHES
 
-    assert SCRIPT_FRAMES_QC_PARALLEL_BATCHES == 6
+    assert SCRIPT_FRAMES_QC_PARALLEL_BATCHES == 10
     for key, kind in (
         ("n_excel_gpt_fw_script", "bits"),
         ("n_excel_gpt_fw_action", "action_chain"),

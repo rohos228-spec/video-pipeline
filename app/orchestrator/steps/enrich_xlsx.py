@@ -82,8 +82,11 @@ _SCENE_GRAMMAR_PROMPT_MARKERS = (
 
 _CHARACTER_REGISTRY_PROMPT_MARKERS = (
     "character_registry_database_agent",
+    "character_registry_db_agent",
     "агент по созданию персонажей",
     "агент заполнения реестра персонажей",
+    "агент реестра персонаж",
+    "агента реестра персонаж",
     "реестр персонаж",
 )
 
@@ -94,7 +97,9 @@ def _is_scene_grammar_prompt(variant: str | None, master: str | None) -> bool:
 
 
 def _is_character_registry_prompt(variant: str | None, master: str | None) -> bool:
-    blob = f"{variant or ''}\n{(master or '')[:800]}".casefold()
+    # Подпись агента часто в конце файла — не режем master[:800],
+    # иначе personajiDB / 07.07 уходят в dense shot-fill и characters[] теряются.
+    blob = f"{variant or ''}\n{master or ''}".casefold()
     return any(m in blob for m in _CHARACTER_REGISTRY_PROMPT_MARKERS)
 
 
@@ -2022,8 +2027,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         ):
             from app.services.apply_ops_batches import (
                 CAMERA_MENU_UNITS_PER_BATCH,
+                DENSE_PARALLEL_MAX,
+                DENSE_TARGET_BATCHES,
                 FW_FRAMES_PER_BATCH,
-                SCRIPT_FRAMES_QC_PARALLEL_BATCHES,
                 SCRIPT_FRAMES_QC_UNITS_PER_BATCH,
                 SKIP_CAMERA_MENU,
                 SKIP_PROMPTS_AND_ACTION,
@@ -2123,10 +2129,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             fw_camera_menu_only,
                         )
                         return
+                    chars = payload.get("characters")
                     await _db_apply.apply_ops(
                         session,
                         project,
                         ops,
+                        characters=chars if isinstance(chars, list) and chars else None,
                         export_xlsx=bool(payload.get("export_xlsx", False)),
                         node_kind=apply_kind,
                     )
@@ -2143,6 +2151,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     _is_script_frames_qc_group_node(variant, master, node_key)
                 )
                 fw_frames = frame_prompts and nk.endswith("_fw_frames")
+                dense_shot_fill = not (
+                    fw_camera_menu_only
+                    or fw_frames
+                    or script_frames_qc
+                    or write_prompts
+                    or scene_analytics
+                )
                 if fw_camera_menu_only:
                     batch_label = (
                         f"меню съёмки по {CAMERA_MENU_UNITS_PER_BATCH}, "
@@ -2166,7 +2181,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 elif scene_analytics:
                     batch_label = "аналитика 54–59 одним вызовом"
                 else:
-                    batch_label = "dense shot fill"
+                    batch_label = (
+                        f"dense shot fill {DENSE_TARGET_BATCHES} пачек, "
+                        f"параллельно {DENSE_PARALLEL_MAX}, "
+                        f"сдвиг {VO_STAGGER_SEC:g}с"
+                    )
                 logger.info(
                     "[#{}] enrich_xlsx node={!r}: apply-ops adaptive "
                     "1→2→4 ({} )",
@@ -2217,14 +2236,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             )
                         )
                     ),
+                    target_batches=(
+                        DENSE_TARGET_BATCHES if dense_shot_fill else None
+                    ),
                     parallel_max=(
                         VO_PARALLEL_MAX
                         if fw_camera_menu_only or script_frames_qc
-                        else None
+                        else (DENSE_PARALLEL_MAX if dense_shot_fill else None)
                     ),
                     stagger_sec=(
                         VO_STAGGER_SEC
-                        if fw_camera_menu_only or script_frames_qc
+                        if fw_camera_menu_only or script_frames_qc or dense_shot_fill
                         else None
                     ),
                     chunk_by_vo_unit=bool(script_frames_qc and not fw_frames),

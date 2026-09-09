@@ -21,7 +21,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from app.bots.outsee import GenerationResult, OutseeImageError
+from app.bots.outsee import GenerationResult, OutseeDownloadError, OutseeImageError
 from app.generation_options import prepend_gen_id
 from app.settings import settings
 
@@ -380,10 +380,53 @@ async def _poll_generation(
     )
 
 
+async def _download_via_curl(url: str, out_path: Path) -> bool:
+    """Windows/httpx DNS часто падает на yandexcloud — curl иногда проходит."""
+    import shutil
+
+    curl = shutil.which("curl")
+    if not curl:
+        return False
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            curl,
+            "-fsSL",
+            "--retry",
+            "4",
+            "--retry-delay",
+            "2",
+            "--connect-timeout",
+            "20",
+            "--max-time",
+            "180",
+            "-o",
+            str(out_path),
+            url,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _stdout, stderr = await proc.communicate()
+        ok = (
+            proc.returncode == 0
+            and out_path.is_file()
+            and out_path.stat().st_size >= 64
+        )
+        if not ok:
+            logger.warning(
+                "outsee_api.download curl failed code={} err={}",
+                proc.returncode,
+                (stderr or b"")[:200],
+            )
+        return ok
+    except OSError as e:
+        logger.warning("outsee_api.download curl spawn failed: {}", e)
+        return False
+
+
 async def _download(url: str, out_path: Path) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     last_err: Exception | None = None
-    for attempt in range(1, 4):
+    for attempt in range(1, 9):
         try:
             async with httpx.AsyncClient(
                 timeout=180.0, follow_redirects=True
@@ -399,12 +442,15 @@ async def _download(url: str, out_path: Path) -> Path:
         except (httpx.HTTPError, OSError, OutseeApiError) as e:
             last_err = e
             logger.warning(
-                "outsee_api.download retry {}/3 url={} err={}",
+                "outsee_api.download retry {}/8 url={} err={}",
                 attempt,
                 url[:120],
                 e,
             )
-            await asyncio.sleep(1.5 * attempt)
+            if await _download_via_curl(url, out_path):
+                logger.info("outsee_api.download via curl ok url={}", url[:120])
+                return out_path
+            await asyncio.sleep(min(2.0 * attempt, 12.0))
     raise OutseeApiError(
         f"Outsee download failed after retries: {last_err}",
         context={"url": url[:160]},
@@ -1107,7 +1153,17 @@ async def generate_image(
     suf = Path(url.split("?")[0]).suffix.lower()
     if suf in {".png", ".jpg", ".jpeg", ".webp"} and out_path.suffix.lower() != suf:
         out_path = out_path.with_suffix(suf if suf != ".jpeg" else ".jpg")
-    await _download(url, out_path)
+    try:
+        await _download(url, out_path)
+    except OutseeApiError as e:
+        raise OutseeDownloadError(
+            str(e.reason if hasattr(e, "reason") else e),
+            context={
+                "img_url": url,
+                "gen_id": str(gen_id or task_id),
+                "task_id": task_id,
+            },
+        ) from e
     return GenerationResult(
         file_path=out_path,
         raw_url=url,

@@ -45,7 +45,12 @@ _STALE_GRACE_SEC = 30.0
 async def _get_default_workflow_id(
     session: AsyncSession | None = None,
 ) -> int | None:
-    """Id default Workflow. Optional session — для тестов/вызовов с уже открытой сессией."""
+    """Id default Workflow. Optional session — для тестов/вызовов с уже открытой сессией.
+
+    Каталог шаблонов живёт в state.db. Изолированная project.db часто без
+    ``workflows`` — тогда смотрим master, иначе ▶ падает с
+    «workflow по умолчанию не найден».
+    """
 
     async def _lookup(s: AsyncSession) -> int | None:
         try:
@@ -63,7 +68,9 @@ async def _get_default_workflow_id(
         return wf.id if wf is not None else None
 
     if session is not None:
-        return await _lookup(session)
+        found = await _lookup(session)
+        if found is not None:
+            return found
     async with session_scope() as s:
         return await _lookup(s)
 
@@ -89,7 +96,16 @@ async def ensure_run_for_project(
             return existing.id
         wf = await s.get(Workflow, workflow_id)
         if wf is None:
-            raise ValueError(f"workflow {workflow_id} not found")
+            # Шаблон в state.db, а session — project.db.
+            from app.project_db import _clone_model_instance
+
+            async with session_scope() as master:
+                src = await master.get(Workflow, workflow_id)
+                if src is None:
+                    raise ValueError(f"workflow {workflow_id} not found")
+                wf = _clone_model_instance(Workflow, src)
+            s.add(wf)
+            await s.flush()
         project = await s.get(Project, project_id)
         nodes = list(wf.nodes or [])
         edges = list(wf.edges or [])
@@ -561,7 +577,7 @@ async def prepare_node_for_step_start(
         return False
     # ensure_run пишет в свою session_scope — только если default workflow известен.
     try:
-        await ensure_run_for_project(project.id, default_wf)
+        await ensure_run_for_project(project.id, default_wf, session=session)
     except Exception:  # noqa: BLE001
         if strict:
             raise

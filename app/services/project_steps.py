@@ -574,12 +574,12 @@ async def start_step(
     project.updated_at = datetime.utcnow()
     await session.flush()
     try:
-        from app.project_db import push_runtime_to_project_db
+        from app.project_db import sync_runtime_both_ways
 
-        await push_runtime_to_project_db(session, project)
+        await sync_runtime_both_ways(session, project)
     except Exception:  # noqa: BLE001
         logger.warning(
-            "[#{}] start_step: push_runtime_to_project_db failed",
+            "[#{}] start_step: runtime sync master↔project.db failed",
             project.id,
             exc_info=True,
         )

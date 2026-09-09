@@ -1017,6 +1017,35 @@ export const api = {
       120_000,
     ),
 
+  insertMontageFrame: (
+    projectId: number,
+    afterFrameId: number | null,
+    voiceover = "",
+  ) =>
+    http<{
+      ok: boolean;
+      id: number;
+      uuid: string;
+      number: number;
+      sort_key: number | null;
+      voiceover_text: string;
+    }>(`/api/projects/${projectId}/montage-board/frames/insert`, {
+      method: "POST",
+      body: JSON.stringify({ after_frame_id: afterFrameId, voiceover }),
+    }),
+
+  setMontageVoiceover: (projectId: number, frameId: number, text: string) =>
+    http<{ ok: boolean; id: number; number: number; voiceover_text: string }>(
+      `/api/projects/${projectId}/montage-board/frames/${frameId}/voiceover`,
+      { method: "PATCH", body: JSON.stringify({ text }) },
+    ),
+
+  deleteMontageFrame: (projectId: number, frameId: number) =>
+    http<{ ok: boolean; frame_id: number; number: number; deleted: number }>(
+      `/api/projects/${projectId}/montage-board/frames/${frameId}`,
+      { method: "DELETE" },
+    ),
+
   saveMontageQueue: (
     projectId: number,
     body: {
