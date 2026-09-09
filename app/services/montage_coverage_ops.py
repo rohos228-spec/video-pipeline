@@ -17,6 +17,7 @@ from app.services.vo_shot_expand import (
     coverage_shot_id,
     find_coverage_parent_frame,
     is_shot_child,
+    main_action_text,
     planned_shots_from_attrs,
 )
 
@@ -26,6 +27,8 @@ COVERAGE_OP_TYPES = frozenset(
         "coverage_action",
         "coverage_kind",
         "coverage_delete",
+        "coverage_template",
+        "coverage_anchors",
     }
 )
 
@@ -165,6 +168,137 @@ def apply_coverage_action(frame: Frame, action: str, frames: list[Frame]) -> Non
     parent = find_coverage_parent_frame(frames, frame)
     if parent is not None and int(parent.number) != int(frame.number):
         _patch_kadry_item_on_parent_ladder(parent, frame, действие=text)
+
+
+def apply_coverage_template(
+    frame: Frame,
+    frames: list[Frame],
+    template: str,
+) -> dict[str, Any]:
+    """Формат сцены (шаблон T*/X*) на всю группу ячейки + план по лестнице.
+
+    Своё написанное «действие» не затираем — только заглушки каталога
+    переписываем под новую роль кадра.
+    """
+    from app.services.montage_scene_editor import frame_place, scene_group
+    from app.services.shot_templates import (
+        catalog_shot_rows,
+        compose_shot_action,
+        is_stub_shot_action,
+        normalize_template_id,
+        parse_scene_chain,
+        template_exists,
+    )
+
+    tid = normalize_template_id(template)
+    if not tid:
+        raise RuntimeError("формат сцены пустой")
+    if not template_exists(tid):
+        raise RuntimeError(f"формата сцены {tid} нет в каталоге")
+    parent, members = scene_group(frames, frame)
+    rows = catalog_shot_rows(tid)
+    chain = parse_scene_chain(main_action_text(parent))
+    scene_action = str(chain[0].get("action") or "") if chain else ""
+    place = frame_place(parent)
+    rewritten = 0
+    for i, member in enumerate(members):
+        row = rows[i] if i < len(rows) else None
+        extra: dict[str, Any] = {"шаблон": tid}
+        patch: dict[str, Any] = {"шаблон": tid}
+        if row is not None:
+            plan = str(row.get("plan") or "").split("/")[0].strip()
+            angle = str(row.get("angle") or "").split("/")[0].strip()
+            if plan:
+                extra["план"] = plan
+                extra["крупность"] = plan
+                patch["план"] = plan
+                attrs = dict(getattr(member, "attrs", None) or {})
+                attrs["крупность"] = plan
+                member.attrs = attrs
+            if angle and angle != "—":
+                extra["ракурс"] = angle
+                patch["ракурс"] = angle
+            current = str(
+                (getattr(member, "attrs", None) or {}).get("shot01_action") or ""
+            )
+            if is_stub_shot_action(current):
+                text = compose_shot_action(
+                    plan=plan,
+                    place=frame_place(member) or place,
+                    scene_action=scene_action,
+                    catalog_action=str(row.get("action") or ""),
+                    catalog_role=str(row.get("role") or ""),
+                )
+                apply_coverage_action(member, text, frames)
+                rewritten += 1
+        _set_cs(member, **extra)
+        _patch_kadry_item(member, **patch)
+        if member is not parent:
+            _patch_kadry_item_on_parent_ladder(parent, member, **patch)
+    _flag_attrs(parent)
+    return {
+        "шаблон": tid,
+        "ladder": len(rows),
+        "frames": len(members),
+        "rewritten_actions": rewritten,
+        "missing_frames": max(0, len(rows) - len(members)),
+        "extra_frames": max(0, len(members) - len(rows)) if rows else 0,
+    }
+
+
+def apply_coverage_anchors(
+    frame: Frame,
+    frames: list[Frame],
+    anchors: list[Any],
+) -> dict[str, Any]:
+    """Якоря закадра → биты[] родителя + пересборка кусков VO по кадрам.
+
+    Кадры не вставляем и не удаляем: якорей больше, чем кадров — лишние
+    остаются в биты[] для следующего прогона нод (в отчёте ``missing_frames``).
+    """
+    from app.services.montage_scene_editor import (
+        cell_full_text,
+        normalize_anchor_rows,
+        scene_group,
+        split_vo_by_anchors,
+    )
+
+    rows = normalize_anchor_rows(anchors)
+    if not rows:
+        raise RuntimeError("нет ни одного якоря")
+    parent, members = scene_group(frames, frame)
+    full = cell_full_text(parent, members)
+    if not full:
+        raise RuntimeError("у ячейки нет закадрового текста")
+    parts = split_vo_by_anchors(full, [row["якорь"] for row in rows])
+    if not parts:
+        raise RuntimeError("якоря не нашлись в тексте ячейки")
+
+    attrs = dict(getattr(parent, "attrs", None) or {})
+    attrs["биты"] = rows
+    attrs["vo_cell_full"] = full
+    parent.attrs = attrs
+    _flag_attrs(parent)
+
+    used = min(len(parts), len(members))
+    # Хвост текста не теряем: последний кадр группы забирает остаток.
+    assigned = list(parts[: used - 1]) + [" ".join(parts[used - 1 :])] if used else []
+    for i, member in enumerate(members[:used]):
+        piece = " ".join((assigned[i] or "").split())
+        if not piece:
+            continue
+        member.voiceover_text = piece
+        _set_cs(member, vo_shot=piece)
+        _patch_kadry_item(member, закадр=piece)
+        if member is not parent:
+            _patch_kadry_item_on_parent_ladder(parent, member, закадр=piece)
+    return {
+        "anchors": len(rows),
+        "parts": len(parts),
+        "frames": len(members),
+        "assigned": used,
+        "missing_frames": max(0, len(parts) - len(members)),
+    }
 
 
 def _patch_kadry_item_on_parent_ladder(
@@ -311,10 +445,15 @@ async def apply_coverage_op(
     if frame is None:
         raise RuntimeError(f"кадр {frame_number} не найден")
 
+    report: dict[str, Any] | None = None
     if op_type == "coverage_plan":
         apply_coverage_plan(frame, str(op.get("plan") or ""), frames)
     elif op_type == "coverage_action":
         apply_coverage_action(frame, str(op.get("action") or ""), frames)
+    elif op_type == "coverage_template":
+        report = apply_coverage_template(frame, frames, str(op.get("template") or ""))
+    elif op_type == "coverage_anchors":
+        report = apply_coverage_anchors(frame, frames, list(op.get("anchors") or []))
     elif op_type == "coverage_kind":
         parent_raw = op.get("parent_number")
         parent_number = int(parent_raw) if parent_raw not in (None, "") else None
@@ -336,10 +475,14 @@ async def apply_coverage_op(
         frame_number,
         highlight,
     )
-    return {
+    out = {
         "ok": True,
         "highlight": highlight,
         "frame_number": frame_number,
         "op": op,
-        "regen_image": op_type != "coverage_delete",
+        # Якоря меняют только нарезку закадра — картинку не трогаем.
+        "regen_image": op_type not in ("coverage_delete", "coverage_anchors"),
     }
+    if report is not None:
+        out["report"] = report
+    return out

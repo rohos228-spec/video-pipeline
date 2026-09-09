@@ -12,7 +12,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Artifact, ArtifactKind, Project, ProjectStatus
+from app.models import Artifact, ArtifactKind, Frame, Project, ProjectStatus
 from app.services.event_bus import publish_project_event
 from app.services.project_control import pause_project as pause_project_svc
 from app.services.project_control import resume_project as resume_project_svc
@@ -839,6 +839,71 @@ async def montage_board_delete_frame(
     return result
 
 
+async def _scene_editor_state(session: AsyncSession, project: Project, frame_id: int) -> dict:
+    from sqlalchemy import select as _select
+
+    from app.services.montage_scene_editor import build_scene_editor_state
+
+    frames = list(
+        (
+            await session.execute(
+                _select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    frame = next((fr for fr in frames if int(fr.id) == int(frame_id)), None)
+    if frame is None:
+        raise HTTPException(status_code=404, detail=f"кадр {frame_id} не найден")
+    return build_scene_editor_state(frames, frame)
+
+
+@router.get("/{project_id}/montage-board/frames/{frame_id}/scene-editor")
+async def montage_board_scene_editor(
+    project_id: int,
+    frame_id: int,
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    """Всё редактируемое у кадра: роль, формат сцены, план, действие, якоря."""
+    p = _project_or_404(await session.get(Project, project_id))
+    return await _scene_editor_state(session, p, frame_id)
+
+
+@router.post("/{project_id}/montage-board/frames/{frame_id}/scene-variants")
+async def montage_board_scene_variants(
+    project_id: int,
+    frame_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    """Подобрать варианты действия / формата сцены / якорей знанием нод сцен."""
+    from app.services.montage_scene_editor import VARIANT_KINDS, generate_scene_variants
+
+    p = _project_or_404(await session.get(Project, project_id))
+    kind = str(body.get("kind") or "action").strip()
+    if kind not in VARIANT_KINDS:
+        raise HTTPException(status_code=400, detail=f"неизвестный вид вариантов: {kind}")
+    state = await _scene_editor_state(session, p, frame_id)
+    try:
+        return await generate_scene_variants(
+            state,
+            kind=kind,
+            desc=str(body.get("desc") or ""),
+            count=int(body.get("count") or 3),
+            project_id=project_id,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception(
+            "scene-variants failed project={} frame={} kind={}", project_id, frame_id, kind
+        )
+        raise HTTPException(
+            status_code=502, detail=f"GPT не ответил: {type(e).__name__}: {e}"
+        ) from e
+
+
 @router.post("/{project_id}/montage-board/queue")
 async def montage_board_save_queue(
     project_id: int,
@@ -881,10 +946,16 @@ async def montage_board_save_queue(
             cleaned.append(item)
             continue
         if t.startswith("coverage_"):
-            for key in ("plan", "action", "kind", "prompt", "correction"):
+            for key in ("plan", "action", "kind", "prompt", "correction", "template"):
                 val = raw.get(key)
                 if isinstance(val, str) and val.strip():
                     item[key] = val.strip()
+            if isinstance(raw.get("anchors"), list):
+                from app.services.montage_scene_editor import normalize_anchor_rows
+
+                rows = normalize_anchor_rows(raw["anchors"])
+                if rows:
+                    item["anchors"] = rows
             parent_raw = raw.get("parent_number")
             if parent_raw not in (None, ""):
                 try:

@@ -279,6 +279,61 @@ def template_required_shots(tid: str) -> int:
     )
 
 
+def template_choices_for_ui() -> list[dict[str, Any]]:
+    """Компактный каталог T/X для пикера «формат сцены» на доске монтажа."""
+    out: list[dict[str, Any]] = []
+    for row in load_shot_templates().get("templates") or []:
+        tid = normalize_template_id(str(row.get("id") or ""))
+        if not tid:
+            continue
+        rows = catalog_shot_rows(tid)
+        out.append(
+            {
+                "id": tid,
+                "name": str(row.get("name") or "").replace("_", " ").strip(),
+                "when": str(row.get("when") or ""),
+                "axis": str(row.get("axis") or ""),
+                "ladder": str(row.get("shots_full") or ""),
+                "example": str(row.get("example") or ""),
+                "shots": template_max_shots(tid),
+                "required": template_required_shots(tid),
+                "plans": [
+                    str(r.get("plan") or "").split("/")[0].strip() for r in rows
+                ],
+                "roles": [str(r.get("role") or "").strip() for r in rows],
+            }
+        )
+    return out
+
+
+def template_ladder_for_ui(tid: str, *, same_place: bool = False) -> list[dict[str, Any]]:
+    """Строки лестницы шаблона для превью в редакторе кадра."""
+    out: list[dict[str, Any]] = []
+    for row in catalog_shot_rows(tid, same_place=same_place):
+        out.append(
+            {
+                "shot_id": str(row.get("shot_id") or ""),
+                "n": int(row.get("n") or 0),
+                "plan": str(row.get("plan") or "").split("/")[0].strip(),
+                "angle": str(row.get("angle") or "").split("/")[0].strip(),
+                "role": str(row.get("role") or ""),
+                "action": str(row.get("action") or ""),
+                "required": int(row.get("required") or 0),
+            }
+        )
+    return out
+
+
+def template_exists(tid: str) -> bool:
+    base = normalize_template_id(tid)
+    if not base:
+        return False
+    return any(
+        normalize_template_id(str(row.get("id") or "")) == base
+        for row in (load_shot_templates().get("templates") or [])
+    )
+
+
 def _select_keys() -> dict[str, str]:
     """template_id → короткий ключ вопроса (select.if)."""
     return {

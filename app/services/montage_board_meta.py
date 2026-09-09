@@ -87,6 +87,10 @@ def slot_key_from_op(op: dict[str, Any] | None) -> str | None:
         return f"{fr}:plan"
     if t == "coverage_action":
         return f"{fr}:action"
+    if t == "coverage_template":
+        return f"{fr}:template"
+    if t == "coverage_anchors":
+        return f"{fr}:anchors"
     if t.startswith("coverage_"):
         return f"{fr}:kind"
     return None
