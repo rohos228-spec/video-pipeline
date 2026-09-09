@@ -314,6 +314,10 @@ export interface MontageBoardFrame {
   shot_kind?: "parent" | "child" | "";
   shot_parent_number?: number | null;
   shot_parent_id?: string;
+  /** Формат сцены: шаблон T0…T10 / X1 / X2. */
+  shot_template?: string;
+  /** Сколько якорей закадра размечено на ячейке. */
+  shot_anchors?: number;
 }
 
 export interface MontageBoardMeta {

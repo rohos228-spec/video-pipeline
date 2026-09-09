@@ -219,7 +219,9 @@ export interface MontagePendingOp {
     | "coverage_plan"
     | "coverage_action"
     | "coverage_kind"
-    | "coverage_delete";
+    | "coverage_delete"
+    | "coverage_template"
+    | "coverage_anchors";
   frame_number: number;
   shot: 1 | 2;
   prompt?: string;
@@ -228,6 +230,106 @@ export interface MontagePendingOp {
   action?: string;
   kind?: "parent" | "child";
   parent_number?: number;
+  /** Формат сцены: шаблон T0…T10 / X1 / X2 из каталога. */
+  template?: string;
+  /** Якоря закадра ячейки — точки нарезки VO по кадрам. */
+  anchors?: SceneAnchorRow[];
+}
+
+export interface SceneAnchorRow {
+  "порядок"?: number;
+  "якорь": string;
+  "изменение"?: string;
+  "главный"?: boolean;
+  offset?: number;
+  found?: boolean;
+}
+
+export interface SceneTemplateChoice {
+  id: string;
+  name: string;
+  when: string;
+  axis: string;
+  ladder: string;
+  example: string;
+  shots: number;
+  required: number;
+  plans: string[];
+  roles: string[];
+}
+
+export interface SceneTemplateLadderRow {
+  shot_id: string;
+  n: number;
+  plan: string;
+  angle: string;
+  role: string;
+  action: string;
+  required: number;
+}
+
+export interface SceneShotRow {
+  id: string;
+  "порядок": number;
+  parent_id: string;
+  "шаблон": string;
+  "план": string;
+  "ракурс": string;
+  "место": string;
+  "действие": string;
+  "закадр": string;
+  frame_number: number | null;
+}
+
+/** Состояние редактора кадра на доске монтажа (GET .../scene-editor). */
+export interface SceneEditorState {
+  frame: {
+    frame_id: number;
+    number: number;
+    uuid: string;
+    role: "parent" | "child";
+    shot_id: string;
+    shot_index: number | null;
+    shots_in_beat: number | null;
+    place: string;
+  };
+  parent: { number: number; frame_id: number; shot_id: string };
+  parent_choices: Array<{ number: number; role: string; vo: string }>;
+  group: number[];
+  vo: { frame_text: string; cell_full: string };
+  plan: { current: string; choices: string[] };
+  action: { current: string };
+  scene_action: {
+    current: string;
+    chain: Array<{ n: number; place: string; action: string; vo: string }>;
+  };
+  template: {
+    current: string;
+    auto: string;
+    ladder: SceneTemplateLadderRow[];
+    choices: SceneTemplateChoice[];
+    group_len: number;
+  };
+  anchors: {
+    text: string;
+    bits: SceneAnchorRow[];
+    preview: string[];
+    covers_text: boolean;
+  };
+  shots: SceneShotRow[];
+}
+
+export type SceneVariantKind = "action" | "template" | "anchors";
+
+export interface SceneVariant {
+  "действие"?: string;
+  "план"?: string;
+  "шаблон"?: string;
+  "лестница"?: string;
+  "биты"?: SceneAnchorRow[];
+  preview?: string[];
+  dropped?: number;
+  "почему"?: string;
 }
 
 export interface XlsxPreview {
@@ -1038,6 +1140,24 @@ export const api = {
     http<{ ok: boolean; id: number; number: number; voiceover_text: string }>(
       `/api/projects/${projectId}/montage-board/frames/${frameId}/voiceover`,
       { method: "PATCH", body: JSON.stringify({ text }) },
+    ),
+
+  getSceneEditor: (projectId: number, frameId: number) =>
+    http<SceneEditorState>(
+      `/api/projects/${projectId}/montage-board/frames/${frameId}/scene-editor`,
+      {},
+      60_000,
+    ),
+
+  getSceneVariants: (
+    projectId: number,
+    frameId: number,
+    body: { kind: SceneVariantKind; desc?: string; count?: number },
+  ) =>
+    http<{ ok: boolean; kind: SceneVariantKind; variants: SceneVariant[] }>(
+      `/api/projects/${projectId}/montage-board/frames/${frameId}/scene-variants`,
+      { method: "POST", body: JSON.stringify(body) },
+      240_000,
     ),
 
   deleteMontageFrame: (projectId: number, frameId: number) =>

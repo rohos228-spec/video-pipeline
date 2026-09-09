@@ -550,6 +550,18 @@ def _shot_kind_payload(
     return "", None, ""
 
 
+def _template_for_frame(frame: Any) -> str:
+    from app.services.montage_scene_editor import frame_template_id
+
+    return frame_template_id(frame)
+
+
+def _anchor_count_for_frame(frame: Any) -> int:
+    from app.services.vo_shot_expand import bits_from_attrs
+
+    return len(bits_from_attrs(frame))
+
+
 def _empty_coverage_fields() -> dict[str, Any]:
     return {
         "shot_plan": "",
@@ -557,6 +569,8 @@ def _empty_coverage_fields() -> dict[str, Any]:
         "shot_kind": "",
         "shot_parent_number": None,
         "shot_parent_id": "",
+        "shot_template": "",
+        "shot_anchors": 0,
     }
 
 
@@ -577,6 +591,8 @@ def _coverage_fields_for_frames(
             "shot_kind": kind,
             "shot_parent_number": parent_number,
             "shot_parent_id": parent_id,
+            "shot_template": _template_for_frame(fr),
+            "shot_anchors": _anchor_count_for_frame(fr),
         }
     return out
 
