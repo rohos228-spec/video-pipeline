@@ -74,22 +74,30 @@ async def main(project_id: int) -> None:
         data_dir = project.data_dir
         meta = dict(project.meta or {})
         graph = dict(meta.get("canvas_graph") or {})
-        nodes = list(graph.get("nodes") or [])
-        if not any(
-            str((n.get("data") or {}).get("groupId") or "").split("#", 1)[0]
-            == "script_frames_qc"
-            for n in nodes
-            if isinstance(n, dict)
-        ):
-            nodes.append(
-                {
-                    "id": "n_dev_script_frames_qc",
-                    "type": "pipeline",
-                    "position": {"x": 0, "y": 0},
-                    "data": {"nodeType": "excel_gpt", "groupId": "script_frames_qc"},
-                }
-            )
-            graph["nodes"] = nodes
+        nodes = [n for n in (graph.get("nodes") or []) if isinstance(n, dict)]
+        # script_frames_qc включает строку «Сцена»; assemble даёт кнопку,
+        # которой доска монтажа вообще открывается.
+        wanted = [
+            {
+                "id": "n_dev_script_frames_qc",
+                "type": "excel_gpt",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "label": "Кадры и промты",
+                    "groupId": "script_frames_qc",
+                },
+            },
+            {
+                "id": "n_dev_assemble",
+                "type": "assemble",
+                "position": {"x": 320, "y": 0},
+                "data": {"label": "Сборка"},
+            },
+        ]
+        have = {str(n.get("id") or "") for n in nodes}
+        added = [n for n in wanted if n["id"] not in have]
+        if added:
+            graph["nodes"] = nodes + added
             graph.setdefault("edges", [])
             meta["canvas_graph"] = graph
             project.meta = meta
