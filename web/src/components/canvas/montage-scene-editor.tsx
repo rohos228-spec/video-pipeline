@@ -1,9 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, Plus, Sparkles, Trash2, X } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  Loader2,
+  Plus,
+  Sparkles,
+  Trash2,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 import {
   api,
@@ -29,7 +36,7 @@ type Draft = {
   anchors: SceneAnchorRow[];
 };
 
-const SECTION = "border-t border-white/10 px-4 py-3.5 first:border-t-0";
+const SECTION = "border-t border-white/10 px-3 py-3 first:border-t-0";
 const LABEL = "text-[10px] font-semibold uppercase tracking-wide text-white/40";
 const HINT = "text-[11px] leading-snug text-muted-foreground";
 const FIELD =
@@ -330,44 +337,39 @@ export function MontageSceneEditor({
     (c) => c.id === (draft?.template || ""),
   );
 
-  return createPortal(
-    <div className="fixed inset-0 z-[10120] flex justify-end bg-black/50" onMouseDown={onClose}>
-      <aside
-        className="flex h-full w-full max-w-[30rem] flex-col border-l border-white/12 bg-card shadow-2xl"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <header className="flex items-center justify-between gap-2 border-b border-white/10 px-4 py-3">
-          <div className="min-w-0">
-            <h2 className="truncate text-sm font-semibold">
-              Кадр #{target?.frameNumber} · сцена
-            </h2>
-            <p className={cn(HINT, "mt-0.5")}>
-              {state
-                ? `${state.frame.role === "child" ? `дочерний шот родителя #${state.parent.number}` : "VO-родитель ячейки"} · кадров в ячейке: ${state.template.group_len}`
-                : "загрузка…"}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md p-1 text-white/50 transition hover:bg-white/10 hover:text-white"
-            title="Закрыть (Esc)"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </header>
+  return (
+    <div className="rounded-lg border border-[rgba(209,254,23,0.35)] bg-black/35 shadow-lg">
+      <header className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2">
+        <p className="min-w-0 truncate text-[12px]">
+          <span className="font-semibold">Кадр #{target?.frameNumber} · сцена</span>
+          <span className={cn(HINT, "ml-2")}>
+            {state
+              ? `${state.frame.role === "child" ? `дочерний шот родителя #${state.parent.number}` : "VO-родитель ячейки"} · кадров в ячейке: ${state.template.group_len}`
+              : "загрузка…"}
+          </span>
+        </p>
+        <button
+          type="button"
+          onClick={onClose}
+          className="shrink-0 rounded-md p-1 text-white/50 transition hover:bg-white/10 hover:text-white"
+          title="Свернуть (Esc)"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </header>
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          {editor.isLoading ? (
-            <p className={cn(HINT, "flex items-center gap-1.5 px-4 py-6")}>
-              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Читаю карточку кадра…
-            </p>
-          ) : editor.isError ? (
-            <p className="px-4 py-6 text-[12px] text-rose-300">
-              {errorMessageFromUnknown(editor.error)}
-            </p>
-          ) : !state || !draft ? null : (
-            <>
+      <div>
+        {editor.isLoading ? (
+          <p className={cn(HINT, "flex items-center gap-1.5 px-3 py-5")}>
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Читаю карточку кадра…
+          </p>
+        ) : editor.isError ? (
+          <p className="px-3 py-5 text-[12px] text-rose-300">
+            {errorMessageFromUnknown(editor.error)}
+          </p>
+        ) : !state || !draft ? null : (
+          <div className="grid grid-cols-1 divide-white/10 lg:grid-cols-2 lg:divide-x xl:grid-cols-3">
+            <div className="min-w-0">
               <Section label="Что видно в кадре (для подбора)">
                 <textarea
                   className={cn(FIELD, "min-h-[3.5rem] resize-y leading-snug")}
@@ -525,7 +527,9 @@ export function MontageSceneEditor({
                   onTake={(v) => patch({ template: v["шаблон"] || draft.template })}
                 />
               </Section>
+            </div>
 
+            <div className="min-w-0">
               <Section label="Крупность">
                 <div className="flex flex-wrap gap-1.5">
                   {state.plan.choices.map((p) => (
@@ -577,7 +581,9 @@ export function MontageSceneEditor({
                   }
                 />
               </Section>
+            </div>
 
+            <div className="min-w-0">
               <Section
                 label="Якоря закадра"
                 aside={
@@ -708,36 +714,35 @@ export function MontageSceneEditor({
                   </ol>
                 </Section>
               ) : null}
-            </>
-          )}
-        </div>
-
-        <footer className="flex items-center justify-between gap-2 border-t border-white/10 px-4 py-3">
-          <p className={HINT}>
-            {ops.length
-              ? `${ops.length} правк${ops.length === 1 ? "а" : "и"} · применятся кнопкой «Применить правки»`
-              : "Правок нет"}
-          </p>
-          <div className="flex items-center gap-2">
-            <Button type="button" variant="outline" size="sm" onClick={onClose}>
-              Закрыть
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              disabled={disabled || !ops.length}
-              onClick={() => {
-                onQueue(ops);
-                onClose();
-              }}
-            >
-              В очередь
-            </Button>
+            </div>
           </div>
-        </footer>
-      </aside>
-    </div>,
-    document.body,
+        )}
+      </div>
+
+      <footer className="flex items-center justify-between gap-2 border-t border-white/10 px-3 py-2">
+        <p className={HINT}>
+          {ops.length
+            ? `${ops.length} правк${ops.length === 1 ? "а" : "и"} · применятся кнопкой «Применить правки»`
+            : "Правок нет"}
+        </p>
+        <div className="flex items-center gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={onClose}>
+            Свернуть
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            disabled={disabled || !ops.length}
+            onClick={() => {
+              onQueue(ops);
+              onClose();
+            }}
+          >
+            В очередь
+          </Button>
+        </div>
+      </footer>
+    </div>
   );
 }
 
@@ -749,6 +754,7 @@ export function SceneSummaryCell({
   action,
   anchors,
   pending,
+  active,
   disabled,
   onOpen,
 }: {
@@ -758,6 +764,7 @@ export function SceneSummaryCell({
   action: string;
   anchors: number;
   pending: boolean;
+  active?: boolean;
   disabled?: boolean;
   onOpen: () => void;
 }) {
@@ -767,12 +774,14 @@ export function SceneSummaryCell({
       type="button"
       disabled={disabled}
       onClick={onOpen}
-      title="Открыть редактор сцены"
+      title={active ? "Свернуть редактор сцены" : "Редактировать сцену"}
       className={cn(
         "w-full rounded-md border p-2 text-left transition disabled:opacity-40",
-        pending
-          ? "border-amber-400/60 bg-amber-500/10"
-          : "border-white/10 bg-black/20 hover:border-white/25 hover:bg-black/30",
+        active
+          ? "border-[rgba(209,254,23,0.65)] bg-[rgba(209,254,23,0.08)]"
+          : pending
+            ? "border-amber-400/60 bg-amber-500/10"
+            : "border-white/10 bg-black/20 hover:border-white/25 hover:bg-black/30",
       )}
     >
       <div className="flex flex-wrap items-center gap-1">
@@ -788,6 +797,19 @@ export function SceneSummaryCell({
       <p className="mt-1.5 line-clamp-3 text-[11px] leading-snug text-white/75">
         {action || <span className="text-white/35">действие не задано</span>}
       </p>
+      <span
+        className={cn(
+          "mt-1.5 flex items-center gap-1 text-[10px] uppercase tracking-wide",
+          active ? "text-[rgba(209,254,23,0.9)]" : "text-white/40",
+        )}
+      >
+        {active ? (
+          <ChevronUp className="h-3 w-3" />
+        ) : (
+          <ChevronDown className="h-3 w-3" />
+        )}
+        {active ? "свернуть" : "редактировать"}
+      </span>
     </button>
   );
 }

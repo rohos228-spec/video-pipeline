@@ -2802,7 +2802,8 @@ export function AssembleMontageBoard({
                     {gridRows.map((row) => {
                       const collapsed = collapsedRows.has(row.key);
                       return (
-                        <tr key={row.key} className="border-b border-white/5">
+                        <Fragment key={row.key}>
+                        <tr className="border-b border-white/5">
                           <td
                             className={cn(
                               "sticky left-0 z-10 border-r border-white/10 bg-card/95 px-2 py-2 align-top",
@@ -2918,11 +2919,16 @@ export function AssembleMontageBoard({
                                           toneForSlot(`${fr.number}:anchors`),
                                       )}
                                       disabled={applyRunning || applyMutation.isPending}
+                                      active={sceneEditor?.frameId === fr.frame_id}
                                       onOpen={() =>
-                                        setSceneEditor({
-                                          frameId: fr.frame_id,
-                                          frameNumber: fr.number,
-                                        })
+                                        setSceneEditor((prev) =>
+                                          prev?.frameId === fr.frame_id
+                                            ? null
+                                            : {
+                                                frameId: fr.frame_id,
+                                                frameNumber: fr.number,
+                                              },
+                                        )
                                       }
                                     />
                                   );
@@ -3111,6 +3117,35 @@ export function AssembleMontageBoard({
                             );
                           })}
                         </tr>
+                        {row.key === "scene" && !collapsed && sceneEditor ? (
+                          <tr className="border-b border-white/5">
+                            <td colSpan={2 + frames.length * 2} className="p-0">
+                              <div
+                                className="sticky left-0 p-2"
+                                style={{ width: "min(72rem, calc(100vw - 5rem))" }}
+                              >
+                                <MontageSceneEditor
+                                  target={sceneEditor}
+                                  projectId={projectId}
+                                  disabled={applyRunning || applyMutation.isPending}
+                                  onClose={() => setSceneEditor(null)}
+                                  onQueue={queueSceneOps}
+                                  onDeleteChild={(frameNumber) => {
+                                    queueSceneOps([
+                                      {
+                                        type: "coverage_delete",
+                                        frame_number: frameNumber,
+                                        shot: 1,
+                                      },
+                                    ]);
+                                    setSceneEditor(null);
+                                  }}
+                                />
+                              </div>
+                            </td>
+                          </tr>
+                        ) : null}
+                        </Fragment>
                       );
                     })}
                   </tbody>
@@ -3147,19 +3182,6 @@ export function AssembleMontageBoard({
           onSubmit={(text) => void handleInsertFrame(text)}
         />
       ) : null}
-      <MontageSceneEditor
-        target={sceneEditor}
-        projectId={projectId}
-        disabled={applyRunning || applyMutation.isPending}
-        onClose={() => setSceneEditor(null)}
-        onQueue={queueSceneOps}
-        onDeleteChild={(frameNumber) => {
-          queueSceneOps([
-            { type: "coverage_delete", frame_number: frameNumber, shot: 1 },
-          ]);
-          setSceneEditor(null);
-        }}
-      />
     </>,
     document.body,
   );
