@@ -279,6 +279,15 @@ def template_required_shots(tid: str) -> int:
     )
 
 
+def _first_alternative(raw: Any) -> str:
+    """Первый вариант из «ОБЩИЙ / ДАЛЬНИЙ».
+
+    Разделитель — слэш **с пробелами**: иначе ракурс «3/4» превращается в «3».
+    """
+    text = " ".join(str(raw or "").split())
+    return re.split(r"\s+/\s+", text)[0].strip() if text else ""
+
+
 def template_choices_for_ui() -> list[dict[str, Any]]:
     """Компактный каталог T/X для пикера «формат сцены» на доске монтажа."""
     out: list[dict[str, Any]] = []
@@ -297,9 +306,7 @@ def template_choices_for_ui() -> list[dict[str, Any]]:
                 "example": str(row.get("example") or ""),
                 "shots": template_max_shots(tid),
                 "required": template_required_shots(tid),
-                "plans": [
-                    str(r.get("plan") or "").split("/")[0].strip() for r in rows
-                ],
+                "plans": [_first_alternative(r.get("plan")) for r in rows],
                 "roles": [str(r.get("role") or "").strip() for r in rows],
             }
         )
@@ -314,8 +321,8 @@ def template_ladder_for_ui(tid: str, *, same_place: bool = False) -> list[dict[s
             {
                 "shot_id": str(row.get("shot_id") or ""),
                 "n": int(row.get("n") or 0),
-                "plan": str(row.get("plan") or "").split("/")[0].strip(),
-                "angle": str(row.get("angle") or "").split("/")[0].strip(),
+                "plan": _first_alternative(row.get("plan")),
+                "angle": _first_alternative(row.get("angle")),
                 "role": str(row.get("role") or ""),
                 "action": str(row.get("action") or ""),
                 "required": int(row.get("required") or 0),
