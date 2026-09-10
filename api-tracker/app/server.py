@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 from contextlib import asynccontextmanager
@@ -105,8 +106,8 @@ async def list_users():
     """Получить список всех уникальных пользователей (облако + локально)."""
     from app.cloud_sync import get_cloud_distinct_users
     from app.db import get_local_distinct_users
-    cloud_users = get_cloud_distinct_users()
-    local_users = get_local_distinct_users()
+    cloud_users = await asyncio.to_thread(get_cloud_distinct_users)
+    local_users = await asyncio.to_thread(get_local_distinct_users)
     combined = sorted(set(cloud_users + local_users))
     return {"users": combined}
 
@@ -114,16 +115,19 @@ async def list_users():
 @app.post("/api/sync")
 async def sync_now():
     """Принудительная отправка накопившихся локальных логов в Supabase."""
-    from app.cloud_sync import push_call_to_supabase
-    from app.db import get_unsynced_calls, mark_calls_synced
-    pending = get_unsynced_calls(limit=100)
-    synced_ids = []
-    for call in pending:
-        if push_call_to_supabase(call):
-            synced_ids.append(call["id"])
-    if synced_ids:
-        mark_calls_synced(synced_ids)
-    return {"status": "ok", "synced_count": len(synced_ids), "remaining": len(pending) - len(synced_ids)}
+    def _do_sync():
+        from app.cloud_sync import push_call_to_supabase
+        from app.db import get_unsynced_calls, mark_calls_synced
+        pending = get_unsynced_calls(limit=100)
+        synced_ids = []
+        for call in pending:
+            if push_call_to_supabase(call):
+                synced_ids.append(call["id"])
+        if synced_ids:
+            mark_calls_synced(synced_ids)
+        return {"status": "ok", "synced_count": len(synced_ids), "remaining": len(pending) - len(synced_ids)}
+
+    return await asyncio.to_thread(_do_sync)
 
 
 @app.post("/api/log")
@@ -152,7 +156,7 @@ async def log_call(event: LogEventRequest):
     # 1. Отправка в Supabase
     is_synced = False
     try:
-        is_synced = push_call_to_supabase({
+        is_synced = await asyncio.to_thread(push_call_to_supabase, {
             "user_name": active_user,
             "device_name": active_device,
             "provider": event.provider,
@@ -176,7 +180,8 @@ async def log_call(event: LogEventRequest):
         pass
 
     # 2. Локальная запись в SQLite
-    call_id = insert_call(
+    call_id = await asyncio.to_thread(
+        insert_call,
         provider=event.provider,
         model=event.model,
         user_name=active_user,
@@ -209,12 +214,12 @@ async def stats(
     """Сводные метрики и данные для графиков (из облака Supabase или локально)."""
     if scope == "cloud":
         from app.cloud_sync import get_cloud_stats
-        cloud_data = get_cloud_stats(user_name=user_name, date_from=date_from, date_to=date_to)
+        cloud_data = await asyncio.to_thread(get_cloud_stats, user_name=user_name, date_from=date_from, date_to=date_to)
         if cloud_data and cloud_data.get("summary"):
             cloud_data["scope"] = "cloud"
             return cloud_data
 
-    local_data = get_stats(user_name=user_name, date_from=date_from, date_to=date_to)
+    local_data = await asyncio.to_thread(get_stats, user_name=user_name, date_from=date_from, date_to=date_to)
     local_data["scope"] = "local"
     return local_data
 
@@ -236,7 +241,8 @@ async def logs_list(
     """Список логов активности с фильтрацией (из облака Supabase или локально)."""
     if scope == "cloud":
         from app.cloud_sync import get_cloud_logs
-        items, total = get_cloud_logs(
+        items, total = await asyncio.to_thread(
+            get_cloud_logs,
             limit=limit,
             offset=offset,
             user_name=user_name,
@@ -251,7 +257,8 @@ async def logs_list(
         if total > 0 or not search:
             return {"items": items, "total": total, "limit": limit, "offset": offset, "scope": "cloud"}
 
-    items, total = get_logs(
+    items, total = await asyncio.to_thread(
+        get_logs,
         limit=limit,
         offset=offset,
         user_name=user_name,
@@ -284,7 +291,7 @@ async def get_killswitch_status():
     # 1. Проверяем облако
     try:
         from app.cloud_sync import get_cloud_killswitch_state
-        st = get_cloud_killswitch_state()
+        st = await asyncio.to_thread(get_cloud_killswitch_state)
         if st.get("updated_at"):
             return st
     except Exception:
@@ -292,7 +299,7 @@ async def get_killswitch_status():
     # 2. Локально
     try:
         from app.db import get_local_killswitch_state
-        return get_local_killswitch_state()
+        return await asyncio.to_thread(get_local_killswitch_state)
     except Exception:
         pass
     return {"is_blocked": False, "updated_by": "", "updated_at": "", "reason": ""}
