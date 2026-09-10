@@ -200,7 +200,10 @@ async def finalize_scene_image(
     if shot == 2:
         patterns = [shot2_file_pattern(frame_number)]
     else:
-        patterns = [f"frame_{frame_number:03d}_*.png"]
+        patterns = [
+            f"frame_{frame_number:03d}_*.{ext}"
+            for ext in ("png", "jpg", "jpeg", "webp")
+        ]
     purged = purge_replaced_media(
         scenes,
         patterns=patterns,
@@ -312,16 +315,20 @@ async def delete_scene_image(
 ) -> bool:
     scenes = project.data_dir / "scenes"
     if shot == 2:
-        pattern = shot2_file_pattern(frame_number)
+        patterns = [shot2_file_pattern(frame_number)]
     else:
-        pattern = f"frame_{frame_number:03d}_*.png"
+        patterns = [
+            f"frame_{frame_number:03d}_*.{ext}"
+            for ext in ("png", "jpg", "jpeg", "webp")
+        ]
     deleted = False
     if scenes.is_dir():
-        for p in list(scenes.glob(pattern)):
-            if shot == 1 and "_s2_" in p.name:
-                continue
-            archive_file(p, project, "scenes")
-            deleted = True
+        for pattern in patterns:
+            for p in list(scenes.glob(pattern)):
+                if shot == 1 and "_s2_" in p.name:
+                    continue
+                archive_file(p, project, "scenes")
+                deleted = True
     fr = await _frame(session, project.id, frame_number)
     if fr is not None:
         arts = (

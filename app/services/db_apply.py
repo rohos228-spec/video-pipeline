@@ -617,15 +617,23 @@ def _join_frame_voiceovers(
     return "".join(chunks), spans
 
 
-def _scene_span_in_text(full: str, start_words: str, end_words: str) -> tuple[int, int] | None:
-    """Найти [start, end) сцены по цитатам; None если не найдено однозначно."""
+def _scene_span_in_text(
+    full: str,
+    start_words: str,
+    end_words: str,
+    start_offset: int = 0,
+) -> tuple[int, int] | None:
+    """Найти [start, end) сцены по цитатам с учетом смещения start_offset; None если не найдено однозначно."""
     s = (start_words or "").strip()
     e = (end_words or "").strip()
     if not s or not e or not full:
         return None
-    i0 = full.find(s)
+    i0 = full.find(s, max(0, start_offset))
     if i0 < 0:
-        return None
+        # Fallback to search from beginning if offset search missed (e.g. slight out of order)
+        i0 = full.find(s)
+        if i0 < 0:
+            return None
     i1 = full.find(e, i0)
     if i1 < 0:
         return None
@@ -656,16 +664,28 @@ def expand_scene_registry_onto_frames(
     full, spans = _join_frame_voiceovers(frames)
     # sid → frames in order
     scene_frames: dict[str, list[Frame]] = {str(sc["id_scene"]).strip(): [] for sc in scenes}
+
+    # Precalculate scene spans sequentially with cursor tracking to prevent recurring start_words collisions
+    scene_spans: dict[str, tuple[int, int]] = {}
+    cursor = 0
+    for sc in scenes:
+        sid = str(sc.get("id_scene") or "").strip()
+        span = _scene_span_in_text(
+            full,
+            str(sc.get("start_words") or sc.get("scene_start_words") or ""),
+            str(sc.get("end_words") or sc.get("scene_end_words") or ""),
+            start_offset=cursor,
+        )
+        if span is not None:
+            scene_spans[sid] = span
+            cursor = span[1]
+
     for fr, a, b in spans:
         if a >= b and not (getattr(fr, "voiceover_text", None) or "").strip():
             continue
         for sc in scenes:
             sid = str(sc.get("id_scene") or "").strip()
-            span = _scene_span_in_text(
-                full,
-                str(sc.get("start_words") or sc.get("scene_start_words") or ""),
-                str(sc.get("end_words") or sc.get("scene_end_words") or ""),
-            )
+            span = scene_spans.get(sid)
             if span is None:
                 continue
             s0, s1 = span

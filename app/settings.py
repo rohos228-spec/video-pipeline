@@ -83,17 +83,10 @@ class Settings(BaseSettings):
     # outsee | kie — кто генерит video в Create / пайплайн
     video_provider: str = Field("outsee", alias="VIDEO_PROVIDER")
 
-    # Текстовый LLM: GPT (kie) по умолчанию. Kimi K3 (TokenRouter) — доп. модель.
+    # Текстовый LLM: GPT (kie) по умолчанию. Vibecode — доп. модель.
     # Переключение: Studio UI / data/text_llm_choice.json / TEXT_LLM_PROVIDER.
-    # TEXT_LLM_PROVIDER=kie|tokenrouter|kimi — default kie (GPT не убирается).
+    # TEXT_LLM_PROVIDER=kie|vibecode — default kie.
     text_llm_provider: str = Field("kie", alias="TEXT_LLM_PROVIDER")
-    tokenrouter_api_key: str = Field("", alias="TOKENROUTER_API_KEY")
-    tokenrouter_base_url: str = Field(
-        "https://api.tokenrouter.com/v1", alias="TOKENROUTER_BASE_URL"
-    )
-    tokenrouter_model: str = Field(
-        "moonshotai/kimi-k3-free", alias="TOKENROUTER_MODEL"
-    )
 
     # vibecode.moe — OpenAI-совместимый chat/completions (GPT 5.5 / 5.6 Sol).
     vibecode_api_key: str = Field("", alias="VIBECODE_API_KEY")
@@ -101,7 +94,7 @@ class Settings(BaseSettings):
         "https://vibecode.moe/v1", alias="VIBECODE_BASE_URL"
     )
 
-    # GPT / kie.ai — основной текстовый стек (не удалять при добавлении Kimi)
+    # GPT / kie.ai — основной текстовый стек
     gpt_api_key: str = Field("", alias="GPT_API_KEY")
     gpt_base_url: str = Field("", alias="GPT_BASE_URL")
     gpt_model: str = Field("gpt-5-6-sol", alias="GPT_MODEL")
@@ -123,7 +116,6 @@ class Settings(BaseSettings):
     # Шаблон пути chat-эндпоинта. grsai/OpenAI: /v1/chat/completions;
     # kie.ai: путь зависит от модели → /{model}/v1/chat/completions.
     # Плейсхолдер {model} подставляется слагом модели.
-    # TokenRouter: /chat/completions (база уже с /v1).
     gpt_chat_path: str = Field("/codex/v1/responses", alias="GPT_CHAT_PATH")
     # reasoning.effort для Responses (kie gpt-5-6-sol): low/medium/high/xhigh/off.
     gpt_reasoning_effort: str = Field("low", alias="GPT_REASONING_EFFORT")
@@ -142,17 +134,13 @@ class Settings(BaseSettings):
     gpt_relay_token: str = Field("", alias="GPT_RELAY_TOKEN")
 
     def resolved_text_llm_provider(self) -> str:
-        """Активный текстовый провайдер: kie | vibecode | tokenrouter.
+        """Активный текстовый провайдер: kie | vibecode.
 
-        Default — kie. vibecode/Kimi только по явному выбору (UI / choice.json / env).
+        Default — kie. vibecode только по явному выбору (UI / choice.json / env).
         """
         from app.services.text_llm_catalog import resolve_active_provider
 
         return resolve_active_provider(self)
-
-    @property
-    def text_llm_is_tokenrouter(self) -> bool:
-        return self.resolved_text_llm_provider() == "tokenrouter"
 
     @property
     def text_llm_is_vibecode(self) -> bool:
@@ -161,8 +149,6 @@ class Settings(BaseSettings):
     @property
     def text_llm_label(self) -> str:
         """Человекочитаемая метка для UI/логов."""
-        if self.text_llm_is_tokenrouter:
-            return "Kimi K3"
         if self.text_llm_is_vibecode:
             from app.services.text_llm_catalog import (
                 catalog_item,
@@ -176,11 +162,6 @@ class Settings(BaseSettings):
     @property
     def gpt_api_effective_key(self) -> str:
         """Ключ активного текстового LLM."""
-        if self.text_llm_is_tokenrouter:
-            return (
-                (self.tokenrouter_api_key or "").strip()
-                or (self.gpt_api_key or "").strip()
-            )
         if self.text_llm_is_vibecode:
             return (self.vibecode_api_key or "").strip()
         return (self.gpt_api_key or "").strip()
@@ -193,7 +174,7 @@ class Settings(BaseSettings):
         if not token or not base:
             return None
         low = base.lower()
-        if any(h in low for h in ("kie.ai", "vibecode.moe", "tokenrouter.com")):
+        if any(h in low for h in ("kie.ai", "vibecode.moe")):
             return None
         return base
 
@@ -204,9 +185,6 @@ class Settings(BaseSettings):
         kie — через VPS-relay, если задан. vibecode — всегда прямиком на
         vibecode.moe (VPS часто ещё только на api.kie.ai; иначе 401-envelope).
         """
-        if self.text_llm_is_tokenrouter:
-            base = (self.tokenrouter_base_url or "https://api.tokenrouter.com/v1").strip()
-            return base.rstrip("/")
         if self.text_llm_is_vibecode:
             return (self.vibecode_base_url or "https://vibecode.moe/v1").strip().rstrip("/")
         vps = self.vps_relay_base_url
@@ -217,8 +195,6 @@ class Settings(BaseSettings):
 
     @property
     def gpt_model_effective(self) -> str:
-        if self.text_llm_is_tokenrouter:
-            return (self.tokenrouter_model or "moonshotai/kimi-k3-free").strip()
         if self.text_llm_is_vibecode:
             from app.services.text_llm_catalog import (
                 catalog_api_model,
@@ -231,9 +207,6 @@ class Settings(BaseSettings):
     @property
     def gpt_chat_path_effective(self) -> str:
         """Путь chat-эндпоинта для активного провайдера."""
-        if self.text_llm_is_tokenrouter:
-            # base уже …/v1 → финальный URL …/v1/chat/completions
-            return "/chat/completions"
         if self.text_llm_is_vibecode:
             base = self.gpt_api_effective_base_url.lower()
             if base.endswith("/v1"):
@@ -243,7 +216,7 @@ class Settings(BaseSettings):
 
     @property
     def gpt_api_mode_effective(self) -> str:
-        if self.text_llm_is_tokenrouter or self.text_llm_is_vibecode:
+        if self.text_llm_is_vibecode:
             return "chat"
         return (self.gpt_api_mode or "auto").strip().lower() or "auto"
 

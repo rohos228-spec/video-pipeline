@@ -34,39 +34,17 @@ from app.models import (
     ProjectStatus,
 )
 from app.services.plan_validation import is_meaningful_general_plan
+from app.services.step_registry import running_statuses
 
 # Промежуточные «running» статусы — их при перевычислении не учитываем
 # (не зафиксированы в БД). Если статус сейчас `generating_X` — мы вернём
 # либо его prerequisite, либо его ready_status (зависит от данных).
-_RUNNING_STATUSES = {
-    ProjectStatus.planning,
-    ProjectStatus.scripting,
-    ProjectStatus.splitting,
-    ProjectStatus.scene_designing,
-    ProjectStatus.scene_assembling,
-    ProjectStatus.generating_hero,
-    ProjectStatus.generating_items,
-    ProjectStatus.enriching_1,
-    ProjectStatus.enriching_2,
-    ProjectStatus.enriching_3,
-    ProjectStatus.enriching_4,
-    ProjectStatus.enriching_5,
-    ProjectStatus.generating_image_prompts,
-    ProjectStatus.generating_images,
-    ProjectStatus.generating_animation_prompts,
-    ProjectStatus.generating_videos,
-    ProjectStatus.generating_audio,
-    ProjectStatus.generating_music,
-    ProjectStatus.sfx_planning,
-    ProjectStatus.generating_sfx,
-    ProjectStatus.assembling,
-    ProjectStatus.publishing,
-}
-
-
 def is_running_status(status: ProjectStatus) -> bool:
     """True если статус — «running» (шаг сейчас выполняется воркером)."""
-    return status in _RUNNING_STATUSES
+    return status in running_statuses()
+
+
+_RUNNING_STATUSES = running_statuses()
 
 
 def _nonempty_item_descriptions(project: Project) -> list[str]:

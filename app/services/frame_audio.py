@@ -129,13 +129,21 @@ def delete_frame_audio_files(audio_dir: Path) -> int:
     return deleted
 
 
-async def _run_ffmpeg(cmd: list[str]) -> None:
+async def _run_ffmpeg(cmd: list[str], timeout: float = 120.0) -> None:
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        await proc.wait()
+        raise TimeoutError(f"ffmpeg timed out after {timeout}s: {' '.join(cmd[:4])}...")
     if proc.returncode != 0:
         raise RuntimeError(stderr.decode(errors="ignore") or stdout.decode(errors="ignore"))
 

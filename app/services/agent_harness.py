@@ -21,6 +21,7 @@ from app.services.xlsx_v8_import import (
 )
 
 HARNESS_HTTP_BASE = "http://127.0.0.1:8765"
+_IMG_EXTS: frozenset[str] = frozenset({".png", ".jpg", ".jpeg", ".webp"})
 
 # Шаги, которые харнес НИКОГДА не запускает.
 HARNESS_FORBIDDEN_STEPS = frozenset({"audio", "music"})
@@ -355,10 +356,14 @@ def verify_project_disk(
     if not xlsx.is_file():
         repair.append("plan")
 
-    scenes = list((data_dir / "scenes").glob("*.png")) if (data_dir / "scenes").is_dir() else []
+    scenes = (
+        [p for p in (data_dir / "scenes").iterdir() if p.is_file() and p.suffix.lower() in _IMG_EXTS]
+        if (data_dir / "scenes").is_dir()
+        else []
+    )
     videos = list((data_dir / "videos").glob("*.mp4")) if (data_dir / "videos").is_dir() else []
     heroes = (
-        list((data_dir / "characters").glob("*.png"))
+        [p for p in (data_dir / "characters").iterdir() if p.is_file() and p.suffix.lower() in _IMG_EXTS]
         if (data_dir / "characters").is_dir()
         else []
     )
@@ -762,7 +767,11 @@ def verify_project_http(
     st, nbytes, _ = _http_get(f"{base}/api/projects/{project_id}/xlsx", timeout=30.0)
     checks.append(HarnessCheck("xlsx_http", st == 200 and nbytes > 0, f"status={st} bytes={nbytes}"))
 
-    scenes = list((data_dir / "scenes").glob("*.png")) if (data_dir / "scenes").is_dir() else []
+    scenes = (
+        [p for p in (data_dir / "scenes").iterdir() if p.is_file() and p.suffix.lower() in _IMG_EXTS]
+        if (data_dir / "scenes").is_dir()
+        else []
+    )
     checks.append(HarnessCheck("http_scene_parity", True, f"scenes_disk={len(scenes)}"))
     return checks
 

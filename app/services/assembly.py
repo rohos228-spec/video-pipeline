@@ -67,7 +67,16 @@ async def _run(cmd: list[str], *, cwd: Path | None = None) -> None:
         stderr=asyncio.subprocess.PIPE,
         cwd=str(cwd) if cwd is not None else None,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300.0)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        await proc.communicate()
+        logger.error("ffmpeg process timed out after 300s: {}", " ".join(cmd[:10]))
+        raise TimeoutError(f"ffmpeg timed out after 300s: {' '.join(cmd[:10])}") from None
     if proc.returncode != 0:
         logger.error("ffmpeg stderr:\n{}", stderr.decode(errors="ignore"))
         raise RuntimeError(f"ffmpeg exited with {proc.returncode}")

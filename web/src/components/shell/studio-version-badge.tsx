@@ -22,6 +22,8 @@ type ServerVersion = {
   text_llm_label?: string;
   text_llm_model?: string;
   text_llm_enabled?: boolean;
+  vps_relay?: boolean;
+  vps_relay_base_url?: string;
 };
 
 export function StudioVersionBadge() {
@@ -60,7 +62,6 @@ export function StudioVersionBadge() {
   const backendStale =
     server != null && (server.pipeline_ok === false || server.backend_ok === false);
   const llmLabel = server?.text_llm_label?.trim() || "";
-  const isKimi = (server?.text_llm_provider || "") === "tokenrouter";
 
   return (
     <span className="inline-flex items-center gap-1.5">
@@ -82,6 +83,14 @@ export function StudioVersionBadge() {
         {displayLabel}
         {uiStale ? " !" : null}
       </span>
+      {server?.vps_relay ? (
+        <span
+          className="inline-flex items-center rounded border border-blue-500/50 bg-blue-500/10 px-1.5 py-px font-mono text-[10px] leading-none text-blue-300"
+          title={`GPT трафик проксируется через VPS-relay: ${server.vps_relay_base_url}`}
+        >
+          🔒 relay
+        </span>
+      ) : null}
     </span>
   );
 }

@@ -1,4 +1,4 @@
-"""Каталог текстовых LLM: GPT (kie) + GPT 5.5/5.6 Sol (vibecode) + Kimi.
+"""Каталог текстовых LLM: GPT (kie) + GPT 5.5/5.6 Sol (vibecode).
 
 Выбор активной модели: data/text_llm_choice.json (Studio UI).
 GPT_* / VIBECODE_* в .env не затираются.
@@ -108,7 +108,6 @@ _MODEL_ALIASES = {
     "gpt-5-5": "gpt-5.6-sol-vibecode",
     "gpt-5.5-vibecode": "gpt-5.6-sol-vibecode",
     "gpt-5.6-sol": "gpt-5.6-sol-vibecode",
-    "gpt-5-6-sol": "gpt-5.6-sol-vibecode",
     "gpt-5.6-sol-vibecode": "gpt-5.6-sol-vibecode",
     "gpt-5.6-terra": "gpt-5.6-terra-vibecode",
     "gpt-5.6-terra-vibecode": "gpt-5.6-terra-vibecode",
@@ -172,8 +171,6 @@ def write_choice(
 ) -> dict[str, Any]:
     s = cfg or settings
     provider = (provider or "kie").strip().lower()
-    if provider in {"kimi", "kimi-k3", "moonshot"}:
-        provider = "tokenrouter"
     if provider in {"vibe", "vibecode.moe"}:
         provider = "vibecode"
     aliased = catalog_item(model_id)
@@ -182,9 +179,7 @@ def write_choice(
         model_id = aliased["id"]
     if provider not in _PROVIDERS:
         raise ValueError(f"unknown text LLM provider: {provider!r}")
-    if provider == "tokenrouter":
-        model_id = model_id or "kimi-k3-tokenrouter"
-    elif provider == "vibecode":
+    if provider == "vibecode":
         model_id = model_id or "gpt-5.6-sol-vibecode"
     else:
         model_id = model_id or "gpt-kie"
@@ -201,11 +196,9 @@ def write_choice(
 
 
 def resolve_active_provider(cfg: Settings | None = None) -> str:
-    """kie по умолчанию; vibecode/tokenrouter — по явному выбору."""
+    """kie по умолчанию; vibecode — по явному выбору."""
     s = cfg or settings
     raw_choice = str(read_choice(s).get("provider") or "").strip().lower()
-    if raw_choice in {"tokenrouter", "kimi", "kimi-k3"}:
-        return "tokenrouter"
     if raw_choice in {"vibecode", "vibe"}:
         return "vibecode"
     if raw_choice in {"kie", "gpt", "openai"}:
@@ -235,11 +228,7 @@ def catalog_status(cfg: Settings | None = None) -> dict[str, Any]:
     models: list[dict[str, Any]] = []
     for item in CATALOG:
         prov = item["provider"]
-        if prov == "tokenrouter":
-            model = s.tokenrouter_model
-            key_ok = bool((s.tokenrouter_api_key or "").strip())
-            base = s.tokenrouter_base_url
-        elif prov == "vibecode":
+        if prov == "vibecode":
             model = item.get("api_model") or "gpt-5.5"
             key_ok = bool((s.vibecode_api_key or "").strip())
             base = s.vibecode_base_url
@@ -256,10 +245,7 @@ def catalog_status(cfg: Settings | None = None) -> dict[str, Any]:
                 "active": item["id"] == active_id,
             }
         )
-    if active == "tokenrouter":
-        label = "Kimi K3"
-        active_model = s.tokenrouter_model
-    elif active == "vibecode":
+    if active == "vibecode":
         item = catalog_item(active_id)
         label = (item or {}).get("label") or "GPT 5.6 Sol"
         active_model = (item or {}).get("api_model") or "gpt-5.6-sol"

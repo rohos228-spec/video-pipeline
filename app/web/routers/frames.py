@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db import commit_with_retry
 from app.models import Frame, FrameStatus
 from app.project_db import register_frame_project
 from app.web.deps import get_project_session
@@ -59,7 +60,7 @@ async def patch_frame(
             raise HTTPException(status_code=400, detail=f"invalid frame status: {data['status']}") from e
     for k, v in data.items():
         setattr(f, k, v)
-    await session.commit()
+    await commit_with_retry(session)
     await session.refresh(f)
     register_frame_project(f.id, project_id)
     return f

@@ -278,7 +278,7 @@ def _fail_message(data: dict[str, Any]) -> str:
 async def poll_task(api: str, task_id: str, *, timeout_s: float = _POLL_MAX_S) -> dict[str, Any]:
     path = _POLL_PATHS.get(api, _POLL_PATHS["jobs"])
     url = f"{kie_api_base_url()}{path}"
-    deadline = asyncio.get_event_loop().time() + max(60.0, timeout_s)
+    deadline = asyncio.get_running_loop().time() + max(60.0, timeout_s)
     net_fails = 0
     async with httpx.AsyncClient(timeout=60.0) as client:
         while True:
@@ -289,7 +289,7 @@ async def poll_task(api: str, task_id: str, *, timeout_s: float = _POLL_MAX_S) -
                 net_fails = 0
             except (httpx.TransportError, httpx.TimeoutException) as e:
                 net_fails += 1
-                if net_fails >= 8 or asyncio.get_event_loop().time() >= deadline:
+                if net_fails >= 8 or asyncio.get_running_loop().time() >= deadline:
                     raise KieHttpError(
                         f"kie poll {task_id}: сеть/таймаут ({type(e).__name__})",
                         context={"provider_code": 504, "task_id": task_id},
@@ -322,7 +322,7 @@ async def poll_task(api: str, task_id: str, *, timeout_s: float = _POLL_MAX_S) -
                         "kind": "generation",
                     },
                 )
-            if asyncio.get_event_loop().time() >= deadline:
+            if asyncio.get_running_loop().time() >= deadline:
                 raise KieHttpError(
                     f"kie: таймаут ожидания task {task_id}",
                     context={"provider_code": 504, "task_id": task_id, "kind": "timeout"},

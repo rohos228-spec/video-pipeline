@@ -291,6 +291,8 @@ def expected_status_progression(project: Project | None) -> list[ProjectStatus]:
         ProjectStatus.generating_videos,
         ProjectStatus.generating_audio,
         ProjectStatus.generating_music,
+        ProjectStatus.sfx_planning,
+        ProjectStatus.generating_sfx,
         ProjectStatus.assembling,
         ProjectStatus.publishing,
     ])
@@ -627,6 +629,9 @@ _LINEAR_MEDIA_READY: frozenset[ProjectStatus] = frozenset(
         ProjectStatus.animation_prompts_ready,
         ProjectStatus.videos_ready,
         ProjectStatus.audio_ready,
+        ProjectStatus.music_ready,
+        ProjectStatus.sfx_plan_ready,
+        ProjectStatus.sfx_ready,
     }
 )
 
@@ -639,6 +644,8 @@ _LINEAR_MEDIA_RUNNING: frozenset[ProjectStatus] = frozenset(
         ProjectStatus.generating_videos,
         ProjectStatus.generating_audio,
         ProjectStatus.generating_music,
+        ProjectStatus.sfx_planning,
+        ProjectStatus.generating_sfx,
         ProjectStatus.assembling,
     }
 )
@@ -1019,6 +1026,30 @@ async def _apply_approve(
         ):
             # Нода запущена флагом без узла на канвасе — линейный fallback.
             graph_nxt = ProjectStatus.generating_hero
+        if (
+            transition.ready_status is ProjectStatus.music_ready
+            and graph_nxt is None
+        ):
+            # Старый канвас без SFX нод — линейный fallback на sfx_planning.
+            graph_nxt = ProjectStatus.sfx_planning
+        if (
+            transition.ready_status is ProjectStatus.sfx_plan_ready
+            and graph_nxt is None
+        ):
+            # Линейный fallback на генерацию SFX.
+            graph_nxt = ProjectStatus.generating_sfx
+        if (
+            transition.ready_status is ProjectStatus.sfx_ready
+            and graph_nxt is None
+        ):
+            # Линейный fallback на финальную сборку.
+            graph_nxt = ProjectStatus.assembling
+        if (
+            transition.ready_status in _ENRICH_READY_TO_INDEX
+            and graph_nxt is None
+        ):
+            # Fallback для enrich-цепочки с учетом enrich_slots_count (парити #3).
+            graph_nxt = _next_running_with_enrich_cap(project, transition)
         if graph_nxt is None:
             # assembled без publish на графе — нормальный idle, не WARNING каждые 5с
             if transition.ready_status in (
