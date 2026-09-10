@@ -4,12 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>API Tracker & Cost Monitor (Cloud)</title>
-  <!-- Tailwind CSS -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <!-- Chart.js -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <!-- Lucide Icons -->
-  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Local Vendor Scripts (Instant load, zero latency, offline ready) -->
+  <script src="/static/vendor/tailwind.min.js"></script>
+  <script src="/static/vendor/chart.min.js"></script>
+  <script src="/static/vendor/lucide.min.js"></script>
   <script>
     tailwind.config = {
       darkMode: 'class',
@@ -622,26 +620,41 @@
       }
     }
 
+    async function fetchLocalFirst() {
+      try {
+        const { from } = getPeriodRange(currentPeriod);
+        const params = new URLSearchParams({ scope: 'local' });
+        if (from) params.append('date_from', from);
+
+        const [sRes, lRes] = await Promise.allSettled([
+          fetch(`/api/stats?${params.toString()}`),
+          fetch(`/api/logs?${params.toString()}&limit=100&offset=0`)
+        ]);
+        if (sRes.status === 'fulfilled' && sRes.value.ok) {
+          const sData = await sRes.value.json();
+          renderStatsView(sData);
+        }
+        if (lRes.status === 'fulfilled' && lRes.value.ok) {
+          const lData = await lRes.value.json();
+          renderLogsView(lData);
+        }
+      } catch (e) {
+        console.debug('fetchLocalFirst:', e);
+      }
+    }
+
     async function fetchData() {
       const icon = document.getElementById('refresh-icon');
       if (icon) icon.classList.add('animate-spin');
       try {
-        await Promise.all([fetchStats(), fetchLogs(), loadUsersList()]);
+        await Promise.allSettled([fetchStats(), fetchLogs(), loadUsersList()]);
       } finally {
         if (icon) icon.classList.remove('animate-spin');
       }
     }
 
-    async function fetchStats() {
-      const { from } = getPeriodRange(currentPeriod);
-      const params = new URLSearchParams({ scope: currentScope });
-      if (from) params.append('date_from', from);
-      if (currentUser && currentUser !== 'all') params.append('user_name', currentUser);
-
-      const r = await fetch(`/api/stats?${params.toString()}`);
-      if (!r.ok) return;
-      const data = await r.json();
-
+    function renderStatsView(data) {
+      if (!data) return;
       const summary = data.summary || data;
       const totalCost = summary.total_cost || 0;
       const totalCalls = summary.total_calls || 0;
@@ -674,6 +687,22 @@
 
       renderTimelineChart(data.daily_chart || data.daily || [], timeUnit);
       renderModelPieChart(data.by_model || data.models || []);
+    }
+
+    async function fetchStats() {
+      const { from } = getPeriodRange(currentPeriod);
+      const params = new URLSearchParams({ scope: currentScope });
+      if (from) params.append('date_from', from);
+      if (currentUser && currentUser !== 'all') params.append('user_name', currentUser);
+
+      try {
+        const r = await fetch(`/api/stats?${params.toString()}`);
+        if (!r.ok) return;
+        const data = await r.json();
+        renderStatsView(data);
+      } catch (e) {
+        console.debug('fetchStats error:', e);
+      }
     }
 
     function renderUsersCards(users) {
@@ -889,11 +918,19 @@
       if (status) params.append('status', status);
       if (callType) params.append('call_type', callType);
 
-      const r = await fetch(`/api/logs?${params.toString()}`);
-      if (!r.ok) return;
-      const data = await r.json();
+      try {
+        const r = await fetch(`/api/logs?${params.toString()}`);
+        if (!r.ok) return;
+        const data = await r.json();
+        renderLogsView(data);
+      } catch (e) {
+        console.debug('fetchLogs error:', e);
+      }
+    }
 
-      document.getElementById('table-total-badge').textContent = data.total;
+    function renderLogsView(data) {
+      if (!data) return;
+      document.getElementById('table-total-badge').textContent = data.total || 0;
       const tbody = document.getElementById('logs-tbody');
 
       if (!data.items || !data.items.length) {
@@ -1051,13 +1088,16 @@
     // Инициализация
     window.addEventListener('DOMContentLoaded', async () => {
       lucide.createIcons();
-      await checkUserProfile();
+      // 1. Мгновенно отрисовываем данные из локальной БД (2 миллисекунды)
+      await fetchLocalFirst();
+      // 2. В фоне опрашиваем профиль, рубильник и обновляем данные
+      checkUserProfile();
       fetchKillswitchStatus();
       fetchData();
-      // Автообновление логов каждые 8 секунд
-      setInterval(fetchData, 8000);
-      // Автообновление статуса рубильника каждые 4 секунды
-      setInterval(fetchKillswitchStatus, 4000);
+      // Автообновление логов каждые 10 секунд
+      setInterval(fetchData, 10000);
+      // Автообновление статуса рубильника каждые 5 секунд
+      setInterval(fetchKillswitchStatus, 5000);
     });
   </script>
 

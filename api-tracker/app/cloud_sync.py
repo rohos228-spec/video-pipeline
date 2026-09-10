@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,10 @@ import httpx
 from loguru import logger
 
 from app.config import get_supabase_key, get_supabase_url
+
+_KILLSWITCH_CACHE: dict[str, Any] = {"data": {}, "expires_at": 0.0}
+_DISTINCT_USERS_CACHE: dict[str, Any] = {"data": [], "expires_at": 0.0}
+_STATS_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
 
 
 def _get_headers() -> dict[str, str]:
@@ -21,6 +26,20 @@ def _get_headers() -> dict[str, str]:
         "Content-Type": "application/json",
         "Prefer": "return=representation",
     }
+
+
+_CLIENT: httpx.Client | None = None
+
+
+def _get_client() -> httpx.Client:
+    global _CLIENT
+    if _CLIENT is None or _CLIENT.is_closed:
+        _CLIENT = httpx.Client(
+            timeout=httpx.Timeout(3.5, connect=2.0),
+            limits=httpx.Limits(max_keepalive_connections=8, max_connections=15, keepalive_expiry=60.0),
+            follow_redirects=True,
+        )
+    return _CLIENT
 
 
 def push_call_to_supabase(call_data: dict[str, Any]) -> bool:
@@ -52,12 +71,12 @@ def push_call_to_supabase(call_data: dict[str, Any]) -> bool:
     }
 
     try:
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.post(endpoint, headers=_get_headers(), json=payload)
-            if resp.status_code in (200, 201):
-                return True
-            logger.warning("Supabase push failed: HTTP {} {}", resp.status_code, resp.text[:200])
-            return False
+        client = _get_client()
+        resp = client.post(endpoint, headers=_get_headers(), json=payload)
+        if resp.status_code in (200, 201):
+            return True
+        logger.warning("Supabase push failed: HTTP {} {}", resp.status_code, resp.text[:200])
+        return False
     except Exception as exc:
         logger.debug("Supabase push network error: {}", exc)
         return False
@@ -75,21 +94,28 @@ def normalize_user_name(name: str | None) -> str:
 
 def get_cloud_distinct_users() -> list[str]:
     """Получить список всех уникальных пользователей из Supabase."""
+    now = time.time()
+    if now < _DISTINCT_USERS_CACHE.get("expires_at", 0.0):
+        return list(_DISTINCT_USERS_CACHE.get("data", []))
+
     url = get_supabase_url()
     if not url or not get_supabase_key():
         return []
 
     endpoint = f"{url.rstrip('/')}/rest/v1/api_calls?call_type=neq.system&select=user_name&order=user_name.asc"
     try:
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.get(endpoint, headers=_get_headers())
-            if resp.status_code == 200:
-                rows = resp.json()
-                users = sorted({normalize_user_name(r.get("user_name")) for r in rows if r.get("user_name")})
-                return [u for u in users if u and u not in ("unknown", "Владелец", "Менеджер")]
+        client = _get_client()
+        resp = client.get(endpoint, headers=_get_headers())
+        if resp.status_code in (200, 206):
+            rows = resp.json()
+            users = sorted({normalize_user_name(r.get("user_name")) for r in rows if r.get("user_name")})
+            res = [u for u in users if u and u not in ("unknown", "Владелец", "Менеджер")]
+            _DISTINCT_USERS_CACHE["data"] = res
+            _DISTINCT_USERS_CACHE["expires_at"] = now + 15.0
+            return res
     except Exception as exc:
         logger.debug("get_cloud_distinct_users error: {}", exc)
-    return []
+    return list(_DISTINCT_USERS_CACHE.get("data", []))
 
 
 def get_cloud_logs(
@@ -149,20 +175,20 @@ def get_cloud_logs(
     headers["Prefer"] = "count=exact"
 
     try:
-        with httpx.Client(timeout=15.0) as client:
-            resp = client.get(endpoint, headers=headers)
-            if resp.status_code == 200:
-                rows = resp.json()
-                for r in rows:
-                    r["user_name"] = normalize_user_name(r.get("user_name"))
-                total = len(rows)
-                cr = resp.headers.get("content-range", "")
-                if "/" in cr:
-                    try:
-                        total = int(cr.split("/")[-1])
-                    except ValueError:
-                        pass
-                return rows, total
+        client = _get_client()
+        resp = client.get(endpoint, headers=headers)
+        if resp.status_code in (200, 206):
+            rows = resp.json()
+            for r in rows:
+                r["user_name"] = normalize_user_name(r.get("user_name"))
+            total = len(rows)
+            cr = resp.headers.get("content-range", "")
+            if "/" in cr:
+                try:
+                    total = int(cr.split("/")[-1])
+                except ValueError:
+                    pass
+            return rows, total
     except Exception as exc:
         logger.warning("get_cloud_logs error: {}", exc)
     return [], 0
@@ -175,6 +201,12 @@ def get_cloud_stats(
     date_to: str | None = None,
 ) -> dict[str, Any]:
     """Сводные метрики из облака Supabase для дашборда."""
+    now = time.time()
+    cache_key = (user_name, date_from, date_to)
+    cached = _STATS_CACHE.get(cache_key)
+    if cached and now < cached.get("expires_at", 0.0):
+        return dict(cached.get("data", {}))
+
     url = get_supabase_url()
     if not url or not get_supabase_key():
         return {}
@@ -201,11 +233,11 @@ def get_cloud_stats(
     endpoint = f"{url.rstrip('/')}/rest/v1/api_calls?{query_str}"
 
     try:
-        with httpx.Client(timeout=15.0) as client:
-            resp = client.get(endpoint, headers=_get_headers())
-            if resp.status_code != 200:
-                return {}
-            rows = resp.json()
+        client = _get_client()
+        resp = client.get(endpoint, headers=_get_headers())
+        if resp.status_code not in (200, 206):
+            return {}
+        rows = resp.json()
     except Exception as exc:
         logger.warning("get_cloud_stats error: {}", exc)
         return {}
@@ -283,7 +315,7 @@ def get_cloud_stats(
 
     daily_chart = sorted(by_day_map.values(), key=lambda x: x["date"])
 
-    return {
+    res = {
         "total_calls": total_calls,
         "total_cost": round(total_cost, 4),
         "total_tokens": total_tokens,
@@ -302,29 +334,38 @@ def get_cloud_stats(
         "daily_chart": daily_chart,
         "by_user": by_user,
     }
+    _STATS_CACHE[cache_key] = {"data": res, "expires_at": now + 5.0}
+    return res
 
 
 def get_cloud_killswitch_state() -> dict[str, Any]:
     """Получить текущий статус аварийного рубильника из облака."""
+    now = time.time()
+    if now < _KILLSWITCH_CACHE.get("expires_at", 0.0):
+        return dict(_KILLSWITCH_CACHE.get("data", {}))
+
     url = get_supabase_url()
     if not url or not get_supabase_key():
         return {"is_blocked": False, "updated_by": "", "updated_at": "", "reason": ""}
 
     endpoint = f"{url.rstrip('/')}/rest/v1/api_calls?call_type=eq.system&provider=eq.SYSTEM&order=timestamp.desc&limit=1"
     try:
-        with httpx.Client(timeout=6.0) as client:
-            resp = client.get(endpoint, headers=_get_headers())
-            if resp.status_code == 200:
-                rows = resp.json()
-                if rows and isinstance(rows, list):
-                    last = rows[0]
-                    is_blocked = (last.get("model") == "KILLSWITCH_ACTIVATED")
-                    return {
-                        "is_blocked": is_blocked,
-                        "updated_by": normalize_user_name(last.get("user_name")),
-                        "updated_at": last.get("timestamp") or "",
-                        "reason": str(last.get("error_message") or ""),
-                    }
+        client = _get_client()
+        resp = client.get(endpoint, headers=_get_headers())
+        if resp.status_code in (200, 206):
+            rows = resp.json()
+            if rows and isinstance(rows, list):
+                last = rows[0]
+                is_blocked = (last.get("model") == "KILLSWITCH_ACTIVATED")
+                data = {
+                    "is_blocked": is_blocked,
+                    "updated_by": normalize_user_name(last.get("user_name")),
+                    "updated_at": last.get("timestamp") or "",
+                    "reason": str(last.get("error_message") or ""),
+                }
+                _KILLSWITCH_CACHE["data"] = data
+                _KILLSWITCH_CACHE["expires_at"] = now + 4.0
+                return data
     except Exception as exc:
         logger.debug("get_cloud_killswitch_state error: {}", exc)
     return {"is_blocked": False, "updated_by": "", "updated_at": "", "reason": ""}
@@ -340,6 +381,15 @@ def push_audit_log(
     desc = "Аварийный рубильник: API заморожены" if action == "KILLSWITCH_ACTIVATED" else "Аварийный рубильник: работа API возобновлена"
     if reason:
         desc += f" ({reason})"
+
+    # Мгновенно обновляем локальный кэш
+    _KILLSWITCH_CACHE["data"] = {
+        "is_blocked": (action == "KILLSWITCH_ACTIVATED"),
+        "updated_by": normalize_user_name(user_name),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "reason": desc,
+    }
+    _KILLSWITCH_CACHE["expires_at"] = time.time() + 4.0
 
     payload = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
