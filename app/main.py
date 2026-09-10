@@ -965,6 +965,11 @@ async def main() -> None:
                 sv.get("backend_attach"),
                 sv.get("attach_expected"),
             )
+        if sv.get("vps_relay"):
+            logger.warning(
+                "🔒 SECURITY NOTICE: GPT API направлен через VPS-relay {} (трафик текстовых LLM проксируется через внешний VPS). Для прямого подключения очистите GPT_RELAY_TOKEN в .env",
+                sv.get("vps_relay_base_url"),
+            )
     except Exception as e:  # noqa: BLE001
         logger.warning("studio version log failed: {}", e)
 

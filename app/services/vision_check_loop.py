@@ -37,6 +37,7 @@ META_HERO_RETURN = "hero_check_return_node"
 
 # Крутим ok/не-ok → regen → recheck, пока все не pass (не сдаёмся на 3-м круге).
 MAX_VISION_CHECK_ROUNDS = 20
+_IMG_EXTENSIONS: frozenset[str] = frozenset({".png", ".jpg", ".jpeg", ".webp"})
 
 VisionKind = Literal["hero", "scenes", "videos"]
 _FRAME_KINDS = frozenset({"scenes", "videos"})
@@ -318,21 +319,23 @@ async def _delete_scene_pngs(
             if shot == 2:
                 disk_paths = [
                     p
-                    for p in out_dir.glob(f"frame_{num:03d}_s2_*.png")
-                    if p.is_file()
+                    for p in out_dir.glob(f"frame_{num:03d}_s2_*")
+                    if p.is_file() and p.suffix.lower() in _IMG_EXTENSIONS
                 ]
                 disk_paths.extend(
                     p
-                    for p in out_dir.glob(f"frame_{num:03d}_*.png")
+                    for p in out_dir.glob(f"frame_{num:03d}_*")
                     if p.is_file()
+                    and p.suffix.lower() in _IMG_EXTENSIONS
                     and re.search(r"(?:_s2_|shot2)", p.name, re.IGNORECASE)
                     and p not in disk_paths
                 )
             else:
                 disk_paths = [
                     p
-                    for p in out_dir.glob(f"frame_{num:03d}_*.png")
+                    for p in out_dir.glob(f"frame_{num:03d}_*")
                     if p.is_file()
+                    and p.suffix.lower() in _IMG_EXTENSIONS
                     and "_s2_" not in p.name
                     and not re.search(r"(?:shot2)", p.name, re.IGNORECASE)
                 ]

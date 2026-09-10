@@ -285,10 +285,10 @@ async def sleep_cancellable(
     if project_id is None:
         await asyncio.sleep(seconds)
         return
-    deadline = asyncio.get_event_loop().time() + seconds
-    while asyncio.get_event_loop().time() < deadline:
+    deadline = asyncio.get_running_loop().time() + seconds
+    while asyncio.get_running_loop().time() < deadline:
         abort_if_cancelled(project_id)
-        remaining = deadline - asyncio.get_event_loop().time()
+        remaining = deadline - asyncio.get_running_loop().time()
         await asyncio.sleep(min(poll_s, max(remaining, 0)))
 
 

@@ -771,10 +771,11 @@ async def ensure_public_image_url(
 ) -> str | None:
     """Outsee image_url принимает только http(s); data: молча игнорит.
 
-    data: → публичный URL только через Yandex Object Storage.
+    data: → публичный URL через Yandex Object Storage (основной).
+    Публичные хосты (uguu/litterbox/catbox/0x0) используются как резервные
+    (fallback) при временном сбое или отсутствии Yandex S3.
     http(s) → как есть (кроме localhost), либо force_rehost=True → скачать и
-    залить в Yandex. Публичные хосты (litterbox/catbox/uguu) отключены.
-    ``yandex`` в skip_hosts игнорируется: новый PUT = новый URL.
+    залить заново. ``yandex`` в skip_hosts игнорируется: новый PUT = новый URL.
     """
     if not url or not str(url).strip():
         return None

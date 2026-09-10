@@ -519,12 +519,18 @@ async def _assemble_body(
             sfx=sfx_inputs,
         )
     else:
+        from app.services.sfx_mix import collect_sfx_inputs
+
+        sfx_inputs = collect_sfx_inputs(project)
+        if sfx_inputs:
+            logger.info("[#{}] assemble (variant3): {} SFX из sfx_gen идут в микс", project.id, len(sfx_inputs))
         await run_variant2(
             project,
             frame_numbers,
             audio_path,
             out_path,
             bgm=bgm,
+            sfx=sfx_inputs,
         )
         # ASS ещё нет на диске: путь зарезервирован выше, файл пишем здесь.
         # Старый `subs_path.is_file()` пропускал весь burn на montage-v3.
@@ -545,7 +551,16 @@ async def _assemble_body(
                     str(burned),
                     cwd=str(tmp),
                 )
-                await proc.communicate()
+                try:
+                    await asyncio.wait_for(proc.communicate(), timeout=300.0)
+                except asyncio.TimeoutError:
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                    await proc.communicate()
+                    logger.error("[#{}] assemble: ffmpeg subtitle burn timed out after 300s", project.id)
+                    raise TimeoutError("ffmpeg subtitle burn timed out after 300s") from None
                 if proc.returncode != 0:
                     raise RuntimeError("ffmpeg subtitle burn failed")
                 shutil.copy2(burned, out_path)

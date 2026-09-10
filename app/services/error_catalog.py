@@ -28,27 +28,27 @@ ERROR_CATALOG: dict[str, ErrorSpec] = {
     "gpt_no_key": ErrorSpec(
         "gpt_no_key",
         "Текст LLM: нет ключа",
-        "Нода: VIBECODE_API_KEY. Шапка kie: GPT_API_KEY. Kimi: TOKENROUTER_API_KEY.",
+        "Нода: VIBECODE_API_KEY. Шапка kie: GPT_API_KEY.",
     ),
     "gpt_no_base": ErrorSpec(
         "gpt_no_base",
         "Текст LLM: нет базы",
-        "Kimi: TOKENROUTER_BASE_URL. GPT: GPT_BASE_URL.",
+        "Vibecode: VIBECODE_BASE_URL. GPT: GPT_BASE_URL.",
     ),
     "gpt_auth": ErrorSpec(
         "gpt_auth",
         "Текст LLM: неверный ключ (401/403)",
-        "Проверь TOKENROUTER_API_KEY или GPT_API_KEY.",
+        "Проверь VIBECODE_API_KEY или GPT_API_KEY.",
     ),
     "gpt_model_unauthorized": ErrorSpec(
         "gpt_model_unauthorized",
         "Текст LLM: модель не авторизована",
-        "Ключ без доступа к модели (Kimi/GPT).",
+        "Ключ без доступа к модели (Vibecode/GPT).",
     ),
     "gpt_model_unsupported": ErrorSpec(
         "gpt_model_unsupported",
         "Текст LLM: модель не поддерживается",
-        "Проверь TOKENROUTER_MODEL или GPT_MODEL.",
+        "Проверь конфигурацию модели или GPT_MODEL.",
     ),
     "gpt_rate_limit": ErrorSpec("gpt_rate_limit", "GPT: лимит запросов (429)", "Снизь параллельность/подожди."),
     "gpt_server": ErrorSpec("gpt_server", "GPT: сбой шлюза (5xx)", "Временная ошибка провайдера, повтор."),

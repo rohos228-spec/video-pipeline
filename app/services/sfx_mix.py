@@ -55,6 +55,7 @@ def build_mux_audio_args(
     output_duration: float | None,
     tail: float,
     sfx: list[SfxInput],
+    voice_gain: float = 1.0,
 ) -> tuple[list[str], str | None]:
     """(extra ffmpeg args, filter_complex | None) для микса аудио.
 
@@ -68,10 +69,11 @@ def build_mux_audio_args(
     next_idx = 2
 
     dur = f"{output_duration:.3f}" if output_duration is not None else None
+    gain_filter = f",volume={voice_gain:.4f}" if abs(voice_gain - 1.0) > 1e-4 else ""
     if dur:
-        chains.append(f"[1:a]apad=whole_dur={dur}[vo]")
+        chains.append(f"[1:a]apad=whole_dur={dur}{gain_filter}[vo]")
     else:
-        chains.append("[1:a]anull[vo]")
+        chains.append(f"[1:a]anull{gain_filter}[vo]")
     mix_in.append("[vo]")
 
     if bgm_path is not None:

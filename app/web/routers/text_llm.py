@@ -1,4 +1,4 @@
-"""Выбор текстовой LLM: GPT (kie) + доп. Kimi K3 (TokenRouter)."""
+"""Выбор текстовой LLM: GPT (kie) + Vibecode."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ router = APIRouter(prefix="/text-llm", tags=["text-llm"])
 
 
 class TextLlmSelectBody(BaseModel):
-    provider: str = Field(..., description="kie | vibecode | tokenrouter")
+    provider: str = Field(..., description="kie | vibecode")
     model_id: str | None = None
 
 

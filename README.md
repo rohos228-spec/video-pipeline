@@ -1,4 +1,4 @@
-﻿# 🎬 Video Pipeline (Studio & Autonomous Orchestration)
+# 🎬 Video Pipeline (Studio & Autonomous Orchestration)
 
 > **Автоматический модульный конвейер генерации коротких и длинных видеороликов (9:16 / 16:9)** с интерактивной **Веб-Студией**, HITL-контролем (Human-In-The-Loop), нейросетевыми агентами сценариев и надежной архитектурой с защитой от сбоев.
 
@@ -14,7 +14,7 @@
   - SQLite + `aiosqlite` + `SQLAlchemy 2.0` — все шаги, кадры и артефакты синхронизируются в БД.
   - Экспорт и импорт в `project.xlsx` без потери состояния.
 - 🤖 **Мультимодельный ИИ-Транспорт:**
-  - **Текст/Сценарии:** GPT 5.5 / 5.6 Sol через VPS Relay, Kie Responses, Kimi K3 (TokenRouter).
+  - **Текст/Сценарии:** GPT 5.5 / 5.6 Sol / Gemini через VPS Relay и Vibecode, Kie Responses.
   - **Изображения:** Outsee (Nano Banana 2, GPT Image 2), ComfyUI.
   - **Видео:** Veo 3.1 Lite/Fast, Kling 2.6 через Kie.
   - **Озвучка и субтитры:** ElevenLabs, faster-whisper, edge-tts.

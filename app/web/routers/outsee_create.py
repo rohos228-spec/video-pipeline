@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -517,7 +518,7 @@ async def enhance_prompt_endpoint(req: EnhancePromptRequest) -> dict[str, Any]:
         "Output ONLY the final enhanced prompt text without any introductory text, quotes, or markdown codeblocks."
     )
 
-    # 1. Попытка через основной текстовый LLM (OpenAI / TokenRouter Kimi / Vibecode)
+    # 1. Попытка через основной текстовый LLM (OpenAI / Vibecode)
     try:
         from app.services.gpt_client import ApiGptClient, gpt_text_via_api
 
@@ -554,7 +555,7 @@ async def enhance_prompt_endpoint(req: EnhancePromptRequest) -> dict[str, Any]:
                 "temperature": 0.7,
                 "max_tokens": 300,
             }
-            async with httpx.AsyncClient(timeout=20.0) as client:
+            async with httpx.AsyncClient(timeout=7.0) as client:
                 r = await client.post(url, headers={"Authorization": f"Bearer {key}"}, json=payload)
                 if r.status_code == 200:
                     data = r.json()

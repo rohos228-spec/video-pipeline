@@ -313,7 +313,11 @@ def _hero_legacy_ref(project_data_dir: Path, persons_id: str) -> Path | None:
     if not chars_dir.is_dir():
         return None
     candidates = sorted(
-        chars_dir.glob(f"hero_{idx}_v1_*.png"),
+        [
+            p
+            for p in chars_dir.glob(f"hero_{idx}_v1_*")
+            if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+        ],
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )

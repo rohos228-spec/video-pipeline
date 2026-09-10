@@ -51,21 +51,22 @@
 
 ---
 
-### 🌟 ЭТАП 9: Интеллектуальный ИИ-Продюсер (Orchestrator Copilot с памятью и Agentic Tool Calling)
-- [ ] **PRODUCER-01:** Создать движок креативного ИИ-Продюсера (`app/services/orchestrator_producer.py`) с глубоким пониманием драматургии, режиссуры, таймингов и полным доступом к контексту проекта (текущая тема, список кадров, тайминги, персонажи, предметы).
-- [ ] **PRODUCER-02:** Реализовать долгосрочную память диалога по проекту в SQLite (`CopilotMessage` / история сессий) с контекстным сжатием.
-- [ ] **PRODUCER-03:** Реализовать систему вызова функций (Agentic Tools):
-  - `set_topic`: установка/изменение темы проекта
-  - `update_script_frame`: точечная корректировка закадрового текста / параметров кадра
-  - `create_character` / `create_item`: прямое добавление сущностей в БД
-  - `trigger_node_run`: запуск или перезапуск любой ноды конвейера
-  - `diagnose_node_error`: чтение логов и автолечение сбоев генераторов
-- [ ] **PRODUCER-04:** Реализовать FastAPI SSE-роутер `/api/producer/chat` для потокового вывода мыслей в реальном времени.
-- [ ] **PRODUCER-05:** Создать UI-панель **«🎬 ИИ-Продюсер»** на канвасе с быстрыми чипами, карточками интерактивных действий (*«Применить в проект»*, *«Запустить ноду»*) и поддержкой Markdown.
+## ✅ ВЫПОЛНЕННЫЕ ЭТАПЫ И ЗАДАЧИ (ПОЛНАЯ ХРОНОЛОГИЯ)
+
+### 🌟 ЭТАП 19: Выполнение архитектурного аудита V2 (Архитектура, Надежность, Безопасность) (10 Сентября 2026)
+- [x] **AUDIT-P1-01 (db_apply cursor matching):** Исправлен `_scene_span_in_text` в `app/services/db_apply.py` — поиск от курсора окончания предыдущей сцены с защитой от захвата первого совпадения при дублирующихся `start_words`. Добавлены тесты в `tests/test_audit_fixes_v2.py`.
+- [x] **AUDIT-P1-02 (Status SoT Unification):** Сведены все реестры активных статусов (`app/services/gen_queue.py:GEN_QUEUE_BUSY_STATUSES`, `app/orchestrator/node_registry.py:LINEAR_NODE_TYPES`, `app/services/project_state.py:_RUNNING_STATUSES`) к единому источнику правды `app/services/step_registry.py:running_statuses()`. Включены `scene_designing`, `scene_assembling`, `sfx_plan`, `sfx_gen`.
+- [x] **AUDIT-P1-03 (TokenRouter Decommissioning):** Полное удаление провайдера `tokenrouter` из всех модулей (`app/settings.py`, `app/services/text_llm_catalog.py`, `app/web/routers/text_llm.py`, `web/src/components/canvas/node-model-picker.tsx`), тестов и документации.
+- [x] **AUDIT-P2-01 (Multi-format Images):** Внедрен общий кортеж `_IMG_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")`. Обеспечена поддержка всех форматов в `artifact_recovery.py`, `reset_step.py`, `vision_check_loop.py`, `montage_outsee_recover.py`, `animation_prompt_gpt.py`, `montage_board_assets.py`, `generate_images.py`, `agent_harness.py`.
+- [x] **AUDIT-P2-02 (asyncio loop modernization):** Механическая замена устаревшего `asyncio.get_event_loop()` на современный `asyncio.get_running_loop()` во всех модулях: `kie_http.py`, `publishers.py`, `elevenlabs.py`, `browser.py`, `step_cancel.py`, `chatgpt.py`, `outsee.py`. 0 устаревших вызовов в проекте.
+- [x] **AUDIT-P2-03 (VPS Relay Security & Visibility):** Добавлен стартап-чек и варнинг в лог (`app/main.py`, `app/web/api.py`), отображение статуса `vps_relay` в `/api/studio-version` и бейдж `🔒 relay` в Studio UI (`studio-version-badge.tsx`). Исправлен устаревший докстринг в `outsee_http.py`.
+- [x] **AUDIT-P2-04 (DB Locked Elimination in Routers):** Заменены все прямые вызовы `session.commit()` на `commit_with_retry(session)` в FastAPI роутерах (`projects.py`, `frames.py`, `db_browser.py`).
+- [x] **AUDIT-P2-05 (FFmpeg 300s/120s Subprocess Timeouts):** Все вызовы `proc.communicate()` для FFmpeg обернуты в `asyncio.wait_for` с принудительным `proc.kill()` при таймауте в `app/services/assembly.py` (300s), `app/orchestrator/steps/assemble.py` (300s), `app/services/montage/variant2.py` (300s) и `app/services/frame_audio.py` (120s). Покрыто тестами.
+- [x] **AUDIT-P2-06 (Kling Video Download 3x Retries):** В `app/bots/kie_kling.py` скачивание готовых MP4 защищено 3-х кратным ретраем с экспоненциальной паузой против сетевых сбросов соединения.
+- [x] **AUDIT-P3-01 (Dead Code Cleanup):** Безопасно удалены 13 подтвержденных мусорных файлов (`recover_from_disk.py`, `recover_project_state.py`, `START_AI_ORCHESTRA_PROMPT.txt`, `Data_video_pipeline.env`, dummy `package-lock.json`, `scripts/_ensure_env_housepc.py`, `installer/VideoPipelineLauncher.ps1`, `web/VideoPipelineStudio.ps1`, `AGENTS.md`, `HANDOVER.md`, `.clinerules`, `.clineignore`, `start-studio.sh`) и каталог `installer/`.
+- [x] **TESTS-VERIFY-08:** Все тесты пройдены успешно (100% green).
 
 ---
-
-## ✅ ВЫПОЛНЕННЫЕ ЭТАПЫ И ЗАДАЧИ (ПОЛНАЯ ХРОНОЛОГИЯ)
 
 ### 🌟 ЭТАП 17: Изолированные SQLite БД проектов (`project.db`) и безопасная миграция 30+ проектов (4 Сентября 2026)
 - [x] **DB-ISOLATE-01:** Разделение глобального состояния и данных проектов. Создан модуль `app/project_db.py`:

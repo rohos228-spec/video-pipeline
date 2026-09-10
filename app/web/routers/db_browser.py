@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db import commit_with_retry
 from app.models import (
     Entity,
     Frame,
@@ -260,7 +261,7 @@ async def db_graph(
     ).scalar_one()
     if needs_backfill:
         await db_v2.backfill_project_v2(session, project)
-        await session.commit()
+        await commit_with_retry(session)
     graph = await db_v2.project_graph(session, project)
     # Регистрируем кадры, сцены, сущности в кэше для роутинга
     for fr in graph.get("frames") or []:
@@ -326,7 +327,7 @@ async def shot_menu(
         from app.services.chatgpt_xlsx import sync_project_xlsx
 
         await sync_project_xlsx(session, project, xlsx, keep_fields=True)
-        await session.commit()
+        await commit_with_retry(session)
         logger.info("[#{}] shot-menu: пустая БД → подтянуто из project.xlsx", project.id)
         graph = await db_v2.project_graph(session, project)
         menu = build_shot_menu(
@@ -447,7 +448,7 @@ async def patch_sheet_cell(
         )
     except db_apply.ApplyOpsError as e:
         raise HTTPException(400, str(e)) from None
-    await session.commit()
+    await commit_with_retry(session)
     return result
 
 
@@ -506,7 +507,7 @@ async def apply_ops(
     except db_apply.ApplyOpsError as e:
         await session.rollback()
         raise HTTPException(400, str(e)) from None
-    await session.commit()
+    await commit_with_retry(session)
     return result
 
 
@@ -566,7 +567,7 @@ _ORCHESTRATOR_SYSTEM = (
     "{\"actions\":[{\"set_prompt\":{\"step\":\"<шаг>\",\"variant\":\"<имя>\"}}]} — "
     "варианты в разделе ПРОМТЫ контекста.\n"
     "6) ТЕКСТОВАЯ LLM → "
-    "{\"actions\":[{\"set_text_llm\":{\"provider\":\"kie|vibecode|tokenrouter\"}}]}.\n"
+    "{\"actions\":[{\"set_text_llm\":{\"provider\":\"kie|vibecode\"}}]}.\n"
     "7) ОТКРЫТЬ окна программы → {\"actions\":[{\"open_ui\":{...}}]} — kinds: "
     "step_prompts (плюс step; ОБЯЗАТЕЛЬНО при выборе/сравнении вариантов "
     "промтов — человек выбирает в окне), node_studio/prompt_builder/hitl "
@@ -1167,7 +1168,7 @@ def _settings_context(project: Project) -> list[str]:
             )
     st = catalog_status()
     lines.append(
-        f"ТЕКСТОВАЯ LLM: активна {st['active_label']} → провайдеры: kie, tokenrouter"
+        f"ТЕКСТОВАЯ LLM: активна {st['active_label']} → провайдеры: kie, vibecode"
     )
     return lines
 
@@ -1372,7 +1373,7 @@ async def _apply_hitl_decision(
     req.decision = new_decision
     req.decided_at = datetime.utcnow()
     await apply_hitl_side_effects(session, req, new_decision)
-    await session.commit()
+    await commit_with_retry(session)
     await publish_hitl_event(
         project.id,
         req.id,
@@ -1473,7 +1474,7 @@ async def _apply_delete_projects(session: AsyncSession, ids: list[int]) -> dict:
         remove_project_from_layout(int(pid))
         await session.delete(p)
         deleted.append(f"#{pid} {title}")
-    await session.commit()
+    await commit_with_retry(session)
     for pid in ids:
         try:
             await publish_project_event(int(pid), event_type="project_deleted")
@@ -1568,7 +1569,7 @@ async def _apply_create_child(
 
     parent = await _resolve_parent_for_child(session, current, spec)
     child = await create_child_from_parent(session, parent, slugify=_slugify)
-    await session.commit()
+    await commit_with_retry(session)
     await session.refresh(child)
     try:
         await finalize_child_data_dir(parent, child)
@@ -1882,7 +1883,7 @@ async def _apply_add_node(session: AsyncSession, project: Project, spec: dict) -
     if run is not None:
         run.nodes_snapshot = list(all_nodes)
         run.edges_snapshot = list(out_edges)
-    await session.commit()
+    await commit_with_retry(session)
     msg = (
         f"{node_type} ×{len(new_nodes)} "
         f"({'каждой' if after == 'each' else after})"
@@ -2037,7 +2038,7 @@ async def _apply_remove_node(session: AsyncSession, project: Project, spec: dict
     if run is not None:
         run.nodes_snapshot = list(left_nodes)
         run.edges_snapshot = list(out_edges)
-    await session.commit()
+    await commit_with_retry(session)
     return {"remove_node": f"удалено {len(targets)}"}
 
 
@@ -2143,7 +2144,7 @@ async def _apply_repair_graph(session: AsyncSession, project: Project) -> dict:
     if run is not None:
         run.nodes_snapshot = list(nodes)
         run.edges_snapshot = list(new_edges)
-    await session.commit()
+    await commit_with_retry(session)
     return {"repair_graph": f"цепочка пересобрана: {len(ordered)} нод + {len(sinks)} сбоку"}
 
 
@@ -2191,7 +2192,7 @@ async def _save_canvas_graph(
     if run is not None:
         run.nodes_snapshot = list(nodes)
         run.edges_snapshot = list(edges)
-    await session.commit()
+    await commit_with_retry(session)
 
 
 async def _apply_connect_edges(session: AsyncSession, project: Project, spec: dict) -> dict:
@@ -2350,7 +2351,7 @@ async def _apply_rename_node(session: AsyncSession, project: Project, spec: dict
     if run is not None:
         run.nodes_snapshot = list(nodes)
         run.edges_snapshot = list(edges)
-    await session.commit()
+    await commit_with_retry(session)
     return {"rename_node": f"{node_key}: «{old_label}» → «{label}»"}
 
 
@@ -2401,7 +2402,7 @@ async def orchestrator_chat(
 
     project = await _project(session, project_id)
     await db_v2.backfill_project_v2(session, project)
-    await session.commit()
+    await commit_with_retry(session)
     graph = await db_v2.project_graph(session, project)
 
     history_txt = "\n".join(
@@ -2485,7 +2486,7 @@ async def orchestrator_chat(
                     scenes=scenes or None,
                     export_xlsx=bool(ops_data.get("export_xlsx", False)),
                 )
-                await session.commit()
+                await commit_with_retry(session)
             except db_apply.ApplyOpsError as e:
                 await session.rollback()
                 error = str(e)
@@ -2539,25 +2540,25 @@ async def orchestrator_chat(
                     new_status = await start_step(
                         session, project, step, explicit_ui_start=True
                     )
-                    await session.commit()
+                    await commit_with_retry(session)
                     actions_run.append({"run_step": step, "status": new_status.value})
                 elif act.get("stop_step"):
                     from app.services.project_control import stop_project_running
 
                     await stop_project_running(session, project)
-                    await session.commit()
+                    await commit_with_retry(session)
                     actions_run.append({"stop_step": True})
                 elif "set_option" in act:
                     spec = act.get("set_option") or {}
                     label = _apply_set_option(project, spec.get("key"), spec.get("value"))
-                    await session.commit()
+                    await commit_with_retry(session)
                     actions_run.append({"set_option": label})
                 elif "set_prompt" in act:
                     spec = act.get("set_prompt") or {}
                     label = _apply_set_prompt(
                         project, spec.get("step"), spec.get("variant")
                     )
-                    await session.commit()
+                    await commit_with_retry(session)
                     actions_run.append({"set_prompt": label})
                 elif "set_text_llm" in act:
                     spec = act.get("set_text_llm") or {}
@@ -2586,7 +2587,7 @@ async def orchestrator_chat(
                     if not text:
                         raise db_apply.ApplyOpsError("set_topic: пустая тема")
                     project.topic = text
-                    await session.commit()
+                    await commit_with_retry(session)
                     actions_run.append({"set_topic": text[:60]})
                 elif "create_project" in act:
                     spec = act.get("create_project") or {}
@@ -2662,7 +2663,7 @@ async def orchestrator_chat(
                     rep = await run_harness_verify(
                         session, project, allow_repair=False, include_http=False
                     )
-                    await session.commit()
+                    await commit_with_retry(session)
                     bad = [c.name for c in rep.checks if not c.ok]
                     actions_run.append(
                         {"run_harness": "ок" if rep.ok else f"НЕОК: {bad}"}
@@ -2992,7 +2993,7 @@ async def patch_frame(
         fr.voiceover_text = body.voiceover_text
     if body.attrs is not None:
         fr.attrs = body.attrs
-    await session.commit()
+    await commit_with_retry(session)
     register_frame_project(fr.id, fr.project_id)
     return {"ok": True, "id": fr.id, "uuid": fr.uuid, "sort_key": fr.sort_key}
 
@@ -3018,7 +3019,7 @@ async def insert_frame(
         )
     except ValueError as e:
         raise HTTPException(404, str(e)) from None
-    await session.commit()
+    await commit_with_retry(session)
     register_frame_project(fr.id, project_id)
     return {"id": fr.id, "uuid": fr.uuid, "sort_key": fr.sort_key, "scene_id": fr.scene_id}
 
@@ -3039,7 +3040,7 @@ async def add_text(
         project_id=fr.project_id, frame_id=fr.id, kind=body.kind, text=body.text
     )
     session.add(t)
-    await session.commit()
+    await commit_with_retry(session)
     register_text_project(t.id, fr.project_id)
     return {"id": t.id, "kind": t.kind}
 
@@ -3052,7 +3053,7 @@ async def delete_text(
     if t is None:
         raise HTTPException(404, "текст не найден")
     await session.delete(t)
-    await session.commit()
+    await commit_with_retry(session)
     return {"ok": True}
 
 
@@ -3081,7 +3082,7 @@ async def add_prompt(
         fr.image_prompt = body.text
     elif body.set_active and body.kind == "video":
         fr.animation_prompt = body.text
-    await session.commit()
+    await commit_with_retry(session)
     register_prompt_project(pv.id, fr.project_id)
     return {"id": pv.id, "version": pv.version, "is_active": pv.is_active}
 
@@ -3110,7 +3111,7 @@ async def activate_prompt(
         fr.image_prompt = pv.text
     elif fr is not None and pv.kind == "video":
         fr.animation_prompt = pv.text
-    await session.commit()
+    await commit_with_retry(session)
     return {"ok": True, "id": pv.id}
 
 
@@ -3142,7 +3143,7 @@ async def add_entity(
         sort_key=float(max_key) + 10.0,
     )
     session.add(en)
-    await session.commit()
+    await commit_with_retry(session)
     register_entity_project(en.id, project_id)
     return {"id": en.id}
 
@@ -3160,7 +3161,7 @@ async def patch_entity(
     en.code = body.code
     en.name = body.name
     en.attrs = body.attrs
-    await session.commit()
+    await commit_with_retry(session)
     register_entity_project(en.id, en.project_id)
     return {"ok": True}
 
@@ -3173,7 +3174,7 @@ async def delete_entity(
     if en is None:
         raise HTTPException(404, "сущность не найдена")
     await session.delete(en)
-    await session.commit()
+    await commit_with_retry(session)
     return {"ok": True}
 
 
@@ -3199,7 +3200,7 @@ async def add_edge(
         type=body.type,
     )
     session.add(e)
-    await session.commit()
+    await commit_with_retry(session)
     register_edge_project(e.id, fr.project_id)
     return {"id": e.id}
 
@@ -3212,7 +3213,7 @@ async def delete_edge(
     if e is None:
         raise HTTPException(404, "связь не найдена")
     await session.delete(e)
-    await session.commit()
+    await commit_with_retry(session)
     return {"ok": True}
 
 
@@ -3257,6 +3258,6 @@ async def add_scene(
         scene_type=body.scene_type,
     )
     session.add(sc)
-    await session.commit()
+    await commit_with_retry(session)
     register_scene_project(sc.id, project_id)
     return {"id": sc.id, "sort_key": sc.sort_key}

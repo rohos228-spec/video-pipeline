@@ -41,8 +41,7 @@ from app.models import (
 )
 from app.services.project_state import compute_actual_status
 
-# ---------------------------------------------------------------------------
-# Внутренние «wipe»-функции — каждая чистит выход одного логического шага.
+_IMG_EXTENSIONS: frozenset[str] = frozenset({".png", ".jpg", ".jpeg", ".webp"})
 
 _BACKUP_ON_WIPE_KINDS = frozenset(
     {
@@ -623,17 +622,21 @@ async def _resume_images(session: AsyncSession, project: Project) -> dict[str, A
 
 
 def _backup_scenes_before_wipe(project: Project, scenes_dir: Path) -> int:
-    """Копия scenes/*.png в data/.../old/scenes/<timestamp>/ перед удалением."""
+    """Копия scenes/* в data/.../old/scenes/<timestamp>/ перед удалением."""
     if not scenes_dir.is_dir():
         return 0
-    pngs = list(scenes_dir.glob("*.png"))
-    if not pngs:
+    imgs = [
+        p
+        for p in scenes_dir.iterdir()
+        if p.is_file() and p.suffix.lower() in _IMG_EXTENSIONS
+    ]
+    if not imgs:
         return 0
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     dest_dir = project.data_dir / "old" / "scenes" / ts
     dest_dir.mkdir(parents=True, exist_ok=True)
     copied = 0
-    for src in pngs:
+    for src in imgs:
         try:
             shutil.copy2(src, dest_dir / src.name)
             copied += 1
@@ -646,7 +649,7 @@ def _backup_scenes_before_wipe(project: Project, scenes_dir: Path) -> int:
             )
     if copied:
         logger.info(
-            "[#{}] reset_step: backup {} scene png → {}",
+            "[#{}] reset_step: backup {} scene images → {}",
             project.id,
             copied,
             dest_dir,
@@ -657,7 +660,7 @@ def _backup_scenes_before_wipe(project: Project, scenes_dir: Path) -> int:
 async def _wipe_images(session: AsyncSession, project: Project) -> dict[str, Any]:
     """Сброс шага 7 «Картинки»:
       - удалить scene_image артефакты + файлы
-      - дочистить data/projects/<slug>/scenes/*.png
+      - дочистить data/projects/<slug>/scenes/*
       - сбросить frame.status в image_prompt_ready (или planned, если
         промт пропал) и снять fail_reason из attrs.
     """
@@ -666,15 +669,16 @@ async def _wipe_images(session: AsyncSession, project: Project) -> dict[str, Any
     art_stats = await _wipe_artifacts_by_kind(
         session, project, ArtifactKind.scene_image
     )
-    # дочистим .png в scenes/, если что-то осталось
+    # дочистим изображения в scenes/, если что-то осталось
     extra_files = 0
     if scenes_dir.exists():
-        for p in scenes_dir.glob("*.png"):
-            try:
-                p.unlink()
-                extra_files += 1
-            except Exception:  # noqa: BLE001
-                pass
+        for p in scenes_dir.iterdir():
+            if p.is_file() and p.suffix.lower() in _IMG_EXTENSIONS:
+                try:
+                    p.unlink()
+                    extra_files += 1
+                except Exception:  # noqa: BLE001
+                    pass
     # сбрасываем frame.status
     frames = (
         await session.execute(

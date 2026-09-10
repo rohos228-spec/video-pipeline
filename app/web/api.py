@@ -219,6 +219,12 @@ async def _lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         logger.exception("auto_migrate_legacy_projects failed (non-fatal)")
 
+    if settings.vps_relay_base_url:
+        logger.warning(
+            "🔒 SECURITY NOTICE: GPT API направлен через VPS-relay {} (трафик текстовых LLM проксируется через внешний VPS). Для прямого подключения очистите GPT_RELAY_TOKEN в .env",
+            settings.vps_relay_base_url,
+        )
+
     try:
         yield
     finally:
