@@ -482,8 +482,11 @@ export function findCatalogModel(
   modelId: string | null | undefined,
 ): CatalogModel | undefined {
   if (!catalog || !modelId) return undefined;
-  const want = IMAGE_MODEL_ALIASES[modelId] || modelId;
-  return catalog.models.find((m) => m.id === want);
+  let want = IMAGE_MODEL_ALIASES[modelId] || modelId;
+  if (want.endsWith("-vibecode")) {
+    want = want.slice(0, -9);
+  }
+  return catalog.models.find((m) => m.id === want || m.id === modelId || m.api_model === want);
 }
 
 export function vendorForModel(model: CatalogModel | undefined): ModelVendorId {

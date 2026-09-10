@@ -775,9 +775,11 @@ function FrameImagesView({
   }
 
   const [index, setIndex] = useState(0);
+  const [zoomOpen, setZoomOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
   const isHero = nodeType === "hero" || nodeType === "hitl_hero";
+  const isItems = nodeType === "items";
   const current = items[index] ?? items[0];
 
   const replaceHero = useMutation({
@@ -822,6 +824,16 @@ function FrameImagesView({
             </Button>
           </>
         )}
+        {current?.previewUrl && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setZoomOpen(true)}
+          >
+            <Maximize2 className="h-3.5 w-3.5" />
+            Открыть
+          </Button>
+        )}
         {current?.downloadUrl && (
           <Button size="sm" variant="outline" asChild>
             <a href={current.downloadUrl} download target="_blank" rel="noreferrer">
@@ -864,8 +876,8 @@ function FrameImagesView({
               type="button"
               onClick={() => setIndex(i)}
               className={cn(
-                "h-16 w-12 shrink-0 overflow-hidden rounded-lg border transition",
-                i === index ? "border-primary ring-1 ring-primary/40" : "border-white/10",
+                "relative h-16 w-24 shrink-0 overflow-hidden rounded-lg border transition",
+                i === index ? "border-primary ring-1 ring-primary/40 shadow-sm" : "border-white/10 hover:border-white/20",
               )}
             >
               {item.previewUrl ? (
@@ -873,16 +885,36 @@ function FrameImagesView({
               ) : (
                 <span className="flex h-full items-center justify-center px-1 text-[9px]">{item.label}</span>
               )}
+              <span className="absolute bottom-1 left-1 rounded bg-black/80 px-1.5 py-0.5 text-[9px] font-mono font-medium text-white backdrop-blur-sm">
+                #{i + 1}
+              </span>
             </button>
           ))}
         </div>
       )}
       {current?.previewUrl && (
-        <div className="flex justify-center rounded-xl border border-white/10 bg-black/30 p-2">
-          <img src={current.previewUrl} alt="" className="max-h-[45vh] w-full object-contain" />
+        <div
+          className="group relative flex justify-center rounded-xl border border-white/10 bg-black/30 p-2 cursor-pointer transition hover:border-white/25"
+          onClick={() => setZoomOpen(true)}
+          title="Нажмите, чтобы открыть на весь экран"
+        >
+          <img src={current.previewUrl} alt="" className="max-h-[45vh] w-full object-contain transition group-hover:opacity-95" />
+          <div className="absolute right-3 top-3 flex items-center gap-1.5 rounded-md bg-black/70 px-2.5 py-1 text-xs text-white/90 opacity-0 backdrop-blur-sm transition group-hover:opacity-100">
+            <Maximize2 className="h-3.5 w-3.5" />
+            Увеличить
+          </div>
         </div>
       )}
-      {!isHero && (
+      {isItems ? (
+        <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+          <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            Описание предмета
+          </p>
+          <p className="max-h-36 overflow-auto whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
+            {current?.content?.trim() || "—"}
+          </p>
+        </div>
+      ) : !isHero ? (
         <div className="rounded-lg border border-white/10 bg-black/20 p-3">
           <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
             Закадровый текст
@@ -890,6 +922,48 @@ function FrameImagesView({
           <p className="max-h-36 overflow-auto whitespace-pre-wrap text-sm leading-relaxed">
             {current?.content?.trim() || "—"}
           </p>
+        </div>
+      ) : null}
+
+      {zoomOpen && current?.previewUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4 backdrop-blur-sm"
+          onClick={() => setZoomOpen(false)}
+        >
+          <div
+            className="relative flex max-h-[95vh] max-w-[95vw] flex-col items-center justify-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <img
+              src={current.previewUrl}
+              alt=""
+              className="max-h-[88vh] max-w-[92vw] rounded-lg object-contain shadow-2xl"
+            />
+            <div className="absolute right-2 top-2 flex items-center gap-2">
+              <Button size="sm" variant="secondary" className="h-8 gap-1.5 text-xs" asChild>
+                <a href={current.previewUrl} target="_blank" rel="noreferrer">
+                  <Maximize2 className="h-3.5 w-3.5" />
+                  В новой вкладке
+                </a>
+              </Button>
+              {current.downloadUrl && (
+                <Button size="sm" variant="secondary" className="h-8 gap-1.5 text-xs" asChild>
+                  <a href={current.downloadUrl} download target="_blank" rel="noreferrer">
+                    <Download className="h-3.5 w-3.5" />
+                    Скачать
+                  </a>
+                </Button>
+              )}
+              <Button
+                size="icon"
+                variant="secondary"
+                className="h-8 w-8"
+                onClick={() => setZoomOpen(false)}
+              >
+                ✕
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </div>

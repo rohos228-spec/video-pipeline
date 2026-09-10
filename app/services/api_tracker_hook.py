@@ -19,19 +19,28 @@ from typing import Any
 # Путь к локальной базе API Tracker
 _TRACKER_DB = Path(__file__).resolve().parent.parent.parent / "api-tracker" / "tracker.db"
 
-# Быстрый расчет тарифов
+# Быстрый расчет тарифов (синхронизирован с api-tracker/app/pricing.py)
 _RATES: dict[str, tuple[float, float]] = {
     # model: (input_usd_per_m, output_usd_per_m)
+    "gemini-3.8-flash": (0.147622, 0.738108),
     "gemini-3.7-flash": (0.147622, 0.738108),
-    "gemini-3.8-flash": (0.75, 3.75),
     "gemini-3.6-flash": (0.295243, 1.476216),
     "gemini-3-flash": (0.098414, 0.590486),
     "gemini-3.1-pro": (0.393658, 2.361946),
-    "gpt-5.6-sol": (1.20, 4.80),
-    "gpt-5.6-terra": (1.50, 6.00),
-    "gpt-5.6-luna": (2.00, 8.00),
+    "gpt-6-astra": (0.852925, 4.264624),
+    "gpt-5.5": (0.426462, 2.558774),
+    "gpt-5.6-sol": (0.426462, 2.558774),
+    "gpt-5.6-terra": (0.170585, 1.023510),
+    "gpt-5.6-luna": (0.131219, 0.787315),
+    "grok-4-6": (0.065610, 0.196829),
+    "grok-4-5": (0.065610, 0.196829),
+    "claude-sonnet-5": (0.196829, 0.984144),
+    "claude-opus-5": (0.492072, 2.460360),
+    "claude-opus-4-8": (0.492072, 2.460360),
+    "claude-fable-5-1": (1.968288, 9.841440),
+    "claude-fable-5": (4.705535, 23.527676),
     "deepseek-v4-flash": (0.291896, 0.875687),
-    "deepseek-v4-pro": (0.55, 2.19),
+    "deepseek-v4-pro": (0.875687, 2.627061),
 }
 
 
@@ -64,6 +73,27 @@ def _calc_cost(
 ) -> float:
     if cost_usd is not None and cost_usd >= 0:
         return round(cost_usd, 6)
+
+    # Пробуем канонический калькулятор из api-tracker
+    try:
+        import importlib.util
+        pricing_file = _TRACKER_DB.parent / "app" / "pricing.py"
+        if pricing_file.is_file():
+            spec = importlib.util.spec_from_file_location("pricing_calc", pricing_file)
+            if spec and spec.loader:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                return mod.calculate_cost(
+                    model,
+                    call_type=call_type,
+                    prompt_tokens=p_tok,
+                    completion_tokens=c_tok,
+                    duration_sec=duration,
+                    media_count=media_count,
+                )
+    except Exception:
+        pass
+
     m = (model or "").lower().replace("_", "-").replace(" ", "-")
     for k, (in_r, out_r) in _RATES.items():
         if k in m:

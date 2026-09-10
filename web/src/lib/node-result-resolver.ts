@@ -142,13 +142,23 @@ function dedupeResultItems(items: NodeResultItem[]): NodeResultItem[] {
 function artifactItems(arts: ArtifactDTO[]): NodeResultItem[] {
   return arts.map((a) => {
     const path = a.path || "";
+    const meta = (a.meta || {}) as Record<string, unknown>;
+    const metaDesc = typeof meta.description === "string" && meta.description.trim()
+      ? meta.description.trim()
+      : undefined;
+    const metaIdx = typeof meta.item_index === "number"
+      ? meta.item_index
+      : (typeof meta.hero_index === "number" ? meta.hero_index : undefined);
+
     return {
       id: a.uuid,
-      label: a.kind,
+      label: metaIdx ? `№${metaIdx}` : a.kind,
       kind: mediaKind(path, a.kind || ""),
       previewUrl: api.artifactFileUrl(a.uuid),
       downloadUrl: api.artifactFileUrl(a.uuid),
       filePath: path || null,
+      content: metaDesc,
+      frameNumber: typeof metaIdx === "number" ? metaIdx : undefined,
     };
   });
 }
@@ -416,11 +426,38 @@ function computeNodeResult(
 
     case "items": {
       const itemAssets = ctx.assets.filter((a) => a.kind.includes("item") || a.path?.includes("item"));
-      const items = [
-        ...assetItems(itemAssets),
+      const rawItems = dedupeResultItems([
         ...artifactItems(arts.filter((a) => a.kind.includes("item"))),
-      ];
-      if (items.length) return ready(items, `${items.length} reference предметов`, "assets");
+        ...assetItems(itemAssets),
+      ]);
+      if (rawItems.length) {
+        // Сортируем строго по возрастанию индекса предмета (predmet1, predmet2, ...),
+        // чтобы порядок картинок не зависел от order_by id desc в БД.
+        const items = [...rawItems].sort((a, b) => {
+          const getIdx = (it: NodeResultItem) => {
+            if (typeof it.frameNumber === "number") return it.frameNumber;
+            const m = (it.filePath || it.downloadUrl || it.previewUrl || it.id || "").match(/predmet(\d+)/i);
+            return m ? parseInt(m[1], 10) : 999;
+          };
+          return getIdx(a) - getIdx(b);
+        });
+
+        const descriptions = project?.item_descriptions ?? [];
+        const enriched = items.map((item, i) => {
+          const m = (item.filePath || item.downloadUrl || item.previewUrl || item.id || "").match(/predmet(\d+)/i);
+          const itemIdx = typeof item.frameNumber === "number"
+            ? item.frameNumber
+            : (m ? parseInt(m[1], 10) : i + 1);
+          const descFromProject = descriptions[itemIdx - 1];
+          const text = item.content?.trim() || descFromProject || descriptions[i] || item.label;
+          return {
+            ...item,
+            content: text,
+            label: `Предмет ${itemIdx}: ${text}`,
+          };
+        });
+        return ready(enriched, `${items.length} reference предметов`, "assets", "frame_images");
+      }
       if ((project?.item_descriptions?.length ?? 0) > 0) {
         return ready(
           (project?.item_descriptions ?? []).map((d, i) => ({

@@ -311,3 +311,28 @@ async def test_recompute_status_never_downgrades() -> None:
     assert new is ProjectStatus.image_prompts_ready
     assert changed is False
     assert p.status is ProjectStatus.image_prompts_ready
+
+
+@pytest.mark.asyncio
+async def test_excel_ids_with_artifact_disk_fallback(tmp_path) -> None:
+    from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+
+    chars_dir = tmp_path / "characters"
+    chars_dir.mkdir(parents=True)
+    c01_file = chars_dir / "c01.png"
+    c01_file.write_bytes(b"x" * 2000)
+
+    p = Project(
+        id=99,
+        topic="t",
+        slug="t",
+        status=ProjectStatus.generating_hero,
+    )
+    session = AsyncMock()
+    m = MagicMock()
+    m.scalars.return_value.all.return_value = []
+    session.execute = AsyncMock(return_value=m)
+
+    with patch.object(Project, "data_dir", new_callable=PropertyMock, return_value=tmp_path):
+        generated = await generate_hero._excel_ids_with_artifact(session, p)
+    assert "c01" in generated
