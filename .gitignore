@@ -68,5 +68,8 @@ prompts/*
 !prompts/02_script/default.md
 !prompts/03_razbivka/
 !prompts/03_razbivka/default.md
+!prompts/04_hero/
+!prompts/04_hero/default.md
+!prompts/04_hero/character_model_sheet_16x9.md
 !prompts/07_animation/
 !prompts/07_animation/default.md

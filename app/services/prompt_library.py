@@ -359,6 +359,16 @@ def read_prompt(step_code: str, name: str) -> str:
         return p.read_text(encoding="utf-8")
     p = prompt_path(step_code, name)
     if not p.exists():
+        if name == DEFAULT_NAME:
+            available = _list_prompts_in_dir(step_code)
+            if available:
+                fallback_p = prompt_path(step_code, available[0])
+                if fallback_p.is_file():
+                    logger.warning(
+                        "read_prompt: '{}' not found in {}, falling back to '{}'",
+                        name, step_dir(step_code), available[0],
+                    )
+                    return fallback_p.read_text(encoding="utf-8")
         raise FileNotFoundError(f"prompt file not found: {p}")
     return p.read_text(encoding="utf-8")
 
@@ -472,6 +482,7 @@ PROMPT_SOURCE_LABELS: dict[str, str] = {
     "override": "оверрайд проекта",
     "global": "глобально активный",
     "default": "default",
+    "fallback": "фоллбэк",
 }
 
 
@@ -564,6 +575,13 @@ def resolve_project_prompt_with_source(
     global_name = get_global_active(step_code)
     if global_name:
         return global_name, "global"
+
+    if prompt_path(step_code, DEFAULT_NAME).exists():
+        return DEFAULT_NAME, "default"
+
+    available = _list_prompts_in_dir(step_code)
+    if available:
+        return available[0], "fallback"
 
     return DEFAULT_NAME, "default"
 

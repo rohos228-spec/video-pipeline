@@ -31,6 +31,10 @@ HIDDEN_IMAGE_IDS = frozenset({
     "gpt-image-1.5",
 })
 IMAGE_MODEL_ALIASES = {"gpt-image-2": "gpt-image-2-vip"}
+TEXT_MODEL_ALIASES = {
+    "claude-fable-5": "claude-fable-5-1",
+    "claude-fable-5.1": "claude-fable-5-1",
+}
 
 IMAGE_MODEL_TO_GENERATOR: dict[str, str] = {
     "gpt-image-2": "gpt_image_2_vip",
@@ -393,6 +397,7 @@ def find_model(model_id: str | None, *, channel: str | None = None) -> dict[str,
     if not want:
         return None
     want = IMAGE_MODEL_ALIASES.get(want, want)
+    want = TEXT_MODEL_ALIASES.get(want, want)
     for item in models_for_channel(channel=channel):
         if item["id"] == want:
             return item

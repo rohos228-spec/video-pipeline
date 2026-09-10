@@ -234,6 +234,17 @@ async def _excel_ids_with_artifact(
             continue
         if a.path and Path(a.path).is_file():
             out.add(xid)
+
+    # Защитный fallback: если файл уже на диске в characters/<xid>.png
+    pdir = getattr(project, "data_dir", None)
+    if pdir:
+        chars_dir = Path(pdir) / "characters"
+        if chars_dir.is_dir():
+            for p in chars_dir.glob("*.png"):
+                stem = p.stem.lower()
+                if stem.startswith("c") and p.is_file() and p.stat().st_size > 1000:
+                    out.add(stem)
+
     return out
 
 
@@ -432,6 +443,9 @@ async def _load_excel_hero_from_xlsx(
     meta["excel_hero"] = cfg
     meta["excel_hero_enabled"] = True
     project.meta = meta
+    from sqlalchemy.orm.attributes import flag_modified
+
+    flag_modified(project, "meta")
     await session.flush()
     logger.info(
         "[#{}] excel_hero load: {} персонаж(ей) из {} ",
@@ -1083,8 +1097,16 @@ async def _run_excel(
         # Отпустить write-txn на время параллельной генерации.
         await session.commit()
 
+        from app.project_db import get_project_sessionmaker
+
+        p_dir = getattr(project, "data_dir", None)
+        if p_dir:
+            sm = await get_project_sessionmaker(p_dir)
+        else:
+            sm = SessionLocal
+
         async def _one(ch: ExcelCharacter) -> str:
-            async with SessionLocal() as s:
+            async with sm() as s:
                 p = (
                     await s.execute(select(Project).where(Project.id == project_id))
                 ).scalar_one()
@@ -1124,6 +1146,7 @@ async def _run_excel(
                 f"excel_hero: волна упала без успехов: {errors[0]!r}"
             )
 
+        await session.commit()
         await session.refresh(project)
         project.status = ProjectStatus.generating_hero
 
@@ -1411,6 +1434,23 @@ async def _generate_one_excel_character(
         meta=art_meta,
     )
     session.add(art)
+    # Синхронизируем Artifact в master state.db для веб-UI студии
+    try:
+        from app.db import SessionLocal
+
+        async with SessionLocal() as master_sess:
+            m_art = Artifact(
+                project_id=project.id,
+                kind=ArtifactKind.hero_reference,
+                uuid=art.uuid,
+                path=str(file_path),
+                meta=art_meta,
+            )
+            master_sess.add(m_art)
+            await master_sess.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[#{}] master artifact sync: {}", project.id, exc)
+
     # Без HITL: всегда продолжаем batch/wave в _run_excel.
     project.status = ProjectStatus.generating_hero
     await session.flush()

@@ -809,7 +809,7 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
                     <span className="text-[10px] text-white/40 font-mono">vibecode / kie</span>
                   </div>
                   <div className="max-h-96 overflow-y-auto space-y-2 pr-1">
-                    {["OpenAI", "Google", "DeepSeek", "KIE"].map((groupName) => {
+                    {["Anthropic", "xAI", "Google", "OpenAI", "DeepSeek", "KIE"].map((groupName) => {
                       const groupModels = (textLlmQ.data?.models || []).filter(
                         (m: any) => (m.group || (m.provider === "kie" ? "KIE" : "OpenAI")) === groupName
                       );
@@ -817,16 +817,25 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
                       return (
                         <div key={groupName} className="space-y-0.5">
                           <div className="px-2.5 pt-1.5 pb-1 font-mono text-[10px] font-bold uppercase tracking-wider text-white/35">
-                            {groupName === "Google"
-                              ? "✨ Google Gemini"
-                              : groupName === "DeepSeek"
-                                ? "🧠 DeepSeek"
-                                : groupName === "OpenAI"
-                                  ? "⚡ OpenAI (GPT 5.6)"
-                                  : "🌐 KIE API"}
+                            {groupName === "Anthropic"
+                              ? "🟣 Anthropic (Claude)"
+                              : groupName === "xAI"
+                                ? "⚡ xAI (Grok)"
+                                : groupName === "Google"
+                                  ? "✨ Google Gemini"
+                                  : groupName === "DeepSeek"
+                                    ? "🧠 DeepSeek"
+                                    : groupName === "OpenAI"
+                                      ? "⚡ OpenAI (GPT)"
+                                      : "🌐 KIE API"}
                           </div>
                           {groupModels.map((m: any) => {
                             const active = m.active;
+                            const isNew =
+                              m.id.includes("3.8") ||
+                              m.id.includes("sonnet-5") ||
+                              m.id.includes("4-6") ||
+                              m.id.includes("astra");
                             return (
                               <button
                                 key={m.id}
@@ -845,7 +854,7 @@ export function GptWorkspace({ open, onOpenChange }: Props) {
                                 <div className="min-w-0 flex-1">
                                   <div className="truncate font-medium flex items-center gap-1.5">
                                     <span>{m.label}</span>
-                                    {m.id.includes("3.7") && (
+                                    {isNew && (
                                       <span className="rounded bg-[#22d3ee] px-1 py-0.2 font-mono text-[9px] font-extrabold text-black">
                                         NEW
                                       </span>

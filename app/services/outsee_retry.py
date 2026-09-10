@@ -926,126 +926,134 @@ async def generate_image_with_retries(
                     else None,
                     project_id=pid if isinstance(pid, int) else None,
                 )
-                if use_outsee_api:
-                    refs = attempt_kwargs.get("reference_image")
-                    ref_list: list[Any] | None = None
-                    if isinstance(refs, Path):
-                        ref_list = [refs]
-                    elif isinstance(refs, list):
-                        ref_list = [p for p in refs if p is not None]
-                    raw_slug = attempt_kwargs.get("model_slug") or getattr(
-                        _settings, "outsee_default_image_model", None
+                refs = attempt_kwargs.get("reference_image")
+                ref_list: list[Any] | None = None
+                if isinstance(refs, Path):
+                    ref_list = [refs]
+                elif isinstance(refs, list):
+                    ref_list = [p for p in refs if p is not None]
+                raw_slug = attempt_kwargs.get("model_slug") or getattr(
+                    _settings, "outsee_default_image_model", None
+                )
+                ar = attempt_kwargs.get("aspect_ratio") or "9:16"
+                res = attempt_kwargs.get("resolution") or attempt_kwargs.get(
+                    "image_resolution"
+                )
+                if ref_list:
+                    logger.info(
+                        "outsee_retry: {} ref(s) → image API reference_images",
+                        len(ref_list),
                     )
+
+                if backend == "kie":
+                    from app.bots.kie_http import generate_kie_image
+
+                    result = await generate_kie_image(
+                        send_prompt,
+                        out_path,
+                        model_slug=str(raw_slug or "seedream-5-pro"),
+                        aspect_ratio=str(ar).replace("_", ":"),
+                        resolution=str(res) if res else "2K",
+                        reference_images=ref_list,
+                        timeout=float(attempt_kwargs.get("timeout") or 600),
+                        gen_id=attempt_kwargs.get("gen_id"),
+                        project_id=pid if isinstance(pid, int) else None,
+                    )
+                    try:
+                        from app.services.generation_storage import write_sidecar
+
+                        write_sidecar(
+                            result.file_path,
+                            media="image",
+                            model=str(raw_slug),
+                            prompt=send_prompt,
+                            params={
+                                "aspect": str(ar).replace("_", ":"),
+                                "resolution": str(res) if res else "2K",
+                                "project_id": pid,
+                                "gen_id": attempt_kwargs.get("gen_id"),
+                            },
+                            raw_url=result.raw_url,
+                            quote=None,
+                            provider="kie",
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.debug("kie sidecar write skipped", exc_info=True)
+                    try:
+                        from app.services.api_tracker_hook import record_api_call
+
+                        record_api_call(
+                            provider="kie",
+                            model=str(raw_slug or "image-model"),
+                            call_type="image",
+                            media_count=1,
+                            status_code=200,
+                            project_source=f"pipeline_project_{pid}" if pid else "pipeline",
+                            metadata={"prompt": send_prompt[:500]},
+                        )
+                    except Exception:
+                        pass
+                    return result
+
+                elif use_outsee_api:
                     slug = studio_id_to_outsee_image_slug(
                         str(raw_slug) if raw_slug else None
                     )
-                    ar = attempt_kwargs.get("aspect_ratio") or "9:16"
-                    res = attempt_kwargs.get("resolution") or attempt_kwargs.get(
-                        "image_resolution"
+                    result = await outsee_api_generate_image(
+                        send_prompt,
+                        out_path,
+                        model_slug=slug,
+                        aspect_ratio=str(ar).replace("_", ":"),
+                        resolution=str(res) if res else "2K",
+                        detail_level=attempt_kwargs.get("quality"),
+                        reference_images=ref_list,
+                        prompt_id_prefix=attempt_kwargs.get("prompt_id_prefix"),
+                        timeout=float(attempt_kwargs.get("timeout") or 600),
+                        gen_id=attempt_kwargs.get("gen_id"),
+                        project_id=pid if isinstance(pid, int) else None,
                     )
-                    if ref_list:
-                        logger.info(
-                            "outsee_retry: {} ref(s) → Outsee HTTP API image_urls",
-                            len(ref_list),
+                    try:
+                        from app.services.generation_storage import write_sidecar
+
+                        write_sidecar(
+                            result.file_path,
+                            media="image",
+                            model=slug,
+                            prompt=send_prompt,
+                            params={
+                                "aspect": str(ar).replace("_", ":"),
+                                "resolution": str(res) if res else "2K",
+                                "project_id": pid,
+                                "gen_id": attempt_kwargs.get("gen_id"),
+                            },
+                            raw_url=result.raw_url,
+                            quote=None,
+                            provider="outsee",
                         )
-                    if backend == "kie":
-                        from app.bots.kie_http import generate_kie_image
+                    except Exception:  # noqa: BLE001
+                        logger.debug("outsee sidecar write skipped", exc_info=True)
+                    try:
+                        from app.services.api_tracker_hook import record_api_call
 
-                        result = await generate_kie_image(
-                            send_prompt,
-                            out_path,
-                            model_slug=str(raw_slug or "seedream-5-pro"),
-                            aspect_ratio=str(ar).replace("_", ":"),
-                            resolution=str(res) if res else "2K",
-                            reference_images=ref_list,
-                            timeout=float(attempt_kwargs.get("timeout") or 600),
-                            gen_id=attempt_kwargs.get("gen_id"),
-                            project_id=pid if isinstance(pid, int) else None,
+                        record_api_call(
+                            provider="outsee",
+                            model=slug,
+                            call_type="image",
+                            media_count=1,
+                            status_code=200,
+                            project_source=f"pipeline_project_{pid}" if pid else "pipeline",
+                            metadata={"prompt": send_prompt[:500]},
                         )
-                        try:
-                            from app.services.generation_storage import write_sidecar
+                    except Exception:
+                        pass
+                    return result
 
-                            write_sidecar(
-                                result.file_path,
-                                media="image",
-                                model=str(raw_slug),
-                                prompt=send_prompt,
-                                params={
-                                    "aspect": str(ar).replace("_", ":"),
-                                    "resolution": str(res) if res else "2K",
-                                    "project_id": pid,
-                                    "gen_id": attempt_kwargs.get("gen_id"),
-                                },
-                                raw_url=result.raw_url,
-                                quote=None,
-                                provider="kie",
-                            )
-                        except Exception:  # noqa: BLE001
-                            logger.debug("kie sidecar write skipped", exc_info=True)
-                        try:
-                            from app.services.api_tracker_hook import record_api_call
-
-                            record_api_call(
-                                provider="kie",
-                                model=str(raw_slug or "image-model"),
-                                call_type="image",
-                                media_count=1,
-                                status_code=200,
-                                project_source=f"pipeline_project_{pid}" if pid else "pipeline",
-                                metadata={"prompt": send_prompt[:500]},
-                            )
-                        except Exception:
-                            pass
-                        return result
-                    if use_outsee_api:
-                        result = await outsee_api_generate_image(
-                            send_prompt,
-                            out_path,
-                            model_slug=slug,
-                            aspect_ratio=str(ar).replace("_", ":"),
-                            resolution=str(res) if res else "2K",
-                            detail_level=attempt_kwargs.get("quality"),
-                            reference_images=ref_list,
-                            prompt_id_prefix=attempt_kwargs.get("prompt_id_prefix"),
-                            timeout=float(attempt_kwargs.get("timeout") or 600),
-                            gen_id=attempt_kwargs.get("gen_id"),
-                            project_id=pid if isinstance(pid, int) else None,
+                else:
+                    if outsee is None:
+                        raise OutseeImageError(
+                            "Браузерная сессия Outsee не инициализирована (outsee is None)",
+                            context={"error_kind": "no_browser", "model": str(raw_slug)},
                         )
-                        try:
-                            from app.services.generation_storage import write_sidecar
-
-                            write_sidecar(
-                                result.file_path,
-                                media="image",
-                                model=slug,
-                                prompt=send_prompt,
-                                params={
-                                    "aspect": str(ar).replace("_", ":"),
-                                    "resolution": str(res) if res else "2K",
-                                    "project_id": pid,
-                                    "gen_id": attempt_kwargs.get("gen_id"),
-                                },
-                                raw_url=result.raw_url,
-                                quote=None,
-                                provider="outsee",
-                            )
-                        except Exception:  # noqa: BLE001
-                            logger.debug("outsee sidecar write skipped", exc_info=True)
-                        try:
-                            from app.services.api_tracker_hook import record_api_call
-
-                            record_api_call(
-                                provider="outsee",
-                                model=slug,
-                                call_type="image",
-                                media_count=1,
-                                status_code=200,
-                                project_source=f"pipeline_project_{pid}" if pid else "pipeline",
-                                metadata={"prompt": send_prompt[:500]},
-                            )
-                        except Exception:
-                            pass
-                        return result
                     return await outsee.generate_image(
                         send_prompt, out_path, **attempt_kwargs
                     )
