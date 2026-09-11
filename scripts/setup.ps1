@@ -131,20 +131,33 @@ function Find-LocalPython {
         if (Have-Cmd py) {
             foreach ($ver in @("3.11", "3.12")) {
                 try {
-                    $check = & py "-$ver" -c "print(1)" 2>$null
-                    if ($LASTEXITCODE -eq 0 -and "$check".Trim() -eq "1") {
-                        return "py -$ver"
+                    $exe = & py "-$ver" -c "import sys; print(sys.executable)" 2>$null
+                    $exeTrim = "$exe".Trim()
+                    if ($LASTEXITCODE -eq 0 -and $exeTrim -and (Test-Path -LiteralPath $exeTrim)) {
+                        return $exeTrim
                     }
                 } catch { }
             }
         }
         if (Have-Cmd python) {
             try {
-                $vraw = & python -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')" 2>$null
-                if ($LASTEXITCODE -eq 0 -and ($vraw -match "3\.11|3\.12")) {
-                    return "python"
+                $exe = & python -c "import sys; print(sys.executable if (sys.version_info[0]==3 and sys.version_info[1] in (11,12)) else '')" 2>$null
+                $exeTrim = "$exe".Trim()
+                if ($LASTEXITCODE -eq 0 -and $exeTrim -and (Test-Path -LiteralPath $exeTrim)) {
+                    return $exeTrim
                 }
             } catch { }
+        }
+        $candidates = @(
+            "$env:LocalAppData\Programs\Python\Python312\python.exe",
+            "$env:LocalAppData\Programs\Python\Python311\python.exe",
+            "$env:ProgramFiles\Python312\python.exe",
+            "$env:ProgramFiles\Python311\python.exe"
+        )
+        foreach ($c in $candidates) {
+            if (Test-Path -LiteralPath $c) {
+                return $c
+            }
         }
         return $null
     } finally {
@@ -195,7 +208,8 @@ if (-not $pyCmd) {
     }
 }
 
-Write-OK "Найден Python: $pyCmd"
+$pyVer = & $pyCmd -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}')" 2>$null
+Write-OK "Найден Python: $pyCmd ($pyVer)"
 
 # -------------------------------------------------------------
 # ШАГ 3: Проверка FFmpeg
@@ -258,10 +272,7 @@ $venvPython = Join-Path $venvDir "Scripts\python.exe"
 
 if (-not (Test-Path -LiteralPath $venvPython)) {
     Write-Host "    Создание виртуального окружения .venv..." -ForegroundColor DarkGray
-    $pyParts = $pyCmd -split ' '
-    $baseExe = $pyParts[0]
-    $baseArgs = if ($pyParts.Length -gt 1) { $pyParts[1..($pyParts.Length - 1)] } else { @() }
-    & $baseExe @baseArgs -m venv $venvDir
+    & $pyCmd -m venv $venvDir
 }
 
 if (-not (Test-Path -LiteralPath $venvPython)) {
