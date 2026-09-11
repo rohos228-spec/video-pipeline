@@ -1,4 +1,4 @@
-# Video Pipeline Studio: Мастер быстрой установки на Windows
+﻿# Video Pipeline Studio: Мастер быстрой установки на Windows
 # Запуск: через SETUP.cmd или powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 
 [CmdletBinding()]
