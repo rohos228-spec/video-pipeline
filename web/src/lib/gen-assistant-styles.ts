@@ -330,6 +330,23 @@ export function assembleGenPrompt(opts: {
   return parts.join("\n\n");
 }
 
+const ASSISTANT_STUB_MARK = "not example objects from the style guide";
+
+/** Сырой запрос / локальная заглушка агента — в генератор картинки слать нельзя. */
+export function isUnfilledAssistantPrompt(prompt: string, request = ""): boolean {
+  const p = prompt.trim();
+  const req = request.trim();
+  if (!p) return true;
+  if (p.toLowerCase().includes(ASSISTANT_STUB_MARK)) return true;
+  if (req) {
+    const head = req.slice(0, 80).toLowerCase();
+    if (head && p.toLowerCase().startsWith(head) && p.length <= req.length + 200) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Текст варианта k из N: тот же промпт + указание варьировать ракурс. */
 export function genPromptVariant(base: string, idx: number, total: number): string {
   if (total <= 1) return base;

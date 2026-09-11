@@ -287,7 +287,7 @@ export function formatApiError(
     if ("detail" in d) {
       const inner = d.detail;
       if (typeof inner === "string") return inner;
-      if (Array.isArray(inner)) return inner.map(String).join("; ");
+      if (Array.isArray(inner)) return inner.map(formatFastapiDetailItem).join("; ");
       if (inner && typeof inner === "object") {
         const nested = inner as Record<string, unknown>;
         if (Array.isArray(nested.errors) && nested.errors.length > 0) {
@@ -298,6 +298,19 @@ export function formatApiError(
     }
   }
   return "Ошибка операции";
+}
+
+function formatFastapiDetailItem(item: unknown): string {
+  if (typeof item === "string") return item;
+  if (item && typeof item === "object") {
+    const rec = item as Record<string, unknown>;
+    if (typeof rec.msg === "string" && rec.msg.trim()) return rec.msg;
+  }
+  try {
+    return JSON.stringify(item);
+  } catch {
+    return String(item);
+  }
 }
 
 // ── База (DB v2) типы ─────────────────────────────────────────────

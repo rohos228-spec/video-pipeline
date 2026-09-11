@@ -1,9 +1,9 @@
 """Помощник генерации: LLM-агент промптов + обвязка-валидатор.
 
 Поток: запрос + текст агента стиля + формат + N → активная текстовая LLM
-(gpt_client) → строгий JSON-контракт → парсинг/валидация → ровно N промптов.
-LLM недоступна или ответ нечитаемый → локальная сборка (fallback), ничего
-не падает: фронт всегда получает count промптов.
+(gpt_client) → строгий JSON-контракт → парсинг/валидация.
+Нет готового visual-промпта → ошибка, генерация картинки НЕ запускается.
+Сырой запрос пользователя в генератор не подставляем.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from loguru import logger
 MIN_COUNT = 1
 MAX_COUNT = 4
 MAX_REQUEST_CHARS = 2000
-MAX_AGENT_CHARS = 8000
+MAX_AGENT_CHARS = 16000
 MIN_PROMPT_CHARS = 40
 MAX_PROMPT_CHARS = 8000
 # Короткие ядра стиля (trash polka, pixel…) можно приклеить в начало.
@@ -29,12 +29,7 @@ MAX_PROMPT_CHARS = 8000
 PREPEND_CORE_MAX = 480
 
 # Вариативные суффиксы для локальной добивки (ракурс/действие)
-_VARIANT_HINTS = [
-    "",
-    "другой ракурс: крупнее, акцент на главном объекте",
-    "другой ракурс: шире, больше окружения и воздуха",
-    "другой ракурс: со спины / сбоку, иная композиция",
-]
+_STUB_MARK = "not example objects from the style guide"
 
 _SYSTEM_TEMPLATE = """Ты — агент визуальных промптов для генерации изображений.
 
@@ -117,21 +112,19 @@ def looks_like_agent_echo(prompt: str, core: str) -> bool:
     return False
 
 
-def _local_variant(core: str, request: str, aspect: str, idx: int, total: int) -> str:
-    """Локальная сборка одного промпта (зеркало фронтовой assembleGenPrompt)."""
-    req = request.strip()
-    if len(core.strip()) > PREPEND_CORE_MAX:
-        # Длинный шаблон — не слать его в генератор: там примеры (початок) бьют запрос.
-        base = (
-            f"{req}. Photorealistic magazine poster infographic of this subject only, "
-            f"not example objects from the style guide. Aspect ratio: {aspect}."
-        )
-    else:
-        base = f"{core.strip()}\n\n{req}\n\nФормат кадра: {aspect}."
-    hint = _VARIANT_HINTS[idx % len(_VARIANT_HINTS)]
-    if total > 1 and hint:
-        base += f"\nВариант {idx + 1} из {total}: {hint}."
-    return base
+def is_unfilled_prompt(prompt: str, request: str = "") -> bool:
+    """Сырой запрос / локальная заглушка — в генератор картинки слать нельзя."""
+    p = (prompt or "").strip()
+    req = (request or "").strip()
+    if not p:
+        return True
+    if _STUB_MARK in p.lower():
+        return True
+    if req:
+        head = req[:80].lower()
+        if head and p.lower().startswith(head) and len(p) <= len(req) + 200:
+            return True
+    return False
 
 
 def parse_prompts_reply(raw: str) -> list[str]:
@@ -165,7 +158,7 @@ def sanitize_prompts(
     request: str,
     aspect: str,
 ) -> tuple[list[str], bool]:
-    """Чистка + контроль количества. Возвращает (промпты, были_локальные_вставки)."""
+    """Чистка. Возвращает (готовые промпты, не хватило до count). Без локальных заглушек."""
     core = core.strip()
     core_key = core[:40].lower()
     prepend_core = bool(core_key) and len(core) <= PREPEND_CORE_MAX
@@ -181,18 +174,22 @@ def sanitize_prompts(
             continue
         if looks_like_agent_echo(p, core):
             continue
-        if len(core) > PREPEND_CORE_MAX and tokens and not any(t.lower() in p.lower() for t in tokens):
+        if is_unfilled_prompt(p, request):
+            continue
+        if (
+            len(core) > PREPEND_CORE_MAX
+            and len(p) < 400
+            and tokens
+            and not any(t.lower() in p.lower() for t in tokens)
+        ):
             continue
         if prepend_core and core_key not in p.lower():
             p = f"{core} — {p}"
-        # дубли НЕ отбрасываем: если просят одинаковые/схожие — так и надо
         out.append(p[:MAX_PROMPT_CHARS])
         if len(out) >= count:
             break
-    padded = len(out) < count
-    while len(out) < count:
-        out.append(_local_variant(core, request, aspect, len(out), count))
-    return out[:count], padded
+    incomplete = len(out) < count
+    return out, incomplete
 
 
 async def generate_prompts(
@@ -202,7 +199,7 @@ async def generate_prompts(
     aspect: str = "9:16",
     count: int = 1,
 ) -> dict[str, Any]:
-    """Агент + обвязка: валидация → LLM → парсинг → ровно count промптов."""
+    """Агент + обвязка. Без готового промпта — ValueError, картинка не стартует."""
     request = (request or "").strip()
     agent_text = (agent_text or "").strip()
     aspect = (aspect or "9:16").strip() or "9:16"
@@ -222,15 +219,18 @@ async def generate_prompts(
         raise ValueError(f"Текст агента длиннее {MAX_AGENT_CHARS} символов — сократите")
 
     system = _SYSTEM_TEMPLATE.format(agent_text=agent_text, aspect=aspect)
-    # Предмет — в начале master-файла, иначе 7k правил перевешивают короткий запрос.
     master = (
         f"ПРЕДМЕТ КАДРА (единственный герой; примеры из правил игнорировать):\n"
         f"{request}\n\n{system}\n\nN = {count}"
     )
     user = f"Предмет кадра: {request}\nN = {count}"
+    retry_user = (
+        f"{user}\n\nПрошлый ответ нельзя слать в генератор картинки "
+        f"(копия правил, YAML, слоты вроде [ГЕРОЙ], пустой JSON или сырой запрос). "
+        f'Верни СТРОГО JSON {{"prompts": ["готовый visual prompt"]}} — ровно {count} '
+        f"развёрнутых промпта(ов) для картинки, без YAML и без копирования правил."
+    )
 
-    source = "llm"
-    warning: str | None = None
     raw_prompts: list[str] = []
     tmp_root: Path | None = None
     try:
@@ -245,52 +245,55 @@ async def generate_prompts(
             len(system),
             len(user),
         )
-        # Файл, не system=: иначе master=— и vibecode chat/completions даёт 400.
         raw = await client.ask_with_files(user, [prompt_file], timeout=180, max_retries=1)
         raw_prompts = parse_prompts_reply(raw)
-        # Не хватило вариантов — один добивающий запрос
-        if 0 < len(raw_prompts) < count:
-            missing = count - len(raw_prompts)
-            logger.info("gen_assistant: LLM дала {} из {}, добиваем {}", len(raw_prompts), count, missing)
-            raw2 = await client.ask_with_files(
-                f"{user}\n\nПрошлый ответ дал только {len(raw_prompts)} промпт(ов). "
-                f"Дай ещё {missing} НОВЫХ варианта (не повторяя прошлые), тем же JSON-контрактом.",
-                [prompt_file],
-                timeout=120,
-                max_retries=1,
+        good, incomplete = sanitize_prompts(
+            raw_prompts, count=count, core=agent_text, request=request, aspect=aspect
+        )
+        if incomplete:
+            logger.warning(
+                "gen_assistant: usable={}/{} after first reply, retry",
+                len(good),
+                count,
             )
-            raw_prompts += parse_prompts_reply(raw2)
-    except Exception as e:  # noqa: BLE001 — LLM/сеть/ключ: уходим в локальную сборку
-        logger.warning("gen_assistant: LLM недоступна ({}), локальная сборка", e)
-        source = "local"
-        warning = f"LLM недоступна ({e}) — промпты собраны локально"
-        raw_prompts = []
+            raw2 = await client.ask_with_files(
+                retry_user, [prompt_file], timeout=120, max_retries=1
+            )
+            extra = parse_prompts_reply(raw2)
+            raw_prompts = [*good, *extra] if good else extra
+    except ValueError:
+        raise
+    except Exception as e:  # noqa: BLE001 — сеть/ключ: ошибка, не заглушка
+        logger.warning("gen_assistant: LLM недоступна ({})", e)
+        raise ValueError(
+            f"Агент недоступен ({e}) — промпт не собран, генерация не запущена"
+        ) from e
     finally:
         if tmp_root is not None:
             shutil.rmtree(tmp_root, ignore_errors=True)
 
-    if not raw_prompts and source == "llm":
-        source = "local"
-        warning = "LLM вернула нечитаемый ответ — промпты собраны локально"
-
-    prompts, padded = sanitize_prompts(
+    prompts, incomplete = sanitize_prompts(
         raw_prompts, count=count, core=agent_text, request=request, aspect=aspect
     )
-    if source == "llm" and padded:
-        warning = "Часть промптов добита локальной сборкой (LLM дала меньше N)"
+    if not prompts:
+        raise ValueError("Агент не собрал промпт — генерация не запущена")
+    warning = (
+        f"Агент собрал {len(prompts)} из {count} — генерация только по готовым"
+        if incomplete
+        else None
+    )
     logger.info(
-        "gen_assistant: source={} count={} padded={} request={!r} out0_len={} out0_head={!r}",
-        source,
+        "gen_assistant: source=llm count={} incomplete={} request={!r} out0_len={} out0_head={!r}",
         len(prompts),
-        padded,
+        incomplete,
         request[:120],
-        len(prompts[0]) if prompts else 0,
-        (prompts[0][:180] if prompts else ""),
+        len(prompts[0]),
+        prompts[0][:180],
     )
     return {
         "prompts": prompts,
         "count": len(prompts),
-        "source": source,
+        "source": "llm",
         "warning": warning,
         "aspect": aspect,
     }

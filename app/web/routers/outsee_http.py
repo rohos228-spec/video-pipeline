@@ -104,6 +104,11 @@ async def outsee_generate(body: OutseeGenerateBody) -> dict[str, Any]:
     text = (body.prompt or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="пустой промпт")
+    if "not example objects from the style guide" in text.lower():
+        raise HTTPException(
+            status_code=400,
+            detail="промпт не собран агентом — генерация не запущена",
+        )
 
     media = body.media
     if media == "audio":

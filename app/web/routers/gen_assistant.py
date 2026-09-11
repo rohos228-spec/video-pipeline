@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from app.services.gen_assistant import MAX_COUNT, MIN_COUNT, generate_prompts
@@ -31,6 +32,13 @@ class GenAssistantPromptsBody(BaseModel):
 
 @router.post("/prompts")
 async def post_gen_assistant_prompts(body: GenAssistantPromptsBody) -> dict[str, Any]:
+    logger.info(
+        "gen-assistant POST request_chars={} agent_chars={} count={} aspect={}",
+        len(body.request or ""),
+        len(body.agent_text or ""),
+        body.count,
+        body.aspect,
+    )
     try:
         return await generate_prompts(
             request=body.request,
@@ -39,7 +47,11 @@ async def post_gen_assistant_prompts(body: GenAssistantPromptsBody) -> dict[str,
             count=body.count,
         )
     except ValueError as e:
+        logger.warning("gen-assistant rejected: {}", e)
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("gen-assistant failed")
+        raise HTTPException(status_code=500, detail=f"Агент сломался: {e}") from e
 
 
 class AnalyzeStyleBody(BaseModel):

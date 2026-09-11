@@ -26,6 +26,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
         <Toaster
           position="bottom-right"
           theme="dark"
+          visibleToasts={5}
+          className="!z-[2147483647]"
           toastOptions={{
             style: {
               background: "hsl(var(--card))",

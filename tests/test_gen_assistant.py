@@ -41,31 +41,31 @@ def test_parse_empty():
     assert parse_prompts_reply("   ") == []
 
 
-def test_sanitize_pads_to_count():
-    out, padded = sanitize_prompts(
+def test_sanitize_does_not_pad_missing():
+    out, incomplete = sanitize_prompts(
         [f"{CORE} — только один промпт"], count=3, core=CORE, request=REQ, aspect="9:16"
     )
-    assert len(out) == 3
-    assert padded is True
+    assert len(out) == 1
+    assert incomplete is True
 
 
 def test_sanitize_trims_extra():
     many = [f"{CORE} — вариант {i} с длинным описанием кадра" for i in range(6)]
-    out, padded = sanitize_prompts(many, count=2, core=CORE, request=REQ, aspect="9:16")
+    out, incomplete = sanitize_prompts(many, count=2, core=CORE, request=REQ, aspect="9:16")
     assert len(out) == 2
-    assert padded is False
+    assert incomplete is False
 
 
 def test_sanitize_keeps_dupes_drops_short():
-    """Дубли разрешены (запрос «одинаковые/схожие»), короткие — отсев."""
+    """Дубли разрешены (запрос «одинаковые/схожие»), короткие — отсев. Без заглушек."""
     dup = f"{CORE} — одинаковый промпт номер один"
-    out, padded = sanitize_prompts(
+    out, incomplete = sanitize_prompts(
         [dup, dup, "коротко"], count=3, core=CORE, request=REQ, aspect="9:16"
     )
     assert out[0] == dup
     assert out[1] == dup
-    assert len(out) == 3  # третий добит локально
-    assert padded is True
+    assert len(out) == 2
+    assert incomplete is True
 
 
 def test_sanitize_prepends_missing_core():
@@ -88,47 +88,70 @@ def test_sanitize_keeps_llm_prompt_when_core_is_long_template():
         "Hero: one photorealistic corn cob кукуруза, half cut open, studio lit. "
         "Headline кукуруза. Bottom strip of maize varieties."
     )
-    out, padded = sanitize_prompts(
+    out, incomplete = sanitize_prompts(
         [filled], count=1, core=core, request="кукуруза в разрезе", aspect="16:9"
     )
-    assert padded is False
+    assert incomplete is False
     assert "кукуруза" in out[0]
     assert "[ГЕРОЙ]" not in out[0]
     assert not out[0].lstrip().startswith("---")
 
 
-def test_sanitize_rejects_template_echo_uses_request_not_example():
-    """Эхо правил агента (YAML + початок + [ГЕРОЙ]) нельзя слать в генератор."""
+def test_sanitize_rejects_template_echo_does_not_fill_stub():
+    """Эхо правил агента нельзя слать в генератор и нельзя подменять сырым запросом."""
     core = (
         "---\nname: infographic-hero-object\n"
         "**Герой любой:** початок, двигатель, кроссовок.\n"
         "Hero: one photorealistic [ГЕРОЙ]\n"
     ) * 40
     echo = core[:3500]
-    out, padded = sanitize_prompts(
+    out, incomplete = sanitize_prompts(
         [echo], count=1, core=core, request="двигатель V8 в разрезе", aspect="16:9"
     )
-    text = out[0].lower()
-    assert "двигатель" in text
-    assert "початок" not in text
-    assert "[ГЕРОЙ]" not in out[0]
-    assert not out[0].lstrip().startswith("---")
-    assert padded is True
+    assert out == []
+    assert incomplete is True
 
 
-def test_local_variant_long_core_does_not_leak_examples():
-    from app.services.gen_assistant import _local_variant
+def test_sanitize_keeps_long_english_visual_without_russian_tokens():
+    """Английский visual-промпт нельзя выкидывать из‑за «приседает» → squat."""
+    core = "---\nname: infographic-hero-object\n" + ("шаблон слот " * 400)
+    filled = (
+        "Minimal line-art presentation slide, 16:9. Background is one flat solid colour. "
+        "Two outline human figures: one in a deep squat, one doing a pull-up on a bar. "
+        "Captions list three benefits under each exercise. Dense grotesque type, bold headline. "
+        "No photorealism, no third colour, wide margins, aligned baseline grid, 2px stroke. "
+        "Headline at the top, two columns, bottom caption strip, no watermark, no logo. "
+        "Icons are line pictograms of the same stroke weight as the figures throughout."
+    )
+    assert len(filled) >= 400
+    out, incomplete = sanitize_prompts(
+        [filled],
+        count=1,
+        core=core,
+        request="мне нужно иллюстрацию человек приседает и человек подтягивается",
+        aspect="16:9",
+    )
+    assert incomplete is False
+    assert out[0].startswith("Minimal")
+    assert "not example objects" not in out[0].lower()
+    from app.services.gen_assistant import is_unfilled_prompt
 
-    core = "---\nname: infographic-hero-object\nГерой любой: початок, гриб, зуб.\n" * 80
-    p = _local_variant(core, "смартфон в разрезе", "16:9", 0, 1)
-    assert "смартфон" in p.lower()
-    assert "початок" not in p.lower()
-    assert not p.lstrip().startswith("---")
+    req = "мне нужно иллюстрацию человек приседает и человек подтягивается"
+    stub = (
+        f"{req}. Photorealistic magazine poster infographic of this subject only, "
+        "not example objects from the style guide. Aspect ratio: 16:9."
+    )
+    assert is_unfilled_prompt(stub, req) is True
+    out, incomplete = sanitize_prompts(
+        [stub], count=1, core=CORE, request=req, aspect="16:9"
+    )
+    assert out == []
+    assert incomplete is True
 
 
 @pytest.mark.asyncio
-async def test_generate_drops_template_echo(monkeypatch):
-    """Если LLM вернула копипасту правил — обвязка подставляет запрос, не початок."""
+async def test_generate_rejects_template_echo_no_generation(monkeypatch):
+    """Если LLM вернула копипасту правил — генерация не стартует."""
     from app.services import gpt_client
 
     core = (
@@ -141,12 +164,10 @@ async def test_generate_drops_template_echo(monkeypatch):
             return '{"prompts": [' + json.dumps(core[:3500]) + "]}"
 
     monkeypatch.setattr(gpt_client, "get_gpt_client", lambda: _Fake())
-    res = await generate_prompts(
-        request="двигатель V8 в разрезе", agent_text=core, aspect="16:9", count=1
-    )
-    text = res["prompts"][0].lower()
-    assert "двигатель" in text
-    assert "початок" not in text
+    with pytest.raises(ValueError, match="не собрал промпт"):
+        await generate_prompts(
+            request="двигатель V8 в разрезе", agent_text=core, aspect="16:9", count=1
+        )
 
 
 @pytest.mark.asyncio
@@ -197,17 +218,46 @@ async def test_generate_attaches_agent_prompt_file(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_generate_local_fallback_without_llm(monkeypatch):
-    """Без ключа/LLM — локальная сборка, ровно count промптов, без падения."""
-
+async def test_generate_fails_without_llm(monkeypatch):
+    """Без ключа/LLM — ошибка, генерация не запускается."""
     from app.services import gpt_client
 
     def _boom():
         raise RuntimeError("no api key")
 
     monkeypatch.setattr(gpt_client, "get_gpt_client", _boom)
-    res = await generate_prompts(request=REQ, agent_text=CORE, aspect="9:16", count=MAX_COUNT)
-    assert res["source"] == "local"
-    assert res["warning"]
-    assert len(res["prompts"]) == MAX_COUNT
-    assert all(p.startswith(CORE) for p in res["prompts"])
+    with pytest.raises(ValueError, match="не собран"):
+        await generate_prompts(request=REQ, agent_text=CORE, aspect="9:16", count=MAX_COUNT)
+
+
+@pytest.mark.asyncio
+async def test_generate_retry_recovers_real_prompt(monkeypatch):
+    """Первый ответ — эхо правил, повтор — готовый visual-промпт → генерация ок."""
+    from app.services import gpt_client
+
+    core = (
+        "---\nname: infographic-hero-object\n"
+        "**Герой любой:** початок, кроссовок, гриб.\nHero: [ГЕРОЙ]\n"
+    ) * 30
+    filled = (
+        "Magazine poster infographic, landscape sheet, editorial science style. "
+        "Hero: one photorealistic V8 engine in cutaway, studio-lit metal, oil sheen. "
+        "Headline двигатель V8. Callouts for pistons, crankshaft, valves."
+    )
+    calls: list[int] = []
+
+    class _Fake:
+        async def ask_with_files(self, text, files, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                return '{"prompts": [' + json.dumps(core[:3500]) + "]}"
+            return '{"prompts": [' + json.dumps(filled) + "]}"
+
+    monkeypatch.setattr(gpt_client, "get_gpt_client", lambda: _Fake())
+    res = await generate_prompts(
+        request="двигатель V8 в разрезе", agent_text=core, aspect="16:9", count=1
+    )
+    assert res["source"] == "llm"
+    assert len(calls) == 2
+    assert "двигатель" in res["prompts"][0].lower()
+    assert "[ГЕРОЙ]" not in res["prompts"][0]

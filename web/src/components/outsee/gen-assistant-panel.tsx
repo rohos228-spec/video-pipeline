@@ -20,7 +20,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+import { api, formatApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { OUTSEE_ACCENT, chipOptions, detailLabel } from "@/lib/outsee-catalog";
 import {
@@ -29,6 +29,7 @@ import {
   assembleGenPrompt,
   genPromptVariant,
   isInstructionAgent,
+  isUnfilledAssistantPrompt,
   type GenStyleArt,
   type GenStyleDef,
 } from "@/lib/gen-assistant-styles";
@@ -179,6 +180,8 @@ export function GenAssistantPanel({
   const [expanded, setExpanded] = useState(false);
   const [resultsOpen, setResultsOpen] = useState(false);
   const [agentBusy, setAgentBusy] = useState(false);
+  const [agentError, setAgentError] = useState("");
+  const agentBusyRef = useRef(false);
   const [catMenuOpen, setCatMenuOpen] = useState(false);
   const [previewCat, setPreviewCat] = useState<string | null>(null);
   // Позиция курсора (относительно поповера категорий) — окно стилей открывается поверх, у курсора
@@ -350,36 +353,56 @@ export function GenAssistantPanel({
     toast.success("Промпт подставлен в поле запроса");
   };
 
-  // Агент пишет ровно `count` промптов и раскладывает их по слотам.
-  // Пустой массив — не получилось, тост об ошибке уже показан.
+  const notifyAgentError = (msg: string) => {
+    setAgentError(msg);
+    toast.error(msg, { duration: 12_000, position: "top-center" });
+  };
+
+  // Пустой массив — не получилось, ошибка уже в панели и toast.
   const requestAgentPrompts = async (): Promise<string[]> => {
     const req = request.trim();
     if (!req) {
-      toast.error("Пустой запрос: напишите, что должно быть в кадре");
+      notifyAgentError("Пустой запрос: напишите, что должно быть в кадре");
       return [];
     }
     if (!style || !agentText.trim()) {
-      toast.error("Выберите стиль: текст агента пуст");
+      notifyAgentError("Выберите стиль: текст агента пуст");
       return [];
     }
+    if (agentBusyRef.current) {
+      toast.error("Агент ещё пишет предыдущий запрос", { duration: 12_000, position: "top-center" });
+      return [];
+    }
+    setAgentError("");
+    agentBusyRef.current = true;
     setAgentBusy(true);
     try {
       const r = await fetch("/api/gen-assistant/prompts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ request: req, agent_text: agentText, aspect, count }),
+        signal: AbortSignal.timeout(200_000),
       });
       if (!r.ok) {
-        const err = (await r.json().catch(() => null)) as { detail?: string } | null;
-        throw new Error(err?.detail || `HTTP ${r.status}`);
+        const err = await r.json().catch(() => null);
+        throw new Error(
+          err && typeof err === "object"
+            ? formatApiError(err as object, r.status)
+            : `HTTP ${r.status}`,
+        );
       }
       const data = (await r.json()) as {
         prompts?: string[];
         source?: string;
         warning?: string | null;
       };
-      const prompts = (data.prompts ?? []).filter((p) => typeof p === "string" && p.trim());
-      if (!prompts.length) throw new Error("пустой ответ агента");
+      const prompts = (data.prompts ?? []).filter(
+        (p) => typeof p === "string" && !isUnfilledAssistantPrompt(p, req),
+      );
+      if (!prompts.length) throw new Error("агент не собрал промпт — генерация не запущена");
+      if (data.source === "local") {
+        throw new Error("агент не собрал промпт — генерация не запущена");
+      }
       setPromptOverrides((prev) => {
         const next = { ...prev };
         prompts.forEach((p, i) => {
@@ -387,42 +410,50 @@ export function GenAssistantPanel({
         });
         return next;
       });
-      // Запоминаем стиль: первая успешная генерация станет фоном его плитки
       const pending = { styleId: style.id, ts: Date.now(), prefix: prompts[0].slice(0, 48) };
       lsSet(LS.pendingStyle, JSON.stringify(pending));
       setPendingArt(pending);
-      if (data.warning) toast.warning(String(data.warning));
+      if (data.warning) toast.warning(String(data.warning), { duration: 12_000, position: "top-center" });
       return prompts;
     } catch (e) {
-      toast.error(
-        `Агент недоступен: ${e instanceof Error ? e.message : String(e)} — собрано локально`,
-      );
+      const aborted =
+        (e instanceof DOMException && e.name === "TimeoutError") ||
+        (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError"));
+      const msg = aborted
+        ? "Агент не ответил за 3 минуты"
+        : e instanceof Error
+          ? e.message
+          : String(e);
+      notifyAgentError(msg.startsWith("Агент:") ? msg : `Агент: ${msg}`);
       return [];
     } finally {
+      agentBusyRef.current = false;
       setAgentBusy(false);
     }
   };
 
-  // Кнопка панели: агент пишет промпты → сразу генерация всех.
-  // Окно результатов автоматически НЕ открываем — только по клику на 📋.
   const runAgent = async () => {
     const prompts = await requestAgentPrompts();
     if (!prompts.length) return;
-    toast.success(`Агент: ${prompts.length} промпт(ов) → генерация запущена`);
+    toast.success(`Агент: ${prompts.length} промпт(ов) → генерация запущена`, {
+      duration: 8_000,
+      position: "top-center",
+    });
     onGenerateAll(prompts);
   };
 
   const generatePrompt = async (idx: number) => {
     let text = promptText(idx).trim();
-    // Слот ещё не заполнен агентом, а агент — инструкция: без прогона через LLM
-    // в модель уйдёт голый запрос без стиля. Сначала просим агента написать промпт.
     if (instructionAgent && promptOverrides[String(idx)] === undefined) {
       const prompts = await requestAgentPrompts();
       if (!prompts.length) return;
       text = (prompts[idx] ?? prompts[0]).trim();
     }
-    if (!text) {
-      toast.error("Промпт пуст — напишите запрос или выберите стиль");
+    if (!text || isUnfilledAssistantPrompt(text, request)) {
+      toast.error("Промпт не собран агентом — генерация не запущена", {
+        duration: 12_000,
+        position: "top-center",
+      });
       return;
     }
     // Запоминаем стиль: первая успешная генерация станет фоном его плитки
@@ -858,8 +889,14 @@ export function GenAssistantPanel({
             <textarea
               value={request}
               onChange={(e) => setRequest(e.target.value)}
+              onKeyDown={(e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                  e.preventDefault();
+                  void runAgent();
+                }
+              }}
               rows={2}
-              placeholder="Ваш запрос: что должно быть в кадре…"
+              placeholder="Ваш запрос: что должно быть в кадре… (Ctrl+Enter — агент)"
               className={cn(areaCls, "min-w-0 flex-1")}
             />
             <button
@@ -877,10 +914,10 @@ export function GenAssistantPanel({
               <span className="font-mono text-[9px] font-bold leading-none">{count} шт</span>
             </button>
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
-              disabled={generating || agentBusy}
+              disabled={agentBusy}
               onClick={() => void runAgent()}
               title="Агент напишет промпты по запросу и стилю — и сразу запустит генерацию"
               className="inline-flex items-center justify-center rounded-lg bg-gradient-to-r from-[#22d3ee] to-[#0ea5e9] px-2.5 py-1.5 text-[10px] font-extrabold uppercase tracking-wider text-black shadow-[0_0_15px_rgba(34,211,238,0.3)] transition hover:brightness-110 disabled:opacity-40"
@@ -906,7 +943,20 @@ export function GenAssistantPanel({
               }}
               className="w-[40px] rounded-lg border border-white/10 bg-[#16161b] px-1 py-1.5 text-center text-[11px] text-white/85 focus:border-[#22d3ee]/60 focus:outline-none"
             />
+            {generating && !agentError ? (
+              <span className="min-w-0 flex-1 text-[10px] leading-tight text-white/40">
+                Картинка ещё генерируется — агент можно запускать снова
+              </span>
+            ) : null}
           </div>
+          {agentError ? (
+            <div
+              role="alert"
+              className="rounded-md border border-red-500/40 bg-red-500/15 px-2 py-1 text-[11px] leading-tight text-red-200"
+            >
+              {agentError}
+            </div>
+          ) : null}
       </div>
 
       {/* результаты промптов — окно вверх по иконке справа от запроса (механика как у категорий) */}
@@ -960,7 +1010,7 @@ export function GenAssistantPanel({
                     <div className="flex items-center gap-1.5">
                       <button
                         type="button"
-                        disabled={generating || agentBusy}
+                        disabled={agentBusy}
                         onClick={() => void generatePrompt(idx)}
                         className="inline-flex items-center justify-center rounded-lg bg-gradient-to-r from-[#22d3ee] to-[#0ea5e9] px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wider text-black transition hover:brightness-110 disabled:opacity-40"
                       >

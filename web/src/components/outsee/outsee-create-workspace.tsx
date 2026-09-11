@@ -43,6 +43,7 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import type { KieField, KieModelSpec } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
+import { isUnfilledAssistantPrompt } from "@/lib/gen-assistant-styles";
 import { cn } from "@/lib/utils";
 import {
   OUTSEE_ACCENT,
@@ -940,6 +941,10 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
       const forceSingle = typeof arg === "object" && arg?.forceSingle === true;
       const preset = STYLE_PRESETS.find((p) => p.id === stylePreset);
       let text = (promptOverride ?? prompt).trim();
+      if (!text) throw new Error("Введите промпт");
+      if (text.toLowerCase().includes("not example objects from the style guide")) {
+        throw new Error("Промпт не собран агентом — генерация не запущена");
+      }
       if (text && mediaType === "image" && preset?.suffix) {
         text += preset.suffix;
       }
@@ -1728,12 +1733,29 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                   }}
                   onApplyPrompt={(t) => setPrompt(t)}
                   onGenerate={(t) => {
+                    if (isUnfilledAssistantPrompt(t)) {
+                      toast.error("Промпт не собран агентом — генерация не запущена", {
+                        duration: 12_000,
+                        position: "top-center",
+                      });
+                      return;
+                    }
                     setPrompt(t);
-                    if (!createGenerate.isPending) createGenerate.mutate(t);
+                    createGenerate.mutate({ prompt: t, forceSingle: true });
                   }}
                   onGenerateAll={(texts) => {
-                    if (texts[0]) setPrompt(texts[0]);
-                    for (const t of texts) {
+                    const ready = texts
+                      .map((x) => x.trim())
+                      .filter((t) => !isUnfilledAssistantPrompt(t));
+                    if (!ready.length) {
+                      toast.error("Промпт не собран агентом — генерация не запущена", {
+                        duration: 12_000,
+                        position: "top-center",
+                      });
+                      return;
+                    }
+                    setPrompt(ready[0]);
+                    for (const t of ready) {
                       createGenerate.mutate({ prompt: t, forceSingle: true });
                     }
                   }}
