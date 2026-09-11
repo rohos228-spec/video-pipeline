@@ -90,6 +90,39 @@ async def test_generate_validates_empty_agent():
 
 
 @pytest.mark.asyncio
+async def test_generate_attaches_agent_prompt_file(monkeypatch):
+    """Как у пайплайн-агентов: мастер-промт — первый .md, не пустой system=."""
+    from app.services import gpt_client
+
+    calls: list[dict] = []
+
+    class _Fake:
+        async def ask_with_files(self, text, files, **kwargs):
+            paths = list(files)
+            master = ""
+            if paths:
+                master = paths[0].read_text(encoding="utf-8")
+            calls.append(
+                {"text": text, "files": paths, "master": master, "kwargs": kwargs}
+            )
+            body = CORE + " — развёрнутый кадр: кот в плаще на мокрой крыше ночью"
+            return '{"prompts": ["' + body + '"]}'
+
+    monkeypatch.setattr(gpt_client, "get_gpt_client", lambda: _Fake())
+    res = await generate_prompts(request=REQ, agent_text=CORE, aspect="9:16", count=1)
+    assert res["source"] == "llm"
+    assert len(calls) == 1
+    files = calls[0]["files"]
+    assert files, "агент должен получить файл промпта"
+    assert files[0].suffix.lower() in {".md", ".txt"}
+    master = calls[0]["master"]
+    assert "Ты — агент визуальных промптов" in master
+    assert CORE in master
+    assert REQ in calls[0]["text"]
+    assert not calls[0]["kwargs"].get("system")
+
+
+@pytest.mark.asyncio
 async def test_generate_local_fallback_without_llm(monkeypatch):
     """Без ключа/LLM — локальная сборка, ровно count промптов, без падения."""
 

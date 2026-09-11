@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -55,6 +58,13 @@ _SYSTEM_TEMPLATE = """Ты — агент визуальных промптов 
 4. Формат ответа — СТРОГО валидный JSON без markdown и пояснений:
    {{"prompts": ["промпт 1", "промпт 2", ...]}}
 5. Внутри текстов промптов — без нумерации и без комментариев."""
+
+
+def write_agent_prompt_file(system: str, tmp_dir: Path) -> Path:
+    """Мастер-промт агента как .md — gpt_client читает первый .md/.txt как master."""
+    path = tmp_dir / "prompt_gen_assistant.md"
+    path.write_text(system, encoding="utf-8")
+    return path
 
 
 def _local_variant(core: str, request: str, aspect: str, idx: int, total: int) -> str:
@@ -149,11 +159,21 @@ async def generate_prompts(
     source = "llm"
     warning: str | None = None
     raw_prompts: list[str] = []
+    tmp_root: Path | None = None
     try:
         from app.services.gpt_client import get_gpt_client
 
         client = get_gpt_client()
-        raw = await client.ask_with_files(user, [], system=system, timeout=180, max_retries=1)
+        tmp_root = Path(tempfile.mkdtemp(prefix="gen_assistant_"))
+        prompt_file = write_agent_prompt_file(system, tmp_root)
+        logger.info(
+            "gen_assistant: attach prompt_file={} chars={} request_chars={}",
+            prompt_file.name,
+            len(system),
+            len(user),
+        )
+        # Файл, не system=: иначе master=— и vibecode chat/completions даёт 400.
+        raw = await client.ask_with_files(user, [prompt_file], timeout=180, max_retries=1)
         raw_prompts = parse_prompts_reply(raw)
         # Не хватило вариантов — один добивающий запрос
         if 0 < len(raw_prompts) < count:
@@ -162,8 +182,7 @@ async def generate_prompts(
             raw2 = await client.ask_with_files(
                 f"{user}\n\nПрошлый ответ дал только {len(raw_prompts)} промпт(ов). "
                 f"Дай ещё {missing} НОВЫХ варианта (не повторяя прошлые), тем же JSON-контрактом.",
-                [],
-                system=system,
+                [prompt_file],
                 timeout=120,
                 max_retries=1,
             )
@@ -173,6 +192,9 @@ async def generate_prompts(
         source = "local"
         warning = f"LLM недоступна ({e}) — промпты собраны локально"
         raw_prompts = []
+    finally:
+        if tmp_root is not None:
+            shutil.rmtree(tmp_root, ignore_errors=True)
 
     if not raw_prompts and source == "llm":
         source = "local"
