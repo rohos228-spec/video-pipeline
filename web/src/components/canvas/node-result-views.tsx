@@ -753,11 +753,48 @@ export function FramePromptsView({ items }: { items: NodeResultItem[] }) {
           ))}
         </div>
       </ScrollArea>
-      <Textarea
-        readOnly
-        value={selected?.content ?? ""}
-        className="h-[65vh] resize-none text-xs leading-relaxed"
-      />
+      {selected?.previewUrl ? (
+        <div className="grid h-[65vh] min-h-0 grid-cols-1 gap-3 md:grid-cols-[260px_1fr]">
+          <div className="flex flex-col gap-2 rounded-lg border border-white/10 bg-black/20 p-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Стартовый кадр (I2V)
+              </span>
+              <a
+                href={selected.previewUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-[10px] text-muted-foreground hover:text-primary underline"
+              >
+                Открыть
+              </a>
+            </div>
+            <div className="relative flex flex-1 items-center justify-center overflow-hidden rounded-md border border-white/5 bg-black/40">
+              <img
+                src={selected.previewUrl}
+                alt={selected.label}
+                className="h-full w-full object-contain"
+              />
+            </div>
+          </div>
+          <div className="flex flex-col gap-2 min-h-0">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Промпт движения (анимация)
+            </span>
+            <Textarea
+              readOnly
+              value={selected?.content ?? ""}
+              className="flex-1 resize-none text-xs leading-relaxed"
+            />
+          </div>
+        </div>
+      ) : (
+        <Textarea
+          readOnly
+          value={selected?.content ?? ""}
+          className="h-[65vh] resize-none text-xs leading-relaxed"
+        />
+      )}
     </div>
   );
 }

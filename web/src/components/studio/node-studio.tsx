@@ -971,9 +971,9 @@ export function NodeStudio({
                     />
                   ) : showFramePromptsPanel ? (
                     <FramePromptsPanel
-                      key={`frame-prompts-${projectId}`}
+                      key={`frame-prompts-${projectId}-${nodeType}`}
                       projectId={projectId}
-                      field="image_prompt"
+                      field={nodeType === "videos" ? "animation_prompt" : "image_prompt"}
                     />
                   ) : showFilesPanel && isCheckNode ? (
                     <CheckNodePromptPanel
@@ -1017,10 +1017,14 @@ export function NodeStudio({
                       </Button>
                     </div>
                   ) : (
-                    <p className="text-sm text-muted-foreground">
-                      Для этой ноды нет редактируемых промтов на этом шаге. Добавьте слот через «+
-                      ещё» в меню V.
-                    </p>
+                    <div className="flex flex-col gap-2 rounded-xl border border-white/10 bg-white/[0.02] p-4 text-sm text-muted-foreground">
+                      <p>
+                        Для этой ноды нет отдельных текстовых промтов на этом шаге.
+                      </p>
+                      <p className="text-xs text-white/50">
+                        Промпты и параметры настраиваются на предшествующих шагах или в таблице Excel.
+                      </p>
+                    </div>
                   )}
                 </div>
               )}

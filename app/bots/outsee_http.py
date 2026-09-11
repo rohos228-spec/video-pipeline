@@ -763,6 +763,23 @@ async def _host_via_tmpfiles(client: httpx.AsyncClient, raw: bytes, mime: str, f
     return await _accept_hosted_url(client, direct, host="tmpfiles", raw_len=len(raw))
 
 
+async def _host_via_telegraph(client: httpx.AsyncClient, raw: bytes, mime: str, filename: str) -> str:
+    r = await client.post(
+        "https://telegra.ph/upload",
+        files={"file": (filename, raw, mime)},
+    )
+    if r.status_code >= 400:
+        raise OutseeApiError(f"telegra.ph HTTP {r.status_code}: {(r.text or '')[:160]}")
+    try:
+        data = r.json()
+        if isinstance(data, list) and data and "src" in data[0]:
+            src = str(data[0]["src"]).lstrip("/")
+            return await _accept_hosted_url(client, f"https://telegra.ph/{src}", host="telegraph", raw_len=len(raw))
+    except Exception as exc:  # noqa: BLE001
+        raise OutseeApiError(f"telegra.ph parse error: {(r.text or '')[:160]}") from exc
+    raise OutseeApiError(f"telegra.ph unexpected response: {(r.text or '')[:160]}")
+
+
 async def ensure_public_image_url(
     url: str | None,
     *,
@@ -772,7 +789,7 @@ async def ensure_public_image_url(
     """Outsee image_url принимает только http(s); data: молча игнорит.
 
     data: → публичный URL через Yandex Object Storage (основной).
-    Публичные хосты (uguu/litterbox/catbox/0x0) используются как резервные
+    Публичные хосты (telegraph/tmpfiles/uguu/litterbox/catbox/0x0) используются как резервные
     (fallback) при временном сбое или отсутствии Yandex S3.
     http(s) → как есть (кроме localhost), либо force_rehost=True → скачать и
     залить заново. ``yandex`` в skip_hosts игнорируется: новый PUT = новый URL.
@@ -825,15 +842,19 @@ async def ensure_public_image_url(
         hosts.append(("yandex", _host_via_yandex))
         # Резервные хосты на случай временного сбоя S3
         hosts.extend([
+            ("telegraph", _host_via_telegraph),
+            ("tmpfiles", _host_via_tmpfiles),
             ("uguu", _host_via_uguu),
             ("litterbox", _host_via_litterbox),
             ("catbox", _host_via_catbox),
             ("0x0", _host_via_0x0),
         ])
-        logger.info("outsee_api.frame: upload host=yandex (с fallback на uguu/litterbox/catbox/0x0, {} bytes)", len(raw))
+        logger.info("outsee_api.frame: upload host=yandex (с fallback на telegraph/tmpfiles/uguu/litterbox, {} bytes)", len(raw))
     else:
-        logger.info("outsee_api.frame: Yandex S3 не настроен, использую fallback (uguu/litterbox/catbox/0x0, {} bytes)", len(raw))
+        logger.info("outsee_api.frame: Yandex S3 не настроен, использую fallback (telegraph/tmpfiles/uguu/litterbox, {} bytes)", len(raw))
         hosts.extend([
+            ("telegraph", _host_via_telegraph),
+            ("tmpfiles", _host_via_tmpfiles),
             ("uguu", _host_via_uguu),
             ("litterbox", _host_via_litterbox),
             ("catbox", _host_via_catbox),
