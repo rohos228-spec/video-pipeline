@@ -51,6 +51,42 @@ _SYNTH_SYSTEM = """Ты — редактор библиотеки стилей. 
 2. Блок «Не …» обязателен — из критерия forbidden.
 3. Без нумерации, без комментариев, без markdown."""
 
+AGENT_MAX_CHARS = 8000
+AGENT_MAX_BYTES = 8000
+AGENT_PROMPT_MAX_CHARS = 4700
+
+_AGENT_SYSTEM = """Ты — конструктор агентов для генерации изображений.
+Тебе дают JSON-заметки анализа референсов одного визуального стиля и, возможно,
+уточнение пользователя. Ты пишешь ГОТОВОГО АГЕНТА — системный текст, который
+затем получит другая модель, чтобы по запросу пользователя выдавать промпты
+для GPT Image 2 / Nano Banana Pro в этом стиле.
+
+Формат ответа строго такой, без markdown и пояснений:
+NAME: короткое имя стиля (RU, до 3 слов)
+DESC: одно предложение описания (RU)
+CATEGORY: предлагаемая категория (RU)
+AGENT:
+<дальше сплошной текст агента>
+
+Правила текста агента:
+1. Первая фраза: агент отвечает ОДНИМ готовым промптом и ничем больше — без
+   пояснений, заголовков, markdown, списков, нумерации и квадратных скобок.
+2. Дальше «ядро», которое агент обязан копировать в каждый промпт дословно:
+   один английский абзац с медиумом, палитрой (точные hex, если цвета на
+   референсах постоянные), линией/штрихом, светом, композицией, типографикой.
+   Постоянный цвет фиксируй как «exactly hex #RRGGBB», а не словом.
+3. Потом что агент дописывает сам: порядок английских фраз про конкретный
+   кадр (герой, композиция, подписи в кавычках на языке запроса, финальная
+   строка-негатив). Никаких слотов в квадратных скобках — только описание
+   словами, что должно стоять на этом месте.
+4. Бюджет содержания: сколько объектов и подписей допустимо, чтобы модель не
+   путала буквы; напоминание брать факты только из запроса.
+5. Один пример готового промпта целиком, на теме, которой нет в запросе, с
+   пометкой, что содержание примера переносить нельзя.
+6. Финальная проверка: нет скобок и служебных слов, ядро на месте, длина
+   промпта не больше 4700 знаков.
+7. Весь текст агента — не длиннее 7000 знаков, по-русски пиши коротко."""
+
 _CATEGORIES_SYSTEM = """Ты — редактор библиотеки стилей. Дан JSON-список стилей (name/desc/category/prompt_core).
 Сгруппируй их в категории по ОБЩИМ критериям: техника/медиум, палитра, настроение, назначение.
 Один стиль — ровно в одной категории. Названия категорий короткие (RU).
@@ -148,6 +184,114 @@ async def analyze_style_images(
         raise ValueError("LLM вернула запись без prompt_core")
     logger.info("style_analyzer: «{}» ← {} изображений, {} пачек", entry["name"], len(images), len(notes))
     return {**entry, "images": len(images), "notes": notes}
+
+
+def strip_markdown_fences(text: str) -> str:
+    """Убирает ```-обёртки: агент должен быть сплошным текстом."""
+    out = re.sub(r"^\s*```[a-zA-Z]*\s*\n?", "", (text or "").strip())
+    out = re.sub(r"\n?```\s*$", "", out)
+    return out.replace("```", "").strip()
+
+
+def fit_agent_text(text: str) -> tuple[str, str | None]:
+    """Агент должен влезать и в 8000 знаков, и в 8000 байт UTF-8.
+
+    Режем по абзацам с конца: лучше короткий рабочий агент, чем обрубок фразы.
+    """
+    out = strip_markdown_fences(text)
+    out = re.sub(r"[ \t]+", " ", out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    if len(out) <= AGENT_MAX_CHARS and len(out.encode("utf-8")) <= AGENT_MAX_BYTES:
+        return out, None
+    paras = out.split("\n\n")
+    while paras and (
+        len("\n\n".join(paras)) > AGENT_MAX_CHARS
+        or len("\n\n".join(paras).encode("utf-8")) > AGENT_MAX_BYTES
+    ):
+        paras.pop()
+    trimmed = "\n\n".join(paras).strip()
+    if not trimmed:
+        trimmed = out[:2000]
+    return trimmed, "Агент был длиннее лимита — хвост обрезан, проверьте текст"
+
+
+def parse_agent_reply(raw: str, *, name_hint: str | None = None) -> dict[str, str]:
+    """Ответ вида NAME/DESC/CATEGORY/AGENT → запись стиля."""
+    text = strip_markdown_fences(raw)
+    if not text:
+        raise ValueError("LLM вернула пустой ответ")
+
+    def field(key: str) -> str:
+        m = re.search(rf"^{key}\s*:\s*(.+)$", text, re.MULTILINE | re.IGNORECASE)
+        return m.group(1).strip() if m else ""
+
+    m_agent = re.search(r"^AGENT\s*:\s*\n?", text, re.MULTILINE | re.IGNORECASE)
+    agent = text[m_agent.end() :].strip() if m_agent else ""
+    if not agent:
+        # Ответ без разметки полей — считаем весь текст агентом.
+        agent = text
+    agent, warning = fit_agent_text(agent)
+    if len(agent) < 200:
+        raise ValueError("LLM вернула слишком короткого агента")
+    return {
+        "name": field("NAME") or (name_hint or "Новый стиль"),
+        "desc": field("DESC"),
+        "category": field("CATEGORY") or "Без категории",
+        "agent": agent,
+        "warning": warning or "",
+    }
+
+
+async def build_style_agent(
+    paths: list[str | Path],
+    *,
+    user_request: str = "",
+    name_hint: str | None = None,
+) -> dict[str, Any]:
+    """Референсы (+ пожелание пользователя) → готовый текст агента стиля."""
+    images = collect_image_paths(paths)
+    from app.services.gpt_client import get_gpt_client
+
+    client = get_gpt_client()
+
+    notes: list[dict[str, Any]] = []
+    for i, batch in enumerate(batch_paths(images)):
+        raw = await client.ask_with_files(
+            "Проанализируй эту пачку референсов по критериям из system-промпта.",
+            batch,
+            system=_NOTES_SYSTEM,
+            timeout=240,
+            max_retries=1,
+        )
+        note = parse_json_object(raw)
+        if note:
+            notes.append(note)
+        else:
+            logger.warning("build_style_agent: пачка {} — нечитаемый ответ, пропуск", i + 1)
+    if not notes:
+        raise ValueError("LLM не смогла описать референсы — попробуйте другие изображения")
+
+    user = json.dumps(notes, ensure_ascii=False, indent=2)
+    if (user_request or "").strip():
+        user += f"\n\nУточнение пользователя (учти его в агенте): {user_request.strip()}"
+    if name_hint:
+        user += f"\n\nПодсказка названия: {name_hint}"
+    raw = await client.ask_with_files(user, [], system=_AGENT_SYSTEM, timeout=300, max_retries=1)
+    entry = parse_agent_reply(raw, name_hint=name_hint)
+    logger.info(
+        "build_style_agent: «{}» ← {} изображений, {} знаков / {} байт",
+        entry["name"],
+        len(images),
+        len(entry["agent"]),
+        len(entry["agent"].encode("utf-8")),
+    )
+    return {
+        **entry,
+        "images": len(images),
+        "chars": len(entry["agent"]),
+        "bytes": len(entry["agent"].encode("utf-8")),
+        "notes": notes,
+    }
 
 
 async def categorize_styles(entries: list[dict[str, Any]]) -> dict[str, Any]:

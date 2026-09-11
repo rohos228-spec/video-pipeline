@@ -240,6 +240,15 @@ export function GenAssistantPanel({
   const [newColor, setNewColor] = useState<GenStyleDef["color"]>("cyan");
   const [newArt, setNewArt] = useState<GenStyleArt>("infographic");
   const [newAgent, setNewAgent] = useState("");
+  // Референсы и пожелание пользователя → агент собирает LLM по картинкам
+  const [newRefs, setNewRefs] = useState<File[]>([]);
+  const [newHint, setNewHint] = useState("");
+  const [buildBusy, setBuildBusy] = useState(false);
+  const refInput = useRef<HTMLInputElement | null>(null);
+  const refPreviews = useMemo(() => newRefs.map((f) => URL.createObjectURL(f)), [newRefs]);
+  useEffect(() => {
+    return () => refPreviews.forEach((u) => URL.revokeObjectURL(u));
+  }, [refPreviews]);
 
   // LLM (текстовая модель Studio, как в топбаре)
   const [llmModels, setLlmModels] = useState<TextLlmModel[]>([]);
@@ -470,6 +479,44 @@ export function GenAssistantPanel({
     };
   }, [pendingArt, artUrls]);
 
+  // Референсы + пожелание → готовый текст агента (vision-LLM разбирает стиль).
+  const buildAgentFromRefs = async () => {
+    if (!newRefs.length) {
+      toast.error("Приложите хотя бы одну картинку-референс");
+      return;
+    }
+    setBuildBusy(true);
+    try {
+      const fd = new FormData();
+      newRefs.forEach((f) => fd.append("files", f));
+      fd.append("request", newHint.trim());
+      fd.append("name_hint", newName.trim());
+      const r = await fetch("/api/gen-assistant/build-agent", { method: "POST", body: fd });
+      if (!r.ok) {
+        const err = (await r.json().catch(() => null)) as { detail?: string } | null;
+        throw new Error(err?.detail || `HTTP ${r.status}`);
+      }
+      const data = (await r.json()) as {
+        name?: string;
+        desc?: string;
+        agent?: string;
+        chars?: number;
+        bytes?: number;
+        warning?: string;
+      };
+      if (!data.agent) throw new Error("пустой ответ");
+      setNewAgent(data.agent);
+      if (!newName.trim() && data.name) setNewName(data.name);
+      if (!newDesc.trim() && data.desc) setNewDesc(data.desc);
+      if (data.warning) toast.warning(data.warning);
+      toast.success(`Агент собран: ${data.chars ?? data.agent.length} симв. / ${data.bytes ?? 0} байт`);
+    } catch (e) {
+      toast.error(`Не удалось собрать агента: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBuildBusy(false);
+    }
+  };
+
   const saveCustomStyle = (catId: string) => {
     const name = newName.trim();
     const agent = newAgent.trim();
@@ -497,6 +544,8 @@ export function GenAssistantPanel({
     setNewName("");
     setNewDesc("");
     setNewAgent("");
+    setNewRefs([]);
+    setNewHint("");
     toast.success(`Стиль «${name}» добавлен`);
   };
 
@@ -670,8 +719,62 @@ export function GenAssistantPanel({
                 </button>
               </div>
             ) : (
-              /* форма нового стиля */
-              <div className="max-h-[220px] space-y-1.5 overflow-y-auto">
+              /* форма нового стиля: референсы + правка → агент */
+              <div className="max-h-[340px] space-y-1.5 overflow-y-auto">
+                <div className="flex flex-wrap items-center gap-1">
+                  {refPreviews.map((url, i) => (
+                    <span key={url} className="relative h-[46px] w-[46px] overflow-hidden rounded-md border border-white/15">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={url} alt="" className="h-full w-full object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => setNewRefs((prev) => prev.filter((_, k) => k !== i))}
+                        title="Убрать"
+                        className="absolute right-0 top-0 bg-black/70 px-0.5 text-[9px] leading-none text-white/80 hover:text-white"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => refInput.current?.click()}
+                    title="Добавить картинки-референсы"
+                    className="flex h-[46px] w-[46px] items-center justify-center rounded-md border border-dashed border-white/20 text-white/45 transition hover:border-[#22d3ee]/50 hover:text-[#22d3ee]"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                  </button>
+                  <input
+                    ref={refInput}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => {
+                      const picked = Array.from(e.target.files ?? []);
+                      if (picked.length) setNewRefs((prev) => [...prev, ...picked]);
+                      e.target.value = "";
+                    }}
+                  />
+                  {newRefs.length > 0 && (
+                    <span className="font-mono text-[9px] text-white/40">{newRefs.length} шт</span>
+                  )}
+                </div>
+                <textarea
+                  value={newHint}
+                  onChange={(e) => setNewHint(e.target.value)}
+                  rows={2}
+                  placeholder="Правка/пожелание: что именно взять из картинок, что зафиксировать (цвет, шрифт, сетка)…"
+                  className={cn(areaCls, "text-[11px]")}
+                />
+                <button
+                  type="button"
+                  disabled={buildBusy || !newRefs.length}
+                  onClick={() => void buildAgentFromRefs()}
+                  className="w-full rounded-lg bg-gradient-to-r from-[#22d3ee] to-[#0ea5e9] px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wider text-black transition hover:brightness-110 disabled:opacity-40"
+                >
+                  {buildBusy ? "Разбираю картинки…" : "Собрать агента по картинкам"}
+                </button>
                 <input
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
@@ -716,10 +819,15 @@ export function GenAssistantPanel({
                 <textarea
                   value={newAgent}
                   onChange={(e) => setNewAgent(e.target.value)}
-                  rows={3}
-                  placeholder="Текст агента стиля (promptCore): EN-ядро + «Не …» негативы…"
+                  rows={6}
+                  placeholder="Текст агента: соберётся по картинкам или впишите свой"
                   className={cn(areaCls, "font-mono text-[11px]")}
                 />
+                {newAgent.trim() && (
+                  <div className="px-0.5 font-mono text-[9px] text-white/35">
+                    {newAgent.length} симв. · {new Blob([newAgent]).size} байт
+                  </div>
+                )}
                 <div className="flex gap-1.5">
                   <button
                     type="button"

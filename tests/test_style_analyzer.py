@@ -5,9 +5,14 @@ from __future__ import annotations
 import pytest
 
 from app.services.style_analyzer import (
+    AGENT_MAX_BYTES,
+    AGENT_MAX_CHARS,
     batch_paths,
     collect_image_paths,
+    fit_agent_text,
+    parse_agent_reply,
     parse_json_object,
+    strip_markdown_fences,
 )
 
 
@@ -82,6 +87,87 @@ async def test_analyze_style_images_with_mock(monkeypatch, tmp_path):
     # 10 изображений → 2 пачки заметок + 1 синтез
     assert calls.count("notes") == 2
     assert calls.count("synth") == 1
+
+
+def test_strip_markdown_fences():
+    assert strip_markdown_fences("```text\nагент\n```") == "агент"
+    assert strip_markdown_fences("  агент  ") == "агент"
+
+
+def test_fit_agent_text_keeps_short_text():
+    text = "Ты — генератор промптов.\n\nЯдро копируй дословно."
+    out, warning = fit_agent_text(text)
+    assert out == text
+    assert warning is None
+
+
+def test_fit_agent_text_trims_by_bytes():
+    """Кириллица — 2 байта: агент влезает в знаки, но не в байты."""
+    para = "Ядро стиля описывает палитру и линию подробно и по-русски.\n\n"
+    text = para * 120
+    assert len(text) < AGENT_MAX_CHARS
+    assert len(text.encode("utf-8")) > AGENT_MAX_BYTES
+    out, warning = fit_agent_text(text)
+    assert len(out) <= AGENT_MAX_CHARS
+    assert len(out.encode("utf-8")) <= AGENT_MAX_BYTES
+    assert warning
+    assert out.endswith("по-русски.")
+
+
+def test_parse_agent_reply_fields():
+    raw = (
+        "NAME: Тёмные слайды\n"
+        "DESC: Белая линия на тёмном фоне\n"
+        "CATEGORY: Инфографика\n"
+        "AGENT:\n" + "Ты отвечаешь одним готовым промптом. " * 12
+    )
+    entry = parse_agent_reply(raw)
+    assert entry["name"] == "Тёмные слайды"
+    assert entry["category"] == "Инфографика"
+    assert entry["agent"].startswith("Ты отвечаешь одним готовым промптом.")
+    assert "NAME:" not in entry["agent"]
+
+
+def test_parse_agent_reply_without_markers():
+    raw = "Ты отвечаешь одним готовым промптом в стиле референсов. " * 8
+    entry = parse_agent_reply(raw, name_hint="Стиль")
+    assert entry["name"] == "Стиль"
+    assert entry["agent"].startswith("Ты отвечаешь")
+
+
+def test_parse_agent_reply_rejects_short():
+    with pytest.raises(ValueError, match="короткого агента"):
+        parse_agent_reply("NAME: X\nAGENT:\nмало")
+
+
+@pytest.mark.asyncio
+async def test_build_style_agent_with_mock(monkeypatch, tmp_path):
+    from app.services import gpt_client, style_analyzer
+
+    img = tmp_path / "ref.png"
+    img.write_bytes(b"\x89PNG")
+    seen: dict[str, str] = {}
+
+    class FakeClient:
+        async def ask_with_files(self, text, files, *, system=None, **kw):
+            if "пачку референсов" in text:
+                return '{"palette": "white on #1E1235", "line": "2px outline", "light": "flat", "composition": "slide", "subjects": "figures", "mood": "clean", "forbidden": "colour"}'
+            seen["user"] = text
+            return (
+                "NAME: Тёмный слайд\nDESC: Белая линия\nCATEGORY: Инфографика\nAGENT:\n"
+                + "Ты отвечаешь одним готовым промптом и ничем больше. " * 10
+            )
+
+    monkeypatch.setattr(gpt_client, "get_gpt_client", lambda: FakeClient())
+    monkeypatch.setattr(style_analyzer, "get_gpt_client", lambda: FakeClient(), raising=False)
+
+    res = await style_analyzer.build_style_agent(
+        [img], user_request="зафиксируй цвет фона", name_hint="Тёмный"
+    )
+    assert res["name"] == "Тёмный слайд"
+    assert res["images"] == 1
+    assert res["bytes"] == len(res["agent"].encode("utf-8"))
+    assert "зафиксируй цвет фона" in seen["user"]
 
 
 @pytest.mark.asyncio
