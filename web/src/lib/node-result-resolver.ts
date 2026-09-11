@@ -616,7 +616,7 @@ function computeNodeResult(
       const withPrompt = ctx.frames.filter((f) => f.animation_prompt?.trim());
       if (withPrompt.length) {
         return ready(
-          withPrompt.slice(0, 12).map((f) => ({
+          withPrompt.map((f) => ({
             id: `frame_${f.id}`,
             label: `Кадр ${f.number}`,
             kind: "text" as const,
@@ -624,9 +624,10 @@ function computeNodeResult(
           })),
           `Промты анимации: ${withPrompt.length} кадров`,
           "studio",
+          "frame_prompts",
         );
       }
-      return empty("Промты анимации ещё не готовы", "studio");
+      return empty("Промты анимации ещё не готовы", "studio", "frame_prompts");
     }
 
     case "videos":

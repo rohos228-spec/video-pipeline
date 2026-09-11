@@ -1,7 +1,7 @@
 "use client";
 
 import type { SyntheticEvent } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -460,7 +460,13 @@ export function NodeStudio({
     if (nodeType === "hero" || nodeType === "items") {
       return list.filter((a) => a.kind.includes("hero") || a.kind.includes("item"));
     }
-    return list.slice(0, 12);
+    if (nodeType === "audio" || nodeType === "music") {
+      return list.filter((a) => a.kind.includes("audio") || a.kind.includes("music"));
+    }
+    if (nodeType === "assemble" || nodeType === "hitl_final") {
+      return list.filter((a) => a.kind.includes("final"));
+    }
+    return [];
   }, [artifacts.data, nodeType]);
 
   const assets = useQuery({
@@ -475,6 +481,41 @@ export function NodeStudio({
     enabled: open && projectId != null,
   });
 
+  const isRunning = shouldShowStopBar(project.data?.status);
+
+  const mediaImages = useQuery({
+    queryKey: ["media-review", projectId, "images"],
+    queryFn: () => api.listMediaReview(projectId!, "images"),
+    enabled: open && projectId != null,
+    refetchInterval:
+      open && isRunning && (nodeType === "images" || nodeType === "hitl_images") ? 5000 : false,
+  });
+
+  const mediaVideos = useQuery({
+    queryKey: ["media-review", projectId, "videos"],
+    queryFn: () => api.listMediaReview(projectId!, "videos"),
+    enabled: open && projectId != null,
+    refetchInterval:
+      open && isRunning && (nodeType === "videos" || nodeType === "hitl_videos") ? 5000 : false,
+  });
+
+  const mapMedia = useCallback(
+    (rows: NonNullable<typeof mediaImages.data>, kind: "images" | "videos") =>
+      rows
+        .filter((r) => r.preview_url)
+        .map((r) => ({
+          source: "frame" as const,
+          id: String(r.frame_id),
+          kind,
+          path: r.file_path,
+          preview_url: r.preview_url,
+          label: `Кадр ${r.number}`,
+          frame_id: r.frame_id,
+          voiceover: r.voiceover_text,
+        })),
+    [],
+  );
+
   const resultSnapshot = useMemo(() => {
     if (!projectId) return null;
     return resolveNodeResult(
@@ -484,8 +525,8 @@ export function NodeStudio({
         artifacts: artifacts.data ?? [],
         assets: assets.data ?? [],
         frames: (dbBrowser.data?.frames as unknown as FrameDTO[]) ?? [],
-        mediaImages: [],
-        mediaVideos: [],
+        mediaImages: mapMedia(mediaImages.data ?? [], "images"),
+        mediaVideos: mapMedia(mediaVideos.data ?? [], "videos"),
       },
       undefined,
       nodeKey,
@@ -497,6 +538,9 @@ export function NodeStudio({
     artifacts.data,
     assets.data,
     dbBrowser.data?.frames,
+    mediaImages.data,
+    mediaVideos.data,
+    mapMedia,
     nodeKey,
   ]);
 

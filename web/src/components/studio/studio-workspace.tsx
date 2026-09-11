@@ -267,14 +267,14 @@ export function StudioWorkspace({
     queryKey: ["media-review", projectId, "images"],
     queryFn: () => api.listMediaReview(projectId!, "images"),
     enabled: projectId != null,
-    refetchInterval: 8000,
+    refetchInterval: 5000,
   });
 
   const mediaVideos = useQuery({
     queryKey: ["media-review", projectId, "videos"],
     queryFn: () => api.listMediaReview(projectId!, "videos"),
     enabled: projectId != null,
-    refetchInterval: 8000,
+    refetchInterval: 5000,
   });
 
   const montageBusy = useMontageBusy(projectId, project.data?.status);
