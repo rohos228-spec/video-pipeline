@@ -14,7 +14,7 @@
   - Изолированная база данных на каждый проект (`project.db` на SQLite + `aiosqlite` + `SQLAlchemy 2.0`).
   - Двусторонняя синхронизация с `project.xlsx` без потери состояния и метаданных.
 - 🤖 **Мультимодельный ИИ-Транспорт:**
-  - **Текст/Сценарии:** GPT 5.5 / 5.6 Sol, Claude 3.7 Sonnet, Gemini 2.5 Pro через VPS Relay, Vibecode и Kie.
+  - **Текст/Сценарии:** GPT 5.5 / 5.6 Sol, Claude 3.7 / 5 Sonnet, Gemini 2.5 / 3.1 Pro, Grok 4.6 и другие модели через VPS Relay, Vibecode и Kie.
   - **Изображения:** Outsee (Nano Banana 2, GPT Image 2), ComfyUI.
   - **Видео:** Veo 3.1 Lite/Fast, Kling 2.6 через Kie.
   - **Озвучка и субтитры:** ElevenLabs, faster-whisper (CPU/GPU), NVIDIA NeMo Parakeet ASR.
