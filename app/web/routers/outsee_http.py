@@ -116,6 +116,7 @@ async def outsee_generate(body: OutseeGenerateBody) -> dict[str, Any]:
         "aspect": body.aspect,
         "resolution": body.resolution,
         "duration": body.duration,
+        "detail_level": body.detail_level,
         "project_id": body.project_id,
         "generate_audio": body.generate_audio,
         "has_first_frame": bool(body.first_frame_url),
