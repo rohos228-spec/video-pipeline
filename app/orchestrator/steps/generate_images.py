@@ -1154,12 +1154,17 @@ async def _generate_frame_job(
     bot: Bot,
     outsee: OutseeBot | None,
     gpt: Any,
+    session_maker: Any = None,
 ) -> None:
     """Один кадр в отдельной DB-сессии + слот провайдера (для streams>1)."""
-    from app.db import SessionLocal
+    if session_maker is None:
+        from app.project_db import get_project_sessionmaker
+
+        p_dir = out_dir.parent
+        session_maker = await get_project_sessionmaker(p_dir)
 
     async with acquire_image_slot():
-        async with SessionLocal() as session:
+        async with session_maker() as session:
             project = await session.get(Project, project_id)
             frame = await session.get(Frame, frame_id)
             if project is None or frame is None:
@@ -1248,6 +1253,11 @@ async def _run_claimed_batch(
         return
 
     await session.commit()
+    from app.project_db import get_project_sessionmaker
+
+    p_dir = getattr(project, "data_dir", None) or out_dir.parent
+    sm = await get_project_sessionmaker(p_dir)
+
     jobs = []
     for fr in claimed:
         ref = (
@@ -1256,9 +1266,7 @@ async def _run_claimed_batch(
             else None
         )
         if shot == 2 and ref is None:
-            from app.db import SessionLocal
-
-            async with SessionLocal() as s:
+            async with sm() as s:
                 f2 = await s.get(Frame, fr.id)
                 if f2 is not None:
                     attrs = dict(f2.attrs or {})
@@ -1277,6 +1285,7 @@ async def _run_claimed_batch(
                 bot=bot,
                 outsee=outsee,
                 gpt=gpt,
+                session_maker=sm,
             )
         )
     if jobs:
@@ -1802,6 +1811,16 @@ async def _generate_and_send(
     )
     # Коммитим сразу, чтобы callback-хендлер в другом таске видел HITL.
     await session.commit()
+    try:
+        from app.services.event_bus import publish_project_event
+
+        await publish_project_event(
+            project.id,
+            event_type="image_generated",
+            data={"frame_id": frame.id, "image_path": str(result.file_path)},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[#{}] publish image_generated event failed: {}", project.id, exc)
 
 
 def _html_escape(s: str) -> str:

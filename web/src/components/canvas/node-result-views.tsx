@@ -76,6 +76,9 @@ export function NodeResultViewBody({
         />
       );
     case "frame_videos":
+      if (nodeType === "videos" || nodeType === "hitl_videos") {
+        return <SceneVideosGalleryView projectId={projectId} />;
+      }
       return <FrameVideosView items={snapshot.items} />;
     case "topic_edit":
       return <TopicEditView projectId={projectId} snapshot={snapshot} />;
@@ -1046,6 +1049,7 @@ function SceneImagesGalleryView({ projectId }: { projectId: number }) {
   const media = useQuery({
     queryKey: ["media-review", projectId, "images"],
     queryFn: () => api.listMediaReview(projectId, "images"),
+    refetchInterval: 5000,
   });
 
   if (media.isLoading) return <LoadingBlock />;
@@ -1057,6 +1061,29 @@ function SceneImagesGalleryView({ projectId }: { projectId: number }) {
       <MediaFrameGallery
         projectId={projectId}
         kind="images"
+        items={items}
+        showApproveButtons={false}
+      />
+    </div>
+  );
+}
+
+function SceneVideosGalleryView({ projectId }: { projectId: number }) {
+  const media = useQuery({
+    queryKey: ["media-review", projectId, "videos"],
+    queryFn: () => api.listMediaReview(projectId, "videos"),
+    refetchInterval: 5000,
+  });
+
+  if (media.isLoading) return <LoadingBlock />;
+
+  const items = (media.data ?? []).filter((f) => f.preview_url);
+
+  return (
+    <div className="min-h-0 flex-1 overflow-auto">
+      <MediaFrameGallery
+        projectId={projectId}
+        kind="videos"
         items={items}
         showApproveButtons={false}
       />
