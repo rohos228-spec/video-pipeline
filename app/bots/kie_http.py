@@ -454,9 +454,14 @@ async def generate_kie_video(
         )
 
     image_url = await _frame_to_public_url(start_frame)
+    ar = (aspect_ratio or "9:16").replace("_", ":")
+    # ByteDance Seedance first-frame I2V requires aspect_ratio='adaptive'
+    if "seedance" in str(kie_id).lower() and image_url:
+        ar = "adaptive"
+
     values: dict[str, Any] = {
         "prompt": prompt,
-        "aspect_ratio": (aspect_ratio or "9:16").replace("_", ":"),
+        "aspect_ratio": ar,
         "duration": int(duration) if duration else 5,
         "generate_audio": bool(generate_audio),
     }

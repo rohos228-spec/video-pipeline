@@ -1001,6 +1001,11 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+  regenerateFrameVideo: (projectId: number, frameId: number) =>
+    http<{ ok: boolean; frame_id: number; frame_number: number }>(
+      `/api/projects/${projectId}/frames/${frameId}/regenerate-video`,
+      { method: "POST" },
+    ),
 
   getMontageBoard: (projectId: number) =>
     http<MontageBoardDTO>(

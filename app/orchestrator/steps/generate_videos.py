@@ -13,27 +13,14 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bots.browser import browser_session
-from app.bots.outsee import OutseeBot
-
-
+# Chrome CDP сессия для видео полностью отключена: генерация идёт строго через HTTP API.
 def _video_http_primary() -> bool:
-    """Outsee HTTP video — без Chrome CDP."""
-    from app.bots.outsee_http import outsee_api_configured, outsee_api_enabled_for_video
-
-    return bool(
-        outsee_api_enabled_for_video()
-        or outsee_api_configured()
-    )
+    return True
 
 
 @asynccontextmanager
-async def _optional_browser_session(need_cdp: bool) -> AsyncIterator[Any]:
-    if not need_cdp:
-        yield None
-        return
-    async with browser_session() as bs:
-        yield bs
+async def _optional_browser_session(need_cdp: bool = False) -> AsyncIterator[Any]:
+    yield None
 from app.generation_options import (
     ASPECT_RATIOS_BY_ID,
     DEFAULTS,
@@ -860,14 +847,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         session_clip_paths: list[Path] = []
         clips_lock = asyncio.Lock()
 
-        http_primary = _video_http_primary()
-        async with _optional_browser_session(need_cdp=not http_primary) as bs:
-            outsee = OutseeBot(bs) if bs is not None else None
-            if http_primary:
-                logger.info(
-                    "[#{}] generate_videos: HTTP video API (без CDP)",
-                    project.id,
-                )
+        async with _optional_browser_session() as _:
+            outsee = None
+            logger.info(
+                "[#{}] generate_videos: HTTP video API (без Chrome CDP)",
+                project.id,
+            )
             gpt = get_gpt_client()
             try:
                 while True:
@@ -931,14 +916,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     # После массового fail (часто «лимит 4» из-за ghost jobs)
                     # дать Outsee освободить слоты, прежде чем claim следующей пачки.
                     if fail_n and fail_n >= len(results):
-                        from app.services.outsee_retry import (
-                            sleep_after_outsee_account_slot_limit,
-                        )
+                        from app.services.step_cancel import sleep_cancellable
 
-                        await sleep_after_outsee_account_slot_limit(
+                        logger.warning(
+                            "[#{}] generate_videos: вся пачка не удалась ({}/{}) — пауза 20с перед следующей попыткой",
                             project.id,
-                            context="generate_videos parallel batch fail",
+                            fail_n,
+                            len(results),
                         )
+                        await sleep_cancellable(20.0, project.id)
                     await session.refresh(project)
 
                 # --- Фаза shot_02 (досъём) ---
@@ -946,7 +932,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     raise_if_cancelled(project.id)
                     batch2 = await _claim_shot2_video_batch(
                         session,
-                        project.id,
+                        project,
                         out_dir=out_dir,
                         scenes_dir=scenes_dir,
                         limit=streams,

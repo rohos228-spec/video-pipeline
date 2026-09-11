@@ -1280,7 +1280,6 @@ async def generate_video_with_retries(
 
     primary_backend = video_provider_for(primary_slug)
     use_outsee_api_video = primary_backend == "outsee" and outsee_api_configured()
-    primary_is_kling = primary_backend == "kie"
     if primary_backend == "outsee" and not outsee_api_configured() and outsee is None:
         raise OutseeImageError(
             "OUTSEE_API_KEY пуст — генерация идёт через ключ Outsee",
@@ -1295,10 +1294,13 @@ async def generate_video_with_retries(
     concurrency_waits = 0
     transient_streak = 0
     fallback_started = False
-    phase = "fallback" if primary_is_kling else "primary"
-    if primary_is_kling:
-        fallback_started = True
-        logger.info("outsee_retry: video primary Kling 2.6 via kie (KIE_API_KEY)")
+    phase = "primary"
+    logger.info(
+        "outsee_retry: video primary model={} via {} (ladder fallback={})",
+        primary_slug,
+        primary_backend,
+        KIE_KLING_FALLBACK_SLUG,
+    )
 
     async def _prepare_send(prompt_body: str, attempt_kwargs: dict[str, Any], *, kling: bool) -> str:
         prefix = (
@@ -1343,8 +1345,13 @@ async def generate_video_with_retries(
     ) -> GenerationResult:
         attempt_kwargs = dict(attempt_kwargs)
         attempt_kwargs["generate_audio"] = False
-        if kling:
-            raw_slug = attempt_kwargs.get("model_slug") or "kling-2-6"
+        is_kie = kling or (primary_backend == "kie")
+        if is_kie:
+            raw_slug = (
+                KIE_KLING_FALLBACK_SLUG
+                if kling
+                else (attempt_kwargs.get("model_slug") or primary_slug)
+            )
             from app.bots.kie_http import generate_kie_video
 
             result = await generate_kie_video(
@@ -1352,7 +1359,7 @@ async def generate_video_with_retries(
                 out_path,
                 model_slug=str(raw_slug),
                 start_frame=attempt_kwargs.get("start_frame"),
-                aspect_ratio=str(attempt_kwargs.get("aspect_ratio") or "9:16"),
+                aspect_ratio=str(attempt_kwargs.get("aspect_ratio") or "adaptive"),
                 resolution=str(attempt_kwargs.get("resolution") or "720p"),
                 duration=attempt_kwargs.get("duration") or 5,
                 generate_audio=False,
@@ -1369,7 +1376,7 @@ async def generate_video_with_retries(
                     model=str(raw_slug),
                     prompt=send_prompt,
                     params={
-                        "aspect": str(attempt_kwargs.get("aspect_ratio") or "9:16"),
+                        "aspect": str(attempt_kwargs.get("aspect_ratio") or "adaptive"),
                         "duration": attempt_kwargs.get("duration") or 5,
                         "project_id": project_id,
                         "ladder": "fallback" if phase == "fallback" else "primary",
@@ -1380,6 +1387,21 @@ async def generate_video_with_retries(
                 )
             except Exception:  # noqa: BLE001
                 logger.debug("kie video sidecar skipped", exc_info=True)
+            try:
+                from app.services.api_tracker_hook import record_api_call
+
+                record_api_call(
+                    provider="kie",
+                    model=str(raw_slug),
+                    call_type="video",
+                    media_count=1,
+                    duration_sec=float(attempt_kwargs.get("duration") or 5),
+                    status_code=200,
+                    project_source=f"pipeline_project_{project_id}" if project_id else "pipeline",
+                    metadata={"prompt": send_prompt[:500]},
+                )
+            except Exception:
+                pass
             return result
         if use_outsee_api_video:
             raw_slug = attempt_kwargs.get("model_slug") or getattr(
@@ -1515,7 +1537,7 @@ async def generate_video_with_retries(
         provider_label = (
             "kie-kling"
             if use_kling
-            else ("outsee-api" if use_outsee_api_video else "outsee-cdp")
+            else (f"kie-{primary_slug}" if primary_backend == "kie" else ("outsee-api" if use_outsee_api_video else "outsee-cdp"))
         )
         logger.info(
             "outsee_retry: video [{}] попытка {}/{} model={} provider={} {}",
@@ -1709,4 +1731,13 @@ async def generate_video_with_retries(
             "last_error": detail[:300],
         },
     )
+
+
+async def sleep_after_outsee_account_slot_limit(
+    project_id: int | None = None,
+    context: str = "",
+) -> None:
+    """Пауза при исчерпании слотов / параллельных лимитов генератора."""
+    await sleep_cancellable(20.0, project_id)
+
 

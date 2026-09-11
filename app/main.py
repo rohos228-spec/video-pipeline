@@ -148,7 +148,9 @@ async def _backfill_from_disk() -> None:
     try:
         async with session_scope() as s:
             projects = (
-                await s.execute(select(Project))
+                await s.execute(
+                    select(Project).where(Project.status != ProjectStatus.assembled)
+                )
             ).scalars().all()
             for p in projects:
                 # p.data_dir автоматически даёт правильный путь:
@@ -221,7 +223,7 @@ async def _recompute_all_projects() -> None:
 
     try:
         async with session_scope() as s:
-            changes = await recompute_all(s)
+            changes = await recompute_all(s, skip_assembled=True)
             if changes:
                 logger.warning(
                     "recompute: {} проект(а/ов) с десинхронизацией статуса "

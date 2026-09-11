@@ -614,13 +614,22 @@ function computeNodeResult(
 
     case "animation_prompts": {
       const withPrompt = ctx.frames.filter((f) => f.animation_prompt?.trim());
+      const imgByNumber = new Map<number, string>();
+      const imgByFrameId = new Map<number, string>();
+      for (const m of ctx.mediaImages) {
+        if (m.preview_url) {
+          if (m.frame_id != null) imgByFrameId.set(m.frame_id, m.preview_url);
+        }
+      }
       if (withPrompt.length) {
         return ready(
           withPrompt.map((f) => ({
             id: `frame_${f.id}`,
             label: `Кадр ${f.number}`,
             kind: "text" as const,
+            previewUrl: imgByFrameId.get(f.id) ?? null,
             content: f.animation_prompt,
+            frameNumber: f.number,
           })),
           `Промты анимации: ${withPrompt.length} кадров`,
           "studio",

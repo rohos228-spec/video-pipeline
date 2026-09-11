@@ -762,11 +762,16 @@ async def recompute_status(
     return old, new, True
 
 
-async def recompute_all(session, *, dry_run: bool = False) -> dict[int, tuple[str, str]]:
+async def recompute_all(
+    session, *, dry_run: bool = False, skip_assembled: bool = False
+) -> dict[int, tuple[str, str]]:
     """Прогон рекомпьюта по всем проектам. Возвращает {pid: (old, new)}
     только для тех, у кого статус изменился.
     """
-    rows = (await session.execute(select(Project))).scalars().all()
+    stmt = select(Project)
+    if skip_assembled:
+        stmt = stmt.where(Project.status != ProjectStatus.assembled)
+    rows = (await session.execute(stmt)).scalars().all()
     changes: dict[int, tuple[str, str]] = {}
     for p in rows:
         old, new, changed = await recompute_status(session, p, dry_run=dry_run)

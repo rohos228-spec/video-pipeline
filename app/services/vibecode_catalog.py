@@ -125,7 +125,7 @@ VIDEO_CATALOG_RAW: list[dict[str, Any]] = [
         "is_video": True,
         "owned_by": "kie",
         "video_generator": "seedance_2_5",
-        "pricing": {"currency": "usd"},
+        "pricing": {"currency": "usd", "usd_per_video": 0.06},
     },
     {
         "id": "seedance-1-5-pro",
@@ -134,7 +134,7 @@ VIDEO_CATALOG_RAW: list[dict[str, Any]] = [
         "is_video": True,
         "owned_by": "kie",
         "video_generator": "seedance_1_5_pro",
-        "pricing": {"currency": "usd"},
+        "pricing": {"currency": "usd", "usd_per_video": 0.07},
     },
     {
         "id": "kling-3-0",
@@ -143,7 +143,7 @@ VIDEO_CATALOG_RAW: list[dict[str, Any]] = [
         "is_video": True,
         "owned_by": "kie",
         "video_generator": "kling_3_0",
-        "pricing": {"currency": "usd"},
+        "pricing": {"currency": "usd", "usd_per_video": 0.12},
     },
     {
         "id": "kling-v3-turbo-t2v",
@@ -152,7 +152,7 @@ VIDEO_CATALOG_RAW: list[dict[str, Any]] = [
         "is_video": True,
         "owned_by": "kie",
         "video_generator": "kling_v3_turbo_t2v",
-        "pricing": {"currency": "usd"},
+        "pricing": {"currency": "usd", "usd_per_video": 0.08},
     },
     {
         "id": "kling-v3-turbo-i2v",
@@ -161,7 +161,7 @@ VIDEO_CATALOG_RAW: list[dict[str, Any]] = [
         "is_video": True,
         "owned_by": "kie",
         "video_generator": "kling_v3_turbo_i2v",
-        "pricing": {"currency": "usd"},
+        "pricing": {"currency": "usd", "usd_per_video": 0.08},
     },
     {
         "id": "kling-3-0-omni-t2v",
@@ -170,7 +170,7 @@ VIDEO_CATALOG_RAW: list[dict[str, Any]] = [
         "is_video": True,
         "owned_by": "kie",
         "video_generator": "kling_3_0_omni_t2v",
-        "pricing": {"currency": "usd"},
+        "pricing": {"currency": "usd", "usd_per_video": 0.14},
     },
     {
         "id": "hailuo-2-3-i2v",
@@ -179,7 +179,7 @@ VIDEO_CATALOG_RAW: list[dict[str, Any]] = [
         "is_video": True,
         "owned_by": "kie",
         "video_generator": "hailuo_2_3_i2v",
-        "pricing": {"currency": "usd"},
+        "pricing": {"currency": "usd", "usd_per_video": 0.09},
     },
     {
         "id": "wan-2-7-t2v",
@@ -188,7 +188,7 @@ VIDEO_CATALOG_RAW: list[dict[str, Any]] = [
         "is_video": True,
         "owned_by": "kie",
         "video_generator": "wan_2_7_t2v",
-        "pricing": {"currency": "usd"},
+        "pricing": {"currency": "usd", "usd_per_video": 0.05},
     },
     {
         "id": "pixverse-v6-t2v",
@@ -197,7 +197,7 @@ VIDEO_CATALOG_RAW: list[dict[str, Any]] = [
         "is_video": True,
         "owned_by": "kie",
         "video_generator": "pixverse_v6_t2v",
-        "pricing": {"currency": "usd"},
+        "pricing": {"currency": "usd", "usd_per_video": 0.07},
     },
     {
         "id": "topaz-video-upscale",
@@ -206,7 +206,7 @@ VIDEO_CATALOG_RAW: list[dict[str, Any]] = [
         "is_video": True,
         "owned_by": "kie",
         "video_generator": "topaz_video_upscale",
-        "pricing": {"currency": "usd"},
+        "pricing": {"currency": "usd", "usd_per_video": 0.05},
     },
     {
         "id": "veo-3-1-lite",
@@ -215,7 +215,7 @@ VIDEO_CATALOG_RAW: list[dict[str, Any]] = [
         "is_video": True,
         "owned_by": "outsee",
         "video_generator": "veo_3_1_lite",
-        "pricing": {"currency": "usd"},
+        "pricing": {"currency": "usd", "usd_per_video": 0.15},
     },
 ]
 
@@ -290,6 +290,7 @@ def apply_markup(
         "cache_read_usd_per_m",
         "cache_create_usd_per_m",
         "usd_per_image",
+        "usd_per_video",
     ):
         if key not in raw or raw[key] is None:
             continue

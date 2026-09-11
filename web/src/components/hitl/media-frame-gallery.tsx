@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Loader2, PenLine, XCircle } from "lucide-react";
+import { CheckCircle2, Loader2, PenLine, RotateCw, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
@@ -88,6 +88,19 @@ export function MediaFrameGallery({
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
+  const regenerateClip = useMutation({
+    mutationFn: async (frameId: number) => {
+      await api.regenerateFrameVideo(projectId, frameId);
+      await api.runProjectStep(projectId, "video", { mode: "resume" });
+    },
+    onSuccess: () => {
+      toast.success("Перегенерация клипа запущена");
+      qc.invalidateQueries({ queryKey: ["media-review", projectId, "videos"] });
+      qc.invalidateQueries({ queryKey: ["project", projectId] });
+    },
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
+
   if (items.length === 0) {
     return (
       <p className="py-6 text-center text-sm text-muted-foreground">
@@ -139,6 +152,7 @@ export function MediaFrameGallery({
                 type="button"
                 size="sm"
                 variant="ghost"
+                title="Редактировать промпт"
                 className="h-7 flex-1 px-1 text-[10px] text-zinc-400 hover:text-cyan-300 hover:bg-cyan-950/30 rounded-lg"
                 onClick={() => {
                   setEditFrame(frame.frame_id);
@@ -151,6 +165,24 @@ export function MediaFrameGallery({
               >
                 <PenLine className="h-3 w-3" />
               </Button>
+              {kind === "videos" && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  title="Перегенерировать клип кадра"
+                  className="h-7 px-2 text-[10px] text-zinc-400 hover:text-amber-300 hover:bg-amber-950/30 rounded-lg gap-1"
+                  disabled={regenerateClip.isPending}
+                  onClick={() => regenerateClip.mutate(frame.frame_id)}
+                >
+                  {regenerateClip.isPending && regenerateClip.variables === frame.frame_id ? (
+                    <Loader2 className="h-3 w-3 animate-spin text-amber-400" />
+                  ) : (
+                    <RotateCw className="h-3 w-3" />
+                  )}
+                  <span className="hidden sm:inline">Перегенерировать</span>
+                </Button>
+              )}
               {frame.preview_url && (
                 <a
                   href={frame.preview_url}
