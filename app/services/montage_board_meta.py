@@ -91,6 +91,16 @@ def slot_key_from_op(op: dict[str, Any] | None) -> str | None:
         return f"{fr}:template"
     if t == "coverage_anchors":
         return f"{fr}:anchors"
+    if t == "coverage_angle":
+        return f"{fr}:angle"
+    if t == "coverage_move":
+        return f"{fr}:move"
+    if t == "coverage_stitch":
+        return f"{fr}:stitch"
+    if t == "coverage_light":
+        return f"{fr}:light"
+    if t == "coverage_set":
+        return f"{fr}:set"
     if t.startswith("coverage_"):
         return f"{fr}:kind"
     return None

@@ -29,6 +29,11 @@ COVERAGE_OP_TYPES = frozenset(
         "coverage_delete",
         "coverage_template",
         "coverage_anchors",
+        "coverage_angle",
+        "coverage_move",
+        "coverage_stitch",
+        "coverage_light",
+        "coverage_set",
     }
 )
 
@@ -39,6 +44,117 @@ COVERAGE_PLAN_CHOICES = (
     "КРУПНЫЙ",
     "ДЕТАЛЬ",
 )
+
+COVERAGE_ANGLE_CHOICES = (
+    "фронт",
+    "3/4",
+    "с плеча",
+    "сверху",
+    "снизу",
+    "макро",
+)
+
+COVERAGE_MOVE_CHOICES = (
+    "статика",
+    "наезд",
+    "отъезд",
+    "панорама",
+    "следование",
+    "ручная",
+)
+
+COVERAGE_STITCH_CHOICES = (
+    ("cut", "cut"),
+    ("cut_on_action", "по действию"),
+    ("eyeline", "взгляд"),
+    ("match_cut", "match"),
+    ("dissolve", "dissolve"),
+    ("fade", "fade"),
+)
+
+COVERAGE_LIGHT_CHOICES = (
+    "дневной",
+    "ночной",
+    "закат",
+    "рассвет",
+    "контровой",
+    "холодный верхний",
+    "туман",
+)
+
+_NO_IMAGE_REGEN = frozenset(
+    {"coverage_delete", "coverage_anchors", "coverage_stitch"}
+)
+
+_STITCH_ALIASES = {
+    "по действию": "cut_on_action",
+    "cut on action": "cut_on_action",
+    "взгляд": "eyeline",
+    "match": "match_cut",
+    "match cut": "match_cut",
+}
+
+
+def choices_with_current(choices: tuple[str, ...] | list[str], current: str) -> list[str]:
+    out = list(choices)
+    text = (current or "").strip()
+    if text and text not in out:
+        out.append(text)
+    return out
+
+
+def canonical_stitch(value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    alias = _STITCH_ALIASES.get(text.casefold())
+    if alias:
+        return alias
+    for sid, label in COVERAGE_STITCH_CHOICES:
+        if text == sid or text == label:
+            return sid
+        if text.casefold() == sid.casefold() or text.casefold() == label.casefold():
+            return sid
+    return text
+
+
+def stitch_choices_for_ui(current: str = "") -> list[dict[str, str]]:
+    out = [{"id": sid, "label": label} for sid, label in COVERAGE_STITCH_CHOICES]
+    text = canonical_stitch(current)
+    if text and all(row["id"] != text for row in out):
+        out.append({"id": text, "label": text})
+    return out
+
+
+def stitch_label(value: str) -> str:
+    sid = canonical_stitch(value)
+    for key, label in COVERAGE_STITCH_CHOICES:
+        if key == sid:
+            return label
+    return (value or "").strip()
+
+
+def _vo_parent_frame(frames: list[Frame], frame: Frame) -> Frame:
+    """VO-родитель ячейки по parent_uuid. coverage_parent_id (X1) не считаем."""
+    if is_shot_child(frame):
+        uid = str(_cs(frame).get("parent_uuid") or "").strip()
+        if uid:
+            for fr in frames:
+                if str(getattr(fr, "uuid", "") or "") == uid:
+                    return fr
+    return frame
+
+
+def _vo_members(frames: list[Frame], parent: Frame) -> list[Frame]:
+    puid = str(getattr(parent, "uuid", "") or "")
+    members = [parent]
+    if puid:
+        for other in frames:
+            if int(other.number) == int(parent.number):
+                continue
+            if str(_cs(other).get("parent_uuid") or "") == puid:
+                members.append(other)
+    return members
 
 
 def _by_number(frames: list[Frame], number: int) -> Frame | None:
@@ -140,6 +256,26 @@ async def _load_frames(session: AsyncSession, project_id: int) -> list[Frame]:
     )
 
 
+def _apply_shot_fields(
+    frame: Frame,
+    frames: list[Frame],
+    *,
+    cs_fields: dict[str, Any],
+    kadry_fields: dict[str, Any],
+    attrs_fields: dict[str, Any] | None = None,
+) -> None:
+    if attrs_fields:
+        attrs = dict(getattr(frame, "attrs", None) or {})
+        attrs.update(attrs_fields)
+        frame.attrs = attrs
+        _flag_attrs(frame)
+    _set_cs(frame, **cs_fields)
+    _patch_kadry_item(frame, **kadry_fields)
+    parent = _vo_parent_frame(frames, frame)
+    if int(parent.number) != int(frame.number):
+        _patch_kadry_item_on_parent_ladder(parent, frame, **kadry_fields)
+
+
 def apply_coverage_plan(frame: Frame, plan: str, frames: list[Frame]) -> None:
     text = (plan or "").strip()
     if not text:
@@ -168,6 +304,70 @@ def apply_coverage_action(frame: Frame, action: str, frames: list[Frame]) -> Non
     parent = find_coverage_parent_frame(frames, frame)
     if parent is not None and int(parent.number) != int(frame.number):
         _patch_kadry_item_on_parent_ladder(parent, frame, действие=text)
+
+
+def apply_coverage_angle(frame: Frame, angle: str, frames: list[Frame]) -> None:
+    text = (angle or "").strip()
+    if not text:
+        raise RuntimeError("ракурс пустой")
+    _apply_shot_fields(
+        frame,
+        frames,
+        cs_fields={"ракурс": text, "angle": text},
+        kadry_fields={"ракурс": text},
+    )
+
+
+def apply_coverage_move(frame: Frame, move: str, frames: list[Frame]) -> None:
+    text = (move or "").strip()
+    if not text:
+        raise RuntimeError("движение пустое")
+    _apply_shot_fields(
+        frame,
+        frames,
+        cs_fields={"движение": text, "move": text},
+        kadry_fields={"движение": text},
+    )
+
+
+def apply_coverage_stitch(frame: Frame, stitch: str, frames: list[Frame]) -> None:
+    text = canonical_stitch(stitch)
+    if not text:
+        raise RuntimeError("стык пустой")
+    label = stitch_label(text)
+    _apply_shot_fields(
+        frame,
+        frames,
+        cs_fields={"переход": text, "тип_стыка": text},
+        kadry_fields={"переход": text, "тип_стыка": label},
+        attrs_fields={"переход": text},
+    )
+
+
+def apply_coverage_light(frame: Frame, light: str, frames: list[Frame]) -> None:
+    text = (light or "").strip()
+    if not text:
+        raise RuntimeError("свет пустой")
+    parent = _vo_parent_frame(frames, frame)
+    for member in _vo_members(frames, parent):
+        attrs = dict(getattr(member, "attrs", None) or {})
+        attrs["освещение"] = text
+        member.attrs = attrs
+        _flag_attrs(member)
+        _set_cs(member, освещение=text)
+        _patch_kadry_item(member, освещение=text)
+
+
+def apply_coverage_set(frame: Frame, scene_set: str, frames: list[Frame]) -> None:
+    text = (scene_set or "").strip()
+    if not text:
+        raise RuntimeError("набор пустой")
+    parent = _vo_parent_frame(frames, frame)
+    for member in _vo_members(frames, parent):
+        _set_cs(member, набор=text)
+        _patch_kadry_item(member, набор=text)
+        if member is not parent:
+            _patch_kadry_item_on_parent_ladder(parent, member, набор=text)
 
 
 def apply_coverage_template(
@@ -450,6 +650,16 @@ async def apply_coverage_op(
         apply_coverage_plan(frame, str(op.get("plan") or ""), frames)
     elif op_type == "coverage_action":
         apply_coverage_action(frame, str(op.get("action") or ""), frames)
+    elif op_type == "coverage_angle":
+        apply_coverage_angle(frame, str(op.get("angle") or ""), frames)
+    elif op_type == "coverage_move":
+        apply_coverage_move(frame, str(op.get("move") or ""), frames)
+    elif op_type == "coverage_stitch":
+        apply_coverage_stitch(frame, str(op.get("stitch") or ""), frames)
+    elif op_type == "coverage_light":
+        apply_coverage_light(frame, str(op.get("light") or ""), frames)
+    elif op_type == "coverage_set":
+        apply_coverage_set(frame, str(op.get("set") or ""), frames)
     elif op_type == "coverage_template":
         report = apply_coverage_template(frame, frames, str(op.get("template") or ""))
     elif op_type == "coverage_anchors":
@@ -481,7 +691,7 @@ async def apply_coverage_op(
         "frame_number": frame_number,
         "op": op,
         # Якоря меняют только нарезку закадра — картинку не трогаем.
-        "regen_image": op_type not in ("coverage_delete", "coverage_anchors"),
+        "regen_image": op_type not in _NO_IMAGE_REGEN,
     }
     if report is not None:
         out["report"] = report

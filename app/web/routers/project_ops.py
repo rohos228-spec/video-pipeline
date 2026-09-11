@@ -858,7 +858,36 @@ async def _scene_editor_state(session: AsyncSession, project: Project, frame_id:
     frame = next((fr for fr in frames if int(fr.id) == int(frame_id)), None)
     if frame is None:
         raise HTTPException(status_code=404, detail=f"кадр {frame_id} не найден")
-    return build_scene_editor_state(frames, frame)
+    state = build_scene_editor_state(frames, frame)
+    try:
+        from app.models import Entity
+
+        ents = list(
+            (
+                await session.execute(
+                    _select(Entity).where(Entity.project_id == project.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        names = {
+            str(getattr(e, "code", "") or "").strip(): str(getattr(e, "name", "") or "").strip()
+            for e in ents
+            if str(getattr(e, "type", "") or "") == "character"
+            and str(getattr(e, "code", "") or "").strip()
+        }
+        raw = str((state.get("scene") or {}).get("characters") or "")
+        if raw and names:
+            parts = [p.strip() for p in raw.replace(";", ",").split(",") if p.strip()]
+            mapped: list[str] = []
+            for part in parts:
+                name = names.get(part) or names.get(part.lower())
+                mapped.append(f"{part} · {name}" if name and name != part else part)
+            state["scene"]["characters"] = ", ".join(mapped)
+    except Exception:
+        pass
+    return state
 
 
 @router.get("/{project_id}/montage-board/frames/{frame_id}/scene-editor")

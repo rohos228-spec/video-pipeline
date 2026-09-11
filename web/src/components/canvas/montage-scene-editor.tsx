@@ -32,6 +32,11 @@ type Draft = {
   parentNumber: number | null;
   template: string;
   plan: string;
+  angle: string;
+  move: string;
+  stitch: string;
+  light: string;
+  set: string;
   action: string;
   anchors: SceneAnchorRow[];
 };
@@ -73,6 +78,33 @@ function Chip({
   );
 }
 
+function ChipRow({
+  choices,
+  value,
+  disabled,
+  onPick,
+}: {
+  choices: Array<{ id: string; label: string }>;
+  value: string;
+  disabled?: boolean;
+  onPick: (id: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {choices.map((c) => (
+        <Chip
+          key={c.id}
+          active={value === c.id || value === c.label}
+          disabled={disabled}
+          onClick={() => onPick(c.id)}
+        >
+          {c.label}
+        </Chip>
+      ))}
+    </div>
+  );
+}
+
 function Section({
   label,
   aside,
@@ -90,6 +122,17 @@ function Section({
       </div>
       {children}
     </section>
+  );
+}
+
+function MetaLine({ label, value }: { label: string; value?: string | null }) {
+  const text = (value || "").trim();
+  if (!text) return null;
+  return (
+    <p className="text-[11px] leading-snug text-white/70">
+      <span className="text-white/40">{label}: </span>
+      {text}
+    </p>
   );
 }
 
@@ -201,13 +244,50 @@ function draftFromState(state: SceneEditorState): Draft {
     parentNumber: state.frame.role === "child" ? state.parent.number : null,
     template: state.template.current,
     plan: state.plan.current,
+    angle: state.angle?.current || "",
+    move: state.move?.current || "",
+    stitch: state.stitch?.current || "",
+    light: state.light?.current || "",
+    set: state.set?.current || state.scene?.set || "",
     action: state.action.current,
     anchors: (state.anchors.bits || []).map((b) => ({
       "якорь": b["якорь"],
       "изменение": b["изменение"] || "",
       "главный": Boolean(b["главный"]),
+      cell_index: b.cell_index,
+      frame_number: b.frame_number,
     })),
   };
+}
+
+function cellAnchorRows(state: SceneEditorState): SceneAnchorRow[] {
+  return (state.scene?.anchors?.bits || []).map((b) => ({
+    "якорь": b["якорь"],
+    "изменение": b["изменение"] || "",
+    "главный": Boolean(b["главный"]),
+  }));
+}
+
+function mergeDraftAnchors(
+  state: SceneEditorState,
+  draft: Draft,
+): SceneAnchorRow[] {
+  const frameBits = draft.anchors.filter((a) => (a["якорь"] || "").trim());
+  if (state.anchors.can_add || state.group.length <= 1) {
+    return frameBits;
+  }
+  const next = cellAnchorRows(state);
+  for (const row of frameBits) {
+    const idx = typeof row.cell_index === "number" ? row.cell_index : -1;
+    if (idx >= 0 && idx < next.length) {
+      next[idx] = {
+        ...next[idx],
+        "якорь": row["якорь"],
+        "изменение": row["изменение"] || "",
+      };
+    }
+  }
+  return next;
 }
 
 function anchorsEqual(a: SceneAnchorRow[], b: SceneAnchorRow[]): boolean {
@@ -224,6 +304,7 @@ export function MontageSceneEditor({
   target,
   projectId,
   disabled,
+  embedded,
   onClose,
   onQueue,
   onDeleteChild,
@@ -231,6 +312,7 @@ export function MontageSceneEditor({
   target: SceneEditorTarget;
   projectId: number | null;
   disabled?: boolean;
+  embedded?: boolean;
   onClose: () => void;
   onQueue: (ops: MontagePendingOp[]) => void;
   onDeleteChild: (frameNumber: number) => void;
@@ -264,7 +346,11 @@ export function MontageSceneEditor({
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -317,12 +403,30 @@ export function MontageSceneEditor({
     if (draft.plan && draft.plan !== state.plan.current) {
       out.push({ ...base, type: "coverage_plan", plan: draft.plan });
     }
+    if (draft.angle && draft.angle !== (state.angle?.current || "")) {
+      out.push({ ...base, type: "coverage_angle", angle: draft.angle });
+    }
+    if (draft.move && draft.move !== (state.move?.current || "")) {
+      out.push({ ...base, type: "coverage_move", move: draft.move });
+    }
+    if (draft.stitch && draft.stitch !== (state.stitch?.current || "")) {
+      out.push({ ...base, type: "coverage_stitch", stitch: draft.stitch });
+    }
+    if (draft.light && draft.light !== (state.light?.current || "")) {
+      out.push({ ...base, type: "coverage_light", light: draft.light });
+    }
+    const setText = draft.set.trim();
+    if (setText && setText !== (state.set?.current || state.scene?.set || "").trim()) {
+      out.push({ ...base, type: "coverage_set", set: setText });
+    }
     const action = draft.action.trim();
     if (action && action !== state.action.current.trim()) {
       out.push({ ...base, type: "coverage_action", action });
     }
-    const anchors = draft.anchors.filter((a) => (a["якорь"] || "").trim());
-    if (anchors.length && !anchorsEqual(anchors, draftFromState(state).anchors)) {
+    const anchors = mergeDraftAnchors(state, draft).filter((a) =>
+      (a["якорь"] || "").trim(),
+    );
+    if (anchors.length && !anchorsEqual(anchors, cellAnchorRows(state))) {
       out.push({ ...base, type: "coverage_anchors", anchors });
     }
     return out;
@@ -338,7 +442,13 @@ export function MontageSceneEditor({
   );
 
   return (
-    <div className="rounded-lg border border-[rgba(209,254,23,0.35)] bg-black/35 shadow-lg">
+    <div
+      className={
+        embedded
+          ? "border-t border-[rgba(209,254,23,0.4)] bg-black/30"
+          : "rounded-lg border border-[rgba(209,254,23,0.35)] bg-black/35 shadow-lg"
+      }
+    >
       <header className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2">
         <p className="min-w-0 truncate text-[12px]">
           <span className="font-semibold">Кадр #{target?.frameNumber} · сцена</span>
@@ -370,6 +480,20 @@ export function MontageSceneEditor({
         ) : !state || !draft ? null : (
           <div className="grid grid-cols-1 divide-white/10 lg:grid-cols-2 lg:divide-x xl:grid-cols-3">
             <div className="min-w-0">
+              <Section label="Этот кадр">
+                <p className={cn(HINT, "mb-2")}>
+                  Закадр кадра: {state.vo.frame_text || "—"}
+                </p>
+                <MetaLine label="Шот" value={state.frame.shot_id} />
+                <MetaLine label="Смысл" value={state.frame.meaning} />
+                {state.frame.duration != null ? (
+                  <MetaLine
+                    label="Длительность"
+                    value={`${Number(state.frame.duration).toFixed(1)} с`}
+                  />
+                ) : null}
+              </Section>
+
               <Section label="Что видно в кадре (для подбора)">
                 <textarea
                   className={cn(FIELD, "min-h-[3.5rem] resize-y leading-snug")}
@@ -437,6 +561,183 @@ export function MontageSceneEditor({
                     </button>
                   ) : null}
                 </div>
+              </Section>
+
+              <Section label="Крупность">
+                <ChipRow
+                  choices={state.plan.choices.map((p) => ({ id: p, label: p }))}
+                  value={draft.plan}
+                  disabled={disabled}
+                  onPick={(id) => patch({ plan: id })}
+                />
+              </Section>
+
+              <Section label="Ракурс">
+                <ChipRow
+                  choices={(state.angle?.choices || []).map((p) => ({
+                    id: p,
+                    label: p,
+                  }))}
+                  value={draft.angle}
+                  disabled={disabled}
+                  onPick={(id) => patch({ angle: id })}
+                />
+              </Section>
+
+              <Section label="Движение">
+                <ChipRow
+                  choices={(state.move?.choices || []).map((p) => ({
+                    id: p,
+                    label: p,
+                  }))}
+                  value={draft.move}
+                  disabled={disabled}
+                  onPick={(id) => patch({ move: id })}
+                />
+              </Section>
+
+              <Section label="Стык / переход">
+                <ChipRow
+                  choices={state.stitch?.choices || []}
+                  value={draft.stitch}
+                  disabled={disabled}
+                  onPick={(id) => patch({ stitch: id })}
+                />
+              </Section>
+
+              <Section
+                label="Действие кадра"
+                aside={
+                  <button
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => void askVariants("action")}
+                    className="inline-flex items-center gap-1 text-[11px] text-white/55 transition hover:text-white disabled:opacity-40"
+                  >
+                    <Sparkles className="h-3 w-3" /> подобрать
+                  </button>
+                }
+              >
+                <textarea
+                  className={cn(FIELD, "min-h-[6rem] resize-y leading-snug")}
+                  value={draft.action}
+                  disabled={disabled}
+                  placeholder="Помещение, кто в кадре, одежда, видимый поступок…"
+                  onChange={(e) => patch({ action: e.target.value })}
+                />
+                <p className={cn(HINT, "mt-1.5")}>
+                  Шаг развития, а не «взял / посмотрел / переложил»: покажите, что
+                  поменялось после кадра.
+                </p>
+                <VariantList
+                  kind="action"
+                  variants={variants.action || []}
+                  busy={variantKind === "action"}
+                  onTake={(v) =>
+                    patch({
+                      action: v["действие"] || draft.action,
+                      plan: v["план"] || draft.plan,
+                    })
+                  }
+                />
+              </Section>
+            </div>
+
+            <div className="min-w-0">
+              <Section label="Сцена (общие для ячейки)">
+                <p className="max-h-24 overflow-y-auto rounded-md border border-white/10 bg-black/25 p-2 text-[11px] leading-relaxed text-white/75">
+                  {state.vo.cell_full || "Ячейка без закадрового текста."}
+                </p>
+                <div className="mt-2 space-y-1">
+                  <MetaLine
+                    label="Кадры"
+                    value={state.group.map((n) => `#${n}`).join(" · ")}
+                  />
+                  <MetaLine label="Сцена №" value={state.scene?.scene_no} />
+                  <MetaLine label="id сцены" value={state.scene?.id_scene} />
+                  <MetaLine
+                    label="Место"
+                    value={
+                      (state.scene?.places || []).length > 1
+                        ? state.scene.places.join(" → ")
+                        : state.scene?.place
+                    }
+                  />
+                  <p className="text-[11px] leading-snug text-white/70">
+                    <span className="text-white/40">Набор: </span>
+                  </p>
+                  <input
+                    className={cn(FIELD, "mt-0.5")}
+                    value={draft.set}
+                    disabled={disabled}
+                    placeholder="SET / декорация ячейки"
+                    onChange={(e) => patch({ set: e.target.value })}
+                  />
+                  <MetaLine label="Персонажи" value={state.scene?.characters} />
+                  <MetaLine
+                    label="Главное действие"
+                    value={state.scene?.action || state.scene_action.current}
+                  />
+                  <p className={cn(LABEL, "mt-2")}>Свет</p>
+                  <ChipRow
+                    choices={(state.light?.choices || []).map((p) => ({
+                      id: p,
+                      label: p,
+                    }))}
+                    value={draft.light}
+                    disabled={disabled}
+                    onPick={(id) => patch({ light: id })}
+                  />
+                  <MetaLine label="Предметы" value={state.scene?.props} />
+                  <MetaLine label="Фон" value={state.scene?.bg} />
+                  <MetaLine label="Акцент" value={state.scene?.accent} />
+                  <MetaLine label="Смысл сцены" value={state.scene?.sense} />
+                  <MetaLine label="Тип сцены" value={state.scene?.visual_type} />
+                  <MetaLine label="Особенность" value={state.scene?.feature} />
+                </div>
+                {state.shots.length ? (
+                  <ol className="mt-2 space-y-1">
+                    {state.shots.map((shot) => (
+                      <li
+                        key={`${shot.id}-${shot.frame_number}`}
+                        className={cn(
+                          "text-[11px] leading-snug",
+                          shot.frame_number === state.frame.number
+                            ? "text-[rgba(209,254,23,0.95)]"
+                            : "text-white/65",
+                        )}
+                      >
+                        <span className="text-white/35">
+                          {shot.frame_number ? `#${shot.frame_number}` : "—"} ·{" "}
+                          {shot["план"] || "—"}
+                          {shot["ракурс"] ? ` · ${shot["ракурс"]}` : ""}
+                          {shot["движение"] ? ` · ${shot["движение"]}` : ""}
+                        </span>
+                        {shot["якорь"] ? ` · «${shot["якорь"]}»` : ""}
+                      </li>
+                    ))}
+                  </ol>
+                ) : null}
+                {(state.scene?.anchors?.bits || []).length > state.group.length ? (
+                  <div className="mt-2">
+                    <p className={LABEL}>Биты ячейки (скелет)</p>
+                    <ol className="mt-1 space-y-1">
+                      {(state.scene.anchors.bits || []).map((b, i) => (
+                        <li
+                          key={i}
+                          className={cn(
+                            "text-[11px] leading-snug",
+                            b.frame_number === state.frame.number
+                              ? "text-white/80"
+                              : "text-white/40",
+                          )}
+                        >
+                          {b.frame_number ? `#${b.frame_number}` : "—"} · «{b["якорь"]}»
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                ) : null}
               </Section>
 
               <Section
@@ -527,65 +828,26 @@ export function MontageSceneEditor({
                   onTake={(v) => patch({ template: v["шаблон"] || draft.template })}
                 />
               </Section>
-            </div>
 
-            <div className="min-w-0">
-              <Section label="Крупность">
-                <div className="flex flex-wrap gap-1.5">
-                  {state.plan.choices.map((p) => (
-                    <Chip
-                      key={p}
-                      active={draft.plan === p}
-                      disabled={disabled}
-                      onClick={() => patch({ plan: p })}
-                    >
-                      {p}
-                    </Chip>
-                  ))}
-                </div>
-              </Section>
-
-              <Section
-                label="Действие кадра"
-                aside={
-                  <button
-                    type="button"
-                    disabled={disabled}
-                    onClick={() => void askVariants("action")}
-                    className="inline-flex items-center gap-1 text-[11px] text-white/55 transition hover:text-white disabled:opacity-40"
-                  >
-                    <Sparkles className="h-3 w-3" /> подобрать
-                  </button>
-                }
-              >
-                <textarea
-                  className={cn(FIELD, "min-h-[6rem] resize-y leading-snug")}
-                  value={draft.action}
-                  disabled={disabled}
-                  placeholder="Помещение, кто в кадре, одежда, видимый поступок…"
-                  onChange={(e) => patch({ action: e.target.value })}
-                />
-                <p className={cn(HINT, "mt-1.5")}>
-                  Шаг развития, а не «взял / посмотрел / переложил»: покажите, что
-                  поменялось после кадра.
-                </p>
-                <VariantList
-                  kind="action"
-                  variants={variants.action || []}
-                  busy={variantKind === "action"}
-                  onTake={(v) =>
-                    patch({
-                      action: v["действие"] || draft.action,
-                      plan: v["план"] || draft.plan,
-                    })
-                  }
-                />
-              </Section>
+              {state.scene_action.chain.length ? (
+                <Section label="Цепь сцен ячейки">
+                  <ol className="space-y-1">
+                    {state.scene_action.chain.map((row) => (
+                      <li key={row.n} className="text-[11px] leading-snug text-white/70">
+                        <span className="text-white/35">{row.n}.</span>{" "}
+                        {row.place ? <span className="text-white/85">{row.place}</span> : null}
+                        {row.place && row.action ? " — " : ""}
+                        {row.action}
+                      </li>
+                    ))}
+                  </ol>
+                </Section>
+              ) : null}
             </div>
 
             <div className="min-w-0">
               <Section
-                label="Якоря закадра"
+                label="Якорь этого кадра"
                 aside={
                   <button
                     type="button"
@@ -607,25 +869,14 @@ export function MontageSceneEditor({
                         .includes((row["якорь"] || "").trim().toLowerCase());
                     return (
                       <li key={i} className="flex items-start gap-1.5">
-                        <button
-                          type="button"
-                          title="Главный бит ячейки"
-                          disabled={disabled}
-                          onClick={() =>
-                            patch({
-                              anchors: draft.anchors.map((r, j) => ({
-                                ...r,
-                                "главный": j === i,
-                              })),
-                            })
-                          }
-                          className={cn(
-                            "mt-1.5 h-3 w-3 shrink-0 rounded-full border transition",
-                            row["главный"]
-                              ? "border-transparent bg-[rgba(209,254,23,1)]"
-                              : "border-white/25 hover:border-white/60",
-                          )}
-                        />
+                        {row["главный"] ? (
+                          <span
+                            title="Главный бит ячейки"
+                            className="mt-1.5 h-3 w-3 shrink-0 rounded-full bg-[rgba(209,254,23,1)]"
+                          />
+                        ) : (
+                          <span className="mt-1.5 h-3 w-3 shrink-0 rounded-full border border-white/20" />
+                        )}
                         <div className="min-w-0 flex-1">
                           <input
                             className={cn(
@@ -635,7 +886,7 @@ export function MontageSceneEditor({
                             )}
                             value={row["якорь"]}
                             disabled={disabled}
-                            placeholder="дословный кусок текста ячейки"
+                            placeholder="дословный кусок закадра этого кадра"
                             onChange={(e) =>
                               patch({
                                 anchors: draft.anchors.map((r, j) =>
@@ -658,62 +909,72 @@ export function MontageSceneEditor({
                             }
                           />
                         </div>
-                        <button
-                          type="button"
-                          disabled={disabled}
-                          title="Убрать якорь"
-                          onClick={() =>
-                            patch({ anchors: draft.anchors.filter((_, j) => j !== i) })
-                          }
-                          className="mt-1 rounded-md p-1 text-white/35 transition hover:bg-white/10 hover:text-rose-200"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
+                        {state.anchors.can_add ? (
+                          <button
+                            type="button"
+                            disabled={disabled}
+                            title="Убрать якорь"
+                            onClick={() =>
+                              patch({ anchors: draft.anchors.filter((_, j) => j !== i) })
+                            }
+                            className="mt-1 rounded-md p-1 text-white/35 transition hover:bg-white/10 hover:text-rose-200"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        ) : null}
                       </li>
                     );
                   })}
                 </ul>
-                <button
-                  type="button"
-                  disabled={disabled}
-                  onClick={() =>
-                    patch({
-                      anchors: [
-                        ...draft.anchors,
-                        { "якорь": "", "изменение": "", "главный": false },
-                      ],
-                    })
-                  }
-                  className="mt-2 inline-flex items-center gap-1 rounded-md border border-dashed border-white/20 px-2 py-1 text-[11px] text-white/55 transition hover:border-white/40 hover:text-white disabled:opacity-40"
-                >
-                  <Plus className="h-3 w-3" /> Якорь
-                </button>
+                {state.anchors.can_add ? (
+                  <button
+                    type="button"
+                    disabled={disabled}
+                    onClick={() =>
+                      patch({
+                        anchors: [
+                          ...draft.anchors,
+                          { "якорь": "", "изменение": "", "главный": false },
+                        ],
+                      })
+                    }
+                    className="mt-2 inline-flex items-center gap-1 rounded-md border border-dashed border-white/20 px-2 py-1 text-[11px] text-white/55 transition hover:border-white/40 hover:text-white disabled:opacity-40"
+                  >
+                    <Plus className="h-3 w-3" /> Якорь
+                  </button>
+                ) : null}
                 <p className={cn(HINT, "mt-2")}>
-                  Сколько якорей — столько визуальных кадров у ячейки. Красный якорь не
-                  найден в тексте и будет отброшен.
+                  {state.group.length > 1
+                    ? "Якорь — точка этого шота в закадре ячейки. Соседние кадры не трогаем."
+                    : "Сколько якорей — столько визуальных кадров у ячейки."}{" "}
+                  Красный якорь не найден в тексте этого кадра.
                 </p>
                 <VariantList
                   kind="anchors"
                   variants={variants.anchors || []}
                   busy={variantKind === "anchors"}
-                  onTake={(v) => patch({ anchors: v["биты"] || draft.anchors })}
+                  onTake={(v) => {
+                    const bits = v["биты"] || [];
+                    if (state.group.length > 1) {
+                      const idx = draft.anchors[0]?.cell_index;
+                      const one = bits[0];
+                      if (!one) return;
+                      patch({
+                        anchors: [
+                          {
+                            ...one,
+                            cell_index: idx,
+                            frame_number: state.frame.number,
+                            "главный": Boolean(draft.anchors[0]?.["главный"]),
+                          },
+                        ],
+                      });
+                      return;
+                    }
+                    patch({ anchors: bits });
+                  }}
                 />
               </Section>
-
-              {state.scene_action.chain.length ? (
-                <Section label="Цепь сцен ячейки">
-                  <ol className="space-y-1">
-                    {state.scene_action.chain.map((row) => (
-                      <li key={row.n} className="text-[11px] leading-snug text-white/70">
-                        <span className="text-white/35">{row.n}.</span>{" "}
-                        {row.place ? <span className="text-white/85">{row.place}</span> : null}
-                        {row.place && row.action ? " — " : ""}
-                        {row.action}
-                      </li>
-                    ))}
-                  </ol>
-                </Section>
-              ) : null}
             </div>
           </div>
         )}
@@ -751,8 +1012,17 @@ export function SceneSummaryCell({
   kindLabel,
   template,
   plan,
+  angle,
+  move,
+  stitch,
+  light,
+  setLabel,
+  durationSeconds,
   action,
   anchors,
+  anchorText,
+  place,
+  characters,
   pending,
   active,
   disabled,
@@ -761,14 +1031,28 @@ export function SceneSummaryCell({
   kindLabel: string;
   template: string;
   plan: string;
+  angle?: string;
+  move?: string;
+  stitch?: string;
+  light?: string;
+  setLabel?: string;
+  durationSeconds?: number | null;
   action: string;
   anchors: number;
+  anchorText?: string;
+  place?: string;
+  characters?: string;
   pending: boolean;
   active?: boolean;
   disabled?: boolean;
   onOpen: () => void;
 }) {
   const badge = "rounded border border-white/12 px-1.5 py-0.5 text-[10px] leading-none";
+  const duration =
+    durationSeconds != null && !Number.isNaN(durationSeconds)
+      ? `${durationSeconds.toFixed(1)}с`
+      : "";
+  const sceneBits = [place, setLabel, light, characters].filter(Boolean);
   return (
     <button
       type="button"
@@ -790,11 +1074,24 @@ export function SceneSummaryCell({
           <span className={cn(badge, "text-[rgba(209,254,23,0.9)]")}>{template}</span>
         ) : null}
         {plan ? <span className={cn(badge, "text-white/70")}>{plan}</span> : null}
-        {anchors ? (
-          <span className={cn(badge, "text-white/45")}>{anchors} якор.</span>
-        ) : null}
+        {angle ? <span className={cn(badge, "text-white/70")}>{angle}</span> : null}
+        {move ? <span className={cn(badge, "text-white/70")}>{move}</span> : null}
+        {stitch ? <span className={cn(badge, "text-white/55")}>{stitch}</span> : null}
+        {duration ? <span className={cn(badge, "text-white/45")}>{duration}</span> : null}
       </div>
-      <p className="mt-1.5 line-clamp-3 text-[11px] leading-snug text-white/75">
+      {sceneBits.length ? (
+        <p className="mt-1 text-[10px] leading-snug text-white/45">
+          {sceneBits.join(" · ")}
+        </p>
+      ) : null}
+      {anchorText ? (
+        <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-white/80">
+          «{anchorText}»
+        </p>
+      ) : anchors ? (
+        <p className="mt-1 text-[10px] text-white/40">{anchors} якорь этого кадра</p>
+      ) : null}
+      <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-white/65">
         {action || <span className="text-white/35">действие не задано</span>}
       </p>
       <span
@@ -808,7 +1105,7 @@ export function SceneSummaryCell({
         ) : (
           <ChevronDown className="h-3 w-3" />
         )}
-        {active ? "свернуть" : "редактировать"}
+        {active ? "свернуть" : "открыть кадр / сцену"}
       </span>
     </button>
   );

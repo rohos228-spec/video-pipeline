@@ -59,13 +59,17 @@ import {
 const FRAME_COL_REM = 15;
 const FRAME_COL_CLASS = "w-[15rem] min-w-[15rem] max-w-[15rem]";
 const ROW_LABEL_CLASS = "w-[11rem] min-w-[11rem] max-w-[11rem]";
-const INSERT_GUTTER_REM = 1.25;
-const INSERT_GUTTER_CLASS = "w-5 min-w-5 max-w-5 p-0 align-middle";
+/** Шов между сценами — сюда же вставка новой VO-ячейки. */
+const SCENE_GAP_REM = 4.5;
+const SCENE_GAP_CLASS = "w-[4.5rem] min-w-[4.5rem] max-w-[4.5rem] p-0 align-middle";
+/** Между шотами одной сцены — вплотную, только узкий + при наведении. */
+const SHOT_GAP_REM = 0.25;
+const SHOT_GAP_CLASS = "w-1 min-w-[4px] max-w-[4px] p-0 align-middle";
 
 type RowKey =
   | "voiceover"
   | "scene"
-  | "characters"
+  | "refs"
   | "image1"
   | "image2"
   | "video1"
@@ -74,7 +78,7 @@ type RowKey =
 
 const GRID_ROWS: { key: RowKey; label: string }[] = [
   { key: "voiceover", label: "Закадровый текст" },
-  { key: "characters", label: "Персонажи" },
+  { key: "refs", label: "Референсы" },
   { key: "image1", label: "Изображение 1" },
   { key: "image2", label: "Изображение 2" },
   { key: "video1", label: "Видео 1" },
@@ -108,6 +112,11 @@ function slotKeyFromOp(op: Pick<MontagePendingOp, "type" | "frame_number" | "sho
   const t = String(op.type || "");
   if (t === "coverage_plan") return `${op.frame_number}:plan`;
   if (t === "coverage_action") return `${op.frame_number}:action`;
+  if (t === "coverage_angle") return `${op.frame_number}:angle`;
+  if (t === "coverage_move") return `${op.frame_number}:move`;
+  if (t === "coverage_stitch") return `${op.frame_number}:stitch`;
+  if (t === "coverage_light") return `${op.frame_number}:light`;
+  if (t === "coverage_set") return `${op.frame_number}:set`;
   if (t.startsWith("coverage_")) return `${op.frame_number}:kind`;
   if (t.startsWith("image_")) {
     return `${op.frame_number}:image${op.shot}`;
@@ -165,6 +174,11 @@ const COVERAGE_QUEUE_TYPES = new Set([
   "coverage_delete",
   "coverage_template",
   "coverage_anchors",
+  "coverage_angle",
+  "coverage_move",
+  "coverage_stitch",
+  "coverage_light",
+  "coverage_set",
 ]);
 
 type PendingCoverage = {
@@ -175,6 +189,11 @@ type PendingCoverage = {
   deleted?: boolean;
   template?: string;
   anchors?: SceneAnchorRow[];
+  angle?: string;
+  move?: string;
+  stitch?: string;
+  light?: string;
+  set?: string;
 };
 
 function pendingCoverageForFrame(
@@ -186,6 +205,11 @@ function pendingCoverageForFrame(
     if (op.frame_number !== frameNumber) continue;
     if (op.type === "coverage_plan" && op.plan) out.plan = op.plan;
     if (op.type === "coverage_action" && op.action) out.action = op.action;
+    if (op.type === "coverage_angle" && op.angle) out.angle = op.angle;
+    if (op.type === "coverage_move" && op.move) out.move = op.move;
+    if (op.type === "coverage_stitch" && op.stitch) out.stitch = op.stitch;
+    if (op.type === "coverage_light" && op.light) out.light = op.light;
+    if (op.type === "coverage_set" && op.set) out.set = op.set;
     if (op.type === "coverage_template" && op.template) out.template = op.template;
     if (op.type === "coverage_anchors" && op.anchors) out.anchors = op.anchors;
     if (op.type === "coverage_kind") {
@@ -195,6 +219,28 @@ function pendingCoverageForFrame(
     if (op.type === "coverage_delete") out.deleted = true;
   }
   return out;
+}
+
+function coverageCorrection(
+  pending: PendingCoverage,
+  fr: MontageBoardFrame | undefined,
+): string {
+  const plan = (pending.plan || fr?.shot_plan || "").trim();
+  const angle = (pending.angle || fr?.shot_angle || "").trim();
+  const move = (pending.move || fr?.shot_move || "").trim();
+  const light = (pending.light || fr?.scene_lighting || "").trim();
+  const setText = (pending.set || fr?.scene_set || "").trim();
+  const action = (pending.action || fr?.shot_action || "").trim();
+  return [
+    `План: ${plan || "как в кадре"}`,
+    angle ? `Ракурс: ${angle}` : "",
+    move ? `Движение: ${move}` : "",
+    light ? `Свет: ${light}` : "",
+    setText ? `Набор: ${setText}` : "",
+    `Действие: ${action || "как в кадре"}`,
+  ]
+    .filter(Boolean)
+    .join(". ");
 }
 
 function formatTs(sec: number | null | undefined): string {
@@ -280,42 +326,117 @@ function PromptModalBody({
   );
 }
 
+function voSceneNumber(fr: MontageBoardFrame): number {
+  const n = fr.vo_scene_number;
+  if (typeof n === "number" && n > 0) return n;
+  if (fr.ref_parent?.number) return fr.ref_parent.number;
+  if (fr.shot_kind === "child" && fr.shot_parent_number) return fr.shot_parent_number;
+  return fr.number;
+}
+
+type SceneRange = {
+  key: number;
+  start: number;
+  end: number;
+  frames: MontageBoardFrame[];
+};
+
+function sceneRanges(frames: MontageBoardFrame[]): SceneRange[] {
+  const out: SceneRange[] = [];
+  frames.forEach((fr, i) => {
+    const key = voSceneNumber(fr);
+    const last = out[out.length - 1];
+    if (last && last.key === key) {
+      last.end = i;
+      last.frames.push(fr);
+    } else {
+      out.push({ key, start: i, end: i, frames: [fr] });
+    }
+  });
+  return out;
+}
+
+function sceneColSpan(frameCount: number): number {
+  return Math.max(1, frameCount * 2 - 1);
+}
+
+function sceneBlockWidthPx(frameCount: number): number {
+  return (
+    frameCount * FRAME_COL_REM * 16 +
+    Math.max(0, frameCount - 1) * SHOT_GAP_REM * 16
+  );
+}
+
+function MontageColGroup({ ranges }: { ranges: SceneRange[] }) {
+  const label = 11 * 16;
+  const frame = FRAME_COL_REM * 16;
+  const scene = SCENE_GAP_REM * 16;
+  const shot = SHOT_GAP_REM * 16;
+  return (
+    <colgroup>
+      <col style={{ width: label }} />
+      {ranges.map((range) => (
+        <Fragment key={`col-${range.key}`}>
+          <col style={{ width: scene }} />
+          {range.frames.map((fr, fi) => (
+            <Fragment key={`colf-${fr.frame_id}`}>
+              <col style={{ width: frame }} />
+              {fi < range.frames.length - 1 ? (
+                <col style={{ width: shot }} />
+              ) : null}
+            </Fragment>
+          ))}
+        </Fragment>
+      ))}
+      <col style={{ width: scene }} />
+    </colgroup>
+  );
+}
+
 function InsertGutter({
   as,
   label,
   onClick,
   showIcon = true,
+  gap = "scene",
 }: {
   as: "th" | "td";
   label: string;
   onClick: () => void;
   showIcon?: boolean;
+  gap?: "scene" | "shot";
 }) {
+  const scene = gap === "scene";
   const inner = (
     <button
       type="button"
       title={label}
       onClick={onClick}
-      className="group/add flex h-full min-h-[2.5rem] w-full items-center justify-center self-stretch text-white/25 transition hover:bg-white/5 hover:text-black"
+      className={cn(
+        "group/add flex h-full min-h-[2.5rem] w-full items-center justify-center self-stretch transition",
+        scene
+          ? "border-l border-white/20 bg-white/[0.03] text-white/30 hover:bg-white/10 hover:text-black"
+          : "text-white/20 hover:bg-white/5 hover:text-black",
+      )}
     >
       <span
         className={cn(
-          "flex h-7 w-4 items-center justify-center rounded-full border border-dashed transition",
-          showIcon
+          "flex items-center justify-center rounded-full border border-dashed transition",
+          scene ? "h-7 w-4" : "h-4 w-3",
+          showIcon || scene
             ? "border-white/20 bg-white/[0.03] group-hover/add:border-transparent group-hover/add:bg-[rgba(209,254,23,1)]"
             : "border-transparent opacity-0 group-hover/add:opacity-100 group-hover/add:border-transparent group-hover/add:bg-[rgba(209,254,23,1)]",
         )}
       >
-        <Plus className="h-3 w-3" />
+        <Plus className={scene ? "h-3 w-3" : "h-2.5 w-2.5"} />
       </span>
     </button>
   );
+  const cls = scene ? SCENE_GAP_CLASS : SHOT_GAP_CLASS;
   if (as === "th") {
-    return (
-      <th className={cn(INSERT_GUTTER_CLASS, "border-b border-white/10")}>{inner}</th>
-    );
+    return <th className={cn(cls, "border-b border-white/10")}>{inner}</th>;
   }
-  return <td className={INSERT_GUTTER_CLASS}>{inner}</td>;
+  return <td className={cls}>{inner}</td>;
 }
 
 function VoiceoverCell({
@@ -1249,87 +1370,95 @@ const VideoMediaCell = memo(function VideoMediaCell({
   );
 });
 
-function CharactersCell({
+function RefsCell({
   fr,
   onPreview,
 }: {
   fr: MontageBoardFrame;
   onPreview: (p: MediaPreview) => void;
 }) {
-  const refs = fr.character_refs ?? [];
-  const [expanded, setExpanded] = useState(false);
-
-  if (refs.length === 0) {
-    const fallback = (fr.characters || "").trim();
-    return (
-      <p className="text-xs leading-snug text-muted-foreground">{fallback || "—"}</p>
-    );
+  const parent = fr.ref_parent ?? null;
+  const chars = fr.group_character_refs ?? [];
+  const items = fr.item_refs ?? [];
+  const empty = !parent && chars.length === 0 && items.length === 0;
+  if (empty) {
+    return <p className="text-xs leading-snug text-muted-foreground">—</p>;
   }
 
-  const visible = expanded ? refs : refs.slice(0, 2);
-  const hiddenCount = refs.length - 2;
+  const thumb = (
+    key: string,
+    imageUrl: string | null | undefined,
+    title: string,
+    sub?: string,
+    kind?: string,
+  ) => (
+    <button
+      key={key}
+      type="button"
+      className="group flex w-[5.5rem] flex-col items-center gap-1 rounded-lg border border-white/10 bg-black/25 p-1.5 transition hover:border-amber-400/40 hover:bg-black/40 disabled:opacity-60"
+      onClick={() => {
+        if (imageUrl) {
+          onPreview({ url: imageUrl, kind: "image", label: title });
+        }
+      }}
+      disabled={!imageUrl}
+      title={imageUrl ? `Открыть ${title}` : `${title} — нет файла`}
+    >
+      {imageUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={imageUrl}
+          alt={title}
+          className="h-16 w-full rounded-md object-cover transition group-hover:brightness-110"
+        />
+      ) : (
+        <div className="flex h-16 w-full items-center justify-center rounded-md border border-dashed border-white/15 text-[10px] text-muted-foreground">
+          нет фото
+        </div>
+      )}
+      {kind ? (
+        <span className="max-w-full truncate text-[9px] uppercase tracking-wide text-white/40">
+          {kind}
+        </span>
+      ) : null}
+      <span className="max-w-full truncate text-[10px] leading-tight text-amber-200/90">
+        {title}
+      </span>
+      {sub ? (
+        <span className="max-w-full truncate text-[9px] text-muted-foreground">{sub}</span>
+      ) : null}
+    </button>
+  );
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap gap-2">
-        {visible.map((ch) => (
-          <button
-            key={ch.id}
-            type="button"
-            className="group flex w-[5.5rem] flex-col items-center gap-1 rounded-lg border border-white/10 bg-black/25 p-1.5 transition hover:border-amber-400/40 hover:bg-black/40"
-            onClick={() => {
-              if (ch.image_url) {
-                onPreview({
-                  url: ch.image_url,
-                  kind: "image",
-                  label: `${ch.name || ch.id} (${ch.id})`,
-                });
-              }
-            }}
-            disabled={!ch.image_url}
-            title={ch.image_url ? `Открыть ${ch.id}` : `${ch.id} — нет фото`}
-          >
-            {ch.image_url ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={ch.image_url}
-                alt={ch.name || ch.id}
-                className="h-16 w-full rounded-md object-cover transition group-hover:brightness-110"
-              />
-            ) : (
-              <div className="flex h-16 w-full items-center justify-center rounded-md border border-dashed border-white/15 text-[10px] text-muted-foreground">
-                нет фото
-              </div>
-            )}
-            <span className="max-w-full truncate font-mono text-[10px] text-amber-200/90">
-              {ch.id}
-            </span>
-            {ch.name && ch.name !== ch.id ? (
-              <span className="max-w-full truncate text-[9px] text-muted-foreground">
-                {ch.name}
-              </span>
-            ) : null}
-          </button>
-        ))}
-      </div>
-      {!expanded && hiddenCount > 0 ? (
-        <button
-          type="button"
-          className="self-start rounded-md border border-white/15 px-2 py-1 text-[11px] text-muted-foreground transition hover:border-amber-400/40 hover:text-foreground"
-          onClick={() => setExpanded(true)}
-        >
-          Ещё {hiddenCount}
-        </button>
-      ) : null}
-      {expanded && refs.length > 2 ? (
-        <button
-          type="button"
-          className="self-start rounded-md border border-white/15 px-2 py-1 text-[11px] text-muted-foreground transition hover:border-amber-400/40 hover:text-foreground"
-          onClick={() => setExpanded(false)}
-        >
-          Свернуть
-        </button>
-      ) : null}
+    <div className="flex flex-wrap gap-2">
+      {parent
+        ? thumb(
+            `parent-${parent.number}`,
+            parent.image_url,
+            parent.label || `родитель #${parent.number}`,
+            undefined,
+            "родитель",
+          )
+        : null}
+      {chars.map((ch) =>
+        thumb(
+          `c-${ch.id}`,
+          ch.image_url,
+          ch.name && ch.name !== ch.id ? ch.name : ch.id,
+          ch.name && ch.name !== ch.id ? ch.id : undefined,
+          "персонаж",
+        ),
+      )}
+      {items.map((it) =>
+        thumb(
+          `i-${it.id}`,
+          it.image_url,
+          it.name && it.name !== it.id ? it.name : it.id,
+          it.name && it.name !== it.id ? it.id : undefined,
+          "предмет",
+        ),
+      )}
     </div>
   );
 }
@@ -1500,6 +1629,7 @@ export function AssembleMontageBoard({
   }, [open, projectId]);
 
   const frames = board.data?.frames ?? [];
+  const ranges = useMemo(() => sceneRanges(frames), [frames]);
   const coverageOn = Boolean(board.data?.show_coverage_rows);
   const gridRows = useMemo(() => {
     if (!coverageOn) return GRID_ROWS;
@@ -1665,25 +1795,13 @@ export function AssembleMontageBoard({
           );
           const fr = frames.find((f) => f.number === frameNumber);
           const pending = pendingCoverageForFrame(next, frameNumber);
-          const plan = (
-            coverageOp.plan ||
-            pending.plan ||
-            fr?.shot_plan ||
-            ""
-          ).trim();
-          const action = (
-            coverageOp.action ||
-            pending.action ||
-            fr?.shot_action ||
-            ""
-          ).trim();
           const imageOp: MontagePendingOp =
             regen === "ai"
               ? {
                   type: "image_ai_change",
                   frame_number: frameNumber,
                   shot: 1,
-                  correction: `План: ${plan || "как в кадре"}. Действие: ${action || "как в кадре"}.`,
+                  correction: coverageCorrection(pending, fr),
                 }
               : {
                   type: "image_regen",
@@ -1713,6 +1831,10 @@ export function AssembleMontageBoard({
         "coverage_template",
         "coverage_plan",
         "coverage_action",
+        "coverage_angle",
+        "coverage_move",
+        "coverage_light",
+        "coverage_set",
       ]);
       const needsImage = ops.some((o) => visualTypes.has(String(o.type)));
       localQueueDirtyRef.current = true;
@@ -1732,15 +1854,13 @@ export function AssembleMontageBoard({
           );
           const fr = frames.find((f) => f.number === frameNumber);
           const pending = pendingCoverageForFrame(next, frameNumber);
-          const plan = (pending.plan || fr?.shot_plan || "").trim();
-          const action = (pending.action || fr?.shot_action || "").trim();
           next = [
             ...next,
             {
               type: "image_ai_change",
               frame_number: frameNumber,
               shot: 1,
-              correction: `План: ${plan || "как в кадре"}. Действие: ${action || "как в кадре"}.`,
+              correction: coverageCorrection(pending, fr),
             },
           ];
         }
@@ -2517,10 +2637,15 @@ export function AssembleMontageBoard({
   const tableWidthPx = useMemo(() => {
     const rowLabel = 11 * 16;
     const col = FRAME_COL_REM * 16;
-    const gutter = INSERT_GUTTER_REM * 16;
-    const gutters = frames.length > 0 ? frames.length + 1 : 0;
-    return rowLabel + frames.length * col + gutters * gutter;
-  }, [frames.length]);
+    const sceneGap = SCENE_GAP_REM * 16;
+    const shotGap = SHOT_GAP_REM * 16;
+    const sceneGaps = frames.length > 0 ? ranges.length + 1 : 0;
+    const shotGaps = ranges.reduce(
+      (n, r) => n + Math.max(0, r.frames.length - 1),
+      0,
+    );
+    return rowLabel + frames.length * col + sceneGaps * sceneGap + shotGaps * shotGap;
+  }, [frames.length, ranges]);
 
   const syncScrollLeft = useCallback((from: HTMLDivElement, to: HTMLDivElement) => {
     if (Math.abs(to.scrollLeft - from.scrollLeft) < 0.5) return;
@@ -2555,11 +2680,16 @@ export function AssembleMontageBoard({
         setSwapPick(null);
         return;
       }
+      if (sceneEditor) {
+        e.preventDefault();
+        setSceneEditor(null);
+        return;
+      }
       if (!preview) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose, preview, swapPick]);
+  }, [open, onClose, preview, swapPick, sceneEditor]);
 
   const toggleRow = (key: RowKey) => {
     setCollapsedRows((prev) => {
@@ -2764,6 +2894,7 @@ export function AssembleMontageBoard({
                   className="border-collapse text-[13px]"
                   style={{ width: tableWidthPx, tableLayout: "fixed" }}
                 >
+                  <MontageColGroup ranges={ranges} />
                   <thead>
                     <tr>
                       <th
@@ -2774,28 +2905,143 @@ export function AssembleMontageBoard({
                       >
                         Строка
                       </th>
-                      <InsertGutter
-                        as="th"
-                        label="Кадр в начало"
-                        onClick={() => setAddFrame({ afterFrameId: null })}
-                      />
-                      {frames.map((fr) => (
-                        <Fragment key={fr.frame_id}>
-                          <th
-                            className={cn(
-                              "border-b border-white/10 px-2 py-2 text-center font-mono text-xs",
-                              FRAME_COL_CLASS,
-                            )}
-                          >
-                            #{fr.number}
-                          </th>
+                      {ranges.map((range, ri) => (
+                        <Fragment key={`scene-n-${range.key}`}>
                           <InsertGutter
                             as="th"
-                            label={`Кадр после #${fr.number}`}
-                            onClick={() => setAddFrame({ afterFrameId: fr.frame_id })}
+                            gap="scene"
+                            showIcon={false}
+                            label={
+                              ri === 0
+                                ? "Кадр в начало"
+                                : `Кадр после сцены #${ranges[ri - 1].key}`
+                            }
+                            onClick={() =>
+                              setAddFrame({
+                                afterFrameId:
+                                  ri === 0
+                                    ? null
+                                    : ranges[ri - 1].frames[
+                                        ranges[ri - 1].frames.length - 1
+                                      ].frame_id,
+                              })
+                            }
                           />
+                          {range.frames.map((fr, fi) => (
+                            <Fragment key={fr.frame_id}>
+                              <th
+                                className={cn(
+                                  "border-b border-white/10 px-1.5 py-2 text-center font-mono text-xs",
+                                  FRAME_COL_CLASS,
+                                  fi === 0 ? "border-l border-white/15" : null,
+                                )}
+                              >
+                                #{fr.number}
+                              </th>
+                              {fi < range.frames.length - 1 ? (
+                                <InsertGutter
+                                  as="th"
+                                  gap="shot"
+                                  showIcon={false}
+                                  label={`Кадр после #${fr.number}`}
+                                  onClick={() =>
+                                    setAddFrame({ afterFrameId: fr.frame_id })
+                                  }
+                                />
+                              ) : null}
+                            </Fragment>
+                          ))}
                         </Fragment>
                       ))}
+                      <InsertGutter
+                        as="th"
+                        gap="scene"
+                        showIcon={false}
+                        label="Кадр в конец"
+                        onClick={() =>
+                          setAddFrame({
+                            afterFrameId: frames[frames.length - 1]?.frame_id ?? null,
+                          })
+                        }
+                      />
+                    </tr>
+                    <tr>
+                      <th
+                        className={cn(
+                          "sticky left-0 z-10 border-b border-r border-white/10 bg-card px-3 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-muted-foreground",
+                          ROW_LABEL_CLASS,
+                        )}
+                      >
+                        Сцены
+                      </th>
+                      {ranges.map((range, ri) => {
+                        const head = range.frames[0];
+                        const last = range.frames[range.frames.length - 1];
+                        const nums = range.frames.map((f) => `#${f.number}`).join(" · ");
+                        const tpl = head?.shot_template || "";
+                        return (
+                          <Fragment key={`scene-h-${range.key}`}>
+                            <InsertGutter
+                              as="th"
+                              gap="scene"
+                              label={
+                                ri === 0
+                                  ? "Новая сцена в начало"
+                                  : `Новая сцена после #${ranges[ri - 1].frames[ranges[ri - 1].frames.length - 1].number}`
+                              }
+                              onClick={() =>
+                                setAddFrame({
+                                  afterFrameId:
+                                    ri === 0
+                                      ? null
+                                      : ranges[ri - 1].frames[
+                                          ranges[ri - 1].frames.length - 1
+                                        ].frame_id,
+                                })
+                              }
+                            />
+                            <th
+                              colSpan={sceneColSpan(range.frames.length)}
+                              style={{ width: sceneBlockWidthPx(range.frames.length) }}
+                              className={cn(
+                                "border-b border-x border-white/20 bg-white/[0.05] px-2 py-1.5 text-left",
+                                sceneEditor &&
+                                  range.frames.some((f) => f.frame_id === sceneEditor.frameId)
+                                  ? "bg-[rgba(209,254,23,0.08)]"
+                                  : null,
+                              )}
+                            >
+                              <p className="truncate text-[11px] font-semibold text-white/80">
+                                Сцена · {nums}
+                                {tpl ? (
+                                  <span className="ml-1.5 font-normal text-[rgba(209,254,23,0.85)]">
+                                    {tpl}
+                                  </span>
+                                ) : null}
+                              </p>
+                              {head?.scene_place ? (
+                                <p className="truncate text-[10px] text-white/40">
+                                  {head.scene_place}
+                                </p>
+                              ) : last && last.number !== head?.number ? (
+                                <p className="truncate text-[10px] text-white/35">
+                                  {range.frames.length} кадра
+                                </p>
+                              ) : null}
+                            </th>
+                          </Fragment>
+                        );
+                      })}
+                      <InsertGutter
+                        as="th"
+                        gap="scene"
+                        label="Новая сцена в конец"
+                        onClick={() =>
+                          setAddFrame({
+                            afterFrameId: frames[frames.length - 1]?.frame_id ?? null,
+                          })
+                        }
+                      />
                     </tr>
                   </thead>
                   <tbody>
@@ -2829,13 +3075,29 @@ export function AssembleMontageBoard({
                               <span>{row.label}</span>
                             </button>
                           </td>
+                          {ranges.map((range, ri) => (
+                          <Fragment key={`${row.key}-scene-${range.key}`}>
                           <InsertGutter
                             as="td"
+                            gap="scene"
                             showIcon={false}
-                            label="Кадр в начало"
-                            onClick={() => setAddFrame({ afterFrameId: null })}
+                            label={
+                              ri === 0
+                                ? "Кадр в начало"
+                                : `Новая сцена после #${ranges[ri - 1].frames[ranges[ri - 1].frames.length - 1].number}`
+                            }
+                            onClick={() =>
+                              setAddFrame({
+                                afterFrameId:
+                                  ri === 0
+                                    ? null
+                                    : ranges[ri - 1].frames[
+                                        ranges[ri - 1].frames.length - 1
+                                      ].frame_id,
+                              })
+                            }
                           />
-                          {frames.map((fr) => {
+                          {range.frames.map((fr, fi) => {
                             const isMediaRow =
                               row.key.startsWith("image") || row.key.startsWith("video");
                             const mediaUrl =
@@ -2856,8 +3118,9 @@ export function AssembleMontageBoard({
                             }>
                             <td
                               className={cn(
-                                "relative isolate overflow-hidden px-3 py-2 align-top",
+                                "relative isolate overflow-hidden px-1.5 py-2 align-top",
                                 FRAME_COL_CLASS,
+                                fi === 0 ? "border-l border-white/15" : null,
                               )}
                               style={
                                 isMediaRow || row.key === "voiceover"
@@ -2903,6 +3166,17 @@ export function AssembleMontageBoard({
                                       }
                                       template={pending.template ?? fr.shot_template ?? ""}
                                       plan={(pending.plan ?? fr.shot_plan ?? "").trim()}
+                                      angle={(pending.angle ?? fr.shot_angle ?? "").trim()}
+                                      move={(pending.move ?? fr.shot_move ?? "").trim()}
+                                      stitch={(
+                                        pending.stitch ??
+                                        fr.shot_stitch_label ??
+                                        fr.shot_stitch ??
+                                        ""
+                                      ).trim()}
+                                      light={(pending.light ?? fr.scene_lighting ?? "").trim()}
+                                      setLabel={(pending.set ?? fr.scene_set ?? "").trim()}
+                                      durationSeconds={fr.duration_seconds}
                                       action={(
                                         pending.action ??
                                         fr.shot_action ??
@@ -2911,10 +3185,22 @@ export function AssembleMontageBoard({
                                       anchors={
                                         pending.anchors?.length ?? fr.shot_anchors ?? 0
                                       }
+                                      anchorText={(
+                                        pending.anchors?.[0]?.["якорь"] ??
+                                        fr.shot_anchor ??
+                                        ""
+                                      ).trim()}
+                                      place={(fr.scene_place || "").trim()}
+                                      characters={(fr.scene_characters || "").trim()}
                                       pending={Boolean(
                                         toneForSlot(`${fr.number}:kind`) ||
                                           toneForSlot(`${fr.number}:plan`) ||
                                           toneForSlot(`${fr.number}:action`) ||
+                                          toneForSlot(`${fr.number}:angle`) ||
+                                          toneForSlot(`${fr.number}:move`) ||
+                                          toneForSlot(`${fr.number}:stitch`) ||
+                                          toneForSlot(`${fr.number}:light`) ||
+                                          toneForSlot(`${fr.number}:set`) ||
                                           toneForSlot(`${fr.number}:template`) ||
                                           toneForSlot(`${fr.number}:anchors`),
                                       )}
@@ -2933,8 +3219,8 @@ export function AssembleMontageBoard({
                                     />
                                   );
                                 })()
-                              ) : row.key === "characters" ? (
-                                <CharactersCell fr={fr} onPreview={showPreview} />
+                              ) : row.key === "refs" ? (
+                                <RefsCell fr={fr} onPreview={showPreview} />
                               ) : row.key === "timestamps" ? (
                                 <TimestampCell fr={fr} />
                               ) : row.key === "image1" ? (
@@ -3107,42 +3393,83 @@ export function AssembleMontageBoard({
                                 />
                               )}
                             </td>
+                            {fi < range.frames.length - 1 ? (
                             <InsertGutter
                               as="td"
+                              gap="shot"
                               showIcon={false}
                               label={`Кадр после #${fr.number}`}
                               onClick={() => setAddFrame({ afterFrameId: fr.frame_id })}
                             />
+                            ) : null}
                             </Fragment>
                             );
                           })}
+                          </Fragment>
+                          ))}
+                          <InsertGutter
+                            as="td"
+                            gap="scene"
+                            showIcon={false}
+                            label="Новая сцена в конец"
+                            onClick={() =>
+                              setAddFrame({
+                                afterFrameId: frames[frames.length - 1]?.frame_id ?? null,
+                              })
+                            }
+                          />
                         </tr>
                         {row.key === "scene" && !collapsed && sceneEditor ? (
                           <tr className="border-b border-white/5">
-                            <td colSpan={2 + frames.length * 2} className="p-0">
-                              <div
-                                className="sticky left-0 p-2"
-                                style={{ width: "min(72rem, calc(100vw - 5rem))" }}
-                              >
-                                <MontageSceneEditor
-                                  target={sceneEditor}
-                                  projectId={projectId}
-                                  disabled={applyRunning || applyMutation.isPending}
-                                  onClose={() => setSceneEditor(null)}
-                                  onQueue={queueSceneOps}
-                                  onDeleteChild={(frameNumber) => {
-                                    queueSceneOps([
-                                      {
-                                        type: "coverage_delete",
-                                        frame_number: frameNumber,
-                                        shot: 1,
-                                      },
-                                    ]);
-                                    setSceneEditor(null);
-                                  }}
-                                />
-                              </div>
+                            <td
+                              className={cn(
+                                "sticky left-0 z-10 border-r border-white/10 bg-card/95 px-2 py-2 align-top text-[10px] uppercase tracking-wide text-white/35",
+                                ROW_LABEL_CLASS,
+                              )}
+                            >
+                              Кадр / сцена
                             </td>
+                            {ranges.map((range) => {
+                              const active = range.frames.some(
+                                (f) => f.frame_id === sceneEditor.frameId,
+                              );
+                              return (
+                                <Fragment key={`editor-${range.key}`}>
+                                  <td className={SCENE_GAP_CLASS} />
+                                  {active ? (
+                                    <td
+                                      colSpan={sceneColSpan(range.frames.length)}
+                                      className="p-0 align-top"
+                                    >
+                                      <MontageSceneEditor
+                                        target={sceneEditor}
+                                        projectId={projectId}
+                                        embedded
+                                        disabled={applyRunning || applyMutation.isPending}
+                                        onClose={() => setSceneEditor(null)}
+                                        onQueue={queueSceneOps}
+                                        onDeleteChild={(frameNumber) => {
+                                          queueSceneOps([
+                                            {
+                                              type: "coverage_delete",
+                                              frame_number: frameNumber,
+                                              shot: 1,
+                                            },
+                                          ]);
+                                          setSceneEditor(null);
+                                        }}
+                                      />
+                                    </td>
+                                  ) : (
+                                    <td
+                                      colSpan={sceneColSpan(range.frames.length)}
+                                      className="p-0"
+                                    />
+                                  )}
+                                </Fragment>
+                              );
+                            })}
+                            <td className={SCENE_GAP_CLASS} />
                           </tr>
                         ) : null}
                         </Fragment>

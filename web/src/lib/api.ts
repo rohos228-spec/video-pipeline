@@ -221,13 +221,23 @@ export interface MontagePendingOp {
     | "coverage_kind"
     | "coverage_delete"
     | "coverage_template"
-    | "coverage_anchors";
+    | "coverage_anchors"
+    | "coverage_angle"
+    | "coverage_move"
+    | "coverage_stitch"
+    | "coverage_light"
+    | "coverage_set";
   frame_number: number;
   shot: 1 | 2;
   prompt?: string;
   correction?: string;
   plan?: string;
   action?: string;
+  angle?: string;
+  move?: string;
+  stitch?: string;
+  light?: string;
+  set?: string;
   kind?: "parent" | "child";
   parent_number?: number;
   /** Формат сцены: шаблон T0…T10 / X1 / X2 из каталога. */
@@ -243,6 +253,9 @@ export interface SceneAnchorRow {
   "главный"?: boolean;
   offset?: number;
   found?: boolean;
+  cell_index?: number;
+  frame_number?: number | null;
+  derived?: boolean;
 }
 
 export interface SceneTemplateChoice {
@@ -275,9 +288,11 @@ export interface SceneShotRow {
   "шаблон": string;
   "план": string;
   "ракурс": string;
+  "движение"?: string;
   "место": string;
   "действие": string;
   "закадр": string;
+  "якорь"?: string;
   frame_number: number | null;
 }
 
@@ -292,12 +307,26 @@ export interface SceneEditorState {
     shot_index: number | null;
     shots_in_beat: number | null;
     place: string;
+    angle?: string;
+    move?: string;
+    set?: string;
+    meaning?: string;
+    duration?: number | null;
   };
   parent: { number: number; frame_id: number; shot_id: string };
   parent_choices: Array<{ number: number; role: string; vo: string }>;
   group: number[];
   vo: { frame_text: string; cell_full: string };
   plan: { current: string; choices: string[] };
+  angle: { current: string; choices: string[] };
+  move: { current: string; choices: string[] };
+  stitch: {
+    current: string;
+    label?: string;
+    choices: Array<{ id: string; label: string }>;
+  };
+  light: { current: string; choices: string[] };
+  set: { current: string };
   action: { current: string };
   scene_action: {
     current: string;
@@ -315,6 +344,30 @@ export interface SceneEditorState {
     bits: SceneAnchorRow[];
     preview: string[];
     covers_text: boolean;
+    can_add?: boolean;
+  };
+  scene: {
+    id_scene: string;
+    scene_no?: string;
+    place: string;
+    places: string[];
+    set?: string;
+    characters: string;
+    lighting: string;
+    props: string;
+    accent: string;
+    sense: string;
+    visual_type: string;
+    bg: string;
+    feature: string;
+    action: string;
+    chain: Array<{ n: number; place: string; action: string; vo: string }>;
+    anchors: {
+      text: string;
+      bits: SceneAnchorRow[];
+      preview: string[];
+      covers_text: boolean;
+    };
   };
   shots: SceneShotRow[];
 }

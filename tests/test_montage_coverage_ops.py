@@ -81,6 +81,11 @@ def _parent_child(project_id: int) -> tuple[Frame, Frame]:
 def test_coverage_slot_keys_and_order() -> None:
     assert slot_key_from_op({"type": "coverage_plan", "frame_number": 7}) == "7:plan"
     assert slot_key_from_op({"type": "coverage_action", "frame_number": 7}) == "7:action"
+    assert slot_key_from_op({"type": "coverage_angle", "frame_number": 7}) == "7:angle"
+    assert slot_key_from_op({"type": "coverage_move", "frame_number": 7}) == "7:move"
+    assert slot_key_from_op({"type": "coverage_stitch", "frame_number": 7}) == "7:stitch"
+    assert slot_key_from_op({"type": "coverage_light", "frame_number": 7}) == "7:light"
+    assert slot_key_from_op({"type": "coverage_set", "frame_number": 7}) == "7:set"
     assert slot_key_from_op({"type": "coverage_kind", "frame_number": 7}) == "7:kind"
     assert slot_key_from_op({"type": "coverage_delete", "frame_number": 7}) == "7:kind"
     ordered = order_montage_pending_ops(
@@ -122,6 +127,85 @@ async def test_apply_plan_and_action(session: AsyncSession, project: Project) ->
     assert result["highlight"] == "2:action"
     await session.refresh(child)
     assert (child.attrs or {}).get("shot01_action") == "берёт ключ"
+
+
+@pytest.mark.asyncio
+async def test_apply_angle_move_stitch_and_scene_light(
+    session: AsyncSession, project: Project
+) -> None:
+    parent, child = _parent_child(project.id)
+    stranger_uid = "cc" * 12
+    stranger = Frame(
+        project_id=project.id,
+        number=39,
+        uuid=stranger_uid,
+        voiceover_text="другая ячейка",
+        status="planned",
+        attrs={
+            "освещение": "дневной",
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": stranger_uid,
+                "shot_id": "1-S13-K1",
+                "coverage_parent_id": "1-K1",
+            },
+        },
+    )
+    session.add_all([project, parent, child, stranger])
+    await session.flush()
+
+    result = await apply_coverage_op(
+        session,
+        project,
+        {"type": "coverage_angle", "frame_number": 2, "angle": "3/4"},
+    )
+    assert result["highlight"] == "2:angle"
+    assert result["regen_image"] is True
+    await session.refresh(child)
+    assert (child.attrs or {}).get("camera_subdivide", {}).get("ракурс") == "3/4"
+
+    result = await apply_coverage_op(
+        session,
+        project,
+        {"type": "coverage_move", "frame_number": 2, "move": "наезд"},
+    )
+    assert result["highlight"] == "2:move"
+    await session.refresh(child)
+    assert (child.attrs or {}).get("camera_subdivide", {}).get("движение") == "наезд"
+
+    result = await apply_coverage_op(
+        session,
+        project,
+        {"type": "coverage_stitch", "frame_number": 2, "stitch": "по действию"},
+    )
+    assert result["highlight"] == "2:stitch"
+    assert result["regen_image"] is False
+    await session.refresh(child)
+    assert (child.attrs or {}).get("camera_subdivide", {}).get("переход") == "cut_on_action"
+
+    result = await apply_coverage_op(
+        session,
+        project,
+        {"type": "coverage_light", "frame_number": 2, "light": "ночной"},
+    )
+    assert result["highlight"] == "2:light"
+    await session.refresh(parent)
+    await session.refresh(child)
+    await session.refresh(stranger)
+    assert (parent.attrs or {}).get("освещение") == "ночной"
+    assert (child.attrs or {}).get("освещение") == "ночной"
+    assert (stranger.attrs or {}).get("освещение") == "дневной"
+
+    result = await apply_coverage_op(
+        session,
+        project,
+        {"type": "coverage_set", "frame_number": 2, "set": "кабинет ночью"},
+    )
+    assert result["highlight"] == "2:set"
+    await session.refresh(parent)
+    await session.refresh(stranger)
+    assert (parent.attrs or {}).get("camera_subdivide", {}).get("набор") == "кабинет ночью"
+    assert (stranger.attrs or {}).get("camera_subdivide", {}).get("набор") != "кабинет ночью"
 
 
 @pytest.mark.asyncio

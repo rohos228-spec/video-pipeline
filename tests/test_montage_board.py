@@ -163,6 +163,95 @@ async def test_montage_board_hides_character_refs_on_shot_children(
 
 
 @pytest.mark.asyncio
+async def test_montage_board_group_refs_on_vo_cell(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    """Строка «Референсы»: still родителя + персонажи/предметы на всю VO-ячейку."""
+    parent_uid = "aa" * 12
+    scenes = montage_project.data_dir / "scenes"
+    chars_dir = montage_project.data_dir / "characters"
+    items_dir = montage_project.data_dir / "items"
+    scenes.mkdir(parents=True, exist_ok=True)
+    chars_dir.mkdir(parents=True, exist_ok=True)
+    items_dir.mkdir(parents=True, exist_ok=True)
+    (scenes / "frame_001_parent.png").write_bytes(b"png-parent")
+    (chars_dir / "c02.png").write_bytes(b"png-c02")
+    (items_dir / "i01.png").write_bytes(b"png-i01")
+
+    parent = Frame(
+        project_id=montage_project.id,
+        number=1,
+        uuid=parent_uid,
+        voiceover_text="вошёл в кабинет",
+        status="planned",
+        attrs={
+            "characters": "c02",
+            "персонажи": "c02",
+            "предметы": "i01",
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+                "shot_id": "1-K1",
+            },
+        },
+    )
+    child = Frame(
+        project_id=montage_project.id,
+        number=2,
+        uuid="bb" * 12,
+        voiceover_text="достал папку",
+        status="planned",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "shot_id": "1-K2",
+                "coverage_parent_id": "1-K1",
+            },
+        },
+    )
+    stranger = Frame(
+        project_id=montage_project.id,
+        number=39,
+        uuid="cc" * 12,
+        voiceover_text="другая ячейка",
+        status="planned",
+        attrs={
+            "characters": "c09",
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": "cc" * 12,
+                "shot_id": "1-S13-K1",
+                "coverage_parent_id": "1-K1",
+            },
+        },
+    )
+    session.add(montage_project)
+    session.add_all([parent, child, stranger])
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    p_row, c_row, s_row = board["frames"]
+    assert p_row["ref_parent"]["number"] == 1
+    assert p_row["ref_parent"]["image_url"]
+    assert p_row["group_character_refs"][0]["id"] == "c02"
+    assert p_row["item_refs"][0]["id"] == "i01"
+    assert c_row["ref_parent"]["number"] == 1
+    assert c_row["ref_parent"]["image_url"] == p_row["ref_parent"]["image_url"]
+    assert [r["id"] for r in c_row["group_character_refs"]] == ["c02"]
+    assert [r["id"] for r in c_row["item_refs"]] == ["i01"]
+    assert "c09" not in [r["id"] for r in c_row["group_character_refs"]]
+    assert s_row["ref_parent"]["number"] == 39
+    assert [r["id"] for r in s_row["group_character_refs"]] == ["c09"]
+    assert p_row["vo_scene_number"] == 1
+    assert c_row["vo_scene_number"] == 1
+    assert s_row["vo_scene_number"] == 39
+    assert p_row["vo_scene_size"] == 2
+    assert s_row["vo_scene_size"] == 1
+
+
+@pytest.mark.asyncio
 async def test_montage_board_exposes_source_prompts_from_excel(
     montage_project: Project,
     session: AsyncSession,
@@ -485,20 +574,22 @@ def _script_frames_qc_meta() -> dict:
 
 
 @pytest.mark.asyncio
-async def test_montage_board_hides_coverage_rows_without_group(
+async def test_montage_board_shows_scene_row_from_frame_data_without_group(
     montage_project: Project,
     session: AsyncSession,
 ) -> None:
+    """Строка «Сцена» в монтаже — по данным кадра, не отдельное меню и не только QC-группа."""
     parent_uid = "aa" * 12
     fr = Frame(
         project_id=montage_project.id,
         number=1,
         uuid=parent_uid,
-        voiceover_text="vo",
+        voiceover_text="сидит за столом в офисе",
         status="planned",
         attrs={
             "shot01_action": "сидит за столом",
             "крупность": "ОБЩИЙ",
+            "персонажи": "следователь",
             "кадры": [
                 {
                     "id": "1-K1",
@@ -521,11 +612,19 @@ async def test_montage_board_hides_coverage_rows_without_group(
     await session.flush()
 
     board = await build_montage_board(session, montage_project)
-    assert board["show_coverage_rows"] is False
+    assert board["show_coverage_rows"] is True
     row = board["frames"][0]
-    assert row["shot_kind"] == ""
-    assert row["shot_plan"] == ""
-    assert row["shot_action"] == ""
+    assert row["shot_kind"] == "parent"
+    assert row["shot_plan"] == "ОБЩИЙ"
+    assert row["shot_action"] == "сидит за столом"
+    assert row["shot_template"] == "T5"
+    assert row["scene_place"] == "офис"
+    assert row["scene_characters"] == "следователь"
+    assert "сидит за столом" in row["shot_anchor"]
+    assert row["shot_angle"] == ""
+    assert "shot_move" in row
+    assert "shot_stitch" in row
+    assert "coverage_angle_choices" in board
 
 
 @pytest.mark.asyncio
@@ -608,3 +707,7 @@ async def test_montage_board_shows_plan_action_parent_child_with_group(
     assert c_row["shot_action"] == "рука выводит строки"
     assert c_row["shot_parent_number"] == 1
     assert c_row["shot_parent_id"] == "1-K1"
+    assert p_row["scene_place"] == "офис"
+    assert "родительский закадр" in p_row["shot_anchor"]
+    assert c_row["shot_anchor"]
+    assert p_row["shot_anchor"] != c_row["shot_anchor"]

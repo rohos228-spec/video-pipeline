@@ -279,6 +279,12 @@ export interface MontageBoardCharacterRef {
   image_url: string | null;
 }
 
+export interface MontageBoardParentRef {
+  number: number;
+  label: string;
+  image_url: string | null;
+}
+
 export interface MontageBoardFrame {
   frame_id: number;
   number: number;
@@ -286,6 +292,11 @@ export interface MontageBoardFrame {
   voiceover_excel: string;
   characters: string;
   character_refs: MontageBoardCharacterRef[];
+  /** Still VO-родителя ячейки — реф покрытия для всех шотов группы. */
+  ref_parent?: MontageBoardParentRef | null;
+  /** Персонажи всей VO-ячейки, не только этой колонки. */
+  group_character_refs?: MontageBoardCharacterRef[];
+  item_refs?: MontageBoardCharacterRef[];
   start_ts: number | null;
   end_ts: number | null;
   duration_seconds: number | null;
@@ -316,8 +327,21 @@ export interface MontageBoardFrame {
   shot_parent_id?: string;
   /** Формат сцены: шаблон T0…T10 / X1 / X2. */
   shot_template?: string;
-  /** Сколько якорей закадра размечено на ячейке. */
+  /** Сколько якорей принадлежит ЭТОМУ кадру. */
   shot_anchors?: number;
+  /** Якорь закадра этого кадра (не всей ячейки). */
+  shot_anchor?: string;
+  shot_angle?: string;
+  shot_move?: string;
+  shot_stitch?: string;
+  shot_stitch_label?: string;
+  scene_place?: string;
+  scene_set?: string;
+  scene_characters?: string;
+  scene_lighting?: string;
+  /** Номер VO-родителя ячейки (сцена). Не coverage_parent_id / X1. */
+  vo_scene_number?: number | null;
+  vo_scene_size?: number;
 }
 
 export interface MontageBoardMeta {
@@ -348,6 +372,9 @@ export interface MontageBoardDTO {
   /** Строки План / Действие / Кадр — только если на канвасе script_frames_qc. */
   show_coverage_rows?: boolean;
   coverage_plan_choices?: string[];
+  coverage_angle_choices?: string[];
+  coverage_move_choices?: string[];
+  coverage_light_choices?: string[];
 }
 
 export interface PromptDTO {

@@ -16,9 +16,11 @@ from app.services.montage_coverage_ops import apply_coverage_op
 from app.services.montage_scene_editor import (
     build_scene_editor_state,
     build_variant_prompt,
+    frame_board_scene_cell,
     normalize_anchor_rows,
     parse_variants,
     preview_template_ladder,
+    scene_group,
     split_vo_by_anchors,
 )
 
@@ -65,6 +67,11 @@ def _group(project_id: int) -> tuple[Frame, Frame]:
                 "1. кабинет следователя — приносит папку и открывает дело\n"
                 f"({VO_CELL})"
             ),
+            "персонажи": "следователь",
+            "освещение": "холодный верхний свет",
+            "предметы": "папка, портфель",
+            "shot01_id_scene": "scene_01",
+            "смысл_сцены": "вход в кабинет и первое дело",
             "биты": [
                 {"порядок": 1, "якорь": "Он вошёл в кабинет", "главный": True},
                 {"порядок": 2, "якорь": "Достал из портфеля папку"},
@@ -99,6 +106,8 @@ def _group(project_id: int) -> tuple[Frame, Frame]:
                 "шаблон": "T2",
                 "план": "ОБЩИЙ",
                 "место": "кабинет следователя",
+                "набор": "кабинет следователя",
+                "сцена": "1",
                 "shot_id": "1-S1-K1",
             },
         },
@@ -213,14 +222,33 @@ async def test_state_for_parent_frame(session: AsyncSession, project: Project) -
     assert state["template"]["ladder"], "лестница шаблона обязана прийти в UI"
     assert {c["id"] for c in state["template"]["choices"]} >= {"T0", "T1", "T2", "X1"}
     assert state["scene_action"]["chain"][0]["place"] == "кабинет следователя"
-    assert [b["якорь"] for b in state["anchors"]["bits"]] == [
+    assert [b["якорь"] for b in state["anchors"]["bits"]] == ["Он вошёл в кабинет"]
+    assert all(b["found"] for b in state["anchors"]["bits"])
+    assert state["anchors"]["bits"][0]["frame_number"] == 1
+    assert [b["якорь"] for b in state["scene"]["anchors"]["bits"]] == [
         "Он вошёл в кабинет",
         "Достал из портфеля папку",
     ]
-    assert all(b["found"] for b in state["anchors"]["bits"])
-    assert state["anchors"]["covers_text"] is True
+    assert state["scene"]["anchors"]["covers_text"] is True
+    assert state["scene"]["characters"] == "следователь"
+    assert "фронт" in state["angle"]["choices"]
+    assert "статика" in state["move"]["choices"]
+    assert {c["id"] for c in state["stitch"]["choices"]} >= {"cut", "cut_on_action"}
+    assert "ночной" in state["light"]["choices"]
+    assert state["set"]["current"] == "кабинет следователя"
+    assert state["light"]["current"] == "холодный верхний свет"
+    assert state["scene"]["lighting"] == "холодный верхний свет"
+    assert state["scene"]["props"] == "папка, портфель"
+    assert state["scene"]["id_scene"] == "scene_01"
+    assert state["scene"]["set"] == "кабинет следователя"
+    assert state["scene"]["scene_no"] == "1"
+    assert state["scene"]["action"]
     assert [s["план"] for s in state["shots"]] == ["ОБЩИЙ", "ДЕТАЛЬ"]
     assert [s["frame_number"] for s in state["shots"]] == [1, 2]
+    assert [s["якорь"] for s in state["shots"]] == [
+        "Он вошёл в кабинет",
+        "Достал из портфеля папку",
+    ]
     assert [p["number"] for p in state["parent_choices"]] == [2]
 
 
@@ -237,9 +265,87 @@ async def test_state_for_child_points_to_parent(
     assert state["frame"]["role"] == "child"
     assert state["parent"]["number"] == 1
     assert state["plan"]["current"] == "ДЕТАЛЬ"
-    # Якоря и полный текст ячейки берём с родителя, а не с куска ребёнка.
+    # Полный текст ячейки — со сцены; якорь — только этого кадра.
     assert state["vo"]["cell_full"] == VO_CELL
-    assert len(state["anchors"]["bits"]) == 2
+    assert [b["якорь"] for b in state["anchors"]["bits"]] == ["Достал из портфеля папку"]
+    assert state["anchors"]["bits"][0]["frame_number"] == 2
+    assert len(state["scene"]["anchors"]["bits"]) == 2
+    assert state["scene"]["characters"] == "следователь"
+    assert state["group"] == [1, 2]
+
+
+def test_scene_group_ignores_x1_coverage_parent() -> None:
+    parent, child = _group(41)
+    stranger = Frame(
+        project_id=41,
+        number=39,
+        uuid="cc" * 12,
+        sort_key=39.0,
+        voiceover_text="другая ячейка",
+        status="planned",
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": "cc" * 12,
+                "shot_id": "1-S13-K1",
+                "coverage_parent_id": "1-S1-K1",
+                "shot_index": 1,
+            }
+        },
+    )
+    frames = [parent, child, stranger]
+    vo_parent, members = scene_group(frames, parent)
+    assert int(vo_parent.number) == 1
+    assert [int(m.number) for m in members] == [1, 2]
+    stranger_parent, stranger_members = scene_group(frames, stranger)
+    assert int(stranger_parent.number) == 39
+    assert [int(m.number) for m in stranger_members] == [39]
+    state = build_scene_editor_state(frames, parent)
+    assert state["group"] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_state_frame_anchors_ignore_foreign_bits(
+    session: AsyncSession, project: Project
+) -> None:
+    parent, child = _group(project.id)
+    attrs = dict(parent.attrs or {})
+    attrs["биты"] = [
+        {"порядок": 1, "якорь": "Он вошёл в кабинет", "главный": True},
+        {"порядок": 2, "якорь": "фраза которой нет ни в одном кадре"},
+        {"порядок": 3, "якорь": "ещё один чужой бит скелета"},
+    ]
+    parent.attrs = attrs
+    session.add_all([project, parent, child])
+    await session.flush()
+    frames = await _frames(session, project)
+
+    parent_state = build_scene_editor_state(frames, frames[0])
+    assert [b["якорь"] for b in parent_state["anchors"]["bits"]] == ["Он вошёл в кабинет"]
+    assert len(parent_state["scene"]["anchors"]["bits"]) == 3
+
+    child_state = build_scene_editor_state(frames, frames[1])
+    child_bits = child_state["anchors"]["bits"]
+    assert len(child_bits) == 1
+    assert child_bits[0].get("derived") is True
+    assert child_bits[0]["якорь"] in child.voiceover_text
+    assert "чужой" not in child_bits[0]["якорь"]
+
+
+def test_frame_board_scene_cell_is_this_shot_not_whole_cell() -> None:
+    parent, child = _group(41)
+    cell = frame_board_scene_cell([parent, child], child)
+    assert cell["shot_anchors"] == 1
+    assert cell["shot_anchor"] == "Достал из портфеля папку"
+    assert cell["scene_place"] == "кабинет следователя"
+    assert cell["scene_set"] == "кабинет следователя"
+    assert cell["scene_characters"] == "следователь"
+    parent_cell = frame_board_scene_cell([parent, child], parent)
+    assert parent_cell["shot_anchor"] == "Он вошёл в кабинет"
+    assert parent_cell["shot_anchor"] != cell["shot_anchor"]
+    assert cell["vo_scene_number"] == 1
+    assert parent_cell["vo_scene_number"] == 1
+    assert cell["vo_scene_size"] == 2
 
 
 # --- формат сцены -------------------------------------------------------
@@ -443,7 +549,8 @@ async def test_variant_prompts_carry_context(
     assert "T1 — только речь" in tpl_prompt
 
     anchor_prompt = build_variant_prompt(state, kind="anchors", count=2)
-    assert VO_CELL in anchor_prompt
+    assert "Достал из портфеля папку" in anchor_prompt
+    assert "только этого шота" in anchor_prompt
     assert "ДОСЛОВНАЯ подстрока" in anchor_prompt
 
 
@@ -500,13 +607,9 @@ async def test_parse_variants_filters_garbage(
         state=state,
     )
     assert len(anchors) == 1
-    # Якорь, которого нет в тексте, выкидываем — иначе нарезка врёт.
-    assert [b["якорь"] for b in anchors[0]["биты"]] == [
-        "Он вошёл в кабинет",
-        "Открыл её",
-    ]
-    assert anchors[0]["dropped"] == 1
-    assert " ".join(" ".join(anchors[0]["preview"]).split()) == VO_CELL
+    # У кадра-родителя якорь ищется в его куске закадра, не во всей ячейке.
+    assert [b["якорь"] for b in anchors[0]["биты"]] == ["Он вошёл в кабинет"]
+    assert anchors[0]["dropped"] == 2
 
 
 def test_parse_variants_survives_non_json() -> None:
