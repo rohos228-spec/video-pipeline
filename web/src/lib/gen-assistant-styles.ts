@@ -293,7 +293,24 @@ export const GEN_STYLE_COLORS: Record<GenStyleDef["color"], string> = {
   yellow: "#facc15",
 };
 
-/** Сборка промпта: запрос + агент стиля + формат кадра. */
+/** Длиннее — это агент-инструкция со слотами, а не ядро стиля. */
+export const STYLE_CORE_MAX_CHARS = 700;
+
+const INSTRUCTION_MARKERS = ["\n#", "\n|", "```", "negative", "шаблон prompt", "чек-лист"];
+
+/**
+ * Ядро стиля вставляется в промпт дословно, агент-инструкция — нет:
+ * её исполняет LLM по кнопке «Сгенерировать» (зеркало looks_like_agent_echo).
+ */
+export function isInstructionAgent(agentText: string): boolean {
+  const text = (agentText ?? "").trim();
+  if (!text) return false;
+  if (text.length > STYLE_CORE_MAX_CHARS) return true;
+  const low = "\n" + text.toLowerCase();
+  return INSTRUCTION_MARKERS.some((m) => low.includes(m));
+}
+
+/** Сборка промпта: запрос + ядро стиля + формат кадра. */
 export function assembleGenPrompt(opts: {
   request: string;
   agentText: string;
@@ -302,7 +319,9 @@ export function assembleGenPrompt(opts: {
   const parts: string[] = [];
   const req = opts.request.trim();
   if (req) parts.push(`Запрос: ${req}`);
-  if (opts.agentText.trim()) parts.push(opts.agentText.trim());
+  if (opts.agentText.trim() && !isInstructionAgent(opts.agentText)) {
+    parts.push(opts.agentText.trim());
+  }
   parts.push(
     opts.aspect === "9:16"
       ? "Aspect ratio: 9:16. Vertical, rule of thirds, читаемый силуэт для shorts."

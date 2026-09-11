@@ -28,6 +28,7 @@ import {
   GEN_STYLE_COLORS,
   assembleGenPrompt,
   genPromptVariant,
+  isInstructionAgent,
   type GenStyleArt,
   type GenStyleDef,
 } from "@/lib/gen-assistant-styles";
@@ -317,6 +318,9 @@ export function GenAssistantPanel({
     () => assembleGenPrompt({ request, agentText, aspect }),
     [request, agentText, aspect],
   );
+  // Длинный агент со слотами — инструкция: её исполняет LLM, дословно в промпт
+  // она не идёт (иначе картинка рисует заголовки и скобки шаблона).
+  const instructionAgent = useMemo(() => isInstructionAgent(agentText), [agentText]);
 
   const aspectOptions = useMemo(() => {
     const opts = chipOptions(imageSlug, "aspect");
@@ -337,17 +341,17 @@ export function GenAssistantPanel({
     toast.success("Промпт подставлен в поле запроса");
   };
 
-  // Агент: LLM пишет ровно `count` промптов → слоты (для 📋) → СРАЗУ генерация всех.
-  // Окно результатов автоматически НЕ открываем — только по клику на 📋.
-  const runAgent = async () => {
+  // Агент пишет ровно `count` промптов и раскладывает их по слотам.
+  // Пустой массив — не получилось, тост об ошибке уже показан.
+  const requestAgentPrompts = async (): Promise<string[]> => {
     const req = request.trim();
     if (!req) {
       toast.error("Пустой запрос: напишите, что должно быть в кадре");
-      return;
+      return [];
     }
     if (!style || !agentText.trim()) {
       toast.error("Выберите стиль: текст агента пуст");
-      return;
+      return [];
     }
     setAgentBusy(true);
     try {
@@ -379,19 +383,35 @@ export function GenAssistantPanel({
       lsSet(LS.pendingStyle, JSON.stringify(pending));
       setPendingArt(pending);
       if (data.warning) toast.warning(String(data.warning));
-      toast.success(`Агент: ${prompts.length} промпт(ов) → генерация запущена`);
-      onGenerateAll(prompts);
+      return prompts;
     } catch (e) {
       toast.error(
         `Агент недоступен: ${e instanceof Error ? e.message : String(e)} — собрано локально`,
       );
+      return [];
     } finally {
       setAgentBusy(false);
     }
   };
 
-  const generatePrompt = (idx: number) => {
-    const text = promptText(idx).trim();
+  // Кнопка панели: агент пишет промпты → сразу генерация всех.
+  // Окно результатов автоматически НЕ открываем — только по клику на 📋.
+  const runAgent = async () => {
+    const prompts = await requestAgentPrompts();
+    if (!prompts.length) return;
+    toast.success(`Агент: ${prompts.length} промпт(ов) → генерация запущена`);
+    onGenerateAll(prompts);
+  };
+
+  const generatePrompt = async (idx: number) => {
+    let text = promptText(idx).trim();
+    // Слот ещё не заполнен агентом, а агент — инструкция: без прогона через LLM
+    // в модель уйдёт голый запрос без стиля. Сначала просим агента написать промпт.
+    if (instructionAgent && promptOverrides[String(idx)] === undefined) {
+      const prompts = await requestAgentPrompts();
+      if (!prompts.length) return;
+      text = (prompts[idx] ?? prompts[0]).trim();
+    }
     if (!text) {
       toast.error("Промпт пуст — напишите запрос или выберите стиль");
       return;
@@ -832,12 +852,17 @@ export function GenAssistantPanel({
                     <div className="flex items-center gap-1.5">
                       <button
                         type="button"
-                        disabled={generating}
-                        onClick={() => generatePrompt(idx)}
+                        disabled={generating || agentBusy}
+                        onClick={() => void generatePrompt(idx)}
                         className="inline-flex items-center justify-center rounded-lg bg-gradient-to-r from-[#22d3ee] to-[#0ea5e9] px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wider text-black transition hover:brightness-110 disabled:opacity-40"
                       >
                         Сгенерировать
                       </button>
+                      {instructionAgent && !overridden && (
+                        <span className="font-mono text-[9px] text-[#22d3ee]/70">
+                          агент-инструкция: промпт напишет LLM
+                        </span>
+                      )}
                       {count > 1 && (
                         <span className="ml-auto font-mono text-[9px] text-white/35">
                           вариант {idx + 1}
@@ -940,7 +965,9 @@ export function GenAssistantPanel({
                   style={{ backgroundColor: GEN_STYLE_COLORS[style.color] }}
                 />
                 <span className="text-[10px] font-semibold text-white/85">Агент «{style.name}»</span>
-                <span className="font-mono text-[8px] text-white/35">сохраняется автоматически</span>
+                <span className="font-mono text-[8px] text-white/35">
+                  {instructionAgent ? "инструкция — исполняет LLM" : "ядро стиля — идёт в промпт"}
+                </span>
                 {agentOverrides[style.id] !== undefined && (
                   <button
                     type="button"
