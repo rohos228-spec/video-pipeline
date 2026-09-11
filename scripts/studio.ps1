@@ -1,4 +1,4 @@
-﻿<#
+<#
 Video Pipeline Studio Launcher
 #>
 param(
@@ -22,14 +22,15 @@ Set-Location -LiteralPath $Root
 # Ветки (выбор при первом запуске / [5] -> только data/studio-pc-branch).
 # Лаунчер никогда не пишет .env.
 # [4] всегда тянет origin/<сохранённая>, не хардкод main.
-$script:PcBranches = @("housepc", "tompc", "strangepc", "workpc", "main")
+$script:PcBranches = @("housepc", "tompc", "strangepc", "workpc", "main", "Kir-updates")
 $script:PcBranchFile = Join-Path $Root "data\studio-pc-branch"
 $EnvFile = Join-Path $Root ".env"
 $StudioBranch = ""
 
 function Test-StudioPcBranchName {
     param([string]$Name)
-    return ($script:PcBranches -contains $Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return $false }
+    return ($script:PcBranches -contains $Name -or $Name -match '^[a-zA-Z0-9_\-\./]+$')
 }
 
 function Read-StudioPcBranchFromEnv {
@@ -90,6 +91,7 @@ function Show-StudioBranchPicker {
         $n = $i + 1
         Write-Host ("  [{0}] {1}" -f $n, $script:PcBranches[$i])
     }
+    Write-Host "  [C] Ввести другое имя ветки вручную"
     if ($AllowCancel) {
         Write-Host "  [0] Отмена"
     }
@@ -97,15 +99,30 @@ function Show-StudioBranchPicker {
     while ($true) {
         $choice = Read-Host "Номер ветки"
         if ($AllowCancel -and $choice -eq "0") { return "" }
-        if ($choice -match '^[1-5]$') {
-            $idx = [int]$choice - 1
-            $br = $script:PcBranches[$idx]
-            if (Save-StudioPcBranch -Branch $br) {
-                Write-StudioMsg "OK: ветка сохранена - $br ([4] будет тянуть origin/$br)" "Green"
-                return $br
+        if ($choice -match '^[cCсС]$') {
+            $custom = Read-Host "Введите точное имя ветки в Git (например, main или Kir-updates)"
+            $custom = "$custom".Trim()
+            if ($custom -and (Test-StudioPcBranchName $custom)) {
+                if (Save-StudioPcBranch -Branch $custom) {
+                    Write-StudioMsg "OK: ветка сохранена - $custom ([4] будет тянуть origin/$custom)" "Green"
+                    return $custom
+                }
+            }
+            Write-StudioMsg "Некорректное имя ветки." "Yellow"
+            continue
+        }
+        if ($choice -match '^\d+$') {
+            $val = [int]$choice
+            if ($val -ge 1 -and $val -le $script:PcBranches.Count) {
+                $idx = $val - 1
+                $br = $script:PcBranches[$idx]
+                if (Save-StudioPcBranch -Branch $br) {
+                    Write-StudioMsg "OK: ветка сохранена - $br ([4] будет тянуть origin/$br)" "Green"
+                    return $br
+                }
             }
         }
-        Write-StudioMsg "Выберите 1-5 (housepc / tompc / strangepc / workpc / main)." "Yellow"
+        Write-StudioMsg "Выберите номер из списка (1-$($script:PcBranches.Count)) или C для ввода вручную." "Yellow"
     }
 }
 
