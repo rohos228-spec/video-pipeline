@@ -22,7 +22,11 @@ MAX_COUNT = 4
 MAX_REQUEST_CHARS = 2000
 MAX_AGENT_CHARS = 8000
 MIN_PROMPT_CHARS = 40
-MAX_PROMPT_CHARS = 4000
+MAX_PROMPT_CHARS = 8000
+# Короткие ядра стиля (trash polka, pixel…) можно приклеить в начало.
+# Длинный шаблон агента (~7k) приклеивать нельзя: срез по MAX_PROMPT_CHARS
+# оставляет только YAML со слотами [ГЕРОЙ], а заполненный промпт отрезается.
+PREPEND_CORE_MAX = 480
 
 # Вариативные суффиксы для локальной добивки (ракурс/действие)
 _VARIANT_HINTS = [
@@ -110,12 +114,13 @@ def sanitize_prompts(
     """Чистка + контроль количества. Возвращает (промпты, были_локальные_вставки)."""
     core = core.strip()
     core_key = core[:40].lower()
+    prepend_core = bool(core_key) and len(core) <= PREPEND_CORE_MAX
     out: list[str] = []
     for p in prompts:
         p = re.sub(r"\s+", " ", str(p)).strip()
         if len(p) < MIN_PROMPT_CHARS:
             continue
-        if core_key and core_key not in p.lower():
+        if prepend_core and core_key not in p.lower():
             p = f"{core} — {p}"
         # дубли НЕ отбрасываем: если просят одинаковые/схожие — так и надо
         out.append(p[:MAX_PROMPT_CHARS])
@@ -205,7 +210,15 @@ async def generate_prompts(
     )
     if source == "llm" and padded:
         warning = "Часть промптов добита локальной сборкой (LLM дала меньше N)"
-    logger.info("gen_assistant: source={} count={} padded={}", source, len(prompts), padded)
+    logger.info(
+        "gen_assistant: source={} count={} padded={} request={!r} out0_len={} out0_head={!r}",
+        source,
+        len(prompts),
+        padded,
+        request[:120],
+        len(prompts[0]) if prompts else 0,
+        (prompts[0][:180] if prompts else ""),
+    )
     return {
         "prompts": prompts,
         "count": len(prompts),

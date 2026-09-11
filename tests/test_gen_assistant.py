@@ -77,6 +77,24 @@ def test_sanitize_prepends_missing_core():
     assert out[0].startswith(CORE)
 
 
+def test_sanitize_keeps_llm_prompt_when_core_is_long_template():
+    """Длинный шаблон агента нельзя приклеивать в начало — иначе 4000-срез
+    съедает заполненный промпт и в генератор уходит пустой [ГЕРОЙ]."""
+    core = "---\nname: infographic-hero-object\n" + ("шаблон слот [ГЕРОЙ] " * 400)
+    filled = (
+        "Magazine poster infographic, landscape sheet, editorial style. "
+        "Hero: one photorealistic corn cob кукуруза, half cut open, studio lit. "
+        "Headline кукуруза. Bottom strip of maize varieties."
+    )
+    out, padded = sanitize_prompts(
+        [filled], count=1, core=core, request="кукуруза в разрезе", aspect="16:9"
+    )
+    assert padded is False
+    assert "кукуруза" in out[0]
+    assert "[ГЕРОЙ]" not in out[0]
+    assert not out[0].lstrip().startswith("---")
+
+
 @pytest.mark.asyncio
 async def test_generate_validates_empty_request():
     with pytest.raises(ValueError, match="Пустой запрос"):
