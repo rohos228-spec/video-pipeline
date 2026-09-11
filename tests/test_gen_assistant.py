@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.services.gen_assistant import (
@@ -95,6 +97,58 @@ def test_sanitize_keeps_llm_prompt_when_core_is_long_template():
     assert not out[0].lstrip().startswith("---")
 
 
+def test_sanitize_rejects_template_echo_uses_request_not_example():
+    """Эхо правил агента (YAML + початок + [ГЕРОЙ]) нельзя слать в генератор."""
+    core = (
+        "---\nname: infographic-hero-object\n"
+        "**Герой любой:** початок, двигатель, кроссовок.\n"
+        "Hero: one photorealistic [ГЕРОЙ]\n"
+    ) * 40
+    echo = core[:3500]
+    out, padded = sanitize_prompts(
+        [echo], count=1, core=core, request="двигатель V8 в разрезе", aspect="16:9"
+    )
+    text = out[0].lower()
+    assert "двигатель" in text
+    assert "початок" not in text
+    assert "[ГЕРОЙ]" not in out[0]
+    assert not out[0].lstrip().startswith("---")
+    assert padded is True
+
+
+def test_local_variant_long_core_does_not_leak_examples():
+    from app.services.gen_assistant import _local_variant
+
+    core = "---\nname: infographic-hero-object\nГерой любой: початок, гриб, зуб.\n" * 80
+    p = _local_variant(core, "смартфон в разрезе", "16:9", 0, 1)
+    assert "смартфон" in p.lower()
+    assert "початок" not in p.lower()
+    assert not p.lstrip().startswith("---")
+
+
+@pytest.mark.asyncio
+async def test_generate_drops_template_echo(monkeypatch):
+    """Если LLM вернула копипасту правил — обвязка подставляет запрос, не початок."""
+    from app.services import gpt_client
+
+    core = (
+        "---\nname: infographic-hero-object\n"
+        "**Герой любой:** початок, кроссовок, гриб.\nHero: [ГЕРОЙ]\n"
+    ) * 30
+
+    class _Fake:
+        async def ask_with_files(self, text, files, **kwargs):
+            return '{"prompts": [' + json.dumps(core[:3500]) + "]}"
+
+    monkeypatch.setattr(gpt_client, "get_gpt_client", lambda: _Fake())
+    res = await generate_prompts(
+        request="двигатель V8 в разрезе", agent_text=core, aspect="16:9", count=1
+    )
+    text = res["prompts"][0].lower()
+    assert "двигатель" in text
+    assert "початок" not in text
+
+
 @pytest.mark.asyncio
 async def test_generate_validates_empty_request():
     with pytest.raises(ValueError, match="Пустой запрос"):
@@ -136,7 +190,9 @@ async def test_generate_attaches_agent_prompt_file(monkeypatch):
     master = calls[0]["master"]
     assert "Ты — агент визуальных промптов" in master
     assert CORE in master
+    assert REQ in master
     assert REQ in calls[0]["text"]
+    assert "нельзя копировать" in master.lower()
     assert not calls[0]["kwargs"].get("system")
 
 

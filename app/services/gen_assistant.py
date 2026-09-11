@@ -38,30 +38,51 @@ _VARIANT_HINTS = [
 
 _SYSTEM_TEMPLATE = """Ты — агент визуальных промптов для генерации изображений.
 
-СТИЛЬ (ядро агента — обязательно дословно в начале КАЖДОГО промпта):
-{agent_text}
+ПРАВИЛА АГЕНТА ниже — это инструкция, КАК собрать промпт. Их НЕЛЬЗЯ копировать
+в выход: ни YAML, ни markdown-заголовки агента, ни таблицу слотов.
+Примеры предметов в правилах (початок, двигатель, кроссовок, гриб, зуб…)
+НЕ являются заданием. Герой кадра = ТОЛЬКО запрос пользователя (блок
+«ПРЕДМЕТ КАДРА»). Если пользователь просит не початок — початок в кадре запрещён.
 
-АЛГОРИТМ (выполняй мысленно, в ответ выводи только финальные промпты):
-ШАГ 1 — АНАЛИЗ ЗАПРОСА. Выдели главный предмет/героя запроса и построй его
-ИСХОДНОЕ ДЕТАЛЬНОЕ ОПИСАНИЕ — так, чтобы всё было прописано заранее и не
-осталось неопределённостей: внешность и форма, материалы и текстуры, точные
-цвета, состояние и возраст предмета, характерные мелочи и дефекты, окружение
-и фон, освещение (источник, температура, тени), композиция и ракурс камеры.
-Если в запросе деталь не задана — додумай её конкретно и зафиксируй.
-ШАГ 2 — ПРОМПТЫ. Каждый промпт строится на этом исходном описании: ядро
-стиля дословно + детальное описание предмета из шага 1 + действие/состояние
-в кадре + окружение + свет + камера + формат кадра {aspect}.
+АЛГОРИТМ (в ответ — только финальные промпты):
+ШАГ 1 — АНАЛИЗ ЗАПРОСА. Главный предмет = формулировка пользователя. Построй
+его детальное описание: форма, материалы, цвета, состояние, окружение, свет,
+камера. Чего нет в запросе — додумай, не подменяя героя примером из правил.
+ШАГ 2 — ПРОМПТЫ. Примени правила агента (композиция, палитра, сетка, типографика)
+к ЭТОМУ герою. Заполни все слоты молча. На выходе — готовый текст для генератора
+картинок (обычно английский visual prompt). Формат кадра {aspect}.
 
 ЖЁСТКИЕ ПРАВИЛА:
-1. В задании указано число N — в ответе должно быть РОВНО N промптов. Не больше и не меньше.
-2. Каждый промпт РАЗВЁРНУТЫЙ (не короткая фраза): предмет описан в мельчайших
-   деталях по исходному описанию шага 1. Абстракции без конкретики запрещены.
-3. По умолчанию промпты различаются ракурсом, действием или деталями (предмет
-   и стиль при этом те же). Но если в запросе сказано «одинаковые», «схожие»
-   или «один и тот же» — делай одинаковые/схожие: это разрешено и обязательно.
-4. Формат ответа — СТРОГО валидный JSON без markdown и пояснений:
+1. В задании указано число N — в ответе РОВНО N промптов. Не больше и не меньше.
+2. Каждый промпт РАЗВЁРНУТЫЙ. Предмет из запроса назван явно.
+3. По умолчанию промпты различаются ракурсом/деталями (герой тот же). Если в
+   запросе «одинаковые»/«схожие» — делай одинаковые.
+4. Формат ответа — СТРОГО валидный JSON без markdown:
    {{"prompts": ["промпт 1", "промпт 2", ...]}}
-5. Внутри текстов промптов — без нумерации и без комментариев."""
+5. Внутри промптов нет YAML, нет «name: infographic», нет квадратных скобок-слотов
+   вроде [ГЕРОЙ], нет копипасты правил агента.
+
+ПРАВИЛА АГЕНТА (применить, не копировать):
+{agent_text}"""
+
+
+_UNFILLED_SLOT_RE = re.compile(r"\[(?:ГЕРОЙ|ЭТАЖ[^\]]*|ЦВЕТ|СЕКЦИЯ|КАК ВСКРЫТ[^\]]*)\]")
+_REQUEST_STOP = frozenset(
+    {
+        "этот",
+        "чтобы",
+        "только",
+        "сделай",
+        "сделать",
+        "нужно",
+        "просто",
+        "картинка",
+        "постер",
+        "инфографика",
+        "промпт",
+        "пожалуйста",
+    }
+)
 
 
 def write_agent_prompt_file(system: str, tmp_dir: Path) -> Path:
@@ -71,9 +92,42 @@ def write_agent_prompt_file(system: str, tmp_dir: Path) -> Path:
     return path
 
 
+def request_tokens(request: str) -> list[str]:
+    """Значимые слова запроса: они обязаны попасть в промпт для картинки."""
+    words = re.findall(r"[A-Za-zА-Яа-яЁё0-9]{4,}", request or "")
+    return [w for w in words if w.lower() not in _REQUEST_STOP]
+
+
+def looks_like_agent_echo(prompt: str, core: str) -> bool:
+    """LLM вернула правила агента вместо готового промпта для картинки."""
+    p = (prompt or "").strip()
+    if not p:
+        return True
+    head = p[:120].lstrip()
+    if head.startswith("---") and "name:" in head.lower():
+        return True
+    if _UNFILLED_SLOT_RE.search(p):
+        return True
+    core = (core or "").strip()
+    if len(core) > PREPEND_CORE_MAX:
+        core_head = re.sub(r"\s+", " ", core[:100]).strip()
+        body = re.sub(r"\s+", " ", p[:240])
+        if core_head and core_head[:50] in body:
+            return True
+    return False
+
+
 def _local_variant(core: str, request: str, aspect: str, idx: int, total: int) -> str:
     """Локальная сборка одного промпта (зеркало фронтовой assembleGenPrompt)."""
-    base = f"{core.strip()}\n\n{request.strip()}\n\nФормат кадра: {aspect}."
+    req = request.strip()
+    if len(core.strip()) > PREPEND_CORE_MAX:
+        # Длинный шаблон — не слать его в генератор: там примеры (початок) бьют запрос.
+        base = (
+            f"{req}. Photorealistic magazine poster infographic of this subject only, "
+            f"not example objects from the style guide. Aspect ratio: {aspect}."
+        )
+    else:
+        base = f"{core.strip()}\n\n{req}\n\nФормат кадра: {aspect}."
     hint = _VARIANT_HINTS[idx % len(_VARIANT_HINTS)]
     if total > 1 and hint:
         base += f"\nВариант {idx + 1} из {total}: {hint}."
@@ -115,10 +169,19 @@ def sanitize_prompts(
     core = core.strip()
     core_key = core[:40].lower()
     prepend_core = bool(core_key) and len(core) <= PREPEND_CORE_MAX
+    tokens = request_tokens(request)
     out: list[str] = []
     for p in prompts:
-        p = re.sub(r"\s+", " ", str(p)).strip()
+        raw = str(p).strip()
+        if len(core) <= PREPEND_CORE_MAX:
+            p = re.sub(r"\s+", " ", raw).strip()
+        else:
+            p = raw
         if len(p) < MIN_PROMPT_CHARS:
+            continue
+        if looks_like_agent_echo(p, core):
+            continue
+        if len(core) > PREPEND_CORE_MAX and tokens and not any(t.lower() in p.lower() for t in tokens):
             continue
         if prepend_core and core_key not in p.lower():
             p = f"{core} — {p}"
@@ -159,7 +222,12 @@ async def generate_prompts(
         raise ValueError(f"Текст агента длиннее {MAX_AGENT_CHARS} символов — сократите")
 
     system = _SYSTEM_TEMPLATE.format(agent_text=agent_text, aspect=aspect)
-    user = f"ЗАПРОС ПОЛЬЗОВАТЕЛЯ:\n{request}\n\nN = {count}"
+    # Предмет — в начале master-файла, иначе 7k правил перевешивают короткий запрос.
+    master = (
+        f"ПРЕДМЕТ КАДРА (единственный герой; примеры из правил игнорировать):\n"
+        f"{request}\n\n{system}\n\nN = {count}"
+    )
+    user = f"Предмет кадра: {request}\nN = {count}"
 
     source = "llm"
     warning: str | None = None
@@ -170,7 +238,7 @@ async def generate_prompts(
 
         client = get_gpt_client()
         tmp_root = Path(tempfile.mkdtemp(prefix="gen_assistant_"))
-        prompt_file = write_agent_prompt_file(system, tmp_root)
+        prompt_file = write_agent_prompt_file(master, tmp_root)
         logger.info(
             "gen_assistant: attach prompt_file={} chars={} request_chars={}",
             prompt_file.name,
