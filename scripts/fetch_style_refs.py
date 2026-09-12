@@ -765,7 +765,15 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=150, help="сколько картинок сохранить")
     ap.add_argument("--min-side", type=int, default=600, help="минимальная сторона оригинала")
     ap.add_argument("--max-side", type=int, default=1600, help="длинная сторона после сжатия")
+    ap.add_argument(
+        "--since",
+        default=None,
+        help="are.na: брать только блоки, добавленные после этой даты (YYYY-MM-DD)",
+    )
     args = ap.parse_args()
+
+    if args.since:
+        globals()["ARENA_SINCE"] = args.since
 
     presets = {
         "arena": ARENA_PRESETS,
