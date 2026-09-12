@@ -167,6 +167,21 @@ function slotKeyFromOp(op: Pick<MontagePendingOp, "type" | "frame_number" | "sho
   return trimKey(op.frame_number, op.shot);
 }
 
+/** Один живой тост очереди вместо стопки на каждый клик по чипу. */
+const QUEUE_TOAST_ID = "montage-queue";
+
+function editsWord(n: number): string {
+  const ones = n % 10;
+  const tens = n % 100;
+  if (ones === 1 && tens !== 11) return "правка";
+  if (ones >= 2 && ones <= 4 && (tens < 10 || tens > 20)) return "правки";
+  return "правок";
+}
+
+function toastQueued(text: string): void {
+  toast.message(text, { id: QUEUE_TOAST_ID });
+}
+
 /** Мгновенный preview URL после regen (без ждать полный refetch доски). */
 function filesUrlFromAbsPath(absPath: string): string {
   return `/api/files?path=${encodeURIComponent(absPath)}&v=${Date.now()}`;
@@ -1653,8 +1668,9 @@ export function AssembleMontageBoard({
       queryFn: () => api.getProject(projectId),
       staleTime: 30_000,
     });
-    // После regen staleTime/кэш иначе показывает старые клипы и пустую подсветку.
-    void queryClient.resetQueries({ queryKey: ["montage-board", projectId] });
+    // После regen staleTime/кэш иначе показывает старые клипы и пустую
+    // подсветку. invalidate, не reset: прошлая доска висит до новых данных.
+    void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
   }, [open, projectId, queryClient]);
 
   // При закрытии панели — сразу сохранить очередь (не ждать debounce).
@@ -1808,7 +1824,7 @@ export function AssembleMontageBoard({
         persistQueue(next);
         return next;
       });
-      toast.message("Операция в очереди — нажмите «Применить правки»");
+      toastQueued("Операция в очереди — нажмите «Применить правки»");
     },
     [persistQueue],
   );
@@ -1862,7 +1878,7 @@ export function AssembleMontageBoard({
         persistQueue(next);
         return next;
       });
-      toast.message("Операция в очереди — нажмите «Применить правки»");
+      toastQueued("Операция в очереди — нажмите «Применить правки»");
     },
     [persistQueue, frames],
   );
@@ -1916,8 +1932,8 @@ export function AssembleMontageBoard({
         persistQueue(next);
         return next;
       });
-      toast.message(
-        `Кадр #${frameNumber}: ${ops.length} правок в очереди — нажмите «Применить правки»`,
+      toastQueued(
+        `Кадр #${frameNumber}: ${ops.length} ${editsWord(ops.length)} в очереди — нажмите «Применить правки»`,
       );
     },
     [persistQueue, frames],
@@ -2074,14 +2090,14 @@ export function AssembleMontageBoard({
         else if (status === "error") toast.error(errText || "Генерация не удалась");
         else if (status === "cancelled") toast.message("Генерация остановлена");
       }
+      // Без resetQueries: доска остаётся на экране (скролл, открытые клетки),
+      // данные подменяются, когда придёт ответ.
       void queryClient
-        .resetQueries({ queryKey: ["montage-board", projectId] })
-        .then(() =>
-          queryClient.fetchQuery({
-            queryKey: ["montage-board", projectId],
-            queryFn: () => api.getMontageBoard(projectId!),
-          }),
-        )
+        .fetchQuery({
+          queryKey: ["montage-board", projectId],
+          queryFn: () => api.getMontageBoard(projectId!),
+          staleTime: 0,
+        })
         .then((data) => {
           const hl = data?.meta?.highlights;
           if (Array.isArray(hl)) setHighlights(hl.map(String));
@@ -2875,17 +2891,36 @@ export function AssembleMontageBoard({
               "главный": Boolean(r["главный"]),
               cell_index: r.cell_index ?? null,
             }))
-          : frameRows.map((r) => {
-              const idx = typeof r.cell_index === "number" ? r.cell_index : -1;
-              const cand = idx >= 0 ? queued[idx] : undefined;
-              return cand
-                ? { ...r, "якорь": cand["якорь"], "изменение": cand["изменение"] || "" }
-                : r;
-            });
+          : [
+              ...frameRows.map((r) => {
+                const idx = typeof r.cell_index === "number" ? r.cell_index : -1;
+                const cand = queued.find(
+                  (q) => typeof q.cell_index === "number" && q.cell_index === idx,
+                );
+                return cand
+                  ? { ...r, "якорь": cand["якорь"], "изменение": cand["изменение"] || "" }
+                  : r;
+              }),
+              // Дописанный якорь этого кадра: в очереди он есть, в биты[] ещё нет.
+              ...queued
+                .filter(
+                  (q) =>
+                    typeof q.cell_index !== "number" &&
+                    q.frame_number === fr.number,
+                )
+                .map((q) => ({
+                  "якорь": q["якорь"],
+                  "изменение": q["изменение"] || "",
+                  "главный": Boolean(q["главный"]),
+                  cell_index: null,
+                  frame_number: fr.number,
+                })),
+            ];
       return (
         <AnchorCell
           projectId={projectId}
           frameId={fr.frame_id}
+          frameNumber={fr.number}
           frameText={voiceoverForFrame(fr)}
           rows={rows}
           cellRows={fr.scene_anchor_rows ?? []}
@@ -3096,6 +3131,13 @@ export function AssembleMontageBoard({
             </button>
           </div>
         </header>
+
+        {/* Доску не перезагружаем: пока летит refetch — тонкая полоска, не пустой экран. */}
+        <div className="h-0.5 shrink-0 overflow-hidden bg-transparent">
+          {board.isFetching && frames.length > 0 ? (
+            <div className="h-full w-1/3 animate-montage-sweep rounded-full bg-[rgba(209,254,23,0.85)]" />
+          ) : null}
+        </div>
 
         <div ref={contentScrollRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
           <div className="p-4 pb-2">

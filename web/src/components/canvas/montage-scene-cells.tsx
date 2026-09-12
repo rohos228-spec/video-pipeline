@@ -394,15 +394,23 @@ function anchorRowsToOps(rows: MontageAnchorRow[]): SceneAnchorRow[] {
 
 /**
  * Якоря ЭТОГО кадра. Правка одного шота не должна стирать биты соседей:
- * в мультишоте кладём строку кадра обратно в список ячейки по `cell_index`.
+ * в мультишоте кладём строку кадра обратно в список ячейки по `cell_index`,
+ * а дописанный якорь встаёт сразу за якорями кадра — он режет именно его.
  */
 export function mergeAnchorRows(
   frameRows: MontageAnchorRow[],
   cellRows: MontageAnchorRow[],
   canAdd: boolean,
+  frameNumber: number,
 ): SceneAnchorRow[] {
   if (canAdd || cellRows.length <= 1) return anchorRowsToOps(frameRows);
   const next = cellRows.map((r) => ({ ...r }));
+  let at = -1;
+  next.forEach((row, i) => {
+    const fn = row.frame_number;
+    if (typeof fn === "number" && fn <= frameNumber) at = i;
+  });
+  const fresh: MontageAnchorRow[] = [];
   for (const row of frameRows) {
     const idx = typeof row.cell_index === "number" ? row.cell_index : -1;
     if (idx >= 0 && idx < next.length) {
@@ -411,10 +419,12 @@ export function mergeAnchorRows(
         "якорь": row["якорь"],
         "изменение": row["изменение"] || "",
       };
+      at = Math.max(at, idx);
     } else if ((row["якорь"] || "").trim()) {
-      next.push(row);
+      fresh.push(row);
     }
   }
+  next.splice(at >= 0 ? at + 1 : next.length, 0, ...fresh);
   return anchorRowsToOps(next);
 }
 
@@ -422,6 +432,7 @@ export function mergeAnchorRows(
 export function AnchorCell({
   projectId,
   frameId,
+  frameNumber,
   frameText,
   rows,
   cellRows,
@@ -432,6 +443,7 @@ export function AnchorCell({
 }: {
   projectId: number | null;
   frameId: number;
+  frameNumber: number;
   frameText: string;
   rows: MontageAnchorRow[];
   cellRows: MontageAnchorRow[];
@@ -452,7 +464,7 @@ export function AnchorCell({
   const commit = (next: MontageAnchorRow[]) => {
     const key = JSON.stringify(next);
     if (key === savedRef.current) return;
-    const ops = mergeAnchorRows(next, cellRows, canAdd);
+    const ops = mergeAnchorRows(next, cellRows, canAdd, frameNumber);
     if (!ops.length) return;
     savedRef.current = key;
     onCommit(ops);
@@ -500,7 +512,7 @@ export function AnchorCell({
                   onBlur={() => commit(draft)}
                 />
               </div>
-              {canAdd ? (
+              {canAdd || draft.length > 1 ? (
                 <button
                   type="button"
                   title="Убрать якорь"
@@ -519,24 +531,32 @@ export function AnchorCell({
           );
         })}
       </ul>
+      {draft.length > rows.length ? (
+        <p className={cn(HINT, "mt-1")} style={{ color: ACCENT }}>
+          +{draft.length - rows.length} шот в ячейке после «Применить правки»
+        </p>
+      ) : null}
       <div className="mt-1 flex items-center justify-between gap-2">
-        {canAdd ? (
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() =>
-              setDraft((prev) => [
-                ...prev,
-                { "якорь": "", "изменение": "", "главный": prev.length === 0 },
-              ])
-            }
-            className="inline-flex items-center gap-1 rounded-md border border-dashed border-white/20 px-1.5 py-0.5 text-[10px] text-white/50 transition hover:border-white/40 hover:text-white disabled:opacity-40"
-          >
-            <Plus className="h-3 w-3" /> якорь
-          </button>
-        ) : (
-          <span className={HINT}>один шот — один якорь</span>
-        )}
+        <button
+          type="button"
+          disabled={disabled}
+          title="Дописать якорь — по нему ячейка режется на ещё один шот"
+          onClick={() =>
+            setDraft((prev) => [
+              ...prev,
+              {
+                "якорь": "",
+                "изменение": "",
+                "главный": prev.length === 0,
+                cell_index: null,
+                frame_number: frameNumber,
+              },
+            ])
+          }
+          className="inline-flex items-center gap-1 rounded-md border border-dashed border-white/20 px-1.5 py-0.5 text-[10px] text-white/50 transition hover:border-white/40 hover:text-white disabled:opacity-40"
+        >
+          <Plus className="h-3 w-3" /> якорь
+        </button>
         <AskButton
           busy={busy === "anchors"}
           disabled={disabled}
@@ -551,19 +571,15 @@ export function AnchorCell({
           onTake={(v) => {
             const bits = v["биты"] || [];
             if (!bits.length) return;
-            const next: MontageAnchorRow[] = canAdd
-              ? bits.map((b) => ({
-                  "якорь": b["якорь"],
-                  "изменение": b["изменение"] || "",
-                  "главный": Boolean(b["главный"]),
-                }))
-              : [
-                  {
-                    ...draft[0],
-                    "якорь": bits[0]["якорь"],
-                    "изменение": bits[0]["изменение"] || "",
-                  },
-                ];
+            // Биты сверх якорей кадра — не выбрасываем: станут шотами ячейки.
+            const next: MontageAnchorRow[] = bits.map((b, i) => ({
+              ...draft[i],
+              "якорь": b["якорь"],
+              "изменение": b["изменение"] || "",
+              "главный": canAdd
+                ? Boolean(b["главный"])
+                : Boolean(draft[i]?.["главный"]),
+            }));
             setDraft(next);
             commit(next);
           }}
