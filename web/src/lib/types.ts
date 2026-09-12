@@ -285,6 +285,15 @@ export interface MontageBoardParentRef {
   image_url: string | null;
 }
 
+export interface MontageAnchorRow {
+  "якорь": string;
+  "изменение"?: string;
+  "главный"?: boolean;
+  found?: boolean;
+  cell_index?: number | null;
+  frame_number?: number | null;
+}
+
 export interface MontageBoardFrame {
   frame_id: number;
   number: number;
@@ -331,6 +340,19 @@ export interface MontageBoardFrame {
   shot_anchors?: number;
   /** Якорь закадра этого кадра (не всей ячейки). */
   shot_anchor?: string;
+  /** «было → стало» первого якоря кадра. */
+  shot_anchor_change?: string;
+  shot_anchor_main?: boolean;
+  /** Якорь найден в закадре этого кадра (иначе строка красная). */
+  shot_anchor_found?: boolean;
+  /** Якоря ЭТОГО кадра — правятся строкой «Якорь» на доске. */
+  shot_anchor_rows?: MontageAnchorRow[];
+  /** У ячейки один кадр — якоря можно добавлять / удалять. */
+  anchor_can_add?: boolean;
+  /** Все биты VO-ячейки: нужны, чтобы правка одного шота не стёрла соседей. */
+  scene_anchor_rows?: MontageAnchorRow[];
+  /** Полный закадр VO-ячейки (сцены). */
+  vo_cell_full?: string;
   shot_angle?: string;
   shot_move?: string;
   shot_stitch?: string;
@@ -339,6 +361,16 @@ export interface MontageBoardFrame {
   scene_set?: string;
   scene_characters?: string;
   scene_lighting?: string;
+  scene_id?: string;
+  scene_no?: string;
+  scene_props?: string;
+  scene_accent?: string;
+  scene_bg?: string;
+  scene_sense?: string;
+  scene_visual_type?: string;
+  scene_feature?: string;
+  /** Что предлагает дерево «Выбор» для формата сцены. */
+  scene_template_auto?: string;
   /** Номер VO-родителя ячейки (сцена). Не coverage_parent_id / X1. */
   vo_scene_number?: number | null;
   vo_scene_size?: number;
@@ -375,6 +407,22 @@ export interface MontageBoardDTO {
   coverage_angle_choices?: string[];
   coverage_move_choices?: string[];
   coverage_light_choices?: string[];
+  coverage_stitch_choices?: Array<{ id: string; label: string }>;
+  coverage_template_choices?: MontageTemplateChoice[];
+}
+
+/** Формат сцены из каталога `templates/shot_templates/shot_templates.json`. */
+export interface MontageTemplateChoice {
+  id: string;
+  name: string;
+  when: string;
+  axis?: string;
+  ladder?: string;
+  example?: string;
+  shots?: number;
+  required?: number;
+  plans: string[];
+  roles: string[];
 }
 
 export interface PromptDTO {

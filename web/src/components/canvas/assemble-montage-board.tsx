@@ -37,7 +37,11 @@ import {
   type SceneAnchorRow,
 } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
-import type { MontageBoardDTO, MontageBoardFrame } from "@/lib/types";
+import type {
+  MontageAnchorRow,
+  MontageBoardDTO,
+  MontageBoardFrame,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -50,10 +54,13 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { NodeStepParamsPanel } from "@/components/studio/node-step-params-panel";
 import { AudioAlignPopover } from "@/components/studio/audio-align-dialog";
 import {
-  MontageSceneEditor,
-  SceneSummaryCell,
-  type SceneEditorTarget,
-} from "@/components/canvas/montage-scene-editor";
+  ActionCell,
+  AnchorCell,
+  ChipsCell,
+  RoleCell,
+  SceneInfoCell,
+  TemplateCell,
+} from "@/components/canvas/montage-scene-cells";
 
 /** Единая ширина колонок кадров (+30% к v215). */
 const FRAME_COL_REM = 15;
@@ -68,7 +75,16 @@ const SHOT_GAP_CLASS = "w-1 min-w-[4px] max-w-[4px] p-0 align-middle";
 
 type RowKey =
   | "voiceover"
-  | "scene"
+  | "scene_info"
+  | "template"
+  | "role"
+  | "plan"
+  | "angle"
+  | "move"
+  | "stitch"
+  | "light"
+  | "action"
+  | "anchor"
   | "refs"
   | "image1"
   | "image2"
@@ -85,6 +101,33 @@ const GRID_ROWS: { key: RowKey; label: string }[] = [
   { key: "video2", label: "Видео 2" },
   { key: "timestamps", label: "Таймкоды" },
 ];
+
+/** Строки сцены прямо в доске — вместо всплывающего редактора кадра. */
+const SCENE_ROWS: { key: RowKey; label: string }[] = [
+  { key: "scene_info", label: "Сцена (ячейка)" },
+  { key: "template", label: "Формат сцены" },
+  { key: "role", label: "Роль в покрытии" },
+  { key: "plan", label: "Крупность" },
+  { key: "angle", label: "Ракурс" },
+  { key: "move", label: "Движение" },
+  { key: "stitch", label: "Стык / переход" },
+  { key: "light", label: "Свет" },
+  { key: "action", label: "Действие кадра" },
+  { key: "anchor", label: "Якорь кадра" },
+];
+
+/** Эти строки общие для VO-ячейки — одна клетка на всю сцену. */
+const SCENE_SPAN_ROWS = new Set<RowKey>(["scene_info", "template", "light"]);
+/** Эти строки правятся у каждого кадра отдельно. */
+const SCENE_FRAME_ROWS = new Set<RowKey>([
+  "role",
+  "plan",
+  "angle",
+  "move",
+  "stitch",
+  "action",
+  "anchor",
+]);
 
 type MediaPreview = {
   url: string;
@@ -1525,7 +1568,6 @@ export function AssembleMontageBoard({
   const [trims, setTrims] = useState<Record<string, VideoTrim>>({});
   const [pendingOps, setPendingOps] = useState<MontagePendingOp[]>([]);
   const [promptModal, setPromptModal] = useState<PromptModalState>(null);
-  const [sceneEditor, setSceneEditor] = useState<SceneEditorTarget>(null);
   const [highlights, setHighlights] = useState<string[]>([]);
   const [failedHighlights, setFailedHighlights] = useState<string[]>([]);
   const [staleVideos, setStaleVideos] = useState<string[]>([]);
@@ -1633,8 +1675,9 @@ export function AssembleMontageBoard({
   const coverageOn = Boolean(board.data?.show_coverage_rows);
   const gridRows = useMemo(() => {
     if (!coverageOn) return GRID_ROWS;
-    // Одна строка «Сцена» вместо Кадр / План / Действие: правки — в панели.
-    return [GRID_ROWS[0], { key: "scene" as RowKey, label: "Сцена" }, ...GRID_ROWS.slice(1)];
+    // Роль / крупность / ракурс / движение / стык / свет / действие / якорь —
+    // отдельными строками доски, без всплывающего окна редактора кадра.
+    return [GRID_ROWS[0], ...SCENE_ROWS, ...GRID_ROWS.slice(1)];
   }, [coverageOn]);
   const meta = board.data?.meta;
   const pendingOpsKey = JSON.stringify(meta?.pending_ops ?? []);
@@ -1671,6 +1714,11 @@ export function AssembleMontageBoard({
       if (typeof rec.plan === "string") item.plan = rec.plan;
       if (typeof rec.action === "string") item.action = rec.action;
       if (typeof rec.template === "string") item.template = rec.template;
+      if (typeof rec.angle === "string") item.angle = rec.angle;
+      if (typeof rec.move === "string") item.move = rec.move;
+      if (typeof rec.stitch === "string") item.stitch = rec.stitch;
+      if (typeof rec.light === "string") item.light = rec.light;
+      if (typeof rec.set === "string") item.set = rec.set;
       if (Array.isArray(rec.anchors)) item.anchors = rec.anchors as SceneAnchorRow[];
       if (rec.kind === "parent" || rec.kind === "child") item.kind = rec.kind;
       const parentNumber = Number(rec.parent_number);
@@ -2680,16 +2728,228 @@ export function AssembleMontageBoard({
         setSwapPick(null);
         return;
       }
-      if (sceneEditor) {
-        e.preventDefault();
-        setSceneEditor(null);
-        return;
-      }
       if (!preview) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose, preview, swapPick, sceneEditor]);
+  }, [open, onClose, preview, swapPick]);
+
+  const sceneDisabled = applyRunning || applyMutation.isPending;
+
+  const hasPendingType = useCallback(
+    (frameNumber: number, type: MontagePendingOp["type"]) =>
+      pendingOps.some((o) => o.frame_number === frameNumber && o.type === type),
+    [pendingOps],
+  );
+
+  const parentChoicesFor = useCallback(
+    (frameNumber: number) =>
+      frames
+        .filter((f) => f.number !== frameNumber)
+        .map((f) => ({
+          number: f.number,
+          kind: f.shot_kind || "",
+          vo: (f.voiceover_text || "").slice(0, 70),
+        })),
+    [frames],
+  );
+
+  /** Одна правка = сразу в очередь: строки сцены не открывают отдельное окно. */
+  const queueCoverage = useCallback(
+    (op: MontagePendingOp) => queueSceneOps([op]),
+    [queueSceneOps],
+  );
+
+  /** Клетка кадра для строк роль / крупность / ракурс / движение / стык / действие / якорь. */
+  const renderSceneFrameCell = (key: RowKey, fr: MontageBoardFrame) => {
+    const pending = pendingCoverageForFrame(pendingOps, fr.number);
+    const base = { frame_number: fr.number, shot: 1 as const };
+    if (key === "role") {
+      if (pending.deleted) {
+        return (
+          <p className="text-[10px] leading-snug text-rose-200/80">
+            кадр в очереди на удаление
+          </p>
+        );
+      }
+      const kind =
+        pending.kind ??
+        (fr.shot_kind === "child" || fr.shot_kind === "parent" ? fr.shot_kind : "");
+      const parentNumber = pending.parent_number ?? fr.shot_parent_number ?? null;
+      return (
+        <RoleCell
+          kind={kind}
+          parentNumber={parentNumber}
+          frameNumber={fr.number}
+          parentChoices={parentChoicesFor(fr.number)}
+          pending={hasPendingType(fr.number, "coverage_kind")}
+          disabled={sceneDisabled}
+          onKind={(nextKind, nextParent) =>
+            queueCoverage(
+              nextKind === "child"
+                ? {
+                    ...base,
+                    type: "coverage_kind",
+                    kind: "child",
+                    parent_number: nextParent ?? undefined,
+                  }
+                : { ...base, type: "coverage_kind", kind: "parent" },
+            )
+          }
+          onDeleteChild={() => queueCoverage({ ...base, type: "coverage_delete" })}
+        />
+      );
+    }
+    if (key === "plan") {
+      return (
+        <ChipsCell
+          value={(pending.plan ?? fr.shot_plan ?? "").trim()}
+          choices={board.data?.coverage_plan_choices}
+          pending={hasPendingType(fr.number, "coverage_plan")}
+          disabled={sceneDisabled}
+          onPick={(plan) => queueCoverage({ ...base, type: "coverage_plan", plan })}
+        />
+      );
+    }
+    if (key === "angle") {
+      return (
+        <ChipsCell
+          value={(pending.angle ?? fr.shot_angle ?? "").trim()}
+          choices={board.data?.coverage_angle_choices}
+          pending={hasPendingType(fr.number, "coverage_angle")}
+          disabled={sceneDisabled}
+          onPick={(angle) => queueCoverage({ ...base, type: "coverage_angle", angle })}
+        />
+      );
+    }
+    if (key === "move") {
+      return (
+        <ChipsCell
+          value={(pending.move ?? fr.shot_move ?? "").trim()}
+          choices={board.data?.coverage_move_choices}
+          pending={hasPendingType(fr.number, "coverage_move")}
+          disabled={sceneDisabled}
+          onPick={(move) => queueCoverage({ ...base, type: "coverage_move", move })}
+        />
+      );
+    }
+    if (key === "stitch") {
+      return (
+        <ChipsCell
+          value={(pending.stitch ?? fr.shot_stitch ?? "").trim()}
+          choices={board.data?.coverage_stitch_choices}
+          pending={hasPendingType(fr.number, "coverage_stitch")}
+          disabled={sceneDisabled}
+          onPick={(stitch) => queueCoverage({ ...base, type: "coverage_stitch", stitch })}
+        />
+      );
+    }
+    if (key === "action") {
+      return (
+        <ActionCell
+          projectId={projectId}
+          frameId={fr.frame_id}
+          value={(pending.action ?? fr.shot_action ?? "").trim()}
+          plan={(pending.plan ?? fr.shot_plan ?? "").trim()}
+          pending={hasPendingType(fr.number, "coverage_action")}
+          disabled={sceneDisabled}
+          onCommit={(action, plan) =>
+            queueSceneOps([
+              { ...base, type: "coverage_action", action },
+              ...(plan ? [{ ...base, type: "coverage_plan" as const, plan }] : []),
+            ])
+          }
+        />
+      );
+    }
+    if (key === "anchor") {
+      const canAdd = Boolean(fr.anchor_can_add);
+      const frameRows = fr.shot_anchor_rows ?? [];
+      const queued = pending.anchors;
+      const rows: MontageAnchorRow[] = !queued
+        ? frameRows
+        : canAdd || frameRows.length === 0
+          ? queued.map((r) => ({
+              "якорь": r["якорь"],
+              "изменение": r["изменение"] || "",
+              "главный": Boolean(r["главный"]),
+              cell_index: r.cell_index ?? null,
+            }))
+          : frameRows.map((r) => {
+              const idx = typeof r.cell_index === "number" ? r.cell_index : -1;
+              const cand = idx >= 0 ? queued[idx] : undefined;
+              return cand
+                ? { ...r, "якорь": cand["якорь"], "изменение": cand["изменение"] || "" }
+                : r;
+            });
+      return (
+        <AnchorCell
+          projectId={projectId}
+          frameId={fr.frame_id}
+          frameText={voiceoverForFrame(fr)}
+          rows={rows}
+          cellRows={fr.scene_anchor_rows ?? []}
+          canAdd={canAdd}
+          pending={hasPendingType(fr.number, "coverage_anchors")}
+          disabled={sceneDisabled}
+          onCommit={(anchors) =>
+            queueCoverage({ ...base, type: "coverage_anchors", anchors })
+          }
+        />
+      );
+    }
+    return null;
+  };
+
+  /** Клетка на всю VO-ячейку: сцена / формат / свет. */
+  const renderSceneSpanCell = (key: RowKey, range: SceneRange) => {
+    const head = range.frames[0];
+    if (!head) return null;
+    const pending = pendingCoverageForFrame(pendingOps, head.number);
+    const base = { frame_number: head.number, shot: 1 as const };
+    if (key === "scene_info") {
+      return (
+        <SceneInfoCell
+          head={head}
+          frameNumbers={range.frames.map((f) => f.number)}
+          setValue={(pending.set ?? head.scene_set ?? "").trim()}
+          setPending={hasPendingType(head.number, "coverage_set")}
+          disabled={sceneDisabled}
+          onSet={(value) => queueCoverage({ ...base, type: "coverage_set", set: value })}
+        />
+      );
+    }
+    if (key === "template") {
+      return (
+        <TemplateCell
+          projectId={projectId}
+          frameId={head.frame_id}
+          value={(pending.template ?? head.shot_template ?? "").trim()}
+          auto={(head.scene_template_auto || "").trim()}
+          choices={board.data?.coverage_template_choices}
+          groupLen={range.frames.length}
+          pending={hasPendingType(head.number, "coverage_template")}
+          disabled={sceneDisabled}
+          onPick={(template) =>
+            queueCoverage({ ...base, type: "coverage_template", template })
+          }
+        />
+      );
+    }
+    if (key === "light") {
+      return (
+        <ChipsCell
+          value={(pending.light ?? head.scene_lighting ?? "").trim()}
+          choices={board.data?.coverage_light_choices}
+          pending={hasPendingType(head.number, "coverage_light")}
+          disabled={sceneDisabled}
+          note="свет общий для всей ячейки закадра"
+          onPick={(light) => queueCoverage({ ...base, type: "coverage_light", light })}
+        />
+      );
+    }
+    return null;
+  };
 
   const toggleRow = (key: RowKey) => {
     setCollapsedRows((prev) => {
@@ -3003,13 +3263,7 @@ export function AssembleMontageBoard({
                             <th
                               colSpan={sceneColSpan(range.frames.length)}
                               style={{ width: sceneBlockWidthPx(range.frames.length) }}
-                              className={cn(
-                                "border-b border-x border-white/20 bg-white/[0.05] px-2 py-1.5 text-left",
-                                sceneEditor &&
-                                  range.frames.some((f) => f.frame_id === sceneEditor.frameId)
-                                  ? "bg-[rgba(209,254,23,0.08)]"
-                                  : null,
-                              )}
+                              className="border-b border-x border-white/20 bg-white/[0.05] px-2 py-1.5 text-left"
                             >
                               <p className="truncate text-[11px] font-semibold text-white/80">
                                 Сцена · {nums}
@@ -3097,7 +3351,20 @@ export function AssembleMontageBoard({
                               })
                             }
                           />
-                          {range.frames.map((fr, fi) => {
+                          {SCENE_SPAN_ROWS.has(row.key) ? (
+                            <td
+                              colSpan={sceneColSpan(range.frames.length)}
+                              style={{ width: sceneBlockWidthPx(range.frames.length) }}
+                              className="border-l border-white/15 px-2 py-2 align-top"
+                            >
+                              {collapsed ? (
+                                <div className="h-8 rounded-md bg-black/10" />
+                              ) : (
+                                renderSceneSpanCell(row.key, range)
+                              )}
+                            </td>
+                          ) : (
+                          range.frames.map((fr, fi) => {
                             const isMediaRow =
                               row.key.startsWith("image") || row.key.startsWith("video");
                             const mediaUrl =
@@ -3140,85 +3407,8 @@ export function AssembleMontageBoard({
                                   onSave={(text) => handleSaveVoiceover(fr.frame_id, text)}
                                   onDelete={() => void handleDeleteFrame(fr)}
                                 />
-                              ) : row.key === "scene" ? (
-                                (() => {
-                                  const pending = pendingCoverageForFrame(
-                                    pendingOps,
-                                    fr.number,
-                                  );
-                                  const kind =
-                                    pending.kind ??
-                                    (fr.shot_kind === "child" || fr.shot_kind === "parent"
-                                      ? fr.shot_kind
-                                      : "");
-                                  const parentNumber =
-                                    pending.parent_number ?? fr.shot_parent_number ?? null;
-                                  return (
-                                    <SceneSummaryCell
-                                      kindLabel={
-                                        pending.deleted
-                                          ? "на удаление"
-                                          : kind === "child"
-                                            ? `дочерний${parentNumber ? ` → #${parentNumber}` : ""}`
-                                            : kind === "parent"
-                                              ? "родитель"
-                                              : "—"
-                                      }
-                                      template={pending.template ?? fr.shot_template ?? ""}
-                                      plan={(pending.plan ?? fr.shot_plan ?? "").trim()}
-                                      angle={(pending.angle ?? fr.shot_angle ?? "").trim()}
-                                      move={(pending.move ?? fr.shot_move ?? "").trim()}
-                                      stitch={(
-                                        pending.stitch ??
-                                        fr.shot_stitch_label ??
-                                        fr.shot_stitch ??
-                                        ""
-                                      ).trim()}
-                                      light={(pending.light ?? fr.scene_lighting ?? "").trim()}
-                                      setLabel={(pending.set ?? fr.scene_set ?? "").trim()}
-                                      durationSeconds={fr.duration_seconds}
-                                      action={(
-                                        pending.action ??
-                                        fr.shot_action ??
-                                        ""
-                                      ).trim()}
-                                      anchors={
-                                        pending.anchors?.length ?? fr.shot_anchors ?? 0
-                                      }
-                                      anchorText={(
-                                        pending.anchors?.[0]?.["якорь"] ??
-                                        fr.shot_anchor ??
-                                        ""
-                                      ).trim()}
-                                      place={(fr.scene_place || "").trim()}
-                                      characters={(fr.scene_characters || "").trim()}
-                                      pending={Boolean(
-                                        toneForSlot(`${fr.number}:kind`) ||
-                                          toneForSlot(`${fr.number}:plan`) ||
-                                          toneForSlot(`${fr.number}:action`) ||
-                                          toneForSlot(`${fr.number}:angle`) ||
-                                          toneForSlot(`${fr.number}:move`) ||
-                                          toneForSlot(`${fr.number}:stitch`) ||
-                                          toneForSlot(`${fr.number}:light`) ||
-                                          toneForSlot(`${fr.number}:set`) ||
-                                          toneForSlot(`${fr.number}:template`) ||
-                                          toneForSlot(`${fr.number}:anchors`),
-                                      )}
-                                      disabled={applyRunning || applyMutation.isPending}
-                                      active={sceneEditor?.frameId === fr.frame_id}
-                                      onOpen={() =>
-                                        setSceneEditor((prev) =>
-                                          prev?.frameId === fr.frame_id
-                                            ? null
-                                            : {
-                                                frameId: fr.frame_id,
-                                                frameNumber: fr.number,
-                                              },
-                                        )
-                                      }
-                                    />
-                                  );
-                                })()
+                              ) : SCENE_FRAME_ROWS.has(row.key) ? (
+                                renderSceneFrameCell(row.key, fr)
                               ) : row.key === "refs" ? (
                                 <RefsCell fr={fr} onPreview={showPreview} />
                               ) : row.key === "timestamps" ? (
@@ -3404,7 +3594,8 @@ export function AssembleMontageBoard({
                             ) : null}
                             </Fragment>
                             );
-                          })}
+                          })
+                          )}
                           </Fragment>
                           ))}
                           <InsertGutter
@@ -3419,59 +3610,6 @@ export function AssembleMontageBoard({
                             }
                           />
                         </tr>
-                        {row.key === "scene" && !collapsed && sceneEditor ? (
-                          <tr className="border-b border-white/5">
-                            <td
-                              className={cn(
-                                "sticky left-0 z-10 border-r border-white/10 bg-card/95 px-2 py-2 align-top text-[10px] uppercase tracking-wide text-white/35",
-                                ROW_LABEL_CLASS,
-                              )}
-                            >
-                              Кадр / сцена
-                            </td>
-                            {ranges.map((range) => {
-                              const active = range.frames.some(
-                                (f) => f.frame_id === sceneEditor.frameId,
-                              );
-                              return (
-                                <Fragment key={`editor-${range.key}`}>
-                                  <td className={SCENE_GAP_CLASS} />
-                                  {active ? (
-                                    <td
-                                      colSpan={sceneColSpan(range.frames.length)}
-                                      className="p-0 align-top"
-                                    >
-                                      <MontageSceneEditor
-                                        target={sceneEditor}
-                                        projectId={projectId}
-                                        embedded
-                                        disabled={applyRunning || applyMutation.isPending}
-                                        onClose={() => setSceneEditor(null)}
-                                        onQueue={queueSceneOps}
-                                        onDeleteChild={(frameNumber) => {
-                                          queueSceneOps([
-                                            {
-                                              type: "coverage_delete",
-                                              frame_number: frameNumber,
-                                              shot: 1,
-                                            },
-                                          ]);
-                                          setSceneEditor(null);
-                                        }}
-                                      />
-                                    </td>
-                                  ) : (
-                                    <td
-                                      colSpan={sceneColSpan(range.frames.length)}
-                                      className="p-0"
-                                    />
-                                  )}
-                                </Fragment>
-                              );
-                            })}
-                            <td className={SCENE_GAP_CLASS} />
-                          </tr>
-                        ) : null}
                         </Fragment>
                       );
                     })}
