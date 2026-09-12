@@ -107,6 +107,55 @@ PRESETS: dict[str, list[str]] = {
 }
 
 
+# Русское кино 90–00 для kinoframes: ищем фильм на YouTube и берём кадры.
+KINO_PRESETS: dict[str, list[str]] = {
+    "retro": [
+        f"{name} фильм смотреть"
+        for name in (
+            "Брат 1997",
+            "Брат 2",
+            "Ворошиловский стрелок",
+            "Жмурки",
+            "Бумер",
+            "Бумер Фильм второй",
+            "Утомлённые солнцем",
+            "Кавказский пленник 1996",
+            "Вор 1997",
+            "Страна глухих",
+            "Хрусталёв, машину!",
+            "Сибирский цирюльник",
+            "Особенности национальной охоты",
+            "Особенности национальной рыбалки",
+            "Мама не горюй",
+            "Про уродов и людей",
+            "Сёстры 2001",
+            "Война 2002 Балабанов",
+            "Олигарх 2002",
+            "Антикиллер",
+            "Русский ковчег",
+            "Кукушка 2002",
+            "Звезда 2002",
+            "Возвращение 2003",
+            "Ночной дозор",
+            "Дневной дозор",
+            "72 метра",
+            "Свои 2004",
+            "Итальянец 2005",
+            "9 рота",
+            "Питер FM",
+            "Остров 2006",
+            "Изображая жертву",
+            "Груз 200",
+            "Все умрут, а я останусь",
+            "Стиляги 2008",
+            "Морфий Балабанов",
+            "Дикое поле 2008",
+            "Волчок 2009",
+            "Царь 2009",
+        )
+    ],
+}
+
 # Русское кино 90–00: категории ru.wikipedia по годам.
 RUWIKI_PRESETS: dict[str, list[str]] = {
     "retro": [f"Фильмы России {year} года" for year in range(1991, 2010)],
@@ -462,6 +511,37 @@ def search_ruwiki(query: str, want: int) -> list[Hit]:
     return out[:want]
 
 
+def search_kinoframes(query: str, want: int) -> list[Hit]:
+    """Кадры из фильма: превью-раскадровка YouTube (hq1..hq3 — точки таймлайна).
+
+    Главную обложку ролика не берём — это часто афиша, а нужны только кадры.
+    """
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["python3", "-m", "yt_dlp", "--flat-playlist", "--print", "%(id)s", f"ytsearch3:{query}"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"  youtube: {e}", file=sys.stderr)
+        return []
+    ids = [x for x in proc.stdout.split() if len(x) == 11][:3]
+    out: list[Hit] = []
+    for vid in ids:
+        for frame in ("hq1.jpg", "hq2.jpg", "hq3.jpg"):
+            out.append(
+                {
+                    "url": f"https://i.ytimg.com/vi/{vid}/{frame}",
+                    "page": f"https://www.youtube.com/watch?v={vid}",
+                    "title": f"{query} — кадр {frame[2]}",
+                }
+            )
+    return out[:want]
+
+
 def search_civitai(query: str, want: int) -> list[Hit]:
     """Civitai: примеры к стилевым моделям — актуальный срез генерации 2023–2026."""
     out: list[Hit] = []
@@ -580,6 +660,7 @@ SOURCES = {
     "arena": search_arena,
     "civitai": search_civitai,
     "ruwiki": search_ruwiki,
+    "kinoframes": search_kinoframes,
     "openverse": search_openverse,
     "wallhaven": search_wallhaven,
     "pexels": search_pexels,
@@ -690,6 +771,7 @@ def main() -> int:
         "arena": ARENA_PRESETS,
         "civitai": CIVITAI_PRESETS,
         "ruwiki": RUWIKI_PRESETS,
+        "kinoframes": KINO_PRESETS,
     }.get(args.source, PRESETS)
 
     if args.preset == "all":
