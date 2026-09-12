@@ -107,6 +107,61 @@ PRESETS: dict[str, list[str]] = {
 }
 
 
+# Русское кино 90–00: категории ru.wikipedia по годам.
+RUWIKI_PRESETS: dict[str, list[str]] = {
+    "retro": [f"Фильмы России {year} года" for year in range(1991, 2010)],
+}
+
+# Civitai ищет по названиям стилевых моделей — короткие технические термины.
+CIVITAI_PRESETS: dict[str, list[str]] = {
+    "animation": [
+        "anime",
+        "anime screencap",
+        "2d animation",
+        "cartoon",
+        "ghibli",
+        "webtoon",
+        "3d pixar",
+        "cel shading",
+    ],
+    "infographic": [
+        "infographic",
+        "flat vector",
+        "isometric",
+        "line art diagram",
+        "poster design",
+        "minimal vector",
+    ],
+    "photo": [
+        "cinematic photography",
+        "analog film",
+        "portrait photography",
+        "film grain",
+        "kodak portra",
+        "cinestill",
+        "product photography",
+        "street photography",
+    ],
+    "retro": [
+        "vhs",
+        "90s photo",
+        "y2k",
+        "polaroid",
+        "vintage film",
+        "retro anime",
+        "8mm film",
+    ],
+    "misc": [
+        "risograph",
+        "claymation",
+        "pixel art",
+        "paper cut",
+        "blueprint",
+        "collage",
+        "knitted",
+    ],
+}
+
 # На Are.na ищут по коротким «эстетикам», а не по поисковым фразам.
 ARENA_PRESETS: dict[str, list[str]] = {
     "animation": [
@@ -255,19 +310,26 @@ def search_wallhaven(query: str, want: int) -> list[Hit]:
     return out[:want]
 
 
+ARENA_SINCE = "2023-01-01"
+
+
 def search_arena(query: str, want: int) -> list[Hit]:
-    """Are.na: кураторские каналы дизайнеров — картинки отобраны людьми."""
+    """Are.na: кураторские каналы дизайнеров — картинки отобраны людьми.
+
+    Берём только блоки, добавленные после ARENA_SINCE, иначе в выдачу лезут
+    архивы десятилетней давности, а нужен свежий срез.
+    """
     out: list[Hit] = []
     seen: set[str] = set()
     try:
         found = _get_json(
-            "https://api.are.na/v2/search/channels?per=20&q=" + urllib.parse.quote(query)
+            "https://api.are.na/v2/search/channels?per=30&q=" + urllib.parse.quote(query)
         )
     except Exception as e:  # noqa: BLE001
         print(f"  are.na поиск: {e}", file=sys.stderr)
         return out
     channels = [c for c in found.get("channels", []) if (c.get("length") or 0) >= 25]
-    channels.sort(key=lambda c: c.get("length") or 0, reverse=True)
+    channels.sort(key=lambda c: str(c.get("updated_at") or ""), reverse=True)
     # Из одного канала берём немного: иначе вся пачка — один чужой мудборд.
     per_channel = max(4, want // 5)
     for ch in channels[:12]:
@@ -290,6 +352,9 @@ def search_arena(query: str, want: int) -> list[Hit]:
             for b in blocks:
                 if taken >= per_channel:
                     break
+                added = str(b.get("connected_at") or b.get("created_at") or "")
+                if added < ARENA_SINCE:
+                    continue
                 image = (b.get("image") or {}).get("original") or {}
                 url = image.get("url") or ""
                 if not url or url in seen:
@@ -304,6 +369,135 @@ def search_arena(query: str, want: int) -> list[Hit]:
                     }
                 )
             time.sleep(0.4)
+    return out[:want]
+
+
+_WIKI_API = "https://ru.wikipedia.org/w/api.php"
+# Портреты актёров и служебная графика на страницах фильмов — не референс кадра.
+_WIKI_SKIP = ("signature", "logo", "flag", "coat_of_arms", "star", "wikidata", ".svg")
+
+
+def _wiki(params: dict[str, str]):
+    url = _WIKI_API + "?" + urllib.parse.urlencode({**params, "format": "json"})
+    return _get_json(url)
+
+
+def search_ruwiki(query: str, want: int) -> list[Hit]:
+    """Кадры, афиши и обложки фильмов со страниц ru.wikipedia.
+
+    query — название категории, например «Фильмы России 1997 года».
+    """
+    out: list[Hit] = []
+    try:
+        cat = _wiki(
+            {
+                "action": "query",
+                "list": "categorymembers",
+                "cmtitle": f"Категория:{query}",
+                "cmlimit": "60",
+                "cmtype": "page",
+            }
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"  ru.wikipedia: {e}", file=sys.stderr)
+        return out
+    films = [m["title"] for m in cat.get("query", {}).get("categorymembers", [])]
+    for i in range(0, len(films), 10):
+        if len(out) >= want:
+            break
+        batch = films[i : i + 10]
+        try:
+            pages = _wiki(
+                {
+                    "action": "query",
+                    "titles": "|".join(batch),
+                    "prop": "images",
+                    "imlimit": "20",
+                }
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        wanted: list[tuple[str, str]] = []  # (файл, фильм)
+        for p in pages.get("query", {}).get("pages", {}).values():
+            film = p.get("title", "")
+            got = 0
+            for im in p.get("images", []):
+                title = im.get("title", "")
+                low = title.lower()
+                if not low.endswith((".jpg", ".jpeg", ".png")) or any(s in low for s in _WIKI_SKIP):
+                    continue
+                wanted.append((title, film))
+                got += 1
+                if got >= 3:
+                    break
+        for k in range(0, len(wanted), 20):
+            if len(out) >= want:
+                break
+            chunk = wanted[k : k + 20]
+            try:
+                info = _wiki(
+                    {
+                        "action": "query",
+                        "titles": "|".join(t for t, _ in chunk),
+                        "prop": "imageinfo",
+                        "iiprop": "url|size",
+                    }
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            by_title = {t: f for t, f in chunk}
+            for p in info.get("query", {}).get("pages", {}).values():
+                ii = (p.get("imageinfo") or [{}])[0]
+                url = ii.get("url")
+                if not url or (ii.get("width") or 0) < 400:
+                    continue
+                out.append(
+                    {
+                        "url": url,
+                        "page": f"https://ru.wikipedia.org/wiki/{urllib.parse.quote(by_title.get(p.get('title', ''), ''))}",
+                        "title": f"{by_title.get(p.get('title', ''), '')} — {p.get('title', '')[5:]}",
+                    }
+                )
+            time.sleep(0.3)
+    return out[:want]
+
+
+def search_civitai(query: str, want: int) -> list[Hit]:
+    """Civitai: примеры к стилевым моделям — актуальный срез генерации 2023–2026."""
+    out: list[Hit] = []
+    try:
+        data = _get_json(
+            "https://civitai.com/api/v1/models?"
+            + urllib.parse.urlencode(
+                {"query": query, "sort": "Most Downloaded", "limit": 12, "nsfw": "false"}
+            )
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"  civitai: {e}", file=sys.stderr)
+        return out
+    per_model = max(3, want // 6)
+    for model in data.get("items", []):
+        if len(out) >= want:
+            break
+        versions = model.get("modelVersions") or []
+        taken = 0
+        for version in versions[:2]:
+            for img in version.get("images") or []:
+                if taken >= per_model or len(out) >= want:
+                    break
+                if img.get("type") != "image" or (img.get("nsfwLevel") or 0) > 1:
+                    continue
+                url = img.get("url") or ""
+                if not url:
+                    continue
+                taken += 1
+                out.append(
+                    {
+                        "url": url,
+                        "page": f"https://civitai.com/models/{model.get('id')}",
+                        "title": f"{model.get('name', '')[:50]} ({query})",
+                    }
+                )
     return out[:want]
 
 
@@ -384,6 +578,8 @@ def search_serper(query: str, want: int) -> list[Hit]:
 SOURCES = {
     "bing": search_bing,
     "arena": search_arena,
+    "civitai": search_civitai,
+    "ruwiki": search_ruwiki,
     "openverse": search_openverse,
     "wallhaven": search_wallhaven,
     "pexels": search_pexels,
@@ -490,7 +686,11 @@ def main() -> int:
     ap.add_argument("--max-side", type=int, default=1600, help="длинная сторона после сжатия")
     args = ap.parse_args()
 
-    presets = ARENA_PRESETS if args.source == "arena" else PRESETS
+    presets = {
+        "arena": ARENA_PRESETS,
+        "civitai": CIVITAI_PRESETS,
+        "ruwiki": RUWIKI_PRESETS,
+    }.get(args.source, PRESETS)
 
     if args.preset == "all":
         total = 0
