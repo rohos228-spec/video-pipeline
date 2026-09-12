@@ -127,6 +127,39 @@ async def test_montage_board_prefers_db_characters_over_excel(
 
 
 @pytest.mark.asyncio
+async def test_montage_board_ships_scene_row_choices(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    """Строки сцены рисуются из одной выдачи доски — без запроса на кадр."""
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="vo",
+        status="planned",
+    )
+    session.add_all([montage_project, fr])
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    assert "ОБЩИЙ" in board["coverage_plan_choices"]
+    assert "3/4" in board["coverage_angle_choices"]
+    assert "панорама" in board["coverage_move_choices"]
+    assert "контровой" in board["coverage_light_choices"]
+    stitches = {row["id"]: row["label"] for row in board["coverage_stitch_choices"]}
+    assert stitches["cut_on_action"] == "по действию"
+    templates = {t["id"]: t for t in board["coverage_template_choices"]}
+    assert templates and all(t["name"] for t in templates.values())
+    assert templates["T5"]["plans"]
+    row = board["frames"][0]
+    # Битов у кадра нет — якорь выводится из его закадра, править можно сразу.
+    assert [r["якорь"] for r in row["shot_anchor_rows"]] == ["vo"]
+    assert row["scene_anchor_rows"] == []
+    assert row["anchor_can_add"] is True
+    assert row["vo_cell_full"] == "vo"
+
+
+@pytest.mark.asyncio
 async def test_montage_board_hides_character_refs_on_shot_children(
     montage_project: Project,
     session: AsyncSession,

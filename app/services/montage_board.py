@@ -34,6 +34,7 @@ from app.services.montage_coverage_ops import (
     COVERAGE_MOVE_CHOICES,
     COVERAGE_PLAN_CHOICES,
     canonical_stitch,
+    stitch_choices_for_ui,
     stitch_label,
 )
 from app.services.node_groups import canvas_has_script_frames_qc
@@ -772,6 +773,13 @@ def _empty_coverage_fields() -> dict[str, Any]:
         "shot_template": "",
         "shot_anchors": 0,
         "shot_anchor": "",
+        "shot_anchor_change": "",
+        "shot_anchor_main": False,
+        "shot_anchor_found": False,
+        "shot_anchor_rows": [],
+        "anchor_can_add": False,
+        "scene_anchor_rows": [],
+        "vo_cell_full": "",
         "shot_angle": "",
         "shot_move": "",
         "shot_stitch": "",
@@ -780,6 +788,15 @@ def _empty_coverage_fields() -> dict[str, Any]:
         "scene_set": "",
         "scene_characters": "",
         "scene_lighting": "",
+        "scene_id": "",
+        "scene_no": "",
+        "scene_props": "",
+        "scene_accent": "",
+        "scene_bg": "",
+        "scene_sense": "",
+        "scene_visual_type": "",
+        "scene_feature": "",
+        "scene_template_auto": "",
         "vo_scene_number": None,
         "vo_scene_size": 0,
     }
@@ -790,9 +807,8 @@ def _coverage_fields_for_frames(
     *,
     enabled: bool,
 ) -> dict[int, dict[str, Any]]:
-    empty = _empty_coverage_fields()
     if not enabled:
-        return {fr.number: dict(empty) for fr in frames}
+        return {fr.number: _empty_coverage_fields() for fr in frames}
     from app.services.montage_scene_editor import frame_board_scene_cell
 
     out: dict[int, dict[str, Any]] = {}
@@ -802,26 +818,23 @@ def _coverage_fields_for_frames(
         stitch = canonical_stitch(
             _shot_cs_kadry(fr, "переход", "тип_стыка", "stitch", "transition")
         )
-        out[fr.number] = {
-            "shot_plan": _plan_for_frame(fr),
-            "shot_action": _action_for_frame(fr),
-            "shot_kind": kind,
-            "shot_parent_number": parent_number,
-            "shot_parent_id": parent_id,
-            "shot_template": _template_for_frame(fr),
-            "shot_anchors": extra["shot_anchors"],
-            "shot_anchor": extra["shot_anchor"],
-            "shot_angle": _shot_cs_kadry(fr, "ракурс", "angle"),
-            "shot_move": _shot_cs_kadry(fr, "движение", "move"),
-            "shot_stitch": stitch,
-            "shot_stitch_label": stitch_label(stitch),
-            "scene_place": extra["scene_place"],
-            "scene_set": extra["scene_set"],
-            "scene_characters": extra["scene_characters"],
-            "scene_lighting": extra.get("scene_lighting") or "",
-            "vo_scene_number": extra.get("vo_scene_number"),
-            "vo_scene_size": extra.get("vo_scene_size") or 0,
-        }
+        row = _empty_coverage_fields()
+        row.update(extra)
+        row.update(
+            {
+                "shot_plan": _plan_for_frame(fr),
+                "shot_action": _action_for_frame(fr),
+                "shot_kind": kind,
+                "shot_parent_number": parent_number,
+                "shot_parent_id": parent_id,
+                "shot_template": _template_for_frame(fr),
+                "shot_angle": _shot_cs_kadry(fr, "ракурс", "angle"),
+                "shot_move": _shot_cs_kadry(fr, "движение", "move"),
+                "shot_stitch": stitch,
+                "shot_stitch_label": stitch_label(stitch),
+            }
+        )
+        out[fr.number] = row
     return out
 
 
@@ -1055,6 +1068,8 @@ async def build_montage_board(
             }
         )
 
+    from app.services.shot_templates import template_choices_for_ui
+
     return {
         "frames": rows,
         "frame_count": len(rows),
@@ -1064,4 +1079,6 @@ async def build_montage_board(
         "coverage_angle_choices": list(COVERAGE_ANGLE_CHOICES),
         "coverage_move_choices": list(COVERAGE_MOVE_CHOICES),
         "coverage_light_choices": list(COVERAGE_LIGHT_CHOICES),
+        "coverage_stitch_choices": stitch_choices_for_ui(),
+        "coverage_template_choices": template_choices_for_ui(),
     }

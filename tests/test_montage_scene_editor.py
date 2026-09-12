@@ -348,6 +348,40 @@ def test_frame_board_scene_cell_is_this_shot_not_whole_cell() -> None:
     assert cell["vo_scene_size"] == 2
 
 
+def test_frame_board_scene_cell_carries_inline_row_payload() -> None:
+    """Строки сцены на доске правятся без запроса за карточкой кадра."""
+    parent, child = _group(41)
+    frames = [parent, child]
+    cell = frame_board_scene_cell(frames, child)
+
+    # Якорь этого шота правится инлайном: строка + «было → стало» + позиция.
+    assert [row["якорь"] for row in cell["shot_anchor_rows"]] == [
+        "Достал из портфеля папку"
+    ]
+    assert cell["shot_anchor_change"] == cell["shot_anchor_rows"][0]["изменение"]
+    assert cell["shot_anchor_found"] is True
+    # Мультишот: якоря нельзя добавлять шоту, но соседние биты ячейки видны,
+    # иначе правка одного кадра стёрла бы разметку остальных.
+    assert cell["anchor_can_add"] is False
+    assert [row["якорь"] for row in cell["scene_anchor_rows"]] == [
+        "Он вошёл в кабинет",
+        "Достал из портфеля папку",
+    ]
+    assert cell["scene_anchor_rows"][0]["cell_index"] == 0
+    assert cell["vo_cell_full"] == VO_CELL
+
+    # Общее по ячейке — для строк «Сцена (ячейка)» / «Свет» / «Формат сцены».
+    assert cell["scene_lighting"] == "холодный верхний свет"
+    assert cell["scene_sense"] == "вход в кабинет и первое дело"
+    assert cell["scene_props"] == "папка, портфель"
+    assert cell["scene_id"] == "scene_01"
+    assert cell["scene_template_auto"]
+
+    parent_cell = frame_board_scene_cell(frames, parent)
+    assert parent_cell["scene_anchor_rows"] == cell["scene_anchor_rows"]
+    assert parent_cell["scene_template_auto"] == cell["scene_template_auto"]
+
+
 # --- формат сцены -------------------------------------------------------
 
 
