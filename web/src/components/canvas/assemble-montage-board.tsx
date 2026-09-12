@@ -2922,6 +2922,7 @@ export function AssembleMontageBoard({
           frameId={fr.frame_id}
           frameNumber={fr.number}
           frameText={voiceoverForFrame(fr)}
+          cellText={fr.vo_cell_full || voiceoverForFrame(fr)}
           rows={rows}
           cellRows={fr.scene_anchor_rows ?? []}
           canAdd={canAdd}
@@ -3015,30 +3016,28 @@ export function AssembleMontageBoard({
                   ? `Обмен ${swapPick.kind === "image" ? "картинок" : "видео"}: выбран #${swapPick.frameNumber}.${swapPick.shot} — нажмите ↔ на другом слоте (Esc — отмена)`
                   : "Кадры ролика — ↔ на двух слотах меняет местами картинки или видео"}
               </p>
-              {(highlights.length > 0 ||
-                failedHighlights.length > 0 ||
-                pendingOnlyCount > 0) && (
-                <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
-                  {highlights.length > 0 && (
-                    <span>
-                      <span className="mr-1 inline-block h-2 w-2 rounded-full bg-emerald-400/80" />
-                      применено {highlights.length}
-                    </span>
-                  )}
-                  {pendingOnlyCount > 0 && (
-                    <span>
-                      <span className="mr-1 inline-block h-2 w-2 rounded-full bg-amber-400/80" />
-                      в очереди {pendingOnlyCount}
-                    </span>
-                  )}
-                  {failedHighlights.length > 0 && (
-                    <span>
-                      <span className="mr-1 inline-block h-2 w-2 rounded-full bg-rose-500/80" />
-                      ошибка {failedHighlights.length}
-                    </span>
-                  )}
-                </p>
-              )}
+              {/* Строка счётчиков всегда держит высоту: её появление на первой
+                  правке сдвигало доску вниз и клик уезжал с кнопки. */}
+              <p className="mt-1 flex min-h-[1rem] flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                {highlights.length > 0 && (
+                  <span>
+                    <span className="mr-1 inline-block h-2 w-2 rounded-full bg-emerald-400/80" />
+                    применено {highlights.length}
+                  </span>
+                )}
+                {pendingOnlyCount > 0 && (
+                  <span>
+                    <span className="mr-1 inline-block h-2 w-2 rounded-full bg-amber-400/80" />
+                    в очереди {pendingOnlyCount}
+                  </span>
+                )}
+                {failedHighlights.length > 0 && (
+                  <span>
+                    <span className="mr-1 inline-block h-2 w-2 rounded-full bg-rose-500/80" />
+                    ошибка {failedHighlights.length}
+                  </span>
+                )}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -3435,8 +3434,14 @@ export function AssembleMontageBoard({
                                 isMediaRow || row.key === "voiceover"
                                   ? undefined
                                   : {
-                                      contentVisibility: "auto",
-                                      containIntrinsicSize: "240px 180px",
+                                                  contentVisibility: "auto",
+                                                  // `auto` = помнить последний
+                                                  // размер клетки: иначе отрисовка
+                                                  // соседней строки меняла 180px
+                                                  // заглушку на реальную высоту и
+                                                  // доска дёргалась под курсором.
+                                                  containIntrinsicSize:
+                                                    "auto 240px auto 180px",
                                     }
                               }
                             >

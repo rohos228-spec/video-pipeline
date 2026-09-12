@@ -68,15 +68,15 @@ function Chip({
   );
 }
 
+/**
+ * Метка «в очереди» — точка поверх клетки, а не строка текста: строка добавляла
+ * клетке высоту в тот момент, когда правка уходила в очередь, и кнопка под
+ * курсором уезжала из-под mouseup. Счётчик очереди есть в шапке доски.
+ */
 function PendingMark({ show }: { show: boolean }) {
   if (!show) return null;
   return (
-    <span
-      className="mt-1 block text-[9px] uppercase tracking-wide text-amber-300/80"
-      title="Правка в очереди — примените кнопкой «Применить правки»"
-    >
-      в очереди
-    </span>
+    <span className="pointer-events-none absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-amber-300/80" />
   );
 }
 
@@ -99,7 +99,7 @@ export function ChipsCell({
   const items = useMemo(() => toChipChoices(choices, value), [choices, value]);
   const current = (value || "").trim();
   return (
-    <div className={cn("rounded-md p-0.5", pending && "bg-amber-500/10")}>
+    <div className={cn("relative rounded-md p-0.5", pending && "bg-amber-500/10")}>
       <div className="flex flex-wrap gap-1">
         {items.map((c) => (
           <Chip
@@ -146,7 +146,7 @@ export function RoleCell({
     parentChoices[0]?.number ??
     null;
   return (
-    <div className={cn("rounded-md p-0.5", pending && "bg-amber-500/10")}>
+    <div className={cn("relative rounded-md p-0.5", pending && "bg-amber-500/10")}>
       <div className="flex flex-wrap items-center gap-1">
         <Chip
           active={kind === "parent"}
@@ -337,7 +337,7 @@ export function ActionCell({
   };
 
   return (
-    <div className={cn("rounded-md p-0.5", pending && "bg-amber-500/10")}>
+    <div className={cn("relative rounded-md p-0.5", pending && "bg-amber-500/10")}>
       <textarea
         className={cn(FIELD, "min-h-[4.5rem] resize-y")}
         value={text}
@@ -434,6 +434,7 @@ export function AnchorCell({
   frameId,
   frameNumber,
   frameText,
+  cellText,
   rows,
   cellRows,
   canAdd,
@@ -445,6 +446,7 @@ export function AnchorCell({
   frameId: number;
   frameNumber: number;
   frameText: string;
+  cellText: string;
   rows: MontageAnchorRow[];
   cellRows: MontageAnchorRow[];
   canAdd: boolean;
@@ -456,10 +458,18 @@ export function AnchorCell({
   const { ask, busy, clear, kind, variants } = useSceneVariants(projectId, frameId);
   const savedRef = useRef(JSON.stringify(rows));
 
+  // Сравнение по значению, а не по ссылке: `rows` — новый массив на каждый
+  // ре-рендер доски, и по ссылке дописанная строка якоря тут же стиралась.
+  // Пустую строку очередь вернуть не может — её и держим сами.
+  const rowsKey = JSON.stringify(rows);
   useEffect(() => {
-    setDraft(rows);
-    savedRef.current = JSON.stringify(rows);
-  }, [rows, frameId]);
+    const next = JSON.parse(rowsKey) as MontageAnchorRow[];
+    setDraft((prev) => {
+      const typing = prev.filter((r) => !(r["якорь"] || "").trim());
+      return typing.length ? [...next, ...typing] : next;
+    });
+    savedRef.current = rowsKey;
+  }, [rowsKey, frameId]);
 
   const commit = (next: MontageAnchorRow[]) => {
     const key = JSON.stringify(next);
@@ -473,21 +483,31 @@ export function AnchorCell({
   const patch = (i: number, field: "якорь" | "изменение", val: string) =>
     setDraft((prev) => prev.map((r, j) => (j === i ? { ...r, [field]: val } : r)));
 
-  const lower = (frameText || "").toLowerCase();
+  // Дописанный якорь режет ячейку, а не текущий кадр: красным — только то,
+  // чего нет в закадре ЯЧЕЙКИ (apply на таком якоре и падает).
+  const cellLower = (cellText || frameText || "").toLowerCase();
+  const frameLower = (frameText || "").toLowerCase();
 
   return (
-    <div className={cn("rounded-md p-0.5", pending && "bg-amber-500/10")}>
+    <div className={cn("relative rounded-md p-0.5", pending && "bg-amber-500/10")}>
       {draft.length === 0 ? (
         <p className={HINT}>якоря нет — ячейка идёт одним куском</p>
       ) : null}
       <ul className="space-y-1">
         {draft.map((row, i) => {
           const anchor = (row["якорь"] || "").trim();
-          const found = !anchor || lower.includes(anchor.toLowerCase());
+          const found = !anchor || cellLower.includes(anchor.toLowerCase());
+          const ownFrame = !anchor || frameLower.includes(anchor.toLowerCase());
           return (
             <li key={i} className="flex items-start gap-1">
               <span
-                title={row["главный"] ? "Главный бит ячейки" : "Бит кадра"}
+                title={
+                  row["главный"]
+                    ? "Главный бит ячейки"
+                    : ownFrame
+                      ? "Бит кадра"
+                      : "Режет ячейку — станет отдельным шотом"
+                }
                 className={cn(
                   "mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full",
                   row["главный"] ? "" : "border border-white/25",
@@ -496,9 +516,16 @@ export function AnchorCell({
               />
               <div className="min-w-0 flex-1">
                 <input
-                  className={cn(FIELD, !found && "border-rose-400/60 text-rose-200")}
+                  className={cn(
+                    FIELD,
+                    !found && "border-rose-400/60 text-rose-200",
+                    found && !ownFrame && "border-dashed border-white/25",
+                  )}
                   value={row["якорь"] || ""}
                   disabled={disabled}
+                  title={
+                    found ? undefined : "Такого куска нет в закадре ячейки — правка не применится"
+                  }
                   placeholder="дословный кусок закадра кадра"
                   onChange={(e) => patch(i, "якорь", e.target.value)}
                   onBlur={() => commit(draft)}
@@ -540,6 +567,7 @@ export function AnchorCell({
         <button
           type="button"
           disabled={disabled}
+          aria-label="Дописать якорь"
           title="Дописать якорь — по нему ячейка режется на ещё один шот"
           onClick={() =>
             setDraft((prev) => [
@@ -618,7 +646,7 @@ export function TemplateCell({
   const current = items.find((c) => c.id === value);
 
   return (
-    <div className={cn("rounded-md p-0.5", pending && "bg-amber-500/10")}>
+    <div className={cn("relative rounded-md p-0.5", pending && "bg-amber-500/10")}>
       <div className="flex flex-wrap items-center gap-1">
         {items.map((c) => (
           <Chip
@@ -748,7 +776,12 @@ export function SceneInfoCell({
         <MetaChip label="место" value={head.scene_place} />
         <MetaChip label="персонажи" value={head.scene_characters} />
       </div>
-      <div className={cn("flex items-center gap-2", setPending && "rounded-md bg-amber-500/10 p-0.5")}>
+      <div
+        className={cn(
+          "relative flex items-center gap-2",
+          setPending && "rounded-md bg-amber-500/10 p-0.5",
+        )}
+      >
         <span className="shrink-0 text-[10px] uppercase tracking-wide text-white/35">
           набор
         </span>
