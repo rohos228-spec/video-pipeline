@@ -174,6 +174,73 @@ def public_board_meta(board: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+"""Текстовые поля coverage-операций, которые обязаны дожить до apply.
+
+Строки сцены на доске (крупность / ракурс / движение / стык / свет / набор)
+пишут значение в саму операцию: потерянное поле = apply с пустым значением.
+"""
+COVERAGE_TEXT_FIELDS = (
+    "plan",
+    "action",
+    "kind",
+    "prompt",
+    "correction",
+    "template",
+    "angle",
+    "move",
+    "stitch",
+    "light",
+    "set",
+)
+
+
+def normalize_queue_ops(raw_ops: Any) -> list[dict[str, Any]]:
+    """Очередь от UI → только известные типы, кадры и поля правок."""
+    cleaned: list[dict[str, Any]] = []
+    for raw in raw_ops or []:
+        if not isinstance(raw, dict):
+            continue
+        op_type = str(raw.get("type") or "")
+        try:
+            frame_number = int(raw.get("frame_number"))
+        except (TypeError, ValueError):
+            continue
+        if frame_number < 1:
+            continue
+        item: dict[str, Any] = {
+            "type": op_type,
+            "frame_number": frame_number,
+            "shot": 2 if raw.get("shot") == 2 else 1,
+        }
+        if op_type.startswith(("image_", "video_")):
+            for key in ("prompt", "correction"):
+                val = raw.get(key)
+                if isinstance(val, str) and val.strip():
+                    item[key] = val
+            cleaned.append(item)
+            continue
+        if not op_type.startswith("coverage_"):
+            continue
+        for key in COVERAGE_TEXT_FIELDS:
+            val = raw.get(key)
+            if isinstance(val, str) and val.strip():
+                item[key] = val.strip()
+        if isinstance(raw.get("anchors"), list):
+            from app.services.montage_scene_editor import normalize_anchor_rows
+
+            rows = normalize_anchor_rows(raw["anchors"])
+            if rows:
+                item["anchors"] = rows
+        parent_raw = raw.get("parent_number")
+        if parent_raw not in (None, ""):
+            try:
+                item["parent_number"] = int(parent_raw)
+            except (TypeError, ValueError):
+                pass
+        cleaned.append(item)
+    return cleaned
+
+
 def should_accept_queue_save(
     *,
     cleaned: list[dict[str, Any]],

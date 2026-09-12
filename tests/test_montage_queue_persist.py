@@ -6,6 +6,7 @@ from app.services.montage_board_meta import (
     add_highlight,
     clear_failed_highlight,
     montage_meta,
+    normalize_queue_ops,
     set_montage_meta,
     should_accept_queue_save,
     slot_key_from_op,
@@ -56,6 +57,50 @@ def test_set_montage_meta_pending_ops_roundtrip() -> None:
     set_montage_meta(p, board)
     again = montage_meta(p)
     assert again["pending_ops"][0]["frame_number"] == 42
+
+
+def test_normalize_queue_keeps_all_scene_row_fields() -> None:
+    """Строки сцены: ракурс / движение / стык / свет / набор доживают до apply."""
+    cleaned = normalize_queue_ops(
+        [
+            {"type": "coverage_angle", "frame_number": 2, "shot": 1, "angle": "с плеча"},
+            {"type": "coverage_move", "frame_number": 2, "shot": 1, "move": "наезд"},
+            {
+                "type": "coverage_stitch",
+                "frame_number": 2,
+                "shot": 1,
+                "stitch": "cut_on_action",
+            },
+            {"type": "coverage_light", "frame_number": 1, "shot": 1, "light": "контровой"},
+            {"type": "coverage_set", "frame_number": 1, "shot": 1, "set": "кабинет"},
+            {"type": "coverage_plan", "frame_number": 1, "shot": 1, "plan": "ДАЛЬНИЙ"},
+            {"type": "coverage_action", "frame_number": 1, "shot": 1, "action": "вошёл"},
+            {
+                "type": "coverage_anchors",
+                "frame_number": 1,
+                "shot": 1,
+                "anchors": [{"якорь": "В сентябре", "изменение": "было → стало"}],
+            },
+            {"type": "coverage_kind", "frame_number": 3, "shot": 1, "kind": "child",
+             "parent_number": "1"},
+            {"type": "image_regen", "frame_number": 4, "shot": 2, "prompt": "p"},
+            {"type": "unknown_op", "frame_number": 5, "shot": 1},
+            {"type": "coverage_plan", "frame_number": 0, "shot": 1, "plan": "ОБЩИЙ"},
+        ]
+    )
+    by_type = {op["type"]: op for op in cleaned}
+    assert by_type["coverage_angle"]["angle"] == "с плеча"
+    assert by_type["coverage_move"]["move"] == "наезд"
+    assert by_type["coverage_stitch"]["stitch"] == "cut_on_action"
+    assert by_type["coverage_light"]["light"] == "контровой"
+    assert by_type["coverage_set"]["set"] == "кабинет"
+    assert by_type["coverage_plan"]["plan"] == "ДАЛЬНИЙ"
+    assert by_type["coverage_anchors"]["anchors"][0]["главный"] is True
+    assert by_type["coverage_kind"]["parent_number"] == 1
+    assert by_type["image_regen"]["shot"] == 2
+    # Неизвестный тип и кадр < 1 отбрасываются.
+    assert "unknown_op" not in by_type
+    assert len(cleaned) == 10
 
 
 def test_refuse_empty_queue_overwrite() -> None:

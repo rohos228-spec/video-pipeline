@@ -946,52 +946,14 @@ async def montage_board_save_queue(
     from app.services.montage_board_apply_job import get_apply_job
     from app.services.montage_board_meta import (
         montage_meta,
+        normalize_queue_ops,
         public_board_meta,
         set_montage_meta,
         should_accept_queue_save,
     )
 
     p = _project_or_404(await session.get(Project, project_id))
-    ops = list(body.get("pending_ops") or [])
-    # Нормализуем: только известные типы + валидный frame.
-    cleaned: list[dict] = []
-    for raw in ops:
-        if not isinstance(raw, dict):
-            continue
-        t = str(raw.get("type") or "")
-        try:
-            fr = int(raw.get("frame_number"))
-        except (TypeError, ValueError):
-            continue
-        if fr < 1:
-            continue
-        shot = 2 if raw.get("shot") == 2 else 1
-        item: dict = {"type": t, "frame_number": fr, "shot": shot}
-        if t.startswith(("image_", "video_")):
-            if isinstance(raw.get("prompt"), str) and raw["prompt"].strip():
-                item["prompt"] = raw["prompt"]
-            if isinstance(raw.get("correction"), str) and raw["correction"].strip():
-                item["correction"] = raw["correction"]
-            cleaned.append(item)
-            continue
-        if t.startswith("coverage_"):
-            for key in ("plan", "action", "kind", "prompt", "correction", "template"):
-                val = raw.get(key)
-                if isinstance(val, str) and val.strip():
-                    item[key] = val.strip()
-            if isinstance(raw.get("anchors"), list):
-                from app.services.montage_scene_editor import normalize_anchor_rows
-
-                rows = normalize_anchor_rows(raw["anchors"])
-                if rows:
-                    item["anchors"] = rows
-            parent_raw = raw.get("parent_number")
-            if parent_raw not in (None, ""):
-                try:
-                    item["parent_number"] = int(parent_raw)
-                except (TypeError, ValueError):
-                    pass
-            cleaned.append(item)
+    cleaned = normalize_queue_ops(body.get("pending_ops"))
 
     board = montage_meta(p)
     existing = list(board.get("pending_ops") or [])
