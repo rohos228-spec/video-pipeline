@@ -107,6 +107,55 @@ PRESETS: dict[str, list[str]] = {
 }
 
 
+# На Are.na ищут по коротким «эстетикам», а не по поисковым фразам.
+ARENA_PRESETS: dict[str, list[str]] = {
+    "animation": [
+        "anime",
+        "animation stills",
+        "cel animation",
+        "character design",
+        "cartoon",
+        "motion graphics",
+        "storyboard",
+    ],
+    "infographic": [
+        "infographic",
+        "diagrams",
+        "data visualization",
+        "editorial layout",
+        "charts",
+        "instructional graphics",
+        "packaging design",
+    ],
+    "photo": [
+        "film stills",
+        "cinematography",
+        "portrait photography",
+        "color grading",
+        "photography",
+        "35mm",
+        "studio lighting",
+    ],
+    "retro": [
+        "y2k",
+        "90s",
+        "vhs",
+        "analog photography",
+        "retro graphics",
+        "2000s web",
+        "vintage advertising",
+    ],
+    "misc": [
+        "risograph",
+        "collage",
+        "brutalist design",
+        "pixel art",
+        "poster design",
+        "typography poster",
+    ],
+}
+
+
 def _get_json(url: str, *, headers: dict[str, str] | None = None, data: bytes | None = None):
     req = urllib.request.Request(url, headers={"User-Agent": UA, **(headers or {})}, data=data)
     with urllib.request.urlopen(req, timeout=40) as r:
@@ -206,6 +255,58 @@ def search_wallhaven(query: str, want: int) -> list[Hit]:
     return out[:want]
 
 
+def search_arena(query: str, want: int) -> list[Hit]:
+    """Are.na: кураторские каналы дизайнеров — картинки отобраны людьми."""
+    out: list[Hit] = []
+    seen: set[str] = set()
+    try:
+        found = _get_json(
+            "https://api.are.na/v2/search/channels?per=20&q=" + urllib.parse.quote(query)
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"  are.na поиск: {e}", file=sys.stderr)
+        return out
+    channels = [c for c in found.get("channels", []) if (c.get("length") or 0) >= 25]
+    channels.sort(key=lambda c: c.get("length") or 0, reverse=True)
+    # Из одного канала берём немного: иначе вся пачка — один чужой мудборд.
+    per_channel = max(4, want // 5)
+    for ch in channels[:12]:
+        if len(out) >= want:
+            break
+        slug = ch.get("slug")
+        taken = 0
+        for page in range(1, 4):
+            if len(out) >= want or taken >= per_channel:
+                break
+            try:
+                data = _get_json(
+                    f"https://api.are.na/v2/channels/{slug}/contents?per=60&page={page}&direction=desc"
+                )
+            except Exception:  # noqa: BLE001 — приватный или удалённый канал
+                break
+            blocks = data.get("contents") or []
+            if not blocks:
+                break
+            for b in blocks:
+                if taken >= per_channel:
+                    break
+                image = (b.get("image") or {}).get("original") or {}
+                url = image.get("url") or ""
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                taken += 1
+                out.append(
+                    {
+                        "url": url,
+                        "page": f"https://are.na/block/{b.get('id')}",
+                        "title": f"{ch.get('title', '')}: {(b.get('title') or '')[:60]}",
+                    }
+                )
+            time.sleep(0.4)
+    return out[:want]
+
+
 def search_pexels(query: str, want: int) -> list[Hit]:
     key = _need_key("PEXELS_API_KEY")
     url = f"https://api.pexels.com/v1/search?query={urllib.parse.quote(query)}&per_page={min(want, 80)}"
@@ -282,6 +383,7 @@ def search_serper(query: str, want: int) -> list[Hit]:
 
 SOURCES = {
     "bing": search_bing,
+    "arena": search_arena,
     "openverse": search_openverse,
     "wallhaven": search_wallhaven,
     "pexels": search_pexels,
@@ -388,10 +490,12 @@ def main() -> int:
     ap.add_argument("--max-side", type=int, default=1600, help="длинная сторона после сжатия")
     args = ap.parse_args()
 
+    presets = ARENA_PRESETS if args.source == "arena" else PRESETS
+
     if args.preset == "all":
         total = 0
-        per_cat = max(1, args.limit // len(PRESETS))
-        for cat, queries in PRESETS.items():
+        per_cat = max(1, args.limit // len(presets))
+        for cat, queries in presets.items():
             print(f"\n=== {cat} ===")
             total += fetch(
                 queries,
@@ -405,7 +509,7 @@ def main() -> int:
         print(f"\nВсего: {total}")
         return 0 if total else 1
 
-    queries = args.query or PRESETS.get(args.preset or "", [])
+    queries = args.query or presets.get(args.preset or "", [])
     if not queries:
         ap.error("нужен --query или --preset")
     saved = fetch(
