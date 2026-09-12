@@ -572,6 +572,69 @@ async def test_coverage_anchors_insert_shifts_queue_numbers(
 
 
 @pytest.mark.asyncio
+async def test_coverage_anchors_out_of_order_rejected(
+    session: AsyncSession, project: Project
+) -> None:
+    """Якорь не по порядку молча ломал нарезку — теперь честная ошибка."""
+    parent, child = _group(project.id)
+    session.add_all([project, parent, child])
+    await session.flush()
+
+    with pytest.raises(RuntimeError, match="не найден по порядку"):
+        await apply_coverage_op(
+            session,
+            project,
+            {
+                "type": "coverage_anchors",
+                "frame_number": 1,
+                "anchors": [
+                    {"якорь": "Открыл её на первой странице"},
+                    {"якорь": "Он вошёл в кабинет"},
+                ],
+            },
+        )
+    frames = await _frames(session, project)
+    # Ни текст кадров, ни биты не тронуты.
+    assert frames[0].voiceover_text == "Он вошёл в кабинет следователя."
+    assert [b["якорь"] for b in (frames[0].attrs or {})["биты"]] == [
+        "Он вошёл в кабинет",
+        "Достал из портфеля папку",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_coverage_anchors_fewer_parts_keeps_frame_texts(
+    session: AsyncSession, project: Project
+) -> None:
+    """Кусков меньше, чем кадров: режем — соседи получили бы чужой текст."""
+    parent, child = _group(project.id)
+    session.add_all([project, parent, child])
+    await session.flush()
+    before = [child.voiceover_text, parent.voiceover_text]
+
+    result = await apply_coverage_op(
+        session,
+        project,
+        {
+            "type": "coverage_anchors",
+            "frame_number": 1,
+            "anchors": [{"якорь": "Он вошёл в кабинет", "изменение": "снаружи → внутри"}],
+        },
+    )
+    report = result["report"]
+    assert report["recut"] is False
+    assert report["assigned"] == 0
+    assert report["missing_anchors"] == 1
+
+    frames = await _frames(session, project)
+    assert [frames[1].voiceover_text, frames[0].voiceover_text] == before
+    # Сам якорь при этом сохранён — оператор правил именно его.
+    bits = (frames[0].attrs or {})["биты"]
+    assert [b["якорь"] for b in bits] == ["Он вошёл в кабинет"]
+    assert bits[0]["изменение"] == "снаружи → внутри"
+
+
+@pytest.mark.asyncio
 async def test_coverage_anchors_empty_rejected(
     session: AsyncSession, project: Project
 ) -> None:

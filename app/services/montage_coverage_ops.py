@@ -536,6 +536,7 @@ async def apply_coverage_anchors(
     правленого кадра: «дописал якорь» и есть разбивка, отдельной кнопки нет.
     """
     from app.services.montage_scene_editor import (
+        anchor_positions,
         cell_full_text,
         normalize_anchor_rows,
         scene_group,
@@ -549,7 +550,15 @@ async def apply_coverage_anchors(
     full = cell_full_text(parent, members)
     if not full:
         raise RuntimeError("у ячейки нет закадрового текста")
-    parts = split_vo_by_anchors(full, [row["якорь"] for row in rows])
+    texts = [row["якорь"] for row in rows]
+    lost = [texts[i] for i, pos in enumerate(anchor_positions(full, texts)) if pos < 0]
+    if lost:
+        # Иначе нарезка молча теряет точки реза и кадры дублируют текст.
+        raise RuntimeError(
+            "якорь не найден по порядку в закадре ячейки: "
+            + "; ".join(f"«{x}»" for x in lost)
+        )
+    parts = split_vo_by_anchors(full, texts)
     if not parts:
         raise RuntimeError("якоря не нашлись в тексте ячейки")
 
@@ -558,6 +567,27 @@ async def apply_coverage_anchors(
     attrs["vo_cell_full"] = full
     parent.attrs = attrs
     _flag_attrs(parent)
+
+    if len(parts) < len(members):
+        # Кусков меньше, чем кадров: резать нельзя — соседи остались бы с
+        # чужим текстом. Якоря сохранили, шоты убирает «удалить кадр».
+        logger.info(
+            "montage anchors #{} ячейка {}: {} кусков на {} кадров — только биты",
+            project.id,
+            parent.number,
+            len(parts),
+            len(members),
+        )
+        return {
+            "anchors": len(rows),
+            "parts": len(parts),
+            "frames": len(members),
+            "assigned": 0,
+            "inserted_frames": 0,
+            "recut": False,
+            "missing_anchors": len(members) - len(parts),
+            "renumber": {},
+        }
 
     group = list(members)
     inserted: list[Frame] = []
@@ -595,6 +625,7 @@ async def apply_coverage_anchors(
         "frames": len(group),
         "assigned": used,
         "inserted_frames": len(inserted),
+        "recut": True,
         "missing_frames": max(0, len(parts) - len(group)),
         "renumber": renumber,
     }
