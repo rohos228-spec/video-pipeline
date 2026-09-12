@@ -495,10 +495,57 @@ async def test_coverage_anchors_recut_voiceover(
 
 
 @pytest.mark.asyncio
-async def test_coverage_anchors_tail_goes_to_last_frame(
+async def test_coverage_anchors_extra_anchor_creates_shot(
     session: AsyncSession, project: Project
 ) -> None:
-    """Якорей больше, чем кадров: хвост текста не теряется."""
+    """Дописал якорь — в ячейке сам появляется шот, без отдельной кнопки."""
+    parent, child = _group(project.id)
+    session.add_all([project, parent, child])
+    await session.flush()
+
+    # Правим последний кадр ячейки: там дописан третий якорь.
+    result = await apply_coverage_op(
+        session,
+        project,
+        {
+            "type": "coverage_anchors",
+            "frame_number": 2,
+            "anchors": [
+                {"якорь": "Он вошёл в кабинет", "cell_index": 0},
+                {"якорь": "Достал из портфеля папку", "cell_index": 1},
+                {"якорь": "Открыл её на первой странице"},
+            ],
+        },
+    )
+    report = result["report"]
+    assert report["parts"] == 3
+    assert report["inserted_frames"] == 1
+    assert report["frames"] == 3
+    assert report["missing_frames"] == 0
+    # Кадров стало больше — доска обязана перечитать структуру.
+    assert result["refresh_board"] is True
+
+    frames = await _frames(session, project)
+    assert [fr.number for fr in frames] == [1, 2, 3]
+    joined = " ".join(" ".join(fr.voiceover_text for fr in frames).split())
+    assert joined == VO_CELL
+    assert frames[0].voiceover_text.startswith("Он вошёл в кабинет")
+    assert frames[1].voiceover_text.startswith("Достал из портфеля папку")
+    assert frames[2].voiceover_text.startswith("Открыл её")
+    # Новый кадр — шот той же ячейки, а не самостоятельный VO-родитель.
+    new_cs = (frames[2].attrs or {})["camera_subdivide"]
+    assert new_cs["role"] == "shot"
+    assert new_cs["parent_uuid"] == parent.uuid
+    assert new_cs["shots_in_beat"] == 3
+    # Аудиометки остаются у родителя ячейки.
+    assert frames[2].start_ts is None
+
+
+@pytest.mark.asyncio
+async def test_coverage_anchors_insert_shifts_queue_numbers(
+    session: AsyncSession, project: Project
+) -> None:
+    """Шот вставлен в середину — apply должен знать, куда уехали номера."""
     parent, child = _group(project.id)
     session.add_all([project, parent, child])
     await session.flush()
@@ -510,19 +557,18 @@ async def test_coverage_anchors_tail_goes_to_last_frame(
             "type": "coverage_anchors",
             "frame_number": 1,
             "anchors": [
-                {"якорь": "Он вошёл в кабинет"},
+                {"якорь": "Он вошёл в кабинет", "cell_index": 0},
                 {"якорь": "Достал из портфеля папку"},
-                {"якорь": "Открыл её на первой странице"},
+                {"якорь": "Открыл её на первой странице", "cell_index": 1},
             ],
         },
     )
-    assert result["report"]["parts"] == 3
-    assert result["report"]["missing_frames"] == 1
+    assert result["report"]["inserted_frames"] == 1
+    # Вставка после кадра 1: бывший кадр 2 стал третьим.
+    assert result["renumber"] == {2: 3}
     frames = await _frames(session, project)
     joined = " ".join(" ".join(fr.voiceover_text for fr in frames).split())
     assert joined == VO_CELL
-    assert frames[1].voiceover_text.startswith("Достал из портфеля папку")
-    assert "Открыл её" in frames[1].voiceover_text
 
 
 @pytest.mark.asyncio

@@ -8,7 +8,15 @@ from loguru import logger
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Artifact, Frame, FrameEdge, FrameText, Project, PromptVersion
+from app.models import (
+    Artifact,
+    Frame,
+    FrameEdge,
+    FrameStatus,
+    FrameText,
+    Project,
+    PromptVersion,
+)
 from app.services.montage_board_meta import slot_key_from_op
 from app.services.vo_shot_expand import (
     _cs,
@@ -446,15 +454,86 @@ def apply_coverage_template(
     }
 
 
-def apply_coverage_anchors(
+def _new_shot_from_parent(parent: Frame, kid: Frame) -> None:
+    """Новый шот ячейки: место/персонажи/свет от родителя, крупность — за оператором."""
+    pattrs = dict(getattr(parent, "attrs", None) or {})
+    attrs = dict(getattr(kid, "attrs", None) or {})
+    for key in (
+        "place",
+        "персонажи_сцены",
+        "персонажи",
+        "characters",
+        "shot01_id_scene",
+        "id_scene",
+        "свет",
+        "lighting",
+        "фон",
+    ):
+        if key in pattrs and key not in attrs:
+            attrs[key] = pattrs[key]
+    kid.attrs = attrs
+    _flag_attrs(kid)
+    fields: dict[str, Any] = {"role": "shot", "parent_uuid": parent.uuid}
+    nab = str(_cs(parent).get("набор") or "").strip()
+    if nab:
+        fields["набор"] = nab
+    _set_cs(kid, **fields)
+
+
+async def _grow_cell_shots(
+    session: AsyncSession,
+    project: Project,
+    parent: Frame,
+    *,
+    after: Frame,
+    count: int,
+) -> tuple[list[Frame], list[Frame], dict[int, int]]:
+    """Дописали якорь → в ячейке появляются шоты. Возвращает группу и renumber."""
+    from app.services.db_v2 import insert_frame_after
+    from app.services.montage_scene_editor import scene_group
+    from app.services.scene_design.camera_expand import renumber_frames_by_sort_key
+
+    before = {int(fr.id): int(fr.number) for fr in await _load_frames(session, int(project.id))}
+    after_id = int(after.id)
+    fresh: list[Frame] = []
+    for _ in range(count):
+        kid = await insert_frame_after(session, project, after_frame_id=after_id)
+        kid.status = FrameStatus.planned
+        kid.start_ts = None
+        kid.end_ts = None
+        _new_shot_from_parent(parent, kid)
+        fresh.append(kid)
+        after_id = int(kid.id)
+    await session.flush()
+    ordered = await renumber_frames_by_sort_key(session, project)
+    renumber = {
+        before[int(fr.id)]: int(fr.number)
+        for fr in ordered
+        if int(fr.id) in before and before[int(fr.id)] != int(fr.number)
+    }
+    _refresh_shots_in_beat(ordered, parent)
+    _, members = scene_group(ordered, parent)
+    logger.info(
+        "montage anchors #{} ячейка {} +{} шот(ов) → {} кадров",
+        project.id,
+        parent.number,
+        len(fresh),
+        len(members),
+    )
+    return members, fresh, renumber
+
+
+async def apply_coverage_anchors(
+    session: AsyncSession,
+    project: Project,
     frame: Frame,
     frames: list[Frame],
     anchors: list[Any],
 ) -> dict[str, Any]:
     """Якоря закадра → биты[] родителя + пересборка кусков VO по кадрам.
 
-    Кадры не вставляем и не удаляем: якорей больше, чем кадров — лишние
-    остаются в биты[] для следующего прогона нод (в отчёте ``missing_frames``).
+    Якорей больше, чем кадров — недостающие шоты создаём сами сразу после
+    правленого кадра: «дописал якорь» и есть разбивка, отдельной кнопки нет.
     """
     from app.services.montage_scene_editor import (
         cell_full_text,
@@ -480,10 +559,23 @@ def apply_coverage_anchors(
     parent.attrs = attrs
     _flag_attrs(parent)
 
-    used = min(len(parts), len(members))
+    group = list(members)
+    inserted: list[Frame] = []
+    renumber: dict[int, int] = {}
+    if len(parts) > len(group):
+        group, inserted, renumber = await _grow_cell_shots(
+            session,
+            project,
+            parent,
+            after=frame,
+            count=len(parts) - len(group),
+        )
+
+    used = min(len(parts), len(group))
     # Хвост текста не теряем: последний кадр группы забирает остаток.
     assigned = list(parts[: used - 1]) + [" ".join(parts[used - 1 :])] if used else []
-    for i, member in enumerate(members[:used]):
+    total_sec = float(getattr(parent, "duration_seconds", 0) or 0)
+    for i, member in enumerate(group[:used]):
         piece = " ".join((assigned[i] or "").split())
         if not piece:
             continue
@@ -492,12 +584,19 @@ def apply_coverage_anchors(
         _patch_kadry_item(member, закадр=piece)
         if member is not parent:
             _patch_kadry_item_on_parent_ladder(parent, member, закадр=piece)
+    if inserted and total_sec > 0 and used > 0:
+        # Аудиометки остаются у родителя, длительность делим на шоты поровну.
+        part_sec = round(total_sec / used, 2)
+        for member in group[:used]:
+            member.duration_seconds = part_sec
     return {
         "anchors": len(rows),
         "parts": len(parts),
-        "frames": len(members),
+        "frames": len(group),
         "assigned": used,
-        "missing_frames": max(0, len(parts) - len(members)),
+        "inserted_frames": len(inserted),
+        "missing_frames": max(0, len(parts) - len(group)),
+        "renumber": renumber,
     }
 
 
@@ -663,7 +762,9 @@ async def apply_coverage_op(
     elif op_type == "coverage_template":
         report = apply_coverage_template(frame, frames, str(op.get("template") or ""))
     elif op_type == "coverage_anchors":
-        report = apply_coverage_anchors(frame, frames, list(op.get("anchors") or []))
+        report = await apply_coverage_anchors(
+            session, project, frame, frames, list(op.get("anchors") or [])
+        )
     elif op_type == "coverage_kind":
         parent_raw = op.get("parent_number")
         parent_number = int(parent_raw) if parent_raw not in (None, "") else None
@@ -695,4 +796,10 @@ async def apply_coverage_op(
     }
     if report is not None:
         out["report"] = report
+        # Вставка шота сдвинула нумерацию — очередь и подсветку правит apply.
+        renumber = report.pop("renumber", None)
+        if renumber:
+            out["renumber"] = {int(k): int(v) for k, v in renumber.items()}
+        if report.get("inserted_frames"):
+            out["refresh_board"] = True
     return out

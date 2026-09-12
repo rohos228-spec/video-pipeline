@@ -38,6 +38,8 @@ from app.services.montage_board_meta import (
     clear_failed_highlight,
     montage_meta,
     public_board_meta,
+    remap_board_slot_keys,
+    remap_frame_numbers,
     set_montage_meta,
     slot_key_from_op,
     touch_applied,
@@ -486,6 +488,18 @@ async def _run_ops_phase(
     async def _finish_op(idx: int, ok: bool, result: dict[str, Any]) -> None:
         async with meta_lock:
             op_status[idx] = "ok" if ok else "fail"
+            mapping = result.get("renumber") if ok else None
+            if isinstance(mapping, dict) and mapping:
+                # Якорь создал шот → номера кадров сдвинулись: чиним ещё не
+                # применённые операции, иначе правка уедет на соседний кадр.
+                rest = [o for i, o in enumerate(all_ops) if op_status[i] != "ok"]
+                moved = remap_frame_numbers(rest, mapping)
+                remap_board_slot_keys(board, mapping)
+                logger.info(
+                    "montage apply #{} renumber после вставки шота: {} ops",
+                    project_id,
+                    moved,
+                )
             if ok:
                 results.append(result)
                 highlight = result.get("highlight")
