@@ -60,7 +60,7 @@ import {
   AnchorCell,
   CoverageMenu,
   RoleCell,
-  SceneInfoCell,
+  SceneCell,
   TemplateCell,
   type CoverageMenuGroup,
 } from "@/components/canvas/montage-scene-cells";
@@ -99,7 +99,6 @@ const SHOT_GAP_CLASS = "w-1 min-w-[4px] max-w-[4px] p-0 align-middle";
 type RowKey =
   | "voiceover"
   | "scene_info"
-  | "template"
   | "role"
   | "action"
   | "anchor"
@@ -120,23 +119,26 @@ const GRID_ROWS: { key: RowKey; label: string }[] = [
   { key: "timestamps", label: "Таймкоды" },
 ];
 
-/** Строки на всю VO-ячейку — над картинкой кадра. */
+/**
+ * Сцена — одна строка на всю VO-ячейку сразу под картинками кадров: что за
+ * сцена, набор, свет, формат с описанием и закадр сцены по кадрам.
+ */
 const SCENE_CELL_ROWS: { key: RowKey; label: string }[] = [
-  { key: "scene_info", label: "Сцена (ячейка)" },
-  { key: "template", label: "Формат сцены" },
+  { key: "scene_info", label: "Сцена" },
 ];
 /**
- * Данные кадра — под его картинкой. Крупность / ракурс / движение / стык /
- * свет отдельными строками не показываем: они в меню покрытия под кадром.
+ * Данные отдельного кадра — под блоком сцены. Крупность / ракурс / движение /
+ * стык отдельными строками не показываем: они в меню покрытия под картинкой.
  */
 const SCENE_SHOT_ROWS: { key: RowKey; label: string }[] = [
+  { key: "voiceover", label: "Закадр кадра" },
   { key: "role", label: "Роль в покрытии" },
   { key: "action", label: "Действие кадра" },
   { key: "anchor", label: "Якорь кадра" },
 ];
 
 /** Эти строки общие для VO-ячейки — одна клетка на всю сцену. */
-const SCENE_SPAN_ROWS = new Set<RowKey>(["scene_info", "template"]);
+const SCENE_SPAN_ROWS = new Set<RowKey>(["scene_info"]);
 /** Эти строки правятся у каждого кадра отдельно. */
 const SCENE_FRAME_ROWS = new Set<RowKey>(["role", "action", "anchor"]);
 
@@ -1752,17 +1754,13 @@ export function AssembleMontageBoard({
   const colRem = coverageOn ? frameColRem(frameAspect) : FRAME_COL_REM;
   const gridRows = useMemo(() => {
     if (!coverageOn) return GRID_ROWS;
-    // В центре кадра — его картинка, под ней данные: роль, действие, якорь.
-    // Крупность … свет живут в меню покрытия прямо под картинкой.
-    const [vo, ...tail] = GRID_ROWS;
-    const frameRow = tail.filter((r) => r.key === "image1");
-    return [
-      vo,
-      ...SCENE_CELL_ROWS,
-      ...frameRow,
-      ...SCENE_SHOT_ROWS,
-      ...tail.filter((r) => r.key !== "image1"),
-    ];
+    // Сверху картинка кадра, под ней сцена целиком (ячейка закадра: формат,
+    // набор, свет, текст по кадрам), и только потом данные каждого кадра.
+    const frameRow = GRID_ROWS.filter((r) => r.key === "image1");
+    const rest = GRID_ROWS.filter(
+      (r) => r.key !== "image1" && r.key !== "voiceover",
+    );
+    return [...frameRow, ...SCENE_CELL_ROWS, ...SCENE_SHOT_ROWS, ...rest];
   }, [coverageOn]);
   const meta = board.data?.meta;
   const pendingOpsKey = JSON.stringify(meta?.pending_ops ?? []);
@@ -2963,54 +2961,75 @@ export function AssembleMontageBoard({
   };
 
   /** Клетка на всю VO-ячейку: сцена / формат / свет. */
-  const renderSceneSpanCell = (key: RowKey, range: SceneRange) => {
+  const renderSceneSpanCell = (key: RowKey, range: SceneRange, sceneNo: number) => {
     const head = range.frames[0];
     if (!head) return null;
     const pending = pendingCoverageForFrame(pendingOps, head.number);
     const base = { frame_number: head.number, shot: 1 as const };
-    if (key === "scene_info") {
-      return (
-        <SceneInfoCell
-          head={head}
-          frameNumbers={range.frames.map((f) => f.number)}
-          setValue={(pending.set ?? head.scene_set ?? "").trim()}
-          setPending={hasPendingType(head.number, "coverage_set")}
-          disabled={sceneDisabled}
-          onSet={(value) => queueCoverage({ ...base, type: "coverage_set", set: value })}
-        />
-      );
-    }
-    if (key === "template") {
-      return (
-        <TemplateCell
-          projectId={projectId}
-          frameId={head.frame_id}
-          value={(pending.template ?? head.shot_template ?? "").trim()}
-          auto={(head.scene_template_auto || "").trim()}
-          choices={board.data?.coverage_template_choices}
-          groupLen={range.frames.length}
-          pending={hasPendingType(head.number, "coverage_template")}
-          disabled={sceneDisabled}
-          onPick={(template) =>
-            queueCoverage({ ...base, type: "coverage_template", template })
-          }
-        />
-      );
-    }
-    return null;
+    if (key !== "scene_info") return null;
+    return (
+      <SceneCell
+        head={head}
+        sceneNo={sceneNo}
+        frames={range.frames}
+        setValue={(pending.set ?? head.scene_set ?? "").trim()}
+        setPending={hasPendingType(head.number, "coverage_set")}
+        disabled={sceneDisabled}
+        onSet={(value) => queueCoverage({ ...base, type: "coverage_set", set: value })}
+        light={
+          <CoverageMenu
+            title="свет сцены"
+            groups={[sceneLightGroup(range)]}
+            disabled={sceneDisabled}
+          />
+        }
+        template={
+          <TemplateCell
+            projectId={projectId}
+            frameId={head.frame_id}
+            value={(pending.template ?? head.shot_template ?? "").trim()}
+            auto={(head.scene_template_auto || "").trim()}
+            choices={board.data?.coverage_template_choices}
+            frameNumbers={range.frames.map((f) => f.number)}
+            pending={hasPendingType(head.number, "coverage_template")}
+            disabled={sceneDisabled}
+            onPick={(template) =>
+              queueCoverage({ ...base, type: "coverage_template", template })
+            }
+          />
+        }
+      />
+    );
+  };
+
+  /** Свет — свойство сцены: op уходит на головной кадр её VO-ячейки. */
+  const sceneLightGroup = (range: SceneRange): CoverageMenuGroup => {
+    const head = range.frames[0];
+    const pending = pendingCoverageForFrame(pendingOps, head.number);
+    return {
+      key: "light",
+      label: "Свет",
+      value: (pending.light ?? head.scene_lighting ?? "").trim(),
+      choices: board.data?.coverage_light_choices,
+      pending: hasPendingType(head.number, "coverage_light"),
+      onPick: (light) =>
+        queueCoverage({
+          frame_number: head.number,
+          shot: 1,
+          type: "coverage_light",
+          light,
+        }),
+    };
   };
 
   /**
-   * Крупность / ракурс / движение / стык / свет — под картинкой кадра одной
-   * строкой значений, варианты открываются наведением (`CoverageMenu`).
-   * Свет пишется на всю VO-ячейку, поэтому op уходит на её головной кадр.
+   * Крупность / ракурс / движение / стык — свойства самого кадра: под его
+   * картинкой одной строкой значений, варианты открываются наведением
+   * (`CoverageMenu`). Свет тут не показываем — он у сцены.
    */
-  const coverageGroups = (range: SceneRange, fr: MontageBoardFrame): CoverageMenuGroup[] => {
+  const coverageGroups = (fr: MontageBoardFrame): CoverageMenuGroup[] => {
     const pending = pendingCoverageForFrame(pendingOps, fr.number);
     const base = { frame_number: fr.number, shot: 1 as const };
-    const head = range.frames[0] ?? fr;
-    const headPending = pendingCoverageForFrame(pendingOps, head.number);
-    const headBase = { frame_number: head.number, shot: 1 as const };
     return [
       {
         key: "plan",
@@ -3043,15 +3062,6 @@ export function AssembleMontageBoard({
         choices: board.data?.coverage_stitch_choices,
         pending: hasPendingType(fr.number, "coverage_stitch"),
         onPick: (stitch) => queueCoverage({ ...base, type: "coverage_stitch", stitch }),
-      },
-      {
-        key: "light",
-        label: "Свет",
-        value: (headPending.light ?? head.scene_lighting ?? "").trim(),
-        choices: board.data?.coverage_light_choices,
-        pending: hasPendingType(head.number, "coverage_light"),
-        note: "свет общий для всей ячейки закадра",
-        onPick: (light) => queueCoverage({ ...headBase, type: "coverage_light", light }),
       },
     ];
   };
@@ -3376,7 +3386,7 @@ export function AssembleMontageBoard({
                               className="border-b border-x border-white/20 bg-white/[0.05] px-2 py-1.5 text-left"
                             >
                               <p className="truncate text-[11px] font-semibold text-white/80">
-                                Сцена · {nums}
+                                Сцена {ri + 1} · {nums}
                                 {tpl ? (
                                   <span className="ml-1.5 font-normal text-[rgba(209,254,23,0.85)]">
                                     {tpl}
@@ -3470,7 +3480,7 @@ export function AssembleMontageBoard({
                               {collapsed ? (
                                 <div className="h-8 rounded-md bg-black/10" />
                               ) : (
-                                renderSceneSpanCell(row.key, range)
+                                renderSceneSpanCell(row.key, range, ri + 1)
                               )}
                             </td>
                           ) : (
@@ -3537,7 +3547,7 @@ export function AssembleMontageBoard({
                                     coverageOn ? (
                                       <CoverageMenu
                                         title={`покрытие кадра #${fr.number}`}
-                                        groups={coverageGroups(range, fr)}
+                                        groups={coverageGroups(fr)}
                                         disabled={sceneDisabled}
                                       />
                                     ) : undefined

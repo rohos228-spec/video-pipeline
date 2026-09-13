@@ -216,7 +216,9 @@ export function CoverageMenu({
         onFocus={show}
         onBlur={hide}
         onClick={() => (open ? setBox(null) : show())}
-        title="Наведи или нажми, чтобы менять крупность, ракурс, движение, стык, свет"
+        title={`Наведи или нажми, чтобы менять: ${groups
+          .map((g) => g.label.toLowerCase())
+          .join(", ")}`}
         className={cn(
           "group w-full rounded-md border px-1.5 py-1 text-left transition",
           open
@@ -240,10 +242,18 @@ export function CoverageMenu({
             изменить
           </span>
         </span>
-        <span className="mt-0.5 grid grid-cols-2 gap-x-2 text-[10px] leading-snug">
+        <span
+          className={cn(
+            "mt-0.5 grid gap-x-2 text-[10px] leading-snug",
+            groups.length > 1 ? "grid-cols-2" : "grid-cols-1",
+          )}
+        >
           {groups.map((g) => (
             <span key={g.key} className="flex min-w-0 items-baseline gap-1">
-              <span className="shrink-0 text-white/30">{g.label.toLowerCase()}</span>
+              {/* У меню на одну группу заголовок уже назвал её — не дублируем. */}
+              {groups.length > 1 ? (
+                <span className="shrink-0 text-white/30">{g.label.toLowerCase()}</span>
+              ) : null}
               <span
                 className={cn(
                   "truncate",
@@ -266,9 +276,11 @@ export function CoverageMenu({
             >
               <p className="flex items-baseline gap-2 px-1 pb-1.5">
                 <span className="text-[9px] uppercase tracking-wide text-white/35">{title}</span>
-                <span className="text-[10px] text-white/25">
-                  наведи строку слева — справа её варианты
-                </span>
+                {groups.length > 1 ? (
+                  <span className="text-[10px] text-white/25">
+                    наведи строку слева — справа её варианты
+                  </span>
+                ) : null}
               </p>
               <div className="flex gap-2">
                 <ul className="w-[9.5rem] shrink-0 space-y-0.5">
@@ -815,14 +827,20 @@ export function AnchorCell({
   );
 }
 
-/** Формат сцены (шаблон T0…T10 / X1 / X2) — на всю VO-ячейку одной строкой. */
+/**
+ * Формат сцены (шаблон T0…T10 / X1 / X2) — выбор варианта для всей VO-ячейки.
+ * При выбранном варианте сразу показываем, для чего он и какая
+ * последовательность кадров из него выйдет: `K1 ОБЩИЙ → кадр #1`. Кадров у
+ * ячейки может быть меньше, чем шотов у шаблона — тогда шаг подписан
+ * «нет кадра», и его добавляют якорем.
+ */
 export function TemplateCell({
   projectId,
   frameId,
   value,
   auto,
   choices,
-  groupLen,
+  frameNumbers,
   pending,
   disabled,
   onPick,
@@ -832,19 +850,23 @@ export function TemplateCell({
   value: string;
   auto: string;
   choices: MontageTemplateChoice[] | undefined;
-  groupLen: number;
+  frameNumbers: number[];
   pending?: boolean;
   disabled?: boolean;
   onPick: (template: string) => void;
 }) {
-  const [ladderOpen, setLadderOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(true);
   const { ask, busy, clear, kind, variants } = useSceneVariants(projectId, frameId);
   const items = choices || [];
   const current = items.find((c) => c.id === value);
+  const groupLen = frameNumbers.length;
 
   return (
     <div className={cn("relative rounded-md p-0.5", pending && "bg-amber-500/10")}>
       <div className="flex flex-wrap items-center gap-1">
+        <span className="mr-0.5 text-[9px] uppercase tracking-wide text-white/35">
+          формат сцены
+        </span>
         {items.map((c) => (
           <Chip
             key={c.id}
@@ -861,15 +883,6 @@ export function TemplateCell({
           disabled={disabled}
           onClick={() => void ask("template", "")}
         />
-      </div>
-      <div className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        {current ? (
-          <span className="text-[10px] text-white/70">
-            {current.id} · {current.name}
-          </span>
-        ) : (
-          <span className={HINT}>формат не выбран</span>
-        )}
         {auto && auto !== value ? (
           <button
             type="button"
@@ -880,34 +893,86 @@ export function TemplateCell({
             дерево «Выбор» предлагает {auto}
           </button>
         ) : null}
-        {current ? (
-          <button
-            type="button"
-            onClick={() => setLadderOpen((v) => !v)}
-            className="text-[10px] uppercase tracking-wide text-white/35 transition hover:text-white/70"
-          >
-            {ladderOpen ? "скрыть лестницу" : "лестница кадров"}
-          </button>
-        ) : null}
       </div>
-      {current && ladderOpen ? (
-        <ol className="mt-1 space-y-0.5">
-          {current.plans.map((plan, i) => (
-            <li
-              key={i}
-              className={cn(
-                "flex items-baseline gap-1.5 text-[10px]",
-                i < groupLen ? "text-white/70" : "text-amber-200/70",
-              )}
+      {current ? (
+        <div className="mt-1 rounded-lg border border-white/10 bg-black/30 p-1.5">
+          <div className="flex items-baseline gap-2">
+            <span className="text-[11px] font-semibold" style={{ color: ACCENT }}>
+              {current.id} · {current.name}
+            </span>
+            <span className={HINT}>
+              {current.shots ? `${current.shots} шота в шаблоне · ` : ""}
+              кадров в ячейке {groupLen}
+            </span>
+            <button
+              type="button"
+              onClick={() => setDetailsOpen((v) => !v)}
+              className="ml-auto text-[10px] uppercase tracking-wide text-white/35 transition hover:text-white/70"
             >
-              <span className="text-white/30">K{i + 1}</span>
-              <span>{plan}</span>
-              <span className="text-white/30">{current.roles[i] || ""}</span>
-              {i >= groupLen ? <span className="ml-auto">нет кадра</span> : null}
-            </li>
-          ))}
-        </ol>
-      ) : null}
+              {detailsOpen ? "скрыть" : "что это даёт"}
+            </button>
+          </div>
+          {detailsOpen ? (
+            <>
+              {current.when ? (
+                <p className="mt-1 text-[10px] leading-relaxed text-white/55">
+                  <span className="text-white/35">для чего: </span>
+                  {current.when}
+                </p>
+              ) : null}
+              <p className="mt-1.5 text-[9px] uppercase tracking-wide text-white/35">
+                последовательность кадров
+              </p>
+              <ol className="mt-0.5 space-y-0.5">
+                {current.plans.map((plan, i) => {
+                  const frameNo = frameNumbers[i];
+                  return (
+                    <li
+                      key={i}
+                      className={cn(
+                        "flex items-baseline gap-1.5 text-[10px]",
+                        frameNo ? "text-white/70" : "text-amber-200/70",
+                      )}
+                    >
+                      <span className="w-6 shrink-0 text-white/30">K{i + 1}</span>
+                      <span className="shrink-0 font-medium">{plan}</span>
+                      <span className="min-w-0 truncate text-white/35">
+                        {current.roles[i] || ""}
+                      </span>
+                      <span className="ml-auto shrink-0">
+                        {frameNo ? `кадр #${frameNo}` : "нет кадра — дописать якорь"}
+                      </span>
+                    </li>
+                  );
+                })}
+                {/* Кадров в сцене может быть больше, чем шотов у шаблона —
+                    такие показываем отдельно, а не прячем. */}
+                {frameNumbers.slice(current.plans.length).map((n) => (
+                  <li
+                    key={`extra-${n}`}
+                    className="flex items-baseline gap-1.5 text-[10px] text-white/45"
+                  >
+                    <span className="w-6 shrink-0 text-white/25">+</span>
+                    <span className="shrink-0 font-medium">{`кадр #${n}`}</span>
+                    <span className="ml-auto shrink-0">сверх шаблона</span>
+                  </li>
+                ))}
+              </ol>
+              {current.example ? (
+                <p className="mt-1 text-[10px] leading-relaxed text-white/35">
+                  <span className="text-white/25">пример: </span>
+                  {current.example}
+                </p>
+              ) : null}
+            </>
+          ) : null}
+        </div>
+      ) : (
+        <p className={cn(HINT, "mt-1")}>
+          формат не выбран — нажми T-вариант, чтобы увидеть, для чего он и какие
+          кадры даёт
+        </p>
+      )}
       {kind === "template" ? (
         <VariantBox
           items={variants}
@@ -935,22 +1000,37 @@ function MetaChip({ label, value }: { label: string; value?: string | null }) {
   );
 }
 
-/** Общее по VO-ячейке: набор / место / персонажи / смысл — одной строкой. */
-export function SceneInfoCell({
+/**
+ * Сцена = одна ячейка закадра. Здесь всё, что общее для сцены: её номер и
+ * кадры, место, персонажи, набор, свет, формат с описанием и полный текст
+ * закадра, разложенный по кадрам. Данные отдельного кадра (роль, действие,
+ * якорь, крупность…) живут в его колонке ниже — понятия не смешиваем.
+ */
+export function SceneCell({
   head,
-  frameNumbers,
+  sceneNo,
+  frames,
   setValue,
   setPending,
   disabled,
+  template,
+  light,
   onSet,
 }: {
   head: MontageBoardFrame;
-  frameNumbers: number[];
+  /** Номер сцены по порядку на доске: ячейки закадра идут подряд. */
+  sceneNo: number;
+  frames: MontageBoardFrame[];
   setValue: string;
   setPending?: boolean;
   disabled?: boolean;
+  /** Формат сцены (`TemplateCell`) — общий для всей ячейки. */
+  template?: React.ReactNode;
+  /** Свет сцены — тоже на всю ячейку, а не на отдельный кадр. */
+  light?: React.ReactNode;
   onSet: (value: string) => void;
 }) {
+  const frameNumbers = frames.map((f) => f.number);
   const source = (setValue || "").trim();
   const [setText, setSetText] = useState(source);
   useEffect(() => {
@@ -963,42 +1043,53 @@ export function SceneInfoCell({
     onSet(next);
   };
 
+  const parts = frames.filter((f) => (f.voiceover_text || "").trim());
+
   return (
-    <div className="space-y-1">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span className="text-[10px] font-semibold text-white/75">
-          кадры {frameNumbers.map((n) => `#${n}`).join(" · ")}
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span className="text-[11px] font-semibold text-white/85">
+          Сцена {sceneNo}
         </span>
-        <MetaChip label="сцена" value={head.scene_no || head.scene_id} />
+        <span className="text-[10px] text-white/45">
+          {frames.length === 1
+            ? `один кадр #${frameNumbers[0]}`
+            : `${frames.length} кадра: ${frameNumbers.map((n) => `#${n}`).join(" · ")}`}
+        </span>
         <MetaChip label="место" value={head.scene_place} />
         <MetaChip label="персонажи" value={head.scene_characters} />
+        <MetaChip label="в плане" value={head.scene_no || head.scene_id} />
       </div>
-      <div
-        className={cn(
-          "relative flex items-center gap-2",
-          setPending && "rounded-md bg-amber-500/10 p-0.5",
-        )}
-      >
-        <span className="shrink-0 text-[10px] uppercase tracking-wide text-white/35">
-          набор
-        </span>
-        <input
-          className={cn(FIELD, "max-w-[28rem]")}
-          value={setText}
-          disabled={disabled}
-          placeholder="SET / декорация ячейки"
-          onChange={(e) => setSetText(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              commit();
-            }
-            if (e.key === "Escape") setSetText(source);
-          }}
-        />
-        <PendingMark show={Boolean(setPending)} />
+      <div className="flex flex-wrap items-start gap-2">
+        <div
+          className={cn(
+            "relative flex min-w-[12rem] flex-1 items-center gap-2",
+            setPending && "rounded-md bg-amber-500/10 p-0.5",
+          )}
+        >
+          <span className="shrink-0 text-[10px] uppercase tracking-wide text-white/35">
+            набор
+          </span>
+          <input
+            className={cn(FIELD, "max-w-[28rem]")}
+            value={setText}
+            disabled={disabled}
+            placeholder="SET / декорация сцены"
+            onChange={(e) => setSetText(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commit();
+              }
+              if (e.key === "Escape") setSetText(source);
+            }}
+          />
+          <PendingMark show={Boolean(setPending)} />
+        </div>
+        {light ? <div className="w-[13rem] shrink-0">{light}</div> : null}
       </div>
+      {template}
       <div className="flex flex-wrap gap-x-3 gap-y-0.5">
         <MetaChip label="смысл" value={head.scene_sense} />
         <MetaChip label="тип" value={head.scene_visual_type} />
@@ -1007,10 +1098,28 @@ export function SceneInfoCell({
         <MetaChip label="акцент" value={head.scene_accent} />
         <MetaChip label="особенность" value={head.scene_feature} />
       </div>
-      {head.vo_cell_full ? (
-        <p className="max-h-16 overflow-y-auto rounded-md border border-white/10 bg-black/25 p-1.5 text-[10px] leading-relaxed text-white/60">
-          {head.vo_cell_full}
-        </p>
+      {parts.length || head.vo_cell_full ? (
+        <div className="rounded-md border border-white/10 bg-black/25 p-1.5">
+          <p className="text-[9px] uppercase tracking-wide text-white/30">
+            закадр сцены по кадрам — так его режут якоря
+          </p>
+          {parts.length ? (
+            <p className="mt-0.5 max-h-16 overflow-y-auto text-[10px] leading-relaxed text-white/60">
+              {parts.map((f) => (
+                <span key={f.frame_id}>
+                  <span className="font-mono text-[9px] text-white/30">
+                    #{f.number}{" "}
+                  </span>
+                  <span>{f.voiceover_text.trim()} </span>
+                </span>
+              ))}
+            </p>
+          ) : (
+            <p className="mt-0.5 max-h-16 overflow-y-auto text-[10px] leading-relaxed text-white/60">
+              {head.vo_cell_full}
+            </p>
+          )}
+        </div>
       ) : null}
     </div>
   );
