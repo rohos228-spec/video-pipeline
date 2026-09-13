@@ -1,13 +1,16 @@
-"""Ручные референсы кадра: то, что оператор добавил прямо на доске монтажа.
+"""Референсы кадра, которые оператор приложил прямо на доске монтажа.
 
 Автоматические рефы (персонажи ячейки, предметы, still VO-родителя) приходят из
 листов и папок проекта — их считает `montage_board._group_refs_for_frames`.
-Здесь — рефы, которые оператор принёс сам: файл + вид (персонаж / предмет /
-фон / просто реф кадра) + **обязательное описание**, иначе генератор не знает,
-что с картинки брать.
+Здесь — рефы, приложенные руками, двумя путями:
 
-Хранение: файл в ``data/<project>/refs/``, запись в ``Frame.attrs["ref_manual"]``
-(SoT — БД проекта, как и остальные правки доски).
+* **приложить готовый** — файл персонажа / предмета, который уже есть в проекте
+  (`characters/`, `items/`): ссылаемся на него, файл не копируем и при
+  отвязке не удаляем;
+* **загрузить новый** — файл + **имя**, которое дальше видно на доске.
+
+Хранение: запись в ``Frame.attrs["ref_manual"]`` (SoT — БД проекта), новый файл
+кладём в ``data/<project>/refs/``.
 """
 
 from __future__ import annotations
@@ -26,16 +29,10 @@ REF_KINDS: dict[str, str] = {
     "other": "реф кадра",
 }
 
-#: Подсказка оператору, что писать в описании для каждого вида.
-REF_KIND_HINTS: dict[str, str] = {
-    "character": "внешность: возраст, лицо, волосы, одежда, что делает в кадре",
-    "item": "предмет: что это, материал, размер, состояние, как попадает в кадр",
-    "background": "фон: что за место, время суток, глубина, чем занят задний план",
-    "other": "что именно брать с этой картинки в кадр",
-}
-
 _ATTR_KEY = "ref_manual"
 _IMG_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+#: Где искать уже готовые рефы проекта: папка → вид рефа.
+_ASSET_DIRS: dict[str, str] = {"characters": "character", "items": "item"}
 
 
 def normalize_ref_kind(raw: str | None) -> str:
@@ -66,6 +63,15 @@ def manual_refs(frame: Any) -> list[dict[str, Any]]:
     return [r for r in raw if isinstance(r, dict) and r.get("id")]
 
 
+def ref_name(row: dict[str, Any]) -> str:
+    """Имя рефа для доски и промта."""
+    for key in ("имя", "name", "описание", "description"):
+        text = str(row.get(key) or "").strip()
+        if text:
+            return text
+    return ""
+
+
 def manual_ref_paths(data_dir: Path, frame: Any) -> list[Path]:
     """Файлы рефов кадра для генерации — в порядке добавления."""
     out: list[Path] = []
@@ -77,7 +83,7 @@ def manual_ref_paths(data_dir: Path, frame: Any) -> list[Path]:
 
 
 def manual_refs_for_board(data_dir: Path, frame: Any) -> list[dict[str, Any]]:
-    """DTO для доски: вид, описание и превью-URL."""
+    """DTO для доски: вид, имя и превью-URL."""
     from app.services.montage_board import _preview_url
 
     out: list[dict[str, Any]] = []
@@ -89,22 +95,58 @@ def manual_refs_for_board(data_dir: Path, frame: Any) -> list[dict[str, Any]]:
                 "id": str(row.get("id") or ""),
                 "kind": kind,
                 "kind_label": REF_KINDS[kind],
-                "description": str(row.get("описание") or row.get("description") or ""),
+                "name": ref_name(row),
+                "linked": bool(row.get("linked")),
                 "image_url": _preview_url(path) if path is not None else None,
             }
         )
     return out
 
 
+def list_ref_assets(
+    data_dir: Path,
+    *,
+    names: dict[str, dict[str, str]] | None = None,
+) -> list[dict[str, Any]]:
+    """Готовые рефы проекта: что лежит в ``characters/`` и ``items/``.
+
+    ``names`` — карта вид → {код: имя} из `Entity`, чтобы на доске был не «c02»,
+    а имя персонажа.
+    """
+    from app.services.montage_board import _preview_url
+
+    out: list[dict[str, Any]] = []
+    for folder, kind in _ASSET_DIRS.items():
+        directory = data_dir / folder
+        if not directory.is_dir():
+            continue
+        by_kind = (names or {}).get(kind) or {}
+        for path in sorted(directory.iterdir()):
+            if not path.is_file() or path.suffix.lower() not in _IMG_SUFFIXES:
+                continue
+            code = path.stem.split("_", 1)[0].strip().lower()
+            out.append(
+                {
+                    "kind": kind,
+                    "kind_label": REF_KINDS[kind],
+                    "code": code,
+                    "name": by_kind.get(code) or path.stem,
+                    "file": _relative_file(data_dir, path),
+                    "image_url": _preview_url(path),
+                }
+            )
+    return out
+
+
 def manual_ref_prompt_note(frame: Any) -> str:
-    """Описания ручных рефов для промта: генератор должен знать, что с них брать."""
+    """Имена ручных рефов для промта: генератор должен знать, что это за файлы."""
     parts: list[str] = []
     for row in manual_refs(frame):
-        text = str(row.get("описание") or row.get("description") or "").strip()
-        if not text:
+        name = ref_name(row)
+        if not name:
             continue
         kind = normalize_ref_kind(str(row.get("kind") or ""))
-        parts.append(f"{REF_KINDS[kind]} — {text}")
+        parts.append(f"{REF_KINDS[kind]} — {name}")
     if not parts:
         return ""
     return "Референсы кадра: " + "; ".join(parts) + "."
@@ -123,14 +165,14 @@ def add_manual_ref(
     *,
     data_dir: Path,
     kind: str,
-    description: str,
+    name: str,
     content: bytes,
     suffix: str,
 ) -> dict[str, Any]:
-    """Сохранить файл рефа и приписать его кадру. Описание обязательно."""
-    text = (description or "").strip()
+    """Загрузить новый реф кадру: файл + имя, которое видно на доске."""
+    text = (name or "").strip()
     if not text:
-        raise ValueError("нужно описание рефа: без него генератор не знает, что брать")
+        raise ValueError("нужно имя рефа: под ним он будет виден на доске")
     if not content:
         raise ValueError("пустой файл рефа")
     ext = (suffix or "").lower()
@@ -145,23 +187,46 @@ def add_manual_ref(
     path = target_dir / f"frame_{number:03d}_{kind_n}_{ref_id}{ext}"
     path.write_bytes(content)
 
-    row = {
-        "id": ref_id,
-        "kind": kind_n,
-        "описание": text,
-        "file": _relative_file(data_dir, path),
-    }
-    attrs = dict(getattr(frame, "attrs", None) or {})
-    rows = [r for r in (attrs.get(_ATTR_KEY) or []) if isinstance(r, dict)]
-    rows.append(row)
-    attrs[_ATTR_KEY] = rows
-    frame.attrs = attrs
-    logger.info("montage refs: кадр {} + {} «{}»", number, kind_n, text[:60])
-    return row
+    return _append_row(
+        frame,
+        {
+            "id": ref_id,
+            "kind": kind_n,
+            "имя": text,
+            "file": _relative_file(data_dir, path),
+        },
+    )
+
+
+def link_ref_asset(
+    frame: Any,
+    *,
+    data_dir: Path,
+    file: str,
+    kind: str = "",
+    name: str = "",
+) -> dict[str, Any]:
+    """Приложить кадру готовый реф проекта — файл остаётся на месте."""
+    assets = {a["file"]: a for a in list_ref_assets(data_dir)}
+    asset = assets.get((file or "").strip())
+    if asset is None:
+        raise ValueError(f"нет такого рефа в проекте: {file!r}")
+    kind_n = normalize_ref_kind(kind or asset["kind"])
+    text = (name or "").strip() or str(asset["name"])
+    return _append_row(
+        frame,
+        {
+            "id": uuid.uuid4().hex[:8],
+            "kind": kind_n,
+            "имя": text,
+            "file": asset["file"],
+            "linked": True,
+        },
+    )
 
 
 def delete_manual_ref(frame: Any, *, data_dir: Path, ref_id: str) -> bool:
-    """Убрать реф кадра вместе с файлом."""
+    """Убрать реф кадра. Загруженный файл удаляем, готовый ассет — нет."""
     wanted = (ref_id or "").strip()
     if not wanted:
         return False
@@ -171,7 +236,7 @@ def delete_manual_ref(frame: Any, *, data_dir: Path, ref_id: str) -> bool:
     if len(keep) == len(rows):
         return False
     for row in rows:
-        if str(row.get("id") or "") != wanted:
+        if str(row.get("id") or "") != wanted or row.get("linked"):
             continue
         path = _ref_path(data_dir, row)
         if path is not None and path.is_file():
@@ -185,6 +250,21 @@ def delete_manual_ref(frame: Any, *, data_dir: Path, ref_id: str) -> bool:
         "montage refs: кадр {} − реф {}", int(getattr(frame, "number", 0) or 0), wanted
     )
     return True
+
+
+def _append_row(frame: Any, row: dict[str, Any]) -> dict[str, Any]:
+    attrs = dict(getattr(frame, "attrs", None) or {})
+    rows = [r for r in (attrs.get(_ATTR_KEY) or []) if isinstance(r, dict)]
+    rows.append(row)
+    attrs[_ATTR_KEY] = rows
+    frame.attrs = attrs
+    logger.info(
+        "montage refs: кадр {} + {} «{}»",
+        int(getattr(frame, "number", 0) or 0),
+        row.get("kind"),
+        str(row.get("имя") or "")[:60],
+    )
+    return row
 
 
 def _relative_file(data_dir: Path, path: Path) -> str:

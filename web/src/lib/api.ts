@@ -10,6 +10,7 @@ import type {
   FrameDTO,
   MontageBoardDTO,
   MontageBoardMeta,
+  MontageRefAsset,
   GenerationConfigPreset,
   GenerationConfigPresetSettings,
   HITLDTO,
@@ -1445,17 +1446,39 @@ export const api = {
     return res.json() as Promise<{ ok: boolean; preview_url: string }>;
   },
 
+  montageRefAssets: (projectId: number) =>
+    http<{ assets: MontageRefAsset[] }>(
+      `/api/projects/${projectId}/montage-board/ref-assets`,
+    ),
+
+  linkMontageFrameRef: (
+    projectId: number,
+    frameNumber: number,
+    payload: { file: string; kind?: string; name?: string },
+  ) => {
+    const q = new URLSearchParams({
+      frame_number: String(frameNumber),
+      file: payload.file,
+      kind: payload.kind ?? "",
+      name: payload.name ?? "",
+    });
+    return http<{ ok: boolean }>(
+      `/api/projects/${projectId}/montage-board/link-ref?${q}`,
+      { method: "POST" },
+    );
+  },
+
   addMontageFrameRef: async (
     projectId: number,
     frameNumber: number,
-    payload: { kind: string; description: string; file: File },
+    payload: { kind: string; name: string; file: File },
   ) => {
     const fd = new FormData();
     fd.append("file", payload.file);
     const q = new URLSearchParams({
       frame_number: String(frameNumber),
       kind: payload.kind,
-      description: payload.description,
+      name: payload.name,
     });
     const res = await fetch(`/api/projects/${projectId}/montage-board/refs?${q}`, {
       method: "POST",

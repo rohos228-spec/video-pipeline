@@ -285,20 +285,31 @@ export interface MontageBoardParentRef {
   image_url: string | null;
 }
 
-/** Реф, который оператор добавил кадру прямо на доске: вид + описание. */
+/** Реф, приложенный кадру на доске: вид + имя, видное в монтаже. */
 export interface MontageManualRef {
   id: string;
   kind: string;
   kind_label: string;
-  description: string;
+  name: string;
+  /** Готовый реф проекта: при отвязке файл остаётся на месте. */
+  linked?: boolean;
   image_url: string | null;
 }
 
-/** Виды рефов для формы добавления (id + подпись + подсказка описания). */
+/** Готовый реф проекта (`characters/`, `items/`) для окна «приложить». */
+export interface MontageRefAsset {
+  kind: string;
+  kind_label: string;
+  code: string;
+  name: string;
+  file: string;
+  image_url: string | null;
+}
+
+/** Виды рефов для загрузки нового (id + подпись). */
 export interface MontageRefKindChoice {
   id: string;
   label: string;
-  hint: string;
 }
 
 export interface MontageAnchorRow {

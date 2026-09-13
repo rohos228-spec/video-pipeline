@@ -1295,16 +1295,33 @@ async def _board_frame_or_404(
     return frame
 
 
+@router.get("/{project_id}/montage-board/ref-assets")
+async def montage_board_ref_assets(
+    project_id: int,
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    """Готовые рефы проекта: персонажи и предметы, которые можно приложить."""
+    from app.services.montage_board import _entity_name_maps
+    from app.services.montage_frame_refs import list_ref_assets
+
+    p = _project_or_404(await session.get(Project, project_id))
+    char_names, item_names = await _entity_name_maps(session, project_id)
+    assets = list_ref_assets(
+        p.data_dir, names={"character": char_names, "item": item_names}
+    )
+    return {"assets": assets}
+
+
 @router.post("/{project_id}/montage-board/refs")
 async def montage_board_add_ref(
     project_id: int,
     frame_number: int = Query(..., ge=1),
     kind: str = Query("other"),
-    description: str = Query(""),
+    name: str = Query(""),
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """Добавить референс кадру: файл + вид + обязательное описание."""
+    """Загрузить новый референс кадру: файл + вид + имя."""
     from app.services.montage_frame_refs import add_manual_ref, manual_refs_for_board
 
     p = _project_or_404(await session.get(Project, project_id))
@@ -1316,10 +1333,36 @@ async def montage_board_add_ref(
             frame,
             data_dir=p.data_dir,
             kind=kind,
-            description=description,
+            name=name,
             content=content,
             suffix=suffix,
         )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await session.commit()
+    return {
+        "ok": True,
+        "frame_number": frame_number,
+        "refs": manual_refs_for_board(p.data_dir, frame),
+    }
+
+
+@router.post("/{project_id}/montage-board/link-ref")
+async def montage_board_link_ref(
+    project_id: int,
+    frame_number: int = Query(..., ge=1),
+    file: str = Query(...),
+    kind: str = Query(""),
+    name: str = Query(""),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    """Приложить кадру готовый реф проекта — без загрузки файла."""
+    from app.services.montage_frame_refs import link_ref_asset, manual_refs_for_board
+
+    p = _project_or_404(await session.get(Project, project_id))
+    frame = await _board_frame_or_404(session, p, frame_number)
+    try:
+        link_ref_asset(frame, data_dir=p.data_dir, file=file, kind=kind, name=name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     await session.commit()

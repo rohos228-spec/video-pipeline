@@ -112,7 +112,6 @@ type RowKey =
 const GRID_ROWS: { key: RowKey; label: string }[] = [
   { key: "voiceover", label: "Закадровый текст" },
   { key: "image1", label: "Кадр" },
-  { key: "image2", label: "Изображение 2" },
   { key: "video1", label: "Видео 1" },
   { key: "video2", label: "Видео 2" },
   { key: "timestamps", label: "Таймкоды" },
@@ -468,17 +467,19 @@ function MontageColGroup({
   );
 }
 
+/**
+ * Вставка кадра в зазоре между колонками. Плюс не мозолит глаза: появляется
+ * только под курсором и только в одной строке сверху.
+ */
 function InsertGutter({
   as,
   label,
   onClick,
-  showIcon = true,
   gap = "scene",
 }: {
   as: "th" | "td";
   label: string;
   onClick: () => void;
-  showIcon?: boolean;
   gap?: "scene" | "shot";
 }) {
   const scene = gap === "scene";
@@ -496,11 +497,9 @@ function InsertGutter({
     >
       <span
         className={cn(
-          "flex items-center justify-center rounded-full border border-dashed transition",
+          "flex items-center justify-center rounded-full border border-dashed border-transparent opacity-0 transition",
           scene ? "h-7 w-4" : "h-4 w-3",
-          showIcon || scene
-            ? "border-white/20 bg-white/[0.03] group-hover/add:border-transparent group-hover/add:bg-[rgba(209,254,23,1)]"
-            : "border-transparent opacity-0 group-hover/add:opacity-100 group-hover/add:border-transparent group-hover/add:bg-[rgba(209,254,23,1)]",
+          "group-hover/add:border-transparent group-hover/add:bg-[rgba(209,254,23,1)] group-hover/add:opacity-100",
         )}
       >
         <Plus className={scene ? "h-3 w-3" : "h-2.5 w-2.5"} />
@@ -512,6 +511,25 @@ function InsertGutter({
     return <th className={cn(cls, "border-b border-white/10")}>{inner}</th>;
   }
   return <td className={cls}>{inner}</td>;
+}
+
+/**
+ * Тот же зазор между кадрами, но без кнопки: плюсик живёт только в одной
+ * строке сверху, а колонки-разделители нужны всем строкам, иначе fixed-таблица
+ * разъедется.
+ */
+function GapCell({
+  as,
+  gap = "scene",
+}: {
+  as: "th" | "td";
+  gap?: "scene" | "shot";
+}) {
+  const cls = gap === "scene" ? SCENE_GAP_CLASS : SHOT_GAP_CLASS;
+  if (as === "th") {
+    return <th className={cn(cls, "border-b border-white/10")} />;
+  }
+  return <td className={cls} />;
 }
 
 function VoiceoverCell({
@@ -3195,7 +3213,6 @@ export function AssembleMontageBoard({
                           <InsertGutter
                             as="th"
                             gap="scene"
-                            showIcon={false}
                             label={
                               ri === 0
                                 ? "Кадр в начало"
@@ -3227,8 +3244,7 @@ export function AssembleMontageBoard({
                                 <InsertGutter
                                   as="th"
                                   gap="shot"
-                                  showIcon={false}
-                                  label={`Кадр после #${fr.number}`}
+                                        label={`Кадр после #${fr.number}`}
                                   onClick={() =>
                                     setAddFrame({ afterFrameId: fr.frame_id })
                                   }
@@ -3241,7 +3257,6 @@ export function AssembleMontageBoard({
                       <InsertGutter
                         as="th"
                         gap="scene"
-                        showIcon={false}
                         label="Кадр в конец"
                         onClick={() =>
                           setAddFrame({
@@ -3266,25 +3281,7 @@ export function AssembleMontageBoard({
                         const tpl = head?.shot_template || "";
                         return (
                           <Fragment key={`scene-h-${range.key}`}>
-                            <InsertGutter
-                              as="th"
-                              gap="scene"
-                              label={
-                                ri === 0
-                                  ? "Новая сцена в начало"
-                                  : `Новая сцена после #${ranges[ri - 1].frames[ranges[ri - 1].frames.length - 1].number}`
-                              }
-                              onClick={() =>
-                                setAddFrame({
-                                  afterFrameId:
-                                    ri === 0
-                                      ? null
-                                      : ranges[ri - 1].frames[
-                                          ranges[ri - 1].frames.length - 1
-                                        ].frame_id,
-                                })
-                              }
-                            />
+                            <GapCell as="th" gap="scene" />
                             <th
                               colSpan={sceneColSpan(range.frames.length)}
                               style={{ width: sceneBlockWidthPx(range.frames.length, colRem) }}
@@ -3311,16 +3308,7 @@ export function AssembleMontageBoard({
                           </Fragment>
                         );
                       })}
-                      <InsertGutter
-                        as="th"
-                        gap="scene"
-                        label="Новая сцена в конец"
-                        onClick={() =>
-                          setAddFrame({
-                            afterFrameId: frames[frames.length - 1]?.frame_id ?? null,
-                          })
-                        }
-                      />
+                      <GapCell as="th" gap="scene" />
                     </tr>
                   </thead>
                   <tbody>
@@ -3356,26 +3344,7 @@ export function AssembleMontageBoard({
                           </td>
                           {ranges.map((range, ri) => (
                           <Fragment key={`${row.key}-scene-${range.key}`}>
-                          <InsertGutter
-                            as="td"
-                            gap="scene"
-                            showIcon={false}
-                            label={
-                              ri === 0
-                                ? "Кадр в начало"
-                                : `Новая сцена после #${ranges[ri - 1].frames[ranges[ri - 1].frames.length - 1].number}`
-                            }
-                            onClick={() =>
-                              setAddFrame({
-                                afterFrameId:
-                                  ri === 0
-                                    ? null
-                                    : ranges[ri - 1].frames[
-                                        ranges[ri - 1].frames.length - 1
-                                      ].frame_id,
-                              })
-                            }
-                          />
+                          <GapCell as="td" gap="scene" />
                           {SCENE_SPAN_ROWS.has(row.key) ? (
                             <td
                               colSpan={sceneColSpan(range.frames.length)}
@@ -3632,13 +3601,7 @@ export function AssembleMontageBoard({
                               )}
                             </td>
                             {fi < range.frames.length - 1 ? (
-                            <InsertGutter
-                              as="td"
-                              gap="shot"
-                              showIcon={false}
-                              label={`Кадр после #${fr.number}`}
-                              onClick={() => setAddFrame({ afterFrameId: fr.frame_id })}
-                            />
+                              <GapCell as="td" gap="shot" />
                             ) : null}
                             </Fragment>
                             );
@@ -3646,17 +3609,7 @@ export function AssembleMontageBoard({
                           )}
                           </Fragment>
                           ))}
-                          <InsertGutter
-                            as="td"
-                            gap="scene"
-                            showIcon={false}
-                            label="Новая сцена в конец"
-                            onClick={() =>
-                              setAddFrame({
-                                afterFrameId: frames[frames.length - 1]?.frame_id ?? null,
-                              })
-                            }
-                          />
+                          <GapCell as="td" gap="scene" />
                         </tr>
                         </Fragment>
                       );

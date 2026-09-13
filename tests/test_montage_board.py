@@ -795,7 +795,7 @@ async def test_montage_board_manual_refs_roundtrip(
     montage_project: Project,
     session: AsyncSession,
 ) -> None:
-    """Ручной реф кадра: файл + описание видны на доске, удаление их убирает."""
+    """Загруженный реф: файл + имя видны на доске, удаление их убирает."""
     from app.services.montage_frame_refs import (
         add_manual_ref,
         delete_manual_ref,
@@ -817,7 +817,7 @@ async def test_montage_board_manual_refs_roundtrip(
         fr,
         data_dir=montage_project.data_dir,
         kind="персонаж",
-        description="следователь, 40 лет, серое пальто",
+        name="следователь Лавров",
         content=b"png",
         suffix=".png",
     )
@@ -827,13 +827,14 @@ async def test_montage_board_manual_refs_roundtrip(
     refs = board["frames"][0]["manual_refs"]
     assert [r["kind"] for r in refs] == ["character"]
     assert refs[0]["kind_label"] == "персонаж"
-    assert refs[0]["description"] == "следователь, 40 лет, серое пальто"
+    assert refs[0]["name"] == "следователь Лавров"
     assert refs[0]["image_url"]
-    assert board["ref_kind_choices"][0]["hint"]
+    assert refs[0]["linked"] is False
+    assert [k["id"] for k in board["ref_kind_choices"]][0] == "character"
 
     paths = manual_ref_paths(montage_project.data_dir, fr)
     assert len(paths) == 1 and paths[0].is_file()
-    assert "следователь" in manual_ref_prompt_note(fr)
+    assert "следователь Лавров" in manual_ref_prompt_note(fr)
 
     assert delete_manual_ref(fr, data_dir=montage_project.data_dir, ref_id=row["id"])
     await session.flush()
@@ -843,19 +844,93 @@ async def test_montage_board_manual_refs_roundtrip(
 
 
 @pytest.mark.asyncio
-async def test_montage_board_manual_ref_needs_description(
+async def test_montage_board_manual_ref_needs_name(
     montage_project: Project,
 ) -> None:
-    """Без описания реф не принимаем: генератору нечего с картинки взять."""
+    """Без имени реф не принимаем: на доске его будет не отличить."""
     from app.services.montage_frame_refs import add_manual_ref
 
     fr = Frame(project_id=montage_project.id, number=1, status="planned")
-    with pytest.raises(ValueError, match="описание"):
+    with pytest.raises(ValueError, match="имя"):
         add_manual_ref(
             fr,
             data_dir=montage_project.data_dir,
             kind="item",
-            description="   ",
+            name="   ",
             content=b"png",
             suffix=".png",
         )
+
+
+@pytest.mark.asyncio
+async def test_montage_board_link_existing_asset(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    """Готовый персонаж проекта прикладывается без загрузки и файл переживает отвязку."""
+    from app.models import Entity
+    from app.services.montage_frame_refs import (
+        delete_manual_ref,
+        link_ref_asset,
+        list_ref_assets,
+    )
+
+    chars = montage_project.data_dir / "characters"
+    chars.mkdir(parents=True, exist_ok=True)
+    png = chars / "c01.png"
+    png.write_bytes(b"png")
+
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="текст кадра",
+        status="planned",
+    )
+    session.add(montage_project)
+    session.add(fr)
+    session.add(
+        Entity(
+            project_id=montage_project.id,
+            type="character",
+            code="c01",
+            name="следователь",
+        )
+    )
+    await session.flush()
+
+    assets = list_ref_assets(
+        montage_project.data_dir, names={"character": {"c01": "следователь"}}
+    )
+    assert [(a["kind"], a["code"], a["name"]) for a in assets] == [
+        ("character", "c01", "следователь")
+    ]
+
+    row = link_ref_asset(
+        fr,
+        data_dir=montage_project.data_dir,
+        file=assets[0]["file"],
+        kind=assets[0]["kind"],
+        name=assets[0]["name"],
+    )
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    ref = board["frames"][0]["manual_refs"][0]
+    assert ref["name"] == "следователь"
+    assert ref["linked"] is True
+
+    assert delete_manual_ref(fr, data_dir=montage_project.data_dir, ref_id=row["id"])
+    # Ассет проекта не наш файл — отвязка его не удаляет.
+    assert png.is_file()
+
+
+@pytest.mark.asyncio
+async def test_montage_board_link_ref_rejects_outside_file(
+    montage_project: Project,
+) -> None:
+    """Приложить можно только то, что лежит в папках проекта."""
+    from app.services.montage_frame_refs import link_ref_asset
+
+    fr = Frame(project_id=montage_project.id, number=1, status="planned")
+    with pytest.raises(ValueError, match="нет такого рефа"):
+        link_ref_asset(fr, data_dir=montage_project.data_dir, file="../../etc/passwd")

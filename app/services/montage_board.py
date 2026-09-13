@@ -28,11 +28,7 @@ from app.services.montage_board_cache import (
     probe_video_durations_parallel,
 )
 from app.services.montage_board_meta import montage_meta, public_board_meta
-from app.services.montage_frame_refs import (
-    REF_KIND_HINTS,
-    REF_KINDS,
-    manual_refs_for_board,
-)
+from app.services.montage_frame_refs import REF_KINDS, manual_refs_for_board
 from app.services.montage_coverage_ops import (
     COVERAGE_ANGLE_CHOICES,
     COVERAGE_LIGHT_CHOICES,
@@ -1122,7 +1118,6 @@ async def build_montage_board(
         "coverage_stitch_choices": stitch_choices_for_ui(),
         "coverage_template_choices": template_choices_for_ui(),
         "ref_kind_choices": [
-            {"id": kind, "label": label, "hint": REF_KIND_HINTS[kind]}
-            for kind, label in REF_KINDS.items()
+            {"id": kind, "label": label} for kind, label in REF_KINDS.items()
         ],
     }

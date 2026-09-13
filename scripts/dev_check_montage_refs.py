@@ -1,7 +1,7 @@
-"""Dev-проверка референсов кадра: полоса под картинкой, добавление и удаление.
+"""Dev-проверка референсов кадра: полоса под картинкой и окно «приложить».
 
 Не часть пайплайна. Нужен бэкенд на :8765 и сид
-``scripts/dev_seed_montage_scene.py``.
+``scripts/dev_seed_montage_scene.py`` (он же кладёт готовых персонажей).
 
     python3 scripts/dev_check_montage_refs.py [project_id] [out_dir]
 """
@@ -20,9 +20,8 @@ BASE = "http://127.0.0.1:8765"
 def _ref_png(path: Path) -> Path:
     from PIL import Image
 
-    img = Image.new("RGB", (256, 256), (40, 80, 140))
     path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(path)
+    Image.new("RGB", (256, 256), (40, 80, 140)).save(path)
     return path
 
 
@@ -42,47 +41,58 @@ async def main(project_id: int, out_dir: Path) -> None:
             "tbody tr > td:first-child button span"
         ).all_inner_texts()
         print("строки доски:", " → ".join(labels))
-        print("отдельной строки референсов нет:", "Референсы" not in labels)
+        print("строки референсов нет:", "Референсы" not in labels)
+        print("строки «Изображение 2» нет:", "Изображение 2" not in labels)
 
         add = page.get_by_role("button", name="Референсы кадра #1").first
         await add.scroll_into_view_if_needed()
+        print("на кнопке нет слова «реф»:", (await add.inner_text()).strip() == "")
         await page.screenshot(path=str(out_dir / "refs-strip.png"))
-        await add.hover()
-        await page.wait_for_timeout(500)
-        panel = page.get_by_text("генератор берёт максимум два", exact=False).first
-        print("панель открылась по наведению:", await panel.is_visible())
-        await page.screenshot(path=str(out_dir / "refs-panel.png"))
 
-        await page.get_by_role("button", name="персонаж", exact=True).first.click()
-        await page.locator("textarea").last.fill(
-            "следователь: 40 лет, серое пальто, стоит у окна"
+        await add.click()
+        await page.wait_for_timeout(1200)
+        print(
+            "окно с готовыми рефами проекта:",
+            await page.get_by_text("уже есть в проекте", exact=False).first.is_visible(),
         )
+        await page.screenshot(path=str(out_dir / "refs-window.png"))
+
+        # 1) приложить готового персонажа проекта
+        await page.get_by_title("Приложить персонаж: следователь Лавров").first.click()
+        await page.wait_for_timeout(2500)
+        print(
+            "готовый персонаж приложен:",
+            await page.get_by_text("следователь Лавров", exact=False).first.is_visible(),
+        )
+
+        # 2) загрузить новый файл под своим именем
         async with page.expect_file_chooser() as fc:
             await page.get_by_role("button", name="выбрать файл").first.click()
         chooser = await fc.value
         await chooser.set_files(str(ref_file))
         await page.wait_for_timeout(300)
-        await page.get_by_role("button", name="добавить", exact=True).first.click()
+        await page.get_by_placeholder("имя для", exact=False).first.fill("окно кабинета")
+        await page.get_by_role("button", name="приложить", exact=True).first.click()
         await page.wait_for_timeout(2500)
+        print(
+            "загруженный реф с именем:",
+            await page.get_by_text("окно кабинета", exact=False).first.is_visible(),
+        )
+        await page.screenshot(path=str(out_dir / "refs-attached.png"))
 
-        # Уводим курсор, иначе повторный hover не даёт mouseenter.
-        await page.mouse.move(10, 10)
-        await page.wait_for_timeout(400)
-        await add.hover()
-        await page.wait_for_timeout(700)
-        added = page.get_by_text("следователь: 40 лет", exact=False).first
-        print("реф с описанием в панели:", await added.is_visible())
-        await page.screenshot(path=str(out_dir / "refs-added.png"))
+        # 3) убрать оба
+        for _ in range(2):
+            await page.get_by_role("button", name="Убрать реф").first.click()
+            await page.wait_for_timeout(2000)
+        print(
+            "после удаления пусто:",
+            await page.get_by_text("пока ничего не приложено", exact=False).first.is_visible(),
+        )
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(800)
 
-        await page.get_by_role("button", name="Убрать реф").first.click()
-        await page.wait_for_timeout(2500)
-        await page.mouse.move(10, 10)
-        await page.wait_for_timeout(400)
-        await add.hover()
-        await page.wait_for_timeout(700)
-        print("после удаления рефов нет:", await page.get_by_text(
-            "своих рефов у кадра нет", exact=False
-        ).first.is_visible())
+        gutters = await page.locator('tbody td[title^="Кадр после"]').count()
+        print("плюсиков в строках таблицы:", gutters)
         await page.screenshot(path=str(out_dir / "refs-deleted.png"))
         await browser.close()
 

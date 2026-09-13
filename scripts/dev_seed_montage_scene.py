@@ -15,7 +15,7 @@ import sys
 from sqlalchemy import delete, select
 
 from app.db import session_scope
-from app.models import Frame, Project
+from app.models import Entity, Frame, Project
 from app.project_db import (
     init_project_db,
     project_db_session_scope,
@@ -58,6 +58,24 @@ CELLS = [
         "anchors": ["Через два дня дело забрали", "Курьер увёз портфель"],
     },
 ]
+
+
+#: Готовые рефы проекта для окна «приложить»: код → (вид, имя, цвет).
+ASSETS = [
+    ("characters", "c01", "character", "следователь Лавров", (74, 92, 122)),
+    ("characters", "c02", "character", "курьер", (122, 88, 74)),
+    ("items", "i01", "item", "папка с делом", (150, 122, 70)),
+]
+
+
+def _seed_assets(data_dir) -> None:
+    """PNG персонажей и предметов + имена в Entity — иначе окно рефов пустое."""
+    from PIL import Image
+
+    for folder, code, _kind, _name, color in ASSETS:
+        directory = data_dir / folder
+        directory.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (256, 256), color).save(directory / f"{code}.png")
 
 
 def _split_by_anchors(text: str, anchors: list[str]) -> list[str]:
@@ -103,6 +121,8 @@ async def main(project_id: int) -> None:
             project.meta = meta
         await master.flush()
 
+    _seed_assets(data_dir)
+
     async with session_scope() as master:
         project = await master.get(Project, project_id)
         await init_project_db(data_dir, project)
@@ -110,6 +130,17 @@ async def main(project_id: int) -> None:
 
     async with project_db_session_scope(data_dir) as session:
         await session.execute(delete(Frame).where(Frame.project_id == project_id))
+        await session.execute(delete(Entity).where(Entity.project_id == project_id))
+        for i, (_folder, code, kind, name, _color) in enumerate(ASSETS, start=1):
+            session.add(
+                Entity(
+                    project_id=project_id,
+                    type=kind if kind != "item" else "prop",
+                    code=code,
+                    name=name,
+                    sort_key=float(i),
+                )
+            )
         await session.flush()
         number = 0
         sort_key = 0.0
