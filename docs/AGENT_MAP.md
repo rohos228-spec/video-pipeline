@@ -187,6 +187,7 @@ Series workbook — отдельный трек: `docs/SERIES_XLSX_WORKBOOK.md`.
 | Word-level в БД | таблица `asr_words` (`app/models.py` AsrWord), запись `app/services/asr_words_store.py`; API `GET /api/projects/{id}/asr-words` |
 | VO в xlsx | R49 (`ROW_VOICEOVER_V8`) + таймкоды R15 |
 | **Regen на доске** | `montage_board_regen.py` → тот же API, что img/video (`outsee_retry`); промты из БД (`prompt_versions`/Frame), Excel fallback. CDP не нужен при `IMAGE/VIDEO_PROVIDER=outsee\|grsai`. См. `docs/DB_V2.md` §8 |
+| **Доска монтажа (UI + строки сцены)** | `web/src/components/canvas/assemble-montage-board.tsx`, `montage-scene-cells.tsx`, `app/services/montage_board.py`, `montage_coverage_ops.py`; разбор и бэклог — [`docs/MONTAGE_BOARD_IMPROVEMENTS.md`](MONTAGE_BOARD_IMPROVEMENTS.md) |
 
 ---
 

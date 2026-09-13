@@ -174,6 +174,145 @@ def public_board_meta(board: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+"""Текстовые поля coverage-операций, которые обязаны дожить до apply.
+
+Строки сцены на доске (крупность / ракурс / движение / стык / свет / набор)
+пишут значение в саму операцию: потерянное поле = apply с пустым значением.
+"""
+COVERAGE_TEXT_FIELDS = (
+    "plan",
+    "action",
+    "kind",
+    "prompt",
+    "correction",
+    "template",
+    "angle",
+    "move",
+    "stitch",
+    "light",
+    "set",
+)
+
+
+def _keep_anchor_hints(
+    rows: list[dict[str, Any]], raw_rows: Any
+) -> list[dict[str, Any]]:
+    """Чей это якорь: без ``cell_index``/``frame_number`` доска после
+    перезагрузки не покажет дописанный якорь в своей клетке. В биты[] эти
+    подсказки не попадают — ``normalize_anchor_rows`` их снимает при apply."""
+    hints: list[dict[str, Any] | None] = []
+    for item in raw_rows or []:
+        if isinstance(item, str):
+            if item.strip():
+                hints.append(None)
+            continue
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("якорь") or item.get("anchor") or "").strip():
+            hints.append(item)
+    for i, row in enumerate(rows):
+        hint = hints[i] if i < len(hints) else None
+        if hint is None:
+            continue
+        for key in ("cell_index", "frame_number"):
+            val = hint.get(key)
+            if isinstance(val, int):
+                row[key] = val
+    return rows
+
+
+def normalize_queue_ops(raw_ops: Any) -> list[dict[str, Any]]:
+    """Очередь от UI → только известные типы, кадры и поля правок."""
+    cleaned: list[dict[str, Any]] = []
+    for raw in raw_ops or []:
+        if not isinstance(raw, dict):
+            continue
+        op_type = str(raw.get("type") or "")
+        try:
+            frame_number = int(raw.get("frame_number"))
+        except (TypeError, ValueError):
+            continue
+        if frame_number < 1:
+            continue
+        item: dict[str, Any] = {
+            "type": op_type,
+            "frame_number": frame_number,
+            "shot": 2 if raw.get("shot") == 2 else 1,
+        }
+        if op_type.startswith(("image_", "video_")):
+            for key in ("prompt", "correction"):
+                val = raw.get(key)
+                if isinstance(val, str) and val.strip():
+                    item[key] = val
+            cleaned.append(item)
+            continue
+        if not op_type.startswith("coverage_"):
+            continue
+        for key in COVERAGE_TEXT_FIELDS:
+            val = raw.get(key)
+            if isinstance(val, str) and val.strip():
+                item[key] = val.strip()
+        if isinstance(raw.get("anchors"), list):
+            from app.services.montage_scene_editor import normalize_anchor_rows
+
+            rows = normalize_anchor_rows(raw["anchors"])
+            if rows:
+                item["anchors"] = _keep_anchor_hints(rows, raw["anchors"])
+        parent_raw = raw.get("parent_number")
+        if parent_raw not in (None, ""):
+            try:
+                item["parent_number"] = int(parent_raw)
+            except (TypeError, ValueError):
+                pass
+        cleaned.append(item)
+    return cleaned
+
+
+def _remap_slot_key(key: str, mapping: dict[int, int]) -> str:
+    head, sep, tail = str(key).partition(":")
+    try:
+        number = int(head)
+    except (TypeError, ValueError):
+        return str(key)
+    return f"{mapping.get(number, number)}{sep}{tail}"
+
+
+def remap_frame_numbers(ops: list[dict[str, Any]], mapping: dict[int, int]) -> int:
+    """Вставка шота сдвинула нумерацию — правим кадры в ещё не применённых ops."""
+    if not mapping:
+        return 0
+    changed = 0
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        for key in ("frame_number", "parent_number"):
+            try:
+                number = int(op.get(key))
+            except (TypeError, ValueError):
+                continue
+            new = mapping.get(number)
+            if new is not None and new != number:
+                op[key] = new
+                changed += 1
+    return changed
+
+
+def remap_board_slot_keys(board: dict[str, Any], mapping: dict[int, int]) -> None:
+    """Подсветка и trim'ы после renumber должны остаться на своих кадрах."""
+    if not mapping:
+        return
+    for key in ("highlights", "failed_highlights", "stale_videos"):
+        raw = board.get(key)
+        if isinstance(raw, list):
+            board[key] = [_remap_slot_key(str(x), mapping) for x in raw]
+    for key in ("video_trims", "corrections"):
+        raw = board.get(key)
+        if isinstance(raw, dict):
+            board[key] = {
+                _remap_slot_key(str(k), mapping): v for k, v in raw.items()
+            }
+
+
 def should_accept_queue_save(
     *,
     cleaned: list[dict[str, Any]],

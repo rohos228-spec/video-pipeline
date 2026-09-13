@@ -946,52 +946,14 @@ async def montage_board_save_queue(
     from app.services.montage_board_apply_job import get_apply_job
     from app.services.montage_board_meta import (
         montage_meta,
+        normalize_queue_ops,
         public_board_meta,
         set_montage_meta,
         should_accept_queue_save,
     )
 
     p = _project_or_404(await session.get(Project, project_id))
-    ops = list(body.get("pending_ops") or [])
-    # Нормализуем: только известные типы + валидный frame.
-    cleaned: list[dict] = []
-    for raw in ops:
-        if not isinstance(raw, dict):
-            continue
-        t = str(raw.get("type") or "")
-        try:
-            fr = int(raw.get("frame_number"))
-        except (TypeError, ValueError):
-            continue
-        if fr < 1:
-            continue
-        shot = 2 if raw.get("shot") == 2 else 1
-        item: dict = {"type": t, "frame_number": fr, "shot": shot}
-        if t.startswith(("image_", "video_")):
-            if isinstance(raw.get("prompt"), str) and raw["prompt"].strip():
-                item["prompt"] = raw["prompt"]
-            if isinstance(raw.get("correction"), str) and raw["correction"].strip():
-                item["correction"] = raw["correction"]
-            cleaned.append(item)
-            continue
-        if t.startswith("coverage_"):
-            for key in ("plan", "action", "kind", "prompt", "correction", "template"):
-                val = raw.get(key)
-                if isinstance(val, str) and val.strip():
-                    item[key] = val.strip()
-            if isinstance(raw.get("anchors"), list):
-                from app.services.montage_scene_editor import normalize_anchor_rows
-
-                rows = normalize_anchor_rows(raw["anchors"])
-                if rows:
-                    item["anchors"] = rows
-            parent_raw = raw.get("parent_number")
-            if parent_raw not in (None, ""):
-                try:
-                    item["parent_number"] = int(parent_raw)
-                except (TypeError, ValueError):
-                    pass
-            cleaned.append(item)
+    cleaned = normalize_queue_ops(body.get("pending_ops"))
 
     board = montage_meta(p)
     existing = list(board.get("pending_ops") or [])
@@ -1314,6 +1276,121 @@ async def montage_board_delete_video(
     deleted = await delete_scene_video(session, p, frame_number, shot=shot)
     await session.commit()
     return {"ok": deleted, "frame_number": frame_number, "shot": shot}
+
+
+async def _board_frame_or_404(
+    session: AsyncSession, project: Project, frame_number: int
+) -> Frame:
+    from sqlalchemy import select as _select
+
+    frame = (
+        await session.execute(
+            _select(Frame).where(
+                Frame.project_id == project.id, Frame.number == frame_number
+            )
+        )
+    ).scalar_one_or_none()
+    if frame is None:
+        raise HTTPException(status_code=404, detail=f"кадр {frame_number} не найден")
+    return frame
+
+
+@router.get("/{project_id}/montage-board/ref-assets")
+async def montage_board_ref_assets(
+    project_id: int,
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    """Готовые рефы проекта: персонажи и предметы, которые можно приложить."""
+    from app.services.montage_board import _entity_name_maps
+    from app.services.montage_frame_refs import list_ref_assets
+
+    p = _project_or_404(await session.get(Project, project_id))
+    char_names, item_names = await _entity_name_maps(session, project_id)
+    assets = list_ref_assets(
+        p.data_dir, names={"character": char_names, "item": item_names}
+    )
+    return {"assets": assets}
+
+
+@router.post("/{project_id}/montage-board/refs")
+async def montage_board_add_ref(
+    project_id: int,
+    frame_number: int = Query(..., ge=1),
+    kind: str = Query("other"),
+    name: str = Query(""),
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    """Загрузить новый референс кадру: файл + вид + имя."""
+    from app.services.montage_frame_refs import add_manual_ref, manual_refs_for_board
+
+    p = _project_or_404(await session.get(Project, project_id))
+    frame = await _board_frame_or_404(session, p, frame_number)
+    content = await file.read()
+    suffix = Path(file.filename or "ref.png").suffix or ".png"
+    try:
+        add_manual_ref(
+            frame,
+            data_dir=p.data_dir,
+            kind=kind,
+            name=name,
+            content=content,
+            suffix=suffix,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await session.commit()
+    return {
+        "ok": True,
+        "frame_number": frame_number,
+        "refs": manual_refs_for_board(p.data_dir, frame),
+    }
+
+
+@router.post("/{project_id}/montage-board/link-ref")
+async def montage_board_link_ref(
+    project_id: int,
+    frame_number: int = Query(..., ge=1),
+    file: str = Query(...),
+    kind: str = Query(""),
+    name: str = Query(""),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    """Приложить кадру готовый реф проекта — без загрузки файла."""
+    from app.services.montage_frame_refs import link_ref_asset, manual_refs_for_board
+
+    p = _project_or_404(await session.get(Project, project_id))
+    frame = await _board_frame_or_404(session, p, frame_number)
+    try:
+        link_ref_asset(frame, data_dir=p.data_dir, file=file, kind=kind, name=name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await session.commit()
+    return {
+        "ok": True,
+        "frame_number": frame_number,
+        "refs": manual_refs_for_board(p.data_dir, frame),
+    }
+
+
+@router.post("/{project_id}/montage-board/delete-ref")
+async def montage_board_delete_ref(
+    project_id: int,
+    frame_number: int = Query(..., ge=1),
+    ref_id: str = Query(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    from app.services.montage_frame_refs import delete_manual_ref, manual_refs_for_board
+
+    p = _project_or_404(await session.get(Project, project_id))
+    frame = await _board_frame_or_404(session, p, frame_number)
+    deleted = delete_manual_ref(frame, data_dir=p.data_dir, ref_id=ref_id)
+    await session.commit()
+    return {
+        "ok": deleted,
+        "frame_number": frame_number,
+        "refs": manual_refs_for_board(p.data_dir, frame),
+    }
 
 
 @router.post("/{project_id}/montage-board/upload-image")

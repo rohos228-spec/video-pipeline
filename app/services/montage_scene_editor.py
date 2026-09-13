@@ -475,20 +475,68 @@ def _frame_anchor_payload(
     }
 
 
+def _anchor_row_for_ui(row: dict[str, Any]) -> dict[str, Any]:
+    """Бит → строка для инлайновой правки якоря на доске."""
+    return {
+        "якорь": str(row.get("якорь") or ""),
+        "изменение": str(row.get("изменение") or ""),
+        "главный": bool(row.get("главный")),
+        "found": bool(row.get("found")),
+        "cell_index": row.get("cell_index"),
+        "frame_number": row.get("frame_number"),
+    }
+
+
+def scene_template_auto(parent: Any) -> str:
+    """Что предлагает дерево «Выбор» для ячейки (подсказка над шаблоном)."""
+    scene_action = main_action_text(parent)
+    place = frame_place(parent)
+    chain = parse_scene_chain(scene_action)
+    if chain:
+        own = chain[0]
+        blob = f"{own.get('place') or ''} {own.get('action') or ''} {own.get('vo') or ''}"
+        return select_template_when({"blob": blob, "place": str(own.get("place") or "")})
+    if not (scene_action or place):
+        return ""
+    return select_template_when(
+        {"blob": f"{place} {scene_action}", "place": place}
+    )
+
+
 def frame_board_scene_cell(frames: list[Any], frame: Any) -> dict[str, Any]:
-    """Сводка для клетки монтажа: якорь ЭТОГО кадра + общие поля сцены."""
+    """Всё, что правится в строках сцены на доске: якоря кадра + поля ячейки."""
     parent, members = scene_group(frames, frame)
     full = cell_full_text(parent, members)
     payload = _frame_anchor_payload(parent, members, frame, full)
-    bits = list(payload.get("bits") or [])
+    bits = [_anchor_row_for_ui(row) for row in (payload.get("bits") or [])]
+    cell_bits = [
+        _anchor_row_for_ui(row)
+        for row in ((payload.get("cell") or {}).get("bits") or [])
+    ]
     scene = _scene_common(parent, members)
     return {
         "shot_anchors": len(bits),
-        "shot_anchor": str(bits[0].get("якорь") or "") if bits else "",
+        "shot_anchor": bits[0]["якорь"] if bits else "",
+        "shot_anchor_change": bits[0]["изменение"] if bits else "",
+        "shot_anchor_main": bits[0]["главный"] if bits else False,
+        "shot_anchor_found": bits[0]["found"] if bits else False,
+        "shot_anchor_rows": bits,
+        "anchor_can_add": bool(payload.get("can_add")),
+        "scene_anchor_rows": cell_bits,
+        "vo_cell_full": full,
         "scene_place": scene.get("place") or "",
         "scene_set": scene.get("set") or "",
         "scene_characters": scene.get("characters") or "",
         "scene_lighting": scene.get("lighting") or "",
+        "scene_id": scene.get("id_scene") or "",
+        "scene_no": scene.get("scene_no") or "",
+        "scene_props": scene.get("props") or "",
+        "scene_accent": scene.get("accent") or "",
+        "scene_bg": scene.get("bg") or "",
+        "scene_sense": scene.get("sense") or "",
+        "scene_visual_type": scene.get("visual_type") or "",
+        "scene_feature": scene.get("feature") or "",
+        "scene_template_auto": scene_template_auto(parent),
         "vo_scene_number": int(parent.number),
         "vo_scene_size": len(members),
     }
