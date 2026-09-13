@@ -11,6 +11,7 @@ import {
   useRef,
   useState,
   type DragEvent as ReactDragEvent,
+  type ReactNode,
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
@@ -56,10 +57,11 @@ import { AudioAlignPopover } from "@/components/studio/audio-align-dialog";
 import {
   ActionCell,
   AnchorCell,
-  ChipsCell,
+  CoverageMenu,
   RoleCell,
   SceneInfoCell,
   TemplateCell,
+  type CoverageMenuGroup,
 } from "@/components/canvas/montage-scene-cells";
 
 /** Единая ширина колонок кадров (+30% к v215). */
@@ -78,11 +80,6 @@ type RowKey =
   | "scene_info"
   | "template"
   | "role"
-  | "plan"
-  | "angle"
-  | "move"
-  | "stitch"
-  | "light"
   | "action"
   | "anchor"
   | "refs"
@@ -95,39 +92,32 @@ type RowKey =
 const GRID_ROWS: { key: RowKey; label: string }[] = [
   { key: "voiceover", label: "Закадровый текст" },
   { key: "refs", label: "Референсы" },
-  { key: "image1", label: "Изображение 1" },
+  { key: "image1", label: "Кадр" },
   { key: "image2", label: "Изображение 2" },
   { key: "video1", label: "Видео 1" },
   { key: "video2", label: "Видео 2" },
   { key: "timestamps", label: "Таймкоды" },
 ];
 
-/** Строки сцены прямо в доске — вместо всплывающего редактора кадра. */
-const SCENE_ROWS: { key: RowKey; label: string }[] = [
+/** Строки на всю VO-ячейку — над картинкой кадра. */
+const SCENE_CELL_ROWS: { key: RowKey; label: string }[] = [
   { key: "scene_info", label: "Сцена (ячейка)" },
   { key: "template", label: "Формат сцены" },
+];
+/**
+ * Данные кадра — под его картинкой. Крупность / ракурс / движение / стык /
+ * свет отдельными строками не показываем: они в меню покрытия под кадром.
+ */
+const SCENE_SHOT_ROWS: { key: RowKey; label: string }[] = [
   { key: "role", label: "Роль в покрытии" },
-  { key: "plan", label: "Крупность" },
-  { key: "angle", label: "Ракурс" },
-  { key: "move", label: "Движение" },
-  { key: "stitch", label: "Стык / переход" },
-  { key: "light", label: "Свет" },
   { key: "action", label: "Действие кадра" },
   { key: "anchor", label: "Якорь кадра" },
 ];
 
 /** Эти строки общие для VO-ячейки — одна клетка на всю сцену. */
-const SCENE_SPAN_ROWS = new Set<RowKey>(["scene_info", "template", "light"]);
+const SCENE_SPAN_ROWS = new Set<RowKey>(["scene_info", "template"]);
 /** Эти строки правятся у каждого кадра отдельно. */
-const SCENE_FRAME_ROWS = new Set<RowKey>([
-  "role",
-  "plan",
-  "angle",
-  "move",
-  "stitch",
-  "action",
-  "anchor",
-]);
+const SCENE_FRAME_ROWS = new Set<RowKey>(["role", "action", "anchor"]);
 
 type MediaPreview = {
   url: string;
@@ -989,6 +979,8 @@ const ClickableMedia = memo(function ClickableMedia({
   onSwapPick,
   swapSelected,
   swapBusy,
+  tall,
+  caption,
 }: {
   url: string | null;
   kind: "image" | "video";
@@ -1010,8 +1002,13 @@ const ClickableMedia = memo(function ClickableMedia({
   onSwapPick?: () => void;
   swapSelected?: boolean;
   swapBusy?: boolean;
+  /** Кадр в центре доски — картинка на три строки в высоту. */
+  tall?: boolean;
+  /** Данные кадра прямо под картинкой (меню покрытия). */
+  caption?: ReactNode;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const mediaH = tall ? "h-[19rem]" : "h-32";
   // Не монтировать сотни <video>/<img> сразу — Chrome зависает на 150×2 клипах.
   const [inView, setInView] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -1067,13 +1064,16 @@ const ClickableMedia = memo(function ClickableMedia({
       >
         <div
           className={cn(
-            "flex h-32 w-full items-center justify-center rounded-lg border border-dashed bg-black/20 text-xs text-muted-foreground",
+            "flex w-full items-center justify-center rounded-lg border border-dashed text-xs text-muted-foreground",
+            mediaH,
+            tall ? "bg-white/[0.06]" : "bg-black/20",
             dragOver ? "border-sky-400/60 bg-sky-500/10 text-sky-100" : "border-white/15",
             swapSelected && "border-amber-400/50 bg-amber-500/10",
           )}
         >
           {dragOver ? "отпустить сюда" : canDropImage ? "нет файла · можно бросить" : "нет файла"}
         </div>
+        {caption ? <div className="mt-1">{caption}</div> : null}
         <MediaActionBar
           kind={kind}
           onRegen={onRegen}
@@ -1108,7 +1108,10 @@ const ClickableMedia = memo(function ClickableMedia({
       {kind === "video" ? (
         <button
           type="button"
-          className="group relative block h-32 w-full overflow-hidden rounded-lg border border-white/10 bg-black"
+          className={cn(
+            "group relative block w-full overflow-hidden rounded-lg border border-white/10 bg-black",
+            mediaH,
+          )}
           onClick={open}
           title={`Открыть ${label}`}
         >
@@ -1134,7 +1137,10 @@ const ClickableMedia = memo(function ClickableMedia({
         <button
           type="button"
           draggable={!!imageSlot}
-          className="group block h-32 w-full cursor-grab overflow-hidden rounded-lg border border-white/10 bg-black active:cursor-grabbing"
+          className={cn(
+            "group block w-full cursor-grab overflow-hidden rounded-lg border border-white/10 bg-black active:cursor-grabbing",
+            mediaH,
+          )}
           onClick={open}
           title={
             imageSlot
@@ -1163,13 +1169,19 @@ const ClickableMedia = memo(function ClickableMedia({
               loading="lazy"
               decoding="async"
               draggable={false}
-              className="h-full w-full object-cover transition group-hover:scale-[1.02] group-hover:brightness-110"
+              className={cn(
+                "h-full w-full transition group-hover:brightness-110",
+                // Кадр в центре доски показываем целиком: вертикаль 9:16 при
+                // object-cover теряла треть картинки.
+                tall ? "object-contain" : "object-cover group-hover:scale-[1.02]",
+              )}
             />
           ) : (
             <div className="h-full w-full bg-black/30" />
           )}
         </button>
       )}
+      {caption ? <div className="mt-1">{caption}</div> : null}
       <MediaActionBar
         kind={kind}
         onRegen={onRegen}
@@ -1691,9 +1703,17 @@ export function AssembleMontageBoard({
   const coverageOn = Boolean(board.data?.show_coverage_rows);
   const gridRows = useMemo(() => {
     if (!coverageOn) return GRID_ROWS;
-    // Роль / крупность / ракурс / движение / стык / свет / действие / якорь —
-    // отдельными строками доски, без всплывающего окна редактора кадра.
-    return [GRID_ROWS[0], ...SCENE_ROWS, ...GRID_ROWS.slice(1)];
+    // В центре кадра — его картинка, под ней данные: роль, действие, якорь.
+    // Крупность … свет живут в меню покрытия прямо под картинкой.
+    const [vo, ...tail] = GRID_ROWS;
+    const frameRow = tail.filter((r) => r.key === "image1");
+    return [
+      vo,
+      ...SCENE_CELL_ROWS,
+      ...frameRow,
+      ...SCENE_SHOT_ROWS,
+      ...tail.filter((r) => r.key !== "image1"),
+    ];
   }, [coverageOn]);
   const meta = board.data?.meta;
   const pendingOpsKey = JSON.stringify(meta?.pending_ops ?? []);
@@ -2816,50 +2836,6 @@ export function AssembleMontageBoard({
         />
       );
     }
-    if (key === "plan") {
-      return (
-        <ChipsCell
-          value={(pending.plan ?? fr.shot_plan ?? "").trim()}
-          choices={board.data?.coverage_plan_choices}
-          pending={hasPendingType(fr.number, "coverage_plan")}
-          disabled={sceneDisabled}
-          onPick={(plan) => queueCoverage({ ...base, type: "coverage_plan", plan })}
-        />
-      );
-    }
-    if (key === "angle") {
-      return (
-        <ChipsCell
-          value={(pending.angle ?? fr.shot_angle ?? "").trim()}
-          choices={board.data?.coverage_angle_choices}
-          pending={hasPendingType(fr.number, "coverage_angle")}
-          disabled={sceneDisabled}
-          onPick={(angle) => queueCoverage({ ...base, type: "coverage_angle", angle })}
-        />
-      );
-    }
-    if (key === "move") {
-      return (
-        <ChipsCell
-          value={(pending.move ?? fr.shot_move ?? "").trim()}
-          choices={board.data?.coverage_move_choices}
-          pending={hasPendingType(fr.number, "coverage_move")}
-          disabled={sceneDisabled}
-          onPick={(move) => queueCoverage({ ...base, type: "coverage_move", move })}
-        />
-      );
-    }
-    if (key === "stitch") {
-      return (
-        <ChipsCell
-          value={(pending.stitch ?? fr.shot_stitch ?? "").trim()}
-          choices={board.data?.coverage_stitch_choices}
-          pending={hasPendingType(fr.number, "coverage_stitch")}
-          disabled={sceneDisabled}
-          onPick={(stitch) => queueCoverage({ ...base, type: "coverage_stitch", stitch })}
-        />
-      );
-    }
     if (key === "action") {
       return (
         <ActionCell
@@ -2972,19 +2948,63 @@ export function AssembleMontageBoard({
         />
       );
     }
-    if (key === "light") {
-      return (
-        <ChipsCell
-          value={(pending.light ?? head.scene_lighting ?? "").trim()}
-          choices={board.data?.coverage_light_choices}
-          pending={hasPendingType(head.number, "coverage_light")}
-          disabled={sceneDisabled}
-          note="свет общий для всей ячейки закадра"
-          onPick={(light) => queueCoverage({ ...base, type: "coverage_light", light })}
-        />
-      );
-    }
     return null;
+  };
+
+  /**
+   * Крупность / ракурс / движение / стык / свет — под картинкой кадра одной
+   * строкой значений, варианты открываются наведением (`CoverageMenu`).
+   * Свет пишется на всю VO-ячейку, поэтому op уходит на её головной кадр.
+   */
+  const coverageGroups = (range: SceneRange, fr: MontageBoardFrame): CoverageMenuGroup[] => {
+    const pending = pendingCoverageForFrame(pendingOps, fr.number);
+    const base = { frame_number: fr.number, shot: 1 as const };
+    const head = range.frames[0] ?? fr;
+    const headPending = pendingCoverageForFrame(pendingOps, head.number);
+    const headBase = { frame_number: head.number, shot: 1 as const };
+    return [
+      {
+        key: "plan",
+        label: "Крупность",
+        value: (pending.plan ?? fr.shot_plan ?? "").trim(),
+        choices: board.data?.coverage_plan_choices,
+        pending: hasPendingType(fr.number, "coverage_plan"),
+        onPick: (plan) => queueCoverage({ ...base, type: "coverage_plan", plan }),
+      },
+      {
+        key: "angle",
+        label: "Ракурс",
+        value: (pending.angle ?? fr.shot_angle ?? "").trim(),
+        choices: board.data?.coverage_angle_choices,
+        pending: hasPendingType(fr.number, "coverage_angle"),
+        onPick: (angle) => queueCoverage({ ...base, type: "coverage_angle", angle }),
+      },
+      {
+        key: "move",
+        label: "Движение",
+        value: (pending.move ?? fr.shot_move ?? "").trim(),
+        choices: board.data?.coverage_move_choices,
+        pending: hasPendingType(fr.number, "coverage_move"),
+        onPick: (move) => queueCoverage({ ...base, type: "coverage_move", move }),
+      },
+      {
+        key: "stitch",
+        label: "Стык",
+        value: (pending.stitch ?? fr.shot_stitch ?? "").trim(),
+        choices: board.data?.coverage_stitch_choices,
+        pending: hasPendingType(fr.number, "coverage_stitch"),
+        onPick: (stitch) => queueCoverage({ ...base, type: "coverage_stitch", stitch }),
+      },
+      {
+        key: "light",
+        label: "Свет",
+        value: (headPending.light ?? head.scene_lighting ?? "").trim(),
+        choices: board.data?.coverage_light_choices,
+        pending: hasPendingType(head.number, "coverage_light"),
+        note: "свет общий для всей ячейки закадра",
+        onPick: (light) => queueCoverage({ ...headBase, type: "coverage_light", light }),
+      },
+    ];
   };
 
   const toggleRow = (key: RowKey) => {
@@ -3464,7 +3484,17 @@ export function AssembleMontageBoard({
                                 <ClickableMedia
                                   url={fr.image_shot1_url}
                                   kind="image"
-                                  label={`Изображение 1 · кадр #${fr.number}`}
+                                  tall={coverageOn}
+                                  caption={
+                                    coverageOn ? (
+                                      <CoverageMenu
+                                        title={`покрытие кадра #${fr.number}`}
+                                        groups={coverageGroups(range, fr)}
+                                        disabled={sceneDisabled}
+                                      />
+                                    ) : undefined
+                                  }
+                                  label={`Кадр #${fr.number} · картинка`}
                                   onPreview={showPreview}
                                   scrollRootRef={tableScrollRef}
                                   imageSlot={{ frameNumber: fr.number, shot: 1 }}

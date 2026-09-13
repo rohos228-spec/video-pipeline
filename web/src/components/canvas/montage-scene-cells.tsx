@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Plus, Sparkles, Trash2 } from "lucide-react";
+import { createPortal } from "react-dom";
+import { ChevronDown, Loader2, Plus, Sparkles, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   api,
@@ -117,6 +118,193 @@ export function ChipsCell({
       </div>
       {note ? <p className={cn(HINT, "mt-1")}>{note}</p> : null}
       <PendingMark show={Boolean(pending)} />
+    </div>
+  );
+}
+
+export type CoverageMenuGroup = {
+  key: string;
+  label: string;
+  value: string;
+  choices: Array<string | ChipChoice> | undefined;
+  note?: string;
+  pending?: boolean;
+  onPick: (id: string) => void;
+};
+
+const MENU_W = 420;
+const MENU_H = 190;
+
+/**
+ * Покрытие кадра под его картинкой: в доске видны только текущие значения,
+ * варианты живут во всплывающем меню и показываются по одной группе — той,
+ * на которую наведён курсор.
+ *
+ * Слева список групп (его высота не меняется), справа чипы выбранной группы:
+ * в раскрывающемся аккордеоне пункты уезжали из-под курсора.
+ */
+export function CoverageMenu({
+  title,
+  groups,
+  disabled,
+}: {
+  title: string;
+  groups: CoverageMenuGroup[];
+  disabled?: boolean;
+}) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const hideRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [box, setBox] = useState<{ left: number; top: number } | null>(null);
+  const [hot, setHot] = useState(0);
+
+  const place = useCallback(() => {
+    const el = hostRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const fit = (x: number) =>
+      Math.round(Math.min(Math.max(8, x), Math.max(8, window.innerWidth - MENU_W - 8)));
+    if (r.bottom + MENU_H + 8 <= window.innerHeight) {
+      setBox({ left: fit(r.left - 6), top: Math.round(r.bottom + 6) });
+      return;
+    }
+    // Снизу не хватает места: уводим меню в сторону, а не наверх — иначе оно
+    // закрывает сам кадр, для которого его и открыли.
+    const toRight = r.right + 8 + MENU_W + 8 <= window.innerWidth;
+    setBox({
+      left: fit(toRight ? r.right + 8 : r.left - 8 - MENU_W),
+      top: Math.round(Math.min(Math.max(8, r.top - 8), Math.max(8, window.innerHeight - MENU_H - 8))),
+    });
+  }, []);
+
+  const show = useCallback(() => {
+    if (hideRef.current) clearTimeout(hideRef.current);
+    place();
+  }, [place]);
+
+  const hide = useCallback(() => {
+    if (hideRef.current) clearTimeout(hideRef.current);
+    // Пауза, чтобы курсор успел дойти от строки значений до самого меню.
+    hideRef.current = setTimeout(() => setBox(null), 140);
+  }, []);
+
+  useEffect(() => () => (hideRef.current ? clearTimeout(hideRef.current) : undefined), []);
+
+  const open = box !== null;
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setBox(null);
+    };
+    const onScroll = () => place();
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+    };
+  }, [open, place]);
+
+  const active = groups[Math.min(hot, groups.length - 1)];
+  const anyPending = groups.some((g) => g.pending);
+
+  return (
+    <div ref={hostRef} onMouseEnter={show} onMouseLeave={hide}>
+      <button
+        type="button"
+        onFocus={show}
+        onBlur={hide}
+        onClick={() => (open ? setBox(null) : show())}
+        title="Наведи, чтобы выбрать крупность, ракурс, движение, стык, свет"
+        className={cn(
+          "w-full rounded-md border px-1.5 py-1 text-left transition",
+          open
+            ? "border-white/30 bg-white/[0.08]"
+            : "border-white/10 bg-white/[0.03] hover:border-white/25 hover:bg-white/[0.07]",
+        )}
+      >
+        <span className="flex items-center gap-1 text-[9px] uppercase tracking-wide text-white/35">
+          {title}
+          <ChevronDown className="h-2.5 w-2.5" />
+          {anyPending ? (
+            <span className="h-1.5 w-1.5 rounded-full bg-amber-300/80" title="есть правка в очереди" />
+          ) : null}
+        </span>
+        <span className="mt-0.5 grid grid-cols-2 gap-x-2 text-[10px] leading-snug">
+          {groups.map((g) => (
+            <span key={g.key} className="flex min-w-0 items-baseline gap-1">
+              <span className="shrink-0 text-white/30">{g.label.toLowerCase()}</span>
+              <span
+                className={cn(
+                  "truncate",
+                  g.pending ? "text-amber-200/90" : g.value ? "text-white/80" : "text-white/25",
+                )}
+              >
+                {g.value || "—"}
+              </span>
+            </span>
+          ))}
+        </span>
+      </button>
+      {open && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              onMouseEnter={show}
+              onMouseLeave={hide}
+              style={{ left: box.left, top: box.top, width: MENU_W }}
+              className="fixed z-[10060] rounded-xl border border-white/12 bg-[#0b0b0b]/98 p-2 shadow-2xl backdrop-blur"
+            >
+              <p className="flex items-baseline gap-2 px-1 pb-1.5">
+                <span className="text-[9px] uppercase tracking-wide text-white/35">{title}</span>
+                <span className="text-[10px] text-white/25">
+                  наведи строку слева — справа её варианты
+                </span>
+              </p>
+              <div className="flex gap-2">
+                <ul className="w-[9.5rem] shrink-0 space-y-0.5">
+                  {groups.map((g, i) => (
+                    <li key={g.key}>
+                      <button
+                        type="button"
+                        onMouseEnter={() => setHot(i)}
+                        onFocus={() => setHot(i)}
+                        className={cn(
+                          "flex w-full items-center gap-1 rounded-md px-1.5 py-1 text-left text-[11px] transition",
+                          i === hot ? "bg-white/10 text-white" : "text-white/55 hover:text-white",
+                        )}
+                      >
+                        <span className="shrink-0">{g.label}</span>
+                        <span
+                          className="ml-auto min-w-0 truncate text-[10px]"
+                          style={{ color: g.value ? ACCENT : "rgba(255,255,255,0.25)" }}
+                        >
+                          {g.value || "—"}
+                        </span>
+                        {g.pending ? (
+                          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-300/80" />
+                        ) : null}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                <div className="min-h-[6.5rem] flex-1 rounded-lg border border-white/10 bg-black/40 p-1.5">
+                  {active ? (
+                    <ChipsCell
+                      value={active.value}
+                      choices={active.choices}
+                      pending={active.pending}
+                      disabled={disabled}
+                      note={active.note}
+                      onPick={active.onPick}
+                    />
+                  ) : null}
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
