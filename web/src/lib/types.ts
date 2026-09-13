@@ -401,6 +401,8 @@ export interface MontageBoardDTO {
   frames: MontageBoardFrame[];
   frame_count: number;
   meta: MontageBoardMeta;
+  /** Формат кадра проекта («9:16», «16:9», …) для картинки на доске. */
+  frame_aspect?: string | null;
   /** Строки План / Действие / Кадр — только если на канвасе script_frames_qc. */
   show_coverage_rows?: boolean;
   coverage_plan_choices?: string[];

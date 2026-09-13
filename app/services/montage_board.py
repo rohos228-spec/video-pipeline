@@ -846,6 +846,17 @@ async def build_montage_board(
     project_id = int(project.id)
     data_dir = project.data_dir
     has_qc_group = canvas_has_script_frames_qc(project)
+    # Пропорции кадра: доска рисует картинку по формату проекта (9:16 / 16:9),
+    # чтобы вокруг горизонтального кадра не оставалось пустого поля.
+    try:
+        from app.services.vibecode_catalog import resolve_node_media_settings
+
+        frame_aspect = str(
+            resolve_node_media_settings(project, node_type="images")["aspect_slug"] or "9:16"
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("montage_board: aspect project {}: {}", project_id, e)
+        frame_aspect = "9:16"
     try:
         board_meta = _json_safe_meta(public_board_meta(montage_meta(project)))
     except Exception as e:  # noqa: BLE001
@@ -1074,6 +1085,7 @@ async def build_montage_board(
         "frames": rows,
         "frame_count": len(rows),
         "meta": board_meta,
+        "frame_aspect": frame_aspect,
         "show_coverage_rows": show_coverage_rows,
         "coverage_plan_choices": list(COVERAGE_PLAN_CHOICES),
         "coverage_angle_choices": list(COVERAGE_ANGLE_CHOICES),

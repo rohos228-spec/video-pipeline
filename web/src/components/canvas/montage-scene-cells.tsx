@@ -216,9 +216,9 @@ export function CoverageMenu({
         onFocus={show}
         onBlur={hide}
         onClick={() => (open ? setBox(null) : show())}
-        title="Наведи, чтобы выбрать крупность, ракурс, движение, стык, свет"
+        title="Наведи или нажми, чтобы менять крупность, ракурс, движение, стык, свет"
         className={cn(
-          "w-full rounded-md border px-1.5 py-1 text-left transition",
+          "group w-full rounded-md border px-1.5 py-1 text-left transition",
           open
             ? "border-white/30 bg-white/[0.08]"
             : "border-white/10 bg-white/[0.03] hover:border-white/25 hover:bg-white/[0.07]",
@@ -230,6 +230,15 @@ export function CoverageMenu({
           {anyPending ? (
             <span className="h-1.5 w-1.5 rounded-full bg-amber-300/80" title="есть правка в очереди" />
           ) : null}
+          {/* Подсказка держит своё место всегда — иначе строка дёргалась. */}
+          <span
+            className={cn(
+              "ml-auto normal-case tracking-normal transition-colors",
+              open ? "text-white/45" : "text-transparent group-hover:text-white/40",
+            )}
+          >
+            изменить
+          </span>
         </span>
         <span className="mt-0.5 grid grid-cols-2 gap-x-2 text-[10px] leading-snug">
           {groups.map((g) => (

@@ -744,3 +744,22 @@ async def test_montage_board_shows_plan_action_parent_child_with_group(
     assert "родительский закадр" in p_row["shot_anchor"]
     assert c_row["shot_anchor"]
     assert p_row["shot_anchor"] != c_row["shot_anchor"]
+
+
+@pytest.mark.asyncio
+async def test_montage_board_frame_aspect_follows_project(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    """Доска отдаёт формат кадра проекта: под него считается высота картинки."""
+    session.add(montage_project)
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    assert board["frame_aspect"] == "16:9"
+
+    montage_project.aspect_ratio = "9_16"
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    assert board["frame_aspect"] == "9:16"

@@ -10,6 +10,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type DragEvent as ReactDragEvent,
   type ReactNode,
   type RefObject,
@@ -66,7 +67,27 @@ import {
 
 /** Единая ширина колонок кадров (+30% к v215). */
 const FRAME_COL_REM = 15;
-const FRAME_COL_CLASS = "w-[15rem] min-w-[15rem] max-w-[15rem]";
+/** Горизонтальный кадр 16:9 сплющен по высоте — колонке даём больше ширины. */
+const FRAME_COL_REM_WIDE = 21;
+
+/** Пропорция кадра ш/в из слага проекта («9:16», «16:9», «1:1»). */
+function frameAspectRatio(aspect?: string | null): number {
+  const m = /^\s*(\d+(?:[.,]\d+)?)\s*[:x/]\s*(\d+(?:[.,]\d+)?)\s*$/.exec(
+    aspect ?? "",
+  );
+  const w = m ? Number(m[1].replace(",", ".")) : 0;
+  const h = m ? Number(m[2].replace(",", ".")) : 0;
+  return w > 0 && h > 0 ? w / h : 9 / 16;
+}
+
+function frameColRem(aspect?: string | null): number {
+  return frameAspectRatio(aspect) >= 1 ? FRAME_COL_REM_WIDE : FRAME_COL_REM;
+}
+
+function frameColStyle(rem: number): CSSProperties {
+  const w = `${rem}rem`;
+  return { width: w, minWidth: w, maxWidth: w };
+}
 const ROW_LABEL_CLASS = "w-[11rem] min-w-[11rem] max-w-[11rem]";
 /** Шов между сценами — сюда же вставка новой VO-ячейки. */
 const SCENE_GAP_REM = 4.5;
@@ -408,16 +429,21 @@ function sceneColSpan(frameCount: number): number {
   return Math.max(1, frameCount * 2 - 1);
 }
 
-function sceneBlockWidthPx(frameCount: number): number {
+function sceneBlockWidthPx(frameCount: number, colRem: number): number {
   return (
-    frameCount * FRAME_COL_REM * 16 +
-    Math.max(0, frameCount - 1) * SHOT_GAP_REM * 16
+    frameCount * colRem * 16 + Math.max(0, frameCount - 1) * SHOT_GAP_REM * 16
   );
 }
 
-function MontageColGroup({ ranges }: { ranges: SceneRange[] }) {
+function MontageColGroup({
+  ranges,
+  colRem,
+}: {
+  ranges: SceneRange[];
+  colRem: number;
+}) {
   const label = 11 * 16;
-  const frame = FRAME_COL_REM * 16;
+  const frame = colRem * 16;
   const scene = SCENE_GAP_REM * 16;
   const shot = SHOT_GAP_REM * 16;
   return (
@@ -960,6 +986,20 @@ function parseImageDrag(e: ReactDragEvent): ImageSlotRef | null {
   return null;
 }
 
+/**
+ * Бокс большого кадра под формат проекта: вертикаль 9:16 упирается в три
+ * строки, горизонт 16:9 берёт высоту по пропорции — без пустых полей.
+ */
+function tallMediaStyle(aspect?: string | null): CSSProperties {
+  const m = /^\s*(\d+(?:[.,]\d+)?)\s*[:x/]\s*(\d+(?:[.,]\d+)?)\s*$/.exec(
+    aspect ?? "",
+  );
+  const w = m ? Number(m[1].replace(",", ".")) : 0;
+  const h = m ? Number(m[2].replace(",", ".")) : 0;
+  const ratio = w > 0 && h > 0 ? w / h : 9 / 16;
+  return { aspectRatio: String(ratio), maxHeight: "19rem", minHeight: "6rem" };
+}
+
 const ClickableMedia = memo(function ClickableMedia({
   url,
   kind,
@@ -980,6 +1020,7 @@ const ClickableMedia = memo(function ClickableMedia({
   swapSelected,
   swapBusy,
   tall,
+  tallAspect,
   caption,
 }: {
   url: string | null;
@@ -1004,11 +1045,14 @@ const ClickableMedia = memo(function ClickableMedia({
   swapBusy?: boolean;
   /** Кадр в центре доски — картинка на три строки в высоту. */
   tall?: boolean;
+  /** Формат проекта («9:16» / «16:9») — задаёт высоту большого кадра. */
+  tallAspect?: string | null;
   /** Данные кадра прямо под картинкой (меню покрытия). */
   caption?: ReactNode;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const mediaH = tall ? "h-[19rem]" : "h-32";
+  const mediaH = tall ? null : "h-32";
+  const mediaBox = tall ? tallMediaStyle(tallAspect) : undefined;
   // Не монтировать сотни <video>/<img> сразу — Chrome зависает на 150×2 клипах.
   const [inView, setInView] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -1070,6 +1114,7 @@ const ClickableMedia = memo(function ClickableMedia({
             dragOver ? "border-sky-400/60 bg-sky-500/10 text-sky-100" : "border-white/15",
             swapSelected && "border-amber-400/50 bg-amber-500/10",
           )}
+          style={mediaBox}
         >
           {dragOver ? "отпустить сюда" : canDropImage ? "нет файла · можно бросить" : "нет файла"}
         </div>
@@ -1112,6 +1157,7 @@ const ClickableMedia = memo(function ClickableMedia({
             "group relative block w-full overflow-hidden rounded-lg border border-white/10 bg-black",
             mediaH,
           )}
+          style={mediaBox}
           onClick={open}
           title={`Открыть ${label}`}
         >
@@ -1141,6 +1187,7 @@ const ClickableMedia = memo(function ClickableMedia({
             "group block w-full cursor-grab overflow-hidden rounded-lg border border-white/10 bg-black active:cursor-grabbing",
             mediaH,
           )}
+          style={mediaBox}
           onClick={open}
           title={
             imageSlot
@@ -1701,6 +1748,8 @@ export function AssembleMontageBoard({
   const frames = board.data?.frames ?? [];
   const ranges = useMemo(() => sceneRanges(frames), [frames]);
   const coverageOn = Boolean(board.data?.show_coverage_rows);
+  const frameAspect = board.data?.frame_aspect ?? null;
+  const colRem = coverageOn ? frameColRem(frameAspect) : FRAME_COL_REM;
   const gridRows = useMemo(() => {
     if (!coverageOn) return GRID_ROWS;
     // В центре кадра — его картинка, под ней данные: роль, действие, якорь.
@@ -2720,7 +2769,7 @@ export function AssembleMontageBoard({
 
   const tableWidthPx = useMemo(() => {
     const rowLabel = 11 * 16;
-    const col = FRAME_COL_REM * 16;
+    const col = colRem * 16;
     const sceneGap = SCENE_GAP_REM * 16;
     const shotGap = SHOT_GAP_REM * 16;
     const sceneGaps = frames.length > 0 ? ranges.length + 1 : 0;
@@ -2729,7 +2778,7 @@ export function AssembleMontageBoard({
       0,
     );
     return rowLabel + frames.length * col + sceneGaps * sceneGap + shotGaps * shotGap;
-  }, [frames.length, ranges]);
+  }, [frames.length, ranges, colRem]);
 
   const syncScrollLeft = useCallback((from: HTMLDivElement, to: HTMLDivElement) => {
     if (Math.abs(to.scrollLeft - from.scrollLeft) < 0.5) return;
@@ -3215,7 +3264,7 @@ export function AssembleMontageBoard({
                   className="border-collapse text-[13px]"
                   style={{ width: tableWidthPx, tableLayout: "fixed" }}
                 >
-                  <MontageColGroup ranges={ranges} />
+                  <MontageColGroup ranges={ranges} colRem={colRem} />
                   <thead>
                     <tr>
                       <th
@@ -3253,9 +3302,9 @@ export function AssembleMontageBoard({
                               <th
                                 className={cn(
                                   "border-b border-white/10 px-1.5 py-2 text-center font-mono text-xs",
-                                  FRAME_COL_CLASS,
                                   fi === 0 ? "border-l border-white/15" : null,
                                 )}
+                                style={frameColStyle(colRem)}
                               >
                                 #{fr.number}
                               </th>
@@ -3323,7 +3372,7 @@ export function AssembleMontageBoard({
                             />
                             <th
                               colSpan={sceneColSpan(range.frames.length)}
-                              style={{ width: sceneBlockWidthPx(range.frames.length) }}
+                              style={{ width: sceneBlockWidthPx(range.frames.length, colRem) }}
                               className="border-b border-x border-white/20 bg-white/[0.05] px-2 py-1.5 text-left"
                             >
                               <p className="truncate text-[11px] font-semibold text-white/80">
@@ -3415,7 +3464,7 @@ export function AssembleMontageBoard({
                           {SCENE_SPAN_ROWS.has(row.key) ? (
                             <td
                               colSpan={sceneColSpan(range.frames.length)}
-                              style={{ width: sceneBlockWidthPx(range.frames.length) }}
+                              style={{ width: sceneBlockWidthPx(range.frames.length, colRem) }}
                               className="border-l border-white/15 px-2 py-2 align-top"
                             >
                               {collapsed ? (
@@ -3447,21 +3496,19 @@ export function AssembleMontageBoard({
                             <td
                               className={cn(
                                 "relative isolate overflow-hidden px-1.5 py-2 align-top",
-                                FRAME_COL_CLASS,
                                 fi === 0 ? "border-l border-white/15" : null,
                               )}
                               style={
                                 isMediaRow || row.key === "voiceover"
-                                  ? undefined
+                                  ? frameColStyle(colRem)
                                   : {
-                                                  contentVisibility: "auto",
-                                                  // `auto` = помнить последний
-                                                  // размер клетки: иначе отрисовка
-                                                  // соседней строки меняла 180px
-                                                  // заглушку на реальную высоту и
-                                                  // доска дёргалась под курсором.
-                                                  containIntrinsicSize:
-                                                    "auto 240px auto 180px",
+                                      ...frameColStyle(colRem),
+                                      contentVisibility: "auto",
+                                      // `auto` = помнить последний размер клетки:
+                                      // иначе отрисовка соседней строки меняла
+                                      // 180px заглушку на реальную высоту и доска
+                                      // дёргалась под курсором.
+                                      containIntrinsicSize: "auto 240px auto 180px",
                                     }
                               }
                             >
@@ -3485,6 +3532,7 @@ export function AssembleMontageBoard({
                                   url={fr.image_shot1_url}
                                   kind="image"
                                   tall={coverageOn}
+                                  tallAspect={frameAspect}
                                   caption={
                                     coverageOn ? (
                                       <CoverageMenu
