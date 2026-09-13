@@ -32,6 +32,7 @@ import {
   Play,
   Search,
   Send,
+  Sparkles,
   Square,
   Trash2,
   Video,
@@ -42,6 +43,7 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import type { KieField, KieModelSpec } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
+import { isUnfilledAssistantPrompt } from "@/lib/gen-assistant-styles";
 import { cn } from "@/lib/utils";
 import {
   OUTSEE_ACCENT,
@@ -64,6 +66,7 @@ import {
   type OutseeMediaType,
 } from "@/lib/outsee-catalog";
 import { estimateCreatePrice } from "@/lib/create-pricing";
+import { GenAssistantPanel } from "@/components/outsee/gen-assistant-panel";
 import {
   estimateKie,
   kieChipFields,
@@ -271,12 +274,16 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     { id: string; url: string; name: string }[]
   >([]);
   const [modelOpen, setModelOpen] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [appliedPrompt, setAppliedPrompt] = useState<{ text: string; ts: number } | null>(null);
   const [openChip, setOpenChip] = useState<string | null>(null);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [kieValues, setKieValues] = useState<Record<string, unknown>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [settingsHydrated, setSettingsHydrated] = useState(false);
   const modelRef = useRef<HTMLDivElement>(null);
+  // Якорь выбора модели, когда открыт помощник промпта (док скрыт)
+  const modelRef2 = useRef<HTMLDivElement>(null);
   const firstFrameInputRef = useRef<HTMLInputElement>(null);
   const lastFrameInputRef = useRef<HTMLInputElement>(null);
   const multiRefInputRef = useRef<HTMLInputElement>(null);
@@ -376,7 +383,9 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   useEffect(() => {
     if (!modelOpen) return;
     const onDown = (e: MouseEvent) => {
-      if (modelRef.current && !modelRef.current.contains(e.target as Node)) setModelOpen(false);
+      const t = e.target as Node;
+      if (modelRef.current?.contains(t) || modelRef2.current?.contains(t)) return;
+      setModelOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setModelOpen(false);
@@ -870,6 +879,37 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     toast.success("Случайный промпт подставлен 🎲");
   };
 
+  /**
+   * Двойной клик по картинке в истории: применить её конфигурацию
+   * (модель / формат / разрешение / детализация из sidecar-params + промпт)
+   * к окну и открыть панель «Помощник» с этим промптом.
+   */
+  const applyHistoryConfig = (item: HistoryItem) => {
+    if (item.kind !== "image") return;
+    const p = (item.params ?? {}) as Record<string, unknown>;
+    const rawModel = item.model ? String(item.model) : "";
+    const candidates = [rawModel, slugToStudioId(rawModel, "image") ?? ""];
+    const slug = candidates.find((c) => c && chipOptions(c, "aspect").length > 0);
+    const effSlug = slug ?? imageSlug;
+    if (slug && slug !== imageSlug) setImageSlug(slug);
+    if (typeof p.aspect === "string" && p.aspect) {
+      setAspect(clampToOptions(p.aspect, chipOptions(effSlug, "aspect"), aspect));
+    }
+    if (typeof p.resolution === "string" && p.resolution) {
+      setResolution(clampToOptions(p.resolution, chipOptions(effSlug, "resolution"), resolution));
+    }
+    if (typeof p.detail_level === "string" && p.detail_level) {
+      const dOpts = chipOptions(effSlug, "detail");
+      if (dOpts.length) setDetail(clampToOptions(p.detail_level, dOpts, detail));
+    }
+    if (item.prompt) {
+      setPrompt(item.prompt);
+      setAppliedPrompt({ text: item.prompt, ts: Date.now() });
+    }
+    setAssistantOpen(true);
+    toast.success("Конфигурация изображения применена к панели снизу");
+  };
+
   const handleEnhancePrompt = async () => {
     const text = prompt.trim();
     if (!text) {
@@ -894,9 +934,17 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   };
 
   const createGenerate = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (arg?: string | { prompt?: string; forceSingle?: boolean }) => {
+      // forceSingle — помощник промптов: ровно 1 картинка на каждый промпт агента,
+      // без умножения на batchCount.
+      const promptOverride = typeof arg === "string" ? arg : arg?.prompt;
+      const forceSingle = typeof arg === "object" && arg?.forceSingle === true;
       const preset = STYLE_PRESETS.find((p) => p.id === stylePreset);
-      let text = prompt.trim();
+      let text = (promptOverride ?? prompt).trim();
+      if (!text) throw new Error("Введите промпт");
+      if (text.toLowerCase().includes("not example objects from the style guide")) {
+        throw new Error("Промпт не собран агентом — генерация не запущена");
+      }
       if (text && mediaType === "image" && preset?.suffix) {
         text += preset.suffix;
       }
@@ -1019,7 +1067,11 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
         return { ...enqueued, provider: "outsee" as const };
       };
 
-      const count = (mediaType === "image" || mediaType === "video") ? batchCount : 1;
+      const count = forceSingle
+        ? 1
+        : (mediaType === "image" || mediaType === "video")
+          ? batchCount
+          : 1;
       if (count > 1) {
         const results = await Promise.all(
           Array.from({ length: count }, (_, i) => executeSingle(i))
@@ -1151,6 +1203,22 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
             <span className="rounded-full border border-[#22d3ee]/30 bg-[#22d3ee]/10 px-2.5 py-0.5 font-mono text-[10px] font-semibold text-[#22d3ee]">
               проект #{projectId}
             </span>
+          )}
+          {mediaType === "image" && (
+            <button
+              type="button"
+              onClick={() => setAssistantOpen((v) => !v)}
+              title="Помощник промпта: стиль → запрос → собранный промпт"
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition",
+                assistantOpen
+                  ? "border-[#22d3ee]/50 bg-[#22d3ee]/15 text-[#22d3ee]"
+                  : "border-white/10 bg-white/[0.03] text-white/60 hover:border-[#22d3ee]/40 hover:bg-[#22d3ee]/10 hover:text-white",
+              )}
+            >
+              <Sparkles className="h-3 w-3" />
+              Помощник
+            </button>
           )}
           <a
             href={outseeCreateUrl(mediaType, activeSlug)}
@@ -1317,13 +1385,14 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       key={item.id}
                       type="button"
                       onClick={() => setSelectedId(item.id)}
+                      onDoubleClick={() => applyHistoryConfig(item)}
                       className={cn(
                         "group relative aspect-square overflow-hidden rounded-xl border bg-[#121216] transition-all duration-200",
                         active
                           ? "border-[#22d3ee] ring-2 ring-[#22d3ee]/40 shadow-[0_0_20px_rgba(34,211,238,0.25)]"
                           : "border-white/[0.08] hover:border-white/25 hover:bg-[#18181f]",
                       )}
-                      title={`${item.label}${item.project_slug ? ` · ${item.project_slug}` : ""}`}
+                      title={`${item.label}${item.project_slug ? ` · ${item.project_slug}` : ""} · двойной клик — применить конфигурацию`}
                     >
                       {item.preview_url && !pending ? (
                         isVideo ? (
@@ -1644,8 +1713,80 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 })}
               </div>
 
+              {/* Помощник промпта: заменяет док генерации (те же размеры) */}
+              {assistantOpen && mediaType === "image" && (
+                <GenAssistantPanel
+                  onClose={() => setAssistantOpen(false)}
+                  appliedPrompt={appliedPrompt}
+                  imageSlug={imageSlug}
+                  modelName={currentName}
+                  aspect={aspect}
+                  resolution={resolution}
+                  detail={detail}
+                  generating={createGenerate.isPending}
+                  onAspectChange={setAspect}
+                  onResolutionChange={setResolution}
+                  onDetailChange={setDetail}
+                  onOpenModelPicker={() => {
+                    setModelOpen(true);
+                    setOpenChip(null);
+                  }}
+                  onApplyPrompt={(t) => setPrompt(t)}
+                  onGenerate={(t) => {
+                    if (isUnfilledAssistantPrompt(t)) {
+                      toast.error("Промпт не собран агентом — генерация не запущена", {
+                        duration: 12_000,
+                        position: "top-center",
+                      });
+                      return;
+                    }
+                    setPrompt(t);
+                    createGenerate.mutate({ prompt: t, forceSingle: true });
+                  }}
+                  onGenerateAll={(texts) => {
+                    const ready = texts
+                      .map((x) => x.trim())
+                      .filter((t) => !isUnfilledAssistantPrompt(t));
+                    if (!ready.length) {
+                      toast.error("Промпт не собран агентом — генерация не запущена", {
+                        duration: 12_000,
+                        position: "top-center",
+                      });
+                      return;
+                    }
+                    setPrompt(ready[0]);
+                    for (const t of ready) {
+                      createGenerate.mutate({ prompt: t, forceSingle: true });
+                    }
+                  }}
+                />
+              )}
+              {/* выбор модели при открытом помощнике: док скрыт, поэтому отдельный якорь у правой панели */}
+              {assistantOpen && mediaType === "image" && modelOpen && (
+                <div
+                  className="absolute bottom-full right-3 z-50 mb-2 w-[520px] lg:right-5"
+                  ref={modelRef2}
+                >
+                  <ModelPickerPopover
+                    mediaType={mediaType}
+                    selectedSlug={activeSlug}
+                    kieModels={kieModels}
+                    creditUsd={kieCatalogQ.data?.credit_usd ?? 0.005}
+                    onSelect={(slug) => {
+                      if (mediaType === "image") setImageSlug(slug);
+                      else if (mediaType === "video") setVideoSlug(slug);
+                      else setAudioSlug(slug);
+                      if (!slug.startsWith("kie:")) applyModelDefaults(slug, mediaType);
+                      setModelOpen(false);
+                    }}
+                  />
+                </div>
+              )}
               <div
-                className="min-w-0 flex-1 rounded-2xl border border-white/15 bg-[#121216]/95 backdrop-blur-2xl shadow-[0_20px_60px_rgba(0,0,0,0.85)] ring-1 ring-white/10"
+                className={cn(
+                  "min-w-0 flex-1 rounded-2xl border border-white/15 bg-[#121216]/95 backdrop-blur-2xl shadow-[0_20px_60px_rgba(0,0,0,0.85)] ring-1 ring-white/10",
+                  assistantOpen && mediaType === "image" && "hidden",
+                )}
               >
                 {/* KIE: вложения для аудио/видео (голос, донор движения, аудиофайл) */}
                 {kieActive &&
@@ -2314,7 +2455,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       }
                       onClick={() => {
                         if (createGenerate.isPending) return;
-                        createGenerate.mutate();
+                        createGenerate.mutate(undefined);
                       }}
                       className={cn(
                         "inline-flex min-w-[145px] items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#22d3ee] to-[#0ea5e9] px-4 py-2 text-[12px] font-extrabold uppercase tracking-wider text-black shadow-[0_0_20px_rgba(34,211,238,0.3)] transition-all duration-200 hover:brightness-110 hover:shadow-[0_0_25px_rgba(34,211,238,0.45)] disabled:opacity-40 disabled:pointer-events-none",
@@ -2545,6 +2686,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
           </div>
         </div>
       )}
+
     </div>
   );
 }

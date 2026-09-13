@@ -47,6 +47,9 @@ from app.web.routers import (
     generation_options as generation_options_router,
 )
 from app.web.routers import (
+    gen_assistant as gen_assistant_router,
+)
+from app.web.routers import (
     gpt_workspace as gpt_workspace_router,
 )
 from app.web.routers import (
@@ -260,6 +263,7 @@ def create_app() -> FastAPI:
     app.include_router(kie_create_router.router, prefix=API_PREFIX)
     app.include_router(gpt_workspace_router.router, prefix=API_PREFIX)
     app.include_router(text_llm_router.router, prefix=API_PREFIX)
+    app.include_router(gen_assistant_router.router, prefix=API_PREFIX)
     app.include_router(sidebar_layout_router.router, prefix=API_PREFIX)
     app.include_router(runtime_streams_router.router, prefix=API_PREFIX)
     app.include_router(runs_router.router, prefix=API_PREFIX)
