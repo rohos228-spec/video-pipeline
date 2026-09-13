@@ -838,6 +838,28 @@ def _coverage_fields_for_frames(
     return out
 
 
+def _real_frame_aspect(scenes_dir: Path, rows: list[dict[str, Any]]) -> str | None:
+    """Формат по первой готовой картинке: настройка проекта врёт после ручных
+    загрузок, а доска рисует именно файл с диска."""
+    from PIL import Image
+
+    for row in rows:
+        if not row.get("image_shot1_url"):
+            continue
+        png = find_shot1_image(scenes_dir, int(row["number"]))
+        if not png:
+            continue
+        try:
+            with Image.open(png) as im:
+                w, h = im.size
+        except Exception as e:  # noqa: BLE001 — битый файл не должен ронять доску
+            logger.warning("montage_board: размер {}: {}", png, e)
+            return None
+        if w > 0 and h > 0:
+            return f"{w}:{h}"
+    return None
+
+
 async def build_montage_board(
     session: AsyncSession,
     project: Project,
@@ -1085,7 +1107,7 @@ async def build_montage_board(
         "frames": rows,
         "frame_count": len(rows),
         "meta": board_meta,
-        "frame_aspect": frame_aspect,
+        "frame_aspect": _real_frame_aspect(scenes_dir, rows) or frame_aspect,
         "show_coverage_rows": show_coverage_rows,
         "coverage_plan_choices": list(COVERAGE_PLAN_CHOICES),
         "coverage_angle_choices": list(COVERAGE_ANGLE_CHOICES),

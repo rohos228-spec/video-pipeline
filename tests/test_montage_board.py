@@ -763,3 +763,28 @@ async def test_montage_board_frame_aspect_follows_project(
 
     board = await build_montage_board(session, montage_project)
     assert board["frame_aspect"] == "9:16"
+
+
+@pytest.mark.asyncio
+async def test_montage_board_frame_aspect_from_real_image(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    """Ручная загрузка вертикали в 16:9-проекте — доска берёт формат файла."""
+    from PIL import Image
+
+    scenes = montage_project.data_dir / "scenes"
+    scenes.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (270, 480), "black").save(scenes / "frame_001_shot1.png")
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="текст кадра",
+        status="planned",
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    assert board["frame_aspect"] == "270:480"
