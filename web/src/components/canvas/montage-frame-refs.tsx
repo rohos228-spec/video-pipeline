@@ -118,10 +118,15 @@ export function FrameRefsStrip({
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key !== "Escape") return;
+      // Доска монтажа слушает тот же Escape: перехватываем на capture, иначе
+      // закрытие окна рефов заодно закрывает всю панель.
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      setOpen(false);
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [open]);
 
   const guard = useCallback(
@@ -277,7 +282,7 @@ export function FrameRefsStrip({
                           </span>
                           <button
                             type="button"
-                            title="Убрать реф"
+                            title={`Убрать реф «${m.name}»`}
                             disabled={disabled || busy}
                             onClick={() => remove(m.id)}
                             className="rounded-md p-1 text-white/30 transition hover:bg-white/10 hover:text-rose-200 disabled:opacity-40"

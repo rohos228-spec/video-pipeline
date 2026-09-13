@@ -489,28 +489,32 @@ function InsertGutter({
       title={label}
       onClick={onClick}
       className={cn(
-        "group/add flex h-full min-h-[2.5rem] w-full items-center justify-center self-stretch transition",
+        "group/add flex items-center justify-center transition",
         scene
-          ? "border-l border-white/20 bg-white/[0.03] text-white/30 hover:bg-white/10 hover:text-black"
-          : "text-white/20 hover:bg-white/5 hover:text-black",
+          ? "h-full min-h-[2.5rem] w-full self-stretch border-l border-white/20 bg-white/[0.03] text-white/30 hover:bg-white/10 hover:text-black"
+          // Зазор между шотами всего 4px — кнопка вылезает за колонку, чтобы в
+          // неё можно было попасть мышью, но саму таблицу не расширяет.
+          : "absolute inset-y-0 left-1/2 z-20 w-6 -translate-x-1/2 text-white/20 hover:text-black",
       )}
     >
       <span
         className={cn(
           "flex items-center justify-center rounded-full border border-dashed border-transparent opacity-0 transition",
-          scene ? "h-7 w-4" : "h-4 w-3",
+          scene ? "h-7 w-4" : "h-5 w-5",
           "group-hover/add:border-transparent group-hover/add:bg-[rgba(209,254,23,1)] group-hover/add:opacity-100",
         )}
       >
-        <Plus className={scene ? "h-3 w-3" : "h-2.5 w-2.5"} />
+        <Plus className="h-3 w-3" />
       </span>
     </button>
   );
   const cls = scene ? SCENE_GAP_CLASS : SHOT_GAP_CLASS;
   if (as === "th") {
-    return <th className={cn(cls, "border-b border-white/10")}>{inner}</th>;
+    return (
+      <th className={cn(cls, "relative border-b border-white/10")}>{inner}</th>
+    );
   }
-  return <td className={cls}>{inner}</td>;
+  return <td className={cn(cls, scene ? null : "relative")}>{inner}</td>;
 }
 
 /**
@@ -3244,7 +3248,7 @@ export function AssembleMontageBoard({
                                 <InsertGutter
                                   as="th"
                                   gap="shot"
-                                        label={`Кадр после #${fr.number}`}
+                                  label={`Кадр после #${fr.number}`}
                                   onClick={() =>
                                     setAddFrame({ afterFrameId: fr.frame_id })
                                   }
