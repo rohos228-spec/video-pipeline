@@ -1445,6 +1445,33 @@ export const api = {
     return res.json() as Promise<{ ok: boolean; preview_url: string }>;
   },
 
+  addMontageFrameRef: async (
+    projectId: number,
+    frameNumber: number,
+    payload: { kind: string; description: string; file: File },
+  ) => {
+    const fd = new FormData();
+    fd.append("file", payload.file);
+    const q = new URLSearchParams({
+      frame_number: String(frameNumber),
+      kind: payload.kind,
+      description: payload.description,
+    });
+    const res = await fetch(`/api/projects/${projectId}/montage-board/refs?${q}`, {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) throw new ApiError(res.status, await res.text());
+    return res.json() as Promise<{ ok: boolean }>;
+  },
+
+  deleteMontageFrameRef: (projectId: number, frameNumber: number, refId: string) =>
+    http<{ ok: boolean }>(
+      `/api/projects/${projectId}/montage-board/delete-ref` +
+        `?frame_number=${frameNumber}&ref_id=${encodeURIComponent(refId)}`,
+      { method: "POST" },
+    ),
+
   uploadMontageVideo: async (projectId: number, frameNumber: number, shot: 1 | 2, file: File) => {
     const fd = new FormData();
     fd.append("file", file);

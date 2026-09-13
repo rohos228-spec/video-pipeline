@@ -32,6 +32,7 @@ from app.generation_options import (
 )
 from app.models import Frame, Project, PromptVersion
 from app.orchestrator.steps.generate_images import (
+    _OUTSEE_MAX_REFS,
     _coverage_parent_png,
     _load_refs_for_frame,
 )
@@ -47,6 +48,7 @@ from app.services.montage_board_meta import (
     store_correction,
     trim_key,
 )
+from app.services.montage_frame_refs import append_manual_ref_note
 from app.services.outsee_retry import generate_image_with_retries, generate_video_with_retries
 from app.services.vibecode_catalog import resolve_node_media_settings
 from app.services.plan_shot2 import (
@@ -295,19 +297,30 @@ async def _montage_shot1_refs(
     *,
     ref_person_ids: list[str] | None = None,
 ) -> tuple[list[Path], bool]:
-    """Shot1-рефы как у generate_images: K2/K3 → PNG VO-родителя, иначе листы."""
+    """Shot1-рефы как у generate_images: K2/K3 → PNG VO-родителя, иначе листы.
+
+    Рефы, добавленные оператором на доске, идут первыми: он принёс их
+    осознанно, а слотов у генератора всего два.
+    """
+    from app.services.montage_frame_refs import manual_ref_paths
     from app.services.vo_shot_expand import is_shot_child
+
+    manual = manual_ref_paths(project.data_dir, fr)
+    if manual:
+        logger.info(
+            "montage regen: кадр #{} ручных рефов {}", fr.number, len(manual)
+        )
 
     if is_shot_child(fr):
         parent_png = await _coverage_parent_png(session, project, fr)
         if parent_png is None:
-            return [], False
+            return manual, False
         logger.info(
             "montage regen: child #{} ← parent still {}",
             fr.number,
             parent_png.name,
         )
-        return [parent_png], True
+        return [*manual, parent_png][:_OUTSEE_MAX_REFS], True
 
     if ref_person_ids is not None:
         override = ref_person_ids
@@ -320,7 +333,8 @@ async def _montage_shot1_refs(
         fr.number,
         persons_override=override,
     )
-    return refs, False
+    # Лимит генератора: ручные рефы важнее автоматических и вытесняют их.
+    return [*manual, *refs][:_OUTSEE_MAX_REFS], False
 
 
 async def prepare_image_regen(
@@ -365,6 +379,7 @@ async def prepare_image_regen(
                     has_parent_ref=True,
                     has_char_ref=False,
                 )
+            prompt_text = append_manual_ref_note(prompt_text, fr)
     elif mode == "correction":
         text = (correction or "").strip()
         if not text:
@@ -398,6 +413,7 @@ async def prepare_image_regen(
                     has_parent_ref=True,
                     has_char_ref=False,
                 )
+            prompt_text = append_manual_ref_note(prompt_text, fr)
         elif shot == 2:
             ref1 = find_shot1_image(scenes_dir, frame_number)
             refs = [ref1] if ref1 is not None else []

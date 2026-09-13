@@ -1000,15 +1000,80 @@ function MetaChip({ label, value }: { label: string; value?: string | null }) {
   );
 }
 
+/** Набор сцены — не поле на всю ширину, а строчка рядом с остальными данными. */
+function SetChip({
+  value,
+  source,
+  pending,
+  disabled,
+  onChange,
+  onCommit,
+}: {
+  value: string;
+  source: string;
+  pending?: boolean;
+  disabled?: boolean;
+  onChange: (next: string) => void;
+  onCommit: () => void;
+}) {
+  const [edit, setEdit] = useState(false);
+  if (!edit) {
+    return (
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setEdit(true)}
+        title="Набор сцены (SET / декорация) — нажми, чтобы изменить"
+        className={cn(
+          "relative text-[10px] leading-snug transition disabled:opacity-40",
+          pending ? "text-amber-200/90" : "text-white/60 hover:text-white",
+        )}
+      >
+        <span className="text-white/35">набор: </span>
+        {source || <span className="text-white/25">задать</span>}
+        <PendingMark show={Boolean(pending)} />
+      </button>
+    );
+  }
+  return (
+    <span className="relative inline-flex items-center gap-1">
+      <span className="text-[10px] text-white/35">набор:</span>
+      <input
+        autoFocus
+        className={cn(FIELD, "w-[16rem]")}
+        value={value}
+        disabled={disabled}
+        placeholder="SET / декорация сцены"
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={() => {
+          onCommit();
+          setEdit(false);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            onCommit();
+            setEdit(false);
+          }
+          if (e.key === "Escape") {
+            onChange(source);
+            setEdit(false);
+          }
+        }}
+      />
+    </span>
+  );
+}
+
 /**
- * Сцена = одна ячейка закадра. Здесь всё, что общее для сцены: её номер и
- * кадры, место, персонажи, набор, свет, формат с описанием и полный текст
- * закадра, разложенный по кадрам. Данные отдельного кадра (роль, действие,
- * якорь, крупность…) живут в его колонке ниже — понятия не смешиваем.
+ * Сцена = одна ячейка закадра. Здесь всё, что общее для сцены: формат с
+ * описанием, свет, набор, смысл и полный закадр, разложенный по кадрам. Номер
+ * сцены, её кадры и место — в полосе сцен сверху, не дублируем. Данные
+ * отдельного кадра (роль, действие, якорь, крупность…) живут в его колонке
+ * ниже — понятия не смешиваем.
  */
 export function SceneCell({
   head,
-  sceneNo,
   frames,
   setValue,
   setPending,
@@ -1018,8 +1083,6 @@ export function SceneCell({
   onSet,
 }: {
   head: MontageBoardFrame;
-  /** Номер сцены по порядку на доске: ячейки закадра идут подряд. */
-  sceneNo: number;
   frames: MontageBoardFrame[];
   setValue: string;
   setPending?: boolean;
@@ -1030,7 +1093,6 @@ export function SceneCell({
   light?: React.ReactNode;
   onSet: (value: string) => void;
 }) {
-  const frameNumbers = frames.map((f) => f.number);
   const source = (setValue || "").trim();
   const [setText, setSetText] = useState(source);
   useEffect(() => {
@@ -1047,50 +1109,23 @@ export function SceneCell({
 
   return (
     <div className="space-y-1.5">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="text-[11px] font-semibold text-white/85">
-          Сцена {sceneNo}
-        </span>
-        <span className="text-[10px] text-white/45">
-          {frames.length === 1
-            ? `один кадр #${frameNumbers[0]}`
-            : `${frames.length} кадра: ${frameNumbers.map((n) => `#${n}`).join(" · ")}`}
-        </span>
-        <MetaChip label="место" value={head.scene_place} />
+      {/* Номер сцены, её кадры и место написаны в полосе сцен сверху —
+          здесь только формат, свет и остальные данные ячейки. */}
+      <div className="flex flex-wrap items-start gap-2">
+        <div className="min-w-[13rem] flex-1">{template}</div>
+        {light ? <div className="w-[11rem] shrink-0">{light}</div> : null}
+      </div>
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+        <SetChip
+          value={setText}
+          source={source}
+          pending={setPending}
+          disabled={disabled}
+          onChange={setSetText}
+          onCommit={commit}
+        />
         <MetaChip label="персонажи" value={head.scene_characters} />
         <MetaChip label="в плане" value={head.scene_no || head.scene_id} />
-      </div>
-      <div className="flex flex-wrap items-start gap-2">
-        <div
-          className={cn(
-            "relative flex min-w-[12rem] flex-1 items-center gap-2",
-            setPending && "rounded-md bg-amber-500/10 p-0.5",
-          )}
-        >
-          <span className="shrink-0 text-[10px] uppercase tracking-wide text-white/35">
-            набор
-          </span>
-          <input
-            className={cn(FIELD, "max-w-[28rem]")}
-            value={setText}
-            disabled={disabled}
-            placeholder="SET / декорация сцены"
-            onChange={(e) => setSetText(e.target.value)}
-            onBlur={commit}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                commit();
-              }
-              if (e.key === "Escape") setSetText(source);
-            }}
-          />
-          <PendingMark show={Boolean(setPending)} />
-        </div>
-        {light ? <div className="w-[13rem] shrink-0">{light}</div> : null}
-      </div>
-      {template}
-      <div className="flex flex-wrap gap-x-3 gap-y-0.5">
         <MetaChip label="смысл" value={head.scene_sense} />
         <MetaChip label="тип" value={head.scene_visual_type} />
         <MetaChip label="предметы" value={head.scene_props} />

@@ -285,6 +285,22 @@ export interface MontageBoardParentRef {
   image_url: string | null;
 }
 
+/** Реф, который оператор добавил кадру прямо на доске: вид + описание. */
+export interface MontageManualRef {
+  id: string;
+  kind: string;
+  kind_label: string;
+  description: string;
+  image_url: string | null;
+}
+
+/** Виды рефов для формы добавления (id + подпись + подсказка описания). */
+export interface MontageRefKindChoice {
+  id: string;
+  label: string;
+  hint: string;
+}
+
 export interface MontageAnchorRow {
   "якорь": string;
   "изменение"?: string;
@@ -306,6 +322,8 @@ export interface MontageBoardFrame {
   /** Персонажи всей VO-ячейки, не только этой колонки. */
   group_character_refs?: MontageBoardCharacterRef[];
   item_refs?: MontageBoardCharacterRef[];
+  /** Рефы кадра, добавленные вручную с доски. */
+  manual_refs?: MontageManualRef[];
   start_ts: number | null;
   end_ts: number | null;
   duration_seconds: number | null;
@@ -411,6 +429,7 @@ export interface MontageBoardDTO {
   coverage_light_choices?: string[];
   coverage_stitch_choices?: Array<{ id: string; label: string }>;
   coverage_template_choices?: MontageTemplateChoice[];
+  ref_kind_choices?: MontageRefKindChoice[];
 }
 
 /** Формат сцены из каталога `templates/shot_templates/shot_templates.json`. */

@@ -64,6 +64,7 @@ import {
   TemplateCell,
   type CoverageMenuGroup,
 } from "@/components/canvas/montage-scene-cells";
+import { FrameRefsStrip } from "@/components/canvas/montage-frame-refs";
 
 /** Единая ширина колонок кадров (+30% к v215). */
 const FRAME_COL_REM = 15;
@@ -102,7 +103,6 @@ type RowKey =
   | "role"
   | "action"
   | "anchor"
-  | "refs"
   | "image1"
   | "image2"
   | "video1"
@@ -111,7 +111,6 @@ type RowKey =
 
 const GRID_ROWS: { key: RowKey; label: string }[] = [
   { key: "voiceover", label: "Закадровый текст" },
-  { key: "refs", label: "Референсы" },
   { key: "image1", label: "Кадр" },
   { key: "image2", label: "Изображение 2" },
   { key: "video1", label: "Видео 1" },
@@ -1488,99 +1487,6 @@ const VideoMediaCell = memo(function VideoMediaCell({
     </div>
   );
 });
-
-function RefsCell({
-  fr,
-  onPreview,
-}: {
-  fr: MontageBoardFrame;
-  onPreview: (p: MediaPreview) => void;
-}) {
-  const parent = fr.ref_parent ?? null;
-  const chars = fr.group_character_refs ?? [];
-  const items = fr.item_refs ?? [];
-  const empty = !parent && chars.length === 0 && items.length === 0;
-  if (empty) {
-    return <p className="text-xs leading-snug text-muted-foreground">—</p>;
-  }
-
-  const thumb = (
-    key: string,
-    imageUrl: string | null | undefined,
-    title: string,
-    sub?: string,
-    kind?: string,
-  ) => (
-    <button
-      key={key}
-      type="button"
-      className="group flex w-[5.5rem] flex-col items-center gap-1 rounded-lg border border-white/10 bg-black/25 p-1.5 transition hover:border-amber-400/40 hover:bg-black/40 disabled:opacity-60"
-      onClick={() => {
-        if (imageUrl) {
-          onPreview({ url: imageUrl, kind: "image", label: title });
-        }
-      }}
-      disabled={!imageUrl}
-      title={imageUrl ? `Открыть ${title}` : `${title} — нет файла`}
-    >
-      {imageUrl ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={imageUrl}
-          alt={title}
-          className="h-16 w-full rounded-md object-cover transition group-hover:brightness-110"
-        />
-      ) : (
-        <div className="flex h-16 w-full items-center justify-center rounded-md border border-dashed border-white/15 text-[10px] text-muted-foreground">
-          нет фото
-        </div>
-      )}
-      {kind ? (
-        <span className="max-w-full truncate text-[9px] uppercase tracking-wide text-white/40">
-          {kind}
-        </span>
-      ) : null}
-      <span className="max-w-full truncate text-[10px] leading-tight text-amber-200/90">
-        {title}
-      </span>
-      {sub ? (
-        <span className="max-w-full truncate text-[9px] text-muted-foreground">{sub}</span>
-      ) : null}
-    </button>
-  );
-
-  return (
-    <div className="flex flex-wrap gap-2">
-      {parent
-        ? thumb(
-            `parent-${parent.number}`,
-            parent.image_url,
-            parent.label || `родитель #${parent.number}`,
-            undefined,
-            "родитель",
-          )
-        : null}
-      {chars.map((ch) =>
-        thumb(
-          `c-${ch.id}`,
-          ch.image_url,
-          ch.name && ch.name !== ch.id ? ch.name : ch.id,
-          ch.name && ch.name !== ch.id ? ch.id : undefined,
-          "персонаж",
-        ),
-      )}
-      {items.map((it) =>
-        thumb(
-          `i-${it.id}`,
-          it.image_url,
-          it.name && it.name !== it.id ? it.name : it.id,
-          it.name && it.name !== it.id ? it.id : undefined,
-          "предмет",
-        ),
-      )}
-    </div>
-  );
-}
 
 function TimestampCell({ fr }: { fr: MontageBoardFrame }) {
   return (
@@ -2961,7 +2867,7 @@ export function AssembleMontageBoard({
   };
 
   /** Клетка на всю VO-ячейку: сцена / формат / свет. */
-  const renderSceneSpanCell = (key: RowKey, range: SceneRange, sceneNo: number) => {
+  const renderSceneSpanCell = (key: RowKey, range: SceneRange) => {
     const head = range.frames[0];
     if (!head) return null;
     const pending = pendingCoverageForFrame(pendingOps, head.number);
@@ -2970,7 +2876,6 @@ export function AssembleMontageBoard({
     return (
       <SceneCell
         head={head}
-        sceneNo={sceneNo}
         frames={range.frames}
         setValue={(pending.set ?? head.scene_set ?? "").trim()}
         setPending={hasPendingType(head.number, "coverage_set")}
@@ -3480,7 +3385,7 @@ export function AssembleMontageBoard({
                               {collapsed ? (
                                 <div className="h-8 rounded-md bg-black/10" />
                               ) : (
-                                renderSceneSpanCell(row.key, range, ri + 1)
+                                renderSceneSpanCell(row.key, range)
                               )}
                             </td>
                           ) : (
@@ -3533,8 +3438,6 @@ export function AssembleMontageBoard({
                                 />
                               ) : SCENE_FRAME_ROWS.has(row.key) ? (
                                 renderSceneFrameCell(row.key, fr)
-                              ) : row.key === "refs" ? (
-                                <RefsCell fr={fr} onPreview={showPreview} />
                               ) : row.key === "timestamps" ? (
                                 <TimestampCell fr={fr} />
                               ) : row.key === "image1" ? (
@@ -3544,13 +3447,23 @@ export function AssembleMontageBoard({
                                   tall={coverageOn}
                                   tallAspect={frameAspect}
                                   caption={
-                                    coverageOn ? (
-                                      <CoverageMenu
-                                        title={`покрытие кадра #${fr.number}`}
-                                        groups={coverageGroups(fr)}
-                                        disabled={sceneDisabled}
+                                    <>
+                                      {coverageOn ? (
+                                        <CoverageMenu
+                                          title={`покрытие кадра #${fr.number}`}
+                                          groups={coverageGroups(fr)}
+                                          disabled={sceneDisabled}
+                                        />
+                                      ) : null}
+                                      <FrameRefsStrip
+                                        projectId={projectId}
+                                        frame={fr}
+                                        kinds={board.data?.ref_kind_choices}
+                                        disabled={frameEditBusy || applyRunning}
+                                        onPreview={showPreview}
+                                        onChanged={() => void board.refetch()}
                                       />
-                                    ) : undefined
+                                    </>
                                   }
                                   label={`Кадр #${fr.number} · картинка`}
                                   onPreview={showPreview}

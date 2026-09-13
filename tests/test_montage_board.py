@@ -788,3 +788,74 @@ async def test_montage_board_frame_aspect_from_real_image(
 
     board = await build_montage_board(session, montage_project)
     assert board["frame_aspect"] == "270:480"
+
+
+@pytest.mark.asyncio
+async def test_montage_board_manual_refs_roundtrip(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    """Ручной реф кадра: файл + описание видны на доске, удаление их убирает."""
+    from app.services.montage_frame_refs import (
+        add_manual_ref,
+        delete_manual_ref,
+        manual_ref_paths,
+        manual_ref_prompt_note,
+    )
+
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="текст кадра",
+        status="planned",
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    row = add_manual_ref(
+        fr,
+        data_dir=montage_project.data_dir,
+        kind="персонаж",
+        description="следователь, 40 лет, серое пальто",
+        content=b"png",
+        suffix=".png",
+    )
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    refs = board["frames"][0]["manual_refs"]
+    assert [r["kind"] for r in refs] == ["character"]
+    assert refs[0]["kind_label"] == "персонаж"
+    assert refs[0]["description"] == "следователь, 40 лет, серое пальто"
+    assert refs[0]["image_url"]
+    assert board["ref_kind_choices"][0]["hint"]
+
+    paths = manual_ref_paths(montage_project.data_dir, fr)
+    assert len(paths) == 1 and paths[0].is_file()
+    assert "следователь" in manual_ref_prompt_note(fr)
+
+    assert delete_manual_ref(fr, data_dir=montage_project.data_dir, ref_id=row["id"])
+    await session.flush()
+    assert not paths[0].exists()
+    board = await build_montage_board(session, montage_project)
+    assert board["frames"][0]["manual_refs"] == []
+
+
+@pytest.mark.asyncio
+async def test_montage_board_manual_ref_needs_description(
+    montage_project: Project,
+) -> None:
+    """Без описания реф не принимаем: генератору нечего с картинки взять."""
+    from app.services.montage_frame_refs import add_manual_ref
+
+    fr = Frame(project_id=montage_project.id, number=1, status="planned")
+    with pytest.raises(ValueError, match="описание"):
+        add_manual_ref(
+            fr,
+            data_dir=montage_project.data_dir,
+            kind="item",
+            description="   ",
+            content=b"png",
+            suffix=".png",
+        )

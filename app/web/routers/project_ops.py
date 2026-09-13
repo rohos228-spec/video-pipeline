@@ -1278,6 +1278,78 @@ async def montage_board_delete_video(
     return {"ok": deleted, "frame_number": frame_number, "shot": shot}
 
 
+async def _board_frame_or_404(
+    session: AsyncSession, project: Project, frame_number: int
+) -> Frame:
+    from sqlalchemy import select as _select
+
+    frame = (
+        await session.execute(
+            _select(Frame).where(
+                Frame.project_id == project.id, Frame.number == frame_number
+            )
+        )
+    ).scalar_one_or_none()
+    if frame is None:
+        raise HTTPException(status_code=404, detail=f"кадр {frame_number} не найден")
+    return frame
+
+
+@router.post("/{project_id}/montage-board/refs")
+async def montage_board_add_ref(
+    project_id: int,
+    frame_number: int = Query(..., ge=1),
+    kind: str = Query("other"),
+    description: str = Query(""),
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    """Добавить референс кадру: файл + вид + обязательное описание."""
+    from app.services.montage_frame_refs import add_manual_ref, manual_refs_for_board
+
+    p = _project_or_404(await session.get(Project, project_id))
+    frame = await _board_frame_or_404(session, p, frame_number)
+    content = await file.read()
+    suffix = Path(file.filename or "ref.png").suffix or ".png"
+    try:
+        add_manual_ref(
+            frame,
+            data_dir=p.data_dir,
+            kind=kind,
+            description=description,
+            content=content,
+            suffix=suffix,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await session.commit()
+    return {
+        "ok": True,
+        "frame_number": frame_number,
+        "refs": manual_refs_for_board(p.data_dir, frame),
+    }
+
+
+@router.post("/{project_id}/montage-board/delete-ref")
+async def montage_board_delete_ref(
+    project_id: int,
+    frame_number: int = Query(..., ge=1),
+    ref_id: str = Query(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    from app.services.montage_frame_refs import delete_manual_ref, manual_refs_for_board
+
+    p = _project_or_404(await session.get(Project, project_id))
+    frame = await _board_frame_or_404(session, p, frame_number)
+    deleted = delete_manual_ref(frame, data_dir=p.data_dir, ref_id=ref_id)
+    await session.commit()
+    return {
+        "ok": deleted,
+        "frame_number": frame_number,
+        "refs": manual_refs_for_board(p.data_dir, frame),
+    }
+
+
 @router.post("/{project_id}/montage-board/upload-image")
 async def montage_board_upload_image(
     project_id: int,
