@@ -22,24 +22,100 @@ class SfxInput:
     t_start: float  # секунды от начала ролика
     gain: float
     kind: str
+    frame_number: int | None = None
 
 
-def collect_sfx_inputs(project: Any) -> list[SfxInput]:
-    """SFX-входы проекта для микса (только файлы, реально есть на диске)."""
+def collect_sfx_inputs(
+    project: Any,
+    video_frame_starts: dict[int, float] | None = None,
+) -> list[SfxInput]:
+    """SFX-входы проекта для микса (только файлы, реально есть на диске).
+
+    Если передан video_frame_starts, метки t_start динамически перепривязываются
+    к фактическому началу кадра на видео-таймлайне (с сохранением внутрикадрового
+    смещения offset_in_frame), чтобы исключить рассинхронизацию (lag) из-за
+    выпадения пауз речи или подрезки видео.
+    """
+    import json
     from app.services.sfx_gen import load_sfx_files
+
+    planned_starts: dict[int, float] = {}
+    if video_frame_starts:
+        data_dir = getattr(project, "data_dir", None)
+        if data_dir is not None:
+            data_path = Path(data_dir)
+            audio_path = data_path / "audio"
+            if audio_path.is_dir():
+                words_files = sorted(
+                    audio_path.glob("words_*.json"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                if words_files:
+                    try:
+                        wdata = json.loads(words_files[0].read_text(encoding="utf-8"))
+                        for it in wdata.get("frames", []):
+                            fn = int(it.get("frame_number", 0))
+                            st = float(it.get("start_ts", 0.0))
+                            planned_starts[fn] = st
+                    except Exception as e:
+                        logger.debug("collect_sfx_inputs: ошибка чтения words_*.json: {}", e)
+
+            if not planned_starts:
+                plan_path = data_path / "sfx_plan.json"
+                if plan_path.is_file():
+                    try:
+                        pdata = json.loads(plan_path.read_text(encoding="utf-8"))
+                        if isinstance(pdata.get("frame_starts"), dict):
+                            planned_starts = {int(k): float(v) for k, v in pdata["frame_starts"].items()}
+                    except Exception:
+                        pass
 
     out: list[SfxInput] = []
     for rec in load_sfx_files(project):
         try:
+            fn = int(rec.get("frame_number") or 0)
             gain = float(rec.get("gain") or 0.5)
             if rec.get("duck"):
                 gain *= 0.35  # фоновые звуки под речью — тише
+
+            orig_t = max(0.0, float(rec.get("t_start") or 0.0))
+            final_t = orig_t
+
+            if video_frame_starts and fn in video_frame_starts:
+                offset = rec.get("offset_in_frame")
+                if offset is None:
+                    p_start = planned_starts.get(fn)
+                    if p_start is not None:
+                        offset = max(0.0, orig_t - p_start)
+                    else:
+                        offset = 0.0
+                else:
+                    offset = max(0.0, float(offset))
+
+                actual_v_start = video_frame_starts[fn]
+                final_t = round(actual_v_start + offset, 3)
+                if abs(final_t - orig_t) > 0.05:
+                    logger.info(
+                        "[#{}] sfx_mix: кадр #{:02d} ({}) синхра t_start: {:.2f}с -> {:.2f}с "
+                        "(видео-склейка {:.2f}с + смещение {:.2f}с, устранено запаздывание {:.2f}с)",
+                        getattr(project, "id", "?"),
+                        fn,
+                        rec.get("kind"),
+                        orig_t,
+                        final_t,
+                        actual_v_start,
+                        offset,
+                        orig_t - final_t,
+                    )
+
             out.append(
                 SfxInput(
                     path=Path(str(rec["path"])),
-                    t_start=max(0.0, float(rec.get("t_start") or 0.0)),
+                    t_start=final_t,
                     gain=min(max(gain, 0.02), 1.0),
                     kind=str(rec.get("kind") or "sfx"),
+                    frame_number=fn,
                 )
             )
         except (TypeError, ValueError):

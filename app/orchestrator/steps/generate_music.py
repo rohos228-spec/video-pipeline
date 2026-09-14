@@ -103,6 +103,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         project_id=project.id,
     )
     suno_prompt = (suno_prompt or "").strip()
+    # Очистка markdown codeblocks, если GPT обернул ответ
+    if suno_prompt.startswith("```"):
+        lines = suno_prompt.splitlines()
+        if len(lines) >= 2 and lines[-1].strip().startswith("```"):
+            suno_prompt = "\n".join(lines[1:-1]).strip()
+    import re
+
+    suno_prompt = re.sub(
+        r"^(?:\*\*)?(?:prompt|промпт)(?:\*\*)?:\s*", "", suno_prompt, flags=re.IGNORECASE
+    ).strip()
+    suno_prompt = suno_prompt.strip('"`\' \n\r\t')
     if len(suno_prompt) < 20:
         raise RuntimeError("GPT вернул слишком короткий промт для музыки")
     logger.info(

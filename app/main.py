@@ -884,6 +884,17 @@ async def main() -> None:
                 with contextlib.suppress(Exception):
                     reconfigure(encoding="utf-8", errors="replace")
 
+        # Windows ProactorEventLoop: подавляет ложные шумы при закрытии сокета браузером (F5/закрытие вкладки)
+        def _windows_proactor_exception_handler(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+            exception = context.get("exception")
+            if isinstance(exception, ConnectionResetError) and getattr(exception, "winerror", None) == 10054:
+                return
+            if "10054" in str(context):
+                return
+            loop.default_exception_handler(context)
+
+        asyncio.get_running_loop().set_exception_handler(_windows_proactor_exception_handler)
+
     logger.info(
         "starting video-pipeline, owner chat_id={}, db={}",
         settings.telegram_owner_chat_id,

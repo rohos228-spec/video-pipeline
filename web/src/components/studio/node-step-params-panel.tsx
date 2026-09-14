@@ -152,8 +152,7 @@ function AudioFields({
       <div>
         <h3 className="text-sm font-semibold text-foreground">11Labs — голос</h3>
         <p className="mt-1 text-xs text-muted-foreground">
-          Бот откроет Text to Speech, выберет модель Eleven v3, вставит ID голоса в поиск
-          голоса, выберет карточку и сгенерирует полный закадровый текст.
+          Генерация через официальный ElevenLabs HTTP API (модель eleven_multilingual_v2) с нарезкой таймингов слов через ASR.
         </p>
       </div>
       <label className="flex flex-col gap-1.5">

@@ -949,6 +949,12 @@ export function NodeStudio({
                       <HeroConfigPanel projectId={projectId} />
                     </div>
                   ) : null}
+                  {nodeType === "sfx_plan" && projectId ? (
+                    <SfxPlanSettingsPanel projectId={projectId} />
+                  ) : null}
+                  {(nodeType === "sfx_gen" || nodeType === "sfx") && projectId ? (
+                    <SfxGenSettingsPanel projectId={projectId} />
+                  ) : null}
                   {nodeDisabled && (
                     <p className="text-amber-400">Нода отключена в графе — шаг не запустится.</p>
                   )}
@@ -1104,5 +1110,156 @@ export function NodeStudio({
       </aside>
     </>,
     document.body,
+  );
+}
+
+function SfxPlanSettingsPanel({ projectId }: { projectId: number }) {
+  const project = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => api.getProject(projectId),
+  });
+
+  const meta = (project.data?.meta || {}) as Record<string, unknown>;
+  const aiJobs = (meta.ai_jobs || {}) as Record<string, unknown>;
+  const sfxPlan = (aiJobs.sfx_plan || meta.sfx_plan) as
+    | {
+        total_duration?: number;
+        events?: unknown[];
+      }
+    | undefined;
+
+  const count = sfxPlan?.events?.length ?? 0;
+  const duration = sfxPlan?.total_duration;
+
+  return (
+    <section className="flex flex-col gap-4 rounded-xl border border-white/10 bg-white/[0.02] p-5">
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">Параметры звукорежиссуры (SFX)</h3>
+        <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+          ИИ-агент автоматически планирует акцентные звуки и переходы по хронометражу дикторского текста.
+        </p>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+          <div className="text-[11px] font-medium text-zinc-400">Статус плана звуков</div>
+          <div className="mt-1.5 flex items-center gap-2">
+            <span
+              className={cn(
+                "h-2 w-2 rounded-full",
+                count > 0 ? "bg-emerald-400" : "bg-amber-400",
+              )}
+            />
+            <span className="text-sm font-medium text-foreground">
+              {count > 0 ? `Составлен (${count} событий)` : "Ожидает запуска"}
+            </span>
+            {duration ? (
+              <span className="text-xs text-muted-foreground">· {duration} с</span>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+          <div className="text-[11px] font-medium text-zinc-400">Провайдер генерации SFX</div>
+          <div className="mt-1.5 text-sm font-medium text-foreground">
+            ElevenLabs SFX API + Локальный синтез
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-white/10 bg-black/20 p-3.5">
+        <div className="text-xs font-semibold text-zinc-300 mb-2">Категории звуковых меток:</div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] text-zinc-400">
+          <div><strong className="text-rose-300">hit</strong> — выстрелы, удары, взрывы</div>
+          <div><strong className="text-cyan-300">whoosh</strong> — взмахи меча, пролёты</div>
+          <div><strong className="text-emerald-300">foley</strong> — шаги, лязг керамита</div>
+          <div><strong className="text-purple-300">stinger</strong> — акценты кульминации</div>
+          <div><strong className="text-amber-300">riser</strong> — нарастание напряжения</div>
+          <div><strong className="text-indigo-300">ambience</strong> — фоновый гул локации</div>
+          <div><strong className="text-sky-300">transition</strong> — переходы сцен</div>
+          <div><strong className="text-zinc-300">duck</strong> — авто-приглушение</div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SfxGenSettingsPanel({ projectId }: { projectId: number }) {
+  const project = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => api.getProject(projectId),
+  });
+
+  const meta = (project.data?.meta || {}) as Record<string, unknown>;
+  const aiJobs = (meta.ai_jobs || {}) as Record<string, unknown>;
+  const sfxPlan = (aiJobs.sfx_plan || meta.sfx_plan) as
+    | {
+        total_duration?: number;
+        events?: unknown[];
+      }
+    | undefined;
+
+  const sfxFiles = (aiJobs.sfx_files || {}) as { files?: unknown[] };
+  const plannedCount = sfxPlan?.events?.length ?? 0;
+  const generatedCount = sfxFiles?.files?.length ?? 0;
+
+  return (
+    <section className="flex flex-col gap-4 rounded-xl border border-white/10 bg-white/[0.02] p-5">
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">Параметры синтеза звуков (SFX)</h3>
+        <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+          Генерация аудиофайлов для каждого запланированного звукового события через нейросеть ElevenLabs Sound Generation или встроенный офлайн-синтезатор.
+        </p>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+          <div className="text-[11px] font-medium text-zinc-400">Статус генерации файлов</div>
+          <div className="mt-1.5 flex items-center gap-2">
+            <span
+              className={cn(
+                "h-2 w-2 rounded-full",
+                generatedCount > 0 ? "bg-emerald-400" : plannedCount > 0 ? "bg-amber-400" : "bg-zinc-500",
+              )}
+            />
+            <span className="text-sm font-medium text-foreground">
+              {generatedCount > 0
+                ? `Готово: ${generatedCount} / ${plannedCount || generatedCount} файлов`
+                : plannedCount > 0
+                  ? `Ожидает запуска (${plannedCount} событий в плане)`
+                  : "Нет плана звуков"}
+            </span>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+          <div className="text-[11px] font-medium text-zinc-400">Провайдер ИИ-звуков</div>
+          <div className="mt-1.5 flex items-center justify-between">
+            <span className="text-sm font-medium text-foreground">ElevenLabs SFX API</span>
+            <span className="rounded bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-medium text-violet-300 border border-violet-500/30">
+              ~$0.01 / звук
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-white/10 bg-black/20 p-3.5 flex flex-col gap-2">
+        <div className="text-xs font-semibold text-zinc-300">Архитектурные гарантии качества:</div>
+        <ul className="text-[11px] text-zinc-400 space-y-1.5 list-disc list-inside">
+          <li>
+            <strong className="text-zinc-200">Резервный синтез (Fallback):</strong> при сбоях сети или исчерпании лимита API автоматически срабатывает встроенный локальный синтезатор WAV.
+          </li>
+          <li>
+            <strong className="text-zinc-200">Пофайловые чекпоинты:</strong> при повторном запуске уже созданные валидные файлы не перезаписываются, сохраняя баланс API.
+          </li>
+          <li>
+            <strong className="text-zinc-200">Quality Guard:</strong> каждый звук проверяется через ffprobe и RMS громкости — брак и тишина отсекаются.
+          </li>
+          <li>
+            <strong className="text-zinc-200">Финальный микс:</strong> в следующем шаге «Сборка» все звуки автоматически позиционируются на таймлайне и микшируются с озвучкой и музыкой.
+          </li>
+        </ul>
+      </div>
+    </section>
   );
 }

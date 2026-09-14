@@ -160,68 +160,106 @@ def _synth(kind: str, duration: float, *, seed: int = 42) -> list[float]:
 
 
 async def _elevenlabs_sfx(prompt: str, duration: float, out_path: Path) -> Path:
+    import asyncio
     import time
     import httpx
 
-    from app.services.api_tracker_hook import record_api_call
+    from app.services.api_tracker_hook import check_api_allowed, record_api_call
     from app.settings import settings
 
     key = settings.elevenlabs_api_key
     if not key:
         raise RuntimeError("no elevenlabs key")
 
-    from app.services.api_tracker_hook import check_api_allowed
-    check_api_allowed(provider="elevenlabs", model="sound-generation")
+    check_api_allowed(provider="ElevenLabs", model="sound-generation")
+
+    proxy_url = getattr(settings, "elevenlabs_proxy_url", None)
+    proxy = str(proxy_url or "").strip() or None
 
     t0 = time.time()
-    try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                "https://api.elevenlabs.io/v1/sound-generation",
-                headers={"xi-api-key": key},
-                json={
-                    "text": prompt[:450],
-                    "duration_seconds": min(max(duration, 0.5), 22.0),
-                    "prompt_influence": 0.5,
-                },
-            )
-            dur = time.time() - t0
-            if resp.status_code != 200:
+    max_retries = 3
+    last_err: Exception | None = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            client_kwargs: dict[str, Any] = {
+                "timeout": httpx.Timeout(90.0, connect=10.0),
+                "follow_redirects": True,
+            }
+            if proxy:
+                client_kwargs["proxy"] = proxy
+
+            async with httpx.AsyncClient(**client_kwargs) as client:
+                resp = await client.post(
+                    "https://api.elevenlabs.io/v1/sound-generation",
+                    headers={"xi-api-key": key},
+                    json={
+                        "text": prompt[:450],
+                        "duration_seconds": min(max(duration, 0.5), 22.0),
+                        "prompt_influence": 0.5,
+                    },
+                )
+                dur = time.time() - t0
+                if resp.status_code != 200:
+                    if attempt < max_retries and resp.status_code in (500, 502, 503, 504, 429):
+                        logger.warning(
+                            "11labs sfx attempt {}/{} failed with {}: {}, retrying...",
+                            attempt,
+                            max_retries,
+                            resp.status_code,
+                            resp.text[:100],
+                        )
+                        await asyncio.sleep(2.0 * attempt)
+                        continue
+                    record_api_call(
+                        provider="ElevenLabs",
+                        model="eleven-sound-generation",
+                        call_type="audio",
+                        duration_sec=dur,
+                        status_code=resp.status_code,
+                        error_message=resp.text[:200],
+                        project_source="sfx_gen",
+                    )
+                    raise RuntimeError(f"11labs sfx {resp.status_code}: {resp.text[:200]}")
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_bytes(resp.content)
                 record_api_call(
                     provider="ElevenLabs",
                     model="eleven-sound-generation",
                     call_type="audio",
                     duration_sec=dur,
-                    status_code=resp.status_code,
-                    error_message=resp.text[:200],
+                    cost_usd=0.01,
+                    media_count=1,
+                    status_code=200,
                     project_source="sfx_gen",
+                    metadata={"prompt": prompt[:100], "duration": duration},
                 )
-                raise RuntimeError(f"11labs sfx {resp.status_code}: {resp.text[:200]}")
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_bytes(resp.content)
-            record_api_call(
-                provider="ElevenLabs",
-                model="eleven-sound-generation",
-                call_type="audio",
-                duration_sec=dur,
-                cost_usd=0.01,
-                media_count=1,
-                status_code=200,
-                project_source="sfx_gen",
-                metadata={"prompt": prompt[:100], "duration": duration},
-            )
-    except Exception as e:
-        if not isinstance(e, RuntimeError):
-            record_api_call(
-                provider="ElevenLabs",
-                model="eleven-sound-generation",
-                call_type="audio",
-                duration_sec=time.time() - t0,
-                status_code=500,
-                error_message=str(e)[:200],
-                project_source="sfx_gen",
-            )
-        raise
+                return out_path
+        except Exception as e:
+            last_err = e
+            if attempt < max_retries and not isinstance(e, RuntimeError):
+                logger.warning(
+                    "11labs sfx attempt {}/{} error: {}, retrying...",
+                    attempt,
+                    max_retries,
+                    e,
+                )
+                await asyncio.sleep(2.0 * attempt)
+                continue
+            break
+
+    if last_err:
+        record_api_call(
+            provider="ElevenLabs",
+            model="eleven-sound-generation",
+            call_type="audio",
+            duration_sec=time.time() - t0,
+            status_code=500,
+            error_message=str(last_err)[:200],
+            project_source="sfx_gen",
+        )
+        raise last_err
+
     return out_path
 
 
@@ -251,7 +289,9 @@ async def generate_sfx_files(
             if isinstance(rec, dict) and isinstance(rec.get("idx"), int):
                 done_by_idx[rec["idx"]] = rec
 
-    use_api = bool(settings.elevenlabs_api_key)
+    meta = project.meta or {}
+    forced_provider = meta.get("sfx_provider")
+    use_api = bool(settings.elevenlabs_api_key) and forced_provider != "local_synth"
     files: list[dict[str, Any]] = []
     problems: list[str] = []
 
@@ -283,10 +323,21 @@ async def generate_sfx_files(
             _write_wav(out_path, samples)
             actual_provider = "local_synth"
 
-        errs = verify_audio_file(out_path, expect_duration=ev.duration, duration_tol=0.6)
+        # Гибкий допуск по длительности для SFX: звуковые эффекты часто имеют естественные хвосты затухания
+        sfx_dur_tol = max(4.0, ev.duration * 2.0)
+        errs = verify_audio_file(out_path, expect_duration=ev.duration, duration_tol=sfx_dur_tol)
+        if errs:
+            logger.warning("[#{}] sfx_gen verify on {}: {} — fallback to local synth", project.id, actual_provider, errs)
+            if actual_provider != "local_synth":
+                out_path = sfx_dir / f"sfx_{idx:02d}_{ev.kind}.wav"
+                samples = _synth(ev.kind, ev.duration, seed=1000 + idx)
+                _write_wav(out_path, samples)
+                actual_provider = "local_synth"
+                errs = verify_audio_file(out_path, expect_duration=ev.duration, duration_tol=0.6)
+
         if errs:
             problems.extend(errs)
-            logger.warning("[#{}] sfx_gen verify: {}", project.id, errs)
+            logger.warning("[#{}] sfx_gen verify still failed: {}", project.id, errs)
             continue
         files.append(
             {
@@ -299,6 +350,7 @@ async def generate_sfx_files(
                 "gain": ev.gain,
                 "duck": ev.duck,
                 "provider": actual_provider,
+                "prompt": ev.prompt,
             }
         )
 

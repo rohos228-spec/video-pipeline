@@ -40,7 +40,9 @@ export type NodeResultViewMode =
   | "frame_prompts"
   | "frame_images"
   | "frame_videos"
-  | "topic_edit";
+  | "topic_edit"
+  | "sfx_plan"
+  | "sfx_gen";
 
 export interface NodeResultSnapshot {
   hasResult: boolean;
@@ -679,15 +681,17 @@ function computeNodeResult(
     case "sfx_plan": {
       const meta = project?.meta as Record<string, unknown> | undefined;
       const aiJobs = meta?.ai_jobs as Record<string, unknown> | undefined;
-      const sfxPlan = meta?.sfx_plan || meta?.sound_plan || aiJobs?.sfx_plan;
+      const sfxPlanObj = (aiJobs?.sfx_plan || meta?.sfx_plan) as Record<string, unknown> | undefined;
       const sfxPlanAsset = ctx.assets.find(
         (a) => a.id === "sfx_plan.json" || a.kind === "sfx_plan" || a.path?.includes("sfx_plan.json"),
       );
-      if (sfxPlan || sfxPlanAsset) {
+      if (sfxPlanObj || sfxPlanAsset) {
+        const eventsList = Array.isArray(sfxPlanObj?.events) ? sfxPlanObj.events : [];
+        const count = eventsList.length;
         return {
           hasResult: true,
-          itemCount: 1,
-          summary: "План звуков готов",
+          itemCount: count || 1,
+          summary: count ? `План звуков: ${count} событий` : "План звуков готов",
           items: [
             {
               id: "sfx_plan",
@@ -697,7 +701,7 @@ function computeNodeResult(
             },
           ],
           replaceMode: "studio",
-          viewMode: "default",
+          viewMode: "sfx_plan",
         };
       }
       return empty("План звуков ещё не составлен", "studio");
@@ -712,10 +716,28 @@ function computeNodeResult(
         ...artifactItems(arts),
         ...assetItems(sfxAssets),
       ]);
+      const sfxGenerated = Boolean(
+        (ctx.project?.meta as Record<string, unknown> | undefined)?.sfx_generated ||
+          (ctx.project?.meta as Record<string, unknown> | undefined)?.sfx_ready,
+      );
       if (items.length) {
-        return ready(items, `Звуки: ${items.length} файл(ов)`, "assets");
+        return {
+          hasResult: true,
+          itemCount: items.length,
+          summary: `Звуки: ${items.length} файл(ов)`,
+          items,
+          replaceMode: "assets",
+          viewMode: "sfx_gen",
+        };
       }
-      return empty("Звуки ещё не сгенерированы", "assets");
+      return {
+        hasResult: sfxGenerated,
+        itemCount: 0,
+        summary: sfxGenerated ? "Звуки сгенерированы" : "Звуки ещё не сгенерированы",
+        items: [],
+        replaceMode: "assets",
+        viewMode: "sfx_gen",
+      };
     }
 
     case "assemble":

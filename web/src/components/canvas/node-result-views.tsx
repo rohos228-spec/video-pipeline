@@ -15,6 +15,7 @@ import {
   Replace,
   Save,
   Upload,
+  Volume2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { errorMessageFromUnknown } from "@/lib/error-message";
@@ -82,7 +83,17 @@ export function NodeResultViewBody({
       return <FrameVideosView items={snapshot.items} />;
     case "topic_edit":
       return <TopicEditView projectId={projectId} snapshot={snapshot} />;
+    case "sfx_plan":
+      return <SfxPlanView projectId={projectId} snapshot={snapshot} />;
+    case "sfx_gen":
+      return <SfxGenView projectId={projectId} snapshot={snapshot} />;
     default:
+      if (nodeType === "sfx_plan") {
+        return <SfxPlanView projectId={projectId} snapshot={snapshot} />;
+      }
+      if (nodeType === "sfx" || nodeType === "sfx_gen") {
+        return <SfxGenView projectId={projectId} snapshot={snapshot} />;
+      }
       if (
         nodeType === "excel_gpt" ||
         Boolean(nodeType?.startsWith("enrich_"))
@@ -1300,11 +1311,463 @@ function DefaultResultView({
           ) : null}
         </div>
       )}
+      {item.kind === "file" && (
+        <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.02] p-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-white/5 border border-white/10">
+              <FileText className="h-4 w-4 text-primary" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-foreground">{item.label}</p>
+              <p className="text-xs text-muted-foreground">Файл результатов готов</p>
+            </div>
+          </div>
+          {item.downloadUrl && (
+            <Button size="sm" variant="outline" asChild>
+              <a href={item.downloadUrl} download>
+                <Download className="h-3.5 w-3.5" />
+                Скачать
+              </a>
+            </Button>
+          )}
+        </div>
+      )}
       {item.content && (
         <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-black/30 p-3 text-xs">
           {item.content}
         </pre>
       )}
+    </div>
+  );
+}
+
+function SfxPlanView({
+  projectId,
+  snapshot,
+}: {
+  projectId: number;
+  snapshot: NodeResultSnapshot;
+}) {
+  const [copied, setCopied] = useState(false);
+  const project = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => api.getProject(projectId),
+  });
+
+  if (project.isLoading) return <LoadingBlock />;
+
+  const meta = (project.data?.meta || {}) as Record<string, unknown>;
+  const aiJobs = (meta.ai_jobs || {}) as Record<string, unknown>;
+  const rawPlan = (aiJobs.sfx_plan || meta.sfx_plan) as
+    | {
+        total_duration?: number;
+        events?: Array<{
+          frame_number: number;
+          t_start: number;
+          duration: number;
+          kind: string;
+          prompt: string;
+          gain: number;
+          duck: boolean;
+        }>;
+      }
+    | undefined;
+
+  const events = rawPlan?.events || [];
+  const totalDuration = rawPlan?.total_duration;
+
+  const kindColors: Record<string, { bg: string; text: string; border: string }> = {
+    hit: { bg: "bg-rose-500/15", text: "text-rose-300", border: "border-rose-500/30" },
+    whoosh: { bg: "bg-cyan-500/15", text: "text-cyan-300", border: "border-cyan-500/30" },
+    foley: { bg: "bg-emerald-500/15", text: "text-emerald-300", border: "border-emerald-500/30" },
+    stinger: { bg: "bg-purple-500/15", text: "text-purple-300", border: "border-purple-500/30" },
+    riser: { bg: "bg-amber-500/15", text: "text-amber-300", border: "border-amber-500/30" },
+    ambience: { bg: "bg-indigo-500/15", text: "text-indigo-300", border: "border-indigo-500/30" },
+    transition: { bg: "bg-sky-500/15", text: "text-sky-300", border: "border-sky-500/30" },
+  };
+
+  const copyJson = () => {
+    if (!rawPlan) return;
+    navigator.clipboard.writeText(JSON.stringify(rawPlan, null, 2));
+    setCopied(true);
+    toast.success("План звуков скопирован в буфер");
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  if (!events.length) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-white/10 bg-white/[0.02] p-8 text-center">
+        <Volume2 className="h-8 w-8 text-muted-foreground/60" />
+        <div>
+          <p className="text-sm font-medium text-foreground">План звуков ещё не составлен</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Запустите шаг «План звуков», чтобы ИИ-агент расставил эффекты по таймлайну.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Сводная карточка */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/10 bg-gradient-to-r from-amber-500/5 via-violet-500/5 to-transparent p-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-500/15 text-amber-300 border border-amber-500/30">
+            <Volume2 className="h-5 w-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-foreground">План звуков (SFX)</span>
+              <span className="rounded-md bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-300 border border-emerald-500/30">
+                Готов · {events.length} событий
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Хронометраж: {totalDuration ? `${totalDuration} с` : "—"} · Подготовлено для шага «Звуки (SFX)»
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs" onClick={copyJson}>
+            {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+            {copied ? "Скопировано" : "Копировать JSON"}
+          </Button>
+          {snapshot.items[0]?.downloadUrl ? (
+            <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs" asChild>
+              <a href={snapshot.items[0].downloadUrl} download>
+                <Download className="h-3.5 w-3.5" />
+                Скачать
+              </a>
+            </Button>
+          ) : null}
+        </div>
+      </div>
+
+      {/* Список звуковых событий */}
+      <div className="flex flex-col gap-2">
+        {events.map((ev, idx) => {
+          const style = kindColors[ev.kind.toLowerCase()] || {
+            bg: "bg-white/5",
+            text: "text-zinc-300",
+            border: "border-white/10",
+          };
+          return (
+            <div
+              key={idx}
+              className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.02] hover:bg-white/[0.04] p-3.5 transition-colors"
+            >
+              <div className="flex items-start sm:items-center gap-3">
+                <span className="text-xs font-mono text-muted-foreground w-6 shrink-0">
+                  #{idx + 1}
+                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={cn(
+                      "rounded-lg px-2.5 py-1 text-xs font-semibold uppercase tracking-wider border",
+                      style.bg,
+                      style.text,
+                      style.border,
+                    )}
+                  >
+                    {ev.kind}
+                  </span>
+                  <span className="rounded-md bg-white/5 px-2 py-0.5 text-xs font-mono text-zinc-300 border border-white/10">
+                    {ev.t_start.toFixed(1)} с (+{ev.duration.toFixed(1)} с)
+                  </span>
+                  <span className="rounded-md bg-white/5 px-2 py-0.5 text-xs text-zinc-400 border border-white/10">
+                    Кадр {ev.frame_number}
+                  </span>
+                  {ev.duck && (
+                    <span className="rounded-md bg-blue-500/10 px-2 py-0.5 text-[11px] text-blue-300 border border-blue-500/20">
+                      Duck (под голосом)
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center justify-between sm:justify-end gap-3 min-w-0 flex-1 sm:max-w-[55%]">
+                <p className="text-xs text-zinc-200 truncate font-sans" title={ev.prompt}>
+                  «{ev.prompt}»
+                </p>
+                <span className="shrink-0 text-[11px] font-mono text-muted-foreground">
+                  {Math.round(ev.gain * 100)}%
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SfxGenView({
+  projectId,
+  snapshot,
+}: {
+  projectId: number;
+  snapshot: NodeResultSnapshot;
+}) {
+  const project = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => api.getProject(projectId),
+  });
+
+  if (project.isLoading) return <LoadingBlock />;
+
+  const meta = (project.data?.meta || {}) as Record<string, unknown>;
+  const aiJobs = (meta.ai_jobs || {}) as Record<string, unknown>;
+  const sfxPlan = (aiJobs.sfx_plan || meta.sfx_plan) as
+    | {
+        total_duration?: number;
+        events?: Array<{
+          frame_number: number;
+          t_start: number;
+          duration: number;
+          kind: string;
+          prompt: string;
+          gain: number;
+          duck: boolean;
+        }>;
+      }
+    | undefined;
+
+  const sfxFilesRecord = aiJobs.sfx_files as
+    | {
+        files?: Array<{
+          idx: number;
+          path: string;
+          frame_number: number;
+          t_start: number;
+          duration: number;
+          kind: string;
+          gain: number;
+          duck: boolean;
+          provider: string;
+          prompt?: string;
+        }>;
+      }
+    | undefined;
+
+  const plannedEvents = sfxPlan?.events || [];
+  const generatedFiles = sfxFilesRecord?.files || [];
+  const items = snapshot.items;
+  const hasFiles = generatedFiles.length > 0 || items.length > 0;
+
+  const kindColors: Record<string, { bg: string; text: string; border: string }> = {
+    hit: { bg: "bg-rose-500/15", text: "text-rose-300", border: "border-rose-500/30" },
+    whoosh: { bg: "bg-cyan-500/15", text: "text-cyan-300", border: "border-cyan-500/30" },
+    foley: { bg: "bg-emerald-500/15", text: "text-emerald-300", border: "border-emerald-500/30" },
+    stinger: { bg: "bg-purple-500/15", text: "text-purple-300", border: "border-purple-500/30" },
+    riser: { bg: "bg-amber-500/15", text: "text-amber-300", border: "border-amber-500/30" },
+    ambience: { bg: "bg-indigo-500/15", text: "text-indigo-300", border: "border-indigo-500/30" },
+    transition: { bg: "bg-sky-500/15", text: "text-sky-300", border: "border-sky-500/30" },
+  };
+
+  if (!hasFiles) {
+    return (
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-white/10 bg-white/[0.02] p-8 text-center">
+          <Volume2 className="h-8 w-8 text-muted-foreground/60" />
+          <div>
+            <p className="text-sm font-medium text-foreground">Звуки ещё не сгенерированы</p>
+            <p className="mt-1 text-xs text-muted-foreground max-w-md">
+              {plannedEvents.length > 0
+                ? `В плане подготовлено ${plannedEvents.length} звуковых событий. Нажмите «Запустить шаг», чтобы синтезировать звуки через ElevenLabs API / локальный синтезатор.`
+                : "Сначала запустите шаг «План звуков», чтобы разметить звуковые эффекты по таймлайну."}
+            </p>
+          </div>
+        </div>
+
+        {plannedEvents.length > 0 && (
+          <div className="flex flex-col gap-2 opacity-60">
+            <div className="text-xs font-semibold text-zinc-400 px-1">
+              Очередь генерации по плану ({plannedEvents.length} событий):
+            </div>
+            {plannedEvents.map((ev, idx) => {
+              const style = kindColors[ev.kind.toLowerCase()] || {
+                bg: "bg-white/5",
+                text: "text-zinc-300",
+                border: "border-white/10",
+              };
+              return (
+                <div
+                  key={idx}
+                  className="flex items-center justify-between gap-3 rounded-xl border border-white/5 bg-white/[0.01] p-3 text-xs"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <span className="font-mono text-zinc-500">#{idx + 1}</span>
+                    <span
+                      className={cn(
+                        "rounded px-2 py-0.5 text-[11px] font-semibold uppercase border",
+                        style.bg,
+                        style.text,
+                        style.border,
+                      )}
+                    >
+                      {ev.kind}
+                    </span>
+                    <span className="text-zinc-400 font-mono">
+                      {ev.t_start.toFixed(1)} с · Кадр {ev.frame_number}
+                    </span>
+                  </div>
+                  <span className="text-zinc-400 truncate max-w-[50%]">«{ev.prompt}»</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const displayItems = generatedFiles.length > 0
+    ? generatedFiles.map((file, idx) => {
+        const planEv = plannedEvents[file.idx ?? idx];
+        const prompt = file.prompt || planEv?.prompt || "";
+        const url = `/api/files?path=${encodeURIComponent(file.path)}`;
+        return {
+          idx: file.idx ?? idx,
+          kind: file.kind,
+          provider: file.provider,
+          tStart: file.t_start,
+          duration: file.duration,
+          frameNumber: file.frame_number,
+          gain: file.gain,
+          duck: file.duck,
+          prompt,
+          audioUrl: url,
+          fileName: file.path.split(/[/\\]/).pop() || `sfx_${idx}.mp3`,
+        };
+      })
+    : items.map((item, idx) => {
+        const planEv = plannedEvents[idx];
+        const rawKind = item.label?.split("_")[2]?.replace(/\.\w+$/, "") || planEv?.kind || "sfx";
+        return {
+          idx,
+          kind: rawKind,
+          provider: "elevenlabs",
+          tStart: planEv?.t_start ?? 0,
+          duration: planEv?.duration ?? 0,
+          frameNumber: planEv?.frame_number ?? (idx + 1),
+          gain: planEv?.gain ?? 0.5,
+          duck: planEv?.duck ?? false,
+          prompt: planEv?.prompt || item.label || "",
+          audioUrl: item.previewUrl || item.downloadUrl || "",
+          fileName: item.label || `sfx_${idx}.mp3`,
+        };
+      });
+
+  const providers = Array.from(new Set(displayItems.map((d) => d.provider)));
+  const providerLabel = providers.includes("elevenlabs")
+    ? providers.includes("local_synth")
+      ? "ElevenLabs + Синтез"
+      : "ElevenLabs SFX API"
+    : "Локальный синтез";
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Сводная карточка */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/10 bg-gradient-to-r from-emerald-500/5 via-violet-500/5 to-transparent p-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+            <Volume2 className="h-5 w-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-foreground">Звуки сопровождения (SFX)</span>
+              <span className="rounded-md bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-300 border border-emerald-500/30">
+                Готово · {displayItems.length} файл(ов)
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Провайдер: <strong className="text-zinc-200">{providerLabel}</strong> · Готовы к миксу в шаге «Сборка»
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Список звуков с аудиоплеерами */}
+      <div className="flex flex-col gap-2.5">
+        {displayItems.map((item) => {
+          const style = kindColors[item.kind.toLowerCase()] || {
+            bg: "bg-white/5",
+            text: "text-zinc-300",
+            border: "border-white/10",
+          };
+          return (
+            <div
+              key={item.idx}
+              className="flex flex-col gap-2 rounded-xl border border-white/10 bg-white/[0.02] hover:bg-white/[0.04] p-3.5 transition-colors"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5">
+                  <span className="text-xs font-mono text-muted-foreground w-6">
+                    #{item.idx + 1}
+                  </span>
+                  <span
+                    className={cn(
+                      "rounded-lg px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wider border",
+                      style.bg,
+                      style.text,
+                      style.border,
+                    )}
+                  >
+                    {item.kind}
+                  </span>
+                  <span className="rounded-md bg-white/5 px-2 py-0.5 text-xs font-mono text-zinc-300 border border-white/10">
+                    {item.tStart.toFixed(1)} с (+{item.duration.toFixed(1)} с)
+                  </span>
+                  <span className="rounded-md bg-white/5 px-2 py-0.5 text-xs text-zinc-400 border border-white/10">
+                    Кадр {item.frameNumber}
+                  </span>
+                  {item.duck && (
+                    <span className="rounded-md bg-blue-500/10 px-2 py-0.5 text-[11px] text-blue-300 border border-blue-500/20">
+                      Duck
+                    </span>
+                  )}
+                  <span className="text-[11px] font-mono text-zinc-400">
+                    Громкость: {Math.round(item.gain * 100)}%
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span
+                    className={cn(
+                      "rounded px-1.5 py-0.5 text-[10px] font-medium border",
+                      item.provider === "elevenlabs"
+                        ? "bg-violet-500/10 text-violet-300 border-violet-500/20"
+                        : "bg-zinc-500/10 text-zinc-300 border-zinc-500/20",
+                    )}
+                  >
+                    {item.provider === "elevenlabs" ? "ElevenLabs" : "Синтез"}
+                  </span>
+                  <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground" asChild>
+                    <a href={item.audioUrl} download={item.fileName} title="Скачать аудио">
+                      <Download className="h-3.5 w-3.5" />
+                    </a>
+                  </Button>
+                </div>
+              </div>
+
+              {item.prompt && (
+                <p className="text-xs text-zinc-300 italic pl-8 leading-relaxed">
+                  «{item.prompt}»
+                </p>
+              )}
+
+              <div className="pl-8 pt-0.5">
+                <audio
+                  controls
+                  src={item.audioUrl}
+                  className="h-8 w-full max-w-xl rounded"
+                  preload="none"
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

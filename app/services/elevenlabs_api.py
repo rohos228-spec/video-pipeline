@@ -180,8 +180,9 @@ async def synthesize_speech(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     async def _do_post(active_proxy: str | None) -> httpx.Response:
+        req_timeout = httpx.Timeout(10.0, connect=5.0) if active_proxy else httpx.Timeout(timeout)
         client_kwargs: dict[str, Any] = {
-            "timeout": timeout,
+            "timeout": req_timeout,
             "follow_redirects": True,
         }
         if active_proxy:
