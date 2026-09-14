@@ -505,7 +505,13 @@ async def _assemble_body(
         tail_seconds = post_voiceover_tail_seconds_for_project(project)
         from app.services.sfx_mix import collect_sfx_inputs
 
-        sfx_inputs = collect_sfx_inputs(project)
+        video_frame_starts: dict[int, float] = {}
+        cum_t = 0.0
+        for fr in frames:
+            video_frame_starts[fr.number] = round(cum_t, 3)
+            cum_t += duration_by_frame.get(fr.number, 0.0)
+
+        sfx_inputs = collect_sfx_inputs(project, video_frame_starts=video_frame_starts)
         if sfx_inputs:
             logger.info("[#{}] assemble: {} SFX из sfx_gen идут в микс", project.id, len(sfx_inputs))
         await assemble(
@@ -521,7 +527,8 @@ async def _assemble_body(
     else:
         from app.services.sfx_mix import collect_sfx_inputs
 
-        sfx_inputs = collect_sfx_inputs(project)
+        v_starts_m = {m.frame_number: m.start_s for m in markers} if "markers" in locals() else None
+        sfx_inputs = collect_sfx_inputs(project, video_frame_starts=v_starts_m)
         if sfx_inputs:
             logger.info("[#{}] assemble (variant3): {} SFX из sfx_gen идут в микс", project.id, len(sfx_inputs))
         await run_variant2(

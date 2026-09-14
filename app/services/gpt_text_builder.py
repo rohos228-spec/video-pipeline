@@ -417,7 +417,9 @@ def _build_music_default(project: Project, **_ctx) -> str:  # noqa: ARG001
         f"Тема ролика: {topic}\n\n"
         "На основе приложенного voiceover.txt составь один промт для генерации "
         "фоновой инструментальной музыки в Suno (без вокала).\n"
-        "Верни ТОЛЬКО текст промта для Suno, без пояснений и кавычек."
+        "Промпт составь на английском языке (жанры, инструменты, темп, атмосфера — "
+        "например: cinematic dark gothic orchestral, pipe organ, deep brass, battle drums, choir, grimdark, instrumental).\n"
+        "Верни ТОЛЬКО текст промта для Suno на английском, без вводных слов, пояснений и кавычек."
     )
 
 

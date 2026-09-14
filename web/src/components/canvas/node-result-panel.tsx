@@ -21,6 +21,8 @@ const WIDE_MODES = new Set([
   "frame_images",
   "frame_videos",
   "topic_edit",
+  "sfx_plan",
+  "sfx_gen",
 ]);
 
 export function NodeResultPanel({

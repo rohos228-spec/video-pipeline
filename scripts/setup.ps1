@@ -45,6 +45,47 @@ function Refresh-Path {
     }
 }
 
+function Invoke-DownloadFile {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Urls,
+        [Parameter(Mandatory = $true)][string]$OutFile,
+        [int]$MinBytes = 1000
+    )
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+    $parent = Split-Path -Parent $OutFile
+    if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    }
+    if (Test-Path -LiteralPath $OutFile) {
+        Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+    }
+    foreach ($url in $Urls) {
+        if (Have-Cmd curl.exe) {
+            try {
+                & curl.exe -L -k -s --connect-timeout 15 --max-time 300 --retry 2 -o $OutFile $url 2>$null
+                if ((Test-Path -LiteralPath $OutFile) -and (Get-Item -LiteralPath $OutFile).Length -gt $MinBytes) {
+                    return $true
+                }
+            } catch { }
+        }
+        try {
+            $wc = New-Object System.Net.WebClient
+            $wc.Headers.Add('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+            $wc.DownloadFile($url, $OutFile)
+            if ((Test-Path -LiteralPath $OutFile) -and (Get-Item -LiteralPath $OutFile).Length -gt $MinBytes) {
+                return $true
+            }
+        } catch { }
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $OutFile -UseBasicParsing -TimeoutSec 120 -Headers @{'User-Agent'='Mozilla/5.0 (Windows NT 10.0; Win64; x64)'} -ErrorAction Stop
+            if ((Test-Path -LiteralPath $OutFile) -and (Get-Item -LiteralPath $OutFile).Length -gt $MinBytes) {
+                return $true
+            }
+        } catch { }
+    }
+    return $false
+}
+
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "         УСТАНОВКА VIDEO PIPELINE STUDIO                   " -ForegroundColor Cyan
@@ -103,7 +144,7 @@ if (Test-Path -LiteralPath $targetEnv) {
         Write-Host ""
 
         while (-not (Test-Path -LiteralPath $targetEnv)) {
-            $inputPath = Read-Host "  Перетащите .env сюда или нажмите Enter после копирования"
+            $inputPath = Read-Host "  Перетащите .env сюда или нажмите Enter для создания из шаблона"
             $cleaned = $inputPath.Trim().Trim('"').Trim("'")
             if ($cleaned -and (Test-Path -LiteralPath $cleaned)) {
                 Copy-Item -LiteralPath $cleaned -Destination $targetEnv -Force
@@ -114,7 +155,16 @@ if (Test-Path -LiteralPath $targetEnv) {
                 Write-OK "Файл .env обнаружен в папке проекта!"
                 break
             }
-            Write-Warn "Файл всё ещё не найден. Скопируйте .env в $Root и нажмите Enter."
+            if (-not $cleaned) {
+                $examplePath = Join-Path $Root ".env.example"
+                if (Test-Path -LiteralPath $examplePath) {
+                    Copy-Item -LiteralPath $examplePath -Destination $targetEnv -Force
+                    Write-OK "Создан файл .env на основе шаблона .env.example."
+                    Write-Host "    Вы сможете ввести API-ключи позже в Студии или отредактировав .env" -ForegroundColor DarkGray
+                    break
+                }
+            }
+            Write-Warn "Файл не найден. Скопируйте .env в $Root или нажмите Enter для создания из шаблона."
         }
     }
 }
@@ -183,19 +233,25 @@ if (-not $pyCmd) {
 
     if (-not $installed) {
         Write-Host "    Скачиваю официальный установщик Python 3.11.9..." -ForegroundColor DarkGray
-        $installerUrl = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
         $installerPath = Join-Path $env:TEMP "python-3.11.9-installer.exe"
-        try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
-            Write-Host "    Запуск тихой установки Python..." -ForegroundColor DarkGray
-            $proc = Start-Process -FilePath $installerPath -ArgumentList "/quiet", "InstallAllUsers=0", "PrependPath=1", "Include_test=0" -Wait -PassThru
-            Refresh-Path
-            Start-Sleep -Seconds 2
-            $pyCmd = Find-LocalPython
-            if ($pyCmd) { $installed = $true }
-        } catch {
-            Write-Warn "Не удалось автоматически скачать Python: $($_.Exception.Message)"
+        $installerUrls = @(
+            "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe",
+            "https://npm.taobao.org/mirrors/python/3.11.9/python-3.11.9-amd64.exe"
+        )
+        $dlOk = Invoke-DownloadFile -Urls $installerUrls -OutFile $installerPath -MinBytes 10000000
+        if ($dlOk) {
+            try {
+                Write-Host "    Запуск тихой установки Python..." -ForegroundColor DarkGray
+                $proc = Start-Process -FilePath $installerPath -ArgumentList "/quiet", "InstallAllUsers=0", "PrependPath=1", "Include_test=0" -Wait -PassThru
+                Refresh-Path
+                Start-Sleep -Seconds 2
+                $pyCmd = Find-LocalPython
+                if ($pyCmd) { $installed = $true }
+            } catch {
+                Write-Warn "Не удалось автоматически установить Python: $($_.Exception.Message)"
+            }
+        } else {
+            Write-Warn "Не удалось автоматически скачать Python."
         }
     }
 
@@ -236,22 +292,31 @@ if (Have-Cmd ffmpeg) {
         $toolsDir = Join-Path $Root "tools\ffmpeg"
         if (-not (Test-Path $toolsDir)) { New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null }
         $zipPath = Join-Path $env:TEMP "ffmpeg-essentials.zip"
-        $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-        try {
-            Invoke-WebRequest -Uri $ffmpegUrl -OutFile $zipPath -UseBasicParsing
-            Expand-Archive -LiteralPath $zipPath -DestinationPath $toolsDir -Force
-            $binFolder = Get-ChildItem -Path $toolsDir -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
-            if ($binFolder) {
-                $binPath = $binFolder.DirectoryName
-                $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
-                if ($userPath -notmatch [regex]::Escape($binPath)) {
-                    [System.Environment]::SetEnvironmentVariable("Path", "$userPath;$binPath", "User")
+        $ffmpegUrls = @(
+            "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+            "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip",
+            "https://ghproxy.net/https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip"
+        )
+        $ffDl = Invoke-DownloadFile -Urls $ffmpegUrls -OutFile $zipPath -MinBytes 10000000
+        if ($ffDl) {
+            try {
+                Expand-Archive -LiteralPath $zipPath -DestinationPath $toolsDir -Force
+                Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+                $binFolder = Get-ChildItem -Path $toolsDir -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
+                if ($binFolder) {
+                    $binPath = $binFolder.DirectoryName
+                    $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+                    if ($userPath -notmatch [regex]::Escape($binPath)) {
+                        [System.Environment]::SetEnvironmentVariable("Path", "$userPath;$binPath", "User")
+                    }
+                    Refresh-Path
+                    $ffmpegInstalled = $true
                 }
-                Refresh-Path
-                $ffmpegInstalled = $true
+            } catch {
+                Write-Warn "Не удалось распаковать FFmpeg: $($_.Exception.Message)"
             }
-        } catch {
-            Write-Warn "Не удалось автоматически скачать FFmpeg: $($_.Exception.Message)"
+        } else {
+            Write-Warn "Не удалось автоматически скачать FFmpeg."
         }
     }
 
@@ -348,12 +413,25 @@ if ($asrBackend -eq "nvidia") {
     Write-OK "Аудио-распознавание (ASR): Whisper (легковесный, готов к работе)."
 }
 
-# Валидация импортов
-$checkImports = & $venvPython -c "import fastapi, sqlalchemy, playwright, faster_whisper; print('IMPORTS_OK')" 2>&1
-if ($checkImports -match "IMPORTS_OK") {
-    Write-OK "Все основные библиотеки успешно проверены."
+# Валидация и самовосстановление библиотек
+Write-Host "    Проверка готовности модулей бэкенда Студии..." -ForegroundColor DarkGray
+$checkApp = & $venvPython -c "try: from app.web.api import create_app; print('CREATE_APP_OK')`nexcept Exception as e: print(f'APP_ERR: {e}')" 2>&1
+if ("$checkApp" -match "CREATE_APP_OK") {
+    Write-OK "Все основные библиотеки и модули Студии успешно проверены."
 } else {
-    Write-Warn "Проверка импортов завершилась с предупреждением: $checkImports"
+    Write-Warn "Обнаружены отсутствующие пакеты: $checkApp"
+    Write-Host "    Автоматическая доустановка пакетов..." -ForegroundColor Yellow
+    if (Test-Path -LiteralPath $venvUv) {
+        & $venvUv pip install --no-cache -e "${repoRoot}[whisper]" 2>&1 | Out-Null
+    } else {
+        & $venvPython -m pip install -e "${repoRoot}[whisper]" 2>&1 | Out-Null
+    }
+    $checkRetry = & $venvPython -c "try: from app.web.api import create_app; print('CREATE_APP_OK')`nexcept Exception as e: print(f'APP_ERR: {e}')" 2>&1
+    if ("$checkRetry" -match "CREATE_APP_OK") {
+        Write-OK "Библиотеки успешно восстановлены (create_app OK)."
+    } else {
+        Write-Warn "Предупреждение при валидации приложения: $checkRetry"
+    }
 }
 
 # -------------------------------------------------------------
