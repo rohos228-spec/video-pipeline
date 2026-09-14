@@ -198,6 +198,7 @@ async def generate_prompts(
     agent_text: str,
     aspect: str = "9:16",
     count: int = 1,
+    ref_labels: list[str] | None = None,
 ) -> dict[str, Any]:
     """Агент + обвязка. Без готового промпта — ValueError, картинка не стартует."""
     request = (request or "").strip()
@@ -224,6 +225,15 @@ async def generate_prompts(
         f"{request}\n\n{system}\n\nN = {count}"
     )
     user = f"Предмет кадра: {request}\nN = {count}"
+    labels = [str(x).strip() for x in (ref_labels or []) if str(x).strip()]
+    if labels:
+        listed = "\n".join(labels)
+        ref_block = (
+            f"\n\nРЕФЕРЕНСЫ (файлы уже приложены к генератору в этом порядке):\n{listed}\n"
+            "Если в запросе есть @imageN — оставь этот тег в выходном промпте."
+        )
+        master += ref_block
+        user += f"\n{listed}"
     retry_user = (
         f"{user}\n\nПрошлый ответ нельзя слать в генератор картинки "
         f"(копия правил, YAML, слоты вроде [ГЕРОЙ], пустой JSON или сырой запрос). "

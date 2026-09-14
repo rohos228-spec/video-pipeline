@@ -218,6 +218,38 @@ async def test_generate_attaches_agent_prompt_file(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_generate_includes_ref_handles_in_master(monkeypatch):
+    """Имена @imageN уходят в мастер/user, чтобы агент оставлял теги в промпте."""
+    from app.services import gpt_client
+
+    calls: list[dict] = []
+
+    class _Fake:
+        async def ask_with_files(self, text, files, **kwargs):
+            paths = list(files)
+            master = paths[0].read_text(encoding="utf-8") if paths else ""
+            calls.append({"text": text, "master": master})
+            body = CORE + " — кадр по @image1, кот в плаще"
+            return '{"prompts": ["' + body + '"]}'
+
+    monkeypatch.setattr(gpt_client, "get_gpt_client", lambda: _Fake())
+    res = await generate_prompts(
+        request=REQ,
+        agent_text=CORE,
+        aspect="9:16",
+        count=1,
+        ref_labels=["@image1 — кот.png", "@image2 — фон.jpg"],
+    )
+    assert res["source"] == "llm"
+    master = calls[0]["master"]
+    assert "@image1 — кот.png" in master
+    assert "@image2 — фон.jpg" in master
+    assert "РЕФЕРЕНСЫ" in master
+    assert "@image1 — кот.png" in calls[0]["text"]
+    assert "@image1" in res["prompts"][0]
+
+
+@pytest.mark.asyncio
 async def test_generate_fails_without_llm(monkeypatch):
     """Без ключа/LLM — ошибка, генерация не запускается."""
     from app.services import gpt_client
@@ -261,3 +293,28 @@ async def test_generate_retry_recovers_real_prompt(monkeypatch):
     assert len(calls) == 2
     assert "двигатель" in res["prompts"][0].lower()
     assert "[ГЕРОЙ]" not in res["prompts"][0]
+
+
+def test_custom_styles_disk_roundtrip(tmp_path, monkeypatch):
+    from app.settings import settings
+    from app.web.routers import gen_assistant as ga
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    assert ga._read_custom_styles() == []
+    payload = {
+        "id": "custom_test",
+        "categoryId": "infographic",
+        "name": "Тест",
+        "promptCore": "ядро стиля достаточно длинное для сохранения",
+        "art": "infographic",
+        "file": "custom",
+        "desc": "desc",
+        "color": "cyan",
+        "tags": ["custom"],
+    }
+    path = tmp_path / "gen_assistant_styles.json"
+    path.write_text(json.dumps({"styles": [payload]}, ensure_ascii=False), encoding="utf-8")
+    got = ga._read_custom_styles()
+    assert len(got) == 1
+    assert got[0]["name"] == "Тест"
+

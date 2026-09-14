@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 from pathlib import Path
@@ -11,6 +12,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from app.settings import settings
 from app.services.gen_assistant import MAX_COUNT, MIN_COUNT, generate_prompts
 from app.services.style_analyzer import (
     IMG_EXTS,
@@ -28,16 +30,18 @@ class GenAssistantPromptsBody(BaseModel):
     agent_text: str = ""
     aspect: str = "9:16"
     count: int = Field(1, ge=MIN_COUNT, le=MAX_COUNT)
+    ref_labels: list[str] = Field(default_factory=list)
 
 
 @router.post("/prompts")
 async def post_gen_assistant_prompts(body: GenAssistantPromptsBody) -> dict[str, Any]:
     logger.info(
-        "gen-assistant POST request_chars={} agent_chars={} count={} aspect={}",
+        "gen-assistant POST request_chars={} agent_chars={} count={} aspect={} refs={}",
         len(body.request or ""),
         len(body.agent_text or ""),
         body.count,
         body.aspect,
+        len(body.ref_labels or []),
     )
     try:
         return await generate_prompts(
@@ -45,6 +49,7 @@ async def post_gen_assistant_prompts(body: GenAssistantPromptsBody) -> dict[str,
             agent_text=body.agent_text,
             aspect=body.aspect,
             count=body.count,
+            ref_labels=body.ref_labels,
         )
     except ValueError as e:
         logger.warning("gen-assistant rejected: {}", e)
@@ -111,3 +116,60 @@ async def post_categorize_styles(body: CategorizeStylesBody) -> dict[str, Any]:
         return await categorize_styles(body.entries)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+_CUSTOM_STYLES_FILE = "gen_assistant_styles.json"
+
+
+def _custom_styles_path() -> Path:
+    return settings.data_dir / _CUSTOM_STYLES_FILE
+
+
+def _read_custom_styles() -> list[dict[str, Any]]:
+    path = _custom_styles_path()
+    if not path.is_file():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning("gen-assistant custom-styles read failed: {}", e)
+        return []
+    styles = raw.get("styles") if isinstance(raw, dict) else raw
+    return styles if isinstance(styles, list) else []
+
+
+@router.get("/custom-styles")
+async def get_custom_styles() -> dict[str, Any]:
+    """Свои стили помощника: диск, не только localStorage браузера."""
+    styles = _read_custom_styles()
+    return {"styles": styles, "count": len(styles)}
+
+
+class CustomStylesBody(BaseModel):
+    styles: list[dict[str, Any]] = Field(default_factory=list)
+
+
+@router.put("/custom-styles")
+async def put_custom_styles(body: CustomStylesBody) -> dict[str, Any]:
+    """Сохранить свои стили на диск (не затираем пустым списком, если на диске уже есть)."""
+    incoming = [s for s in body.styles if isinstance(s, dict) and s.get("id") and s.get("promptCore")]
+    existing = _read_custom_styles()
+    if not incoming and existing:
+        return {"styles": existing, "count": len(existing), "kept": True}
+    by_id: dict[str, dict[str, Any]] = {}
+    for s in existing + incoming:
+        sid = str(s.get("id") or "")
+        if not sid:
+            continue
+        prev = by_id.get(sid)
+        if prev is None or len(str(s.get("promptCore") or "")) >= len(str(prev.get("promptCore") or "")):
+            by_id[sid] = s
+    merged = list(by_id.values())
+    path = _custom_styles_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"styles": merged}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    logger.info("gen-assistant custom-styles saved n={}", len(merged))
+    return {"styles": merged, "count": len(merged)}

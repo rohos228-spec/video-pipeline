@@ -3,7 +3,8 @@
 /**
  * Мини-превью стиля/категории для панели «Помощник промпта».
  * Чистый SVG-эскиз в палитре окна генерации (dark + цвет стиля).
- * Растягивается на весь контейнер: родителю нужен relative + высота.
+ * Превью в плитке: svg с width/height, без position:absolute (иначе привязка к окну Create).
+ * Родителю: высота (h-[72px] и т.п.) + overflow-hidden.
  */
 
 import { GEN_STYLE_COLORS } from "@/lib/gen-assistant-styles";
@@ -24,9 +25,11 @@ export function GenStyleArt({
 }) {
   const c = GEN_STYLE_COLORS[color];
   const common = {
-    preserveAspectRatio: "xMidYMid slice",
+    preserveAspectRatio: "xMidYMid slice" as const,
     viewBox: "0 0 120 96",
-    style: { position: "absolute", inset: 0, width: "100%", height: "100%", display: "block" } as const,
+    width: 120,
+    height: 96,
+    className: "block h-full w-full max-h-full max-w-full",
   };
   if (art === "polka")
     return (

@@ -19,6 +19,8 @@ export type GenStyleDef = {
   id: string;
   /** Ключ SVG-превью плитки. */
   art: GenStyleArt;
+  /** Готовая картинка превью (`/gen-styles/...`). Если нет — SVG по `art`. */
+  cover?: string;
   name: string;
   /** Путь блока в библиотеке промптов (справочно). */
   file: string;
@@ -119,6 +121,7 @@ export const GEN_ASSISTANT_CATEGORIES: GenCategoryDef[] = [
       {
         id: "infographic_tutor",
         art: "tutor",
+        cover: "/gen-styles/infographic_tutor.jpg",
         name: "Tutor",
         file: "visual_style/infographic_tutor.md",
         desc: "Обложка урока: крупный округлый заголовок, 3D-тьютор у доски, кремовая палитра",
@@ -328,6 +331,10 @@ export function assembleGenPrompt(opts: {
       : `Aspect ratio: ${opts.aspect}.`,
   );
   return parts.join("\n\n");
+}
+
+export function assistantRefHandle(index: number): string {
+  return `@image${index + 1}`;
 }
 
 const ASSISTANT_STUB_MARK = "not example objects from the style guide";

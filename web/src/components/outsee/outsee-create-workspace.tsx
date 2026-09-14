@@ -275,6 +275,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   >([]);
   const [modelOpen, setModelOpen] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
+  const [assistantExpanded, setAssistantExpanded] = useState(true);
   const [appliedPrompt, setAppliedPrompt] = useState<{ text: string; ts: number } | null>(null);
   const [openChip, setOpenChip] = useState<string | null>(null);
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -699,6 +700,31 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     } catch {
       toast.error("Не удалось взять референс из истории");
     }
+  };
+
+  const addReferenceFiles = async (files: File[]) => {
+    if (maxReferences <= 0) {
+      toast.error("Эта модель не принимает референсы");
+      return;
+    }
+    const remaining = maxReferences - referenceImages.length;
+    if (remaining <= 0) {
+      toast.error(`Достигнут лимит референсов (${maxReferences})`);
+      return;
+    }
+    const toAdd = files.slice(0, remaining);
+    const newRefs: { id: string; url: string; name: string }[] = [];
+    for (const f of toAdd) {
+      const dataUrl = await readFileAsDataUrl(f);
+      newRefs.push({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        url: dataUrl,
+        name: f.name,
+      });
+    }
+    if (!newRefs.length) return;
+    setReferenceImages((prev) => [...prev, ...newRefs]);
+    toast.success(`Добавлено ${newRefs.length} референс(ов)`);
   };
 
   const applyModelDefaults = (slug: string, kind: OutseeMediaType) => {
@@ -1759,6 +1785,15 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       createGenerate.mutate({ prompt: t, forceSingle: true });
                     }
                   }}
+                  expanded={assistantExpanded}
+                  onExpandedChange={setAssistantExpanded}
+                  modelIcon={currentIcon}
+                  references={referenceImages}
+                  maxReferences={maxReferences}
+                  onAddReferenceFiles={(files) => void addReferenceFiles(files)}
+                  onRemoveReference={(id) =>
+                    setReferenceImages((prev) => prev.filter((r) => r.id !== id))
+                  }
                 />
               )}
               {/* выбор модели при открытом помощнике: док скрыт, поэтому отдельный якорь у правой панели */}
