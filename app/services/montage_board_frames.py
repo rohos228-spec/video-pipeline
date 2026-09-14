@@ -15,7 +15,6 @@ from app.services.montage_coverage_ops import (
     _load_frames,
     delete_coverage_child,
 )
-from app.services.scene_design.camera_expand import renumber_frames_by_sort_key
 from app.services.vo_shot_expand import _set_cs, is_shot_child
 
 
@@ -74,8 +73,52 @@ async def insert_montage_frame(
     *,
     after_frame_id: int | None,
     voiceover: str = "",
+    kind: str = "parent",
 ) -> Frame:
-    """Новый VO-родитель после кадра (или в начало). Номера — по sort_key."""
+    """Вставить кадр.
+
+    ``parent`` — новая VO-ячейка после кадра / в начало.
+    ``child`` — шот в ту же сцену, сразу после указанного кадра.
+    """
+    from app.services.montage_board import _vo_parent_and_members
+    from app.services.montage_coverage_ops import _new_shot_from_parent, _refresh_shots_in_beat
+
+    kind_n = (kind or "parent").strip().lower()
+    if kind_n in {"child", "shot"}:
+        if after_frame_id is None:
+            raise ValueError("для шота в сцене нужен кадр, после которого вставлять")
+        frames = await _load_frames(session, int(project.id))
+        after = next((fr for fr in frames if int(fr.id) == int(after_frame_id)), None)
+        if after is None:
+            raise ValueError(f"кадр {after_frame_id} не найден")
+        parent, _members = _vo_parent_and_members(frames, after)
+        fr = await insert_frame_after(
+            session,
+            project,
+            after_frame_id=int(after.id),
+        )
+        fr.status = FrameStatus.planned
+        fr.voiceover_text = ""
+        _new_shot_from_parent(parent, fr)
+        await session.flush()
+        await upsert_frame_voiceover(session, fr, "")
+        ordered = await _load_frames(session, int(project.id))
+        live_parent = next(
+            (x for x in ordered if int(x.id) == int(parent.id)), parent
+        )
+        _refresh_shots_in_beat(ordered, live_parent)
+        await session.flush()
+        live = await session.get(Frame, fr.id)
+        out = live if live is not None else fr
+        logger.info(
+            "montage insert child #{} after={} → frame {} parent={}",
+            project.id,
+            after_frame_id,
+            out.number,
+            live_parent.number,
+        )
+        return out
+
     fr = await insert_frame_after(
         session,
         project,
@@ -88,7 +131,6 @@ async def insert_montage_frame(
     _set_cs(fr, role="vo_parent", parent_uuid=uid)
     await session.flush()
     await upsert_frame_voiceover(session, fr, vo)
-    await renumber_frames_by_sort_key(session, project)
     await session.flush()
     live = await session.get(Frame, fr.id)
     out = live if live is not None else fr
@@ -141,14 +183,12 @@ async def delete_montage_frame(
     number = int(frame.number)
     if is_shot_child(frame):
         await delete_coverage_child(session, project, frame, frames)
-        await renumber_frames_by_sort_key(session, project)
         logger.info("montage delete child #{} frame {}", project.id, number)
         return {"ok": True, "frame_id": frame_id, "number": number, "deleted": 1}
 
     kids = _children_of(frames, frame)
     drop = [frame, *kids]
     await _drop_frame_rows(session, project, drop)
-    await renumber_frames_by_sort_key(session, project)
     logger.info(
         "montage delete cell #{} frame {} (+{} children)",
         project.id,

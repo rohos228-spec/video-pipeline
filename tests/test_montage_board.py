@@ -200,7 +200,7 @@ async def test_montage_board_group_refs_on_vo_cell(
     montage_project: Project,
     session: AsyncSession,
 ) -> None:
-    """Строка «Референсы»: still родителя + персонажи/предметы на всю VO-ячейку."""
+    """Рефы VO-ячейки: still родителя только у детей; персонажи/предметы на группе."""
     parent_uid = "aa" * 12
     scenes = montage_project.data_dir / "scenes"
     chars_dir = montage_project.data_dir / "characters"
@@ -209,6 +209,7 @@ async def test_montage_board_group_refs_on_vo_cell(
     chars_dir.mkdir(parents=True, exist_ok=True)
     items_dir.mkdir(parents=True, exist_ok=True)
     (scenes / "frame_001_parent.png").write_bytes(b"png-parent")
+    (scenes / "frame_002_child.png").write_bytes(b"png-parent")
     (chars_dir / "c02.png").write_bytes(b"png-c02")
     (items_dir / "i01.png").write_bytes(b"png-i01")
 
@@ -266,16 +267,17 @@ async def test_montage_board_group_refs_on_vo_cell(
 
     board = await build_montage_board(session, montage_project)
     p_row, c_row, s_row = board["frames"]
-    assert p_row["ref_parent"]["number"] == 1
-    assert p_row["ref_parent"]["image_url"]
+    assert p_row["ref_parent"] is None
     assert p_row["group_character_refs"][0]["id"] == "c02"
     assert p_row["item_refs"][0]["id"] == "i01"
     assert c_row["ref_parent"]["number"] == 1
-    assert c_row["ref_parent"]["image_url"] == p_row["ref_parent"]["image_url"]
+    assert c_row["ref_parent"]["image_url"]
+    assert c_row["image_shot1_url"]
+    assert c_row["image_shot1_url"] != c_row["ref_parent"]["image_url"]
     assert [r["id"] for r in c_row["group_character_refs"]] == ["c02"]
     assert [r["id"] for r in c_row["item_refs"]] == ["i01"]
     assert "c09" not in [r["id"] for r in c_row["group_character_refs"]]
-    assert s_row["ref_parent"]["number"] == 39
+    assert s_row["ref_parent"] is None
     assert [r["id"] for r in s_row["group_character_refs"]] == ["c09"]
     assert p_row["vo_scene_number"] == 1
     assert c_row["vo_scene_number"] == 1
@@ -934,3 +936,54 @@ async def test_montage_board_link_ref_rejects_outside_file(
     fr = Frame(project_id=montage_project.id, number=1, status="planned")
     with pytest.raises(ValueError, match="нет такого рефа"):
         link_ref_asset(fr, data_dir=montage_project.data_dir, file="../../etc/passwd")
+
+
+@pytest.mark.asyncio
+async def test_montage_board_unlink_hides_scene_character(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    """Крестик в окне рефов снимает персонажа ячейки, даже если id пришёл из attrs."""
+    from app.services.montage_board import _group_refs_for_frames
+    from app.services.montage_frame_refs import hidden_ref_ids, unlink_scene_ref
+
+    chars = montage_project.data_dir / "characters"
+    chars.mkdir(parents=True, exist_ok=True)
+    (chars / "c01.png").write_bytes(b"png")
+
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="текст кадра",
+        status="planned",
+        attrs={"персонажи": "c01"},
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    assert unlink_scene_ref(fr, [fr], kind="character", ref_id="c01")
+    assert "c01" in hidden_ref_ids(fr)
+
+    grouped = _group_refs_for_frames(
+        [fr],
+        scenes_dir=montage_project.data_dir / "scenes",
+        chars_dir=chars,
+        items_dir=montage_project.data_dir / "items",
+        excel_by_frame={},
+        char_names={"c01": "следователь"},
+        item_names={},
+    )
+    assert grouped[1]["group_character_refs"] == []
+
+
+def test_list_ref_assets_groups_backgrounds(montage_project: Project) -> None:
+    from app.services.montage_frame_refs import list_ref_assets
+
+    bgs = montage_project.data_dir / "backgrounds"
+    bgs.mkdir(parents=True, exist_ok=True)
+    (bgs / "loc01.png").write_bytes(b"png")
+    assets = list_ref_assets(montage_project.data_dir)
+    kinds = {a["kind"] for a in assets}
+    assert "background" in kinds
+    assert any(a["code"] == "loc01" for a in assets)

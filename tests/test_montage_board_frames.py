@@ -49,8 +49,12 @@ def _vo_parent(project_id: int, number: int, uid: str, vo: str) -> Frame:
     )
 
 
+def _ordered(frames: list[Frame]) -> list[Frame]:
+    return sorted(frames, key=lambda fr: (float(fr.sort_key or 0.0), int(fr.number or 0)))
+
+
 @pytest.mark.asyncio
-async def test_insert_between_renumbers(
+async def test_insert_between_keeps_neighbor_numbers(
     session: AsyncSession, project: Project
 ) -> None:
     session.add(project)
@@ -64,18 +68,19 @@ async def test_insert_between_renumbers(
     )
     await session.commit()
     assert (inserted.voiceover_text or "") == "между"
+    assert inserted.number == 3
 
-    rows = list(
-        (
-            await session.execute(
-                select(Frame)
-                .where(Frame.project_id == project.id)
-                .order_by(Frame.number)
-            )
-        ).scalars()
+    rows = _ordered(
+        list(
+            (
+                await session.execute(
+                    select(Frame).where(Frame.project_id == project.id)
+                )
+            ).scalars()
+        )
     )
     assert [fr.voiceover_text for fr in rows] == ["первый", "между", "второй"]
-    assert [fr.number for fr in rows] == [1, 2, 3]
+    assert [fr.number for fr in rows] == [1, 3, 2]
     texts = (
         await session.execute(
             select(FrameText).where(
@@ -84,6 +89,67 @@ async def test_insert_between_renumbers(
         )
     ).scalars().all()
     assert len(texts) == 1 and texts[0].text == "между"
+
+
+@pytest.mark.asyncio
+async def test_insert_between_when_sort_key_missing(
+    session: AsyncSession, project: Project
+) -> None:
+    """Старые кадры без sort_key не должны выталкивать вставку в конец."""
+    session.add(project)
+    a = _vo_parent(project.id, 1, "aa" * 12, "первый")
+    b = _vo_parent(project.id, 2, "bb" * 12, "второй")
+    a.sort_key = None
+    b.sort_key = None
+    session.add_all([a, b])
+    await session.flush()
+
+    inserted = await insert_montage_frame(
+        session, project, after_frame_id=a.id, voiceover="между"
+    )
+    await session.commit()
+    rows = _ordered(
+        list(
+            (
+                await session.execute(
+                    select(Frame).where(Frame.project_id == project.id)
+                )
+            ).scalars()
+        )
+    )
+    assert [fr.voiceover_text for fr in rows] == ["первый", "между", "второй"]
+    assert inserted.number == 3
+
+
+@pytest.mark.asyncio
+async def test_insert_child_stays_in_same_scene(
+    session: AsyncSession, project: Project
+) -> None:
+    from app.services.vo_shot_expand import is_shot_child
+
+    session.add(project)
+    a = _vo_parent(project.id, 1, "aa" * 12, "ячейка")
+    b = _vo_parent(project.id, 2, "bb" * 12, "дальше")
+    session.add_all([a, b])
+    await session.flush()
+
+    kid = await insert_montage_frame(
+        session, project, after_frame_id=a.id, kind="child"
+    )
+    await session.commit()
+    rows = _ordered(
+        list(
+            (
+                await session.execute(
+                    select(Frame).where(Frame.project_id == project.id)
+                )
+            ).scalars()
+        )
+    )
+    assert [fr.number for fr in rows] == [1, 3, 2]
+    assert is_shot_child(kid)
+    assert rows[1].id == kid.id
+    assert rows[2].voiceover_text == "дальше"
 
 
 @pytest.mark.asyncio
@@ -155,4 +221,41 @@ async def test_delete_parent_drops_children(
     )
     assert len(left) == 1
     assert left[0].voiceover_text == "дальше"
-    assert left[0].number == 1
+    assert left[0].number == 3
+
+
+@pytest.mark.asyncio
+async def test_insert_does_not_steal_neighbor_image(
+    session: AsyncSession, project: Project
+) -> None:
+    """Новый кадр пустой: PNG соседа остаются на соседе, номер не сдвигается."""
+    from app.services.montage_board import build_montage_board
+
+    session.add(project)
+    a = _vo_parent(project.id, 1, "aa" * 12, "первый")
+    b = _vo_parent(project.id, 2, "bb" * 12, "второй")
+    session.add_all([a, b])
+    await session.flush()
+    scenes = project.data_dir / "scenes"
+    scenes.mkdir(parents=True, exist_ok=True)
+    (scenes / "frame_001_a.png").write_bytes(b"png-a")
+    (scenes / "frame_002_b.png").write_bytes(b"png-b")
+
+    kid = await insert_montage_frame(
+        session, project, after_frame_id=a.id, kind="child"
+    )
+    await session.commit()
+
+    assert kid.number == 3
+    live_b = await session.get(Frame, b.id)
+    assert live_b is not None and live_b.number == 2
+
+    board = await build_montage_board(session, project)
+    ordered = board["frames"]
+    assert [row["frame_id"] for row in ordered] == [a.id, kid.id, b.id]
+    kid_row = ordered[1]
+    b_row = ordered[2]
+    assert not kid_row["image_shot1_url"]
+    assert not (kid_row.get("image_prompt_shot1") or "").strip()
+    assert b_row["image_shot1_url"]
+    assert "frame_002" in (b_row["image_shot1_url"] or "")

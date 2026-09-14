@@ -1177,6 +1177,7 @@ export const api = {
     projectId: number,
     afterFrameId: number | null,
     voiceover = "",
+    kind: "parent" | "child" = "parent",
   ) =>
     http<{
       ok: boolean;
@@ -1187,7 +1188,7 @@ export const api = {
       voiceover_text: string;
     }>(`/api/projects/${projectId}/montage-board/frames/insert`, {
       method: "POST",
-      body: JSON.stringify({ after_frame_id: afterFrameId, voiceover }),
+      body: JSON.stringify({ after_frame_id: afterFrameId, voiceover, kind }),
     }),
 
   setMontageVoiceover: (projectId: number, frameId: number, text: string) =>
@@ -1488,10 +1489,16 @@ export const api = {
     return res.json() as Promise<{ ok: boolean }>;
   },
 
-  deleteMontageFrameRef: (projectId: number, frameNumber: number, refId: string) =>
+  deleteMontageFrameRef: (
+    projectId: number,
+    frameNumber: number,
+    refId: string,
+    kind = "manual",
+  ) =>
     http<{ ok: boolean }>(
       `/api/projects/${projectId}/montage-board/delete-ref` +
-        `?frame_number=${frameNumber}&ref_id=${encodeURIComponent(refId)}`,
+        `?frame_number=${frameNumber}&ref_id=${encodeURIComponent(refId)}` +
+        `&kind=${encodeURIComponent(kind)}`,
       { method: "POST" },
     ),
 

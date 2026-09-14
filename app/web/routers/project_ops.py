@@ -767,12 +767,14 @@ async def montage_board_insert_frame(
     after_raw = body.get("after_frame_id")
     after_id = int(after_raw) if after_raw not in (None, "") else None
     voiceover = str(body.get("voiceover") or "")
+    kind = str(body.get("kind") or "parent")
     try:
         fr = await insert_montage_frame(
             session,
             p,
             after_frame_id=after_id,
             voiceover=voiceover,
+            kind=kind,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -1378,13 +1380,30 @@ async def montage_board_delete_ref(
     project_id: int,
     frame_number: int = Query(..., ge=1),
     ref_id: str = Query(...),
+    kind: str = Query("manual"),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    from app.services.montage_frame_refs import delete_manual_ref, manual_refs_for_board
+    from sqlalchemy import select as _select
+
+    from app.models import Frame
+    from app.services.montage_frame_refs import (
+        delete_manual_ref,
+        manual_refs_for_board,
+        unlink_scene_ref,
+    )
 
     p = _project_or_404(await session.get(Project, project_id))
     frame = await _board_frame_or_404(session, p, frame_number)
-    deleted = delete_manual_ref(frame, data_dir=p.data_dir, ref_id=ref_id)
+    kind_n = (kind or "manual").strip().lower()
+    if kind_n in {"character", "item", "персонаж", "предмет"}:
+        frames = list(
+            (
+                await session.execute(_select(Frame).where(Frame.project_id == p.id))
+            ).scalars().all()
+        )
+        deleted = unlink_scene_ref(frame, frames, kind=kind_n, ref_id=ref_id)
+    else:
+        deleted = delete_manual_ref(frame, data_dir=p.data_dir, ref_id=ref_id)
     await session.commit()
     return {
         "ok": deleted,

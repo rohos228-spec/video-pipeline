@@ -133,7 +133,7 @@ export type CoverageMenuGroup = {
 };
 
 const MENU_W = 420;
-const MENU_H = 190;
+const MENU_H = 230;
 
 /**
  * Покрытие кадра под его картинкой: в доске видны только текущие значения,
@@ -338,6 +338,7 @@ export function RoleCell({
   parentChoices,
   pending,
   disabled,
+  compact,
   onKind,
   onDeleteChild,
 }: {
@@ -347,6 +348,8 @@ export function RoleCell({
   parentChoices: Array<{ number: number; kind: string; vo: string }>;
   pending?: boolean;
   disabled?: boolean;
+  /** Компактная полоска поверх картинки кадра. */
+  compact?: boolean;
   onKind: (kind: "parent" | "child", parentNumber: number | null) => void;
   onDeleteChild: () => void;
 }) {
@@ -355,7 +358,15 @@ export function RoleCell({
     parentChoices[0]?.number ??
     null;
   return (
-    <div className={cn("relative rounded-md p-0.5", pending && "bg-amber-500/10")}>
+    <div
+      className={cn(
+        "relative rounded-md",
+        compact
+          ? "bg-black/75 p-1 shadow-lg backdrop-blur-sm"
+          : "p-0.5",
+        pending && "bg-amber-500/10",
+      )}
+    >
       <div className="flex flex-wrap items-center gap-1">
         <Chip
           active={kind === "parent"}
@@ -398,7 +409,7 @@ export function RoleCell({
             </option>
           ))}
         </select>
-      ) : (
+      ) : compact ? null : (
         <p className={cn(HINT, "mt-1")}>ячейка закадра #{frameNumber}</p>
       )}
       <PendingMark show={Boolean(pending)} />
@@ -989,173 +1000,15 @@ export function TemplateCell({
   );
 }
 
-function MetaChip({ label, value }: { label: string; value?: string | null }) {
-  const text = (value || "").trim();
-  if (!text) return null;
-  return (
-    <span className="text-[10px] leading-snug text-white/60">
-      <span className="text-white/35">{label}: </span>
-      {text}
-    </span>
-  );
-}
-
-/** Набор сцены — не поле на всю ширину, а строчка рядом с остальными данными. */
-function SetChip({
-  value,
-  source,
-  pending,
-  disabled,
-  onChange,
-  onCommit,
-}: {
-  value: string;
-  source: string;
-  pending?: boolean;
-  disabled?: boolean;
-  onChange: (next: string) => void;
-  onCommit: () => void;
-}) {
-  const [edit, setEdit] = useState(false);
-  if (!edit) {
-    return (
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => setEdit(true)}
-        title="Набор сцены (SET / декорация) — нажми, чтобы изменить"
-        className={cn(
-          "relative text-[10px] leading-snug transition disabled:opacity-40",
-          pending ? "text-amber-200/90" : "text-white/60 hover:text-white",
-        )}
-      >
-        <span className="text-white/35">набор: </span>
-        {source || <span className="text-white/25">задать</span>}
-        <PendingMark show={Boolean(pending)} />
-      </button>
-    );
-  }
-  return (
-    <span className="relative inline-flex items-center gap-1">
-      <span className="text-[10px] text-white/35">набор:</span>
-      <input
-        autoFocus
-        className={cn(FIELD, "w-[16rem]")}
-        value={value}
-        disabled={disabled}
-        placeholder="SET / декорация сцены"
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={() => {
-          onCommit();
-          setEdit(false);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            onCommit();
-            setEdit(false);
-          }
-          if (e.key === "Escape") {
-            onChange(source);
-            setEdit(false);
-          }
-        }}
-      />
-    </span>
-  );
-}
-
 /**
- * Сцена = одна ячейка закадра. Здесь всё, что общее для сцены: формат с
- * описанием, свет, набор, смысл и полный закадр, разложенный по кадрам. Номер
- * сцены, её кадры и место — в полосе сцен сверху, не дублируем. Данные
- * отдельного кадра (роль, действие, якорь, крупность…) живут в его колонке
- * ниже — понятия не смешиваем.
+ * Сцена = одна ячейка закадра. В полосе «Сцены» — только формат (T0…T10)
+ * на всю VO-ячейку, без дубля набора и закадра.
  */
 export function SceneCell({
-  head,
-  frames,
-  setValue,
-  setPending,
-  disabled,
   template,
-  light,
-  onSet,
 }: {
-  head: MontageBoardFrame;
-  frames: MontageBoardFrame[];
-  setValue: string;
-  setPending?: boolean;
-  disabled?: boolean;
-  /** Формат сцены (`TemplateCell`) — общий для всей ячейки. */
   template?: React.ReactNode;
-  /** Свет сцены — тоже на всю ячейку, а не на отдельный кадр. */
-  light?: React.ReactNode;
-  onSet: (value: string) => void;
 }) {
-  const source = (setValue || "").trim();
-  const [setText, setSetText] = useState(source);
-  useEffect(() => {
-    setSetText(source);
-  }, [source, head.frame_id]);
-
-  const commit = () => {
-    const next = setText.trim();
-    if (!next || next === source) return;
-    onSet(next);
-  };
-
-  const parts = frames.filter((f) => (f.voiceover_text || "").trim());
-
-  return (
-    <div className="space-y-1.5">
-      {/* Номер сцены, её кадры и место написаны в полосе сцен сверху —
-          здесь только формат, свет и остальные данные ячейки. */}
-      <div className="flex flex-wrap items-start gap-2">
-        <div className="min-w-[13rem] flex-1">{template}</div>
-        {light ? <div className="w-[11rem] shrink-0">{light}</div> : null}
-      </div>
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-        <SetChip
-          value={setText}
-          source={source}
-          pending={setPending}
-          disabled={disabled}
-          onChange={setSetText}
-          onCommit={commit}
-        />
-        <MetaChip label="персонажи" value={head.scene_characters} />
-        <MetaChip label="в плане" value={head.scene_no || head.scene_id} />
-        <MetaChip label="смысл" value={head.scene_sense} />
-        <MetaChip label="тип" value={head.scene_visual_type} />
-        <MetaChip label="предметы" value={head.scene_props} />
-        <MetaChip label="фон" value={head.scene_bg} />
-        <MetaChip label="акцент" value={head.scene_accent} />
-        <MetaChip label="особенность" value={head.scene_feature} />
-      </div>
-      {parts.length || head.vo_cell_full ? (
-        <div className="rounded-md border border-white/10 bg-black/25 p-1.5">
-          <p className="text-[9px] uppercase tracking-wide text-white/30">
-            закадр сцены по кадрам — так его режут якоря
-          </p>
-          {parts.length ? (
-            <p className="mt-0.5 max-h-16 overflow-y-auto text-[10px] leading-relaxed text-white/60">
-              {parts.map((f) => (
-                <span key={f.frame_id}>
-                  <span className="font-mono text-[9px] text-white/30">
-                    #{f.number}{" "}
-                  </span>
-                  <span>{f.voiceover_text.trim()} </span>
-                </span>
-              ))}
-            </p>
-          ) : (
-            <p className="mt-0.5 max-h-16 overflow-y-auto text-[10px] leading-relaxed text-white/60">
-              {head.vo_cell_full}
-            </p>
-          )}
-        </div>
-      ) : null}
-    </div>
-  );
+  if (!template) return null;
+  return <div className="min-w-0">{template}</div>;
 }

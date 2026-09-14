@@ -297,6 +297,16 @@ async def replace_all_frames(
     return created
 
 
+async def _fill_missing_sort_keys(session: AsyncSession, frames: list[Frame]) -> None:
+    """Старые кадры часто без sort_key — тогда вставка всегда падает в конец."""
+    missing = [fr for fr in frames if fr.sort_key is None]
+    if not missing:
+        return
+    for fr in missing:
+        fr.sort_key = float(fr.number or 0) * _SORT_STEP
+    await session.flush()
+
+
 def sort_key_between(before: float | None, after: float | None) -> float:
     """Дробный ключ между соседями; края — с шагом _SORT_STEP."""
     if before is None and after is None:
@@ -446,22 +456,33 @@ async def insert_frame_after(
             )
         ).scalars()
     )
+    # Без sort_key SQLite ставит NULL первыми: новый кадр с ключом 10
+    # оказывается в конце, а порядок сцены разъезжается.
+    await _fill_missing_sort_keys(session, frames)
+    frames.sort(key=lambda fr: (float(fr.sort_key or 0.0), int(fr.number or 0)))
+
     before_key: float | None = None
     after_key: float | None = None
-    if after_frame_id is None:
-        after_key = frames[0].sort_key if frames else None
+    want = None if after_frame_id is None else int(after_frame_id)
+    if want is None:
+        after_key = float(frames[0].sort_key) if frames else None
     else:
         for i, fr in enumerate(frames):
-            if fr.id == after_frame_id:
-                before_key = fr.sort_key
-                after_key = frames[i + 1].sort_key if i + 1 < len(frames) else None
+            if int(fr.id) == want:
+                before_key = float(fr.sort_key) if fr.sort_key is not None else None
+                nxt = frames[i + 1] if i + 1 < len(frames) else None
+                after_key = (
+                    float(nxt.sort_key)
+                    if nxt is not None and nxt.sort_key is not None
+                    else None
+                )
                 break
         else:
             raise ValueError(f"frame {after_frame_id} не найден в проекте {project.id}")
 
     key = sort_key_between(before_key, after_key)
-    if scene_id is None and after_frame_id is not None:
-        src = next((f for f in frames if f.id == after_frame_id), None)
+    if scene_id is None and want is not None:
+        src = next((f for f in frames if int(f.id) == want), None)
         scene_id = src.scene_id if src else None
     if scene_id is None:
         stats = await backfill_project_v2(session, project)

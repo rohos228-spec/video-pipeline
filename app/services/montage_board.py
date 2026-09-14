@@ -136,41 +136,13 @@ def _character_refs_for_ids(
     return refs
 
 
-def _cs_dict(frame: Any) -> dict[str, Any]:
-    attrs = getattr(frame, "attrs", None)
-    src = attrs if isinstance(attrs, dict) else {}
-    raw = src.get("camera_subdivide")
-    return raw if isinstance(raw, dict) else {}
-
-
 def _vo_parent_and_members(
     frames: list[Any], frame: Any
 ) -> tuple[Any, list[Any]]:
     """VO-ячейка: родитель + шоты с тем же parent_uuid. Без coverage_parent_id."""
-    parent = frame
-    if is_shot_child(frame):
-        uid = str(_cs_dict(frame).get("parent_uuid") or "").strip()
-        if uid:
-            found = next(
-                (
-                    fr
-                    for fr in frames
-                    if str(getattr(fr, "uuid", "") or "") == uid
-                ),
-                None,
-            )
-            if found is not None:
-                parent = found
-    puid = str(getattr(parent, "uuid", "") or "")
-    members = [parent]
-    if puid:
-        for other in frames:
-            if int(other.number) == int(parent.number):
-                continue
-            if str(_cs_dict(other).get("parent_uuid") or "") == puid:
-                members.append(other)
-    members.sort(key=lambda m: int(m.number or 0))
-    return parent, members
+    from app.services.montage_scene_editor import scene_group
+
+    return scene_group(frames, frame)
 
 
 def _merge_ref_ids(*batches: list[str]) -> list[str]:
@@ -255,21 +227,38 @@ def _group_refs_for_frames(
                 list((excel_by_frame.get(pno) or {}).get("item_ids") or []),
             )
             names_i = {**item_names, **seed_names}
+            from app.services.montage_frame_refs import hidden_ref_ids
+
+            hidden = {x.lower() for x in hidden_ref_ids(parent)}
+            if hidden:
+                person_ids = [i for i in person_ids if i.lower() not in hidden]
+                item_ids_all = [i for i in item_ids_all if i.lower() not in hidden]
             parent_png = find_shot1_image(scenes_dir, pno)
-            by_parent[pno] = {
-                "ref_parent": {
-                    "number": pno,
-                    "label": f"родитель #{pno}",
-                    "image_url": _preview_url(parent_png),
-                },
-                "group_character_refs": _character_refs_for_ids(
-                    person_ids, chars_dir=chars_dir, names=char_names
-                ),
-                "item_refs": _character_refs_for_ids(
-                    item_ids_all, chars_dir=items_dir, names=names_i
-                ),
+            parent_ref = {
+                "number": pno,
+                "label": f"родитель #{pno}",
+                "image_url": _preview_url(parent_png),
             }
-        out[int(fr.number)] = by_parent[pno]
+            chars = _character_refs_for_ids(
+                person_ids, chars_dir=chars_dir, names=char_names
+            )
+            items = _character_refs_for_ids(
+                item_ids_all, chars_dir=items_dir, names=names_i
+            )
+            by_parent[pno] = {
+                "ref_parent": parent_ref,
+                "group_character_refs": chars,
+                "item_refs": items,
+            }
+        shared = by_parent[pno]
+        # Сам still кадра — не реф. Реф «родитель» только у дочерних шотов.
+        out[int(fr.number)] = {
+            "ref_parent": None
+            if int(fr.number) == pno
+            else shared["ref_parent"],
+            "group_character_refs": shared["group_character_refs"],
+            "item_refs": shared["item_refs"],
+        }
     return out
 
 
@@ -892,7 +881,7 @@ async def build_montage_board(
                 await session.execute(
                     select(Frame)
                     .where(Frame.project_id == project_id)
-                    .order_by(Frame.number.asc())
+                    .order_by(Frame.sort_key.asc(), Frame.number.asc())
                 )
             ).scalars().all()
         )
@@ -949,6 +938,12 @@ async def build_montage_board(
         )
 
     # ORM только здесь; дальше — plain snapshots (to_thread не трогает Session).
+    from app.services.db_v2 import _fill_missing_sort_keys
+
+    await _fill_missing_sort_keys(session, frames_orm)
+    frames_orm.sort(
+        key=lambda fr: (float(fr.sort_key or 0.0), int(fr.number or 0))
+    )
     frames = _snapshot_frames(frames_orm)
     entity_char_names, entity_item_names = await _entity_name_maps(session, project_id)
     # Сводка сцены живёт в монтаже, не в отдельном меню: поля считаем всегда.
