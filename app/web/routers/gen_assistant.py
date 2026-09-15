@@ -12,6 +12,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from app.project_root import find_project_root
 from app.settings import settings
 from app.services.gen_assistant import MAX_COUNT, MIN_COUNT, generate_prompts
 from app.services.style_analyzer import (
@@ -119,23 +120,94 @@ async def post_categorize_styles(body: CategorizeStylesBody) -> dict[str, Any]:
 
 
 _CUSTOM_STYLES_FILE = "gen_assistant_styles.json"
+_CUSTOM_AGENTS_FILE = "gen_assistant_agents.json"
 
 
 def _custom_styles_path() -> Path:
     return settings.data_dir / _CUSTOM_STYLES_FILE
 
 
-def _read_custom_styles() -> list[dict[str, Any]]:
-    path = _custom_styles_path()
+def _seed_styles_path() -> Path:
+    return find_project_root() / "templates" / "gen_assistant_styles.json"
+
+
+def _load_styles_file(path: Path) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
-        logger.warning("gen-assistant custom-styles read failed: {}", e)
+        logger.warning("gen-assistant styles read failed {}: {}", path, e)
         return []
     styles = raw.get("styles") if isinstance(raw, dict) else raw
-    return styles if isinstance(styles, list) else []
+    return [s for s in styles if isinstance(s, dict)] if isinstance(styles, list) else []
+
+
+def _portable_cover(url: str) -> str:
+    text = (url or "").strip()
+    if text.startswith("/gen-styles/"):
+        return text
+    return ""
+
+
+def _merge_style(old: dict[str, Any] | None, new: dict[str, Any]) -> dict[str, Any]:
+    merged = {**(old or {}), **new}
+    for key in ("artUrl", "cover"):
+        portable = _portable_cover(str(new.get(key) or "")) or _portable_cover(
+            str((old or {}).get(key) or "")
+        )
+        if portable:
+            merged[key] = portable
+    old_core = str((old or {}).get("promptCore") or "")
+    new_core = str(new.get("promptCore") or "")
+    if len(old_core) > len(new_core):
+        merged["promptCore"] = old_core
+    return merged
+
+
+def _read_custom_styles() -> list[dict[str, Any]]:
+    """Свои стили: seed из репо + data/*.json. Обложки /gen-styles/ важнее локальных путей."""
+    by_id: dict[str, dict[str, Any]] = {}
+    for s in _load_styles_file(_seed_styles_path()) + _load_styles_file(_custom_styles_path()):
+        sid = str(s.get("id") or "")
+        if not sid:
+            continue
+        by_id[sid] = _merge_style(by_id.get(sid), s)
+    return list(by_id.values())
+
+
+def _agents_path() -> Path:
+    return settings.data_dir / _CUSTOM_AGENTS_FILE
+
+
+def _seed_agents_path() -> Path:
+    return find_project_root() / "templates" / "gen_assistant_agents.json"
+
+
+def _load_agents_file(path: Path) -> dict[str, str]:
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning("gen-assistant agents read failed {}: {}", path, e)
+        return {}
+    data = raw.get("agents") if isinstance(raw, dict) else raw
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items() if str(v or "").strip()}
+
+
+def _read_agent_overrides() -> dict[str, str]:
+    """Правки вкладки «Агент»: seed + promptCore стилей + диск."""
+    out = dict(_load_agents_file(_seed_agents_path()))
+    for s in _read_custom_styles():
+        sid = str(s.get("id") or "")
+        core = str(s.get("promptCore") or "").strip()
+        if sid and core and sid not in out:
+            out[sid] = core
+    out.update(_load_agents_file(_agents_path()))
+    return out
 
 
 @router.get("/custom-styles")
@@ -161,9 +233,7 @@ async def put_custom_styles(body: CustomStylesBody) -> dict[str, Any]:
         sid = str(s.get("id") or "")
         if not sid:
             continue
-        prev = by_id.get(sid)
-        if prev is None or len(str(s.get("promptCore") or "")) >= len(str(prev.get("promptCore") or "")):
-            by_id[sid] = s
+        by_id[sid] = _merge_style(by_id.get(sid), s)
     merged = list(by_id.values())
     path = _custom_styles_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -173,3 +243,34 @@ async def put_custom_styles(body: CustomStylesBody) -> dict[str, Any]:
     )
     logger.info("gen-assistant custom-styles saved n={}", len(merged))
     return {"styles": merged, "count": len(merged)}
+
+
+@router.get("/agent-overrides")
+async def get_agent_overrides() -> dict[str, Any]:
+    agents = _read_agent_overrides()
+    return {"agents": agents, "count": len(agents)}
+
+
+class AgentOverridesBody(BaseModel):
+    agents: dict[str, str] = Field(default_factory=dict)
+
+
+@router.put("/agent-overrides")
+async def put_agent_overrides(body: AgentOverridesBody) -> dict[str, Any]:
+    incoming = {
+        str(k): str(v)
+        for k, v in (body.agents or {}).items()
+        if str(k).strip() and str(v or "").strip()
+    }
+    existing = _read_agent_overrides()
+    if not incoming and existing:
+        return {"agents": existing, "count": len(existing), "kept": True}
+    merged = {**existing, **incoming}
+    path = _agents_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"agents": merged}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    logger.info("gen-assistant agent-overrides saved n={}", len(merged))
+    return {"agents": merged, "count": len(merged)}

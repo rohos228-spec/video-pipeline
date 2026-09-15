@@ -300,6 +300,8 @@ def test_custom_styles_disk_roundtrip(tmp_path, monkeypatch):
     from app.web.routers import gen_assistant as ga
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(ga, "_seed_styles_path", lambda: tmp_path / "no-seed.json")
+    monkeypatch.setattr(ga, "_seed_agents_path", lambda: tmp_path / "no-agents.json")
     assert ga._read_custom_styles() == []
     payload = {
         "id": "custom_test",
@@ -317,4 +319,61 @@ def test_custom_styles_disk_roundtrip(tmp_path, monkeypatch):
     got = ga._read_custom_styles()
     assert len(got) == 1
     assert got[0]["name"] == "Тест"
+
+
+def test_seed_styles_and_agents_merge(tmp_path, monkeypatch):
+    from app.settings import settings
+    from app.web.routers import gen_assistant as ga
+
+    seed = tmp_path / "seed.json"
+    seed.write_text(
+        json.dumps(
+            {
+                "styles": [
+                    {
+                        "id": "custom_mtwuuy1z",
+                        "name": "Грифельная",
+                        "promptCore": "агент-ядро стиля " + ("x" * 40),
+                        "artUrl": "/gen-styles/custom_mtwuuy1z.jpg",
+                        "cover": "/gen-styles/custom_mtwuuy1z.jpg",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    disk = tmp_path / "gen_assistant_styles.json"
+    disk.write_text(
+        json.dumps(
+            {
+                "styles": [
+                    {
+                        "id": "custom_mtwuuy1z",
+                        "name": "Грифельная",
+                        "promptCore": "короче",
+                        "artUrl": "/api/files?path=C:\\local\\cover.png",
+                    },
+                    {
+                        "id": "custom_extra",
+                        "name": "Ещё",
+                        "promptCore": "второй агент достаточно длинный",
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(ga, "_seed_styles_path", lambda: seed)
+    monkeypatch.setattr(ga, "_seed_agents_path", lambda: tmp_path / "no-agents.json")
+    got = {s["id"]: s for s in ga._read_custom_styles()}
+    assert "custom_mtwuuy1z" in got
+    assert got["custom_mtwuuy1z"]["promptCore"].startswith("агент-ядро")
+    assert got["custom_mtwuuy1z"]["artUrl"] == "/gen-styles/custom_mtwuuy1z.jpg"
+    assert got["custom_extra"]["name"] == "Ещё"
+    agents = ga._read_agent_overrides()
+    assert agents["custom_mtwuuy1z"].startswith("агент-ядро")
+    assert agents["custom_extra"] == "второй агент достаточно длинный"
 
