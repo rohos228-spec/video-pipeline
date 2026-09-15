@@ -21,6 +21,7 @@ from app.services.montage_ai_change import (
     system_for_kind,
     write_ai_change_db_card,
 )
+from app.services.montage_board_meta import normalize_queue_ops
 from app.services.montage_board_apply import (
     _IMAGE_OP_TYPES,
     _VIDEO_OP_TYPES,
@@ -78,6 +79,38 @@ def test_user_message_asks_llm_to_write_full_prompt() -> None:
     assert "агент" in low
     assert "style" in low
     assert "не json" in low
+    assert "OPERATOR_CHANGE" not in msg
+
+
+def test_user_message_includes_operator_instruction() -> None:
+    msg = build_ai_change_user_message(
+        voiceover_text="Он открывает ящик.",
+        instruction="сделай крупнее руки, холодный свет",
+    )
+    assert "OPERATOR_CHANGE:" in msg
+    assert "сделай крупнее руки, холодный свет" in msg
+    assert "Он открывает ящик." in msg
+
+
+def test_normalize_keeps_ai_change_instruction() -> None:
+    queued = normalize_queue_ops(
+        [
+            {
+                "type": "image_ai_change",
+                "frame_number": 3,
+                "shot": 1,
+                "instruction": "руки крупнее",
+            }
+        ]
+    )
+    assert queued == [
+        {
+            "type": "image_ai_change",
+            "frame_number": 3,
+            "shot": 1,
+            "instruction": "руки крупнее",
+        }
+    ]
 
 
 def test_strip_takes_prompt_from_apply_ops_json() -> None:
@@ -148,10 +181,13 @@ async def test_rewrite_prompt_via_gpt_uses_system_and_strips(
         img_pr_path=master,
         img_pr_variant="img_prompts_trash_polka_watercolor",
         db_card_path=card,
+        instruction="холодный свет",
     )
     assert out == "UPDATED PROMPT HERE"
     assert "IMAGE_PROMPT:" not in str(captured["text"])
     assert "VOICEOVER:" in str(captured["text"])
+    assert "OPERATOR_CHANGE:" in str(captured["text"])
+    assert "холодный свет" in str(captured["text"])
     assert captured["files"] == [master, card]
     assert captured["auto_pack"] is False
     assert "музык" in str(captured["system"]).lower()
@@ -363,3 +399,85 @@ async def test_run_op_video_ai_change_passes_gpt_prompt_to_prepare(
     assert prepare_calls
     assert prepare_calls[0]["mode"] == "edit_prompt"
     assert prepare_calls[0]["new_prompt"] == "AI VIDEO PROMPT NO NEW OBJECTS"
+
+
+@pytest.mark.asyncio
+async def test_run_op_image_ai_change_passes_instruction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    session: AsyncSession,
+) -> None:
+    data_root = tmp_path / "data"
+    data_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("app.settings.settings.data_dir", str(data_root))
+    project = Project(id=202, slug="ai-note", topic="t", hero_mode="auto")
+    project.data_dir.mkdir(parents=True, exist_ok=True)
+    (project.data_dir / "scenes").mkdir(parents=True, exist_ok=True)
+    png = project.data_dir / "scenes" / "frame_001.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 300_000)
+    session.add_all(
+        [
+            project,
+            Frame(
+                project_id=202,
+                number=1,
+                voiceover_text="vo",
+                image_prompt="old",
+            ),
+        ]
+    )
+    await session.commit()
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def fake_scope(*_a, **_k):
+        yield session
+
+    rewrite = AsyncMock(return_value="AGENT PROMPT")
+    monkeypatch.setattr("app.services.montage_board_apply.session_scope", fake_scope)
+    monkeypatch.setattr("app.services.montage_board_apply.rewrite_prompt_via_gpt", rewrite)
+
+    async def fake_prepare(session_, project_, frame_number, **kwargs):
+        prep = MagicMock()
+        prep.file_path = project.data_dir / "scenes" / "frame_001.png"
+        prep.prompt_text = kwargs.get("new_prompt") or ""
+        return prep
+
+    monkeypatch.setattr(
+        "app.services.montage_board_apply.prepare_image_regen",
+        fake_prepare,
+    )
+    monkeypatch.setattr(
+        "app.services.montage_board_apply.execute_image_regen",
+        AsyncMock(return_value=png),
+    )
+    monkeypatch.setattr(
+        "app.services.montage_board_apply._finalize_image_with_retry",
+        AsyncMock(return_value={"ok": True}),
+    )
+
+    class _Slot:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(
+        "app.services.montage_board_apply.acquire_image_slot",
+        lambda: _Slot(),
+    )
+
+    result = await _run_op_with_short_sessions(
+        202,
+        {
+            "type": "image_ai_change",
+            "frame_number": 1,
+            "shot": 1,
+            "instruction": "руки крупнее, холодный свет",
+        },
+        board={},
+    )
+    assert result["ok"] is True
+    assert rewrite.await_args.kwargs["instruction"] == "руки крупнее, холодный свет"

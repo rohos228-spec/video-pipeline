@@ -298,6 +298,7 @@ async def _run_op_with_short_sessions(
     ai_img_pr_variant = ""
     ai_db_card_path: Path | None = None
     ai_project: Any = None
+    ai_instruction = ""
     prep: Any = None
 
     async with session_scope(project_id) as session:
@@ -324,6 +325,9 @@ async def _run_op_with_short_sessions(
                 id=project.id,
                 meta=getattr(project, "meta", None),
             )
+            ai_instruction = str(
+                op.get("instruction") or op.get("correction") or ""
+            ).strip()
         elif op_type in (
             "image_regen",
             "image_regen_prompt",
@@ -369,6 +373,7 @@ async def _run_op_with_short_sessions(
             img_pr_path=ai_img_pr_path,
             img_pr_variant=ai_img_pr_variant,
             db_card_path=ai_db_card_path,
+            instruction=ai_instruction,
         )
 
         async def _prepare_after_gpt():

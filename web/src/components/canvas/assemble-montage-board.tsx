@@ -149,6 +149,12 @@ type PromptModalState = {
   mode: "prompt" | "correction";
 } | null;
 
+type AiChangeModalState = {
+  kind: "image" | "video";
+  frameNumber: number;
+  shot: 1 | 2;
+} | null;
+
 function trimKey(frameNumber: number, shot: 1 | 2): string {
   return `${frameNumber}:${shot}`;
 }
@@ -163,6 +169,14 @@ function slotKeyFromOp(op: Pick<MontagePendingOp, "type" | "frame_number" | "sho
   if (t === "coverage_stitch") return `${op.frame_number}:stitch`;
   if (t === "coverage_light") return `${op.frame_number}:light`;
   if (t === "coverage_set") return `${op.frame_number}:set`;
+  if (t === "coverage_sense") return `${op.frame_number}:sense`;
+  if (t === "coverage_visual_type") return `${op.frame_number}:visual_type`;
+  if (t === "coverage_place") return `${op.frame_number}:place`;
+  if (t === "coverage_characters") return `${op.frame_number}:characters`;
+  if (t === "coverage_props") return `${op.frame_number}:props`;
+  if (t === "coverage_bg") return `${op.frame_number}:bg`;
+  if (t === "coverage_accent") return `${op.frame_number}:accent`;
+  if (t === "coverage_feature") return `${op.frame_number}:feature`;
   if (t.startsWith("coverage_")) return `${op.frame_number}:kind`;
   if (t.startsWith("image_")) {
     return `${op.frame_number}:image${op.shot}`;
@@ -183,6 +197,65 @@ function editsWord(n: number): string {
 
 function toastQueued(text: string): void {
   toast.message(text, { id: QUEUE_TOAST_ID });
+}
+
+function opSelectKey(op: MontagePendingOp): string {
+  return `${op.type}:${op.frame_number}:${op.shot}`;
+}
+
+function describePendingOp(op: MontagePendingOp): string {
+  const n = op.shot === 2 ? `#${op.frame_number}.2` : `#${op.frame_number}`;
+  const value =
+    op.sense ||
+    op.visual_type ||
+    op.place ||
+    op.characters ||
+    op.props ||
+    op.bg ||
+    op.accent ||
+    op.feature ||
+    op.set ||
+    op.light ||
+    op.plan ||
+    op.angle ||
+    op.move ||
+    op.stitch ||
+    op.action ||
+    op.template ||
+    op.instruction ||
+    op.prompt ||
+    op.correction ||
+    "";
+  const labels: Record<string, string> = {
+    coverage_sense: "смысл",
+    coverage_visual_type: "тип",
+    coverage_place: "место",
+    coverage_characters: "персонажи",
+    coverage_props: "предметы",
+    coverage_bg: "фон",
+    coverage_accent: "акцент",
+    coverage_feature: "особенность",
+    coverage_set: "набор",
+    coverage_light: "свет",
+    coverage_plan: "крупность",
+    coverage_angle: "ракурс",
+    coverage_move: "движение",
+    coverage_stitch: "стык",
+    coverage_action: "действие",
+    coverage_template: "формат",
+    coverage_anchors: "якоря",
+    coverage_kind: "роль",
+    coverage_delete: "удаление",
+    image_regen: "переген картинки",
+    image_regen_prompt: "промт картинки",
+    image_regen_correction: "правка картинки",
+    image_ai_change: op.instruction ? "ИИзменение по тексту" : "ИИзменение картинки",
+    video_regen: "переген видео",
+    video_regen_prompt: "промт видео",
+    video_ai_change: op.instruction ? "ИИзменение видео по тексту" : "ИИзменение видео",
+  };
+  const title = labels[op.type] || op.type;
+  return value ? `${n} · ${title}: ${value}` : `${n} · ${title}`;
 }
 
 /** Мгновенный preview URL после regen (без ждать полный refetch доски). */
@@ -409,6 +482,69 @@ function PromptModalBody({
             onClick={() => onSubmit(text.trim())}
           >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "В очередь"}
+          </Button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function AiChangeModal({
+  state,
+  onClose,
+  onAutomatic,
+  onWithText,
+}: {
+  state: AiChangeModalState;
+  onClose: () => void;
+  onAutomatic: () => void;
+  onWithText: (text: string) => void;
+}) {
+  const [text, setText] = useState("");
+  useEffect(() => {
+    setText("");
+  }, [state?.kind, state?.frameNumber, state?.shot]);
+  if (!state) return null;
+  const kindLabel = state.kind === "image" ? "изображение" : "видео";
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[10110] flex items-center justify-center bg-black/70 p-4"
+      onMouseDown={onClose}
+    >
+      <div
+        className="w-full max-w-lg rounded-xl border border-white/15 bg-card p-4 shadow-xl"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <h3 className="text-sm font-semibold">
+          ИИзменение · кадр #{state.frameNumber} · {kindLabel} {state.shot}
+        </h3>
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          Автоматически — агент картинок пишет промт по карточке и закадру, как
+          сейчас. Если в окне есть текст — агент обрабатывает его и из этого
+          получается промт генерации.
+        </p>
+        <textarea
+          className="mt-3 min-h-[140px] w-full rounded-lg border border-white/15 bg-black/30 p-3 text-sm"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="Пусто = автоматически. Или напишите, что изменить: крупнее руки, холодный свет…"
+          autoFocus
+        />
+        <div className="mt-3 flex flex-wrap justify-end gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={onClose}>
+            Отмена
+          </Button>
+          <Button type="button" variant="outline" size="sm" onClick={onAutomatic}>
+            Автоматически
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            disabled={!text.trim()}
+            onClick={() => onWithText(text.trim())}
+          >
+            По тексту
           </Button>
         </div>
       </div>
@@ -1646,6 +1782,8 @@ export function AssembleMontageBoard({
   const [trims, setTrims] = useState<Record<string, VideoTrim>>({});
   const [pendingOps, setPendingOps] = useState<MontagePendingOp[]>([]);
   const [promptModal, setPromptModal] = useState<PromptModalState>(null);
+  const [aiChangeModal, setAiChangeModal] = useState<AiChangeModalState>(null);
+  const [selectedOpKeys, setSelectedOpKeys] = useState<Set<string>>(new Set());
   const [highlights, setHighlights] = useState<string[]>([]);
   const [failedHighlights, setFailedHighlights] = useState<string[]>([]);
   const [staleVideos, setStaleVideos] = useState<string[]>([]);
@@ -1718,6 +1856,8 @@ export function AssembleMontageBoard({
     setMontageRunning(false);
     setRecoverRunning(false);
     setPromptModal(null);
+    setAiChangeModal(null);
+    setSelectedOpKeys(new Set());
     setPreview(null);
     setSwapPick(null);
     setSwapBusy(false);
@@ -1768,6 +1908,15 @@ export function AssembleMontageBoard({
   const meta = board.data?.meta;
   const pendingOpsKey = JSON.stringify(meta?.pending_ops ?? []);
 
+  useEffect(() => {
+    const live = new Set(pendingOps.map(opSelectKey));
+    setSelectedOpKeys((prev) => {
+      const next = new Set([...prev].filter((k) => live.has(k)));
+      if (next.size === prev.size && [...next].every((k) => prev.has(k))) return prev;
+      return next;
+    });
+  }, [pendingOps]);
+
   const parsePendingOps = useCallback((raw: unknown): MontagePendingOp[] => {
     if (!Array.isArray(raw)) return [];
     const restored: MontagePendingOp[] = [];
@@ -1797,6 +1946,7 @@ export function AssembleMontageBoard({
       };
       if (typeof rec.prompt === "string") item.prompt = rec.prompt;
       if (typeof rec.correction === "string") item.correction = rec.correction;
+      if (typeof rec.instruction === "string") item.instruction = rec.instruction;
       if (typeof rec.plan === "string") item.plan = rec.plan;
       if (typeof rec.action === "string") item.action = rec.action;
       if (typeof rec.template === "string") item.template = rec.template;
@@ -2025,6 +2175,53 @@ export function AssembleMontageBoard({
     [persistQueue, frames],
   );
 
+  const toggleOpSelected = useCallback((key: string) => {
+    setSelectedOpKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const selectAllPending = useCallback(() => {
+    setSelectedOpKeys(new Set(pendingOpsRef.current.map(opSelectKey)));
+  }, []);
+
+  const cancelSelectedOps = useCallback(() => {
+    if (selectedOpKeys.size === 0) return;
+    localQueueDirtyRef.current = true;
+    setPendingOps((prev) => {
+      const next = prev.filter((op) => !selectedOpKeys.has(opSelectKey(op)));
+      pendingOpsRef.current = next;
+      persistQueue(next);
+      return next;
+    });
+    setSelectedOpKeys(new Set());
+    toastQueued("Выбранные правки сняты с очереди");
+  }, [persistQueue, selectedOpKeys]);
+
+  const queueAiChange = useCallback(
+    (kind: "image" | "video", frameNumber: number, shot: 1 | 2, instruction?: string) => {
+      const op: MontagePendingOp =
+        kind === "image"
+          ? {
+              type: "image_ai_change",
+              frame_number: frameNumber,
+              shot,
+              ...(instruction ? { instruction } : {}),
+            }
+          : {
+              type: "video_ai_change",
+              frame_number: frameNumber,
+              shot,
+              ...(instruction ? { instruction } : {}),
+            };
+      queueOp(op);
+    },
+    [queueOp],
+  );
+
   const applyMutation = useMutation({
     mutationFn: () => {
       const ops = pendingOpsRef.current;
@@ -2048,6 +2245,7 @@ export function AssembleMontageBoard({
         }
         setPendingOps([]);
         pendingOpsRef.current = [];
+        setSelectedOpKeys(new Set());
         setFailedHighlights([]);
         applySeenRunningRef.current = false;
         lastPatchedPathRef.current = "";
@@ -3217,6 +3415,69 @@ export function AssembleMontageBoard({
                   ? ` (${pendingOps.length})`
                   : ""}
             </Button>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-9 text-xs"
+                  disabled={pendingOps.length === 0 || applyRunning}
+                >
+                  Очередь
+                  {pendingOps.length > 0 ? ` (${pendingOps.length})` : ""}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent
+                align="end"
+                className="z-[10080] w-[22rem] border-white/15 bg-card p-2"
+              >
+                <div className="mb-1.5 flex items-center justify-between gap-2 px-1">
+                  <p className="text-[10px] uppercase tracking-wide text-white/40">
+                    правки в очереди
+                  </p>
+                  <button
+                    type="button"
+                    className="text-[10px] text-white/50 underline decoration-dotted hover:text-white"
+                    onClick={selectAllPending}
+                  >
+                    выбрать все
+                  </button>
+                </div>
+                <ul className="max-h-64 space-y-1 overflow-y-auto">
+                  {pendingOps.map((op) => {
+                    const key = opSelectKey(op);
+                    const checked = selectedOpKeys.has(key);
+                    return (
+                      <li key={key}>
+                        <label className="flex cursor-pointer items-start gap-2 rounded-md px-1.5 py-1 text-[11px] hover:bg-white/5">
+                          <input
+                            type="checkbox"
+                            className="mt-0.5"
+                            checked={checked}
+                            onChange={() => toggleOpSelected(key)}
+                          />
+                          <span className={checked ? "text-amber-100" : "text-white/70"}>
+                            {describePendingOp(op)}
+                          </span>
+                        </label>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </PopoverContent>
+            </Popover>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-9 text-xs"
+              disabled={selectedOpKeys.size === 0 || applyRunning}
+              onClick={cancelSelectedOps}
+            >
+              Отменить выбранные
+              {selectedOpKeys.size > 0 ? ` (${selectedOpKeys.size})` : ""}
+            </Button>
             <Button
               type="button"
               size="sm"
@@ -3637,9 +3898,9 @@ export function AssembleMontageBoard({
                                   }
                                   onEditPrompt={() => openPromptModal("image", fr.number, 1, "prompt")}
                                   onAiChange={() =>
-                                    queueOp({
-                                      type: "image_ai_change",
-                                      frame_number: fr.number,
+                                    setAiChangeModal({
+                                      kind: "image",
+                                      frameNumber: fr.number,
                                       shot: 1,
                                     })
                                   }
@@ -3683,9 +3944,9 @@ export function AssembleMontageBoard({
                                   }
                                   onEditPrompt={() => openPromptModal("image", fr.number, 2, "prompt")}
                                   onAiChange={() =>
-                                    queueOp({
-                                      type: "image_ai_change",
-                                      frame_number: fr.number,
+                                    setAiChangeModal({
+                                      kind: "image",
+                                      frameNumber: fr.number,
                                       shot: 2,
                                     })
                                   }
@@ -3723,9 +3984,9 @@ export function AssembleMontageBoard({
                                   }
                                   onEditPrompt={() => openPromptModal("video", fr.number, 1, "prompt")}
                                   onAiChange={() =>
-                                    queueOp({
-                                      type: "video_ai_change",
-                                      frame_number: fr.number,
+                                    setAiChangeModal({
+                                      kind: "video",
+                                      frameNumber: fr.number,
                                       shot: 1,
                                     })
                                   }
@@ -3761,9 +4022,9 @@ export function AssembleMontageBoard({
                                   }
                                   onEditPrompt={() => openPromptModal("video", fr.number, 2, "prompt")}
                                   onAiChange={() =>
-                                    queueOp({
-                                      type: "video_ai_change",
-                                      frame_number: fr.number,
+                                    setAiChangeModal({
+                                      kind: "video",
+                                      frameNumber: fr.number,
                                       shot: 2,
                                     })
                                   }
@@ -3822,6 +4083,25 @@ export function AssembleMontageBoard({
         onClose={() => setPromptModal(null)}
         onSubmit={submitPromptModal}
         busy={applyMutation.isPending}
+      />
+      <AiChangeModal
+        state={aiChangeModal}
+        onClose={() => setAiChangeModal(null)}
+        onAutomatic={() => {
+          if (!aiChangeModal) return;
+          queueAiChange(aiChangeModal.kind, aiChangeModal.frameNumber, aiChangeModal.shot);
+          setAiChangeModal(null);
+        }}
+        onWithText={(text) => {
+          if (!aiChangeModal) return;
+          queueAiChange(
+            aiChangeModal.kind,
+            aiChangeModal.frameNumber,
+            aiChangeModal.shot,
+            text,
+          );
+          setAiChangeModal(null);
+        }}
       />
       {addFrame ? (
         <AddFrameModal

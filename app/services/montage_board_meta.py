@@ -264,7 +264,7 @@ def normalize_queue_ops(raw_ops: Any) -> list[dict[str, Any]]:
             "shot": 2 if raw.get("shot") == 2 else 1,
         }
         if op_type.startswith(("image_", "video_")):
-            for key in ("prompt", "correction"):
+            for key in ("prompt", "correction", "instruction"):
                 val = raw.get(key)
                 if isinstance(val, str) and val.strip():
                     item[key] = val

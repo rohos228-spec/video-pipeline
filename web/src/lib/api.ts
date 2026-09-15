@@ -240,6 +240,8 @@ export interface MontagePendingOp {
   shot: 1 | 2;
   prompt?: string;
   correction?: string;
+  /** Заметка оператора для ИИзменения — агент img_pr пишет по ней новый промт. */
+  instruction?: string;
   plan?: string;
   action?: string;
   angle?: string;

@@ -33,11 +33,24 @@ _SYSTEM_VIDEO = """\
 """
 
 
-def build_ai_change_user_message(*, voiceover_text: str) -> str:
+def build_ai_change_user_message(
+    *,
+    voiceover_text: str,
+    instruction: str = "",
+) -> str:
     vo = (voiceover_text or "").strip() or "(пусто)"
+    note = (instruction or "").strip()
+    extra = ""
+    if note:
+        extra = (
+            f"\n\nOPERATOR_CHANGE:\n{note}\n\n"
+            "Это заметка оператора: впиши её в новый промт по правилам агента. "
+            "Не копируй заметку дословно — переведи в визуальный промт."
+        )
     return (
-        f"VOICEOVER:\n{vo}\n\n"
-        "Карточка кадра — во вложенном db_frames.json (База: место, действие, "
+        f"VOICEOVER:\n{vo}\n"
+        f"{extra}"
+        "\nКарточка кадра — во вложенном db_frames.json (База: место, действие, "
         "персонажи, камера, свет). Старого промта нет.\n"
         "Напиши полный промт по вложенному агенту. "
         "STYLE / Final style lock / Negative пишешь ты. Не JSON. Только промт."
@@ -177,12 +190,16 @@ async def rewrite_prompt_via_gpt(
     img_pr_variant: str = "",
     image_prompt: str = "",
     db_card_path: Path | None = None,
+    instruction: str = "",
 ) -> str:
     """Агент + карточка Базы + закадр → vibecode LLM → промт как есть."""
     del img_pr_rules, img_pr_variant, image_prompt
     from app.services.llm_override import bind_generation_llm
 
-    user = build_ai_change_user_message(voiceover_text=voiceover_text)
+    user = build_ai_change_user_message(
+        voiceover_text=voiceover_text,
+        instruction=instruction,
+    )
     system = system_for_kind(kind)
     files: list[Path] = []
     if img_pr_path is not None and img_pr_path.is_file():
