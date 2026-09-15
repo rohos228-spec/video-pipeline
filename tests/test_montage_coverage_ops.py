@@ -277,6 +277,10 @@ async def test_apply_scene_fields_write_board_keys(
     assert (parent.attrs or {}).get("visual_type") == "Кинематографический реализм"
     assert (parent.attrs or {}).get("camera_subdivide", {}).get("место") == "кабинет у окна"
     assert (child.attrs or {}).get("место") == "кабинет у окна"
+    assert (parent.attrs or {}).get("characters") == "c01"
+    assert (parent.attrs or {}).get("shot01_props") == "перо, чернильница"
+    assert (parent.attrs or {}).get("accent") == "перо на бумаге"
+    assert (child.attrs or {}).get("shot01_props") == "перо, чернильница"
     assert (stranger.attrs or {}).get("смысл_сцены") == "чужой смысл"
 
     queued = normalize_queue_ops(

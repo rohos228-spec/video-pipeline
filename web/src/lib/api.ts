@@ -1244,6 +1244,8 @@ export const api = {
     body: {
       pending_ops: MontagePendingOp[];
       video_trims?: Record<string, { start: number; end: number }>;
+      /** Пустая очередь иначе не затирает серверную (should_accept_queue_save). */
+      force_clear?: boolean;
     },
   ) =>
     http<{

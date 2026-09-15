@@ -169,14 +169,14 @@ SCENE_FIELD_SPECS: tuple[SceneFieldSpec, ...] = (
     SceneFieldSpec(
         "coverage_characters",
         "characters",
-        ("персонажи_сцены",),
+        ("персонажи_сцены", "characters"),
         "персонажи сцены пустые",
         "characters",
     ),
     SceneFieldSpec(
         "coverage_props",
         "props",
-        ("предметы",),
+        ("предметы", "shot01_props"),
         "предметы сцены пустые",
         "props",
     ),
@@ -190,7 +190,7 @@ SCENE_FIELD_SPECS: tuple[SceneFieldSpec, ...] = (
     SceneFieldSpec(
         "coverage_accent",
         "accent",
-        ("акцент",),
+        ("акцент", "accent"),
         "акцент сцены пустой",
         "accent",
     ),

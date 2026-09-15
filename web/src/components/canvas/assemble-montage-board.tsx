@@ -392,6 +392,11 @@ function coverageCorrection(
   const sense = (pending.sense || fr?.scene_sense || "").trim();
   const place = (pending.place || fr?.scene_place || "").trim();
   const characters = (pending.characters || fr?.scene_characters || "").trim();
+  const visualType = (pending.visual_type || fr?.scene_visual_type || "").trim();
+  const props = (pending.props || fr?.scene_props || "").trim();
+  const bg = (pending.bg || fr?.scene_bg || "").trim();
+  const accent = (pending.accent || fr?.scene_accent || "").trim();
+  const feature = (pending.feature || fr?.scene_feature || "").trim();
   return [
     `План: ${plan || "как в кадре"}`,
     angle ? `Ракурс: ${angle}` : "",
@@ -401,6 +406,11 @@ function coverageCorrection(
     sense ? `Смысл: ${sense}` : "",
     place ? `Место: ${place}` : "",
     characters ? `Персонажи: ${characters}` : "",
+    visualType ? `Тип: ${visualType}` : "",
+    props ? `Предметы: ${props}` : "",
+    bg ? `Фон: ${bg}` : "",
+    accent ? `Акцент: ${accent}` : "",
+    feature ? `Особенность: ${feature}` : "",
     `Действие: ${action || "как в кадре"}`,
   ]
     .filter(Boolean)
@@ -2034,6 +2044,7 @@ export function AssembleMontageBoard({
           .saveMontageQueue(projectId, {
             pending_ops: ops,
             video_trims: trimsDirtyRef.current ? trims : undefined,
+            force_clear: ops.length === 0,
           })
           .catch(() => {
             // Не мешаем набору очереди — при следующем add/retry сохранится.
