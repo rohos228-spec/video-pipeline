@@ -1,12 +1,9 @@
 "use client";
 
 /**
- * Помощник генерации — занимает место дока генерации (те же размеры,
- * свёрнут = высота дока). Категории/стили — выпадающее вверх меню картинок
- * по кнопке «Категория». Кнопка «Агент ✎» — в ряду управления панели,
- * редактор агента раскрывается поповером вверх. Стрелка ⌃ разворачивает
- * панель вверх поверх изображения, ⌄ сворачивает обратно.
- * Фон плитки стиля — первая успешная генерация по этому агенту (localStorage).
+ * Помощник: одно большое поле, три вкладки.
+ * Запрос — вход. Агент — стиль (не в картинку). Промпт — результат, уходит в GPT.
+ * По умолчанию открыт Промпт — это главное, что смотришь и правишь.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -14,7 +11,7 @@ import {
   ChevronDown,
   ChevronsDown,
   ChevronsUp,
-  ClipboardList,
+  Paperclip,
   Plus,
   Sparkles,
   X,
@@ -22,7 +19,7 @@ import {
 import { toast } from "sonner";
 import { api, formatApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { OUTSEE_ACCENT, chipOptions, detailLabel } from "@/lib/outsee-catalog";
+import { chipOptions, detailLabel } from "@/lib/outsee-catalog";
 import {
   GEN_ASSISTANT_CATEGORIES,
   GEN_STYLE_COLORS,
@@ -30,6 +27,7 @@ import {
   genPromptVariant,
   isInstructionAgent,
   isUnfilledAssistantPrompt,
+  assistantRefHandle,
   type GenStyleArt,
   type GenStyleDef,
 } from "@/lib/gen-assistant-styles";
@@ -50,11 +48,27 @@ type Props = {
   onResolutionChange: (v: string) => void;
   onDetailChange: (v: string) => void;
   onOpenModelPicker: () => void;
+  /** Иконка модели картинки (как в доке генерации), не подпись GPT. */
+  modelIcon?: string | null;
   onApplyPrompt: (text: string) => void;
   onGenerate: (text: string) => void;
   /** Агент написал N промптов → сразу генерация всех (по одной на промпт). */
   onGenerateAll: (texts: string[]) => void;
+  expanded: boolean;
+  onExpandedChange: (v: boolean) => void;
+  references: { id: string; url: string; name: string }[];
+  maxReferences: number;
+  onAddReferenceFiles: (files: File[]) => void;
+  onRemoveReference: (id: string) => void;
 };
+
+type EditorTab = "request" | "agent" | "prompt";
+
+const STAGE_TABS: { id: EditorTab; label: string }[] = [
+  { id: "request", label: "Запрос" },
+  { id: "agent", label: "Агент" },
+  { id: "prompt", label: "Промпт" },
+];
 
 type CustomStyle = GenStyleDef & { categoryId: string; artUrl?: string };
 
@@ -133,24 +147,78 @@ function readArtUrls(): Record<string, string> {
   return out;
 }
 
-const labelSmCls =
-  "w-[62px] shrink-0 font-mono text-[9px] font-semibold uppercase tracking-wider text-white/40";
 const selectCls =
-  "w-full rounded-lg border border-white/10 bg-[#16161b] px-2.5 py-1.5 text-[12px] text-white/85 focus:border-[#22d3ee]/60 focus:outline-none";
-const selectSmCls =
-  "min-w-0 flex-1 rounded-lg border border-white/10 bg-[#16161b] px-2 py-1 text-[11px] text-white/85 focus:border-[#22d3ee]/60 focus:outline-none";
+  "w-full rounded-md border border-white/12 bg-[#16161b] px-2.5 py-1.5 text-[13px] text-white/85 focus:border-white/25 focus:outline-none";
 const areaCls =
-  "w-full resize-none rounded-lg border border-white/10 bg-[#16161b] px-3 py-2 text-[12px] leading-relaxed text-white/90 placeholder-white/30 focus:border-[#22d3ee]/60 focus:outline-none";
+  "w-full resize-none rounded-md border border-white/12 bg-[#16161b] px-3 py-2 text-[13px] font-normal leading-relaxed text-white/90 placeholder-white/35 focus:border-white/25 focus:outline-none";
+const chipCls = (active: boolean) =>
+  cn(
+    "inline-flex h-7 items-center gap-1 px-1 text-[12px] font-medium transition",
+    active ? "text-white" : "text-white/55 hover:text-white",
+  );
 
-/** Картинка фоном на всю плитку (своё превью из генерации или SVG-схема). */
-function TileBg({ art, color, artUrl }: { art: GenStyleArt; color: GenStyleDef["color"]; artUrl?: string }) {
-  if (artUrl) {
-    return (
-      // eslint-disable-next-line @next/next/no-img-element
-      <img src={artUrl} alt="" className="absolute inset-0 h-full w-full object-cover" />
-    );
-  }
-  return <GenStyleArtView art={art} color={color} />;
+const STYLE_COVER_FILE: Record<string, string> = {
+  infographic_tutor: "/gen-styles/infographic_tutor.jpg",
+  custom_mtwuuy1z: "/gen-styles/custom_mtwuuy1z.jpg",
+};
+const COVER_CACHE = "c4";
+
+function bustCover(u: string): string {
+  if (!u.startsWith("/gen-styles/")) return u;
+  return u.includes("?") ? `${u}&v=${COVER_CACHE}` : `${u}?v=${COVER_CACHE}`;
+}
+
+function styleTileSrcs(
+  s: { id: string; cover?: string; artUrl?: string } | undefined,
+  artUrls: Record<string, string>,
+): string[] {
+  if (!s) return [];
+  const out: string[] = [];
+  const add = (u?: string) => {
+    let v = (u || "").trim();
+    if (!v) return;
+    if (v.startsWith("blob:") || v.startsWith("file:")) return;
+    v = bustCover(v);
+    if (!out.includes(v)) out.push(v);
+  };
+  add(STYLE_COVER_FILE[s.id]);
+  add(s.cover);
+  add(s.artUrl);
+  if (!STYLE_COVER_FILE[s.id]) add(artUrls[s.id]);
+  return out;
+}
+
+/** Фото обложки поверх SVG. JPG/PNG — слой z-10; эскиз только пока фото не загрузилось. */
+function TileBg({
+  art,
+  color,
+  srcs,
+}: {
+  art: GenStyleArt;
+  color: GenStyleDef["color"];
+  srcs: string[];
+}) {
+  const [i, setI] = useState(0);
+  const [photoOk, setPhotoOk] = useState(false);
+  const src = srcs[i];
+  return (
+    <>
+      {!photoOk ? <GenStyleArtView art={art} color={color} /> : null}
+      {src ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={src}
+          alt=""
+          className="pointer-events-none absolute inset-0 z-10 h-full w-full object-cover"
+          onLoad={() => setPhotoOk(true)}
+          onError={() => {
+            setPhotoOk(false);
+            setI((n) => n + 1);
+          }}
+        />
+      ) : null}
+    </>
+  );
 }
 
 export function GenAssistantPanel({
@@ -161,14 +229,21 @@ export function GenAssistantPanel({
   aspect,
   resolution,
   detail,
-  generating,
+  generating: _generating,
   onAspectChange,
   onResolutionChange,
   onDetailChange,
   onOpenModelPicker,
+  modelIcon,
   onApplyPrompt,
   onGenerate,
   onGenerateAll,
+  expanded,
+  onExpandedChange,
+  references,
+  maxReferences,
+  onAddReferenceFiles,
+  onRemoveReference,
 }: Props) {
   const [categoryId, setCategoryId] = useState(() => lsGet(LS.category, GEN_ASSISTANT_CATEGORIES[0].id));
   const [styleId, setStyleId] = useState(() => lsGet(LS.style, ""));
@@ -177,8 +252,10 @@ export function GenAssistantPanel({
     const n = Math.round(Number(lsGet(LS.count, "1")) || 1);
     return Math.max(1, Math.min(4, n));
   });
-  const [expanded, setExpanded] = useState(false);
-  const [resultsOpen, setResultsOpen] = useState(false);
+  const [editorTab, setEditorTab] = useState<EditorTab>("request");
+  const [promptSlot, setPromptSlot] = useState(0);
+  const [menu, setMenu] = useState<null | "llm" | "aspect" | "resolution" | "detail">(null);
+  const dockRef = useRef<HTMLDivElement | null>(null);
   const [agentBusy, setAgentBusy] = useState(false);
   const [agentError, setAgentError] = useState("");
   const agentBusyRef = useRef(false);
@@ -196,20 +273,9 @@ export function GenAssistantPanel({
     }
   };
   const scheduleHide = () => {
+    if (addOpen) return;
     cancelHide();
     hideTimer.current = window.setTimeout(() => setPreviewCat(null), 180);
-  };
-  // Окно результатов: курсор ушёл с иконки/окна — исчезает (как у категорий)
-  const resultsTimer = useRef<number | null>(null);
-  const cancelResultsHide = () => {
-    if (resultsTimer.current !== null) {
-      window.clearTimeout(resultsTimer.current);
-      resultsTimer.current = null;
-    }
-  };
-  const scheduleResultsHide = () => {
-    cancelResultsHide();
-    resultsTimer.current = window.setTimeout(() => setResultsOpen(false), 180);
   };
   const [agentOverrides, setAgentOverrides] = useState<Record<string, string>>(() => {
     try {
@@ -248,6 +314,9 @@ export function GenAssistantPanel({
   const [newHint, setNewHint] = useState("");
   const [buildBusy, setBuildBusy] = useState(false);
   const refInput = useRef<HTMLInputElement | null>(null);
+  const genRefInput = useRef<HTMLInputElement | null>(null);
+  const requestAreaRef = useRef<HTMLTextAreaElement | null>(null);
+  const promptAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const refPreviews = useMemo(() => newRefs.map((f) => URL.createObjectURL(f)), [newRefs]);
   useEffect(() => {
     return () => refPreviews.forEach((u) => URL.revokeObjectURL(u));
@@ -261,10 +330,14 @@ export function GenAssistantPanel({
   useEffect(() => lsSet(LS.style, styleId), [styleId]);
   useEffect(() => lsSet(LS.request, request), [request]);
   useEffect(() => lsSet(LS.count, String(count)), [count]);
+  useEffect(() => {
+    setPromptSlot((s) => Math.max(0, Math.min(s, count - 1)));
+  }, [count]);
   useEffect(() => lsSet(LS.agentOverrides, JSON.stringify(agentOverrides)), [agentOverrides]);
   const customStylesHydrated = useRef(false);
   const diskStylesReady = useRef(false);
   useEffect(() => {
+    // Не затирать LS пустым [] при гидрации (window на SSR нет → стейт []).
     if (!customStylesHydrated.current) {
       customStylesHydrated.current = true;
       try {
@@ -354,6 +427,15 @@ export function GenAssistantPanel({
     }
   };
 
+  useEffect(() => {
+    if (!menu) return;
+    const onDown = (e: MouseEvent) => {
+      if (dockRef.current && !dockRef.current.contains(e.target as Node)) setMenu(null);
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [menu]);
+
   // Категории + пользовательские стили
   const categories = useMemo(
     () =>
@@ -373,6 +455,8 @@ export function GenAssistantPanel({
     if (!appliedPrompt?.text) return;
     const text = appliedPrompt.text;
     setPromptOverrides((prev) => ({ ...prev, "0": text }));
+    setPromptSlot(0);
+    setEditorTab("prompt");
     for (const c of categories) {
       const hit = c.styles.find((s) => {
         const core = (agentOverrides[s.id] ?? s.promptCore).trim();
@@ -409,9 +493,40 @@ export function GenAssistantPanel({
   const promptText = (idx: number) =>
     promptOverrides[String(idx)] ?? genPromptVariant(assembled, idx, count);
 
+  useEffect(() => {
+    if (editorTab !== "prompt") return;
+    const el = promptAreaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const min = 56;
+    const max = Math.round(window.innerHeight * 0.42);
+    el.style.height = `${Math.min(max, Math.max(min, el.scrollHeight))}px`;
+  }, [editorTab, promptSlot, promptOverrides, assembled, count]);
+
   const applyPrompt = (idx: number) => {
     onApplyPrompt(promptText(idx));
     toast.success("Промпт подставлен в поле запроса");
+  };
+
+  const insertRefHandle = (handle: string) => {
+    if (!expanded) onExpandedChange(true);
+    setEditorTab("request");
+    const el = requestAreaRef.current;
+    const start = el?.selectionStart ?? request.length;
+    const end = el?.selectionEnd ?? request.length;
+    const before = request.slice(0, start);
+    const after = request.slice(end);
+    const padL = before && !/\s$/.test(before) ? " " : "";
+    const padR = after && !/^\s/.test(after) ? " " : "";
+    const next = `${before}${padL}${handle}${padR}${after}`;
+    setRequest(next);
+    requestAnimationFrame(() => {
+      const area = requestAreaRef.current;
+      if (!area) return;
+      const pos = start + padL.length + handle.length + padR.length;
+      area.focus();
+      area.setSelectionRange(pos, pos);
+    });
   };
 
   const notifyAgentError = (msg: string) => {
@@ -441,7 +556,15 @@ export function GenAssistantPanel({
       const r = await fetch("/api/gen-assistant/prompts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ request: req, agent_text: agentText, aspect, count }),
+        body: JSON.stringify({
+          request: req,
+          agent_text: agentText,
+          aspect,
+          count,
+          ref_labels: references.map(
+            (r, i) => `${assistantRefHandle(i)} — ${r.name || "референс"}`,
+          ),
+        }),
         signal: AbortSignal.timeout(200_000),
       });
       if (!r.ok) {
@@ -471,6 +594,8 @@ export function GenAssistantPanel({
         });
         return next;
       });
+      setPromptSlot(0);
+      setEditorTab("prompt");
       const pending = { styleId: style.id, ts: Date.now(), prefix: prompts[0].slice(0, 48) };
       lsSet(LS.pendingStyle, JSON.stringify(pending));
       setPendingArt(pending);
@@ -647,68 +772,219 @@ export function GenAssistantPanel({
 
   return (
     <div
+      ref={dockRef}
       className={cn(
-        "relative flex w-full min-w-0 items-stretch gap-2 transition-[height] duration-300 ease-out",
-        expanded ? "h-[54vh]" : "h-[168px]",
+        "relative flex min-w-0 flex-1 flex-col bg-[#121216]/95 backdrop-blur-2xl",
+        expanded ? "rounded-xl border border-white/12" : "rounded-lg border border-white/12",
       )}
       style={{ animation: "gaUp 0.25s ease-out" }}
     >
       <style>{`@keyframes gaUp{from{transform:translateY(12px);opacity:0}to{transform:translateY(0);opacity:1}}`}</style>
 
-      {/* левая панель: категории + запрос + промпты (половина ширины) */}
-      <div className="flex w-1/2 shrink-0 flex-col rounded-2xl border border-white/15 bg-[#121216]/95 backdrop-blur-2xl ring-1 ring-white/10 shadow-[0_20px_60px_rgba(0,0,0,0.85)]">
-      {/* header: кнопка категорий + выбранный стиль + разворот + закрыть */}
-      <div className="flex h-[34px] shrink-0 items-center gap-1.5 border-b border-white/[0.08] px-2.5">
-        <Sparkles className="h-3.5 w-3.5 shrink-0" style={{ color: OUTSEE_ACCENT }} />
+      {/* header: категория + стиль + свернуть + закрыть */}
+      <div className="flex h-8 shrink-0 items-center gap-1.5 px-2">
+        <Sparkles className="h-3.5 w-3.5 shrink-0 text-white/50" />
         <button
           type="button"
           onClick={() => {
             setCatMenuOpen((v) => {
-              if (!v) setPreviewCat(null);
+              if (!v) setPreviewCat(categoryId);
               return !v;
             });
             setAddOpen(false);
           }}
           className={cn(
-            "inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold transition",
-            catMenuOpen
-              ? "bg-[#22d3ee]/15 text-[#22d3ee] ring-1 ring-[#22d3ee]/40"
-              : "bg-white/[0.04] text-white/70 hover:bg-white/[0.08] hover:text-white",
+            "inline-flex items-center gap-1 px-1 py-1 text-[13px] font-medium transition",
+            catMenuOpen ? "text-white" : "text-white/70 hover:text-white",
           )}
         >
-          Категория: {category.name}
-          <ChevronDown className={cn("h-3 w-3 transition", catMenuOpen && "rotate-180")} />
+          {category.name}
+          <ChevronDown className={cn("h-3.5 w-3.5 transition", catMenuOpen && "rotate-180")} />
         </button>
-        {style && (
-          <span className="inline-flex min-w-0 items-center gap-1.5 rounded-lg bg-white/[0.04] px-2 py-1">
+        {style && expanded ? (
+          <span className="inline-flex min-w-0 items-center gap-1.5 px-1 py-1">
             <span
-              className="h-2 w-2 shrink-0 rounded-full"
+              className="h-1.5 w-1.5 shrink-0 rounded-full"
               style={{ backgroundColor: GEN_STYLE_COLORS[style.color] }}
             />
-            <span className="truncate text-[10px] font-semibold text-white/80">{style.name}</span>
+            <span className="truncate text-[12px] font-medium text-white/70">{style.name}</span>
           </span>
-        )}
+        ) : null}
+        <input
+          ref={genRefInput}
+          type="file"
+          multiple
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          className="hidden"
+          onChange={(e) => {
+            const files = Array.from(e.target.files ?? []);
+            if (files.length) onAddReferenceFiles(files);
+            e.target.value = "";
+          }}
+        />
+        {expanded ? (
+          <div className="flex shrink-0 items-center gap-0.5">
+            {STAGE_TABS.map((t) => {
+              const active = editorTab === t.id;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => {
+                    setEditorTab(t.id);
+                    if (t.id === "prompt") onExpandedChange(true);
+                  }}
+                  className={cn(
+                    "h-7 px-2 text-[13px] font-medium transition",
+                    active ? "text-white" : "text-white/45 hover:text-white/80",
+                  )}
+                >
+                  {t.label}
+                </button>
+              );
+            })}
+            {editorTab === "prompt" && count > 1 &&
+              Array.from({ length: count }, (_, idx) => (
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={() => setPromptSlot(idx)}
+                  className={cn(
+                    "h-7 w-6 text-[12px] font-medium transition",
+                    promptSlot === idx ? "text-white" : "text-white/40 hover:text-white",
+                  )}
+                >
+                  {idx + 1}
+                </button>
+              ))}
+            {editorTab === "agent" && style && agentOverrides[style.id] !== undefined && (
+              <button
+                type="button"
+                onClick={() =>
+                  setAgentOverrides((prev) => {
+                    const next = { ...prev };
+                    delete next[style.id];
+                    return next;
+                  })
+                }
+                className="text-[12px] font-medium text-white/45 transition hover:text-white"
+                title="Вернуть исходный текст агента"
+              >
+                Сбросить
+              </button>
+            )}
+            {editorTab === "prompt" && promptOverrides[String(promptSlot)] !== undefined && (
+              <button
+                type="button"
+                onClick={() =>
+                  setPromptOverrides((prev) => {
+                    const next = { ...prev };
+                    delete next[String(promptSlot)];
+                    return next;
+                  })
+                }
+                className="text-[12px] font-medium text-white/45 transition hover:text-white"
+                title="Вернуть автосборку"
+              >
+                Сбросить
+              </button>
+            )}
+          </div>
+        ) : null}
+        <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
+          <button
+            type="button"
+            onClick={() => {
+              if (!expanded) onExpandedChange(true);
+              if (maxReferences <= 0) return;
+              genRefInput.current?.click();
+            }}
+            disabled={maxReferences > 0 && references.length >= maxReferences}
+            title={
+              maxReferences <= 0
+                ? "Эта модель не принимает референсы"
+                : "Приложить картинку. Клик по имени вставит @image в запрос"
+            }
+            className={cn(
+              "inline-flex h-7 shrink-0 items-center gap-1.5 px-1.5 text-[13px] font-medium transition",
+              references.length > 0 ? "text-white" : "text-white/70 hover:text-white",
+              "disabled:cursor-not-allowed disabled:opacity-40",
+            )}
+          >
+            <Paperclip className="h-3.5 w-3.5 text-white/70" />
+            Референсы
+            {maxReferences > 0 ? (
+              <span className="font-mono text-[11px] tabular-nums text-white/45">
+                {references.length}/{maxReferences}
+              </span>
+            ) : null}
+          </button>
+          {references.map((ref, idx) => {
+            const handle = assistantRefHandle(idx);
+            const fileName = (ref.name || "").trim() || `картинка ${idx + 1}`;
+            return (
+              <div
+                key={ref.id}
+                className="flex min-w-0 items-center gap-1 py-0.5 pl-0.5 pr-1"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={ref.url}
+                  alt=""
+                  className="h-6 w-6 shrink-0 rounded object-cover"
+                />
+                <div className="min-w-0 leading-tight">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!expanded) onExpandedChange(true);
+                      insertRefHandle(handle);
+                    }}
+                    title={`Вставить ${handle} в запрос`}
+                    className="block font-mono text-[12px] font-medium text-white hover:underline"
+                  >
+                    {handle}
+                  </button>
+                  <span className="block max-w-[120px] truncate text-[11px] text-white/45" title={fileName}>
+                    {fileName}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onRemoveReference(ref.id)}
+                  title="Убрать"
+                  className="shrink-0 self-start pt-0.5 text-white/35 transition hover:text-white"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
         <span className="ml-auto flex items-center gap-1">
           <button
             type="button"
-            onClick={() => setExpanded((v) => !v)}
-            title={expanded ? "Свернуть к высоте дока" : "Развернуть вверх поверх изображения"}
-            className="inline-flex h-6 w-6 items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] text-white/70 transition hover:bg-white/[0.08] hover:text-white"
+            onClick={() => {
+              const next = !expanded;
+              onExpandedChange(next);
+            }}
+            title={expanded ? "Свернуть" : "Развернуть"}
+            className="inline-flex h-7 w-6 items-center justify-center text-white/50 transition hover:text-white"
           >
-            {expanded ? <ChevronsDown className="h-3 w-3" /> : <ChevronsUp className="h-3 w-3" />}
+            {expanded ? <ChevronsDown className="h-3.5 w-3.5" /> : <ChevronsUp className="h-3.5 w-3.5" />}
           </button>
           <button
             type="button"
             onClick={onClose}
             title="Скрыть помощника"
-            className="inline-flex h-6 w-6 items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] text-white/70 transition hover:bg-white/[0.08] hover:text-white"
+            className="inline-flex h-7 w-6 items-center justify-center text-white/50 transition hover:text-white"
           >
-            <X className="h-3 w-3" />
+            <X className="h-3.5 w-3.5" />
           </button>
         </span>
       </div>
 
-      {/* выпадающее меню категорий/стилей — по кнопке, вверх поверх картинки */}
+      {/* категории — поповер вверх, панель не раскрывается */}
       {catMenuOpen && (
         <>
           <div
@@ -720,11 +996,11 @@ export function GenAssistantPanel({
           />
           <div
             ref={popRef}
-            className="absolute bottom-full left-0 z-50 mb-2 w-full rounded-xl border border-white/15 bg-[#121216]/98 p-2 shadow-[0_20px_50px_rgba(0,0,0,0.85)] backdrop-blur-2xl"
+            className="absolute bottom-full left-0 z-50 mb-2 w-[min(100%,720px)] rounded-xl border border-white/12 bg-[#121216]/98 p-2.5 shadow-[0_16px_40px_rgba(0,0,0,0.7)] backdrop-blur-2xl"
             onMouseEnter={cancelHide}
             onMouseLeave={scheduleHide}
           >
-            <div className="grid grid-cols-4 gap-1.5">
+            <div className="grid grid-cols-4 gap-2">
               {categories.map((c) => {
                 const rep = c.styles[0];
                 return (
@@ -742,17 +1018,21 @@ export function GenAssistantPanel({
                     onClick={() => setPreviewCat(c.id)}
                     title={c.name}
                     className={cn(
-                      "relative h-[115px] overflow-hidden rounded-none border text-left transition",
+                      "flex flex-col overflow-hidden rounded-md border text-left transition",
                       c.id === menuCat?.id
-                        ? "border-[#22d3ee]/70 ring-2 ring-[#22d3ee]/40"
-                        : "border-white/10 hover:border-white/30",
+                        ? "border-white/30 bg-white/[0.04]"
+                        : "border-white/12 hover:border-white/25",
                     )}
                   >
-                    <TileBg art={c.art} color={rep?.color ?? "cyan"} artUrl={rep ? artUrls[rep.id] : undefined} />
-                    <span className="absolute inset-x-0 bottom-0 bg-black/60 px-1 py-0.5 backdrop-blur-sm">
-                      <span className="block truncate text-[9px] font-bold leading-tight text-white/95">
-                        {c.name}
-                      </span>
+                    <span className="relative h-[72px] w-full overflow-hidden">
+                      <TileBg
+                        art={c.art}
+                        color={rep?.color ?? "cyan"}
+                        srcs={[]}
+                      />
+                    </span>
+                    <span className="px-1.5 py-1.5 text-center text-[12px] font-medium leading-tight text-white/85">
+                      {c.name}
                     </span>
                   </button>
                 );
@@ -760,59 +1040,18 @@ export function GenAssistantPanel({
             </div>
             {menuCat && (
               <div
-                className="absolute z-10 w-[600px] rounded-xl border border-white/15 bg-[#121216]/98 p-2 shadow-[0_20px_50px_rgba(0,0,0,0.85)] backdrop-blur-2xl"
+                className="absolute z-10 w-[600px] rounded-xl border border-white/12 bg-[#121216]/98 p-2.5 shadow-[0_16px_40px_rgba(0,0,0,0.7)] backdrop-blur-2xl"
                 style={{
                   left: Math.max(4, Math.min((stylesPos?.x ?? 60) - 16, (stylesPos?.w ?? 700) - 604)),
-                  // правило 70%: низ окна не ниже 30% высоты плиток категорий —
-                  // ячейки категорий остаются открытыми для нажатия минимум на 70%
-                  top: Math.min((stylesPos?.y ?? 60) + 8, 8 + Math.round(115 * 0.3)),
+                  top: Math.min((stylesPos?.y ?? 60) + 8, 8 + Math.round(104 * 0.3)),
                   transform: "translateY(-100%)",
                 }}
                 onMouseEnter={cancelHide}
                 onMouseLeave={scheduleHide}
               >
-            <div className="mb-1 px-0.5 font-mono text-[9px] font-bold uppercase tracking-wider text-white/40">
-              {menuCat.name} · {menuCat.styles.length} стилей
-            </div>
-            {!addOpen ? (
-              <div className="grid max-h-[330px] grid-cols-3 gap-1.5 overflow-y-auto">
-                {menuCat.styles.map((s) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => {
-                      setCategoryId(menuCat.id);
-                      setStyleId(s.id === styleId && menuCat.id === categoryId ? "" : s.id);
-                      setCatMenuOpen(false);
-                    }}
-                    title={`${s.name} — ${s.desc}`}
-                    className={cn(
-                      "relative h-[155px] overflow-hidden rounded-none border text-left transition",
-                      s.id === styleId && menuCat.id === categoryId
-                        ? "border-[#22d3ee]/70 ring-2 ring-[#22d3ee]/40"
-                        : "border-white/10 hover:border-white/30",
-                    )}
-                  >
-                    <TileBg art={s.art} color={s.color} artUrl={artUrls[s.id]} />
-                    <span className="absolute inset-x-0 bottom-0 bg-black/60 px-1.5 py-0.5 backdrop-blur-sm">
-                      <span className="block truncate text-[9px] font-bold leading-tight text-white/95">
-                        {s.name}
-                      </span>
-                    </span>
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => setAddOpen(true)}
-                  title="Добавить свой стиль"
-                  className="flex h-[155px] items-center justify-center rounded-none border border-dashed border-white/15 text-white/40 transition hover:border-[#22d3ee]/40 hover:text-[#22d3ee]"
-                >
-                  <Plus className="h-4 w-4" />
-                </button>
-              </div>
-            ) : (
-              /* форма нового стиля: референсы + правка → агент */
-              <div className="max-h-[340px] space-y-1.5 overflow-y-auto">
+            {addOpen ? (
+              <div className="max-h-[360px] space-y-1.5 overflow-y-auto">
+                <div className="text-[13px] font-medium text-white/85">Новый стиль · {menuCat.name}</div>
                 <div className="flex flex-wrap items-center gap-1">
                   {refPreviews.map((url, i) => (
                     <span key={url} className="relative h-[46px] w-[46px] overflow-hidden rounded-md border border-white/15">
@@ -822,7 +1061,7 @@ export function GenAssistantPanel({
                         type="button"
                         onClick={() => setNewRefs((prev) => prev.filter((_, k) => k !== i))}
                         title="Убрать"
-                        className="absolute right-0 top-0 bg-black/70 px-0.5 text-[9px] leading-none text-white/80 hover:text-white"
+                        className="absolute right-0 top-0 bg-black/70 px-0.5 text-[12px] leading-none text-white/80 hover:text-white"
                       >
                         ×
                       </button>
@@ -832,7 +1071,7 @@ export function GenAssistantPanel({
                     type="button"
                     onClick={() => refInput.current?.click()}
                     title="Добавить картинки-референсы"
-                    className="flex h-[46px] w-[46px] items-center justify-center rounded-md border border-dashed border-white/20 text-white/45 transition hover:border-[#22d3ee]/50 hover:text-[#22d3ee]"
+                    className="flex h-[46px] w-[46px] items-center justify-center rounded-md border border-dashed border-white/20 text-white/45 transition hover:border-white/40 hover:text-white"
                   >
                     <Plus className="h-3.5 w-3.5" />
                   </button>
@@ -848,22 +1087,19 @@ export function GenAssistantPanel({
                       e.target.value = "";
                     }}
                   />
-                  {newRefs.length > 0 && (
-                    <span className="font-mono text-[9px] text-white/40">{newRefs.length} шт</span>
-                  )}
                 </div>
                 <textarea
                   value={newHint}
                   onChange={(e) => setNewHint(e.target.value)}
                   rows={2}
-                  placeholder="Правка/пожелание: что именно взять из картинок, что зафиксировать (цвет, шрифт, сетка)…"
-                  className={cn(areaCls, "text-[11px]")}
+                  placeholder="Что взять из картинок…"
+                  className={cn(areaCls, "text-[12px]")}
                 />
                 <button
                   type="button"
                   disabled={buildBusy || !newRefs.length}
                   onClick={() => void buildAgentFromRefs()}
-                  className="w-full rounded-lg bg-gradient-to-r from-[#22d3ee] to-[#0ea5e9] px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wider text-black transition hover:brightness-110 disabled:opacity-40"
+                  className="w-full rounded-md bg-white px-2.5 py-1.5 text-[13px] font-medium text-black transition hover:bg-white/90 disabled:opacity-40"
                 >
                   {buildBusy ? "Разбираю картинки…" : "Собрать агента по картинкам"}
                 </button>
@@ -873,70 +1109,74 @@ export function GenAssistantPanel({
                   placeholder="Название стиля"
                   className={selectCls}
                 />
-                <input
-                  value={newDesc}
-                  onChange={(e) => setNewDesc(e.target.value)}
-                  placeholder="Короткое описание (необязательно)"
-                  className={selectCls}
-                />
-                <div className="flex items-center gap-1">
-                  {(Object.keys(GEN_STYLE_COLORS) as GenStyleDef["color"][]).map((c) => (
-                    <button
-                      key={c}
-                      type="button"
-                      onClick={() => setNewColor(c)}
-                      className={cn(
-                        "h-4 w-4 rounded-full transition",
-                        newColor === c && "ring-2 ring-white/70 ring-offset-1 ring-offset-black",
-                      )}
-                      style={{ backgroundColor: GEN_STYLE_COLORS[c] }}
-                    />
-                  ))}
-                </div>
-                <div className="grid grid-cols-9 gap-1">
-                  {ART_KEYS.map((a) => (
-                    <button
-                      key={a}
-                      type="button"
-                      onClick={() => setNewArt(a)}
-                      className={cn(
-                        "relative h-[24px] overflow-hidden rounded-md border transition",
-                        newArt === a ? "border-[#22d3ee]/70 ring-1 ring-[#22d3ee]/50" : "border-white/10",
-                      )}
-                    >
-                      <GenStyleArtView art={a} color={newColor} />
-                    </button>
-                  ))}
-                </div>
                 <textarea
                   value={newAgent}
                   onChange={(e) => setNewAgent(e.target.value)}
-                  rows={6}
-                  placeholder="Текст агента: соберётся по картинкам или впишите свой"
-                  className={cn(areaCls, "font-mono text-[11px]")}
+                  rows={4}
+                  placeholder="Текст агента"
+                  className={cn(areaCls, "font-mono text-[12px]")}
                 />
-                {newAgent.trim() && (
-                  <div className="px-0.5 font-mono text-[9px] text-white/35">
-                    {newAgent.length} симв. · {new Blob([newAgent]).size} байт
-                  </div>
-                )}
                 <div className="flex gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => saveCustomStyle(menuCat.id)}
-                    className="rounded-lg bg-gradient-to-r from-[#22d3ee] to-[#0ea5e9] px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wider text-black transition hover:brightness-110"
-                  >
+                  <button type="button" onClick={() => saveCustomStyle(menuCat.id)} className="rounded-md bg-white px-2.5 py-1.5 text-[13px] font-medium text-black">
                     Сохранить
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setAddOpen(false)}
-                    className="rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] font-medium text-white/60 transition hover:text-white"
-                  >
+                  <button type="button" onClick={() => setAddOpen(false)} className="rounded-md px-2.5 py-1.5 text-[13px] font-medium text-white/60 hover:text-white">
                     Отмена
                   </button>
                 </div>
               </div>
+            ) : (
+            <>
+            <div className="mb-2 px-0.5 text-[12px] font-medium text-white/50">
+              {menuCat.name}
+            </div>
+            <div className="grid max-h-[280px] grid-cols-3 gap-2 overflow-y-auto">
+                {menuCat.styles.map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => {
+                      setCategoryId(menuCat.id);
+                      setStyleId(s.id === styleId && menuCat.id === categoryId ? "" : s.id);
+                      if (!(s.id === styleId && menuCat.id === categoryId)) setEditorTab("request");
+                      setCatMenuOpen(false);
+                    }}
+                    title={s.name}
+                    className={cn(
+                      "flex flex-col overflow-hidden rounded-md border text-left transition",
+                      s.id === styleId && menuCat.id === categoryId
+                        ? "border-white/30 bg-white/[0.04]"
+                        : "border-white/12 hover:border-white/25",
+                    )}
+                  >
+                    <span className="relative h-[90px] w-full overflow-hidden">
+                      <TileBg
+                        art={s.art}
+                        color={s.color}
+                        srcs={styleTileSrcs(
+                          { id: s.id, cover: s.cover, artUrl: (s as CustomStyle).artUrl },
+                          artUrls,
+                        )}
+                      />
+                    </span>
+                    <span className="px-1.5 py-1.5 text-center text-[12px] font-medium leading-tight text-white/85">
+                      {s.name}
+                    </span>
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCategoryId(menuCat.id);
+                    setAddOpen(true);
+                  }}
+                  title="Добавить свой стиль по картинкам"
+                  className="flex min-h-[124px] items-center justify-center rounded-md border border-dashed border-white/15 text-white/40 transition hover:border-white/30 hover:text-white/70"
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+              </div>
+            </>
             )}
               </div>
             )}
@@ -944,10 +1184,11 @@ export function GenAssistantPanel({
         </>
       )}
 
-      {/* тело: запрос + промпты */}
-      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-2.5 py-2">
-          <div className="flex items-stretch gap-1.5">
+      {expanded ? (
+      <div className="flex min-h-0 flex-col px-2 pb-1.5 pt-0">
+          {editorTab === "request" && (
             <textarea
+              ref={requestAreaRef}
               value={request}
               onChange={(e) => setRequest(e.target.value)}
               onKeyDown={(e) => {
@@ -957,265 +1198,243 @@ export function GenAssistantPanel({
                 }
               }}
               rows={2}
-              placeholder="Ваш запрос: что должно быть в кадре… (Ctrl+Enter — агент)"
-              className={cn(areaCls, "min-w-0 flex-1")}
+              placeholder="Что должно быть в кадре"
+              className={cn(areaCls, "min-w-0")}
             />
-            <button
-              type="button"
-              onClick={() => setResultsOpen((v) => !v)}
-              title="Результаты: собранные промпты"
-              className={cn(
-                "flex w-[64px] shrink-0 flex-col items-center justify-center gap-1 rounded-lg border transition",
-                resultsOpen
-                  ? "border-[#22d3ee]/50 bg-[#22d3ee]/15 text-[#22d3ee]"
-                  : "border-white/10 bg-white/[0.04] text-white/70 hover:border-[#22d3ee]/40 hover:bg-[#22d3ee]/10 hover:text-white",
-              )}
-            >
-              <ClipboardList className="h-7 w-7" />
-              <span className="font-mono text-[9px] font-bold leading-none">{count} шт</span>
-            </button>
-          </div>
-          <div className="flex flex-wrap items-center gap-1.5">
-            <button
-              type="button"
-              disabled={agentBusy}
-              onClick={() => void runAgent()}
-              title="Агент напишет промпты по запросу и стилю — и сразу запустит генерацию"
-              className="inline-flex items-center justify-center rounded-lg bg-gradient-to-r from-[#22d3ee] to-[#0ea5e9] px-2.5 py-1.5 text-[10px] font-extrabold uppercase tracking-wider text-black shadow-[0_0_15px_rgba(34,211,238,0.3)] transition hover:brightness-110 disabled:opacity-40"
-            >
-              {agentBusy ? "Агент пишет…" : "Сгенерировать"}
-            </button>
-            <button
-              type="button"
-              onClick={() => applyPrompt(0)}
-              className="inline-flex items-center rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1.5 text-[10px] font-medium text-white/70 transition hover:border-[#22d3ee]/40 hover:bg-[#22d3ee]/10 hover:text-white"
-            >
-              Только промпт
-            </button>
-            <input
-              type="number"
-              min={1}
-              max={4}
-              value={count}
-              title="Количество промптов"
-              onChange={(e) => {
-                const n = Math.max(1, Math.min(4, Math.round(Number(e.target.value) || 1)));
-                setCount(n);
-              }}
-              className="w-[40px] rounded-lg border border-white/10 bg-[#16161b] px-1 py-1.5 text-center text-[11px] text-white/85 focus:border-[#22d3ee]/60 focus:outline-none"
-            />
-            {generating && !agentError ? (
-              <span className="min-w-0 flex-1 text-[10px] leading-tight text-white/40">
-                Картинка ещё генерируется — агент можно запускать снова
-              </span>
-            ) : null}
-          </div>
-          {agentError ? (
-            <div
-              role="alert"
-              className="rounded-md border border-red-500/40 bg-red-500/15 px-2 py-1 text-[11px] leading-tight text-red-200"
-            >
-              {agentError}
-            </div>
-          ) : null}
-      </div>
-
-      {/* результаты промптов — окно вверх по иконке справа от запроса (механика как у категорий) */}
-      {resultsOpen && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setResultsOpen(false)} />
-          <div
-            className="absolute bottom-full left-0 z-50 mb-2 max-h-[50vh] w-full space-y-2 overflow-y-auto rounded-xl border border-white/15 bg-[#121216]/98 p-2 shadow-[0_20px_50px_rgba(0,0,0,0.85)] backdrop-blur-2xl"
-            onMouseEnter={cancelResultsHide}
-            onMouseLeave={scheduleResultsHide}
-          >
-            {Array.from({ length: count }, (_, idx) => {
-              const key = String(idx);
-              const overridden = promptOverrides[key] !== undefined;
-              const text = promptText(idx);
-              return (
-                <div key={key} className="rounded-xl border border-white/10 bg-white/[0.02]">
-                  <div className="flex items-center gap-2 border-b border-white/[0.06] px-2.5 py-1">
-                    <span className="text-[10px] font-semibold text-white/85">
-                      {count > 1 ? `Промпт ${idx + 1} из ${count}` : "Собранный промпт"}
-                    </span>
-                    {overridden && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setPromptOverrides((prev) => {
-                            const next = { ...prev };
-                            delete next[key];
-                            return next;
-                          })
-                        }
-                        className="rounded-md bg-[#22d3ee]/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-[#22d3ee] transition hover:bg-[#22d3ee]/25"
-                        title="Вернуть автосборку"
-                      >
-                        сбросить
-                      </button>
-                    )}
-                    <span className="ml-auto font-mono text-[9px] text-white/35">
-                      {text.length} симв.
-                    </span>
-                  </div>
-                  <div className="space-y-1.5 px-2.5 py-1.5">
-                    <textarea
-                      value={text}
-                      onChange={(e) =>
-                        setPromptOverrides((prev) => ({ ...prev, [key]: e.target.value }))
-                      }
-                      rows={expanded ? 12 : 6}
-                      className={cn(areaCls, "font-mono text-[10px]")}
-                    />
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        disabled={agentBusy}
-                        onClick={() => void generatePrompt(idx)}
-                        className="inline-flex items-center justify-center rounded-lg bg-gradient-to-r from-[#22d3ee] to-[#0ea5e9] px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wider text-black transition hover:brightness-110 disabled:opacity-40"
-                      >
-                        Сгенерировать
-                      </button>
-                      {instructionAgent && !overridden && (
-                        <span className="font-mono text-[9px] text-[#22d3ee]/70">
-                          агент-инструкция: промпт напишет LLM
-                        </span>
-                      )}
-                      {count > 1 && (
-                        <span className="ml-auto font-mono text-[9px] text-white/35">
-                          вариант {idx + 1}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </>
-      )}
-      </div>
-
-      {/* распорка: правая панель прижата к правому краю */}
-      <div className="min-w-0 flex-1" />
-
-      {/* правая панель — отдельное меню у правого края: агент + управление */}
-      <div className="-mr-3 flex w-[580px] shrink-0 flex-col space-y-1.5 overflow-y-auto rounded-2xl border border-white/15 bg-[#121216]/95 px-2.5 py-2 backdrop-blur-2xl ring-1 ring-white/10 shadow-[0_20px_60px_rgba(0,0,0,0.85)] lg:-mr-5">
-          <div className="flex items-center gap-1.5">
-            <span className={labelSmCls}>LLM</span>
-            <select
-              value={activeLlm?.id ?? ""}
-              disabled={llmBusy || !llmModels.length}
-              onChange={(e) => void onLlmChange(e.target.value)}
-              className={selectSmCls}
-              title="Текстовая модель Studio (как в топбаре)"
-            >
-              {!llmModels.length && <option value="">загрузка…</option>}
-              {llmModels.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                  {m.key_configured ? "" : " · нет ключа"}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className={labelSmCls}>Модель</span>
-            <button
-              type="button"
-              onClick={onOpenModelPicker}
-              className="flex min-w-0 flex-1 items-center justify-between gap-2 rounded-lg border border-white/10 bg-[#16161b] px-2 py-1 text-[11px] text-white/85 transition hover:border-[#22d3ee]/40"
-            >
-              <span className="truncate">{modelName}</span>
-              <ChevronDown className="h-3 w-3 shrink-0 opacity-60" />
-            </button>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className={labelSmCls}>Формат</span>
-            <select
-              value={aspect}
-              onChange={(e) => onAspectChange(e.target.value)}
-              className={selectSmCls}
-            >
-              {aspectOptions.map((a) => (
-                <option key={a} value={a}>
-                  {a}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className={labelSmCls}>Разреш.</span>
-            <select
-              value={resolution}
-              onChange={(e) => onResolutionChange(e.target.value)}
-              className={selectSmCls}
-            >
-              {resolutionOptions.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </select>
-          </div>
-          {detailOptions.length > 0 && (
-            <div className="flex items-center gap-1.5">
-              <span className={labelSmCls}>Детализац.</span>
-              <select
-                value={detail}
-                onChange={(e) => onDetailChange(e.target.value)}
-                className={selectSmCls}
-              >
-                {detailOptions.map((d) => (
-                  <option key={d} value={d}>
-                    {detailLabel(d)}
-                  </option>
-                ))}
-              </select>
-            </div>
           )}
-          {/* агент: весь текст сразу, редактируется, сохраняется автоматически */}
-          {style && (
-            <div className="space-y-1 pt-1">
-              <div className="flex items-center gap-2 px-0.5">
-                <span
-                  className="h-2 w-2 shrink-0 rounded-full"
-                  style={{ backgroundColor: GEN_STYLE_COLORS[style.color] }}
-                />
-                <span className="text-[10px] font-semibold text-white/85">Агент «{style.name}»</span>
-                <span className="font-mono text-[8px] text-white/35">
-                  {instructionAgent ? "инструкция — исполняет LLM" : "ядро стиля — идёт в промпт"}
-                </span>
-                {agentOverrides[style.id] !== undefined && (
+          {editorTab === "agent" && (
+            <textarea
+              value={agentText}
+              onChange={(e) => {
+                if (!style) return;
+                setAgentOverrides((prev) => ({ ...prev, [style.id]: e.target.value }));
+              }}
+              rows={2}
+              placeholder={style ? "Текст агента стиля" : "Выберите стиль"}
+              disabled={!style}
+              className={cn(areaCls, "font-mono text-[13px] disabled:opacity-50")}
+            />
+          )}
+          {editorTab === "prompt" && (
+            <textarea
+              ref={promptAreaRef}
+              value={promptText(promptSlot)}
+              onChange={(e) =>
+                setPromptOverrides((prev) => ({ ...prev, [String(promptSlot)]: e.target.value }))
+              }
+              rows={2}
+              placeholder="Собранный промпт"
+              className={cn(areaCls, "max-h-[42vh] overflow-y-auto font-mono text-[13px]")}
+            />
+          )}
+
+        <div className="mt-1.5 flex shrink-0 flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            disabled={agentBusy}
+            onClick={() => void runAgent()}
+            title="Собрать промпт и запустить картинку"
+            className="inline-flex h-7 items-center justify-center rounded-md bg-gradient-to-r from-[#22d3ee] to-[#0ea5e9] px-3 text-[13px] font-medium text-black shadow-[0_0_14px_rgba(34,211,238,0.28)] transition hover:brightness-110 disabled:opacity-40"
+          >
+            {agentBusy ? "Пишет…" : "Сгенерировать"}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setEditorTab("prompt");
+              applyPrompt(promptSlot);
+            }}
+            className="inline-flex h-7 items-center rounded-md px-2 text-[13px] font-medium text-white/45 transition hover:text-white"
+          >
+            Только промпт
+          </button>
+          <input
+            type="number"
+            min={1}
+            max={4}
+            value={count}
+            title="Сколько промптов напишет агент"
+            onChange={(e) => {
+              const n = Math.max(1, Math.min(4, Math.round(Number(e.target.value) || 1)));
+              setCount(n);
+            }}
+            className="h-7 w-10 rounded-md border border-white/12 bg-[#16161b] px-1 text-center text-[13px] text-white/85 focus:border-white/25 focus:outline-none"
+          />
+        {agentError ? (
+          <div
+            role="alert"
+            className="rounded-md border border-red-500/40 bg-red-500/15 px-2 py-1 text-[11px] leading-tight text-red-200"
+          >
+            {agentError}
+          </div>
+        ) : null}
+
+          <div className="relative flex items-center gap-1">
+            <span className="shrink-0 px-1 text-[12px] font-medium text-white/40">
+              LLM
+            </span>
+            <button
+              type="button"
+              disabled={llmBusy || !llmModels.length}
+              onClick={() => setMenu((v) => (v === "llm" ? null : "llm"))}
+              title="Текстовая модель — без формата и разрешения"
+              className={chipCls(menu === "llm")}
+            >
+              <span className="max-w-[140px] truncate">{activeLlm?.label ?? "загрузка…"}</span>
+              <ChevronDown className="h-3 w-3 opacity-60" />
+            </button>
+            {menu === "llm" && (
+              <div className="absolute bottom-full left-0 z-[80] mb-1.5 min-w-[220px] overflow-hidden rounded-xl border border-white/15 bg-[#121216]/98 p-1 shadow-[0_12px_32px_rgba(0,0,0,0.85)]">
+                {llmModels.map((m) => (
                   <button
+                    key={m.id}
                     type="button"
-                    onClick={() =>
-                      setAgentOverrides((prev) => {
-                        const next = { ...prev };
-                        delete next[style.id];
-                        return next;
-                      })
-                    }
-                    className="ml-auto rounded-md bg-[#22d3ee]/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-[#22d3ee] transition hover:bg-[#22d3ee]/25"
-                    title="Вернуть исходный текст агента"
+                    onClick={() => {
+                      void onLlmChange(m.id);
+                      setMenu(null);
+                    }}
+                    className={cn(
+                      "flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-[11px] transition",
+                      m.id === activeLlm?.id
+                        ? "bg-white/10 text-white"
+                        : "text-white/75 hover:bg-white/[0.06] hover:text-white",
+                    )}
                   >
-                    сбросить
+                    <span className="truncate">{m.label}</span>
+                    {!m.key_configured ? (
+                      <span className="ml-2 font-mono text-[9px] text-white/35">нет ключа</span>
+                    ) : null}
                   </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="flex w-fit min-w-0 flex-wrap items-center gap-1">
+            {modelIcon ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={modelIcon}
+                alt=""
+                width={18}
+                height={18}
+                className="h-[18px] w-[18px] shrink-0 rounded-md object-cover ring-1 ring-white/10"
+              />
+            ) : null}
+            <span className="shrink-0 px-1 text-[12px] font-medium text-white/50" title="Модель картинки">
+              Изображение
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setMenu(null);
+                onOpenModelPicker();
+              }}
+              className={chipCls(false)}
+              title="Модель картинки"
+            >
+              <span className="max-w-[150px] truncate">{modelName}</span>
+              <ChevronDown className="h-3 w-3 opacity-60" />
+            </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setMenu((v) => (v === "aspect" ? null : "aspect"))}
+                className={chipCls(menu === "aspect")}
+                title="Формат (только GPT)"
+              >
+                <span className="font-mono tabular-nums">{aspect}</span>
+                <ChevronDown className="h-3 w-3 opacity-60" />
+              </button>
+              {menu === "aspect" && (
+                <div className="absolute bottom-full left-0 z-[80] mb-1.5 min-w-[88px] rounded-xl border border-white/15 bg-[#121216]/98 p-1 shadow-[0_12px_32px_rgba(0,0,0,0.85)]">
+                  {aspectOptions.map((a) => (
+                    <button
+                      key={a}
+                      type="button"
+                      onClick={() => {
+                        onAspectChange(a);
+                        setMenu(null);
+                      }}
+                      className={cn(
+                        "flex w-full rounded-lg px-2.5 py-1.5 text-left font-mono text-[11px] transition",
+                        a === aspect ? "bg-[#22d3ee]/15 text-[#22d3ee]" : "text-white/80 hover:bg-white/[0.06]",
+                      )}
+                    >
+                      {a}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setMenu((v) => (v === "resolution" ? null : "resolution"))}
+                className={chipCls(menu === "resolution")}
+                title="Разрешение (только GPT)"
+              >
+                <span className="font-mono tabular-nums">{resolution}</span>
+                <ChevronDown className="h-3 w-3 opacity-60" />
+              </button>
+              {menu === "resolution" && (
+                <div className="absolute bottom-full left-0 z-[80] mb-1.5 min-w-[72px] rounded-xl border border-white/15 bg-[#121216]/98 p-1 shadow-[0_12px_32px_rgba(0,0,0,0.85)]">
+                  {resolutionOptions.map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      onClick={() => {
+                        onResolutionChange(r);
+                        setMenu(null);
+                      }}
+                      className={cn(
+                        "flex w-full rounded-lg px-2.5 py-1.5 text-left font-mono text-[11px] transition",
+                        r === resolution ? "bg-[#22d3ee]/15 text-[#22d3ee]" : "text-white/80 hover:bg-white/[0.06]",
+                      )}
+                    >
+                      {r}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {detailOptions.length > 0 && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setMenu((v) => (v === "detail" ? null : "detail"))}
+                  className={chipCls(menu === "detail")}
+                  title="Детализация (только GPT)"
+                >
+                  {detailLabel(detail)}
+                  <ChevronDown className="h-3 w-3 opacity-60" />
+                </button>
+                {menu === "detail" && (
+                  <div className="absolute bottom-full left-0 z-[80] mb-1.5 min-w-[110px] rounded-xl border border-white/15 bg-[#121216]/98 p-1 shadow-[0_12px_32px_rgba(0,0,0,0.85)]">
+                    {detailOptions.map((d) => (
+                      <button
+                        key={d}
+                        type="button"
+                        onClick={() => {
+                          onDetailChange(d);
+                          setMenu(null);
+                        }}
+                        className={cn(
+                          "flex w-full rounded-lg px-2.5 py-1.5 text-left text-[11px] transition",
+                          d === detail ? "bg-[#22d3ee]/15 text-[#22d3ee]" : "text-white/80 hover:bg-white/[0.06]",
+                        )}
+                      >
+                        {detailLabel(d)}
+                      </button>
+                    ))}
+                  </div>
                 )}
               </div>
-              <textarea
-                value={agentText}
-                onChange={(e) =>
-                  setAgentOverrides((prev) => ({ ...prev, [style.id]: e.target.value }))
-                }
-                rows={9}
-                className={cn(areaCls, "font-mono text-[11px]")}
-              />
-            </div>
-          )}
+            )}
+          </div>
+        </div>
       </div>
-
+      ) : null}
     </div>
   );
 }

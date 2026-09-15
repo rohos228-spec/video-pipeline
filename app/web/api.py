@@ -445,6 +445,11 @@ def _mount_frontend(app: FastAPI) -> None:
         if candidate.is_file():
             if candidate.suffix.lower() in {".html", ".htm"}:
                 return _html_response(candidate)
+            if candidate.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg"}:
+                return FileResponse(
+                    candidate,
+                    headers={"Cache-Control": "no-cache, must-revalidate"},
+                )
             return FileResponse(candidate)
         html_variant = out_dir / f"{full_path}.html"
         if html_variant.is_file():
