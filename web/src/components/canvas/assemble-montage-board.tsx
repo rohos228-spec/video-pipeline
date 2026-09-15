@@ -1849,7 +1849,7 @@ export function AssembleMontageBoard({
     prevProjectIdRef.current = projectId;
     if (prev != null && prev !== projectId && localQueueDirtyRef.current) {
       const ops = pendingOpsRef.current;
-      void api.saveMontageQueue(prev, { pending_ops: ops }).catch(() => {});
+      void api.saveMontageQueue(prev, { pending_ops: ops, force_clear: ops.length === 0 }).catch(() => {});
     }
     setPendingOps([]);
     pendingOpsRef.current = [];
@@ -1893,7 +1893,7 @@ export function AssembleMontageBoard({
     if (!localQueueDirtyRef.current) return;
     const ops = pendingOpsRef.current;
     void api
-      .saveMontageQueue(projectId, { pending_ops: ops })
+      .saveMontageQueue(projectId, { pending_ops: ops, force_clear: ops.length === 0 })
       .then(() => {
         localQueueDirtyRef.current = false;
       })
