@@ -86,10 +86,17 @@ def test_user_message_includes_operator_instruction() -> None:
     msg = build_ai_change_user_message(
         voiceover_text="Он открывает ящик.",
         instruction="сделай крупнее руки, холодный свет",
+        action="рука выводит строки",
     )
     assert "OPERATOR_CHANGE:" in msg
     assert "сделай крупнее руки, холодный свет" in msg
     assert "Он открывает ящик." in msg
+    assert "ACTION:" in msg
+    assert "рука выводит строки" in msg
+    assert "OPERATOR_CHANGE" in msg
+    # Текст оператора важнее старого действия кадра, если они расходятся.
+    low = msg.lower()
+    assert "важнее" in low or "расход" in low or "новое действие" in low
 
 
 def test_normalize_keeps_ai_change_instruction() -> None:
@@ -131,7 +138,46 @@ def test_write_ai_change_db_card_has_frame_fields(tmp_path: Path) -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["frames"][0]["characters"] == "c05"
     assert data["frames"][0]["place"] == "кабинет"
+    assert data["frames"][0]["shot01_action"] == "печать"
     assert "IMAGE_PROMPT" not in path.read_text(encoding="utf-8")
+
+
+def test_write_ai_change_db_card_uses_shot_action_not_scene_chain(
+    tmp_path: Path,
+) -> None:
+    """В запросе ИИзменения — действие ЭТОГО кадра, не цепь всей сцены."""
+    project = Project(id=9, slug="card-act", topic="t", hero_mode="auto")
+    fr = Frame(
+        project_id=9,
+        number=2,
+        uuid="340ef477ea3d463a95e6bae5",
+        voiceover_text="достал папку",
+        attrs={
+            "действие": "рука выводит строки заявления",
+            "главное_действие": (
+                "1. кабинет — сидит за столом\n"
+                "(вошёл и сел,)\n"
+                "2. кабинет — рука пишет\n"
+                "(достал папку)"
+            ),
+            "кадры": [
+                {"id": "1-K1", "действие": "сидит за столом"},
+                {"id": "1-K2", "действие": "рука выводит строки заявления"},
+            ],
+            "camera_subdivide": {"role": "shot", "shot_id": "1-K2"},
+        },
+    )
+    path = write_ai_change_db_card(project, fr, tmp_path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    row = data["frames"][0]
+    assert row["shot01_action"] == "рука выводит строки заявления"
+    assert row["действие"] == "рука выводит строки заявления"
+    assert "сидит за столом" not in str(row.get("main_action") or "")
+    assert "сидит за столом" not in str(row.get("главное_действие") or "")
+    kadry = row.get("кадры") or []
+    assert len(kadry) <= 1
+    if kadry:
+        assert kadry[0]["действие"] == "рука выводит строки заявления"
 
 
 def test_character_ids_from_prompt() -> None:
@@ -182,12 +228,15 @@ async def test_rewrite_prompt_via_gpt_uses_system_and_strips(
         img_pr_variant="img_prompts_trash_polka_watercolor",
         db_card_path=card,
         instruction="холодный свет",
+        action="рука пишет",
     )
     assert out == "UPDATED PROMPT HERE"
     assert "IMAGE_PROMPT:" not in str(captured["text"])
     assert "VOICEOVER:" in str(captured["text"])
     assert "OPERATOR_CHANGE:" in str(captured["text"])
     assert "холодный свет" in str(captured["text"])
+    assert "ACTION:" in str(captured["text"])
+    assert "рука пишет" in str(captured["text"])
     assert captured["files"] == [master, card]
     assert captured["auto_pack"] is False
     assert "музык" in str(captured["system"]).lower()
@@ -423,6 +472,7 @@ async def test_run_op_image_ai_change_passes_instruction(
                 number=1,
                 voiceover_text="vo",
                 image_prompt="old",
+                attrs={"действие": "рука выводит строки"},
             ),
         ]
     )
@@ -481,3 +531,4 @@ async def test_run_op_image_ai_change_passes_instruction(
     )
     assert result["ok"] is True
     assert rewrite.await_args.kwargs["instruction"] == "руки крупнее, холодный свет"
+    assert rewrite.await_args.kwargs["action"] == "рука выводит строки"
