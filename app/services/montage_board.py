@@ -34,6 +34,7 @@ from app.services.montage_coverage_ops import (
     COVERAGE_LIGHT_CHOICES,
     COVERAGE_MOVE_CHOICES,
     COVERAGE_PLAN_CHOICES,
+    COVERAGE_VISUAL_TYPE_CHOICES,
     canonical_stitch,
     stitch_choices_for_ui,
     stitch_label,
@@ -1110,6 +1111,7 @@ async def build_montage_board(
         "coverage_angle_choices": list(COVERAGE_ANGLE_CHOICES),
         "coverage_move_choices": list(COVERAGE_MOVE_CHOICES),
         "coverage_light_choices": list(COVERAGE_LIGHT_CHOICES),
+        "coverage_visual_type_choices": list(COVERAGE_VISUAL_TYPE_CHOICES),
         "coverage_stitch_choices": stitch_choices_for_ui(),
         "coverage_template_choices": template_choices_for_ui(),
         "ref_kind_choices": [

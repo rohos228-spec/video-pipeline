@@ -101,6 +101,22 @@ def slot_key_from_op(op: dict[str, Any] | None) -> str | None:
         return f"{fr}:light"
     if t == "coverage_set":
         return f"{fr}:set"
+    if t == "coverage_sense":
+        return f"{fr}:sense"
+    if t == "coverage_visual_type":
+        return f"{fr}:visual_type"
+    if t == "coverage_place":
+        return f"{fr}:place"
+    if t == "coverage_characters":
+        return f"{fr}:characters"
+    if t == "coverage_props":
+        return f"{fr}:props"
+    if t == "coverage_bg":
+        return f"{fr}:bg"
+    if t == "coverage_accent":
+        return f"{fr}:accent"
+    if t == "coverage_feature":
+        return f"{fr}:feature"
     if t.startswith("coverage_"):
         return f"{fr}:kind"
     return None
@@ -191,6 +207,14 @@ COVERAGE_TEXT_FIELDS = (
     "stitch",
     "light",
     "set",
+    "sense",
+    "visual_type",
+    "place",
+    "characters",
+    "props",
+    "bg",
+    "accent",
+    "feature",
 )
 
 

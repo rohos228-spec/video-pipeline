@@ -61,8 +61,10 @@ import {
   CoverageMenu,
   RoleCell,
   SceneCell,
+  SceneDataCell,
   TemplateCell,
   type CoverageMenuGroup,
+  type SceneDataField,
 } from "@/components/canvas/montage-scene-cells";
 import { FrameRefsStrip } from "@/components/canvas/montage-frame-refs";
 
@@ -93,9 +95,6 @@ const ROW_LABEL_CLASS = "w-[11rem] min-w-[11rem] max-w-[11rem]";
 /** Шов между сценами — сюда же вставка новой VO-ячейки. */
 const SCENE_GAP_REM = 5.5;
 const SCENE_GAP_CLASS = "w-[5.5rem] min-w-[5.5rem] max-w-[5.5rem] p-0 align-middle";
-/** Шоты одной сцены — почти встык. */
-const SHOT_GAP_REM = 0.125;
-const SHOT_GAP_CLASS = "w-0.5 min-w-[2px] max-w-[2px] p-0 align-middle";
 /** Между шотами одной сцены — вплотную, только узкий + при наведении. */
 const SHOT_GAP_REM = 0.25;
 const SHOT_GAP_CLASS = "w-1 min-w-[4px] max-w-[4px] p-0 align-middle";
@@ -241,6 +240,14 @@ const COVERAGE_QUEUE_TYPES = new Set([
   "coverage_stitch",
   "coverage_light",
   "coverage_set",
+  "coverage_sense",
+  "coverage_visual_type",
+  "coverage_place",
+  "coverage_characters",
+  "coverage_props",
+  "coverage_bg",
+  "coverage_accent",
+  "coverage_feature",
 ]);
 
 type PendingCoverage = {
@@ -256,6 +263,14 @@ type PendingCoverage = {
   stitch?: string;
   light?: string;
   set?: string;
+  sense?: string;
+  visual_type?: string;
+  place?: string;
+  characters?: string;
+  props?: string;
+  bg?: string;
+  accent?: string;
+  feature?: string;
 };
 
 function pendingCoverageForFrame(
@@ -272,6 +287,14 @@ function pendingCoverageForFrame(
     if (op.type === "coverage_stitch" && op.stitch) out.stitch = op.stitch;
     if (op.type === "coverage_light" && op.light) out.light = op.light;
     if (op.type === "coverage_set" && op.set) out.set = op.set;
+    if (op.type === "coverage_sense" && op.sense) out.sense = op.sense;
+    if (op.type === "coverage_visual_type" && op.visual_type) out.visual_type = op.visual_type;
+    if (op.type === "coverage_place" && op.place) out.place = op.place;
+    if (op.type === "coverage_characters" && op.characters) out.characters = op.characters;
+    if (op.type === "coverage_props" && op.props) out.props = op.props;
+    if (op.type === "coverage_bg" && op.bg) out.bg = op.bg;
+    if (op.type === "coverage_accent" && op.accent) out.accent = op.accent;
+    if (op.type === "coverage_feature" && op.feature) out.feature = op.feature;
     if (op.type === "coverage_template" && op.template) out.template = op.template;
     if (op.type === "coverage_anchors" && op.anchors) out.anchors = op.anchors;
     if (op.type === "coverage_kind") {
@@ -293,12 +316,18 @@ function coverageCorrection(
   const light = (pending.light || fr?.scene_lighting || "").trim();
   const setText = (pending.set || fr?.scene_set || "").trim();
   const action = (pending.action || fr?.shot_action || "").trim();
+  const sense = (pending.sense || fr?.scene_sense || "").trim();
+  const place = (pending.place || fr?.scene_place || "").trim();
+  const characters = (pending.characters || fr?.scene_characters || "").trim();
   return [
     `План: ${plan || "как в кадре"}`,
     angle ? `Ракурс: ${angle}` : "",
     move ? `Движение: ${move}` : "",
     light ? `Свет: ${light}` : "",
     setText ? `Набор: ${setText}` : "",
+    sense ? `Смысл: ${sense}` : "",
+    place ? `Место: ${place}` : "",
+    characters ? `Персонажи: ${characters}` : "",
     `Действие: ${action || "как в кадре"}`,
   ]
     .filter(Boolean)
@@ -1776,6 +1805,14 @@ export function AssembleMontageBoard({
       if (typeof rec.stitch === "string") item.stitch = rec.stitch;
       if (typeof rec.light === "string") item.light = rec.light;
       if (typeof rec.set === "string") item.set = rec.set;
+      if (typeof rec.sense === "string") item.sense = rec.sense;
+      if (typeof rec.visual_type === "string") item.visual_type = rec.visual_type;
+      if (typeof rec.place === "string") item.place = rec.place;
+      if (typeof rec.characters === "string") item.characters = rec.characters;
+      if (typeof rec.props === "string") item.props = rec.props;
+      if (typeof rec.bg === "string") item.bg = rec.bg;
+      if (typeof rec.accent === "string") item.accent = rec.accent;
+      if (typeof rec.feature === "string") item.feature = rec.feature;
       if (Array.isArray(rec.anchors)) item.anchors = rec.anchors as SceneAnchorRow[];
       if (rec.kind === "parent" || rec.kind === "child") item.kind = rec.kind;
       const parentNumber = Number(rec.parent_number);
@@ -1940,6 +1977,14 @@ export function AssembleMontageBoard({
         "coverage_move",
         "coverage_light",
         "coverage_set",
+        "coverage_sense",
+        "coverage_visual_type",
+        "coverage_place",
+        "coverage_characters",
+        "coverage_props",
+        "coverage_bg",
+        "coverage_accent",
+        "coverage_feature",
       ]);
       const needsImage = ops.some((o) => visualTypes.has(String(o.type)));
       localQueueDirtyRef.current = true;
@@ -2972,6 +3017,50 @@ export function AssembleMontageBoard({
             onPick={(template) =>
               queueCoverage({ ...base, type: "coverage_template", template })
             }
+          />
+        }
+        data={
+          <SceneDataCell
+            values={{
+              sense: (pending.sense ?? head.scene_sense ?? "").trim(),
+              visual_type: (pending.visual_type ?? head.scene_visual_type ?? "").trim(),
+              place: (pending.place ?? head.scene_place ?? "").trim(),
+              characters: (pending.characters ?? head.scene_characters ?? "").trim(),
+              props: (pending.props ?? head.scene_props ?? "").trim(),
+              bg: (pending.bg ?? head.scene_bg ?? "").trim(),
+              accent: (pending.accent ?? head.scene_accent ?? "").trim(),
+              feature: (pending.feature ?? head.scene_feature ?? "").trim(),
+              set: (pending.set ?? head.scene_set ?? "").trim(),
+            }}
+            pending={{
+              sense: hasPendingType(head.number, "coverage_sense"),
+              visual_type: hasPendingType(head.number, "coverage_visual_type"),
+              place: hasPendingType(head.number, "coverage_place"),
+              characters: hasPendingType(head.number, "coverage_characters"),
+              props: hasPendingType(head.number, "coverage_props"),
+              bg: hasPendingType(head.number, "coverage_bg"),
+              accent: hasPendingType(head.number, "coverage_accent"),
+              feature: hasPendingType(head.number, "coverage_feature"),
+              set: hasPendingType(head.number, "coverage_set"),
+            }}
+            visualTypeChoices={board.data?.coverage_visual_type_choices}
+            disabled={sceneDisabled}
+            onCommit={(field: SceneDataField, value) => {
+              const type = (
+                {
+                  sense: "coverage_sense",
+                  visual_type: "coverage_visual_type",
+                  place: "coverage_place",
+                  characters: "coverage_characters",
+                  props: "coverage_props",
+                  bg: "coverage_bg",
+                  accent: "coverage_accent",
+                  feature: "coverage_feature",
+                  set: "coverage_set",
+                } as const
+              )[field];
+              queueCoverage({ ...base, type, [field]: value });
+            }}
           />
         }
       />

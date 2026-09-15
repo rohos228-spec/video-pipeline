@@ -438,6 +438,7 @@ export interface MontageBoardDTO {
   coverage_angle_choices?: string[];
   coverage_move_choices?: string[];
   coverage_light_choices?: string[];
+  coverage_visual_type_choices?: string[];
   coverage_stitch_choices?: Array<{ id: string; label: string }>;
   coverage_template_choices?: MontageTemplateChoice[];
   ref_kind_choices?: MontageRefKindChoice[];

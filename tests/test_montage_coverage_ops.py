@@ -10,8 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.models import Base, Frame, Project
 from app.services.montage_board_apply import order_montage_pending_ops
-from app.services.montage_board_meta import slot_key_from_op
-from app.services.montage_coverage_ops import apply_coverage_op
+from app.services.montage_board_meta import normalize_queue_ops, slot_key_from_op
+from app.services.montage_coverage_ops import (
+    COVERAGE_OP_TYPES,
+    SCENE_FIELD_OP_TYPES,
+    SCENE_FIELD_SPECS,
+    apply_coverage_op,
+)
+from app.services.montage_scene_editor import frame_board_scene_cell
 from app.services.vo_shot_expand import find_coverage_parent_frame, is_shot_child
 
 
@@ -86,7 +92,10 @@ def test_coverage_slot_keys_and_order() -> None:
     assert slot_key_from_op({"type": "coverage_stitch", "frame_number": 7}) == "7:stitch"
     assert slot_key_from_op({"type": "coverage_light", "frame_number": 7}) == "7:light"
     assert slot_key_from_op({"type": "coverage_set", "frame_number": 7}) == "7:set"
+    assert slot_key_from_op({"type": "coverage_sense", "frame_number": 7}) == "7:sense"
+    assert slot_key_from_op({"type": "coverage_place", "frame_number": 7}) == "7:place"
     assert slot_key_from_op({"type": "coverage_kind", "frame_number": 7}) == "7:kind"
+    assert SCENE_FIELD_OP_TYPES <= COVERAGE_OP_TYPES
     assert slot_key_from_op({"type": "coverage_delete", "frame_number": 7}) == "7:kind"
     ordered = order_montage_pending_ops(
         [
@@ -206,6 +215,100 @@ async def test_apply_angle_move_stitch_and_scene_light(
     await session.refresh(stranger)
     assert (parent.attrs or {}).get("camera_subdivide", {}).get("набор") == "кабинет ночью"
     assert (stranger.attrs or {}).get("camera_subdivide", {}).get("набор") != "кабинет ночью"
+
+
+@pytest.mark.asyncio
+async def test_apply_scene_fields_write_board_keys(
+    session: AsyncSession, project: Project
+) -> None:
+    """«Применить правки» пишет те attrs, которые читает клетка сцены."""
+    parent, child = _parent_child(project.id)
+    stranger_uid = "cc" * 12
+    stranger = Frame(
+        project_id=project.id,
+        number=39,
+        uuid=stranger_uid,
+        voiceover_text="другая ячейка",
+        status="planned",
+        attrs={
+            "смысл_сцены": "чужой смысл",
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": stranger_uid,
+            },
+        },
+    )
+    session.add_all([project, parent, child, stranger])
+    await session.flush()
+
+    values = {
+        "coverage_sense": ("sense", "мужчина пишет пером"),
+        "coverage_visual_type": ("visual_type", "Кинематографический реализм"),
+        "coverage_place": ("place", "кабинет у окна"),
+        "coverage_characters": ("characters", "c01"),
+        "coverage_props": ("props", "перо, чернильница"),
+        "coverage_bg": ("bg", "тёмные панели"),
+        "coverage_accent": ("accent", "перо на бумаге"),
+        "coverage_feature": ("feature", "средний план у окна"),
+    }
+    for op_type, (key, text) in values.items():
+        result = await apply_coverage_op(
+            session, project, {"type": op_type, "frame_number": 2, key: text}
+        )
+        spec = next(s for s in SCENE_FIELD_SPECS if s.op_type == op_type)
+        assert result["highlight"] == f"2:{spec.slot}"
+        assert result["regen_image"] is True
+
+    await session.refresh(parent)
+    await session.refresh(child)
+    await session.refresh(stranger)
+    cell = frame_board_scene_cell([parent, child, stranger], parent)
+    assert cell["scene_sense"] == "мужчина пишет пером"
+    assert cell["scene_visual_type"] == "Кинематографический реализм"
+    assert cell["scene_place"] == "кабинет у окна"
+    assert cell["scene_characters"] == "c01"
+    assert cell["scene_props"] == "перо, чернильница"
+    assert cell["scene_bg"] == "тёмные панели"
+    assert cell["scene_accent"] == "перо на бумаге"
+    assert cell["scene_feature"] == "средний план у окна"
+    assert (parent.attrs or {}).get("смысл_сцены") == "мужчина пишет пером"
+    assert (child.attrs or {}).get("смысл_сцены") == "мужчина пишет пером"
+    assert (parent.attrs or {}).get("тип_сцены") == "Кинематографический реализм"
+    assert (parent.attrs or {}).get("visual_type") == "Кинематографический реализм"
+    assert (parent.attrs or {}).get("camera_subdivide", {}).get("место") == "кабинет у окна"
+    assert (child.attrs or {}).get("место") == "кабинет у окна"
+    assert (stranger.attrs or {}).get("смысл_сцены") == "чужой смысл"
+
+    queued = normalize_queue_ops(
+        [
+            {
+                "type": "coverage_sense",
+                "frame_number": 1,
+                "sense": "новый смысл",
+            }
+        ]
+    )
+    assert queued == [
+        {
+            "type": "coverage_sense",
+            "frame_number": 1,
+            "shot": 1,
+            "sense": "новый смысл",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_apply_scene_field_rejects_empty(
+    session: AsyncSession, project: Project
+) -> None:
+    parent, child = _parent_child(project.id)
+    session.add_all([project, parent, child])
+    await session.flush()
+    with pytest.raises(RuntimeError, match="смысл сцены пустой"):
+        await apply_coverage_op(
+            session, project, {"type": "coverage_sense", "frame_number": 1, "sense": "  "}
+        )
 
 
 @pytest.mark.asyncio

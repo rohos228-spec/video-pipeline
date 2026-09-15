@@ -227,7 +227,15 @@ export interface MontagePendingOp {
     | "coverage_move"
     | "coverage_stitch"
     | "coverage_light"
-    | "coverage_set";
+    | "coverage_set"
+    | "coverage_sense"
+    | "coverage_visual_type"
+    | "coverage_place"
+    | "coverage_characters"
+    | "coverage_props"
+    | "coverage_bg"
+    | "coverage_accent"
+    | "coverage_feature";
   frame_number: number;
   shot: 1 | 2;
   prompt?: string;
@@ -239,6 +247,14 @@ export interface MontagePendingOp {
   stitch?: string;
   light?: string;
   set?: string;
+  sense?: string;
+  visual_type?: string;
+  place?: string;
+  characters?: string;
+  props?: string;
+  bg?: string;
+  accent?: string;
+  feature?: string;
   kind?: "parent" | "child";
   parent_number?: number;
   /** Формат сцены: шаблон T0…T10 / X1 / X2 из каталога. */

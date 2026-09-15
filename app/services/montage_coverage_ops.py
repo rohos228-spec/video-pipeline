@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from loguru import logger
@@ -42,6 +43,29 @@ COVERAGE_OP_TYPES = frozenset(
         "coverage_stitch",
         "coverage_light",
         "coverage_set",
+        "coverage_sense",
+        "coverage_visual_type",
+        "coverage_place",
+        "coverage_characters",
+        "coverage_props",
+        "coverage_bg",
+        "coverage_accent",
+        "coverage_feature",
+    }
+)
+
+# Поля VO-ячейки, которые доска читает в `_scene_common` / `frame_board_scene_cell`.
+# «Применить правки» пишет те же ключи, иначе клетка сцены остаётся со старым текстом.
+SCENE_FIELD_OP_TYPES = frozenset(
+    {
+        "coverage_sense",
+        "coverage_visual_type",
+        "coverage_place",
+        "coverage_characters",
+        "coverage_props",
+        "coverage_bg",
+        "coverage_accent",
+        "coverage_feature",
     }
 )
 
@@ -89,6 +113,97 @@ COVERAGE_LIGHT_CHOICES = (
     "холодный верхний",
     "туман",
 )
+
+# Словарь тип_сцены из prompts/scene_design/style.md — те же значения, что у агентов.
+COVERAGE_VISUAL_TYPE_CHOICES = (
+    "Реализм",
+    "Кинематографический реализм",
+    "Импрессионизм",
+    "Экспрессионизм",
+    "Сюрреализм",
+    "Минимализм",
+    "Поп-арт",
+    "Ар-деко",
+    "Детская книжная иллюстрация",
+    "Детективная доска",
+)
+
+
+@dataclass(frozen=True)
+class SceneFieldSpec:
+    """Один механизм правки поля сцены: op → те ключи, которые читает доска."""
+
+    op_type: str
+    payload_key: str
+    attr_keys: tuple[str, ...]
+    empty_error: str
+    slot: str
+    cs_keys: tuple[str, ...] = ()
+    kadry_keys: tuple[str, ...] = ()
+
+
+SCENE_FIELD_SPECS: tuple[SceneFieldSpec, ...] = (
+    SceneFieldSpec(
+        "coverage_sense",
+        "sense",
+        ("смысл_сцены", "scene_sense"),
+        "смысл сцены пустой",
+        "sense",
+    ),
+    SceneFieldSpec(
+        "coverage_visual_type",
+        "visual_type",
+        ("тип_сцены", "visual_type"),
+        "тип сцены пустой",
+        "visual_type",
+    ),
+    SceneFieldSpec(
+        "coverage_place",
+        "place",
+        ("место", "place"),
+        "место сцены пустое",
+        "place",
+        cs_keys=("место",),
+        kadry_keys=("место",),
+    ),
+    SceneFieldSpec(
+        "coverage_characters",
+        "characters",
+        ("персонажи_сцены",),
+        "персонажи сцены пустые",
+        "characters",
+    ),
+    SceneFieldSpec(
+        "coverage_props",
+        "props",
+        ("предметы",),
+        "предметы сцены пустые",
+        "props",
+    ),
+    SceneFieldSpec(
+        "coverage_bg",
+        "bg",
+        ("фон", "shot01_bg"),
+        "фон сцены пустой",
+        "bg",
+    ),
+    SceneFieldSpec(
+        "coverage_accent",
+        "accent",
+        ("акцент",),
+        "акцент сцены пустой",
+        "accent",
+    ),
+    SceneFieldSpec(
+        "coverage_feature",
+        "feature",
+        ("особенность_сцены", "scene_feature"),
+        "особенность сцены пустая",
+        "feature",
+    ),
+)
+
+SCENE_FIELD_BY_OP: dict[str, SceneFieldSpec] = {s.op_type: s for s in SCENE_FIELD_SPECS}
 
 _NO_IMAGE_REGEN = frozenset(
     {"coverage_delete", "coverage_anchors", "coverage_stitch"}
@@ -376,6 +491,33 @@ def apply_coverage_set(frame: Frame, scene_set: str, frames: list[Frame]) -> Non
         _patch_kadry_item(member, набор=text)
         if member is not parent:
             _patch_kadry_item_on_parent_ladder(parent, member, набор=text)
+
+
+def apply_scene_field(
+    frame: Frame,
+    frames: list[Frame],
+    spec: SceneFieldSpec,
+    value: str,
+) -> None:
+    """Записать поле сцены всем кадрам VO-ячейки в ключи, которые читает доска."""
+    text = (value or "").strip()
+    if not text:
+        raise RuntimeError(spec.empty_error)
+    parent = _vo_parent_frame(frames, frame)
+    for member in _vo_members(frames, parent):
+        if spec.cs_keys:
+            _set_cs(member, **{key: text for key in spec.cs_keys})
+        if spec.attr_keys:
+            attrs = dict(getattr(member, "attrs", None) or {})
+            for key in spec.attr_keys:
+                attrs[key] = text
+            member.attrs = attrs
+            _flag_attrs(member)
+        if spec.kadry_keys:
+            kadry = {key: text for key in spec.kadry_keys}
+            _patch_kadry_item(member, **kadry)
+            if member is not parent:
+                _patch_kadry_item_on_parent_ladder(parent, member, **kadry)
 
 
 def apply_coverage_template(
@@ -790,6 +932,9 @@ async def apply_coverage_op(
         apply_coverage_light(frame, str(op.get("light") or ""), frames)
     elif op_type == "coverage_set":
         apply_coverage_set(frame, str(op.get("set") or ""), frames)
+    elif op_type in SCENE_FIELD_BY_OP:
+        spec = SCENE_FIELD_BY_OP[op_type]
+        apply_scene_field(frame, frames, spec, str(op.get(spec.payload_key) or ""))
     elif op_type == "coverage_template":
         report = apply_coverage_template(frame, frames, str(op.get("template") or ""))
     elif op_type == "coverage_anchors":

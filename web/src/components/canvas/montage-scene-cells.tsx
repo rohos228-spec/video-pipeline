@@ -1000,15 +1000,203 @@ export function TemplateCell({
   );
 }
 
+export type SceneDataField =
+  | "sense"
+  | "visual_type"
+  | "place"
+  | "characters"
+  | "props"
+  | "bg"
+  | "accent"
+  | "feature"
+  | "set";
+
+export type SceneDataValues = Record<SceneDataField, string>;
+
+const SCENE_DATA_FIELDS: {
+  key: SceneDataField;
+  label: string;
+  placeholder: string;
+  multiline?: boolean;
+}[] = [
+  { key: "sense", label: "смысл", placeholder: "что происходит в ячейке", multiline: true },
+  { key: "visual_type", label: "тип", placeholder: "стиль картинки" },
+  { key: "place", label: "место", placeholder: "где стоит камера" },
+  { key: "set", label: "набор", placeholder: "декорация / обстановка" },
+  { key: "characters", label: "персонажи", placeholder: "c01, c02" },
+  { key: "props", label: "предметы", placeholder: "что видно в кадре" },
+  { key: "bg", label: "фон", placeholder: "задний план" },
+  { key: "accent", label: "акцент", placeholder: "на чём глаз" },
+  { key: "feature", label: "особенность", placeholder: "чем сцена отличается" },
+];
+
+function SceneDataFieldInput({
+  field,
+  value,
+  pending,
+  disabled,
+  visualTypeChoices,
+  onCommit,
+}: {
+  field: (typeof SCENE_DATA_FIELDS)[number];
+  value: string;
+  pending?: boolean;
+  disabled?: boolean;
+  visualTypeChoices?: string[];
+  onCommit: (key: SceneDataField, next: string) => void;
+}) {
+  const [text, setText] = useState(value);
+  useEffect(() => {
+    setText(value);
+  }, [value]);
+
+  const commit = () => {
+    const next = text.trim();
+    if (!next || next === value.trim()) return;
+    onCommit(field.key, next);
+  };
+
+  if (field.key === "visual_type") {
+    return (
+      <ChipsCell
+        value={value}
+        choices={visualTypeChoices}
+        pending={pending}
+        disabled={disabled}
+        onPick={(id) => {
+          if (id === value.trim()) return;
+          onCommit("visual_type", id);
+        }}
+      />
+    );
+  }
+
+  const shared = {
+    className: cn(FIELD, field.multiline && "min-h-[3.25rem] resize-y"),
+    value: text,
+    disabled,
+    placeholder: field.placeholder,
+    onChange: (e: { target: { value: string } }) => setText(e.target.value),
+    onBlur: commit,
+    onKeyDown: (e: { key: string; metaKey: boolean; ctrlKey: boolean; preventDefault: () => void }) => {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey || !field.multiline)) {
+        e.preventDefault();
+        commit();
+      }
+      if (e.key === "Escape") setText(value);
+    },
+  };
+
+  return field.multiline ? <textarea {...shared} /> : <input {...shared} />;
+}
+
 /**
- * Сцена = одна ячейка закадра. В полосе «Сцены» — только формат (T0…T10)
- * на всю VO-ячейку, без дубля набора и закадра.
+ * Кнопка в блоке сцены: по клику в клетке появляются поля ячейки.
+ * Правка кладётся в очередь; «Применить правки» пишет те же attrs, что читает доска.
+ */
+export function SceneDataCell({
+  values,
+  pending,
+  visualTypeChoices,
+  disabled,
+  onCommit,
+}: {
+  values: SceneDataValues;
+  pending: Partial<Record<SceneDataField, boolean>>;
+  visualTypeChoices?: string[];
+  disabled?: boolean;
+  onCommit: (field: SceneDataField, value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const anyPending = SCENE_DATA_FIELDS.some((f) => pending[f.key]);
+  const summary = [
+    values.sense,
+    values.place,
+    values.characters,
+    values.props,
+  ].filter((x) => x.trim());
+
+  return (
+    <div className={cn("relative mt-2 rounded-md", anyPending && "bg-amber-500/10")}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((v) => !v)}
+        title="Нажми — в сцене появятся смысл, место, персонажи и остальные поля ячейки"
+        className={cn(
+          "group flex w-full items-center gap-1.5 rounded-md border px-1.5 py-1 text-left transition disabled:opacity-40",
+          open
+            ? "border-white/30 bg-white/[0.08]"
+            : "border-white/10 bg-white/[0.03] hover:border-white/25 hover:bg-white/[0.07]",
+        )}
+      >
+        <span className="text-[9px] uppercase tracking-wide text-white/35">данные сцены</span>
+        <ChevronDown
+          className={cn(
+            "h-2.5 w-2.5 text-white/35 transition",
+            open && "rotate-180",
+          )}
+        />
+        {anyPending ? (
+          <span className="h-1.5 w-1.5 rounded-full bg-amber-300/80" title="есть правка в очереди" />
+        ) : null}
+        <span
+          className={cn(
+            "ml-auto text-[10px] normal-case tracking-normal transition-colors",
+            open ? "text-white/45" : "text-transparent group-hover:text-white/40",
+          )}
+        >
+          {open ? "свернуть" : "изменить"}
+        </span>
+      </button>
+      {!open ? (
+        <p className={cn(HINT, "mt-1 truncate")}>
+          {summary.length ? summary.join(" · ") : "смысл, место, персонажи — нажми, чтобы править"}
+        </p>
+      ) : (
+        <div className="mt-1.5 space-y-1.5 rounded-lg border border-white/10 bg-black/30 p-1.5">
+          {SCENE_DATA_FIELDS.map((field) => (
+            <label key={field.key} className="block">
+              <span className="mb-0.5 flex items-center gap-1 text-[9px] uppercase tracking-wide text-white/35">
+                {field.label}
+                {pending[field.key] ? (
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-300/80" />
+                ) : null}
+              </span>
+              <SceneDataFieldInput
+                field={field}
+                value={values[field.key]}
+                pending={pending[field.key]}
+                disabled={disabled}
+                visualTypeChoices={visualTypeChoices}
+                onCommit={onCommit}
+              />
+            </label>
+          ))}
+          <p className={HINT}>в очередь сразу, в БД — кнопкой «Применить правки»</p>
+        </div>
+      )}
+      <PendingMark show={anyPending && !open} />
+    </div>
+  );
+}
+
+/**
+ * Сцена = одна ячейка закадра. В полосе «Сцены» — формат (T0…T10)
+ * и кнопка данных ячейки на всю VO-ячейку.
  */
 export function SceneCell({
   template,
+  data,
 }: {
   template?: React.ReactNode;
+  data?: React.ReactNode;
 }) {
-  if (!template) return null;
-  return <div className="min-w-0">{template}</div>;
+  if (!template && !data) return null;
+  return (
+    <div className="min-w-0 space-y-1">
+      {template}
+      {data}
+    </div>
+  );
 }

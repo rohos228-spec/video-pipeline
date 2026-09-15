@@ -146,6 +146,7 @@ async def test_montage_board_ships_scene_row_choices(
     assert "3/4" in board["coverage_angle_choices"]
     assert "панорама" in board["coverage_move_choices"]
     assert "контровой" in board["coverage_light_choices"]
+    assert "Кинематографический реализм" in board["coverage_visual_type_choices"]
     stitches = {row["id"]: row["label"] for row in board["coverage_stitch_choices"]}
     assert stitches["cut_on_action"] == "по действию"
     templates = {t["id"]: t for t in board["coverage_template_choices"]}
