@@ -160,8 +160,11 @@ const chipCls = (active: boolean) =>
 const STYLE_COVER_FILE: Record<string, string> = {
   infographic_tutor: "/gen-styles/infographic_tutor.jpg",
   custom_mtwuuy1z: "/gen-styles/custom_mtwuuy1z.jpg",
+  custom_mtwxwlev: "/gen-styles/custom_mtwxwlev.jpg",
+  custom_mtxfckrd: "/gen-styles/custom_mtxfckrd.jpg",
+  custom_mty20b3s: "/gen-styles/custom_mty20b3s.jpg",
 };
-const COVER_CACHE = "c4";
+const COVER_CACHE = "c5";
 
 function bustCover(u: string): string {
   if (!u.startsWith("/gen-styles/")) return u;
@@ -178,6 +181,7 @@ function styleTileSrcs(
     let v = (u || "").trim();
     if (!v) return;
     if (v.startsWith("blob:") || v.startsWith("file:")) return;
+    if (v.includes("/api/files?path=")) return;
     v = bustCover(v);
     if (!out.includes(v)) out.push(v);
   };
@@ -336,6 +340,7 @@ export function GenAssistantPanel({
   useEffect(() => lsSet(LS.agentOverrides, JSON.stringify(agentOverrides)), [agentOverrides]);
   const customStylesHydrated = useRef(false);
   const diskStylesReady = useRef(false);
+  const diskAgentsReady = useRef(false);
   useEffect(() => {
     // Не затирать LS пустым [] при гидрации (window на SSR нет → стейт []).
     if (!customStylesHydrated.current) {
@@ -365,6 +370,19 @@ export function GenAssistantPanel({
   }, [customStyles]);
 
   useEffect(() => {
+    if (!diskAgentsReady.current) return;
+    const agents = Object.fromEntries(
+      Object.entries(agentOverrides).filter(([, v]) => (v || "").trim()),
+    );
+    if (!Object.keys(agents).length) return;
+    void fetch("/api/gen-assistant/agent-overrides", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agents }),
+    }).catch(() => undefined);
+  }, [agentOverrides]);
+
+  useEffect(() => {
     let cancelled = false;
     fetch("/api/gen-assistant/custom-styles", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
@@ -373,7 +391,8 @@ export function GenAssistantPanel({
         const remote = Array.isArray(data?.styles) ? data.styles : [];
         if (remote.length) {
           for (const s of remote) {
-            if (s.artUrl) lsSet(LS.artPrefix + s.id, s.artUrl);
+            const cover = (s.cover || s.artUrl || "").trim();
+            if (cover.startsWith("/gen-styles/")) lsSet(LS.artPrefix + s.id, cover);
           }
           setArtUrls(readArtUrls());
           setCustomStyles((prev) => {
@@ -381,9 +400,13 @@ export function GenAssistantPanel({
             for (const s of [...prev, ...remote]) {
               if (!s?.id) continue;
               const old = byId.get(s.id);
-              if (!old || (s.promptCore?.length || 0) >= (old.promptCore?.length || 0)) {
-                byId.set(s.id, s);
-              }
+              const pick =
+                !old || (s.promptCore?.length || 0) >= (old.promptCore?.length || 0) ? s : old;
+              const other = pick === s ? old : s;
+              const cover = [pick.cover, pick.artUrl, other?.cover, other?.artUrl]
+                .map((u) => (u || "").trim())
+                .find((u) => u.startsWith("/gen-styles/"));
+              byId.set(s.id, cover ? { ...pick, cover, artUrl: cover } : pick);
             }
             return Array.from(byId.values());
           });
@@ -392,6 +415,27 @@ export function GenAssistantPanel({
       })
       .catch(() => {
         diskStylesReady.current = true;
+      });
+    fetch("/api/gen-assistant/agent-overrides", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { agents?: Record<string, string> } | null) => {
+        if (cancelled) return;
+        const remote = data?.agents && typeof data.agents === "object" ? data.agents : {};
+        setAgentOverrides((prev) => {
+          const out: Record<string, string> = {};
+          for (const src of [remote, prev]) {
+            for (const [k, v] of Object.entries(src)) {
+              const text = (v || "").trim();
+              if (!text) continue;
+              if (!out[k] || text.length >= out[k].length) out[k] = text;
+            }
+          }
+          return out;
+        });
+        diskAgentsReady.current = true;
+      })
+      .catch(() => {
+        diskAgentsReady.current = true;
       });
     return () => {
       cancelled = true;
