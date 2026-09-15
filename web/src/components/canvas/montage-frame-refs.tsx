@@ -94,7 +94,7 @@ function thumbsForFrame(
       imageUrl: parent.image_url,
       source: "parent",
       id: String(parent.number),
-      canDelete: false,
+      canDelete: true,
     });
   }
   const pushIfNotSelf = (t: Thumb) => {
@@ -169,16 +169,19 @@ export function FrameRefsStrip({
   disabled,
   onPreview,
   onChanged,
+  onPromoteToParent,
 }: {
   projectId: number | null;
   frame: MontageBoardFrame;
   parentFrame?: MontageBoardFrame | null;
-  /** Очередь coverage_kind: parent — сразу убрать still родителя. */
+  /** Очередь / только что нажатая роль: parent — сразу убрать still родителя. */
   pendingKind?: "parent" | "child" | "" | null;
   kinds: MontageRefKindChoice[] | undefined;
   disabled?: boolean;
   onPreview: (p: { url: string; kind: "image"; label: string }) => void;
   onChanged: () => void;
+  /** Снять still родителя = сделать кадр родительским. */
+  onPromoteToParent?: () => Promise<void> | void;
 }) {
   const [open, setOpen] = useState(false);
   const [group, setGroup] = useState("all");
@@ -275,12 +278,20 @@ export function FrameRefsStrip({
 
   const remove = (refId: string, source: Thumb["source"]) =>
     void guard(async () => {
+      if (source === "parent") {
+        if (!onPromoteToParent) {
+          toast.error("этот реф — still родителя, смените роль на «Родитель»");
+          return;
+        }
+        await onPromoteToParent();
+        return;
+      }
       if (projectId == null) return;
       const res = await api.deleteMontageFrameRef(
         projectId,
         frame.number,
         refId,
-        source === "parent" ? "manual" : source,
+        source,
       );
       if (!res.ok) {
         toast.error("не удалось убрать реф");

@@ -86,6 +86,15 @@ def _parent_child(project_id: int) -> tuple[Frame, Frame]:
     return parent, child
 
 
+def test_normalize_keeps_parent_kind_without_parent_number() -> None:
+    cleaned = normalize_queue_ops(
+        [{"type": "coverage_kind", "frame_number": 2, "shot": 1, "kind": "parent"}]
+    )
+    assert cleaned == [
+        {"type": "coverage_kind", "frame_number": 2, "shot": 1, "kind": "parent"}
+    ]
+
+
 def test_coverage_slot_keys_and_order() -> None:
     assert slot_key_from_op({"type": "coverage_plan", "frame_number": 7}) == "7:plan"
     assert slot_key_from_op({"type": "coverage_action", "frame_number": 7}) == "7:action"
