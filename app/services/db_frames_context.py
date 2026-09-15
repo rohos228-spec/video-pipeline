@@ -228,14 +228,14 @@ def force_full_strip_output_keys(
         return ("биты",)
     if kind == "action_chain":
         return ("main_action", "главное_действие")
-    if kind == "shots_coverage":
+    if kind in {"shots_coverage", "shots_qc", "qc_shots"}:
         return ("кадры",)
     nk = str(node_key or "")
     if nk.endswith("_fw_script"):
         return ("биты",)
     if nk.endswith("_fw_action"):
         return ("main_action", "главное_действие")
-    if nk.endswith("_fw_shots"):
+    if nk.endswith(("_fw_shots", "_fw_qc")):
         return ("кадры",)
     return ()
 

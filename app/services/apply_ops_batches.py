@@ -19,7 +19,15 @@ from loguru import logger
 
 from app.services.gpt_operator_client import OperatorApiResult, run_operator_api
 from app.services.scene_design.camera_expand import vo_chunk_is_dangling
-from app.services.shot_templates import coverage_template_reason, fill_kadry_from_catalog
+from app.services.scene_shot_grammar import (
+    SHOT_VO_MAX,
+    SHOT_VO_MIN,
+    apply_grammar_to_ops,
+    fill_bit_spans,
+    merge_same_place_scenes,
+    shots_grammar_reason,
+)
+from app.services.shot_templates import fill_kadry_from_catalog
 
 # Плотный выход (shot_01 + главное_действие): 102+ кадров одним ответом
 # рвёт SSE (~90с timeout) и подмешивает фейковые uuid. 10 пачек параллельно.
@@ -33,18 +41,21 @@ _LIGHT_FRAMES_PER_BATCH = 120
 _LIGHT_JSON_BYTES_PER_BATCH = 180_000
 # Сценарист / закадр (прочие ноды): пачка = 6 ячеек VO.
 VO_UNITS_PER_BATCH = 6
-# Группа script_frames_qc (биты → действие → кадры → промты → QC):
+# Группа script_frames_qc (биты → действие → кадры-шаги → QC):
 # биты/действие/кадры — по 8 отрезков, до 10 пачек параллельно, сдвиг 0.5 с.
-# fw_frames — по 6 кадров (тяжёлые image+anim). Из main: соло-пачка
-# жирного K1, автопочинка UUID, не резать пачку на socket salvage.
+# fw_frames (старые канвасы) — по 6 кадров (тяжёлые image+anim).
+# Из main: соло-пачка жирного K1, автопочинка UUID, не резать пачку на salvage.
 SCRIPT_FRAMES_QC_UNITS_PER_BATCH = 8
 SCRIPT_FRAMES_QC_PARALLEL_BATCHES = 10
 FW_FRAMES_PER_BATCH = 6
 VO_PARALLEL_MAX = 10
 FW_FRAMES_PARALLEL_BATCHES = 10
 VO_STAGGER_SEC = 0.5
-SHOT_VO_MIN_CHARS = 27
-SHOT_VO_MAX_CHARS = 54
+SHOT_VO_MIN_CHARS = SHOT_VO_MIN
+SHOT_VO_MAX_CHARS = SHOT_VO_MAX
+_SHOTS_FOOTER_KINDS = frozenset(
+    {"shots_coverage", "shots", "shots_qc", "qc_shots"}
+)
 
 _COMPLETE_ATTRS_DENSE = ("main_action", "shot01_description")
 _IMG_SKIP_KEYS = ("image_prompt", "промт_картинки")
@@ -846,6 +857,11 @@ def bits_ops_reason(
                         bit["якорь"] = first_word
                     else:
                         return f"uuid {uid[:8]}: якорь бита {i} не из закадра"
+        filled = fill_bit_spans(vo, raw)
+        if "биты" in fields:
+            fields["биты"] = filled
+        elif "bits" in fields:
+            fields["bits"] = filled
         clauses = _vo_clauses(vo)
         if len(clauses) >= 2 and len(raw) < 2 and len(vo) >= 54:
             return (
@@ -887,9 +903,14 @@ def auto_repair_action_chain_ops(
                     fields["главное_действие"] = text
                 elif "main_action" in fields:
                     fields["main_action"] = text
-
-
-def action_chain_ops_reason(
+        merged = merge_same_place_scenes(text)
+        if merged != text:
+            if "главное_действие" in fields:
+                fields["главное_действие"] = merged
+            elif "main_action" in fields:
+                fields["main_action"] = merged
+            else:
+                fields["главное_действие"] = merged
     ops: list[Any],
     frames: list[dict[str, Any]],
 ) -> str | None:
@@ -963,7 +984,8 @@ def shots_coverage_ops_reason(
     ops: list[Any],
     frames: list[dict[str, Any]],
 ) -> str | None:
-    """Пустой закадр и копипаст действия — стоп. Прочий брак T/X — в лог."""
+    """Кадры = шаги действия сцены: камера из таблицы, закадр 13–80, без повторов."""
+    apply_grammar_to_ops(ops, frames)
     by_uid = _frames_by_uuid(frames)
     for op in ops or []:
         if not isinstance(op, dict):
@@ -971,37 +993,15 @@ def shots_coverage_ops_reason(
         fields = op.get("fields") or {}
         shots = fields.get("кадры") or fields.get("shots")
         if not isinstance(shots, list):
-            continue
+            uid = str(op.get("frame_uuid") or "")
+            return f"uuid {uid[:8]}: пустые кадры"
         uid = str(op.get("frame_uuid") or "")
-        empty = [
-            str(s.get("id") or "?")
-            for s in shots
-            if isinstance(s, dict) and not _shot_vo_chunk(s)
-        ]
-        if empty:
-            return (
-                f"uuid {uid[:8]}: пустой закадр у кадров {', '.join(empty)} "
-                "— у каждого кадра свой кусок"
-            )
-        reason = coverage_template_reason(shots, uid)
-        if reason and (
-            "одинаковым действием" in reason or "одним действием сцены" in reason
-        ):
-            return reason
-        if reason:
-            logger.warning("shots coverage T/X: {}", reason)
-        for shot in shots:
-            if not str(shot.get("план") or "").strip():
-                shot["план"] = "средний"
-            if not str(shot.get("ракурс") or "").strip():
-                shot["ракурс"] = "на уровне глаз"
-        cell_vo = _frame_vo(by_uid.get(uid) or {})
-        vo_len = _shot_vo_len_reason(shots, cell_vo, uid)
-        if vo_len:
-            return vo_len
-        ladder = _same_place_plan_ladder_reason(shots, uid)
-        if ladder:
-            logger.warning("shots coverage ladder: {}", ladder)
+        vo = _frame_vo(by_uid.get(uid) or {})
+        bad = shots_grammar_reason(
+            [s for s in shots if isinstance(s, dict)], vo, uid
+        )
+        if bad:
+            return bad
     return None
 
 
@@ -1070,33 +1070,27 @@ def _batch_footer(
     if kind in {"shots_coverage", "shots"}:
         return (
             f"\n# BATCH call={batch_i} split={split_level} "
-            f"(кадры T/X, пачка {batch_i}, "
+            f"(кадры-шаги, пачка {batch_i}, "
             f"{SCRIPT_FRAMES_QC_PARALLEL_BATCHES} параллельно)\n"
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Верни ops ровно по каждому uuid: fields.кадры. "
-            "Дерево ВЫБОР на КАЖДУЮ сцену цепи, не один T* на всю ячейку. "
-            "T3 = «только смена места»: руки/взгляд/путь/удар — свои T*. "
-            "T8 только прыжок жизни/новое место, один ОБЩИЙ на мир. "
-            "Одно место — лестница планов, не один ОБЩИЙ подряд. "
-            "shots из каталога задают роль и план, не текст. "
-            "Полная лестница шаблона, не один кадр на сцену. "
-            "drop_order (required=1 нельзя). "
-            "У КАЖДОГО кадра лестницы поле действие — полное описание: "
-            "помещение, кто в кадре, одежда, эмоция если видно лицо, "
-            "видимый поступок. K2/K3/K4 пиши так же длинно, как K1. "
-            "Не копируй «понял / испугался / решил», "
-            "«тянет / открывает / берёт», «руки +». "
-            "Закадр: не одно слово. Крупный/деталь от 13 символов, "
-            "общий/средний от 20. Для коротких ячеек сохраняй исходный текст целиком. "
-            "Пустой закадр запрещён: выкинь кадр (drop_order), не оставляй покрытие без куска. "
-            "Не удлиняй T* сверх таблицы. То же место, что у прошлой сцены — "
-            "сжатие без нового ОБЩЕГО (T1-c2 / T5 без K0), шаблон не менять "
-            "ради чередования (T8>T8>T8 на разных местах — норма). "
-            "У каждого кадра свой шаблон. "
-            "Одно место → parent_id = id master (кроме T8 разных мест). "
-            "Новое место только если его назвал закадр. "
-            "Все parent_id null на одном сетапе = брак. "
-            "Не пиши закадр, биты, главное_действие. JSON apply-ops, без прозы.\n"
+            "Один кадр = один видимый шаг действия сцены. "
+            "Поле объект: место|тело|двое|предмет|лицо|взгляд. "
+            "Камеру (план, линза_мм, ракурс, движение) можно не писать — "
+            "код подставит из таблицы. Закадр кадра 13–80 символов, цель ~45. "
+            "Склейка закадр = весь voiceover_text. Без повтора действия. "
+            "Не пиши биты и главное_действие. JSON apply-ops, без прозы.\n"
+        )
+    if kind in {"shots_qc", "qc_shots"}:
+        return (
+            f"\n# BATCH call={batch_i} split={split_level} "
+            f"(QC полей кадров, пачка {batch_i})\n"
+            f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
+            "Чини только нарушителей: fields.кадры. "
+            "Проверь склейку закадра, 13–80, уникальность действия, "
+            "объект enum, parent_id на одном месте. "
+            "Не пиши промт_картинки и промт_видео. Пустые ops = ок, если всё чисто. "
+            "JSON apply-ops, без прозы.\n"
         )
     if kind in {"prompts", "img"}:
         return (
@@ -1408,7 +1402,7 @@ async def run_apply_ops_batched(
                     level,
                     bad_action,
                 )
-        if kind in {"shots_coverage", "shots"}:
+        if kind in _SHOTS_FOOTER_KINDS:
             repaired_parents = repair_same_place_shot_parents(ops)
             if repaired_parents:
                 logger.info(
@@ -1418,11 +1412,28 @@ async def run_apply_ops_batched(
                     node_key,
                     repaired_parents,
                 )
-            filled = fill_kadry_ops_from_catalog(ops, chunk)
+            before = 0
+            for op in ops:
+                if not isinstance(op, dict):
+                    continue
+                fields = op.get("fields") or {}
+                shots = fields.get("кадры") or fields.get("shots")
+                if isinstance(shots, list):
+                    before += len(shots)
+            apply_grammar_to_ops(ops, chunk)
+            after = 0
+            for op in ops:
+                if not isinstance(op, dict):
+                    continue
+                fields = op.get("fields") or {}
+                shots = fields.get("кадры") or fields.get("shots")
+                if isinstance(shots, list):
+                    after += len(shots)
+            filled = max(0, after - before)
             if filled:
                 logger.info(
-                    "[#{}] apply_ops batched node={!r}: лестница T/X "
-                    "дописана из каталога +{} кадров",
+                    "[#{}] apply_ops batched node={!r}: грамматика кадров "
+                    "дописала +{} шагов из главное_действие",
                     project_id,
                     node_key,
                     filled,
