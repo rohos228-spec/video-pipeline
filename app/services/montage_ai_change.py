@@ -21,8 +21,14 @@ _SYSTEM_IMAGE = """\
 Ты — агент из вложенного файла. Пиши промт картинки по его правилам.
 Один кадр, не батч. Старого промта кадра нет — пиши с нуля по агенту и закадру.
 
-Верни ОДИН полный промт: сцена + STYLE / Final style lock + Negative.
-Не JSON apply-ops. Не копируй закадр.
+Первый абзац — персонаж: Image N / cNN, где стоит, что делает.
+Референс = только identity (лицо/тело/одежда). Не копируй сетку листа
+и не клонируй людей с приложенной картинки, если промт описывает другой каст.
+
+STYLE / Final style lock / Negative — максимум 6 коротких строк.
+Не копируй словарь стиля / §5–§6 из агента.
+
+Верни ОДИН полный промт. Не JSON apply-ops. Не копируй закадр.
 Ответ: только текст промта, без пояснений.
 """
 
@@ -60,7 +66,9 @@ def build_ai_change_user_message(
         "\nКарточка кадра — во вложенном db_frames.json (База: место, действие, "
         "персонажи, камера, свет). Старого промта нет.\n"
         "Напиши полный промт по вложенному агенту. "
-        "STYLE / Final style lock / Negative пишешь ты. Не JSON. Только промт."
+        "Блок персонажа — первым. "
+        "STYLE / Final style lock / Negative — коротко, не словарь из агента. "
+        "Не JSON. Только промт."
     )
     return "".join(parts)
 
@@ -183,6 +191,34 @@ def character_ids_from_prompt(text: str) -> list[str]:
     return seen
 
 
+_STYLE_LINE_RE = re.compile(
+    r"(?im)^(?:\*\*)?(?:STYLE|Final style lock|Negative)\b"
+)
+_MAX_AI_CHANGE_STYLE = 900
+
+
+def trim_style_encyclopedia(text: str, max_style: int = _MAX_AI_CHANGE_STYLE) -> str:
+    """Агент часто копирует §5–§6 целиком — тогда Outsee сжимает персонажа."""
+    raw = (text or "").strip()
+    match = _STYLE_LINE_RE.search(raw)
+    start = match.start() if match else raw.find("STYLE:")
+    if start < 0:
+        return raw
+    scene, style = raw[:start].rstrip(), raw[start:].strip()
+    if len(style) <= max_style:
+        return raw
+    cut = style[:max_style]
+    sp = cut.rfind(" ")
+    if sp > int(max_style * 0.85):
+        cut = cut[:sp]
+    logger.info(
+        "montage_ai_change: STYLE {} → {} симв (блок персонажа не трогаем)",
+        len(style),
+        len(cut),
+    )
+    return f"{scene}\n\n{cut}" if scene else cut
+
+
 def strip_ai_change_reply(raw: str) -> str:
     """Срезать обёртки; если модель вернула apply-ops — взять промт_картинки."""
     text = (raw or "").strip()
@@ -269,7 +305,7 @@ async def rewrite_prompt_via_gpt(
             system=system,
             auto_pack=False,
         )
-    cleaned = strip_ai_change_reply(raw)
+    cleaned = trim_style_encyclopedia(strip_ai_change_reply(raw))
     if not cleaned:
         raise RuntimeError("ИИзменение: GPT вернул пустой промт")
     logger.info(

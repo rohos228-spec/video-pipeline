@@ -28,6 +28,7 @@ from app.services.vo_shot_expand import (
     is_shot_child,
     main_action_text,
     planned_shots_from_attrs,
+    uses_parent_still,
 )
 
 COVERAGE_OP_TYPES = frozenset(
@@ -51,6 +52,7 @@ COVERAGE_OP_TYPES = frozenset(
         "coverage_bg",
         "coverage_accent",
         "coverage_feature",
+        "coverage_scene_action",
     }
 )
 
@@ -206,7 +208,12 @@ SCENE_FIELD_SPECS: tuple[SceneFieldSpec, ...] = (
 SCENE_FIELD_BY_OP: dict[str, SceneFieldSpec] = {s.op_type: s for s in SCENE_FIELD_SPECS}
 
 _NO_IMAGE_REGEN = frozenset(
-    {"coverage_delete", "coverage_anchors", "coverage_stitch"}
+    {
+        "coverage_delete",
+        "coverage_anchors",
+        "coverage_stitch",
+        "coverage_scene_action",
+    }
 )
 
 _STITCH_ALIASES = {
@@ -330,12 +337,15 @@ def _remove_kadry_id(frame: Frame, shot_id: str) -> None:
 
 
 def _children_of(frames: list[Frame], parent: Frame) -> list[Frame]:
+    """Шоты VO-ячейки по parent_uuid, не по still покрытия."""
+    puid = str(getattr(parent, "uuid", "") or "")
     out: list[Frame] = []
+    if not puid:
+        return out
     for fr in frames:
         if int(fr.number) == int(parent.number):
             continue
-        found = find_coverage_parent_frame(frames, fr)
-        if found is not None and int(found.number) == int(parent.number):
+        if str(_cs(fr).get("parent_uuid") or "") == puid and is_shot_child(fr):
             out.append(fr)
     return out
 
@@ -847,33 +857,6 @@ def _inherit_scene_refs_if_empty(frame: Frame, source: Frame | None) -> None:
     _flag_attrs(frame)
 
 
-def _detach_as_vo_parent(frame: Frame) -> None:
-    """Снять привязку к чужому K1: свой id, без parent_id / coverage_parent_id."""
-    new_sid = f"{int(frame.number)}-K1"
-    planned = planned_shots_from_attrs(frame)
-    if planned:
-        sid = coverage_shot_id(frame)
-        item = planned[0]
-        if sid:
-            for cand in planned:
-                if str(cand.get("id") or "").strip() == sid:
-                    item = cand
-                    break
-        item["id"] = new_sid
-        item["parent_id"] = None
-        attrs = dict(getattr(frame, "attrs", None) or {})
-        attrs["кадры"] = planned
-        frame.attrs = attrs
-        _flag_attrs(frame)
-    _set_cs(
-        frame,
-        role="vo_parent",
-        parent_uuid=frame.uuid,
-        coverage_parent_id="",
-        shot_id=new_sid,
-    )
-
-
 def apply_coverage_kind(
     frame: Frame,
     frames: list[Frame],
@@ -881,52 +864,48 @@ def apply_coverage_kind(
     kind: str,
     parent_number: int | None,
 ) -> None:
+    """Роль покрытия: still родителя вкл/выкл. VO-ячейка (parent_uuid) не меняется."""
     role = (kind or "").strip().lower()
     if role not in ("parent", "child"):
         raise RuntimeError("нужно выбрать родитель или дочерний")
+    vo_head = _vo_parent_frame(frames, frame)
     if role == "parent":
-        old_parent = find_coverage_parent_frame(frames, frame)
-        old_sid = coverage_shot_id(frame)
-        _detach_as_vo_parent(frame)
-        _inherit_scene_refs_if_empty(frame, old_parent)
-        if old_parent is not None and int(old_parent.number) != int(frame.number):
-            _remove_kadry_id(old_parent, old_sid)
-            _refresh_shots_in_beat(frames, old_parent)
-        _refresh_shots_in_beat(frames, frame)
+        old_still = (
+            find_coverage_parent_frame(frames, frame)
+            if uses_parent_still(frame)
+            else None
+        )
+        _set_cs(
+            frame,
+            coverage_kind="parent",
+            use_parent_still=False,
+            coverage_parent_id="",
+        )
+        _patch_kadry_item(frame, parent_id="")
+        if old_still is not None and int(old_still.number) != int(frame.number):
+            _inherit_scene_refs_if_empty(frame, old_still)
+        _refresh_shots_in_beat(frames, vo_head)
         return
 
     if parent_number is None:
         raise RuntimeError("для дочернего кадра выберите родителя")
-    parent = _by_number(frames, int(parent_number))
-    if parent is None:
+    still_src = _by_number(frames, int(parent_number))
+    if still_src is None:
         raise RuntimeError(f"родитель #{parent_number} не найден")
-    if int(parent.number) == int(frame.number):
+    if int(still_src.number) == int(frame.number):
         raise RuntimeError("нельзя сделать кадр дочерним самому себе")
-    if _would_cycle(frames, frame, parent):
+    if _would_cycle(frames, frame, still_src):
         raise RuntimeError("нельзя привязать кадр к своему потомку")
 
-    old_parent = find_coverage_parent_frame(frames, frame)
-    former_kids = _children_of(frames, frame)
-    parent_sid = coverage_shot_id(parent) or f"{parent.number}-K1"
+    parent_sid = coverage_shot_id(still_src) or f"{still_src.number}-K1"
     _set_cs(
         frame,
-        role="shot",
-        parent_uuid=parent.uuid,
+        coverage_kind="child",
+        use_parent_still=True,
         coverage_parent_id=parent_sid,
     )
     _patch_kadry_item(frame, parent_id=parent_sid)
-    if old_parent is not None and int(old_parent.number) != int(parent.number):
-        _remove_kadry_id(old_parent, coverage_shot_id(frame))
-        _refresh_shots_in_beat(frames, old_parent)
-    for kid in former_kids:
-        _set_cs(
-            kid,
-            role="shot",
-            parent_uuid=parent.uuid,
-            coverage_parent_id=parent_sid,
-        )
-        _patch_kadry_item(kid, parent_id=parent_sid)
-    _refresh_shots_in_beat(frames, parent)
+    _refresh_shots_in_beat(frames, vo_head)
 
 
 async def delete_coverage_child(
@@ -935,10 +914,13 @@ async def delete_coverage_child(
     frame: Frame,
     frames: list[Frame],
 ) -> None:
-    parent = find_coverage_parent_frame(frames, frame)
+    parent = _vo_parent_frame(frames, frame)
     is_child = parent is not None and int(parent.number) != int(frame.number)
     if not (is_shot_child(frame) or is_child):
         raise RuntimeError("удалять можно только дочерний кадр")
+    from app.services.ensure_frames_from_disk import quarantine_frame_media
+
+    quarantine_frame_media(project, int(frame.number))
     drop_id = int(frame.id)
     sid = coverage_shot_id(frame)
     await session.execute(
@@ -961,6 +943,154 @@ async def delete_coverage_child(
         remaining = [fr for fr in frames if int(fr.id) != drop_id]
         _remove_kadry_id(parent, sid)
         _refresh_shots_in_beat(remaining, parent)
+
+
+def _clear_child_scene_chain(frame: Frame) -> None:
+    attrs = dict(getattr(frame, "attrs", None) or {})
+    if "главное_действие" not in attrs and "main_action" not in attrs:
+        return
+    attrs.pop("главное_действие", None)
+    attrs.pop("main_action", None)
+    frame.attrs = attrs
+    _flag_attrs(frame)
+
+
+async def apply_coverage_scene_action(
+    session: AsyncSession,
+    project: Project,
+    frame: Frame,
+    frames: list[Frame],
+    action: str,
+) -> dict[str, Any]:
+    """Главное действие сцены → цепь и кадры[] на уже существующих членах ячейки.
+
+    Новые Frame не создаём: insert + глобальный renumber сдвигает number
+    у всех следующих карточек, а превью монтажа ищутся по frame_NNN_*.png.
+    """
+    from app.services.montage_scene_editor import cell_full_text, frame_place, scene_group
+    from app.services.shot_templates import (
+        explode_scene_action_to_kadry,
+        format_scene_chain,
+    )
+    from app.services.vo_shot_expand import _apply_shot_meta
+
+    raw = (action or "").strip()
+    if not raw:
+        raise RuntimeError("главное действие сцены пустое")
+    parent, members = scene_group(frames, frame)
+    full = cell_full_text(parent, members)
+    place = frame_place(parent)
+    kadry = explode_scene_action_to_kadry(
+        raw, place=place, vo=full, cell_number=int(parent.number)
+    )
+    if not kadry:
+        raise RuntimeError("не удалось разобрать действие на кадры")
+    chain_text = format_scene_chain(
+        [
+            {
+                "n": i + 1,
+                "place": str(shot.get("место") or place or ""),
+                "action": str(shot.get("действие") or ""),
+                "vo": str(shot.get("закадр") or ""),
+            }
+            for i, shot in enumerate(kadry)
+        ]
+    )
+    if not chain_text:
+        raise RuntimeError("главное действие сцены пустое")
+
+    attrs = dict(getattr(parent, "attrs", None) or {})
+    attrs["главное_действие"] = chain_text
+    attrs["main_action"] = chain_text
+    if full:
+        attrs["vo_cell_full"] = full
+    parent.attrs = attrs
+    _flag_attrs(parent)
+
+    attrs = dict(getattr(parent, "attrs", None) or {})
+    attrs["кадры"] = kadry
+    parent.attrs = attrs
+    _flag_attrs(parent)
+
+    group = list(members)
+    # Только существующие кадры ячейки: вставка + renumber съезжает
+    # number у всего проекта, а превью ищутся как frame_NNN_*.png.
+    if len(kadry) > len(group):
+        logger.info(
+            "montage scene_action #{} ячейка {} цепь={} кадров, в ячейке {} — без вставки",
+            project.id,
+            parent.number,
+            len(kadry),
+            len(group),
+        )
+
+    used = min(len(kadry), len(group))
+    parent_sid = str(kadry[0].get("id") or f"{int(parent.number)}-K1")
+    for i, member in enumerate(group[:used]):
+        shot = kadry[i]
+        _apply_shot_meta(member, shot)
+        piece = " ".join(str(shot.get("закадр") or "").split())
+        if piece:
+            member.voiceover_text = piece
+            _set_cs(member, vo_shot=piece)
+        extra: dict[str, Any] = {
+            "shot_id": str(shot.get("id") or ""),
+            "shot_index": i + 1,
+        }
+        tid = str(shot.get("шаблон") or "").strip()
+        if tid:
+            extra["шаблон"] = tid
+        if i == 0:
+            extra.update(
+                {
+                    "role": "vo_parent",
+                    "parent_uuid": parent.uuid,
+                    "coverage_parent_id": "",
+                }
+            )
+        else:
+            extra.update(
+                {
+                    "role": "shot",
+                    "parent_uuid": parent.uuid,
+                    "coverage_parent_id": parent_sid,
+                }
+            )
+            _clear_child_scene_chain(member)
+        _set_cs(member, **extra)
+        act = str(shot.get("действие") or "").strip()
+        if act:
+            apply_coverage_action(member, act, group)
+        if member is not parent:
+            ladder: dict[str, Any] = {}
+            if piece:
+                ladder["закадр"] = piece
+            if act:
+                ladder["действие"] = act
+            if shot.get("план"):
+                ladder["план"] = shot.get("план")
+            if shot.get("ракурс"):
+                ladder["ракурс"] = shot.get("ракурс")
+            if ladder:
+                _patch_kadry_item_on_parent_ladder(parent, member, **ladder)
+    _refresh_shots_in_beat(group, parent)
+    tid = str(kadry[0].get("шаблон") or "")
+    logger.info(
+        "montage scene_action #{} ячейка {} кадры={} шаблон={}",
+        project.id,
+        parent.number,
+        used,
+        tid,
+    )
+    return {
+        "шаблон": tid,
+        "shots": used,
+        "frames": len(group),
+        "inserted_frames": 0,
+        "skipped_shots": max(0, len(kadry) - used),
+        "renumber": {},
+        "chain": chain_text,
+    }
 
 
 async def apply_coverage_op(
@@ -1001,6 +1131,10 @@ async def apply_coverage_op(
     elif op_type == "coverage_anchors":
         report = await apply_coverage_anchors(
             session, project, frame, frames, list(op.get("anchors") or [])
+        )
+    elif op_type == "coverage_scene_action":
+        report = await apply_coverage_scene_action(
+            session, project, frame, frames, str(op.get("action") or "")
         )
     elif op_type == "coverage_kind":
         parent_raw = op.get("parent_number")

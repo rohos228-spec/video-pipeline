@@ -13,6 +13,7 @@ from app.services import db_v2
 from app.services.montage_board_frames import (
     delete_montage_frame,
     insert_montage_frame,
+    merge_montage_scenes,
     set_montage_voiceover,
 )
 
@@ -181,7 +182,7 @@ async def test_edit_and_clear_voiceover(
 
 
 @pytest.mark.asyncio
-async def test_delete_parent_drops_children(
+async def test_delete_parent_keeps_children(
     session: AsyncSession, project: Project
 ) -> None:
     session.add(project)
@@ -209,7 +210,8 @@ async def test_delete_parent_drops_children(
 
     result = await delete_montage_frame(session, project, parent_id)
     await session.commit()
-    assert result["deleted"] == 2
+    assert result["deleted"] == 1
+    assert result["promoted"] == 2
     left = list(
         (
             await session.execute(
@@ -219,9 +221,9 @@ async def test_delete_parent_drops_children(
             )
         ).scalars()
     )
-    assert len(left) == 1
-    assert left[0].voiceover_text == "дальше"
-    assert left[0].number == 3
+    assert [fr.number for fr in left] == [2, 3]
+    assert left[0].voiceover_text == "кусок"
+    assert left[1].voiceover_text == "дальше"
 
 
 @pytest.mark.asyncio
@@ -259,3 +261,76 @@ async def test_insert_does_not_steal_neighbor_image(
     assert not (kid_row.get("image_prompt_shot1") or "").strip()
     assert b_row["image_shot1_url"]
     assert "frame_002" in (b_row["image_shot1_url"] or "")
+
+
+@pytest.mark.asyncio
+async def test_merge_scenes_keeps_numbers(
+    session: AsyncSession, project: Project
+) -> None:
+    from app.services.montage_board import build_montage_board
+    from app.services.vo_shot_expand import is_shot_child
+
+    session.add(project)
+    a = _vo_parent(project.id, 13, "aa" * 12, "первая ячейка")
+    b = _vo_parent(project.id, 14, "bb" * 12, "вторая ячейка")
+    c = _vo_parent(project.id, 15, "cc" * 12, "хвост второй")
+    c.attrs = {
+        "camera_subdivide": {
+            "role": "shot",
+            "parent_uuid": "bb" * 12,
+        }
+    }
+    session.add_all([a, b, c])
+    await session.flush()
+
+    result = await merge_montage_scenes(
+        session, project, left_frame_id=int(a.id), right_frame_id=int(b.id)
+    )
+    await session.commit()
+    assert result["parent_number"] == 13
+    assert result["vo_scene_size"] == 3
+
+    rows = _ordered(
+        list(
+            (
+                await session.execute(
+                    select(Frame).where(Frame.project_id == project.id)
+                )
+            ).scalars()
+        )
+    )
+    assert [fr.number for fr in rows] == [13, 14, 15]
+    assert is_shot_child(rows[1]) is True
+    assert is_shot_child(rows[2]) is True
+
+    board = await build_montage_board(session, project)
+    by_n = {fr["number"]: fr for fr in board["frames"]}
+    assert by_n[13]["vo_scene_number"] == 13
+    assert by_n[14]["vo_scene_number"] == 13
+    assert by_n[15]["vo_scene_number"] == 13
+    assert by_n[13]["vo_scene_size"] == 3
+
+
+@pytest.mark.asyncio
+async def test_delete_does_not_resurrect_from_disk_png(
+    session: AsyncSession, project: Project
+) -> None:
+    from app.services.ensure_frames_from_disk import ensure_frames_from_disk_media
+    from app.services.montage_board import build_montage_board
+
+    session.add(project)
+    fr = _vo_parent(project.id, 19, "aa" * 12, "лишний")
+    other = _vo_parent(project.id, 20, "bb" * 12, "сосед")
+    session.add_all([fr, other])
+    await session.flush()
+    scenes = project.data_dir / "scenes"
+    scenes.mkdir(parents=True, exist_ok=True)
+    png = scenes / "frame_019_ghost.png"
+    png.write_bytes(b"png-19")
+
+    await delete_montage_frame(session, project, int(fr.id))
+    await session.commit()
+    assert not png.exists()
+    assert await ensure_frames_from_disk_media(session, project) == []
+    board = await build_montage_board(session, project)
+    assert [row["number"] for row in board["frames"]] == [20]

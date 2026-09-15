@@ -303,7 +303,7 @@ async def _montage_shot1_refs(
     осознанно, а слотов у генератора всего два.
     """
     from app.services.montage_frame_refs import manual_ref_paths
-    from app.services.vo_shot_expand import is_shot_child
+    from app.services.vo_shot_expand import uses_parent_still
 
     manual = manual_ref_paths(project.data_dir, fr)
     if manual:
@@ -311,7 +311,7 @@ async def _montage_shot1_refs(
             "montage regen: кадр #{} ручных рефов {}", fr.number, len(manual)
         )
 
-    if is_shot_child(fr):
+    if uses_parent_still(fr):
         parent_png = await _coverage_parent_png(session, project, fr)
         if parent_png is None:
             return manual, False
@@ -335,6 +335,29 @@ async def _montage_shot1_refs(
     )
     # Лимит генератора: ручные рефы важнее автоматических и вытесняют их.
     return [*manual, *refs][:_OUTSEE_MAX_REFS], False
+
+
+def _lock_montage_image_refs(
+    project: Project,
+    fr: Frame,
+    prompt_text: str,
+    refs: list[Path],
+    *,
+    child: bool = False,
+) -> tuple[str, list[Path]]:
+    """Кроп листов + Image N по фактическим аттачам (как generate_images)."""
+    if not refs:
+        return prompt_text, refs
+    from app.services.image_ref_lock import prepare_refs_and_prompt
+
+    ids = [] if child else frame_shot_character_ids(fr, 1)
+    return prepare_refs_and_prompt(
+        prompt_text,
+        refs,
+        sheet_ids=ids,
+        cache_dir=project.data_dir / "tmp_gpt" / "ref_crops",
+        child=child,
+    )
 
 
 async def prepare_image_regen(
@@ -365,21 +388,16 @@ async def prepare_image_regen(
         prompt_text = text
         refs: list[Path] = []
         if shot == 1:
-            from app.services.vo_shot_expand import with_parent_scene_lock
-
             refs, has_parent = await _montage_shot1_refs(
                 session,
                 project,
                 fr,
                 ref_person_ids=ref_person_ids,
             )
-            if has_parent:
-                prompt_text = with_parent_scene_lock(
-                    prompt_text,
-                    has_parent_ref=True,
-                    has_char_ref=False,
-                )
             prompt_text = append_manual_ref_note(prompt_text, fr)
+            prompt_text, refs = _lock_montage_image_refs(
+                project, fr, prompt_text, refs, child=has_parent
+            )
     elif mode == "correction":
         text = (correction or "").strip()
         if not text:
@@ -404,19 +422,18 @@ async def prepare_image_regen(
                 f"нет промта картинки в БД/Excel (кадр {frame_number}, shot {shot})"
             )
         if shot == 1:
-            from app.services.vo_shot_expand import with_parent_scene_lock
-
             refs, has_parent = await _montage_shot1_refs(session, project, fr)
-            if has_parent:
-                prompt_text = with_parent_scene_lock(
-                    prompt_text,
-                    has_parent_ref=True,
-                    has_char_ref=False,
-                )
             prompt_text = append_manual_ref_note(prompt_text, fr)
+            prompt_text, refs = _lock_montage_image_refs(
+                project, fr, prompt_text, refs, child=has_parent
+            )
         elif shot == 2:
             ref1 = find_shot1_image(scenes_dir, frame_number)
             refs = [ref1] if ref1 is not None else []
+            if refs:
+                prompt_text, refs = _lock_montage_image_refs(
+                    project, fr, prompt_text, refs, child=True
+                )
         else:
             refs = []
 

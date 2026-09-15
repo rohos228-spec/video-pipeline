@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -239,6 +241,10 @@ _CONCURRENCY_MARKERS = (
 )
 _CONCURRENCY_MAX_WAITS = 3
 _CONCURRENCY_BACKOFF_S = (15.0, 30.0, 45.0)
+# outsee.io с этого ПК часто принимает TCP >20с — старый connect=20 резал POST
+# до того, как генерация вообще ставилась в очередь.
+_GENERATE_CONNECT_S = 60.0
+_GENERATE_TOTAL_S = 180.0
 
 
 def _is_concurrency_api_error(err: BaseException) -> bool:
@@ -256,12 +262,105 @@ def _concurrency_backoff_s(wait_n: int) -> float:
     return _CONCURRENCY_BACKOFF_S[idx]
 
 
+def _generate_timeout() -> httpx.Timeout:
+    return httpx.Timeout(_GENERATE_TOTAL_S, connect=_GENERATE_CONNECT_S)
+
+
+def _curl_tls_args() -> list[str]:
+    """Windows curl = schannel: без --ssl-no-revoke падает CRYPT_E_REVOCATION_OFFLINE."""
+    if sys.platform == "win32":
+        return ["--ssl-no-revoke"]
+    return []
+
+
+def _prefer_curl_download(url: str) -> bool:
+    low = (url or "").lower()
+    return any(h in low for h in ("yandexcloud.net", "outseehistory"))
+
+
+async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, Any] | None:
+    """Fallback, когда httpx не коннектится к outsee.io (Windows / долгий handshake)."""
+    import os
+    import shutil
+    import tempfile
+
+    curl = shutil.which("curl")
+    if not curl:
+        return None
+    url = f"{_base_url()}{path}"
+    headers = _headers()
+    fd, tmp_name = tempfile.mkstemp(prefix="outsee_gen_", suffix=".json")
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        tmp.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+        proc = await asyncio.create_subprocess_exec(
+            curl,
+            "-sS",
+            "-X",
+            "POST",
+            "--connect-timeout",
+            str(int(_GENERATE_CONNECT_S)),
+            "--max-time",
+            str(int(_GENERATE_TOTAL_S)),
+            *_curl_tls_args(),
+            "-H",
+            f"Authorization: {headers['Authorization']}",
+            "-H",
+            "Content-Type: application/json",
+            "-H",
+            "Accept: application/json",
+            "--data-binary",
+            f"@{tmp}",
+            url,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            logger.warning(
+                "outsee_api.generate curl failed code={} err={}",
+                proc.returncode,
+                (stderr or b"")[:200],
+            )
+            return None
+        try:
+            data = json.loads((stdout or b"").decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            logger.warning("outsee_api.generate curl: ответ не JSON")
+            return None
+        if not isinstance(data, dict):
+            return None
+        err = data.get("error")
+        if isinstance(err, dict):
+            raise OutseeApiError(
+                f"Outsee generate curl: {err.get('message') or err}",
+                context={"path": path, "code": str(err.get("code") or "")},
+            )
+        if data.get("id") is None:
+            return None
+        logger.info(
+            "outsee_api.submitted via curl path={} id={} status={}",
+            path,
+            data.get("id"),
+            data.get("status"),
+        )
+        return data
+    except OutseeApiError:
+        raise
+    except OSError as e:
+        logger.warning("outsee_api.generate curl spawn failed: {}", e)
+        return None
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
     waits = 0
     last_err: BaseException | None = None
     while True:
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=_generate_timeout()) as client:
                 r = await client.post(
                     f"{_base_url()}{path}", headers=_headers(), json=body
                 )
@@ -298,9 +397,36 @@ async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
             await asyncio.sleep(delay)
             continue
         except (httpx.HTTPError, OSError) as e:
+            detail = f"{type(e).__name__}: {e}" if str(e).strip() else type(e).__name__
+            if isinstance(e, (httpx.ConnectTimeout, httpx.ConnectError, httpx.TimeoutException)):
+                try:
+                    via_curl = await _post_generate_via_curl(path, body)
+                except OutseeApiError as curl_err:
+                    if _is_concurrency_api_error(curl_err):
+                        last_err = curl_err
+                        waits += 1
+                        if waits > _CONCURRENCY_MAX_WAITS:
+                            raise
+                        delay = _concurrency_backoff_s(waits)
+                        logger.warning(
+                            "outsee_api: concurrency_limit {} — жду {:.0f}с (wait {}/{})",
+                            path,
+                            delay,
+                            waits,
+                            _CONCURRENCY_MAX_WAITS,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    raise
+                if via_curl is not None:
+                    return via_curl
             raise OutseeApiError(
-                f"Outsee API network {path}: {e}",
-                context={"path": path, "network": True},
+                f"Outsee API network {path}: {detail}",
+                context={
+                    "path": path,
+                    "network": True,
+                    "exc_type": type(e).__name__,
+                },
             ) from e
     raise last_err or OutseeApiError("Outsee generate: concurrency exhausted")
 
@@ -380,8 +506,26 @@ async def _poll_generation(
     )
 
 
+def _curl_download_args(url: str, out_path: Path) -> list[str]:
+    return [
+        "-fsSL",
+        "--retry",
+        "4",
+        "--retry-delay",
+        "2",
+        "--connect-timeout",
+        "45",
+        "--max-time",
+        "180",
+        *_curl_tls_args(),
+        "-o",
+        str(out_path),
+        url,
+    ]
+
+
 async def _download_via_curl(url: str, out_path: Path) -> bool:
-    """Windows/httpx DNS часто падает на yandexcloud — curl иногда проходит."""
+    """Windows/httpx DNS часто падает на yandexcloud — curl с --ssl-no-revoke проходит."""
     import shutil
 
     curl = shutil.which("curl")
@@ -390,18 +534,7 @@ async def _download_via_curl(url: str, out_path: Path) -> bool:
     try:
         proc = await asyncio.create_subprocess_exec(
             curl,
-            "-fsSL",
-            "--retry",
-            "4",
-            "--retry-delay",
-            "2",
-            "--connect-timeout",
-            "20",
-            "--max-time",
-            "180",
-            "-o",
-            str(out_path),
-            url,
+            *_curl_download_args(url, out_path),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -426,10 +559,16 @@ async def _download_via_curl(url: str, out_path: Path) -> bool:
 async def _download(url: str, out_path: Path) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     last_err: Exception | None = None
+    prefer_curl = _prefer_curl_download(url)
     for attempt in range(1, 9):
+        if prefer_curl or attempt > 1:
+            if await _download_via_curl(url, out_path):
+                logger.info("outsee_api.download via curl ok url={}", url[:120])
+                return out_path
         try:
             async with httpx.AsyncClient(
-                timeout=180.0, follow_redirects=True
+                timeout=httpx.Timeout(180.0, connect=45.0),
+                follow_redirects=True,
             ) as client:
                 r = await client.get(url)
                 if r.status_code >= 400 or len(r.content) < 64:
@@ -447,7 +586,7 @@ async def _download(url: str, out_path: Path) -> Path:
                 url[:120],
                 e,
             )
-            if await _download_via_curl(url, out_path):
+            if not prefer_curl and await _download_via_curl(url, out_path):
                 logger.info("outsee_api.download via curl ok url={}", url[:120])
                 return out_path
             await asyncio.sleep(min(2.0 * attempt, 12.0))

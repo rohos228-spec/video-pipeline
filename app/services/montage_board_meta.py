@@ -101,6 +101,8 @@ def slot_key_from_op(op: dict[str, Any] | None) -> str | None:
         return f"{fr}:light"
     if t == "coverage_set":
         return f"{fr}:set"
+    if t == "coverage_scene_action":
+        return f"{fr}:scene_action"
     if t == "coverage_sense":
         return f"{fr}:sense"
     if t == "coverage_visual_type":

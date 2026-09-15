@@ -237,7 +237,8 @@ export interface MontagePendingOp {
     | "coverage_props"
     | "coverage_bg"
     | "coverage_accent"
-    | "coverage_feature";
+    | "coverage_feature"
+    | "coverage_scene_action";
   frame_number: number;
   shot: 1 | 2;
   prompt?: string;
@@ -1192,6 +1193,25 @@ export const api = {
       {},
       120_000,
     ),
+
+  mergeMontageScenes: (
+    projectId: number,
+    leftFrameId: number,
+    rightFrameId: number,
+  ) =>
+    http<{
+      ok: boolean;
+      parent_id: number;
+      parent_number: number;
+      merged_frames: number;
+      vo_scene_size: number;
+    }>(`/api/projects/${projectId}/montage-board/scenes/merge`, {
+      method: "POST",
+      body: JSON.stringify({
+        left_frame_id: leftFrameId,
+        right_frame_id: rightFrameId,
+      }),
+    }),
 
   insertMontageFrame: (
     projectId: number,

@@ -172,20 +172,72 @@ def _join_scene_style(scene: str, style: str) -> str:
     return scene or style
 
 
+# Словарь стиля из агента часто 3k+ симв. Тогда GPT-сжатие убивает персонажа.
+_MIN_SCENE_CHARS = 1200
+_MAX_STYLE_SHARE = 0.42
+
+
+def _cap_style_block(style: str, body_limit: int) -> str:
+    raw = (style or "").strip()
+    if not raw:
+        return raw
+    max_style = min(
+        int(body_limit * _MAX_STYLE_SHARE),
+        max(400, body_limit - _MIN_SCENE_CHARS - 2),
+    )
+    if len(raw) <= max_style:
+        return raw
+    return _cut_at_space(raw, max_style)
+
+
+def _split_identity_lock(scene: str) -> tuple[str, str]:
+    from app.services.image_ref_lock import split_identity_lock
+
+    return split_identity_lock(scene)
+
+
+def _join_lock_scene(lock: str, scene: str) -> str:
+    lock = (lock or "").rstrip()
+    scene = (scene or "").strip()
+    if lock and scene:
+        return f"{lock}\n\n{scene}"
+    return lock or scene
+
+
 def _hard_truncate_prompt(text: str, body_limit: int) -> str:
-    """Обрезка тела: режем сцену, STYLE/Negative оставляем."""
+    """Обрезка тела: lock персонажа и STYLE бережём, режем воду сцены."""
     if len(text) <= body_limit:
         return text
     scene, style = _split_style_lock(text)
+    style = _cap_style_block(style, body_limit)
     if not style:
-        return _cut_at_space(text, body_limit)
-    sep_len = 2 if scene else 0
+        lock, body = _split_identity_lock(scene)
+        if not lock:
+            return _cut_at_space(text, body_limit)
+        sep = 2 if body else 0
+        body_limit_i = body_limit - len(lock) - sep
+        if body_limit_i < 40:
+            return _cut_at_space(lock, body_limit)
+        return _join_lock_scene(lock, _cut_at_space(body, body_limit_i))
+    lock, body = _split_identity_lock(scene)
+    scene_keep = _join_lock_scene(lock, body)
+    sep_len = 2 if scene_keep else 0
     scene_limit = body_limit - len(style) - sep_len
     if scene_limit < 40:
         if len(style) <= body_limit:
             return style
         return _cut_at_space(style, body_limit)
-    return _join_scene_style(_cut_at_space(scene, scene_limit), style)
+    if len(scene_keep) <= scene_limit:
+        return _join_scene_style(scene_keep, style)
+    if lock:
+        body_limit_i = scene_limit - len(lock) - (2 if body else 0)
+        if body_limit_i < 40:
+            return _join_scene_style(_cut_at_space(lock, scene_limit), style)
+        return _join_scene_style(
+            _join_lock_scene(lock, _cut_at_space(body, body_limit_i)),
+            style,
+        )
+    return _join_scene_style(_cut_at_space(scene_keep, scene_limit), style)
 
 # Fallback для rewrite не из-за модерации (редко — второй раунд после других сбоев).
 _GPT_REWRITE_META = (
@@ -355,7 +407,7 @@ def _is_audio_content_policy_error(err: BaseException) -> bool:
 
 
 def _is_transient_network_error(err: BaseException) -> bool:
-    """Сеть к Outsee / host рефов — retry, не wipe кадра."""
+    """Сеть к Outsee / host рефов — retry, не wipe кадра и не GPT-rewrite."""
     if isinstance(err, (OSError, TimeoutError)):
         return True
     try:
@@ -365,6 +417,8 @@ def _is_transient_network_error(err: BaseException) -> bool:
             return True
     except Exception:  # noqa: BLE001
         pass
+    if isinstance(err, OutseeImageError) and (err.context or {}).get("network"):
+        return True
     msg = str(getattr(err, "reason", None) or err).lower()
     ctx = ""
     if isinstance(err, OutseeImageError):
@@ -385,6 +439,9 @@ def _is_transient_network_error(err: BaseException) -> bool:
             "name or service not known",
             "getaddrinfo failed",
             "server disconnected",
+            "connecterror",
+            "remoteprotocolerror",
+            "readerror",
         )
     )
 
@@ -516,7 +573,10 @@ async def _compress_prompt_for_outsee(
         return last
     scene, style = _split_style_lock(last)
     if style:
-        scene_limit = max_body - len(style) - (2 if scene else 0)
+        style = _cap_style_block(style, max_body)
+        id_lock, scene_body = _split_identity_lock(scene)
+        scene_keep = _join_lock_scene(id_lock, scene_body)
+        scene_limit = max_body - len(style) - (2 if scene_keep else 0)
         if scene_limit < 40:
             joined = _hard_truncate_prompt(last, max_body)
             logger.info(
@@ -525,8 +585,8 @@ async def _compress_prompt_for_outsee(
                 max_body,
             )
             return joined
-        if len(scene) <= scene_limit:
-            joined = _join_scene_style(scene, style)
+        if len(scene_keep) <= scene_limit:
+            joined = _join_scene_style(scene_keep, style)
             if len(joined) <= max_body:
                 logger.info(
                     "outsee_retry: сцена уже влезает, STYLE не сжимал: {} → {}",
@@ -534,14 +594,21 @@ async def _compress_prompt_for_outsee(
                     len(joined),
                 )
                 return joined
+        shrink_target = scene_limit - len(id_lock) - (2 if id_lock and scene_body else 0)
+        shrink_target = max(80, shrink_target)
         meta = (
-            f"Сожми ТОЛЬКО сцену кадра до ≤{scene_limit} символов. "
-            "Убери повторы и воду, оставь визуальные детали. "
+            f"Сожми ТОЛЬКО сцену кадра до ≤{shrink_target} символов. "
+            "Убери повторы и воду, оставь кто в кадре (cNN), где стоит и что делает. "
             "Не пиши STYLE / Final style lock / Negative — их добавлю сам. "
+            "Не пиши HARD CAST LOCK и строки Image N is the — их добавлю сам. "
             "Верни ТОЛЬКО сжатую сцену без пояснений."
         )
         shrunk = await _gpt_shrink_text(
-            gpt, scene, scene_limit, project_id=project_id, meta=meta
+            gpt,
+            scene_body or scene_keep,
+            shrink_target,
+            project_id=project_id,
+            meta=meta,
         )
         if not shrunk:
             return None
@@ -552,7 +619,10 @@ async def _compress_prompt_for_outsee(
                 "оставил исходный lock {} симв",
                 len(style),
             )
-        joined = _join_scene_style(scene_only or shrunk, style)
+        body_only = scene_only or shrunk
+        # GPT мог вернуть lock обратно — не дублируем.
+        _again_lock, body_only = _split_identity_lock(body_only)
+        joined = _join_scene_style(_join_lock_scene(id_lock, body_only), style)
         if len(joined) > max_body:
             joined = _hard_truncate_prompt(joined, max_body)
         logger.info(
@@ -1187,6 +1257,13 @@ async def generate_image_with_retries(
         # «rewritten» — попробуем переписать промт через GPT.
         is_last_round = round_idx == len(rounds) - 1
         if is_last_round:
+            break
+        if last_err is not None and _is_transient_network_error(last_err):
+            logger.warning(
+                "outsee.generate_image: сеть после раунда «{}» — "
+                "промт не переписываю, кадр без картинки",
+                round_label,
+            )
             break
         if gpt is None:
             logger.warning(

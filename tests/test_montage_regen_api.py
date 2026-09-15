@@ -163,6 +163,39 @@ async def test_edit_prompt_child_attaches_parent_still(
 
 
 @pytest.mark.asyncio
+async def test_prepare_crops_character_sheets_and_locks_ids(
+    session: AsyncSession, project: Project
+) -> None:
+    from PIL import Image
+
+    session.add(project)
+    fr = Frame(
+        project_id=project.id,
+        number=7,
+        voiceover_text="vo",
+        image_prompt="official at the desk",
+        attrs={"персонажи": "c02,c03"},
+    )
+    session.add(fr)
+    await session.flush()
+    (project.data_dir / "scenes").mkdir(parents=True, exist_ok=True)
+    chars = project.data_dir / "characters"
+    chars.mkdir(parents=True, exist_ok=True)
+    for name in ("c02.png", "c03.png"):
+        im = Image.new("RGB", (2048, 1152), (200, 200, 200))
+        im.save(chars / name)
+
+    prep = await prepare_image_regen(
+        session, project, 7, shot=1, mode="same_prompt"
+    )
+    assert len(prep.refs) == 2
+    assert all(p.name.endswith("_front.png") for p in prep.refs)
+    assert "identity reference of c02" in prep.prompt_text
+    assert "identity reference of c03" in prep.prompt_text
+    assert "TWO different people" in prep.prompt_text
+
+
+@pytest.mark.asyncio
 async def test_prepare_uses_images_node_model_not_sidecar(
     session: AsyncSession, project: Project
 ) -> None:

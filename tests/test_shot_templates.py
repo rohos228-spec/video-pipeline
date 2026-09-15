@@ -577,3 +577,64 @@ def test_catalog_fill_keeps_unique_gpt_actions() -> None:
     assert len({a.casefold() for a in acts}) == len(acts)
     assert all(str(s.get("закадр") or "").strip() for s in filled)
     assert "Средний план по пояс" not in "".join(acts)
+
+
+def test_normalize_scene_action_prose_and_chain() -> None:
+    from app.services.shot_templates import (
+        normalize_scene_action_text,
+        parse_scene_chain,
+    )
+
+    prose = normalize_scene_action_text(
+        "Ткач входит в архив, тянет папку и читает дело",
+        place="архив",
+        vo="Ткач вошёл в архив и открыл чужое дело.",
+    )
+    chain = parse_scene_chain(prose)
+    assert len(chain) == 1
+    assert chain[0]["place"] == "архив"
+    assert "тянет папку" in chain[0]["action"]
+    assert "вошёл в архив" in chain[0]["vo"]
+
+    numbered = (
+        "1. кабинет — открывает дело\n"
+        "(Он сел за стол и открыл дело.)"
+    )
+    assert normalize_scene_action_text(numbered, place="двор", vo="другой") == numbered
+
+
+def test_explode_scene_action_keeps_beats_not_catalog_stub() -> None:
+    """Проза режиссёра → несколько кадров. Короткий закадр не схлопывает лестницу."""
+    from app.services.shot_templates import (
+        explode_scene_action_to_kadry,
+        split_scene_action_beats,
+    )
+
+    raw = (
+        "покажи сцену как набор кадров, крепостной стоит опустив голову и "
+        "слушает как на него кричит помещик. нужно потом показать, как его "
+        "с семьей и землей один помещник продал другому. как его наказывали "
+        "потом и заставляли работать"
+    )
+    vo = (
+        "Крепостной крестьянин полностью зависел от помещика. "
+        "Его записывали как «душу», продавали вместе с землёй, переселяли, "
+        "наказывали и заставляли работать по воле хозяина."
+    )
+    beats = split_scene_action_beats(raw)
+    assert len(beats) >= 3
+    assert all("покажи сцену" not in b.casefold() for b in beats)
+    assert any("кричит" in b for b in beats)
+    assert any("продал" in b for b in beats)
+    assert any("наказывали" in b or "заставляли" in b for b in beats)
+
+    kadry = explode_scene_action_to_kadry(
+        raw, place="двор помещичьей усадьбы", vo=vo, cell_number=14
+    )
+    assert len(kadry) >= 3
+    acts = [str(s.get("действие") or "") for s in kadry]
+    assert all("вход: видно всё помещение" not in a for a in acts)
+    assert any("кричит" in a for a in acts)
+    joined_vo = " ".join(str(s.get("закадр") or "") for s in kadry).split()
+    assert "Крепостной" in " ".join(joined_vo)
+    assert "зависел" in " ".join(joined_vo)

@@ -40,6 +40,24 @@ def is_shot_child(frame: Any) -> bool:
     return str(_cs(frame).get("role") or "") == "shot"
 
 
+def parent_still_suppressed(frame: Any) -> bool:
+    """Явная роль «родитель» на доске: still снят, кадр остаётся в VO-сцене."""
+    cs = _cs(frame)
+    raw = cs.get("use_parent_still")
+    if raw is False or str(raw).strip().lower() in {"0", "false", "no", "off"}:
+        return True
+    return str(cs.get("coverage_kind") or "").strip().lower() == "parent"
+
+
+def uses_parent_still(frame: Any) -> bool:
+    """Вешать PNG родителя в генерацию / рефы доски."""
+    if parent_still_suppressed(frame):
+        return False
+    if str(_cs(frame).get("coverage_kind") or "").strip().lower() == "child":
+        return True
+    return is_shot_child(frame)
+
+
 def is_img_pr_vo_parent(frame: Any) -> bool:
     """GPT img_pr пишет только VO-родителя ячейки, не K2/K3."""
     if is_shot_child(frame):
@@ -204,15 +222,19 @@ def coverage_parent_shot_id(frame: Any) -> str:
 
 
 def find_coverage_parent_frame(frames: list[Any], child: Any) -> Any | None:
-    """Родитель покрытия: K1 ЭТОЙ ячейки. Не предыдущий K2 и не чужой 2-K1.
+    """Still-родитель покрытия. VO-ячейка (parent_uuid) здесь не меняется.
 
-    У ``role=shot`` якорь — ``parent_uuid`` (VO-родитель ячейки). Явный
-    ``coverage_parent_id`` с другой сцены (X1 / «место уже было») не должен
-    подменять PNG K1 этой же ячейки: иначе K2/K3 уезжают в чужой сетап.
+    По умолчанию K2/K3 берут K1 своей ячейки. Явный ``coverage_kind=child``
+    на доске — выбранный still, даже с другой сцены. Без этой роли
+    ``coverage_parent_id`` X1 не подменяет PNG K1 ячейки.
     """
+    if parent_still_suppressed(child):
+        return None
     child_uid = str(getattr(child, "uuid", "") or "")
-    if is_shot_child(child):
-        uid = str(_cs(child).get("parent_uuid") or "").strip()
+    cs = _cs(child)
+    explicit_kind = str(cs.get("coverage_kind") or "").strip().lower() == "child"
+    if is_shot_child(child) and not explicit_kind:
+        uid = str(cs.get("parent_uuid") or "").strip()
         if uid and uid != child_uid:
             for fr in frames:
                 if str(getattr(fr, "uuid", "") or "") == uid:

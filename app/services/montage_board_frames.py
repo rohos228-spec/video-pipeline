@@ -12,10 +12,12 @@ from app.models import Artifact, Frame, FrameEdge, FrameStatus, FrameText, Proje
 from app.services.db_v2 import insert_frame_after
 from app.services.montage_coverage_ops import (
     _children_of,
+    _clear_child_scene_chain,
     _load_frames,
+    _refresh_shots_in_beat,
     delete_coverage_child,
 )
-from app.services.vo_shot_expand import _set_cs, is_shot_child
+from app.services.vo_shot_expand import _flag_attrs, _set_cs, is_shot_child
 
 
 async def upsert_frame_voiceover(session: AsyncSession, frame: Frame, text: str) -> None:
@@ -171,11 +173,40 @@ async def _drop_frame_rows(
     await session.flush()
 
 
+def _promote_first_child(parent: Frame, kids: list[Frame]) -> Frame | None:
+    """Голова сцены удалена — первый шот становится VO-родителем, остальные остаются."""
+    if not kids:
+        return None
+    ordered = sorted(kids, key=lambda fr: (float(fr.sort_key or 0.0), int(fr.number or 0)))
+    head = ordered[0]
+    src = dict(getattr(parent, "attrs", None) or {})
+    dst = dict(getattr(head, "attrs", None) or {})
+    for key in ("vo_cell_full", "главное_действие", "main_action", "биты"):
+        if src.get(key) and not dst.get(key):
+            dst[key] = src[key]
+    head.attrs = dst
+    _flag_attrs(head)
+    _set_cs(
+        head,
+        role="vo_parent",
+        parent_uuid=head.uuid,
+        coverage_kind="parent",
+        use_parent_still=False,
+        coverage_parent_id="",
+    )
+    for kid in ordered[1:]:
+        _set_cs(kid, role="shot", parent_uuid=head.uuid)
+    return head
+
+
 async def delete_montage_frame(
     session: AsyncSession,
     project: Project,
     frame_id: int,
 ) -> dict[str, Any]:
+    """Удалить только этот кадр. Детей сцены не трогаем — повышаем первого."""
+    from app.services.ensure_frames_from_disk import quarantine_frame_media
+
     frames = await _load_frames(session, int(project.id))
     frame = next((fr for fr in frames if int(fr.id) == int(frame_id)), None)
     if frame is None:
@@ -187,10 +218,16 @@ async def delete_montage_frame(
         return {"ok": True, "frame_id": frame_id, "number": number, "deleted": 1}
 
     kids = _children_of(frames, frame)
-    drop = [frame, *kids]
-    await _drop_frame_rows(session, project, drop)
+    new_head = _promote_first_child(frame, kids)
+    quarantine_frame_media(project, number)
+    await _drop_frame_rows(session, project, [frame])
+    if new_head is not None:
+        leftover = await _load_frames(session, int(project.id))
+        live = next((fr for fr in leftover if int(fr.id) == int(new_head.id)), new_head)
+        _refresh_shots_in_beat(leftover, live)
+        await session.flush()
     logger.info(
-        "montage delete cell #{} frame {} (+{} children)",
+        "montage delete frame #{} number {} (сцена жива, шотов {})",
         project.id,
         number,
         len(kids),
@@ -199,5 +236,89 @@ async def delete_montage_frame(
         "ok": True,
         "frame_id": frame_id,
         "number": number,
-        "deleted": len(drop),
+        "deleted": 1,
+        "promoted": int(new_head.number) if new_head is not None else None,
+    }
+
+
+async def merge_montage_scenes(
+    session: AsyncSession,
+    project: Project,
+    *,
+    left_frame_id: int,
+    right_frame_id: int,
+) -> dict[str, Any]:
+    """Склеить две соседние VO-ячейки в одну сцену. Номера кадров не трогаем."""
+    from app.services.montage_scene_editor import cell_full_text, scene_group
+
+    frames = await _load_frames(session, int(project.id))
+    left = next((fr for fr in frames if int(fr.id) == int(left_frame_id)), None)
+    right = next((fr for fr in frames if int(fr.id) == int(right_frame_id)), None)
+    if left is None or right is None:
+        raise RuntimeError("кадр для склейки сцен не найден")
+    left_parent, left_members = scene_group(frames, left)
+    right_parent, right_members = scene_group(frames, right)
+    if int(left_parent.id) == int(right_parent.id):
+        raise RuntimeError("эти кадры уже в одной сцене")
+
+    left_key = (float(left_parent.sort_key or 0.0), int(left_parent.number or 0))
+    right_key = (float(right_parent.sort_key or 0.0), int(right_parent.number or 0))
+    if left_key > right_key:
+        left_parent, right_parent = right_parent, left_parent
+        left_members, right_members = right_members, left_members
+
+    left_full = cell_full_text(left_parent, left_members)
+    right_full = cell_full_text(right_parent, right_members)
+    merged_vo = " ".join(part for part in (left_full, right_full) if part).strip()
+
+    before_numbers = [int(fr.number) for fr in frames]
+    for member in right_members:
+        was_head = int(member.id) == int(right_parent.id)
+        _set_cs(member, role="shot", parent_uuid=left_parent.uuid)
+        if was_head:
+            _set_cs(
+                member,
+                coverage_kind="parent",
+                use_parent_still=False,
+                coverage_parent_id="",
+            )
+            _clear_child_scene_chain(member)
+            attrs = dict(getattr(member, "attrs", None) or {})
+            if "vo_cell_full" in attrs:
+                attrs.pop("vo_cell_full", None)
+                member.attrs = attrs
+                _flag_attrs(member)
+
+    if merged_vo:
+        attrs = dict(getattr(left_parent, "attrs", None) or {})
+        attrs["vo_cell_full"] = merged_vo
+        left_parent.attrs = attrs
+        _flag_attrs(left_parent)
+
+    ordered = await _load_frames(session, int(project.id))
+    live_left = next(
+        (fr for fr in ordered if int(fr.id) == int(left_parent.id)), left_parent
+    )
+    _refresh_shots_in_beat(ordered, live_left)
+    await session.flush()
+
+    after = await _load_frames(session, int(project.id))
+    after_numbers = [int(fr.number) for fr in after]
+    if after_numbers != before_numbers:
+        raise RuntimeError("склейка сцен не должна менять номера кадров")
+    _, members = scene_group(after, live_left)
+    logger.info(
+        "montage merge scenes #{} {}+{} → ячейка {} кадров={}",
+        project.id,
+        left_parent.number,
+        right_parent.number,
+        live_left.number,
+        len(members),
+    )
+    return {
+        "ok": True,
+        "parent_id": int(live_left.id),
+        "parent_number": int(live_left.number),
+        "merged_frames": len(right_members),
+        "vo_scene_size": len(members),
     }

@@ -19,6 +19,7 @@ from app.services.montage_ai_change import (
     rewrite_prompt_via_gpt,
     strip_ai_change_reply,
     system_for_kind,
+    trim_style_encyclopedia,
     write_ai_change_db_card,
 )
 from app.services.montage_board_meta import normalize_queue_ops
@@ -58,6 +59,17 @@ def test_system_image_locks_plan_and_objects() -> None:
     assert "STYLE" in sys
     assert "JSON" in sys
     assert "агент" in sys.lower() or "вложенн" in sys.lower()
+    assert "сетк" in sys.lower() or "клонир" in sys.lower()
+    assert "6 коротких" in sys or "словар" in sys.lower()
+
+
+def test_trim_style_encyclopedia_keeps_character_block() -> None:
+    scene = "Reference: character sheet for c02 — official at the left desk."
+    style = "STYLE: " + ("watercolor noir dictionary word " * 80)
+    out = trim_style_encyclopedia(f"{scene}\n\n{style}", max_style=200)
+    assert out.startswith("Reference: character sheet for c02")
+    assert "STYLE:" in out
+    assert len(out) < len(scene) + 220
 
 
 def test_system_does_not_embed_agent_text() -> None:

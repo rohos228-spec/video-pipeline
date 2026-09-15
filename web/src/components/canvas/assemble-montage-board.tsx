@@ -22,6 +22,7 @@ import {
   ChevronDown,
   ChevronRight,
   Clapperboard,
+  Link2,
   Loader2,
   MoreHorizontal,
   Plus,
@@ -60,6 +61,7 @@ import {
   AnchorCell,
   CoverageMenu,
   RoleCell,
+  SceneActionBlock,
   SceneCell,
   SceneDataCell,
   TemplateCell,
@@ -169,6 +171,7 @@ function slotKeyFromOp(op: Pick<MontagePendingOp, "type" | "frame_number" | "sho
   if (t === "coverage_stitch") return `${op.frame_number}:stitch`;
   if (t === "coverage_light") return `${op.frame_number}:light`;
   if (t === "coverage_set") return `${op.frame_number}:set`;
+  if (t === "coverage_scene_action") return `${op.frame_number}:scene_action`;
   if (t === "coverage_sense") return `${op.frame_number}:sense`;
   if (t === "coverage_visual_type") return `${op.frame_number}:visual_type`;
   if (t === "coverage_place") return `${op.frame_number}:place`;
@@ -227,6 +230,7 @@ function describePendingOp(op: MontagePendingOp): string {
     op.correction ||
     "";
   const labels: Record<string, string> = {
+    coverage_scene_action: "главное действие",
     coverage_sense: "смысл",
     coverage_visual_type: "тип",
     coverage_place: "место",
@@ -313,6 +317,7 @@ const COVERAGE_QUEUE_TYPES = new Set([
   "coverage_stitch",
   "coverage_light",
   "coverage_set",
+  "coverage_scene_action",
   "coverage_sense",
   "coverage_visual_type",
   "coverage_place",
@@ -344,6 +349,7 @@ type PendingCoverage = {
   bg?: string;
   accent?: string;
   feature?: string;
+  scene_action?: string;
 };
 
 function pendingCoverageForFrame(
@@ -368,6 +374,7 @@ function pendingCoverageForFrame(
     if (op.type === "coverage_bg" && op.bg) out.bg = op.bg;
     if (op.type === "coverage_accent" && op.accent) out.accent = op.accent;
     if (op.type === "coverage_feature" && op.feature) out.feature = op.feature;
+    if (op.type === "coverage_scene_action" && op.action) out.scene_action = op.action;
     if (op.type === "coverage_template" && op.template) out.template = op.template;
     if (op.type === "coverage_anchors" && op.anchors) out.anchors = op.anchors;
     if (op.type === "coverage_kind") {
@@ -620,26 +627,17 @@ function parentFrameOf(
 function voSceneNumber(fr: MontageBoardFrame): number {
   const n = fr.vo_scene_number;
   if (typeof n === "number" && n > 0) return n;
-  if (
-    typeof fr.shot_parent_number === "number" &&
-    fr.shot_parent_number > 0 &&
-    fr.shot_parent_number !== fr.number
-  ) {
-    return fr.shot_parent_number;
-  }
-  if (fr.ref_parent?.number) return fr.ref_parent.number;
   return fr.number;
 }
 
 function isChildOfScene(fr: MontageBoardFrame, sceneKey: number): boolean {
-  if (voSceneNumber(fr) === sceneKey && fr.number !== sceneKey) return true;
-  if (fr.shot_kind === "child" && fr.shot_parent_number === sceneKey) return true;
-  if (fr.ref_parent?.number === sceneKey) return true;
-  return false;
+  return voSceneNumber(fr) === sceneKey && fr.number !== sceneKey;
 }
 
 type SceneRange = {
+  /** Уникальный ключ блока = номер первого кадра на пайплайне, не VO-сцена. */
   key: number;
+  scene: number;
   start: number;
   end: number;
   frames: MontageBoardFrame[];
@@ -648,13 +646,13 @@ type SceneRange = {
 function sceneRanges(frames: MontageBoardFrame[]): SceneRange[] {
   const out: SceneRange[] = [];
   frames.forEach((fr, i) => {
-    const key = voSceneNumber(fr);
+    const scene = voSceneNumber(fr);
     const last = out[out.length - 1];
-    if (last && (last.key === key || isChildOfScene(fr, last.key))) {
+    if (last && (last.scene === scene || isChildOfScene(fr, last.scene))) {
       last.end = i;
       last.frames.push(fr);
     } else {
-      out.push({ key, start: i, end: i, frames: [fr] });
+      out.push({ key: fr.number, scene, start: i, end: i, frames: [fr] });
     }
   });
   return out;
@@ -710,15 +708,21 @@ function InsertGutter({
   as,
   label,
   onClick,
+  mergeLabel,
+  onMerge,
+  mergeDisabled,
   gap = "scene",
 }: {
   as: "th" | "td";
   label: string;
   onClick: () => void;
+  mergeLabel?: string;
+  onMerge?: () => void;
+  mergeDisabled?: boolean;
   gap?: "scene" | "shot";
 }) {
   const scene = gap === "scene";
-  const inner = (
+  const plusBtn = (
     <button
       type="button"
       title={label}
@@ -726,7 +730,7 @@ function InsertGutter({
       className={cn(
         "group/add flex items-center justify-center transition",
         scene
-          ? "h-full min-h-[2.5rem] w-full self-stretch border-l border-white/20 bg-white/[0.03] text-white/30 hover:bg-white/10 hover:text-black"
+          ? "h-7 w-full text-white/30 hover:text-black"
           // Зазор между шотами всего 4px — кнопка вылезает за колонку, чтобы в
           // неё можно было попасть мышью, но саму таблицу не расширяет.
           : "absolute inset-y-0 left-1/2 z-20 w-6 -translate-x-1/2 text-white/20 hover:text-black",
@@ -735,13 +739,31 @@ function InsertGutter({
       <span
         className={cn(
           "flex items-center justify-center rounded-full border border-dashed border-transparent opacity-0 transition",
-          scene ? "h-7 w-4" : "h-5 w-5",
+          scene ? "h-6 w-6" : "h-5 w-5",
           "group-hover/add:border-transparent group-hover/add:bg-[rgba(209,254,23,1)] group-hover/add:opacity-100",
         )}
       >
         <Plus className="h-3 w-3" />
       </span>
     </button>
+  );
+  const inner = scene ? (
+    <div className="flex h-full min-h-[3.25rem] w-full flex-col items-center justify-center gap-0.5 self-stretch border-l border-white/20 bg-white/[0.03]">
+      {plusBtn}
+      {onMerge ? (
+        <button
+          type="button"
+          title={mergeLabel || "Объединить ячейки в одну сцену"}
+          disabled={mergeDisabled}
+          onClick={onMerge}
+          className="flex h-6 w-6 items-center justify-center rounded-md text-white/45 transition hover:bg-[rgba(209,254,23,0.2)] hover:text-[rgba(209,254,23,1)] disabled:opacity-40"
+        >
+          <Link2 className="h-3.5 w-3.5" />
+        </button>
+      ) : null}
+    </div>
+  ) : (
+    plusBtn
   );
   const cls = scene ? SCENE_GAP_CLASS : SHOT_GAP_CLASS;
   if (as === "th") {
@@ -2732,7 +2754,7 @@ export function AssembleMontageBoard({
   const handleDeleteFrame = async (fr: MontageBoardFrame) => {
     if (!projectId) return;
     const ok = window.confirm(
-      `Удалить кадр #${fr.number}${fr.shot_kind === "parent" ? " и дочерние" : ""}?`,
+      `Удалить кадр #${fr.number}? Остальные кадры сцены останутся.`,
     );
     if (!ok) return;
     setFrameEditBusy(true);
@@ -2760,6 +2782,30 @@ export function AssembleMontageBoard({
       setAddFrame(null);
       refreshBoard();
       toast.success(`Кадр #${res.number} добавлен`);
+    } catch (e) {
+      toast.error(errorMessageFromUnknown(e));
+    } finally {
+      setFrameEditBusy(false);
+    }
+  };
+
+  const mergeScenesAt = async (left: MontageBoardFrame, right: MontageBoardFrame) => {
+    if (!projectId) return;
+    const ok = window.confirm(
+      `Объединить ячейки #${left.number} и #${right.number} в одну сцену?`,
+    );
+    if (!ok) return;
+    setFrameEditBusy(true);
+    try {
+      const res = await api.mergeMontageScenes(
+        projectId,
+        left.frame_id,
+        right.frame_id,
+      );
+      refreshBoard();
+      toast.success(
+        `Сцена #${res.parent_number}: ${res.vo_scene_size} кадров`,
+      );
     } catch (e) {
       toast.error(errorMessageFromUnknown(e));
     } finally {
@@ -3155,14 +3201,17 @@ export function AssembleMontageBoard({
   );
 
   const parentChoicesFor = useCallback(
-    (frameNumber: number) =>
-      frames
+    (frameNumber: number) => {
+      return frames
         .filter((f) => f.number !== frameNumber)
+        .slice()
+        .sort((a, b) => a.number - b.number)
         .map((f) => ({
           number: f.number,
           kind: f.shot_kind || "",
           vo: (f.voiceover_text || "").slice(0, 70),
-        })),
+        }));
+    },
     [frames],
   );
 
@@ -3193,6 +3242,13 @@ export function AssembleMontageBoard({
           parentNumber={parentNumber}
           frameNumber={fr.number}
           parentChoices={parentChoicesFor(fr.number)}
+          fallbackParentNumber={
+            typeof fr.vo_scene_number === "number" &&
+            fr.vo_scene_number > 0 &&
+            fr.vo_scene_number !== fr.number
+              ? fr.vo_scene_number
+              : parentNumber
+          }
           pending={hasPendingType(fr.number, "coverage_kind") || Boolean(kindOverride[fr.number])}
           disabled={sceneDisabled}
           onKind={(nextKind, nextParent) =>
@@ -3279,6 +3335,40 @@ export function AssembleMontageBoard({
     return null;
   };
 
+  const enqueueSceneActionNow = useCallback(
+    (frameNumber: number, action: string) => {
+      const op: MontagePendingOp = {
+        type: "coverage_scene_action",
+        frame_number: frameNumber,
+        shot: 1,
+        action,
+      };
+      localQueueDirtyRef.current = true;
+      const next = [
+        ...pendingOpsRef.current.filter(
+          (x) =>
+            !(x.frame_number === frameNumber && x.type === "coverage_scene_action"),
+        ),
+        op,
+      ];
+      pendingOpsRef.current = next;
+      persistQueue(next);
+      setPendingOps(next);
+      toastQueued(
+        `Кадр #${frameNumber}: главное действие в очереди — нажмите «Применить правки»`,
+      );
+    },
+    [persistQueue],
+  );
+
+  const applySceneActionNow = useCallback(
+    (frameNumber: number, action: string) => {
+      enqueueSceneActionNow(frameNumber, action);
+      applyMutation.mutate();
+    },
+    [applyMutation, enqueueSceneActionNow],
+  );
+
   /** Клетка на всю VO-ячейку: окно формата сцены. */
   const renderSceneSpanCell = (key: RowKey, range: SceneRange) => {
     const head = range.frames[0];
@@ -3288,6 +3378,18 @@ export function AssembleMontageBoard({
     if (key !== "scene_info") return null;
     return (
       <SceneCell
+        action={
+          <SceneActionBlock
+            value={(pending.scene_action ?? head.scene_action ?? "").trim()}
+            pending={hasPendingType(head.number, "coverage_scene_action")}
+            disabled={sceneDisabled}
+            applyBusy={applyMutation.isPending || applyRunning}
+            onQueue={(action) =>
+              queueCoverage({ ...base, type: "coverage_scene_action", action })
+            }
+            onApply={(action) => applySceneActionNow(head.number, action)}
+          />
+        }
         template={
           <TemplateCell
             projectId={projectId}
@@ -3734,6 +3836,21 @@ export function AssembleMontageBoard({
                                       ].frame_id,
                               })
                             }
+                            mergeLabel={
+                              ri > 0
+                                ? `Объединить сцену ${ri} и сцену ${ri + 1} в одну`
+                                : undefined
+                            }
+                            onMerge={
+                              ri > 0
+                                ? () =>
+                                    void mergeScenesAt(
+                                      ranges[ri - 1].frames[0],
+                                      range.frames[0],
+                                    )
+                                : undefined
+                            }
+                            mergeDisabled={frameEditBusy}
                           />
                           {range.frames.map((fr, fi) => (
                             <Fragment key={fr.frame_id}>

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -53,14 +55,50 @@ def _disk_has_image(scenes_dir: Path, number: int) -> bool:
     )
 
 
+def quarantine_frame_media(project: Project, number: int) -> list[str]:
+    """Убрать PNG/MP4 удалённого кадра, чтобы монтаж не воскресил его с диска."""
+    data_dir = Path(project.data_dir)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dest = data_dir / "old" / "scenes" / f"deleted-{stamp}_frame_{int(number):03d}"
+    moved: list[str] = []
+    for folder, pattern in (
+        (data_dir / "scenes", f"frame_{int(number):03d}_*"),
+        (data_dir / "videos", f"clip_{int(number):03d}_*"),
+    ):
+        if not folder.is_dir():
+            continue
+        hits = [p for p in folder.glob(pattern) if p.is_file()]
+        if not hits:
+            continue
+        dest.mkdir(parents=True, exist_ok=True)
+        for src in hits:
+            target = dest / src.name
+            if target.exists():
+                target = dest / f"{src.stem}_{stamp}{src.suffix}"
+            shutil.move(str(src), str(target))
+            moved.append(src.name)
+    if moved:
+        logger.info(
+            "[#{}] quarantine_frame_media #{} → {} ({})",
+            project.id,
+            number,
+            dest.name,
+            len(moved),
+        )
+    return moved
+
+
 async def ensure_frames_from_disk_media(
     session: AsyncSession,
     project: Project,
+    *,
+    fill_gaps: bool = False,
 ) -> list[int]:
-    """Создать отсутствующие Frame по PNG/MP4 на диске.
+    """Создать Frame по PNG/MP4 на диске.
 
-    Нужно, когда пользователь скопировал ``scenes/`` и ``videos/`` в новый
-    проект без ``project.xlsx`` / шага «Разбивка» — иначе монтаж пустой.
+    По умолчанию только в пустом проекте. Иначе дырка после удаления
+    кадра (остался ``frame_NNN_*.png``) снова становится карточкой — дубль.
+    ``fill_gaps=True`` — явный импорт недостающих номеров.
     """
     numbers = discover_frame_numbers_on_disk(project.data_dir)
     if not numbers:
@@ -74,6 +112,8 @@ async def ensure_frames_from_disk_media(
             )
         ).scalars().all()
     }
+    if existing and not fill_gaps:
+        return []
     missing = sorted(n for n in numbers if n not in existing)
     if not missing:
         return []

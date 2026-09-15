@@ -794,6 +794,36 @@ async def montage_board_insert_frame(
     }
 
 
+@router.post("/{project_id}/montage-board/scenes/merge")
+async def montage_board_merge_scenes(
+    project_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    """Склеить две соседние VO-ячейки в одну сцену (без перенумерации)."""
+    from app.services.montage_board_frames import merge_montage_scenes
+
+    p = _project_or_404(await session.get(Project, project_id))
+    try:
+        result = await merge_montage_scenes(
+            session,
+            p,
+            left_frame_id=int(body["left_frame_id"]),
+            right_frame_id=int(body["right_frame_id"]),
+        )
+    except (KeyError, TypeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail="нужны left_frame_id и right_frame_id") from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"montage_scenes_merged": True, "parent_id": result.get("parent_id")},
+    )
+    return result
+
+
 @router.patch("/{project_id}/montage-board/frames/{frame_id}/voiceover")
 async def montage_board_set_voiceover(
     project_id: int,

@@ -160,6 +160,15 @@ def test_is_transient_network_error() -> None:
         )
         is True
     )
+    assert (
+        mod._is_transient_network_error(
+            OutseeImageError(
+                "Outsee API network /api/v1/images/generate: ",
+                context={"path": "/api/v1/images/generate", "network": True},
+            )
+        )
+        is True
+    )
     assert mod._is_transient_network_error(OutseeImageError("контент отклонён")) is False
 
 
@@ -212,6 +221,53 @@ async def test_prepare_prompt_compresses_when_over_limit(monkeypatch) -> None:
     )
     assert len(out) == 4000
     assert calls
+
+
+@pytest.mark.asyncio
+async def test_generate_image_network_does_not_rewrite(monkeypatch) -> None:
+    """Сеть Outsee — не GPT-rewrite промта (кадр 77: 3 fail + rewrite + 3 fail)."""
+    attempts: list[str] = []
+    rewrite_calls: list[str] = []
+
+    class FakeOutsee:
+        async def generate_image(self, prompt: str, out_path, **kwargs):
+            attempts.append(prompt)
+            raise OutseeImageError(
+                "Outsee API network /api/v1/images/generate: ConnectError",
+                context={"path": "/api/v1/images/generate", "network": True},
+            )
+
+    class FakeGpt:
+        async def ask_fresh(self, ask: str, *, timeout: float = 300, project_id=None) -> str:
+            rewrite_calls.append(ask)
+            return "rewritten after network " * 8
+
+    async def fake_prepare(gpt, body, prefix, *, project_id=None):
+        return body
+
+    async def no_sleep(*_a, **_k):
+        return None
+
+    fake_outsee = FakeOutsee()
+    monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
+    monkeypatch.setattr(mod, "sleep_cancellable", no_sleep)
+    monkeypatch.setattr("app.bots.outsee_http.outsee_api_configured", lambda: True)
+    monkeypatch.setattr("app.bots.outsee_http.generate_image", fake_outsee.generate_image)
+
+    with pytest.raises(OutseeImageError, match="network"):
+        await mod.generate_image_with_retries(
+            fake_outsee,
+            FakeGpt(),
+            prompt="scene at the desk " * 10,
+            out_path=__import__("pathlib").Path("out.png"),
+            max_attempts_per_prompt=3,
+            gpt_rewrite=True,
+            project_id=1,
+            model_slug="gpt-image-2",
+        )
+
+    assert len(attempts) == 3
+    assert rewrite_calls == []
 
 
 @pytest.mark.asyncio
@@ -536,6 +592,30 @@ def test_hard_truncate_keeps_style_cuts_scene() -> None:
     assert "Negative:" in cut
     assert len(cut) <= 900
     assert cut.index("STYLE:") > 0
+
+
+def test_hard_truncate_keeps_identity_lock() -> None:
+    lock = (
+        "Image 1 is the identity reference of c02 — use this face.\n"
+        "Exactly one living body of c02."
+    )
+    scene = lock + "\n\n" + ("official writes at the worn desk " * 80)
+    text = scene + "\n\n" + _STYLE
+    cut = mod._hard_truncate_prompt(text, 900)
+    assert cut.startswith("Image 1 is the identity reference of c02")
+    assert "STYLE:" in cut
+    assert len(cut) <= 900
+
+
+def test_hard_truncate_caps_encyclopedia_style() -> None:
+    lock = "Image 1 is the identity reference of c02 — official left.\n\nсцена стол"
+    style = "STYLE: " + ("archival noir watercolor dictionary " * 120)
+    text = lock + "\n\n" + style
+    cut = mod._hard_truncate_prompt(text, 2000)
+    assert "identity reference of c02" in cut
+    assert "сцена стол" in cut
+    assert len(cut) <= 2000
+    assert cut.index("identity reference") < cut.index("STYLE:")
 
 
 @pytest.mark.asyncio

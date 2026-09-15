@@ -86,6 +86,163 @@ def parse_scene_chain(action: str) -> list[dict[str, Any]]:
     return scenes
 
 
+def format_scene_chain(scenes: list[dict[str, Any]]) -> str:
+    """Обратная сборка ``N. место — действие`` + ``(закадр)``."""
+    lines: list[str] = []
+    for item in scenes:
+        if not isinstance(item, dict):
+            continue
+        try:
+            n = int(item.get("n") or 0)
+        except (TypeError, ValueError):
+            continue
+        if n < 1:
+            continue
+        place = " ".join(str(item.get("place") or "").split())
+        act = " ".join(str(item.get("action") or "").split())
+        head = f"{n}. {place} — {act}" if place else f"{n}. {act}"
+        lines.append(head)
+        vo = plain_scene_vo(str(item.get("vo") or ""))
+        if vo:
+            lines.append(f"({vo})")
+    return "\n".join(lines)
+
+
+_META_ACTION_RE = re.compile(
+    r"(?i)\b(?:покажи(?:те)?\s+сцену\s+как\s+набор\s+кадров|"
+    r"как\s+набор\s+кадров|"
+    r"нужно\s+потом\s+показать|"
+    r"потом\s+показать|"
+    r"разбей(?:те)?\s+на\s+кадры)\b[,.:;]?\s*"
+)
+_BEAT_SPLIT_RE = re.compile(
+    r"(?<=[.!?])\s+|(?:^|[\s,;])(?:нужно\s+)?потом(?:\s+показать)?[,:]?\s+",
+    re.IGNORECASE,
+)
+
+
+def split_scene_action_beats(text: str) -> list[str]:
+    """Проза или цепь → видимые шаги сцены, без режиссёрской мета-обёртки."""
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    chain = parse_scene_chain(raw)
+    if len(chain) >= 2:
+        beats = [
+            " ".join(str(item.get("action") or "").split())
+            for item in chain
+            if " ".join(str(item.get("action") or "").split())
+        ]
+        if len(beats) >= 2:
+            return beats
+    body = raw
+    if chain:
+        body = " ".join(str(chain[0].get("action") or "").split()) or raw
+    body = _META_ACTION_RE.sub(" ", body)
+    body = " ".join(body.split())
+    chunks = [p.strip(" ,.;:—-") for p in _BEAT_SPLIT_RE.split(body) if p and p.strip()]
+    beats: list[str] = []
+    for chunk in chunks:
+        piece = " ".join(chunk.split())
+        piece = re.sub(r"(?i)^как\s+", "", piece).strip()
+        if len(piece) < 8:
+            if beats:
+                beats[-1] = f"{beats[-1]} {piece}".strip()
+            continue
+        beats.append(piece)
+    if len(beats) == 1 and " и " in beats[0]:
+        extra = [p.strip() for p in re.split(r"(?i)\s+и\s+(?=заставля|наказыва|прода)", beats[0]) if p.strip()]
+        if len(extra) > 1:
+            beats = extra
+    return beats or ([body] if body else [])
+
+
+def explode_scene_action_to_kadry(
+    action: str,
+    *,
+    place: str = "",
+    vo: str = "",
+    cell_number: int = 1,
+) -> list[dict[str, Any]]:
+    """Главное действие → по кадру на шаг. Закадр режется, шаги не выкидываются."""
+    from app.services.scene_design.camera_expand import split_text_into_parts
+
+    beats = split_scene_action_beats(action)
+    if not beats:
+        return []
+    loc = " ".join((place or "").split())
+    vo_plain = " ".join(plain_scene_vo(vo).split())
+    parts = split_text_into_parts(vo_plain, len(beats)) if vo_plain else [""] * len(beats)
+    if len(parts) < len(beats):
+        parts = list(parts) + [""] * (len(beats) - len(parts))
+    master = f"{int(cell_number)}-S1-K1"
+    out: list[dict[str, Any]] = []
+    prev_place = ""
+    for i, beat in enumerate(beats):
+        scene = {
+            "n": i + 1,
+            "place": loc,
+            "action": beat,
+            "vo": parts[i],
+            "blob": f"{loc} {beat}",
+        }
+        tid = select_template_when(scene, prev_place)
+        prev_place = loc or prev_place
+        rows = catalog_shot_rows(tid, same_place=bool(i and loc))
+        row = rows[0] if rows else {}
+        plan = str(row.get("plan") or "СРЕДНИЙ").split("/")[0].strip() or "СРЕДНИЙ"
+        angle = str(row.get("angle") or "фронт").split("/")[0].strip()
+        if angle == "—":
+            angle = ""
+        out.append(
+            {
+                "id": f"{int(cell_number)}-S1-K{i + 1}",
+                "parent_id": None if i == 0 else master,
+                "порядок": i + 1,
+                "сцена": 1,
+                "шаблон": tid,
+                "план": plan,
+                "ракурс": angle,
+                "место": loc,
+                "действие": beat,
+                "закадр": " ".join(str(parts[i] or "").split()),
+            }
+        )
+    return out
+
+
+def normalize_scene_action_text(
+    text: str,
+    *,
+    place: str = "",
+    vo: str = "",
+) -> str:
+    """Проза или уже цепь → канон ``1. место — действие`` + ``(закадр)``.
+
+    Не выдумывает сюжет: прозу кладёт в одну сцену, закадр — дословно.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    parsed = parse_scene_chain(raw)
+    vo_plain = " ".join(plain_scene_vo(vo).split())
+    loc = " ".join((place or "").split())
+    if parsed:
+        missing_vo = all(not plain_scene_vo(str(item.get("vo") or "")) for item in parsed)
+        if missing_vo and vo_plain and len(parsed) == 1:
+            parsed[0]["vo"] = vo_plain
+            if loc and not str(parsed[0].get("place") or "").strip():
+                parsed[0]["place"] = loc
+            return format_scene_chain(parsed)
+        return raw.strip()
+    loc = loc or "сцена"
+    body = " ".join(raw.split())
+    lines = [f"1. {loc} — {body}"]
+    if vo_plain:
+        lines.append(f"({vo_plain})")
+    return "\n".join(lines)
+
+
 def plain_scene_vo(raw: str) -> str:
     """Кусок закадра сцены без обёртки ``(...)``."""
     text = " ".join((raw or "").split())
@@ -100,7 +257,7 @@ def plain_scene_vo(raw: str) -> str:
 # T2; приказ/отказ/возврат — T7. T5 = только ДЛИТЕЛЬНАЯ работа руками.
 _RE_T0_TITR = r"титр|имя появляется"
 _RE_T1 = (
-    r"говор(и|ю)|спор(и|ят)|спрашива|отвеча|диалог|бесед|допрашива|допрос|"
+    r"говор(и|ю)|крич|ор(ёт|ут|ал)|спор(и|ят)|спрашива|отвеча|диалог|бесед|допрашива|допрос|"
     r"расспрашива|объясня|обща|здорова|переговар|шепч|совеща|рассказыва|"
     r"рассказал|ссор|приветств|выслушива|выслушал|требу(ет|ют)|доказыва|"
     r"возража|оправдыва|защища(ет|ют|л)ся"

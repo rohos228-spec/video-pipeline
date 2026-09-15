@@ -537,6 +537,7 @@ def frame_board_scene_cell(frames: list[Any], frame: Any) -> dict[str, Any]:
         "scene_visual_type": scene.get("visual_type") or "",
         "scene_feature": scene.get("feature") or "",
         "scene_template_auto": scene_template_auto(parent),
+        "scene_action": main_action_text(parent),
         "vo_scene_number": int(parent.number),
         "vo_scene_size": len(members),
     }

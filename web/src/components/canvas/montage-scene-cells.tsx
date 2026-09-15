@@ -336,6 +336,7 @@ export function RoleCell({
   parentNumber,
   frameNumber,
   parentChoices,
+  fallbackParentNumber,
   pending,
   disabled,
   compact,
@@ -346,6 +347,8 @@ export function RoleCell({
   parentNumber: number | null;
   frameNumber: number;
   parentChoices: Array<{ number: number; kind: string; vo: string }>;
+  /** Still-родитель по умолчанию: голова этой же VO-сцены, не кадр #1 проекта. */
+  fallbackParentNumber?: number | null;
   pending?: boolean;
   disabled?: boolean;
   /** Компактная полоска поверх картинки кадра. */
@@ -354,6 +357,7 @@ export function RoleCell({
   onDeleteChild: () => void;
 }) {
   const fallbackParent =
+    fallbackParentNumber ??
     parentChoices.find((p) => p.kind === "parent")?.number ??
     parentChoices[0]?.number ??
     null;
@@ -1182,19 +1186,108 @@ export function SceneDataCell({
 }
 
 /**
- * Сцена = одна ячейка закадра. В полосе «Сцены» — формат (T0…T10)
- * и кнопка данных ячейки на всю VO-ячейку.
+ * Главное действие сцены: проза или цепь. Большая кнопка кладёт разбор
+ * в очередь и сразу запускает «Применить правки».
+ */
+export function SceneActionBlock({
+  value,
+  pending,
+  disabled,
+  applyBusy,
+  onQueue,
+  onApply,
+}: {
+  value: string;
+  pending?: boolean;
+  disabled?: boolean;
+  applyBusy?: boolean;
+  onQueue: (action: string) => void;
+  onApply: (action: string) => void;
+}) {
+  const [text, setText] = useState(value);
+  useEffect(() => {
+    setText(value);
+  }, [value]);
+
+  const commitQueue = () => {
+    const next = text.trim();
+    if (!next || next === value.trim()) return;
+    onQueue(next);
+  };
+
+  const runApply = () => {
+    const next = text.trim();
+    if (!next) return;
+    onApply(next);
+  };
+
+  return (
+    <div
+      className={cn(
+        "rounded-lg border p-2",
+        pending
+          ? "border-amber-400/50 bg-amber-500/10"
+          : "border-[rgba(209,254,23,0.35)] bg-[rgba(209,254,23,0.06)]",
+      )}
+    >
+      <span className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-[rgba(209,254,23,0.9)]">
+        главное действие сцены
+        {pending ? <span className="h-1.5 w-1.5 rounded-full bg-amber-300/80" /> : null}
+      </span>
+      <textarea
+        className={cn(FIELD, "min-h-[7rem] resize-y text-[12px]")}
+        value={text}
+        disabled={disabled}
+        placeholder={
+          "Проза или цепь.\nТкач входит в архив, тянет папку, открывает, читает.\nили\n1. архив — Ткач входит и берёт папку\n(кусок закадра)"
+        }
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commitQueue}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            runApply();
+          }
+          if (e.key === "Escape") setText(value);
+        }}
+      />
+      <button
+        type="button"
+        disabled={disabled || applyBusy || !text.trim()}
+        onClick={runApply}
+        className={cn(
+          "mt-2 flex h-12 w-full items-center justify-center gap-2 rounded-md text-sm font-semibold transition disabled:opacity-40",
+          "bg-[rgba(209,254,23,0.95)] text-black hover:bg-[rgba(209,254,23,1)]",
+        )}
+      >
+        {applyBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+        Разобрать на кадры
+      </button>
+      <p className={cn(HINT, "mt-1.5")}>
+        ноды покрытия: кадры, родитель/дети, нарезка закадра. Кнопка ставит
+        правку в очередь и сразу жмёт «Применить правки».
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Сцена = одна ячейка закадра. В полосе «Сцены» — главное действие,
+ * формат (T0…T10) и кнопка данных ячейки на всю VO-ячейку.
  */
 export function SceneCell({
+  action,
   template,
   data,
 }: {
+  action?: React.ReactNode;
   template?: React.ReactNode;
   data?: React.ReactNode;
 }) {
-  if (!template && !data) return null;
+  if (!action && !template && !data) return null;
   return (
-    <div className="min-w-0 space-y-1">
+    <div className="min-w-0 space-y-2">
+      {action}
       {template}
       {data}
     </div>

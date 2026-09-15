@@ -124,15 +124,30 @@ def fit_prompt_for_outsee(
     if len(raw) <= max_chars:
         return raw
     scene, style = _split_style_lock(raw)
+    max_style = min(int(max_chars * 0.42), max(400, max_chars - 1200 - 2))
+    if style and len(style) > max_style:
+        style = _cut_at_space(style, max_style)
     if not style:
         return _cut_at_space(raw, max_chars)
-    sep = 2 if scene else 0
+    from app.services.image_ref_lock import split_identity_lock
+
+    lock, body = split_identity_lock(scene)
+    scene_keep = f"{lock}\n\n{body}".strip() if lock else scene
+    sep = 2 if scene_keep else 0
     scene_limit = max_chars - len(style) - sep
     if scene_limit < 40:
         if len(style) <= max_chars:
             return style
         return _cut_at_space(style, max_chars)
-    return f"{_cut_at_space(scene, scene_limit)}\n\n{style}"
+    if len(scene_keep) <= scene_limit:
+        return f"{scene_keep}\n\n{style}" if scene_keep else style
+    if lock:
+        body_limit = scene_limit - len(lock) - (2 if body else 0)
+        if body_limit < 40:
+            cut_lock = _cut_at_space(lock, scene_limit)
+            return f"{cut_lock}\n\n{style}"
+        return f"{lock}\n\n{_cut_at_space(body, body_limit)}\n\n{style}"
+    return f"{_cut_at_space(scene_keep, scene_limit)}\n\n{style}"
 
 
 def rewrite_hero_ref_prompt(

@@ -1087,6 +1087,7 @@ async def _claim_shot1_batch(
     from app.services.vo_shot_expand import (
         find_coverage_parent_frame,
         is_shot_child,
+        uses_parent_still,
     )
 
     if limit < 1:
@@ -1117,7 +1118,7 @@ async def _claim_shot1_batch(
                 child = is_shot_child(fr)
                 if child != prefer_child:
                     continue
-                if child:
+                if uses_parent_still(fr):
                     parent = find_coverage_parent_frame(list(frames), fr)
                     if parent is not None and not disk_has_valid_frame_image(
                         out_dir, int(parent.number)
@@ -1192,10 +1193,10 @@ async def _coverage_parent_png(
     """PNG K1 ЭТОЙ ячейки — layout-lock только для K2/K3 группы."""
     from app.services.vo_shot_expand import (
         find_coverage_parent_frame,
-        is_shot_child,
+        uses_parent_still,
     )
 
-    if not is_shot_child(frame):
+    if not uses_parent_still(frame):
         return None
     frames = (
         await session.execute(
@@ -1751,26 +1752,28 @@ async def _generate_and_send(
 
     # Референсы: shot_02 — PNG shot_01 той же колонки.
     # K2/K3: только still родителя. Листы персонажей — только у VO-родителя.
-    from app.services.hero_ref_prompt import rewrite_hero_ref_prompt
+    from app.services.image_ref_lock import prepare_refs_and_prompt
 
+    crop_dir = project.data_dir / "tmp_gpt" / "ref_crops"
     if is_shot2:
         refs: list[Path] = [shot1_reference] if shot1_reference else []
+        if refs:
+            prompt_text, refs = prepare_refs_and_prompt(
+                prompt_text, refs, child=True
+            )
     else:
         from app.services.node_groups import canvas_has_script_frames_qc
         from app.services.vo_shot_expand import (
             is_shot_child,
             merge_parent_scene_refs,
-            with_parent_scene_lock,
         )
 
         if is_shot_child(frame):
             parent_png = await _coverage_parent_png(session, project, frame)
             refs = [parent_png] if parent_png is not None else []
-            if parent_png is not None:
-                prompt_text = with_parent_scene_lock(
-                    prompt_text,
-                    has_parent_ref=True,
-                    has_char_ref=False,
+            if refs:
+                prompt_text, refs = prepare_refs_and_prompt(
+                    prompt_text, refs, child=True
                 )
         else:
             db_ids = _character_sheet_ids_for_image(frame)
@@ -1785,31 +1788,14 @@ async def _generate_and_send(
                 refs = merge_parent_scene_refs(
                     parent_png, refs, max_refs=_OUTSEE_MAX_REFS
                 )
-            if db_ids and refs:
-                from app.services.character_sheet_ref import identity_ref_from_sheet
-
-                crop_dir = project.data_dir / "tmp_gpt" / "ref_crops"
-                cropped: list[Path] = []
-                for src in refs:
-                    ident = identity_ref_from_sheet(src, crop_dir)
-                    if ident != src:
-                        logger.info(
-                            "[#{}] frame {}: sheet {} → identity crop {}",
-                            project.id,
-                            frame.number,
-                            src.name,
-                            ident.name,
-                        )
-                    cropped.append(ident)
-                refs = cropped
+            if refs:
+                prompt_text, refs = prepare_refs_and_prompt(
+                    prompt_text,
+                    refs,
+                    sheet_ids=db_ids,
+                    cache_dir=crop_dir,
+                )
     if refs:
-        hero_ids = [] if is_shot2 else _character_sheet_ids_for_image(frame)
-        if hero_ids:
-            prompt_text = rewrite_hero_ref_prompt(
-                prompt_text, hero_ids[: len(refs)]
-            )
-        else:
-            prompt_text = rewrite_hero_ref_prompt(prompt_text, [], child=True)
         logger.info(
             "[#{}] frame {}: {} ref(ов) подгружено: {}",
             project.id, frame.number, len(refs), [str(r) for r in refs],

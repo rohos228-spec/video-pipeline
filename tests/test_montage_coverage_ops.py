@@ -104,6 +104,10 @@ def test_coverage_slot_keys_and_order() -> None:
     assert slot_key_from_op({"type": "coverage_light", "frame_number": 7}) == "7:light"
     assert slot_key_from_op({"type": "coverage_set", "frame_number": 7}) == "7:set"
     assert slot_key_from_op({"type": "coverage_sense", "frame_number": 7}) == "7:sense"
+    assert (
+        slot_key_from_op({"type": "coverage_scene_action", "frame_number": 7})
+        == "7:scene_action"
+    )
     assert slot_key_from_op({"type": "coverage_place", "frame_number": 7}) == "7:place"
     assert slot_key_from_op({"type": "coverage_kind", "frame_number": 7}) == "7:kind"
     assert SCENE_FIELD_OP_TYPES <= COVERAGE_OP_TYPES
@@ -300,17 +304,22 @@ async def test_apply_scene_fields_write_board_keys(
                 "type": "coverage_sense",
                 "frame_number": 1,
                 "sense": "новый смысл",
-            }
+            },
+            {
+                "type": "coverage_scene_action",
+                "frame_number": 5,
+                "action": "входит и берёт папку",
+            },
         ]
     )
-    assert queued == [
-        {
-            "type": "coverage_sense",
-            "frame_number": 1,
-            "shot": 1,
-            "sense": "новый смысл",
-        }
-    ]
+    assert queued[-1]["type"] == "coverage_scene_action"
+    assert queued[-1]["action"] == "входит и берёт папку"
+    assert queued[0] == {
+        "type": "coverage_sense",
+        "frame_number": 1,
+        "shot": 1,
+        "sense": "новый смысл",
+    }
 
 
 @pytest.mark.asyncio
@@ -336,7 +345,13 @@ async def test_relink_and_delete_child(session: AsyncSession, project: Project) 
         uuid=other_uid,
         voiceover_text="другой",
         status="planned",
-        attrs={"camera_subdivide": {"role": "vo_parent", "parent_uuid": other_uid}},
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": other_uid,
+                "shot_id": "3-K1",
+            }
+        },
     )
     session.add_all([project, parent, child, other])
     await session.flush()
@@ -365,6 +380,10 @@ async def test_relink_and_delete_child(session: AsyncSession, project: Project) 
     assert found is not None
     assert int(found.number) == 3
     assert is_shot_child(child2) is True
+    board = await build_montage_board(session, project)
+    c_row = next(fr for fr in board["frames"] if fr["number"] == 2)
+    assert c_row["vo_scene_number"] == 1
+    assert c_row["shot_parent_number"] == 3
 
     await apply_coverage_op(
         session,
@@ -431,9 +450,9 @@ async def test_promote_child_to_parent_drops_parent_ref(
         .all()
     )
     promoted = next(fr for fr in rows if int(fr.number) == 2)
-    assert is_shot_child(promoted) is False
+    assert is_shot_child(promoted) is True
     found = find_coverage_parent_frame(rows, promoted)
-    assert found is None or int(found.number) == 2
+    assert found is None
     assert (promoted.attrs or {}).get("characters") == "c02"
 
     refs_after, used_parent_after = await _montage_shot1_refs(
@@ -444,10 +463,268 @@ async def test_promote_child_to_parent_drops_parent_ref(
 
     board = await build_montage_board(session, project)
     c_row = next(fr for fr in board["frames"] if fr["number"] == 2)
+    p_row = next(fr for fr in board["frames"] if fr["number"] == 1)
     assert c_row["shot_kind"] == "parent"
     assert c_row["shot_parent_number"] is None
     assert c_row["ref_parent"] is None
+    assert c_row["vo_scene_number"] == 1
+    assert p_row["vo_scene_number"] == 1
+    assert p_row["vo_scene_size"] == 2
     chars_row = c_row["group_character_refs"]
     assert [r["id"] for r in chars_row] == ["c02"]
     assert chars_row[0]["code"] == "c02"
     assert chars_row[0]["name"] == "Инспектор"
+
+
+@pytest.mark.asyncio
+async def test_kind_change_does_not_split_vo_scene(
+    session: AsyncSession, project: Project
+) -> None:
+    """Родитель/дочерний меняет still, не членство в VO-сцене."""
+    parent, child = _parent_child(project.id)
+    sib_uid = "dd" * 12
+    sibling = Frame(
+        project_id=project.id,
+        number=3,
+        uuid=sib_uid,
+        voiceover_text="третий шот",
+        status="planned",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent.uuid,
+                "coverage_parent_id": "1-K1",
+            },
+        },
+    )
+    other = Frame(
+        project_id=project.id,
+        number=9,
+        uuid="cc" * 12,
+        voiceover_text="другая ячейка",
+        status="planned",
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": "cc" * 12,
+                "shot_id": "9-K1",
+            }
+        },
+    )
+    session.add_all([project, parent, child, sibling, other])
+    await session.flush()
+
+    await apply_coverage_op(
+        session,
+        project,
+        {"type": "coverage_kind", "frame_number": 2, "kind": "parent"},
+    )
+    board = await build_montage_board(session, project)
+    by_n = {fr["number"]: fr for fr in board["frames"]}
+    assert by_n[1]["vo_scene_number"] == 1
+    assert by_n[2]["vo_scene_number"] == 1
+    assert by_n[3]["vo_scene_number"] == 1
+    assert by_n[1]["vo_scene_size"] == 3
+    assert by_n[2]["shot_kind"] == "parent"
+    assert by_n[9]["vo_scene_number"] == 9
+
+    await apply_coverage_op(
+        session,
+        project,
+        {
+            "type": "coverage_kind",
+            "frame_number": 1,
+            "kind": "child",
+            "parent_number": 9,
+        },
+    )
+    board = await build_montage_board(session, project)
+    by_n = {fr["number"]: fr for fr in board["frames"]}
+    assert by_n[1]["vo_scene_number"] == 1
+    assert by_n[2]["vo_scene_number"] == 1
+    assert by_n[3]["vo_scene_number"] == 1
+    assert by_n[1]["vo_scene_size"] == 3
+    assert by_n[1]["shot_kind"] == "child"
+    assert by_n[1]["shot_parent_number"] == 9
+    assert by_n[9]["vo_scene_number"] == 9
+    assert by_n[9]["vo_scene_size"] == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_scene_action_explodes_shots(
+    session: AsyncSession, project: Project
+) -> None:
+    parent = Frame(
+        project_id=project.id,
+        number=5,
+        uuid="ee" * 12,
+        voiceover_text="Следователь вошёл в архив и снял папку с полки.",
+        duration_seconds=8,
+        status="planned",
+        attrs={
+            "place": "архив",
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": "ee" * 12,
+                "место": "архив",
+            },
+        },
+    )
+    session.add_all([project, parent])
+    await session.flush()
+
+    result = await apply_coverage_op(
+        session,
+        project,
+        {
+            "type": "coverage_scene_action",
+            "frame_number": 5,
+            "action": "следователь входит в архив, достаёт папку и читает документ",
+        },
+    )
+    assert result["ok"] is True
+    assert result["highlight"] == "5:scene_action"
+    assert result["regen_image"] is False
+    assert result["report"]["shots"] >= 1
+
+    rows = list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    head = next(fr for fr in rows if int(fr.number) == 5)
+    chain = str((head.attrs or {}).get("главное_действие") or "")
+    assert chain.startswith("1.")
+    kadry = (head.attrs or {}).get("кадры") or []
+    assert isinstance(kadry, list) and kadry
+    vo_join = " ".join(
+        " ".join((fr.voiceover_text or "").split())
+        for fr in rows
+        if " ".join((fr.voiceover_text or "").split())
+    )
+    assert "архив" in vo_join.casefold()
+    assert int(result["report"]["inserted_frames"]) == 0
+    assert "renumber" not in result
+    assert [int(fr.number) for fr in rows] == [5]
+    if len(kadry) > 1:
+        assert int(result["report"]["skipped_shots"]) == len(kadry) - 1
+
+
+@pytest.mark.asyncio
+async def test_apply_scene_action_splits_director_prose(
+    session: AsyncSession, project: Project
+) -> None:
+    parent_uid = "ee" * 12
+    child_uid = "ff" * 12
+    parent = Frame(
+        project_id=project.id,
+        number=14,
+        uuid=parent_uid,
+        voiceover_text="Крепостной крестьянин полностью зависел от помещика.",
+        duration_seconds=3.71,
+        status="planned",
+        attrs={
+            "place": "двор помещичьей усадьбы",
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+                "место": "двор помещичьей усадьбы",
+            },
+        },
+    )
+    child = Frame(
+        project_id=project.id,
+        number=15,
+        uuid=child_uid,
+        voiceover_text=(
+            "Его записывали как «душу», продавали вместе с землёй, "
+            "переселяли, наказывали и заставляли работать по воле хозяина."
+        ),
+        duration_seconds=8.21,
+        status="planned",
+        attrs={
+            "shot01_action": "старый приказчик со списком",
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "coverage_parent_id": "14-K1",
+            },
+        },
+    )
+    neighbor = Frame(
+        project_id=project.id,
+        number=16,
+        uuid="aa" * 12,
+        voiceover_text="Закон существовал, однако внутри усадьбы власть помещика.",
+        duration_seconds=4,
+        status="planned",
+        attrs={"shot01_action": "лицо приказчика"},
+    )
+    session.add_all([project, parent, child, neighbor])
+    await session.flush()
+
+    result = await apply_coverage_op(
+        session,
+        project,
+        {
+            "type": "coverage_scene_action",
+            "frame_number": 14,
+            "action": (
+                "покажи сцену как набор кадров, крепостной стоит опустив голову "
+                "и слушает как на него кричит помещик. нужно потом показать, "
+                "как его с семьей и землей один помещник продал другому. "
+                "как его наказывали потом и заставляли работать"
+            ),
+        },
+    )
+    assert result["ok"] is True
+    assert int(result["report"]["inserted_frames"]) == 0
+    assert "renumber" not in result
+    rows = list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [int(fr.number) for fr in rows] == [14, 15, 16]
+    head = next(fr for fr in rows if str(fr.uuid) == parent_uid)
+    kadry = head.attrs.get("кадры") or []
+    acts = [str(s.get("действие") or "") for s in kadry]
+    assert len(acts) >= 3
+    assert all("вход: видно всё помещение" not in a for a in acts)
+    assert any("кричит" in a for a in acts)
+    assert int(result["report"]["shots"]) == 2
+    assert int(result["report"]["skipped_shots"]) == len(kadry) - 2
+    kids = [fr for fr in rows if str(fr.uuid) == child_uid]
+    assert kids
+    assert "приказчик" not in str((kids[0].attrs or {}).get("shot01_action") or "")
+    assert is_shot_child(kids[0]) is True
+    later = next(fr for fr in rows if int(fr.number) == 16)
+    assert later.voiceover_text.startswith("Закон существовал")
+    assert str((later.attrs or {}).get("shot01_action") or "") == "лицо приказчика"
+
+
+@pytest.mark.asyncio
+async def test_apply_scene_action_rejects_empty(
+    session: AsyncSession, project: Project
+) -> None:
+    parent, _child = _parent_child(project.id)
+    session.add_all([project, parent])
+    await session.flush()
+    with pytest.raises(RuntimeError, match="главное действие сцены пустое"):
+        await apply_coverage_op(
+            session,
+            project,
+            {"type": "coverage_scene_action", "frame_number": 1, "action": "  "},
+        )

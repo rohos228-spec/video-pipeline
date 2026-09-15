@@ -39,7 +39,6 @@ from app.services.montage_coverage_ops import (
     stitch_choices_for_ui,
     stitch_label,
 )
-from app.services.node_groups import canvas_has_script_frames_qc
 from app.services.plan_shot2 import (
     MIN_SHOT2_VIDEO_PROMPT_LEN,
     ROW_IMAGE_PROMPT_2_V8,
@@ -57,6 +56,7 @@ from app.services.vo_shot_expand import (
     coverage_parent_shot_id,
     coverage_shot_id,
     find_coverage_parent_frame,
+    uses_parent_still,
     is_shot_child,
     kadry_are_scene_shots,
     looks_like_scene_chain,
@@ -254,12 +254,24 @@ def _group_refs_for_frames(
                 "item_refs": items,
             }
         shared = by_parent[pno]
-        # Сам still кадра — не реф. Реф «родитель» только у role=shot,
-        # не у VO-родителя (в т.ч. после смены child → parent).
+        still = (
+            find_coverage_parent_frame(frames, fr) if uses_parent_still(fr) else None
+        )
+        if still is not None and int(still.number) == int(fr.number):
+            still = None
+        still_ref = None
+        if still is not None:
+            if int(still.number) == pno:
+                still_ref = shared["ref_parent"]
+            else:
+                still_png = find_shot1_image(scenes_dir, int(still.number))
+                still_ref = {
+                    "number": int(still.number),
+                    "label": f"родитель #{int(still.number)}",
+                    "image_url": _preview_url(still_png),
+                }
         out[int(fr.number)] = {
-            "ref_parent": None
-            if (not is_shot_child(fr) or int(fr.number) == pno)
-            else shared["ref_parent"],
+            "ref_parent": still_ref,
             "group_character_refs": shared["group_character_refs"],
             "item_refs": shared["item_refs"],
         }
@@ -723,7 +735,10 @@ def _shot_kind_payload(
     """parent | child | "" + номер родителя + id шота родителя."""
     # Только role=shot — дочерний. leftover parent_id / K2-id / X1
     # у VO-родителя не делают кадр ребёнком и не вешают still родителя.
-    if is_shot_child(frame):
+    cs = getattr(frame, "attrs", None) or {}
+    cs = cs.get("camera_subdivide") if isinstance(cs, dict) else {}
+    coverage_kind = str((cs or {}).get("coverage_kind") or "").strip().lower()
+    if uses_parent_still(frame) and (is_shot_child(frame) or coverage_kind == "child"):
         parent = find_coverage_parent_frame(frames, frame)
         parent_number = (
             int(parent.number)
@@ -795,6 +810,7 @@ def _empty_coverage_fields() -> dict[str, Any]:
         "scene_visual_type": "",
         "scene_feature": "",
         "scene_template_auto": "",
+        "scene_action": "",
         "vo_scene_number": None,
         "vo_scene_size": 0,
     }
@@ -865,7 +881,6 @@ async def build_montage_board(
     # Project scalars / data_dir — до любого await, пока ORM ещё hot в запросе.
     project_id = int(project.id)
     data_dir = project.data_dir
-    has_qc_group = canvas_has_script_frames_qc(project)
     # Пропорции кадра: доска рисует картинку по формату проекта (9:16 / 16:9),
     # чтобы вокруг горизонтального кадра не оставалось пустого поля.
     try:
@@ -956,23 +971,7 @@ async def build_montage_board(
     entity_char_names, entity_item_names = await _entity_name_maps(session, project_id)
     # Сводка сцены живёт в монтаже, не в отдельном меню: поля считаем всегда.
     coverage_by_number = _coverage_fields_for_frames(frames, enabled=True)
-    show_coverage_rows = has_qc_group or any(
-        bool(
-            row.get("shot_kind")
-            or row.get("shot_plan")
-            or row.get("shot_action")
-            or row.get("shot_template")
-            or row.get("shot_anchor")
-            or row.get("shot_angle")
-            or row.get("shot_move")
-            or row.get("shot_stitch")
-            or row.get("scene_place")
-            or row.get("scene_set")
-            or row.get("scene_characters")
-            or row.get("scene_lighting")
-        )
-        for row in coverage_by_number.values()
-    )
+    show_coverage_rows = True
 
     xlsx_path = data_dir / "project.xlsx"
     chars_dir = data_dir / "characters"
