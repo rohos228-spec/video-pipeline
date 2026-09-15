@@ -83,6 +83,16 @@ def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, Any]:
                 out["characters"] = str(raw).strip()
                 out["персонажи"] = out["characters"]
                 break
+    # Монтаж пишет «действие»; агент img_pr ждёт shot01_action (ACTION).
+    # Не берём главное_действие — это цепь всей сцены, не шота.
+    if "shot01_action" not in out:
+        for alt in ("действие", "action"):
+            raw = src.get(alt)
+            if raw is not None and str(raw).strip():
+                out["shot01_action"] = str(raw).strip()
+                break
+    if "shot01_action" in out and "действие" not in out:
+        out["действие"] = out["shot01_action"]
     return out
 
 

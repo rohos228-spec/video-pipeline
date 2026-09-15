@@ -37,24 +37,32 @@ def build_ai_change_user_message(
     *,
     voiceover_text: str,
     instruction: str = "",
+    action: str = "",
 ) -> str:
     vo = (voiceover_text or "").strip() or "(пусто)"
     note = (instruction or "").strip()
-    extra = ""
-    if note:
-        extra = (
-            f"\n\nOPERATOR_CHANGE:\n{note}\n\n"
-            "Это заметка оператора: впиши её в новый промт по правилам агента. "
-            "Не копируй заметку дословно — переведи в визуальный промт."
+    act = (action or "").strip()
+    parts = [f"VOICEOVER:\n{vo}\n"]
+    if act:
+        parts.append(
+            f"\nACTION:\n{act}\n"
+            "\nЭто действие ЭТОГО кадра, не цепи всей сцены.\n"
         )
-    return (
-        f"VOICEOVER:\n{vo}\n"
-        f"{extra}"
+    if note:
+        parts.append(
+            f"\nOPERATOR_CHANGE:\n{note}\n\n"
+            "Это то, что оператор написал для промта. "
+            "Если там новое действие или правка действия — изобрази именно его: "
+            "OPERATOR_CHANGE важнее ACTION, если они расходятся. "
+            "Не копируй заметку дословно — переведи в визуальный промт по правилам агента."
+        )
+    parts.append(
         "\nКарточка кадра — во вложенном db_frames.json (База: место, действие, "
         "персонажи, камера, свет). Старого промта нет.\n"
         "Напиши полный промт по вложенному агенту. "
         "STYLE / Final style lock / Negative пишешь ты. Не JSON. Только промт."
     )
+    return "".join(parts)
 
 
 def write_ai_change_db_card(
@@ -77,6 +85,7 @@ def write_ai_change_db_card(
         include_characters=True,
         include_field_map=True,
     )
+    _pin_ai_change_shot_action(ctx, frame)
     path = dest_dir / "db_frames.json"
     path.write_text(
         json.dumps(ctx, ensure_ascii=False, separators=(",", ":")),
@@ -89,6 +98,47 @@ def write_ai_change_db_card(
         len(ctx.get("characters") or []),
     )
     return path
+
+
+def _pin_ai_change_shot_action(ctx: dict, frame: object) -> None:
+    """В карточке ИИзменения — действие этого шота, без цепи сцены и чужих K."""
+    from app.services.montage_board import _action_for_frame
+    from app.services.vo_shot_expand import _cs, coverage_shot_id
+
+    action = _action_for_frame(frame)
+    sid = str(_cs(frame).get("shot_id") or "").strip() or coverage_shot_id(frame)
+    for row in ctx.get("frames") or []:
+        if not isinstance(row, dict):
+            continue
+        if action:
+            row["shot01_action"] = action
+            row["действие"] = action
+        row.pop("main_action", None)
+        row.pop("главное_действие", None)
+        kadry = row.get("кадры")
+        if not isinstance(kadry, list) or not kadry:
+            continue
+        match = [
+            item
+            for item in kadry
+            if isinstance(item, dict) and str(item.get("id") or "").strip() == sid
+        ]
+        if match:
+            row["кадры"] = match
+            continue
+        if action:
+            same = [
+                item
+                for item in kadry
+                if isinstance(item, dict)
+                and str(item.get("действие") or item.get("action") or "").strip()
+                == action
+            ]
+            if same:
+                row["кадры"] = same
+                continue
+        if len(kadry) > 1:
+            row["кадры"] = [kadry[0]] if isinstance(kadry[0], dict) else kadry[:1]
 
 
 def load_img_pr_master(project: object | None) -> tuple[Path | None, str]:
@@ -191,6 +241,7 @@ async def rewrite_prompt_via_gpt(
     image_prompt: str = "",
     db_card_path: Path | None = None,
     instruction: str = "",
+    action: str = "",
 ) -> str:
     """Агент + карточка Базы + закадр → vibecode LLM → промт как есть."""
     del img_pr_rules, img_pr_variant, image_prompt
@@ -199,6 +250,7 @@ async def rewrite_prompt_via_gpt(
     user = build_ai_change_user_message(
         voiceover_text=voiceover_text,
         instruction=instruction,
+        action=action,
     )
     system = system_for_kind(kind)
     files: list[Path] = []

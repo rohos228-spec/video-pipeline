@@ -51,6 +51,7 @@ def test_img_pr_db_context_picks_scene_grammar_keys() -> None:
     assert row["voiceover_text"].startswith("закадр")
     assert "камера неподвижна" in row["animation_prompt"]
     assert row["place"] == "метро вагон"
+    assert row["shot01_action"] == "пассажир читает газету"
     assert row["shot01_bg"].startswith("серый")
     assert row["lighting"] == "fluorescent overhead"
     assert row["персонажи"] == "c01"
@@ -58,6 +59,24 @@ def test_img_pr_db_context_picks_scene_grammar_keys() -> None:
     assert "noise" not in row
     assert ctx["characters"][0]["id"] == "c01"
     assert "shot01_bg" in ctx["field_map"]
+
+
+def test_img_pr_db_context_aliases_russian_action() -> None:
+    """Монтаж пишет «действие»; в карточке для агента это shot01_action."""
+    fr = SimpleNamespace(
+        number=2,
+        uuid="def456",
+        voiceover_text="кусок",
+        meaning="",
+        animation_prompt="",
+        attrs={"действие": "рука выводит строки", "place": "кабинет"},
+    )
+    ctx = build_img_pr_db_context(
+        project_id=53, slug="aum", frames=[fr], characters=[]
+    )
+    row = ctx["frames"][0]
+    assert row["shot01_action"] == "рука выводит строки"
+    assert row["действие"] == "рука выводит строки"
 
 
 def test_img_pr_db_context_skips_frames_without_uuid() -> None:
