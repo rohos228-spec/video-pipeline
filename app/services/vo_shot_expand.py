@@ -114,10 +114,13 @@ def planned_shots_from_attrs(frame: Any) -> list[dict[str, Any]]:
 
 
 def kadry_are_scene_shots(planned: list[dict[str, Any]] | None) -> bool:
-    """Настоящие кадры сцен (T/X: шаблон / план+место), не заглушки Bnn-K1."""
+    """Настоящие кадры сцен (шаги действия / план+место), не заглушки Bnn-K1."""
     for item in planned or []:
         if not isinstance(item, dict):
             continue
+        obj = str(item.get("объект") or "").strip().casefold()
+        if obj in {"место", "тело", "двое", "предмет", "лицо", "взгляд"}:
+            return True
         template = str(item.get("шаблон") or item.get("template") or "").strip()
         tid = template.upper()
         if tid[:1] in {"T", "X"} and any(ch.isdigit() for ch in tid):
@@ -162,7 +165,7 @@ def collect_bits_for_reseed(frames: list[Any]) -> list[dict[str, Any]]:
 
 
 def strip_non_scene_kadry(frame: Any) -> bool:
-    """Снять фейковые Bnn-K1, чтобы shots GPT писал T/X с нуля."""
+    """Снять фейковые Bnn-K1, чтобы shots GPT писал кадры-шаги с нуля."""
     planned = planned_shots_from_attrs(frame)
     if not planned or kadry_are_scene_shots(planned):
         return False
@@ -1583,7 +1586,7 @@ async def expand_vo_cells_into_shots(
     """Шоты внутри ячейки.
 
     Без группы на канвасе — глобальный путь main (режем копию закадра).
-    С ``script_frames_qc`` — ячейка = сцена, дети = лестница T/X.
+    С ``script_frames_qc`` — ячейка = сцена, дети = шаги действия.
     """
     from app.services.node_groups import canvas_has_script_frames_qc
 
@@ -1698,7 +1701,7 @@ async def _expand_vo_cells_into_shots_group(
     project: Project,
     frames: list[Frame],
 ) -> tuple[list[Frame], dict[str, Any]]:
-    """Группа script_frames_qc: ячейка = сцена, дети = лестница T/X."""
+    """Группа script_frames_qc: ячейка = сцена, дети = шаги действия."""
     report: dict[str, Any] = {
         "skipped": False,
         "parents": 0,

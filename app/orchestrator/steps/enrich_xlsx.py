@@ -125,6 +125,10 @@ _QC_PROMPTS_MARKERS = (
     "prompts_qc",
     "qc промпт",
 )
+_SHOTS_QC_MARKERS = (
+    "shots_qc",
+    "qc полей кадров",
+)
 _SCENE_ANALYTICS_MARKERS = (
     "54_59",
     "scene_analytics_54_59",
@@ -220,11 +224,12 @@ def _is_scenes_to_frames_node(
 def _is_vo_cell_markup_node(
     variant: str | None, master: str | None, node_key: str | None
 ) -> bool:
-    """Биты / главное действие / сцены→кадры работают по VO-ячейке, не по шотам."""
+    """Биты / главное действие / сцены→кадры / QC полей работают по VO-ячейке."""
     return (
         _is_script_writer_node(variant, master, node_key)
         or _is_main_action_node(variant, master, node_key)
         or _is_scenes_to_frames_node(variant, master, node_key)
+        or _is_shots_qc_node(variant, master, node_key)
     )
 
 
@@ -242,7 +247,7 @@ _SCRIPT_FRAMES_QC_SUFFIXES = (
 def _is_script_frames_qc_group_node(
     variant: str | None, master: str | None, node_key: str | None
 ) -> bool:
-    """Группа script_frames_qc: биты → действие → кадры → промты → QC → отчёт."""
+    """Группа script_frames_qc: биты → действие → кадры-шаги → QC → отчёт."""
     nk = str(node_key or "")
     if any(nk.endswith(s) for s in _SCRIPT_FRAMES_QC_SUFFIXES):
         return True
@@ -263,8 +268,12 @@ def _script_frames_qc_footer_kind(
         return "action_chain"
     if nk.endswith("_fw_shots"):
         return "shots_coverage"
-    if nk.endswith(("_fw_frames", "_fw_qc")):
+    if nk.endswith("_fw_frames"):
         return "prompts"
+    if nk.endswith("_fw_qc"):
+        if _is_qc_prompts_prompt(variant, master):
+            return "prompts"
+        return "shots_qc"
     if nk.endswith("_fw_report"):
         return "report"
     if _is_script_writer_node(variant, master, node_key):
@@ -273,6 +282,8 @@ def _script_frames_qc_footer_kind(
         return "action_chain"
     if _is_scenes_to_frames_node(variant, master, node_key):
         return "shots_coverage"
+    if _is_shots_qc_node(variant, master, node_key):
+        return "shots_qc"
     return "prompts"
 
 
@@ -302,6 +313,23 @@ def _is_frame_prompts_prompt(variant: str | None, master: str | None) -> bool:
 
 def _is_qc_prompts_prompt(variant: str | None, master: str | None) -> bool:
     return any(m in _prompt_blob(variant, master) for m in _QC_PROMPTS_MARKERS)
+
+
+def _is_shots_qc_prompt(variant: str | None, master: str | None) -> bool:
+    if _is_qc_prompts_prompt(variant, master):
+        return False
+    return any(m in _prompt_blob(variant, master) for m in _SHOTS_QC_MARKERS)
+
+
+def _is_shots_qc_node(
+    variant: str | None, master: str | None, node_key: str | None
+) -> bool:
+    nk = str(node_key or "")
+    if _is_qc_prompts_prompt(variant, master):
+        return False
+    if nk.endswith("_fw_qc"):
+        return True
+    return _is_shots_qc_prompt(variant, master)
 
 
 def _is_scene_analytics_prompt(variant: str | None, master: str | None) -> bool:
@@ -417,7 +445,7 @@ async def _run_four_node_markup_pass(
     apply_kind: str,
     on_progress,
 ) -> None:
-    """Внутренний GPT-проход 4 нод: действие или T/X кадры (без ноды на канвасе)."""
+    """Внутренний GPT-проход 4 нод: действие или кадры-шаги (без ноды на канвасе)."""
     import json as _json
 
     from app.services.apply_ops_batches import (
@@ -516,13 +544,10 @@ async def _ensure_four_node_scene_shots(
     ents,
     on_progress,
 ):
-    """4 ноды: внутри fw_frames прогнать действие + T/X кадры, потом expand."""
+    """4 ноды: внутри fw_frames прогнать действие + кадры-шаги, потом expand."""
     from sqlalchemy import select as _select
 
-    from app.services.shot_templates import (
-        format_shot_templates_catalog,
-        neighbor_place_hints,
-    )
+    from app.services.shot_templates import neighbor_place_hints
     from app.services.vo_shot_expand import (
         bits_from_attrs,
         frame_has_scene_shots,
@@ -605,16 +630,8 @@ async def _ensure_four_node_scene_shots(
                 "не записал цепь сцен"
             )
     if need_shots:
-        catalog = format_shot_templates_catalog()
         neighbors = neighbor_place_hints(parents)
-        from app.services.shot_templates import format_when_assignments
-
-        when_plan = format_when_assignments(parents)
-        extra = ""
-        if neighbors:
-            extra += f"\n\n{neighbors}"
-        if when_plan:
-            extra += f"\n\n{when_plan}"
+        extra = f"\n\n{neighbors}" if neighbors else ""
         await _run_four_node_markup_pass(
             session,
             project,
@@ -629,20 +646,13 @@ async def _ensure_four_node_scene_shots(
                 "# DB SoT\n"
                 "Файл db_frames.json — VO-ячейки (uuid + voiceover_text + "
                 "главное_действие). Пиши только fields.кадры. "
-                "На каждую сцену главное_действие — свой вопрос дерева "
-                "ВЫБОР, не один шаблон на всю ячейку. T3 = «только смена "
-                "места»; руки/взгляд/путь/удар — свои T*. T8 только на "
-                "прыжок жизни/новое место, один ОБЩИЙ на мир. То же место — "
-                "сжатие без нового ОБЩЕГО, лестница планов. "
-                "Раскрой shots: роль и план из таблицы. У КАЖДОГО кадра "
-                "(K1 и K2+) текст действия — полное описание кадра "
-                "(помещение, кто, одежда, эмоция, поступок), не слоган "
-                "«тянет / открывает / берёт» и не «понял / испугался / решил». "
-                "Закадр не одно слово: крупный/деталь от 13 символов, "
-                "общий/средний от 20. "
-                "Сожми по drop_order (required=1 не трогай). "
-                "Не пиши закадр, биты, главное_действие.\n\n"
-                f"{catalog}{extra}"
+                "Один кадр = один видимый шаг из главное_действие. "
+                "Поле объект: место|тело|двое|предмет|лицо|взгляд. "
+                "Камеру можно не писать — код подставит из таблицы. "
+                "Закадр кадра 13–80 символов, цель ~45. "
+                "Склейка закадр = весь voiceover_text. Без повтора действия. "
+                "Не пиши закадр ячейки, биты, главное_действие."
+                f"{extra}"
             ),
             apply_kind="excel_gpt_no_prompts",
             on_progress=on_progress,
@@ -668,7 +678,7 @@ async def _ensure_four_node_scene_shots(
         if not any(frame_has_scene_shots(fr) for fr in parents):
             raise RuntimeError(
                 f"#{project.id} {node_key}: внутренний проход «сцены → кадры» "
-                "не записал T/X кадры[]"
+                "не записал кадры[]"
             )
     return frames_for_map
 
@@ -1532,6 +1542,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         scenes_to_frames = (not check_mode) and _is_scenes_to_frames_node(
             variant, master, node_key
         )
+        shots_qc_node = (not check_mode) and _is_shots_qc_node(
+            variant, master, node_key
+        )
         if script_writer and output_mode != "project_file":
             logger.info(
                 "[#{}] enrich_xlsx node={!r}: script_writer → force "
@@ -1942,38 +1955,33 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         "Слоган без номера = брак. Не пиши закадр и биты."
                     ).strip()
                 elif scenes_to_frames:
-                    from app.services.shot_templates import (
-                        format_shot_templates_catalog,
-                        format_when_assignments,
-                        neighbor_place_hints,
-                    )
+                    from app.services.shot_templates import neighbor_place_hints
 
-                    catalog = format_shot_templates_catalog()
                     neighbors = neighbor_place_hints(gpt_frames)
-                    when_plan = format_when_assignments(gpt_frames)
                     accompanying = (
                         f"{accompanying}\n\n"
                         "# DB SoT\n"
                         "Файл db_frames.json — VO-ячейки (uuid + voiceover_text + "
                         "главное_действие). Пиши только fields.кадры. "
-                        "На каждую сцену главное_действие — свой вопрос дерева "
-                        "ВЫБОР, не один шаблон на всю ячейку. T3 = «только смена "
-                        "места»; руки/взгляд/путь/удар — свои T*. T8 только на "
-                        "прыжок жизни/новое место. То же место — сжатие без "
-                        "нового ОБЩЕГО. Раскрой shots: роль и план из таблицы. "
-                        "K1 и K2+ — полное описание кадра (помещение, кто, "
-                        "одежда, эмоция, поступок), не слоган каталога "
-                        "«тянет / открывает / берёт». "
-                        "Закадр не одно слово: крупный/деталь от 13, "
-                        "общий/средний от 20. Сожми по drop_order "
-                        "(required=1 не трогай). "
-                        "Не пиши закадр, биты, главное_действие.\n\n"
-                        f"{catalog}"
+                        "Один кадр = один видимый шаг из главное_действие. "
+                        "Поле объект: место|тело|двое|предмет|лицо|взгляд. "
+                        "Камеру можно не писать — код подставит из таблицы. "
+                        "Закадр кадра 13–80 символов, цель ~45. "
+                        "Склейка закадр = весь voiceover_text. Без повтора действия. "
+                        "Не пиши закадр ячейки, биты, главное_действие."
                     ).strip()
                     if neighbors:
                         accompanying = f"{accompanying}\n\n{neighbors}".strip()
-                    if when_plan:
-                        accompanying = f"{accompanying}\n\n{when_plan}".strip()
+                elif shots_qc_node:
+                    accompanying = (
+                        f"{accompanying}\n\n"
+                        "# DB SoT\n"
+                        "Файл db_frames.json — VO-ячейки с fields.кадры. "
+                        "Чини только нарушителей: склейка закадра, 13–80, "
+                        "уникальность действия, объект enum, parent_id. "
+                        "Не пиши промт_картинки и промт_видео. "
+                        "Пустые ops = ок, если всё чисто."
+                    ).strip()
                 elif _is_frame_prompts_prompt(variant, master) or str(
                     node_key or ""
                 ).endswith("_fw_frames"):
@@ -2044,7 +2052,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             frame_prompts = _is_frame_prompts_prompt(variant, master) or nk.endswith(
                 "_fw_frames"
             )
-            qc_prompts = _is_qc_prompts_prompt(variant, master) or nk.endswith("_fw_qc")
+            qc_prompts = _is_qc_prompts_prompt(variant, master)
+            shots_qc = shots_qc_node or (
+                nk.endswith("_fw_qc") and not qc_prompts
+            )
             write_prompts = frame_prompts or qc_prompts
             scene_analytics = _is_scene_analytics_prompt(variant, master)
             # Нода сценария пишет только биты — свой kind (текст запрещён).
@@ -2266,7 +2277,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         )
                     ),
                     on_progress=_progress,
-                    allow_empty_ops=qc_prompts,
+                    allow_empty_ops=qc_prompts or shots_qc,
                 )
                 if fw_frames:
                     from sqlalchemy import select as _sel_fw
@@ -2448,7 +2459,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 else []
             )
             # check/report_only не пишут (или пишут DB-check без стрипа).
-            # Shot-fill не пишет промты картинки/видео; frames/QC — пишут.
+            # Shot-fill и QC полей кадров не пишут промты картинки/видео;
+            # leftover fw_frames / старый prompts_qc — пишут.
             apply_node_kind: str | None = None
             if ops_list and not check_mode:
                 from app.services.node_write_contract import filter_ops_for_node
@@ -2458,7 +2470,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     _is_frame_prompts_prompt(variant, master)
                     or _is_qc_prompts_prompt(variant, master)
                     or nk.endswith("_fw_frames")
-                    or nk.endswith("_fw_qc")
                 )
                 apply_kind = (
                     "excel_gpt_prompts" if write_prompts else "excel_gpt_no_prompts"

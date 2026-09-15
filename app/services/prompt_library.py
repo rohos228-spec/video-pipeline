@@ -134,6 +134,7 @@ SCRIPT_FRAMES_QC_PROMPT_NAMES: frozenset[str] = frozenset(
         "script_writer_ru",
         "main_action_from_bits_ru",
         "scenes_to_frames_ru",
+        "shots_qc_ru",
         "frame_prompts_continuity_ru",
         "prompts_qc_continuity_ru",
     }

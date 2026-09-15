@@ -405,7 +405,10 @@ def test_force_full_frames_keeps_shots_strips_prompts() -> None:
     from app.services.db_frames_context import force_full_strip_output_keys
 
     assert force_full_strip_output_keys("n_excel_gpt_fw_frames") == ()
-    assert force_full_strip_output_keys("n_excel_gpt_fw_qc") == ()
+    assert force_full_strip_output_keys("n_excel_gpt_fw_qc") == ("кадры",)
+    assert force_full_strip_output_keys(
+        "n_excel_gpt_fw_qc", footer_kind="shots_qc"
+    ) == ("кадры",)
 
 
 def test_excel_gpt_exposes_vo_shot_copy_not_as_voiceover() -> None:

@@ -945,7 +945,7 @@ def test_parent_repair_wired_into_shots_apply() -> None:
     from pathlib import Path
 
     src = Path("app/services/apply_ops_batches.py").read_text(encoding="utf-8")
-    marker = 'if kind in {"shots_coverage", "shots"}:'
+    marker = "if kind in _SHOTS_FOOTER_KINDS:"
     assert marker in src
     tail = src.split(marker, 1)[1]
     assert "repair_same_place_shot_parents(ops)" in tail.split("shots_coverage_ops_reason")[0]
@@ -994,7 +994,7 @@ def test_repair_same_place_parents_makes_coverage_valid() -> None:
                         "план": "СРЕДНИЙ",
                         "ракурс": "с плеча",
                         "место": "кабинет следствия",
-                        "действие": "рука у доски",
+                        "действие": "сел к столу",
                         "закадр": "которые он знал изнутри.",
                     },
                     {
@@ -1004,7 +1004,7 @@ def test_repair_same_place_parents_makes_coverage_valid() -> None:
                         "план": "ДЕТАЛЬ",
                         "ракурс": "в упор",
                         "место": "кабинет следствия",
-                        "действие": "пустая карточка",
+                        "действие": "открыл папку",
                         "закадр": "Для следствия он оставался неизвестным,",
                     },
                     {
@@ -1063,6 +1063,33 @@ def test_shots_coverage_rejects_same_place_all_independent() -> None:
 def test_shots_coverage_accepts_one_logical_shot() -> None:
     from app.services.apply_ops_batches import shots_coverage_ops_reason
 
+    vo = "Он мешает кастрюлю у плиты."
+    frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "фронт",
+                        "место": "кухня",
+                        "действие": "мешает кастрюлю",
+                        "объект": "тело",
+                        "закадр": vo,
+                    }
+                ]
+            },
+        }
+    ]
+    assert shots_coverage_ops_reason(ops, frames) is None
+
+
+def test_shots_coverage_rejects_one_shot_on_long_vo() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
     long_vo = "A" * 90
     frames = [{"uuid": "aa" * 4, "voiceover_text": long_vo}]
     ops = [
@@ -1077,13 +1104,16 @@ def test_shots_coverage_accepts_one_logical_shot() -> None:
                         "ракурс": "фронт",
                         "место": "кухня",
                         "действие": "мешает кастрюлю",
-                        "закадр": "Он мешает кастрюлю у плиты.",
+                        "объект": "тело",
+                        "закадр": long_vo,
                     }
                 ]
             },
         }
     ]
-    assert shots_coverage_ops_reason(ops, frames) is None
+    reason = shots_coverage_ops_reason(ops, frames)
+    assert reason is not None
+    assert "один кадр" in reason or "80" in reason
 
 
 def test_shots_coverage_accepts_parent_on_same_place() -> None:
@@ -1420,7 +1450,7 @@ def test_shots_coverage_allows_mixed_templates_per_scene() -> None:
                         "план": "СРЕДНИЙ",
                         "ракурс": "фронт",
                         "место": "титр",
-                        "действие": "имя",
+                        "действие": "титр имени",
                         "закадр": "Сергей Ткач.",
                     },
                     {
@@ -1430,7 +1460,7 @@ def test_shots_coverage_allows_mixed_templates_per_scene() -> None:
                         "план": "ОБЩИЙ",
                         "ракурс": "фронт",
                         "место": "кабинет следствия",
-                        "действие": "человек в среде",
+                        "действие": "вошёл в кабинет",
                         "закадр": "Следователи раскладывают дело.",
                     },
                     {
@@ -1440,7 +1470,7 @@ def test_shots_coverage_allows_mixed_templates_per_scene() -> None:
                         "план": "СРЕДНИЙ",
                         "ракурс": "3/4",
                         "место": "кабинет следствия",
-                        "действие": "отмечает схему",
+                        "действие": "открыл папку",
                         "закадр": "На схеме отмечают правила поиска.",
                     },
                     {
@@ -1475,7 +1505,7 @@ def test_shots_coverage_rejects_same_place_same_plan() -> None:
                         "план": "ОБЩИЙ",
                         "ракурс": "фронт",
                         "место": "кабинет следствия",
-                        "действие": "сопоставляют дело",
+                        "действие": "вошёл в кабинет",
                         "закадр": "Следователи сопоставляют дело.",
                     },
                     {
@@ -1485,7 +1515,7 @@ def test_shots_coverage_rejects_same_place_same_plan() -> None:
                         "план": "ОБЩИЙ",
                         "ракурс": "фронт",
                         "место": "кабинет следствия",
-                        "действие": "отмечает схему",
+                        "действие": "сел к столу",
                         "закадр": "На схеме отмечают ошибки.",
                     },
                 ]
@@ -1511,7 +1541,7 @@ def test_shots_coverage_rejects_adjacent_same_plan() -> None:
                         "план": "СРЕДНИЙ",
                         "ракурс": "фронт",
                         "место": "кабинет следствия",
-                        "действие": "сопоставляют дело",
+                        "действие": "вошёл в кабинет",
                         "закадр": "Следователи сопоставляют дело.",
                     },
                     {
@@ -1521,7 +1551,7 @@ def test_shots_coverage_rejects_adjacent_same_plan() -> None:
                         "план": "СРЕДНИЙ",
                         "ракурс": "фронт",
                         "место": "кабинет следствия",
-                        "действие": "отмечает схему",
+                        "действие": "сел к столу",
                         "закадр": "На схеме отмечают ошибки.",
                     },
                     {
@@ -1531,7 +1561,7 @@ def test_shots_coverage_rejects_adjacent_same_plan() -> None:
                         "план": "ДЕТАЛЬ",
                         "ракурс": "макро",
                         "место": "кабинет следствия",
-                        "действие": "схема крупно",
+                        "действие": "открыл папку",
                         "закадр": "Главный вопрос звучит так.",
                     },
                 ]
@@ -1585,7 +1615,14 @@ def test_shots_coverage_rejects_lengthened_template() -> None:
     shots = []
     plans = ["ОБЩИЙ", "СРЕДНИЙ", "ДЕТАЛЬ", "КРУПНЫЙ", "СРЕДНИЙ"]
     angles = ["фронт", "3/4", "макро", "фронт", "с плеча"]
-    for i, (plan, angle) in enumerate(zip(plans, angles), 1):
+    actions = [
+        "вошёл в кабинет",
+        "сел к столу",
+        "открыл папку",
+        "прочитал лист",
+        "встал из-за стола",
+    ]
+    for i, (plan, angle, act) in enumerate(zip(plans, angles, actions), 1):
         shots.append(
             {
                 "id": f"1-K{i}",
@@ -1595,7 +1632,7 @@ def test_shots_coverage_rejects_lengthened_template() -> None:
                 "план": plan,
                 "ракурс": angle,
                 "место": "кабинет следствия",
-                "действие": f"жест {i}",
+                "действие": act,
                 "закадр": f"Кусок закадра номер {i} целиком.",
             }
         )
@@ -1620,7 +1657,7 @@ def test_shots_coverage_rejects_same_t_on_neighbor_scenes() -> None:
                         "план": "СРЕДНИЙ",
                         "ракурс": "3/4",
                         "место": "кабинет следствия",
-                        "действие": "листает дело",
+                        "действие": "сел к столу",
                         "закадр": "Он листает дело.",
                     },
                     {
@@ -1631,7 +1668,7 @@ def test_shots_coverage_rejects_same_t_on_neighbor_scenes() -> None:
                         "план": "ДЕТАЛЬ",
                         "ракурс": "макро",
                         "место": "кабинет следствия",
-                        "действие": "отмечает схему",
+                        "действие": "открыл папку",
                         "закадр": "Потом отмечает схему.",
                     },
                 ]

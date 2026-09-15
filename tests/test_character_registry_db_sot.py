@@ -79,7 +79,7 @@ def test_script_frames_qc_group_batches_of_30() -> None:
         ("n_excel_gpt_fw_action", "action_chain"),
         ("n_excel_gpt_fw_shots", "shots_coverage"),
         ("n_excel_gpt_fw_frames", "prompts"),
-        ("n_excel_gpt_fw_qc", "prompts"),
+        ("n_excel_gpt_fw_qc", "shots_qc"),
         ("n_excel_gpt_fw_report", "report"),
     ):
         assert _is_script_frames_qc_group_node(None, None, key)
@@ -122,6 +122,13 @@ def test_detect_frame_and_qc_prompt() -> None:
     assert not _is_frame_prompts_prompt("script_writer_ru.md", None)
     assert not _is_frame_prompts_prompt("scenes_to_frames_ru.md", None)
     assert not _is_qc_prompts_prompt("scenes_to_frames_ru.md", None)
+    assert not _is_qc_prompts_prompt("shots_qc_ru.md", None)
+    from app.orchestrator.steps.enrich_xlsx import _is_shots_qc_node
+
+    assert _is_shots_qc_node("shots_qc_ru.md", None, "n_excel_gpt_fw_qc")
+    assert not _is_shots_qc_node(
+        "prompts_qc_continuity_ru.md", None, "n_excel_gpt_fw_qc"
+    )
     qc_body = (
         "Нода: excel_gpt. ПОСЛЕ агента-конвертера\n"
         "(frame_prompts_continuity) и ДО генерации картинок.\n"
