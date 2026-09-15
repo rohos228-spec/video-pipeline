@@ -275,6 +275,9 @@ export interface FrameDTO {
 
 export interface MontageBoardCharacterRef {
   id: string;
+  /** Код рефа в проекте: c02 / i01. */
+  code?: string;
+  /** Кто это: имя персонажа или предмета. */
   name: string;
   image_url: string | null;
 }

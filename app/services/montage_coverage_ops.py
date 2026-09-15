@@ -808,6 +808,72 @@ def _cs_shot_index(frame: Frame) -> int | None:
         return None
 
 
+_CHAR_COPY_KEYS = ("characters", "персонажи", "persons", "персонажи_сцены")
+_ITEM_COPY_KEYS = ("предметы", "shot01_props", "items", "items_seed")
+
+
+def _has_ref_ids(attrs: dict[str, Any], keys: tuple[str, ...]) -> bool:
+    from app.orchestrator.steps.generate_images import _parse_ref_ids
+
+    for key in keys:
+        raw = attrs.get(key)
+        if isinstance(raw, list) and raw:
+            return True
+        if _parse_ref_ids(raw):
+            return True
+    return False
+
+
+def _inherit_scene_refs_if_empty(frame: Frame, source: Frame | None) -> None:
+    """После child→parent: листы персонажей/предметов вместо still родителя."""
+    if source is None or int(source.number) == int(frame.number):
+        return
+    dst = dict(getattr(frame, "attrs", None) or {})
+    src = dict(getattr(source, "attrs", None) or {})
+    changed = False
+    if not _has_ref_ids(dst, _CHAR_COPY_KEYS):
+        for key in _CHAR_COPY_KEYS:
+            if src.get(key):
+                dst[key] = src[key]
+                changed = True
+    if not _has_ref_ids(dst, _ITEM_COPY_KEYS):
+        for key in _ITEM_COPY_KEYS:
+            if src.get(key):
+                dst[key] = src[key]
+                changed = True
+    if not changed:
+        return
+    frame.attrs = dst
+    _flag_attrs(frame)
+
+
+def _detach_as_vo_parent(frame: Frame) -> None:
+    """Снять привязку к чужому K1: свой id, без parent_id / coverage_parent_id."""
+    new_sid = f"{int(frame.number)}-K1"
+    planned = planned_shots_from_attrs(frame)
+    if planned:
+        sid = coverage_shot_id(frame)
+        item = planned[0]
+        if sid:
+            for cand in planned:
+                if str(cand.get("id") or "").strip() == sid:
+                    item = cand
+                    break
+        item["id"] = new_sid
+        item["parent_id"] = None
+        attrs = dict(getattr(frame, "attrs", None) or {})
+        attrs["кадры"] = planned
+        frame.attrs = attrs
+        _flag_attrs(frame)
+    _set_cs(
+        frame,
+        role="vo_parent",
+        parent_uuid=frame.uuid,
+        coverage_parent_id="",
+        shot_id=new_sid,
+    )
+
+
 def apply_coverage_kind(
     frame: Frame,
     frames: list[Frame],
@@ -820,16 +886,11 @@ def apply_coverage_kind(
         raise RuntimeError("нужно выбрать родитель или дочерний")
     if role == "parent":
         old_parent = find_coverage_parent_frame(frames, frame)
-        _set_cs(
-            frame,
-            role="vo_parent",
-            parent_uuid=frame.uuid,
-            coverage_parent_id="",
-        )
-        _patch_kadry_item(frame, parent_id=None)
+        old_sid = coverage_shot_id(frame)
+        _detach_as_vo_parent(frame)
+        _inherit_scene_refs_if_empty(frame, old_parent)
         if old_parent is not None and int(old_parent.number) != int(frame.number):
-            sid = coverage_shot_id(frame)
-            _remove_kadry_id(old_parent, sid)
+            _remove_kadry_id(old_parent, old_sid)
             _refresh_shots_in_beat(frames, old_parent)
         _refresh_shots_in_beat(frames, frame)
         return

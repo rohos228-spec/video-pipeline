@@ -9,7 +9,9 @@ import type {
   ExcelHeroCharacter,
   FrameDTO,
   MontageBoardDTO,
+  MontageBoardFrame,
   MontageBoardMeta,
+  MontageBoardParentRef,
   MontageRefAsset,
   GenerationConfigPreset,
   GenerationConfigPresetSettings,
@@ -1238,6 +1240,25 @@ export const api = {
       `/api/projects/${projectId}/montage-board/frames/${frameId}`,
       { method: "DELETE" },
     ),
+
+  applyMontageCoverage: (
+    projectId: number,
+    body: Pick<
+      MontagePendingOp,
+      "type" | "frame_number" | "shot" | "kind" | "parent_number"
+    >,
+  ) =>
+    http<{
+      ok: boolean;
+      highlight?: string | null;
+      shot_kind?: "parent" | "child" | "";
+      shot_parent_number?: number | null;
+      ref_parent?: MontageBoardParentRef | null;
+      frame?: MontageBoardFrame | null;
+    }>(`/api/projects/${projectId}/montage-board/coverage`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
   saveMontageQueue: (
     projectId: number,

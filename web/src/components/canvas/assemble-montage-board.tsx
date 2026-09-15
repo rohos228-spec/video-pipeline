@@ -563,6 +563,41 @@ function AiChangeModal({
   );
 }
 
+function effectiveShotKind(
+  fr: MontageBoardFrame,
+  pending: PendingCoverage,
+  override?: "parent" | "child",
+): "parent" | "child" | "" {
+  if (override) return override;
+  if (pending.kind) return pending.kind;
+  if (fr.shot_kind === "child" || fr.shot_kind === "parent") return fr.shot_kind;
+  return "";
+}
+
+function frameForRefs(
+  fr: MontageBoardFrame,
+  pending: PendingCoverage,
+  override?: "parent" | "child",
+): MontageBoardFrame {
+  const kind = effectiveShotKind(fr, pending, override);
+  if (kind === "parent") {
+    return {
+      ...fr,
+      shot_kind: "parent",
+      shot_parent_number: null,
+      ref_parent: null,
+    };
+  }
+  if (kind === "child") {
+    return {
+      ...fr,
+      shot_kind: "child",
+      shot_parent_number: pending.parent_number ?? fr.shot_parent_number ?? null,
+    };
+  }
+  return fr;
+}
+
 function parentFrameOf(
   frames: MontageBoardFrame[],
   fr: MontageBoardFrame,
@@ -1804,6 +1839,10 @@ export function AssembleMontageBoard({
   const [swapBusy, setSwapBusy] = useState(false);
   const [moveImageBusy, setMoveImageBusy] = useState(false);
   const [frameEditBusy, setFrameEditBusy] = useState(false);
+  /** Роль, которую только что нажали — до ответа сервера. */
+  const [kindOverride, setKindOverride] = useState<
+    Record<number, "parent" | "child">
+  >({});
   const [addFrame, setAddFrame] = useState<{
     afterFrameId: number | null;
     kind: "parent" | "child";
@@ -3060,7 +3099,54 @@ export function AssembleMontageBoard({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose, preview, swapPick]);
 
-  const sceneDisabled = applyRunning || applyMutation.isPending;
+  const sceneDisabled = applyRunning || applyMutation.isPending || frameEditBusy;
+
+  const applyKindNow = useCallback(
+    async (
+      frameNumber: number,
+      nextKind: "parent" | "child",
+      nextParent?: number | null,
+    ) => {
+      if (projectId == null) return;
+      setKindOverride((prev) => ({ ...prev, [frameNumber]: nextKind }));
+      setFrameEditBusy(true);
+      try {
+        await api.applyMontageCoverage(projectId, {
+          type: "coverage_kind",
+          frame_number: frameNumber,
+          shot: 1,
+          kind: nextKind,
+          ...(nextKind === "child" && nextParent
+            ? { parent_number: nextParent }
+            : {}),
+        });
+        setPendingOps((prev) => {
+          const next = prev.filter(
+            (x) => !(x.frame_number === frameNumber && x.type === "coverage_kind"),
+          );
+          pendingOpsRef.current = next;
+          persistQueue(next);
+          return next;
+        });
+        await board.refetch();
+        toast.success(
+          nextKind === "parent"
+            ? `Кадр #${frameNumber}: родительский, still родителя снят`
+            : `Кадр #${frameNumber}: дочерний`,
+        );
+      } catch (e) {
+        toast.error(errorMessageFromUnknown(e));
+      } finally {
+        setKindOverride((prev) => {
+          const next = { ...prev };
+          delete next[frameNumber];
+          return next;
+        });
+        setFrameEditBusy(false);
+      }
+    },
+    [projectId, persistQueue, board],
+  );
 
   const hasPendingType = useCallback(
     (frameNumber: number, type: MontagePendingOp["type"]) =>
@@ -3098,9 +3184,7 @@ export function AssembleMontageBoard({
           </p>
         );
       }
-      const kind =
-        pending.kind ??
-        (fr.shot_kind === "child" || fr.shot_kind === "parent" ? fr.shot_kind : "");
+      const kind = effectiveShotKind(fr, pending, kindOverride[fr.number]);
       const parentNumber = pending.parent_number ?? fr.shot_parent_number ?? null;
       return (
         <RoleCell
@@ -3109,19 +3193,10 @@ export function AssembleMontageBoard({
           parentNumber={parentNumber}
           frameNumber={fr.number}
           parentChoices={parentChoicesFor(fr.number)}
-          pending={hasPendingType(fr.number, "coverage_kind")}
+          pending={hasPendingType(fr.number, "coverage_kind") || Boolean(kindOverride[fr.number])}
           disabled={sceneDisabled}
           onKind={(nextKind, nextParent) =>
-            queueCoverage(
-              nextKind === "child"
-                ? {
-                    ...base,
-                    type: "coverage_kind",
-                    kind: "child",
-                    parent_number: nextParent ?? undefined,
-                  }
-                : { ...base, type: "coverage_kind", kind: "parent" },
-            )
+            void applyKindNow(fr.number, nextKind, nextParent)
           }
           onDeleteChild={() => queueCoverage({ ...base, type: "coverage_delete" })}
         />
@@ -3865,11 +3940,10 @@ export function AssembleMontageBoard({
                                   kind="image"
                                   tall={coverageOn}
                                   tallAspect={frameAspect}
-                                  overlay={
-                                    coverageOn ? renderSceneFrameCell("role", fr) : null
-                                  }
+                                  overlay={null}
                                   caption={
                                     <>
+                                      {coverageOn ? renderSceneFrameCell("role", fr) : null}
                                       {coverageOn ? (
                                         <CoverageMenu
                                           title={`покрытие кадра #${fr.number}`}
@@ -3880,8 +3954,30 @@ export function AssembleMontageBoard({
                                       {coverageOn ? renderSceneFrameCell("anchor", fr) : null}
                                       <FrameRefsStrip
                                         projectId={projectId}
-                                        frame={fr}
-                                        parentFrame={parentFrameOf(frames, fr)}
+                                        frame={frameForRefs(
+                                          fr,
+                                          pendingCoverageForFrame(pendingOps, fr.number),
+                                          kindOverride[fr.number],
+                                        )}
+                                        parentFrame={
+                                          effectiveShotKind(
+                                            fr,
+                                            pendingCoverageForFrame(pendingOps, fr.number),
+                                            kindOverride[fr.number],
+                                          ) === "parent"
+                                            ? null
+                                            : parentFrameOf(frames, fr)
+                                        }
+                                        pendingKind={
+                                          effectiveShotKind(
+                                            fr,
+                                            pendingCoverageForFrame(pendingOps, fr.number),
+                                            kindOverride[fr.number],
+                                          ) || undefined
+                                        }
+                                        onPromoteToParent={() =>
+                                          applyKindNow(fr.number, "parent")
+                                        }
                                         kinds={board.data?.ref_kind_choices}
                                         disabled={frameEditBusy || applyRunning}
                                         onPreview={showPreview}

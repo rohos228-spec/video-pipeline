@@ -935,6 +935,50 @@ async def montage_board_scene_variants(
         ) from e
 
 
+@router.post("/{project_id}/montage-board/coverage")
+async def montage_board_apply_coverage(
+    project_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    """Записать роль / план сразу в БД — без очереди «Применить правки»."""
+    from app.services.montage_board import build_montage_board
+    from app.services.montage_board_meta import normalize_queue_ops
+    from app.services.montage_coverage_ops import COVERAGE_OP_TYPES, apply_coverage_op
+
+    p = _project_or_404(await session.get(Project, project_id))
+    cleaned = normalize_queue_ops([body])
+    if len(cleaned) != 1:
+        raise HTTPException(status_code=400, detail="нужна одна coverage-операция")
+    op = cleaned[0]
+    if str(op.get("type") or "") not in COVERAGE_OP_TYPES:
+        raise HTTPException(status_code=400, detail="это не coverage-операция")
+    try:
+        result = await apply_coverage_op(session, p, op)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"montage_coverage": True, "type": op.get("type")},
+    )
+    board = await build_montage_board(session, p)
+    frame_number = int(op["frame_number"])
+    row = next(
+        (fr for fr in (board.get("frames") or []) if int(fr.get("number") or 0) == frame_number),
+        None,
+    )
+    return {
+        "ok": True,
+        "highlight": result.get("highlight"),
+        "shot_kind": (row or {}).get("shot_kind"),
+        "shot_parent_number": (row or {}).get("shot_parent_number"),
+        "ref_parent": (row or {}).get("ref_parent"),
+        "frame": row,
+    }
+
+
 @router.post("/{project_id}/montage-board/queue")
 async def montage_board_save_queue(
     project_id: int,
