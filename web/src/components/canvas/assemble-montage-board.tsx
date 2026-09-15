@@ -3881,7 +3881,16 @@ export function AssembleMontageBoard({
                                       <FrameRefsStrip
                                         projectId={projectId}
                                         frame={fr}
-                                        parentFrame={parentFrameOf(frames, fr)}
+                                        parentFrame={
+                                          pendingCoverageForFrame(pendingOps, fr.number)
+                                            .kind === "parent"
+                                            ? null
+                                            : parentFrameOf(frames, fr)
+                                        }
+                                        pendingKind={
+                                          pendingCoverageForFrame(pendingOps, fr.number)
+                                            .kind
+                                        }
                                         kinds={board.data?.ref_kind_choices}
                                         disabled={frameEditBusy || applyRunning}
                                         onPreview={showPreview}

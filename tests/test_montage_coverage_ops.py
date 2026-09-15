@@ -8,9 +8,11 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.models import Base, Frame, Project
+from app.models import Base, Entity, Frame, Project
+from app.services.montage_board import build_montage_board
 from app.services.montage_board_apply import order_montage_pending_ops
 from app.services.montage_board_meta import normalize_queue_ops, slot_key_from_op
+from app.services.montage_board_regen import _montage_shot1_refs
 from app.services.montage_coverage_ops import (
     COVERAGE_OP_TYPES,
     SCENE_FIELD_OP_TYPES,
@@ -362,3 +364,81 @@ async def test_relink_and_delete_child(session: AsyncSession, project: Project) 
     )
     gone = await session.get(Frame, child.id)
     assert gone is None
+
+
+@pytest.mark.asyncio
+async def test_promote_child_to_parent_drops_parent_ref(
+    session: AsyncSession, project: Project
+) -> None:
+    """child→parent: still родителя с кадра снимается и не идёт в генерацию."""
+    parent, child = _parent_child(project.id)
+    parent_attrs = dict(parent.attrs or {})
+    parent_attrs["characters"] = "c02"
+    parent_attrs["персонажи"] = "c02"
+    parent.attrs = parent_attrs
+    data = project.data_dir
+    scenes = data / "scenes"
+    chars = data / "characters"
+    scenes.mkdir(parents=True, exist_ok=True)
+    chars.mkdir(parents=True, exist_ok=True)
+    parent_png = scenes / "frame_001_shot1.png"
+    parent_png.write_bytes(b"png-parent-still")
+    (chars / "c02.png").write_bytes(b"png-c02")
+    session.add_all(
+        [
+            project,
+            parent,
+            child,
+            Entity(
+                project_id=project.id,
+                type="character",
+                code="c02",
+                name="Инспектор",
+            ),
+        ]
+    )
+    await session.flush()
+
+    refs_before, used_parent_before = await _montage_shot1_refs(
+        session, project, child
+    )
+    assert used_parent_before is True
+    assert any(p.name.startswith("frame_001") for p in refs_before)
+
+    await apply_coverage_op(
+        session,
+        project,
+        {"type": "coverage_kind", "frame_number": 2, "kind": "parent"},
+    )
+    rows = list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    promoted = next(fr for fr in rows if int(fr.number) == 2)
+    assert is_shot_child(promoted) is False
+    found = find_coverage_parent_frame(rows, promoted)
+    assert found is None or int(found.number) == 2
+    assert (promoted.attrs or {}).get("characters") == "c02"
+
+    refs_after, used_parent_after = await _montage_shot1_refs(
+        session, project, promoted
+    )
+    assert used_parent_after is False
+    assert not any(p.name.startswith("frame_001") for p in refs_after)
+
+    board = await build_montage_board(session, project)
+    c_row = next(fr for fr in board["frames"] if fr["number"] == 2)
+    assert c_row["shot_kind"] == "parent"
+    assert c_row["shot_parent_number"] is None
+    assert c_row["ref_parent"] is None
+    chars_row = c_row["group_character_refs"]
+    assert [r["id"] for r in chars_row] == ["c02"]
+    assert chars_row[0]["code"] == "c02"
+    assert chars_row[0]["name"] == "Инспектор"

@@ -87,6 +87,7 @@ async def test_montage_board_reads_excel_voiceover_and_characters(
     assert row["number"] == 1
     assert len(row["character_refs"]) == 2
     assert row["character_refs"][0]["id"] == "c01"
+    assert row["character_refs"][0]["code"] == "c01"
     assert row["character_refs"][0]["name"] == "Кот"
     assert row["character_refs"][0]["image_url"] is not None
     assert row["character_refs"][1]["id"] == "c02"
@@ -270,6 +271,7 @@ async def test_montage_board_group_refs_on_vo_cell(
     p_row, c_row, s_row = board["frames"]
     assert p_row["ref_parent"] is None
     assert p_row["group_character_refs"][0]["id"] == "c02"
+    assert p_row["group_character_refs"][0]["code"] == "c02"
     assert p_row["item_refs"][0]["id"] == "i01"
     assert c_row["ref_parent"]["number"] == 1
     assert c_row["ref_parent"]["image_url"]

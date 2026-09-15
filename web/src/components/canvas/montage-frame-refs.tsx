@@ -30,25 +30,26 @@ type Thumb = {
   key: string;
   kind: string;
   title: string;
+  /** Код рефа (c02) или пусто. */
+  subtitle?: string;
   imageUrl: string | null | undefined;
   source: "parent" | "character" | "item" | "manual";
   id: string;
   canDelete: boolean;
 };
 
-function isShotChild(fr: MontageBoardFrame): boolean {
+function isShotChild(
+  fr: MontageBoardFrame,
+  pendingKind?: "parent" | "child" | "" | null,
+): boolean {
+  if (pendingKind === "parent") return false;
+  if (pendingKind === "child") return true;
+  if (fr.shot_kind === "parent") return false;
   if (fr.shot_kind === "child") return true;
-  if (
+  return (
     typeof fr.shot_parent_number === "number" &&
     fr.shot_parent_number > 0 &&
     fr.shot_parent_number !== fr.number
-  ) {
-    return true;
-  }
-  return (
-    typeof fr.vo_scene_number === "number" &&
-    fr.vo_scene_number > 0 &&
-    fr.vo_scene_number !== fr.number
   );
 }
 
@@ -75,13 +76,14 @@ function parentThumbFrom(
 function thumbsForFrame(
   fr: MontageBoardFrame,
   parentFrame?: MontageBoardFrame | null,
+  pendingKind?: "parent" | "child" | "" | null,
 ): Thumb[] {
   const chars: MontageBoardCharacterRef[] = fr.group_character_refs ?? [];
   const items: MontageBoardCharacterRef[] = fr.item_refs ?? [];
   const manual: MontageManualRef[] = fr.manual_refs ?? [];
   const ownUrl = (fr.image_shot1_url || "").trim();
   const out: Thumb[] = [];
-  const child = isShotChild(fr);
+  const child = isShotChild(fr, pendingKind);
   const parent = child ? parentThumbFrom(fr.ref_parent ?? null, parentFrame, fr) : null;
   // У дочернего шота still родителя — всегда, даже если URL совпал с картинкой кадра.
   if (parent) {
@@ -100,13 +102,16 @@ function thumbsForFrame(
     if (ownUrl && url && url === ownUrl) return;
     out.push(t);
   };
-  // Персонажи/предметы сцены — один раз, на VO-родителе. Дочернему нужен родитель.
+  // Персонажи/предметы сцены — на VO-родителе. После child→parent still родителя нет.
   if (!child) {
     for (const c of chars) {
+      const code = (c.code || c.id || "").trim();
+      const who = (c.name || "").trim() || code;
       pushIfNotSelf({
         key: `char-${c.id}`,
         kind: "персонаж",
-        title: c.name || c.id,
+        title: who,
+        subtitle: code && code.toLowerCase() !== who.toLowerCase() ? code : undefined,
         imageUrl: c.image_url,
         source: "character",
         id: c.id,
@@ -114,10 +119,13 @@ function thumbsForFrame(
       });
     }
     for (const it of items) {
+      const code = (it.code || it.id || "").trim();
+      const who = (it.name || "").trim() || code;
       pushIfNotSelf({
         key: `item-${it.id}`,
         kind: "предмет",
-        title: it.name || it.id,
+        title: who,
+        subtitle: code && code.toLowerCase() !== who.toLowerCase() ? code : undefined,
         imageUrl: it.image_url,
         source: "item",
         id: it.id,
@@ -156,6 +164,7 @@ export function FrameRefsStrip({
   projectId,
   frame,
   parentFrame,
+  pendingKind,
   kinds,
   disabled,
   onPreview,
@@ -164,6 +173,8 @@ export function FrameRefsStrip({
   projectId: number | null;
   frame: MontageBoardFrame;
   parentFrame?: MontageBoardFrame | null;
+  /** Очередь coverage_kind: parent — сразу убрать still родителя. */
+  pendingKind?: "parent" | "child" | "" | null;
   kinds: MontageRefKindChoice[] | undefined;
   disabled?: boolean;
   onPreview: (p: { url: string; kind: "image"; label: string }) => void;
@@ -184,7 +195,7 @@ export function FrameRefsStrip({
     staleTime: 30_000,
   });
 
-  const items = thumbsForFrame(frame, parentFrame);
+  const items = thumbsForFrame(frame, parentFrame, pendingKind);
   const attached = new Set(
     items
       .filter((t) => t.source !== "parent")
@@ -280,48 +291,80 @@ export function FrameRefsStrip({
 
   return (
     <div className="mt-1">
-      <div className="flex items-center gap-1">
+      <div className="flex flex-wrap items-start gap-1">
         {items.map((t) => (
-          <span key={t.key} className="group relative h-9 w-9 shrink-0">
-            <button
-              type="button"
-              className="h-full w-full overflow-hidden rounded-md border border-white/12 bg-black/30 transition hover:border-amber-400/50"
-              title={`${t.kind}: ${t.title}`}
-              onClick={() => {
-                if (t.imageUrl) {
-                  onPreview({ url: t.imageUrl, kind: "image", label: t.title });
-                }
-              }}
-            >
-              {t.imageUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={t.imageUrl}
-                  alt={t.title}
-                  className="h-full w-full object-cover transition group-hover:brightness-110"
-                />
-              ) : (
-                <span className="flex h-full w-full items-center justify-center text-[8px] leading-none text-white/30">
-                  нет
-                  <br />
-                  фото
-                </span>
-              )}
-            </button>
-            {t.canDelete ? (
+          <span
+            key={t.key}
+            className="group relative flex min-w-0 max-w-[7.25rem] items-center gap-1"
+          >
+            <span className="relative h-9 w-9 shrink-0">
               <button
                 type="button"
-                title={`Убрать «${t.title}»`}
-                disabled={disabled || busy}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  remove(t.id, t.source);
+                className="h-full w-full overflow-hidden rounded-md border border-white/12 bg-black/30 transition hover:border-amber-400/50"
+                title={
+                  t.subtitle
+                    ? `${t.kind}: ${t.title} (${t.subtitle})`
+                    : `${t.kind}: ${t.title}`
+                }
+                onClick={() => {
+                  if (t.imageUrl) {
+                    onPreview({
+                      url: t.imageUrl,
+                      kind: "image",
+                      label: t.subtitle ? `${t.title} · ${t.subtitle}` : t.title,
+                    });
+                  }
                 }}
-                className="absolute -right-1 -top-1 hidden rounded-full bg-black/80 p-0.5 text-white/70 shadow group-hover:block hover:bg-rose-500/80 hover:text-white disabled:opacity-40"
               >
-                <X className="h-3 w-3" />
+                {t.imageUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={t.imageUrl}
+                    alt={t.title}
+                    className="h-full w-full object-cover transition group-hover:brightness-110"
+                  />
+                ) : (
+                  <span className="flex h-full w-full items-center justify-center text-[8px] leading-none text-white/30">
+                    нет
+                    <br />
+                    фото
+                  </span>
+                )}
               </button>
-            ) : null}
+              {t.canDelete ? (
+                <button
+                  type="button"
+                  title={`Убрать «${t.title}»`}
+                  disabled={disabled || busy}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    remove(t.id, t.source);
+                  }}
+                  className="absolute -right-1 -top-1 hidden rounded-full bg-black/80 p-0.5 text-white/70 shadow group-hover:block hover:bg-rose-500/80 hover:text-white disabled:opacity-40"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              ) : null}
+            </span>
+            <span className="min-w-0 leading-tight">
+              <span
+                className="block truncate text-[8px] uppercase tracking-wide"
+                style={{ color: ACCENT }}
+              >
+                {t.kind}
+              </span>
+              <span className="block truncate text-[10px] text-white/85" title={t.title}>
+                {t.title}
+              </span>
+              {t.subtitle ? (
+                <span
+                  className="block truncate font-mono text-[9px] text-white/45"
+                  title={t.subtitle}
+                >
+                  {t.subtitle}
+                </span>
+              ) : null}
+            </span>
           </span>
         ))}
         <button
@@ -392,6 +435,11 @@ export function FrameRefsStrip({
                             <span className="block truncate text-[11px] text-white/80">
                               {t.title}
                             </span>
+                            {t.subtitle ? (
+                              <span className="block truncate font-mono text-[10px] text-white/45">
+                                {t.subtitle}
+                              </span>
+                            ) : null}
                           </span>
                           {t.canDelete ? (
                             <button

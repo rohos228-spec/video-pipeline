@@ -112,6 +112,7 @@ def _person_ids_from_attrs(attrs: dict[str, Any] | None) -> list[str]:
     raw = (
         src.get("characters")
         or src.get("персонажи")
+        or src.get("персонажи_сцены")
         or src.get("persons")
         or ""
     )
@@ -130,6 +131,7 @@ def _character_refs_for_ids(
         refs.append(
             {
                 "id": ref_id,
+                "code": ref_id,
                 "name": names.get(ref_id.lower(), ref_id),
                 "image_url": _preview_url(image_path),
             }
@@ -252,10 +254,11 @@ def _group_refs_for_frames(
                 "item_refs": items,
             }
         shared = by_parent[pno]
-        # Сам still кадра — не реф. Реф «родитель» только у дочерних шотов.
+        # Сам still кадра — не реф. Реф «родитель» только у role=shot,
+        # не у VO-родителя (в т.ч. после смены child → parent).
         out[int(fr.number)] = {
             "ref_parent": None
-            if int(fr.number) == pno
+            if (not is_shot_child(fr) or int(fr.number) == pno)
             else shared["ref_parent"],
             "group_character_refs": shared["group_character_refs"],
             "item_refs": shared["item_refs"],
@@ -718,11 +721,15 @@ def _shot_kind_payload(
     frames: list[Any],
 ) -> tuple[str, int | None, str]:
     """parent | child | "" + номер родителя + id шота родителя."""
-    parent = find_coverage_parent_frame(frames, frame)
-    if is_shot_child(frame) or (
-        parent is not None and int(parent.number) != int(frame.number)
-    ):
-        parent_number = int(parent.number) if parent is not None else None
+    # Только role=shot — дочерний. leftover parent_id / K2-id / X1
+    # у VO-родителя не делают кадр ребёнком и не вешают still родителя.
+    if is_shot_child(frame):
+        parent = find_coverage_parent_frame(frames, frame)
+        parent_number = (
+            int(parent.number)
+            if parent is not None and int(parent.number) != int(frame.number)
+            else None
+        )
         parent_id = coverage_parent_shot_id(frame) or (
             coverage_shot_id(parent) if parent is not None else ""
         )
