@@ -531,20 +531,22 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                             p.status.value,
                         )
                         continue
+                    # Этот цикл — уже running. Gate очереди / until_node
+                    # только для auto_advance *_ready. Иначе ручной ▶
+                    # (overflow excel_gpt) ставит enriching_1, а воркер
+                    # не берёт — нода так и висит «ожидание».
                     if project_gated_by_gen_queue(p.id):
-                        logger.debug(
-                            "worker: #{} {} — не в gen_queue, пропуск тика",
+                        logger.info(
+                            "worker: #{} {} — не в gen_queue, но шаг уже running — берём",
                             p.id,
                             p.status.value,
                         )
-                        continue
                     if should_hold_queue_auto_advance(p):
-                        logger.debug(
-                            "worker: #{} {} — gen_queue target reached/passed, пропуск тика",
+                        logger.info(
+                            "worker: #{} {} — until_node пройден, но шаг уже running — берём",
                             p.id,
                             p.status.value,
                         )
-                        continue
                     if is_stop_requested(p.id):
                         from app.services.step_cancel import stop_flag_path
 

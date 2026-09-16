@@ -851,6 +851,8 @@ def test_drop_script_frames_qc_check_graph() -> None:
             ],
         },
         "excel_gpt_nodes": {"n_excel_gpt_fw_check_script": {"checkMode": True}},
+        "active_excel_gpt_node_key": "n_excel_gpt_fw_check_script",
+        "excel_gpt_completed_keys": ["n_excel_gpt_fw_script", "n_excel_gpt_fw_check_script"],
     }
     assert ng.drop_script_frames_qc_check_graph(meta) is True
     ids = {n["id"] for n in meta["canvas_graph"]["nodes"]}
@@ -860,6 +862,9 @@ def test_drop_script_frames_qc_check_graph() -> None:
     assert ("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_shots") not in pairs
     assert ("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_script") not in pairs
     assert "n_excel_gpt_fw_check_script" not in meta["excel_gpt_nodes"]
+    assert meta.get("active_excel_gpt_node_key") is None
+    assert "n_excel_gpt_fw_check_script" not in (meta.get("excel_gpt_completed_keys") or [])
+    assert "n_excel_gpt_fw_script" in (meta.get("excel_gpt_completed_keys") or [])
     assert ng.drop_script_frames_qc_check_graph(meta) is False
 
 
@@ -917,6 +922,52 @@ def test_upgrade_script_frames_qc_six_node_canvas_drops_check_and_action() -> No
     assert "n_excel_gpt_fw_check_script" not in meta["excel_gpt_nodes"]
     assert "n_excel_gpt_fw_action" not in meta["excel_gpt_nodes"]
     assert "n_excel_gpt_fw_check_script" not in meta["prompt_slot_variants"]
+
+
+def test_script_frames_qc_needs_upgrade_only_while_check_present() -> None:
+    gid = {"groupId": "script_frames_qc"}
+    stale = {
+        "canvas_graph": {
+            "workflow_id": 1,
+            "nodes": [
+                {"id": "n_excel_gpt_fw_script", "type": "excel_gpt", "position": {}, "data": gid},
+                {"id": "n_excel_gpt_fw_check_script", "type": "excel_gpt", "position": {}, "data": gid},
+                {"id": "n_excel_gpt_fw_shots", "type": "excel_gpt", "position": {}, "data": gid},
+                {"id": "n_excel_gpt_fw_qc", "type": "excel_gpt", "position": {}, "data": gid},
+                {"id": "n_excel_gpt_fw_report", "type": "excel_gpt", "position": {}, "data": gid},
+            ],
+            "edges": [
+                {"source": "n_excel_gpt_fw_script", "target": "n_excel_gpt_fw_check_script"},
+                {"source": "n_excel_gpt_fw_check_script", "target": "n_excel_gpt_fw_shots"},
+                {"source": "n_excel_gpt_fw_shots", "target": "n_excel_gpt_fw_qc"},
+                {"source": "n_excel_gpt_fw_qc", "target": "n_excel_gpt_fw_report"},
+            ],
+        }
+    }
+    assert ng.script_frames_qc_needs_upgrade(stale) is True
+    assert ng.drop_script_frames_qc_check_graph(stale) is True
+    assert ng.script_frames_qc_needs_upgrade(stale) is False
+
+
+def test_drop_check_keeps_active_key_of_remaining_node() -> None:
+    gid = {"groupId": "script_frames_qc"}
+    meta = {
+        "canvas_graph": {
+            "workflow_id": 1,
+            "nodes": [
+                {"id": "n_excel_gpt_fw_script", "type": "excel_gpt", "position": {}, "data": gid},
+                {"id": "n_excel_gpt_fw_check_script", "type": "excel_gpt", "position": {}, "data": gid},
+                {"id": "n_excel_gpt_fw_shots", "type": "excel_gpt", "position": {}, "data": gid},
+            ],
+            "edges": [
+                {"source": "n_excel_gpt_fw_script", "target": "n_excel_gpt_fw_check_script"},
+                {"source": "n_excel_gpt_fw_check_script", "target": "n_excel_gpt_fw_shots"},
+            ],
+        },
+        "active_excel_gpt_node_key": "n_excel_gpt_fw_shots",
+    }
+    assert ng.drop_script_frames_qc_check_graph(meta) is True
+    assert meta["active_excel_gpt_node_key"] == "n_excel_gpt_fw_shots"
 
 
 def test_rewire_script_frames_qc_shots_to_qc() -> None:

@@ -1153,6 +1153,7 @@ def drop_script_frames_qc_action_graph(meta: dict[str, Any]) -> bool:
     egn = dict(egn) if isinstance(egn, dict) else {}
     egn.pop(action_id, None)
     meta["excel_gpt_nodes"] = egn
+    _forget_dropped_excel_gpt_key(meta, action_id)
     meta["canvas_graph"] = build_canvas_graph_payload(
         workflow_id=int(graph.get("workflow_id") or 0),
         nodes=nodes,
@@ -1212,12 +1213,45 @@ def drop_script_frames_qc_check_graph(meta: dict[str, Any]) -> bool:
     egn = dict(egn) if isinstance(egn, dict) else {}
     egn.pop(check_id, None)
     meta["excel_gpt_nodes"] = egn
+    _forget_dropped_excel_gpt_key(meta, check_id)
     meta["canvas_graph"] = build_canvas_graph_payload(
         workflow_id=int(graph.get("workflow_id") or 0),
         nodes=nodes,
         edges=edges,
     )
     return True
+
+
+def _forget_dropped_excel_gpt_key(meta: dict[str, Any], node_id: str) -> None:
+    """Снятая нода не должна оставаться active — иначе ▶ крутит призрак и висит."""
+    if str(meta.get("active_excel_gpt_node_key") or "").strip() == node_id:
+        meta.pop("active_excel_gpt_node_key", None)
+    keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
+    if node_id in keys:
+        meta["excel_gpt_completed_keys"] = [k for k in keys if k != node_id]
+
+
+def script_frames_qc_needs_upgrade(meta: dict[str, Any] | None) -> bool:
+    """True если на канвасе ещё check/action или нет shots→qc / report."""
+    if not isinstance(meta, dict) or not canvas_has_script_frames_qc(meta):
+        return False
+    graph = canvas_graph_from_meta(meta)
+    if graph is None:
+        return False
+    ids = {str(n.get("id")) for n in (graph.get("nodes") or []) if isinstance(n, dict)}
+    if "n_excel_gpt_fw_check_script" in ids or "n_excel_gpt_fw_action" in ids:
+        return True
+    pairs = {
+        (str(e.get("source") or ""), str(e.get("target") or ""))
+        for e in (graph.get("edges") or [])
+        if isinstance(e, dict)
+    }
+    if "n_excel_gpt_fw_shots" in ids and "n_excel_gpt_fw_qc" in ids:
+        if ("n_excel_gpt_fw_shots", "n_excel_gpt_fw_qc") not in pairs:
+            return True
+    if "n_excel_gpt_fw_qc" in ids and "n_excel_gpt_fw_report" not in ids:
+        return True
+    return False
 
 
 def rewire_script_frames_qc_shots_to_qc(meta: dict[str, Any]) -> bool:

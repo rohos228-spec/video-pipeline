@@ -396,6 +396,58 @@ async def test_start_step_overflow_group_nodes(
         assert nr is not None and nr.status == NodeRunStatus.running, label
 
 
+@pytest.mark.asyncio
+async def test_start_step_after_drop_check_runs_script(
+    mem_db, tmp_path, monkeypatch
+) -> None:
+    """После снятия check ▶ сценариста всё ещё ставит NodeRun running."""
+    from app.services import node_groups as ng
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    from app import settings as app_settings
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path / "data")
+    project_id, wf_id, nr_ids = await _seed_overflow_group(mem_db)
+    _patch_default_workflow(monkeypatch, wf_id)
+
+    async def _noop_clear(*_a, **_k):
+        return {}
+
+    monkeypatch.setattr(
+        "app.services.project_steps.clear_step_outputs_for_rerun",
+        _noop_clear,
+    )
+    monkeypatch.setattr(
+        "app.services.project_steps.purge_tmp_gpt_for_step",
+        lambda *_a, **_k: None,
+    )
+
+    async with mem_db() as session:
+        project = await session.get(Project, project_id)
+        assert project is not None
+        meta = dict(project.meta or {})
+        meta["active_excel_gpt_node_key"] = "n_excel_gpt_fw_check_script"
+        assert ng.drop_script_frames_qc_check_graph(meta) is True
+        project.meta = meta
+        status = await start_step(
+            session,
+            project,
+            "excel_gpt",
+            node_key="n_excel_gpt_fw_script",
+            skip_queue_guard=True,
+            require_node_fsm=True,
+            explicit_ui_start=True,
+        )
+        assert status is ProjectStatus.enriching_1
+        assert (project.meta or {}).get("active_excel_gpt_node_key") == (
+            "n_excel_gpt_fw_script"
+        )
+
+    async with mem_db() as session:
+        nr = await session.get(NodeRun, nr_ids["n_excel_gpt_fw_script"])
+        assert nr is not None and nr.status == NodeRunStatus.running
+
+
 def test_overflow_successor_after_check_stays_enriching_1() -> None:
     """check → action: slot 0, running = enriching_1, не слот 2."""
     from app.services.excel_gpt_node import (
