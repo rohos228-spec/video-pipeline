@@ -336,3 +336,5 @@ def test_group_run_html_has_nodes_and_qc() -> None:
     assert "действие / реакция" in html
     assert "bits-node" in html
     assert "B1" in html
+    assert "карточка сцены целиком" in html
+    assert "карточка ноды 3 целиком" in html

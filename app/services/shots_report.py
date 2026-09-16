@@ -533,6 +533,41 @@ def render_bits_check_table(run: dict[str, Any]) -> str:
     )
 
 
+def render_scene_cards_table(run: dict[str, Any]) -> str:
+    """Нода 3: карточка целиком — место — шаг → шаг + (закадр)."""
+    action = str(run.get("action") or "")
+    chain = parse_scene_chain(action)
+    rows: list[str] = []
+    for i, scene in enumerate(chain, start=1):
+        n = int(scene.get("n") or i)
+        place = str(scene.get("place") or "")
+        steps = str(scene.get("action") or "")
+        vo = plain_scene_vo(scene.get("vo") or "")
+        card = f"{n}. {place} — {steps}" if place else f"{n}. {steps}"
+        rows.append(
+            "<tr>"
+            f"<td>S{n:02d}</td>"
+            f"<td>{_esc(place)}</td>"
+            f"<td>{_esc(steps)}</td>"
+            f"<td>{_esc(vo)}</td>"
+            f"<td><b>{_esc(card)}</b>"
+            f"<div class=vo-bit>({_esc(vo)})</div></td>"
+            "</tr>"
+        )
+    return (
+        "<table class=scene-cards>"
+        "<thead><tr>"
+        "<th>сцена</th>"
+        "<th>место</th>"
+        "<th>шаги сцены</th>"
+        "<th>закадр сцены</th>"
+        "<th>карточка ноды 3 целиком</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+        f"<pre class=note>{html.escape(action)}</pre>"
+    )
+
+
 def render_all_nodes_one_table(run: dict[str, Any]) -> str:
     """Одна таблица: все поля бита, проверки, сцены, кадра, камеры, QC."""
     bits = [b for b in (run.get("bits") or []) if isinstance(b, dict)]
@@ -540,7 +575,12 @@ def render_all_nodes_one_table(run: dict[str, Any]) -> str:
     action = str(run.get("action") or "")
     qc = run.get("qc")
     chain = parse_scene_chain(action)
-    check = "Ок" if not qc else "Не ок"
+    check_node = str(run.get("check") or "").strip()
+    check_cell = (
+        check_node.splitlines()[0]
+        if check_node
+        else ("Ок" if not qc else "Не ок")
+    )
     qc_cell = "ок" if not qc else str(qc)
     rows: list[str] = []
     for shot in shots:
@@ -551,17 +591,23 @@ def render_all_nodes_one_table(run: dict[str, Any]) -> str:
         vo_shot = str(shot.get("закадр") or "")
         n_vis = visible_len_safe(vo_shot)
         bit_id = f"B{int(bit.get('порядок') or 0)}" if bit else "—"
+        n = int(scene.get("n") or shot.get("сцена") or 0)
+        place = str(scene.get("place") or shot.get("место") or "")
+        steps = str(scene.get("action") or "")
+        card = f"{n}. {place} — {steps}" if place else f"{n}. {steps}"
         rows.append(
             "<tr>"
             f"<td>{_esc(shot.get('id'))}</td>"
-            f"<td><b>{_esc(bit.get('изменение'))}</b>"
-            f"<div class=vo-bit>{_esc(bit_id)}</div></td>"
+            f"<td>{_esc(bit_id)}"
+            f"<div class=vo-bit>{_esc(bit.get('глагол'))}</div></td>"
+            f"<td><b>{_esc(bit.get('изменение'))}</b></td>"
             f"<td>{_esc(bit.get('закадр'))}</td>"
-            f"<td>{_esc(check)}</td>"
-            f"<td>S{int(scene.get('n') or shot.get('сцена') or 0):02d}</td>"
-            f"<td>{_esc(scene.get('place') or shot.get('место'))}</td>"
-            f"<td>{_esc(scene.get('action'))}</td>"
+            f"<td>{_esc(check_cell)}</td>"
+            f"<td>S{n:02d}</td>"
+            f"<td>{_esc(place)}</td>"
+            f"<td>{_esc(steps)}</td>"
             f"<td>{_esc(plain_scene_vo(scene.get('vo') or ''))}</td>"
+            f"<td><b>{_esc(card)}</b></td>"
             f"<td>{_esc(shot.get('действие'))}</td>"
             f"<td>{_esc(shot.get('объект'))}</td>"
             f"<td>{_esc(shot.get('позиция'))}</td>"
@@ -583,14 +629,16 @@ def render_all_nodes_one_table(run: dict[str, Any]) -> str:
         "<table class=all-nodes>"
         "<thead><tr>"
         "<th>кадр</th>"
+        "<th>бит / действие-реакция</th>"
         "<th>бит было→стало</th>"
         "<th>закадр бита</th>"
-        "<th>проверка</th>"
+        "<th>нода 2 проверка</th>"
         "<th>сцена</th>"
         "<th>место</th>"
-        "<th>действие сцены</th>"
+        "<th>шаги сцены</th>"
         "<th>закадр сцены</th>"
-        "<th>шаг</th>"
+        "<th>карточка сцены целиком</th>"
+        "<th>шаг кадра</th>"
         "<th>объект</th>"
         "<th>позиция</th>"
         "<th>план</th>"
@@ -624,15 +672,6 @@ def render_group_run_html(
     vo = str(run.get("vo") or "")
     stamp = datetime.now().strftime("%d.%m.%Y %H:%M")
     chain = parse_scene_chain(action)
-    scene_rows = "".join(
-        "<tr>"
-        f"<td>S{int(sc.get('n') or i):02d}</td>"
-        f"<td>{_esc(sc.get('place'))}</td>"
-        f"<td>{_esc(sc.get('action'))}"
-        f"<div class=vo-bit>({_esc(plain_scene_vo(sc.get('vo') or ''))})</div></td>"
-        "</tr>"
-        for i, sc in enumerate(chain, start=1)
-    )
     shot_cards = "".join(
         "<tr>"
         f"<td>{_esc(s.get('id'))}</td>"
@@ -652,7 +691,12 @@ def render_group_run_html(
         for s in shots
     )
     one_table = render_all_nodes_one_table(run)
+    scene_cards = render_scene_cards_table(run)
     bits_table = render_bits_check_table(run)
+    check_text = str(run.get("check") or "").strip()
+    check_html = (
+        f"<pre class=note>{html.escape(check_text)}</pre>" if check_text else ""
+    )
     qc_cls = "ok" if not qc else "warn"
     qc_text = "пусто ops — поля чистые" if not qc else str(qc)
     return f"""<!doctype html><html lang=ru><head><meta charset=utf-8>
@@ -667,7 +711,8 @@ h2{{font-size:16px;margin:28px 0 8px;padding-top:8px;border-top:1px solid #e5e5e
 table{{border-collapse:collapse;width:100%;min-width:1100px;margin:0 0 8px}}
 th,td{{border:1px solid #ddd;vertical-align:top;padding:8px 10px}}
 th{{text-align:left;background:#f4f4f4}}
-table.all-nodes{{min-width:3200px;font-size:12px}}
+table.scene-cards{{min-width:1400px;font-size:15px}}
+table.scene-cards th,table.scene-cards td{{padding:10px 12px}}
 table.all-nodes th,table.all-nodes td{{padding:8px 8px;white-space:normal}}
 th:first-child,td:first-child{{width:72px;text-align:center;color:#666;font-weight:650}}
 .vo-bit{{color:#666;margin-top:2px}}
@@ -685,6 +730,7 @@ pre.note{{white-space:pre-wrap}}
 · битов {len(bits)} · сцен {len(chain)} · кадров {len(shots)} · закадр кадра {SHOT_VO_MIN}–{SHOT_VO_MAX}</p>
 <p class=nav>
 <a href="#all">все поля</a>
+<a href="#scenes">карточки сцен</a>
 <a href="#gate">гейт</a>
 <a href="#n0">6 нод</a>
 <a href="#n1">1 биты</a>
@@ -699,6 +745,11 @@ pre.note{{white-space:pre-wrap}}
 Промты картинок — <code>img_pr</code>, не эта группа. Нода frames на новых канвасах не вставляется.
 Все поля нод — в одной таблице ниже: действие/реакция, закадр бита, сцена, камера, QC.</p>
 <h2 id="all">Одна таблица · все поля всех нод</h2>
+<h2 id="scenes">Нода 3 · карточка сцены целиком</h2>
+<p class=note>Поле <code>главное_действие</code>: <code>N. место — шаг → шаг</code>
+и строка <code>(дословный кусок закадра)</code>. Это не проза-описание.</p>
+{scene_cards}
+<h2>Все поля бита + сцены + кадра + камеры + QC</h2>
 {one_table}
 <h2 id="gate">Гейт: только если группа на пайплайне</h2>
 <p class=ok><span class=badge g>вкл</span> <code>canvas_has_script_frames_qc</code> —
@@ -730,16 +781,14 @@ pre.note{{white-space:pre-wrap}}
 Каждый бит несёт свой дословный кусок <code>закадр</code>.</p>
 {bits_table}
 <h2 id="n2">2 · Проверка · n_excel_gpt_fw_check_script</h2>
-<p class=note>Своего .md нет. checkMode. Ниже те же биты ноды 1 — что проверяли.</p>
+<p class=note>Своего .md нет. checkMode. Ниже вердикт ноды и те же биты ноды 1.</p>
+{check_html}
 {bits_table}
 <h2 id="n3">3 · Действие · n_excel_gpt_fw_action</h2>
 <p class=note>Промт <code>main_action_from_bits_ru.md</code>. Код
-<code>merge_same_place_scenes</code> склеил соседние карточки с одним местом.</p>
-<pre class=note>{html.escape(action)}</pre>
-<table>
-<thead><tr><th>id</th><th>Место</th><th>Сцена + закадр</th></tr></thead>
-<tbody>{scene_rows}</tbody>
-</table>
+<code>merge_same_place_scenes</code> склеил соседние карточки с одним местом.
+Ниже карточка целиком.</p>
+{scene_cards}
 <h2 id="n4">4 · Кадры-шаги · n_excel_gpt_fw_shots</h2>
 <p class=note>Промт <code>scenes_to_frames_ru.md</code> + <code>scene_shot_grammar</code>.
 Один кадр = один видимый шаг. Камера из таблицы, не каталог T/X.</p>
