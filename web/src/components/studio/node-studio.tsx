@@ -383,14 +383,14 @@ export function NodeStudio({
     mutationFn: (variables?: { mode?: "full" | "resume" }) =>
       api.runProjectStep(projectId!, stepCode!, {
         nodeKey: nodeKey ?? undefined,
-        mode: variables?.mode ?? "full",
+        mode: variables?.mode ?? "resume",
       }),
     onSuccess: (_, vars) => {
-      const isResume = vars?.mode === "resume";
+      const isFull = vars?.mode === "full";
       toast.success(
-        isResume
-          ? `Доделка шага «${spec.label}» запущена`
-          : `Шаг «${spec.label}» запущен начисто`,
+        isFull
+          ? `Шаг «${spec.label}» запущен начисто`
+          : `Шаг «${spec.label}» запущен`,
       );
       qc.invalidateQueries({ queryKey: ["project", projectId] });
       qc.invalidateQueries({ queryKey: ["project-run", projectId] });
@@ -642,7 +642,7 @@ export function NodeStudio({
                   <>
                     <Button
                       size="sm"
-                      onClick={() => runStep.mutate({ mode: "full" })}
+                      onClick={() => runStep.mutate({ mode: "resume" })}
                       disabled={!projectId || isThisNodeRunning || nodeDisabled}
                       className={cn(
                         "transition-all duration-200 gap-2 h-9 px-4 font-semibold text-xs text-white bg-gradient-to-r from-emerald-500 via-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 active:scale-[0.98] shadow-lg shadow-emerald-500/35 border border-emerald-300/40 rounded-xl backdrop-blur-md",
@@ -654,7 +654,7 @@ export function NodeStudio({
                           ? "Нода отключена в графе"
                           : isThisNodeRunning
                             ? "Шаг сейчас выполняется..."
-                            : "Запустить шаг начисто с 1-го кадра (полный перезапуск с очисткой)"
+                            : "Запустить шаг: готовое не трогаем, дальше по цепочке"
                       }
                     >
                       {isThisNodeRunning ? (

@@ -577,13 +577,13 @@ async def run_project_step(
     step_code: str,
     dry_run: bool = False,
     node_key: str | None = None,
-    mode: str = Query("full", pattern="^(full|resume)$"),
+    mode: str = Query("resume", pattern="^(full|resume)$"),
     force_wipe: bool | None = None,
     session: AsyncSession = Depends(get_project_session),
 ) -> Project:
     """Запустить шаг: статус → running, воркер выполнит advance_project.
-    mode='full' (по умолчанию) — полный чистый перезапуск шага с нуля (force_wipe=True).
-    mode='resume' — мягкое продолжение/доделка недостающих кадров (force_wipe=False).
+    Wipe только при явном force_wipe=true. mode=full без force_wipe — как resume
+    (старый UI слал full на каждый ▶ и сжигал выход).
     """
     p = await session.get(Project, project_id)
     if p is None:
@@ -601,7 +601,7 @@ async def run_project_step(
             payload=payload,
         )
         return p
-    resolved_force_wipe = force_wipe if force_wipe is not None else (mode != "resume")
+    resolved_force_wipe = bool(force_wipe) if force_wipe is not None else False
     try:
         await start_step(
             session,

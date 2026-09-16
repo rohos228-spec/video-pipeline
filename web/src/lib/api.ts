@@ -947,7 +947,7 @@ export const api = {
     const params = new URLSearchParams();
     if (opts?.dryRun) params.set("dry_run", "true");
     if (opts?.nodeKey) params.set("node_key", opts.nodeKey);
-    if (opts?.mode) params.set("mode", opts.mode);
+    params.set("mode", opts?.mode ?? "resume");
     if (opts?.forceWipe != null) params.set("force_wipe", String(opts.forceWipe));
     const q = params.toString() ? `?${params.toString()}` : "";
     return http<ProjectDetail>(`/api/projects/${projectId}/steps/${stepCode}/run${q}`, {
