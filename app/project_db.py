@@ -915,10 +915,14 @@ async def init_project_db(
     """Инициализировать схему таблиц в project.db проекта (create_all) и синхронизировать проект."""
     eng = await get_project_engine(project_data_dir)
     async with eng.begin() as conn:
+        from app.services.scene_space import models as _scene_space_models  # noqa: F401
+
         await conn.run_sync(Base.metadata.create_all)
         from app.services.db_v2 import migrate_db_v2_schema
+        from app.services.scene_space.migrate import migrate_scene_space_schema
 
         await migrate_db_v2_schema(conn)
+        await migrate_scene_space_schema(conn)
 
     if project is not None:
         try:

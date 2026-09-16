@@ -125,10 +125,14 @@ async def _lifespan(app: FastAPI):
         from app.models import Base
 
         async with engine.begin() as conn:
+            from app.services.scene_space import models as _scene_space_models  # noqa: F401
+
             await conn.run_sync(Base.metadata.create_all)
             from app.services.db_v2 import migrate_db_v2_schema
+            from app.services.scene_space.migrate import migrate_scene_space_schema
 
             await migrate_db_v2_schema(conn)
+            await migrate_scene_space_schema(conn)
     except Exception:  # noqa: BLE001
         logger.exception("create_all failed (non-fatal — possibly already exists)")
     try:
