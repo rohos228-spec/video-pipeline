@@ -261,7 +261,7 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
         res = await insert_node_group(session, project, "script_frames_qc")
 
     assert res["after"] == "n_plan"
-    assert len(res["nodes"]) == 5
+    assert len(res["nodes"]) == 4
     cg = project.meta["canvas_graph"]
     by_id = {n["id"]: n for n in cg["nodes"]}
     plan_x = by_id["n_plan"]["position"]["x"]
@@ -278,14 +278,8 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
     assert cfg["outputMode"] == "project_file"
     assert cfg["transport"] == "api"
 
-    # проверка сценария — как в веере: checkMode, правила с промта источника
-    chk = by_id["n_excel_gpt_fw_check_script"]
-    assert chk["data"]["slotOverflow"] is True
-    ccfg = project.meta["excel_gpt_nodes"]["n_excel_gpt_fw_check_script"]
-    assert ccfg["checkMode"] is True
-    assert ccfg["checkPromptSource"] == "upstream"
-    assert "n_excel_gpt_fw_check_script" not in project.meta["prompt_slot_variants"]
-
+    assert "n_excel_gpt_fw_check_script" not in by_id
+    assert "n_excel_gpt_fw_check_script" not in project.meta["excel_gpt_nodes"]
     assert project.meta["prompt_slot_variants"]["n_excel_gpt_fw_shots"] == {
         "main": "scenes_to_frames_ru"
     }
@@ -299,13 +293,9 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
     pairs = {(e["source"], e["target"]) for e in cg["edges"]}
     assert ("n_plan", "n_script") not in pairs  # нет такого ребра
     assert ("n_plan", "n_excel_gpt_fw_script") in pairs
-    assert ("n_excel_gpt_fw_script", "n_excel_gpt_fw_check_script") in pairs
-    kinds = {
-        (e["source"], e["target"]): (e.get("data") or {}).get("kind")
-        for e in cg["edges"]
-    }
-    assert kinds[("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_shots")] == "pass"
-    assert kinds[("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_script")] == "fail"
+    assert ("n_excel_gpt_fw_script", "n_excel_gpt_fw_shots") in pairs
+    assert ("n_excel_gpt_fw_script", "n_excel_gpt_fw_check_script") not in pairs
+    assert ("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_shots") not in pairs
     assert ("n_excel_gpt_fw_action", "n_excel_gpt_fw_shots") not in pairs
     assert ("n_excel_gpt_fw_shots", "n_excel_gpt_fw_qc") in pairs
     assert ("n_excel_gpt_fw_shots", "n_excel_gpt_fw_frames") not in pairs
@@ -815,6 +805,118 @@ def test_drop_script_frames_qc_action_graph() -> None:
     assert "n_excel_gpt_fw_action" not in meta["excel_gpt_nodes"]
     assert "n_excel_gpt_fw_shots" in meta["excel_gpt_nodes"]
     assert ng.drop_script_frames_qc_action_graph(meta) is False
+
+
+def test_drop_script_frames_qc_check_graph() -> None:
+    meta = {
+        "canvas_graph": {
+            "workflow_id": 1,
+            "nodes": [
+                {
+                    "id": "n_excel_gpt_fw_script",
+                    "type": "excel_gpt",
+                    "position": {"x": 0, "y": 0},
+                    "data": {"groupId": "script_frames_qc"},
+                },
+                {
+                    "id": "n_excel_gpt_fw_check_script",
+                    "type": "excel_gpt",
+                    "position": {"x": 100, "y": 0},
+                    "data": {"groupId": "script_frames_qc"},
+                },
+                {
+                    "id": "n_excel_gpt_fw_shots",
+                    "type": "excel_gpt",
+                    "position": {"x": 200, "y": 0},
+                    "data": {"groupId": "script_frames_qc"},
+                },
+            ],
+            "edges": [
+                {
+                    "source": "n_excel_gpt_fw_script",
+                    "target": "n_excel_gpt_fw_check_script",
+                    "data": {"kind": "after"},
+                },
+                {
+                    "source": "n_excel_gpt_fw_check_script",
+                    "target": "n_excel_gpt_fw_shots",
+                    "data": {"kind": "pass", "label": "Ок"},
+                    "label": "Ок",
+                },
+                {
+                    "source": "n_excel_gpt_fw_check_script",
+                    "target": "n_excel_gpt_fw_script",
+                    "data": {"kind": "fail"},
+                },
+            ],
+        },
+        "excel_gpt_nodes": {"n_excel_gpt_fw_check_script": {"checkMode": True}},
+    }
+    assert ng.drop_script_frames_qc_check_graph(meta) is True
+    ids = {n["id"] for n in meta["canvas_graph"]["nodes"]}
+    assert "n_excel_gpt_fw_check_script" not in ids
+    pairs = {(e["source"], e["target"]) for e in meta["canvas_graph"]["edges"]}
+    assert ("n_excel_gpt_fw_script", "n_excel_gpt_fw_shots") in pairs
+    assert ("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_shots") not in pairs
+    assert ("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_script") not in pairs
+    assert "n_excel_gpt_fw_check_script" not in meta["excel_gpt_nodes"]
+    assert ng.drop_script_frames_qc_check_graph(meta) is False
+
+
+def test_upgrade_script_frames_qc_six_node_canvas_drops_check_and_action() -> None:
+    """Старый холст 6 нод (check + action) → 4: script → shots → qc → report."""
+    gid = {"groupId": "script_frames_qc"}
+    meta = {
+        "canvas_graph": {
+            "workflow_id": 1,
+            "nodes": [
+                {"id": "n_excel_gpt_fw_script", "type": "excel_gpt", "position": {"x": 0, "y": 0}, "data": gid},
+                {"id": "n_excel_gpt_fw_check_script", "type": "excel_gpt", "position": {"x": 100, "y": 0}, "data": gid},
+                {"id": "n_excel_gpt_fw_action", "type": "excel_gpt", "position": {"x": 200, "y": 0}, "data": gid},
+                {"id": "n_excel_gpt_fw_shots", "type": "excel_gpt", "position": {"x": 300, "y": 0}, "data": gid},
+                {"id": "n_excel_gpt_fw_qc", "type": "excel_gpt", "position": {"x": 400, "y": 0}, "data": gid},
+                {"id": "n_excel_gpt_fw_report", "type": "excel_gpt", "position": {"x": 500, "y": 0}, "data": gid},
+            ],
+            "edges": [
+                {"source": "n_excel_gpt_fw_script", "target": "n_excel_gpt_fw_check_script", "data": {"kind": "after"}},
+                {
+                    "source": "n_excel_gpt_fw_check_script",
+                    "target": "n_excel_gpt_fw_action",
+                    "data": {"kind": "pass", "label": "Ок"},
+                    "label": "Ок",
+                },
+                {"source": "n_excel_gpt_fw_check_script", "target": "n_excel_gpt_fw_script", "data": {"kind": "fail"}},
+                {"source": "n_excel_gpt_fw_action", "target": "n_excel_gpt_fw_shots", "data": {"kind": "after"}},
+                {"source": "n_excel_gpt_fw_shots", "target": "n_excel_gpt_fw_qc", "data": {"kind": "after"}},
+                {"source": "n_excel_gpt_fw_qc", "target": "n_excel_gpt_fw_report", "data": {"kind": "after"}},
+            ],
+        },
+        "excel_gpt_nodes": {
+            "n_excel_gpt_fw_check_script": {"checkMode": True},
+            "n_excel_gpt_fw_action": {"outputMode": "project_file"},
+        },
+        "prompt_slot_variants": {
+            "n_excel_gpt_fw_check_script": {"main": "check_script"},
+            "n_excel_gpt_fw_action": {"main": "main_action_from_bits_ru"},
+        },
+    }
+    assert ng.upgrade_script_frames_qc_graph(meta) is False
+    assert ng.drop_script_frames_qc_action_graph(meta) is True
+    assert ng.drop_script_frames_qc_check_graph(meta) is True
+    ids = {n["id"] for n in meta["canvas_graph"]["nodes"]}
+    assert ids == {
+        "n_excel_gpt_fw_script",
+        "n_excel_gpt_fw_shots",
+        "n_excel_gpt_fw_qc",
+        "n_excel_gpt_fw_report",
+    }
+    pairs = {(e["source"], e["target"]) for e in meta["canvas_graph"]["edges"]}
+    assert ("n_excel_gpt_fw_script", "n_excel_gpt_fw_shots") in pairs
+    assert ("n_excel_gpt_fw_shots", "n_excel_gpt_fw_qc") in pairs
+    assert ("n_excel_gpt_fw_qc", "n_excel_gpt_fw_report") in pairs
+    assert "n_excel_gpt_fw_check_script" not in meta["excel_gpt_nodes"]
+    assert "n_excel_gpt_fw_action" not in meta["excel_gpt_nodes"]
+    assert "n_excel_gpt_fw_check_script" not in meta["prompt_slot_variants"]
 
 
 def test_rewire_script_frames_qc_shots_to_qc() -> None:

@@ -456,7 +456,7 @@ def render_group_run_html(
     slug: str = "",
     title: str = "Отчёт группы нод",
 ) -> str:
-    """Полный прогон группы: биты → проверка → действие → кадры-шаги → QC."""
+    """Полный прогон группы: биты → последовательность кадров → QC."""
     bits = list(run.get("bits") or [])
     shots = list(run.get("shots") or [])
     action = str(run.get("action") or "")
@@ -526,12 +526,11 @@ pre.note{{white-space:pre-wrap}}
 · битов {len(bits)} · сцен {len(chain)} · кадров {len(shots)} · закадр кадра {SHOT_VO_MIN}–{SHOT_VO_MAX}</p>
 <p class=nav>
 <a href="#gate">гейт</a>
-<a href="#n0">5 нод</a>
+<a href="#n0">4 ноды</a>
 <a href="#n1">1 биты</a>
-<a href="#n2">2 проверка</a>
-<a href="#n3">3 кадры</a>
-<a href="#n4">4 QC</a>
-<a href="#n5">5 отчёт</a>
+<a href="#n2">2 кадры</a>
+<a href="#n3">3 QC</a>
+<a href="#n4">4 отчёт</a>
 </p>
 <p class=note>Формат как у старого отчёта группы, но <b>без T0–T10</b>.
 Кадр = видимый шаг действия. Камера из таблицы по полю <code>объект</code>.
@@ -548,16 +547,15 @@ pre.note{{white-space:pre-wrap}}
 <tr><td>4</td><td>промты картинок</td><td>img_pr</td><td>fw_frames если нода осталась на старом канвасе</td></tr>
 </tbody>
 </table>
-<h2 id="n0">Пять нод группы</h2>
-<p class=meta>сценарист → проверка → последовательность кадров → QC полей → HTML-отчёт</p>
+<h2 id="n0">Четыре ноды группы</h2>
+<p class=meta>сценарист → последовательность кадров → QC полей → HTML-отчёт</p>
 <table>
 <thead><tr><th>id</th><th>Нода</th><th>canvas id</th><th>промт / режим</th><th>Что пишет</th></tr></thead>
 <tbody>
 <tr><td>1</td><td><b>сценарист</b></td><td class=node>n_excel_gpt_fw_script</td><td class=node>script_writer_ru</td><td>биты: изменение + якорь. Закадр не пишет.</td></tr>
-<tr><td>2</td><td><b>проверка</b></td><td class=node>n_excel_gpt_fw_check_script</td><td class=node>checkMode, upstream</td><td>Ок / Не ок. Fail → script.</td></tr>
-<tr><td>3</td><td><b>кадры</b></td><td class=node>n_excel_gpt_fw_shots</td><td class=node>scenes_to_frames_ru</td><td>биты → последовательность кадров. Камеру дописывает код. Не T0–T10.</td></tr>
-<tr><td>4</td><td><b>QC полей</b></td><td class=node>n_excel_gpt_fw_qc</td><td class=node>shots_qc_ru</td><td>склейка, 13–80, уникальность, enum. Не промты картинок.</td></tr>
-<tr><td>5</td><td><b>отчёт</b></td><td class=node>n_excel_gpt_fw_report</td><td class=node>transport=code</td><td>HTML без GPT.</td></tr>
+<tr><td>2</td><td><b>кадры</b></td><td class=node>n_excel_gpt_fw_shots</td><td class=node>scenes_to_frames_ru</td><td>биты → последовательность кадров. Камеру дописывает код. Не T0–T10.</td></tr>
+<tr><td>3</td><td><b>QC полей</b></td><td class=node>n_excel_gpt_fw_qc</td><td class=node>shots_qc_ru</td><td>склейка, 13–80, уникальность, enum. Не промты картинок.</td></tr>
+<tr><td>4</td><td><b>отчёт</b></td><td class=node>n_excel_gpt_fw_report</td><td class=node>transport=code</td><td>HTML без GPT.</td></tr>
 </tbody>
 </table>
 <h2 id="n1">1 · Сценарист · n_excel_gpt_fw_script</h2>
@@ -567,18 +565,7 @@ pre.note{{white-space:pre-wrap}}
 <thead><tr><th>id</th><th>Бит</th></tr></thead>
 <tbody>{bit_rows}</tbody>
 </table>
-<h2 id="n2">2 · Проверка · n_excel_gpt_fw_check_script</h2>
-<p class=note>Своего .md нет. checkMode, правила со сценариста.</p>
-<table>
-<thead><tr><th>id</th><th>Вердикт</th></tr></thead>
-<tbody>
-<tr><td>Ок</td><td>биты — массив объектов, не слоган</td></tr>
-<tr><td>Ок</td><td>якоря дословно есть в voiceover_text</td></tr>
-<tr><td>Ок</td><td>склейка bit.закадр = весь VO ({len(vo)} симв.)</td></tr>
-<tr><td>Ок</td><td>нет replace_frames / переписывания закадра</td></tr>
-</tbody>
-</table>
-<h2 id="n3">3 · Кадры · n_excel_gpt_fw_shots</h2>
+<h2 id="n2">2 · Кадры · n_excel_gpt_fw_shots</h2>
 <p class=note>Промт <code>scenes_to_frames_ru.md</code> + <code>scene_shot_grammar</code>.
 Последовательность кадров = сцена. Камера из таблицы, не каталог T/X.</p>
 <pre class=note>{html.escape(action)}</pre>
@@ -586,11 +573,11 @@ pre.note{{white-space:pre-wrap}}
 <thead><tr><th>id</th><th>Место</th><th>Действие</th><th>объект</th><th>камера</th><th>parent</th><th>закадр</th></tr></thead>
 <tbody>{shot_cards}</tbody>
 </table>
-<h2 id="n4">4 · QC · n_excel_gpt_fw_qc</h2>
+<h2 id="n3">3 · QC · n_excel_gpt_fw_qc</h2>
 <p class="{qc_cls}"><span class="badge {'g' if not qc else 'o'}">shots_grammar_reason</span>
 {html.escape(qc_text)}</p>
 <p class=note>Промт <code>shots_qc_ru.md</code>. Пустые ops = ок. Промты картинок не пишет.</p>
-<h2 id="n5">5 · Отчёт · n_excel_gpt_fw_report</h2>
+<h2 id="n4">4 · Отчёт · n_excel_gpt_fw_report</h2>
 <p class=ok>Этот файл. Картинки/видео пустые — их пишет img_pr позже.</p>
 </body></html>
 """
