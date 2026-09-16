@@ -12,7 +12,11 @@ from app.services.scene_shot_grammar import (
     merge_same_place_scenes,
     shots_grammar_reason,
 )
-from app.services.shots_report import render_all_nodes_one_table, render_group_run_html
+from app.services.shots_report import (
+    render_all_nodes_one_table,
+    render_bits_check_table,
+    render_group_run_html,
+)
 
 VO = (
     "Алекса́ндр Спеси́вцев, сын Людми́лы Спеси́вцевой, рос в семье, где мать "
@@ -81,23 +85,28 @@ BIT_STEP = {
 
 def _one_table_html(model: dict) -> str:
     qc = "ок" if not model.get("qc") else str(model.get("qc"))
+    bits_table = render_bits_check_table(model)
     table = render_all_nodes_one_table(model)
     return f"""<!doctype html><html lang=ru><meta charset=utf-8>
-<title>script_frames_qc · одна таблица</title>
+<title>script_frames_qc · биты и таблица</title>
 <style>
-body{{font:13px/1.35 system-ui,Segoe UI,sans-serif;margin:16px;color:#111;background:#fff}}
-h1{{font-size:20px;margin:0 0 6px}}
+body{{font:15px/1.4 system-ui,Segoe UI,sans-serif;margin:16px;color:#111;background:#fff}}
+h1{{font-size:22px;margin:0 0 6px}}
+h2{{font-size:18px;margin:24px 0 8px}}
 .meta{{color:#444;margin:0 0 12px}}
-table{{border-collapse:collapse;width:100%;min-width:3200px}}
-th,td{{border:1px solid #bbb;vertical-align:top;padding:8px 8px}}
+table{{border-collapse:collapse;width:100%}}
+table.bits-node{{min-width:1100px;font-size:16px}}
+table.all-nodes{{min-width:3200px;font-size:12px}}
+th,td{{border:1px solid #bbb;vertical-align:top;padding:10px 10px}}
 th{{background:#ececec;text-align:left}}
 .vo-bit{{color:#555;margin-top:4px}}
 </style>
-<h1>script_frames_qc · одна таблица всех нод</h1>
-<p class=meta>1 сценарист · 2 проверка · 3 действие · 4 кадры-шаги · 5 QC · 6 отчёт=эта таблица
-· {len(model.get('bits') or [])} битов · {len(model.get('shots') or [])} кадров · QC: {qc}
-· бит = слово/словосочетание было→стало; закадр бита = покрытие, не ярлык
-· закадр кадра режется по точке или запятой</p>
+<h1>Нода 1–2 · биты</h1>
+<p class=meta>бит = слово/словосочетание было→стало. Закадр бита — покрытие, не ярлык.
+· {len(model.get('bits') or [])} битов · QC: {qc}</p>
+{bits_table}
+<h2>Кадры со всеми полями</h2>
+<p class=meta>во втором столбце бит целиком, не номер B1</p>
 {table}
 """
 

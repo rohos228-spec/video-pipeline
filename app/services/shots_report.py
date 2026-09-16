@@ -487,6 +487,36 @@ def _scene_for_shot(shot: dict[str, Any], chain: list[Any]) -> dict[str, Any]:
     return chain[0] if chain else {}
 
 
+def render_bits_check_table(run: dict[str, Any]) -> str:
+    """Нода 1–2: все биты целиком, не B1 без текста."""
+    bits = [b for b in (run.get("bits") or []) if isinstance(b, dict)]
+    qc = run.get("qc")
+    vo = str(run.get("vo") or "")
+    check = "Ок" if not qc else "Не ок"
+    rows = "".join(
+        "<tr>"
+        f"<td>B{int(b.get('порядок') or i)}</td>"
+        f"<td><b>{_esc(b.get('изменение'))}</b></td>"
+        f"<td>{_esc(b.get('якорь'))}</td>"
+        f"<td>{_esc(b.get('закадр'))}</td>"
+        f"<td>{_esc(check)}</td>"
+        "</tr>"
+        for i, b in enumerate(bits, start=1)
+    )
+    return (
+        "<table class=bits-node>"
+        "<thead><tr>"
+        "<th>бит</th>"
+        "<th>изменение было→стало</th>"
+        "<th>якорь</th>"
+        "<th>закадр бита</th>"
+        "<th>проверка</th>"
+        "</tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+        f"<p class=vo-bit>склейка bit.закадр = voiceover_text · {len(vo)} симв. · вердикт {html.escape(check)}</p>"
+    )
+
+
 def render_all_nodes_one_table(run: dict[str, Any]) -> str:
     """Одна таблица: все поля бита, проверки, сцены, кадра, камеры, QC."""
     bits = [b for b in (run.get("bits") or []) if isinstance(b, dict)]
@@ -504,13 +534,14 @@ def render_all_nodes_one_table(run: dict[str, Any]) -> str:
         parent_s = "null" if parent in (None, "", "null") else str(parent)
         vo_shot = str(shot.get("закадр") or "")
         n_vis = visible_len_safe(vo_shot)
+        bit_id = f"B{int(bit.get('порядок') or 0)}" if bit else "—"
         rows.append(
             "<tr>"
             f"<td>{_esc(shot.get('id'))}</td>"
-            f"<td>B{_esc(bit.get('порядок'))}</td>"
-            f"<td>{_esc(bit.get('изменение'))}</td>"
+            f"<td><b>{_esc(bit.get('изменение'))}</b>"
+            f"<div class=vo-bit>{_esc(bit_id)}</div></td>"
             f"<td>{_esc(bit.get('якорь'))}</td>"
-            f"<td>{_esc(bit.get('закадр'))}<div class=vo-bit>закадр бита · покрытие, не ярлык</div></td>"
+            f"<td>{_esc(bit.get('закадр'))}</td>"
             f"<td>{_esc(check)}</td>"
             f"<td>S{int(scene.get('n') or shot.get('сцена') or 0):02d}</td>"
             f"<td>{_esc(scene.get('place') or shot.get('место'))}</td>"
@@ -537,8 +568,7 @@ def render_all_nodes_one_table(run: dict[str, Any]) -> str:
         "<table class=all-nodes>"
         "<thead><tr>"
         "<th>кадр</th>"
-        "<th>бит</th>"
-        "<th>изменение было→стало</th>"
+        "<th>бит было→стало</th>"
         "<th>якорь</th>"
         "<th>закадр бита</th>"
         "<th>проверка</th>"
@@ -580,15 +610,6 @@ def render_group_run_html(
     vo = str(run.get("vo") or "")
     stamp = datetime.now().strftime("%d.%m.%Y %H:%M")
     chain = parse_scene_chain(action)
-    bit_rows = "".join(
-        "<tr>"
-        f"<td>B{int(b.get('порядок') or i)}</td>"
-        f"<td>{_esc(b.get('изменение'))}</td>"
-        f"<td>{_esc(b.get('якорь'))}</td>"
-        f"<td>{_esc(b.get('закадр'))}</td>"
-        "</tr>"
-        for i, b in enumerate(bits, start=1)
-    )
     scene_rows = "".join(
         "<tr>"
         f"<td>S{int(sc.get('n') or i):02d}</td>"
@@ -617,6 +638,7 @@ def render_group_run_html(
         for s in shots
     )
     one_table = render_all_nodes_one_table(run)
+    bits_table = render_bits_check_table(run)
     qc_cls = "ok" if not qc else "warn"
     qc_text = "пусто ops — поля чистые" if not qc else str(qc)
     return f"""<!doctype html><html lang=ru><head><meta charset=utf-8>
@@ -692,22 +714,10 @@ pre.note{{white-space:pre-wrap}}
 <h2 id="n1">1 · Сценарист · n_excel_gpt_fw_script</h2>
 <p class=note>Промт <code>script_writer_ru.md</code>. Пишет только <code>биты</code>.
 Код <code>fill_bit_spans</code> режет закадр по якорям.</p>
-<table>
-<thead><tr><th>id</th><th>изменение было→стало</th><th>якорь</th><th>закадр бита</th></tr></thead>
-<tbody>{bit_rows}</tbody>
-</table>
+{bits_table}
 <h2 id="n2">2 · Проверка · n_excel_gpt_fw_check_script</h2>
-<p class=note>Своего .md нет. checkMode, правила со сценариста.</p>
-<table>
-<thead><tr><th>id</th><th>Вердикт</th></tr></thead>
-<tbody>
-<tr><td>Ок</td><td>биты — массив объектов, не слоган</td></tr>
-<tr><td>Ок</td><td>изменение = слово/словосочетание было → стало, не кусок VO</td></tr>
-<tr><td>Ок</td><td>якоря 2–6 слов, дословно есть в voiceover_text</td></tr>
-<tr><td>Ок</td><td>склейка bit.закадр = весь VO ({len(vo)} симв.)</td></tr>
-<tr><td>Ок</td><td>нет replace_frames / переписывания закадра</td></tr>
-</tbody>
-</table>
+<p class=note>Своего .md нет. checkMode. Ниже те же биты ноды 1 — что проверяли.</p>
+{bits_table}
 <h2 id="n3">3 · Действие · n_excel_gpt_fw_action</h2>
 <p class=note>Промт <code>main_action_from_bits_ru.md</code>. Код
 <code>merge_same_place_scenes</code> склеил соседние карточки с одним местом.</p>

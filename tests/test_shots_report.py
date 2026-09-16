@@ -333,3 +333,5 @@ def test_group_run_html_has_nodes_and_qc() -> None:
     assert "точка" in html
     assert "стык" in html
     assert "снаружи → внутри" in html
+    assert "bits-node" in html
+    assert "B1" in html
