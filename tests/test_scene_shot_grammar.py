@@ -13,6 +13,7 @@ from app.services.scene_shot_grammar import (
     object_matches_step,
     shots_grammar_reason,
     split_scene_action,
+    visible_len,
 )
 
 
@@ -25,6 +26,8 @@ def test_split_and_classify() -> None:
     assert object_matches_step("открыл папку", "предмет")
     assert not object_matches_step("открыл папку", "двое")
     assert has_visible_verb("вошёл, сел")
+    assert has_visible_verb("стоят у перил подъезда")
+    assert has_visible_verb("мать встала между ним и дверью")
     assert not has_visible_verb("узнаёт правду")
 
 
@@ -70,6 +73,11 @@ def test_merge_same_place_and_expand() -> None:
     assert shots[1]["parent_id"] == shots[0]["id"]
     assert shots[0]["линза_мм"] in (24, 35)
     assert any(s["объект"] == "предмет" for s in shots)
+    later_place = [
+        s for s in shots[1:]
+        if s.get("объект") == "место" and s.get("место") == shots[0].get("место")
+    ]
+    assert all(s.get("план") != "ОБЩИЙ" or int(s.get("линза_мм") or 0) != 24 for s in later_place)
     glued = " ".join(s["закадр"] for s in shots)
     assert "вошёл" in glued.lower() or "кабинет" in glued.lower()
     reason = shots_grammar_reason(shots, glued)
@@ -132,6 +140,45 @@ def test_apply_grammar_fills_empty_shots() -> None:
     assert len(shots) >= 2
     assert all(s.get("линза_мм") for s in shots)
     assert SHOT_VO_MIN >= 13
+
+
+def test_long_vo_gets_more_shots() -> None:
+    vo = (
+        "Для окружающих семья выглядела тяжёлой, конфликтной и неблагополучной, "
+        "однако само по себе это ещё не означало, что внутри совершаются преступления."
+    )
+    action = f"1. подъезд — соседи смотрят на семью\n({vo})"
+    shots = expand_action_to_shots(action, cell_number=1)
+    assert len(shots) >= 2
+    assert all(SHOT_VO_MIN <= visible_len(s["закадр"]) <= 80 for s in shots)
+    glued = " ".join(s["закадр"] for s in shots)
+    assert " ".join(glued.split()) == " ".join(vo.split())
+    stems = [s["действие"] for s in shots]
+    assert len(stems) == len(set(stems))
+    assert shots[0]["parent_id"] is None
+    assert shots_grammar_reason(shots, vo) is None
+
+
+def test_new_place_parent_is_null() -> None:
+    action = (
+        "1. квартира — стоит у матери → отец идёт к стене\n"
+        "(Александр стоит у матери, отец идёт к стене.)\n"
+        "2. подъезд — соседи смотрят на семью\n"
+        "(Соседи смотрят на семью в подъезде.)"
+    )
+    shots = expand_action_to_shots(action, cell_number=1)
+    ops = [{"frame_uuid": "u1", "fields": {"главное_действие": action, "кадры": shots}}]
+    apply_grammar_to_ops(
+        ops,
+        [{"uuid": "u1", "number": 1, "main_action": action, "voiceover_text": ""}],
+    )
+    shots = ops[0]["fields"]["кадры"]
+    places: dict[str, list] = {}
+    for s in shots:
+        places.setdefault(s["место"], []).append(s)
+    assert shots[0]["parent_id"] is None
+    pod = places["подъезд"][0]
+    assert pod["parent_id"] is None
 
 
 def test_empty_vo_and_glue_fail() -> None:
