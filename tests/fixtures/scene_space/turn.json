@@ -280,7 +280,7 @@
             "facing": 328.0
           },
           "c01": {
-            "x": 1.0,
+            "x": 0.4,
             "y": 2.0,
             "facing": 90.0
           },
@@ -439,10 +439,10 @@
           "c02": "R"
         },
         "screen_dir": "R→L",
-        "shot_size": "MWS",
+        "shot_size": "WS",
         "angle_v": "slight low",
         "angle_h": "three-quarter",
-        "beat_role": "beat",
+        "beat_role": "insert",
         "crossing_method": null,
         "space_delta_json": {
           "cam": {

@@ -118,6 +118,13 @@ def normalize_frames(frames: list[Any]) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         row = dict(item)
+        nested = row.get("space")
+        if isinstance(nested, dict):
+            for key, val in nested.items():
+                row.setdefault(key, val)
+        attrs = row.get("attrs")
+        if isinstance(attrs, dict) and not row.get("accent") and attrs.get("accent"):
+            row["accent"] = attrs["accent"]
         if "space_delta_json" in row:
             parsed = _as_dict(row.get("space_delta_json"))
             row["_delta"] = parsed

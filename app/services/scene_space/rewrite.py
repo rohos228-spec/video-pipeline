@@ -239,7 +239,15 @@ def canonical_dumps(obj: Any) -> str:
 
 
 def input_hash(meaning: str, bits: list[dict], shots: list[dict]) -> str:
-    payload = {"bits": bits, "meaning": meaning, "shots": [_shot_hash_view(s) for s in shots]}
+    payload = {
+        "bits": [{"i": b.get("i"), "meaning_tag": b.get("meaning_tag")} for b in bits],
+        "meaning": meaning,
+        "uuids": [
+            str(s.get("uuid"))
+            for s in shots
+            if int(s.get("manual") or 0) != 1 and not _is_service_row(s)
+        ],
+    }
     return hashlib.sha256(canonical_dumps(payload).encode("utf-8")).hexdigest()
 
 
@@ -283,17 +291,22 @@ def _as_json_obj(val: Any) -> dict:
     return {}
 
 
+def _is_service_row(row: Mapping[str, Any]) -> bool:
+    delta = _as_json_obj(row.get("space_delta_json"))
+    if delta.get("service_shot"):
+        return True
+    return False
+
+
 def derive_bits(meaning: str, rows: Sequence[Mapping[str, Any]]) -> list[dict]:
     tag = hashlib.sha256((meaning or "").encode("utf-8")).hexdigest()[:12]
     bits: list[dict] = []
+    i = 0
     for row in sorted(rows, key=lambda r: int(r.get("shot_order") or 0)):
-        bits.append(
-            {
-                "beat_role": str(row.get("beat_role") or "beat"),
-                "meaning_tag": tag,
-                "shot_order": int(row.get("shot_order") or 0),
-            }
-        )
+        if _is_service_row(row):
+            continue
+        i += 1
+        bits.append({"beat_role": "beat", "meaning_tag": tag, "i": i})
     return bits
 
 
@@ -1270,9 +1283,11 @@ def _desired_via_blocking(
         from app.services.scene_space.blocking import assign_blocking
     except ImportError:
         return None
-    frames = [{"uuid": r["uuid"], "shot_order": r["shot_order"]} for r in rows]
+    payload = dict(space)
+    if rows and not payload.get("scene_id"):
+        payload["scene_id"] = rows[0].get("scene_id")
     try:
-        out = assign_blocking(space, bits, frames)
+        out = assign_blocking(payload, bits, [dict(r) for r in rows])
     except Exception as exc:  # noqa: BLE001
         logger.warning("assign_blocking failed ({}): {}", type(exc).__name__, exc)
         return None
@@ -1301,21 +1316,21 @@ async def _insert_service_frame(
         after_frame_id=after_id,
         scene_id=scene.id,
     )
+    keep_uuid = str(desired.get("uuid") or "").strip() or new_frame_uuid()
+    fr.uuid = keep_uuid
     fr.voiceover_text = ""
     fr.image_prompt = _prompt("service shot, same room, same pair")
     fr.animation_prompt = _prompt("service shot hold")
     fr.attrs = dict(fr.attrs or {})
-    if not fr.uuid:
-        fr.uuid = new_frame_uuid()
     await session.flush()
     row = {
-        "uuid": fr.uuid,
+        "uuid": keep_uuid,
         "scene_id": scene_id,
         **{k: desired[k] for k in desired if k != "uuid"},
     }
-    row["uuid"] = fr.uuid
+    row["uuid"] = keep_uuid
     await _upsert_frame_space(session, row)
-    return str(fr.uuid)
+    return keep_uuid
 
 
 async def rewrite(session: AsyncSession, scene_id: str, meaning: str) -> dict:
@@ -1332,8 +1347,9 @@ async def rewrite(session: AsyncSession, scene_id: str, meaning: str) -> dict:
     assert space is not None
 
     meaning = str(meaning)
-    bits = derive_bits(meaning, rows)
-    desired = _desired_via_blocking(space, bits, rows) or [dict(r) for r in rows]
+    content_rows = [r for r in rows if not _is_service_row(r)]
+    bits = derive_bits(meaning, content_rows)
+    desired = _desired_via_blocking(space, bits, content_rows) or [dict(r) for r in content_rows]
     # align uuids / scene_id
     by_order = {int(r["shot_order"]): r for r in rows}
     aligned: list[dict] = []
@@ -1347,8 +1363,7 @@ async def rewrite(session: AsyncSession, scene_id: str, meaning: str) -> dict:
             item["manual"] = by_order[order].get("manual", 0)
         aligned.append(item)
 
-    non_manual_desired = [r for r in aligned if int(r.get("manual") or 0) != 1]
-    new_hash = input_hash(meaning, bits, non_manual_desired)
+    new_hash = input_hash(meaning, bits, content_rows)
     old_hash = str(space.get("input_hash") or "")
     if new_hash == old_hash:
         logger.info("scene_space rewrite {}: unchanged hash, skip", scene_id)
@@ -1538,12 +1553,21 @@ async def run_e2e(session: AsyncSession, *, meaning: str = "A wins then loses th
 
     validate_result: dict[str, Any] = {"imported": False}
     try:
-        from app.services.scene_space.validate import validate_scene
+        from app.services.scene_space.validate import (
+            load_fixture as load_validate_fixture,
+            validate_scene,
+        )
 
-        validate_result = {
-            "imported": True,
-            "dialogue": validate_scene("fix:dialogue"),
-        }
+        by_scene: dict[str, dict[str, int]] = {}
+        for sid in FIXTURE_IDS:
+            stem = sid.split(":", 1)[1]
+            _sid, space, rows, frames = load_validate_fixture(FIXTURE_DIR / f"{stem}.json")
+            issues = validate_scene(sid, rows, space, frames)
+            by_scene[sid] = {
+                "errors": sum(1 for i in issues if i.get("level") == "error"),
+                "warnings": sum(1 for i in issues if i.get("level") == "warning"),
+            }
+        validate_result = {"imported": True, "by_scene": by_scene}
     except ImportError:
         validate_result["request"] = (
             "stream 4: app/services/scene_space/validate.py and "

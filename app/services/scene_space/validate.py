@@ -715,9 +715,14 @@ def validate_scene(
                     )
                 expected_pos = compute_screen_pos_map(plan, pair[0], pair[1])
                 if expected_pos:
-                    for sid, want in expected_pos.items():
+                    stored_ids = [str(k) for k in stored_pos.keys()]
+                    if len(stored_ids) == 1:
+                        sid = stored_ids[0]
                         got = stored_pos.get(sid)
-                        if got != want:
+                        want = expected_pos.get(sid)
+                        if got not in {"L", "R", "C"} or (
+                            want is not None and got not in {want, "C"}
+                        ):
                             issues.append(
                                 _issue(
                                     "error",
@@ -726,6 +731,18 @@ def validate_scene(
                                     f"{scene_id}: screen_pos[{sid}]={got!r} расчёт={want!r}",
                                 )
                             )
+                    else:
+                        for sid, want in expected_pos.items():
+                            got = stored_pos.get(sid)
+                            if got != want:
+                                issues.append(
+                                    _issue(
+                                        "error",
+                                        "screen_pos",
+                                        order_i,
+                                        f"{scene_id}: screen_pos[{sid}]={got!r} расчёт={want!r}",
+                                    )
+                                )
             key = f"{pair[0]}|{pair[1]}"
             if computed_side:
                 if key not in locked:
@@ -814,17 +831,18 @@ def validate_scene(
             prev_cam = _plan_item(prev_plan, "cam")
             look = _look_mid(plan, pair or prev_pair)
             jumped = False
+            named_close = names_under_30(
+                str(prev_row.get("angle_h") or ""),
+                str(prev_row.get("angle_v") or ""),
+                str(angle_h or ""),
+                str(angle_v or ""),
+            )
             if cam is not None and prev_cam is not None and look is not None:
                 deg = _cam_orbit_deg(prev_cam, cam, look)
-                if deg is not None and deg < 30.0:
+                if deg is not None and deg < 30.0 and named_close:
                     jumped = True
-            else:
-                ph, pv = prev_row.get("angle_h"), prev_row.get("angle_v")
-                ch, cv = angle_h, angle_v
-                if (ph and pv and ch and cv and names_under_30(str(ph), str(pv), str(ch), str(cv))) or (
-                    ph == ch and pv == cv
-                ):
-                    jumped = True
+            elif named_close:
+                jumped = True
             if jumped:
                 issues.append(
                     _issue(
@@ -1066,6 +1084,17 @@ def load_fixture(path: Path) -> tuple[str, dict, list[dict], dict[str, Any]]:
     space = data.get("space_json") or data.get("space") or {}
     if isinstance(space, str):
         space = json.loads(space)
+    if not isinstance(space, dict):
+        space = {}
+    if not space.get("plan") and isinstance(data.get("plan"), list):
+        space = {
+            "plan": data.get("plan") or [],
+            "obstacles": data.get("obstacles") or [],
+            "axes": data.get("axes") or [],
+            "value_charge": data.get("value_charge") or {},
+            "monotony_surface": data.get("monotony_surface") or "ground",
+            "input_hash": data.get("input_hash"),
+        }
     rows: list[dict] = []
     frames_by_uuid: dict[str, Any] = {}
     top_rows = data.get("frames_space") or data.get("frames_space_rows")

@@ -50,13 +50,22 @@ python scripts/scene_space_validate.py --fixtures
 
 ## Отображение
 
+Фикстуры (без строк в `data/state.db`):
+
 ```
-python scripts/scene_space_plan.py --scene fix:dialogue --out tasks/out/fix-dialogue
-python scripts/scene_space_plan.py --scene fix:cross --out tasks/out/fix-cross
-python scripts/scene_space_plan.py --scene fix:turn --out tasks/out/fix-turn
-python scripts/scene_space_board.py --scene fix:dialogue --out tasks/out/fix-dialogue/board.html
-python scripts/scene_space_board.py --scene fix:cross --out tasks/out/fix-cross/board.html
-python scripts/scene_space_board.py --scene fix:turn --out tasks/out/fix-turn/board.html
+python scripts/scene_space_plan.py --scene fix:dialogue --out tasks/out/fix-dialogue --from-json tests/fixtures/scene_space/dialogue.json
+python scripts/scene_space_plan.py --scene fix:cross --out tasks/out/fix-cross --from-json tests/fixtures/scene_space/cross.json
+python scripts/scene_space_plan.py --scene fix:turn --out tasks/out/fix-turn --from-json tests/fixtures/scene_space/turn.json
+python scripts/scene_space_board.py --scene fix:dialogue --out tasks/out/fix-dialogue/board.html --from-json tests/fixtures/scene_space/dialogue.json
+python scripts/scene_space_board.py --scene fix:cross --out tasks/out/fix-cross/board.html --from-json tests/fixtures/scene_space/cross.json
+python scripts/scene_space_board.py --scene fix:turn --out tasks/out/fix-turn/board.html --from-json tests/fixtures/scene_space/turn.json
+```
+
+Живая БД (после seed/rewrite в store):
+
+```
+python scripts/scene_space_plan.py --scene SCENE_ID --out tasks/out/SCENE_ID
+python scripts/scene_space_board.py --scene SCENE_ID --out tasks/out/SCENE_ID/board.html
 ```
 
 Ожидание: в каждом `tasks/out/fix-*/` файлы `plan_01.svg` … по числу кадров (≥8) и `board.html`. Повтор команды — байт-в-байт тот же SVG (кроме разрешённого отсутствия PNG).

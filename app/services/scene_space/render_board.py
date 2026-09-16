@@ -373,6 +373,12 @@ def try_call_validate(module: Any, scene_id: str, space: dict[str, Any], frames:
         if not callable(fn):
             continue
         attempts = (
+            lambda f=fn: f(
+                scene_id,
+                frames,
+                space,
+                {str(r.get("uuid")): r for r in frames if r.get("uuid")},
+            ),
             lambda f=fn: f(scene_id, space, frames),
             lambda f=fn: f(scene_id=scene_id, space=space, frames=frames),
             lambda f=fn: f(scene_id=scene_id, space_json=space, frames=frames),

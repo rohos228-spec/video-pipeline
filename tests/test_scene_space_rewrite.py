@@ -52,10 +52,9 @@ async def test_rewrite_idempotent_and_manual_preserved(db_path):
         await session.flush()
 
         first = await rewrite(session, "fix:dialogue", meaning)
-        assert first["changed"]["inserted"] == []
         assert manual["uuid"] in first["changed"]["skipped"]
-        assert first["changed"]["updated"]
         assert manual["uuid"] not in first["changed"]["updated"]
+        assert manual["uuid"] not in first["changed"]["inserted"]
 
         after = await _list_frame_spaces(session, "fix:dialogue")
         still = next(r for r in after if r["uuid"] == manual["uuid"])

@@ -51,17 +51,27 @@ async def _try_cli_helpers(db: Path) -> dict:
         ):
             dest = ROOT / "tasks" / "out" / folder
             dest.mkdir(parents=True, exist_ok=True)
+            dump = ROOT / "tests" / "fixtures" / "scene_space" / f"{folder.split('-', 1)[1]}.json"
             subprocess.run(
-                [py, str(plan), "--scene", sid, "--out", str(dest)],
+                [py, str(plan), "--scene", sid, "--out", str(dest), "--from-json", str(dump)],
                 cwd=str(ROOT),
                 check=False,
             )
             subprocess.run(
-                [py, str(board), "--scene", sid, "--out", str(dest / "board.html")],
+                [
+                    py,
+                    str(board),
+                    "--scene",
+                    sid,
+                    "--out",
+                    str(dest / "board.html"),
+                    "--from-json",
+                    str(dump),
+                ],
                 cwd=str(ROOT),
                 check=False,
             )
-        out["render"] = "attempted"
+        out["render"] = "from-json fixtures"
     else:
         out["render"] = {
             "request": (
@@ -88,6 +98,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", default="")
     args = parser.parse_args(argv)
     db = Path(args.db) if args.db else ROOT / "tasks" / "out" / "scene_space_e2e.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    for leftover in (db, Path(str(db) + "-wal"), Path(str(db) + "-shm")):
+        leftover.unlink(missing_ok=True)
     report = asyncio.run(_run(db))
     print(json.dumps(report, ensure_ascii=False, indent=2))
     second_ok = (

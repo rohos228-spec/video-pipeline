@@ -105,7 +105,7 @@ async def test_rebuild_idempotent():
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-    from app.models import Base, Frame, Project
+    from app.models import Base, Frame, Project, ProjectStatus, Scene
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     try:
@@ -114,14 +114,24 @@ async def test_rebuild_idempotent():
             await migrate.migrate_scene_space_schema(conn)
         factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
         async with factory() as session:
-            session.add(Project(slug="prop-rebuild", topic="t", status=None))
+            session.add(Project(slug="prop-rebuild", topic="t", status=ProjectStatus.new))
             await session.flush()
             proj = (
                 await session.execute(select(Project).where(Project.slug == "prop-rebuild"))
             ).scalar_one()
+            sc = Scene(
+                project_id=proj.id,
+                sort_key=10.0,
+                title="prop",
+                meaning="prop scene turns",
+                attrs={"scene_space_id": "fix:prop"},
+            )
+            session.add(sc)
+            await session.flush()
             session.add(
                 Frame(
                     project_id=proj.id,
+                    scene_id=sc.id,
                     number=1,
                     voiceover_text="ok",
                     uuid="a" * 24,

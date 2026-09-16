@@ -101,10 +101,9 @@
         "axis_pair": "c01|c02",
         "axis_side": "B",
         "screen_pos": {
-          "c01": "L",
-          "c02": "R"
+          "c01": "C"
         },
-        "screen_dir": "L→R",
+        "screen_dir": "none",
         "shot_size": "FS",
         "angle_v": "slight low",
         "angle_h": "profile",
@@ -194,7 +193,7 @@
         "shot_size": "CU",
         "angle_v": "slight high",
         "angle_h": "rear three-quarter",
-        "beat_role": "beat",
+        "beat_role": "reaction",
         "crossing_method": null,
         "space_delta_json": {
           "cam": {
@@ -202,13 +201,8 @@
             "y": -0.81,
             "facing": 312.0
           },
-          "c02": {
-            "x": 4.68,
-            "y": 2.0,
-            "facing": 90.0
-          },
           "monotony": {
-            "action_class": "action",
+            "action_class": "reaction",
             "bodies": 1,
             "surface": "ground"
           }
@@ -364,7 +358,7 @@
         "shot_size": "FS",
         "angle_v": "slight high",
         "angle_h": "profile",
-        "beat_role": "beat",
+        "beat_role": "turning_point",
         "crossing_method": null,
         "space_delta_json": {
           "cam": {

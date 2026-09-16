@@ -99,8 +99,8 @@ SoT: `app/orchestrator/node_registry.py`, `app/orchestrator/pipeline.py`, `app/o
 |---------|-----|
 | `python scripts/scene_space_migrate.py --up` | миграция вверх (идемпотентно) |
 | `python scripts/scene_space_migrate.py --down` | откат: DROP `frames_space`, `scenes_space` |
-| `python scripts/scene_space_plan.py --scene SCENE_ID --out DIR` | SVG (и при возможности PNG) плана сверху на каждый кадр |
-| `python scripts/scene_space_board.py --scene SCENE_ID --out FILE.html` | монтажная раскладка HTML |
+| `python scripts/scene_space_plan.py --scene SCENE_ID --out DIR [--from-json PATH]` | SVG/PNG плана сверху; `--from-json` для фикстур |
+| `python scripts/scene_space_board.py --scene SCENE_ID --out FILE.html [--from-json PATH]` | монтажная раскладка HTML |
 | `python scripts/scene_space_validate.py --fixtures` | валидатор 3 фикстур → `tasks/VALIDATION.md`, код выхода 0/1/2 |
 | `python scripts/scene_space_validate.py --scene SCENE_ID` | одна сцена |
 | `python scripts/scene_space_rewrite.py --scene SCENE_ID --meaning TEXT` | перезапись смысла |
