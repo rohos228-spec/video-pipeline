@@ -334,7 +334,7 @@ def _script_frames_qc_group() -> NodeGroupDef:
     script = _work_spec(
         "script",
         "GPT: сценарий · биты",
-        "Готовый закадр → биты (изменение + якорь); код режет spans",
+        "Готовый закадр → биты (действие/реакция + ценность + якорь); код режет spans",
         _STEP_X,
         "script_writer_ru",
     )

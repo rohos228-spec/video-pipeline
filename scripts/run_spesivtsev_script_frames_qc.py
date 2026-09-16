@@ -1,22 +1,12 @@
-"""Прогон группы script_frames_qc на закадре Спесивцева → HTML-отчёт."""
+"""Первый шаг группы: биты Спесивцева. Без кадров, упаковки VO и чужих сцен."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from app.services.scene_shot_grammar import (
-    apply_grammar_to_ops,
-    bits_cover_vo,
-    fill_bit_spans,
-    merge_same_place_scenes,
-    shots_grammar_reason,
-)
-from app.services.shots_report import (
-    render_all_nodes_one_table,
-    render_bits_check_table,
-    render_group_run_html,
-)
+from app.services.scene_shot_grammar import bits_cover_vo, fill_bit_spans
+from app.services.shots_report import render_bits_check_table
 
 VO = (
     "Алекса́ндр Спеси́вцев, сын Людми́лы Спеси́вцевой, рос в семье, где мать "
@@ -37,77 +27,101 @@ VO = (
     "местонахождении."
 )
 
+# Бит = обмен поведение действие/реакция (McKee Story 258–259; Назайкин).
+# Новый бит только когда поведение сменилось. изменение = заряд ценности.
+# Здесь нет поз, слоганов, выдуманной драки и нарезки VO под 13–80.
 BITS = [
-    {"порядок": 1, "изменение": "мать → центр", "якорь": "Алекса́ндр Спеси́вцев"},
-    {"порядок": 2, "изменение": "мир → закрыт", "якорь": "Она защищала его"},
-    {"порядок": 3, "изменение": "отец → периферия", "якорь": "Отец постепенно"},
-    {"порядок": 4, "изменение": "сестра → рядом", "якорь": "а сестра Наде́жда"},
-    {"порядок": 5, "изменение": "снаружи → конфликт", "якорь": "Для окружающих"},
-    {"порядок": 6, "изменение": "внутри → не видно", "якорь": "однако само по себе"},
-    {"порядок": 7, "изменение": "диагноз → объяснение", "якорь": "Психиатрический диагноз"},
-    {"порядок": 8, "изменение": "ответственность → трое", "якорь": "На практике"},
-    {"порядок": 9, "изменение": "дом → Орловская", "якорь": "В 1992 году"},
-    {"порядок": 10, "изменение": "Орловская → Новокузнецк", "якорь": "а в 1995 году"},
-    {"порядок": 11, "изменение": "бумаги → две записи", "якорь": "При этом документы"},
-    {"порядок": 12, "изменение": "поиск → путаница", "якорь": "Позже именно эта путаница"},
+    {
+        "порядок": 1,
+        "глагол": "называя / ставя мать в центр",
+        "изменение": "сын как отдельное имя → сын внутри материнского центра семьи",
+        "якорь": "Алекса́ндр Спеси́вцев",
+    },
+    {
+        "порядок": 2,
+        "глагол": "защищая / замыкая",
+        "изменение": "мир доступен → дом закрыт вокруг матери и сына",
+        "якорь": "Она защищала его",
+    },
+    {
+        "порядок": 3,
+        "глагол": "вытесняя / отступая",
+        "изменение": "отец в семье → отец на периферии",
+        "якорь": "Отец постепенно",
+    },
+    {
+        "порядок": 4,
+        "глагол": "живя рядом / не устанавливая участия",
+        "изменение": "рядом значит соучастие → рядом не равно вина",
+        "якорь": "а сестра Наде́жда",
+    },
+    {
+        "порядок": 5,
+        "глагол": "осуждая снаружи / не доказывая внутри",
+        "изменение": "тяжёлая семья = преступление → тяжёлая семья ещё не преступление",
+        "якорь": "Для окружающих",
+    },
+    {
+        "порядок": 6,
+        "глагол": "объясняя болезнью / перекладывая на врачей",
+        "изменение": "странности = вина семьи → странности = дело врачей",
+        "якорь": "Психиатрический диагноз",
+    },
+    {
+        "порядок": 7,
+        "глагол": "разделяя / не держа целиком",
+        "изменение": "врачи должны наблюдать → ответственность на троих и ничья",
+        "якорь": "На практике",
+    },
+    {
+        "порядок": 8,
+        "глагол": "направляя / забирая из дома",
+        "изменение": "дома в семье → в Орловской больнице",
+        "якорь": "В 1992 году",
+    },
+    {
+        "порядок": 9,
+        "глагол": "возвращая / выпуская в город",
+        "изменение": "в стационаре → снова в Новокузнецке",
+        "якорь": "а в 1995 году",
+    },
+    {
+        "порядок": 10,
+        "глагол": "утверждая что дома / числя в стационаре",
+        "изменение": "одно место → две записи сразу",
+        "якорь": "При этом документы",
+    },
+    {
+        "порядок": 11,
+        "глагол": "ища / не находя",
+        "изменение": "можно проверить где он → поиск сорван путаницей бумаг",
+        "якорь": "Позже именно эта путаница",
+    },
 ]
 
-BIT_PLACE = {
-    1: "квартира Спесивцевых",
-    2: "квартира Спесивцевых",
-    3: "квартира Спесивцевых",
-    4: "квартира Спесивцевых",
-    5: "окна во двор",
-    6: "окна во двор",
-    7: "кабинет врача",
-    8: "кабинет врача",
-    9: "Орловская больница",
-    10: "Новокузнецк",
-    11: "Новокузнецк",
-    12: "Новокузнецк",
-}
 
-BIT_STEP = {
-    1: "дверь закрыта на засов → ключ лежит на столе",
-    2: "окно закрыто шторой → пустая тарелка стоит у края",
-    3: "стул отодвинут от стола",
-    4: "фото стоит на полке",
-    5: "соседи смотрят на окна → забор стоит вдоль улицы",
-    6: "калитка стоит закрытой → окна дома стоят тёмными",
-    7: "карта лежит на столе врача → три папки лежат в ряд",
-    8: "лампа горит над бланком → штамп лежит на бланке → три стула стоят у стены",
-    9: "коридор больницы стоит пустой → дверь палаты закрыта",
-    10: "сумка стоит у порога",
-    11: "две справки лежат рядом → папка открыта на двух датах",
-    12: "карта лежит с двумя адресами → календарь лежит открытым → печать лежит на двух справках",
-}
-
-
-def _one_table_html(model: dict) -> str:
-    qc = "ок" if not model.get("qc") else str(model.get("qc"))
+def _first_step_html(model: dict) -> str:
     bits_table = render_bits_check_table(model)
-    table = render_all_nodes_one_table(model)
     return f"""<!doctype html><html lang=ru><meta charset=utf-8>
-<title>script_frames_qc · биты и таблица</title>
+<title>шаг 1 · биты</title>
 <style>
-body{{font:15px/1.4 system-ui,Segoe UI,sans-serif;margin:16px;color:#111;background:#fff}}
-h1{{font-size:22px;margin:0 0 6px}}
-h2{{font-size:18px;margin:24px 0 8px}}
-.meta{{color:#444;margin:0 0 12px}}
+body{{font:16px/1.45 system-ui,Segoe UI,sans-serif;margin:16px;color:#111;background:#fff}}
+h1{{font-size:22px;margin:0 0 8px}}
+.meta{{color:#333;margin:0 0 14px;max-width:1100px}}
 table{{border-collapse:collapse;width:100%}}
-table.bits-node{{min-width:1100px;font-size:16px}}
-table.all-nodes{{min-width:3200px;font-size:12px}}
+table.bits-node{{min-width:1400px;font-size:16px}}
 th,td{{border:1px solid #bbb;vertical-align:top;padding:10px 10px}}
 th{{background:#ececec;text-align:left}}
 .vo-bit{{color:#555;margin-top:4px}}
 </style>
-<h1>Нода 1–2 · биты</h1>
-<p class=meta>бит = слово/словосочетание было→стало. Закадр бита — покрытие, не ярлык.
-· {len(model.get('bits') or [])} битов · QC: {qc}</p>
+<h1>Шаг 1 · сценарист · биты</h1>
+<p class=meta>
+Бит = обмен <b>действие / реакция</b> в поведении, пока поведение не сменилось
+(McKee, Story, 258–259; Назайкин). <code>изменение</code> — заряд ценности этого обмена.
+Закадр бита режет код по якорю. Кадры, 13–80 и сцены сюда не входят.
+· {len(model.get('bits') or [])} битов
+</p>
 {bits_table}
-<h2>Кадры со всеми полями</h2>
-<p class=meta>во втором столбце бит целиком, не номер B1</p>
-{table}
 """
 
 
@@ -118,71 +132,32 @@ def run() -> dict:
         glued = " ".join(str(b.get("закадр") or "") for b in bits)
         raise SystemExit(f"биты не покрывают VO\n{glued!r}\n{vo!r}")
     for bit in bits:
+        verb = str(bit.get("глагол") or "")
         change = str(bit.get("изменение") or "")
-        span = str(bit.get("закадр") or "")
+        if "/" not in verb:
+            raise SystemExit(f"бит {bit.get('порядок')} без действие/реакция: {verb!r}")
         if "→" not in change:
-            raise SystemExit(f"бит {bit.get('порядок')} без было→стало: {change!r}")
-        if change.strip() in span:
-            raise SystemExit(f"бит {bit.get('порядок')} скопировал закадр: {change!r}")
-
-    lines: list[str] = []
-    for b in bits:
-        n = int(b["порядок"])
-        place = BIT_PLACE[n]
-        step = BIT_STEP[n]
-        chunk = str(b.get("закадр") or "").strip()
-        lines.append(f"{n}. {place} — {step}")
-        lines.append(f"({chunk})")
-    raw_action = "\n".join(lines)
-    action = merge_same_place_scenes(raw_action)
-
-    ops = [{"frame_uuid": "seed-spesivtsev", "fields": {"кадры": [], "главное_действие": action}}]
-    frames = [
-        {
-            "uuid": "seed-spesivtsev",
-            "number": 1,
-            "voiceover_text": vo,
-            "main_action": action,
-        }
-    ]
-    apply_grammar_to_ops(ops, frames)
-    shots = ops[0]["fields"]["кадры"]
-    qc = shots_grammar_reason(shots, vo, "seed-spesivtsev")
-    return {
-        "vo": vo,
-        "bits": bits,
-        "action_raw": raw_action,
-        "action": action,
-        "shots": shots,
-        "qc": qc,
-    }
+            raise SystemExit(f"бит {bit.get('порядок')} без смены ценности: {change!r}")
+    return {"vo": vo, "bits": bits, "qc": None}
 
 
 def main() -> None:
     model = run()
     out_dir = Path("/opt/cursor/artifacts")
     out_dir.mkdir(parents=True, exist_ok=True)
-    json_path = out_dir / "spesivtsev_script_frames_qc.json"
-    html_path = out_dir / "spesivtsev_shots_report.html"
-    one_path = out_dir / "spesivtsev_one_table.html"
+    json_path = out_dir / "spesivtsev_step1_bits.json"
+    html_path = out_dir / "spesivtsev_step1_bits.html"
     json_path.write_text(
         json.dumps(model, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    html_path.write_text(
-        render_group_run_html(
-            model,
-            slug="spesivtsev",
-            title="Отчёт группы нод · Спесивцев",
-        ),
-        encoding="utf-8",
-    )
-    one_path.write_text(_one_table_html(model), encoding="utf-8")
-    print("qc:", model["qc"])
-    print("shots:", len(model["shots"]))
+    html_path.write_text(_first_step_html(model), encoding="utf-8")
     print("bits:", len(model["bits"]))
     print("wrote", html_path)
-    print("wrote", one_path)
     print("wrote", json_path)
+    for b in model["bits"]:
+        print(
+            f"B{b['порядок']}\t{b['глагол']}\t{b['изменение']}\t{b['якорь']}"
+        )
 
 
 if __name__ == "__main__":

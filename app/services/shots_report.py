@@ -433,7 +433,7 @@ th:first-child,td:first-child{{width:56px;text-align:center;color:#666;font-weig
 <table>
 <thead><tr><th>id</th><th>Кусок</th><th>Как используется</th></tr></thead>
 <tbody>
-<tr><td>1</td><td>fw_script</td><td>биты: изменение + якорь. Код fill_bit_spans</td></tr>
+<tr><td>1</td><td>fw_script</td><td>биты: действие/реакция + ценность + якорь. Код fill_bit_spans</td></tr>
 <tr><td>2</td><td>fw_action</td><td>карточка сцены. Код merge_same_place_scenes</td></tr>
 <tr><td>3</td><td>fw_shots + scene_shot_grammar</td><td>шаги → кадры, camera_pack по объекту, 13–80</td></tr>
 <tr><td>4</td><td>fw_qc</td><td>shots_qc_ru: склейка, уникальность, enum, parent. Не промты</td></tr>
@@ -487,19 +487,37 @@ def _scene_for_shot(shot: dict[str, Any], chain: list[Any]) -> dict[str, Any]:
     return chain[0] if chain else {}
 
 
+def _bit_step1_check(bit: dict[str, Any], vo: str) -> str:
+    verb = str(bit.get("глагол") or "").strip()
+    change = str(bit.get("изменение") or "").strip()
+    anchor = str(bit.get("якорь") or "").strip()
+    span = str(bit.get("закадр") or "").strip()
+    vo_n = " ".join(vo.split())
+    if "/" not in verb:
+        return "нет действие / реакция"
+    if "→" not in change and "->" not in change:
+        return "нет смены ценности"
+    if not anchor:
+        return "нет якоря"
+    if vo_n and anchor.casefold() not in vo_n.casefold():
+        return "якорь не из закадра"
+    if span and change.strip() in span:
+        return "изменение скопировало закадр"
+    return "Ок"
+
+
 def render_bits_check_table(run: dict[str, Any]) -> str:
-    """Нода 1–2: все биты целиком, не B1 без текста."""
+    """Нода 1: бит = действие/реакция + ценность + якорь + закадр по якорю."""
     bits = [b for b in (run.get("bits") or []) if isinstance(b, dict)]
-    qc = run.get("qc")
     vo = str(run.get("vo") or "")
-    check = "Ок" if not qc else "Не ок"
     rows = "".join(
         "<tr>"
         f"<td>B{int(b.get('порядок') or i)}</td>"
-        f"<td><b>{_esc(b.get('изменение'))}</b></td>"
+        f"<td><b>{_esc(b.get('глагол'))}</b></td>"
+        f"<td>{_esc(b.get('изменение'))}</td>"
         f"<td>{_esc(b.get('якорь'))}</td>"
         f"<td>{_esc(b.get('закадр'))}</td>"
-        f"<td>{_esc(check)}</td>"
+        f"<td>{_esc(_bit_step1_check(b, vo))}</td>"
         "</tr>"
         for i, b in enumerate(bits, start=1)
     )
@@ -507,13 +525,14 @@ def render_bits_check_table(run: dict[str, Any]) -> str:
         "<table class=bits-node>"
         "<thead><tr>"
         "<th>бит</th>"
-        "<th>изменение было→стало</th>"
+        "<th>действие / реакция</th>"
+        "<th>изменение ценности</th>"
         "<th>якорь</th>"
         "<th>закадр бита</th>"
         "<th>проверка</th>"
         "</tr></thead>"
         f"<tbody>{rows}</tbody></table>"
-        f"<p class=vo-bit>склейка bit.закадр = voiceover_text · {len(vo)} симв. · вердикт {html.escape(check)}</p>"
+        f"<p class=vo-bit>склейка bit.закадр = voiceover_text · {len(vo)} симв.</p>"
     )
 
 
@@ -703,7 +722,7 @@ pre.note{{white-space:pre-wrap}}
 <table>
 <thead><tr><th>id</th><th>Нода</th><th>canvas id</th><th>промт / режим</th><th>Что пишет</th></tr></thead>
 <tbody>
-<tr><td>1</td><td><b>сценарист</b></td><td class=node>n_excel_gpt_fw_script</td><td class=node>script_writer_ru</td><td>биты: изменение + якорь. Закадр не пишет.</td></tr>
+<tr><td>1</td><td><b>сценарист</b></td><td class=node>n_excel_gpt_fw_script</td><td class=node>script_writer_ru</td><td>биты: действие/реакция + ценность + якорь. Закадр не пишет.</td></tr>
 <tr><td>2</td><td><b>проверка</b></td><td class=node>n_excel_gpt_fw_check_script</td><td class=node>checkMode, upstream</td><td>Ок / Не ок. Fail → script.</td></tr>
 <tr><td>3</td><td><b>действие</b></td><td class=node>n_excel_gpt_fw_action</td><td class=node>main_action_from_bits_ru</td><td>карточка «место — шаг → шаг» + (кусок VO). Код склеивает одно место.</td></tr>
 <tr><td>4</td><td><b>кадры-шаги</b></td><td class=node>n_excel_gpt_fw_shots</td><td class=node>scenes_to_frames_ru</td><td>шаги → кадры. Камеру дописывает код. Не T0–T10.</td></tr>
