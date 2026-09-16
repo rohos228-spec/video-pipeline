@@ -357,6 +357,7 @@ async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, 
 
 async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
     waits = 0
+    net_tries = 0
     last_err: BaseException | None = None
     while True:
         try:
@@ -420,6 +421,17 @@ async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
                     raise
                 if via_curl is not None:
                     return via_curl
+                net_tries += 1
+                if net_tries < 3:
+                    delay = 2.0 * net_tries
+                    logger.warning(
+                        "outsee_api.generate network {} — повтор через {:.0f}с ({}/3)",
+                        type(e).__name__,
+                        delay,
+                        net_tries,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
             raise OutseeApiError(
                 f"Outsee API network {path}: {detail}",
                 context={

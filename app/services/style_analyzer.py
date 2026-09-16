@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -28,8 +29,10 @@ _NOTES_SYSTEM = """Ты — аналитик визуальных стилей �
 - line: линия/штрих (контур, текстура, техника, медиум)
 - light: свет и атмосфера
 - composition: композиция и кадрирование
-- subjects: персонажи/объекты (тип, пропорции, анатомия)
-- mood: настроение
+- subjects: КАК нарисованы фигуры (контур, условные пропорции, без лиц).
+  ЗАПРЕЩЕНО писать тему/сюжет референсов (спорт, фитнес, история, конкретные
+  предметы). Тема кадра всегда приходит позже из запроса пользователя.
+- mood: визуальное настроение (спокойный, резкий, учебный) — без предметной темы
 - forbidden: чего на референсах НЕТ и что сломает стиль (для негативов)
 
 Ответ — СТРОГО валидный JSON без markdown и пояснений:
@@ -85,7 +88,9 @@ AGENT:
    пометкой, что содержание примера переносить нельзя.
 6. Финальная проверка: нет скобок и служебных слов, ядро на месте, длина
    промпта не больше 4700 знаков.
-7. Весь текст агента — не длиннее 7000 знаков, по-русски пиши коротко."""
+7. Весь текст агента — не длиннее 7000 знаков, по-русски пиши коротко.
+8. В ядре только визуал. Тема референсов (о чём картинка) ЗАПРЕЩЕНА — предмет
+   кадра всегда только из следующего запроса пользователя."""
 
 _CATEGORIES_SYSTEM = """Ты — редактор библиотеки стилей. Дан JSON-список стилей (name/desc/category/prompt_core).
 Сгруппируй их в категории по ОБЩИМ критериям: техника/медиум, палитра, настроение, назначение.
@@ -106,6 +111,14 @@ def parse_json_object(raw: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return data if isinstance(data, dict) else None
+
+
+def _gpt_host_dead(err: str) -> bool:
+    low = (err or "").lower()
+    return any(
+        token in low
+        for token in ("upstream", "connect", "timeout", "all connection", "empty output")
+    )
 
 
 def collect_image_paths(paths: list[str | Path]) -> list[Path]:
@@ -215,6 +228,62 @@ def fit_agent_text(text: str) -> tuple[str, str | None]:
     return trimmed, "Агент был длиннее лимита — хвост обрезан, проверьте текст"
 
 
+_VISUAL_RE = re.compile(
+    r"график|контур|иконк|схем|палитр|фон|свет|компон|шрифт|линейн|вектор|"
+    r"hex|#|palette|outline|flat|vector|background|lighting|typography|"
+    r"contrast|gradient|shadow|frame|margin|колонк|рамк|выравн|насыщен|"
+    r"освещен|мазк|текстур|диаграмм|стрелк|круг|слайд|презентац|плоск|"
+    r"геометр|заголов|типограф|полями|выравнив|штрих|медиум|line|fill|"
+    r"stroke|icon|grid|column|margin",
+    re.IGNORECASE,
+)
+_TOPIC_RE = re.compile(
+    r"фитнес|плиометр|мышц|биомехан|спортивн|нервн\w+\s+систем|трениров|"
+    r"fitness|plyometr|workout|muscle|sport\b|anatomy of|биомеханик",
+    re.IGNORECASE,
+)
+
+
+def _style_clauses(text: str) -> list[str]:
+    return [c.strip(" .;") for c in re.split(r"[.;]\s+", text or "") if c.strip(" .;")]
+
+
+_STRONG_VISUAL_RE = re.compile(
+    r"hex|#|палитр|фон\b|outline|контур|линейн|освещен|palette|background|lighting",
+    re.IGNORECASE,
+)
+
+
+def is_topic_clause(clause: str) -> bool:
+    """Предмет/сюжет референса, а не визуальный приём."""
+    c = (clause or "").strip()
+    if len(c) < 6:
+        return False
+    if _TOPIC_RE.search(c) and not _STRONG_VISUAL_RE.search(c):
+        return True
+    if not _VISUAL_RE.search(c) and c.count(",") >= 2:
+        return True
+    return False
+
+
+def scrub_style_topic(text: str) -> str:
+    """Выкинуть из ядра стиля тему референсов — оставить только визуал."""
+    kept = [c for c in _style_clauses(text) if c and not is_topic_clause(c)]
+    return ". ".join(kept).strip()
+
+
+def _scrub_agent_core_block(agent: str) -> str:
+    m = re.search(
+        r"((?:скопированного\s+ядра|ядра)[^\n]{0,80}:\s*\n+)(.+?)(\n+После\s+ядра|\n+В\s+финальной)",
+        agent or "",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not m:
+        return agent
+    cleaned = scrub_style_topic(m.group(2)) or m.group(2)
+    return agent[: m.start(2)] + cleaned + agent[m.end(2) :]
+
+
 def parse_agent_reply(raw: str, *, name_hint: str | None = None) -> dict[str, str]:
     """Ответ вида NAME/DESC/CATEGORY/AGENT → запись стиля."""
     text = strip_markdown_fences(raw)
@@ -233,6 +302,11 @@ def parse_agent_reply(raw: str, *, name_hint: str | None = None) -> dict[str, st
     agent, warning = fit_agent_text(agent)
     if len(agent) < 200:
         raise ValueError("LLM вернула слишком короткого агента")
+    from app.services.gen_assistant import is_stub_agent_text
+
+    if is_stub_agent_text(agent):
+        raise ValueError("GPT не собрал агента — заглушка запрещена")
+    agent = _scrub_agent_core_block(agent)
     return {
         "name": field("NAME") or (name_hint or "Новый стиль"),
         "desc": field("DESC"),
@@ -255,29 +329,60 @@ async def build_style_agent(
     client = get_gpt_client()
 
     notes: list[dict[str, Any]] = []
+    last_err = ""
     for i, batch in enumerate(batch_paths(images)):
-        raw = await client.ask_with_files(
-            "Проанализируй эту пачку референсов по критериям из system-промпта.",
-            batch,
-            system=_NOTES_SYSTEM,
-            timeout=240,
-            max_retries=1,
-        )
+        try:
+            raw = await client.ask_with_files(
+                "Проанализируй эту пачку референсов по критериям из system-промпта.",
+                batch,
+                system=_NOTES_SYSTEM,
+                timeout=240,
+                max_retries=1,
+            )
+        except Exception as e:  # noqa: BLE001
+            last_err = str(e)
+            logger.warning("build_style_agent: пачка {} — GPT недоступен ({})", i + 1, e)
+            continue
         note = parse_json_object(raw)
         if note:
             notes.append(note)
         else:
             logger.warning("build_style_agent: пачка {} — нечитаемый ответ, пропуск", i + 1)
+    if not notes and len(images) > 1 and not _gpt_host_dead(last_err):
+        try:
+            raw = await client.ask_with_files(
+                "Проанализируй эту пачку референсов по критериям из system-промпта.",
+                images[:1],
+                system=_NOTES_SYSTEM,
+                timeout=240,
+                max_retries=1,
+            )
+            note = parse_json_object(raw)
+            if note:
+                notes.append(note)
+                logger.info("build_style_agent: заметки с первой картинки после сбоя пачки")
+        except Exception as e:  # noqa: BLE001
+            last_err = str(e)
+            logger.warning("build_style_agent: первая картинка тоже недоступна ({})", e)
     if not notes:
-        raise ValueError("LLM не смогла описать референсы — попробуйте другие изображения")
+        detail = last_err or "пустой ответ"
+        logger.warning("build_style_agent: GPT не разобрал референсы ({})", detail)
+        raise ValueError(f"GPT не разобрал референсы ({detail}) — агент не собран")
 
     user = json.dumps(notes, ensure_ascii=False, indent=2)
     if (user_request or "").strip():
         user += f"\n\nУточнение пользователя (учти его в агенте): {user_request.strip()}"
     if name_hint:
         user += f"\n\nПодсказка названия: {name_hint}"
-    raw = await client.ask_with_files(user, [], system=_AGENT_SYSTEM, timeout=300, max_retries=1)
-    entry = parse_agent_reply(raw, name_hint=name_hint)
+    await asyncio.sleep(2.0)
+    try:
+        raw = await client.ask_with_files(
+            user, [], system=_AGENT_SYSTEM, timeout=300, max_retries=1
+        )
+        entry = parse_agent_reply(raw, name_hint=name_hint)
+    except Exception as e:  # noqa: BLE001 — шлюз часто рвёт второй вызов
+        logger.warning("build_style_agent: второй вызов недоступен ({}) — агент не записан", e)
+        raise ValueError(f"GPT не собрал агента ({e}) — агент не записан") from e
     logger.info(
         "build_style_agent: «{}» ← {} изображений, {} знаков / {} байт",
         entry["name"],

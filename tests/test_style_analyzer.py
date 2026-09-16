@@ -12,6 +12,7 @@ from app.services.style_analyzer import (
     fit_agent_text,
     parse_agent_reply,
     parse_json_object,
+    scrub_style_topic,
     strip_markdown_fences,
 )
 
@@ -140,6 +141,19 @@ def test_parse_agent_reply_rejects_short():
         parse_agent_reply("NAME: X\nAGENT:\nмало")
 
 
+def test_parse_agent_reply_rejects_fallback_wrapper():
+    raw = (
+        "NAME: Слайд\nDESC: x\nCATEGORY: y\nAGENT:\n"
+        "Агент отвечает одним готовым промптом и ничем больше — без пояснений.\n\n"
+        "Каждый промпт начинай с дословно скопированного ядра, не меняй в нём "
+        "ни слова и не переводи его:\n"
+        "white line on purple\n\n"
+        "После ядра допиши английские фразы. " * 8
+    )
+    with pytest.raises(ValueError, match="заглушка запрещена"):
+        parse_agent_reply(raw, name_hint="Слайд")
+
+
 @pytest.mark.asyncio
 async def test_build_style_agent_with_mock(monkeypatch, tmp_path):
     from app.services import gpt_client, style_analyzer
@@ -168,6 +182,104 @@ async def test_build_style_agent_with_mock(monkeypatch, tmp_path):
     assert res["images"] == 1
     assert res["bytes"] == len(res["agent"].encode("utf-8"))
     assert "зафиксируй цвет фона" in seen["user"]
+
+
+def test_scrub_style_topic_drops_subject_list():
+    dirty = (
+        "Thin white line graphics, dark purple background. "
+        "Фитнес, сила, плиометрика, мышцы, нервная система, биомеханика. "
+        "Schematic outline icons, no photoreal faces."
+    )
+    clean = scrub_style_topic(dirty)
+    assert "плиометрика" not in clean
+    assert "purple" in clean or "line" in clean
+    assert "outline" in clean
+
+
+@pytest.mark.asyncio
+async def test_build_style_agent_fails_when_second_call_fails(monkeypatch, tmp_path):
+    from app.services import gpt_client, style_analyzer
+
+    img = tmp_path / "ref.png"
+    img.write_bytes(b"\x89PNG")
+
+    class FakeClient:
+        async def ask_with_files(self, text, files, *, system=None, **kw):
+            if "пачку референсов" in text:
+                return (
+                    '{"palette": "white on #1E1235", "line": "2px outline", '
+                    '"light": "flat", "composition": "slide", "subjects": "figures", '
+                    '"mood": "clean", "forbidden": "colour"}'
+                )
+            raise RuntimeError("upstream error")
+
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(gpt_client, "get_gpt_client", lambda: FakeClient())
+    monkeypatch.setattr(style_analyzer, "get_gpt_client", lambda: FakeClient(), raising=False)
+    monkeypatch.setattr(style_analyzer.asyncio, "sleep", _no_sleep)
+
+    with pytest.raises(ValueError, match="не собрал агента"):
+        await style_analyzer.build_style_agent([img], name_hint="Слайд")
+
+
+@pytest.mark.asyncio
+async def test_build_style_agent_retries_first_image(monkeypatch, tmp_path):
+    from app.services import gpt_client, style_analyzer
+
+    imgs = []
+    for i in range(2):
+        p = tmp_path / f"ref{i}.png"
+        p.write_bytes(b"\x89PNG")
+        imgs.append(p)
+    calls: list[int] = []
+
+    class FakeClient:
+        async def ask_with_files(self, text, files, *, system=None, **kw):
+            calls.append(len(files))
+            if "пачку референсов" in text:
+                if len(files) > 1:
+                    raise RuntimeError("batch too large")
+                return (
+                    '{"palette": "white on #1E1235", "line": "2px outline", '
+                    '"light": "flat", "composition": "slide", "subjects": "figures", '
+                    '"mood": "clean", "forbidden": "colour"}'
+                )
+            return (
+                "NAME: Слайд\nDESC: Линия\nCATEGORY: Инфографика\nAGENT:\n"
+                + "Ты отвечаешь одним готовым промптом и ничем больше. " * 10
+            )
+
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(gpt_client, "get_gpt_client", lambda: FakeClient())
+    monkeypatch.setattr(style_analyzer, "get_gpt_client", lambda: FakeClient(), raising=False)
+    monkeypatch.setattr(style_analyzer.asyncio, "sleep", _no_sleep)
+
+    res = await style_analyzer.build_style_agent(imgs, name_hint="Слайд")
+    assert calls[:2] == [2, 1]
+    assert res["name"] == "Слайд"
+    assert "#1E1235" in res["agent"] or "готовым промптом" in res["agent"]
+
+
+@pytest.mark.asyncio
+async def test_build_style_agent_fails_when_vision_dies(monkeypatch, tmp_path):
+    from app.services import gpt_client, style_analyzer
+
+    img = tmp_path / "ref.png"
+    img.write_bytes(b"\x89PNG")
+
+    class FakeClient:
+        async def ask_with_files(self, text, files, *, system=None, **kw):
+            raise RuntimeError("upstream error")
+
+    monkeypatch.setattr(gpt_client, "get_gpt_client", lambda: FakeClient())
+    monkeypatch.setattr(style_analyzer, "get_gpt_client", lambda: FakeClient(), raising=False)
+
+    with pytest.raises(ValueError, match="не разобрал"):
+        await style_analyzer.build_style_agent([img], name_hint="Линия")
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -14,7 +15,12 @@ from pydantic import BaseModel, Field
 
 from app.project_root import find_project_root
 from app.settings import settings
-from app.services.gen_assistant import MAX_COUNT, MIN_COUNT, generate_prompts
+from app.services.gen_assistant import (
+    MAX_COUNT,
+    MIN_COUNT,
+    generate_prompts,
+    is_stub_agent_text,
+)
 from app.services.style_analyzer import (
     IMG_EXTS,
     MAX_IMAGES,
@@ -86,6 +92,12 @@ async def post_build_agent(  # noqa: B008
         raise HTTPException(status_code=400, detail="Не приложено ни одного изображения")
     if len(uploads) > MAX_IMAGES:
         raise HTTPException(status_code=400, detail=f"Слишком много изображений: {len(uploads)}")
+    logger.info(
+        "build-agent start files={} hint={!r} request_chars={}",
+        len(uploads),
+        (name_hint or "").strip(),
+        len(request or ""),
+    )
     tmp_dir = Path(tempfile.mkdtemp(prefix="style-agent-"))
     try:
         paths: list[str] = []
@@ -102,6 +114,12 @@ async def post_build_agent(  # noqa: B008
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("build-agent failed")
+        raise HTTPException(
+            status_code=502,
+            detail=f"GPT недоступен ({e}) — агент не собран",
+        ) from e
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -121,6 +139,88 @@ async def post_categorize_styles(body: CategorizeStylesBody) -> dict[str, Any]:
 
 _CUSTOM_STYLES_FILE = "gen_assistant_styles.json"
 _CUSTOM_AGENTS_FILE = "gen_assistant_agents.json"
+_STYLE_ID_RE = re.compile(r"^[A-Za-z0-9_]{3,64}$")
+
+
+def gen_styles_dir() -> Path:
+    path = settings.data_dir / "gen_styles"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def resolve_style_cover(name: str) -> Path | None:
+    """Файл обложки: сначала data/gen_styles, потом собранный web/out и public."""
+    safe = Path(name or "").name
+    if not safe or safe != name or ".." in name:
+        return None
+    roots = (
+        settings.data_dir / "gen_styles",
+        find_project_root() / "web" / "out" / "gen-styles",
+        find_project_root() / "web" / "public" / "gen-styles",
+    )
+    for root in roots:
+        cand = root / safe
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _safe_cover_source(path: str) -> Path:
+    fp = Path(path).expanduser().resolve()
+    allowed = (
+        (settings.data_dir / "generations").resolve(),
+        (settings.data_dir / "gen_styles").resolve(),
+        Path(tempfile.gettempdir()).resolve(),
+    )
+    if not any(fp == root or root in fp.parents for root in allowed):
+        raise HTTPException(status_code=400, detail="Нельзя взять обложку с этого пути")
+    if not fp.is_file():
+        raise HTTPException(status_code=400, detail="Файл обложки не найден")
+    if fp.suffix.lower() not in IMG_EXTS:
+        raise HTTPException(status_code=400, detail="Обложка должна быть изображением")
+    return fp
+
+
+def save_style_cover(*, style_id: str, src: Path) -> str:
+    """Копирует картинку в data/gen_styles + web/out|public и пишет cover в JSON."""
+    if not _STYLE_ID_RE.match(style_id):
+        raise ValueError("Некорректный id стиля")
+    suffix = src.suffix.lower() if src.suffix.lower() in IMG_EXTS else ".png"
+    dest = gen_styles_dir() / f"{style_id}{suffix}"
+    shutil.copyfile(src, dest)
+    for extra in (
+        find_project_root() / "web" / "out" / "gen-styles",
+        find_project_root() / "web" / "public" / "gen-styles",
+    ):
+        extra.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copyfile(src, extra / dest.name)
+        except OSError as e:
+            logger.warning("style cover copy to {} failed: {}", extra, e)
+    url = f"/gen-styles/{dest.name}"
+    _set_style_cover(style_id, url)
+    logger.info("style cover saved id={} url={}", style_id, url)
+    return url
+
+
+def _set_style_cover(style_id: str, url: str) -> None:
+    styles = _read_custom_styles()
+    changed = False
+    for s in styles:
+        if str(s.get("id") or "") != style_id:
+            continue
+        s["cover"] = url
+        s["artUrl"] = url
+        changed = True
+        break
+    if not changed:
+        return
+    path = _custom_styles_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"styles": styles}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _custom_styles_path() -> Path:
@@ -173,7 +273,11 @@ def _read_custom_styles() -> list[dict[str, Any]]:
         if not sid:
             continue
         by_id[sid] = _merge_style(by_id.get(sid), s)
-    return list(by_id.values())
+    return [
+        s
+        for s in by_id.values()
+        if not is_stub_agent_text(str(s.get("promptCore") or ""))
+    ]
 
 
 def _agents_path() -> Path:
@@ -195,7 +299,11 @@ def _load_agents_file(path: Path) -> dict[str, str]:
     data = raw.get("agents") if isinstance(raw, dict) else raw
     if not isinstance(data, dict):
         return {}
-    return {str(k): str(v) for k, v in data.items() if str(v or "").strip()}
+    return {
+        str(k): str(v)
+        for k, v in data.items()
+        if str(v or "").strip() and not is_stub_agent_text(str(v))
+    }
 
 
 def _read_agent_overrides() -> dict[str, str]:
@@ -224,7 +332,14 @@ class CustomStylesBody(BaseModel):
 @router.put("/custom-styles")
 async def put_custom_styles(body: CustomStylesBody) -> dict[str, Any]:
     """Сохранить свои стили на диск (не затираем пустым списком, если на диске уже есть)."""
-    incoming = [s for s in body.styles if isinstance(s, dict) and s.get("id") and s.get("promptCore")]
+    incoming = [
+        s
+        for s in body.styles
+        if isinstance(s, dict)
+        and s.get("id")
+        and s.get("promptCore")
+        and not is_stub_agent_text(str(s.get("promptCore") or ""))
+    ]
     existing = _read_custom_styles()
     if not incoming and existing:
         return {"styles": existing, "count": len(existing), "kept": True}
@@ -245,6 +360,39 @@ async def put_custom_styles(body: CustomStylesBody) -> dict[str, Any]:
     return {"styles": merged, "count": len(merged)}
 
 
+@router.post("/style-cover")
+async def post_style_cover(  # noqa: B008
+    style_id: str = Form(..., description="id стиля"),
+    file: UploadFile | None = File(None),
+    source_path: str = Form(""),
+) -> dict[str, Any]:
+    """Первая картинка стиля / готовая генерация → обложка /gen-styles/{id}.*"""
+    sid = (style_id or "").strip()
+    if not _STYLE_ID_RE.match(sid):
+        raise HTTPException(status_code=400, detail="Некорректный id стиля")
+    tmp_dir: Path | None = None
+    try:
+        if file and file.filename:
+            suffix = Path(file.filename).suffix.lower()
+            if suffix not in IMG_EXTS:
+                raise HTTPException(status_code=400, detail=f"Не изображение: {file.filename}")
+            tmp_dir = Path(tempfile.mkdtemp(prefix="style-cover-"))
+            src = tmp_dir / f"cover{suffix}"
+            with src.open("wb") as fh:
+                shutil.copyfileobj(file.file, fh)
+        elif (source_path or "").strip():
+            src = _safe_cover_source(source_path.strip())
+        else:
+            raise HTTPException(status_code=400, detail="Нужен файл или путь к генерации")
+        url = save_style_cover(style_id=sid, src=src)
+        return {"ok": True, "style_id": sid, "cover": url}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    finally:
+        if tmp_dir is not None:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 @router.get("/agent-overrides")
 async def get_agent_overrides() -> dict[str, Any]:
     agents = _read_agent_overrides()
@@ -260,7 +408,9 @@ async def put_agent_overrides(body: AgentOverridesBody) -> dict[str, Any]:
     incoming = {
         str(k): str(v)
         for k, v in (body.agents or {}).items()
-        if str(k).strip() and str(v or "").strip()
+        if str(k).strip()
+        and str(v or "").strip()
+        and not is_stub_agent_text(str(v))
     }
     existing = _read_agent_overrides()
     if not incoming and existing:

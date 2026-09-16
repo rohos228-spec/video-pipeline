@@ -17,7 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
-import { api, formatApiError } from "@/lib/api";
+import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { chipOptions, detailLabel } from "@/lib/outsee-catalog";
 import {
@@ -25,8 +25,8 @@ import {
   GEN_STYLE_COLORS,
   assembleGenPrompt,
   genPromptVariant,
-  isInstructionAgent,
   isUnfilledAssistantPrompt,
+  isStubAgentText,
   assistantRefHandle,
   type GenStyleArt,
   type GenStyleDef,
@@ -52,8 +52,11 @@ type Props = {
   modelIcon?: string | null;
   onApplyPrompt: (text: string) => void;
   onGenerate: (text: string) => void;
+  /** Сразу карточки в «Генерации», ещё до ответа LLM. */
+  onPrepareGenerate: (preview: string, count: number) => string[];
+  onFailGenerate: (draftIds: string[]) => void;
   /** Агент написал N промптов → сразу генерация всех (по одной на промпт). */
-  onGenerateAll: (texts: string[]) => void;
+  onGenerateAll: (texts: string[], draftIds?: string[]) => void;
   expanded: boolean;
   onExpandedChange: (v: boolean) => void;
   references: { id: string; url: string; name: string }[];
@@ -164,11 +167,30 @@ const STYLE_COVER_FILE: Record<string, string> = {
   custom_mtxfckrd: "/gen-styles/custom_mtxfckrd.jpg",
   custom_mty20b3s: "/gen-styles/custom_mty20b3s.jpg",
 };
-const COVER_CACHE = "c5";
+const COVER_CACHE = "c6";
 
 function bustCover(u: string): string {
-  if (!u.startsWith("/gen-styles/")) return u;
+  if (!u.startsWith("/gen-styles/") && !u.includes("/api/files?path=")) return u;
   return u.includes("?") ? `${u}&v=${COVER_CACHE}` : `${u}?v=${COVER_CACHE}`;
+}
+
+async function persistStyleCover(
+  styleId: string,
+  src: { file?: File; path?: string | null },
+): Promise<string> {
+  const fd = new FormData();
+  fd.append("style_id", styleId);
+  if (src.file) fd.append("file", src.file);
+  if (src.path) fd.append("source_path", src.path);
+  const r = await fetch("/api/gen-assistant/style-cover", { method: "POST", body: fd });
+  if (!r.ok) {
+    const err = (await r.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(err?.detail || `HTTP ${r.status}`);
+  }
+  const data = (await r.json()) as { cover?: string };
+  const cover = (data.cover || "").trim();
+  if (!cover) throw new Error("пустая обложка");
+  return cover;
 }
 
 function styleTileSrcs(
@@ -181,7 +203,6 @@ function styleTileSrcs(
     let v = (u || "").trim();
     if (!v) return;
     if (v.startsWith("blob:") || v.startsWith("file:")) return;
-    if (v.includes("/api/files?path=")) return;
     v = bustCover(v);
     if (!out.includes(v)) out.push(v);
   };
@@ -241,6 +262,8 @@ export function GenAssistantPanel({
   modelIcon,
   onApplyPrompt,
   onGenerate,
+  onPrepareGenerate,
+  onFailGenerate,
   onGenerateAll,
   expanded,
   onExpandedChange,
@@ -260,9 +283,7 @@ export function GenAssistantPanel({
   const [promptSlot, setPromptSlot] = useState(0);
   const [menu, setMenu] = useState<null | "llm" | "aspect" | "resolution" | "detail">(null);
   const dockRef = useRef<HTMLDivElement | null>(null);
-  const [agentBusy, setAgentBusy] = useState(false);
   const [agentError, setAgentError] = useState("");
-  const agentBusyRef = useRef(false);
   const [catMenuOpen, setCatMenuOpen] = useState(false);
   const [previewCat, setPreviewCat] = useState<string | null>(null);
   // Позиция курсора (относительно поповера категорий) — окно стилей открывается поверх, у курсора
@@ -332,7 +353,9 @@ export function GenAssistantPanel({
 
   useEffect(() => lsSet(LS.category, categoryId), [categoryId]);
   useEffect(() => lsSet(LS.style, styleId), [styleId]);
-  useEffect(() => lsSet(LS.request, request), [request]);
+  useEffect(() => {
+    if (request.trim()) lsSet(LS.request, request);
+  }, [request]);
   useEffect(() => lsSet(LS.count, String(count)), [count]);
   useEffect(() => {
     setPromptSlot((s) => Math.max(0, Math.min(s, count - 1)));
@@ -346,7 +369,9 @@ export function GenAssistantPanel({
     if (!customStylesHydrated.current) {
       customStylesHydrated.current = true;
       try {
-        const fromLs = JSON.parse(lsGet(LS.customStyles, "[]")) as CustomStyle[];
+        const fromLs = (JSON.parse(lsGet(LS.customStyles, "[]")) as CustomStyle[]).filter(
+          (s) => s?.id && !isStubAgentText(s.promptCore || ""),
+        );
         if (Array.isArray(fromLs) && fromLs.length > 0 && customStyles.length === 0) {
           setCustomStyles(fromLs);
           return;
@@ -398,15 +423,16 @@ export function GenAssistantPanel({
           setCustomStyles((prev) => {
             const byId = new Map<string, CustomStyle>();
             for (const s of [...prev, ...remote]) {
-              if (!s?.id) continue;
+              if (!s?.id || isStubAgentText(s.promptCore || "")) continue;
               const old = byId.get(s.id);
-              const pick =
-                !old || (s.promptCore?.length || 0) >= (old.promptCore?.length || 0) ? s : old;
-              const other = pick === s ? old : s;
-              const cover = [pick.cover, pick.artUrl, other?.cover, other?.artUrl]
+              if (!old) {
+                byId.set(s.id, s);
+                continue;
+              }
+              const cover = [old.cover, old.artUrl, s.cover, s.artUrl]
                 .map((u) => (u || "").trim())
                 .find((u) => u.startsWith("/gen-styles/"));
-              byId.set(s.id, cover ? { ...pick, cover, artUrl: cover } : pick);
+              byId.set(s.id, cover ? { ...s, cover, artUrl: cover } : s);
             }
             return Array.from(byId.values());
           });
@@ -423,11 +449,11 @@ export function GenAssistantPanel({
         const remote = data?.agents && typeof data.agents === "object" ? data.agents : {};
         setAgentOverrides((prev) => {
           const out: Record<string, string> = {};
-          for (const src of [remote, prev]) {
+          for (const src of [prev, remote]) {
             for (const [k, v] of Object.entries(src)) {
               const text = (v || "").trim();
-              if (!text) continue;
-              if (!out[k] || text.length >= out[k].length) out[k] = text;
+              if (!text || isStubAgentText(text)) continue;
+              out[k] = text;
             }
           }
           return out;
@@ -516,13 +542,17 @@ export function GenAssistantPanel({
   }, [appliedPrompt?.ts]);
 
   const assembled = useMemo(
-    () => assembleGenPrompt({ request, agentText, aspect }),
-    [request, agentText, aspect],
+    () =>
+      assembleGenPrompt({
+        request,
+        agentText,
+        aspect,
+        refLabels: references.map(
+          (r, i) => `${assistantRefHandle(i)} — ${r.name || "референс"}`,
+        ),
+      }),
+    [request, agentText, aspect, references],
   );
-  // Длинный агент со слотами — инструкция: её исполняет LLM, дословно в промпт
-  // она не идёт (иначе картинка рисует заголовки и скобки шаблона).
-  const instructionAgent = useMemo(() => isInstructionAgent(agentText), [agentText]);
-
   const aspectOptions = useMemo(() => {
     const opts = chipOptions(imageSlug, "aspect");
     return opts.includes(aspect) ? opts : [aspect, ...opts];
@@ -578,24 +608,31 @@ export function GenAssistantPanel({
     toast.error(msg, { duration: 12_000, position: "top-center" });
   };
 
-  // Пустой массив — не получилось, ошибка уже в панели и toast.
-  const requestAgentPrompts = async (): Promise<string[]> => {
-    const req = request.trim();
+  const lastRequestRef = useRef(request);
+  const startGenerationNow = async () => {
+    const typed = request.trim();
+    const req =
+      typed ||
+      lastRequestRef.current.trim() ||
+      lsGet(LS.request, "").trim();
     if (!req) {
       notifyAgentError("Пустой запрос: напишите, что должно быть в кадре");
-      return [];
+      return;
     }
+    lastRequestRef.current = req;
     if (!style || !agentText.trim()) {
       notifyAgentError("Выберите стиль: текст агента пуст");
-      return [];
+      return;
     }
-    if (agentBusyRef.current) {
-      toast.error("Агент ещё пишет предыдущий запрос", { duration: 12_000, position: "top-center" });
-      return [];
+    if (isStubAgentText(agentText)) {
+      notifyAgentError("Агент не написан LLM — заглушка запрещена, генерация не запущена");
+      return;
     }
+    setRequest("");
+    setPromptOverrides({});
     setAgentError("");
-    agentBusyRef.current = true;
-    setAgentBusy(true);
+    setEditorTab("request");
+    const draftIds = onPrepareGenerate(req, count);
     try {
       const r = await fetch("/api/gen-assistant/prompts", {
         method: "POST",
@@ -609,100 +646,52 @@ export function GenAssistantPanel({
             (r, i) => `${assistantRefHandle(i)} — ${r.name || "референс"}`,
           ),
         }),
-        signal: AbortSignal.timeout(200_000),
       });
       if (!r.ok) {
-        const err = await r.json().catch(() => null);
-        throw new Error(
-          err && typeof err === "object"
-            ? formatApiError(err as object, r.status)
-            : `HTTP ${r.status}`,
-        );
+        const err = (await r.json().catch(() => null)) as { detail?: string } | null;
+        throw new Error(err?.detail || `HTTP ${r.status}`);
       }
       const data = (await r.json()) as {
         prompts?: string[];
         source?: string;
-        warning?: string | null;
       };
-      const prompts = (data.prompts ?? []).filter(
-        (p) => typeof p === "string" && !isUnfilledAssistantPrompt(p, req),
-      );
-      if (!prompts.length) throw new Error("агент не собрал промпт — генерация не запущена");
       if (data.source === "local") {
-        throw new Error("агент не собрал промпт — генерация не запущена");
+        throw new Error("Агент не собрал промпт — генерация не запущена");
       }
-      setPromptOverrides((prev) => {
-        const next = { ...prev };
-        prompts.forEach((p, i) => {
-          next[String(i)] = p;
-        });
-        return next;
-      });
-      setPromptSlot(0);
-      setEditorTab("prompt");
+      const prompts = (data.prompts || [])
+        .map((t) => t.trim())
+        .filter((t) => t && !isUnfilledAssistantPrompt(t, req));
+      if (!prompts.length) {
+        throw new Error("Промпт не собран агентом — генерация не запущена");
+      }
       const pending = { styleId: style.id, ts: Date.now(), prefix: prompts[0].slice(0, 48) };
       lsSet(LS.pendingStyle, JSON.stringify(pending));
       setPendingArt(pending);
-      if (data.warning) toast.warning(String(data.warning), { duration: 12_000, position: "top-center" });
-      return prompts;
-    } catch (e) {
-      const aborted =
-        (e instanceof DOMException && e.name === "TimeoutError") ||
-        (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError"));
-      const msg = aborted
-        ? "Агент не ответил за 3 минуты"
-        : e instanceof Error
-          ? e.message
-          : String(e);
-      notifyAgentError(msg.startsWith("Агент:") ? msg : `Агент: ${msg}`);
-      return [];
-    } finally {
-      agentBusyRef.current = false;
-      setAgentBusy(false);
-    }
-  };
-
-  const runAgent = async () => {
-    const prompts = await requestAgentPrompts();
-    if (!prompts.length) return;
-    toast.success(`Агент: ${prompts.length} промпт(ов) → генерация запущена`, {
-      duration: 8_000,
-      position: "top-center",
-    });
-    onGenerateAll(prompts);
-  };
-
-  const generatePrompt = async (idx: number) => {
-    let text = promptText(idx).trim();
-    if (instructionAgent && promptOverrides[String(idx)] === undefined) {
-      const prompts = await requestAgentPrompts();
-      if (!prompts.length) return;
-      text = (prompts[idx] ?? prompts[0]).trim();
-    }
-    if (!text || isUnfilledAssistantPrompt(text, request)) {
-      toast.error("Промпт не собран агентом — генерация не запущена", {
-        duration: 12_000,
+      toast.success(`Генерация запущена: ${prompts.length}`, {
+        duration: 6_000,
         position: "top-center",
       });
-      return;
+      onFailGenerate(draftIds.slice(prompts.length));
+      onGenerateAll(prompts, draftIds.slice(0, prompts.length));
+    } catch (e) {
+      onFailGenerate(draftIds);
+      notifyAgentError(
+        e instanceof Error ? e.message : "Агент не собрал промпт — генерация не запущена",
+      );
     }
-    // Запоминаем стиль: первая успешная генерация станет фоном его плитки
-    if (style) {
-      const pending = { styleId: style.id, ts: Date.now(), prefix: text.slice(0, 48) };
-      lsSet(LS.pendingStyle, JSON.stringify(pending));
-      setPendingArt(pending);
-    }
-    onGenerate(text);
   };
 
-  // Поллинг истории: ловим первую успешную генерацию по агенту → фон плитки навсегда
+  const applyStyleCover = (styleId: string, url: string) => {
+    lsSet(LS.artPrefix + styleId, url);
+    setArtUrls((prev) => ({ ...prev, [styleId]: url }));
+    setCustomStyles((prev) =>
+      prev.map((s) => (s.id === styleId ? { ...s, cover: url, artUrl: url } : s)),
+    );
+  };
+
+  // Поллинг истории: первая успешная генерация → /gen-styles/{id} на плитке
   useEffect(() => {
     if (!pendingArt) return;
-    if (artUrls[pendingArt.styleId]) {
-      setPendingArt(null);
-      lsRemove(LS.pendingStyle);
-      return;
-    }
     let stopped = false;
     const tick = async () => {
       try {
@@ -710,19 +699,25 @@ export function GenAssistantPanel({
         if (stopped) return;
         const hit = items.find(
           (it) =>
-            it.preview_url &&
-            it.status !== "failed" &&
+            it.status === "done" &&
+            Boolean(it.preview_url || it.path) &&
             it.prompt &&
             it.prompt.startsWith(pendingArt.prefix),
         );
-        if (hit?.preview_url) {
-          const url = hit.preview_url;
-          lsSet(LS.artPrefix + pendingArt.styleId, url);
-          setArtUrls((prev) => ({ ...prev, [pendingArt.styleId]: url }));
-          setPendingArt(null);
-          lsRemove(LS.pendingStyle);
-          toast.success("Превью стиля обновлено картинкой из генерации");
+        if (!hit) return;
+        let url = hit.preview_url || "";
+        if (hit.path) {
+          try {
+            url = await persistStyleCover(pendingArt.styleId, { path: hit.path });
+          } catch {
+            /* оставляем /api/files — плитка всё равно покажет */
+          }
         }
+        if (!url) return;
+        applyStyleCover(pendingArt.styleId, url);
+        setPendingArt(null);
+        lsRemove(LS.pendingStyle);
+        toast.success("Превью стиля обновлено картинкой из генерации");
       } catch {
         /* история может быть недоступна */
       }
@@ -766,6 +761,9 @@ export function GenAssistantPanel({
         warning?: string;
       };
       if (!data.agent) throw new Error("пустой ответ");
+      if (isStubAgentText(data.agent)) {
+        throw new Error("GPT не собрал агента — заглушка запрещена");
+      }
       setNewAgent(data.agent);
       if (!newName.trim() && data.name) setNewName(data.name);
       if (!newDesc.trim() && data.desc) setNewDesc(data.desc);
@@ -778,11 +776,15 @@ export function GenAssistantPanel({
     }
   };
 
-  const saveCustomStyle = (catId: string) => {
+  const saveCustomStyle = async (catId: string) => {
     const name = newName.trim();
     const agent = newAgent.trim();
     if (!name || !agent) {
       toast.error("Нужны название и текст агента");
+      return;
+    }
+    if (isStubAgentText(agent)) {
+      toast.error("Агент не написан LLM — заглушка запрещена");
       return;
     }
     const id = `custom_${Date.now().toString(36)}`;
@@ -798,10 +800,12 @@ export function GenAssistantPanel({
       promptCore: agent,
     };
     setCustomStyles((prev) => [...prev, cs]);
+    setAgentOverrides((prev) => ({ ...prev, [id]: agent }));
     setCategoryId(catId);
     setStyleId(id);
     setAddOpen(false);
-    setCatMenuOpen(false);
+    setCatMenuOpen(true);
+    setPreviewCat(catId);
     setNewName("");
     setNewDesc("");
     setNewAgent("");
@@ -1161,7 +1165,7 @@ export function GenAssistantPanel({
                   className={cn(areaCls, "font-mono text-[12px]")}
                 />
                 <div className="flex gap-1.5">
-                  <button type="button" onClick={() => saveCustomStyle(menuCat.id)} className="rounded-md bg-white px-2.5 py-1.5 text-[13px] font-medium text-black">
+                  <button type="button" onClick={() => void saveCustomStyle(menuCat.id)} className="rounded-md bg-white px-2.5 py-1.5 text-[13px] font-medium text-black">
                     Сохранить
                   </button>
                   <button type="button" onClick={() => setAddOpen(false)} className="rounded-md px-2.5 py-1.5 text-[13px] font-medium text-white/60 hover:text-white">
@@ -1181,8 +1185,8 @@ export function GenAssistantPanel({
                     type="button"
                     onClick={() => {
                       setCategoryId(menuCat.id);
-                      setStyleId(s.id === styleId && menuCat.id === categoryId ? "" : s.id);
-                      if (!(s.id === styleId && menuCat.id === categoryId)) setEditorTab("request");
+                      setStyleId(s.id);
+                      setEditorTab("request");
                       setCatMenuOpen(false);
                     }}
                     title={s.name}
@@ -1238,7 +1242,7 @@ export function GenAssistantPanel({
               onKeyDown={(e) => {
                 if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
                   e.preventDefault();
-                  void runAgent();
+                  void startGenerationNow();
                 }
               }}
               rows={2}
@@ -1275,12 +1279,11 @@ export function GenAssistantPanel({
         <div className="mt-1.5 flex shrink-0 flex-wrap items-center gap-1.5">
           <button
             type="button"
-            disabled={agentBusy}
-            onClick={() => void runAgent()}
-            title="Собрать промпт и запустить картинку"
-            className="inline-flex h-7 items-center justify-center rounded-md bg-gradient-to-r from-[#22d3ee] to-[#0ea5e9] px-3 text-[13px] font-medium text-black shadow-[0_0_14px_rgba(34,211,238,0.28)] transition hover:brightness-110 disabled:opacity-40"
+            onClick={() => void startGenerationNow()}
+            title="Сразу в генерацию, промпт собирается в фоне"
+            className="inline-flex h-7 items-center justify-center rounded-md bg-gradient-to-r from-[#22d3ee] to-[#0ea5e9] px-3 text-[13px] font-medium text-black shadow-[0_0_14px_rgba(34,211,238,0.28)] transition hover:brightness-110"
           >
-            {agentBusy ? "Пишет…" : "Сгенерировать"}
+            Сгенерировать
           </button>
           <button
             type="button"
