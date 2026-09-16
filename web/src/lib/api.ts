@@ -848,6 +848,8 @@ export const api = {
   // ── Projects ─────────────────────────────────────────────────────
   listProjects: () => http<ProjectSummary[]>(`/api/projects`),
   getProject: (id: number) => http<ProjectDetail>(`/api/projects/${id}`),
+  getProjectRun: (projectId: number) =>
+    http<WorkflowRunDetail>(`/api/projects/${projectId}/run`),
   createProject: (body: {
     title: string;
     topic?: string;

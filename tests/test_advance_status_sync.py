@@ -6,10 +6,21 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.orm import selectinload
 
-from app.models import Base, Project, ProjectStatus
+from app.models import (
+    Base,
+    NodeRun,
+    NodeRunStatus,
+    Project,
+    ProjectStatus,
+    Workflow,
+    WorkflowRun,
+)
 from app.project_db import (
+    _copy_noderuns_between_sessions,
     close_all_project_engines,
     get_project_sessionmaker,
     init_project_db,
@@ -260,3 +271,80 @@ async def test_push_runtime_to_master_copies_running_status(
 
     await master_engine.dispose()
     await close_all_project_engines()
+
+
+@pytest.mark.asyncio
+async def test_copy_noderuns_creates_missing_group_nodes() -> None:
+    """state.db без fw_* не должен глотать running-ноду группы из project.db."""
+    src_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    dest_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with src_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    async with dest_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    src_factory = async_sessionmaker(src_engine, expire_on_commit=False)
+    dest_factory = async_sessionmaker(dest_engine, expire_on_commit=False)
+
+    async def _seed(factory, *, with_group: bool) -> None:
+        async with factory() as s:
+            s.add(Project(id=34, slug="saltykova-1609", title="s", topic="t"))
+            s.add(Workflow(id=1, name="default", is_default=True))
+            await s.flush()
+            run = WorkflowRun(
+                id=1,
+                workflow_id=1,
+                project_id=34,
+                nodes_snapshot=[{"id": "n_excel_gpt_1", "type": "excel_gpt"}],
+            )
+            s.add(run)
+            await s.flush()
+            s.add(
+                NodeRun(
+                    workflow_run_id=run.id,
+                    node_key="n_excel_gpt_1",
+                    node_type="excel_gpt",
+                    status=NodeRunStatus.pending,
+                )
+            )
+            if with_group:
+                run.nodes_snapshot = [
+                    {"id": "n_excel_gpt_1", "type": "excel_gpt"},
+                    {"id": "n_excel_gpt_fw_script", "type": "excel_gpt"},
+                ]
+                s.add(
+                    NodeRun(
+                        workflow_run_id=run.id,
+                        node_key="n_excel_gpt_fw_script",
+                        node_type="excel_gpt",
+                        status=NodeRunStatus.running,
+                        progress=15,
+                        progress_text="GPT",
+                    )
+                )
+            await s.commit()
+
+    await _seed(src_factory, with_group=True)
+    await _seed(dest_factory, with_group=False)
+
+    async with src_factory() as src, dest_factory() as dest:
+        n = await _copy_noderuns_between_sessions(src, dest, 34)
+        assert n >= 1
+        await dest.commit()
+
+    async with dest_factory() as dest:
+        dest_run = (
+            await dest.execute(
+                select(WorkflowRun)
+                .where(WorkflowRun.project_id == 34)
+                .options(selectinload(WorkflowRun.node_runs))
+            )
+        ).scalar_one()
+        keys = {nr.node_key: nr for nr in dest_run.node_runs}
+        assert "n_excel_gpt_fw_script" in keys
+        assert keys["n_excel_gpt_fw_script"].status is NodeRunStatus.running
+        assert keys["n_excel_gpt_fw_script"].progress == 15
+        snap_ids = {str(n.get("id")) for n in (dest_run.nodes_snapshot or [])}
+        assert "n_excel_gpt_fw_script" in snap_ids
+
+    await src_engine.dispose()
+    await dest_engine.dispose()

@@ -160,10 +160,11 @@ export function FlowCanvas({
     queryKey: ["project-run", projectId],
     queryFn: async () => {
       if (!projectId) return null;
-      const runs = await api.listRuns();
-      const found = runs.find((r) => r.project_id === projectId);
-      if (!found) return null;
-      return api.getRun(found.id);
+      try {
+        return await api.getProjectRun(projectId);
+      } catch {
+        return null;
+      }
     },
     enabled: projectId != null,
     refetchInterval: 4000,

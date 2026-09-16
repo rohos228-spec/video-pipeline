@@ -11,7 +11,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer, selectinload
 
-from app.models import Artifact, ArtifactKind, BatchProject, Frame, Project, ProjectStatus
+from app.models import (
+    Artifact,
+    ArtifactKind,
+    BatchProject,
+    Frame,
+    Project,
+    ProjectStatus,
+    WorkflowRun,
+)
 from app.services.default_project import default_auto_mode_for_new_project
 from app.services.mass_factory import mass_parent_id
 from app.services.sidebar_layout import (
@@ -29,7 +37,12 @@ from app.storage import ProjectSheet
 from app.db import commit_with_retry
 from app.web.deps import get_project_session, get_session
 from app.web.project_dto import project_to_detail, project_to_summary
-from app.web.schemas import CreateProjectRequest, ProjectDetail, ProjectSummary
+from app.web.schemas import (
+    CreateProjectRequest,
+    ProjectDetail,
+    ProjectSummary,
+    WorkflowRunDetail,
+)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -363,6 +376,45 @@ async def ensure_project_run(
     run_id = await ensure_run_for_project(project_id, wf_id, session=session)
     await session.commit()
     return {"run_id": run_id}
+
+
+@router.get("/{project_id}/run", response_model=WorkflowRunDetail)
+async def get_project_run(
+    project_id: int, session: AsyncSession = Depends(get_project_session)
+) -> WorkflowRun:
+    """Run канваса из project.db (там ноды группы). state.db часто без fw_*."""
+    p = await session.get(Project, project_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    from app.services.canvas_graph import sync_run_snapshot_from_canvas_graph
+
+    run = (
+        await session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == project_id)
+            .options(selectinload(WorkflowRun.node_runs))
+        )
+    ).scalar_one_or_none()
+    created = False
+    if run is None:
+        wf_id = await _get_default_workflow_id(session)
+        if wf_id is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        await ensure_run_for_project(project_id, wf_id, session=session)
+        created = True
+    changed = await sync_run_snapshot_from_canvas_graph(session, p)
+    if created or changed:
+        await session.commit()
+    run = (
+        await session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == project_id)
+            .options(selectinload(WorkflowRun.node_runs))
+        )
+    ).scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return run
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)

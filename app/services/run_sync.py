@@ -1600,6 +1600,29 @@ async def _reconcile_stale_node_runs(
                         in ("scene_designing", "scene_assembling")
                     )
                 ):
+                    if (
+                        eff == EXCEL_GPT_NODE_TYPE
+                        and str(status_val).startswith("enriching_")
+                    ):
+                        active_key = active_excel_gpt_node_key(project)
+                        if active_key and str(nr.node_key or "") != str(active_key):
+                            if reset_node_to_pending(
+                                nr,
+                                project_id=run.project_id,
+                                initiator="inactive_excel_gpt",
+                            ):
+                                fixed += 1
+                                logger.info(
+                                    "[#{}] NodeRun {}/{}: {} → pending "
+                                    "(active={}, {})",
+                                    run.project_id,
+                                    nr.node_type,
+                                    nr.node_key,
+                                    old.value,
+                                    active_key,
+                                    initiator,
+                                )
+                            continue
                     logger.info(
                         "[#{}] NodeRun {}/{}: keep {} (project still {}, {})",
                         run.project_id,

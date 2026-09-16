@@ -590,6 +590,11 @@ _CLEAR_WHEN_MASTER_RUNNING = (
     "mass_lane_user_stop",
     "auto_await_manual_start",
 )
+# Ключи-ворота: если в src их уже нет (▶ снял), dest не должен хранить True.
+_CLEAR_WHEN_SRC_ABSENT = _CLEAR_WHEN_MASTER_RUNNING + (
+    "excel_gpt_ui_force_full",
+    "excel_gpt_force_full_rerun",
+)
 
 
 def _bind_url(session: AsyncSession) -> str:
@@ -610,6 +615,8 @@ def _apply_runtime_fields(src: Project, dest: Project) -> None:
     for key in _RUNTIME_META_KEYS:
         if key in s_meta:
             d_meta[key] = s_meta[key]
+        elif key in _CLEAR_WHEN_SRC_ABSENT:
+            d_meta.pop(key, None)
         elif (
             is_running_status(src.status)
             and key in _CLEAR_WHEN_MASTER_RUNNING
@@ -724,6 +731,9 @@ async def pull_master_runtime_into_project(
                 if p_meta.get(key) != m_meta.get(key):
                     p_meta[key] = m_meta[key]
                     changed = True
+            elif key in _CLEAR_WHEN_SRC_ABSENT and key in p_meta:
+                p_meta.pop(key, None)
+                changed = True
             elif key in _CLEAR_WHEN_MASTER_RUNNING and key in p_meta and is_running_status(m.status):
                 p_meta.pop(key, None)
                 changed = True
@@ -791,6 +801,50 @@ async def sync_runtime_both_ways(
     await push_runtime_to_master(session, project)
 
 
+def _merge_run_snapshot(
+    dest_items: list | None, src_items: list | None
+) -> tuple[list, bool]:
+    """Добавить в dest элементы src, которых нет по id (ноды группы на канвасе)."""
+    dest = [x for x in (dest_items or []) if isinstance(x, dict)]
+    ids = {str(n.get("id") or "") for n in dest}
+    added = False
+    for item in src_items or []:
+        if not isinstance(item, dict):
+            continue
+        nid = str(item.get("id") or "")
+        if not nid or nid in ids:
+            continue
+        dest.append(item)
+        ids.add(nid)
+        added = True
+    return dest, added
+
+
+def _apply_noderun_fields(dest: NodeRun, src: NodeRun) -> bool:
+    if (
+        dest.status == src.status
+        and dest.progress == src.progress
+        and (dest.error or None) == (src.error or None)
+        and dest.progress_text == src.progress_text
+        and dest.attempts == src.attempts
+    ):
+        return False
+    from app.services.node_status_machine import allow_replica_status_write
+
+    with allow_replica_status_write():
+        dest.status = src.status
+    dest.progress = src.progress
+    dest.progress_text = src.progress_text
+    dest.error = src.error
+    dest.started_at = src.started_at
+    dest.finished_at = src.finished_at
+    dest.attempts = src.attempts
+    dest.updated_at = src.updated_at
+    if src.meta:
+        dest.meta = dict(src.meta)
+    return True
+
+
 async def _copy_noderuns_between_sessions(
     src_session: AsyncSession,
     dest_session: AsyncSession,
@@ -812,27 +866,36 @@ async def _copy_noderuns_between_sessions(
     ).scalar_one_or_none()
     if src_run is None or dest_run is None:
         return 0
-    dest_by_key = {str(nr.node_key or ""): nr for nr in dest_run.node_runs}
     updated = 0
-    for src in src_run.node_runs:
-        dest = dest_by_key.get(str(src.node_key or ""))
-        if dest is None:
-            continue
-        if (
-            dest.status == src.status
-            and dest.progress == src.progress
-            and (dest.error or None) == (src.error or None)
-        ):
-            continue
-        dest.status = src.status
-        dest.progress = src.progress
-        dest.progress_text = src.progress_text
-        dest.error = src.error
-        dest.started_at = src.started_at
-        dest.finished_at = src.finished_at
-        dest.attempts = src.attempts
-        dest.updated_at = src.updated_at
+    merged_nodes, nodes_added = _merge_run_snapshot(
+        dest_run.nodes_snapshot, src_run.nodes_snapshot
+    )
+    merged_edges, edges_added = _merge_run_snapshot(
+        dest_run.edges_snapshot, src_run.edges_snapshot
+    )
+    if nodes_added:
+        dest_run.nodes_snapshot = merged_nodes
         updated += 1
+    if edges_added:
+        dest_run.edges_snapshot = merged_edges
+        updated += 1
+    dest_by_key = {str(nr.node_key or ""): nr for nr in dest_run.node_runs}
+    for src in src_run.node_runs:
+        key = str(src.node_key or "")
+        dest = dest_by_key.get(key)
+        if dest is None:
+            dest = NodeRun(
+                workflow_run_id=dest_run.id,
+                node_key=src.node_key,
+                node_type=src.node_type,
+            )
+            dest_session.add(dest)
+            dest_by_key[key] = dest
+            _apply_noderun_fields(dest, src)
+            updated += 1
+            continue
+        if _apply_noderun_fields(dest, src):
+            updated += 1
     return updated
 
 
