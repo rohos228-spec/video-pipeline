@@ -33,15 +33,17 @@ async def main(project_id: int, out_dir: Path) -> None:
 
         scene = page.get_by_text("последовательность кадров", exact=True).first
         await scene.scroll_into_view_if_needed()
-        print("формат сцены с описанием:", await scene.is_visible())
+        print("последовательность кадров:", await scene.is_visible())
+        anchors = page.get_by_text("якоря", exact=True).first
+        print("якоря в строке сцены:", await anchors.count() > 0)
         light = page.get_by_role("button", name="свет сцены").first
         print("свет у сцены:", await light.count() > 0)
         strip = page.get_by_role("button", name="покрытие кадра").first
         print("в полосе кадра нет света:", "свет" not in (await strip.inner_text()).lower())
         await page.screenshot(path=str(out_dir / "rows-top.png"))
 
-        anchor = page.get_by_text("Якорь кадра", exact=True).first
-        await anchor.scroll_into_view_if_needed()
+        action = page.get_by_text("Действие кадра", exact=True).first
+        await action.scroll_into_view_if_needed()
         await page.wait_for_timeout(400)
         await page.screenshot(path=str(out_dir / "rows-frame-data.png"))
         await browser.close()

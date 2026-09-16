@@ -722,7 +722,7 @@ async def test_apply_scene_action_rejects_empty(
     parent, _child = _parent_child(project.id)
     session.add_all([project, parent])
     await session.flush()
-    with pytest.raises(RuntimeError, match="главное действие сцены пустое"):
+    with pytest.raises(RuntimeError, match="последовательность кадров пустая"):
         await apply_coverage_op(
             session,
             project,

@@ -3,16 +3,14 @@
 Одно место, откуда UI получает всё, что можно править у кадра:
 
 - роль в покрытии (VO-родитель / дочерний шот) и кто родитель;
-- формат сцены — шаблон ``T0…T10`` / ``X1``, ``X2`` из каталога
-  ``templates/shot_templates/shot_templates.json``;
 - крупность (план) и «действие» этого кадра;
-- якорь закадра **этого** кадра (``attrs.биты[].якорь`` по слоту шота);
+- якоря закадра ячейки (``attrs.биты[].якорь``) — точки реза VO по кадрам;
 - общие поля сцены / VO-ячейки (полный закадр, персонажи, свет, предметы);
+- последовательность кадров сцены (действия шотов через « → »);
 - лестница кадров сцены (``attrs.кадры``) с закадром каждого кадра.
 
 Варианты («подобрать вариантами») собираются тем же знанием, что и ноды
-группы сцен: каталог шаблонов, предвыбор по дереву «Выбор», текст ячейки
-и короткое описание видимой сцены от оператора.
+группы сцен: текст ячейки и короткое описание видимой сцены от оператора.
 """
 
 from __future__ import annotations
@@ -537,7 +535,7 @@ def frame_board_scene_cell(frames: list[Any], frame: Any) -> dict[str, Any]:
         "scene_visual_type": scene.get("visual_type") or "",
         "scene_feature": scene.get("feature") or "",
         "scene_template_auto": scene_template_auto(parent),
-        "scene_action": main_action_text(parent),
+        "scene_action": shot_sequence_text(parent, members),
         "vo_scene_number": int(parent.number),
         "vo_scene_size": len(members),
     }
@@ -636,6 +634,19 @@ def _shots_payload(parent: Any, members: list[Any]) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def shot_sequence_text(parent: Any, members: list[Any] | None = None) -> str:
+    """Действия кадров ячейки через « → » — то, что в строке сцены на доске."""
+    group = members if members is not None else [parent]
+    steps = [
+        _norm(str(item.get("действие") or ""))
+        for item in _shots_payload(parent, group)
+    ]
+    steps = [step for step in steps if step]
+    if steps:
+        return " → ".join(steps)
+    return main_action_text(parent)
 
 
 def build_scene_editor_state(frames: list[Any], frame: Any) -> dict[str, Any]:

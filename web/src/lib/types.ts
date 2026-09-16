@@ -403,7 +403,7 @@ export interface MontageBoardFrame {
   scene_feature?: string;
   /** Что предлагает дерево «Выбор» для формата сцены. */
   scene_template_auto?: string;
-  /** Главное действие сцены (цепь или проза) — на всю VO-ячейку. */
+  /** Последовательность кадров сцены (действие → действие) — на всю VO-ячейку. */
   scene_action?: string;
   /** Номер VO-родителя ячейки (сцена). Не coverage_parent_id / X1. */
   vo_scene_number?: number | null;

@@ -652,7 +652,7 @@ export function mergeAnchorRows(
   return anchorRowsToOps(next);
 }
 
-/** Якорь кадра — своя строка: где этот кадр режет закадр ячейки. */
+/** Якоря VO-ячейки: где сцена режется на кадры. */
 export function AnchorCell({
   projectId,
   frameId,
@@ -664,6 +664,7 @@ export function AnchorCell({
   canAdd,
   pending,
   disabled,
+  heading,
   onCommit,
 }: {
   projectId: number | null;
@@ -676,6 +677,7 @@ export function AnchorCell({
   canAdd: boolean;
   pending?: boolean;
   disabled?: boolean;
+  heading?: string;
   onCommit: (anchors: SceneAnchorRow[]) => void;
 }) {
   const [draft, setDraft] = useState<MontageAnchorRow[]>(rows);
@@ -714,6 +716,12 @@ export function AnchorCell({
 
   return (
     <div className={cn("relative rounded-md p-0.5", pending && "bg-amber-500/10")}>
+      {heading ? (
+        <span className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-white/55">
+          {heading}
+          {pending ? <span className="h-1.5 w-1.5 rounded-full bg-amber-300/80" /> : null}
+        </span>
+      ) : null}
       {draft.length === 0 ? (
         <p className={HINT}>якоря нет — ячейка идёт одним куском</p>
       ) : null}
@@ -843,11 +851,9 @@ export function AnchorCell({
 }
 
 /**
- * Формат сцены (шаблон T0…T10 / X1 / X2) — выбор варианта для всей VO-ячейки.
- * При выбранном варианте сразу показываем, для чего он и какая
- * последовательность кадров из него выйдет: `K1 ОБЩИЙ → кадр #1`. Кадров у
- * ячейки может быть меньше, чем шотов у шаблона — тогда шаг подписан
- * «нет кадра», и его добавляют якорем.
+ * Формат сцены (шаблон T0…T10 / X1 / X2). В строке сцены больше не
+ * показывается — каталог не используется. Компонент оставлен, пока жив
+ * `coverage_template` в API.
  */
 export function TemplateCell({
   projectId,
@@ -1186,7 +1192,7 @@ export function SceneDataCell({
 }
 
 /**
- * Главное действие сцены: проза или цепь. Большая кнопка кладёт разбор
+ * Последовательность кадров сцены. Большая кнопка кладёт разбор
  * в очередь и сразу запускает «Применить правки».
  */
 export function SceneActionBlock({
@@ -1231,7 +1237,7 @@ export function SceneActionBlock({
       )}
     >
       <span className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-[rgba(209,254,23,0.9)]">
-        главное действие сцены
+        последовательность кадров
         {pending ? <span className="h-1.5 w-1.5 rounded-full bg-amber-300/80" /> : null}
       </span>
       <textarea
@@ -1239,7 +1245,7 @@ export function SceneActionBlock({
         value={text}
         disabled={disabled}
         placeholder={
-          "Проза или цепь.\nТкач входит в архив, тянет папку, открывает, читает.\nили\n1. архив — Ткач входит и берёт папку\n(кусок закадра)"
+          "действие кадра 1 → действие кадра 2 → действие кадра 3\nдевушка подходит к двери → девушка открывает дверь → мужчина сидит за столом"
         }
         onChange={(e) => setText(e.target.value)}
         onBlur={commitQueue}
@@ -1264,31 +1270,31 @@ export function SceneActionBlock({
         Разобрать на кадры
       </button>
       <p className={cn(HINT, "mt-1.5")}>
-        ноды покрытия: кадры, родитель/дети, нарезка закадра. Кнопка ставит
-        правку в очередь и сразу жмёт «Применить правки».
+        каждое звено — кадр сцены. Кнопка ставит правку в очередь и сразу
+        жмёт «Применить правки».
       </p>
     </div>
   );
 }
 
 /**
- * Сцена = одна ячейка закадра. В полосе «Сцены» — главное действие,
- * формат (T0…T10) и кнопка данных ячейки на всю VO-ячейку.
+ * Сцена = одна ячейка закадра. В полосе «Сцены» — последовательность кадров,
+ * якоря ячейки и данные ячейки. Каталог T0–X2 в строке больше не показывается.
  */
 export function SceneCell({
   action,
-  template,
+  anchors,
   data,
 }: {
   action?: React.ReactNode;
-  template?: React.ReactNode;
+  anchors?: React.ReactNode;
   data?: React.ReactNode;
 }) {
-  if (!action && !template && !data) return null;
+  if (!action && !anchors && !data) return null;
   return (
     <div className="min-w-0 space-y-2">
       {action}
-      {template}
+      {anchors}
       {data}
     </div>
   );

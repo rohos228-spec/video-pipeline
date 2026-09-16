@@ -962,7 +962,7 @@ async def apply_coverage_scene_action(
     frames: list[Frame],
     action: str,
 ) -> dict[str, Any]:
-    """Главное действие сцены → цепь и кадры[] на уже существующих членах ячейки.
+    """Последовательность кадров сцены → кадры[] на уже существующих членах ячейки.
 
     Новые Frame не создаём: insert + глобальный renumber сдвигает number
     у всех следующих карточек, а превью монтажа ищутся по frame_NNN_*.png.
@@ -976,7 +976,7 @@ async def apply_coverage_scene_action(
 
     raw = (action or "").strip()
     if not raw:
-        raise RuntimeError("главное действие сцены пустое")
+        raise RuntimeError("последовательность кадров пустая")
     parent, members = scene_group(frames, frame)
     full = cell_full_text(parent, members)
     place = frame_place(parent)
@@ -997,7 +997,7 @@ async def apply_coverage_scene_action(
         ]
     )
     if not chain_text:
-        raise RuntimeError("главное действие сцены пустое")
+        raise RuntimeError("последовательность кадров пустая")
 
     attrs = dict(getattr(parent, "attrs", None) or {})
     attrs["главное_действие"] = chain_text

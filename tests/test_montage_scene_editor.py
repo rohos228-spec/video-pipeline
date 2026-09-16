@@ -21,6 +21,7 @@ from app.services.montage_scene_editor import (
     parse_variants,
     preview_template_ladder,
     scene_group,
+    shot_sequence_text,
     split_vo_by_anchors,
 )
 
@@ -370,16 +371,29 @@ def test_frame_board_scene_cell_carries_inline_row_payload() -> None:
     assert cell["scene_anchor_rows"][0]["cell_index"] == 0
     assert cell["vo_cell_full"] == VO_CELL
 
-    # Общее по ячейке — для строк «Сцена (ячейка)» / «Свет» / «Формат сцены».
+    # Общее по ячейке — для строк «Сцена» / «Свет».
     assert cell["scene_lighting"] == "холодный верхний свет"
     assert cell["scene_sense"] == "вход в кабинет и первое дело"
     assert cell["scene_props"] == "папка, портфель"
     assert cell["scene_id"] == "scene_01"
     assert cell["scene_template_auto"]
+    assert "вошёл, снял пальто" in cell["scene_action"]
+    assert " → " in cell["scene_action"]
+    assert "достают папку" in cell["scene_action"]
 
     parent_cell = frame_board_scene_cell(frames, parent)
     assert parent_cell["scene_anchor_rows"] == cell["scene_anchor_rows"]
     assert parent_cell["scene_template_auto"] == cell["scene_template_auto"]
+    assert parent_cell["scene_action"] == cell["scene_action"]
+
+
+def test_shot_sequence_text_joins_frame_actions() -> None:
+    parent, child = _group(41)
+    seq = shot_sequence_text(parent, [parent, child])
+    assert " → " in seq
+    assert seq.startswith("кабинет следователя. вошёл")
+    assert "достают папку" in seq
+    assert "1." not in seq
 
 
 # --- формат сцены -------------------------------------------------------

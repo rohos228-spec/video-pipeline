@@ -64,7 +64,6 @@ import {
   SceneActionBlock,
   SceneCell,
   SceneDataCell,
-  TemplateCell,
   type CoverageMenuGroup,
   type SceneDataField,
 } from "@/components/canvas/montage-scene-cells";
@@ -131,7 +130,7 @@ const SCENE_SHOT_ROWS: { key: RowKey; label: string }[] = [
 
 /** Эти строки общие для VO-ячейки — одна клетка на всю сцену. */
 const SCENE_SPAN_ROWS = new Set<RowKey>(["scene_info"]);
-/** Эти строки правятся у каждого кадра отдельно (роль и якорь — на/под картинкой). */
+/** Эти строки правятся у каждого кадра отдельно (роль — на картинке). */
 const SCENE_FRAME_ROWS = new Set<RowKey>(["action"]);
 
 type MediaPreview = {
@@ -230,7 +229,7 @@ function describePendingOp(op: MontagePendingOp): string {
     op.correction ||
     "";
   const labels: Record<string, string> = {
-    coverage_scene_action: "главное действие",
+    coverage_scene_action: "последовательность кадров",
     coverage_sense: "смысл",
     coverage_visual_type: "тип",
     coverage_place: "место",
@@ -656,6 +655,35 @@ function sceneRanges(frames: MontageBoardFrame[]): SceneRange[] {
     }
   });
   return out;
+}
+
+/** Действия кадров ячейки через « → » — вместо одного главного действия. */
+function sceneShotSequence(
+  range: SceneRange,
+  pendingOps: MontagePendingOp[],
+  pendingScene: PendingCoverage,
+): string {
+  const queued = (pendingScene.scene_action || "").trim();
+  if (queued) return queued;
+  const steps = range.frames
+    .map((fr) => {
+      const pending = pendingCoverageForFrame(pendingOps, fr.number);
+      return ((pending.action ?? fr.shot_action) || "").trim();
+    })
+    .filter(Boolean);
+  if (steps.length) return steps.join(" → ");
+  return (range.frames[0]?.scene_action || "").trim();
+}
+
+function pendingAnchorsForRange(
+  ops: MontagePendingOp[],
+  range: SceneRange,
+): SceneAnchorRow[] | undefined {
+  for (const fr of range.frames) {
+    const pending = pendingCoverageForFrame(ops, fr.number);
+    if (pending.anchors) return pending.anchors;
+  }
+  return undefined;
 }
 
 function sceneColSpan(frameCount: number): number {
@@ -1968,8 +1996,8 @@ export function AssembleMontageBoard({
   const colRem = coverageOn ? frameColRem(frameAspect) : FRAME_COL_REM;
   const gridRows = useMemo(() => {
     if (!coverageOn) return GRID_ROWS;
-    // Сверху картинка кадра; формат сцены (T0…T10) — в шапке «Сцены» на всю
-    // VO-ячейку. Ниже — данные каждого кадра.
+    // Сверху картинка кадра; строка «Сцены» — последовательность кадров и якоря
+    // всей VO-ячейки. Ниже — данные каждого кадра.
     const frameRow = GRID_ROWS.filter((r) => r.key === "image1");
     const rest = GRID_ROWS.filter(
       (r) => r.key !== "image1" && r.key !== "voiceover",
@@ -3276,62 +3304,6 @@ export function AssembleMontageBoard({
         />
       );
     }
-    if (key === "anchor") {
-      const canAdd = Boolean(fr.anchor_can_add);
-      const frameRows = fr.shot_anchor_rows ?? [];
-      const queued = pending.anchors;
-      const rows: MontageAnchorRow[] = !queued
-        ? frameRows
-        : canAdd || frameRows.length === 0
-          ? queued.map((r) => ({
-              "якорь": r["якорь"],
-              "изменение": r["изменение"] || "",
-              "главный": Boolean(r["главный"]),
-              cell_index: r.cell_index ?? null,
-            }))
-          : [
-              ...frameRows.map((r) => {
-                const idx = typeof r.cell_index === "number" ? r.cell_index : -1;
-                const cand = queued.find(
-                  (q) => typeof q.cell_index === "number" && q.cell_index === idx,
-                );
-                return cand
-                  ? { ...r, "якорь": cand["якорь"], "изменение": cand["изменение"] || "" }
-                  : r;
-              }),
-              // Дописанный якорь этого кадра: в очереди он есть, в биты[] ещё нет.
-              ...queued
-                .filter(
-                  (q) =>
-                    typeof q.cell_index !== "number" &&
-                    q.frame_number === fr.number,
-                )
-                .map((q) => ({
-                  "якорь": q["якорь"],
-                  "изменение": q["изменение"] || "",
-                  "главный": Boolean(q["главный"]),
-                  cell_index: null,
-                  frame_number: fr.number,
-                })),
-            ];
-      return (
-        <AnchorCell
-          projectId={projectId}
-          frameId={fr.frame_id}
-          frameNumber={fr.number}
-          frameText={voiceoverForFrame(fr)}
-          cellText={fr.vo_cell_full || voiceoverForFrame(fr)}
-          rows={rows}
-          cellRows={fr.scene_anchor_rows ?? []}
-          canAdd={canAdd}
-          pending={hasPendingType(fr.number, "coverage_anchors")}
-          disabled={sceneDisabled}
-          onCommit={(anchors) =>
-            queueCoverage({ ...base, type: "coverage_anchors", anchors })
-          }
-        />
-      );
-    }
     return null;
   };
 
@@ -3355,7 +3327,7 @@ export function AssembleMontageBoard({
       persistQueue(next);
       setPendingOps(next);
       toastQueued(
-        `Кадр #${frameNumber}: главное действие в очереди — нажмите «Применить правки»`,
+        `Кадр #${frameNumber}: последовательность кадров в очереди — нажмите «Применить правки»`,
       );
     },
     [persistQueue],
@@ -3369,18 +3341,34 @@ export function AssembleMontageBoard({
     [applyMutation, enqueueSceneActionNow],
   );
 
-  /** Клетка на всю VO-ячейку: окно формата сцены. */
+  /** Клетка на всю VO-ячейку: последовательность кадров и якоря. */
   const renderSceneSpanCell = (key: RowKey, range: SceneRange) => {
     const head = range.frames[0];
+    const tail = range.frames[range.frames.length - 1] ?? head;
     if (!head) return null;
     const pending = pendingCoverageForFrame(pendingOps, head.number);
     const base = { frame_number: head.number, shot: 1 as const };
     if (key !== "scene_info") return null;
+    const cellText = (head.vo_cell_full || voiceoverForFrame(head)).trim();
+    const queuedAnchors = pendingAnchorsForRange(pendingOps, range);
+    const cellRows = head.scene_anchor_rows ?? [];
+    const anchorRows: MontageAnchorRow[] = !queuedAnchors
+      ? cellRows
+      : queuedAnchors.map((r) => ({
+          "якорь": r["якорь"],
+          "изменение": r["изменение"] || "",
+          "главный": Boolean(r["главный"]),
+          cell_index: r.cell_index ?? null,
+          frame_number: r.frame_number ?? null,
+        }));
+    const anchorsPending = range.frames.some((fr) =>
+      hasPendingType(fr.number, "coverage_anchors"),
+    );
     return (
       <SceneCell
         action={
           <SceneActionBlock
-            value={(pending.scene_action ?? head.scene_action ?? "").trim()}
+            value={sceneShotSequence(range, pendingOps, pending)}
             pending={hasPendingType(head.number, "coverage_scene_action")}
             disabled={sceneDisabled}
             applyBusy={applyMutation.isPending || applyRunning}
@@ -3390,20 +3378,30 @@ export function AssembleMontageBoard({
             onApply={(action) => applySceneActionNow(head.number, action)}
           />
         }
-        template={
-          <TemplateCell
-            projectId={projectId}
-            frameId={head.frame_id}
-            value={(pending.template ?? head.shot_template ?? "").trim()}
-            auto={(head.scene_template_auto || "").trim()}
-            choices={board.data?.coverage_template_choices}
-            frameNumbers={range.frames.map((f) => f.number)}
-            pending={hasPendingType(head.number, "coverage_template")}
-            disabled={sceneDisabled}
-            onPick={(template) =>
-              queueCoverage({ ...base, type: "coverage_template", template })
-            }
-          />
+        anchors={
+          <div className="rounded-lg border border-white/10 bg-black/20 p-2">
+            <AnchorCell
+              projectId={projectId}
+              frameId={head.frame_id}
+              frameNumber={tail.number}
+              frameText={cellText}
+              cellText={cellText}
+              rows={anchorRows}
+              cellRows={cellRows}
+              canAdd
+              heading="якоря"
+              pending={anchorsPending}
+              disabled={sceneDisabled}
+              onCommit={(anchors) =>
+                queueCoverage({
+                  frame_number: tail.number,
+                  shot: 1,
+                  type: "coverage_anchors",
+                  anchors,
+                })
+              }
+            />
+          </div>
         }
         data={
           <SceneDataCell
@@ -3915,7 +3913,6 @@ export function AssembleMontageBoard({
                         const head = range.frames[0];
                         const last = range.frames[range.frames.length - 1];
                         const nums = range.frames.map((f) => `#${f.number}`).join(" · ");
-                        const tpl = head?.shot_template || "";
                         return (
                           <Fragment key={`scene-h-${range.key}`}>
                             <GapCell as="th" gap="scene" />
@@ -3926,11 +3923,6 @@ export function AssembleMontageBoard({
                             >
                               <p className="truncate text-[11px] font-semibold text-white/80">
                                 Сцена {ri + 1} · {nums}
-                                {tpl ? (
-                                  <span className="ml-1.5 font-normal text-[rgba(209,254,23,0.85)]">
-                                    {tpl}
-                                  </span>
-                                ) : null}
                               </p>
                               {head?.scene_place ? (
                                 <p className="truncate text-[10px] text-white/40">
@@ -4068,7 +4060,6 @@ export function AssembleMontageBoard({
                                           disabled={sceneDisabled}
                                         />
                                       ) : null}
-                                      {coverageOn ? renderSceneFrameCell("anchor", fr) : null}
                                       <FrameRefsStrip
                                         projectId={projectId}
                                         frame={frameForRefs(
