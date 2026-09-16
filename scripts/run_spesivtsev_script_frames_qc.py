@@ -1,163 +1,87 @@
-"""Первый шаг группы: биты Спесивцева. Без кадров, упаковки VO и чужих сцен."""
+"""Первый шаг: сырой apply-ops ноды сценариста + fill_bit_spans. Без своих битов."""
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
 from app.services.scene_shot_grammar import bits_cover_vo, fill_bit_spans
 from app.services.shots_report import render_bits_check_table
 
-VO = (
-    "Алекса́ндр Спеси́вцев, сын Людми́лы Спеси́вцевой, рос в семье, где мать "
-    "занимала центральное место. Она защищала его от внешнего мира, принимала "
-    "решения за него и всё сильнее замыкала семейную жизнь вокруг себя и сына. "
-    "Отец постепенно оказался на периферии этой истории, а сестра Наде́жда жила "
-    "рядом, хотя впоследствии суд не установил её участия в преступлениях. "
-    "Для окружающих семья выглядела тяжёлой, конфликтной и неблагополучной, "
-    "однако само по себе это ещё не означало, что внутри совершаются преступления. "
-    "Психиатрический диагноз Александра становился удобным объяснением многих "
-    "странностей: если человек болен, значит, за ним должны наблюдать врачи. "
-    "На практике ответственность оказалась разделена между больницей, семьёй "
-    "и милицией. В 1992 году Александра направили в Орло́вскую "
-    "специализированную психиатрическую больницу, а в 1995 году он вернулся "
-    "в Новокузне́цк. При этом документы содержали противоречия: по одним сведениям "
-    "он уже находился дома, по другим мог продолжать числиться в стационаре. "
-    "Позже именно эта путаница осложнила поиски и проверку информации о его "
-    "местонахождении."
-)
+REPLY = Path("/opt/cursor/artifacts/fw_script_node/gpt_reply.txt")
+FRAMES = Path("/opt/cursor/artifacts/fw_script_node/db_frames.json")
 
-# Бит = обмен поведение действие/реакция (McKee Story 258–259; Назайкин).
-# Новый бит только когда поведение сменилось. изменение = заряд ценности.
-# Здесь нет поз, слоганов, выдуманной драки и нарезки VO под 13–80.
-BITS = [
-    {
-        "порядок": 1,
-        "глагол": "называя / ставя мать в центр",
-        "изменение": "сын как отдельное имя → сын внутри материнского центра семьи",
-        "якорь": "Алекса́ндр Спеси́вцев",
-    },
-    {
-        "порядок": 2,
-        "глагол": "защищая / замыкая",
-        "изменение": "мир доступен → дом закрыт вокруг матери и сына",
-        "якорь": "Она защищала его",
-    },
-    {
-        "порядок": 3,
-        "глагол": "вытесняя / отступая",
-        "изменение": "отец в семье → отец на периферии",
-        "якорь": "Отец постепенно",
-    },
-    {
-        "порядок": 4,
-        "глагол": "живя рядом / не устанавливая участия",
-        "изменение": "рядом значит соучастие → рядом не равно вина",
-        "якорь": "а сестра Наде́жда",
-    },
-    {
-        "порядок": 5,
-        "глагол": "осуждая снаружи / не доказывая внутри",
-        "изменение": "тяжёлая семья = преступление → тяжёлая семья ещё не преступление",
-        "якорь": "Для окружающих",
-    },
-    {
-        "порядок": 6,
-        "глагол": "объясняя болезнью / перекладывая на врачей",
-        "изменение": "странности = вина семьи → странности = дело врачей",
-        "якорь": "Психиатрический диагноз",
-    },
-    {
-        "порядок": 7,
-        "глагол": "разделяя / не держа целиком",
-        "изменение": "врачи должны наблюдать → ответственность на троих и ничья",
-        "якорь": "На практике",
-    },
-    {
-        "порядок": 8,
-        "глагол": "направляя / забирая из дома",
-        "изменение": "дома в семье → в Орловской больнице",
-        "якорь": "В 1992 году",
-    },
-    {
-        "порядок": 9,
-        "глагол": "возвращая / выпуская в город",
-        "изменение": "в стационаре → снова в Новокузнецке",
-        "якорь": "а в 1995 году",
-    },
-    {
-        "порядок": 10,
-        "глагол": "утверждая что дома / числя в стационаре",
-        "изменение": "одно место → две записи сразу",
-        "якорь": "При этом документы",
-    },
-    {
-        "порядок": 11,
-        "глагол": "ища / не находя",
-        "изменение": "можно проверить где он → поиск сорван путаницей бумаг",
-        "якорь": "Позже именно эта путаница",
-    },
-]
+
+def load_node_bits(reply_path: Path = REPLY) -> tuple[str, list[dict]]:
+    db = json.loads(FRAMES.read_text(encoding="utf-8"))
+    vo = str((db["frames"][0].get("voiceover_text") or "")).strip()
+    payload = json.loads(reply_path.read_text(encoding="utf-8"))
+    ops = payload.get("ops") or []
+    if not ops:
+        raise SystemExit("в ответе нет ops")
+    bits = list((ops[0].get("fields") or {}).get("биты") or [])
+    if not bits:
+        raise SystemExit("в ответе нет биты")
+    return vo, bits
 
 
 def _first_step_html(model: dict) -> str:
     bits_table = render_bits_check_table(model)
     return f"""<!doctype html><html lang=ru><meta charset=utf-8>
-<title>шаг 1 · биты</title>
+<title>шаг 1 · сырой ответ</title>
 <style>
 body{{font:16px/1.45 system-ui,Segoe UI,sans-serif;margin:16px;color:#111;background:#fff}}
 h1{{font-size:22px;margin:0 0 8px}}
 .meta{{color:#333;margin:0 0 14px;max-width:1100px}}
+pre{{white-space:pre-wrap;background:#f6f6f6;border:1px solid #ddd;padding:10px;font-size:13px}}
 table{{border-collapse:collapse;width:100%}}
 table.bits-node{{min-width:1400px;font-size:16px}}
 th,td{{border:1px solid #bbb;vertical-align:top;padding:10px 10px}}
 th{{background:#ececec;text-align:left}}
 .vo-bit{{color:#555;margin-top:4px}}
 </style>
-<h1>Шаг 1 · сценарист · биты</h1>
-<p class=meta>
-Бит = обмен <b>действие / реакция</b> в поведении, пока поведение не сменилось
-(McKee, Story, 258–259; Назайкин). <code>изменение</code> — заряд ценности этого обмена.
-Закадр бита режет код по якорю. Кадры, 13–80 и сцены сюда не входят.
-· {len(model.get('bits') or [])} битов
-</p>
+<h1>Шаг 1 · сырой JSON модели</h1>
+<p class=meta>Промт <code>script_writer_ru.md</code> + <code>db_frames.json</code>.
+Поля бита не правились. <code>закадр</code> ниже — только <code>fill_bit_spans</code>.
+· {len(model.get('bits') or [])} битов</p>
+<pre>{json.dumps(model.get('raw_ops'), ensure_ascii=False, indent=2)}</pre>
+<h1>Закадр по якорям (код, не модель)</h1>
 {bits_table}
 """
 
 
 def run() -> dict:
-    vo = " ".join(VO.split())
-    bits = fill_bit_spans(vo, BITS)
-    if not bits_cover_vo(vo, bits):
-        glued = " ".join(str(b.get("закадр") or "") for b in bits)
-        raise SystemExit(f"биты не покрывают VO\n{glued!r}\n{vo!r}")
-    for bit in bits:
-        verb = str(bit.get("глагол") or "")
-        change = str(bit.get("изменение") or "")
-        if "/" not in verb:
-            raise SystemExit(f"бит {bit.get('порядок')} без действие/реакция: {verb!r}")
-        if "→" not in change:
-            raise SystemExit(f"бит {bit.get('порядок')} без смены ценности: {change!r}")
-    return {"vo": vo, "bits": bits, "qc": None}
+    vo, bits = load_node_bits()
+    raw_bits = copy.deepcopy(bits)
+    filled = fill_bit_spans(vo, bits)
+    return {
+        "vo": vo,
+        "bits": filled,
+        "raw_ops": {
+            "ops": [
+                {
+                    "frame_uuid": "8f3c1a2b-4d5e-4678-9abc-def012345678",
+                    "fields": {"биты": raw_bits},
+                }
+            ]
+        },
+        "cover": bits_cover_vo(vo, filled),
+        "qc": None,
+    }
 
 
 def main() -> None:
     model = run()
     out_dir = Path("/opt/cursor/artifacts")
     out_dir.mkdir(parents=True, exist_ok=True)
-    json_path = out_dir / "spesivtsev_step1_bits.json"
     html_path = out_dir / "spesivtsev_step1_bits.html"
-    json_path.write_text(
-        json.dumps(model, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    json_path = out_dir / "spesivtsev_step1_bits.json"
+    json_path.write_text(json.dumps(model, ensure_ascii=False, indent=2), encoding="utf-8")
     html_path.write_text(_first_step_html(model), encoding="utf-8")
     print("bits:", len(model["bits"]))
+    print("cover:", model["cover"])
     print("wrote", html_path)
-    print("wrote", json_path)
-    for b in model["bits"]:
-        print(
-            f"B{b['порядок']}\t{b['глагол']}\t{b['изменение']}\t{b['якорь']}"
-        )
 
 
 if __name__ == "__main__":
