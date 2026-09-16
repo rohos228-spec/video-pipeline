@@ -1,0 +1,436 @@
+{
+  "scene_id": "fix:dialogue",
+  "meaning": "Two clerks argue over a folder; the winner then loses it.",
+  "value_charge": {
+    "start": "+",
+    "end": "-"
+  },
+  "monotony_surface": "ground",
+  "plan": [
+    {
+      "id": "c01",
+      "x": 0.0,
+      "y": 2.0,
+      "facing": 90.0
+    },
+    {
+      "id": "c02",
+      "x": 4.0,
+      "y": 2.0,
+      "facing": 270.0
+    },
+    {
+      "id": "cam",
+      "x": -1.947,
+      "y": 0.564,
+      "facing": 70.0
+    }
+  ],
+  "obstacles": [
+    {
+      "id": "desk1",
+      "x": 1.6,
+      "y": 2.15,
+      "w": 1.2,
+      "h": 0.35
+    }
+  ],
+  "axes": [
+    {
+      "pair": [
+        "c01",
+        "c02"
+      ],
+      "side_locked": "B"
+    }
+  ],
+  "project": {
+    "slug": "fix-dialogue",
+    "topic": "dialogue fixture"
+  },
+  "scene": {
+    "title": "folder dispute",
+    "place": "archive"
+  },
+  "frames": [
+    {
+      "uuid": "d1a100000000000000000001",
+      "number": 1,
+      "voiceover_text": "Folder talk 1.",
+      "image_prompt": "PROMPT: archive lobby, two clerks at a steel desk, cold window\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, archive lobby, two clerks at a steel desk, cold window\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "lobby"
+      },
+      "space": {
+        "shot_order": 1,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c01": "L",
+          "c02": "R"
+        },
+        "screen_dir": "none",
+        "shot_size": "EWS",
+        "angle_v": "eye-level",
+        "angle_h": "frontal",
+        "beat_role": "establish",
+        "crossing_method": null,
+        "space_delta_json": {
+          "monotony": {
+            "action_class": "establish",
+            "bodies": 2,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "d1a100000000000000000002",
+      "number": 2,
+      "voiceover_text": "Folder talk 2.",
+      "image_prompt": "PROMPT: full figures at the desk, folder closed between them\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, full figures at the desk, folder closed between them\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "steel-desk"
+      },
+      "space": {
+        "shot_order": 2,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c01": "L",
+          "c02": "R"
+        },
+        "screen_dir": "none",
+        "shot_size": "FS",
+        "angle_v": "slight low",
+        "angle_h": "profile",
+        "beat_role": "beat",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": 5.947,
+            "y": 0.564,
+            "facing": 290.0
+          },
+          "monotony": {
+            "action_class": "action",
+            "bodies": 2,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "d1a100000000000000000003",
+      "number": 3,
+      "voiceover_text": "Folder talk 3.",
+      "image_prompt": "PROMPT: clerk c01 waist-up, folder in both hands\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, clerk c01 waist-up, folder in both hands\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "folder"
+      },
+      "space": {
+        "shot_order": 3,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c01": "C"
+        },
+        "screen_dir": "none",
+        "shot_size": "MS",
+        "angle_v": "eye-level",
+        "angle_h": "over-the-shoulder",
+        "beat_role": "beat",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": -1.217,
+            "y": -0.7,
+            "facing": 50.0
+          },
+          "monotony": {
+            "action_class": "action",
+            "bodies": 1,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 1
+      }
+    },
+    {
+      "uuid": "d1a100000000000000000004",
+      "number": 4,
+      "voiceover_text": "Folder talk 4.",
+      "image_prompt": "PROMPT: clerk c02 face, eyes on the folder\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, clerk c02 face, eyes on the folder\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "pupils"
+      },
+      "space": {
+        "shot_order": 4,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c02": "C"
+        },
+        "screen_dir": "none",
+        "shot_size": "CU",
+        "angle_v": "slight high",
+        "angle_h": "rear three-quarter",
+        "beat_role": "beat",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": 5.217,
+            "y": -0.7,
+            "facing": 310.0
+          },
+          "monotony": {
+            "action_class": "action",
+            "bodies": 1,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "d1a100000000000000000005",
+      "number": 5,
+      "voiceover_text": "Folder talk 5.",
+      "image_prompt": "PROMPT: metal folder clasp, fingers on the latch\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, metal folder clasp, fingers on the latch\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "clasp"
+      },
+      "space": {
+        "shot_order": 5,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c02": "C"
+        },
+        "screen_dir": "none",
+        "shot_size": "ECU",
+        "angle_v": "high",
+        "angle_h": "frontal",
+        "beat_role": "insert",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": -0.1,
+            "y": -1.637,
+            "facing": 30.0
+          },
+          "monotony": {
+            "action_class": "insert",
+            "bodies": 1,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "d1a100000000000000000006",
+      "number": 6,
+      "voiceover_text": "Folder talk 6.",
+      "image_prompt": "PROMPT: c01 head and shoulders, held breath\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, c01 head and shoulders, held breath\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "breath"
+      },
+      "space": {
+        "shot_order": 6,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c01": "C"
+        },
+        "screen_dir": "none",
+        "shot_size": "MCU",
+        "angle_v": "eye-level",
+        "angle_h": "profile",
+        "beat_role": "reaction",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": 4.1,
+            "y": -1.637,
+            "facing": 330.0
+          },
+          "monotony": {
+            "action_class": "reaction",
+            "bodies": 1,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 1,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "d1a100000000000000000007",
+      "number": 7,
+      "voiceover_text": "Folder talk 7.",
+      "image_prompt": "PROMPT: wide smash to the room, rain on the glass\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, wide smash to the room, rain on the glass\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "rain-wide"
+      },
+      "space": {
+        "shot_order": 7,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c01": "L",
+          "c02": "R"
+        },
+        "screen_dir": "none",
+        "shot_size": "WS",
+        "angle_v": "slight low",
+        "angle_h": "from behind",
+        "beat_role": "insert",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": 1.271,
+            "y": -2.136,
+            "facing": 10.0
+          },
+          "monotony": {
+            "action_class": "insert",
+            "bodies": 2,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "d1a100000000000000000008",
+      "number": 8,
+      "voiceover_text": "Folder talk 8.",
+      "image_prompt": "PROMPT: knees-up two-shot, window light on the desk\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, knees-up two-shot, window light on the desk\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "window-mix"
+      },
+      "space": {
+        "shot_order": 8,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c01": "L",
+          "c02": "R"
+        },
+        "screen_dir": "none",
+        "shot_size": "MWS",
+        "angle_v": "eye-level",
+        "angle_h": "three-quarter",
+        "beat_role": "beat",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": 2.729,
+            "y": -2.136,
+            "facing": 350.0
+          },
+          "monotony": {
+            "action_class": "action",
+            "bodies": 2,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "d1a100000000000000000009",
+      "number": 9,
+      "voiceover_text": "Folder talk 9.",
+      "image_prompt": "PROMPT: c02 presses a stamp, charge flips\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, c02 presses a stamp, charge flips\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "stamp"
+      },
+      "space": {
+        "shot_order": 9,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c02": "C"
+        },
+        "screen_dir": "none",
+        "shot_size": "MCU",
+        "angle_v": "dutch",
+        "angle_h": "frontal",
+        "beat_role": "turning_point",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": -1.637,
+            "y": -0.1,
+            "facing": 60.0
+          },
+          "monotony": {
+            "action_class": "action",
+            "bodies": 1,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "d1a10000000000000000000a",
+      "number": 10,
+      "voiceover_text": "Folder talk 10.",
+      "image_prompt": "PROMPT: wax seal on the folder, cracked edge\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, wax seal on the folder, cracked edge\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "wax-seal"
+      },
+      "space": {
+        "shot_order": 10,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c02": "C"
+        },
+        "screen_dir": "none",
+        "shot_size": "ECU",
+        "angle_v": "slight high",
+        "angle_h": "over-the-shoulder",
+        "beat_role": "insert",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": 5.44,
+            "y": -0.409,
+            "facing": 305.0
+          },
+          "monotony": {
+            "action_class": "insert",
+            "bodies": 1,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    }
+  ]
+}

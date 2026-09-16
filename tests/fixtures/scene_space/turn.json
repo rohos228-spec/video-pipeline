@@ -1,0 +1,464 @@
+{
+  "scene_id": "fix:turn",
+  "meaning": "c01 walks right, turns in the frame, then walks left.",
+  "value_charge": {
+    "start": "+",
+    "end": "-"
+  },
+  "monotony_surface": "ground",
+  "plan": [
+    {
+      "id": "c01",
+      "x": 0.0,
+      "y": 2.0,
+      "facing": 90.0
+    },
+    {
+      "id": "c02",
+      "x": 4.0,
+      "y": 2.0,
+      "facing": 270.0
+    },
+    {
+      "id": "cam",
+      "x": -1.947,
+      "y": 0.564,
+      "facing": 70.0
+    }
+  ],
+  "obstacles": [
+    {
+      "id": "post1",
+      "x": -0.4,
+      "y": 1.0,
+      "w": 0.2,
+      "h": 0.2
+    }
+  ],
+  "axes": [
+    {
+      "pair": [
+        "c01",
+        "c02"
+      ],
+      "side_locked": "B"
+    }
+  ],
+  "project": {
+    "slug": "fix-turn",
+    "topic": "turn fixture"
+  },
+  "scene": {
+    "title": "pivot",
+    "place": "yard"
+  },
+  "frames": [
+    {
+      "uuid": "f3f100000000000000000001",
+      "number": 1,
+      "voiceover_text": "Turn 1.",
+      "image_prompt": "PROMPT: yard, c01 walking right, c02 waiting\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, yard, c01 walking right, c02 waiting\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "yard"
+      },
+      "space": {
+        "shot_order": 1,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c01": "L",
+          "c02": "R"
+        },
+        "screen_dir": "L→R",
+        "shot_size": "EWS",
+        "angle_v": "eye-level",
+        "angle_h": "frontal",
+        "beat_role": "establish",
+        "crossing_method": null,
+        "space_delta_json": {
+          "monotony": {
+            "action_class": "establish",
+            "bodies": 2,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "f3f100000000000000000002",
+      "number": 2,
+      "voiceover_text": "Turn 2.",
+      "image_prompt": "PROMPT: c01 full figure walking right\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, c01 full figure walking right\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "walk-out"
+      },
+      "space": {
+        "shot_order": 2,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c01": "L",
+          "c02": "R"
+        },
+        "screen_dir": "L→R",
+        "shot_size": "FS",
+        "angle_v": "slight low",
+        "angle_h": "profile",
+        "beat_role": "beat",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": 5.894,
+            "y": 0.427,
+            "facing": 292.0
+          },
+          "c01": {
+            "x": 0.4,
+            "y": 2.0,
+            "facing": 90.0
+          },
+          "monotony": {
+            "action_class": "action",
+            "bodies": 2,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "f3f100000000000000000003",
+      "number": 3,
+      "voiceover_text": "Turn 3.",
+      "image_prompt": "PROMPT: c01 waist-up still going right\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, c01 waist-up still going right\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "torso"
+      },
+      "space": {
+        "shot_order": 3,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c01": "C"
+        },
+        "screen_dir": "L→R",
+        "shot_size": "MS",
+        "angle_v": "eye-level",
+        "angle_h": "over-the-shoulder",
+        "beat_role": "beat",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": -1.31,
+            "y": -0.586,
+            "facing": 52.0
+          },
+          "c01": {
+            "x": 0.7,
+            "y": 2.0,
+            "facing": 90.0
+          },
+          "monotony": {
+            "action_class": "action",
+            "bodies": 1,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "f3f100000000000000000004",
+      "number": 4,
+      "voiceover_text": "Turn 4.",
+      "image_prompt": "PROMPT: smash insert of the heel striking grit\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, smash insert of the heel striking grit\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "smash-heel"
+      },
+      "space": {
+        "shot_order": 4,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c01": "C"
+        },
+        "screen_dir": "L→R",
+        "shot_size": "ECU",
+        "angle_v": "high",
+        "angle_h": "rear three-quarter",
+        "beat_role": "insert",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": 5.31,
+            "y": -0.586,
+            "facing": 308.0
+          },
+          "monotony": {
+            "action_class": "insert",
+            "bodies": 1,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "f3f100000000000000000005",
+      "number": 5,
+      "voiceover_text": "Turn 5.",
+      "image_prompt": "PROMPT: c02 flinch at the sound\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, c02 flinch at the sound\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "flinch"
+      },
+      "space": {
+        "shot_order": 5,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c02": "C"
+        },
+        "screen_dir": "L→R",
+        "shot_size": "MCU",
+        "angle_v": "eye-level",
+        "angle_h": "three-quarter",
+        "beat_role": "reaction",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": -0.226,
+            "y": -1.562,
+            "facing": 32.0
+          },
+          "monotony": {
+            "action_class": "reaction",
+            "bodies": 1,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "f3f100000000000000000006",
+      "number": 6,
+      "voiceover_text": "Turn 6.",
+      "image_prompt": "PROMPT: path two-shot before the pivot\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, path two-shot before the pivot\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "path"
+      },
+      "space": {
+        "shot_order": 6,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c01": "L",
+          "c02": "R"
+        },
+        "screen_dir": "L→R",
+        "shot_size": "MWS",
+        "angle_v": "slight low",
+        "angle_h": "from behind",
+        "beat_role": "beat",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": 4.226,
+            "y": -1.562,
+            "facing": 328.0
+          },
+          "c01": {
+            "x": 1.0,
+            "y": 2.0,
+            "facing": 90.0
+          },
+          "monotony": {
+            "action_class": "action",
+            "bodies": 2,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "f3f100000000000000000007",
+      "number": 7,
+      "voiceover_text": "Turn 7.",
+      "image_prompt": "PROMPT: c01 turns in place, facing reverses\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, c01 turns in place, facing reverses\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "pivot"
+      },
+      "space": {
+        "shot_order": 7,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c01": "C"
+        },
+        "screen_dir": "R→L",
+        "shot_size": "MCU",
+        "angle_v": "dutch",
+        "angle_h": "frontal",
+        "beat_role": "insert",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": 1.127,
+            "y": -2.108,
+            "facing": 12.0
+          },
+          "c01": {
+            "x": 1.0,
+            "y": 2.0,
+            "facing": 270.0
+          },
+          "monotony": {
+            "action_class": "insert",
+            "bodies": 1,
+            "surface": "ground"
+          },
+          "turn": {
+            "subject": "c01"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "f3f100000000000000000008",
+      "number": 8,
+      "voiceover_text": "Turn 8.",
+      "image_prompt": "PROMPT: eyes after the turn, charge flips\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, eyes after the turn, charge flips\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "after-face"
+      },
+      "space": {
+        "shot_order": 8,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c01": "C"
+        },
+        "screen_dir": "R→L",
+        "shot_size": "ECU",
+        "angle_v": "slight high",
+        "angle_h": "profile",
+        "beat_role": "turning_point",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": 2.873,
+            "y": -2.108,
+            "facing": 348.0
+          },
+          "monotony": {
+            "action_class": "action",
+            "bodies": 1,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "f3f100000000000000000009",
+      "number": 9,
+      "voiceover_text": "Turn 9.",
+      "image_prompt": "PROMPT: c01 steps back left after the turn\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, c01 steps back left after the turn\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "reverse-step"
+      },
+      "space": {
+        "shot_order": 9,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c01": "C"
+        },
+        "screen_dir": "R→L",
+        "shot_size": "MCU",
+        "angle_v": "eye-level",
+        "angle_h": "over-the-shoulder",
+        "beat_role": "beat",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": -1.562,
+            "y": -0.226,
+            "facing": 58.0
+          },
+          "c01": {
+            "x": 0.5,
+            "y": 2.0,
+            "facing": 270.0
+          },
+          "monotony": {
+            "action_class": "action",
+            "bodies": 1,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "f3f10000000000000000000a",
+      "number": 10,
+      "voiceover_text": "Turn 10.",
+      "image_prompt": "PROMPT: both figures after the reverse, stop mark on the grit\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, both figures after the reverse, stop mark on the grit\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "stop-mark"
+      },
+      "space": {
+        "shot_order": 10,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c01": "L",
+          "c02": "R"
+        },
+        "screen_dir": "R→L",
+        "shot_size": "MWS",
+        "angle_v": "slight low",
+        "angle_h": "three-quarter",
+        "beat_role": "beat",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": 5.217,
+            "y": -0.7,
+            "facing": 310.0
+          },
+          "monotony": {
+            "action_class": "action",
+            "bodies": 2,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    }
+  ]
+}
