@@ -2,20 +2,19 @@
 
 Поток: запрос + текст агента стиля + формат + N → активная текстовая LLM
 (gpt_client) → строгий JSON-контракт → парсинг/валидация.
-Нет готового visual-промпта → ошибка, генерация картинки НЕ запускается.
-Сырой запрос пользователя в генератор не подставляем.
+Без готового промпта от LLM генерация не стартует.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
-import shutil
-import tempfile
-from pathlib import Path
 from typing import Any
 
 from loguru import logger
+
+_LLM_LOCK = asyncio.Lock()
 
 MIN_COUNT = 1
 MAX_COUNT = 4
@@ -29,7 +28,22 @@ MAX_PROMPT_CHARS = 8000
 PREPEND_CORE_MAX = 480
 
 # Вариативные суффиксы для локальной добивки (ракурс/действие)
-_STUB_MARK = "not example objects from the style guide"
+_STUB_MARKS = (
+    "not example objects from the style guide",
+    "subject of this image (the only topic)",
+    "depict this request as one finished scene",
+    "агент отвечает одним готовым промптом",
+    "каждый промпт начинай с дословно скопированного ядра",
+    "после ядра допиши",
+    "агент собран из разбора референсов",
+)
+_STUB_MARK = _STUB_MARKS[0]
+
+
+def is_stub_agent_text(text: str) -> bool:
+    """Локальная обёртка / fallback — не текст, который написала LLM."""
+    low = (text or "").lower()
+    return bool(low.strip()) and any(mark in low for mark in _STUB_MARKS)
 
 _SYSTEM_TEMPLATE = """Ты — агент визуальных промптов для генерации изображений.
 
@@ -80,13 +94,6 @@ _REQUEST_STOP = frozenset(
 )
 
 
-def write_agent_prompt_file(system: str, tmp_dir: Path) -> Path:
-    """Мастер-промт агента как .md — gpt_client читает первый .md/.txt как master."""
-    path = tmp_dir / "prompt_gen_assistant.md"
-    path.write_text(system, encoding="utf-8")
-    return path
-
-
 def request_tokens(request: str) -> list[str]:
     """Значимые слова запроса: они обязаны попасть в промпт для картинки."""
     words = re.findall(r"[A-Za-zА-Яа-яЁё0-9]{4,}", request or "")
@@ -112,13 +119,101 @@ def looks_like_agent_echo(prompt: str, core: str) -> bool:
     return False
 
 
+_CORE_RE = re.compile(
+    r"(?:скопированного\s+ядра|ядра)[^\n]{0,80}:\s*\n+(.+?)(?:\n+После\s+ядра|\n+В\s+финальной|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
+_NEG_RE = re.compile(
+    r"(?:негативе\s+обязательно\s*:|NEGATIVE\s*\n)\s*(.+?)(?:\n|\Z)",
+    re.IGNORECASE,
+)
+
+
+def extract_agent_core(agent_text: str) -> str:
+    """Ядро стиля из длинного агента — без инструкции и без темы референсов."""
+    from app.services.style_analyzer import scrub_style_topic
+
+    text = (agent_text or "").strip()
+    if not text:
+        return ""
+    raw = ""
+    m = _CORE_RE.search(text)
+    if m:
+        core = re.sub(r"\s+", " ", m.group(1)).strip()
+        if len(core) >= 40:
+            raw = core[:4000]
+    if not raw and (
+        len(text) <= PREPEND_CORE_MAX
+        and not text.lower().startswith("агент отвечает")
+        and not any(
+            mark in text.lower() for mark in ("\n#", "```", "шаблон prompt", "чек-лист")
+        )
+    ):
+        raw = text
+    if not raw:
+        for para in re.split(r"\n\s*\n", text):
+            p = para.strip()
+            if len(p) < 80:
+                continue
+            if p.startswith(("#", "---", "|")) or p.lower().startswith("агент отвечает"):
+                continue
+            raw = re.sub(r"\s+", " ", p)[:4000]
+            break
+    return scrub_style_topic(raw) or raw
+
+
+def extract_agent_negatives(agent_text: str) -> str:
+    m = _NEG_RE.search(agent_text or "")
+    return (m.group(1).strip() if m else "")[:500]
+
+
+def local_visual_prompt(
+    *,
+    request: str,
+    agent_text: str,
+    aspect: str,
+    ref_labels: list[str] | None = None,
+) -> str:
+    """Готовый visual-промпт: визуал стиля + предмет из запроса. Без темы референсов."""
+    core = extract_agent_core(agent_text)
+    if not core:
+        core = (
+            "Follow the selected style: same medium, palette, lighting, "
+            "composition and typography. One finished image, no collage."
+        )
+    req = (request or "").strip()
+    parts = [core]
+    if req:
+        parts.append(
+            f"Subject of this image (the only topic): {req}. "
+            "Depict this request as one finished scene in the style above. "
+            "Ignore any topics or objects that came from style references. "
+            "If the request is a list, benefits, steps or facts, show them as "
+            "clear labels and diagrams. Do not copy the user's wording as a "
+            "lonely caption — build the actual picture."
+        )
+    labels = [str(x).strip() for x in (ref_labels or []) if str(x).strip()]
+    if labels:
+        parts.append("Use attached references only for look, not for topic: " + ", ".join(labels))
+    parts.append(
+        "Aspect ratio: 9:16. Vertical, rule of thirds, читаемый силуэт для shorts."
+        if (aspect or "").strip() == "9:16"
+        else f"Aspect ratio: {(aspect or '9:16').strip()}."
+    )
+    neg = extract_agent_negatives(agent_text)
+    if neg:
+        parts.append(f"Avoid: {neg}")
+    return "\n\n".join(parts)
+
+
 def is_unfilled_prompt(prompt: str, request: str = "") -> bool:
     """Сырой запрос / локальная заглушка — в генератор картинки слать нельзя."""
     p = (prompt or "").strip()
     req = (request or "").strip()
     if not p:
         return True
-    if _STUB_MARK in p.lower():
+    low = p.lower()
+    if any(mark in low for mark in _STUB_MARKS):
         return True
     if req:
         head = req[:80].lower()
@@ -216,6 +311,8 @@ async def generate_prompts(
         raise ValueError(f"Запрос длиннее {MAX_REQUEST_CHARS} символов — сократите")
     if not agent_text:
         raise ValueError("Не выбран стиль: текст агента пуст")
+    if is_stub_agent_text(agent_text):
+        raise ValueError("Агент не написан LLM — заглушка запрещена, генерация не запущена")
     if len(agent_text) > MAX_AGENT_CHARS:
         raise ValueError(f"Текст агента длиннее {MAX_AGENT_CHARS} символов — сократите")
 
@@ -242,58 +339,66 @@ async def generate_prompts(
     )
 
     raw_prompts: list[str] = []
-    tmp_root: Path | None = None
+    last_err = ""
     try:
-        from app.services.gpt_client import get_gpt_client
+        from app.services.gpt_api import chat
 
-        client = get_gpt_client()
-        tmp_root = Path(tempfile.mkdtemp(prefix="gen_assistant_"))
-        prompt_file = write_agent_prompt_file(master, tmp_root)
         logger.info(
-            "gen_assistant: attach prompt_file={} chars={} request_chars={}",
-            prompt_file.name,
-            len(system),
+            "gen_assistant: chat system_chars={} request_chars={}",
+            len(master),
             len(user),
         )
-        raw = await client.ask_with_files(user, [prompt_file], timeout=180, max_retries=1)
-        raw_prompts = parse_prompts_reply(raw)
-        good, incomplete = sanitize_prompts(
-            raw_prompts, count=count, core=agent_text, request=request, aspect=aspect
-        )
-        if incomplete:
-            logger.warning(
-                "gen_assistant: usable={}/{} after first reply, retry",
-                len(good),
-                count,
+        async with _LLM_LOCK:
+            result = await chat(
+                prompt=user,
+                system=master,
+                timeout=180,
+                max_retries=4,
+                auto_pack=False,
             )
-            raw2 = await client.ask_with_files(
-                retry_user, [prompt_file], timeout=120, max_retries=1
+            raw_prompts = parse_prompts_reply(result.text or "")
+            good, incomplete = sanitize_prompts(
+                raw_prompts, count=count, core=agent_text, request=request, aspect=aspect
             )
-            extra = parse_prompts_reply(raw2)
-            raw_prompts = [*good, *extra] if good else extra
+            if incomplete:
+                logger.warning(
+                    "gen_assistant: usable={}/{} after first reply, retry",
+                    len(good),
+                    count,
+                )
+                result2 = await chat(
+                    prompt=retry_user,
+                    system=master,
+                    timeout=120,
+                    max_retries=3,
+                    auto_pack=False,
+                )
+                extra = parse_prompts_reply(result2.text or "")
+                raw_prompts = [*good, *extra] if good else extra
     except ValueError:
         raise
-    except Exception as e:  # noqa: BLE001 — сеть/ключ: ошибка, не заглушка
+    except Exception as e:  # noqa: BLE001
+        last_err = str(e)
         logger.warning("gen_assistant: LLM недоступна ({})", e)
-        raise ValueError(
-            f"Агент недоступен ({e}) — промпт не собран, генерация не запущена"
-        ) from e
-    finally:
-        if tmp_root is not None:
-            shutil.rmtree(tmp_root, ignore_errors=True)
+        raw_prompts = []
 
     prompts, incomplete = sanitize_prompts(
         raw_prompts, count=count, core=agent_text, request=request, aspect=aspect
     )
     if not prompts:
-        raise ValueError("Агент не собрал промпт — генерация не запущена")
+        detail = last_err or "пустой или неготовый ответ"
+        raise ValueError(
+            f"Агент недоступен ({detail}) — промпт не собран, генерация не запущена"
+        )
+    source = "llm"
     warning = (
         f"Агент собрал {len(prompts)} из {count} — генерация только по готовым"
         if incomplete
         else None
     )
     logger.info(
-        "gen_assistant: source=llm count={} incomplete={} request={!r} out0_len={} out0_head={!r}",
+        "gen_assistant: source={} count={} incomplete={} request={!r} out0_len={} out0_head={!r}",
+        source,
         len(prompts),
         incomplete,
         request[:120],
@@ -303,7 +408,7 @@ async def generate_prompts(
     return {
         "prompts": prompts,
         "count": len(prompts),
-        "source": "llm",
+        "source": source,
         "warning": warning,
         "aspect": aspect,
     }

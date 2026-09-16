@@ -313,38 +313,98 @@ export function isInstructionAgent(agentText: string): boolean {
   return INSTRUCTION_MARKERS.some((m) => low.includes(m));
 }
 
-/** Сборка промпта: запрос + ядро стиля + формат кадра. */
-export function assembleGenPrompt(opts: {
+const VISUAL_RE =
+  /график|контур|иконк|схем|палитр|фон|свет|компон|шрифт|линейн|вектор|hex|#|palette|outline|flat|vector|background|lighting|typography|contrast|gradient|shadow|frame|колонк|рамк|насыщен|освещен|диаграмм|стрелк|круг|слайд|презентац|плоск|геометр|заголов|типограф|line|fill|icon|grid/i;
+const TOPIC_RE =
+  /фитнес|плиометр|мышц|биомехан|спортивн|нервн\w*\s+систем|трениров|fitness|plyometr|workout|muscle|sport\b/i;
+
+const STRONG_VISUAL_RE =
+  /hex|#|палитр|фон\b|outline|контур|линейн|освещен|palette|background|lighting/i;
+
+export function isTopicClause(clause: string): boolean {
+  const c = (clause || "").trim();
+  if (c.length < 6) return false;
+  if (TOPIC_RE.test(c) && !STRONG_VISUAL_RE.test(c)) return true;
+  if (!VISUAL_RE.test(c) && (c.match(/,/g) || []).length >= 2) return true;
+  return false;
+}
+
+export function scrubStyleTopic(text: string): string {
+  const kept = (text || "")
+    .split(/[.;]\s+/)
+    .map((c) => c.trim().replace(/^[.;]+|[.;]+$/g, ""))
+    .filter((c) => c && !isTopicClause(c));
+  return kept.join(". ").trim();
+}
+
+/** Ядро стиля из длинного агента (блок после «ядра:»), без инструкции и без темы референсов. */
+export function extractAgentCore(agentText: string): string {
+  const text = (agentText ?? "").trim();
+  if (!text) return "";
+  let raw = "";
+  const marked = text.match(
+    /(?:скопированного\s+ядра|ядра)[^\n]{0,80}:\s*\n+([\s\S]+?)(?:\n+После\s+ядра|\n+В\s+финальной|$)/i,
+  );
+  if (marked?.[1]) {
+    const core = marked[1].replace(/\s+/g, " ").trim();
+    if (core.length >= 40) raw = core.slice(0, 4000);
+  }
+  if (!raw && !isInstructionAgent(text) && !/^агент отвечает/i.test(text)) raw = text;
+  if (!raw) {
+    for (const para of text.split(/\n\s*\n/)) {
+      const p = para.trim();
+      if (p.length < 80) continue;
+      if (/^(#|---|[\|])/.test(p) || /^агент отвечает/i.test(p)) continue;
+      raw = p.replace(/\s+/g, " ").slice(0, 4000);
+      break;
+    }
+  }
+  return scrubStyleTopic(raw) || raw;
+}
+
+export function extractAgentNegatives(agentText: string): string {
+  const m = (agentText ?? "").match(
+    /(?:негативе\s+обязательно\s*:|NEGATIVE\s*\n)\s*([^\n]+)/i,
+  );
+  return (m?.[1] || "").trim();
+}
+
+/** Локально промпт не собираем — только ответ LLM. */
+export function assembleGenPrompt(_opts: {
   request: string;
   agentText: string;
   aspect: string;
+  refLabels?: string[];
 }): string {
-  const parts: string[] = [];
-  const req = opts.request.trim();
-  if (req) parts.push(`Запрос: ${req}`);
-  if (opts.agentText.trim() && !isInstructionAgent(opts.agentText)) {
-    parts.push(opts.agentText.trim());
-  }
-  parts.push(
-    opts.aspect === "9:16"
-      ? "Aspect ratio: 9:16. Vertical, rule of thirds, читаемый силуэт для shorts."
-      : `Aspect ratio: ${opts.aspect}.`,
-  );
-  return parts.join("\n\n");
+  return "";
 }
 
 export function assistantRefHandle(index: number): string {
   return `@image${index + 1}`;
 }
 
-const ASSISTANT_STUB_MARK = "not example objects from the style guide";
+const ASSISTANT_STUB_MARKS = [
+  "not example objects from the style guide",
+  "subject of this image (the only topic)",
+  "depict this request as one finished scene",
+  "агент отвечает одним готовым промптом",
+  "каждый промпт начинай с дословно скопированного ядра",
+  "после ядра допиши",
+  "агент собран из разбора референсов",
+];
+
+export function isStubAgentText(text: string): boolean {
+  const low = text.trim().toLowerCase();
+  return Boolean(low) && ASSISTANT_STUB_MARKS.some((m) => low.includes(m));
+}
 
 /** Сырой запрос / локальная заглушка агента — в генератор картинки слать нельзя. */
 export function isUnfilledAssistantPrompt(prompt: string, request = ""): boolean {
   const p = prompt.trim();
   const req = request.trim();
   if (!p) return true;
-  if (p.toLowerCase().includes(ASSISTANT_STUB_MARK)) return true;
+  const low = p.toLowerCase();
+  if (ASSISTANT_STUB_MARKS.some((m) => low.includes(m))) return true;
   if (req) {
     const head = req.slice(0, 80).toLowerCase();
     if (head && p.toLowerCase().startsWith(head) && p.length <= req.length + 200) {

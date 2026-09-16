@@ -1004,6 +1004,7 @@ def _openai_error_retryable(msg: str, code: Any) -> bool:
             "try again",
             "server",
             "capacity",
+            "upstream",
         )
     ):
         return True
@@ -1922,7 +1923,19 @@ async def _chat_completions_stream(
                                                         await res
                                     except Exception:
                                         pass
-        except GptApiError:
+        except GptApiError as e:
+            if e.retryable:
+                logger.warning("GPT(chat/stream) {} → nostream salvage", e)
+                try:
+                    return await _chat_completions_nostream(
+                        url=url,
+                        headers=headers,
+                        body=body,
+                        timeout=timeout,
+                        use_model=use_model,
+                    )
+                except GptApiError:
+                    raise e
             raise
         except BaseException as e:
             stream_err = e
@@ -1961,7 +1974,15 @@ async def _chat_completions_stream(
             )
             can_nostream = stream_err is None or isinstance(
                 stream_err,
-                (httpx.ReadError, httpx.RemoteProtocolError),
+                (
+                    httpx.ReadError,
+                    httpx.RemoteProtocolError,
+                    httpx.ConnectError,
+                    httpx.ConnectTimeout,
+                    httpx.TimeoutException,
+                    TimeoutError,
+                    asyncio.TimeoutError,
+                ),
             )
             if can_nostream:
                 try:

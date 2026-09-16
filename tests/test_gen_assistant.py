@@ -8,7 +8,11 @@ import pytest
 
 from app.services.gen_assistant import (
     MAX_COUNT,
+    extract_agent_core,
     generate_prompts,
+    is_stub_agent_text,
+    is_unfilled_prompt,
+    local_visual_prompt,
     parse_prompts_reply,
     sanitize_prompts,
 )
@@ -149,25 +153,43 @@ def test_sanitize_keeps_long_english_visual_without_russian_tokens():
     assert incomplete is True
 
 
+class _ChatRes:
+    def __init__(self, text: str):
+        self.text = text
+
+
 @pytest.mark.asyncio
-async def test_generate_rejects_template_echo_no_generation(monkeypatch):
-    """Если LLM вернула копипасту правил — генерация не стартует."""
-    from app.services import gpt_client
+async def test_generate_template_echo_does_not_start(monkeypatch):
+    """Эхо правил от LLM — ошибка, генерация не стартует."""
+    from app.services import gpt_api
 
     core = (
         "---\nname: infographic-hero-object\n"
         "**Герой любой:** початок, кроссовок, гриб.\nHero: [ГЕРОЙ]\n"
     ) * 30
 
-    class _Fake:
-        async def ask_with_files(self, text, files, **kwargs):
-            return '{"prompts": [' + json.dumps(core[:3500]) + "]}"
+    async def _fake(**kwargs):
+        return _ChatRes('{"prompts": [' + json.dumps(core[:3500]) + "]}")
 
-    monkeypatch.setattr(gpt_client, "get_gpt_client", lambda: _Fake())
-    with pytest.raises(ValueError, match="не собрал промпт"):
+    monkeypatch.setattr(gpt_api, "chat", _fake)
+    with pytest.raises(ValueError, match="не собран"):
         await generate_prompts(
             request="двигатель V8 в разрезе", agent_text=core, aspect="16:9", count=1
         )
+
+
+@pytest.mark.asyncio
+async def test_generate_rejects_stub_agent():
+    stub = (
+        "Агент отвечает одним готовым промптом и ничем больше.\n\n"
+        "Каждый промпт начинай с дословно скопированного ядра, не меняй в нём "
+        "ни слова и не переводи его:\n"
+        "Flat white line graphics on #1E1235.\n\n"
+        "После ядра допиши английские фразы."
+    )
+    assert is_stub_agent_text(stub) is True
+    with pytest.raises(ValueError, match="заглушка запрещена"):
+        await generate_prompts(request=REQ, agent_text=stub, count=1)
 
 
 @pytest.mark.asyncio
@@ -183,56 +205,43 @@ async def test_generate_validates_empty_agent():
 
 
 @pytest.mark.asyncio
-async def test_generate_attaches_agent_prompt_file(monkeypatch):
-    """Как у пайплайн-агентов: мастер-промт — первый .md, не пустой system=."""
-    from app.services import gpt_client
+async def test_generate_sends_agent_as_system(monkeypatch):
+    """Агент уходит system-текстом, без файлового вложения."""
+    from app.services import gpt_api
 
     calls: list[dict] = []
 
-    class _Fake:
-        async def ask_with_files(self, text, files, **kwargs):
-            paths = list(files)
-            master = ""
-            if paths:
-                master = paths[0].read_text(encoding="utf-8")
-            calls.append(
-                {"text": text, "files": paths, "master": master, "kwargs": kwargs}
-            )
-            body = CORE + " — развёрнутый кадр: кот в плаще на мокрой крыше ночью"
-            return '{"prompts": ["' + body + '"]}'
+    async def _fake(**kwargs):
+        calls.append(kwargs)
+        body = CORE + " — развёрнутый кадр: кот в плаще на мокрой крыше ночью"
+        return _ChatRes('{"prompts": ["' + body + '"]}')
 
-    monkeypatch.setattr(gpt_client, "get_gpt_client", lambda: _Fake())
+    monkeypatch.setattr(gpt_api, "chat", _fake)
     res = await generate_prompts(request=REQ, agent_text=CORE, aspect="9:16", count=1)
     assert res["source"] == "llm"
     assert len(calls) == 1
-    files = calls[0]["files"]
-    assert files, "агент должен получить файл промпта"
-    assert files[0].suffix.lower() in {".md", ".txt"}
-    master = calls[0]["master"]
+    master = calls[0]["system"]
     assert "Ты — агент визуальных промптов" in master
     assert CORE in master
     assert REQ in master
-    assert REQ in calls[0]["text"]
+    assert REQ in calls[0]["prompt"]
     assert "нельзя копировать" in master.lower()
-    assert not calls[0]["kwargs"].get("system")
+    assert not calls[0].get("input_paths")
 
 
 @pytest.mark.asyncio
 async def test_generate_includes_ref_handles_in_master(monkeypatch):
     """Имена @imageN уходят в мастер/user, чтобы агент оставлял теги в промпте."""
-    from app.services import gpt_client
+    from app.services import gpt_api
 
     calls: list[dict] = []
 
-    class _Fake:
-        async def ask_with_files(self, text, files, **kwargs):
-            paths = list(files)
-            master = paths[0].read_text(encoding="utf-8") if paths else ""
-            calls.append({"text": text, "master": master})
-            body = CORE + " — кадр по @image1, кот в плаще"
-            return '{"prompts": ["' + body + '"]}'
+    async def _fake(**kwargs):
+        calls.append(kwargs)
+        body = CORE + " — кадр по @image1, кот в плаще"
+        return _ChatRes('{"prompts": ["' + body + '"]}')
 
-    monkeypatch.setattr(gpt_client, "get_gpt_client", lambda: _Fake())
+    monkeypatch.setattr(gpt_api, "chat", _fake)
     res = await generate_prompts(
         request=REQ,
         agent_text=CORE,
@@ -241,31 +250,84 @@ async def test_generate_includes_ref_handles_in_master(monkeypatch):
         ref_labels=["@image1 — кот.png", "@image2 — фон.jpg"],
     )
     assert res["source"] == "llm"
-    master = calls[0]["master"]
+    master = calls[0]["system"]
     assert "@image1 — кот.png" in master
     assert "@image2 — фон.jpg" in master
     assert "РЕФЕРЕНСЫ" in master
-    assert "@image1 — кот.png" in calls[0]["text"]
+    assert "@image1 — кот.png" in calls[0]["prompt"]
     assert "@image1" in res["prompts"][0]
 
 
 @pytest.mark.asyncio
-async def test_generate_fails_without_llm(monkeypatch):
-    """Без ключа/LLM — ошибка, генерация не запускается."""
-    from app.services import gpt_client
+async def test_generate_without_llm_does_not_start(monkeypatch):
+    """Без ключа/LLM — ошибка, генерация не стартует."""
+    from app.services import gpt_api
 
-    def _boom():
+    async def _boom(**kwargs):
         raise RuntimeError("no api key")
 
-    monkeypatch.setattr(gpt_client, "get_gpt_client", _boom)
+    monkeypatch.setattr(gpt_api, "chat", _boom)
     with pytest.raises(ValueError, match="не собран"):
         await generate_prompts(request=REQ, agent_text=CORE, aspect="9:16", count=MAX_COUNT)
+
+
+def test_is_unfilled_prompt_rejects_subject_wrapper():
+    req = "ПОКАЖИ 5 ПЛЮСОВ ПОДТЯГИВАНИЙ"
+    junk = (
+        "Flat white line graphics on #1E1235.\n\n"
+        f"Subject of this image (the only topic): {req}. "
+        "Depict this request as one finished scene in the style above."
+    )
+    assert is_unfilled_prompt(junk, req) is True
+
+
+def test_extract_agent_core_from_written_agent():
+    agent = (
+        "Агент отвечает одним готовым промптом и ничем больше.\n\n"
+        "Каждый промпт начинай с дословно скопированного ядра, не меняй в нём "
+        "ни слова и не переводи его:\n"
+        "Flat white line graphics on #1E1235, 2px outline, no fill, editorial slide.\n\n"
+        "После ядра допиши английские фразы.\n\n"
+        "В финальной строке-негативе обязательно: photorealism, gradients."
+    )
+    core = extract_agent_core(agent)
+    assert "#1E1235" in core
+    assert "Агент отвечает" not in core
+    prompt = local_visual_prompt(
+        request="приседания и подтягивания", agent_text=agent, aspect="16:9"
+    )
+    assert prompt.startswith("Flat white")
+    assert "приседания" in prompt
+    assert "Subject of this image" in prompt
+    assert "photorealism" in prompt
+
+
+def test_local_prompt_strips_reference_topic_and_builds_scene():
+    agent = (
+        "Агент отвечает одним готовым промптом.\n\n"
+        "Каждый промпт начинай с дословно скопированного ядра, не меняй в нём "
+        "ни слова и не переводи его:\n"
+        "Thin white line graphics on #1E1235. "
+        "Фитнес, сила, плиометрика, мышцы, нервная система, биомеханика. "
+        "Schematic outline icons, flat lighting.\n\n"
+        "После ядра допиши английские фразы.\n\n"
+        "В финальной строке-негативе обязательно: photorealism."
+    )
+    prompt = local_visual_prompt(
+        request="покажи 6 плюсов подтягиваний", agent_text=agent, aspect="16:9"
+    )
+    assert "плиометрика" not in prompt
+    assert "фитнес" not in prompt.lower()
+    assert "подтягиван" in prompt
+    assert "Subject of this image" in prompt
+    assert "lonely caption" in prompt
+    assert not prompt.strip().endswith("покажи 6 плюсов подтягиваний")
 
 
 @pytest.mark.asyncio
 async def test_generate_retry_recovers_real_prompt(monkeypatch):
     """Первый ответ — эхо правил, повтор — готовый visual-промпт → генерация ок."""
-    from app.services import gpt_client
+    from app.services import gpt_api
 
     core = (
         "---\nname: infographic-hero-object\n"
@@ -278,14 +340,13 @@ async def test_generate_retry_recovers_real_prompt(monkeypatch):
     )
     calls: list[int] = []
 
-    class _Fake:
-        async def ask_with_files(self, text, files, **kwargs):
-            calls.append(1)
-            if len(calls) == 1:
-                return '{"prompts": [' + json.dumps(core[:3500]) + "]}"
-            return '{"prompts": [' + json.dumps(filled) + "]}"
+    async def _fake(**kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return _ChatRes('{"prompts": [' + json.dumps(core[:3500]) + "]}")
+        return _ChatRes('{"prompts": [' + json.dumps(filled) + "]}")
 
-    monkeypatch.setattr(gpt_client, "get_gpt_client", lambda: _Fake())
+    monkeypatch.setattr(gpt_api, "chat", _fake)
     res = await generate_prompts(
         request="двигатель V8 в разрезе", agent_text=core, aspect="16:9", count=1
     )
@@ -376,4 +437,46 @@ def test_seed_styles_and_agents_merge(tmp_path, monkeypatch):
     agents = ga._read_agent_overrides()
     assert agents["custom_mtwuuy1z"].startswith("агент-ядро")
     assert agents["custom_extra"] == "второй агент достаточно длинный"
+
+
+def test_save_style_cover_writes_portable_url(tmp_path, monkeypatch):
+    from app.settings import settings
+    from app.web.routers import gen_assistant as ga
+
+    repo = tmp_path / "repo"
+    (repo / "web" / "out" / "gen-styles").mkdir(parents=True)
+    (repo / "web" / "public" / "gen-styles").mkdir(parents=True)
+    src = tmp_path / "generations" / "shot.png"
+    src.parent.mkdir()
+    src.write_bytes(b"\x89PNG fake")
+    (tmp_path / "gen_assistant_styles.json").write_text(
+        json.dumps(
+            {
+                "styles": [
+                    {
+                        "id": "custom_mu3s8rvy",
+                        "name": "текст",
+                        "promptCore": "ядро стиля достаточно длинное",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(ga, "find_project_root", lambda: repo)
+    monkeypatch.setattr(ga, "_seed_styles_path", lambda: tmp_path / "no-seed.json")
+    monkeypatch.setattr(ga, "_seed_agents_path", lambda: tmp_path / "no-agents.json")
+
+    url = ga.save_style_cover(style_id="custom_mu3s8rvy", src=src)
+    assert url == "/gen-styles/custom_mu3s8rvy.png"
+    stored = tmp_path / "gen_styles" / "custom_mu3s8rvy.png"
+    assert stored.is_file()
+    assert stored.read_bytes().startswith(b"\x89PNG")
+    assert ga.resolve_style_cover("custom_mu3s8rvy.png") == stored
+    assert ga.resolve_style_cover("../secret.png") is None
+    got = {s["id"]: s for s in ga._read_custom_styles()}
+    assert got["custom_mu3s8rvy"]["cover"] == url
+    assert got["custom_mu3s8rvy"]["artUrl"] == url
 

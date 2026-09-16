@@ -440,6 +440,15 @@ def _mount_frontend(app: FastAPI) -> None:
             from fastapi import HTTPException
 
             raise HTTPException(status_code=404, detail="not found")
+        if full_path.startswith("gen-styles/"):
+            from app.web.routers.gen_assistant import resolve_style_cover
+
+            cover = resolve_style_cover(full_path.split("/", 1)[1])
+            if cover is not None:
+                return FileResponse(
+                    cover,
+                    headers={"Cache-Control": "no-cache, must-revalidate"},
+                )
         # Next static export — все маршруты как .html-файлы.
         candidate = out_dir / full_path
         if candidate.is_file():
