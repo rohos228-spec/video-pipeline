@@ -417,7 +417,7 @@ th:first-child,td:first-child{{width:56px;text-align:center;color:#666;font-weig
 <thead><tr><th>id</th><th>Правило</th><th>Как используется</th></tr></thead>
 <tbody>
 <tr><td>1</td><td>VO-ячейка = сцена</td><td>бит несёт свой кусок закадра; склейка = весь voiceover_text</td></tr>
-<tr><td>2</td><td>карточка сцены</td><td>N. место — шаг → шаг + (дословный кусок). Одно место не плодит новые N.</td></tr>
+<tr><td>2</td><td>карточка сцены</td><td>последовательная группа кадров: шаг → шаг + (дословный кусок). Одно место не плодит новые N.</td></tr>
 <tr><td>3</td><td>кадр = видимый шаг</td><td>объект: место|тело|двое|предмет|лицо|взгляд. Камеру дописывает код</td></tr>
 <tr><td>4</td><td>закадр кадра</td><td>13–80, цель ~45. Склейка = весь voiceover_text</td></tr>
 <tr><td>5</td><td>parent</td><td>новое место — null; то же место — id первого кадра локации (PNG)</td></tr>
@@ -534,7 +534,7 @@ def render_bits_check_table(run: dict[str, Any]) -> str:
 
 
 def render_scene_cards_table(run: dict[str, Any]) -> str:
-    """Нода 3: карточка целиком — место — шаг → шаг + (закадр)."""
+    """Нода 3: карточка целиком — группа кадров шаг → шаг + (закадр)."""
     action = str(run.get("action") or "")
     chain = parse_scene_chain(action)
     rows: list[str] = []
@@ -746,8 +746,8 @@ pre.note{{white-space:pre-wrap}}
 Все поля нод — в одной таблице ниже: действие/реакция, закадр бита, сцена, камера, QC.</p>
 <h2 id="all">Одна таблица · все поля всех нод</h2>
 <h2 id="scenes">Нода 3 · карточка сцены целиком</h2>
-<p class=note>Поле <code>главное_действие</code>: <code>N. место — шаг → шаг</code>
-и строка <code>(дословный кусок закадра)</code>. Это не проза-описание.</p>
+<p class=note>Поле <code>главное_действие</code>: последовательная сцена как группа кадров
+<code>шаг → шаг</code> и строка <code>(дословный кусок закадра)</code>. Это не проза-описание.</p>
 {scene_cards}
 <h2>Все поля бита + сцены + кадра + камеры + QC</h2>
 {one_table}
@@ -770,7 +770,7 @@ pre.note{{white-space:pre-wrap}}
 <tbody>
 <tr><td>1</td><td><b>сценарист</b></td><td class=node>n_excel_gpt_fw_script</td><td class=node>script_writer_ru</td><td>биты: действие/реакция + свой кусок закадра.</td></tr>
 <tr><td>2</td><td><b>проверка</b></td><td class=node>n_excel_gpt_fw_check_script</td><td class=node>checkMode, upstream</td><td>Ок / Не ок. Fail → script.</td></tr>
-<tr><td>3</td><td><b>действие</b></td><td class=node>n_excel_gpt_fw_action</td><td class=node>main_action_from_bits_ru</td><td>карточка «место — шаг → шаг» + (кусок VO). Код склеивает одно место.</td></tr>
+<tr><td>3</td><td><b>действие</b></td><td class=node>n_excel_gpt_fw_action</td><td class=node>main_action_from_bits_ru</td><td>последовательная сцена как группа кадров + (кусок VO).</td></tr>
 <tr><td>4</td><td><b>кадры-шаги</b></td><td class=node>n_excel_gpt_fw_shots</td><td class=node>scenes_to_frames_ru</td><td>шаги → кадры. Камеру дописывает код. Не T0–T10.</td></tr>
 <tr><td>5</td><td><b>QC полей</b></td><td class=node>n_excel_gpt_fw_qc</td><td class=node>shots_qc_ru</td><td>склейка, 13–80, уникальность, enum. Не промты картинок.</td></tr>
 <tr><td>6</td><td><b>отчёт</b></td><td class=node>n_excel_gpt_fw_report</td><td class=node>transport=code</td><td>HTML без GPT.</td></tr>

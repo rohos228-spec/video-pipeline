@@ -352,7 +352,7 @@ def _script_frames_qc_group() -> NodeGroupDef:
     action = _work_spec(
         "action",
         "GPT: действие сцены",
-        "Биты + закадр → одно общее действие сцены, шаги только этой смены",
+        "Биты + закадр → последовательная сцена как группа кадров",
         _STEP_X * 3,
         "main_action_from_bits_ru",
     )
