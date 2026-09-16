@@ -911,6 +911,9 @@ def auto_repair_action_chain_ops(
                 fields["main_action"] = merged
             else:
                 fields["главное_действие"] = merged
+
+
+def action_chain_ops_reason(
     ops: list[Any],
     frames: list[dict[str, Any]],
 ) -> str | None:

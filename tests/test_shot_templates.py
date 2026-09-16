@@ -496,6 +496,7 @@ def test_scenes_to_frames_resolves_v8_template() -> None:
     text = path.read_text(encoding="utf-8")
     assert "видимый шаг" in text or "шаги действия" in text
     assert "объект" in text
+    grouped = list_group_owned_prompts("script_frames_qc")
     assert grouped is not None
     assert "scenes_to_frames_ru" in grouped
     assert "shots_qc_ru" in grouped

@@ -292,7 +292,7 @@ def test_group_prompts_for_four_node_markup_exist() -> None:
     action = _load_script_frames_qc_prompt("main_action_from_bits_ru")
     shots = _load_script_frames_qc_prompt("scenes_to_frames_ru")
     assert "главное_действие" in action
-    assert "select" in shots.casefold() or "шаблон" in shots
+    assert "видимый шаг" in shots or "объект" in shots
 
 
 def test_kadry_from_bits_covers_full_vo() -> None:

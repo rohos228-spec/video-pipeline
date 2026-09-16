@@ -223,27 +223,43 @@ def merge_same_place_scenes(action: str) -> str:
 
 
 def _split_vo_for_steps(vo: str, n: int) -> list[str]:
-    from app.services.scene_design.camera_expand import split_text_into_parts
-
+    """Режет закадр на n кусков 13–80. Шаги действия важнее границ клаузы."""
     text = " ".join((vo or "").split())
     if n <= 1:
         return [text] if text else [""]
     if not text:
         return [""] * n
-    parts = [" ".join((p or "").split()) for p in split_text_into_parts(text, n)]
+    vis = visible_len(text)
+    max_n = max(1, vis // SHOT_VO_MIN) if vis >= SHOT_VO_MIN else 1
+    n = min(n, max_n)
+    words = text.split()
+    n = min(n, max(1, len(words)))
+    if n <= 1:
+        return [text]
+    target = vis / n
+    parts: list[str] = []
     i = 0
-    while i < len(parts):
-        if visible_len(parts[i]) < SHOT_VO_MIN and len(parts) > 1:
-            if i + 1 < len(parts):
-                parts[i + 1] = " ".join((parts[i] + " " + parts[i + 1]).split())
-                parts.pop(i)
-                continue
-            if i > 0:
-                parts[i - 1] = " ".join((parts[i - 1] + " " + parts[i]).split())
-                parts.pop(i)
-                continue
-        i += 1
-    return parts or [text]
+    for p in range(n):
+        if p == n - 1:
+            parts.append(" ".join(words[i:]))
+            break
+        chunk: list[str] = []
+        size = 0
+        while i < len(words):
+            leftover_parts = n - p
+            leftover_words = len(words) - i
+            if chunk and leftover_words <= leftover_parts:
+                break
+            add = len(words[i]) + (1 if chunk else 0)
+            if chunk and size + add >= target and size >= SHOT_VO_MIN:
+                break
+            chunk.append(words[i])
+            size += add
+            i += 1
+        parts.append(" ".join(chunk) if chunk else words[i])
+        if not chunk:
+            i += 1
+    return [p for p in parts if p] or [text]
 
 
 def _position(i: int, n: int, obj: str, place_new: bool) -> str:
@@ -578,10 +594,16 @@ def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None
         if n < SHOT_VO_MIN and not (
             len(shots) == 1 and visible_len(vo) <= SHOT_VO_MAX
         ):
-            return (
-                f"{prefix}кадр закадр {n} симв. "
-                f"(нужно {SHOT_VO_MIN}–{SHOT_VO_MAX})"
+            words = re.findall(r"[^\W\d_]+", chunk, flags=re.UNICODE)
+            title = bool(_TITLE_RE.search(step))
+            name_like = 1 <= len(words) <= 2 and all(
+                w[:1].isupper() for w in words if w
             )
+            if not (title or name_like):
+                return (
+                    f"{prefix}кадр закадр {n} симв. "
+                    f"(нужно {SHOT_VO_MIN}–{SHOT_VO_MAX})"
+                )
         if chunk and n > SHOT_VO_MAX:
             return (
                 f"{prefix}кадр закадр {n} симв. "
