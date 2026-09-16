@@ -10,11 +10,11 @@
 | файл | нода |
 |------|------|
 | `script_writer_ru.md` | fw_script |
-| `main_action_from_bits_ru.md` | fw_action |
 | `scenes_to_frames_ru.md` | fw_shots |
 | `shots_qc_ru.md` | fw_qc |
 
 Опционально (старые канвасы, нода не в новой группе):
+`main_action_from_bits_ru.md` — fw_action (снята: последовательность кадров пишет fw_shots)
 `frame_prompts_continuity_ru.md` — fw_frames
 `prompts_qc_continuity_ru.md` — старый QC промптов
 
