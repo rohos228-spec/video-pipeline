@@ -1950,9 +1950,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         f"{accompanying}\n\n"
                         "# DB SoT\n"
                         "Файл db_frames.json — VO-ячейки (uuid + voiceover_text + биты). "
-                        "Пиши только fields.главное_действие. Даже одна строка закадра "
-                        "= «1. место — действие» и следующая строка (весь кусок). "
-                        "Слоган без номера = брак. Не пиши закадр и биты."
+                        "Пиши только fields.главное_действие. 1 ячейка = 1 сцена, "
+                        "пока не сменилось съёмочное место. После «—» одно общее "
+                        "действие сцены, шаги через → только его продолжают. "
+                        "Витрина персонажей = брак. Слоган без номера = брак. "
+                        "Не пиши закадр и биты."
                     ).strip()
                 elif scenes_to_frames:
                     from app.services.shot_templates import neighbor_place_hints
