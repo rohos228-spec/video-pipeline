@@ -141,7 +141,7 @@ def test_parse_agent_reply_rejects_short():
         parse_agent_reply("NAME: X\nAGENT:\nмало")
 
 
-def test_parse_agent_reply_rejects_fallback_wrapper():
+def test_parse_agent_reply_keeps_llm_agent_text():
     raw = (
         "NAME: Слайд\nDESC: x\nCATEGORY: y\nAGENT:\n"
         "Агент отвечает одним готовым промптом и ничем больше — без пояснений.\n\n"
@@ -150,8 +150,9 @@ def test_parse_agent_reply_rejects_fallback_wrapper():
         "white line on purple\n\n"
         "После ядра допиши английские фразы. " * 8
     )
-    with pytest.raises(ValueError, match="заглушка запрещена"):
-        parse_agent_reply(raw, name_hint="Слайд")
+    entry = parse_agent_reply(raw, name_hint="Слайд")
+    assert entry["name"] == "Слайд"
+    assert "готовым промптом" in entry["agent"]
 
 
 @pytest.mark.asyncio

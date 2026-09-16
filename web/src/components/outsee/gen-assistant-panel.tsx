@@ -26,7 +26,6 @@ import {
   assembleGenPrompt,
   genPromptVariant,
   isUnfilledAssistantPrompt,
-  isStubAgentText,
   assistantRefHandle,
   type GenStyleArt,
   type GenStyleDef,
@@ -370,7 +369,7 @@ export function GenAssistantPanel({
       customStylesHydrated.current = true;
       try {
         const fromLs = (JSON.parse(lsGet(LS.customStyles, "[]")) as CustomStyle[]).filter(
-          (s) => s?.id && !isStubAgentText(s.promptCore || ""),
+          (s) => s?.id,
         );
         if (Array.isArray(fromLs) && fromLs.length > 0 && customStyles.length === 0) {
           setCustomStyles(fromLs);
@@ -423,7 +422,7 @@ export function GenAssistantPanel({
           setCustomStyles((prev) => {
             const byId = new Map<string, CustomStyle>();
             for (const s of [...prev, ...remote]) {
-              if (!s?.id || isStubAgentText(s.promptCore || "")) continue;
+              if (!s?.id) continue;
               const old = byId.get(s.id);
               if (!old) {
                 byId.set(s.id, s);
@@ -452,7 +451,7 @@ export function GenAssistantPanel({
           for (const src of [prev, remote]) {
             for (const [k, v] of Object.entries(src)) {
               const text = (v || "").trim();
-              if (!text || isStubAgentText(text)) continue;
+              if (!text) continue;
               out[k] = text;
             }
           }
@@ -624,10 +623,6 @@ export function GenAssistantPanel({
       notifyAgentError("Выберите стиль: текст агента пуст");
       return;
     }
-    if (isStubAgentText(agentText)) {
-      notifyAgentError("Агент не написан LLM — заглушка запрещена, генерация не запущена");
-      return;
-    }
     setRequest("");
     setPromptOverrides({});
     setAgentError("");
@@ -761,9 +756,6 @@ export function GenAssistantPanel({
         warning?: string;
       };
       if (!data.agent) throw new Error("пустой ответ");
-      if (isStubAgentText(data.agent)) {
-        throw new Error("GPT не собрал агента — заглушка запрещена");
-      }
       setNewAgent(data.agent);
       if (!newName.trim() && data.name) setNewName(data.name);
       if (!newDesc.trim() && data.desc) setNewDesc(data.desc);
@@ -781,10 +773,6 @@ export function GenAssistantPanel({
     const agent = newAgent.trim();
     if (!name || !agent) {
       toast.error("Нужны название и текст агента");
-      return;
-    }
-    if (isStubAgentText(agent)) {
-      toast.error("Агент не написан LLM — заглушка запрещена");
       return;
     }
     const id = `custom_${Date.now().toString(36)}`;

@@ -929,6 +929,17 @@ async def get_project_db_session(project_id: int) -> AsyncIterator[AsyncSession]
     sm = await get_project_sessionmaker(data_dir)
     session = sm()
     try:
+        row = await session.get(Project, project_id)
+        if row is None:
+            await session.rollback()
+            await session.close()
+            from app.db import SessionLocal
+
+            async with SessionLocal() as master:
+                src = await master.get(Project, project_id)
+                if src is not None:
+                    await sync_project_row_to_project_db(src, data_dir=data_dir)
+            session = sm()
         yield session
     except Exception:
         await session.rollback()

@@ -383,28 +383,11 @@ export function assistantRefHandle(index: number): string {
   return `@image${index + 1}`;
 }
 
-const ASSISTANT_STUB_MARKS = [
-  "not example objects from the style guide",
-  "subject of this image (the only topic)",
-  "depict this request as one finished scene",
-  "агент отвечает одним готовым промптом",
-  "каждый промпт начинай с дословно скопированного ядра",
-  "после ядра допиши",
-  "агент собран из разбора референсов",
-];
-
-export function isStubAgentText(text: string): boolean {
-  const low = text.trim().toLowerCase();
-  return Boolean(low) && ASSISTANT_STUB_MARKS.some((m) => low.includes(m));
-}
-
-/** Сырой запрос / локальная заглушка агента — в генератор картинки слать нельзя. */
+/** Сырой запрос без ответа LLM — в генератор картинки слать нельзя. */
 export function isUnfilledAssistantPrompt(prompt: string, request = ""): boolean {
   const p = prompt.trim();
   const req = request.trim();
   if (!p) return true;
-  const low = p.toLowerCase();
-  if (ASSISTANT_STUB_MARKS.some((m) => low.includes(m))) return true;
   if (req) {
     const head = req.slice(0, 80).toLowerCase();
     if (head && p.toLowerCase().startsWith(head) && p.length <= req.length + 200) {

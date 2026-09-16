@@ -19,7 +19,6 @@ from app.services.gen_assistant import (
     MAX_COUNT,
     MIN_COUNT,
     generate_prompts,
-    is_stub_agent_text,
 )
 from app.services.style_analyzer import (
     IMG_EXTS,
@@ -273,11 +272,7 @@ def _read_custom_styles() -> list[dict[str, Any]]:
         if not sid:
             continue
         by_id[sid] = _merge_style(by_id.get(sid), s)
-    return [
-        s
-        for s in by_id.values()
-        if not is_stub_agent_text(str(s.get("promptCore") or ""))
-    ]
+    return list(by_id.values())
 
 
 def _agents_path() -> Path:
@@ -302,7 +297,7 @@ def _load_agents_file(path: Path) -> dict[str, str]:
     return {
         str(k): str(v)
         for k, v in data.items()
-        if str(v or "").strip() and not is_stub_agent_text(str(v))
+        if str(v or "").strip()
     }
 
 
@@ -338,7 +333,6 @@ async def put_custom_styles(body: CustomStylesBody) -> dict[str, Any]:
         if isinstance(s, dict)
         and s.get("id")
         and s.get("promptCore")
-        and not is_stub_agent_text(str(s.get("promptCore") or ""))
     ]
     existing = _read_custom_styles()
     if not incoming and existing:
@@ -410,7 +404,6 @@ async def put_agent_overrides(body: AgentOverridesBody) -> dict[str, Any]:
         for k, v in (body.agents or {}).items()
         if str(k).strip()
         and str(v or "").strip()
-        and not is_stub_agent_text(str(v))
     }
     existing = _read_agent_overrides()
     if not incoming and existing:

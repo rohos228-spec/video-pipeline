@@ -255,11 +255,17 @@ async def create_project(
         hero_mode=p.hero_mode,
         status=p.status.value,
     )
-    from app.project_db import init_project_db
+    from app.project_db import (
+        init_project_db,
+        register_project_data_dir,
+        sync_project_row_to_project_db,
+    )
     try:
-        await init_project_db(p.data_dir)
+        register_project_data_dir(p.id, p.data_dir)
+        # Без project= схема project.db пустая: PATCH/GET после «Создать» → 404,
+        # хотя запись уже есть в state.db.
+        await init_project_db(p.data_dir, project=p)
     except Exception as exc:
-        from loguru import logger
         logger.warning("create_project: init_project_db failed: {}", exc)
     await session.commit()
     await session.refresh(p)
@@ -278,6 +284,11 @@ async def create_project(
     await recompute_status(session, p, log_prefix="recompute(create)")
     await session.commit()
     await session.refresh(p)
+    try:
+        register_project_data_dir(p.id, p.data_dir)
+        await sync_project_row_to_project_db(p)
+    except Exception as exc:
+        logger.warning("create_project: sync project.db row failed: {}", exc)
     return project_to_detail(p)
 
 

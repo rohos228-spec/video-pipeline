@@ -302,10 +302,6 @@ def parse_agent_reply(raw: str, *, name_hint: str | None = None) -> dict[str, st
     agent, warning = fit_agent_text(agent)
     if len(agent) < 200:
         raise ValueError("LLM вернула слишком короткого агента")
-    from app.services.gen_assistant import is_stub_agent_text
-
-    if is_stub_agent_text(agent):
-        raise ValueError("GPT не собрал агента — заглушка запрещена")
     agent = _scrub_agent_core_block(agent)
     return {
         "name": field("NAME") or (name_hint or "Новый стиль"),

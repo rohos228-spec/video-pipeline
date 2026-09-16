@@ -27,24 +27,6 @@ MAX_PROMPT_CHARS = 8000
 # оставляет только YAML со слотами [ГЕРОЙ], а заполненный промпт отрезается.
 PREPEND_CORE_MAX = 480
 
-# Вариативные суффиксы для локальной добивки (ракурс/действие)
-_STUB_MARKS = (
-    "not example objects from the style guide",
-    "subject of this image (the only topic)",
-    "depict this request as one finished scene",
-    "агент отвечает одним готовым промптом",
-    "каждый промпт начинай с дословно скопированного ядра",
-    "после ядра допиши",
-    "агент собран из разбора референсов",
-)
-_STUB_MARK = _STUB_MARKS[0]
-
-
-def is_stub_agent_text(text: str) -> bool:
-    """Локальная обёртка / fallback — не текст, который написала LLM."""
-    low = (text or "").lower()
-    return bool(low.strip()) and any(mark in low for mark in _STUB_MARKS)
-
 _SYSTEM_TEMPLATE = """Ты — агент визуальных промптов для генерации изображений.
 
 ПРАВИЛА АГЕНТА ниже — это инструкция, КАК собрать промпт. Их НЕЛЬЗЯ копировать
@@ -212,9 +194,6 @@ def is_unfilled_prompt(prompt: str, request: str = "") -> bool:
     req = (request or "").strip()
     if not p:
         return True
-    low = p.lower()
-    if any(mark in low for mark in _STUB_MARKS):
-        return True
     if req:
         head = req[:80].lower()
         if head and p.lower().startswith(head) and len(p) <= len(req) + 200:
@@ -311,8 +290,6 @@ async def generate_prompts(
         raise ValueError(f"Запрос длиннее {MAX_REQUEST_CHARS} символов — сократите")
     if not agent_text:
         raise ValueError("Не выбран стиль: текст агента пуст")
-    if is_stub_agent_text(agent_text):
-        raise ValueError("Агент не написан LLM — заглушка запрещена, генерация не запущена")
     if len(agent_text) > MAX_AGENT_CHARS:
         raise ValueError(f"Текст агента длиннее {MAX_AGENT_CHARS} символов — сократите")
 

@@ -10,7 +10,6 @@ from app.services.gen_assistant import (
     MAX_COUNT,
     extract_agent_core,
     generate_prompts,
-    is_stub_agent_text,
     is_unfilled_prompt,
     local_visual_prompt,
     parse_prompts_reply,
@@ -179,20 +178,6 @@ async def test_generate_template_echo_does_not_start(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_generate_rejects_stub_agent():
-    stub = (
-        "Агент отвечает одним готовым промптом и ничем больше.\n\n"
-        "Каждый промпт начинай с дословно скопированного ядра, не меняй в нём "
-        "ни слова и не переводи его:\n"
-        "Flat white line graphics on #1E1235.\n\n"
-        "После ядра допиши английские фразы."
-    )
-    assert is_stub_agent_text(stub) is True
-    with pytest.raises(ValueError, match="заглушка запрещена"):
-        await generate_prompts(request=REQ, agent_text=stub, count=1)
-
-
-@pytest.mark.asyncio
 async def test_generate_validates_empty_request():
     with pytest.raises(ValueError, match="Пустой запрос"):
         await generate_prompts(request="  ", agent_text=CORE, count=1)
@@ -271,14 +256,14 @@ async def test_generate_without_llm_does_not_start(monkeypatch):
         await generate_prompts(request=REQ, agent_text=CORE, aspect="9:16", count=MAX_COUNT)
 
 
-def test_is_unfilled_prompt_rejects_subject_wrapper():
+def test_is_unfilled_prompt_rejects_raw_request_copy():
     req = "ПОКАЖИ 5 ПЛЮСОВ ПОДТЯГИВАНИЙ"
-    junk = (
-        "Flat white line graphics on #1E1235.\n\n"
-        f"Subject of this image (the only topic): {req}. "
-        "Depict this request as one finished scene in the style above."
-    )
-    assert is_unfilled_prompt(junk, req) is True
+    assert is_unfilled_prompt(req, req) is True
+    assert is_unfilled_prompt(f"{req}. ещё пара слов", req) is True
+    assert is_unfilled_prompt(
+        "Editorial slide, one athlete on a bar, hex #1E1235 field, 16:9",
+        req,
+    ) is False
 
 
 def test_extract_agent_core_from_written_agent():
