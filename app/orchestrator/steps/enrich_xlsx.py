@@ -1939,20 +1939,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         f"{accompanying}\n\n"
                         "# DB SoT\n"
                         "Файл db_frames.json — ОДНА seed-ячейка = весь целый закадр "
-                        "(uuid + number + voiceover_text). Это неразделённый "
-                        "script_text / voiceover.txt: не пиши, не меняй, не режь "
-                        "его на ячейки. Твоя единственная работа — разметить в нём "
-                        "биты (fields.биты). Разбивку на ячейки сделает пайплайн "
-                        "позже. Excel не используется. Отвечай только JSON apply-ops."
+                        "(uuid + number + voiceover_text). Не пиши и не меняй "
+                        "voiceover_text ячейки. Каждый бит несёт свой дословный "
+                        "кусок в fields.биты[].закадр. Склейка кусков = весь "
+                        "voiceover_text. Поля якорь нет. Excel не используется. "
+                        "Отвечай только JSON apply-ops."
                     ).strip()
                 elif main_action_node:
                     accompanying = (
                         f"{accompanying}\n\n"
                         "# DB SoT\n"
                         "Файл db_frames.json — VO-ячейки (uuid + voiceover_text + биты). "
-                        "Пиши только fields.главное_действие. Даже одна строка закадра "
-                        "= «1. место — действие» и следующая строка (весь кусок). "
-                        "Слоган без номера = брак. Не пиши закадр и биты."
+                        "Пиши только fields.главное_действие. 1 ячейка = 1 сцена, "
+                        "пока не сменилось съёмочное место. Сцена — последовательная "
+                        "группа кадров: шаг → шаг. Если есть изменение — оно в цепи. "
+                        "Каждое микродействие отражено. Слоган без номера = брак. "
+                        "Не пиши закадр и биты."
                     ).strip()
                 elif scenes_to_frames:
                     from app.services.shot_templates import neighbor_place_hints

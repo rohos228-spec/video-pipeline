@@ -334,7 +334,7 @@ def _script_frames_qc_group() -> NodeGroupDef:
     script = _work_spec(
         "script",
         "GPT: сценарий · биты",
-        "Готовый закадр → биты (изменение + якорь); код режет spans",
+        "Готовый закадр → биты (действие/реакция + свой кусок закадра)",
         _STEP_X,
         "script_writer_ru",
     )
@@ -352,7 +352,7 @@ def _script_frames_qc_group() -> NodeGroupDef:
     action = _work_spec(
         "action",
         "GPT: действие сцены",
-        "Биты + закадр → карточка сцены «место — шаг → шаг»; текст НЕ пишет",
+        "Биты + закадр → последовательная сцена как группа кадров",
         _STEP_X * 3,
         "main_action_from_bits_ru",
     )

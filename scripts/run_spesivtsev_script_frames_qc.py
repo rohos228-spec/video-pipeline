@@ -1,197 +1,87 @@
-"""Прогон группы script_frames_qc на закадре Спесивцева → HTML-отчёт."""
+"""Первый шаг: сырой apply-ops ноды сценариста + fill_bit_spans. Без своих битов."""
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
-from app.project_root import find_project_root
-from app.services.scene_shot_grammar import (
-    apply_grammar_to_ops,
-    bits_cover_vo,
-    fill_bit_spans,
-    merge_same_place_scenes,
-    shots_grammar_reason,
-)
-from app.services.shots_report import render_group_run_html
+from app.services.scene_shot_grammar import bits_cover_vo, fill_bit_spans
+from app.services.shots_report import render_bits_check_table
 
-VO = (
-    "Алекса́ндр Спеси́вцев, сын Людми́лы Спеси́вцевой, рос в семье, где мать "
-    "занимала центральное место. Она защищала его от внешнего мира, принимала "
-    "решения за него и всё сильнее замыкала семейную жизнь вокруг себя и сына. "
-    "Отец постепенно оказался на периферии этой истории, а сестра Наде́жда жила "
-    "рядом, хотя впоследствии суд не установил её участия в преступлениях. "
-    "Для окружающих семья выглядела тяжёлой, конфликтной и неблагополучной, "
-    "однако само по себе это ещё не означало, что внутри совершаются преступления. "
-    "Психиатрический диагноз Александра становился удобным объяснением многих "
-    "странностей: если человек болен, значит, за ним должны наблюдать врачи. "
-    "На практике ответственность оказалась разделена между больницей, семьёй "
-    "и милицией. В 1992 году Александра направили в Орло́вскую "
-    "специализированную психиатрическую больницу, а в 1995 году он вернулся "
-    "в Новокузне́цк. При этом документы содержали противоречия: по одним сведениям "
-    "он уже находился дома, по другим мог продолжать числиться в стационаре. "
-    "Позже именно эта путаница осложнила поиски и проверку информации о его "
-    "местонахождении."
-)
+REPLY = Path("/opt/cursor/artifacts/fw_script_node/gpt_reply.txt")
+FRAMES = Path("/opt/cursor/artifacts/fw_script_node/db_frames.json")
 
-BITS = [
-    {
-        "порядок": 1,
-        "изменение": "пусто → назван сын Людмилы",
-        "якорь": "Алекса́ндр Спеси́вцев",
-    },
-    {
-        "порядок": 2,
-        "изменение": "стоит рядом → мать в центре комнаты",
-        "якорь": "рос в семье, где мать",
-    },
-    {
-        "порядок": 3,
-        "изменение": "дверь открыта → мать загораживает сына",
-        "якорь": "Она защищала его",
-    },
-    {
-        "порядок": 4,
-        "изменение": "отец в кадре → отец у стены",
-        "якорь": "Отец постепенно оказался",
-    },
-    {
-        "порядок": 5,
-        "изменение": "пусто → сестра проходит рядом",
-        "якорь": "сестра Наде́жда жила рядом",
-    },
-    {
-        "порядок": 6,
-        "изменение": "соседи не смотрят → смотрят на семью",
-        "якорь": "Для окружающих семья выглядела",
-    },
-    {
-        "порядок": 7,
-        "изменение": "стол пуст → кладут диагноз",
-        "якорь": "Психиатрический диагноз Александра",
-    },
-    {
-        "порядок": 8,
-        "изменение": "папка у врачей → передают между больницей, семьёй и милицией",
-        "якорь": "На практике ответственность",
-    },
-    {
-        "порядок": 9,
-        "изменение": "дом → ведут в Орловскую больницу",
-        "якорь": "В 1992 году Александра направили",
-    },
-    {
-        "порядок": 10,
-        "изменение": "больница → пришёл домой в Новокузнецк",
-        "якорь": "в 1995 году он вернулся",
-    },
-    {
-        "порядок": 11,
-        "изменение": "бумаги закрыты → открыл противоречивые документы",
-        "якорь": "документы содержали противоречия",
-    },
-    {
-        "порядок": 12,
-        "изменение": "ищут по адресу → читают путаницу в бумагах",
-        "якорь": "Позже именно эта путаница",
-    },
-]
 
-# Место карточки на бит (соседние с одним местом сожмутся).
-BIT_PLACE = {
-    1: "квартира Спесивцевых",
-    2: "квартира Спесивцевых",
-    3: "квартира Спесивцевых",
-    4: "квартира Спесивцевых",
-    5: "квартира Спесивцевых",
-    6: "подъезд",
-    7: "кабинет врачей",
-    8: "кабинет врачей",
-    9: "Орловская больница",
-    10: "Новокузнецк, дом",
-    11: "Новокузнецк, дом",
-    12: "Новокузнецк, дом",
-}
+def load_node_bits(reply_path: Path = REPLY) -> tuple[str, list[dict]]:
+    db = json.loads(FRAMES.read_text(encoding="utf-8"))
+    vo = str((db["frames"][0].get("voiceover_text") or "")).strip()
+    payload = json.loads(reply_path.read_text(encoding="utf-8"))
+    ops = payload.get("ops") or []
+    if not ops:
+        raise SystemExit("в ответе нет ops")
+    bits = list((ops[0].get("fields") or {}).get("биты") or [])
+    if not bits:
+        raise SystemExit("в ответе нет биты")
+    return vo, bits
 
-BIT_STEP = {
-    1: "стоит у матери",
-    2: "мать встала в центр комнаты",
-    3: "мать встала между ним и дверью",
-    4: "отец идёт к стене",
-    5: "сестра проходит мимо",
-    6: "соседи смотрят на семью → стоят у перил подъезда",
-    7: "кладут диагноз на стол",
-    8: "передают папку между больницей, семьёй и милицией → кладут печать на журнал",
-    9: "вошёл в Орловскую больницу → идёт по коридору больницы",
-    10: "пришёл домой в Новокузнецк",
-    11: "открыл противоречивые документы",
-    12: "читает бумаги о местонахождении → берёт бумагу с адресом",
-}
+
+def _first_step_html(model: dict) -> str:
+    bits_table = render_bits_check_table(model)
+    return f"""<!doctype html><html lang=ru><meta charset=utf-8>
+<title>шаг 1 · сырой ответ</title>
+<style>
+body{{font:16px/1.45 system-ui,Segoe UI,sans-serif;margin:16px;color:#111;background:#fff}}
+h1{{font-size:22px;margin:0 0 8px}}
+.meta{{color:#333;margin:0 0 14px;max-width:1100px}}
+pre{{white-space:pre-wrap;background:#f6f6f6;border:1px solid #ddd;padding:10px;font-size:13px}}
+table{{border-collapse:collapse;width:100%}}
+table.bits-node{{min-width:1400px;font-size:16px}}
+th,td{{border:1px solid #bbb;vertical-align:top;padding:10px 10px}}
+th{{background:#ececec;text-align:left}}
+.vo-bit{{color:#555;margin-top:4px}}
+</style>
+<h1>Шаг 1 · сырой JSON модели</h1>
+<p class=meta>Промт <code>script_writer_ru.md</code> + <code>db_frames.json</code>.
+Поля бита не правились. <code>закадр</code> ниже — только <code>fill_bit_spans</code>.
+· {len(model.get('bits') or [])} битов</p>
+<pre>{json.dumps(model.get('raw_ops'), ensure_ascii=False, indent=2)}</pre>
+<h1>Бит = свой кусок закадра</h1>
+{bits_table}
+"""
 
 
 def run() -> dict:
-    vo = " ".join(VO.split())
-    bits = fill_bit_spans(vo, BITS)
-    if not bits_cover_vo(vo, bits):
-        glued = " ".join(str(b.get("закадр") or "") for b in bits)
-        raise SystemExit(f"биты не покрывают VO\n{glued!r}\n{vo!r}")
-
-    lines: list[str] = []
-    for b in bits:
-        n = int(b["порядок"])
-        place = BIT_PLACE[n]
-        step = BIT_STEP[n]
-        chunk = str(b.get("закадр") or "").strip()
-        lines.append(f"{n}. {place} — {step}")
-        lines.append(f"({chunk})")
-    raw_action = "\n".join(lines)
-    action = merge_same_place_scenes(raw_action)
-
-    ops = [{"frame_uuid": "seed-spesivtsev", "fields": {"кадры": [], "главное_действие": action}}]
-    frames = [
-        {
-            "uuid": "seed-spesivtsev",
-            "number": 1,
-            "voiceover_text": vo,
-            "main_action": action,
-        }
-    ]
-    apply_grammar_to_ops(ops, frames)
-    shots = ops[0]["fields"]["кадры"]
-    qc = shots_grammar_reason(shots, vo, "seed-spesivtsev")
+    vo, bits = load_node_bits()
+    raw_bits = copy.deepcopy(bits)
+    filled = fill_bit_spans(vo, bits)
     return {
         "vo": vo,
-        "bits": bits,
-        "action_raw": raw_action,
-        "action": action,
-        "shots": shots,
-        "qc": qc,
+        "bits": filled,
+        "raw_ops": {
+            "ops": [
+                {
+                    "frame_uuid": "8f3c1a2b-4d5e-4678-9abc-def012345678",
+                    "fields": {"биты": raw_bits},
+                }
+            ]
+        },
+        "cover": bits_cover_vo(vo, filled),
+        "qc": None,
     }
 
 
 def main() -> None:
     model = run()
-    root = find_project_root()
-    out_dir = root / "exports"
+    out_dir = Path("/opt/cursor/artifacts")
     out_dir.mkdir(parents=True, exist_ok=True)
-    json_path = out_dir / "spesivtsev-script-frames-qc.json"
-    html_path = out_dir / "spesivtsev-shots-report.html"
-    json_path.write_text(
-        json.dumps(model, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    html_path.write_text(
-        render_group_run_html(
-            model,
-            slug="spesivtsev",
-            title="Отчёт группы нод · Спесивцев",
-        ),
-        encoding="utf-8",
-    )
-    print("qc:", model["qc"])
-    print("shots:", len(model["shots"]))
+    html_path = out_dir / "spesivtsev_step1_bits.html"
+    json_path = out_dir / "spesivtsev_step1_bits.json"
+    json_path.write_text(json.dumps(model, ensure_ascii=False, indent=2), encoding="utf-8")
+    html_path.write_text(_first_step_html(model), encoding="utf-8")
     print("bits:", len(model["bits"]))
+    print("cover:", model["cover"])
     print("wrote", html_path)
-    print("wrote", json_path)
 
 
 if __name__ == "__main__":

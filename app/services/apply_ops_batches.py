@@ -23,6 +23,7 @@ from app.services.scene_shot_grammar import (
     SHOT_VO_MAX,
     SHOT_VO_MIN,
     apply_grammar_to_ops,
+    bits_cover_vo,
     fill_bit_spans,
     merge_same_place_scenes,
     shots_grammar_reason,
@@ -647,39 +648,8 @@ def _place_attested_in_vo(place: str, vo: str) -> bool:
     return False
 
 
-def _snap_anchor_to_vo(anchor: str, vo: str) -> str:
-    """Якорь должен читаться в закадре. Кривой якорь — подтянуть к фразе VO."""
-    vo = (vo or "").strip()
-    anchor = (anchor or "").strip()
-    if not vo:
-        return anchor
-    if not anchor:
-        clauses = _vo_clauses(vo)
-        return clauses[0] if clauses else vo[:80]
-    vo_cf = vo.casefold()
-    a_cf = anchor.casefold()
-    idx = vo_cf.find(a_cf)
-    if idx >= 0:
-        return vo[idx : idx + len(anchor)]
-    clauses = _vo_clauses(vo)
-    a_words = set(re.findall(r"[^\W\d_]+", a_cf, flags=re.UNICODE))
-    best = ""
-    best_n = 0
-    for clause in clauses:
-        c_words = set(
-            re.findall(r"[^\W\d_]+", clause.casefold(), flags=re.UNICODE)
-        )
-        n = len(a_words & c_words)
-        if n > best_n:
-            best_n = n
-            best = clause
-    if best:
-        return best
-    return clauses[0] if clauses else vo[:80]
-
-
 def repair_bits_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
-    """Починить биты на месте: слоган → объект, якорь → кусок закадра."""
+    """Починить биты на месте: слоган → объект, кусок закадра на бите."""
     by_uid = _frames_by_uuid(frames)
     fixed = 0
     for op in ops or []:
@@ -689,7 +659,7 @@ def repair_bits_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
         if not isinstance(fields, dict):
             continue
         uid = str(op.get("frame_uuid") or "").strip()
-        vo = _frame_vo(by_uid.get(uid))
+        vo = " ".join(_frame_vo(by_uid.get(uid)).split())
         raw = _op_bits(fields)
         if isinstance(raw, str):
             raw = [
@@ -697,7 +667,7 @@ def repair_bits_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
                     "порядок": 1,
                     "глагол": "говорит",
                     "изменение": "было → стало",
-                    "якорь": _snap_anchor_to_vo(raw, vo),
+                    "закадр": vo,
                 }
             ]
             fields["биты"] = raw
@@ -710,23 +680,23 @@ def repair_bits_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
                     "порядок": i + 1,
                     "глагол": "говорит",
                     "изменение": "было → стало",
-                    "якорь": _snap_anchor_to_vo(str(bit), vo),
+                    "закадр": vo,
                 }
                 fixed += 1
                 continue
+            bit.pop("якорь", None)
             if not str(bit.get("глагол") or "").strip():
                 bit["глагол"] = "говорит"
                 fixed += 1
             if not str(bit.get("изменение") or "").strip():
                 bit["изменение"] = "было → стало"
                 fixed += 1
-            snapped = _snap_anchor_to_vo(str(bit.get("якорь") or ""), vo)
-            if snapped and snapped != str(bit.get("якорь") or "").strip():
-                bit["якорь"] = snapped
+            chunk = " ".join(str(bit.get("закадр") or "").split())
+            if not chunk:
+                bit["закадр"] = vo
                 fixed += 1
-            elif not str(bit.get("якорь") or "").strip() and snapped:
-                bit["якорь"] = snapped
-                fixed += 1
+            else:
+                bit["закадр"] = chunk
         fields["биты"] = raw
     return fixed
 
@@ -830,7 +800,6 @@ def bits_ops_reason(
             continue
         if not raw:
             return f"uuid {uid[:8]}: пустые биты у непустой ячейки"
-        vo_cf = vo.casefold()
         for i, bit in enumerate(raw, start=1):
             if not isinstance(bit, dict):
                 return f"uuid {uid[:8]}: бит {i} не объект"
@@ -838,26 +807,13 @@ def bits_ops_reason(
                 return f"uuid {uid[:8]}: бит {i} без глагола"
             if not str(bit.get("изменение") or "").strip():
                 return f"uuid {uid[:8]}: бит {i} без изменения"
-            anchor = str(bit.get("якорь") or "").strip()
-            if not anchor:
-                # Автоисправление: подставить ключевое слово из глагола или закадра
-                verb = str(bit.get("глагол") or "").strip()
-                if verb and verb.casefold() in vo_cf:
-                    bit["якорь"] = verb
-                else:
-                    words = [w for w in re.findall(r"[^\W\d_]+", vo, flags=re.UNICODE) if len(w) >= 3]
-                    bit["якорь"] = words[0] if words else vo[:15].strip()
-            anchor_cf = str(bit.get("якорь") or "").strip().casefold()
-            if anchor_cf and anchor_cf not in vo_cf:
-                # Проверим отдельные слова из якоря
-                anchor_words = [w for w in re.findall(r"[^\W\d_]+", anchor_cf, flags=re.UNICODE) if len(w) >= 3]
-                if not any(w in vo_cf for w in anchor_words):
-                    first_word = next((w for w in re.findall(r"[^\W\d_]+", vo_cf, flags=re.UNICODE) if len(w) >= 3), None)
-                    if first_word:
-                        bit["якорь"] = first_word
-                    else:
-                        return f"uuid {uid[:8]}: якорь бита {i} не из закадра"
+            if not str(bit.get("закадр") or "").strip() and not (
+                len(raw) == 1
+            ):
+                return f"uuid {uid[:8]}: бит {i} без закадра"
         filled = fill_bit_spans(vo, raw)
+        if not bits_cover_vo(vo, filled):
+            return f"uuid {uid[:8]}: склейка bit.закадр ≠ voiceover_text"
         if "биты" in fields:
             fields["биты"] = filled
         elif "bits" in fields:
@@ -1055,9 +1011,11 @@ def _batch_footer(
             f"(биты, пачка {batch_i}, схема {SCRIPT_FRAMES_QC_PARALLEL_BATCHES} параллельно)\n"
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Верни ops ровно по каждому uuid: fields.биты — JSON-массив "
-            "объектов {{порядок, глагол, изменение, якорь}}. "
-            "Число битов = число изменений в ячейке, не 1 и не строка-слоган. "
-            "Не пиши закадр. Чужие кадры не пиши. JSON apply-ops, без прозы.\n"
+            "объектов {{порядок, глагол, изменение, закадр}}. "
+            "закадр — дословный кусок voiceover_text этого бита. "
+            "Склейка bit.закадр = весь voiceover_text. Поля якорь нет. "
+            "Число битов = число обменов действие/реакция, не строка-слоган. "
+            "Чужие кадры не пиши. JSON apply-ops, без прозы.\n"
         )
     if kind in {"action_chain", "main_action"}:
         return (
@@ -1066,9 +1024,10 @@ def _batch_footer(
             f"{SCRIPT_FRAMES_QC_PARALLEL_BATCHES} параллельно)\n"
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Верни ops ровно по каждому uuid: fields.главное_действие — "
-            "нумерованная цепь «N. место — действие» + строка (кусок закадра). "
-            "Даже одна строка закадра = «1. …» и скобки. Слоган без номера = брак. "
-            "Не пиши закадр и биты. JSON apply-ops, без прозы.\n"
+            "последовательная сцена как группа кадров: шаг → шаг + (кусок закадра). "
+            "Если есть изменение — оно в цепи. Каждое микродействие отражено. "
+            "1 ячейка = 1 сцена, пока не сменилось съёмочное место. "
+            "Слоган без номера = брак. Не пиши закадр и биты. JSON apply-ops, без прозы.\n"
         )
     if kind in {"shots_coverage", "shots"}:
         return (

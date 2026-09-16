@@ -294,8 +294,8 @@ def test_group_run_html_has_nodes_and_qc() -> None:
             "bits": [
                 {
                     "порядок": 1,
+                    "глагол": "входя / принимая в кабинет",
                     "изменение": "снаружи → внутри",
-                    "якорь": "Он вошёл",
                     "закадр": "Он вошёл в кабинет следователя.",
                 }
             ],
@@ -324,3 +324,17 @@ def test_group_run_html_has_nodes_and_qc() -> None:
     assert "пусто ops" in html
     assert "T0–T10" in html
     assert "вошёл" in html
+    assert "изменение" in html
+    assert "закадр бита" in html
+    assert "позиция" in html
+    assert "высота" in html
+    assert "наклон" in html
+    assert "точка" in html
+    assert "стык" in html
+    assert "снаружи → внутри" in html
+    assert "входя / принимая в кабинет" in html
+    assert "действие / реакция" in html
+    assert "bits-node" in html
+    assert "B1" in html
+    assert "карточка сцены целиком" in html
+    assert "карточка ноды 3 целиком" in html

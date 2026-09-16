@@ -416,8 +416,8 @@ th:first-child,td:first-child{{width:56px;text-align:center;color:#666;font-weig
 <table>
 <thead><tr><th>id</th><th>Правило</th><th>Как используется</th></tr></thead>
 <tbody>
-<tr><td>1</td><td>VO-ячейка = сцена</td><td>биты якорями, код режет spans; закадр не пишет GPT</td></tr>
-<tr><td>2</td><td>карточка сцены</td><td>N. место — шаг → шаг + (дословный кусок). Одно место не плодит новые N.</td></tr>
+<tr><td>1</td><td>VO-ячейка = сцена</td><td>бит несёт свой кусок закадра; склейка = весь voiceover_text</td></tr>
+<tr><td>2</td><td>карточка сцены</td><td>последовательная группа кадров: шаг → шаг + (дословный кусок). Одно место не плодит новые N.</td></tr>
 <tr><td>3</td><td>кадр = видимый шаг</td><td>объект: место|тело|двое|предмет|лицо|взгляд. Камеру дописывает код</td></tr>
 <tr><td>4</td><td>закадр кадра</td><td>13–80, цель ~45. Склейка = весь voiceover_text</td></tr>
 <tr><td>5</td><td>parent</td><td>новое место — null; то же место — id первого кадра локации (PNG)</td></tr>
@@ -433,7 +433,7 @@ th:first-child,td:first-child{{width:56px;text-align:center;color:#666;font-weig
 <table>
 <thead><tr><th>id</th><th>Кусок</th><th>Как используется</th></tr></thead>
 <tbody>
-<tr><td>1</td><td>fw_script</td><td>биты: изменение + якорь. Код fill_bit_spans</td></tr>
+<tr><td>1</td><td>fw_script</td><td>биты: действие/реакция + свой кусок закадра</td></tr>
 <tr><td>2</td><td>fw_action</td><td>карточка сцены. Код merge_same_place_scenes</td></tr>
 <tr><td>3</td><td>fw_shots + scene_shot_grammar</td><td>шаги → кадры, camera_pack по объекту, 13–80</td></tr>
 <tr><td>4</td><td>fw_qc</td><td>shots_qc_ru: склейка, уникальность, enum, parent. Не промты</td></tr>
@@ -450,6 +450,214 @@ def visible_len_safe(text: Any) -> int:
     return visible_len(str(text or ""))
 
 
+def _bit_for_chunk(chunk: str, bits: list[Any]) -> dict[str, Any]:
+    chunk_n = " ".join(str(chunk or "").split())
+    if not chunk_n or not bits:
+        return {}
+    best: dict[str, Any] = {}
+    best_score = -1
+    for bit in bits:
+        if not isinstance(bit, dict):
+            continue
+        span = " ".join(str(bit.get("закадр") or "").split())
+        if not span:
+            continue
+        if chunk_n in span:
+            return bit
+        score = 0
+        if span in chunk_n:
+            score = len(span)
+        else:
+            limit = min(len(chunk_n), len(span))
+            for i in range(limit, 11, -1):
+                if chunk_n[:i] in span or span[:i] in chunk_n:
+                    score = i
+                    break
+        if score > best_score:
+            best = bit
+            best_score = score
+    return best
+
+
+def _scene_for_shot(shot: dict[str, Any], chain: list[Any]) -> dict[str, Any]:
+    n = int(shot.get("сцена") or 0)
+    for scene in chain:
+        if int(scene.get("n") or 0) == n:
+            return scene
+    return chain[0] if chain else {}
+
+
+def _bit_step1_check(bit: dict[str, Any], vo: str) -> str:
+    verb = str(bit.get("глагол") or "").strip()
+    change = str(bit.get("изменение") or "").strip()
+    span = str(bit.get("закадр") or "").strip()
+    vo_n = " ".join(vo.split())
+    if "/" not in verb:
+        return "нет действие / реакция"
+    if "→" not in change and "->" not in change:
+        return "нет смены ценности"
+    if not span:
+        return "нет закадра бита"
+    if vo_n and span not in vo_n:
+        return "закадр бита не из ячейки"
+    if change.strip() in span:
+        return "изменение скопировало закадр"
+    return "Ок"
+
+
+def render_bits_check_table(run: dict[str, Any]) -> str:
+    """Нода 1: бит = действие/реакция + свой кусок закадра."""
+    bits = [b for b in (run.get("bits") or []) if isinstance(b, dict)]
+    vo = str(run.get("vo") or "")
+    rows = "".join(
+        "<tr>"
+        f"<td>B{int(b.get('порядок') or i)}</td>"
+        f"<td><b>{_esc(b.get('глагол'))}</b></td>"
+        f"<td>{_esc(b.get('изменение'))}</td>"
+        f"<td>{_esc(b.get('закадр'))}</td>"
+        f"<td>{_esc(_bit_step1_check(b, vo))}</td>"
+        "</tr>"
+        for i, b in enumerate(bits, start=1)
+    )
+    return (
+        "<table class=bits-node>"
+        "<thead><tr>"
+        "<th>бит</th>"
+        "<th>действие / реакция</th>"
+        "<th>изменение</th>"
+        "<th>закадр бита</th>"
+        "<th>проверка</th>"
+        "</tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+        f"<p class=vo-bit>склейка bit.закадр = voiceover_text · {len(vo)} симв.</p>"
+    )
+
+
+def render_scene_cards_table(run: dict[str, Any]) -> str:
+    """Нода 3: карточка целиком — группа кадров шаг → шаг + (закадр)."""
+    action = str(run.get("action") or "")
+    chain = parse_scene_chain(action)
+    rows: list[str] = []
+    for i, scene in enumerate(chain, start=1):
+        n = int(scene.get("n") or i)
+        place = str(scene.get("place") or "")
+        steps = str(scene.get("action") or "")
+        vo = plain_scene_vo(scene.get("vo") or "")
+        card = f"{n}. {place} — {steps}" if place else f"{n}. {steps}"
+        rows.append(
+            "<tr>"
+            f"<td>S{n:02d}</td>"
+            f"<td>{_esc(place)}</td>"
+            f"<td>{_esc(steps)}</td>"
+            f"<td>{_esc(vo)}</td>"
+            f"<td><b>{_esc(card)}</b>"
+            f"<div class=vo-bit>({_esc(vo)})</div></td>"
+            "</tr>"
+        )
+    return (
+        "<table class=scene-cards>"
+        "<thead><tr>"
+        "<th>сцена</th>"
+        "<th>место</th>"
+        "<th>шаги сцены</th>"
+        "<th>закадр сцены</th>"
+        "<th>карточка ноды 3 целиком</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+        f"<pre class=note>{html.escape(action)}</pre>"
+    )
+
+
+def render_all_nodes_one_table(run: dict[str, Any]) -> str:
+    """Одна таблица: все поля бита, проверки, сцены, кадра, камеры, QC."""
+    bits = [b for b in (run.get("bits") or []) if isinstance(b, dict)]
+    shots = [s for s in (run.get("shots") or []) if isinstance(s, dict)]
+    action = str(run.get("action") or "")
+    qc = run.get("qc")
+    chain = parse_scene_chain(action)
+    check_node = str(run.get("check") or "").strip()
+    check_cell = (
+        check_node.splitlines()[0]
+        if check_node
+        else ("Ок" if not qc else "Не ок")
+    )
+    qc_cell = "ок" if not qc else str(qc)
+    rows: list[str] = []
+    for shot in shots:
+        bit = _bit_for_chunk(str(shot.get("закадр") or ""), bits)
+        scene = _scene_for_shot(shot, chain)
+        parent = shot.get("parent_id")
+        parent_s = "null" if parent in (None, "", "null") else str(parent)
+        vo_shot = str(shot.get("закадр") or "")
+        n_vis = visible_len_safe(vo_shot)
+        bit_id = f"B{int(bit.get('порядок') or 0)}" if bit else "—"
+        n = int(scene.get("n") or shot.get("сцена") or 0)
+        place = str(scene.get("place") or shot.get("место") or "")
+        steps = str(scene.get("action") or "")
+        card = f"{n}. {place} — {steps}" if place else f"{n}. {steps}"
+        rows.append(
+            "<tr>"
+            f"<td>{_esc(shot.get('id'))}</td>"
+            f"<td>{_esc(bit_id)}"
+            f"<div class=vo-bit>{_esc(bit.get('глагол'))}</div></td>"
+            f"<td><b>{_esc(bit.get('изменение'))}</b></td>"
+            f"<td>{_esc(bit.get('закадр'))}</td>"
+            f"<td>{_esc(check_cell)}</td>"
+            f"<td>S{n:02d}</td>"
+            f"<td>{_esc(place)}</td>"
+            f"<td>{_esc(steps)}</td>"
+            f"<td>{_esc(plain_scene_vo(scene.get('vo') or ''))}</td>"
+            f"<td><b>{_esc(card)}</b></td>"
+            f"<td>{_esc(shot.get('действие'))}</td>"
+            f"<td>{_esc(shot.get('объект'))}</td>"
+            f"<td>{_esc(shot.get('позиция'))}</td>"
+            f"<td>{_esc(shot.get('план'))}</td>"
+            f"<td>{_esc(shot.get('линза_мм'))}</td>"
+            f"<td>{_esc(shot.get('ракурс'))}</td>"
+            f"<td>{_esc(shot.get('высота'))}</td>"
+            f"<td>{_esc(shot.get('наклон'))}</td>"
+            f"<td>{_esc(shot.get('точка'))}</td>"
+            f"<td>{_esc(shot.get('движение'))}</td>"
+            f"<td>{_esc(shot.get('стык'))}</td>"
+            f"<td>{_esc(shot.get('свет'))}</td>"
+            f"<td>{_esc(parent_s)}</td>"
+            f"<td>{_esc(vo_shot)}<div class=vo-bit>{n_vis} симв. · цель ~{SHOT_VO_IDEAL}</div></td>"
+            f"<td>{_esc(qc_cell)}</td>"
+            "</tr>"
+        )
+    return (
+        "<table class=all-nodes>"
+        "<thead><tr>"
+        "<th>кадр</th>"
+        "<th>бит / действие-реакция</th>"
+        "<th>бит было→стало</th>"
+        "<th>закадр бита</th>"
+        "<th>нода 2 проверка</th>"
+        "<th>сцена</th>"
+        "<th>место</th>"
+        "<th>шаги сцены</th>"
+        "<th>закадр сцены</th>"
+        "<th>карточка сцены целиком</th>"
+        "<th>шаг кадра</th>"
+        "<th>объект</th>"
+        "<th>позиция</th>"
+        "<th>план</th>"
+        "<th>мм</th>"
+        "<th>ракурс</th>"
+        "<th>высота</th>"
+        "<th>наклон</th>"
+        "<th>точка</th>"
+        "<th>движение</th>"
+        "<th>стык</th>"
+        "<th>свет</th>"
+        "<th>parent</th>"
+        "<th>закадр кадра</th>"
+        "<th>QC</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
 def render_group_run_html(
     run: dict[str, Any],
     *,
@@ -464,37 +672,30 @@ def render_group_run_html(
     vo = str(run.get("vo") or "")
     stamp = datetime.now().strftime("%d.%m.%Y %H:%M")
     chain = parse_scene_chain(action)
-    bit_rows = "".join(
-        "<tr>"
-        f"<td>B{int(b.get('порядок') or i)}</td>"
-        f"<td><b>{_esc(b.get('изменение'))}</b>"
-        f"<div class=vo-bit>якорь: {_esc(b.get('якорь'))}</div>"
-        f"<div class=vo-bit>({_esc(b.get('закадр'))})</div></td>"
-        "</tr>"
-        for i, b in enumerate(bits, start=1)
-    )
-    scene_rows = "".join(
-        "<tr>"
-        f"<td>S{int(sc.get('n') or i):02d}</td>"
-        f"<td>{_esc(sc.get('place'))}</td>"
-        f"<td>{_esc(sc.get('action'))}"
-        f"<div class=vo-bit>({_esc(plain_scene_vo(sc.get('vo') or ''))})</div></td>"
-        "</tr>"
-        for i, sc in enumerate(chain, start=1)
-    )
     shot_cards = "".join(
         "<tr>"
         f"<td>{_esc(s.get('id'))}</td>"
         f"<td>{_esc(s.get('место'))}</td>"
         f"<td>{_esc(s.get('действие'))}</td>"
         f"<td>{_esc(s.get('объект'))}</td>"
+        f"<td>{_esc(s.get('позиция'))}</td>"
         f"<td>{_esc(s.get('план'))} · {_esc(s.get('линза_мм'))}mm"
-        f"<div class=vo-bit>{_esc(s.get('ракурс'))} · {_esc(s.get('движение'))}</div></td>"
+        f"<div class=vo-bit>ракурс: {_esc(s.get('ракурс'))}</div>"
+        f"<div class=vo-bit>высота: {_esc(s.get('высота'))} · наклон: {_esc(s.get('наклон'))}</div>"
+        f"<div class=vo-bit>точка: {_esc(s.get('точка'))} · движение: {_esc(s.get('движение'))}</div>"
+        f"<div class=vo-bit>стык: {_esc(s.get('стык'))} · свет: {_esc(s.get('свет'))}</div></td>"
         f"<td>{'null' if s.get('parent_id') in (None, '', 'null') else _esc(s.get('parent_id'))}</td>"
         f"<td>{_esc(s.get('закадр'))}"
         f"<div class={'warn' if visible_len_safe(s.get('закадр')) > SHOT_VO_MAX or visible_len_safe(s.get('закадр')) < SHOT_VO_MIN else 'vo-bit'}>{visible_len_safe(s.get('закадр'))} симв. · цель ~{SHOT_VO_IDEAL}</div></td>"
         "</tr>"
         for s in shots
+    )
+    one_table = render_all_nodes_one_table(run)
+    scene_cards = render_scene_cards_table(run)
+    bits_table = render_bits_check_table(run)
+    check_text = str(run.get("check") or "").strip()
+    check_html = (
+        f"<pre class=note>{html.escape(check_text)}</pre>" if check_text else ""
     )
     qc_cls = "ok" if not qc else "warn"
     qc_text = "пусто ops — поля чистые" if not qc else str(qc)
@@ -505,11 +706,14 @@ body{{font:14px/1.4 system-ui,Segoe UI,sans-serif;margin:20px;color:#111;backgro
 h1{{font-size:22px;margin:0 0 6px}}
 h2{{font-size:16px;margin:28px 0 8px;padding-top:8px;border-top:1px solid #e5e5e5}}
 .meta{{color:#555;margin:0 0 12px}}
-.nav{{position:sticky;top:0;background:#fff;padding:10px 0 12px;border-bottom:1px solid #ddd;z-index:5;margin:0 0 16px}}
+.nav{{background:#fff;padding:10px 0 12px;border-bottom:1px solid #ddd;margin:0 0 16px}}
 .nav a{{margin-right:12px;color:#1a4d8c;font-weight:650;text-decoration:none}}
 table{{border-collapse:collapse;width:100%;min-width:1100px;margin:0 0 8px}}
-th,td{{border:1px solid #ddd;vertical-align:top;padding:10px 12px}}
-th{{text-align:left;background:#f4f4f4;position:sticky;top:48px}}
+th,td{{border:1px solid #ddd;vertical-align:top;padding:8px 10px}}
+th{{text-align:left;background:#f4f4f4}}
+table.scene-cards{{min-width:1400px;font-size:15px}}
+table.scene-cards th,table.scene-cards td{{padding:10px 12px}}
+table.all-nodes th,table.all-nodes td{{padding:8px 8px;white-space:normal}}
 th:first-child,td:first-child{{width:72px;text-align:center;color:#666;font-weight:650}}
 .vo-bit{{color:#666;margin-top:2px}}
 .note{{background:#eef5ff;border:1px solid #c9dbf5;padding:10px 12px;margin:0 0 16px}}
@@ -525,6 +729,8 @@ pre.note{{white-space:pre-wrap}}
 <p class=meta>группа <b>script_frames_qc</b> · {html.escape(slug or '—')} · {html.escape(stamp)}
 · битов {len(bits)} · сцен {len(chain)} · кадров {len(shots)} · закадр кадра {SHOT_VO_MIN}–{SHOT_VO_MAX}</p>
 <p class=nav>
+<a href="#all">все поля</a>
+<a href="#scenes">карточки сцен</a>
 <a href="#gate">гейт</a>
 <a href="#n0">6 нод</a>
 <a href="#n1">1 биты</a>
@@ -536,7 +742,15 @@ pre.note{{white-space:pre-wrap}}
 </p>
 <p class=note>Формат как у старого отчёта группы, но <b>без T0–T10</b>.
 Кадр = видимый шаг действия. Камера из таблицы по полю <code>объект</code>.
-Промты картинок — <code>img_pr</code>, не эта группа. Нода frames на новых канвасах не вставляется.</p>
+Промты картинок — <code>img_pr</code>, не эта группа. Нода frames на новых канвасах не вставляется.
+Все поля нод — в одной таблице ниже: действие/реакция, закадр бита, сцена, камера, QC.</p>
+<h2 id="all">Одна таблица · все поля всех нод</h2>
+<h2 id="scenes">Нода 3 · карточка сцены целиком</h2>
+<p class=note>Поле <code>главное_действие</code>: последовательная сцена как группа кадров
+<code>шаг → шаг</code> и строка <code>(дословный кусок закадра)</code>. Это не проза-описание.</p>
+{scene_cards}
+<h2>Все поля бита + сцены + кадра + камеры + QC</h2>
+{one_table}
 <h2 id="gate">Гейт: только если группа на пайплайне</h2>
 <p class=ok><span class=badge g>вкл</span> <code>canvas_has_script_frames_qc</code> —
 <code>data.groupId=script_frames_qc</code>.</p>
@@ -554,9 +768,9 @@ pre.note{{white-space:pre-wrap}}
 <table>
 <thead><tr><th>id</th><th>Нода</th><th>canvas id</th><th>промт / режим</th><th>Что пишет</th></tr></thead>
 <tbody>
-<tr><td>1</td><td><b>сценарист</b></td><td class=node>n_excel_gpt_fw_script</td><td class=node>script_writer_ru</td><td>биты: изменение + якорь. Закадр не пишет.</td></tr>
+<tr><td>1</td><td><b>сценарист</b></td><td class=node>n_excel_gpt_fw_script</td><td class=node>script_writer_ru</td><td>биты: действие/реакция + свой кусок закадра.</td></tr>
 <tr><td>2</td><td><b>проверка</b></td><td class=node>n_excel_gpt_fw_check_script</td><td class=node>checkMode, upstream</td><td>Ок / Не ок. Fail → script.</td></tr>
-<tr><td>3</td><td><b>действие</b></td><td class=node>n_excel_gpt_fw_action</td><td class=node>main_action_from_bits_ru</td><td>карточка «место — шаг → шаг» + (кусок VO). Код склеивает одно место.</td></tr>
+<tr><td>3</td><td><b>действие</b></td><td class=node>n_excel_gpt_fw_action</td><td class=node>main_action_from_bits_ru</td><td>последовательная сцена как группа кадров + (кусок VO).</td></tr>
 <tr><td>4</td><td><b>кадры-шаги</b></td><td class=node>n_excel_gpt_fw_shots</td><td class=node>scenes_to_frames_ru</td><td>шаги → кадры. Камеру дописывает код. Не T0–T10.</td></tr>
 <tr><td>5</td><td><b>QC полей</b></td><td class=node>n_excel_gpt_fw_qc</td><td class=node>shots_qc_ru</td><td>склейка, 13–80, уникальность, enum. Не промты картинок.</td></tr>
 <tr><td>6</td><td><b>отчёт</b></td><td class=node>n_excel_gpt_fw_report</td><td class=node>transport=code</td><td>HTML без GPT.</td></tr>
@@ -564,35 +778,22 @@ pre.note{{white-space:pre-wrap}}
 </table>
 <h2 id="n1">1 · Сценарист · n_excel_gpt_fw_script</h2>
 <p class=note>Промт <code>script_writer_ru.md</code>. Пишет только <code>биты</code>.
-Код <code>fill_bit_spans</code> режет закадр по якорям.</p>
-<table>
-<thead><tr><th>id</th><th>Бит</th></tr></thead>
-<tbody>{bit_rows}</tbody>
-</table>
+Каждый бит несёт свой дословный кусок <code>закадр</code>.</p>
+{bits_table}
 <h2 id="n2">2 · Проверка · n_excel_gpt_fw_check_script</h2>
-<p class=note>Своего .md нет. checkMode, правила со сценариста.</p>
-<table>
-<thead><tr><th>id</th><th>Вердикт</th></tr></thead>
-<tbody>
-<tr><td>Ок</td><td>биты — массив объектов, не слоган</td></tr>
-<tr><td>Ок</td><td>якоря дословно есть в voiceover_text</td></tr>
-<tr><td>Ок</td><td>склейка bit.закадр = весь VO ({len(vo)} симв.)</td></tr>
-<tr><td>Ок</td><td>нет replace_frames / переписывания закадра</td></tr>
-</tbody>
-</table>
+<p class=note>Своего .md нет. checkMode. Ниже вердикт ноды и те же биты ноды 1.</p>
+{check_html}
+{bits_table}
 <h2 id="n3">3 · Действие · n_excel_gpt_fw_action</h2>
 <p class=note>Промт <code>main_action_from_bits_ru.md</code>. Код
-<code>merge_same_place_scenes</code> склеил соседние карточки с одним местом.</p>
-<pre class=note>{html.escape(action)}</pre>
-<table>
-<thead><tr><th>id</th><th>Место</th><th>Сцена + закадр</th></tr></thead>
-<tbody>{scene_rows}</tbody>
-</table>
+<code>merge_same_place_scenes</code> склеил соседние карточки с одним местом.
+Ниже карточка целиком.</p>
+{scene_cards}
 <h2 id="n4">4 · Кадры-шаги · n_excel_gpt_fw_shots</h2>
 <p class=note>Промт <code>scenes_to_frames_ru.md</code> + <code>scene_shot_grammar</code>.
 Один кадр = один видимый шаг. Камера из таблицы, не каталог T/X.</p>
 <table>
-<thead><tr><th>id</th><th>Место</th><th>Действие</th><th>объект</th><th>камера</th><th>parent</th><th>закадр</th></tr></thead>
+<thead><tr><th>id</th><th>Место</th><th>Действие</th><th>объект</th><th>позиция</th><th>камера</th><th>parent</th><th>закадр</th></tr></thead>
 <tbody>{shot_cards}</tbody>
 </table>
 <h2 id="n5">5 · QC · n_excel_gpt_fw_qc</h2>
