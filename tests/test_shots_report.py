@@ -324,3 +324,12 @@ def test_group_run_html_has_nodes_and_qc() -> None:
     assert "пусто ops" in html
     assert "T0–T10" in html
     assert "вошёл" in html
+    assert "изменение" in html
+    assert "якорь" in html
+    assert "закадр бита" in html
+    assert "позиция" in html
+    assert "высота" in html
+    assert "наклон" in html
+    assert "точка" in html
+    assert "стык" in html
+    assert "снаружи → внутри" in html

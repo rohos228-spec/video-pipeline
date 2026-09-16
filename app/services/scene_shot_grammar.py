@@ -32,7 +32,7 @@ _BODY_RE = re.compile(
 )
 _ITEM_RE = re.compile(
     r"открыл|открыва|взял|бер[её]т|папк|папк[уие]|печат|ключ|документ|"
-    r"письм|жалоб|достал|доста[её]т|положил",
+    r"письм|жалоб|достал|доста[её]т|положил|справк|бумаг|направл|засов|карт",
     re.IGNORECASE,
 )
 _FACE_RE = re.compile(
@@ -53,7 +53,7 @@ _VISIBLE_VERB_RE = re.compile(
     r"полож|достал|смотрел|увидел|говор|шёл|шел|бежит|стоит|стоя[тл]|"
     r"смотр|меша|бега|ходит|кладет|кладёт|кладут|несёт|несет|держ|чита|"
     r"крич|пада|подн|опуск|брос|толк|тяне|обня|обним|переда|"
-    r"протяж",
+    r"протяж|закры|леж|отодв|горит|висит",
     re.IGNORECASE,
 )
 _COGNITIVE_RE = re.compile(
@@ -223,52 +223,56 @@ def merge_same_place_scenes(action: str) -> str:
 
 
 _PAD_STEPS = (
-    "останавливается у стены",
-    "поворачивается к двери",
-    "смотрит на стол",
-    "берёт бумагу",
-    "идёт дальше по коридору",
-    "стоит у окна",
-    "кладёт руку на стол",
-    "открывает дверь",
-    "читает следующую строку",
-    "проходит вдоль стены",
+    "ключ лежит на столе",
+    "дверь закрыта на засов",
+    "две бумаги лежат рядом",
+    "окно закрыто шторой",
+    "папка лежит раскрытой",
+    "стул отодвинут от стола",
+    "лампа горит над столом",
+    "коридор стоит пустой",
+    "справка лежит на папке",
+    "карта лежит с двумя адресами",
+    "штамп лежит на бланке",
+    "три стула стоят у стены",
+    "халат висит на крючке",
+    "кровать стоит пустая",
+    "решётка стоит на окне",
+    "журнал лежит раскрытым",
+    "табличка висит на двери",
+    "печать лежит на двух справках",
+    "календарь лежит открытым",
+    "конверт лежит нераспечатанный",
+    "скамейка стоит у стены",
+    "чайник стоит на плите",
 )
 
+_SENT_SPLIT = re.compile(r"(?<=[.!?…])\s+")
+_CLAUSE_SPLIT = re.compile(r"(?<=[,;:—–])\s+")
+_PUNCT_WORD = re.compile(r"[.!?…,;:—–]+$")
 
-def _shot_count_for_vo(vo: str, n_steps: int) -> int:
-    """Сколько кадров нужно, чтобы закадр влез в 13–80."""
-    text = " ".join((vo or "").split())
-    vis = visible_len(text)
-    words = text.split()
-    if not text:
-        return max(1, n_steps)
-    max_n = min(len(words), vis // SHOT_VO_MIN if vis >= SHOT_VO_MIN else 1)
+
+def target_shot_count(vis: int) -> int:
+    """Сколько кадров: цель vis/45, не меньше чем нужно для потолка 80, не больше чем пол 13."""
+    if vis <= 0:
+        return 1
+    by_ideal = max(1, round(vis / SHOT_VO_IDEAL))
     min_n = 1 if vis <= SHOT_VO_MAX else (vis + SHOT_VO_MAX - 1) // SHOT_VO_MAX
-    return max(1, min(max(n_steps, min_n), max_n))
+    max_n = max(1, vis // SHOT_VO_MIN)
+    return min(max(by_ideal, min_n), max_n)
 
 
-def _pad_unique_steps(steps: list[str], n: int) -> list[str]:
-    out = list(steps)
-    seen = {action_stem(s) for s in out if action_stem(s)}
-    for extra in _PAD_STEPS:
-        if len(out) >= n:
-            break
-        stem = action_stem(extra)
-        if stem and stem not in seen and has_visible_verb(extra):
-            out.append(extra)
-            seen.add(stem)
-    return out
+def _word_ends_punct(token: str) -> bool:
+    return bool(_PUNCT_WORD.search(token or ""))
 
 
-def _split_vo_for_steps(vo: str, n: int) -> list[str]:
-    """Режет закадр на n кусков 13–80. Шаги действия важнее границ клаузы."""
-    text = " ".join((vo or "").split())
-    if not text:
-        return [""] * max(1, n)
-    vis = visible_len(text)
+def _pack_words_to_n(text: str, n: int) -> list[str]:
+    """n кусков. Want ≈ vis/n (~45). Пол 13, потолок 80. Точка/запятая ближе к цели бьёт разрез по слову."""
     words = text.split()
-    n = _shot_count_for_vo(text, n)
+    if not words:
+        return [text]
+    vis = visible_len(text)
+    n = max(1, int(n) if n else 1)
     if n <= 1:
         return [text]
     parts: list[str] = []
@@ -280,31 +284,98 @@ def _split_vo_for_steps(vo: str, n: int) -> list[str]:
             parts.append(" ".join(rest))
             break
         rest_vis = visible_len(" ".join(rest))
-        max_take = min(SHOT_VO_MAX, rest_vis - (remaining_parts - 1) * SHOT_VO_MIN)
-        min_take = max(
-            SHOT_VO_MIN, rest_vis - (remaining_parts - 1) * SHOT_VO_MAX
-        )
-        want = min(max(rest_vis / remaining_parts, min_take), max_take)
-        chunk: list[str] = []
+        hard_min = max(SHOT_VO_MIN, rest_vis - (remaining_parts - 1) * SHOT_VO_MAX)
+        hard_max = min(SHOT_VO_MAX, rest_vis - (remaining_parts - 1) * SHOT_VO_MIN)
+        want = rest_vis / remaining_parts
+        slack = (SHOT_VO_MAX - SHOT_VO_IDEAL) // 2
+        min_take = max(hard_min, int(want - slack))
+        max_take = min(hard_max, int(want + slack))
+        if min_take > max_take:
+            min_take, max_take = hard_min, hard_max
+        want = min(max(want, min_take), max_take)
+        best_end: int | None = None
+        best_score: float | None = None
         size = 0
-        while i < len(words):
-            leftover_words = len(words) - i
-            if chunk and leftover_words < remaining_parts:
-                break
-            add = visible_len(words[i]) + (1 if chunk else 0)
+        for j, word in enumerate(rest):
+            leftover_words = len(rest) - (j + 1)
+            add = visible_len(word) + (1 if j else 0)
             nxt = size + add
-            if chunk and nxt > max_take:
+            if leftover_words < remaining_parts - 1:
                 break
-            if chunk and size >= want:
+            if nxt > max_take and size >= min_take:
                 break
-            chunk.append(words[i])
             size = nxt
-            i += 1
-        if not chunk and i < len(words):
-            chunk = [words[i]]
-            i += 1
-        parts.append(" ".join(chunk) if chunk else "")
+            if size < min_take:
+                continue
+            if size > max_take:
+                break
+            punct = _word_ends_punct(word)
+            score = (
+                abs(size - want)
+                + 0.5 * abs(size - SHOT_VO_IDEAL)
+                - (18 if punct else 0)
+            )
+            if best_score is None or score < best_score:
+                best_score = score
+                best_end = i + j + 1
+        if best_end is None or best_end <= i:
+            size = 0
+            j = 0
+            while i + j < len(words):
+                add = visible_len(words[i + j]) + (1 if j else 0)
+                if size and size + add > max_take:
+                    break
+                size += add
+                j += 1
+                if size >= min_take and size >= want:
+                    break
+            best_end = min(len(words) - (remaining_parts - 1), i + max(j, 1))
+            if best_end <= i:
+                best_end = i + 1
+        parts.append(" ".join(words[i:best_end]))
+        i = best_end
     return [p for p in parts if p] or [text]
+
+
+def packed_vo_parts(vo: str) -> list[str]:
+    """Каноническая нарезка: цель ~45, пол 13, потолок 80. Точка, иначе запятая."""
+    text = " ".join((vo or "").split())
+    if not text:
+        return []
+    return _split_vo_for_steps(text, 0)
+
+
+def _shot_count_for_vo(vo: str, n_steps: int) -> int:
+    vis = visible_len(" ".join((vo or "").split()))
+    return max(target_shot_count(vis), 1)
+
+
+def _pad_unique_steps(
+    steps: list[str], n: int, *, seen: set[str] | None = None
+) -> list[str]:
+    out = list(steps)
+    used = set(seen or ())
+    used |= {action_stem(s) for s in out if action_stem(s)}
+    for extra in _PAD_STEPS:
+        if len(out) >= n:
+            break
+        stem = action_stem(extra)
+        if stem and stem not in used and has_visible_verb(extra):
+            out.append(extra)
+            used.add(stem)
+    return out
+
+
+def _split_vo_for_steps(vo: str, n: int) -> list[str]:
+    """Режет по точке или запятой к ~45. n шагов не подменяет 13/45/80."""
+    text = " ".join((vo or "").split())
+    if not text:
+        return [""] * max(1, n)
+    vis = visible_len(text)
+    want_n = target_shot_count(vis)
+    if want_n <= 1:
+        return [text]
+    return _pack_words_to_n(text, want_n)
 
 
 def _position(i: int, n: int, obj: str, place_new: bool) -> str:
@@ -426,6 +497,7 @@ def expand_action_to_shots(
     out: list[dict[str, Any]] = []
     last_place = (prev_place or "").strip().casefold()
     order = 0
+    used_stems: set[str] = set()
     for scene in chain:
         place = str(scene.get("place") or "").strip()
         act = str(scene.get("action") or "").strip()
@@ -443,13 +515,14 @@ def expand_action_to_shots(
                 uniq.append(step)
                 seen.add(stem)
         steps = uniq or steps[:1] or ["действие"]
-        need = _shot_count_for_vo(vo, len(steps))
-        steps = _pad_unique_steps(steps, need)
         pieces = _split_vo_for_steps(vo, len(steps))
-        if len(pieces) > len(steps):
-            steps = _pad_unique_steps(steps, len(pieces))
+        need = max(len(pieces), 1)
+        steps = _pad_unique_steps(steps, need, seen=used_stems)
         if len(pieces) < len(steps):
             steps = steps[: len(pieces)] or steps[:1]
+        if len(pieces) > len(steps):
+            steps = _pad_unique_steps(steps, len(pieces), seen=used_stems)
+        used_stems |= {action_stem(s) for s in steps if action_stem(s)}
         n = min(len(steps), len(pieces)) or 1
         master_id = f"{cell_number}-S{int(scene['n'])}-K1"
         prev_shot: dict[str, Any] | None = None

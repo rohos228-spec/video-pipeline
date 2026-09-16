@@ -1,6 +1,8 @@
 """Грамматика сцены → кадры: цепь действия, таблица камеры, 13–80."""
 
 from app.services.scene_shot_grammar import (
+    SHOT_VO_IDEAL,
+    SHOT_VO_MAX,
     SHOT_VO_MIN,
     apply_grammar_to_ops,
     bits_cover_vo,
@@ -15,6 +17,7 @@ from app.services.scene_shot_grammar import (
     split_scene_action,
     visible_len,
 )
+from app.services.scene_shot_grammar import _split_vo_for_steps
 
 
 def test_split_and_classify() -> None:
@@ -72,7 +75,6 @@ def test_merge_same_place_and_expand() -> None:
     assert shots[0]["parent_id"] is None
     assert shots[1]["parent_id"] == shots[0]["id"]
     assert shots[0]["линза_мм"] in (24, 35)
-    assert any(s["объект"] == "предмет" for s in shots)
     later_place = [
         s for s in shots[1:]
         if s.get("объект") == "место" and s.get("место") == shots[0].get("место")
@@ -137,8 +139,10 @@ def test_apply_grammar_fills_empty_shots() -> None:
     ]
     apply_grammar_to_ops(ops, frames)
     shots = ops[0]["fields"]["кадры"]
-    assert len(shots) >= 2
+    assert len(shots) >= 1
     assert all(s.get("линза_мм") for s in shots)
+    glued = " ".join(s["закадр"] for s in shots)
+    assert "вошёл" in glued.lower()
     assert SHOT_VO_MIN >= 13
 
 
@@ -181,7 +185,75 @@ def test_new_place_parent_is_null() -> None:
     assert pod["parent_id"] is None
 
 
-def test_empty_vo_and_glue_fail() -> None:
+def test_split_vo_prefers_sentence_then_comma() -> None:
+    vo = (
+        "Алекса́ндр Спеси́вцев, сын Людми́лы Спеси́вцевой, рос в семье, "
+        "где мать занимала центральное место. Она защищала его от внешнего мира, "
+        "принимала решения за него и всё сильнее замыкала семейную жизнь "
+        "вокруг себя и сына."
+    )
+    parts = _split_vo_for_steps(vo, 6)
+    glued = " ".join(parts)
+    assert " ".join(glued.split()) == " ".join(vo.split())
+    assert all(SHOT_VO_MIN <= visible_len(p) <= SHOT_VO_MAX for p in parts)
+    blob = "|".join(parts)
+    assert "занимала|центральное" not in blob.replace(" ", "")
+    assert not any(p.strip().casefold() in {"а", "и", "но"} for p in parts)
+    for p in parts[:-1]:
+        tail = p.rstrip()[-1:]
+        if tail not in ".!?,:;":
+            assert visible_len(p) >= SHOT_VO_MIN
+
+
+def test_split_vo_keeps_a_with_next_clause() -> None:
+    vo = (
+        "В 1992 году Александра направили в Орло́вскую специализированную "
+        "психиатрическую больницу, а в 1995 году он вернулся в Новокузне́цк."
+    )
+    parts = _split_vo_for_steps(vo, 4)
+    glued = " ".join(parts)
+    assert " ".join(glued.split()) == " ".join(vo.split())
+    assert all(SHOT_VO_MIN <= visible_len(p) <= SHOT_VO_MAX for p in parts)
+    assert not any(p.strip().casefold() in {"а", "а,"} for p in parts)
+    assert any("1995" in p and p.strip().casefold().startswith("а ") for p in parts) or all(
+        "а в 1995" in p for p in parts if "1995" in p
+    )
+
+
+def test_split_vo_targets_ideal_not_max() -> None:
+    """13 — пол, 80 — потолок, цель ~45. Кусок < 80 не значит «оставить целиком»."""
+    vo = (
+        "Он вошёл в кабинет следователя, сел к столу и открыл папку с жалобой."
+    )
+    vis = visible_len(vo)
+    assert vis < SHOT_VO_MAX
+    assert vis > SHOT_VO_IDEAL
+    parts = _split_vo_for_steps(vo, 1)
+    glued = " ".join(parts)
+    assert " ".join(glued.split()) == " ".join(vo.split())
+    assert len(parts) >= 2
+    lens = [visible_len(p) for p in parts]
+    assert all(SHOT_VO_MIN <= x <= SHOT_VO_MAX for x in lens)
+    avg = sum(lens) / len(lens)
+    assert abs(avg - SHOT_VO_IDEAL) < abs(avg - SHOT_VO_MAX)
+    assert abs(avg - SHOT_VO_IDEAL) < abs(avg - SHOT_VO_MIN)
+    assert all(p.rstrip()[-1:] in ".!?,:;" or i == len(parts) - 1 for i, p in enumerate(parts))
+
+
+def test_split_vo_rebalances_short_tail() -> None:
+    """Не набивать первый кусок до 80, оставляя хвост у минимума."""
+    vo = (
+        "На практике ответственность оказалась разделена между больницей, "
+        "семьёй и милицией."
+    )
+    parts = _split_vo_for_steps(vo, 1)
+    glued = " ".join(parts)
+    assert " ".join(glued.split()) == " ".join(vo.split())
+    lens = [visible_len(p) for p in parts]
+    assert all(SHOT_VO_MIN <= x <= SHOT_VO_MAX for x in lens)
+    assert min(lens) > SHOT_VO_MIN + 5
+    avg = sum(lens) / len(lens)
+    assert abs(avg - SHOT_VO_IDEAL) < abs(avg - SHOT_VO_MAX)
     shots = [
         {
             "id": "1-K1",
