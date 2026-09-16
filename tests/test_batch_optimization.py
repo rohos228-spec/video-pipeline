@@ -79,7 +79,7 @@ def test_bits_ops_reason_short_vo_and_auto_anchor():
     ]
     reason = bits_ops_reason(ops, frames)
     assert reason is None
-    assert ops[0]['fields']['биты'][0].get('якорь') is not None
+    assert ops[0]['fields']['биты'][0].get('закадр') == vo
 
 
 def test_shots_coverage_single_shot_on_short_vo():

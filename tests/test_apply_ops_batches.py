@@ -1186,7 +1186,7 @@ def test_bits_ops_rejects_one_bit_for_two_clauses() -> None:
                         "порядок": 1,
                         "глагол": "сдвигает",
                         "изменение": "процесс → жалобы",
-                        "якорь": "Дарья Салтыкова",
+                        "закадр": vo,
                     }
                 ]
             },
@@ -1209,19 +1209,50 @@ def test_bits_ops_accepts_two_bits() -> None:
                         "порядок": 1,
                         "глагол": "называет",
                         "изменение": "никто → названа",
-                        "якорь": "Дарья Салтыкова",
+                        "закадр": "Дарья Салтыкова.",
                     },
                     {
                         "порядок": 2,
                         "глагол": "сдвигает",
                         "изменение": "процесс → две жалобы",
-                        "якорь": "История началась не с процесса",
+                        "закадр": "История началась не с процесса, а с двух жалоб.",
                     },
                 ]
             },
         }
     ]
     assert bits_ops_reason(ops, frames) is None
+
+
+def test_bits_ops_rejects_chunks_that_do_not_glue() -> None:
+    from app.services.apply_ops_batches import bits_ops_reason
+
+    vo = "Дарья Салтыкова. История началась не с процесса, а с двух жалоб."
+    frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "биты": [
+                    {
+                        "порядок": 1,
+                        "глагол": "называет",
+                        "изменение": "никто → названа",
+                        "закадр": "Дарья Салтыкова.",
+                    },
+                    {
+                        "порядок": 2,
+                        "глагол": "сдвигает",
+                        "изменение": "процесс → две жалобы",
+                        "закадр": "чужой текст",
+                    },
+                ]
+            },
+        }
+    ]
+    reason = bits_ops_reason(ops, frames)
+    assert reason
+    assert "склейка" in reason
 
 
 def test_shots_coverage_rejects_single_shot_on_two_clauses() -> None:
@@ -1707,7 +1738,7 @@ async def test_vo_chunk_size_8_packs(tmp_path, monkeypatch) -> None:
                             "порядок": 1,
                             "глагол": "говорит",
                             "изменение": "молчит → сказано",
-                            "якорь": fr["voiceover_text"],
+                            "закадр": fr["voiceover_text"],
                         }
                     ]
                 },
@@ -1861,7 +1892,7 @@ async def test_shots_short_vo_writes_without_failing_node(tmp_path, monkeypatch)
     assert all(str(s.get("закадр") or "").strip() for s in shots)
 
 
-def test_repair_bits_snaps_anchor_to_vo() -> None:
+def test_repair_bits_binds_vo_chunk() -> None:
     from app.services.apply_ops_batches import repair_bits_ops
 
     vo = "Ткач родился в Киселёвске и пошёл в милицию."
@@ -1874,7 +1905,6 @@ def test_repair_bits_snaps_anchor_to_vo() -> None:
                         "порядок": 1,
                         "глагол": "родился",
                         "изменение": "нет → есть",
-                        "якорь": "мальчик появился в городе",
                     }
                 ]
             },
@@ -1882,7 +1912,8 @@ def test_repair_bits_snaps_anchor_to_vo() -> None:
     ]
     frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
     assert repair_bits_ops(ops, frames) >= 1
-    assert ops[0]["fields"]["биты"][0]["якорь"] in vo
+    assert ops[0]["fields"]["биты"][0]["закадр"] == vo
+    assert "якорь" not in ops[0]["fields"]["биты"][0]
 
 
 @pytest.mark.asyncio

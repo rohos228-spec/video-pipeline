@@ -416,7 +416,7 @@ th:first-child,td:first-child{{width:56px;text-align:center;color:#666;font-weig
 <table>
 <thead><tr><th>id</th><th>Правило</th><th>Как используется</th></tr></thead>
 <tbody>
-<tr><td>1</td><td>VO-ячейка = сцена</td><td>биты якорями, код режет spans; закадр не пишет GPT</td></tr>
+<tr><td>1</td><td>VO-ячейка = сцена</td><td>бит несёт свой кусок закадра; склейка = весь voiceover_text</td></tr>
 <tr><td>2</td><td>карточка сцены</td><td>N. место — шаг → шаг + (дословный кусок). Одно место не плодит новые N.</td></tr>
 <tr><td>3</td><td>кадр = видимый шаг</td><td>объект: место|тело|двое|предмет|лицо|взгляд. Камеру дописывает код</td></tr>
 <tr><td>4</td><td>закадр кадра</td><td>13–80, цель ~45. Склейка = весь voiceover_text</td></tr>
@@ -433,7 +433,7 @@ th:first-child,td:first-child{{width:56px;text-align:center;color:#666;font-weig
 <table>
 <thead><tr><th>id</th><th>Кусок</th><th>Как используется</th></tr></thead>
 <tbody>
-<tr><td>1</td><td>fw_script</td><td>биты: действие/реакция + ценность + якорь. Код fill_bit_spans</td></tr>
+<tr><td>1</td><td>fw_script</td><td>биты: действие/реакция + свой кусок закадра</td></tr>
 <tr><td>2</td><td>fw_action</td><td>карточка сцены. Код merge_same_place_scenes</td></tr>
 <tr><td>3</td><td>fw_shots + scene_shot_grammar</td><td>шаги → кадры, camera_pack по объекту, 13–80</td></tr>
 <tr><td>4</td><td>fw_qc</td><td>shots_qc_ru: склейка, уникальность, enum, parent. Не промты</td></tr>
@@ -490,24 +490,23 @@ def _scene_for_shot(shot: dict[str, Any], chain: list[Any]) -> dict[str, Any]:
 def _bit_step1_check(bit: dict[str, Any], vo: str) -> str:
     verb = str(bit.get("глагол") or "").strip()
     change = str(bit.get("изменение") or "").strip()
-    anchor = str(bit.get("якорь") or "").strip()
     span = str(bit.get("закадр") or "").strip()
     vo_n = " ".join(vo.split())
     if "/" not in verb:
         return "нет действие / реакция"
     if "→" not in change and "->" not in change:
         return "нет смены ценности"
-    if not anchor:
-        return "нет якоря"
-    if vo_n and anchor.casefold() not in vo_n.casefold():
-        return "якорь не из закадра"
-    if span and change.strip() in span:
+    if not span:
+        return "нет закадра бита"
+    if vo_n and span not in vo_n:
+        return "закадр бита не из ячейки"
+    if change.strip() in span:
         return "изменение скопировало закадр"
     return "Ок"
 
 
 def render_bits_check_table(run: dict[str, Any]) -> str:
-    """Нода 1: бит = действие/реакция + ценность + якорь + закадр по якорю."""
+    """Нода 1: бит = действие/реакция + свой кусок закадра."""
     bits = [b for b in (run.get("bits") or []) if isinstance(b, dict)]
     vo = str(run.get("vo") or "")
     rows = "".join(
@@ -515,7 +514,6 @@ def render_bits_check_table(run: dict[str, Any]) -> str:
         f"<td>B{int(b.get('порядок') or i)}</td>"
         f"<td><b>{_esc(b.get('глагол'))}</b></td>"
         f"<td>{_esc(b.get('изменение'))}</td>"
-        f"<td>{_esc(b.get('якорь'))}</td>"
         f"<td>{_esc(b.get('закадр'))}</td>"
         f"<td>{_esc(_bit_step1_check(b, vo))}</td>"
         "</tr>"
@@ -526,8 +524,7 @@ def render_bits_check_table(run: dict[str, Any]) -> str:
         "<thead><tr>"
         "<th>бит</th>"
         "<th>действие / реакция</th>"
-        "<th>изменение ценности</th>"
-        "<th>якорь</th>"
+        "<th>изменение</th>"
         "<th>закадр бита</th>"
         "<th>проверка</th>"
         "</tr></thead>"
@@ -559,7 +556,6 @@ def render_all_nodes_one_table(run: dict[str, Any]) -> str:
             f"<td>{_esc(shot.get('id'))}</td>"
             f"<td><b>{_esc(bit.get('изменение'))}</b>"
             f"<div class=vo-bit>{_esc(bit_id)}</div></td>"
-            f"<td>{_esc(bit.get('якорь'))}</td>"
             f"<td>{_esc(bit.get('закадр'))}</td>"
             f"<td>{_esc(check)}</td>"
             f"<td>S{int(scene.get('n') or shot.get('сцена') or 0):02d}</td>"
@@ -588,7 +584,6 @@ def render_all_nodes_one_table(run: dict[str, Any]) -> str:
         "<thead><tr>"
         "<th>кадр</th>"
         "<th>бит было→стало</th>"
-        "<th>якорь</th>"
         "<th>закадр бита</th>"
         "<th>проверка</th>"
         "<th>сцена</th>"
@@ -702,7 +697,7 @@ pre.note{{white-space:pre-wrap}}
 <p class=note>Формат как у старого отчёта группы, но <b>без T0–T10</b>.
 Кадр = видимый шаг действия. Камера из таблицы по полю <code>объект</code>.
 Промты картинок — <code>img_pr</code>, не эта группа. Нода frames на новых канвасах не вставляется.
-Все поля нод — в одной таблице ниже: изменение было→стало, якорь, закадр бита, сцена, камера, QC.</p>
+Все поля нод — в одной таблице ниже: действие/реакция, закадр бита, сцена, камера, QC.</p>
 <h2 id="all">Одна таблица · все поля всех нод</h2>
 {one_table}
 <h2 id="gate">Гейт: только если группа на пайплайне</h2>
@@ -722,7 +717,7 @@ pre.note{{white-space:pre-wrap}}
 <table>
 <thead><tr><th>id</th><th>Нода</th><th>canvas id</th><th>промт / режим</th><th>Что пишет</th></tr></thead>
 <tbody>
-<tr><td>1</td><td><b>сценарист</b></td><td class=node>n_excel_gpt_fw_script</td><td class=node>script_writer_ru</td><td>биты: действие/реакция + ценность + якорь. Закадр не пишет.</td></tr>
+<tr><td>1</td><td><b>сценарист</b></td><td class=node>n_excel_gpt_fw_script</td><td class=node>script_writer_ru</td><td>биты: действие/реакция + свой кусок закадра.</td></tr>
 <tr><td>2</td><td><b>проверка</b></td><td class=node>n_excel_gpt_fw_check_script</td><td class=node>checkMode, upstream</td><td>Ок / Не ок. Fail → script.</td></tr>
 <tr><td>3</td><td><b>действие</b></td><td class=node>n_excel_gpt_fw_action</td><td class=node>main_action_from_bits_ru</td><td>карточка «место — шаг → шаг» + (кусок VO). Код склеивает одно место.</td></tr>
 <tr><td>4</td><td><b>кадры-шаги</b></td><td class=node>n_excel_gpt_fw_shots</td><td class=node>scenes_to_frames_ru</td><td>шаги → кадры. Камеру дописывает код. Не T0–T10.</td></tr>
@@ -732,7 +727,7 @@ pre.note{{white-space:pre-wrap}}
 </table>
 <h2 id="n1">1 · Сценарист · n_excel_gpt_fw_script</h2>
 <p class=note>Промт <code>script_writer_ru.md</code>. Пишет только <code>биты</code>.
-Код <code>fill_bit_spans</code> режет закадр по якорям.</p>
+Каждый бит несёт свой дословный кусок <code>закадр</code>.</p>
 {bits_table}
 <h2 id="n2">2 · Проверка · n_excel_gpt_fw_check_script</h2>
 <p class=note>Своего .md нет. checkMode. Ниже те же биты ноды 1 — что проверяли.</p>

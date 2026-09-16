@@ -46,7 +46,7 @@ th{{background:#ececec;text-align:left}}
 Поля бита не правились. <code>закадр</code> ниже — только <code>fill_bit_spans</code>.
 · {len(model.get('bits') or [])} битов</p>
 <pre>{json.dumps(model.get('raw_ops'), ensure_ascii=False, indent=2)}</pre>
-<h1>Закадр по якорям (код, не модель)</h1>
+<h1>Бит = свой кусок закадра</h1>
 {bits_table}
 """
 

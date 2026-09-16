@@ -512,46 +512,14 @@ def bits_from_attrs(frame: Any) -> list[dict[str, Any]]:
 
 
 def kadry_from_bits(full_vo: str, bits: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """1 бит → 1 кадр. Склейка закадр = весь текст ячейки, без хвостов."""
-    text = " ".join((full_vo or "").split())
-    ordered = sorted(
-        (item for item in bits if isinstance(item, dict)),
-        key=lambda item: int(item.get("порядок") or 0),
-    )
-    if not text or not ordered:
+    """1 бит → 1 кадр. Склейка bit.закадр = весь текст ячейки."""
+    from app.services.scene_shot_grammar import bits_cover_vo, fill_bit_spans
+
+    filled = fill_bit_spans(full_vo, list(bits))
+    if not bits_cover_vo(full_vo, filled):
         return []
-    starts: list[int] = []
-    cursor = 0
-    for i, item in enumerate(ordered):
-        anchor = " ".join(str(item.get("якорь") or "").split())
-        idx = -1
-        if anchor:
-            idx = text.find(anchor, cursor)
-            if idx < 0:
-                idx = text.lower().find(anchor.lower(), cursor)
-        if idx < 0:
-            parts = split_text_into_parts(text, len(ordered))
-            while parts and not str(parts[-1] or "").strip():
-                parts.pop()
-            if " ".join(" ".join(parts).split()) != text:
-                return []
-            return _kadry_rows(ordered[: len(parts)], parts)
-        starts.append(0 if i == 0 else idx)
-        cursor = idx + max(len(anchor), 1)
-    parts: list[str] = []
-    for i, start in enumerate(starts):
-        end = starts[i + 1] if i + 1 < len(starts) else len(text)
-        if end < start:
-            end = start
-        parts.append(text[start:end].strip())
-    if " ".join(" ".join(parts).split()) != text:
-        parts = split_text_into_parts(text, len(ordered))
-        while parts and not str(parts[-1] or "").strip():
-            parts.pop()
-        if " ".join(" ".join(parts).split()) != text:
-            return []
-        ordered = ordered[: len(parts)]
-    return _kadry_rows(ordered, parts)
+    parts = [str(item.get("закадр") or "").strip() for item in filled]
+    return _kadry_rows(filled, parts)
 
 
 def _kadry_rows(
@@ -576,7 +544,7 @@ def _kadry_rows(
 
 
 def ensure_kadry_from_bits(frame: Any) -> int:
-    """Если кадры[] пустые, а биты есть — собрать покрытие по якорям."""
+    """Если кадры[] пустые, а биты есть — собрать покрытие по bit.закадр."""
     if planned_shots_from_attrs(frame):
         return 0
     bits = bits_from_attrs(frame)

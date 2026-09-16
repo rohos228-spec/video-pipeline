@@ -1939,11 +1939,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         f"{accompanying}\n\n"
                         "# DB SoT\n"
                         "Файл db_frames.json — ОДНА seed-ячейка = весь целый закадр "
-                        "(uuid + number + voiceover_text). Это неразделённый "
-                        "script_text / voiceover.txt: не пиши, не меняй, не режь "
-                        "его на ячейки. Твоя единственная работа — разметить в нём "
-                        "биты (fields.биты). Разбивку на ячейки сделает пайплайн "
-                        "позже. Excel не используется. Отвечай только JSON apply-ops."
+                        "(uuid + number + voiceover_text). Не пиши и не меняй "
+                        "voiceover_text ячейки. Каждый бит несёт свой дословный "
+                        "кусок в fields.биты[].закадр. Склейка кусков = весь "
+                        "voiceover_text. Поля якорь нет. Excel не используется. "
+                        "Отвечай только JSON apply-ops."
                     ).strip()
                 elif main_action_node:
                     accompanying = (

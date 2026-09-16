@@ -124,48 +124,19 @@ def object_matches_step(step: str, obj: str) -> bool:
 
 
 def fill_bit_spans(vo: str, bits: list[Any]) -> list[dict[str, Any]]:
-    """Якорь = старт куска. Код режет закадр ячейки по якорям по порядку."""
+    """Бит уже несёт свой кусок закадра. Якорь не используем."""
     text = " ".join((vo or "").split())
     ordered = sorted(
         (dict(b) for b in bits if isinstance(b, dict)),
         key=lambda item: int(item.get("порядок") or 0),
     )
-    if not text or not ordered:
+    if not ordered:
         return ordered
-    starts: list[int] = []
-    cursor = 0
-    for i, item in enumerate(ordered):
-        anchor = " ".join(str(item.get("якорь") or item.get("закадр") or "").split())
-        idx = -1
-        if anchor:
-            idx = text.find(anchor, cursor)
-            if idx < 0:
-                idx = text.casefold().find(anchor.casefold(), cursor)
-        if idx < 0:
-            starts.append(0 if i == 0 else cursor)
-            continue
-        starts.append(0 if i == 0 else idx)
-        cursor = idx + max(len(anchor), 1)
-    if not starts:
-        return ordered
-    for i, item in enumerate(ordered):
-        start = starts[i] if i < len(starts) else 0
-        end = starts[i + 1] if i + 1 < len(starts) else len(text)
-        if end < start:
-            end = start
-        piece = text[start:end].strip()
-        if piece:
-            item["закадр"] = piece
-        elif not str(item.get("закадр") or "").strip():
-            item["закадр"] = anchor if i == 0 else ""
-    joined = " ".join(str(b.get("закадр") or "").strip() for b in ordered)
-    if " ".join(joined.split()) != text and ordered:
-        from app.services.scene_design.camera_expand import split_text_into_parts
-
-        parts = split_text_into_parts(text, len(ordered))
-        for item, piece in zip(ordered, parts, strict=False):
-            if piece:
-                item["закадр"] = " ".join(piece.split())
+    for item in ordered:
+        item.pop("якорь", None)
+        item["закадр"] = " ".join(str(item.get("закадр") or "").split())
+    if text and len(ordered) == 1 and not ordered[0]["закадр"]:
+        ordered[0]["закадр"] = text
     return ordered
 
 

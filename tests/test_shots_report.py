@@ -296,7 +296,6 @@ def test_group_run_html_has_nodes_and_qc() -> None:
                     "порядок": 1,
                     "глагол": "входя / принимая в кабинет",
                     "изменение": "снаружи → внутри",
-                    "якорь": "Он вошёл",
                     "закадр": "Он вошёл в кабинет следователя.",
                 }
             ],
@@ -326,7 +325,6 @@ def test_group_run_html_has_nodes_and_qc() -> None:
     assert "T0–T10" in html
     assert "вошёл" in html
     assert "изменение" in html
-    assert "якорь" in html
     assert "закадр бита" in html
     assert "позиция" in html
     assert "высота" in html
