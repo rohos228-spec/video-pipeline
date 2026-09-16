@@ -1,0 +1,464 @@
+{
+  "scene_id": "fix:cross",
+  "meaning": "c02 walks the curb; geography is reset; camera recrosses the axis.",
+  "value_charge": {
+    "start": "+",
+    "end": "-"
+  },
+  "monotony_surface": "ground",
+  "plan": [
+    {
+      "id": "c01",
+      "x": 0.0,
+      "y": 2.0,
+      "facing": 90.0
+    },
+    {
+      "id": "c02",
+      "x": 4.0,
+      "y": 2.0,
+      "facing": 270.0
+    },
+    {
+      "id": "cam",
+      "x": -1.947,
+      "y": 0.564,
+      "facing": 70.0
+    }
+  ],
+  "obstacles": [
+    {
+      "id": "curb1",
+      "x": 3.0,
+      "y": 1.2,
+      "w": 4.0,
+      "h": 0.2
+    }
+  ],
+  "axes": [
+    {
+      "pair": [
+        "c01",
+        "c02"
+      ],
+      "side_locked": "B"
+    }
+  ],
+  "project": {
+    "slug": "fix-cross",
+    "topic": "cross fixture"
+  },
+  "scene": {
+    "title": "axis walk",
+    "place": "street"
+  },
+  "frames": [
+    {
+      "uuid": "c20500000000000000000001",
+      "number": 1,
+      "voiceover_text": "Crossing 1.",
+      "image_prompt": "PROMPT: street two-shot, c02 about to walk right\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, street two-shot, c02 about to walk right\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "street-master"
+      },
+      "space": {
+        "shot_order": 1,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c01": "L",
+          "c02": "R"
+        },
+        "screen_dir": "L→R",
+        "shot_size": "EWS",
+        "angle_v": "eye-level",
+        "angle_h": "frontal",
+        "beat_role": "establish",
+        "crossing_method": null,
+        "space_delta_json": {
+          "monotony": {
+            "action_class": "establish",
+            "bodies": 2,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "c20500000000000000000002",
+      "number": 2,
+      "voiceover_text": "Crossing 2.",
+      "image_prompt": "PROMPT: c02 takes a step along the curb\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, c02 takes a step along the curb\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "stride"
+      },
+      "space": {
+        "shot_order": 2,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c01": "L",
+          "c02": "R"
+        },
+        "screen_dir": "L→R",
+        "shot_size": "FS",
+        "angle_v": "slight low",
+        "angle_h": "profile",
+        "beat_role": "beat",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": 5.806,
+            "y": 0.225,
+            "facing": 295.0
+          },
+          "c02": {
+            "x": 4.22,
+            "y": 2.0,
+            "facing": 90.0
+          },
+          "monotony": {
+            "action_class": "action",
+            "bodies": 2,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "c20500000000000000000003",
+      "number": 3,
+      "voiceover_text": "Crossing 3.",
+      "image_prompt": "PROMPT: c02 waist-up walking\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, c02 waist-up walking\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "shoulder"
+      },
+      "space": {
+        "shot_order": 3,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c02": "C"
+        },
+        "screen_dir": "L→R",
+        "shot_size": "MS",
+        "angle_v": "eye-level",
+        "angle_h": "over-the-shoulder",
+        "beat_role": "beat",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": -1.121,
+            "y": -0.81,
+            "facing": 48.0
+          },
+          "c02": {
+            "x": 4.45,
+            "y": 2.0,
+            "facing": 90.0
+          },
+          "monotony": {
+            "action_class": "action",
+            "bodies": 1,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "c20500000000000000000004",
+      "number": 4,
+      "voiceover_text": "Crossing 4.",
+      "image_prompt": "PROMPT: c02 face while walking\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, c02 face while walking\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "boot"
+      },
+      "space": {
+        "shot_order": 4,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c02": "C"
+        },
+        "screen_dir": "L→R",
+        "shot_size": "CU",
+        "angle_v": "slight high",
+        "angle_h": "rear three-quarter",
+        "beat_role": "beat",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": 5.121,
+            "y": -0.81,
+            "facing": 312.0
+          },
+          "c02": {
+            "x": 4.68,
+            "y": 2.0,
+            "facing": 90.0
+          },
+          "monotony": {
+            "action_class": "action",
+            "bodies": 1,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "c20500000000000000000005",
+      "number": 5,
+      "voiceover_text": "Crossing 5.",
+      "image_prompt": "PROMPT: c02 mid-stride, still on the locked side\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, c02 mid-stride, still on the locked side\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "mid-walk"
+      },
+      "space": {
+        "shot_order": 5,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c02": "C"
+        },
+        "screen_dir": "L→R",
+        "shot_size": "MS",
+        "angle_v": "eye-level",
+        "angle_h": "three-quarter",
+        "beat_role": "beat",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": 0.028,
+            "y": -1.708,
+            "facing": 28.0
+          },
+          "c02": {
+            "x": 4.9,
+            "y": 2.0,
+            "facing": 90.0
+          },
+          "monotony": {
+            "action_class": "action",
+            "bodies": 1,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "c20500000000000000000006",
+      "number": 6,
+      "voiceover_text": "Crossing 6.",
+      "image_prompt": "PROMPT: c02 covers more than a meter, geography shifts\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, c02 covers more than a meter, geography shifts\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "axis-cross-step"
+      },
+      "space": {
+        "shot_order": 6,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c01": "L",
+          "c02": "R"
+        },
+        "screen_dir": "L→R",
+        "shot_size": "FS",
+        "angle_v": "slight low",
+        "angle_h": "from behind",
+        "beat_role": "beat",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": 3.972,
+            "y": -1.708,
+            "facing": 332.0
+          },
+          "c02": {
+            "x": 6.5,
+            "y": 2.0,
+            "facing": 90.0
+          },
+          "monotony": {
+            "action_class": "action",
+            "bodies": 2,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 1,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "c20500000000000000000007",
+      "number": 7,
+      "voiceover_text": "Crossing 7.",
+      "image_prompt": "PROMPT: wide geography after the move, same locked side\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, wide geography after the move, same locked side\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "geo-wide"
+      },
+      "space": {
+        "shot_order": 7,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c01": "L",
+          "c02": "R"
+        },
+        "screen_dir": "none",
+        "shot_size": "EWS",
+        "angle_v": "eye-level",
+        "angle_h": "frontal",
+        "beat_role": "reestablish",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": 1.415,
+            "y": -2.159,
+            "facing": 8.0
+          },
+          "monotony": {
+            "action_class": "establish",
+            "bodies": 2,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "c20500000000000000000008",
+      "number": 8,
+      "voiceover_text": "Crossing 8.",
+      "image_prompt": "PROMPT: hold the pair before the bank change\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, hold the pair before the bank change\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "hold"
+      },
+      "space": {
+        "shot_order": 8,
+        "axis_pair": "c01|c02",
+        "axis_side": "B",
+        "screen_pos": {
+          "c01": "L",
+          "c02": "R"
+        },
+        "screen_dir": "none",
+        "shot_size": "FS",
+        "angle_v": "slight high",
+        "angle_h": "profile",
+        "beat_role": "beat",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": 2.873,
+            "y": -2.108,
+            "facing": 348.0
+          },
+          "monotony": {
+            "action_class": "action",
+            "bodies": 2,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "c20500000000000000000009",
+      "number": 9,
+      "voiceover_text": "Crossing 9.",
+      "image_prompt": "PROMPT: new bank of the street, camera across the axis\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, new bank of the street, camera across the axis\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "far-bank"
+      },
+      "space": {
+        "shot_order": 9,
+        "axis_pair": "c01|c02",
+        "axis_side": "A",
+        "screen_pos": {
+          "c02": "L",
+          "c01": "R"
+        },
+        "screen_dir": "none",
+        "shot_size": "EWS",
+        "angle_v": "slight low",
+        "angle_h": "from behind",
+        "beat_role": "reestablish",
+        "crossing_method": "reestablish",
+        "space_delta_json": {
+          "cam": {
+            "x": 2.0,
+            "y": 6.5,
+            "facing": 180.0
+          },
+          "monotony": {
+            "action_class": "establish",
+            "bodies": 2,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    },
+    {
+      "uuid": "c2050000000000000000000a",
+      "number": 10,
+      "voiceover_text": "Crossing 10.",
+      "image_prompt": "PROMPT: pair settled on the new side of the axis\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "animation_prompt": "PROMPT: slow hold, pair settled on the new side of the axis\nNEGATIVE PROMPT: extra limbs, watermark, readable lettering",
+      "attrs": {
+        "accent": "settle"
+      },
+      "space": {
+        "shot_order": 10,
+        "axis_pair": "c01|c02",
+        "axis_side": "A",
+        "screen_pos": {
+          "c02": "L",
+          "c01": "R"
+        },
+        "screen_dir": "none",
+        "shot_size": "FS",
+        "angle_v": "eye-level",
+        "angle_h": "three-quarter",
+        "beat_role": "beat",
+        "crossing_method": null,
+        "space_delta_json": {
+          "cam": {
+            "x": 3.4,
+            "y": 6.3,
+            "facing": 198.03
+          },
+          "monotony": {
+            "action_class": "action",
+            "bodies": 2,
+            "surface": "ground"
+          }
+        },
+        "reestablish_due": 0,
+        "manual": 0
+      }
+    }
+  ]
+}
