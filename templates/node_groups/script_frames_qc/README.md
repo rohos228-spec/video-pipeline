@@ -10,18 +10,18 @@
 | файл | нода |
 |------|------|
 | `script_writer_ru.md` | fw_script |
+| `main_action_from_bits_ru.md` | fw_action |
 | `scenes_to_frames_ru.md` | fw_shots |
 | `shots_qc_ru.md` | fw_qc |
 
 Опционально (старые канвасы, нода не в новой группе):
-`main_action_from_bits_ru.md` — fw_action (снята: последовательность кадров пишет fw_shots)
 `frame_prompts_continuity_ru.md` — fw_frames
 `prompts_qc_continuity_ru.md` — старый QC промптов
 
 Нода без промта (код собирает HTML):
 `fw_report` — после fw_qc, отчёт кадров.
 
-Опционально (старые канвасы, нода не в новой группе):
-`fw_check_script` — проверка сценария, снята.
+Проверка без своего файла (правила — с промта источника, checkMode):
+`fw_check_script` (после fw_script).
 
 Каталог кадров T/X (`templates/shot_templates/`) — для монтажа, не для этой группы.

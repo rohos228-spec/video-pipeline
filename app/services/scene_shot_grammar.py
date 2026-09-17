@@ -26,7 +26,7 @@ _PLACE_RE = re.compile(
     re.IGNORECASE,
 )
 _BODY_RE = re.compile(
-    r"сел|сел[аи]|встал|вста[её]т|ид[её]т|ш[её]л|шаг|стоит у|стоя[тл]|подош|подош[её]л|"
+    r"сел|сел[аи]|встал|ид[её]т|ш[её]л|шаг|стоит у|подош|подош[её]л|"
     r"подошла|снял|надева|переда|протяж",
     re.IGNORECASE,
 )
@@ -49,9 +49,9 @@ _LOOK_RE = re.compile(
     re.IGNORECASE,
 )
 _VISIBLE_VERB_RE = re.compile(
-    r"вош|выш|сел|встал|вста[её]т|ид[её]|ш[её]л|открыл|взял|бер|снял|надева|"
-    r"полож|достал|смотрел|увидел|говор|шёл|шел|бежит|стоит|стоя[тл]|"
-    r"смотр|меша|бега|ходит|кладет|кладёт|кладут|несёт|несет|держ|чита|"
+    r"вош|выш|сел|встал|ид[её]|ш[её]л|открыл|взял|бер|снял|надева|"
+    r"полож|достал|смотрел|увидел|говор|шёл|шел|бежит|стоит|"
+    r"смотр|меша|бега|ходит|кладет|кладёт|несёт|несет|держ|чита|"
     r"крич|пада|подн|опуск|брос|толк|тяне|обня|обним|переда|"
     r"протяж",
     re.IGNORECASE,
@@ -222,89 +222,28 @@ def merge_same_place_scenes(action: str) -> str:
     return "\n".join(lines)
 
 
-_PAD_STEPS = (
-    "останавливается у стены",
-    "поворачивается к двери",
-    "смотрит на стол",
-    "берёт бумагу",
-    "идёт дальше по коридору",
-    "стоит у окна",
-    "кладёт руку на стол",
-    "открывает дверь",
-    "читает следующую строку",
-    "проходит вдоль стены",
-)
-
-
-def _shot_count_for_vo(vo: str, n_steps: int) -> int:
-    """Сколько кадров нужно, чтобы закадр влез в 13–80."""
-    text = " ".join((vo or "").split())
-    vis = visible_len(text)
-    words = text.split()
-    if not text:
-        return max(1, n_steps)
-    max_n = min(len(words), vis // SHOT_VO_MIN if vis >= SHOT_VO_MIN else 1)
-    min_n = 1 if vis <= SHOT_VO_MAX else (vis + SHOT_VO_MAX - 1) // SHOT_VO_MAX
-    return max(1, min(max(n_steps, min_n), max_n))
-
-
-def _pad_unique_steps(steps: list[str], n: int) -> list[str]:
-    out = list(steps)
-    seen = {action_stem(s) for s in out if action_stem(s)}
-    for extra in _PAD_STEPS:
-        if len(out) >= n:
-            break
-        stem = action_stem(extra)
-        if stem and stem not in seen and has_visible_verb(extra):
-            out.append(extra)
-            seen.add(stem)
-    return out
-
-
 def _split_vo_for_steps(vo: str, n: int) -> list[str]:
-    """Режет закадр на n кусков 13–80. Шаги действия важнее границ клаузы."""
+    from app.services.scene_design.camera_expand import split_text_into_parts
+
     text = " ".join((vo or "").split())
-    if not text:
-        return [""] * max(1, n)
-    vis = visible_len(text)
-    words = text.split()
-    n = _shot_count_for_vo(text, n)
     if n <= 1:
-        return [text]
-    parts: list[str] = []
+        return [text] if text else [""]
+    if not text:
+        return [""] * n
+    parts = [" ".join((p or "").split()) for p in split_text_into_parts(text, n)]
     i = 0
-    for p in range(n):
-        remaining_parts = n - p
-        rest = words[i:]
-        if remaining_parts <= 1 or not rest:
-            parts.append(" ".join(rest))
-            break
-        rest_vis = visible_len(" ".join(rest))
-        max_take = min(SHOT_VO_MAX, rest_vis - (remaining_parts - 1) * SHOT_VO_MIN)
-        min_take = max(
-            SHOT_VO_MIN, rest_vis - (remaining_parts - 1) * SHOT_VO_MAX
-        )
-        want = min(max(rest_vis / remaining_parts, min_take), max_take)
-        chunk: list[str] = []
-        size = 0
-        while i < len(words):
-            leftover_words = len(words) - i
-            if chunk and leftover_words < remaining_parts:
-                break
-            add = visible_len(words[i]) + (1 if chunk else 0)
-            nxt = size + add
-            if chunk and nxt > max_take:
-                break
-            if chunk and size >= want:
-                break
-            chunk.append(words[i])
-            size = nxt
-            i += 1
-        if not chunk and i < len(words):
-            chunk = [words[i]]
-            i += 1
-        parts.append(" ".join(chunk) if chunk else "")
-    return [p for p in parts if p] or [text]
+    while i < len(parts):
+        if visible_len(parts[i]) < SHOT_VO_MIN and len(parts) > 1:
+            if i + 1 < len(parts):
+                parts[i + 1] = " ".join((parts[i] + " " + parts[i + 1]).split())
+                parts.pop(i)
+                continue
+            if i > 0:
+                parts[i - 1] = " ".join((parts[i - 1] + " " + parts[i]).split())
+                parts.pop(i)
+                continue
+        i += 1
+    return parts or [text]
 
 
 def _position(i: int, n: int, obj: str, place_new: bool) -> str:
@@ -443,11 +382,7 @@ def expand_action_to_shots(
                 uniq.append(step)
                 seen.add(stem)
         steps = uniq or steps[:1] or ["действие"]
-        need = _shot_count_for_vo(vo, len(steps))
-        steps = _pad_unique_steps(steps, need)
         pieces = _split_vo_for_steps(vo, len(steps))
-        if len(pieces) > len(steps):
-            steps = _pad_unique_steps(steps, len(pieces))
         if len(pieces) < len(steps):
             steps = steps[: len(pieces)] or steps[:1]
         n = min(len(steps), len(pieces)) or 1
@@ -456,11 +391,10 @@ def expand_action_to_shots(
         for i in range(n):
             step = steps[i]
             obj = classify_object(step)
-            shot_new = place_new and i == 0
-            pos = _position(i, n, obj, shot_new)
+            pos = _position(i, n, obj, place_new)
             pack = camera_pack(
                 obj=obj,
-                place_new=shot_new,
+                place_new=place_new,
                 position=pos,
                 hod=_hod(step),
                 prev=prev_shot,
@@ -591,7 +525,7 @@ def _fill_missing_camera(shots: list[Any], *, prev_place: str = "") -> None:
         shot.setdefault("точка", pack["точка"])
         shot.setdefault("движение", pack["движение"])
         shot.setdefault("стык", pack["стык"])
-        if place_new or i == 0:
+        if i == 0:
             shot["parent_id"] = None
         elif not str(shot.get("parent_id") or "").strip():
             first = shots[0] if isinstance(shots[0], dict) else {}
@@ -644,16 +578,10 @@ def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None
         if n < SHOT_VO_MIN and not (
             len(shots) == 1 and visible_len(vo) <= SHOT_VO_MAX
         ):
-            words = re.findall(r"[^\W\d_]+", chunk, flags=re.UNICODE)
-            title = bool(_TITLE_RE.search(step))
-            name_like = 1 <= len(words) <= 2 and all(
-                w[:1].isupper() for w in words if w
+            return (
+                f"{prefix}кадр закадр {n} симв. "
+                f"(нужно {SHOT_VO_MIN}–{SHOT_VO_MAX})"
             )
-            if not (title or name_like):
-                return (
-                    f"{prefix}кадр закадр {n} симв. "
-                    f"(нужно {SHOT_VO_MIN}–{SHOT_VO_MAX})"
-                )
         if chunk and n > SHOT_VO_MAX:
             return (
                 f"{prefix}кадр закадр {n} симв. "

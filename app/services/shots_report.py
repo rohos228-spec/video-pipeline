@@ -1,4 +1,4 @@
-"""HTML-отчёт группы script_frames_qc: кадры-шаги, камера из таблицы, QC полей."""
+"""HTML-отчёт группы script_frames_qc: сцены → кадры, справа промты и QC."""
 
 from __future__ import annotations
 
@@ -8,8 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from app.project_root import find_project_root
-from app.services.scene_shot_grammar import OBJECTS, SHOT_VO_IDEAL, SHOT_VO_MAX, SHOT_VO_MIN
-from app.services.shot_templates import parse_scene_chain, plain_scene_vo
+from app.services.shot_templates import (
+    load_shot_templates,
+    parse_scene_chain,
+    plain_scene_vo,
+    plan_templates_for_action,
+)
 
 def _esc(text: Any) -> str:
     return html.escape(" ".join(str(text or "").split()))
@@ -60,7 +64,14 @@ def _get(src: dict[str, Any], *keys: str) -> str:
 
 
 def _when_by_template() -> dict[str, str]:
-    return {}
+    out: dict[str, str] = {}
+    for row in load_shot_templates().get("templates") or []:
+        if not isinstance(row, dict):
+            continue
+        tid = str(row.get("id") or "").strip()
+        if tid:
+            out[tid] = str(row.get("when") or "").strip()
+    return out
 
 
 def _frame_action(fr: Any) -> str:
@@ -201,15 +212,10 @@ def _camera_bits(fr: Any | None, shot: dict[str, Any]) -> dict[str, str]:
     cs = _cs(fr) if fr is not None else {}
     top = _top(fr) if fr is not None else {}
     src = {**shot, **attrs, **cs, **top}
-    mm = _get(src, "линза_мм")
     return {
-        "объект": _get(src, "объект") or "",
-        "план": _get(src, "план"),
-        "линза_мм": mm,
-        "ракурс": _get(src, "ракурс"),
+        "крупность": _get(src, "крупность", "size"),
         "движение": _get(src, "движение", "move"),
-        "крупность": _get(src, "крупность", "size") or _get(src, "план"),
-        "набор": _get(src, "набор", "set") or _get(src, "место", "place"),
+        "набор": _get(src, "набор", "set"),
     }
 
 
@@ -242,12 +248,15 @@ def _cs_scene_nums(frames: list[Any]) -> set[int]:
 def build_shots_report_model(frames: list[Any]) -> dict[str, Any]:
     action = _merged_action(frames)
     chain_map = _scene_action_map(frames)
+    plan = {int(row["n"]): row for row in plan_templates_for_action(action)}
+    when_map = _when_by_template()
     kadry = _collect_kadry(frames)
     index = _overlay_index(frames)
     scene_nums = sorted(set(chain_map) | set(kadry) | _cs_scene_nums(frames)) or [1]
     scenes: list[dict[str, Any]] = []
     for n in scene_nums:
         scene = chain_map.get(n) or {}
+        prow = plan.get(n) or {}
         packed = kadry.get(n) or {}
         shots = list(packed.values())
         if not shots:
@@ -255,6 +264,8 @@ def build_shots_report_model(frames: list[Any]) -> dict[str, Any]:
         else:
             shots.sort(key=lambda s: int(s.get("порядок") or 0))
         ids = {_shot_id(s) for s in shots if _shot_id(s)}
+        first_tid = _get(shots[0], "шаблон", "template") if shots else ""
+        tid = first_tid or str(prow.get("template") or "")
         built: list[dict[str, Any]] = []
         for i, shot in enumerate(shots, start=1):
             overlay = shot.get("_frame") or _pick_overlay(shot, index)
@@ -268,19 +279,15 @@ def build_shots_report_model(frames: list[Any]) -> dict[str, Any]:
             except (TypeError, ValueError):
                 cell = 0
             sid = _shot_id(shot) or f"S{n}-K{i}"
-            qc = _camera_bits(overlay, shot)
             built.append(
                 {
                     "id": sid,
-                    "template": _get(shot, "шаблон", "template") or "",
+                    "template": _get(shot, "шаблон", "template") or tid,
                     "order": int(shot.get("порядок") or i),
-                    "object": _get(shot, "объект") or qc.get("объект") or "",
-                    "plan": _get(shot, "план") or qc.get("план") or "",
-                    "lens": _get(shot, "линза_мм") or qc.get("линза_мм") or "",
-                    "angle": _get(shot, "ракурс") or qc.get("ракурс") or "",
-                    "move": _get(shot, "движение") or qc.get("движение") or "",
+                    "plan": _get(shot, "план"),
+                    "angle": _get(shot, "ракурс"),
                     "place": _get(shot, "место", "place")
-                    or str(scene.get("place") or ""),
+                    or str(scene.get("place") or prow.get("place") or ""),
                     "action": _get(shot, "действие", "action"),
                     "vo": plain_scene_vo(
                         shot.get("закадр") or shot.get("voiceover_text") or ""
@@ -289,7 +296,7 @@ def build_shots_report_model(frames: list[Any]) -> dict[str, Any]:
                     "cell": cell,
                     "rel": _rel_label(shot, ids),
                     "prompts": _prompts(overlay),
-                    "qc": qc,
+                    "qc": _camera_bits(overlay, shot),
                 }
             )
         cell0 = next((s["cell"] for s in built if s.get("cell")), 0)
@@ -303,35 +310,51 @@ def build_shots_report_model(frames: list[Any]) -> dict[str, Any]:
                 "n": n,
                 "place": str(
                     scene.get("place")
+                    or prow.get("place")
                     or (built[0].get("place") if built else "")
                     or ""
                 ),
                 "action": str(
                     scene.get("action")
+                    or prow.get("action")
                     or (built[0].get("action") if built else "")
                     or ""
                 ),
                 "vo": vo,
-                "same_place": False if n == min(scene_nums) else True,
-                "template": "",
-                "when": "",
-                "when_key": "",
+                "same_place": bool(prow.get("same_place")),
+                "template": tid,
+                "when": when_map.get(tid, ""),
+                "when_key": str(prow.get("reason") or ""),
                 "shots": built,
             }
         )
-    prev_place = ""
-    for scene in scenes:
-        place = str(scene.get("place") or "").strip().casefold()
-        scene["same_place"] = bool(place and place == prev_place)
-        if place:
-            prev_place = place
+    tids = sorted({s["template"] for s in scenes if s.get("template")})
+    select_if = {
+        str(row.get("then_template") or ""): str(row.get("if") or "")
+        for row in (load_shot_templates().get("select") or [])
+        if isinstance(row, dict)
+    }
+    select_q = {
+        str(row.get("then_template") or ""): str(row.get("question") or "")
+        for row in (load_shot_templates().get("select") or [])
+        if isinstance(row, dict)
+    }
     return {
         "scenes": scenes,
         "shot_count": sum(len(s["shots"]) for s in scenes),
-        "templates": [],
-        "when_catalog": [],
-        "objects": list(OBJECTS),
-        "vo_window": f"{SHOT_VO_MIN}–{SHOT_VO_MAX} (цель ~{SHOT_VO_IDEAL})",
+        "templates": tids,
+        "when_catalog": [
+            {
+                "id": str(row.get("id") or ""),
+                "name": str(row.get("name") or ""),
+                "when_key": select_if.get(str(row.get("id") or ""), ""),
+                "when": str(row.get("when") or ""),
+                "fits": select_q.get(str(row.get("id") or ""), ""),
+                "ladder": str(row.get("shots_full") or ""),
+            }
+            for row in (load_shot_templates().get("templates") or [])
+            if isinstance(row, dict) and row.get("id")
+        ],
     }
 
 
@@ -343,36 +366,28 @@ def render_shots_report_html(
 ) -> str:
     scenes = list(model.get("scenes") or [])
     shot_n = int(model.get("shot_count") or 0)
+    tids = ", ".join(model.get("templates") or []) or "—"
     stamp = datetime.now().strftime("%d.%m.%Y %H:%M")
     pid = f"#{project_id} " if project_id else ""
-    vo_win = _esc(model.get("vo_window") or f"{SHOT_VO_MIN}–{SHOT_VO_MAX}")
     rows: list[str] = []
     for i, scene in enumerate(scenes, start=1):
         cards: list[str] = []
         for sh in scene.get("shots") or []:
+            tid = _esc(sh.get("template") or "T")
             sid = _esc(sh.get("id"))
             vo = _esc(sh.get("vo"))
             prompts = sh.get("prompts") or {}
             qc = sh.get("qc") or {}
             img = _esc(prompts.get("картинка") or "—")
             vid = _esc(prompts.get("видео") or "—")
-            obj = _esc(sh.get("object") or qc.get("объект") or "—")
-            mm = _esc(sh.get("lens") or qc.get("линза_мм") or "—")
             qc_line = " · ".join(
-                f"{lab} {_esc(qc.get(lab) or sh.get(key) or '—')}"
-                for lab, key in (
-                    ("объект", "object"),
-                    ("план", "plan"),
-                    ("линза_мм", "lens"),
-                    ("ракурс", "angle"),
-                    ("движение", "move"),
-                )
+                f"{lab} {_esc(qc.get(lab) or '—')}"
+                for lab in ("крупность", "движение", "набор")
             )
             vo_html = f"<div class=vo-bit>({vo})</div>" if vo else ""
             cards.append(
-                f"<div class=shot><b>{sid}</b> · {obj} · "
-                f"{_esc(sh.get('plan') or '—')} · {mm}mm · "
-                f"{_esc(sh.get('angle') or '—')} "
+                f"<div class=shot><b>{sid}</b> · {tid} · "
+                f"{_esc(sh.get('plan') or '—')} · {_esc(sh.get('angle') or '—')} "
                 f"— {_esc(sh.get('action'))}{vo_html}"
                 f"<div class=rel>{_esc(sh.get('rel'))}</div>"
                 f"<div class=vo-bit>картинка: {img}</div>"
@@ -384,15 +399,29 @@ def render_shots_report_html(
             if scene.get("vo")
             else ""
         )
+        when_key = _esc(scene.get("when_key") or "")
         rows.append(
             "<tr>"
             f"<td>{_esc(scene.get('id') or scene.get('n') or i)}</td>"
             f"<td>{_esc(scene.get('place') or '—')}</td>"
             f"<td>{_esc(scene.get('action'))}{vo_bit}</td>"
             f"<td>{'да' if scene.get('same_place') else 'нет'}</td>"
+            f"<td><div class=bit><b>{_esc(scene.get('template') or '—')}</b>"
+            f"{('<div class=vo-bit>when: ' + when_key + '</div>') if when_key else ''}"
+            f"<div class=vo-bit>{_esc(scene.get('when'))}</div></div></td>"
             f"<td>{''.join(cards) or '—'}</td>"
             "</tr>"
         )
+    when_rows = "".join(
+        "<tr>"
+        f"<td>{_esc(row.get('id'))}</td>"
+        f"<td>{_esc(row.get('name'))}</td>"
+        f"<td>{_esc(row.get('when_key') or row.get('when'))}</td>"
+        f"<td>{_esc(row.get('fits') or row.get('when'))}</td>"
+        f"<td>{_esc(row.get('ladder'))}</td>"
+        "</tr>"
+        for row in (model.get("when_catalog") or [])
+    )
     return f"""<!doctype html><html lang=ru><head><meta charset=utf-8>
 <title>Отчёт кадров · {html.escape(slug or 'проект')}</title>
 <style>
@@ -410,175 +439,39 @@ th:first-child,td:first-child{{width:56px;text-align:center;color:#666;font-weig
 .rel{{color:#1a4d8c;margin-top:2px;font-weight:650}}
 .note{{background:#eef5ff;border:1px solid #c9dbf5;padding:10px 12px;margin:0 0 16px}}
 </style></head><body>
-<h1>Сцены → кадры-шаги и QC полей</h1>
-<p class=meta>проект {html.escape(pid)}{html.escape(slug or '—')} · {html.escape(stamp)} · сцен {len(scenes)} · кадров {shot_n} · закадр кадра {vo_win}</p>
-<h2>Грамматика группы (не T0–T10)</h2>
+<h1>Сцены → кадры, промты и QC</h1>
+<p class=meta>проект {html.escape(pid)}{html.escape(slug or '—')} · {html.escape(stamp)} · сцен {len(scenes)} · кадров {shot_n} · шаблоны {html.escape(tids)}</p>
+<h2>Листы xlsx → куда легло в код</h2>
 <table>
-<thead><tr><th>id</th><th>Правило</th><th>Как используется</th></tr></thead>
+<thead><tr><th>id</th><th>Лист таблицы</th><th>Как использовал</th></tr></thead>
 <tbody>
-<tr><td>1</td><td>VO-ячейка = сцена</td><td>биты якорями, код режет spans; закадр не пишет GPT</td></tr>
-<tr><td>2</td><td>карточка сцены</td><td>N. место — шаг → шаг + (дословный кусок). Одно место не плодит новые N.</td></tr>
-<tr><td>3</td><td>кадр = видимый шаг</td><td>объект: место|тело|двое|предмет|лицо|взгляд. Камеру дописывает код</td></tr>
-<tr><td>4</td><td>закадр кадра</td><td>13–80, цель ~45. Склейка = весь voiceover_text</td></tr>
-<tr><td>5</td><td>parent</td><td>новое место — null; то же место — id первого кадра локации (PNG)</td></tr>
-<tr><td>6</td><td>промты картинок</td><td>не эта группа — шаг img_pr</td></tr>
+<tr><td>1</td><td>Как читать</td><td>слоты {{место}} {{кто}} {{предмет}}; короткий текст — резать с конца лестницы; один жест = один кадр</td></tr>
+<tr><td>2</td><td>Каталог + столбец Когда / when</td><td>templates[].when — условие, когда брать T0–T10 и X1/X2</td></tr>
+<tr><td>3</td><td>Кадры</td><td>shots[]: план, ракурс, parent, роль каждого кадра схемы</td></tr>
+<tr><td>4</td><td>Сжатие</td><td>drop_order, если кусок закадра сцены короткий</td></tr>
+<tr><td>5</td><td>Выбор</td><td>select[]: первое «да» сверху вниз. То же место → X1, если нет более точного when</td></tr>
+<tr><td>6</td><td>Цепи</td><td>жил→служил→работал = T8+T8+T8; две сцены одно место = T* → X1</td></tr>
+<tr><td>7</td><td>Parent</td><td>новое место — parent нет; то же место — parent = первый кадр локации</td></tr>
 </tbody>
 </table>
-<h2>Сцены: кадры схемы</h2>
+<h2>Столбец when</h2>
+<table><thead><tr><th>id</th><th>Шаблон</th><th>when из таблицы</th><th>Когда подходит</th><th>Лестница кадров</th></tr></thead>
+<tbody>{when_rows}</tbody></table>
+<h2>Сцены: какой when сработал</h2>
 <table>
-<thead><tr><th>id</th><th>Место</th><th>Действие сцены + закадр</th><th>То же место</th><th>Кадры схемы</th></tr></thead>
+<thead><tr><th>id</th><th>Место</th><th>Действие сцены + закадр</th><th>То же место</th><th>when → шаблон</th><th>Кадры схемы</th></tr></thead>
 <tbody>{''.join(rows)}</tbody>
 </table>
 <h2>Куда это вставлено в пайплайн</h2>
 <table>
 <thead><tr><th>id</th><th>Кусок</th><th>Как используется</th></tr></thead>
 <tbody>
-<tr><td>1</td><td>fw_script</td><td>биты: изменение + якорь. Код fill_bit_spans</td></tr>
-<tr><td>2</td><td>fw_action</td><td>карточка сцены. Код merge_same_place_scenes</td></tr>
-<tr><td>3</td><td>fw_shots + scene_shot_grammar</td><td>шаги → кадры, camera_pack по объекту, 13–80</td></tr>
-<tr><td>4</td><td>fw_qc</td><td>shots_qc_ru: склейка, уникальность, enum, parent. Не промты</td></tr>
-<tr><td>5</td><td>fw_report</td><td>этот HTML из БД: кадры[] + цепь. Картинки — если уже есть от img_pr</td></tr>
+<tr><td>1</td><td>fw_frames, проход сцены→кадры</td><td>в accompanying уходит каталог + готовый SELECT ПО when. GPT не выбирает один T* на ячейку — ставит id из этой колонки</td></tr>
+<tr><td>2</td><td>scenes_to_frames_ru</td><td>алгоритм: разбор главное_действие → select на каждую сцену → shots из таблицы</td></tr>
+<tr><td>3</td><td>валидатор apply-ops</td><td>разные шаблоны в ячейке можно. Нельзя все ОБЩИЙ на одно место и два кадра подряд с одним планом</td></tr>
+<tr><td>4</td><td>fw_report</td><td>собирает HTML из текущей БД: все сцены из кадры[] + цепь, справа у кадра промты и QC</td></tr>
 </tbody>
 </table>
-</body></html>
-"""
-
-
-def visible_len_safe(text: Any) -> int:
-    from app.services.scene_shot_grammar import visible_len
-
-    return visible_len(str(text or ""))
-
-
-def render_group_run_html(
-    run: dict[str, Any],
-    *,
-    slug: str = "",
-    title: str = "Отчёт группы нод",
-) -> str:
-    """Полный прогон группы: биты → последовательность кадров → QC."""
-    bits = list(run.get("bits") or [])
-    shots = list(run.get("shots") or [])
-    action = str(run.get("action") or "")
-    qc = run.get("qc")
-    vo = str(run.get("vo") or "")
-    stamp = datetime.now().strftime("%d.%m.%Y %H:%M")
-    chain = parse_scene_chain(action)
-    bit_rows = "".join(
-        "<tr>"
-        f"<td>B{int(b.get('порядок') or i)}</td>"
-        f"<td><b>{_esc(b.get('изменение'))}</b>"
-        f"<div class=vo-bit>якорь: {_esc(b.get('якорь'))}</div>"
-        f"<div class=vo-bit>({_esc(b.get('закадр'))})</div></td>"
-        "</tr>"
-        for i, b in enumerate(bits, start=1)
-    )
-    scene_rows = "".join(
-        "<tr>"
-        f"<td>S{int(sc.get('n') or i):02d}</td>"
-        f"<td>{_esc(sc.get('place'))}</td>"
-        f"<td>{_esc(sc.get('action'))}"
-        f"<div class=vo-bit>({_esc(plain_scene_vo(sc.get('vo') or ''))})</div></td>"
-        "</tr>"
-        for i, sc in enumerate(chain, start=1)
-    )
-    shot_cards = "".join(
-        "<tr>"
-        f"<td>{_esc(s.get('id'))}</td>"
-        f"<td>{_esc(s.get('место'))}</td>"
-        f"<td>{_esc(s.get('действие'))}</td>"
-        f"<td>{_esc(s.get('объект'))}</td>"
-        f"<td>{_esc(s.get('план'))} · {_esc(s.get('линза_мм'))}mm"
-        f"<div class=vo-bit>{_esc(s.get('ракурс'))} · {_esc(s.get('движение'))}</div></td>"
-        f"<td>{'null' if s.get('parent_id') in (None, '', 'null') else _esc(s.get('parent_id'))}</td>"
-        f"<td>{_esc(s.get('закадр'))}"
-        f"<div class={'warn' if visible_len_safe(s.get('закадр')) > SHOT_VO_MAX or visible_len_safe(s.get('закадр')) < SHOT_VO_MIN else 'vo-bit'}>{visible_len_safe(s.get('закадр'))} симв. · цель ~{SHOT_VO_IDEAL}</div></td>"
-        "</tr>"
-        for s in shots
-    )
-    qc_cls = "ok" if not qc else "warn"
-    qc_text = "пусто ops — поля чистые" if not qc else str(qc)
-    return f"""<!doctype html><html lang=ru><head><meta charset=utf-8>
-<title>{html.escape(title)}</title>
-<style>
-body{{font:14px/1.4 system-ui,Segoe UI,sans-serif;margin:20px;color:#111;background:#fff}}
-h1{{font-size:22px;margin:0 0 6px}}
-h2{{font-size:16px;margin:28px 0 8px;padding-top:8px;border-top:1px solid #e5e5e5}}
-.meta{{color:#555;margin:0 0 12px}}
-.nav{{position:sticky;top:0;background:#fff;padding:10px 0 12px;border-bottom:1px solid #ddd;z-index:5;margin:0 0 16px}}
-.nav a{{margin-right:12px;color:#1a4d8c;font-weight:650;text-decoration:none}}
-table{{border-collapse:collapse;width:100%;min-width:1100px;margin:0 0 8px}}
-th,td{{border:1px solid #ddd;vertical-align:top;padding:10px 12px}}
-th{{text-align:left;background:#f4f4f4;position:sticky;top:48px}}
-th:first-child,td:first-child{{width:72px;text-align:center;color:#666;font-weight:650}}
-.vo-bit{{color:#666;margin-top:2px}}
-.note{{background:#eef5ff;border:1px solid #c9dbf5;padding:10px 12px;margin:0 0 16px}}
-.warn{{background:#fff6e8;border:1px solid #f0d2a0;padding:10px 12px;margin:0 0 16px}}
-.ok{{background:#eef8ee;border:1px solid #b7ddb7;padding:10px 12px;margin:0 0 16px}}
-.badge{{display:inline-block;background:#1a4d8c;color:#fff;border-radius:4px;padding:1px 7px;font-size:12px;font-weight:700;margin-right:6px}}
-.badge.g{{background:#2a7}}
-.badge.o{{background:#c80}}
-.node{{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:#444}}
-pre.note{{white-space:pre-wrap}}
-</style></head><body>
-<h1>{html.escape(title)}</h1>
-<p class=meta>группа <b>script_frames_qc</b> · {html.escape(slug or '—')} · {html.escape(stamp)}
-· битов {len(bits)} · сцен {len(chain)} · кадров {len(shots)} · закадр кадра {SHOT_VO_MIN}–{SHOT_VO_MAX}</p>
-<p class=nav>
-<a href="#gate">гейт</a>
-<a href="#n0">4 ноды</a>
-<a href="#n1">1 биты</a>
-<a href="#n2">2 кадры</a>
-<a href="#n3">3 QC</a>
-<a href="#n4">4 отчёт</a>
-</p>
-<p class=note>Формат как у старого отчёта группы, но <b>без T0–T10</b>.
-Кадр = видимый шаг действия. Камера из таблицы по полю <code>объект</code>.
-Промты картинок — <code>img_pr</code>, не эта группа. Нода frames на новых канвасах не вставляется.</p>
-<h2 id="gate">Гейт: только если группа на пайплайне</h2>
-<p class=ok><span class=badge g>вкл</span> <code>canvas_has_script_frames_qc</code> —
-<code>data.groupId=script_frames_qc</code>.</p>
-<table>
-<thead><tr><th>id</th><th>Механика</th><th>С группой</th><th>Без группы (main)</th></tr></thead>
-<tbody>
-<tr><td>1</td><td>Ячейка = сцена, дети = шаги действия</td><td>да, scene_shot_grammar</td><td>не эта грамматика; T/X остаётся монтажу</td></tr>
-<tr><td>2</td><td>камера</td><td>таблица объект → план / мм / ракурс</td><td>меню съёмки / каталог T/X</td></tr>
-<tr><td>3</td><td>parent PNG</td><td>первое новое место null, дальше id первого</td><td>как было</td></tr>
-<tr><td>4</td><td>промты картинок</td><td>img_pr</td><td>fw_frames если нода осталась на старом канвасе</td></tr>
-</tbody>
-</table>
-<h2 id="n0">Четыре ноды группы</h2>
-<p class=meta>сценарист → последовательность кадров → QC полей → HTML-отчёт</p>
-<table>
-<thead><tr><th>id</th><th>Нода</th><th>canvas id</th><th>промт / режим</th><th>Что пишет</th></tr></thead>
-<tbody>
-<tr><td>1</td><td><b>сценарист</b></td><td class=node>n_excel_gpt_fw_script</td><td class=node>script_writer_ru</td><td>биты: изменение + якорь. Закадр не пишет.</td></tr>
-<tr><td>2</td><td><b>кадры</b></td><td class=node>n_excel_gpt_fw_shots</td><td class=node>scenes_to_frames_ru</td><td>биты → последовательность кадров. Камеру дописывает код. Не T0–T10.</td></tr>
-<tr><td>3</td><td><b>QC полей</b></td><td class=node>n_excel_gpt_fw_qc</td><td class=node>shots_qc_ru</td><td>склейка, 13–80, уникальность, enum. Не промты картинок.</td></tr>
-<tr><td>4</td><td><b>отчёт</b></td><td class=node>n_excel_gpt_fw_report</td><td class=node>transport=code</td><td>HTML без GPT.</td></tr>
-</tbody>
-</table>
-<h2 id="n1">1 · Сценарист · n_excel_gpt_fw_script</h2>
-<p class=note>Промт <code>script_writer_ru.md</code>. Пишет только <code>биты</code>.
-Код <code>fill_bit_spans</code> режет закадр по якорям.</p>
-<table>
-<thead><tr><th>id</th><th>Бит</th></tr></thead>
-<tbody>{bit_rows}</tbody>
-</table>
-<h2 id="n2">2 · Кадры · n_excel_gpt_fw_shots</h2>
-<p class=note>Промт <code>scenes_to_frames_ru.md</code> + <code>scene_shot_grammar</code>.
-Последовательность кадров = сцена. Камера из таблицы, не каталог T/X.</p>
-<pre class=note>{html.escape(action)}</pre>
-<table>
-<thead><tr><th>id</th><th>Место</th><th>Действие</th><th>объект</th><th>камера</th><th>parent</th><th>закадр</th></tr></thead>
-<tbody>{shot_cards}</tbody>
-</table>
-<h2 id="n3">3 · QC · n_excel_gpt_fw_qc</h2>
-<p class="{qc_cls}"><span class="badge {'g' if not qc else 'o'}">shots_grammar_reason</span>
-{html.escape(qc_text)}</p>
-<p class=note>Промт <code>shots_qc_ru.md</code>. Пустые ops = ок. Промты картинок не пишет.</p>
-<h2 id="n4">4 · Отчёт · n_excel_gpt_fw_report</h2>
-<p class=ok>Этот файл. Картинки/видео пустые — их пишет img_pr позже.</p>
 </body></html>
 """
 

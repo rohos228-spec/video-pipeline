@@ -92,7 +92,6 @@ def test_report_hides_uuid_role_shot_index() -> None:
     assert "shots_in_beat" not in html
     assert "background:#000" in html
     assert "background:#fff" in html
-    assert "T0–T10" in html or "не T0" in html
 
 
 def test_report_aligns_prompt_and_qc_per_shot() -> None:
@@ -213,8 +212,8 @@ def test_report_keeps_every_kadry_scene() -> None:
     assert "1-S2-K1" in html
     assert "Открывает папку" in html
     assert "Раскладывает улики" in html
-    assert "Грамматика группы" in html
-    assert "fw_shots" in html
+    assert "when из таблицы" in html
+    assert "Листы xlsx" in html
 
 
 def test_report_lists_every_kadry_row() -> None:
@@ -283,44 +282,3 @@ def test_report_lists_every_kadry_row() -> None:
     html = render_shots_report_html(model, slug="x")
     assert "1-K7" in html
     assert "1-S3-K1" in html
-
-
-def test_group_run_html_has_nodes_and_qc() -> None:
-    from app.services.shots_report import render_group_run_html
-
-    html = render_group_run_html(
-        {
-            "vo": "Он вошёл в кабинет следователя.",
-            "bits": [
-                {
-                    "порядок": 1,
-                    "изменение": "снаружи → внутри",
-                    "якорь": "Он вошёл",
-                    "закадр": "Он вошёл в кабинет следователя.",
-                }
-            ],
-            "action": "1. кабинет — вошёл\n(Он вошёл в кабинет следователя.)",
-            "shots": [
-                {
-                    "id": "1-S1-K1",
-                    "место": "кабинет",
-                    "действие": "вошёл",
-                    "объект": "место",
-                    "план": "ОБЩИЙ",
-                    "линза_мм": 24,
-                    "ракурс": "уровень глаз, нейтральный, фронт",
-                    "движение": "следование",
-                    "parent_id": None,
-                    "закадр": "Он вошёл в кабинет следователя.",
-                }
-            ],
-            "qc": None,
-        },
-        slug="tester",
-        title="Отчёт группы нод · тест",
-    )
-    assert "n_excel_gpt_fw_script" in html
-    assert "shots_qc_ru" in html
-    assert "пусто ops" in html
-    assert "T0–T10" in html
-    assert "вошёл" in html

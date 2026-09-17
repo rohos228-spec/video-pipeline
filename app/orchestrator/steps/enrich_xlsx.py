@@ -247,7 +247,7 @@ _SCRIPT_FRAMES_QC_SUFFIXES = (
 def _is_script_frames_qc_group_node(
     variant: str | None, master: str | None, node_key: str | None
 ) -> bool:
-    """Группа script_frames_qc: биты → кадры-шаги → QC → отчёт."""
+    """Группа script_frames_qc: биты → действие → кадры-шаги → QC → отчёт."""
     nk = str(node_key or "")
     if any(nk.endswith(s) for s in _SCRIPT_FRAMES_QC_SUFFIXES):
         return True
