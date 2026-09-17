@@ -116,6 +116,42 @@ async def test_vibecode_empty_stream_falls_back_to_nostream(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
+async def test_vibecode_upstream_error_stream_falls_back_to_nostream(
+    monkeypatch,
+) -> None:
+    _enable(monkeypatch)
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "text_llm_provider", "vibecode")
+    monkeypatch.setattr(settings, "vibecode_api_key", "vk-test")
+    monkeypatch.setattr(settings, "vibecode_base_url", "https://vibecode.moe/v1")
+    monkeypatch.setattr(settings, "gpt_api_mode", "chat")
+    modes: list[bool] = []
+    sse = (
+        'data: {"id":"resp-1","object":"chat.completion.chunk",'
+        '"choices":[{"delta":{"role":"assistant"},"index":0}]}\n'
+        'data: {"error":{"message":"upstream error","type":"upstream_error"}}\n'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        streamed = bool(body.get("stream"))
+        modes.append(streamed)
+        if streamed:
+            return httpx.Response(
+                200,
+                content=sse.encode("utf-8"),
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=_completion("nostream ok"))
+
+    _mock_httpx(monkeypatch, handler)
+    res = await chat(prompt="x", auto_pack=False, max_retries=0)
+    assert res.text == "nostream ok"
+    assert modes == [True, False]
+
+
+@pytest.mark.asyncio
 async def test_stream_cancelled_error_is_not_retryable(monkeypatch) -> None:
     """⏹ / ▶ другой ноды: CancelledError нельзя превращать в retryable GptApiError."""
 

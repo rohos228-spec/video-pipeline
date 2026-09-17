@@ -76,7 +76,7 @@ def test_vibecode_models_switch_url_and_key(monkeypatch, tmp_path: Path) -> None
     monkeypatch.setattr(settings_mod, "settings", s)
     monkeypatch.setattr(gpt_api, "settings", s)
 
-    cat.write_choice(provider="vibecode", model_id="gpt-5.5", cfg=s)
+    cat.write_choice(provider="vibecode", model_id="gpt-5.5-vibecode", cfg=s)
     assert s.resolved_text_llm_provider() == "vibecode"
     assert s.gpt_model_effective == "gpt-5.5"
     assert s.gpt_api_effective_key == "vk-test"
@@ -96,10 +96,10 @@ def test_vibecode_models_switch_url_and_key(monkeypatch, tmp_path: Path) -> None
     assert s.gpt_api_effective_base_url == "https://api.kie.ai"
 
 
-def test_vibecode_stays_direct_even_when_vps_relay_set(
+def test_vibecode_uses_vps_relay_when_set(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """VPS relay is for kie; vibecode must hit vibecode.moe (stale relay = 401 envelope)."""
+    """VPS /v1/* → vibecode.moe; ключ vk- + X-VP-Relay-Token. kie остаётся /codex."""
     from app.services import text_llm_catalog as cat
     import app.settings as settings_mod
     import app.services.gpt_api as gpt_api
@@ -114,14 +114,31 @@ def test_vibecode_stays_direct_even_when_vps_relay_set(
     monkeypatch.setattr(settings_mod, "settings", s)
     monkeypatch.setattr(gpt_api, "settings", s)
     cat.write_choice(provider="vibecode", model_id="gpt-5.5-vibecode", cfg=s)
-    assert s.gpt_api_effective_base_url == "https://vibecode.moe/v1"
-    assert gpt_api._chat_url("gpt-5.5") == "https://vibecode.moe/v1/chat/completions"
-    assert gpt_api._headers()["Authorization"] == "Bearer vk-test"
+    assert s.gpt_api_effective_base_url == "https://gpt.example.com"
+    assert gpt_api._chat_url("gpt-5.5") == (
+        "https://gpt.example.com/v1/chat/completions"
+    )
+    headers = gpt_api._headers()
+    assert headers["Authorization"] == "Bearer vk-test"
+    assert headers["X-VP-Relay-Token"] == "relay-secret"
     cat.write_choice(provider="kie", model_id="gpt-kie", cfg=s)
     assert s.gpt_api_effective_base_url == "https://gpt.example.com"
     assert gpt_api._chat_url("gpt-5-6-sol") == (
         "https://gpt.example.com/codex/v1/responses"
     )
+
+
+def test_parse_sse_keeps_text_when_upstream_error_follows() -> None:
+    from app.services.gpt_api import parse_chat_completions_sse_lines
+
+    lines = [
+        'data: {"choices":[{"delta":{"content":"hello"}}]}',
+        'data: {"error": {"message": "upstream error", "type": "upstream_error"}}',
+        "data: [DONE]",
+    ]
+    text, finish, _ = parse_chat_completions_sse_lines(lines)
+    assert text == "hello"
+    assert finish == "stop"
 
 
 def test_parse_chat_completions_sse() -> None:

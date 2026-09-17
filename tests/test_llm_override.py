@@ -122,7 +122,8 @@ def test_bind_generation_llm_routes_chat_to_vibecode_not_kie(
     with bind_generation_llm(None, node_type="image_prompts"):
         assert gpt_api.is_responses_mode() is False
         assert gpt_api._chat_url("gpt-5.6-sol") == (
-            "https://vibecode.moe/v1/chat/completions"
+            "https://gpt.example.com/v1/chat/completions"
         )
-        assert gpt_api._headers()["Authorization"] == "Bearer vk-test"
-        assert "X-VP-Relay-Token" not in gpt_api._headers()
+        headers = gpt_api._headers()
+        assert headers["Authorization"] == "Bearer vk-test"
+        assert headers["X-VP-Relay-Token"] == "relay-secret"
