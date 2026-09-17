@@ -80,6 +80,10 @@ import {
   readCanvasGraph,
 } from "@/lib/canvas-graph-storage";
 import { mergeGraphNodesWithRuntime } from "@/lib/canvas-node-merge";
+import {
+  readPipelineViewport,
+  writePipelineViewport,
+} from "@/lib/pipeline-viewport";
 import { defaultModelIdForNodeType, isTextNodeType } from "@/lib/node-model-catalog";
 import { EdgeKindControls } from "./edge-kind-controls";
 import { SoftThreadEdge } from "./soft-thread-edge";
@@ -241,7 +245,11 @@ export function FlowCanvas({
   const persistInFlightRef = useRef(false);
   const persistQueuedRef = useRef(false);
   const reactFlowRef = useRef<ReactFlowInstance<Node<PipelineNodeData>, Edge> | null>(null);
+  const persistProjectIdRef = useRef(projectId);
+  persistProjectIdRef.current = projectId;
+  const lastGraphProjectRef = useRef<number | null>(projectId);
   const paneRef = useRef<HTMLDivElement | null>(null);
+  const savedViewport = projectId != null ? readPipelineViewport(projectId) : null;
 
   useEffect(() => {
     nodesRef.current = nodes;
@@ -253,7 +261,9 @@ export function FlowCanvas({
   // Смена проекта — не тащим позиции/версию соседа с теми же node_key.
   useEffect(() => {
     setGraphVersion("");
-  }, [projectId]);
+    setNodes([]);
+    setEdges([]);
+  }, [projectId, setNodes, setEdges]);
 
   useEffect(() => {
     if (!graphSource) return;
@@ -262,10 +272,12 @@ export function FlowCanvas({
     const ver = `${projectId ?? "none"}|${workflowStructureKey(graphSource)}`;
     if (ver === graphVersion && nodes.length > 0) return;
     setGraphVersion(ver);
+    const switched = lastGraphProjectRef.current !== projectId;
+    lastGraphProjectRef.current = projectId;
     setNodes((prev) =>
       mergeGraphNodesWithRuntime(
         baseNodes as Node<PipelineNodeData>[],
-        prev,
+        switched ? [] : prev,
       ) as Node<PipelineNodeData>[],
     );
     setEdges(baseEdges);
@@ -563,6 +575,7 @@ export function FlowCanvas({
         else toast.message(check.warnings[0]);
       }
       if (projectId) {
+        if (persistProjectIdRef.current !== projectId) return;
         // Только дельта: НЕ слать весь meta из кэша — иначе stale
         // gpt_operator_results/storage_nodes затирают результаты всех нод.
         const projectData = project.data ?? (await api.getProject(projectId));
@@ -578,6 +591,7 @@ export function FlowCanvas({
         if (bindings.length) {
           meta.excel_lane_bindings = bindings;
         }
+        if (persistProjectIdRef.current !== projectId) return;
         await api.patchProject(projectId, { meta });
         await qc.invalidateQueries({ queryKey: ["project", projectId] });
       } else {
@@ -1070,16 +1084,25 @@ export function FlowCanvas({
     <>
       <div ref={paneRef} className="relative h-full w-full">
       <ReactFlow
+        key={projectId ?? "none"}
         className="neural-flow"
         nodes={nodes}
         edges={edges}
         onInit={(inst) => {
           reactFlowRef.current = inst;
+          if (projectId != null) {
+            const vp = readPipelineViewport(projectId);
+            if (vp) inst.setViewport(vp, { duration: 0 });
+          }
         }}
+        onMoveEnd={(_event, vp) => {
+          if (projectId != null) writePipelineViewport(projectId, vp);
+        }}
+        defaultViewport={savedViewport ?? undefined}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
-        fitView={!canvasGraph?.saved_at}
+        fitView={!savedViewport && !canvasGraph?.saved_at}
         fitViewOptions={{ padding: 0.12, maxZoom: 0.85, minZoom: 0.2 }}
         minZoom={0.15}
         maxZoom={1.5}

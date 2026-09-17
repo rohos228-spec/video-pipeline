@@ -303,6 +303,37 @@ def _remap_slot_key(key: str, mapping: dict[int, int]) -> str:
     return f"{mapping.get(number, number)}{sep}{tail}"
 
 
+def drop_pending_ops_for_frames(
+    board: dict[str, Any], frame_numbers: set[int]
+) -> int:
+    """Удаление кадра не должно затирать очередь соседей — только его ops."""
+    if not frame_numbers:
+        return 0
+    ops = list(board.get("pending_ops") or [])
+    kept: list[dict[str, Any]] = []
+    dropped = 0
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        try:
+            fr = int(op.get("frame_number") or 0)
+        except (TypeError, ValueError):
+            fr = 0
+        if fr in frame_numbers:
+            dropped += 1
+            continue
+        try:
+            parent = int(op.get("parent_number") or 0)
+        except (TypeError, ValueError):
+            parent = 0
+        if parent in frame_numbers:
+            op = dict(op)
+            op.pop("parent_number", None)
+        kept.append(op)
+    board["pending_ops"] = kept
+    return dropped
+
+
 def remap_frame_numbers(ops: list[dict[str, Any]], mapping: dict[int, int]) -> int:
     """Вставка шота сдвинула нумерацию — правим кадры в ещё не применённых ops."""
     if not mapping:

@@ -21,9 +21,10 @@ from types import SimpleNamespace
 from typing import Any
 
 from loguru import logger
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Project
+from app.models import Frame, Project
 from app.project_db import project_db_session_scope as _isolated_project_scope
 from app.services.img_streams import acquire_image_slot, get_img_streams
 from app.services.montage_ai_change import (
@@ -178,6 +179,69 @@ def order_montage_pending_ops(ops: list[dict[str, Any]]) -> list[dict[str, Any]]
     images.sort(key=_op_frame_shot)
     videos.sort(key=_op_frame_shot)
     return coverage + images + videos + other
+
+
+def waves_parent_then_child(
+    frame_numbers: list[int],
+    parent_of: dict[int, int | None],
+) -> list[list[int]]:
+    """Сначала кадры без родителя в этой пачке, потом их дети.
+
+    Если родитель уже есть и его нет в очереди — ребёнок идёт сразу.
+    Если родитель тоже генерируется в этой пачке — ждём волну родителя.
+    """
+    remaining = list(dict.fromkeys(int(n) for n in frame_numbers))
+    in_batch = set(remaining)
+    waves: list[list[int]] = []
+    while remaining:
+        ready: list[int] = []
+        blocked: list[int] = []
+        remaining_set = set(remaining)
+        for fr in remaining:
+            parent = parent_of.get(fr)
+            if (
+                parent is not None
+                and parent in in_batch
+                and parent != fr
+                and parent in remaining_set
+            ):
+                blocked.append(fr)
+            else:
+                ready.append(fr)
+        if not ready:
+            ready = blocked
+            blocked = []
+        waves.append(ready)
+        remaining = blocked
+    return waves
+
+
+async def coverage_parent_map(project_id: int) -> dict[int, int | None]:
+    """frame_number → still-родитель, если кадр вешает PNG родителя."""
+    from app.services.vo_shot_expand import find_coverage_parent_frame, uses_parent_still
+
+    async with session_scope(project_id) as session:
+        frames = list(
+            (
+                await session.execute(
+                    select(Frame)
+                    .where(Frame.project_id == int(project_id))
+                    .order_by(Frame.number.asc())
+                )
+            ).scalars().all()
+        )
+        mapping: dict[int, int | None] = {}
+        for fr in frames:
+            num = int(fr.number)
+            if not uses_parent_still(fr):
+                mapping[num] = None
+                continue
+            parent = find_coverage_parent_frame(frames, fr)
+            if parent is None or int(parent.number) == num:
+                mapping[num] = None
+            else:
+                mapping[num] = int(parent.number)
+        return mapping
 
 
 def group_ops_by_frame(
@@ -467,8 +531,12 @@ async def _run_ops_phase(
     errors: list[str],
     on_progress: ProgressCb | None,
     phase_label: str,
+    parent_of: dict[int, int | None] | None = None,
 ) -> None:
-    """Одна фаза: кадры параллельно до N; внутри кадра shot1 → shot2 строго."""
+    """Одна фаза: кадры параллельно до N; внутри кадра shot1 → shot2 строго.
+
+    Картинки/видео: волна родителей, затем дети — если родитель в этой же пачке.
+    """
     if not phase_indices:
         return
 
@@ -480,13 +548,19 @@ async def _run_ops_phase(
         by_frame[fr].sort(key=lambda i: _op_frame_shot(all_ops[i]))
 
     frames = sorted(by_frame.keys())
+    waves = (
+        waves_parent_then_child(frames, parent_of)
+        if parent_of
+        else [frames]
+    )
     logger.info(
-        "montage apply #{} phase={} frames={} ops={} parallel={}",
+        "montage apply #{} phase={} frames={} ops={} parallel={} waves={}",
         project_id,
         phase_label,
         len(frames),
         len(phase_indices),
         parallel,
+        [len(w) for w in waves],
     )
 
     meta_lock = asyncio.Lock()
@@ -556,7 +630,8 @@ async def _run_ops_phase(
         async with sem:
             await _frame_worker(frame)
 
-    await asyncio.gather(*(_guarded(fr) for fr in frames))
+    for wave in waves:
+        await asyncio.gather(*(_guarded(fr) for fr in wave))
 
 
 async def apply_montage_board(
@@ -634,6 +709,13 @@ async def apply_montage_board(
         on_progress=on_progress,
         phase_label="coverage",
     )
+    # После coverage роли актуальны: ребёнок ждёт родителя только если тот
+    # тоже в этой пачке. Уже готовый родитель на диске детей не блокирует.
+    parent_of = (
+        await coverage_parent_map(project_id)
+        if image_indices or video_indices
+        else None
+    )
     await _run_ops_phase(
         project_id=project_id,
         phase_indices=image_indices,
@@ -645,6 +727,7 @@ async def apply_montage_board(
         errors=errors,
         on_progress=on_progress,
         phase_label="images",
+        parent_of=parent_of,
     )
     await _run_ops_phase(
         project_id=project_id,
@@ -657,6 +740,7 @@ async def apply_montage_board(
         errors=errors,
         on_progress=on_progress,
         phase_label="videos",
+        parent_of=parent_of,
     )
     await _run_ops_phase(
         project_id=project_id,

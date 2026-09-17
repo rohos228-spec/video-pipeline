@@ -17,6 +17,11 @@ from app.services.montage_coverage_ops import (
     _refresh_shots_in_beat,
     delete_coverage_child,
 )
+from app.services.montage_board_meta import (
+    drop_pending_ops_for_frames,
+    montage_meta,
+    set_montage_meta,
+)
 from app.services.vo_shot_expand import _flag_attrs, _set_cs, is_shot_child
 
 
@@ -214,6 +219,9 @@ async def delete_montage_frame(
     number = int(frame.number)
     if is_shot_child(frame):
         await delete_coverage_child(session, project, frame, frames)
+        board = montage_meta(project)
+        drop_pending_ops_for_frames(board, {number})
+        set_montage_meta(project, board)
         logger.info("montage delete child #{} frame {}", project.id, number)
         return {"ok": True, "frame_id": frame_id, "number": number, "deleted": 1}
 
@@ -226,6 +234,9 @@ async def delete_montage_frame(
         live = next((fr for fr in leftover if int(fr.id) == int(new_head.id)), new_head)
         _refresh_shots_in_beat(leftover, live)
         await session.flush()
+    board = montage_meta(project)
+    drop_pending_ops_for_frames(board, {number})
+    set_montage_meta(project, board)
     logger.info(
         "montage delete frame #{} number {} (сцена жива, шотов {})",
         project.id,

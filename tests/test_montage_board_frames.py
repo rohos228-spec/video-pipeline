@@ -334,3 +334,39 @@ async def test_delete_does_not_resurrect_from_disk_png(
     assert await ensure_frames_from_disk_media(session, project) == []
     board = await build_montage_board(session, project)
     assert [row["number"] for row in board["frames"]] == [20]
+
+
+@pytest.mark.asyncio
+async def test_delete_other_frame_keeps_pending_ops(
+    session: AsyncSession, project: Project
+) -> None:
+    from app.services.montage_board_meta import montage_meta
+
+    project.meta = {
+        "montage_board": {
+            "pending_ops": [
+                {
+                    "type": "coverage_action",
+                    "frame_number": 1,
+                    "shot": 1,
+                    "action": "оставить",
+                },
+                {
+                    "type": "image_ai_change",
+                    "frame_number": 2,
+                    "shot": 1,
+                    "instruction": "убрать",
+                },
+            ]
+        }
+    }
+    session.add(project)
+    keep = _vo_parent(project.id, 1, "aa" * 12, "правлю")
+    drop = _vo_parent(project.id, 2, "bb" * 12, "удаляю")
+    session.add_all([keep, drop])
+    await session.flush()
+
+    await delete_montage_frame(session, project, int(drop.id))
+    ops = montage_meta(project).get("pending_ops") or []
+    assert [op["frame_number"] for op in ops] == [1]
+    assert ops[0]["action"] == "оставить"

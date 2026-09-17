@@ -189,3 +189,17 @@ def test_refuse_shorter_queue_while_apply_running() -> None:
         cleaned=cleaned, existing=existing, apply_running=False, force_clear=False
     )
     assert ok2 is True
+
+
+def test_drop_pending_ops_for_deleted_frame_keeps_neighbors() -> None:
+    from app.services.montage_board_meta import drop_pending_ops_for_frames
+
+    board = {
+        "pending_ops": [
+            {"type": "coverage_action", "frame_number": 1, "action": "a"},
+            {"type": "image_ai_change", "frame_number": 3, "instruction": "x"},
+            {"type": "coverage_action", "frame_number": 2, "action": "b"},
+        ]
+    }
+    assert drop_pending_ops_for_frames(board, {3}) == 1
+    assert [op["frame_number"] for op in board["pending_ops"]] == [1, 2]

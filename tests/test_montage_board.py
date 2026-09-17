@@ -990,3 +990,26 @@ def test_list_ref_assets_groups_backgrounds(montage_project: Project) -> None:
     kinds = {a["kind"] for a in assets}
     assert "background" in kinds
     assert any(a["code"] == "loc01" for a in assets)
+
+
+def test_shot_kind_parent_from_explicit_coverage_kind() -> None:
+    """Кнопка «Родитель» подсвечивается и без плана/детей — coverage_kind."""
+    from app.services.montage_board import _shot_kind_payload
+
+    fr = Frame(
+        project_id=1,
+        number=4,
+        uuid="aa" * 12,
+        voiceover_text="x",
+        status="planned",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "coverage_kind": "parent",
+                "use_parent_still": False,
+            }
+        },
+    )
+    kind, parent_n, _sid = _shot_kind_payload(fr, [fr])
+    assert kind == "parent"
+    assert parent_n is None

@@ -193,3 +193,13 @@ async def test_apply_shot1_before_shot2_same_frame(
     )
     assert result["ok"] is True
     assert events == ["start:1", "done:1", "start:2", "done:2"]
+
+
+def test_waves_parent_then_child_only_if_parent_in_batch() -> None:
+    from app.services.montage_board_apply import waves_parent_then_child
+
+    parent_of = {1: None, 2: 1, 3: 1, 8: 7}
+    # Родитель уже есть и не в очереди — дети сразу.
+    assert waves_parent_then_child([2, 3, 8], parent_of) == [[2, 3, 8]]
+    # Родитель тоже в пачке — сначала он, потом дети.
+    assert waves_parent_then_child([1, 2, 3], parent_of) == [[1], [2, 3]]

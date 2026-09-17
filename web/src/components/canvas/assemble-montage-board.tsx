@@ -40,6 +40,10 @@ import {
   type SceneAnchorRow,
 } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
+import {
+  readMontageAiChangeText,
+  writeMontageAiChangeText,
+} from "@/lib/montage-ai-change-memory";
 import type {
   MontageAnchorRow,
   MontageBoardDTO,
@@ -154,6 +158,7 @@ type AiChangeModalState = {
   kind: "image" | "video";
   frameNumber: number;
   shot: 1 | 2;
+  initialText?: string;
 } | null;
 
 function trimKey(frameNumber: number, shot: 1 | 2): string {
@@ -506,6 +511,26 @@ function PromptModalBody({
   );
 }
 
+function lastAiInstruction(
+  ops: MontagePendingOp[],
+  kind: "image" | "video",
+  frameNumber: number,
+  shot: 1 | 2,
+): string {
+  const want = kind === "image" ? "image_ai_change" : "video_ai_change";
+  for (let i = ops.length - 1; i >= 0; i -= 1) {
+    const op = ops[i];
+    if (
+      op.type === want &&
+      op.frame_number === frameNumber &&
+      (op.shot ?? 1) === shot
+    ) {
+      return String(op.instruction || op.correction || "").trim();
+    }
+  }
+  return "";
+}
+
 function AiChangeModal({
   state,
   onClose,
@@ -514,13 +539,13 @@ function AiChangeModal({
 }: {
   state: AiChangeModalState;
   onClose: () => void;
-  onAutomatic: () => void;
+  onAutomatic: (text: string) => void;
   onWithText: (text: string) => void;
 }) {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(state?.initialText ?? "");
   useEffect(() => {
-    setText("");
-  }, [state?.kind, state?.frameNumber, state?.shot]);
+    setText(state?.initialText ?? "");
+  }, [state?.kind, state?.frameNumber, state?.shot, state?.initialText]);
   if (!state) return null;
   const kindLabel = state.kind === "image" ? "изображение" : "видео";
   return createPortal(
@@ -551,7 +576,12 @@ function AiChangeModal({
           <Button type="button" variant="outline" size="sm" onClick={onClose}>
             Отмена
           </Button>
-          <Button type="button" variant="outline" size="sm" onClick={onAutomatic}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => onAutomatic(text.trim())}
+          >
             Автоматически
           </Button>
           <Button
@@ -2093,7 +2123,14 @@ export function AssembleMontageBoard({
     const restored = parsePendingOps(meta?.pending_ops);
     // Пока пользователь набирает очередь (dirty) — НИКОГДА не затирать её
     // серверным meta. Иначе: локально 40+, на сервере старые 8 → «стало 8».
+    // То же после удаления чужого кадра: refetch не должен снимать правки.
     if (localQueueDirtyRef.current) {
+      return;
+    }
+    if (
+      pendingOpsRef.current.length > 0 &&
+      restored.length < pendingOpsRef.current.length
+    ) {
       return;
     }
     const nextKey = JSON.stringify(restored);
@@ -2122,13 +2159,13 @@ export function AssembleMontageBoard({
   const queueSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const persistQueue = useCallback(
-    (ops: MontagePendingOp[]) => {
+    (ops: MontagePendingOp[], immediate = false) => {
       if (projectId == null) return;
       // Во время apply очередь пишет сам apply (_finish_op) — клиентский
       // debounce с [] или устаревшим списком иначе затирает remaining.
       if (applyRunning) return;
       if (queueSaveTimerRef.current) clearTimeout(queueSaveTimerRef.current);
-      queueSaveTimerRef.current = setTimeout(() => {
+      const save = () => {
         void api
           .saveMontageQueue(projectId, {
             pending_ops: ops,
@@ -2138,10 +2175,38 @@ export function AssembleMontageBoard({
           .catch(() => {
             // Не мешаем набору очереди — при следующем add/retry сохранится.
           });
-      }, 400);
+      };
+      if (immediate) {
+        save();
+        return;
+      }
+      queueSaveTimerRef.current = setTimeout(save, 400);
     },
     [projectId, trims, applyRunning],
   );
+
+  useEffect(() => {
+    if (applyRunning) return;
+    if (!localQueueDirtyRef.current) return;
+    if (pendingOpsRef.current.length === 0) return;
+    persistQueue(pendingOpsRef.current);
+  }, [applyRunning, persistQueue]);
+
+  useEffect(() => {
+    setKindOverride((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const [raw, kind] of Object.entries(prev)) {
+        const num = Number(raw);
+        const fr = frames.find((f) => f.number === num);
+        if (fr && fr.shot_kind === kind) {
+          delete next[num];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [frames]);
 
   const queueOp = useCallback(
     (op: MontagePendingOp) => {
@@ -2300,6 +2365,28 @@ export function AssembleMontageBoard({
     setSelectedOpKeys(new Set());
     toastQueued("Выбранные правки сняты с очереди");
   }, [persistQueue, selectedOpKeys]);
+
+  const openAiChangeModal = useCallback(
+    (kind: "image" | "video", frameNumber: number, shot: 1 | 2) => {
+      const remembered =
+        projectId != null
+          ? readMontageAiChangeText(projectId, kind, frameNumber, shot)
+          : "";
+      const fromQueue = lastAiInstruction(
+        pendingOpsRef.current,
+        kind,
+        frameNumber,
+        shot,
+      );
+      setAiChangeModal({
+        kind,
+        frameNumber,
+        shot,
+        initialText: remembered || fromQueue,
+      });
+    },
+    [projectId],
+  );
 
   const queueAiChange = useCallback(
     (kind: "image" | "video", frameNumber: number, shot: 1 | 2, instruction?: string) => {
@@ -2460,13 +2547,18 @@ export function AssembleMontageBoard({
       const showToast = lastApplyToastKeyRef.current !== toastKey;
       if (showToast) lastApplyToastKeyRef.current = toastKey;
 
+      const keepLocal =
+        localQueueDirtyRef.current && pendingOpsRef.current.length > 0;
+      const localKept = keepLocal ? [...pendingOpsRef.current] : [];
       setApplyRunning(false);
       setApplyProgress(null);
-      if (submittedApplyRef.current) {
+      if (submittedApplyRef.current && !keepLocal) {
         // Очередь подтянется из meta после refetch (remaining / пусто).
         localQueueDirtyRef.current = false;
         setPendingOps([]);
         pendingOpsRef.current = [];
+        submittedApplyRef.current = false;
+      } else if (submittedApplyRef.current) {
         submittedApplyRef.current = false;
       }
       if (showToast) {
@@ -2490,6 +2582,17 @@ export function AssembleMontageBoard({
           const stale = data?.meta?.stale_videos;
           if (Array.isArray(stale)) setStaleVideos(stale.map(String));
           const restored = parsePendingOps(data?.meta?.pending_ops);
+          if (keepLocal) {
+            const seen = new Set(localKept.map(opSelectKey));
+            const merged = [
+              ...localKept,
+              ...restored.filter((op) => !seen.has(opSelectKey(op))),
+            ];
+            pendingOpsRef.current = merged;
+            setPendingOps(merged);
+            persistQueue(merged, true);
+            return;
+          }
           pendingOpsRef.current = restored;
           setPendingOps(restored);
         })
@@ -2497,7 +2600,7 @@ export function AssembleMontageBoard({
           void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
         });
     },
-    [projectId, queryClient, parsePendingOps],
+    [projectId, queryClient, parsePendingOps, persistQueue],
   );
 
   const handleRecoverTerminal = useCallback(
@@ -2787,6 +2890,15 @@ export function AssembleMontageBoard({
     if (!ok) return;
     setFrameEditBusy(true);
     try {
+      localQueueDirtyRef.current = true;
+      const next = pendingOpsRef.current.filter(
+        (op) =>
+          op.frame_number !== fr.number &&
+          op.parent_number !== fr.number,
+      );
+      pendingOpsRef.current = next;
+      setPendingOps(next);
+      persistQueue(next, true);
       await api.deleteMontageFrame(projectId, fr.frame_id);
       refreshBoard();
       toast.success(`Кадр #${fr.number} удалён`);
@@ -3183,9 +3295,8 @@ export function AssembleMontageBoard({
     ) => {
       if (projectId == null) return;
       setKindOverride((prev) => ({ ...prev, [frameNumber]: nextKind }));
-      setFrameEditBusy(true);
       try {
-        await api.applyMontageCoverage(projectId, {
+        const res = await api.applyMontageCoverage(projectId, {
           type: "coverage_kind",
           frame_number: frameNumber,
           shot: 1,
@@ -3194,6 +3305,33 @@ export function AssembleMontageBoard({
             ? { parent_number: nextParent }
             : {}),
         });
+        queryClient.setQueryData<MontageBoardDTO>(
+          ["montage-board", projectId],
+          (old) => {
+            if (!old) return old;
+            if (res.frame) {
+              return {
+                ...old,
+                frames: old.frames.map((row) =>
+                  row.number === frameNumber ? { ...row, ...res.frame } : row,
+                ),
+              };
+            }
+            return {
+              ...old,
+              frames: old.frames.map((row) =>
+                row.number === frameNumber
+                  ? {
+                      ...row,
+                      shot_kind: res.shot_kind ?? nextKind,
+                      shot_parent_number: res.shot_parent_number ?? null,
+                      ref_parent: res.ref_parent ?? row.ref_parent,
+                    }
+                  : row,
+              ),
+            };
+          },
+        );
         setPendingOps((prev) => {
           const next = prev.filter(
             (x) => !(x.frame_number === frameNumber && x.type === "coverage_kind"),
@@ -3202,24 +3340,28 @@ export function AssembleMontageBoard({
           persistQueue(next);
           return next;
         });
-        await board.refetch();
+        if (res.shot_kind === nextKind || res.frame?.shot_kind === nextKind) {
+          setKindOverride((prev) => {
+            const next = { ...prev };
+            delete next[frameNumber];
+            return next;
+          });
+        }
         toast.success(
           nextKind === "parent"
             ? `Кадр #${frameNumber}: родительский, still родителя снят`
             : `Кадр #${frameNumber}: дочерний`,
         );
       } catch (e) {
-        toast.error(errorMessageFromUnknown(e));
-      } finally {
         setKindOverride((prev) => {
           const next = { ...prev };
           delete next[frameNumber];
           return next;
         });
-        setFrameEditBusy(false);
+        toast.error(errorMessageFromUnknown(e));
       }
     },
-    [projectId, persistQueue, board],
+    [projectId, persistQueue, queryClient],
   );
 
   const hasPendingType = useCallback(
@@ -3294,7 +3436,7 @@ export function AssembleMontageBoard({
           value={(pending.action ?? fr.shot_action ?? "").trim()}
           plan={(pending.plan ?? fr.shot_plan ?? "").trim()}
           pending={hasPendingType(fr.number, "coverage_action")}
-          disabled={sceneDisabled}
+          disabled={frameEditBusy}
           onCommit={(action, plan) =>
             queueSceneOps([
               { ...base, type: "coverage_action", action },
@@ -4113,11 +4255,7 @@ export function AssembleMontageBoard({
                                   }
                                   onEditPrompt={() => openPromptModal("image", fr.number, 1, "prompt")}
                                   onAiChange={() =>
-                                    setAiChangeModal({
-                                      kind: "image",
-                                      frameNumber: fr.number,
-                                      shot: 1,
-                                    })
+                                    openAiChangeModal("image", fr.number, 1)
                                   }
                                   onRegenWithCorrection={() =>
                                     openPromptModal("image", fr.number, 1, "correction")
@@ -4159,11 +4297,7 @@ export function AssembleMontageBoard({
                                   }
                                   onEditPrompt={() => openPromptModal("image", fr.number, 2, "prompt")}
                                   onAiChange={() =>
-                                    setAiChangeModal({
-                                      kind: "image",
-                                      frameNumber: fr.number,
-                                      shot: 2,
-                                    })
+                                    openAiChangeModal("image", fr.number, 2)
                                   }
                                   onRegenWithCorrection={() =>
                                     openPromptModal("image", fr.number, 2, "correction")
@@ -4199,11 +4333,7 @@ export function AssembleMontageBoard({
                                   }
                                   onEditPrompt={() => openPromptModal("video", fr.number, 1, "prompt")}
                                   onAiChange={() =>
-                                    setAiChangeModal({
-                                      kind: "video",
-                                      frameNumber: fr.number,
-                                      shot: 1,
-                                    })
+                                    openAiChangeModal("video", fr.number, 1)
                                   }
                                   onDelete={() => void handleDeleteVideo(fr.number, 1)}
                                   onUpload={(file) => void handleUploadVideo(fr.number, 1, file)}
@@ -4237,11 +4367,7 @@ export function AssembleMontageBoard({
                                   }
                                   onEditPrompt={() => openPromptModal("video", fr.number, 2, "prompt")}
                                   onAiChange={() =>
-                                    setAiChangeModal({
-                                      kind: "video",
-                                      frameNumber: fr.number,
-                                      shot: 2,
-                                    })
+                                    openAiChangeModal("video", fr.number, 2)
                                   }
                                   onDelete={() => void handleDeleteVideo(fr.number, 2)}
                                   onUpload={(file) => void handleUploadVideo(fr.number, 2, file)}
@@ -4302,13 +4428,31 @@ export function AssembleMontageBoard({
       <AiChangeModal
         state={aiChangeModal}
         onClose={() => setAiChangeModal(null)}
-        onAutomatic={() => {
+        onAutomatic={(text) => {
           if (!aiChangeModal) return;
+          if (projectId != null && text) {
+            writeMontageAiChangeText(
+              projectId,
+              aiChangeModal.kind,
+              aiChangeModal.frameNumber,
+              aiChangeModal.shot,
+              text,
+            );
+          }
           queueAiChange(aiChangeModal.kind, aiChangeModal.frameNumber, aiChangeModal.shot);
           setAiChangeModal(null);
         }}
         onWithText={(text) => {
           if (!aiChangeModal) return;
+          if (projectId != null && text) {
+            writeMontageAiChangeText(
+              projectId,
+              aiChangeModal.kind,
+              aiChangeModal.frameNumber,
+              aiChangeModal.shot,
+              text,
+            );
+          }
           queueAiChange(
             aiChangeModal.kind,
             aiChangeModal.frameNumber,

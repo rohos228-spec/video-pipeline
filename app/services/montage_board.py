@@ -56,6 +56,7 @@ from app.services.vo_shot_expand import (
     coverage_parent_shot_id,
     coverage_shot_id,
     find_coverage_parent_frame,
+    parent_still_suppressed,
     uses_parent_still,
     is_shot_child,
     kadry_are_scene_shots,
@@ -738,6 +739,10 @@ def _shot_kind_payload(
     cs = getattr(frame, "attrs", None) or {}
     cs = cs.get("camera_subdivide") if isinstance(cs, dict) else {}
     coverage_kind = str((cs or {}).get("coverage_kind") or "").strip().lower()
+    # Явная роль «Родитель» на доске: без плана/детей shot_kind иначе "" —
+    # кнопка не подсвечивается после клика.
+    if coverage_kind == "parent" or parent_still_suppressed(frame):
+        return "parent", None, coverage_shot_id(frame)
     if uses_parent_still(frame) and (is_shot_child(frame) or coverage_kind == "child"):
         parent = find_coverage_parent_frame(frames, frame)
         parent_number = (
