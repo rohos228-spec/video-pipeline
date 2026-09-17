@@ -40,6 +40,7 @@ from app.models import (
     FrameText,
     HITLRequest,
     NodeRun,
+    NodeRunStatus,
     Project,
     ProjectStatus,
     PromptVersion,
@@ -606,14 +607,20 @@ def _bind_url(session: AsyncSession) -> str:
 
 
 def master_park_overrides_running(master: Project, project: Project) -> bool:
-    """Master paused/failed после сна, abandon или кнопки паузы — не stale paused."""
+    """Master paused/failed/⏹ — не крутить leftover running на канвасе."""
     from app.services.project_state import is_running_status
 
-    if master.status not in (ProjectStatus.paused, ProjectStatus.failed):
+    if is_running_status(master.status):
         return False
     if not is_running_status(project.status):
         return False
     meta = master.meta if isinstance(master.meta, dict) else {}
+    if meta.get("user_stop") or meta.get("mass_lane_user_stop"):
+        return True
+    if meta.get("auto_await_manual_start"):
+        return True
+    if master.status not in (ProjectStatus.paused, ProjectStatus.failed):
+        return False
     if meta.get("paused_from_status"):
         return True
     fs = meta.get("step_failure") if isinstance(meta.get("step_failure"), dict) else {}
@@ -736,8 +743,15 @@ async def push_runtime_to_project_db(
 async def pull_master_runtime_into_project(
     session: AsyncSession,
     project: Project,
+    *,
+    copy_noderuns: bool = False,
 ) -> bool:
-    """Перед advance/GET: running с master, либо parked pause (сон / кнопка)."""
+    """Перед advance/GET: running с master, либо parked pause (сон / ⏹).
+
+    NodeRuns с master по умолчанию НЕ копируем: fw_* живут в project.db,
+    а state.db часто держит вчерашний failed — GET/advance тогда красят
+    живую ноду в «ошибка», пока воркер всё ещё пишет.
+    """
     from app.db import session_scope
     from app.services.project_state import is_running_status
 
@@ -786,11 +800,12 @@ async def pull_master_runtime_into_project(
                 changed = True
         if changed:
             project.meta = p_meta
-        n = await _copy_noderuns_between_sessions(
-            master, session, int(project.id)
-        )
-        if n:
-            changed = True
+        if copy_noderuns:
+            n = await _copy_noderuns_between_sessions(
+                master, session, int(project.id)
+            )
+            if n:
+                changed = True
     if changed:
         await session.flush()
     return changed
@@ -867,6 +882,23 @@ def _merge_run_snapshot(
     return dest, added
 
 
+def _noderun_copy_should_apply(dest: NodeRun, src: NodeRun) -> bool:
+    """Не затирать живую/готовую ноду вчерашним failed с другой БД."""
+    live = {
+        NodeRunStatus.running,
+        NodeRunStatus.queued,
+        NodeRunStatus.waiting_hitl,
+    }
+    if dest.status in live and src.status in (
+        NodeRunStatus.failed,
+        NodeRunStatus.pending,
+    ):
+        return False
+    if dest.status == NodeRunStatus.done and src.status == NodeRunStatus.failed:
+        return False
+    return True
+
+
 def _apply_noderun_fields(dest: NodeRun, src: NodeRun) -> bool:
     if (
         dest.status == src.status
@@ -940,6 +972,8 @@ async def _copy_noderuns_between_sessions(
             dest_by_key[key] = dest
             _apply_noderun_fields(dest, src)
             updated += 1
+            continue
+        if not _noderun_copy_should_apply(dest, src):
             continue
         if _apply_noderun_fields(dest, src):
             updated += 1

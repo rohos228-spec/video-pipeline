@@ -2,6 +2,7 @@ import pytest
 
 from app.services.apply_ops_batches import (
     frames_per_batch,
+    pack_call_timeout_s,
     should_batch_apply_ops,
     split_frames,
     split_vo_units,
@@ -10,6 +11,18 @@ from app.services.apply_ops_batches import (
     _pending_frames,
     run_apply_ops_batched,
 )
+
+
+def test_pack_call_timeout_uses_gpt_timeout_not_90(monkeypatch) -> None:
+    """script_frames_qc (bits/shots) нельзя резать wait_for(90) — GPT пишет дольше."""
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_timeout_s", 600.0)
+    assert pack_call_timeout_s("bits") == 600.0
+    assert pack_call_timeout_s("shots_coverage") == 600.0
+    assert pack_call_timeout_s("prompts") == 600.0
+    monkeypatch.setattr(settings, "gpt_timeout_s", 90.0)
+    assert pack_call_timeout_s("bits") >= 180.0
 
 
 def test_dense_102_splits_into_ten_packs() -> None:

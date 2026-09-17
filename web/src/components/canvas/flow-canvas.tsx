@@ -337,6 +337,14 @@ export function FlowCanvas({
     // Не сбрасываем в pending при кратковременном отсутствии run.data (refetch/invalidate).
     if (!run.data) return;
     const projectStatus = project.data?.status;
+    const meta = (project.data?.meta ?? {}) as Record<string, unknown>;
+    const activeExcelGptKey =
+      typeof meta.active_excel_gpt_node_key === "string"
+        ? meta.active_excel_gpt_node_key
+        : undefined;
+    const completedExcelGptKeys = Array.isArray(meta.excel_gpt_completed_keys)
+      ? meta.excel_gpt_completed_keys.map(String)
+      : [];
     const nodeRunByKey = new Map(run.data.node_runs.map((nr) => [nr.node_key, nr]));
     setNodes((prev) =>
       prev.map((n) => {
@@ -358,6 +366,11 @@ export function FlowCanvas({
           n.data.type,
           nr.status as PipelineNodeData["status"],
           projectStatus,
+          {
+            nodeKey: n.id,
+            activeExcelGptKey,
+            completedExcelGptKeys,
+          },
         );
         const progress = status === "running" ? (nr.progress ?? 0) : 0;
         const progressText = status === "running" ? (nr.progress_text ?? null) : null;
@@ -376,7 +389,7 @@ export function FlowCanvas({
         };
       }),
     );
-  }, [run.data, project.data?.status, setNodes, nodes.length, projectId]);
+  }, [run.data, project.data?.status, project.data?.meta, setNodes, nodes.length, projectId]);
 
   // Выделение на канвасе ← selectedNodeKey (кнопка V без клика по телу ноды).
   useEffect(() => {
@@ -406,10 +419,21 @@ export function FlowCanvas({
       setNodes((prev) =>
         prev.map((n) => {
           if (n.id !== e.node_key) return n;
+          const meta = (project.data?.meta ?? {}) as Record<string, unknown>;
           const to = reconcileNodeRunStatus(
             n.data.type,
             e.to as PipelineNodeData["status"],
             project.data?.status,
+            {
+              nodeKey: n.id,
+              activeExcelGptKey:
+                typeof meta.active_excel_gpt_node_key === "string"
+                  ? meta.active_excel_gpt_node_key
+                  : undefined,
+              completedExcelGptKeys: Array.isArray(meta.excel_gpt_completed_keys)
+                ? meta.excel_gpt_completed_keys.map(String)
+                : [],
+            },
           );
           return {
             ...n,

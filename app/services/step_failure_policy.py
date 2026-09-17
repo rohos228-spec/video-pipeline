@@ -476,14 +476,48 @@ async def record_step_failure(
     if step is not None:
         project.status = step.running_status
     short_err = err_msg.replace("\n", " ")[:120]
-    from app.services.run_sync import update_active_node_progress_text
-
-    await update_active_node_progress_text(
-        session,
-        project,
-        f"Повтор {fail_in_cycle} из {FAILS_PER_CYCLE}: {short_err}",
+    retry_text = f"Повтор {fail_in_cycle} из {FAILS_PER_CYCLE}: {short_err}"
+    from app.services.run_sync import (
+        prepare_node_for_step_start,
+        update_active_node_progress_text,
     )
+
+    await update_active_node_progress_text(session, project, retry_text)
     await session.flush()
+    try:
+        from app.project_db import run_on_replica_project
+
+        async def _retry_ui(replica_session: AsyncSession, replica: Project) -> None:
+            if step is not None:
+                replica.status = step.running_status
+            r_meta = dict(replica.meta) if isinstance(replica.meta, dict) else {}
+            r_meta["step_failure"] = dict(fs)
+            replica.meta = r_meta
+            try:
+                await prepare_node_for_step_start(
+                    replica_session,
+                    replica,
+                    step_code,
+                    node_key=r_meta.get("active_excel_gpt_node_key"),
+                    explicit_ui_start=True,
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "[#{}] soft retry: prepare replica NodeRun failed",
+                    project.id,
+                    exc_info=True,
+                )
+            await update_active_node_progress_text(
+                replica_session, replica, retry_text
+            )
+
+        await run_on_replica_project(session, project, _retry_ui)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[#{}] soft retry: replica NodeRun/progress sync failed",
+            project.id,
+            exc_info=True,
+        )
     logger.warning(
         "[#{}] fail {}/{} on {} (cycle {} fail {}/{}), soft retry без wipe: {}",
         project.id,

@@ -47,6 +47,39 @@ from app.web.schemas import (
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
+async def _heal_get_runtime_from_master(session: AsyncSession, p: Project) -> bool:
+    """GET: статус/meta с master, без копирования NodeRuns.
+
+    fw_* живут в project.db. Копировать failed с state.db на каждый poll —
+    канвас «ошибка», список «работает».
+    """
+    from app.project_db import pull_master_runtime_into_project
+    from app.services.run_sync import park_leftover_running_nodes
+    from app.services.step_cancel import is_generation_active
+
+    pulled = await pull_master_runtime_into_project(
+        session, p, copy_noderuns=False
+    )
+    if is_generation_active(p.id):
+        return pulled
+    meta = p.meta if isinstance(p.meta, dict) else {}
+    parked = p.status in (ProjectStatus.paused, ProjectStatus.failed)
+    stopped = bool(meta.get("user_stop") or meta.get("mass_lane_user_stop"))
+    if parked or stopped:
+        fs = meta.get("step_failure") if isinstance(meta.get("step_failure"), dict) else {}
+        as_failed = bool(
+            parked
+            and (
+                (fs or {}).get("sleep_until")
+                or (fs or {}).get("abandoned_at")
+                or p.status is ProjectStatus.failed
+            )
+        )
+        if await park_leftover_running_nodes(session, p, as_failed=as_failed):
+            pulled = True
+    return pulled
+
+
 def _slugify(s: str) -> str:
     """Простой кириллица-латиница slugifier (как в app/services)."""
     base = re.sub(r"[^\w\s-]", "", s.lower(), flags=re.UNICODE).strip()
@@ -223,19 +256,7 @@ async def get_project(
         upgraded = await upgrade_script_frames_qc_on_project(session, p)
     pulled = False
     try:
-        from app.project_db import pull_master_runtime_into_project
-        from app.services.run_sync import park_leftover_running_nodes
-
-        pulled = await pull_master_runtime_into_project(session, p)
-        if p.status in (ProjectStatus.paused, ProjectStatus.failed):
-            fs = (p.meta or {}).get("step_failure") if isinstance(p.meta, dict) else {}
-            as_failed = bool(
-                (fs or {}).get("sleep_until")
-                or (fs or {}).get("abandoned_at")
-                or p.status is ProjectStatus.failed
-            )
-            if await park_leftover_running_nodes(session, p, as_failed=as_failed):
-                pulled = True
+        pulled = await _heal_get_runtime_from_master(session, p)
     except Exception:  # noqa: BLE001
         logger.warning(
             "get_project: #{} pull parked runtime failed",
@@ -425,19 +446,7 @@ async def get_project_run(
         created = True
     pulled = False
     try:
-        from app.project_db import pull_master_runtime_into_project
-        from app.services.run_sync import park_leftover_running_nodes
-
-        pulled = await pull_master_runtime_into_project(session, p)
-        if p.status in (ProjectStatus.paused, ProjectStatus.failed):
-            fs = (p.meta or {}).get("step_failure") if isinstance(p.meta, dict) else {}
-            as_failed = bool(
-                (fs or {}).get("sleep_until")
-                or (fs or {}).get("abandoned_at")
-                or p.status is ProjectStatus.failed
-            )
-            if await park_leftover_running_nodes(session, p, as_failed=as_failed):
-                pulled = True
+        pulled = await _heal_get_runtime_from_master(session, p)
     except Exception:  # noqa: BLE001
         logger.warning(
             "get_project_run: #{} pull parked runtime failed",

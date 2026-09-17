@@ -181,6 +181,26 @@ def order_montage_pending_ops(ops: list[dict[str, Any]]) -> list[dict[str, Any]]
     return coverage + images + videos + other
 
 
+def failed_parent_skip_reason(
+    frame: int,
+    parent_of: dict[int, int | None] | None,
+    failed_frames: set[int],
+) -> str | None:
+    """Если предок в этой пачке уже упал — ребёнка не гоняем."""
+    if not parent_of or not failed_frames:
+        return None
+    seen: set[int] = set()
+    cur = parent_of.get(int(frame))
+    while cur is not None and cur not in seen:
+        if cur == int(frame):
+            break
+        if cur in failed_frames:
+            return f"пропуск: родительский кадр {cur} не применился"
+        seen.add(cur)
+        cur = parent_of.get(cur)
+    return None
+
+
 def waves_parent_then_child(
     frame_numbers: list[int],
     parent_of: dict[int, int | None],
@@ -607,7 +627,29 @@ async def _run_ops_phase(
             if on_progress is not None:
                 await on_progress(len(results), max(total, 1), result)
 
+    def _failed_frame_set() -> set[int]:
+        out: set[int] = set()
+        for i, st in enumerate(op_status):
+            if st != "fail":
+                continue
+            fr, _ = _op_frame_shot(all_ops[i])
+            out.add(fr)
+        return out
+
     async def _frame_worker(frame: int) -> None:
+        skip = failed_parent_skip_reason(frame, parent_of, _failed_frame_set())
+        if skip:
+            logger.warning(
+                "montage apply #{} skip child frame {}: {}",
+                project_id,
+                frame,
+                skip,
+            )
+            for idx in by_frame[frame]:
+                await _finish_op(
+                    idx, False, {"ok": False, "error": skip, "op": all_ops[idx]}
+                )
+            return
         # Shot1 → shot2 строго подряд внутри кадра.
         for idx in by_frame[frame]:
             op = all_ops[idx]

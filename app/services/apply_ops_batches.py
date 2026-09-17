@@ -66,14 +66,25 @@ SKIP_PROMPTS_AND_ACTION = "prompts_and_action"
 # Добор меню съёмки: крупность + движение + набор (по 6).
 SKIP_CAMERA_MENU = "camera_menu"
 CAMERA_MENU_UNITS_PER_BATCH = 6
-# Зависший SSE не должен держать всю волну 10 мин (GPT_TIMEOUT_S=600).
-_PROMPT_PACK_TIMEOUT_S = 180.0
+# Стена на пачку = GPT_TIMEOUT_S. 90с резало script/shots на Салтыковой.
 _SIZE_SKIP_KEYS = ("крупность", "size", "shot_size")
 _MOVE_SKIP_KEYS = ("движение", "движение_камеры", "move", "shot_move")
 _SET_SKIP_KEYS = ("набор", "set", "shot_set")
 
 ApplyFn = Callable[[dict[str, Any]], Awaitable[None]]
 ProgressFn = Callable[[str], Awaitable[None]]
+
+
+def pack_call_timeout_s(footer_kind: str | None = None) -> float:
+    """Стена на одну apply-ops пачку: GPT_TIMEOUT_S, не 90с.
+
+    ``footer_kind`` оставлен в сигнатуре — все виды пачек ждут одну стену.
+    """
+    del footer_kind
+    from app.settings import settings
+
+    wall = float(getattr(settings, "gpt_timeout_s", 600.0) or 600.0)
+    return max(180.0, wall)
 
 
 def frames_per_batch(
@@ -1283,13 +1294,7 @@ async def run_apply_ops_batched(
             input_paths=[batch_path],
             auto_pack=False,
         )
-        # Тайм-аут на пачку: 90с по умолчанию (вместо вечного зависания на 10 мин)
-        pack_timeout = (
-            _PROMPT_PACK_TIMEOUT_S
-            if (footer_kind or "").strip().lower()
-            in {"prompts", "img", "camera_menu", "shot_menu"}
-            else 90.0
-        )
+        pack_timeout = pack_call_timeout_s(footer_kind)
         try:
             res = await asyncio.wait_for(
                 run_operator_api(**api_kw),

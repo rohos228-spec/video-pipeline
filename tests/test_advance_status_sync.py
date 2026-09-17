@@ -564,3 +564,218 @@ async def test_copy_noderuns_creates_missing_group_nodes() -> None:
 
     await src_engine.dispose()
     await dest_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_copy_noderuns_does_not_overwrite_running_with_failed() -> None:
+    src_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    dest_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with src_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    async with dest_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    src_factory = async_sessionmaker(src_engine, expire_on_commit=False)
+    dest_factory = async_sessionmaker(dest_engine, expire_on_commit=False)
+
+    async def _seed(factory, status: NodeRunStatus) -> None:
+        async with factory() as s:
+            s.add(Project(id=34, slug="copy-protect", title="s", topic="t"))
+            s.add(Workflow(id=1, name="default", is_default=True))
+            await s.flush()
+            run = WorkflowRun(
+                id=1,
+                workflow_id=1,
+                project_id=34,
+                nodes_snapshot=[{"id": "n_excel_gpt_fw_script", "type": "excel_gpt"}],
+            )
+            s.add(run)
+            await s.flush()
+            s.add(
+                NodeRun(
+                    workflow_run_id=run.id,
+                    node_key="n_excel_gpt_fw_script",
+                    node_type="excel_gpt",
+                    status=status,
+                    progress=20 if status is NodeRunStatus.running else 0,
+                    error="stale" if status is NodeRunStatus.failed else None,
+                )
+            )
+            await s.commit()
+
+    await _seed(src_factory, NodeRunStatus.failed)
+    await _seed(dest_factory, NodeRunStatus.running)
+
+    async with src_factory() as src, dest_factory() as dest:
+        await _copy_noderuns_between_sessions(src, dest, 34)
+        await dest.commit()
+
+    async with dest_factory() as dest:
+        dest_run = (
+            await dest.execute(
+                select(WorkflowRun)
+                .where(WorkflowRun.project_id == 34)
+                .options(selectinload(WorkflowRun.node_runs))
+            )
+        ).scalar_one()
+        assert dest_run.node_runs[0].status is NodeRunStatus.running
+
+    await src_engine.dispose()
+    await dest_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_pull_master_does_not_copy_failed_noderun(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GET/advance poll не должен красить живую fw-ноду вчерашним failed."""
+    master_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with master_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    master_factory = async_sessionmaker(master_engine, expire_on_commit=False)
+
+    async with master_factory() as ms:
+        ms.add(
+            Project(
+                id=783,
+                slug="pull-no-noderun",
+                title="pull",
+                topic="t",
+                status=ProjectStatus.enriching_1,
+                meta={"active_excel_gpt_node_key": "n_excel_gpt_fw_script"},
+            )
+        )
+        ms.add(Workflow(id=1, name="default", is_default=True))
+        await ms.flush()
+        run = WorkflowRun(
+            id=1,
+            workflow_id=1,
+            project_id=783,
+            nodes_snapshot=[{"id": "n_excel_gpt_fw_script", "type": "excel_gpt"}],
+        )
+        ms.add(run)
+        await ms.flush()
+        ms.add(
+            NodeRun(
+                workflow_run_id=run.id,
+                node_key="n_excel_gpt_fw_script",
+                node_type="excel_gpt",
+                status=NodeRunStatus.failed,
+                error="утренний heal",
+            )
+        )
+        await ms.commit()
+
+    @asynccontextmanager
+    async def master_scope():
+        async with master_factory() as s:
+            yield s
+
+    monkeypatch.setattr("app.db.session_scope", master_scope)
+
+    p = Project(
+        id=783,
+        slug="pull-no-noderun",
+        title="pull",
+        topic="t",
+        status=ProjectStatus.enriching_1,
+        meta={"active_excel_gpt_node_key": "n_excel_gpt_fw_script"},
+    )
+    p.data_dir.mkdir(parents=True, exist_ok=True)
+    await init_project_db(p.data_dir, project=p)
+
+    sm = await get_project_sessionmaker(p.data_dir)
+    async with sm() as session:
+        row = await session.get(Project, 783)
+        assert row is not None
+        row.status = ProjectStatus.enriching_1
+        session.add(Workflow(id=1, name="default", is_default=True))
+        await session.flush()
+        run = WorkflowRun(
+            id=1,
+            workflow_id=1,
+            project_id=783,
+            nodes_snapshot=[{"id": "n_excel_gpt_fw_script", "type": "excel_gpt"}],
+        )
+        session.add(run)
+        await session.flush()
+        session.add(
+            NodeRun(
+                workflow_run_id=run.id,
+                node_key="n_excel_gpt_fw_script",
+                node_type="excel_gpt",
+                status=NodeRunStatus.running,
+                progress=10,
+            )
+        )
+        await session.commit()
+
+    async with sm() as session:
+        row = await session.get(Project, 783)
+        assert row is not None
+        await pull_master_runtime_into_project(session, row)
+        run = (
+            await session.execute(
+                select(WorkflowRun)
+                .where(WorkflowRun.project_id == 783)
+                .options(selectinload(WorkflowRun.node_runs))
+            )
+        ).scalar_one()
+        assert run.node_runs[0].status is NodeRunStatus.running
+        await session.commit()
+
+    await master_engine.dispose()
+    await close_all_project_engines()
+
+
+@pytest.mark.asyncio
+async def test_pull_master_takes_user_stop_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⏹ на master (script_ready) должен снять leftover enriching_1 с канваса."""
+    master_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with master_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    master_factory = async_sessionmaker(master_engine, expire_on_commit=False)
+
+    async with master_factory() as ms:
+        ms.add(
+            Project(
+                id=784,
+                slug="pull-user-stop",
+                title="pull",
+                topic="t",
+                status=ProjectStatus.script_ready,
+                meta={"user_stop": True, "auto_await_manual_start": True},
+            )
+        )
+        await ms.commit()
+
+    @asynccontextmanager
+    async def master_scope():
+        async with master_factory() as s:
+            yield s
+
+    monkeypatch.setattr("app.db.session_scope", master_scope)
+
+    p = Project(
+        id=784,
+        slug="pull-user-stop",
+        title="pull",
+        topic="t",
+        status=ProjectStatus.enriching_1,
+    )
+    p.data_dir.mkdir(parents=True, exist_ok=True)
+    await init_project_db(p.data_dir, project=p)
+
+    sm = await get_project_sessionmaker(p.data_dir)
+    async with sm() as session:
+        row = await session.get(Project, 784)
+        assert row is not None
+        row.status = ProjectStatus.enriching_1
+        changed = await pull_master_runtime_into_project(session, row)
+        assert changed is True
+        assert row.status is ProjectStatus.script_ready
+        await session.commit()
+
+    await master_engine.dispose()
+    await close_all_project_engines()
