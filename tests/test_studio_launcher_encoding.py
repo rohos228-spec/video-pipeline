@@ -83,14 +83,48 @@ def test_stop_backend_supports_wait_sec() -> None:
     assert "VP_REPO_ROOT" in text
 
 
-def test_studio_cmd_heals_launcher_before_powershell() -> None:
-    """Broken studio.ps1 cannot parse; STUDIO.cmd must replace it before -File."""
+def test_studio_cmd_heals_bom_before_powershell() -> None:
+    """PS 5.1 without BOM reads UTF-8 as CP1251: Д/— bytes become quotes.
+
+    STUDIO.cmd must restore the UTF-8 BOM locally before ``-File``.
+    Do not git reset origin/main and do not download studio.ps1 from GitHub:
+    that would wipe the PC branch (housepc/tompc/...).
+    """
     root = Path(__file__).resolve().parents[1]
     data = (root / "STUDIO.cmd").read_bytes()
     assert not data.startswith(UTF8_BOM), "UTF-8 BOM before @echo off breaks cmd.exe"
     text = data.decode("ascii")
     assert "STUDIO_HEALED" in text
-    assert "Invoke-WebRequest" in text
-    assert "raw.githubusercontent.com/rohos228-spec/video-pipeline/main/scripts/studio.ps1" in text
-    assert "git reset --hard origin/main" in text
+    assert "heal-studio-ps1.ps1" in text
+    assert "git reset --hard origin/main" not in text
+    assert "raw.githubusercontent.com" not in text
     assert text.index("STUDIO_HEALED") < text.index("-File")
+
+    heal_path = root / "scripts" / "heal-studio-ps1.ps1"
+    assert heal_path.is_file(), "ASCII healer must exist so it can run when studio.ps1 cannot parse"
+    heal = heal_path.read_text(encoding="ascii")
+    assert "ReadAllBytes" in heal
+    assert "WriteAllBytes" in heal
+    assert "239" in heal and "187" in heal and "191" in heal
+
+
+def test_studio_git_fetch_does_not_pipe_lastexitcode() -> None:
+    """PS 5.1: ``git fetch 2>&1 | ForEach-Object`` leaves $LASTEXITCODE null.
+
+    ``($null -ne 0)`` is True, so the first fetch with progress prints
+    ``git fetch не удался`` even when git exited 0. Retry is quiet -> success.
+    """
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "scripts/studio.ps1").read_text(encoding="utf-8-sig")
+    assert "function Invoke-StudioGitLogged" in text
+    logged = text.split("function Invoke-StudioGitLogged", 1)[1].split("function ", 1)[0]
+    assert "$code = $LASTEXITCODE" in logged
+    assert "| ForEach-Object" not in logged
+    update = text.split("function Invoke-StudioGitUpdate", 1)[1].split("function ", 1)[0]
+    assert "2>&1 | ForEach-Object" not in update
+    assert "Invoke-StudioGitLogged" in update
+    assert "Invoke-StudioGitFetch" in text
+    fetch = text.split("function Invoke-StudioGitFetch", 1)[1].split("function ", 1)[0]
+    assert "Повтор git fetch" in fetch
+    assert "http.version=HTTP/1.1" in fetch
+    assert "git -C $Root fetch origin $StudioBranch 2>&1 | ForEach-Object" not in text
