@@ -99,7 +99,9 @@ SoT: `app/orchestrator/node_registry.py`, `app/orchestrator/pipeline.py`, `app/o
 |---------|-----|
 | `python scripts/scene_space_migrate.py --up` | миграция вверх (идемпотентно) |
 | `python scripts/scene_space_migrate.py --down` | откат: DROP `frames_space`, `scenes_space` |
-| `python scripts/scene_space_plan.py --scene SCENE_ID --out DIR [--from-json PATH]` | SVG/PNG плана сверху; `--from-json` для фикстур |
+| `python scripts/scene_space_sync.py --project ID` | overlay живых сцен проекта в `*_space` (без вставки Frame) |
+| `python scripts/scene_space_sync.py --scene pN:sM` | overlay одной сцены |
+| `python scripts/scene_space_plan.py --scene SCENE_ID --out DIR [--from-json PATH]` | SVG/PNG плана сверху; `--from-json` для фикстур; `pN:sM` — живая БД |
 | `python scripts/scene_space_board.py --scene SCENE_ID --out FILE.html [--from-json PATH]` | монтажная раскладка HTML |
 | `python scripts/scene_space_validate.py --fixtures` | валидатор 3 фикстур → `tasks/VALIDATION.md`, код выхода 0/1/2 |
 | `python scripts/scene_space_validate.py --scene SCENE_ID` | одна сцена |
@@ -112,7 +114,7 @@ SoT: `app/orchestrator/node_registry.py`, `app/orchestrator/pipeline.py`, `app/o
 ## Тесты слоя
 
 ```
-python -m pytest tests/test_scene_space_geom.py tests/test_scene_space_migrate.py tests/test_scene_space_properties.py tests/test_scene_space_validator.py tests/test_scene_space_rewrite.py tests/test_scene_space_e2e.py -q
+python -m pytest tests/test_scene_space_geom.py tests/test_scene_space_migrate.py tests/test_scene_space_properties.py tests/test_scene_space_validator.py tests/test_scene_space_rewrite.py tests/test_scene_space_e2e.py tests/test_scene_space_pipeline.py -q
 ```
 
 ## Вне скоупа (грязное дерево housepc, не коммитить в этот слой)

@@ -1343,7 +1343,15 @@ async def rewrite(session: AsyncSession, scene_id: str, meaning: str) -> dict:
             space = await _get_scene_space(session, scene_id)
             rows = await _list_frame_spaces(session, scene_id)
         else:
-            raise RuntimeError(f"unknown scene {scene_id}; seed fixtures first")
+            from app.services.scene_space.pipeline import ingest_space_id, parse_space_id
+
+            if parse_space_id(scene_id) is None:
+                raise RuntimeError(f"unknown scene {scene_id}; seed fixtures first")
+            await ingest_space_id(session, scene_id)
+            space = await _get_scene_space(session, scene_id)
+            rows = await _list_frame_spaces(session, scene_id)
+            if space is None or not rows:
+                raise RuntimeError(f"unknown scene {scene_id}; ingest produced nothing")
     assert space is not None
 
     meaning = str(meaning)
@@ -1429,7 +1437,11 @@ async def rebuild(session: AsyncSession, scene_id: str) -> dict:
         if scene_id in _BUILDERS:
             await seed_fixture(session, load_fixture(scene_id))
         else:
-            raise RuntimeError(f"unknown scene {scene_id}")
+            from app.services.scene_space.pipeline import ingest_space_id, parse_space_id
+
+            if parse_space_id(scene_id) is None:
+                raise RuntimeError(f"unknown scene {scene_id}")
+            await ingest_space_id(session, scene_id)
     _proj, sc = await _pipeline_project_for(session, scene_id)
     meaning = sc.meaning or ""
     return await rewrite(session, scene_id, meaning)

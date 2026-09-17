@@ -21,7 +21,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Frame, Project, ProjectStatus
+from app.models import Frame, Project, ProjectStatus, Scene
 from app.storage import for_project as _sheet_for_project
 
 _MAX_ASSEMBLE_ATTEMPTS = 2
@@ -357,6 +357,30 @@ async def run_assemble(
             )
 
         applied = await sd_apply.apply_scene_design(session, project, payload)
+        try:
+            from app.services.scene_space.pipeline import (
+                apply_blocking_after_ingest,
+                ingest_project,
+            )
+
+            space_rep = await ingest_project(session, project)
+            for item in space_rep.get("reports") or []:
+                sid = str(item.get("scene_id") or "")
+                if not sid or int(item.get("frames") or 0) < 1:
+                    continue
+                sc_pk = int(sid.rsplit(":s", 1)[-1])
+                sc = await session.get(Scene, sc_pk)
+                meaning = (sc.meaning or sc.title or "scene turns") if sc else "scene turns"
+                blocked = await apply_blocking_after_ingest(session, sid, meaning)
+                logger.info(
+                    "[#{}] scene_space blocking {}: {}",
+                    project.id,
+                    sid,
+                    blocked.get("changed"),
+                )
+            logger.info("[#{}] scene_space ingest: {}", project.id, space_rep)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[#{}] scene_space after assemble failed: {}", project.id, e)
         # Пayload сборщика на диск ноды — материал для «Проверка: сборка сцен».
         _write_sd_reply_file(project, "assemble", payload)
         runner.mark_done(project, str(payload.get("report") or ""))

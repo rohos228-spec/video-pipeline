@@ -61,12 +61,16 @@ python scripts/scene_space_board.py --scene fix:cross --out tasks/out/fix-cross/
 python scripts/scene_space_board.py --scene fix:turn --out tasks/out/fix-turn/board.html --from-json tests/fixtures/scene_space/turn.json
 ```
 
-Живая БД (после seed/rewrite в store):
+Живая БД (overlay, без вставки кадров):
 
 ```
-python scripts/scene_space_plan.py --scene SCENE_ID --out tasks/out/SCENE_ID
-python scripts/scene_space_board.py --scene SCENE_ID --out tasks/out/SCENE_ID/board.html
+python scripts/scene_space_sync.py --project 13
+python scripts/scene_space_plan.py --scene p13:s4 --out tasks/out/p13-s4
+python scripts/scene_space_board.py --scene p13:s4 --out tasks/out/p13-s4/board.html
+python scripts/scene_space_validate.py --scene p13:s4
 ```
+
+`pN:sM` — `p{projects.id}:s{scenes.id}`. Служебные кадры вставляет только новый assemble (до картинок), не этот CLI.
 
 Ожидание: в каждом `tasks/out/fix-*/` файлы `plan_01.svg` … по числу кадров (≥8) и `board.html`. Повтор команды — байт-в-байт тот же SVG (кроме разрешённого отсутствия PNG).
 
@@ -96,7 +100,7 @@ python -m pytest tests/test_scene_space_validator.py tests/test_scene_space_e2e.
 
 ```
 python scripts/scene_space_migrate.py --up
-python -m pytest tests/test_scene_space_geom.py tests/test_scene_space_migrate.py tests/test_scene_space_properties.py tests/test_scene_space_validator.py tests/test_scene_space_rewrite.py tests/test_scene_space_e2e.py -q --tb=short
+python -m pytest tests/test_scene_space_geom.py tests/test_scene_space_migrate.py tests/test_scene_space_properties.py tests/test_scene_space_validator.py tests/test_scene_space_rewrite.py tests/test_scene_space_e2e.py tests/test_scene_space_pipeline.py -q --tb=short
 python scripts/scene_space_e2e.py
 python scripts/scene_space_validate.py --fixtures
 ```

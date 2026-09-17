@@ -2,18 +2,33 @@
 
 Ветка: `housepc`, локально. `main` / `origin/main` не трогали. Push не было.
 
+## Живой пайплайн (2026-09-17)
+
+Overlay ingest + хук assemble. Существующие проекты **не** получают служебные кадры.
+
+- CLI: `python scripts/scene_space_sync.py --project ID`
+- После `scene_design` assemble: ingest + blocking (может вставить Frame, картинок ещё нет)
+- Прогон overlay: `#50 nicshe-60-sekund` → `p50:s3` (18 кадров); `#57 scene-design-30` → `p57:s10` (8)
+- Валидатор на живых: exit=2 — это правда монтажа (все MS, угол не меняется), не баг ingest
+- Раскладки: `tasks/out/p50-s3/board.html`, `tasks/out/p57-s10/board.html`
+
+Повторный sync `#50` — `skipped: unchanged`.
+
+На `#50` в `Frame.attrs` нет `крупность`/`план` — overlay ставит MS. Валидатор честно орёт `size_same` + `angle_30`. Это дыра данных пайплайна, не ingest.
+
 ## Не работает
 
-- Слой **не встроен** в живой канвас и `camera_expand`. Постановка — сервис + CLI, не нода registry. Проекты в `data/state.db` (59 проектов, 2057 кадров) **не имеют** рядов `scenes_space` / `frames_space`.
-- `scene_space_plan.py` / `scene_space_board.py` **без** `--from-json` читают store живой БД; для `fix:*` там пусто. Рабочий путь фикстур — `--from-json` (зафиксировано в `tasks/CHECKS.md` и `INVENTORY.md`).
-- Первый `rewrite` после seed прогоняет blocking: может вставить служебный кадр и обновить не-`manual` поля. Второй прогон на том же meaning пустой. Это не «молчаливая идемпотентность с первого кадра seed», а «идемпотентность со второго».
-- Существующие промты сцен (`prompts/scene_design/**`) не подключены к этому слою — так и задумано.
+- Studio UI / нода канваса по-прежнему нет. CLI + хук assemble.
+- Существующие проекты без крупности в attrs выглядят как ряд MS.
+- Overlay не чинит монтаж сам (ты выбрал: вставки только на новом assemble).
+- `fix:*` по-прежнему через `--from-json`.
+- Существующие промты сцен не подключены — так и задумано.
 
 ## Работает (цифры)
 
 | Проверка | Результат |
 |---|---|
-| `python -m pytest tests/test_scene_space_*.py -q` | **66 passed** |
+| `python -m pytest tests/test_scene_space_*.py -q` | **70 passed** |
 | Property §7.1–10 (200 прогонов в geom) | **10/10** собраны, все зелёные |
 | `python scripts/scene_space_validate.py --fixtures` | **exit=0**; 3 сцены × 0 error / 0 warning |
 | Критерии 2.9 на dialogue / cross / turn | все `ok` на трёх `board.html` |
