@@ -41,6 +41,7 @@ from app.models import (
     HITLRequest,
     NodeRun,
     Project,
+    ProjectStatus,
     PromptVersion,
     Scene,
     SceneDesignCell,
@@ -584,6 +585,8 @@ _RUNTIME_META_KEYS = (
     "user_stop",
     "mass_lane_user_stop",
     "auto_await_manual_start",
+    "step_failure",
+    "paused_from_status",
 )
 _CLEAR_WHEN_MASTER_RUNNING = (
     "user_stop",
@@ -600,6 +603,48 @@ _CLEAR_WHEN_SRC_ABSENT = _CLEAR_WHEN_MASTER_RUNNING + (
 def _bind_url(session: AsyncSession) -> str:
     bind = session.get_bind()
     return str(getattr(bind, "url", "") or "").replace("\\", "/")
+
+
+def master_park_overrides_running(master: Project, project: Project) -> bool:
+    """Master paused/failed после сна, abandon или кнопки паузы — не stale paused."""
+    from app.services.project_state import is_running_status
+
+    if master.status not in (ProjectStatus.paused, ProjectStatus.failed):
+        return False
+    if not is_running_status(project.status):
+        return False
+    meta = master.meta if isinstance(master.meta, dict) else {}
+    if meta.get("paused_from_status"):
+        return True
+    fs = meta.get("step_failure") if isinstance(meta.get("step_failure"), dict) else {}
+    return bool(fs.get("sleep_until") or fs.get("abandoned_at"))
+
+
+async def run_on_replica_project(session: AsyncSession, project: Project, fn) -> None:
+    """Выполнить fn(replica_session, replica_project) на другой БД и закоммитить."""
+    from app.db import commit_with_retry, session_scope
+
+    if "project.db" in _bind_url(session):
+        async with session_scope() as master:
+            row = await master.get(Project, int(project.id))
+            if row is None:
+                return
+            await fn(master, row)
+            await commit_with_retry(master)
+        return
+    dir_path = Path(project.data_dir)
+    if not dir_path.exists():
+        found = await get_project_data_dir(int(project.id))
+        if found is None:
+            return
+        dir_path = found
+    sm = await get_project_sessionmaker(dir_path)
+    async with sm() as p_sess:
+        row = await p_sess.get(Project, int(project.id))
+        if row is None:
+            return
+        await fn(p_sess, row)
+        await commit_with_retry(p_sess)
 
 
 def _apply_runtime_fields(src: Project, dest: Project) -> None:
@@ -692,7 +737,7 @@ async def pull_master_runtime_into_project(
     session: AsyncSession,
     project: Project,
 ) -> bool:
-    """Перед advance: взять running-статус с master, если project.db отстал."""
+    """Перед advance/GET: running с master, либо parked pause (сон / кнопка)."""
     from app.db import session_scope
     from app.services.project_state import is_running_status
 
@@ -705,6 +750,8 @@ async def pull_master_runtime_into_project(
             take_master_status = is_running_status(m.status) and not is_running_status(
                 project.status
             )
+            if not take_master_status:
+                take_master_status = master_park_overrides_running(m, project)
             if take_master_status:
                 logger.warning(
                     "pull_master_runtime: #{} project.db={} master={} — берём master",

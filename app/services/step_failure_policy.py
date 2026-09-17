@@ -213,6 +213,84 @@ async def _soft_retry_without_wipe(
         )
 
 
+async def _fail_active_on_both(
+    session: AsyncSession,
+    project: Project,
+    error: Exception,
+    err_code: str | None,
+) -> None:
+    from app.services.run_sync import mark_running_node_failed
+
+    await mark_running_node_failed(
+        session,
+        project,
+        error,
+        initiator="worker",
+        error_code=err_code,
+    )
+    try:
+        from app.project_db import run_on_replica_project
+
+        async def _fail(replica_session: AsyncSession, replica: Project) -> None:
+            await mark_running_node_failed(
+                replica_session,
+                replica,
+                error,
+                initiator="worker",
+                error_code=err_code,
+            )
+
+        await run_on_replica_project(session, project, _fail)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[#{}] fail active NodeRun on replica failed",
+            project.id,
+            exc_info=True,
+        )
+
+
+async def _push_parked_runtime(session: AsyncSession, project: Project) -> None:
+    """paused/failed + leftover NodeRun → вторая БД (сайдбар и канвас одно)."""
+    try:
+        from app.services.run_sync import park_leftover_running_nodes
+
+        await park_leftover_running_nodes(session, project, as_failed=True)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[#{}] park leftover NodeRuns on worker session failed",
+            project.id,
+            exc_info=True,
+        )
+    try:
+        from app.project_db import sync_runtime_both_ways
+
+        await sync_runtime_both_ways(session, project)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[#{}] parked runtime sync master↔project.db failed",
+            project.id,
+            exc_info=True,
+        )
+    try:
+        from app.project_db import run_on_replica_project
+        from app.services.run_sync import park_leftover_running_nodes
+
+        async def _park(replica_session: AsyncSession, replica: Project) -> None:
+            if replica.status not in (ProjectStatus.paused, ProjectStatus.failed):
+                replica.status = project.status
+            await park_leftover_running_nodes(
+                replica_session, replica, as_failed=True
+            )
+
+        await run_on_replica_project(session, project, _park)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[#{}] park leftover NodeRuns on replica failed",
+            project.id,
+            exc_info=True,
+        )
+
+
 async def record_step_failure(
     session: AsyncSession,
     project: Project,
@@ -301,8 +379,6 @@ async def record_step_failure(
 
     # ⏹ уже нажат — не поднимать planning снова soft-retry'ем (иначе крутилка вечная)
     if is_user_stopped(project) or is_stop_requested(project.id):
-        from app.services.run_sync import mark_running_node_failed
-
         running = project.status
         step = step_by_running_status(running)
         err_code, err_msg = describe_error(error)
@@ -313,13 +389,7 @@ async def record_step_failure(
             fs["last_running"] = step.running_status.value
         fs.pop("sleep_until", None)
         _save_failure_state(project, fs)
-        await mark_running_node_failed(
-            session,
-            project,
-            error,
-            initiator="worker",
-            error_code=err_code,
-        )
+        await _fail_active_on_both(session, project, error, err_code)
         if is_running_status(project.status):
             rollback = (
                 step.requires
@@ -328,6 +398,7 @@ async def record_step_failure(
             )
             project.status = rollback
         await session.flush()
+        await _push_parked_runtime(session, project)
         logger.warning(
             "[#{}] step failure ignored soft-retry (user_stop) → {}",
             project.id,
@@ -358,18 +429,11 @@ async def record_step_failure(
     if total >= MAX_TOTAL_FAILS:
         fs["abandoned_at"] = datetime.now(timezone.utc).isoformat()
         fs["recovery_cycles"] = MAX_CYCLES
-        project.status = ProjectStatus.paused
         _save_failure_state(project, fs)
-        from app.services.run_sync import mark_running_node_failed
-
-        await mark_running_node_failed(
-            session,
-            project,
-            error,
-            initiator="worker",
-            error_code=err_code,
-        )
+        await _fail_active_on_both(session, project, error, err_code)
+        project.status = ProjectStatus.paused
         await session.flush()
+        await _push_parked_runtime(session, project)
         logger.error(
             "[#{}] abandoned after {} fails ({} cycles) on {}",
             project.id,
@@ -385,22 +449,15 @@ async def record_step_failure(
         fs["sleep_until"] = until.isoformat()
         fs["recovery_cycles"] = total // FAILS_PER_CYCLE
         _save_failure_state(project, fs)
-        from app.services.run_sync import mark_running_node_failed
-
-        # Сначала failed по NodeRun (пока status ещё running-шаг), потом уходим
-        # из planning/… — иначе UI крутит «выполняется» все 30 мин сна.
-        await mark_running_node_failed(
-            session,
-            project,
-            error,
-            initiator="worker",
-            error_code=err_code,
-        )
+        # Сначала failed по NodeRun в обеих БД (пока status ещё running-шаг).
+        # state.db часто без fw_* — канвас читает project.db.
+        await _fail_active_on_both(session, project, error, err_code)
         # Не откатывать в step.requires (часто enrich_N_ready): при auto_mode
         # auto_advance сразу уводит проект «назад» (например img_pr → enrich_3_ready → scripting).
         # Во время 30-мин сна держим paused; ручной run_step снимает sleep.
         project.status = ProjectStatus.paused
         await session.flush()
+        await _push_parked_runtime(session, project)
         logger.warning(
             "[#{}] sleep {} min after fail {}/{} on {} (cycle {}/{}) → status={}",
             project.id,

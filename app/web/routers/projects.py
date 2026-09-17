@@ -221,10 +221,31 @@ async def get_project(
         if p is None:
             raise HTTPException(status_code=404, detail="project not found")
         upgraded = await upgrade_script_frames_qc_on_project(session, p)
+    pulled = False
+    try:
+        from app.project_db import pull_master_runtime_into_project
+        from app.services.run_sync import park_leftover_running_nodes
+
+        pulled = await pull_master_runtime_into_project(session, p)
+        if p.status in (ProjectStatus.paused, ProjectStatus.failed):
+            fs = (p.meta or {}).get("step_failure") if isinstance(p.meta, dict) else {}
+            as_failed = bool(
+                (fs or {}).get("sleep_until")
+                or (fs or {}).get("abandoned_at")
+                or p.status is ProjectStatus.failed
+            )
+            if await park_leftover_running_nodes(session, p, as_failed=as_failed):
+                pulled = True
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "get_project: #{} pull parked runtime failed",
+            project_id,
+            exc_info=True,
+        )
     _old, _new, recomputed = await recompute_status(
         session, p, log_prefix="recompute(web_get)"
     )
-    if upgraded or recomputed:
+    if upgraded or recomputed or pulled:
         await session.commit()
         await session.refresh(p)
     else:
@@ -402,8 +423,29 @@ async def get_project_run(
             raise HTTPException(status_code=404, detail="run not found")
         await ensure_run_for_project(project_id, wf_id, session=session)
         created = True
+    pulled = False
+    try:
+        from app.project_db import pull_master_runtime_into_project
+        from app.services.run_sync import park_leftover_running_nodes
+
+        pulled = await pull_master_runtime_into_project(session, p)
+        if p.status in (ProjectStatus.paused, ProjectStatus.failed):
+            fs = (p.meta or {}).get("step_failure") if isinstance(p.meta, dict) else {}
+            as_failed = bool(
+                (fs or {}).get("sleep_until")
+                or (fs or {}).get("abandoned_at")
+                or p.status is ProjectStatus.failed
+            )
+            if await park_leftover_running_nodes(session, p, as_failed=as_failed):
+                pulled = True
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "get_project_run: #{} pull parked runtime failed",
+            project_id,
+            exc_info=True,
+        )
     changed = await sync_run_snapshot_from_canvas_graph(session, p)
-    if created or changed:
+    if created or changed or pulled:
         await session.commit()
     run = (
         await session.execute(

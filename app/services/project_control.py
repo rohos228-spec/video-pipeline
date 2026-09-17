@@ -352,6 +352,26 @@ async def stop_project_running(
 async def pause_project(session: AsyncSession, project: Project) -> None:
     if project.status is ProjectStatus.paused:
         return
+    from app.services.run_sync import (
+        park_leftover_running_nodes,
+        stop_active_running_node,
+    )
+
+    # Пока status ещё running — иначе stop не находит excel_gpt / fw_*.
+    await stop_active_running_node(session, project)
+    try:
+        from app.project_db import run_on_replica_project
+
+        async def _stop(replica_session: AsyncSession, replica: Project) -> None:
+            await stop_active_running_node(replica_session, replica)
+
+        await run_on_replica_project(session, project, _stop)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[#{}] PAUSE: stop NodeRun on replica failed",
+            project.id,
+            exc_info=True,
+        )
     meta = dict(project.meta or {})
     meta["paused_from_status"] = project.status.value
     project.meta = meta
@@ -359,12 +379,37 @@ async def pause_project(session: AsyncSession, project: Project) -> None:
     project.updated_at = datetime.utcnow()
     await session.flush()
     try:
+        await park_leftover_running_nodes(session, project, as_failed=False)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[#{}] PAUSE: park leftover NodeRuns failed",
+            project.id,
+            exc_info=True,
+        )
+    try:
         from app.project_db import sync_runtime_both_ways
 
         await sync_runtime_both_ways(session, project)
     except Exception:  # noqa: BLE001
         logger.warning(
             "[#{}] PAUSE: runtime sync master↔project.db failed",
+            project.id,
+            exc_info=True,
+        )
+    try:
+        from app.project_db import run_on_replica_project
+
+        async def _park(replica_session: AsyncSession, replica: Project) -> None:
+            if replica.status is not ProjectStatus.paused:
+                replica.status = ProjectStatus.paused
+            await park_leftover_running_nodes(
+                replica_session, replica, as_failed=False
+            )
+
+        await run_on_replica_project(session, project, _park)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[#{}] PAUSE: park leftover on replica failed",
             project.id,
             exc_info=True,
         )

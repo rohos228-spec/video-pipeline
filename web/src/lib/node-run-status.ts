@@ -86,6 +86,12 @@ export function reconcileNodeRunStatus(
 ): NodeRunStatus {
   const ps = projectStatus as ProjectStatus | undefined;
   if (
+    (ps === "paused" || ps === "failed") &&
+    (runStatus === "running" || runStatus === "queued")
+  ) {
+    return ps === "failed" ? "failed" : "pending";
+  }
+  if (
     (runStatus === "failed" || runStatus === "pending" || runStatus === "queued") &&
     projectImpliesNodeRunning(nodeType, ps)
   ) {

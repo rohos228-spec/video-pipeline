@@ -1335,6 +1335,45 @@ async def stop_active_running_node(
             return
 
 
+async def park_leftover_running_nodes(
+    session: AsyncSession,
+    project: Project,
+    *,
+    as_failed: bool = True,
+    error: str | None = None,
+) -> bool:
+    """Если проект на паузе/failed — leftover running/queued на канвасе гасим.
+
+    Воркер пишет NodeRun в state.db, а fw_* живут в project.db: без этого
+    сайдбар «пауза», нода крутит «в работе».
+    """
+    if project.status not in (ProjectStatus.paused, ProjectStatus.failed):
+        return False
+    run = await _workflow_run_with_nodes(session, project.id)
+    if run is None:
+        return False
+    fs = (project.meta or {}).get("step_failure") or {}
+    err = str(error or fs.get("last_error") or "paused")[:2000]
+    changed = False
+    for nr in run.node_runs:
+        if nr.status not in (
+            NodeRunStatus.running,
+            NodeRunStatus.queued,
+            NodeRunStatus.waiting_hitl,
+        ):
+            continue
+        if as_failed:
+            if fail_node(nr, err, project_id=project.id, initiator="worker"):
+                changed = True
+        elif reset_node_to_pending(
+            nr, project_id=project.id, initiator="api_stop"
+        ):
+            changed = True
+    if changed:
+        await session.flush()
+    return changed
+
+
 # Линейный порядок типов нод (legacy — reset_nodes_from_step, тесты).
 NODE_TYPE_ORDER: list[str] = [
     "topic",

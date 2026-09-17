@@ -28,7 +28,9 @@ from app.project_db import (
     push_runtime_to_master,
     push_runtime_to_project_db,
 )
+from app.services.project_control import pause_project
 from app.services.project_steps import start_step
+from app.services.step_failure_policy import record_step_failure
 
 
 def _fake_master_session() -> SimpleNamespace:
@@ -169,6 +171,220 @@ async def test_pull_master_runtime_skips_stale_paused(
 
     await master_engine.dispose()
     await close_all_project_engines()
+
+
+@pytest.mark.asyncio
+async def test_pull_master_runtime_takes_parked_sleep_pause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Master paused после 30-мин сна — канвас должен взять паузу, не крутить ноду."""
+    master_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with master_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    master_factory = async_sessionmaker(master_engine, expire_on_commit=False)
+
+    async with master_factory() as ms:
+        ms.add(
+            Project(
+                id=781,
+                slug="pull-sleep-paused",
+                title="pull",
+                topic="t",
+                status=ProjectStatus.paused,
+                meta={
+                    "step_failure": {
+                        "sleep_until": "2099-01-01T00:00:00+00:00",
+                        "last_running": "enriching_1",
+                        "total_fails": {"enriching_1": 3},
+                    },
+                    "active_excel_gpt_node_key": "n_excel_gpt_fw_script",
+                },
+            )
+        )
+        await ms.commit()
+
+    @asynccontextmanager
+    async def master_scope():
+        async with master_factory() as s:
+            yield s
+
+    monkeypatch.setattr("app.db.session_scope", master_scope)
+
+    p = Project(
+        id=781,
+        slug="pull-sleep-paused",
+        title="pull",
+        topic="t",
+        status=ProjectStatus.enriching_1,
+        meta={"active_excel_gpt_node_key": "n_excel_gpt_fw_script"},
+    )
+    p.data_dir.mkdir(parents=True, exist_ok=True)
+    await init_project_db(p.data_dir, project=p)
+
+    sm = await get_project_sessionmaker(p.data_dir)
+    async with sm() as session:
+        row = await session.get(Project, 781)
+        assert row is not None
+        row.status = ProjectStatus.enriching_1
+        changed = await pull_master_runtime_into_project(session, row)
+        assert changed is True
+        assert row.status is ProjectStatus.paused
+        await session.commit()
+
+    await master_engine.dispose()
+    await close_all_project_engines()
+
+
+@pytest.mark.asyncio
+async def test_record_step_failure_sleep_parks_project_db_noderun(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Сон 30 мин на state.db не должен оставлять fw-ноду running в project.db."""
+    master_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with master_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    master_factory = async_sessionmaker(master_engine, expire_on_commit=False)
+
+    async with master_factory() as ms:
+        ms.add(
+            Project(
+                id=782,
+                slug="sleep-park-noderun",
+                title="sleep",
+                topic="t",
+                status=ProjectStatus.enriching_1,
+                meta={
+                    "active_excel_gpt_node_key": "n_excel_gpt_fw_script",
+                    "step_failure": {"total_fails": {"enriching_1": 2}},
+                },
+            )
+        )
+        await ms.commit()
+
+    @asynccontextmanager
+    async def master_scope():
+        async with master_factory() as s:
+            yield s
+
+    monkeypatch.setattr("app.db.session_scope", master_scope)
+
+    p = Project(
+        id=782,
+        slug="sleep-park-noderun",
+        title="sleep",
+        topic="t",
+        status=ProjectStatus.enriching_1,
+        meta={"active_excel_gpt_node_key": "n_excel_gpt_fw_script"},
+    )
+    p.data_dir.mkdir(parents=True, exist_ok=True)
+    await init_project_db(p.data_dir, project=p)
+
+    sm = await get_project_sessionmaker(p.data_dir)
+    async with sm() as session:
+        row = await session.get(Project, 782)
+        assert row is not None
+        row.status = ProjectStatus.enriching_1
+        session.add(Workflow(id=1, name="default", is_default=True))
+        await session.flush()
+        run = WorkflowRun(
+            id=1,
+            workflow_id=1,
+            project_id=782,
+            nodes_snapshot=[{"id": "n_excel_gpt_fw_script", "type": "excel_gpt"}],
+        )
+        session.add(run)
+        await session.flush()
+        session.add(
+            NodeRun(
+                workflow_run_id=run.id,
+                node_key="n_excel_gpt_fw_script",
+                node_type="excel_gpt",
+                status=NodeRunStatus.running,
+                progress=15,
+                progress_text="GPT",
+            )
+        )
+        await session.commit()
+
+    async with master_factory() as ms:
+        m = await ms.get(Project, 782)
+        assert m is not None
+        action = await record_step_failure(
+            ms,
+            m,
+            error=RuntimeError("upstream error"),
+        )
+        assert action == "sleep"
+        assert m.status is ProjectStatus.paused
+        await ms.commit()
+
+    async with sm() as session:
+        row = await session.get(Project, 782)
+        assert row is not None
+        assert row.status is ProjectStatus.paused
+        run = (
+            await session.execute(
+                select(WorkflowRun)
+                .where(WorkflowRun.project_id == 782)
+                .options(selectinload(WorkflowRun.node_runs))
+            )
+        ).scalar_one()
+        keys = {nr.node_key: nr for nr in run.node_runs}
+        assert keys["n_excel_gpt_fw_script"].status is not NodeRunStatus.running
+
+    await master_engine.dispose()
+    await close_all_project_engines()
+
+
+@pytest.mark.asyncio
+async def test_pause_project_stops_running_noderun() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        p = Project(
+            slug="pause-noderun",
+            title="pause",
+            topic="t",
+            status=ProjectStatus.enriching_1,
+            meta={"active_excel_gpt_node_key": "n_excel_gpt_fw_script"},
+        )
+        session.add(p)
+        await session.flush()
+        session.add(Workflow(id=1, name="default", is_default=True))
+        await session.flush()
+        run = WorkflowRun(
+            workflow_id=1,
+            project_id=p.id,
+            nodes_snapshot=[{"id": "n_excel_gpt_fw_script", "type": "excel_gpt"}],
+        )
+        session.add(run)
+        await session.flush()
+        session.add(
+            NodeRun(
+                workflow_run_id=run.id,
+                node_key="n_excel_gpt_fw_script",
+                node_type="excel_gpt",
+                status=NodeRunStatus.running,
+            )
+        )
+        await session.flush()
+
+        await pause_project(session, p)
+        await session.commit()
+
+        assert p.status is ProjectStatus.paused
+        run = (
+            await session.execute(
+                select(WorkflowRun)
+                .where(WorkflowRun.project_id == p.id)
+                .options(selectinload(WorkflowRun.node_runs))
+            )
+        ).scalar_one()
+        assert run.node_runs[0].status is not NodeRunStatus.running
+
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
