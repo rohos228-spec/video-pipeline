@@ -82,6 +82,28 @@ def test_salvage_ops_from_partial_json_truncated() -> None:
     assert [o["frame_uuid"] for o in ops] == ["aaa", "bbb"]
 
 
+def test_extract_apply_ops_json_closes_truncated_nested_bits() -> None:
+    """#34 fw_script: один op, биты оборваны — стрим [DONE] без хвоста.
+
+    salvage_ops пустой (op не закрыт). Без close → RuntimeError
+    «модель не вернула apply-ops».
+    """
+    text = (
+        '{"ops":[{"frame_uuid":"98ce4c2b0697437bad9f71d8","fields":{"биты":['
+        '{"порядок":1,"глагол":"подает","якорь":"раз"},'
+        '{"порядок":2,"глагол":"оставляет","якорь":"два"}]'
+        "```"
+    )
+    assert db_apply.salvage_ops_from_partial_json(text) == []
+    data = db_apply.extract_apply_ops_json(text)
+    assert data is not None
+    assert data["_salvaged_partial"] is True
+    assert data["ops"][0]["frame_uuid"] == "98ce4c2b0697437bad9f71d8"
+    bits = data["ops"][0]["fields"]["биты"]
+    assert len(bits) == 2
+    assert bits[1]["глагол"] == "оставляет"
+
+
 def test_extract_apply_ops_json_uses_partial_salvage() -> None:
     text = (
         'Вот JSON:\n{"ops":['

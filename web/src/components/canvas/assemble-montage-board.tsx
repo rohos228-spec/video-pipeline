@@ -1247,7 +1247,7 @@ const MediaActionBar = memo(function MediaActionBar({
           )}
         </Button>
       )}
-      <DropdownMenu>
+      <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
           <Button type="button" variant="outline" size="sm" className="h-7 flex-1 px-2 text-[10px]">
             <MoreHorizontal className="mr-1 h-3.5 w-3.5" />
@@ -1890,6 +1890,13 @@ function mergeTrimsFromMeta(
   return merged;
 }
 
+/** Radix Dropdown/Popover после apply часто оставляет body { pointer-events: none }. */
+function restoreDocumentPointerEvents() {
+  if (typeof document === "undefined") return;
+  document.body.style.removeProperty("pointer-events");
+  document.documentElement.style.removeProperty("pointer-events");
+}
+
 export function AssembleMontageBoard({
   open,
   projectId,
@@ -1939,8 +1946,10 @@ export function AssembleMontageBoard({
   const submittedApplyRef = useRef(false);
   const trimsDirtyRef = useRef(false);
   const lastApplyToastKeyRef = useRef("");
-  /** Не принимать done/error, пока хотя бы раз не увидели running (гонка stale meta). */
+  /** Этот прогон apply наш: принимаем done/idle даже если running не успел прийти. */
   const applySeenRunningRef = useRef(false);
+  const applyRunningRef = useRef(false);
+  applyRunningRef.current = applyRunning;
   const lastPatchedPathRef = useRef("");
   const lastMontageToastKeyRef = useRef("");
   const lastRecoverToastKeyRef = useRef("");
@@ -1991,6 +2000,7 @@ export function AssembleMontageBoard({
     setSwapPick(null);
     setSwapBusy(false);
     lastApplyToastKeyRef.current = "";
+    restoreDocumentPointerEvents();
   }, [projectId]);
 
   // Прогрев «Доп. функции» — getProject не блокирует первый клик.
@@ -2434,17 +2444,19 @@ export function AssembleMontageBoard({
         pendingOpsRef.current = [];
         setSelectedOpKeys(new Set());
         setFailedHighlights([]);
-        applySeenRunningRef.current = false;
+        applySeenRunningRef.current = true;
         lastPatchedPathRef.current = "";
         setApplyRunning(true);
+        queueMicrotask(restoreDocumentPointerEvents);
         lastApplyToastKeyRef.current = "";
         toast.message(res.message || `Генерация ${queued} операций через API…`);
         return;
       }
       if (res.already_running) {
         // Чужой/текущий job — НЕ чистим локальную очередь пользователя.
-        applySeenRunningRef.current = false;
+        applySeenRunningRef.current = true;
         setApplyRunning(true);
+        queueMicrotask(restoreDocumentPointerEvents);
         toast.message("Генерация уже выполняется");
         return;
       }
@@ -2476,7 +2488,9 @@ export function AssembleMontageBoard({
       } else {
         // Фоновый job должен вернуть started/already_running. Иначе не врём «завершено».
         toast.message(res.message || "Генерация принята — ждём статус…");
+        applySeenRunningRef.current = true;
         setApplyRunning(true);
+        queueMicrotask(restoreDocumentPointerEvents);
       }
     },
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
@@ -2532,7 +2546,10 @@ export function AssembleMontageBoard({
       if (st.job?.status === "running") setMontageRunning(true);
     }).catch(() => {});
     void api.getMontageApplyStatus(projectId).then((st) => {
-      if (st.job?.status === "running") setApplyRunning(true);
+      if (st.job?.status === "running") {
+        applySeenRunningRef.current = true;
+        setApplyRunning(true);
+      }
     }).catch(() => {});
     void api.getMontageRecoverOutseeStatus(projectId).then((st) => {
       if (st.job?.status === "running") setRecoverRunning(true);
@@ -2550,8 +2567,10 @@ export function AssembleMontageBoard({
       const keepLocal =
         localQueueDirtyRef.current && pendingOpsRef.current.length > 0;
       const localKept = keepLocal ? [...pendingOpsRef.current] : [];
+      applySeenRunningRef.current = false;
       setApplyRunning(false);
       setApplyProgress(null);
+      restoreDocumentPointerEvents();
       if (submittedApplyRef.current && !keepLocal) {
         // Очередь подтянется из meta после refetch (remaining / пусто).
         localQueueDirtyRef.current = false;
@@ -2669,6 +2688,8 @@ export function AssembleMontageBoard({
         setApplyRunning(false);
         setRecoverRunning(false);
         setApplyProgress(null);
+        applySeenRunningRef.current = false;
+        restoreDocumentPointerEvents();
         return;
       }
       if (evt.payload?.montage_outsee_recover) {
@@ -2733,7 +2754,13 @@ export function AssembleMontageBoard({
             });
           }
         } else if (status === "done" || status === "error" || status === "cancelled") {
-          if (!applySeenRunningRef.current && status !== "cancelled") return;
+          if (
+            !applySeenRunningRef.current &&
+            !applyRunningRef.current &&
+            status !== "cancelled"
+          ) {
+            return;
+          }
           const err =
             evt.payload.error ||
             (Array.isArray(evt.payload.errors) ? evt.payload.errors.join("; ") : undefined);
@@ -2825,9 +2852,12 @@ export function AssembleMontageBoard({
           }
           return;
         }
-        if (!status || status === "idle") return;
-        // Stale done/error до первого running — ждём, не автозавершаем.
-        if (!applySeenRunningRef.current) return;
+        // Этот эффект живёт только пока applyRunning: idle/пусто = job уже кончился.
+        // Раньше ждали «видели running» и при быстром coverage кнопки оставались disabled.
+        if (!status || status === "idle") {
+          handleApplyTerminal("done");
+          return;
+        }
         const pk =
           typeof doneOps === "number" && typeof totalOps === "number"
             ? `${doneOps}/${totalOps}`
@@ -2844,6 +2874,15 @@ export function AssembleMontageBoard({
       window.clearInterval(id);
     };
   }, [open, projectId, applyRunning, handleApplyTerminal, queryClient]);
+
+  useEffect(() => {
+    if (!open) return;
+    restoreDocumentPointerEvents();
+  }, [open]);
+
+  useEffect(() => {
+    if (!applyRunning) restoreDocumentPointerEvents();
+  }, [applyRunning]);
 
   useEffect(() => {
     if (!open || projectId == null || !recoverRunning) return;
@@ -3689,7 +3728,7 @@ export function AssembleMontageBoard({
 
   return createPortal(
     <>
-      <div className="fixed inset-0 z-[10050] flex flex-col bg-card">
+      <div className="pointer-events-auto fixed inset-0 z-[10050] flex flex-col bg-card">
         <header className="flex shrink-0 items-center justify-between border-b border-white/10 px-5 py-4">
           <div className="flex items-center gap-3">
             <Clapperboard className="h-7 w-7 text-amber-400" />

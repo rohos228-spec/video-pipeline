@@ -189,6 +189,12 @@ export function CoverageMenu({
 
   useEffect(() => () => (hideRef.current ? clearTimeout(hideRef.current) : undefined), []);
 
+  useEffect(() => {
+    if (!disabled) return;
+    if (hideRef.current) clearTimeout(hideRef.current);
+    setBox(null);
+  }, [disabled]);
+
   const open = box !== null;
   useEffect(() => {
     if (!open) return;
@@ -272,7 +278,7 @@ export function CoverageMenu({
               onMouseEnter={show}
               onMouseLeave={hide}
               style={{ left: box.left, top: box.top, width: MENU_W }}
-              className="fixed z-[10060] rounded-xl border border-white/12 bg-[#0b0b0b]/98 p-2 shadow-2xl backdrop-blur"
+              className="pointer-events-auto fixed z-[10060] rounded-xl border border-white/12 bg-[#0b0b0b]/98 p-2 shadow-2xl backdrop-blur"
             >
               <p className="flex items-baseline gap-2 px-1 pb-1.5">
                 <span className="text-[9px] uppercase tracking-wide text-white/35">{title}</span>

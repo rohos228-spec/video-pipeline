@@ -350,7 +350,9 @@ async def sync_run_for_project(
 
         # Heal: excel_gpt в completed_keys, но NodeRun ещё running/queued —
         # (auto-chain раньше помечал next done и оставлял prev running).
-        # pending + completed_keys = stale meta → снимаем «готово», не прыгаем в done.
+        # Линейный slot 1..5: pending + completed_keys = stale meta → сброс.
+        # overflow slot 0 (fw_*): pending + ключ = NodeRun не закрыли после
+        # apply-ops (STOP / stale status) → done, meta не трогаем.
         active_key = active_excel_gpt_node_key(project)
         done_keys = completed_node_keys(project)
         for nr in run.node_runs:
@@ -364,6 +366,38 @@ async def sync_run_for_project(
                 continue
             slot = slot_for_excel_gpt_node_key(project, nr.node_key)
             if nr.status == NodeRunStatus.pending:
+                # overflow / slotOverflow (fw_*): runner пишет completed_keys,
+                # но NodeRun остаётся pending если STOP/stale status обошёл
+                # complete_excel_gpt_node_by_key. Ключ — правда, закрываем ноду.
+                if slot == 0:
+                    old = nr.status.value
+                    queue_node_for_start(
+                        nr, project_id=project_id, initiator="worker"
+                    )
+                    start_node_running(
+                        nr, project_id=project_id, initiator="worker"
+                    )
+                    if complete_node(
+                        nr, project_id=project_id, initiator="worker"
+                    ):
+                        await publish_node_event(
+                            run.id,
+                            event_type="node_status_changed",
+                            node_key=nr.node_key,
+                            payload={
+                                "node_type": nr.node_type,
+                                "from": old,
+                                "to": nr.status.value,
+                                "project_id": project_id,
+                            },
+                        )
+                        logger.info(
+                            "[#{}] heal: overflow completed_key {} → done "
+                            "(slot 0, meta не трогаем)",
+                            project_id,
+                            nr.node_key,
+                        )
+                    continue
                 if slot is not None:
                     await clear_slot_completion_meta(
                         s, project, slot, node_key=nr.node_key

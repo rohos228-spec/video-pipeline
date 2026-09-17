@@ -442,6 +442,61 @@ def remap_frame_number_uuids(
     return remaps
 
 
+def close_truncated_json(text: str) -> dict[str, Any] | None:
+    """Дописать незакрытые ``]}`` у обрезанного apply-ops JSON.
+
+    Один большой op с ``биты:[…]`` часто рвётся сетью: последний объект
+    бита цел, а корневые скобки нет. salvage_ops тогда пустой — нода
+    падает с «модель не вернула apply-ops», хотя JSON почти готов.
+    """
+    if not text:
+        return None
+    t = text.strip()
+    t = re.sub(r"```+\s*$", "", t).rstrip()
+    start = t.find("{")
+    if start < 0:
+        return None
+    s = t[start:]
+    stack: list[str] = []
+    in_str = False
+    esc = False
+    for ch in s:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append("]" if ch == "[" else "}")
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+    if in_str:
+        s += '"'
+    s = s.rstrip()
+    if s.endswith(","):
+        s = s[:-1]
+    if s.endswith(":"):
+        s += "null"
+    if not stack:
+        try:
+            data = json.loads(s)
+        except Exception:  # noqa: BLE001
+            return None
+        return data if isinstance(data, dict) else None
+    s += "".join(reversed(stack))
+    try:
+        data = json.loads(s)
+    except Exception:  # noqa: BLE001
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def salvage_ops_from_partial_json(text: str) -> list[dict[str, Any]]:
     """Достать целые объекты из обрезанного ``{"ops":[…`` (без закрытия)."""
     if not text:
@@ -561,6 +616,15 @@ def extract_apply_ops_json(text: str) -> dict[str, Any] | None:
     partial_ops = salvage_ops_from_partial_json(text)
     if partial_ops:
         return {"ops": partial_ops, "_salvaged_partial": True}
+    closed = close_truncated_json(text)
+    if isinstance(closed, dict) and (
+        isinstance(closed.get("ops"), list)
+        or isinstance(closed.get("actions"), list)
+        or isinstance(closed.get("characters"), list)
+        or isinstance(closed.get("scenes"), list)
+    ):
+        closed["_salvaged_partial"] = True
+        return closed
     return None
 
 

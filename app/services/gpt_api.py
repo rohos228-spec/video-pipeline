@@ -2478,6 +2478,22 @@ async def chat(
                 # незакрыт — добираем хвост коротким continue (без тяжёлых файлов).
                 cont_round = 0
                 while cont_round < 2 and looks_truncated_llm_text(result.text):
+                    if xlsx_write_contract == "apply_ops":
+                        from app.services.db_apply import extract_apply_ops_json
+
+                        salvaged = extract_apply_ops_json(result.text or "")
+                        if isinstance(salvaged, dict) and (
+                            salvaged.get("ops")
+                            or salvaged.get("characters")
+                            or salvaged.get("scenes")
+                        ):
+                            logger.info(
+                                "gpt_api.chat truncated JSON closed locally "
+                                "chars={} ops={} — skip continue",
+                                len(result.text or ""),
+                                len(salvaged.get("ops") or []),
+                            )
+                            break
                     cont_round += 1
                     tail = (result.text or "")[-4000:]
                     cont_prompt = (
@@ -2582,6 +2598,22 @@ async def chat(
                 )
                 cont_round = 0
                 while cont_round < 2 and looks_truncated_llm_text(result.text):
+                    if xlsx_write_contract == "apply_ops":
+                        from app.services.db_apply import extract_apply_ops_json
+
+                        salvaged = extract_apply_ops_json(result.text or "")
+                        if isinstance(salvaged, dict) and (
+                            salvaged.get("ops")
+                            or salvaged.get("characters")
+                            or salvaged.get("scenes")
+                        ):
+                            logger.info(
+                                "gpt_api.chat truncated JSON closed locally "
+                                "chars={} ops={} — skip continue",
+                                len(result.text or ""),
+                                len(salvaged.get("ops") or []),
+                            )
+                            break
                     cont_round += 1
                     tail = (result.text or "")[-4000:]
                     cont_prompt = (

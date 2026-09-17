@@ -231,6 +231,10 @@ export function FrameRefsStrip({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [open]);
 
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
   const guard = useCallback(
     async (run: () => Promise<unknown>) => {
       setBusy(true);
@@ -391,7 +395,7 @@ export function FrameRefsStrip({
       {open && typeof document !== "undefined"
         ? createPortal(
             <div
-              className="fixed inset-0 z-[10060] flex items-center justify-center bg-black/70 p-6"
+              className="pointer-events-auto fixed inset-0 z-[10060] flex items-center justify-center bg-black/70 p-6"
               onClick={() => setOpen(false)}
             >
               <div
