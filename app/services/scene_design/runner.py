@@ -188,14 +188,16 @@ def load_checkpoint(project: Project, name: str) -> dict[str, Any] | None:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return None
-    list_key = ag.LIST_KEY[name]
-    if (
-        not isinstance(data, dict)
-        or not isinstance(data.get(list_key), list)
-        or not data[list_key]
-    ):
-        return None
-    return data
+    list_key = ag.LIST_KEY.get(name)
+    if list_key:
+        if (
+            not isinstance(data, dict)
+            or not isinstance(data.get(list_key), list)
+            or not data[list_key]
+        ):
+            return None
+        return data
+    return data if isinstance(data, dict) else None
 
 
 def save_checkpoint(project: Project, name: str, data: dict[str, Any]) -> None:

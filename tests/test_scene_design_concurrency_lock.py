@@ -37,3 +37,28 @@ async def test_concurrent_agent_checkpoint_writes_preserve_all_agents(tmp_path: 
         assert agents_meta[name]["status"] == "done"
         loaded = load_checkpoint(project, name)
         assert loaded is not None
+
+
+def test_load_checkpoint_legacy_style_does_not_keyerror(tmp_path: Path):
+    """Старый style.json: сборка не должна падать KeyError LIST_KEY['style']."""
+    import json
+
+    project = SimpleNamespace(
+        id=102,
+        slug="style_legacy",
+        data_dir=tmp_path,
+        meta={
+            "scene_design": {
+                "agents": {"style": {"status": "done"}},
+            }
+        },
+    )
+    sd = tmp_path / "scene_design"
+    sd.mkdir()
+    (sd / "style.json").write_text(
+        json.dumps({"style_arc": [{"тон": "тихо"}], "report": "ok"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    loaded = load_checkpoint(project, "style")
+    assert loaded is not None
+    assert loaded["style_arc"][0]["тон"] == "тихо"
