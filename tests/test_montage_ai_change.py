@@ -154,6 +154,62 @@ def test_write_ai_change_db_card_has_frame_fields(tmp_path: Path) -> None:
     assert "IMAGE_PROMPT" not in path.read_text(encoding="utf-8")
 
 
+def test_action_for_child_ignores_inherited_k1_action() -> None:
+    """63/64 копируют кадры[] родителя 62 — действие должно быть своего K2, не K1."""
+    from app.services.montage_board import _action_for_frame
+
+    child = Frame(
+        project_id=1,
+        number=63,
+        uuid="ab" * 12,
+        voiceover_text="достал папку",
+        attrs={
+            "shot01_action": "сидит за столом",
+            "действие": "сидит за столом",
+            "кадры": [
+                {"id": "1-K1", "действие": "сидит за столом"},
+                {"id": "1-K2", "действие": "достаёт папку из портфеля"},
+                {"id": "1-K3", "действие": "пишет заявление"},
+            ],
+            "camera_subdivide": {
+                "role": "shot",
+                "shot_id": "1-K2",
+                "shot_index": 2,
+            },
+        },
+    )
+    assert _action_for_frame(child) == "достаёт папку из портфеля"
+
+
+def test_write_ai_change_db_card_child_full_ladder_not_k1(tmp_path: Path) -> None:
+    """Карточка ИИзменения кадра 63 не должна держать действие/кадр 62."""
+    project = Project(id=9, slug="leak62", topic="t", hero_mode="auto")
+    fr = Frame(
+        project_id=9,
+        number=63,
+        uuid="340ef477ea3d463a95e6bae6",
+        voiceover_text="достал папку",
+        attrs={
+            "shot01_action": "сидит за столом",
+            "действие": "сидит за столом",
+            "кадры": [
+                {"id": "1-K1", "действие": "сидит за столом"},
+                {"id": "1-K2", "действие": "достаёт папку из портфеля"},
+                {"id": "1-K3", "действие": "пишет заявление"},
+            ],
+            "camera_subdivide": {"role": "shot", "shot_id": "1-K2"},
+        },
+    )
+    path = write_ai_change_db_card(project, fr, tmp_path)
+    row = json.loads(path.read_text(encoding="utf-8"))["frames"][0]
+    assert row["shot01_action"] == "достаёт папку из портфеля"
+    assert "сидит за столом" not in str(row.get("shot01_action") or "")
+    kadry = row.get("кадры") or []
+    assert len(kadry) == 1
+    assert kadry[0]["id"] == "1-K2"
+    assert kadry[0]["действие"] == "достаёт папку из портфеля"
+
+
 def test_write_ai_change_db_card_uses_shot_action_not_scene_chain(
     tmp_path: Path,
 ) -> None:

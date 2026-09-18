@@ -145,8 +145,9 @@ def _pin_ai_change_shot_action(ctx: dict, frame: object) -> None:
             if same:
                 row["кадры"] = same
                 continue
+        # Не кадры[0]: у ребёнка с полной лестницей это действие K1 (сосед).
         if len(kadry) > 1:
-            row["кадры"] = [kadry[0]] if isinstance(kadry[0], dict) else kadry[:1]
+            row["кадры"] = []
 
 
 def load_img_pr_master(project: object | None) -> tuple[Path | None, str]:

@@ -481,6 +481,7 @@ async def _run_op_with_short_sessions(
                         correction="",
                         board=board,
                         ref_person_ids=character_ids_from_prompt(new_prompt),
+                        skip_parent_still=bool(ai_instruction),
                     )
                 return await prepare_video_regen(
                     session,
