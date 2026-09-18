@@ -296,6 +296,7 @@ async def _montage_shot1_refs(
     fr: Frame,
     *,
     ref_person_ids: list[str] | None = None,
+    skip_parent_still: bool = False,
 ) -> tuple[list[Path], bool]:
     """Shot1-рефы как у generate_images: K2/K3 → PNG VO-родителя, иначе листы.
 
@@ -311,7 +312,7 @@ async def _montage_shot1_refs(
             "montage regen: кадр #{} ручных рефов {}", fr.number, len(manual)
         )
 
-    if uses_parent_still(fr):
+    if uses_parent_still(fr) and not skip_parent_still:
         parent_png = await _coverage_parent_png(session, project, fr)
         if parent_png is None:
             return manual, False
@@ -372,6 +373,7 @@ async def prepare_image_regen(
     board: dict | None = None,
     pinned_prompt: str | None = None,
     ref_person_ids: list[str] | None = None,
+    skip_parent_still: bool = False,
 ) -> ImageRegenPrep:
     fr = await _frame_by_number(session, project.id, frame_number)
     if fr is None:
@@ -393,6 +395,7 @@ async def prepare_image_regen(
                 project,
                 fr,
                 ref_person_ids=ref_person_ids,
+                skip_parent_still=skip_parent_still,
             )
             prompt_text = append_manual_ref_note(prompt_text, fr)
             prompt_text, refs = _lock_montage_image_refs(

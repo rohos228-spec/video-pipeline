@@ -1596,6 +1596,25 @@ def test_coverage_child_detects_flattened_k2() -> None:
     assert locked.endswith("сцена")
 
 
+def test_coverage_shot_id_prefers_camera_subdivide_when_ladder_copied() -> None:
+    """Ребёнок часто несёт полную кадры[] родителя — id шота = camera_subdivide, не кадры[0]."""
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import coverage_shot_id
+
+    child = SimpleNamespace(
+        number=63,
+        attrs={
+            "кадры": [
+                {"id": "1-K1", "действие": "сидит"},
+                {"id": "1-K2", "действие": "достаёт папку"},
+            ],
+            "camera_subdivide": {"role": "shot", "shot_id": "1-K2", "shot_index": 2},
+        },
+    )
+    assert coverage_shot_id(child) == "1-K2"
+
+
 def test_character_sheet_lock_maps_two_images() -> None:
     from app.services.vo_shot_expand import with_character_sheet_lock
 
