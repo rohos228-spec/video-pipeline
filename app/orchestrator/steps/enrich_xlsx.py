@@ -34,6 +34,7 @@ from app.services.excel_gpt_node import (
     active_node_key,
     attachment_paths,
     display_attachment_name,
+    excel_gpt_already_completed_no_force,
     expects_xlsx_result,
     save_gpt_reply_text,
     work_mode,
@@ -69,8 +70,13 @@ _SCENE_GRAMMAR_APPLY_HINT = (
 _CHARACTER_REGISTRY_APPLY_HINT = (
     "# CHARACTER REGISTRY — ЗАПИСЬ (DB SoT)\n"
     "Верни ТОЛЬКО JSON {characters, ops, report}. "
-    "Вход = db_frames.json (закадр + текущие Entity). "
-    "Пустой characters[] во входе = создай реестр с нуля по закадру. "
+    "Вход = db_frames.json: voiceover_text + действие (кто ФИЗИЧЕСКИ в кадре). "
+    "characters[] во входе пустой — строй реестр с нуля. "
+    "Кто в действии (следователь, дежурный, эксперт, преподаватель, "
+    "журналист, судья, архивист, начальник милиции, судебный служащий, "
+    "медработник) — отдельная карточка, даже если закадр про другого. "
+    "Закадр ≠ кто на экране. Толпа/группа — без ID. "
+    "frame_uuid копируй ТОЧЬ-В-ТОЧЬ из входа (полный hex). "
     "Запрет: error «реестр не найден»; Excel; TSV; # Лист:; проза вне JSON. "
     "ops: только поле персонажи по frame_uuid из входа.\n"
 )
@@ -840,7 +846,11 @@ async def _after_excel_gpt_done(
     slot_idx: int,
     ready_status: ProjectStatus,
 ) -> None:
-    """После готовности excel_gpt: sync storage; цепочка — только при auto_mode."""
+    """После готовности excel_gpt: sync storage; excel_gpt→excel_gpt по стрелкам.
+
+    Прыжок на hero/img_pr — только auto_mode, и даже тогда стоп, если
+    следующий work не excel_gpt (ждём ручной ▶).
+    """
     if node_key:
         try:
             from app.services.storage_node import sync_downstream_storage_from_node
@@ -896,21 +906,19 @@ async def _after_excel_gpt_done(
                 node_key,
             )
 
-    # Без автопродвижения — остаёмся на enrich_N_ready, следующую ноду
-    # пользователь запускает вручную ▶. Воркер сам вызовет maybe_auto_advance
-    # только если auto_mode=True.
+    # excel_gpt→excel_gpt по стрелкам — цепочка группы, не auto_mode.
+    # maybe_auto_advance на img_pr/hero/… — только если auto_mode=True.
     if not getattr(project, "auto_mode", False):
         if _clear_excel_gpt_ui_force_full(project):
             from sqlalchemy.orm.attributes import flag_modified
 
             flag_modified(project, "meta")
         logger.info(
-            "[#{}] enrich_xlsx: slot {} → {} — auto_mode выкл, без auto-chain/advance",
+            "[#{}] enrich_xlsx: slot {} → {} — auto_mode выкл, без pipeline auto-advance",
             project.id,
             slot_idx,
             ready_status.value,
         )
-        return
 
     await _maybe_auto_chain_excel_gpt(
         session,
@@ -955,16 +963,20 @@ async def _maybe_auto_chain_excel_gpt(
         meta.pop("excel_gpt_ui_force_full", None)
         meta.pop("excel_gpt_force_full_rerun", None)
         project.meta = meta
+        _hold_pipeline_after_excel_gpt(project)
         await session.flush()
         return
     next_key, typ, next_slot = succ
     if not is_excel_gpt_node_type(typ):
         # Стрелка ведёт не в excel_gpt — цепочку не форсим.
+        # auto_mode иначе сразу стартует hero/img_pr («нода отработала →
+        # персонажи → та же нода снова»).
         meta = dict(project.meta or {})
         meta.pop("enrich_auto_chain_to", None)
         meta.pop("excel_gpt_ui_force_full", None)
         meta.pop("excel_gpt_force_full_rerun", None)
         project.meta = meta
+        _hold_pipeline_after_excel_gpt(project)
         await session.flush()
         logger.info(
             "[#{}] enrich_xlsx: после slot {} / {} следующий work={} — без auto-chain",
@@ -999,9 +1011,43 @@ async def _maybe_auto_chain_excel_gpt(
 
     meta = dict(project.meta or {})
     if overflow_next:
-        keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
-        if next_key in keys:
-            meta["excel_gpt_completed_keys"] = [k for k in keys if k != next_key]
+        from app.services.excel_gpt_node import (
+            backfill_overflow_completed_predecessors,
+            overflow_excel_gpt_predecessors,
+        )
+
+        if finished_key:
+            added = backfill_overflow_completed_predecessors(project, finished_key)
+            if added:
+                logger.info(
+                    "[#{}] enrich_xlsx auto-chain: backfill predecessors {}",
+                    project.id,
+                    added,
+                )
+            meta = dict(project.meta or {})
+            keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
+            if finished_key not in keys:
+                keys.append(finished_key)
+            pred_missing = [
+                p
+                for p in overflow_excel_gpt_predecessors(project, next_key)
+                if p not in keys
+            ]
+            if pred_missing:
+                meta["excel_gpt_completed_keys"] = keys
+                project.meta = meta
+                logger.error(
+                    "[#{}] enrich_xlsx auto-chain BLOCKED: {} ещё не в "
+                    "completed_keys, не стартуем {}",
+                    project.id,
+                    pred_missing,
+                    next_key,
+                )
+                await session.flush()
+                return
+            if next_key in keys:
+                keys = [k for k in keys if k != next_key]
+            meta["excel_gpt_completed_keys"] = keys
     meta["active_excel_gpt_node_key"] = next_key
     project.meta = meta
     try:
@@ -1032,6 +1078,19 @@ async def _maybe_auto_chain_excel_gpt(
         chain_to,
         next_key,
     )
+
+
+def _hold_pipeline_after_excel_gpt(project: Project) -> None:
+    """excel_gpt закончился, следующий work не excel_gpt — не прыгать на hero.
+
+    Даже при auto_mode=True: воркер увидит auto_await_manual_start и не
+    стартует персонажей / img_pr, пока оператор не нажмёт ▶ на той ноде.
+    """
+    if not getattr(project, "auto_mode", False):
+        return
+    from app.services.project_control import arm_auto_await_manual_start
+
+    arm_auto_await_manual_start(project)
 
 
 def _resolve_slot_idx(status: ProjectStatus) -> int | None:
@@ -1161,6 +1220,25 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             meta["active_excel_gpt_node_key"] = node_key
             project.meta = meta
             await session.flush()
+    if node_key and excel_gpt_already_completed_no_force(project):
+        logger.info(
+            "[#{}] enrich_xlsx slot={} node={} already in completed_keys "
+            "— skip GPT (leftover worker tick)",
+            project.id,
+            slot_idx,
+            node_key,
+        )
+        if project.status is running_status:
+            project.status = ready_status
+            await session.flush()
+        await _after_excel_gpt_done(
+            session,
+            project,
+            node_key=str(node_key),
+            slot_idx=slot_idx,
+            ready_status=ready_status,
+        )
+        return
     if str(node_key or "").endswith("_fw_report"):
         await _run_fw_report_node(
             session, project, node_key=str(node_key), slot_idx=slot_idx
@@ -1752,35 +1830,39 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     )
             # Компактный снимок DB (SoT). Excel в GPT не отдаём вообще.
             # scene_grammar: attrs не тащим — пишем с нуля.
-            # character_registry: voiceover + текущие персонажи кадра + Entity.
+            # character_registry: VO + действие кадра, без старого Entity/ID.
             # excel_gpt else: slim whitelist + короткий VO, без сырого attrs.
             if scene_grammar or character_registry:
-                frame_rows: list[dict] = []
-                for fr in frames_for_map:
-                    if not fr.uuid:
-                        continue
-                    row: dict = {
-                        "number": fr.number,
-                        "uuid": fr.uuid,
-                        "voiceover_text": fr.voiceover_text or "",
-                        "meaning": fr.meaning or "",
-                    }
-                    if character_registry:
-                        attrs = fr.attrs or {}
-                        row["персонажи"] = str(
-                            attrs.get("characters")
-                            or attrs.get("персонажи")
-                            or attrs.get("persons")
-                            or ""
+                if character_registry:
+                    from app.services.db_frames_context import (
+                        build_character_registry_db_context,
+                    )
+
+                    db_ctx = build_character_registry_db_context(
+                        project_id=project.id,
+                        slug=project.slug,
+                        frames=frames_for_map,
+                    )
+                else:
+                    frame_rows: list[dict] = []
+                    for fr in frames_for_map:
+                        if not fr.uuid:
+                            continue
+                        frame_rows.append(
+                            {
+                                "number": fr.number,
+                                "uuid": fr.uuid,
+                                "voiceover_text": fr.voiceover_text or "",
+                                "meaning": fr.meaning or "",
+                            }
                         )
-                    frame_rows.append(row)
-                db_ctx: dict = {
-                    "source": "db_v2",
-                    "project_id": project.id,
-                    "slug": project.slug,
-                    "frames": frame_rows,
-                    "characters": entity_cards_for_gpt(ents),
-                }
+                    db_ctx = {
+                        "source": "db_v2",
+                        "project_id": project.id,
+                        "slug": project.slug,
+                        "frames": frame_rows,
+                        "characters": entity_cards_for_gpt(ents),
+                    }
             else:
                 gpt_frames = list(frames_for_map)
                 vo_markup = _is_vo_cell_markup_node(variant, master, node_key)
@@ -1923,10 +2005,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     f"{accompanying}\n\n{hint}\n"
                     f"{mapping}\n"
                     "# DB SoT\n"
-                    "db_frames.json: frames[].voiceover_text + персонажи, "
-                    "characters[] = текущий Entity (может быть []). "
-                    "Пустой реестр — норма: создай characters с нуля. "
-                    "Пайплайн запишет JSON в Entity + attrs. Excel нет."
+                    "db_frames.json: frames[].voiceover_text + действие "
+                    "(кто в кадре) + место. characters[] пустой — строй с нуля. "
+                    "Не копируй старые ID. Пайплайн запишет JSON в Entity + attrs."
                 ).strip()
                 vo_chunks = [
                     (fr.voiceover_text or "").strip()
@@ -2480,6 +2561,30 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 if isinstance(ops_data, dict)
                 else []
             )
+            if ops_list and expected_frame_uuids and not check_mode:
+                known_uuids = set(expected_frame_uuids)
+                kept_ops: list = []
+                n_unk_apply = 0
+                for op in ops_list:
+                    if not isinstance(op, dict):
+                        continue
+                    if str(op.get("target") or "frame") != "frame":
+                        kept_ops.append(op)
+                        continue
+                    uid = str(op.get("frame_uuid") or "")
+                    if uid in known_uuids:
+                        kept_ops.append(op)
+                    else:
+                        n_unk_apply += 1
+                if n_unk_apply:
+                    logger.warning(
+                        "[#{}] enrich_xlsx node={}: drop {} unknown "
+                        "frame_uuid (не валим весь apply)",
+                        project.id,
+                        node_key,
+                        n_unk_apply,
+                    )
+                    ops_list = kept_ops
             # check/report_only не пишут (или пишут DB-check без стрипа).
             # Shot-fill и QC полей кадров не пишут промты картинки/видео;
             # leftover fw_frames / старый prompts_qc — пишут.
@@ -2533,6 +2638,26 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 )
 
                 try:
+                    if character_registry:
+                        from app.services.db_frames_context import (
+                            character_registry_missing_visual_roles,
+                        )
+
+                        missing_roles = character_registry_missing_visual_roles(
+                            frames_for_map, chars_list
+                        )
+                        if missing_roles:
+                            _persist_excel_gpt_reply_for_ui(
+                                project,
+                                node_key,
+                                data_paths=data_paths,
+                                api_res=api_res,
+                            )
+                            raise RuntimeError(
+                                f"enrich_xlsx node={node_key}: нет карточек "
+                                f"для видимых ролей {missing_roles}. "
+                                "Нода не done."
+                            )
                     applied = await db_apply.apply_ops(
                         session,
                         project,

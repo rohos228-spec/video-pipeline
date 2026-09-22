@@ -641,3 +641,55 @@ async def test_compress_reattaches_style_and_ignores_gpt_rewrite(monkeypatch) ->
     assert "Archival Noir Watercolor Grunge Dossier Poster Illustration" in out
     assert "photoreal cinematic oil painting" not in out
     assert "Negative: photorealism" in out
+
+
+@pytest.mark.asyncio
+async def test_gpt_image_2_content_policy_falls_back_to_nano_banana_2(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Create/pipeline: gpt-image-2 CONTENT_POLICY → nano-banana-2, без GPT."""
+    from app.bots.outsee_http import OutseeApiError
+
+    slugs: list[str] = []
+    out = tmp_path / "fish.png"
+
+    async def fake_api(prompt, out_path, **kwargs):
+        slug = str(kwargs.get("model_slug") or "")
+        slugs.append(slug)
+        if slug != "nano-banana-2":
+            raise OutseeApiError(
+                "Outsee generation failed: {'code': 'CONTENT_POLICY', 'message': "
+                "'Изображение или описание не прошли модерацию модели. "
+                "Попробуйте изменить описание или использовать другое изображение'}",
+                context={"code": "content_policy"},
+            )
+        out_path.write_bytes(b"ok" * 50)
+        return GenerationResult(file_path=out_path, raw_url="https://example/x.png")
+
+    async def fake_prepare(gpt, body, prefix, *, project_id=None):
+        return body
+
+    async def no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(mod, "_prepare_prompt_for_outsee", fake_prepare)
+    monkeypatch.setattr(mod, "sleep_cancellable", no_sleep)
+    monkeypatch.setattr("app.bots.outsee_http.outsee_api_configured", lambda: True)
+    monkeypatch.setattr("app.bots.outsee_http.generate_image", fake_api)
+
+    result = await mod.generate_image_with_retries(
+        None,
+        None,
+        prompt="рыба",
+        out_path=out,
+        max_attempts_per_prompt=1,
+        gpt_rewrite=False,
+        model_slug="gpt-image-2",
+        aspect_ratio="16:9",
+        resolution="2K",
+        project_id=63,
+    )
+    assert result.file_path == out
+    assert slugs[0] == "gpt-image-2"
+    assert slugs[-1] == "nano-banana-2"
+    assert "nano-banana-2" in slugs

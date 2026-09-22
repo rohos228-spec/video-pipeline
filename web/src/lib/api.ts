@@ -2570,6 +2570,9 @@ export const api = {
       }
       throw err;
     }
+    if (!doneReceived && !signal?.aborted) {
+      callbacks?.onError?.("Стрим оборвался без ответа от модели");
+    }
   },
   gptSaveToProject: (
     sessionId: string,

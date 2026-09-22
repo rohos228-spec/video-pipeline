@@ -89,7 +89,6 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
     from app.services.step_cancel import (
         abort_if_cancelled,
         register_advance_task,
-        unregister_advance_task,
     )
 
     project_id = int(project.id)
@@ -194,4 +193,8 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
                 await _step_lock_cm.__aexit__(None, None, None)
             except Exception:  # noqa: BLE001
                 pass
-        unregister_advance_task(project_id)
+        # Не unregister: current_task() — это worker wrapper
+        # (_handle_one_advance). Снятие здесь обнуляло is_generation_active
+        # до push_runtime_to_master; при WORKER_MAX_PARALLEL>1 воркер видел
+        # leftover enriching_N и стартовал ту же excel_gpt снова. Снимает
+        # wrapper в app.main / app.worker после commit+push.

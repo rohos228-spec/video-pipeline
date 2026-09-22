@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.models import Project
 from app.services.mass_factory import is_mass_factory_parent, mass_parent_id
+from app.services.project_state import is_running_status
 from app.services.step_cancel import is_generation_active
 from app.web.schemas import ProjectDetail, ProjectSummary
 
@@ -51,5 +52,7 @@ def project_to_detail(project: Project) -> ProjectDetail:
         detail.mass_lane_position = int(lane_raw) if lane_raw is not None else None
     except (TypeError, ValueError):
         detail.mass_lane_position = None
-    detail.generation_active = is_generation_active(project.id)
+    detail.generation_active = is_generation_active(project.id) or is_running_status(
+        project.status
+    )
     return detail

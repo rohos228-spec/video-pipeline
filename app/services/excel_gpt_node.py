@@ -695,6 +695,103 @@ def completed_node_keys(project: Project) -> set[str]:
     return {str(k) for k in raw if k}
 
 
+def excel_gpt_already_completed_no_force(project: Project) -> bool:
+    """True — активная excel_gpt уже в completed_keys и это не явный ▶.
+
+    Leftover worker tick (enriching_N + generation_active=false) не должен
+    снова вызывать GPT. start_step с explicit_ui_start снимает ключ и/или
+    ставит excel_gpt_ui_force_full.
+    """
+    key = active_node_key(project)
+    if not key or key not in completed_node_keys(project):
+        return False
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    if meta.get("excel_gpt_ui_force_full") or meta.get("excel_gpt_force_full_rerun"):
+        return False
+    return True
+
+
+def excel_gpt_artifact_exists(project: Project, node_key: str) -> bool:
+    """Есть gpt_reply / отчёт на диске — нода уже отработала."""
+    key = (node_key or "").strip()
+    if not key:
+        return False
+    folder = upload_dir(project, key)
+    for name in ("gpt_reply.txt", "shots-report.html"):
+        path = folder / name
+        try:
+            if path.is_file() and path.stat().st_size > 0:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def overflow_excel_gpt_predecessors(project: Project, node_key: str) -> list[str]:
+    """excel_gpt-предки по стрелкам канваса, ближние первыми."""
+    from app.services.canvas_graph import canvas_graph_from_meta
+
+    want = (node_key or "").strip()
+    if not want:
+        return []
+    cg = canvas_graph_from_meta(
+        project.meta if isinstance(project.meta, dict) else {}
+    )
+    if not cg:
+        return []
+    by_id = {
+        str(n.get("id") or ""): n
+        for n in (cg.get("nodes") or [])
+        if isinstance(n, dict) and n.get("id")
+    }
+    incoming: dict[str, list[str]] = {}
+    for e in cg.get("edges") or []:
+        if not isinstance(e, dict):
+            continue
+        src = str(e.get("source") or "")
+        tgt = str(e.get("target") or "")
+        if not src or not tgt:
+            continue
+        incoming.setdefault(tgt, []).append(src)
+    out: list[str] = []
+    seen: set[str] = {want}
+    wave = list(incoming.get(want) or [])
+    while wave:
+        cur = wave.pop(0)
+        if not cur or cur in seen:
+            continue
+        seen.add(cur)
+        node = by_id.get(cur) or {}
+        if str(node.get("type") or "") == EXCEL_GPT_NODE_TYPE:
+            out.append(cur)
+        wave.extend(incoming.get(cur) or [])
+    return out
+
+
+def backfill_overflow_completed_predecessors(
+    project: Project, node_key: str
+) -> list[str]:
+    """Вернуть в completed_keys предков с артефактом (сценарист после ⏹)."""
+    preds = overflow_excel_gpt_predecessors(project, node_key)
+    if not preds:
+        return []
+    meta = dict(project.meta or {}) if isinstance(project.meta, dict) else {}
+    keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
+    added: list[str] = []
+    for pred in preds:
+        if pred in keys:
+            continue
+        if not excel_gpt_artifact_exists(project, pred):
+            continue
+        keys.append(pred)
+        added.append(pred)
+    if not added:
+        return []
+    meta["excel_gpt_completed_keys"] = keys
+    project.meta = meta
+    return added
+
+
 def max_excel_gpt_slot(project: Project) -> int:
     """Максимальный slotIndex среди excel_gpt на канвасе (1..5)."""
     nodes = excel_gpt_nodes_from_project(project)

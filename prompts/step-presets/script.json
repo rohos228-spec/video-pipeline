@@ -1,0 +1,167 @@
+{
+  "compose_step_id": "02_script",
+  "label": "Сценарий / voiceover",
+  "presets": {
+    "default": {
+      "label": "Default 60s",
+      "aliases": [
+        "default",
+        "reworked_default_60s_blocks_v2"
+      ],
+      "description": "Компактный voiceover 800–900 символов без явного выбора режима",
+      "blocks": {
+        "script_role": "voiceover_author",
+        "source_policy": "xlsx_general_plan_only",
+        "script_narrative_structure": "short_voiceover_arc",
+        "script_voice_tone": "human_documentary_voice",
+        "script_continuity_rules": "smooth_voiceover_flow",
+        "script_anti_gpt_patterns": "zinser_filter",
+        "script_output_contract": "voiceover_txt_60s",
+        "script_self_check": "voiceover_quality_gate"
+      },
+      "omit_slots": [
+        "script_mode_selector",
+        "script_domain_skills"
+      ],
+      "vars": {
+        "VIDEO_DURATION_SEC": 60,
+        "VOICEOVER_MIN_CHARS": 800,
+        "VOICEOVER_MAX_CHARS": 900
+      }
+    },
+    "scenario": {
+      "label": "Scenario pipeline",
+      "aliases": [
+        "scenario_agent",
+        "reworked_scenario_agent_blocks_v2"
+      ],
+      "description": "Pipeline-ready: режим герой/тема, навыки по материалу",
+      "blocks": {
+        "script_role": "voiceover_author",
+        "source_policy": "xlsx_general_plan_only",
+        "script_mode_selector": "universal_modes",
+        "script_domain_skills": "biography_history_science_process_object",
+        "script_narrative_structure": "short_voiceover_arc",
+        "script_voice_tone": "human_documentary_voice",
+        "script_continuity_rules": "smooth_voiceover_flow",
+        "script_anti_gpt_patterns": "zinser_filter",
+        "script_output_contract": "voiceover_txt_60s",
+        "script_self_check": "voiceover_quality_gate"
+      },
+      "vars": {
+        "VIDEO_DURATION_SEC": 60,
+        "VOICEOVER_MIN_CHARS": 800,
+        "VOICEOVER_MAX_CHARS": 900
+      }
+    },
+    "long": {
+      "label": "Long cells",
+      "aliases": [
+        "zakadrovyuTekst_long_story",
+        "reworked_zakadrovyu_long_cells_blocks_v2"
+      ],
+      "description": "Длинный текст 10k символов + нарезка на ячейки 110–140",
+      "blocks": {
+        "script_role": "voiceover_author",
+        "source_policy": "xlsx_general_plan_only",
+        "script_mode_selector": "universal_modes",
+        "script_domain_skills": "biography_history_science_process_object",
+        "script_continuity_rules": "smooth_voiceover_flow",
+        "script_voice_tone": "human_documentary_voice",
+        "script_anti_gpt_patterns": "zinser_filter",
+        "script_output_contract": "long_cells_txt_10000",
+        "script_self_check": "voiceover_quality_gate"
+      },
+      "extra_blocks": {
+        "script_segmentation_rules": "long_cells_110_140"
+      },
+      "vars": {
+        "VIDEO_DURATION_SEC": 600,
+        "VOICEOVER_MIN_CHARS": 10000,
+        "VOICEOVER_MAX_CHARS": 10500
+      }
+    },
+    "editor": {
+      "label": "Universal editor",
+      "aliases": [
+        "reworked_new_prompt_universal_editor_blocks_v2",
+        "Новый промт 12.05"
+      ],
+      "description": "Универсальный редакторский voiceover по типу материала",
+      "blocks": {
+        "script_role": "voiceover_author",
+        "source_policy": "xlsx_general_plan_only",
+        "script_mode_selector": "universal_modes",
+        "script_domain_skills": "biography_history_science_process_object",
+        "script_narrative_structure": "short_voiceover_arc",
+        "script_voice_tone": "human_documentary_voice",
+        "script_continuity_rules": "smooth_voiceover_flow",
+        "script_anti_gpt_patterns": "zinser_filter",
+        "script_output_contract": "voiceover_txt_60s",
+        "script_self_check": "voiceover_quality_gate"
+      },
+      "vars": {
+        "VIDEO_DURATION_SEC": 60,
+        "VOICEOVER_MIN_CHARS": 800,
+        "VOICEOVER_MAX_CHARS": 900
+      }
+    },
+    "zinser": {
+      "label": "Zinser anti-GPT",
+      "aliases": [
+        "reworked_zinser_filter_blocks_v2",
+        "У.Зинзер 12.05"
+      ],
+      "description": "Усиленный редакторский фильтр против машинных паттернов",
+      "blocks": {
+        "script_role": "voiceover_author",
+        "source_policy": "xlsx_general_plan_only",
+        "script_mode_selector": "universal_modes",
+        "script_domain_skills": "biography_history_science_process_object",
+        "script_continuity_rules": "smooth_voiceover_flow",
+        "script_voice_tone": "human_documentary_voice",
+        "script_anti_gpt_patterns": "zinser_filter",
+        "script_output_contract": "voiceover_txt_60s",
+        "script_self_check": "voiceover_quality_gate"
+      },
+      "vars": {
+        "VIDEO_DURATION_SEC": 60,
+        "VOICEOVER_MIN_CHARS": 800,
+        "VOICEOVER_MAX_CHARS": 900
+      }
+    },
+    "king": {
+      "label": "Stephen King placeholder",
+      "aliases": [
+        "promt_stiven_king",
+        "reworked_stephen_king_placeholder_blocks_v2"
+      ],
+      "description": "Заготовка — исходник без правил, базовый pipeline",
+      "blocks": {
+        "script_role": "voiceover_author",
+        "source_policy": "xlsx_general_plan_only",
+        "script_mode_selector": "universal_modes",
+        "script_domain_skills": "biography_history_science_process_object",
+        "script_narrative_structure": "short_voiceover_arc",
+        "script_voice_tone": "human_documentary_voice",
+        "script_continuity_rules": "smooth_voiceover_flow",
+        "script_anti_gpt_patterns": "zinser_filter",
+        "script_output_contract": "voiceover_txt_60s",
+        "script_self_check": "voiceover_quality_gate"
+      },
+      "vars": {
+        "VIDEO_DURATION_SEC": 60,
+        "VOICEOVER_MIN_CHARS": 800,
+        "VOICEOVER_MAX_CHARS": 900
+      }
+    }
+  },
+  "preset_order": [
+    "default",
+    "scenario",
+    "long",
+    "editor",
+    "zinser",
+    "king"
+  ]
+}

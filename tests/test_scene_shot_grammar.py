@@ -8,6 +8,7 @@ from app.services.scene_shot_grammar import (
     classify_object,
     expand_action_to_shots,
     fill_bit_spans,
+    fill_kadry_scene_numbers,
     has_visible_verb,
     merge_same_place_scenes,
     object_matches_step,
@@ -132,7 +133,22 @@ def test_apply_grammar_fills_empty_shots() -> None:
     shots = ops[0]["fields"]["кадры"]
     assert len(shots) >= 1
     assert all(s.get("линза_мм") for s in shots)
+    assert all(s.get("сцена") not in (None, "") for s in shots)
     assert SHOT_VO_MIN >= 13
+
+
+def test_fill_kadry_scene_numbers_from_parent_id() -> None:
+    shots = [
+        {"id": "f001", "parent_id": None},
+        {"id": "f002", "parent_id": "f001"},
+        {"id": "f003", "parent_id": "f001"},
+        {"id": "f011", "parent_id": None},
+        {"id": "f014", "parent_id": None},
+        {"id": "f015", "parent_id": "f014"},
+    ]
+    filled = fill_kadry_scene_numbers(shots)
+    assert filled == 6
+    assert [s["сцена"] for s in shots] == [1, 1, 1, 2, 3, 3]
 
 
 def test_empty_vo_and_glue_fail() -> None:

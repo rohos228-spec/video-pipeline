@@ -707,7 +707,7 @@ def repair_bits_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
                 {
                     "порядок": 1,
                     "глагол": "говорит",
-                    "изменение": "было → стало",
+                    "изменение": "смысл из закадра",
                     "якорь": _snap_anchor_to_vo(raw, vo),
                 }
             ]
@@ -720,7 +720,7 @@ def repair_bits_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
                 raw[i] = {
                     "порядок": i + 1,
                     "глагол": "говорит",
-                    "изменение": "было → стало",
+                    "изменение": "смысл из закадра",
                     "якорь": _snap_anchor_to_vo(str(bit), vo),
                 }
                 fixed += 1
@@ -729,7 +729,7 @@ def repair_bits_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
                 bit["глагол"] = "говорит"
                 fixed += 1
             if not str(bit.get("изменение") or "").strip():
-                bit["изменение"] = "было → стало"
+                bit["изменение"] = "смысл из закадра"
                 fixed += 1
             snapped = _snap_anchor_to_vo(str(bit.get("якорь") or ""), vo)
             if snapped and snapped != str(bit.get("якорь") or "").strip():
@@ -1066,8 +1066,10 @@ def _batch_footer(
             f"(биты, пачка {batch_i}, схема {SCRIPT_FRAMES_QC_PARALLEL_BATCHES} параллельно)\n"
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Верни ops ровно по каждому uuid: fields.биты — JSON-массив "
-            "объектов {{порядок, глагол, изменение, якорь}}. "
-            "Число битов = число изменений в ячейке, не 1 и не строка-слоган. "
+            "объектов {{порядок, изменение, якорь}}. "
+            "Один бит = одна мысль или одно важное событие "
+            "(умер, женился и т.п.), не 1 слоган на всю ячейку. "
+            "изменение: кто/что → что происходит → другие персонажи → год → место. "
             "Не пиши закадр. Чужие кадры не пиши. JSON apply-ops, без прозы.\n"
         )
     if kind in {"action_chain", "main_action"}:

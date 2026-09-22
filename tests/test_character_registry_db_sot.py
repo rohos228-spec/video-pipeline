@@ -291,3 +291,55 @@ async def test_hero_falls_back_to_xlsx_when_entity_empty(
     assert cfg is not None
     assert cfg["source"] == "xlsx"
     assert cfg["characters"][0]["name"] == "ИзExcel"
+
+
+def test_character_registry_payload_uses_action_not_old_ids() -> None:
+    from app.services.db_frames_context import (
+        build_character_registry_db_context,
+        character_registry_missing_visual_roles,
+    )
+
+    frames = [
+        SimpleNamespace(
+            number=1,
+            uuid="aa" * 12,
+            voiceover_text="Сергей Ткач самый страшный парадокс",
+            attrs={
+                "main_action": "следователь садится к рабочему столу",
+                "place": "кабинет следователя",
+                "characters": "c01",
+            },
+        ),
+        SimpleNamespace(
+            number=2,
+            uuid="bb" * 12,
+            voiceover_text="ДНК-экспертиза",
+            attrs={"shot01_action": "эксперт-криминалист открывает конверт"},
+        ),
+        SimpleNamespace(
+            number=3,
+            uuid="cc" * 12,
+            voiceover_text="дети указали на Ткача",
+            attrs={"main_action": "дети остановились у ограды"},
+        ),
+    ]
+    ctx = build_character_registry_db_context(
+        project_id=63, slug="tkach", frames=frames
+    )
+    assert ctx["characters"] == []
+    assert ctx["frames"][0]["действие"] == "следователь садится к рабочему столу"
+    assert ctx["frames"][0]["персонажи"] == ""
+    assert ctx["frames"][0]["место"] == "кабинет следователя"
+    assert ctx["frames"][1]["действие"].startswith("эксперт-криминалист")
+
+    echo_cards = [{"id": "c01", "имя": "Сергей Ткач"}]
+    missing = character_registry_missing_visual_roles(frames, echo_cards)
+    assert "следователь" in missing
+    assert "эксперт" in missing
+
+    full_cards = [
+        {"id": "c01", "имя": "Сергей Ткач"},
+        {"id": "c05", "имя": "следователь"},
+        {"id": "c06", "имя": "эксперт-криминалист"},
+    ]
+    assert character_registry_missing_visual_roles(frames, full_cards) == []

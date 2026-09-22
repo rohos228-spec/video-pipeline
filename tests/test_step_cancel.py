@@ -285,3 +285,40 @@ async def test_cancel_advance_closes_registered_page() -> None:
     await asyncio.sleep(0.05)
     assert closed.is_set()
     unregister_active_page(77)
+
+
+@pytest.mark.asyncio
+async def test_wrapper_stays_generation_active_until_outer_unregister() -> None:
+    """pipeline.advance_project больше не unregister — иначе leftover excel_gpt."""
+    from app.services.step_cancel import is_generation_active
+
+    started = asyncio.Event()
+
+    async def wrapper() -> None:
+        started.set()
+        await asyncio.sleep(0.4)
+
+    task = asyncio.create_task(wrapper())
+    register_advance_task(63, task)
+    await started.wait()
+    try:
+        assert is_advance_active(63) is True
+        assert is_generation_active(63) is True
+    finally:
+        unregister_advance_task(63)
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+    assert is_advance_active(63) is False
+
+
+@pytest.mark.asyncio
+async def test_done_advance_task_is_not_active() -> None:
+    async def noop() -> None:
+        return None
+
+    task = asyncio.create_task(noop())
+    await task
+    register_advance_task(63, task)
+    assert is_advance_active(63) is False

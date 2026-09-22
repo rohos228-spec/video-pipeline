@@ -714,6 +714,237 @@ def test_promote_shots_makes_one_cell_per_kadr() -> None:
     ) == " ".join(full.split())
 
 
+def test_promote_parent_id_keeps_shot_children() -> None:
+    """Без ``сцена``, но с parent_id: K2 остаётся shot той же ячейки."""
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import is_shot_child, promote_shots_to_vo_cells
+
+    pu = "aa" * 12
+    cu = "bb" * 12
+    xu = "cc" * 12
+    full = "Первая фраза целиком. Вторая тоже на месте."
+    kadry = [
+        {
+            "id": "f001",
+            "parent_id": None,
+            "закадр": "мусор",
+            "действие": "жест",
+            "место": "двор",
+        },
+        {
+            "id": "f002",
+            "parent_id": "f001",
+            "закадр": "мусор",
+            "действие": "деталь",
+            "место": "двор",
+        },
+    ]
+    parent = SimpleNamespace(
+        uuid=pu,
+        voiceover_text=full,
+        image_prompt="master",
+        animation_prompt="",
+        duration_seconds=4.0,
+        attrs={
+            "кадры": kadry,
+            "vo_cell_full": full,
+            "биты": [{"порядок": 1}],
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": pu,
+                "shot_index": 1,
+            },
+        },
+    )
+    child = SimpleNamespace(
+        uuid=cu,
+        voiceover_text="",
+        image_prompt="",
+        animation_prompt="",
+        duration_seconds=2.0,
+        attrs={
+            "image_prompt_shot2": "closer",
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": pu,
+                "shot_index": 2,
+            },
+        },
+    )
+    spare = SimpleNamespace(
+        uuid=xu,
+        voiceover_text="",
+        image_prompt="",
+        animation_prompt="",
+        duration_seconds=2.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": pu,
+                "shot_index": 3,
+            }
+        },
+    )
+    n, extra = promote_shots_to_vo_cells([parent, child, spare])
+    assert n == 2
+    assert extra == [spare]
+    assert parent.attrs["camera_subdivide"]["role"] == "vo_parent"
+    assert child.attrs["camera_subdivide"]["role"] == "shot"
+    assert is_shot_child(child)
+    assert child.attrs["camera_subdivide"]["parent_uuid"] == pu
+    assert parent.attrs["camera_subdivide"]["shots_in_beat"] == 2
+    assert len(parent.attrs["кадры"]) == 2
+    assert parent.attrs["кадры"][0].get("сцена") == 1
+    assert parent.attrs["кадры"][1].get("сцена") == 1
+
+
+def test_relink_shot_roles_groups_parent_id_chain() -> None:
+    """После flatten 1 кадр = 1 vo_parent: склеить лестницу parent_id."""
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import is_shot_child, relink_shot_roles_by_scene
+
+    def _fr(number: int, sid: str, pid: str | None, vo: str):
+        uid = f"{number:02d}" * 12
+        return SimpleNamespace(
+            number=number,
+            sort_key=float(number),
+            uuid=uid,
+            voiceover_text=vo,
+            attrs={
+                "кадры": [
+                    {
+                        "id": sid,
+                        "parent_id": pid,
+                        "действие": "шаг",
+                        "закадр": vo,
+                    }
+                ],
+                "camera_subdivide": {
+                    "role": "vo_parent",
+                    "parent_uuid": uid,
+                    "shot_index": 1,
+                    "shots_in_beat": 1,
+                    "scene_split": 1,
+                },
+            },
+        )
+
+    a = _fr(1, "f001", None, "Первая фраза.")
+    b = _fr(2, "f002", "f001", "Вторая фраза.")
+    c = _fr(3, "f003", "f001", "Третья фраза.")
+    d = _fr(4, "f011", None, "Другая сцена.")
+    n = relink_shot_roles_by_scene([a, b, c, d])
+    assert n >= 3
+    assert a.attrs["camera_subdivide"]["role"] == "vo_parent"
+    assert b.attrs["camera_subdivide"]["role"] == "shot"
+    assert c.attrs["camera_subdivide"]["role"] == "shot"
+    assert is_shot_child(b)
+    assert b.attrs["camera_subdivide"]["parent_uuid"] == a.uuid
+    assert c.attrs["camera_subdivide"]["parent_uuid"] == a.uuid
+    assert a.attrs["camera_subdivide"]["shots_in_beat"] == 3
+    assert len(a.attrs["кадры"]) == 3
+    assert d.attrs["camera_subdivide"]["role"] == "vo_parent"
+    assert not is_shot_child(d)
+    assert d.attrs["camera_subdivide"]["parent_uuid"] == d.uuid
+
+
+def test_relink_skips_existing_parent_child() -> None:
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import relink_shot_roles_by_scene
+
+    pu = "aa" * 12
+    cu = "bb" * 12
+    parent = SimpleNamespace(
+        number=1,
+        sort_key=1.0,
+        uuid=pu,
+        voiceover_text="Родитель.",
+        attrs={
+            "кадры": [{"id": "f001", "parent_id": None, "сцена": 1}],
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": pu,
+                "shot_index": 1,
+                "shots_in_beat": 2,
+            },
+        },
+    )
+    child = SimpleNamespace(
+        number=2,
+        sort_key=2.0,
+        uuid=cu,
+        voiceover_text="Ребёнок.",
+        attrs={
+            "кадры": [{"id": "f002", "parent_id": "f001", "сцена": 1}],
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": pu,
+                "shot_index": 2,
+                "shots_in_beat": 2,
+            },
+        },
+    )
+    n = relink_shot_roles_by_scene([parent, child])
+    assert n == 0
+    assert parent.attrs["camera_subdivide"]["role"] == "vo_parent"
+    assert child.attrs["camera_subdivide"]["role"] == "shot"
+    assert child.attrs["camera_subdivide"]["parent_uuid"] == pu
+
+
+def test_relink_groups_cell_prefix_not_reused_f1() -> None:
+    """``57-2``+``57-3`` — одна сцена; reused ``f1`` с разным местом — нет."""
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import is_shot_child, relink_shot_roles_by_scene
+
+    def _fr(number: int, sid: str, pid: str | None, place: str, vo: str):
+        uid = f"{number:02d}" * 12
+        shot = {"id": sid, "parent_id": pid, "действие": "шаг", "закадр": vo}
+        if place:
+            shot["место"] = place
+        return SimpleNamespace(
+            number=number,
+            sort_key=float(number),
+            uuid=uid,
+            voiceover_text=vo,
+            attrs={
+                "кадры": [shot],
+                "place": place,
+                "camera_subdivide": {
+                    "role": "vo_parent",
+                    "parent_uuid": uid,
+                    "shot_index": 1,
+                    "shots_in_beat": 1,
+                    "scene_split": 1,
+                    "место": place,
+                },
+            },
+        )
+
+    a = _fr(1, "f1", None, "отдел милиции", "Отдел.")
+    b = _fr(2, "f2", "f1", "лаборатория", "Лаба.")
+    c = _fr(3, "f3", "f1", "", "Перчатки.")
+    d = _fr(4, "57-2", "57-1", "дом Ткача", "Дом.")
+    e = _fr(5, "57-3", "57-1", "", "Обыск.")
+    s2 = _fr(6, "1-S2-K1", "1-S1-K1", "казарма", "Армия.")
+    s3 = _fr(7, "1-S3-K1", "1-S1-K1", "архив", "Киселёвск.")
+    n = relink_shot_roles_by_scene([a, b, c, d, e, s2, s3])
+    assert n >= 2
+    assert a.attrs["camera_subdivide"]["role"] == "vo_parent"
+    assert not is_shot_child(a)
+    assert b.attrs["camera_subdivide"]["role"] == "vo_parent"
+    assert c.attrs["camera_subdivide"]["role"] == "shot"
+    assert c.attrs["camera_subdivide"]["parent_uuid"] == b.uuid
+    assert d.attrs["camera_subdivide"]["role"] == "vo_parent"
+    assert e.attrs["camera_subdivide"]["role"] == "shot"
+    assert e.attrs["camera_subdivide"]["parent_uuid"] == d.uuid
+    assert s2.attrs["camera_subdivide"]["role"] == "vo_parent"
+    assert s3.attrs["camera_subdivide"]["role"] == "vo_parent"
+
+
 def test_promote_is_idempotent_on_flat_cells() -> None:
     from types import SimpleNamespace
 
@@ -1132,8 +1363,8 @@ def test_promote_scene_split_is_idempotent() -> None:
     assert [s["id"] for s in parent.attrs["кадры"]] == ["1-K1", "1-K2"]
 
 
-def test_promote_drops_extra_frames_without_vo() -> None:
-    """Клауз меньше кадров — лишние дети в extra, у оставшихся непустой VO."""
+def test_promote_keeps_all_kadry_when_vo_has_fewer_clauses() -> None:
+    """Клауз меньше кадров — лестницу не режем, слоты остаются."""
     from types import SimpleNamespace
 
     from app.services.vo_shot_expand import promote_shots_to_vo_cells
@@ -1142,13 +1373,17 @@ def test_promote_drops_extra_frames_without_vo() -> None:
     full = "Короткая фраза. Вторая."
     kadry = [
         {"id": "1-K1", "сцена": 1, "шаблон": "T2", "место": "архив",
-         "действие": "вошёл", "parent_id": None},
+         "действие": "вошёл", "parent_id": None,
+         "закадр": "Короткая фраза видимого входа в архив"},
         {"id": "1-K2", "сцена": 1, "шаблон": "T2", "место": "архив",
-         "действие": "тянет папку", "parent_id": "1-K1"},
+         "действие": "тянет папку", "parent_id": "1-K1",
+         "закадр": "Тянет папку с полки двумя руками"},
         {"id": "1-K3", "сцена": 1, "шаблон": "T2", "место": "архив",
-         "действие": "обложка крупно", "parent_id": "1-K1"},
+         "действие": "обложка крупно", "parent_id": "1-K1",
+         "закадр": "Обложка дела крупно на столе лежит"},
         {"id": "1-K4", "сцена": 1, "шаблон": "T2", "место": "архив",
-         "действие": "лицо понял", "parent_id": "1-K1"},
+         "действие": "лицо понял", "parent_id": "1-K1",
+         "закадр": "Лицо следователя понял что это то дело"},
     ]
     parent = SimpleNamespace(
         uuid=pu, voiceover_text=full, image_prompt="", animation_prompt="",
@@ -1167,13 +1402,9 @@ def test_promote_drops_extra_frames_without_vo() -> None:
         for i in range(1, 4)
     ]
     n, extra = promote_shots_to_vo_cells([parent, *children])
-    assert extra
-    kept = [parent, *[c for c in children if c not in extra]]
-    assert n == len(kept)
-    assert all((f.voiceover_text or "").strip() for f in kept)
-    assert all(str(s.get("закадр") or "").strip() for s in parent.attrs["кадры"])
-    joined = " ".join((f.voiceover_text or "") for f in kept)
-    assert " ".join(joined.split()) == " ".join(full.split())
+    assert extra == []
+    assert n == 4
+    assert len(parent.attrs["кадры"]) == 4
 
 
 def test_kadry_vo_partition_aligned_recovers_gpt_drift() -> None:
@@ -1196,6 +1427,73 @@ def test_kadry_vo_partition_aligned_recovers_gpt_drift() -> None:
     parts = kadry_vo_partition_aligned(full, planned)
     assert parts is not None and len(parts) == 4
     assert " ".join(" ".join(parts).split()) == " ".join(full.split())
+
+
+def test_resolve_shot_plan_keeps_all_kadry_rows() -> None:
+    from app.services.vo_shot_expand import kadry_vo_pieces, resolve_shot_plan
+
+    planned = [
+        {"id": "f001", "закадр": "Первый видимый шаг входа в кадр",
+         "объект": "место", "действие": "вошёл"},
+        {"id": "f002", "закадр": "Второй видимый шаг у стола тут",
+         "объект": "тело", "действие": "сел", "parent_id": "f001"},
+        {"id": "f003", "закадр": "Третий видимый шаг с папкой",
+         "объект": "предмет", "действие": "открыл", "parent_id": "f001"},
+        {"id": "f004", "закадр": "Четвёртый видимый шаг взгляда",
+         "объект": "лицо", "действие": "смотрит", "parent_id": "f001"},
+        {"id": "f005", "закадр": "Пятый видимый шаг чтения строк",
+         "объект": "взгляд", "действие": "читает", "parent_id": "f001"},
+    ]
+    need, parts = resolve_shot_plan("Короткий текст целиком.", planned)
+    assert need == 5
+    assert len(parts) == 5
+    assert parts[0].startswith("Первый")
+    assert kadry_vo_pieces(planned, "x")[4].startswith("Пятый")
+
+
+def test_promote_does_not_drop_kadry_when_vo_cannot_split() -> None:
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import is_shot_child, promote_shots_to_vo_cells
+
+    pu = "aa" * 12
+    kadry = [
+        {"id": "f001", "parent_id": None, "сцена": 1, "закадр": "A.",
+         "действие": "вошёл", "объект": "место", "место": "кабинет"},
+        {"id": "f002", "parent_id": "f001", "сцена": 1, "закадр": "B.",
+         "действие": "сел", "объект": "тело", "место": "кабинет"},
+        {"id": "f003", "parent_id": "f001", "сцена": 1, "закадр": "C.",
+         "действие": "открыл", "объект": "предмет", "место": "кабинет"},
+    ]
+    members = []
+    for i, shot in enumerate(kadry, start=1):
+        uid = f"{i:02d}" * 12
+        members.append(
+            SimpleNamespace(
+                uuid=uid if i == 1 else uid,
+                voiceover_text=shot["закадр"],
+                image_prompt="",
+                animation_prompt="",
+                duration_seconds=2.0,
+                attrs={
+                    "кадры": kadry if i == 1 else [shot],
+                    "vo_cell_full": "A. B. C.",
+                    "camera_subdivide": {
+                        "role": "vo_parent" if i == 1 else "shot",
+                        "parent_uuid": pu,
+                        "shot_index": i,
+                    },
+                },
+            )
+        )
+    members[0].uuid = pu
+    n, extra = promote_shots_to_vo_cells(members)
+    assert extra == []
+    assert n == 3
+    assert members[0].attrs["camera_subdivide"]["role"] == "vo_parent"
+    assert is_shot_child(members[1])
+    assert is_shot_child(members[2])
+    assert len(members[0].attrs["кадры"]) == 3
 
 
 def test_coverage_parent_prefers_explicit_parent_id() -> None:
@@ -1368,6 +1666,79 @@ async def test_apply_shot_coverage_splits_scenes_with_children(mem_db) -> None:
         )
         assert len([f for f in frames2 if is_shot_child(f)]) == 2
         assert len([f for f in frames2 if not is_shot_child(f)]) == 2
+
+
+async def test_apply_shot_coverage_keeps_all_kadry_when_vo_is_short(mem_db) -> None:
+    """5 строк кадры[] → 5 Frame, даже если закадр ячейки не режется на 5 фраз."""
+    import uuid as _uuid
+
+    from sqlalchemy import select
+
+    from app.models import Frame, Project, ProjectStatus
+    from app.services.vo_shot_expand import apply_shot_coverage_to_vo_cells
+
+    kadry = [
+        {"id": "f001", "parent_id": None, "сцена": 1, "объект": "место",
+         "действие": "вошёл", "место": "кабинет", "закадр": "Первый."},
+        {"id": "f002", "parent_id": "f001", "сцена": 1, "объект": "тело",
+         "действие": "сел", "место": "кабинет", "закадр": "Второй."},
+        {"id": "f003", "parent_id": "f001", "сцена": 1, "объект": "предмет",
+         "действие": "открыл папку", "место": "кабинет", "закадр": "Третий."},
+        {"id": "f011", "parent_id": None, "сцена": 2, "объект": "место",
+         "действие": "вышел", "место": "коридор", "закадр": "Четвёртый."},
+        {"id": "f012", "parent_id": "f011", "сцена": 2, "объект": "взгляд",
+         "действие": "смотрит на дверь", "место": "коридор", "закадр": "Пятый."},
+    ]
+    canvas = {
+        "canvas_graph": {
+            "nodes": [{
+                "id": "n_excel_gpt_fw_shots",
+                "data": {"groupId": "script_frames_qc"},
+            }],
+            "edges": [],
+        }
+    }
+    async with mem_db() as session:
+        project = Project(
+            slug=f"kadry5-{_uuid.uuid4().hex[:8]}",
+            topic="t",
+            status=ProjectStatus.new,
+            meta=canvas,
+        )
+        session.add(project)
+        await session.flush()
+        session.add(
+            Frame(
+                project_id=project.id,
+                number=1,
+                sort_key=1.0,
+                uuid="aa" * 12,
+                voiceover_text="Короткий текст ячейки.",
+                duration_seconds=4.0,
+                attrs={
+                    "кадры": [dict(s) for s in kadry],
+                    "vo_cell_full": "Короткий текст ячейки.",
+                    "camera_subdivide": {
+                        "role": "vo_parent",
+                        "parent_uuid": "aa" * 12,
+                        "shot_index": 1,
+                    },
+                },
+            )
+        )
+        await session.flush()
+        out = await apply_shot_coverage_to_vo_cells(session, project)
+        assert out["pipeline"] == 5
+        frames = list(
+            (
+                await session.execute(
+                    select(Frame)
+                    .where(Frame.project_id == project.id)
+                    .order_by(Frame.number)
+                )
+            ).scalars().all()
+        )
+        assert len(frames) == 5
 
 
 async def test_group_rerun_drops_stale_ladder_without_second_copy(mem_db) -> None:

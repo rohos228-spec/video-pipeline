@@ -972,6 +972,15 @@ async def build_montage_board(
     frames_orm.sort(
         key=lambda fr: (float(fr.sort_key or 0.0), int(fr.number or 0))
     )
+    from app.services.vo_shot_expand import relink_shot_roles_by_scene
+
+    n_relink = relink_shot_roles_by_scene(frames_orm)
+    if n_relink:
+        logger.info(
+            "montage_board: relink shot roles project {} frames={}",
+            project_id,
+            n_relink,
+        )
     frames = _snapshot_frames(frames_orm)
     entity_char_names, entity_item_names = await _entity_name_maps(session, project_id)
     # Сводка сцены живёт в монтаже, не в отдельном меню: поля считаем всегда.

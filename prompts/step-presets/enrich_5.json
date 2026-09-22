@@ -1,0 +1,47 @@
+{
+  "step_code": "enrich_5",
+  "compose_step_id": "05e_enrich_5",
+  "label": "Excel #5",
+  "presets": {
+    "default": {
+      "label": "default",
+      "aliases": [
+        "default",
+        "reworked_default_blocks_v2"
+      ],
+      "description": "Структурированный вариант legacy-промта default.md",
+      "blocks": {
+        "enrich_role": "xlsx_editor",
+        "enrich_edit_rules": "sheet_safe_edits",
+        "enrich_source_policy": "xlsx_task_only",
+        "enrich_output_contract": "return_full_xlsx",
+        "enrich_self_check": "no_structure_damage_gate"
+      },
+      "extra_blocks": {
+        "enrich_source_full": "default_full"
+      }
+    },
+    "gpt_agent_excel_plan_enhanced_anti_dubles_fixed_txt": {
+      "label": "GPT_Agent_Excel_Plan_Enhanced_ANTI_DUBLES_FIXED.txt",
+      "aliases": [
+        "GPT_Agent_Excel_Plan_Enhanced_ANTI_DUBLES_FIXED.txt",
+        "reworked_gpt_agent_excel_plan_enhanced_anti_dubles_fixed_txt_blocks_v2"
+      ],
+      "description": "Структурированный вариант legacy-промта GPT_Agent_Excel_Plan_Enhanced_ANTI_DUBLES_FIXED.txt.md",
+      "blocks": {
+        "enrich_role": "xlsx_editor",
+        "enrich_edit_rules": "sheet_safe_edits",
+        "enrich_source_policy": "xlsx_task_only",
+        "enrich_output_contract": "return_full_xlsx",
+        "enrich_self_check": "no_structure_damage_gate"
+      },
+      "extra_blocks": {
+        "enrich_source_full": "gpt_agent_excel_plan_enhanced_anti_dubles_fixed_txt_full"
+      }
+    }
+  },
+  "preset_order": [
+    "default",
+    "gpt_agent_excel_plan_enhanced_anti_dubles_fixed_txt"
+  ]
+}

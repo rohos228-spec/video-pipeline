@@ -100,6 +100,19 @@ from app.services.video_prompt_sanitize import (
     sanitize_video_prompt_after_errors,
 )
 
+# Developer API: gpt-image-2 (OpenAI) часто бьёт CONTENT_POLICY даже на
+# безопасном тексте; nano-banana-2 — вторая живая image-модель каталога.
+_IMAGE_POLICY_FALLBACK_SLUG = "nano-banana-2"
+
+
+def _image_moderation_fallback_slug(model_slug: str | None) -> str | None:
+    from app.bots.outsee_http import studio_id_to_outsee_image_slug
+
+    slug = studio_id_to_outsee_image_slug(str(model_slug) if model_slug else None)
+    if slug == "gpt-image-2":
+        return _IMAGE_POLICY_FALLBACK_SLUG
+    return None
+
 
 def _apply_local_prompt_sanitize(
     prompt: str,
@@ -958,6 +971,7 @@ async def generate_image_with_retries(
     from app.services.media_route import image_provider_for
     from app.settings import settings as _settings
 
+    fallback_done = bool(kwargs.pop("_image_model_fallback_done", False))
     raw_slug = kwargs.get("model_slug") or getattr(
         _settings, "outsee_default_image_model", None
     )
@@ -1292,6 +1306,28 @@ async def generate_image_with_retries(
     if last_err is None:
         # сюда мы попасть не должны (raise/return должны были отработать)
         raise RuntimeError("generate_image_with_retries: unreachable")
+    fb = None if fallback_done else _image_moderation_fallback_slug(
+        str(raw_slug) if raw_slug else None
+    )
+    if fb and outsee_error_is_moderation(last_err):
+        logger.warning(
+            "outsee.generate_image: {} CONTENT_POLICY → fallback {}",
+            raw_slug,
+            fb,
+        )
+        fb_kwargs = dict(kwargs)
+        fb_kwargs["model_slug"] = fb
+        fb_kwargs.pop("quality", None)
+        fb_kwargs["_image_model_fallback_done"] = True
+        return await generate_image_with_retries(
+            outsee,
+            gpt,
+            prompt=current_prompt,
+            out_path=out_path,
+            max_attempts_per_prompt=max(1, min(2, int(max_attempts_per_prompt))),
+            gpt_rewrite=False,
+            **fb_kwargs,
+        )
     raise last_err
 
 

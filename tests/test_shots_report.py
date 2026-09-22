@@ -83,7 +83,7 @@ def test_report_hides_uuid_role_shot_index() -> None:
     assert "wide archive still" in html
     assert "slow push in" in html
     assert "наезд" in html
-    assert "Кадры схемы" in html
+    assert "Кадры" in html
     assert "QC:" in html
     assert "картинка:" in html
     assert "e8ca9ac60d0e4c659e2610b4" not in html
@@ -212,8 +212,9 @@ def test_report_keeps_every_kadry_scene() -> None:
     assert "1-S2-K1" in html
     assert "Открывает папку" in html
     assert "Раскладывает улики" in html
-    assert "when из таблицы" in html
-    assert "Листы xlsx" in html
+    assert "Шаблонов T нет" in html
+    assert "when из таблицы" not in html
+    assert "Листы xlsx" not in html
 
 
 def test_report_lists_every_kadry_row() -> None:

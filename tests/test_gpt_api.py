@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 from pathlib import Path
 
 import httpx
@@ -1249,6 +1250,7 @@ def test_headers_include_relay_token(monkeypatch) -> None:
     monkeypatch.setattr(settings, "tokenrouter_api_key", "")
     monkeypatch.setattr(settings, "gpt_api_key", "test-key")
     monkeypatch.setattr(settings, "gpt_relay_token", "relay-secret")
+    monkeypatch.setattr(settings, "gpt_base_url", "https://relay.example.com")
     h = gpt_api._headers()
     assert h["Authorization"] == "Bearer test-key"
     assert h["X-VP-Relay-Token"] == "relay-secret"
@@ -1293,6 +1295,93 @@ def test_gpt_proxy_url_empty(monkeypatch) -> None:
     assert gpt_api._gpt_proxy_url() is None
     monkeypatch.setattr(settings, "gpt_proxy_url", "  ")
     assert gpt_api._gpt_proxy_url() is None
+
+
+def test_async_client_disables_trust_env_without_proxy(monkeypatch) -> None:
+    from app.settings import settings
+
+    captured: dict = {}
+    real = httpx.AsyncClient
+
+    def factory(*args, **kwargs):
+        captured.update(kwargs)
+        kwargs["transport"] = httpx.MockTransport(lambda r: httpx.Response(200))
+        kwargs.pop("proxy", None)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(settings, "gpt_proxy_url", None)
+    monkeypatch.setattr(settings, "gpt_relay_token", "")
+    monkeypatch.setattr(gpt_api, "_PROXY_LOGGED", False)
+    monkeypatch.setattr(gpt_api.httpx, "AsyncClient", factory)
+    gpt_api._async_client(timeout=1.0)
+    assert captured.get("trust_env") is False
+
+
+def test_gpt_retry_backoff_dns_is_short() -> None:
+    err = httpx.ConnectError("[Errno 11001] getaddrinfo failed")
+    assert gpt_api._is_fast_retry_network_error(err) is True
+    assert gpt_api._gpt_retry_backoff_s(1, err) == 0.4
+    assert gpt_api._gpt_retry_backoff_s(2, err) == 0.8
+    wrapped = gpt_api.GptApiError(
+        "GPT сетевая ошибка: ConnectError: errno=11001",
+        context={"error_kind": "network", "retryable": True},
+    )
+    assert gpt_api._is_fast_retry_network_error(wrapped) is True
+    timeout = gpt_api.GptApiError(
+        "GPT timeout 600s",
+        context={"error_kind": "timeout", "retryable": True},
+    )
+    assert gpt_api._is_fast_retry_network_error(timeout) is False
+    assert gpt_api._gpt_retry_backoff_s(1, timeout) == 2.0
+
+
+def test_connect_error_skips_nostream_salvage() -> None:
+    assert gpt_api._stream_should_salvage_nostream(None) is True
+    assert gpt_api._stream_should_salvage_nostream(httpx.ConnectError("getaddrinfo")) is False
+    assert gpt_api._stream_should_salvage_nostream(httpx.ReadError("peer")) is True
+
+
+def test_httpx_error_detail_includes_errno() -> None:
+    err = OSError(11001, "getaddrinfo failed")
+    wrapped = httpx.ConnectError("")
+    wrapped.__cause__ = err
+    detail = gpt_api._httpx_error_detail(wrapped)
+    assert "11001" in detail or "getaddrinfo" in detail
+
+
+def test_parse_dns_a_records_extracts_ipv4() -> None:
+    import struct
+    import socket as _sock
+
+    def enc(host: str) -> bytes:
+        out = b""
+        for lab in host.split("."):
+            raw = lab.encode()
+            out += bytes([len(raw)]) + raw
+        return out + b"\x00"
+
+    name = enc("example.com")
+    header = struct.pack("!HHHHHH", 0x1234, 0x8180, 1, 1, 0, 0)
+    question = name + struct.pack("!HH", 1, 1)
+    answer = name + struct.pack("!HHIH", 1, 1, 60, 4) + _sock.inet_aton("1.2.3.4")
+    assert gpt_api._parse_dns_a_records(header + question + answer, 0x1234) == [
+        "1.2.3.4"
+    ]
+    assert gpt_api._parse_dns_a_records(header + question + answer, 0x0001) == []
+
+
+def test_remember_host_ipv4_answers_getaddrinfo() -> None:
+    gpt_api._HOST_IPV4.pop("gpt-dns-test.invalid", None)
+    gpt_api._remember_host_ipv4("gpt-dns-test.invalid", "185.178.208.164")
+    try:
+        infos = socket.getaddrinfo(
+            "gpt-dns-test.invalid", 443, socket.AF_INET, socket.SOCK_STREAM
+        )
+        assert infos[0][4][0] == "185.178.208.164"
+    finally:
+        gpt_api._HOST_IPV4.pop("gpt-dns-test.invalid", None)
+
+
 @pytest.mark.asyncio
 async def test_download_content_html_renamed_off_xlsx(monkeypatch, tmp_path: Path) -> None:
     """Страница HTML, сохранённая как .xlsx, переименовывается в .html."""

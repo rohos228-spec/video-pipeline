@@ -122,14 +122,9 @@ async def start_step(
 
         clear_user_stop_gate(project)
         clear_auto_await_manual_start(project)
-        # ▶ = запустить процесс. Без auto_mode следующая нода не стартует
-        # (лог: «auto_mode выкл, без auto-chain/advance»).
-        if not getattr(project, "auto_mode", False):
-            project.auto_mode = True
-            logger.info(
-                "[#{}] start_step: auto_mode=True (ручной ▶ — цепочка нод)",
-                project.id,
-            )
+        # ▶ не включает auto_mode. Цепочка excel_gpt→excel_gpt идёт по
+        # стрелкам канваса; прыжок на следующий шаг пайплайна — только если
+        # тумблер уже включён пользователем.
         # Явный ▶ снимает глобальный halt очереди и family-halt родителя.
         clear_gen_queue_halted(reason=f"start_step #{project.id}")
         parent_id = mass_parent_id(project)
@@ -449,6 +444,7 @@ async def start_step(
         # Цепочка до последней excel_gpt + сброс «готово» у хвоста —
         # иначе already-done 3-я нода пропускается и не перегенерируется.
         from app.services.excel_gpt_node import (
+            backfill_overflow_completed_predecessors,
             clear_excel_gpt_tail_completion,
             ensure_enrich_auto_chain_to,
         )
@@ -456,20 +452,42 @@ async def start_step(
         started_slot = slot_index_from_node(node)
         project.meta = meta
         if started_slot < 1:
+            added_preds = backfill_overflow_completed_predecessors(project, nk)
+            if added_preds:
+                logger.info(
+                    "[#{}] start_step excel_gpt: backfill completed predecessors {}",
+                    project.id,
+                    added_preds,
+                )
+                meta = dict(project.meta or {})
+        # Всегда снять именно эту ноду из completed_keys. Иначе воркер в
+        # _prepare_node_run_for_status видит stale active и re-resolve на
+        # чужой slot 1 (#63: fw_report → n_excel_gpt_1788694559747).
+        keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
+        self_cleared = [nk] if nk in keys else []
+        if self_cleared:
+            meta["excel_gpt_completed_keys"] = [k for k in keys if k != nk]
+            project.meta = meta
+        if started_slot < 1:
             # overflow: не трактовать слот 0 как «сбросить enrich 1..5».
-            keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
-            keys_cleared = [k for k in keys if k == nk]
-            if keys_cleared:
-                meta["excel_gpt_completed_keys"] = [k for k in keys if k != nk]
-                project.meta = meta
             cleared = {
                 "from_slot": 0,
                 "slots_cleared": [],
-                "keys_cleared": keys_cleared,
+                "keys_cleared": self_cleared,
             }
             chain_to = None
         else:
             cleared = clear_excel_gpt_tail_completion(project, started_slot)
+            extra = [
+                k
+                for k in self_cleared
+                if k not in (cleared.get("keys_cleared") or [])
+            ]
+            if extra:
+                cleared = {
+                    **cleared,
+                    "keys_cleared": list(cleared.get("keys_cleared") or []) + extra,
+                }
             chain_to = ensure_enrich_auto_chain_to(project, started_slot)
         if cleared.get("slots_cleared") or cleared.get("keys_cleared"):
             logger.info(

@@ -683,14 +683,32 @@ async def _prepare_node_run_for_status(
         meta = dict(project.meta) if isinstance(project.meta, dict) else {}
         node_key = str(meta.get("active_excel_gpt_node_key") or "").strip() or None
         # Stale active: уже done → иначе снова крутим ноду ДО hero.
+        # НО: ▶ overflow (slot 0) живёт в enriching_1. Если шаг уже running
+        # с этим active_key, re-resolve(slot=1) стартует чужую линейную ноду
+        # параллельно, а выбранная через секунду heal'ится в done (#63).
+        already_running = project.status is running_status
         if node_key and node_key in completed_node_keys(project):
-            logger.warning(
-                "auto_advance: #{} stale active_excel_gpt_node_key={} "
-                "(already completed) — re-resolve",
-                project.id,
-                node_key,
-            )
-            node_key = None
+            if already_running:
+                # Leftover worker tick после успеха: ключ уже в
+                # completed_keys, статус ещё enriching_N. Раньше pop
+                # completed_keys + allow_restart заново гнал GPT.
+                # Явный ▶ снимает ключ в start_step до воркера.
+                logger.info(
+                    "auto_advance: #{} keep active_excel_gpt_node_key={} "
+                    "(already {}, still in completed_keys — no restart)",
+                    project.id,
+                    node_key,
+                    running_status.value,
+                )
+                return False
+            else:
+                logger.warning(
+                    "auto_advance: #{} stale active_excel_gpt_node_key={} "
+                    "(already completed) — re-resolve",
+                    project.id,
+                    node_key,
+                )
+                node_key = None
         # auto_mode: active key часто пуст (multi excel_gpt) — резолвим по слоту
         # (incomplete-first, см. resolve_excel_gpt_node_key_for_slot).
         if not node_key:

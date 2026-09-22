@@ -1,0 +1,1 @@
+photorealistic humans, 3D plastic, glossy skin, anime, realistic facial details, hard outlines, cold colors, scary mood, extra characters, distorted faces, low texture, blurry, text, watermark, logo, border

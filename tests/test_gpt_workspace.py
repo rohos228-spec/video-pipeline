@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -1120,3 +1121,47 @@ async def test_ask_api_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     got = gw.get_session(s["id"])
     assert got["status"] == "error"
     assert any(m["role"] == "system" for m in got["messages"])
+
+
+@pytest.mark.asyncio
+async def test_ask_uses_default_gpt_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Studio-чат не должен резать GPT_MAX_RETRIES до нуля (ConnectError)."""
+    import app.services.gpt_client as gc
+
+    s = gw.create_session()
+    captured: dict = {}
+
+    class FakeGpt:
+        async def ask_with_files(self, *a, **k):
+            captured["max_retries"] = k.get("max_retries", "missing")
+            return "ок"
+
+        async def download_attachment_from_last_reply(self, *a, **k):
+            return None
+
+    monkeypatch.setattr(gc, "get_gpt_client", lambda: FakeGpt())
+    await gw.ask(s["id"], "привет")
+    assert captured["max_retries"] is None
+
+
+@pytest.mark.asyncio
+async def test_ask_stream_emits_error_if_task_finishes_during_heartbeat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ConnectError во время SSE-heartbeat не должен оборвать стрим молча."""
+
+    async def boom(*_a, **_k):
+        await asyncio.sleep(0.4)
+        raise RuntimeError(
+            "GPT(chat/stream) пустой output после ConnectError: "
+            "All connection attempts failed"
+        )
+
+    monkeypatch.setattr(gw, "ask", boom)
+    s = gw.create_session()
+    chunks: list[str] = []
+    async for chunk in gw.ask_stream(s["id"], "сколько символов"):
+        chunks.append(chunk)
+    blob = "".join(chunks)
+    assert '"type": "error"' in blob
+    assert "ConnectError" in blob

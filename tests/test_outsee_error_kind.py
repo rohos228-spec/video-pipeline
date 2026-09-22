@@ -320,3 +320,14 @@ def test_unlimited_busy_is_always_stale_keep_waiting() -> None:
         queue_mode=True,
         prompt_id_prefix="[ID: P47-F18-f2a307ba]",
     )
+
+
+def test_content_policy_code_is_moderation() -> None:
+    """HTTP API: code=CONTENT_POLICY, формулировка «не прошли модерацию»."""
+    err = OutseeImageError(
+        "Outsee generation failed: {'code': 'CONTENT_POLICY', 'message': "
+        "'Изображение или описание не прошли модерацию модели.'}",
+        context={"code": "content_policy"},
+    )
+    assert outsee_error_is_moderation(err) is True
+    assert outsee_error_kind(err) == "moderation"

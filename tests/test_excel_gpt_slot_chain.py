@@ -329,3 +329,23 @@ def test_auto_chain_uses_edge_key_not_slot_resolve_collision() -> None:
     assert nxt is ProjectStatus.enriching_5
     assert p.meta["active_excel_gpt_node_key"] == "n_check"
     assert p.meta["active_excel_gpt_node_key"] != "n_excel_gpt_2"
+
+
+def test_excel_gpt_already_completed_no_force_leftover() -> None:
+    from app.services.excel_gpt_node import excel_gpt_already_completed_no_force
+
+    p = SimpleNamespace(
+        meta={
+            "active_excel_gpt_node_key": "n_excel_gpt_1788694559747",
+            "excel_gpt_completed_keys": ["n_excel_gpt_1788694559747"],
+        }
+    )
+    assert excel_gpt_already_completed_no_force(p) is True
+    p.meta["excel_gpt_ui_force_full"] = True
+    assert excel_gpt_already_completed_no_force(p) is False
+    p.meta.pop("excel_gpt_ui_force_full")
+    p.meta["excel_gpt_force_full_rerun"] = True
+    assert excel_gpt_already_completed_no_force(p) is False
+    p.meta.pop("excel_gpt_force_full_rerun")
+    p.meta["excel_gpt_completed_keys"] = []
+    assert excel_gpt_already_completed_no_force(p) is False

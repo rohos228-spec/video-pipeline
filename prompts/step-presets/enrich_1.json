@@ -1,0 +1,66 @@
+{
+  "compose_step_id": "05a_enrich_1",
+  "label": "Excel #1",
+  "presets": {
+    "default": {
+      "label": "default",
+      "aliases": [
+        "default",
+        "reworked_default_blocks_v2"
+      ],
+      "description": "Структурированный вариант legacy-промта default.md",
+      "blocks": {
+        "enrich_role": "xlsx_editor",
+        "enrich_edit_rules": "sheet_safe_edits",
+        "enrich_source_policy": "xlsx_task_only",
+        "enrich_output_contract": "return_full_xlsx",
+        "enrich_self_check": "no_structure_damage_gate"
+      },
+      "extra_blocks": {
+        "enrich_source_full": "default_full"
+      }
+    },
+    "xlsx_agent_v7_2_row52_strengthened_txt": {
+      "label": "XLSX_Agent_V7_2_Row52_Strengthened.txt",
+      "aliases": [
+        "XLSX_Agent_V7_2_Row52_Strengthened.txt",
+        "reworked_xlsx_agent_v7_2_row52_strengthened_txt_blocks_v2"
+      ],
+      "description": "Структурированный вариант legacy-промта XLSX_Agent_V7_2_Row52_Strengthened.txt.md",
+      "blocks": {
+        "enrich_role": "xlsx_editor",
+        "enrich_edit_rules": "sheet_safe_edits",
+        "enrich_source_policy": "xlsx_task_only",
+        "enrich_output_contract": "return_full_xlsx",
+        "enrich_self_check": "no_structure_damage_gate"
+      },
+      "extra_blocks": {
+        "enrich_source_full": "xlsx_agent_v7_2_row52_strengthened_txt_full"
+      }
+    },
+    "zapolnenie_tablicy": {
+      "label": "заполнение таблицы",
+      "aliases": [
+        "заполнение таблицы",
+        "reworked_zapolnenie_tablicy_blocks_v2"
+      ],
+      "description": "Структурированный вариант legacy-промта заполнение таблицы.md",
+      "blocks": {
+        "enrich_role": "xlsx_editor",
+        "enrich_edit_rules": "sheet_safe_edits",
+        "enrich_source_policy": "xlsx_task_only",
+        "enrich_output_contract": "return_full_xlsx",
+        "enrich_self_check": "no_structure_damage_gate"
+      },
+      "extra_blocks": {
+        "enrich_source_full": "zapolnenie_tablicy_full"
+      },
+      "omit_slots": []
+    }
+  },
+  "preset_order": [
+    "default",
+    "xlsx_agent_v7_2_row52_strengthened_txt",
+    "zapolnenie_tablicy"
+  ]
+}

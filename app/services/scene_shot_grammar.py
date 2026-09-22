@@ -428,6 +428,46 @@ def expand_action_to_shots(
     return out
 
 
+def fill_kadry_scene_numbers(shots: list[Any]) -> int:
+    """Проставить ``сцена``, если GPT выкинул номер, но оставил parent_id.
+
+    Без этого promote_shots_to_vo_cells режет каждый кадр в свою VO-ячейку.
+    """
+    filled = 0
+    scene = 0
+    master: dict[str, int] = {}
+    for shot in shots:
+        if not isinstance(shot, dict):
+            continue
+        raw = shot.get("сцена")
+        if raw not in (None, ""):
+            try:
+                scene = int(raw)
+            except (TypeError, ValueError):
+                scene = scene or 1
+                shot["сцена"] = scene
+                filled += 1
+            sid = str(shot.get("id") or "").strip()
+            if sid:
+                master[sid] = scene
+            continue
+        pid = shot.get("parent_id")
+        sid = str(shot.get("id") or "").strip()
+        if pid in (None, "", "null"):
+            scene += 1
+            shot["сцена"] = scene
+            filled += 1
+            if sid:
+                master[sid] = scene
+        else:
+            sc = master.get(str(pid).strip()) or scene or 1
+            shot["сцена"] = sc
+            filled += 1
+            if sid:
+                master[sid] = sc
+    return filled
+
+
 def apply_grammar_to_ops(ops: list[Any], frames: list[dict[str, Any]]) -> None:
     """Дописать кадры из главное_действие / дозаполнить камеру."""
     by_uid = {
@@ -483,6 +523,7 @@ def apply_grammar_to_ops(ops: list[Any], frames: list[dict[str, Any]]) -> None:
                     if isinstance(shot, dict) and not str(shot.get("закадр") or "").strip():
                         shot["закадр"] = piece
             _fill_missing_camera(shots, prev_place=prev_place)
+            fill_kadry_scene_numbers(shots)
             for sh in shots:
                 if isinstance(sh, dict) and sh.get("место"):
                     prev_place = str(sh.get("место") or "")

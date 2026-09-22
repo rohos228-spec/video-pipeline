@@ -238,22 +238,8 @@ async def get_project(
         raise HTTPException(status_code=404, detail="project not found")
     # Свежий meta (user_stop) — иначе stale recompute затирает ⏹ и снова крутит ноду.
     await session.refresh(p)
-    from app.services.node_groups import (
-        script_frames_qc_needs_upgrade,
-        upgrade_script_frames_qc_on_project,
-    )
-
-    # Upgrade в новой транзакции: иначе poll GET со старым snapshot
-    # затирает ▶ (enriching_* + active_excel_gpt_node_key) и нода висит
-    # в «ожидание».
-    meta_now = p.meta if isinstance(p.meta, dict) else {}
-    upgraded = False
-    if script_frames_qc_needs_upgrade(meta_now):
-        await session.rollback()
-        p = await session.get(Project, project_id)
-        if p is None:
-            raise HTTPException(status_code=404, detail="project not found")
-        upgraded = await upgrade_script_frames_qc_on_project(session, p)
+    # GET не пишет canvas_graph. Poll #60 каждые ~2с делал upgrade
+    # 20↔18 нод, commit stale snapshot и выжигал сокеты (GPT errno=8).
     pulled = False
     try:
         pulled = await _heal_get_runtime_from_master(session, p)
@@ -266,7 +252,7 @@ async def get_project(
     _old, _new, recomputed = await recompute_status(
         session, p, log_prefix="recompute(web_get)"
     )
-    if upgraded or recomputed or pulled:
+    if recomputed or pulled:
         await session.commit()
         await session.refresh(p)
     else:
@@ -276,7 +262,7 @@ async def get_project(
         p = await session.get(Project, project_id)
         if p is None:
             raise HTTPException(status_code=404, detail="project not found")
-    return p
+    return project_to_detail(p)
 
 
 @router.post("", response_model=ProjectDetail, status_code=status.HTTP_201_CREATED)
@@ -731,4 +717,4 @@ async def run_project_step(
         event_type="project_updated",
         payload={"step": step_code, "status": p.status.value},
     )
-    return p
+    return project_to_detail(p)

@@ -470,3 +470,103 @@ def build_img_pr_db_context(
             "coverage_parent": "K1 still of the SAME scene (Preserve/Change)",
         }
     return out
+
+
+def frame_visual_action(fr: Any) -> str:
+    """Кто физически в кадре: main_action / shot01_action."""
+    attrs = getattr(fr, "attrs", None)
+    if not isinstance(attrs, dict):
+        return ""
+    for key in ("main_action", "shot01_action", "главное_действие"):
+        val = str(attrs.get(key) or "").strip()
+        if val:
+            return val
+    return ""
+
+
+def frame_visual_place(fr: Any) -> str:
+    attrs = getattr(fr, "attrs", None)
+    if not isinstance(attrs, dict):
+        return ""
+    for key in ("place", "место"):
+        val = str(attrs.get(key) or "").strip()
+        if val:
+            return val
+    return ""
+
+
+# Индивидуальные роли из действия кадра. Группы (дети, сотрудники) сюда не входят.
+CHARACTER_REGISTRY_ROLE_MARKERS: tuple[str, ...] = (
+    "следователь",
+    "дежурный",
+    "эксперт",
+    "преподаватель",
+    "журналист",
+    "судья",
+    "архивист",
+    "начальник милиции",
+    "судебный служащий",
+    "медработник",
+)
+_CHARACTER_REGISTRY_ROLE_ALIASES: dict[str, tuple[str, ...]] = {
+    "эксперт": ("эксперт", "криминалист"),
+    "архивист": ("архивист", "архивариус"),
+    "начальник милиции": ("начальник милиции", "начальник"),
+}
+
+
+def build_character_registry_db_context(
+    *,
+    project_id: int,
+    slug: str,
+    frames: list[Any],
+) -> dict[str, Any]:
+    """Снимок для агента персонажей: VO + действие.
+
+    Старый Entity и ID кадров не отдаём — иначе модель копирует c01–c04
+    и не создаёт следователя / эксперта из main_action.
+    """
+    rows: list[dict[str, Any]] = []
+    for fr in frames:
+        uuid = str(getattr(fr, "uuid", None) or "").strip()
+        if not uuid:
+            continue
+        row: dict[str, Any] = {
+            "number": getattr(fr, "number", None),
+            "uuid": uuid,
+            "voiceover_text": str(getattr(fr, "voiceover_text", None) or ""),
+            "действие": frame_visual_action(fr),
+            "персонажи": "",
+        }
+        place = frame_visual_place(fr)
+        if place:
+            row["место"] = place
+        rows.append(row)
+    return {
+        "source": "db_v2",
+        "project_id": project_id,
+        "slug": slug,
+        "frames": rows,
+        "characters": [],
+    }
+
+
+def character_registry_missing_visual_roles(
+    frames: list[Any],
+    cards: list[Any] | None,
+) -> list[str]:
+    """Роли из действия кадров, которых нет ни на одной карточке."""
+    names_blob = " ".join(
+        str((c or {}).get("имя") or (c or {}).get("name") or "").lower()
+        for c in (cards or [])
+        if isinstance(c, dict)
+    )
+    missing: list[str] = []
+    for role in CHARACTER_REGISTRY_ROLE_MARKERS:
+        seen = any(role in frame_visual_action(fr).lower() for fr in frames)
+        if not seen:
+            continue
+        aliases = _CHARACTER_REGISTRY_ROLE_ALIASES.get(role, (role,))
+        if not any(a in names_blob for a in aliases):
+            missing.append(role)
+    return missing

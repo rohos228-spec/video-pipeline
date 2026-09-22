@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from app.bots import outsee_http as oh
@@ -159,15 +160,29 @@ async def outsee_generate(body: OutseeGenerateBody) -> dict[str, Any]:
             raise HTTPException(status_code=400, detail=str(e.reason)) from e
 
         async def run(out_path):
-            return await oh.generate_image(
-                text,
-                out_path,
+            from app.services.gpt_client import get_gpt_client
+            from app.services.outsee_retry import generate_image_with_retries
+
+            gpt = None
+            try:
+                gpt = get_gpt_client()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("outsee generate: GPT недоступен для rewrite: {}", e)
+            refs = body.reference_images or (
+                [body.first_frame_url] if body.first_frame_url else None
+            )
+            return await generate_image_with_retries(
+                None,
+                gpt,
+                prompt=text,
+                out_path=out_path,
+                max_attempts_per_prompt=3,
+                gpt_rewrite=True,
                 model_slug=model,
                 aspect_ratio=(body.aspect or "9:16").replace("_", ":"),
                 resolution=body.resolution or "2K",
-                detail_level=body.detail_level,
-                reference_images=body.reference_images
-                or ([body.first_frame_url] if body.first_frame_url else None),
+                quality=body.detail_level,
+                reference_image=refs,
                 project_id=body.project_id,
                 timeout=600,
             )

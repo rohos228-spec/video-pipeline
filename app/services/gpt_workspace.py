@@ -1391,7 +1391,9 @@ async def ask(
                 history=history,
                 treat_txt_as_prompt=False,
                 system=_WORKSPACE_SYSTEM,
-                max_retries=0,
+                # None → GPT_MAX_RETRIES. 0 = одна попытка: ConnectError
+                # сразу рвёт Studio-чат, спиннер остаётся без ответа.
+                max_retries=None,
                 on_delta=on_delta,
             )
         except Exception as e:  # noqa: BLE001
@@ -1441,7 +1443,7 @@ async def ask(
                     history=retry_history,
                     treat_txt_as_prompt=False,
                     system=_WORKSPACE_SYSTEM,
-                    max_retries=0,
+                    max_retries=None,
                 )
                 reply2 = (reply2 or "").strip()
                 if reply2 and not _reply_fails_file_delivery(
@@ -1777,15 +1779,46 @@ async def ask_stream(
                     yield f"data: {json.dumps({'type': 'error', 'error': data}, ensure_ascii=False)}\n\n"
                     break
             except asyncio.TimeoutError:
-                if task.done():
-                    exc = task.exception()
-                    if exc:
-                        yield f"data: {json.dumps({'type': 'error', 'error': str(exc)}, ensure_ascii=False)}\n\n"
-                    break
-                meta = _read_json(d / "meta.json", {})
-                phase = meta.get("phase", "thinking")
-                phase_detail = meta.get("phase_detail", "Генерация ответа…")
-                yield f"data: {json.dumps({'type': 'phase', 'phase': phase, 'phase_detail': phase_detail}, ensure_ascii=False)}\n\n"
+                if not task.done():
+                    meta = _read_json(d / "meta.json", {})
+                    phase = meta.get("phase", "thinking")
+                    phase_detail = meta.get("phase_detail", "Генерация ответа…")
+                    yield f"data: {json.dumps({'type': 'phase', 'phase': phase, 'phase_detail': phase_detail}, ensure_ascii=False)}\n\n"
+                    continue
+                # Runner уже завершился, а wait_for не успел забрать
+                # error/done из очереди — без drain UI крутит спиннер вечно.
+                leftover: list[tuple[str, Any]] = []
+                while True:
+                    try:
+                        leftover.append(queue.get_nowait())
+                    except asyncio.QueueEmpty:
+                        break
+                terminal = False
+                for kind, data in leftover:
+                    if kind == "delta":
+                        saw_deltas = True
+                        yield f"data: {json.dumps({'type': 'delta', 'delta': data}, ensure_ascii=False)}\n\n"
+                    elif kind == "done":
+                        session, last_msg = data
+                        if not saw_deltas:
+                            reply_content = str(last_msg.get("content") or "")
+                            if reply_content:
+                                yield f"data: {json.dumps({'type': 'delta', 'delta': reply_content}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps({'type': 'done', 'session': session, 'message': last_msg}, ensure_ascii=False)}\n\n"
+                        terminal = True
+                        break
+                    elif kind == "error":
+                        yield f"data: {json.dumps({'type': 'error', 'error': data}, ensure_ascii=False)}\n\n"
+                        terminal = True
+                        break
+                if not terminal:
+                    err = "стрим оборвался без ответа"
+                    if not task.cancelled():
+                        exc = task.exception()
+                        if exc:
+                            err = str(exc)
+                    yield f"data: {json.dumps({'type': 'error', 'error': err}, ensure_ascii=False)}\n\n"
+                break
 
     except asyncio.CancelledError:
         task.cancel()

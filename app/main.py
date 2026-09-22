@@ -602,6 +602,27 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                             p.status.value,
                         )
                         continue
+                    from app.services.excel_gpt_node import (
+                        excel_gpt_already_completed_no_force,
+                        slot_from_running_status,
+                    )
+
+                    if (
+                        slot_from_running_status(p.status) is not None
+                        and excel_gpt_already_completed_no_force(p)
+                    ):
+                        st = step_by_running_status(p.status)
+                        if st is not None:
+                            logger.info(
+                                "worker: #{} {} node already in completed_keys "
+                                "— {} without GPT restart",
+                                p.id,
+                                p.status.value,
+                                st.ready_status.value,
+                            )
+                            p.status = st.ready_status
+                            await s.commit()
+                        continue
                     queue_blocker = await gen_queue_blocks_project(s, p.id)
                     if queue_blocker is not None:
                         logger.debug(

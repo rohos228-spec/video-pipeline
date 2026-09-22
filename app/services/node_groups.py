@@ -70,6 +70,55 @@ def canvas_has_script_frames_qc(project_or_meta: Any) -> bool:
         if any(nid.endswith(suf) for suf in _SCRIPT_FRAMES_QC_NODE_SUFFIXES):
             return True
     return False
+
+
+_SCRIPT_FRAMES_QC_GPT_SUFFIXES = tuple(
+    s for s in _SCRIPT_FRAMES_QC_NODE_SUFFIXES if s != "_fw_report"
+)
+
+
+def _nid_is_script_frames_qc_gpt(nid: str) -> bool:
+    """GPT-ноды группы (без HTML-отчёта). Учитывает суффикс ``_2`` при коллизии id."""
+    raw = str(nid or "").strip()
+    if not raw or raw.endswith("_fw_report") or "_fw_report_" in raw:
+        return False
+    for suf in _SCRIPT_FRAMES_QC_GPT_SUFFIXES:
+        if raw.endswith(suf) or f"{suf}_" in raw:
+            return True
+    return False
+
+
+def is_script_frames_qc_gpt_node(
+    project_or_meta: Any,
+    *,
+    node_key: str | None = None,
+) -> bool:
+    """Текущая нода — GPT-шаг группы ``script_frames_qc`` (не отчёт)."""
+    nk = str(node_key or "").strip()
+    if _nid_is_script_frames_qc_gpt(nk):
+        return True
+    if nk.endswith("_fw_report") or "_fw_report_" in nk:
+        return False
+    meta = project_or_meta
+    if meta is not None and not isinstance(meta, dict):
+        meta = getattr(meta, "meta", None)
+    if not isinstance(meta, dict):
+        return False
+    from app.services.vibecode_catalog import find_canvas_node
+
+    node = find_canvas_node(meta, node_key=nk or None)
+    if not isinstance(node, dict):
+        return False
+    nid = str(node.get("id") or "")
+    if _nid_is_script_frames_qc_gpt(nid):
+        return True
+    if nid.endswith("_fw_report") or "_fw_report_" in nid:
+        return False
+    data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    gid = str((data or {}).get("groupId") or "").split("#", 1)[0].strip()
+    return gid == SCRIPT_FRAMES_QC_GROUP_ID
+
+
 _FAN_DY = 145.0
 
 

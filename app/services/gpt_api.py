@@ -16,9 +16,12 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import socket
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from loguru import logger
@@ -86,7 +89,17 @@ _REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 
 def _responses_reasoning_block() -> dict[str, str] | None:
     """``reasoning.effort`` для Codex/Responses (kie gpt-5-6-sol)."""
-    raw = str(getattr(settings, "gpt_reasoning_effort", "") or "").strip().lower()
+    raw = ""
+    try:
+        from app.services.llm_override import current_override
+
+        ov = current_override()
+        if ov and ov.reasoning_effort:
+            raw = str(ov.reasoning_effort).strip().lower()
+    except Exception:  # noqa: BLE001
+        pass
+    if not raw:
+        raw = str(getattr(settings, "gpt_reasoning_effort", "") or "").strip().lower()
     if not raw or raw in {"off", "none", "0", "false"}:
         return None
     # алиасы из RU-доки
@@ -160,11 +173,252 @@ def _gpt_proxy_url() -> str | None:
     return raw
 
 
+def _httpx_error_detail(exc: BaseException) -> str:
+    """ConnectError часто пустой str(); errno/winerror живут на cause."""
+    parts: list[str] = []
+    text = str(exc).strip()
+    if text:
+        parts.append(text)
+    cur: BaseException | None = exc
+    for _ in range(5):
+        if cur is None:
+            break
+        errno = getattr(cur, "errno", None)
+        if errno is not None:
+            parts.append(f"errno={errno}")
+        winerr = getattr(cur, "winerror", None)
+        if winerr is not None:
+            parts.append(f"winerror={winerr}")
+        nxt = cur.__cause__ or cur.__context__
+        if nxt is cur:
+            break
+        cur = nxt
+    return " ".join(parts) if parts else type(exc).__name__
+
+
+def _is_fast_retry_network_error(exc: BaseException | None) -> bool:
+    """DNS/TCP ConnectError: короткий backoff. Таймаут чтения — как раньше."""
+    if exc is None:
+        return False
+    if isinstance(exc, httpx.ConnectError):
+        return True
+    blob = f"{type(exc).__name__} {_httpx_error_detail(exc)}".lower()
+    if isinstance(exc, GptApiError):
+        if str(exc.context.get("error_kind") or "") == "network":
+            return True
+        blob = f"{blob} {exc}".lower()
+    return any(
+        token in blob
+        for token in (
+            "getaddrinfo",
+            "11001",
+            "name or service not known",
+            "nodename nor servname",
+            "temporary failure in name resolution",
+            "connecterror",
+        )
+    )
+
+
+def _gpt_retry_backoff_s(attempt: int, exc: BaseException | None) -> float:
+    """attempt — номер уже неудачной попытки (1-based)."""
+    n = max(int(attempt), 1)
+    if _is_fast_retry_network_error(exc):
+        return min(0.4 * (2 ** (n - 1)), 5.0)
+    return min(2.0 * (2 ** (n - 1)), 30.0)
+
+
+def _stream_should_salvage_nostream(stream_err: BaseException | None) -> bool:
+    """Повтор non-stream имеет смысл на обрыве SSE, не на DNS ConnectError."""
+    if stream_err is None:
+        return True
+    if isinstance(stream_err, httpx.ConnectError):
+        return False
+    return isinstance(
+        stream_err,
+        (
+            httpx.ReadError,
+            httpx.RemoteProtocolError,
+            httpx.ConnectTimeout,
+            httpx.TimeoutException,
+            TimeoutError,
+            asyncio.TimeoutError,
+        ),
+    )
+
+
+_HOST_IPV4: dict[str, str] = {}
+_GETADDRINFO_ORIG = socket.getaddrinfo
+_GETADDRINFO_PATCHED = False
+_DNS_SERVERS = ("8.8.8.8", "1.1.1.1")
+
+
+def _install_gpt_getaddrinfo_cache() -> None:
+    """httpx ходит в getaddrinfo(hostname). Подставляем кэш IPv4, SNI не трогаем."""
+    global _GETADDRINFO_PATCHED
+    if _GETADDRINFO_PATCHED:
+        return
+
+    def _cached(
+        host: str | None,
+        port: int | str | None,
+        family: int = 0,
+        type: int = 0,
+        proto: int = 0,
+        flags: int = 0,
+    ):
+        key = str(host or "").lower().rstrip(".")
+        ip = _HOST_IPV4.get(key)
+        if ip:
+            # IPv6-сокет + IPv4-адрес на Windows → ConnectError errno=8.
+            if family == socket.AF_INET6:
+                return []
+            return _GETADDRINFO_ORIG(
+                ip, port, socket.AF_INET, type, proto, flags
+            )
+        return _GETADDRINFO_ORIG(host, port, family, type, proto, flags)
+
+    socket.getaddrinfo = _cached  # type: ignore[assignment]
+    _GETADDRINFO_PATCHED = True
+
+
+def _skip_dns_name(data: bytes, offset: int) -> int:
+    n = len(data)
+    while offset < n:
+        length = data[offset]
+        if length == 0:
+            return offset + 1
+        if length & 0xC0 == 0xC0:
+            if offset + 1 >= n:
+                raise ValueError("truncated pointer")
+            return offset + 2
+        offset += 1 + length
+    raise ValueError("truncated name")
+
+
+def _parse_dns_a_records(data: bytes, expected_tid: int) -> list[str]:
+    import struct
+
+    if len(data) < 12:
+        return []
+    tid, flags, qd, an, _ns, _ar = struct.unpack("!HHHHHH", data[:12])
+    if tid != expected_tid or an <= 0 or (flags & 0x000F) != 0:
+        return []
+    offset = 12
+    try:
+        for _ in range(qd):
+            offset = _skip_dns_name(data, offset)
+            offset += 4
+        ips: list[str] = []
+        for _ in range(an):
+            offset = _skip_dns_name(data, offset)
+            if offset + 10 > len(data):
+                break
+            rtype, rclass, _ttl, rdlen = struct.unpack(
+                "!HHIH", data[offset : offset + 10]
+            )
+            offset += 10
+            rdata = data[offset : offset + rdlen]
+            offset += rdlen
+            if rtype == 1 and rclass == 1 and rdlen == 4 and len(rdata) == 4:
+                ips.append(socket.inet_ntoa(rdata))
+        return ips
+    except (ValueError, struct.error):
+        return []
+
+
+def _dns_query_a_udp(host: str, server: str, timeout: float = 1.5) -> str | None:
+    """A-запись через UDP :53, минуя сломанный Windows getaddrinfo/1.1.1.1."""
+    import random
+    import struct
+
+    host = host.strip(".").lower()
+    if not host:
+        return None
+    tid = random.randint(0, 65535)
+    parts: list[bytes] = []
+    try:
+        for label in host.split("."):
+            raw = label.encode("idna")
+            if not raw or len(raw) > 63:
+                return None
+            parts.append(bytes([len(raw)]) + raw)
+    except UnicodeError:
+        return None
+    q = (
+        struct.pack("!HHHHHH", tid, 0x0100, 1, 0, 0, 0)
+        + b"".join(parts)
+        + b"\x00"
+        + struct.pack("!HH", 1, 1)
+    )
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    try:
+        sock.sendto(q, (server, 53))
+        data, _ = sock.recvfrom(512)
+    except OSError:
+        return None
+    finally:
+        sock.close()
+    ips = _parse_dns_a_records(data, tid)
+    return ips[0] if ips else None
+
+
+def _remember_host_ipv4(host: str, ip: str) -> None:
+    _HOST_IPV4[host.strip(".").lower()] = ip
+    _install_gpt_getaddrinfo_cache()
+
+
+async def _ensure_url_host_resolves(url: str) -> None:
+    """Windows 11001: системный DNS часто мёртв; кэш + UDP 8.8.8.8/1.1.1.1."""
+    host = urlparse(url).hostname
+    if not host:
+        return
+    key = host.lower().rstrip(".")
+    if key in _HOST_IPV4:
+        _install_gpt_getaddrinfo_cache()
+        return
+    loop = asyncio.get_running_loop()
+    last: OSError | None = None
+    try_system = sys.platform != "win32"
+    if try_system:
+        for i in range(2):
+            try:
+                infos = await loop.getaddrinfo(
+                    host, 443, family=socket.AF_INET, type=socket.SOCK_STREAM
+                )
+                if infos:
+                    ip = str(infos[0][4][0] or "")
+                    if ip:
+                        _remember_host_ipv4(host, ip)
+                        if i:
+                            logger.info(
+                                "GPT DNS {} recovered after {} tries ip={}",
+                                host,
+                                i + 1,
+                                ip,
+                            )
+                        return
+            except OSError as exc:
+                last = exc
+                await asyncio.sleep(0.2 * (i + 1))
+    for server in _DNS_SERVERS:
+        ip = await loop.run_in_executor(None, _dns_query_a_udp, host, server)
+        if ip:
+            _remember_host_ipv4(host, ip)
+            logger.info("GPT DNS {} via {} → {}", host, server, ip)
+            return
+    logger.warning("GPT DNS getaddrinfo failed host={} err={}", host, last)
+
+
 def _async_client(**kwargs: Any) -> httpx.AsyncClient:
-    """httpx-клиент. При VPS-relay — без прокси и без системных HTTP(S)_PROXY."""
+    """httpx-клиент. Без системных HTTP(S)_PROXY, если не задан GPT_PROXY_URL."""
     global _PROXY_LOGGED
-    if (getattr(settings, "gpt_relay_token", None) or "").strip():
-        kwargs.setdefault("trust_env", False)
+    kwargs.setdefault("trust_env", False)
+    kwargs.setdefault(
+        "limits",
+        httpx.Limits(max_keepalive_connections=0, max_connections=32),
+    )
     proxy = _gpt_proxy_url()
     if proxy:
         if proxy.lower().startswith(("socks4://", "socks5://", "socks5h://")):
@@ -176,7 +430,7 @@ def _async_client(**kwargs: Any) -> httpx.AsyncClient:
                     context={"error_kind": "proxy_socks_missing", "retryable": False},
                 ) from e
         kwargs.setdefault("proxy", proxy)
-        kwargs.setdefault("trust_env", False)
+        kwargs["trust_env"] = False
         if not _PROXY_LOGGED:
             logger.info("GPT API: using proxy {}", _mask_proxy_url(proxy))
             _PROXY_LOGGED = True
@@ -192,6 +446,15 @@ def _node_vibecode_override() -> bool:
     return bool(ov and ov.kind == "text" and ov.provider == "vibecode")
 
 
+def _node_kie_override() -> bool:
+    try:
+        from app.services.llm_override import current_override
+    except Exception:  # noqa: BLE001
+        return False
+    ov = current_override()
+    return bool(ov and ov.kind == "text" and ov.provider == "kie")
+
+
 def _override_vibecode_base_url() -> str:
     """Нода/шапка vibecode: VPS /v1/* если relay задан, иначе vibecode.moe."""
     vps = _vps_relay_base()
@@ -200,12 +463,22 @@ def _override_vibecode_base_url() -> str:
     return (settings.vibecode_base_url or "https://vibecode.moe/v1").strip().rstrip("/")
 
 
+def _override_kie_base_url() -> str:
+    """Нода kie: VPS-relay если задан, иначе GPT_BASE_URL (api.kie.ai)."""
+    vps = _vps_relay_base()
+    if vps:
+        return vps
+    return (settings.gpt_base_url or "https://api.kie.ai").strip().rstrip("/")
+
+
 def _hitting_vps_relay() -> bool:
     vps = _vps_relay_base()
     if not vps:
         return False
     if settings.text_llm_is_tokenrouter:
         return False
+    if _node_kie_override():
+        return True
     if _node_vibecode_override() or settings.text_llm_is_vibecode:
         return _override_vibecode_base_url().rstrip("/") == vps.rstrip("/")
     return True
@@ -213,12 +486,21 @@ def _hitting_vps_relay() -> bool:
 
 def _headers() -> dict[str, str]:
     vibe_ov = _node_vibecode_override()
+    kie_ov = _node_kie_override()
     if vibe_ov:
         # Не подставлять kie GPT_API_KEY: иначе 401 на vibecode /v1/chat/completions.
         key = (settings.vibecode_api_key or "").strip()
+    elif kie_ov:
+        # Не брать vibecode-ключ шапки: группа script_frames_qc идёт на kie.
+        key = (settings.gpt_api_key or "").strip()
     else:
         key = settings.gpt_api_effective_key
     if not key:
+        if kie_ov:
+            raise GptApiError(
+                "GPT_API_KEY пуст — задай ключ kie.ai в .env",
+                context={"error_kind": "no_key", "provider": "kie"},
+            )
         if vibe_ov or settings.text_llm_is_vibecode:
             raise GptApiError(
                 "VIBECODE_API_KEY пуст — задай ключ vibecode.moe (vk-…) в .env",
@@ -246,11 +528,12 @@ def _headers() -> dict[str, str]:
 
 def _chat_url(model: str) -> str:
     global _RELAY_BASE_LOGGED
-    base = (
-        _override_vibecode_base_url()
-        if _node_vibecode_override()
-        else settings.gpt_api_effective_base_url
-    )
+    if _node_kie_override():
+        base = _override_kie_base_url()
+    elif _node_vibecode_override():
+        base = _override_vibecode_base_url()
+    else:
+        base = settings.gpt_api_effective_base_url
     if not base:
         raise GptApiError(
             "База текстового LLM пуста — задай TOKENROUTER_BASE_URL, VIBECODE_BASE_URL или GPT_BASE_URL",
@@ -266,7 +549,9 @@ def _chat_url(model: str) -> str:
         elif "kie.ai" not in base.lower():
             logger.info("GPT API: base_url={} (non-kie host, no VPS-relay)", base)
         _RELAY_BASE_LOGGED = True
-    if _node_vibecode_override():
+    if _node_kie_override():
+        path = (settings.gpt_chat_path or "/codex/v1/responses").strip()
+    elif _node_vibecode_override():
         path = "/chat/completions" if base.lower().endswith("/v1") else "/v1/chat/completions"
     else:
         path = (settings.gpt_chat_path_effective or "/v1/chat/completions").strip()
@@ -774,6 +1059,8 @@ def split_input_paths(
 
 def is_responses_mode() -> bool:
     """API формата Responses (input/output) вместо chat/completions?"""
+    if _node_kie_override():
+        return True
     if _node_vibecode_override():
         return False
     mode = (settings.gpt_api_mode_effective or "auto").strip().lower()
@@ -1964,7 +2251,7 @@ async def _chat_completions_stream(
                 "GPT(chat/stream) interrupt after {} lines: {}: {}",
                 len(lines),
                 type(e).__name__,
-                e,
+                _httpx_error_detail(e),
             )
     try:
         text, finish, last = parse_chat_completions_sse_lines(lines)
@@ -2008,18 +2295,7 @@ async def _chat_completions_stream(
                 preview,
                 type(stream_err).__name__ if stream_err else "-",
             )
-            can_nostream = stream_err is None or isinstance(
-                stream_err,
-                (
-                    httpx.ReadError,
-                    httpx.RemoteProtocolError,
-                    httpx.ConnectError,
-                    httpx.ConnectTimeout,
-                    httpx.TimeoutException,
-                    TimeoutError,
-                    asyncio.TimeoutError,
-                ),
-            )
+            can_nostream = _stream_should_salvage_nostream(stream_err)
             if can_nostream:
                 try:
                     return await _chat_completions_nostream(
@@ -2411,9 +2687,12 @@ async def chat(
     use_timeout = float(timeout if timeout is not None else settings.gpt_timeout_s)
     retries = int(max_retries if max_retries is not None else settings.gpt_max_retries)
     ov_model = current_text_model_id()
-    provider_label = (
-        f"vibecode ({ov_model})" if _node_vibecode_override() else settings.text_llm_label
-    )
+    if _node_vibecode_override():
+        provider_label = f"vibecode ({ov_model})"
+    elif _node_kie_override():
+        provider_label = f"kie ({ov_model})"
+    else:
+        provider_label = settings.text_llm_label
     proxy = _gpt_proxy_url()
     via = "vps-relay" if _vps_relay_base() else ("proxy" if proxy else "direct")
     logger.info(
@@ -2465,6 +2744,7 @@ async def chat(
     while attempt <= retries:
         attempt += 1
         try:
+            await _ensure_url_host_resolves(url)
             if responses_mode:
                 result = await _chat_responses_stream(
                     url=url,
@@ -2743,7 +3023,7 @@ async def chat(
             logger.warning(str(last_exc))
         except httpx.HTTPError as e:
             last_exc = GptApiError(
-                f"GPT сетевая ошибка: {type(e).__name__}: {e}",
+                f"GPT сетевая ошибка: {type(e).__name__}: {_httpx_error_detail(e)}",
                 context={"error_kind": "network", "retryable": True, "model": use_model},
             )
             logger.warning(str(last_exc))
@@ -2771,7 +3051,7 @@ async def chat(
             logger.warning("gpt_api.chat retryable: {}", e)
 
         if attempt <= retries:
-            backoff = min(2.0 * (2 ** (attempt - 1)), 30.0)
+            backoff = _gpt_retry_backoff_s(attempt, last_exc)
             await asyncio.sleep(backoff)
 
     raise last_exc or GptApiError("GPT: неизвестная ошибка", context={"model": use_model})

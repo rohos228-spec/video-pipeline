@@ -64,7 +64,12 @@ def unregister_advance_task(project_id: int) -> None:
 
 def is_advance_active(project_id: int) -> bool:
     task = _advance_tasks.get(project_id)
-    return task is not None and not task.done()
+    if task is None:
+        return False
+    if task.done():
+        _advance_tasks.pop(project_id, None)
+        return False
+    return True
 
 
 def active_advance_count() -> int:

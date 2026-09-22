@@ -140,12 +140,11 @@ Write-Host "    Дождитесь: Uvicorn running on http://127.0.0.1:8765" -F
 Write-Host ""
 
 $exitCode = 0
+$env:PYTHONUNBUFFERED = "1"
 try {
-    & $py -m app.main 2>&1 | ForEach-Object {
-        $line = "$_"
-        Write-Host $line
-        Write-BackendLogLine $line
-    }
+    # Нельзя `python | ForEach-Object { Add-Content }`: пайп заполняется
+    # DEBUG-логами старта, Python блокируется, uvicorn так и не bind'ит :8765.
+    & $py -u -m app.main
     if ($null -ne $LASTEXITCODE) { $exitCode = $LASTEXITCODE }
 } catch {
     $msg = $_.Exception.Message
