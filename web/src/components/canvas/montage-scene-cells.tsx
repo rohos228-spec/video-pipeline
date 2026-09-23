@@ -773,14 +773,6 @@ export function AnchorCell({
                   onChange={(e) => patch(i, "якорь", e.target.value)}
                   onBlur={() => commit(draft)}
                 />
-                <input
-                  className={cn(FIELD, "mt-1 text-[10px]")}
-                  value={row["изменение"] || ""}
-                  disabled={disabled}
-                  placeholder="было → стало"
-                  onChange={(e) => patch(i, "изменение", e.target.value)}
-                  onBlur={() => commit(draft)}
-                />
               </div>
               {canAdd || draft.length > 1 ? (
                 <button
