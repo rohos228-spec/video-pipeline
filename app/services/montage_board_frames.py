@@ -259,8 +259,16 @@ async def merge_montage_scenes(
     left_frame_id: int,
     right_frame_id: int,
 ) -> dict[str, Any]:
-    """Склеить две соседние VO-ячейки в одну сцену. Номера кадров не трогаем."""
-    from app.services.montage_scene_editor import cell_full_text, scene_group
+    """Склеить две соседние VO-ячейки в одну сцену. Номера кадров не трогаем.
+
+    Якоря обеих сцен переезжают на родителя склеенной сцены.
+    """
+    from app.services.montage_scene_editor import (
+        cell_full_text,
+        claim_scene_bits,
+        scene_anchor_bits,
+        scene_group,
+    )
 
     frames = await _load_frames(session, int(project.id))
     left = next((fr for fr in frames if int(fr.id) == int(left_frame_id)), None)
@@ -318,6 +326,9 @@ async def merge_montage_scenes(
     if after_numbers != before_numbers:
         raise RuntimeError("склейка сцен не должна менять номера кадров")
     _, members = scene_group(after, live_left)
+    anchors = scene_anchor_bits(after, live_left, members)
+    claim_scene_bits(after, live_left, members, anchors)
+    await session.flush()
     logger.info(
         "montage merge scenes #{} {}+{} → ячейка {} кадров={}",
         project.id,
@@ -427,6 +438,24 @@ def _mark_leftover_shots(parent: Frame, extras: list[Frame]) -> None:
         )
 
 
+def _split_anchor_bits(frames: list[Frame], parents: list[Frame]) -> None:
+    """После разделения каждый якорь уходит в сцену, где лежит его текст."""
+    from app.services.montage_scene_editor import (
+        claim_scene_bits,
+        scene_anchor_bits,
+        scene_group,
+        scene_index,
+    )
+
+    index = scene_index(frames)
+    plan: list[tuple[Frame, list[Frame], list[dict[str, Any]]]] = []
+    for head in parents:
+        parent, members = scene_group(frames, head)
+        plan.append((parent, members, scene_anchor_bits(frames, parent, members, index=index)))
+    for parent, members, rows in plan:
+        claim_scene_bits(frames, parent, members, rows)
+
+
 async def split_montage_scene_at(
     session: AsyncSession,
     project: Project,
@@ -477,6 +506,8 @@ async def split_montage_scene_at(
     )
     _refresh_shots_in_beat(ordered, live_left)
     _refresh_shots_in_beat(ordered, live_right)
+    await session.flush()
+    _split_anchor_bits(ordered, [live_left, live_right])
     await session.flush()
 
     after = await _load_frames(session, int(project.id))
@@ -532,6 +563,11 @@ async def split_montage_scene_frames(
     for member in visible:
         live = next((fr for fr in ordered if int(fr.id) == int(member.id)), member)
         _refresh_shots_in_beat(ordered, live)
+    await session.flush()
+    _split_anchor_bits(
+        ordered,
+        [next((fr for fr in ordered if int(fr.id) == int(m.id)), m) for m in visible],
+    )
     await session.flush()
     after = await _load_frames(session, int(project.id))
     after_numbers = [int(fr.number) for fr in after]

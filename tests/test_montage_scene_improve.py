@@ -209,7 +209,7 @@ def test_normalize_maps_aliases_and_keeps_passport_place() -> None:
         place="кабинет",
     )
     assert [s["план"] for s in shots] == ["ОБЩИЙ", "ДЕТАЛЬ", "КРУПНЫЙ"]
-    assert [s["место"] for s in shots] == ["кабинет"] * 3
+    assert [s["место"] for s in shots] == ["кабинет: порог", "кабинет", "кабинет: другой дом"]
     assert shots[0]["зона"] == "порог"
     assert shots[0]["ракурс"] == "фронт"
     assert shots[1]["ракурс"] == "с плеча"
@@ -381,6 +381,9 @@ async def test_improve_runs_six_nodes_and_board_shows_result(
     assert [c["vo"] for c in head["scene_chain"]] == [PIECE_1, PIECE_2]
     assert [a["якорь"] for a in head["scene_anchor_rows"]] == [ANCHOR_1, ANCHOR_2]
     assert all(r["scene_place"] == "дом" for r in rows)
+    shot_places = [((fr.attrs or {}).get("camera_subdivide") or {}).get("место") for fr in cell]
+    assert shot_places[0] == "дом: крыльцо"
+    assert shot_places[3] == "дом: коридор"
 
     head_frame = next(fr for fr in cell if fr.uuid == UID)
     assert (head_frame.attrs or {}).get(REPORT_ATTR)

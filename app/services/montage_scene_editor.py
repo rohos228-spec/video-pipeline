@@ -259,6 +259,146 @@ def normalize_anchor_rows(raw: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def scene_index(frames: list[Any]) -> dict[str, dict[str, Any]]:
+    """Все VO-сцены проекта: uuid родителя → родитель, члены, закадр сцены."""
+    out: dict[str, dict[str, Any]] = {}
+    for fr in frames:
+        if is_shot_child(fr):
+            continue
+        uid = str(getattr(fr, "uuid", "") or "")
+        if not uid or uid in out:
+            continue
+        parent, members = scene_group(frames, fr)
+        out[uid] = {
+            "parent": parent,
+            "members": members,
+            "text": cell_full_text(parent, members),
+        }
+    return out
+
+
+def _find_ci(text: str, anchor: str) -> int:
+    return text.casefold().find(anchor.casefold()) if anchor and text else -1
+
+
+def scene_anchor_bits(
+    frames: list[Any],
+    parent: Any,
+    members: list[Any],
+    *,
+    index: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Якоря сцены = якоря, чей текст есть в закадре ЭТОЙ сцены.
+
+    Берём биты родителя и всех шотов сцены, плюс «осиротевшие» биты других
+    сцен (после склейки / разделения остались на чужом родителе и в его
+    тексте их нет). Порядок — по месту в закадре сцены.
+    """
+    full = _norm(cell_full_text(parent, members))
+    if not full:
+        return []
+    idx = index if index is not None else scene_index(frames)
+    puid = str(getattr(parent, "uuid", "") or "")
+    candidates: list[dict[str, Any]] = []
+    for member in [parent, *[m for m in members if m is not parent]]:
+        candidates.extend(dict(b, _own=True) for b in bits_from_attrs(member))
+    other_texts = [
+        _norm(scene["text"]) for uid, scene in idx.items() if uid != puid
+    ]
+    for uid, scene in idx.items():
+        if uid == puid:
+            continue
+        own_text = _norm(scene["text"])
+        for member in scene["members"]:
+            for bit in bits_from_attrs(member):
+                anchor = _norm(str(bit.get("якорь") or ""))
+                if anchor and _find_ci(own_text, anchor) < 0:
+                    candidates.append(dict(bit))
+    picked: list[tuple[int, int, dict[str, Any]]] = []
+    seen: set[str] = set()
+    for order, bit in enumerate(candidates):
+        anchor = _norm(str(bit.get("якорь") or ""))
+        key = anchor.casefold()
+        if not anchor or key in seen:
+            continue
+        pos = _find_ci(full, anchor)
+        if pos < 0:
+            # Свой якорь без текста — показываем красным (сломан правкой закадра),
+            # но не тот, чей текст ушёл в другую сцену.
+            if not bit.get("_own") or any(_find_ci(t, anchor) >= 0 for t in other_texts):
+                continue
+            pos = len(full) + order
+        seen.add(key)
+        picked.append((pos, order, bit))
+    picked.sort(key=lambda item: (item[0], item[1]))
+    rows: list[dict[str, Any]] = []
+    for i, (_pos, _order, bit) in enumerate(picked, start=1):
+        row = {k: v for k, v in bit.items() if k != "_own"}
+        row["порядок"] = i
+        row["якорь"] = _norm(str(bit.get("якорь") or ""))
+        rows.append(row)
+    if rows and not any(r.get("главный") for r in rows):
+        rows[0]["главный"] = True
+    main_seen = False
+    for row in rows:
+        if row.get("главный") and not main_seen:
+            main_seen = True
+        else:
+            row["главный"] = False
+    return rows
+
+
+def _set_bits(frame: Any, rows: list[dict[str, Any]] | None) -> None:
+    from app.services.vo_shot_expand import _flag_attrs
+
+    attrs = dict(getattr(frame, "attrs", None) or {})
+    if rows:
+        attrs["биты"] = rows
+    else:
+        attrs.pop("биты", None)
+        attrs.pop("bits", None)
+    frame.attrs = attrs
+    _flag_attrs(frame)
+
+
+def claim_scene_bits(
+    frames: list[Any],
+    parent: Any,
+    members: list[Any],
+    rows: list[dict[str, Any]],
+) -> None:
+    """Якоря сцены живут на её родителе: шоты и чужие родители их больше не держат.
+
+    Снимаем биты шотов этой сцены и сиротские биты других сцен, чей текст
+    теперь в этой сцене — иначе удалённый якорь всплывёт снова.
+    """
+    full = _norm(cell_full_text(parent, members))
+    _set_bits(parent, rows)
+    for member in members:
+        if member is not parent and bits_from_attrs(member):
+            _set_bits(member, None)
+    puid = str(getattr(parent, "uuid", "") or "")
+    for uid, scene in scene_index(frames).items():
+        if uid == puid:
+            continue
+        own_text = _norm(scene["text"])
+        for member in scene["members"]:
+            bits = bits_from_attrs(member)
+            if not bits:
+                continue
+            kept = [
+                b
+                for b in bits
+                if not (
+                    _norm(str(b.get("якорь") or ""))
+                    and _find_ci(own_text, _norm(str(b.get("якорь") or ""))) < 0
+                    and _find_ci(full, _norm(str(b.get("якорь") or ""))) >= 0
+                )
+            ]
+            if len(kept) != len(bits):
+                _set_bits(member, kept)
+
+
 def _plain_names(raw: Any) -> str:
     if isinstance(raw, str):
         return _norm(raw)
@@ -386,9 +526,17 @@ def _assign_bits_to_members(
 
 
 def _cell_anchor_rows(
-    parent: Any, members: list[Any], full: str
+    parent: Any,
+    members: list[Any],
+    full: str,
+    *,
+    frames: list[Any] | None = None,
+    index: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    bits = bits_from_attrs(parent)
+    if frames is None:
+        bits = bits_from_attrs(parent)
+    else:
+        bits = scene_anchor_bits(frames, parent, members, index=index)
     ordered = sorted(bits, key=lambda item: int(item.get("порядок") or 0))
     anchors = [_norm(str(item.get("якорь") or "")) for item in ordered]
     positions = anchor_positions(full, anchors)
@@ -427,10 +575,16 @@ def _anchor_payload(parent: Any, full: str) -> dict[str, Any]:
 
 
 def _frame_anchor_payload(
-    parent: Any, members: list[Any], frame: Any, full: str
+    parent: Any,
+    members: list[Any],
+    frame: Any,
+    full: str,
+    *,
+    frames: list[Any] | None = None,
+    index: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Якоря только этого кадра + полный список ячейки для склейки при сохранении."""
-    rows, parts = _cell_anchor_rows(parent, members, full)
+    rows, parts = _cell_anchor_rows(parent, members, full, frames=frames, index=index)
     frame_no = int(frame.number)
     frame_rows = [row for row in rows if row.get("frame_number") == frame_no]
     frame_text = _norm(str(getattr(frame, "voiceover_text", "") or ""))
@@ -501,11 +655,18 @@ def scene_template_auto(parent: Any) -> str:
     )
 
 
-def frame_board_scene_cell(frames: list[Any], frame: Any) -> dict[str, Any]:
+def frame_board_scene_cell(
+    frames: list[Any],
+    frame: Any,
+    *,
+    index: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Всё, что правится в строках сцены на доске: якоря кадра + поля ячейки."""
     parent, members = scene_group(frames, frame)
     full = cell_full_text(parent, members)
-    payload = _frame_anchor_payload(parent, members, frame, full)
+    payload = _frame_anchor_payload(
+        parent, members, frame, full, frames=frames, index=index
+    )
     bits = [_anchor_row_for_ui(row) for row in (payload.get("bits") or [])]
     cell_bits = [
         _anchor_row_for_ui(row)
@@ -574,11 +735,16 @@ def _scene_common(parent: Any, members: list[Any]) -> dict[str, Any]:
     characters = _first_attr(
         lookup, "персонажи_сцены", "персонажи", "characters", "persons"
     ) or _who_from_kadry(parent)
+    roots = {p.split(":", 1)[0].strip().casefold() for p in places}
+    if len(places) > 1 and len(roots) == 1:
+        scene_place = places[0].split(":", 1)[0].strip()
+    else:
+        scene_place = places[0] if places else ""
     return {
         "id_scene": _first_attr(lookup, "shot01_id_scene", "id_scene")
         or _cs_text(parent, "сцена", "scene"),
         "scene_no": _cs_text(parent, "сцена", "scene"),
-        "place": places[0] if len(places) == 1 else (places[0] if places else ""),
+        "place": scene_place,
         "places": places,
         "set": sets[0] if len(sets) == 1 else " · ".join(sets),
         "characters": characters,
@@ -727,7 +893,7 @@ def build_scene_editor_state(frames: list[Any], frame: Any) -> dict[str, Any]:
     )
     plan_choices = choices_with_current(COVERAGE_PLAN_CHOICES, plan_current)
 
-    anchors = _frame_anchor_payload(parent, members, frame, full)
+    anchors = _frame_anchor_payload(parent, members, frame, full, frames=frames)
     cell_bits = list((anchors.get("cell") or {}).get("bits") or [])
     shots = _shots_payload(parent, members)
     by_fn: dict[int, list[dict[str, Any]]] = {}

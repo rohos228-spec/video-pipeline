@@ -38,7 +38,9 @@ from app.services.montage_coverage_ops import (
 )
 from app.services.montage_scene_editor import (
     anchor_positions,
+    claim_scene_bits,
     normalize_anchor_rows,
+    scene_anchor_bits,
     split_vo_by_anchors,
 )
 from app.services.prompt_library import resolve_script_frames_qc_prompt_path
@@ -262,11 +264,11 @@ def build_script_prompt(parent: Frame, vo: str, operator_prompt: str, reason: st
     return _compose(load_group_prompt("script_writer_ru"), "", task, payload)
 
 
-def _save_bits(parent: Frame, rows: list[dict[str, Any]]) -> None:
-    attrs = dict(parent.attrs or {})
-    attrs["биты"] = rows
-    parent.attrs = attrs
-    _flag_attrs(parent)
+def _save_bits(
+    frames: list[Frame], parent: Frame, members: list[Frame], rows: list[dict[str, Any]]
+) -> None:
+    clean = [{k: v for k, v in row.items() if k != "закадр"} for row in rows]
+    claim_scene_bits(frames, parent, members, clean)
 
 
 async def stage_script(
@@ -276,19 +278,19 @@ async def stage_script(
     operator_prompt: str,
     nodes: list[dict[str, Any]],
     *,
+    frames: list[Frame] | None = None,
+    members: list[Frame] | None = None,
     anchors: list[Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Куски сцены по якорям. Якоря есть — GPT биты не пишет."""
+    frames = frames if frames is not None else [parent]
+    members = members if members is not None else [parent]
     given = normalize_anchor_rows(anchors) if anchors else []
-    own = [b for b in bits_from_attrs(parent) if _norm(b.get("якорь"))]
+    own = scene_anchor_bits(frames, parent, members)
     rows = given or own
     if rows:
         units = anchor_units(vo, rows)
-        if given:
-            merged = [
-                {**row, "закадр": units[i]["закадр"]} for i, row in enumerate(given)
-            ]
-            _save_bits(parent, merged)
+        _save_bits(frames, parent, members, rows)
         nodes.append(
             _node(
                 "fw_script",
@@ -323,7 +325,7 @@ async def stage_script(
             except RuntimeError as exc:
                 reason = str(exc)
             else:
-                _save_bits(parent, candidate)
+                _save_bits(frames, parent, members, candidate)
                 nodes.append(_node("fw_script", "ok", f"биты ячейки: {len(units)}"))
                 nodes.append(
                     _node(
@@ -395,7 +397,8 @@ def build_improve_action_prompt(
         "Каждый `→` — отдельный кадр. Все исходные события остаются по порядку; "
         "добавь мосты (вход в место, предмет в руке, второй персонаж до встречи), "
         "реакцию после сильного события и следствие в конце.\n"
-        "Место карточки — `место` паспорта.\n"
+        "Место шага — `место` паспорта, можно с уточнением части места "
+        "(«дом: коридор»), другое место не выдумывай.\n"
         "В `fields` верни `главное_действие` и `паспорт` (объект с полями "
         "смысл, тип, место, набор, персонажи, свет, предметы, фон, акцент, "
         "особенность — по разделу «Паспорт сцены»)."
@@ -696,7 +699,7 @@ def normalize_shots(
             "порядок": i + 1,
             "сцена": 1,
             "якорь_n": _anchor_n(row, anchors) if anchors > 1 else 1,
-            "место": shot_place,
+            "место": f"{shot_place}: {zone}" if shot_place and zone else shot_place,
             "зона": _norm(row.get("зона")) or zone,
             "действие": step,
             "объект": obj,
@@ -755,7 +758,8 @@ def build_improve_shots_prompt(
         "дословный кусок `закадр` **этого** якоря; склейка закадра кадров "
         "одного якоря = его `закадр`. Текст другого якоря в кадр не бери. "
         "Кусок может быть короче 13 знаков, но не пустой.\n"
-        "`место` — место паспорта; часть места («коридор») пиши в `зона`."
+        "`место` — место паспорта с уточнением части места через двоеточие "
+        "(«дом: коридор»)."
     )
     payload = {
         "frame_uuid": str(parent.uuid or ""),
@@ -1197,7 +1201,9 @@ async def improve_cell_scene(
     pass_in = _passport_input(op_passport, labels)
     nodes: list[dict[str, Any]] = []
 
-    units = await stage_script(ask, parent, vo, op_prompt, nodes, anchors=anchors)
+    units = await stage_script(
+        ask, parent, vo, op_prompt, nodes, frames=frames, members=members, anchors=anchors
+    )
     cards, gpt_passport = await stage_action(
         ask,
         parent=parent,

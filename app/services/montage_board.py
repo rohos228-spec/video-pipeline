@@ -830,12 +830,13 @@ def _coverage_fields_for_frames(
 ) -> dict[int, dict[str, Any]]:
     if not enabled:
         return {fr.number: _empty_coverage_fields() for fr in frames}
-    from app.services.montage_scene_editor import frame_board_scene_cell
+    from app.services.montage_scene_editor import frame_board_scene_cell, scene_index
 
     out: dict[int, dict[str, Any]] = {}
+    index = scene_index(frames)
     for fr in frames:
         kind, parent_number, parent_id = _shot_kind_payload(fr, frames)
-        extra = frame_board_scene_cell(frames, fr)
+        extra = frame_board_scene_cell(frames, fr, index=index)
         stitch = canonical_stitch(
             _shot_cs_kadry(fr, "переход", "тип_стыка", "stitch", "transition")
         )

@@ -765,11 +765,13 @@ async def apply_coverage_anchors(
     if not parts:
         raise RuntimeError("якоря не нашлись в тексте ячейки")
 
+    from app.services.montage_scene_editor import claim_scene_bits
+
     attrs = dict(getattr(parent, "attrs", None) or {})
-    attrs["биты"] = rows
     attrs["vo_cell_full"] = full
     parent.attrs = attrs
     _flag_attrs(parent)
+    claim_scene_bits(frames, parent, members, rows)
 
     if len(parts) < len(members):
         # Кусков меньше, чем кадров: резать нельзя — соседи остались бы с
