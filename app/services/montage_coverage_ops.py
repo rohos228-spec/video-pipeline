@@ -1050,6 +1050,7 @@ async def apply_coverage_scene_action(
     from app.services.shot_templates import (
         explode_scene_action_to_kadry,
         format_scene_chain,
+        parse_scene_chain,
     )
     from app.services.vo_shot_expand import _apply_shot_meta
 
@@ -1066,21 +1067,24 @@ async def apply_coverage_scene_action(
         kadry = explode_scene_action_to_kadry(
             raw, place=place, vo=full, cell_number=int(parent.number)
         )
-    if grow and len(kadry) > MAX_IMPROVE_SHOTS:
+    if grow and not with_coverage and len(kadry) > MAX_IMPROVE_SHOTS:
         kadry = kadry[:MAX_IMPROVE_SHOTS]
     if not kadry:
         raise RuntimeError("не удалось разобрать действие на кадры")
-    chain_text = format_scene_chain(
-        [
-            {
-                "n": i + 1,
-                "place": str(shot.get("место") or place or ""),
-                "action": str(shot.get("действие") or ""),
-                "vo": str(shot.get("закадр") or ""),
-            }
-            for i, shot in enumerate(kadry)
-        ]
-    )
+    if with_coverage and parse_scene_chain(raw):
+        chain_text = raw
+    else:
+        chain_text = format_scene_chain(
+            [
+                {
+                    "n": i + 1,
+                    "place": str(shot.get("место") or place or ""),
+                    "action": str(shot.get("действие") or ""),
+                    "vo": str(shot.get("закадр") or ""),
+                }
+                for i, shot in enumerate(kadry)
+            ]
+        )
     if not chain_text:
         raise RuntimeError("последовательность кадров пустая")
 

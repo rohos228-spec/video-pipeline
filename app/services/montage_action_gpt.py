@@ -511,6 +511,9 @@ def scene_image_instruction(
     if act:
         parts.append(f"Действие этого кадра: {act}.")
     cam = shot or {}
+    zone = str(cam.get("зона") or "").strip()
+    if zone:
+        parts.append(f"Часть места: {zone}.")
     camera = ", ".join(
         f"{label} {str(cam.get(key) or '').strip()}"
         for key, label in (("план", "план"), ("ракурс", "ракурс"), ("движение", "движение"))
@@ -575,11 +578,12 @@ async def generate_cell_scene_with_images(
     frame_ids: list[int] | None = None,
     timeout: float = 180.0,
     mode: str = "",
+    anchors: list[Any] | None = None,
 ) -> dict[str, Any]:
     """GPT-сцены ячейки (мягкий fallback на текст цепи) + ops ИИзменения.
 
     ``mode="improve"`` — ячейка точечно через 6 нод группы script_frames_qc
-    (``montage_scene_improve``).
+    (``montage_scene_improve``); ``anchors`` — якоря, видимые на доске.
     """
     if mode == "improve":
         from app.services.montage_scene_improve import improve_cell_scene
@@ -590,6 +594,7 @@ async def generate_cell_scene_with_images(
             frame_id,
             operator_prompt=operator_prompt,
             passport=passport,
+            anchors=anchors,
             timeout=timeout,
         )
     gen_error = ""
