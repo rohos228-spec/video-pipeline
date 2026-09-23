@@ -181,13 +181,27 @@ def strip_non_scene_kadry(frame: Any) -> bool:
 
 
 def coverage_shot_id(frame: Any) -> str:
-    """id шота покрытия: ``кадры[0].id`` или ``camera_subdivide.shot_id``."""
+    """id ЭТОГО шота: camera_subdivide, иначе кадры[shot_index], иначе кадры[0].
+
+    Ребёнок часто копирует полную лестницу родителя в ``кадры[]``.
+    Тогда ``кадры[0].id`` — это K1 соседа, не этот кадр.
+    """
+    cs = _cs(frame)
+    sid = str(cs.get("shot_id") or "").strip()
+    if sid:
+        return sid
     planned = planned_shots_from_attrs(frame)
+    try:
+        idx = int(cs.get("shot_index") or 0)
+    except (TypeError, ValueError):
+        idx = 0
+    if planned and 1 <= idx <= len(planned):
+        item_id = str(planned[idx - 1].get("id") or "").strip()
+        if item_id:
+            return item_id
     if planned:
-        sid = str(planned[0].get("id") or "").strip()
-        if sid:
-            return sid
-    return str(_cs(frame).get("shot_id") or "").strip()
+        return str(planned[0].get("id") or "").strip()
+    return ""
 
 
 def parse_coverage_shot(shot_id: str) -> tuple[str, int] | None:

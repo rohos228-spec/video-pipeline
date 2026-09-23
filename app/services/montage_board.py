@@ -715,14 +715,18 @@ def _shot_cs_kadry(frame: Any, *keys: str) -> str:
 def _action_for_frame(frame: Any) -> str:
     attrs = getattr(frame, "attrs", None)
     src = attrs if isinstance(attrs, dict) else {}
-    found = _first_text(src.get("shot01_action"), src.get("действие"))
-    if found:
-        return found
     item = _matching_kadry_item(frame)
     if item:
         found = _first_text(item.get("действие"), item.get("action"))
         if found:
             return found
+    planned = planned_shots_from_attrs(frame)
+    # Полная лестница без своего id — shot01_action почти всегда K1 соседа.
+    if len(planned) > 1:
+        return ""
+    found = _first_text(src.get("shot01_action"), src.get("действие"))
+    if found:
+        return found
     main = _first_text(src.get("главное_действие"), src.get("main_action"))
     if main and not looks_like_scene_chain(main):
         return main

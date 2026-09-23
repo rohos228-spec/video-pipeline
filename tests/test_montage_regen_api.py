@@ -163,6 +163,57 @@ async def test_edit_prompt_child_attaches_parent_still(
 
 
 @pytest.mark.asyncio
+async def test_edit_prompt_skips_parent_still_when_operator_wrote(
+    session: AsyncSession, project: Project
+) -> None:
+    """ИИзменение с текстом оператора: не клеить PNG кадра 62 как Image 1."""
+    session.add(project)
+    parent_uid = "aa" * 12
+    child_uid = "bb" * 12
+    parent = Frame(
+        project_id=project.id,
+        number=62,
+        uuid=parent_uid,
+        voiceover_text="vo",
+        image_prompt="parent prompt",
+        attrs={"camera_subdivide": {"role": "vo_parent", "parent_uuid": parent_uid}},
+    )
+    child = Frame(
+        project_id=project.id,
+        number=63,
+        uuid=child_uid,
+        voiceover_text="кусок",
+        image_prompt="old child",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "coverage_parent_id": "1-K1",
+            },
+        },
+    )
+    session.add_all([parent, child])
+    await session.flush()
+    scenes = project.data_dir / "scenes"
+    scenes.mkdir(parents=True, exist_ok=True)
+    parent_png = scenes / "frame_062_parent01.png"
+    parent_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"p" * 1000)
+
+    prep = await prepare_image_regen(
+        session,
+        project,
+        63,
+        shot=1,
+        mode="edit_prompt",
+        new_prompt="ночь, пустая улица, один фонарь",
+        skip_parent_still=True,
+    )
+    assert parent_png not in prep.refs
+    assert "previous coverage still" not in prep.prompt_text
+    assert "ночь, пустая улица" in prep.prompt_text
+
+
+@pytest.mark.asyncio
 async def test_prepare_crops_character_sheets_and_locks_ids(
     session: AsyncSession, project: Project
 ) -> None:
