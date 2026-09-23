@@ -1061,6 +1061,7 @@ async def montage_board_scene_generate_with_images(
             passport=passport,
             frame_ids=frame_ids,
             mode=str(body.get("mode") or ""),
+            anchors=body.get("anchors") if isinstance(body.get("anchors"), list) else None,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

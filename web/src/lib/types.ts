@@ -331,6 +331,29 @@ export interface MontageSceneChainRow {
   vo?: string;
 }
 
+/** Отчёт «Улучшить сцену»: ячейка прошла 6 нод группы script_frames_qc. */
+export interface MontageImproveReport {
+  nodes: { node: string; label: string; status: string; note: string }[];
+  budget?: number;
+  anchors?: { n: number; "якорь": string; "закадр": string; "бюджет"?: number }[];
+  shots: {
+    "порядок"?: number;
+    "якорь_n"?: number;
+    "зона"?: string;
+    "роль"?: string;
+    "действие"?: string;
+    "объект"?: string;
+    "план"?: string;
+    "ракурс"?: string;
+    "движение"?: string;
+    "стык"?: string;
+    "закадр"?: string;
+  }[];
+  passport?: Record<string, string>;
+  passport_changed?: string[];
+  warnings?: string[];
+}
+
 export interface MontageBoardFrame {
   frame_id: number;
   number: number;

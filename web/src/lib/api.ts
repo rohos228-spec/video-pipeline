@@ -12,6 +12,7 @@ import type {
   MontageBoardFrame,
   MontageBoardMeta,
   MontageBoardParentRef,
+  MontageImproveReport,
   MontageRefAsset,
   GenerationConfigPreset,
   GenerationConfigPresetSettings,
@@ -1343,6 +1344,8 @@ export const api = {
       prompt?: string;
       passport?: Record<string, string>;
       frame_ids?: number[];
+      /** Якоря сцены, как они видны на доске (с очередью): граница текста сцены. */
+      anchors?: { "якорь": string; "изменение"?: string; "главный"?: boolean }[];
     },
   ) =>
     http<{
@@ -1361,10 +1364,11 @@ export const api = {
       message?: string;
       mode?: string;
       job?: { status?: string; total_ops?: number };
+      improve_report?: MontageImproveReport;
     }>(
       `/api/projects/${projectId}/montage-board/frames/${frameId}/scene-improve`,
       { method: "POST", body: JSON.stringify(body) },
-      300_000,
+      900_000,
     ),
 
   deleteMontageFrame: (projectId: number, frameId: number) =>

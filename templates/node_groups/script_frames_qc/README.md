@@ -18,6 +18,10 @@
 `frame_prompts_continuity_ru.md` — fw_frames
 `prompts_qc_continuity_ru.md` — старый QC промптов
 
+Режиссура «Улучшить сцену» (монтаж, одна ячейка через все 6 нод):
+`scene_improve_directing_ru.md` — добавляется к промтам fw_action / fw_shots / fw_qc
+только в этом режиме. Источники — `docs/SCENE_DIRECTING_RULES.md`.
+
 Нода без промта (код собирает HTML):
 `fw_report` — после fw_qc, отчёт кадров.
 

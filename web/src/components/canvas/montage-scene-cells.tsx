@@ -15,6 +15,7 @@ import { errorMessageFromUnknown } from "@/lib/error-message";
 import type {
   MontageAnchorRow,
   MontageBoardFrame,
+  MontageImproveReport,
   MontageSceneChainRow,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -1098,11 +1099,12 @@ export function SceneGenerateBlock({
   passport: Record<string, string>;
   disabled?: boolean;
   onDone?: () => void;
-  onImprove?: (prompt: string) => Promise<void> | void;
+  onImprove?: (prompt: string) => Promise<MontageImproveReport | undefined | void> | void;
 }) {
   const [prompt, setPrompt] = useState("");
   const [selected, setSelected] = useState<number[]>([]);
   const [busy, setBusy] = useState<"all" | "pieces" | "improve" | null>(null);
+  const [report, setReport] = useState<MontageImproveReport | null>(null);
 
   useEffect(() => {
     const allowed = new Set(chain.map((row) => row.n));
@@ -1140,7 +1142,8 @@ export function SceneGenerateBlock({
     if (busy || !onImprove) return;
     setBusy("improve");
     try {
-      await onImprove(prompt.trim());
+      const next = await onImprove(prompt.trim());
+      if (next) setReport(next);
     } finally {
       setBusy(null);
     }
@@ -1205,7 +1208,7 @@ export function SceneGenerateBlock({
       {onImprove ? (
         <button
           type="button"
-          title="Подробная цепь: вступление, действие, перебивка, реакция. Недостающие кадры вставляются, затем PNG."
+          title="Ячейка идёт через 6 нод группы: биты → проверка → действие → кадры → QC → отчёт. Дописывает вход, мосты, реакцию и следствие, ставит покрытие кадров и паспорт, затем PNG."
           disabled={disabled || Boolean(busy)}
           onClick={() => void improve()}
           className={cn(
@@ -1220,16 +1223,77 @@ export function SceneGenerateBlock({
       {busy ? (
         <p className="mt-1.5 text-[11px] font-medium text-[rgba(209,254,23,0.95)]">
           {busy === "improve"
-            ? "GPT пишет подробную цепь и дописывает кадры…"
+            ? "6 нод: биты → проверка → действие → кадры → QC → отчёт…"
             : "GPT пишет сцены этой ячейки…"}
         </p>
       ) : (
         <p className={cn(HINT, "mt-1.5")}>
-          сгенерировать — цепь на существующие кадры. улучшить — вступление,
-          действие, перебивка, реакция; недостающие кадры вставляются и
-          получают PNG.
+          сгенерировать — цепь на существующие кадры. улучшить — по правилам
+          монтажа: вход в место, мосты, реакция, следствие; покрытие кадров и
+          паспорт сцены; недостающие кадры вставляются и получают PNG.
         </p>
       )}
+      {report ? <ImproveReportView report={report} onClose={() => setReport(null)} /> : null}
+    </div>
+  );
+}
+
+const IMPROVE_STATUS_TONE: Record<string, string> = {
+  ok: "text-[rgba(209,254,23,0.9)]",
+  reused: "text-white/60",
+  fixed: "text-sky-300",
+  fallback: "text-amber-300",
+  warn: "text-amber-300",
+};
+
+function ImproveReportView({
+  report,
+  onClose,
+}: {
+  report: MontageImproveReport;
+  onClose: () => void;
+}) {
+  return (
+    <div className="mt-2 rounded-md border border-white/10 bg-black/30 p-2 text-[10px] leading-snug text-white/75">
+      <div className="mb-1 flex items-center justify-between">
+        <span className="font-semibold uppercase tracking-wide text-white/60">отчёт улучшения</span>
+        <button type="button" className="text-white/40 hover:text-white/80" onClick={onClose}>
+          скрыть
+        </button>
+      </div>
+      <ol className="space-y-0.5">
+        {report.nodes.map((n) => (
+          <li key={n.node} className="flex gap-1.5">
+            <span className={cn("shrink-0 font-semibold", IMPROVE_STATUS_TONE[n.status] ?? "text-white/60")}>
+              {n.label}
+            </span>
+            <span className="text-white/55">{n.note}</span>
+          </li>
+        ))}
+      </ol>
+      {report.shots.length ? (
+        <ol className="mt-1.5 space-y-0.5 border-t border-white/10 pt-1.5">
+          {report.shots.map((s, i) => (
+            <li key={`${s["порядок"] ?? i}`}>
+              <span className="text-white/45">{s["порядок"] ?? i + 1}.</span>{" "}
+              {(report.anchors?.length ?? 0) > 1 && s["якорь_n"] ? (
+                <span className="text-sky-300/80">якорь {s["якорь_n"]} </span>
+              ) : null}
+              <span className="text-white/50">
+                [{[s["роль"], s["план"], s["ракурс"], s["движение"], s["стык"]].filter(Boolean).join(" · ")}]
+              </span>{" "}
+              {s["действие"]}
+            </li>
+          ))}
+        </ol>
+      ) : null}
+      {report.warnings?.length ? (
+        <ul className="mt-1.5 space-y-0.5 text-amber-300/80">
+          {report.warnings.map((w) => (
+            <li key={w}>· {w}</li>
+          ))}
+        </ul>
+      ) : null}
     </div>
   );
 }

@@ -1009,6 +1009,25 @@ def _clear_child_scene_chain(frame: Frame) -> None:
 MAX_IMPROVE_SHOTS = 12
 
 
+def _apply_shot_coverage(member: Frame, shot: dict[str, Any], group: list[Frame]) -> None:
+    """Покрытие кадра с улучшения сцены → те же ключи, что пишут чипы доски."""
+    for key, fn in (
+        ("план", apply_coverage_plan),
+        ("ракурс", apply_coverage_angle),
+        ("движение", apply_coverage_move),
+        ("стык", apply_coverage_stitch),
+    ):
+        value = str(shot.get(key) or "").strip()
+        if value:
+            fn(member, value, group)
+    role = str(shot.get("роль") or "").strip()
+    obj = str(shot.get("объект") or "").strip()
+    extra = {k: v for k, v in (("роль_кадра", role), ("объект", obj)) if v}
+    if extra:
+        _set_cs(member, **extra)
+        _patch_kadry_item(member, **{k: v for k, v in (("роль", role), ("объект", obj)) if v})
+
+
 async def apply_coverage_scene_action(
     session: AsyncSession,
     project: Project,
@@ -1017,17 +1036,21 @@ async def apply_coverage_scene_action(
     action: str,
     *,
     grow: bool = False,
+    kadry: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Последовательность кадров сцены → кадры[] на членах ячейки.
 
     По умолчанию новые Frame не создаём: insert + глобальный renumber
     сдвигает number, а превью ищутся по frame_NNN_*.png.
     ``grow`` дописывает недостающие шоты без перенумерации существующих.
+    ``kadry`` — готовые кадры с покрытием (план/ракурс/движение/стык):
+    текст не режем заново, покрытие пишем на каждый шот.
     """
     from app.services.montage_scene_editor import cell_full_text, frame_place, scene_group
     from app.services.shot_templates import (
         explode_scene_action_to_kadry,
         format_scene_chain,
+        parse_scene_chain,
     )
     from app.services.vo_shot_expand import _apply_shot_meta
 
@@ -1037,24 +1060,31 @@ async def apply_coverage_scene_action(
     parent, members = scene_group(frames, frame)
     full = cell_full_text(parent, members)
     place = frame_place(parent)
-    kadry = explode_scene_action_to_kadry(
-        raw, place=place, vo=full, cell_number=int(parent.number)
-    )
-    if grow and len(kadry) > MAX_IMPROVE_SHOTS:
+    with_coverage = bool(kadry)
+    if kadry:
+        kadry = [dict(shot) for shot in kadry if isinstance(shot, dict)]
+    else:
+        kadry = explode_scene_action_to_kadry(
+            raw, place=place, vo=full, cell_number=int(parent.number)
+        )
+    if grow and not with_coverage and len(kadry) > MAX_IMPROVE_SHOTS:
         kadry = kadry[:MAX_IMPROVE_SHOTS]
     if not kadry:
         raise RuntimeError("не удалось разобрать действие на кадры")
-    chain_text = format_scene_chain(
-        [
-            {
-                "n": i + 1,
-                "place": str(shot.get("место") or place or ""),
-                "action": str(shot.get("действие") or ""),
-                "vo": str(shot.get("закадр") or ""),
-            }
-            for i, shot in enumerate(kadry)
-        ]
-    )
+    if with_coverage and parse_scene_chain(raw):
+        chain_text = raw
+    else:
+        chain_text = format_scene_chain(
+            [
+                {
+                    "n": i + 1,
+                    "place": str(shot.get("место") or place or ""),
+                    "action": str(shot.get("действие") or ""),
+                    "vo": str(shot.get("закадр") or ""),
+                }
+                for i, shot in enumerate(kadry)
+            ]
+        )
     if not chain_text:
         raise RuntimeError("последовательность кадров пустая")
 
@@ -1131,6 +1161,8 @@ async def apply_coverage_scene_action(
         act = str(shot.get("действие") or "").strip()
         if act:
             apply_coverage_action(member, act, group)
+        if with_coverage:
+            _apply_shot_coverage(member, shot, group)
         if member is not parent:
             ladder: dict[str, Any] = {}
             if piece:
