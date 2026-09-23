@@ -12,6 +12,7 @@ import type {
   MontageBoardFrame,
   MontageBoardMeta,
   MontageBoardParentRef,
+  MontageImproveReport,
   MontageRefAsset,
   GenerationConfigPreset,
   GenerationConfigPresetSettings,
@@ -1361,10 +1362,11 @@ export const api = {
       message?: string;
       mode?: string;
       job?: { status?: string; total_ops?: number };
+      improve_report?: MontageImproveReport;
     }>(
       `/api/projects/${projectId}/montage-board/frames/${frameId}/scene-improve`,
       { method: "POST", body: JSON.stringify(body) },
-      300_000,
+      900_000,
     ),
 
   deleteMontageFrame: (projectId: number, frameId: number) =>

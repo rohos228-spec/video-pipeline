@@ -50,6 +50,7 @@ import type {
   MontageAnchorRow,
   MontageBoardDTO,
   MontageBoardFrame,
+  MontageImproveReport,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -3678,11 +3679,11 @@ export function AssembleMontageBoard({
       frameNumber: number,
       prompt: string,
       passport: Record<string, string>,
-    ) => {
-      if (projectId == null) return;
+    ): Promise<MontageImproveReport | undefined> => {
+      if (projectId == null) return undefined;
       setFrameEditBusy(true);
       try {
-        toast.message("GPT разворачивает сцену и дописывает кадры…");
+        toast.message("Сцена идёт через 6 нод: биты → проверка → действие → кадры → QC → отчёт…");
         const res = await api.improveScene(projectId, frameId, {
           prompt,
           passport,
@@ -3694,7 +3695,7 @@ export function AssembleMontageBoard({
             res.message ||
               `Сцена улучшена${extra ? ` · +${extra} кадров` : ""} — картинки ждут свободной генерации`,
           );
-          return;
+          return res.improve_report;
         }
         if (res.started) {
           applySeenRunningRef.current = true;
@@ -3704,11 +3705,13 @@ export function AssembleMontageBoard({
             res.message ||
               `Улучшено${extra ? ` · +${extra} кадров` : ""} · картинки: ${res.images ?? 0} через Outsee…`,
           );
-          return;
+          return res.improve_report;
         }
         toast.message(res.message || `Сцена улучшена${extra ? ` · +${extra} кадров` : ""}`);
+        return res.improve_report;
       } catch (err) {
         toast.error(errorMessageFromUnknown(err));
+        return undefined;
       } finally {
         setFrameEditBusy(false);
       }
