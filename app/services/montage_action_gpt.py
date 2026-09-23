@@ -475,8 +475,13 @@ async def generate_cell_scene_action(
     }
 
 
-def scene_image_instruction(*, beat: str = "", passport: dict[str, Any] | None = None) -> str:
-    """Заметка оператора для ИИзменения: паспорт ячейки + действие этого кадра."""
+def scene_image_instruction(
+    *,
+    beat: str = "",
+    passport: dict[str, Any] | None = None,
+    shot: dict[str, Any] | None = None,
+) -> str:
+    """Заметка оператора для ИИзменения: паспорт ячейки + действие и покрытие кадра."""
     p = passport or {}
 
     def _get(*keys: str) -> str:
@@ -505,6 +510,17 @@ def scene_image_instruction(*, beat: str = "", passport: dict[str, Any] | None =
     act = " ".join((beat or "").split())
     if act:
         parts.append(f"Действие этого кадра: {act}.")
+    cam = shot or {}
+    camera = ", ".join(
+        f"{label} {str(cam.get(key) or '').strip()}"
+        for key, label in (("план", "план"), ("ракурс", "ракурс"), ("движение", "движение"))
+        if str(cam.get(key) or "").strip()
+    )
+    if camera:
+        parts.append(f"Камера: {camera}.")
+    accent = _get("accent", "акцент")
+    if accent and str(cam.get("роль") or "") in {"реакция", "перебивка"}:
+        parts.append(f"Акцент: {accent}.")
     parts.append("Один кадр, не коллаж.")
     return " ".join(parts)
 
@@ -515,6 +531,7 @@ def build_scene_image_ops(
     passport: dict[str, Any] | None = None,
     chain: str = "",
     frame_ids: list[int] | None = None,
+    kadry: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """ИИзменение на видимые кадры ячейки. leftover и лишние id пропускаем."""
     from app.services.montage_board import _action_for_frame
@@ -534,12 +551,15 @@ def build_scene_image_ops(
             beat = beats[-1]
         if not beat:
             beat = _action_for_frame(fr)
+        shot = kadry[i] if kadry and i < len(kadry) else None
         ops.append(
             {
                 "type": "image_ai_change",
                 "frame_number": int(fr.number),
                 "shot": 1,
-                "instruction": scene_image_instruction(beat=beat, passport=passport),
+                "instruction": scene_image_instruction(
+                    beat=beat, passport=passport, shot=shot
+                ),
             }
         )
     return ops
@@ -556,7 +576,22 @@ async def generate_cell_scene_with_images(
     timeout: float = 180.0,
     mode: str = "",
 ) -> dict[str, Any]:
-    """GPT-сцены ячейки (мягкий fallback на текст цепи) + ops ИИзменения."""
+    """GPT-сцены ячейки (мягкий fallback на текст цепи) + ops ИИзменения.
+
+    ``mode="improve"`` — ячейка точечно через 6 нод группы script_frames_qc
+    (``montage_scene_improve``).
+    """
+    if mode == "improve":
+        from app.services.montage_scene_improve import improve_cell_scene
+
+        return await improve_cell_scene(
+            session,
+            project,
+            frame_id,
+            operator_prompt=operator_prompt,
+            passport=passport,
+            timeout=timeout,
+        )
     gen_error = ""
     result: dict[str, Any] | None = None
     grow = mode == "improve"
