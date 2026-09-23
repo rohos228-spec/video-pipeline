@@ -1,0 +1,71 @@
+# Режиссура монтажной фразы — правила для «Улучшить сцену»
+
+Кнопка **Монтаж → Улучшить сцену** гонит одну VO-ячейку через 6 нод
+группы `script_frames_qc` (`app/services/montage_scene_improve.py`).
+Правила, которые читает GPT: `templates/node_groups/script_frames_qc/scene_improve_directing_ru.md`.
+Этот файл — откуда правила взяты и как код их проверяет.
+
+## Поток
+
+| нода | что делает на ячейке | GPT |
+|---|---|---|
+| fw_script | биты ячейки; есть и проходят проверку — берём как есть | только если битов нет / брак |
+| fw_check_script | якоря дословно и по порядку, `изменение` не пустое; Не ок → fw_script ещё раз | нет (код) |
+| fw_action | исходные события → монтажная фраза (вход, мосты, реакция, следствие) + паспорт сцены | `main_action_from_bits_ru` + режиссура |
+| fw_shots | шаг → кадр: роль, объект, план, ракурс, движение, стык | `scenes_to_frames_ru` + режиссура; нет ответа → таблица камеры `scene_shot_grammar` |
+| fw_qc | код чинит (повторы, 30°, предмет не с плеча, закадр дословно без пустых); брак остался → GPT | `shots_qc_ru` только при браке |
+| fw_report | отчёт в ответе API и `attrs.montage_improve_report` родителя | нет |
+
+Затем: паспорт → поля ячейки (как чипы доски), кадры вставляются без
+перенумерации соседей, покрытие каждого шота пишется в те же ключи, что
+чипы План / Ракурс / Движение / Стык, PNG — через ИИзменение с камерой кадра.
+
+## Правила и источники
+
+| правило | источник |
+|---|---|
+| Establishing / вход в место до действия; re-establishing после сложной серии | Continuity editing — [Wikipedia](https://en.wikipedia.org/wiki/Continuity_editing), [LibreTexts](https://human.libretexts.org/Courses/Nashville_State_Community_College/Tokyo_in_Film/04%3A_Post-Production/4.03%3A_Editing_and_Animation/4.3.04%3A_Continuity_Editing) |
+| Match on action: резать в середине движения, следующий кадр продолжает жест | [Wikipedia](https://en.wikipedia.org/wiki/Continuity_editing), [Learn About Film](https://learnaboutfilm.com/film-language/sequence/) |
+| Чистый вход/выход из кадра; ушёл вправо → входит слева; погоня в одну сторону | [180-degree rule](https://en.wikipedia.org/wiki/180-degree_rule), [Jenny Stark: clean entrance/exit](http://jenny-stark-23rk.squarespace.com/new-page-95) |
+| 180°: двое — камера по одну сторону линии; «восьмёрка» взглядами навстречу | [180-degree rule](https://en.wikipedia.org/wiki/180-degree_rule), [ВШРиС: правила по Кулешову](https://kinoshkola.org/articles/316b3fdb-e25f-464c-b045-c29c2bb69164) |
+| 30° / 20 мм: два кадра одного объекта — другой план или ракурс, иначе jump cut | [30-degree rule](https://en.wikipedia.org/wiki/30-degree_rule), Filmmaker's Handbook ch.13 |
+| Крупность «через план» (исключения: деталь↔крупный, дальний↔общий) | [С. Шинкарев: принципы монтажа](https://www.shinkareff.com/printsipy-montazha/), [mabuk.ru: 10 принципов](https://mabuk.ru/content/desyat-printsipov-montazha) |
+| Eyeline: посмотрел → что увидел | [Wikipedia](https://en.wikipedia.org/wiki/Continuity_editing), Smith (Birkbeck) |
+| Cut-in / cutaway / reaction shot (безмолвный крупный план реакции) | J. Mascelli, *The Five C's of Cinematography* (глава Close-ups) |
+| Reaction shot: «дверь открылась — сначала лица в комнате» | [Hitchcock, «My own methods», BFI](https://www.bfi.org.uk/sight-and-sound/features/alfred-hitchcock-my-own-methods) |
+| Размер объекта в кадре = его важность сейчас (важная вещь → деталь) | [Hitchcock's rule](https://www.filmmakersacademy.com/glossary/hitchcocks-rule/) |
+| Саспенс: зритель знает раньше героя → второй персонаж показан до встречи | [Bordwell: bomb under the table](https://www.davidbordwell.net/blog/2013/11/29/hitchcock-lessing-and-the-bomb-under-the-table/) |
+| Приоритет при конфликте: эмоция > история > ритм > след взгляда > 180° > пространство | W. Murch, *In the Blink of an Eye* — [Rule of Six](https://nofilmschool.com/2016/11/6-rules-good-cutting-according-oscar-winning-editor-walter-murch) |
+| Монтажная фраза = группа кадров законченного действия | [textzone: фраза монтажная](https://textzone.ru/publ/slovar_sozdatelja_mediateksta/f/fraza_montazhnaja/86-1-0-262) |
+| Эллипсис: рутину не расписывать, «войти поздно — выйти рано» | Hitchcock / Truffaut (анализ и синтез времени) |
+
+## Пример
+
+Исходник: `пришёл в дом → положил носок → зашла девушка → закричала → убегает`
+
+После улучшения (роль · план · ракурс · движение · стык):
+
+1. вход · ОБЩИЙ · фронт · следование · cut — подходит к дому
+2. мост · ДЕТАЛЬ · сверху · статика · cut_on_action — рука открывает дверь
+3. мост · СРЕДНИЙ · 3/4 · статика · cut_on_action — закрывает дверь изнутри
+4. действие · СРЕДНИЙ · фронт · следование · cut_on_action — проходит вперёд, достаёт носок
+5. действие · ДЕТАЛЬ · сверху · статика · cut_on_action — кладёт носок на пол
+6. мост · СРЕДНИЙ · 3/4 · следование · cut — девушка крадётся по коридору
+7. действие · СРЕДНИЙ · с плеча · статика · cut_on_action — девушка входит к нему
+8. реакция · КРУПНЫЙ · фронт · наезд · cut — лицо девушки: испуг
+9. действие · КРУПНЫЙ · 3/4 · статика · cut — девушка кричит
+10. действие · ОБЩИЙ · 3/4 · ручная · cut_on_action — девушка убегает
+11. следствие · СРЕДНИЙ · 3/4 · следование · cut_on_action — он бежит за ней
+
+Этот пример — тест `tests/test_montage_scene_improve.py`.
+
+## Ограничения
+
+- Бюджет кадров: ~12 знаков закадра на кадр, не больше слов закадра и
+  не больше 12 (`MAX_IMPROVE_SHOTS`). Короткая ячейка — меньше мостов;
+  сверх бюджета код сначала срезает мосты и перебивки, исходные события держит.
+- Сумма закадра кадров = весь закадр ячейки (правило scene_design);
+  при достройке кусок кадра может быть короче 13 знаков, но не пустой.
+- Паспорт: `место`, `набор`, `персонажи`, `свет`, `тип`, заполненные
+  оператором, не меняются; `смысл`, `предметы`, `фон`, `акцент`,
+  `особенность` GPT заполняет и уточняет.

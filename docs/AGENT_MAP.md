@@ -233,6 +233,7 @@ SoT по тексту GPT: `AGENTS.md` + этот map §8.
 |-----|---------|
 | **DB v2 / кнопка «База»** | [`DB_V2.md`](DB_V2.md), `app/services/db_v2.py` |
 | Монтаж regen img/video | `montage_board_regen.py` (API = ноды img/video; промты из БД) |
+| Монтаж «Улучшить сцену» (режиссура, 6 нод на ячейку) | [`SCENE_DIRECTING_RULES.md`](SCENE_DIRECTING_RULES.md), `montage_scene_improve.py` |
 | step_code / status | `node_registry.py` |
 | R48 anim | `plan_sheet_v8.py`, ops rule |
 | Prompt contract (GPT↔DB) | `PROMPT_CONTRACT.md` |
