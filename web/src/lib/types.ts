@@ -335,8 +335,11 @@ export interface MontageSceneChainRow {
 export interface MontageImproveReport {
   nodes: { node: string; label: string; status: string; note: string }[];
   budget?: number;
+  anchors?: { n: number; "якорь": string; "закадр": string; "бюджет"?: number }[];
   shots: {
     "порядок"?: number;
+    "якорь_n"?: number;
+    "зона"?: string;
     "роль"?: string;
     "действие"?: string;
     "объект"?: string;

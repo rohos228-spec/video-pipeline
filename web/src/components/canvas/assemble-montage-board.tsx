@@ -123,6 +123,19 @@ const SCENE_GENERATE_CLEAR_TYPES = new Set<MontagePendingOp["type"]>([
   "coverage_light",
 ]);
 
+/** «Улучшить сцену» переписывает покрытие всех шотов ячейки и берёт якоря с доски. */
+const SCENE_IMPROVE_CLEAR_TYPES = new Set<MontagePendingOp["type"]>([
+  ...SCENE_GENERATE_CLEAR_TYPES,
+  "coverage_plan",
+  "coverage_action",
+  "coverage_angle",
+  "coverage_move",
+  "coverage_stitch",
+  "coverage_anchors",
+  "coverage_template",
+  "coverage_kind",
+]);
+
 type RowKey =
   | "voiceover"
   | "scene_info"
@@ -3618,11 +3631,15 @@ export function AssembleMontageBoard({
   );
 
   const afterSceneActionGenerate = useCallback(
-    (frameNumber: number) => {
+    (
+      frameNumber: number,
+      frameNumbers: number[] = [frameNumber],
+      types: Set<MontagePendingOp["type"]> = SCENE_GENERATE_CLEAR_TYPES,
+    ) => {
       localQueueDirtyRef.current = true;
+      const numbers = new Set([frameNumber, ...frameNumbers]);
       const next = pendingOpsRef.current.filter(
-        (x) =>
-          !(x.frame_number === frameNumber && SCENE_GENERATE_CLEAR_TYPES.has(x.type)),
+        (x) => !(numbers.has(x.frame_number) && types.has(x.type)),
       );
       pendingOpsRef.current = next;
       persistQueue(next);
@@ -3679,6 +3696,8 @@ export function AssembleMontageBoard({
       frameNumber: number,
       prompt: string,
       passport: Record<string, string>,
+      anchors: MontageAnchorRow[],
+      frameNumbers: number[],
     ): Promise<MontageImproveReport | undefined> => {
       if (projectId == null) return undefined;
       setFrameEditBusy(true);
@@ -3687,8 +3706,15 @@ export function AssembleMontageBoard({
         const res = await api.improveScene(projectId, frameId, {
           prompt,
           passport,
+          anchors: anchors
+            .filter((r) => (r["якорь"] || "").trim())
+            .map((r) => ({
+              "якорь": r["якорь"],
+              "изменение": r["изменение"] || "",
+              "главный": Boolean(r["главный"]),
+            })),
         });
-        afterSceneActionGenerate(frameNumber);
+        afterSceneActionGenerate(frameNumber, frameNumbers, SCENE_IMPROVE_CLEAR_TYPES);
         const extra = Number(res.inserted_frames || 0);
         if (res.already_running) {
           toast.message(
@@ -3790,7 +3816,14 @@ export function AssembleMontageBoard({
               disabled={sceneDisabled || applyMutation.isPending || applyRunning}
               onDone={() => afterSceneActionGenerate(head.number)}
               onImprove={(prompt) =>
-                improveSceneWithImagesNow(head.frame_id, head.number, prompt, passport)
+                improveSceneWithImagesNow(
+                  head.frame_id,
+                  head.number,
+                  prompt,
+                  passport,
+                  anchorRows,
+                  range.frames.map((fr) => fr.number),
+                )
               }
             />
           ) : null

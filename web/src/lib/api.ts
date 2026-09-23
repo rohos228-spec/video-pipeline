@@ -1344,6 +1344,8 @@ export const api = {
       prompt?: string;
       passport?: Record<string, string>;
       frame_ids?: number[];
+      /** Якоря сцены, как они видны на доске (с очередью): граница текста сцены. */
+      anchors?: { "якорь": string; "изменение"?: string; "главный"?: boolean }[];
     },
   ) =>
     http<{

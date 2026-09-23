@@ -1276,6 +1276,9 @@ function ImproveReportView({
           {report.shots.map((s, i) => (
             <li key={`${s["порядок"] ?? i}`}>
               <span className="text-white/45">{s["порядок"] ?? i + 1}.</span>{" "}
+              {(report.anchors?.length ?? 0) > 1 && s["якорь_n"] ? (
+                <span className="text-sky-300/80">якорь {s["якорь_n"]} </span>
+              ) : null}
               <span className="text-white/50">
                 [{[s["роль"], s["план"], s["ракурс"], s["движение"], s["стык"]].filter(Boolean).join(" · ")}]
               </span>{" "}
