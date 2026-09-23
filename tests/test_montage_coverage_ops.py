@@ -728,3 +728,290 @@ async def test_apply_scene_action_rejects_empty(
             project,
             {"type": "coverage_scene_action", "frame_number": 1, "action": "  "},
         )
+
+
+@pytest.mark.asyncio
+async def test_apply_scene_action_rewrites_arrows_and_clears_extra(
+    session: AsyncSession, project: Project
+) -> None:
+    """Новая цепь по ``→`` сменяет действия шотов; лишние не оставляют старый шаг."""
+    parent_uid = "aa" * 12
+    parent = Frame(
+        project_id=project.id,
+        number=1,
+        uuid=parent_uid,
+        voiceover_text="Он вошёл и ушёл.",
+        status="planned",
+        attrs={
+            "shot01_action": "старый вход",
+            "камера_place": "двор",
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+                "место": "двор",
+                "действие": "старый вход",
+            },
+        },
+    )
+    child_a = Frame(
+        project_id=project.id,
+        number=2,
+        uuid="bb" * 12,
+        voiceover_text="кусок",
+        status="planned",
+        attrs={
+            "shot01_action": "старый жест",
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "действие": "старый жест",
+            },
+        },
+    )
+    child_b = Frame(
+        project_id=project.id,
+        number=3,
+        uuid="cc" * 12,
+        voiceover_text="хвост",
+        status="planned",
+        attrs={
+            "shot01_action": "старый уход",
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "действие": "старый уход",
+            },
+        },
+    )
+    session.add_all([project, parent, child_a, child_b])
+    await session.flush()
+
+    result = await apply_coverage_op(
+        session,
+        project,
+        {
+            "type": "coverage_scene_action",
+            "frame_number": 1,
+            "action": (
+                "1. двор — душит → уходит скрытно\n"
+                "(Он вошёл и ушёл.)"
+            ),
+        },
+    )
+    assert result["ok"] is True
+    kadry = (parent.attrs or {}).get("кадры") or []
+    acts = [str(s.get("действие") or "") for s in kadry]
+    assert acts[:2] == ["душит", "уходит скрытно"]
+    assert str((parent.attrs or {}).get("shot01_action") or "") == "душит"
+    assert str((child_a.attrs or {}).get("shot01_action") or "") == "уходит скрытно"
+    assert str((child_b.attrs or {}).get("shot01_action") or "") == ""
+    from app.services.montage_scene_editor import shot_sequence_text
+
+    seq = shot_sequence_text(parent, [parent, child_a, child_b])
+    assert seq.startswith("душит → уходит скрытно")
+    assert "старый" not in seq
+    assert bool((child_b.attrs or {}).get("camera_subdivide", {}).get("leftover")) is True
+    assert not bool((parent.attrs or {}).get("camera_subdivide", {}).get("leftover"))
+
+
+@pytest.mark.asyncio
+async def test_apply_scene_action_grow_inserts_without_renumber(
+    session: AsyncSession, project: Project
+) -> None:
+    """Improve: новые шоты в конец ячейки, number соседей не двигаем."""
+    from app.services.montage_coverage_ops import apply_coverage_scene_action
+    from app.services.montage_scene_editor import scene_group
+
+    parent_uid = "aa" * 12
+    parent = Frame(
+        project_id=project.id,
+        number=14,
+        uuid=parent_uid,
+        voiceover_text="Следователь вошёл в архив, снял папку и читает документ.",
+        status="planned",
+        sort_key=14.0,
+        attrs={
+            "place": "архив",
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+                "место": "архив",
+            },
+        },
+    )
+    child = Frame(
+        project_id=project.id,
+        number=15,
+        uuid="bb" * 12,
+        voiceover_text="снял папку",
+        status="planned",
+        sort_key=15.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "coverage_parent_id": "14-K1",
+            },
+        },
+    )
+    neighbor = Frame(
+        project_id=project.id,
+        number=16,
+        uuid="cc" * 12,
+        voiceover_text="Закон существовал.",
+        status="planned",
+        sort_key=16.0,
+        attrs={"shot01_action": "лицо приказчика"},
+    )
+    session.add_all([project, parent, child, neighbor])
+    await session.flush()
+    action = (
+        "1. архив — входит в помещение\n"
+        "(Следователь вошёл в архив,)\n"
+        "2. архив — снимает папку с полки\n"
+        "(снял папку)\n"
+        "3. архив — читает документ\n"
+        "(и читает документ.)\n"
+        "4. архив — смотрит на печать\n"
+        "(на обложке.)"
+    )
+    report = await apply_coverage_scene_action(
+        session, project, parent, [parent, child, neighbor], action, grow=True
+    )
+    assert int(report["inserted_frames"]) == 2
+    assert int(report["skipped_shots"]) == 0
+    assert not report.get("renumber")
+    rows = list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    later = next(fr for fr in rows if int(fr.number) == 16)
+    assert later.voiceover_text.startswith("Закон")
+    assert str((later.attrs or {}).get("shot01_action") or "") == "лицо приказчика"
+    _parent, group = scene_group(rows, parent)
+    assert len(group) == 4
+    ordered = [int(fr.number) for fr in rows]
+    assert ordered[:2] == [14, 15]
+    assert ordered[-1] == 16
+    fresh = [n for n in ordered if n not in (14, 15, 16)]
+    assert len(fresh) == 2
+    assert min(fresh) > 16
+    from app.services.vo_shot_expand import _cs
+
+    for fr in rows:
+        if int(fr.number) in fresh:
+            assert _cs(fr).get("role") == "shot"
+            assert _cs(fr).get("parent_uuid") == parent_uid
+
+
+@pytest.mark.asyncio
+async def test_improve_does_not_turn_leftover_glue_into_new_scenes(
+    session: AsyncSession, project: Project
+) -> None:
+    """Хвост leftover другой ячейки не становится новыми «Сцена · кадр»."""
+    from app.services.montage_coverage_ops import apply_coverage_scene_action
+    from app.services.montage_scene_editor import scene_group
+    from app.services.vo_shot_expand import _cs
+
+    parent_uid = "aa" * 12
+    other_uid = "bb" * 12
+    parent = Frame(
+        project_id=project.id,
+        number=1,
+        uuid=parent_uid,
+        voiceover_text="Он вышел в лес.",
+        status="planned",
+        sort_key=10.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+                "место": "лес",
+            },
+        },
+    )
+    neighbor = Frame(
+        project_id=project.id,
+        number=2,
+        uuid=other_uid,
+        voiceover_text="Потом вернулся домой.",
+        status="planned",
+        sort_key=20.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": other_uid,
+            },
+        },
+    )
+    leftover = Frame(
+        project_id=project.id,
+        number=7,
+        uuid="cc" * 12,
+        voiceover_text="хвост",
+        status="planned",
+        sort_key=30.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "leftover": True,
+            },
+        },
+    )
+    session.add_all([project, parent, neighbor, leftover])
+    await session.flush()
+    action = (
+        "1. лес — выходит из чащи\n(Он вышел в лес.)\n"
+        "2. лес — скрывается в тени\n(скрылся.)\n"
+        "3. лес — смотрит на тропу\n(на тропе.)"
+    )
+    report = await apply_coverage_scene_action(
+        session,
+        project,
+        parent,
+        [parent, neighbor, leftover],
+        action,
+        grow=True,
+    )
+    assert int(report["inserted_frames"]) == 2
+    rows = list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    glue = next(fr for fr in rows if int(fr.number) == 7)
+    assert bool(_cs(glue).get("leftover")) is True
+    home = next(fr for fr in rows if int(fr.number) == 2)
+    assert _cs(home).get("role") == "vo_parent"
+    assert home.voiceover_text.startswith("Потом")
+    ordered = [int(fr.number) for fr in rows]
+    assert ordered[0] == 1
+    assert ordered[-1] == 7
+    assert 2 in ordered
+    live_parent, members = scene_group(rows, parent)
+    live = [m for m in members if not bool(_cs(m).get("leftover"))]
+    assert live_parent.uuid == parent_uid
+    assert len(live) == 3
+    assert all(
+        _cs(m).get("role") == "shot" and _cs(m).get("parent_uuid") == parent_uid
+        for m in live
+        if int(m.number) != 1
+    )
+    assert all(_cs(m).get("role") != "vo_parent" or m.uuid == parent_uid for m in live)
+    # новые шоты стоят сразу после родителя, до соседней сцены
+    assert ordered[:4] == [1, ordered[1], ordered[2], 2]
+

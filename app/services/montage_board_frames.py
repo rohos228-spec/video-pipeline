@@ -22,7 +22,7 @@ from app.services.montage_board_meta import (
     montage_meta,
     set_montage_meta,
 )
-from app.services.vo_shot_expand import _flag_attrs, _set_cs, is_shot_child
+from app.services.vo_shot_expand import _cs, _flag_attrs, _set_cs, is_shot_child
 
 
 async def upsert_frame_voiceover(session: AsyncSession, frame: Frame, text: str) -> None:
@@ -332,4 +332,220 @@ async def merge_montage_scenes(
         "parent_number": int(live_left.number),
         "merged_frames": len(right_members),
         "vo_scene_size": len(members),
+    }
+
+
+def _promote_to_vo_parent(frame: Frame) -> None:
+    uid = str(getattr(frame, "uuid", "") or "").strip()
+    if not uid:
+        raise RuntimeError(f"у кадра #{frame.number} нет uuid — нельзя сделать сценой")
+    _set_cs(
+        frame,
+        role="vo_parent",
+        parent_uuid=uid,
+        coverage_kind="parent",
+        use_parent_still=False,
+        coverage_parent_id="",
+        leftover=False,
+        shot_index=1,
+        shots_in_beat=1,
+    )
+
+
+def _rewrite_vo_cell(parent: Frame, members: list[Frame]) -> None:
+    """vo_cell_full / кадры[] / главное_действие только из текущих членов."""
+    from app.services.montage_scene_editor import frame_action, frame_place
+    from app.services.shot_templates import format_scene_chain
+
+    vo = " ".join(
+        (getattr(m, "voiceover_text", None) or "").strip()
+        for m in members
+        if (getattr(m, "voiceover_text", None) or "").strip()
+    )
+    attrs = dict(getattr(parent, "attrs", None) or {})
+    if vo:
+        attrs["vo_cell_full"] = vo
+    else:
+        attrs.pop("vo_cell_full", None)
+    place = frame_place(parent)
+    kadry: list[dict[str, Any]] = []
+    chain: list[dict[str, Any]] = []
+    for i, member in enumerate(members):
+        act = frame_action(member)
+        loc = frame_place(member) or place
+        piece = (getattr(member, "voiceover_text", None) or "").strip()
+        kadry.append(
+            {
+                "id": f"{int(parent.number)}-K{i + 1}",
+                "порядок": i + 1,
+                "действие": act,
+                "место": loc,
+                "закадр": piece,
+            }
+        )
+        chain.append({"n": i + 1, "place": loc, "action": act, "vo": piece})
+    attrs["кадры"] = kadry
+    chain_text = format_scene_chain(chain)
+    if chain_text:
+        attrs["главное_действие"] = chain_text
+        attrs["main_action"] = chain_text
+    parent.attrs = attrs
+    _flag_attrs(parent)
+
+
+def _timeline_members(members: list[Frame]) -> list[Frame]:
+    return sorted(
+        members,
+        key=lambda m: (float(getattr(m, "sort_key", 0) or 0.0), int(m.number or 0)),
+    )
+
+
+def _visible_and_extras(
+    members: list[Frame],
+    frame_ids: list[int] | None,
+) -> tuple[list[Frame], list[Frame]]:
+    """Кадры, которые делим (как на доске) vs хвост, который прячем."""
+    ordered = _timeline_members(members)
+    live = [m for m in ordered if not bool(_cs(m).get("leftover"))]
+    if frame_ids:
+        want = {int(x) for x in frame_ids}
+        visible = [m for m in live if int(m.id) in want]
+        extras = [m for m in ordered if m not in visible]
+        return visible, extras
+    leftovers = [m for m in ordered if bool(_cs(m).get("leftover"))]
+    return live, leftovers
+
+
+def _mark_leftover_shots(parent: Frame, extras: list[Frame]) -> None:
+    uid = str(getattr(parent, "uuid", "") or "")
+    for extra in extras:
+        _set_cs(
+            extra,
+            role="shot",
+            parent_uuid=uid,
+            leftover=True,
+        )
+
+
+async def split_montage_scene_at(
+    session: AsyncSession,
+    project: Project,
+    *,
+    at_frame_id: int,
+    frame_ids: list[int] | None = None,
+) -> dict[str, Any]:
+    """Кадр ``at`` и все правее в ячейке — новая VO-сцена. Номера не трогаем."""
+    from app.services.montage_scene_editor import scene_group
+
+    frames = await _load_frames(session, int(project.id))
+    at = next((fr for fr in frames if int(fr.id) == int(at_frame_id)), None)
+    if at is None:
+        raise RuntimeError("кадр для разделения сцены не найден")
+    parent, members = scene_group(frames, at)
+    visible, extras = _visible_and_extras(members, frame_ids)
+    idx = next(
+        (i for i, m in enumerate(visible) if int(m.id) == int(at.id)),
+        -1,
+    )
+    if idx < 1:
+        raise RuntimeError("первый кадр сцены нельзя отделить — это и есть сцена")
+    left = visible[:idx]
+    right = visible[idx:]
+    before_numbers = [int(fr.number) for fr in frames]
+
+    new_parent = right[0]
+    _promote_to_vo_parent(new_parent)
+    new_uid = str(new_parent.uuid or "")
+    for extra in right[1:]:
+        _set_cs(
+            extra,
+            role="shot",
+            parent_uuid=new_uid,
+            leftover=False,
+            coverage_kind="",
+        )
+        _clear_child_scene_chain(extra)
+    _rewrite_vo_cell(parent, left)
+    _rewrite_vo_cell(new_parent, right)
+    _mark_leftover_shots(parent, extras)
+    await session.flush()
+
+    ordered = await _load_frames(session, int(project.id))
+    live_left = next((fr for fr in ordered if int(fr.id) == int(parent.id)), parent)
+    live_right = next(
+        (fr for fr in ordered if int(fr.id) == int(new_parent.id)), new_parent
+    )
+    _refresh_shots_in_beat(ordered, live_left)
+    _refresh_shots_in_beat(ordered, live_right)
+    await session.flush()
+
+    after = await _load_frames(session, int(project.id))
+    after_numbers = [int(fr.number) for fr in after]
+    if after_numbers != before_numbers:
+        raise RuntimeError("разделение сцен не должно менять номера кадров")
+    logger.info(
+        "montage split scene #{} at {} → ячейки {} + {}",
+        project.id,
+        at.number,
+        live_left.number,
+        live_right.number,
+    )
+    return {
+        "ok": True,
+        "left_id": int(live_left.id),
+        "left_number": int(live_left.number),
+        "right_id": int(live_right.id),
+        "right_number": int(live_right.number),
+        "left_size": len(left),
+        "right_size": len(right),
+    }
+
+
+async def split_montage_scene_frames(
+    session: AsyncSession,
+    project: Project,
+    *,
+    frame_id: int,
+    frame_ids: list[int] | None = None,
+) -> dict[str, Any]:
+    """Каждый шот VO-ячейки — отдельная сцена. Номера кадров не трогаем."""
+    from app.services.montage_scene_editor import scene_group
+
+    frames = await _load_frames(session, int(project.id))
+    frame = next((fr for fr in frames if int(fr.id) == int(frame_id)), None)
+    if frame is None:
+        raise RuntimeError("кадр для разделения сцены не найден")
+    _parent, members = scene_group(frames, frame)
+    visible, extras = _visible_and_extras(members, frame_ids)
+    if len(visible) < 2:
+        raise RuntimeError("в сцене один кадр — делить нечего")
+    before_numbers = [int(fr.number) for fr in frames]
+    head = visible[0]
+    for member in visible[1:]:
+        _promote_to_vo_parent(member)
+        _clear_child_scene_chain(member)
+        _rewrite_vo_cell(member, [member])
+    _rewrite_vo_cell(head, [head])
+    _mark_leftover_shots(head, extras)
+    await session.flush()
+    ordered = await _load_frames(session, int(project.id))
+    for member in visible:
+        live = next((fr for fr in ordered if int(fr.id) == int(member.id)), member)
+        _refresh_shots_in_beat(ordered, live)
+    await session.flush()
+    after = await _load_frames(session, int(project.id))
+    after_numbers = [int(fr.number) for fr in after]
+    if after_numbers != before_numbers:
+        raise RuntimeError("разделение сцен не должно менять номера кадров")
+    logger.info(
+        "montage split-all #{} cell={} → {} сцен",
+        project.id,
+        head.number,
+        len(visible),
+    )
+    return {
+        "ok": True,
+        "scenes": len(visible),
+        "parent_id": int(head.id),
+        "parent_number": int(head.number),
     }

@@ -639,3 +639,36 @@ def test_explode_scene_action_keeps_beats_not_catalog_stub() -> None:
     joined_vo = " ".join(str(s.get("закадр") or "") for s in kadry).split()
     assert "Крепостной" in " ".join(joined_vo)
     assert "зависел" in " ".join(joined_vo)
+
+
+def test_split_scene_action_beats_on_arrows() -> None:
+    from app.services.shot_templates import (
+        explode_scene_action_to_kadry,
+        split_scene_action_beats,
+    )
+
+    numbered = (
+        "1. кабинет — вошёл → сел к столу → открыл папку\n"
+        "(Он вошёл в кабинет следователя, сел к столу и открыл папку.)"
+    )
+    assert split_scene_action_beats(numbered) == [
+        "вошёл",
+        "сел к столу",
+        "открыл папку",
+    ]
+    kadry = explode_scene_action_to_kadry(
+        numbered, place="кабинет", vo="Он вошёл. Сел. Открыл.", cell_number=1
+    )
+    assert [s.get("действие") for s in kadry] == [
+        "вошёл",
+        "сел к столу",
+        "открыл папку",
+    ]
+    assert [s.get("план") for s in kadry] == ["ОБЩИЙ", "СРЕДНИЙ", "КРУПНЫЙ"]
+    assert all("шаблон" not in s for s in kadry)
+    plain = "девушка подходит к двери → девушка открывает дверь → мужчина сидит"
+    assert split_scene_action_beats(plain) == [
+        "девушка подходит к двери",
+        "девушка открывает дверь",
+        "мужчина сидит",
+    ]

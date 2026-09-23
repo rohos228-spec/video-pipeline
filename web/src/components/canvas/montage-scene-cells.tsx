@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Loader2, Plus, Sparkles, Trash2 } from "lucide-react";
+import { ChevronDown, Images, Loader2, Plus, Sparkles, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   api,
@@ -12,7 +12,11 @@ import {
   type SceneVariantKind,
 } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
-import type { MontageAnchorRow, MontageBoardFrame, MontageTemplateChoice } from "@/lib/types";
+import type {
+  MontageAnchorRow,
+  MontageBoardFrame,
+  MontageSceneChainRow,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** Строки сцены живут прямо в клетках доски — никаких всплывающих окон. */
@@ -856,166 +860,6 @@ export function AnchorCell({
   );
 }
 
-/**
- * Формат сцены (шаблон T0…T10 / X1 / X2). В строке сцены больше не
- * показывается — каталог не используется. Компонент оставлен, пока жив
- * `coverage_template` в API.
- */
-export function TemplateCell({
-  projectId,
-  frameId,
-  value,
-  auto,
-  choices,
-  frameNumbers,
-  pending,
-  disabled,
-  onPick,
-}: {
-  projectId: number | null;
-  frameId: number;
-  value: string;
-  auto: string;
-  choices: MontageTemplateChoice[] | undefined;
-  frameNumbers: number[];
-  pending?: boolean;
-  disabled?: boolean;
-  onPick: (template: string) => void;
-}) {
-  const [detailsOpen, setDetailsOpen] = useState(true);
-  const { ask, busy, clear, kind, variants } = useSceneVariants(projectId, frameId);
-  const items = choices || [];
-  const current = items.find((c) => c.id === value);
-  const groupLen = frameNumbers.length;
-
-  return (
-    <div className={cn("relative rounded-md p-0.5", pending && "bg-amber-500/10")}>
-      <div className="flex flex-wrap items-center gap-1">
-        <span className="mr-0.5 text-[9px] uppercase tracking-wide text-white/35">
-          формат сцены
-        </span>
-        {items.map((c) => (
-          <Chip
-            key={c.id}
-            active={value === c.id}
-            disabled={disabled}
-            title={`${c.name} — ${c.when}`}
-            onClick={() => onPick(c.id)}
-          >
-            {c.id}
-          </Chip>
-        ))}
-        <AskButton
-          busy={busy === "template"}
-          disabled={disabled}
-          onClick={() => void ask("template", "")}
-        />
-        {auto && auto !== value ? (
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => onPick(auto)}
-            className="text-[10px] text-white/45 underline decoration-dotted transition hover:text-white disabled:opacity-40"
-          >
-            дерево «Выбор» предлагает {auto}
-          </button>
-        ) : null}
-      </div>
-      {current ? (
-        <div className="mt-1 rounded-lg border border-white/10 bg-black/30 p-1.5">
-          <div className="flex items-baseline gap-2">
-            <span className="text-[11px] font-semibold" style={{ color: ACCENT }}>
-              {current.id} · {current.name}
-            </span>
-            <span className={HINT}>
-              {current.shots ? `${current.shots} шота в шаблоне · ` : ""}
-              кадров в ячейке {groupLen}
-            </span>
-            <button
-              type="button"
-              onClick={() => setDetailsOpen((v) => !v)}
-              className="ml-auto text-[10px] uppercase tracking-wide text-white/35 transition hover:text-white/70"
-            >
-              {detailsOpen ? "скрыть" : "что это даёт"}
-            </button>
-          </div>
-          {detailsOpen ? (
-            <>
-              {current.when ? (
-                <p className="mt-1 text-[10px] leading-relaxed text-white/55">
-                  <span className="text-white/35">для чего: </span>
-                  {current.when}
-                </p>
-              ) : null}
-              <p className="mt-1.5 text-[9px] uppercase tracking-wide text-white/35">
-                последовательность кадров
-              </p>
-              <ol className="mt-0.5 space-y-0.5">
-                {current.plans.map((plan, i) => {
-                  const frameNo = frameNumbers[i];
-                  return (
-                    <li
-                      key={i}
-                      className={cn(
-                        "flex items-baseline gap-1.5 text-[10px]",
-                        frameNo ? "text-white/70" : "text-amber-200/70",
-                      )}
-                    >
-                      <span className="w-6 shrink-0 text-white/30">K{i + 1}</span>
-                      <span className="shrink-0 font-medium">{plan}</span>
-                      <span className="min-w-0 truncate text-white/35">
-                        {current.roles[i] || ""}
-                      </span>
-                      <span className="ml-auto shrink-0">
-                        {frameNo ? `кадр #${frameNo}` : "нет кадра — дописать якорь"}
-                      </span>
-                    </li>
-                  );
-                })}
-                {/* Кадров в сцене может быть больше, чем шотов у шаблона —
-                    такие показываем отдельно, а не прячем. */}
-                {frameNumbers.slice(current.plans.length).map((n) => (
-                  <li
-                    key={`extra-${n}`}
-                    className="flex items-baseline gap-1.5 text-[10px] text-white/45"
-                  >
-                    <span className="w-6 shrink-0 text-white/25">+</span>
-                    <span className="shrink-0 font-medium">{`кадр #${n}`}</span>
-                    <span className="ml-auto shrink-0">сверх шаблона</span>
-                  </li>
-                ))}
-              </ol>
-              {current.example ? (
-                <p className="mt-1 text-[10px] leading-relaxed text-white/35">
-                  <span className="text-white/25">пример: </span>
-                  {current.example}
-                </p>
-              ) : null}
-            </>
-          ) : null}
-        </div>
-      ) : (
-        <p className={cn(HINT, "mt-1")}>
-          формат не выбран — нажми T-вариант, чтобы увидеть, для чего он и какие
-          кадры даёт
-        </p>
-      )}
-      {kind === "template" ? (
-        <VariantBox
-          items={variants}
-          render={(v) => `${v["шаблон"]} · ${v["лестница"] || ""}`}
-          onClose={clear}
-          onTake={(v) => {
-            const tid = (v["шаблон"] || "").trim();
-            if (tid) onPick(tid);
-          }}
-        />
-      ) : null}
-      <PendingMark show={Boolean(pending)} />
-    </div>
-  );
-}
-
 export type SceneDataField =
   | "sense"
   | "visual_type"
@@ -1025,9 +869,23 @@ export type SceneDataField =
   | "bg"
   | "accent"
   | "feature"
-  | "set";
+  | "set"
+  | "light";
 
 export type SceneDataValues = Record<SceneDataField, string>;
+
+export const SCENE_DATA_OPS: Record<SceneDataField, MontagePendingOp["type"]> = {
+  sense: "coverage_sense",
+  visual_type: "coverage_visual_type",
+  place: "coverage_place",
+  characters: "coverage_characters",
+  props: "coverage_props",
+  bg: "coverage_bg",
+  accent: "coverage_accent",
+  feature: "coverage_feature",
+  set: "coverage_set",
+  light: "coverage_light",
+};
 
 const SCENE_DATA_FIELDS: {
   key: SceneDataField;
@@ -1040,6 +898,7 @@ const SCENE_DATA_FIELDS: {
   { key: "place", label: "место", placeholder: "где стоит камера" },
   { key: "set", label: "набор", placeholder: "декорация / обстановка" },
   { key: "characters", label: "персонажи", placeholder: "c01, c02" },
+  { key: "light", label: "свет", placeholder: "дневной / ночной" },
   { key: "props", label: "предметы", placeholder: "что видно в кадре" },
   { key: "bg", label: "фон", placeholder: "задний план" },
   { key: "accent", label: "акцент", placeholder: "на чём глаз" },
@@ -1052,6 +911,7 @@ function SceneDataFieldInput({
   pending,
   disabled,
   visualTypeChoices,
+  lightChoices,
   onCommit,
 }: {
   field: (typeof SCENE_DATA_FIELDS)[number];
@@ -1059,6 +919,7 @@ function SceneDataFieldInput({
   pending?: boolean;
   disabled?: boolean;
   visualTypeChoices?: string[];
+  lightChoices?: string[];
   onCommit: (key: SceneDataField, next: string) => void;
 }) {
   const [text, setText] = useState(value);
@@ -1082,6 +943,21 @@ function SceneDataFieldInput({
         onPick={(id) => {
           if (id === value.trim()) return;
           onCommit("visual_type", id);
+        }}
+      />
+    );
+  }
+
+  if (field.key === "light") {
+    return (
+      <ChipsCell
+        value={value}
+        choices={lightChoices}
+        pending={pending}
+        disabled={disabled}
+        onPick={(id) => {
+          if (id === value.trim()) return;
+          onCommit("light", id);
         }}
       />
     );
@@ -1114,12 +990,14 @@ export function SceneDataCell({
   values,
   pending,
   visualTypeChoices,
+  lightChoices,
   disabled,
   onCommit,
 }: {
   values: SceneDataValues;
   pending: Partial<Record<SceneDataField, boolean>>;
   visualTypeChoices?: string[];
+  lightChoices?: string[];
   disabled?: boolean;
   onCommit: (field: SceneDataField, value: string) => void;
 }) {
@@ -1129,16 +1007,17 @@ export function SceneDataCell({
     values.sense,
     values.place,
     values.characters,
+    values.light,
     values.props,
   ].filter((x) => x.trim());
 
   return (
-    <div className={cn("relative mt-2 rounded-md", anyPending && "bg-amber-500/10")}>
+    <div className={cn("relative rounded-md", anyPending && "bg-amber-500/10")}>
       <button
         type="button"
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
-        title="Нажми — в сцене появятся смысл, место, персонажи и остальные поля ячейки"
+        title="Паспорт сцены: место, персонажи, свет — генерация сцен берёт эти поля"
         className={cn(
           "group flex w-full items-center gap-1.5 rounded-md border px-1.5 py-1 text-left transition disabled:opacity-40",
           open
@@ -1146,7 +1025,7 @@ export function SceneDataCell({
             : "border-white/10 bg-white/[0.03] hover:border-white/25 hover:bg-white/[0.07]",
         )}
       >
-        <span className="text-[9px] uppercase tracking-wide text-white/35">данные сцены</span>
+        <span className="text-[9px] uppercase tracking-wide text-white/35">паспорт сцены</span>
         <ChevronDown
           className={cn(
             "h-2.5 w-2.5 text-white/35 transition",
@@ -1185,11 +1064,14 @@ export function SceneDataCell({
                 pending={pending[field.key]}
                 disabled={disabled}
                 visualTypeChoices={visualTypeChoices}
+                lightChoices={lightChoices}
                 onCommit={onCommit}
               />
             </label>
           ))}
-          <p className={HINT}>в очередь сразу, в БД — кнопкой «Применить правки»</p>
+          <p className={HINT}>
+            в очередь сразу; генерация сцен забирает эти поля в промт action
+          </p>
         </div>
       )}
       <PendingMark show={anyPending && !open} />
@@ -1198,8 +1080,206 @@ export function SceneDataCell({
 }
 
 /**
+ * Промт оператора + генерация сцен ячейки / пересборка кусков ``N.``.
+ * GPT берёт промт action группы, не гоняет всю ноду fw_action.
+ */
+export function SceneGenerateBlock({
+  projectId,
+  frameId,
+  chain,
+  passport,
+  disabled,
+  onDone,
+  onImprove,
+}: {
+  projectId: number;
+  frameId: number;
+  chain: MontageSceneChainRow[];
+  passport: Record<string, string>;
+  disabled?: boolean;
+  onDone?: () => void;
+  onImprove?: (prompt: string) => Promise<void> | void;
+}) {
+  const [prompt, setPrompt] = useState("");
+  const [selected, setSelected] = useState<number[]>([]);
+  const [busy, setBusy] = useState<"all" | "pieces" | "improve" | null>(null);
+
+  useEffect(() => {
+    const allowed = new Set(chain.map((row) => row.n));
+    setSelected((prev) => prev.filter((n) => allowed.has(n)));
+  }, [chain]);
+
+  const toggle = (n: number) => {
+    setSelected((prev) => (prev.includes(n) ? prev.filter((x) => x !== n) : [...prev, n].sort((a, b) => a - b)));
+  };
+
+  const run = async (replaceNs: number[]) => {
+    if (busy) return;
+    setBusy(replaceNs.length ? "pieces" : "all");
+    try {
+      const result = await api.generateSceneAction(projectId, frameId, {
+        prompt: prompt.trim(),
+        replace_ns: replaceNs,
+        passport,
+      });
+      const skipped = Number(result.skipped_shots || 0);
+      toast.success(
+        replaceNs.length
+          ? `Куски ${replaceNs.join(", ")} пересобраны`
+          : `Сцены ячейки записаны${skipped ? ` · ${skipped} шагов без новых кадров` : ""}`,
+      );
+      onDone?.();
+    } catch (err) {
+      toast.error(errorMessageFromUnknown(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const improve = async () => {
+    if (busy || !onImprove) return;
+    setBusy("improve");
+    try {
+      await onImprove(prompt.trim());
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-white/12 bg-black/25 p-2">
+      <span className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-white/70">
+        <Sparkles className="h-3 w-3" />
+        сцены по промту
+      </span>
+      <textarea
+        className={cn(FIELD, "min-h-[3.5rem] resize-y")}
+        value={prompt}
+        disabled={disabled || Boolean(busy)}
+        placeholder="что сделать со сценами этой ячейки закадра"
+        onChange={(e) => setPrompt(e.target.value)}
+      />
+      {chain.length ? (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1">
+          <span className="text-[9px] uppercase tracking-wide text-white/35">куски</span>
+          {chain.map((row) => (
+            <Chip
+              key={row.n}
+              active={selected.includes(row.n)}
+              disabled={disabled || Boolean(busy)}
+              title={[row.place, row.action].filter(Boolean).join(" — ")}
+              onClick={() => toggle(row.n)}
+            >
+              {row.n}.
+            </Chip>
+          ))}
+        </div>
+      ) : (
+        <p className={cn(HINT, "mt-1.5")}>кусков пока нет — сначала сгенерируйте сцены</p>
+      )}
+      <div className="mt-2 grid grid-cols-2 gap-1.5">
+        <button
+          type="button"
+          disabled={disabled || Boolean(busy)}
+          onClick={() => void run([])}
+          className={cn(
+            "flex h-10 items-center justify-center gap-1.5 rounded-md text-[11px] font-semibold transition disabled:opacity-40",
+            "bg-[rgba(209,254,23,0.95)] text-black hover:bg-[rgba(209,254,23,1)]",
+          )}
+        >
+          {busy === "all" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+          Сгенерировать сцены
+        </button>
+        <button
+          type="button"
+          disabled={disabled || Boolean(busy) || selected.length === 0}
+          onClick={() => void run(selected)}
+          className={cn(
+            "flex h-10 items-center justify-center gap-1.5 rounded-md border border-white/15 text-[11px] font-semibold text-white/80 transition disabled:opacity-40 hover:border-white/30",
+          )}
+        >
+          {busy === "pieces" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+          Пересобрать куски
+        </button>
+      </div>
+      {onImprove ? (
+        <button
+          type="button"
+          title="Подробная цепь: вступление, действие, перебивка, реакция. Недостающие кадры вставляются, затем PNG."
+          disabled={disabled || Boolean(busy)}
+          onClick={() => void improve()}
+          className={cn(
+            "mt-1.5 flex h-10 w-full items-center justify-center gap-1.5 rounded-md border text-[11px] font-semibold transition disabled:opacity-40",
+            "border-[rgba(209,254,23,0.45)] bg-black/35 text-[rgba(209,254,23,0.95)] hover:bg-[rgba(209,254,23,0.12)]",
+          )}
+        >
+          {busy === "improve" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+          Улучшить сцену
+        </button>
+      ) : null}
+      {busy ? (
+        <p className="mt-1.5 text-[11px] font-medium text-[rgba(209,254,23,0.95)]">
+          {busy === "improve"
+            ? "GPT пишет подробную цепь и дописывает кадры…"
+            : "GPT пишет сцены этой ячейки…"}
+        </p>
+      ) : (
+        <p className={cn(HINT, "mt-1.5")}>
+          сгенерировать — цепь на существующие кадры. улучшить — вступление,
+          действие, перебивка, реакция; недостающие кадры вставляются и
+          получают PNG.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Цепь «A → B» или нумерованные строки → шаги для картинок кадров. */
+export function splitSceneActionBeats(text: string): string[] {
+  const raw = (text || "").trim();
+  if (!raw) return [];
+  const arrows = raw
+    .split(/\s*→\s*/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (arrows.length >= 2) return arrows;
+  const numbered: string[] = [];
+  const re = /^\s*\d+[.)]\s+(.+)$/gm;
+  let m: RegExpExecArray | null = re.exec(raw);
+  while (m) {
+    const line = m[1].replace(/\s+/g, " ").trim();
+    if (line) numbered.push(line);
+    m = re.exec(raw);
+  }
+  if (numbered.length >= 2) return numbered;
+  return [raw];
+}
+
+export function sceneImageInstruction(opts: {
+  beat?: string;
+  place?: string;
+  set?: string;
+  light?: string;
+  characters?: string;
+  sense?: string;
+  bg?: string;
+}): string {
+  const parts: string[] = [];
+  const place = (opts.place || opts.set || "").trim();
+  if (place) parts.push(`Место только: ${place}. Не выдумывай другое место.`);
+  if (opts.light?.trim()) parts.push(`Свет: ${opts.light.trim()}.`);
+  if (opts.characters?.trim()) parts.push(`Персонажи: ${opts.characters.trim()}.`);
+  if (opts.bg?.trim()) parts.push(`Фон: ${opts.bg.trim()}.`);
+  if (opts.sense?.trim()) parts.push(`Смысл: ${opts.sense.trim()}.`);
+  if (opts.beat?.trim()) parts.push(`Действие этого кадра: ${opts.beat.trim()}.`);
+  parts.push("Один кадр, не коллаж.");
+  return parts.join(" ");
+}
+
+/**
  * Последовательность кадров сцены. Большая кнопка кладёт разбор
  * в очередь и сразу запускает «Применить правки».
+ * «Генерация с картинками» — тот же разбор + ИИзменение PNG на каждый кадр.
  */
 export function SceneActionBlock({
   value,
@@ -1208,6 +1288,7 @@ export function SceneActionBlock({
   applyBusy,
   onQueue,
   onApply,
+  onApplyWithImages,
 }: {
   value: string;
   pending?: boolean;
@@ -1215,6 +1296,7 @@ export function SceneActionBlock({
   applyBusy?: boolean;
   onQueue: (action: string) => void;
   onApply: (action: string) => void;
+  onApplyWithImages: (action: string) => void;
 }) {
   const [text, setText] = useState(value);
   useEffect(() => {
@@ -1231,6 +1313,12 @@ export function SceneActionBlock({
     const next = text.trim();
     if (!next) return;
     onApply(next);
+  };
+
+  const runApplyWithImages = () => {
+    const next = text.trim();
+    if (!next) return;
+    onApplyWithImages(next);
   };
 
   return (
@@ -1275,9 +1363,22 @@ export function SceneActionBlock({
         {applyBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
         Разобрать на кадры
       </button>
+      <button
+        type="button"
+        title="Разбор цепи + новый промт и PNG на каждый видимый кадр сцены"
+        disabled={disabled || applyBusy || !text.trim()}
+        onClick={runApplyWithImages}
+        className={cn(
+          "mt-1.5 flex h-12 w-full items-center justify-center gap-2 rounded-md border text-sm font-semibold transition disabled:opacity-40",
+          "border-[rgba(209,254,23,0.45)] bg-black/35 text-[rgba(209,254,23,0.95)] hover:bg-[rgba(209,254,23,0.12)]",
+        )}
+      >
+        {applyBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Images className="h-4 w-4" />}
+        Генерация с картинками
+      </button>
       <p className={cn(HINT, "mt-1.5")}>
-        каждое звено — кадр сцены. Кнопка ставит правку в очередь и сразу
-        жмёт «Применить правки».
+        разобрать — только действия кадров. генерация с картинками — GPT
+        пишет сцены ячейки, затем ИИзменение и PNG на каждый видимый кадр.
       </p>
     </div>
   );
@@ -1285,23 +1386,26 @@ export function SceneActionBlock({
 
 /**
  * Сцена = одна ячейка закадра. В полосе «Сцены» — последовательность кадров,
- * якоря ячейки и данные ячейки. Каталог T0–X2 в строке больше не показывается.
+ * якоря ячейки и данные ячейки.
  */
 export function SceneCell({
   action,
   anchors,
   data,
+  generate,
 }: {
   action?: React.ReactNode;
   anchors?: React.ReactNode;
   data?: React.ReactNode;
+  generate?: React.ReactNode;
 }) {
-  if (!action && !anchors && !data) return null;
+  if (!action && !anchors && !data && !generate) return null;
   return (
     <div className="min-w-0 space-y-2">
+      {generate}
       {action}
-      {anchors}
       {data}
+      {anchors}
     </div>
   );
 }

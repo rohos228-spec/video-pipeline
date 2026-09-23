@@ -324,6 +324,13 @@ export interface MontageAnchorRow {
   frame_number?: number | null;
 }
 
+export interface MontageSceneChainRow {
+  n: number;
+  place?: string;
+  action?: string;
+  vo?: string;
+}
+
 export interface MontageBoardFrame {
   frame_id: number;
   number: number;
@@ -405,9 +412,13 @@ export interface MontageBoardFrame {
   scene_template_auto?: string;
   /** Последовательность кадров сцены (действие → действие) — на всю VO-ячейку. */
   scene_action?: string;
+  /** Нумерованные сцены ``N.`` внутри VO-ячейки (куски для пересборки). */
+  scene_chain?: MontageSceneChainRow[];
   /** Номер VO-родителя ячейки (сцена). Не coverage_parent_id / X1. */
   vo_scene_number?: number | null;
   vo_scene_size?: number;
+  /** leftover-клей (не живой шот). Живых детей не режем по scene_chain.length. */
+  shot_leftover?: boolean;
 }
 
 export interface MontageBoardMeta {

@@ -824,6 +824,55 @@ async def montage_board_merge_scenes(
     return result
 
 
+@router.post("/{project_id}/montage-board/scenes/split")
+async def montage_board_split_scenes(
+    project_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    """Разделить VO-ячейку: кадр и правее — новая сцена, или каждый кадр — сцена."""
+    from app.services.montage_board_frames import (
+        split_montage_scene_at,
+        split_montage_scene_frames,
+    )
+
+    p = _project_or_404(await session.get(Project, project_id))
+    try:
+        frame_id = int(body["frame_id"])
+    except (KeyError, TypeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail="нужен frame_id") from e
+    explode = bool(body.get("all") or body.get("explode"))
+    raw_ids = body.get("frame_ids") or body.get("ids")
+    frame_ids: list[int] | None = None
+    if raw_ids:
+        try:
+            frame_ids = [int(x) for x in raw_ids]
+        except (TypeError, ValueError) as e:
+            raise HTTPException(status_code=400, detail="frame_ids — список id") from e
+    try:
+        if explode:
+            result = await split_montage_scene_frames(
+                session, p, frame_id=frame_id, frame_ids=frame_ids
+            )
+        else:
+            result = await split_montage_scene_at(
+                session, p, at_frame_id=frame_id, frame_ids=frame_ids
+            )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={
+            "montage_scenes_split": True,
+            "refresh_board": True,
+            "frame_id": frame_id,
+        },
+    )
+    return result
+
+
 @router.patch("/{project_id}/montage-board/frames/{frame_id}/voiceover")
 async def montage_board_set_voiceover(
     project_id: int,
@@ -931,6 +980,177 @@ async def montage_board_scene_editor(
     """Всё редактируемое у кадра: роль, формат сцены, план, действие, якоря."""
     p = _project_or_404(await session.get(Project, project_id))
     return await _scene_editor_state(session, p, frame_id)
+
+
+@router.post("/{project_id}/montage-board/frames/{frame_id}/scene-action-generate")
+async def montage_board_scene_action_generate(
+    project_id: int,
+    frame_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    """Сгенерировать сцены одной VO-ячейки промтом action (или пересобрать куски N.)."""
+    from app.services.montage_action_gpt import generate_cell_scene_action, parse_replace_ns
+
+    p = _project_or_404(await session.get(Project, project_id))
+    passport = body.get("passport") if isinstance(body.get("passport"), dict) else {}
+    try:
+        result = await generate_cell_scene_action(
+            session,
+            p,
+            frame_id,
+            operator_prompt=str(body.get("prompt") or body.get("operator_prompt") or ""),
+            replace_ns=parse_replace_ns(body.get("replace_ns")),
+            passport=passport,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception(
+            "scene-action-generate failed project={} frame={}", project_id, frame_id
+        )
+        raise HTTPException(
+            status_code=502, detail=f"GPT не ответил: {type(e).__name__}: {e}"
+        ) from e
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={
+            "montage_scene_action_generate": True,
+            "refresh_board": True,
+            "frame_id": frame_id,
+            "replace_ns": result.get("replace_ns") or [],
+        },
+    )
+    return result
+
+
+@router.post("/{project_id}/montage-board/frames/{frame_id}/scene-generate-with-images")
+async def montage_board_scene_generate_with_images(
+    project_id: int,
+    frame_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    """GPT-сцены ячейки + ИИзменение PNG на видимые кадры (фон apply)."""
+    from datetime import datetime, timezone
+
+    from app.services.montage_action_gpt import generate_cell_scene_with_images
+    from app.services.montage_board import build_montage_board
+    from app.services.montage_board_apply_job import get_apply_job, spawn_apply_job
+    from app.services.montage_board_meta import montage_meta, set_montage_meta
+
+    p = _project_or_404(await session.get(Project, project_id))
+    passport = body.get("passport") if isinstance(body.get("passport"), dict) else {}
+    raw_ids = body.get("frame_ids") or body.get("ids")
+    frame_ids: list[int] | None = None
+    if raw_ids:
+        try:
+            frame_ids = [int(x) for x in raw_ids]
+        except (TypeError, ValueError) as e:
+            raise HTTPException(status_code=400, detail="frame_ids — список id") from e
+    try:
+        result = await generate_cell_scene_with_images(
+            session,
+            p,
+            frame_id,
+            operator_prompt=str(body.get("prompt") or body.get("operator_prompt") or ""),
+            passport=passport,
+            frame_ids=frame_ids,
+            mode=str(body.get("mode") or ""),
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception(
+            "scene-generate-with-images failed project={} frame={}", project_id, frame_id
+        )
+        raise HTTPException(
+            status_code=502, detail=f"GPT не ответил: {type(e).__name__}: {e}"
+        ) from e
+
+    ops = list(result.pop("image_ops", None) or [])
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={
+            "montage_scene_action_generate": True,
+            "refresh_board": True,
+            "frame_id": frame_id,
+            "with_images": True,
+        },
+    )
+    out = {
+        "ok": True,
+        "started": False,
+        "already_running": False,
+        "images": len(ops),
+        **{k: v for k, v in result.items() if k != "report"},
+        "report": result.get("report"),
+    }
+    if not ops:
+        out["message"] = "сцены записаны, кадров для картинок нет"
+        return out
+
+    job = get_apply_job(p)
+    if job.get("status") == "running":
+        board = await build_montage_board(session, p)
+        out.update(
+            {
+                "started": False,
+                "already_running": True,
+                "ok": False,
+                "job": job,
+                "meta": board["meta"],
+                "message": "сцены записаны, картинки ждут: генерация уже выполняется",
+            }
+        )
+        return out
+
+    from app.services.step_cancel import clear_stop
+
+    clear_stop(project_id)
+    board = montage_meta(p)
+    board["apply_job"] = {
+        "status": "running",
+        "error": None,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "finished_at": None,
+        "total_ops": len(ops),
+        "done_ops": 0,
+    }
+    set_montage_meta(p, board)
+    await session.commit()
+    spawn_apply_job(project_id, video_trims=None, pending_ops=ops)
+    out.update(
+        {
+            "started": True,
+            "job": {"status": "running", "total_ops": len(ops)},
+            "message": f"сцены записаны, генерация {len(ops)} картинок запущена",
+        }
+    )
+    return out
+
+
+@router.post("/{project_id}/montage-board/frames/{frame_id}/scene-improve")
+async def montage_board_scene_improve(
+    project_id: int,
+    frame_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    """Подробная цепь смысла: GPT пишет биты, недостающие кадры вставляются, затем PNG."""
+    payload = dict(body or {})
+    payload["mode"] = "improve"
+    return await montage_board_scene_generate_with_images(
+        project_id, frame_id, payload, session
+    )
 
 
 @router.post("/{project_id}/montage-board/frames/{frame_id}/scene-variants")

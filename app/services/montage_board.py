@@ -816,8 +816,10 @@ def _empty_coverage_fields() -> dict[str, Any]:
         "scene_feature": "",
         "scene_template_auto": "",
         "scene_action": "",
+        "scene_chain": [],
         "vo_scene_number": None,
         "vo_scene_size": 0,
+        "shot_leftover": False,
     }
 
 

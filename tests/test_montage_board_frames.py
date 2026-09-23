@@ -15,6 +15,8 @@ from app.services.montage_board_frames import (
     insert_montage_frame,
     merge_montage_scenes,
     set_montage_voiceover,
+    split_montage_scene_at,
+    split_montage_scene_frames,
 )
 
 
@@ -309,6 +311,198 @@ async def test_merge_scenes_keeps_numbers(
     assert by_n[14]["vo_scene_number"] == 13
     assert by_n[15]["vo_scene_number"] == 13
     assert by_n[13]["vo_scene_size"] == 3
+
+
+@pytest.mark.asyncio
+async def test_split_scene_at_keeps_numbers(
+    session: AsyncSession, project: Project
+) -> None:
+    from app.services.montage_board import build_montage_board
+    from app.services.vo_shot_expand import is_shot_child
+
+    session.add(project)
+    a = _vo_parent(project.id, 21, "aa" * 12, "голова")
+    b = Frame(
+        project_id=project.id,
+        number=22,
+        uuid="bb" * 12,
+        voiceover_text="середина",
+        sort_key=220.0,
+        status="planned",
+        attrs={"camera_subdivide": {"role": "shot", "parent_uuid": "aa" * 12}},
+    )
+    c = Frame(
+        project_id=project.id,
+        number=23,
+        uuid="cc" * 12,
+        voiceover_text="хвост",
+        sort_key=230.0,
+        status="planned",
+        attrs={"camera_subdivide": {"role": "shot", "parent_uuid": "aa" * 12}},
+    )
+    session.add_all([a, b, c])
+    await session.flush()
+
+    result = await split_montage_scene_at(
+        session, project, at_frame_id=int(b.id)
+    )
+    await session.commit()
+    assert result["left_number"] == 21
+    assert result["right_number"] == 22
+    assert result["left_size"] == 1
+    assert result["right_size"] == 2
+
+    rows = _ordered(
+        list(
+            (
+                await session.execute(
+                    select(Frame).where(Frame.project_id == project.id)
+                )
+            ).scalars()
+        )
+    )
+    assert [fr.number for fr in rows] == [21, 22, 23]
+    assert is_shot_child(rows[0]) is False
+    assert is_shot_child(rows[1]) is False
+    assert is_shot_child(rows[2]) is True
+
+    board = await build_montage_board(session, project)
+    by_n = {fr["number"]: fr for fr in board["frames"]}
+    assert by_n[21]["vo_scene_number"] == 21
+    assert by_n[21]["vo_scene_size"] == 1
+    assert by_n[22]["vo_scene_number"] == 22
+    assert by_n[23]["vo_scene_number"] == 22
+    assert by_n[22]["vo_scene_size"] == 2
+
+
+@pytest.mark.asyncio
+async def test_split_scene_all_each_frame_own_scene(
+    session: AsyncSession, project: Project
+) -> None:
+    from app.services.montage_board import build_montage_board
+    from app.services.vo_shot_expand import is_shot_child
+
+    session.add(project)
+    a = _vo_parent(project.id, 31, "aa" * 12, "один")
+    b = Frame(
+        project_id=project.id,
+        number=32,
+        uuid="bb" * 12,
+        voiceover_text="два",
+        sort_key=320.0,
+        status="planned",
+        attrs={"camera_subdivide": {"role": "shot", "parent_uuid": "aa" * 12}},
+    )
+    c = Frame(
+        project_id=project.id,
+        number=33,
+        uuid="cc" * 12,
+        voiceover_text="три",
+        sort_key=330.0,
+        status="planned",
+        attrs={"camera_subdivide": {"role": "shot", "parent_uuid": "aa" * 12}},
+    )
+    session.add_all([a, b, c])
+    await session.flush()
+
+    result = await split_montage_scene_frames(
+        session, project, frame_id=int(a.id)
+    )
+    await session.commit()
+    assert result["scenes"] == 3
+
+    rows = _ordered(
+        list(
+            (
+                await session.execute(
+                    select(Frame).where(Frame.project_id == project.id)
+                )
+            ).scalars()
+        )
+    )
+    assert [fr.number for fr in rows] == [31, 32, 33]
+    assert all(is_shot_child(fr) is False for fr in rows)
+
+    board = await build_montage_board(session, project)
+    by_n = {fr["number"]: fr for fr in board["frames"]}
+    assert by_n[31]["vo_scene_number"] == 31
+    assert by_n[32]["vo_scene_number"] == 32
+    assert by_n[33]["vo_scene_number"] == 33
+    assert by_n[31]["vo_scene_size"] == 1
+    assert by_n[32]["vo_scene_size"] == 1
+    assert by_n[33]["vo_scene_size"] == 1
+
+
+@pytest.mark.asyncio
+async def test_split_all_visible_ids_hides_extra_shots(
+    session: AsyncSession, project: Project
+) -> None:
+    from app.services.montage_board import build_montage_board
+    from app.services.vo_shot_expand import _cs, is_shot_child
+
+    session.add(project)
+    a = _vo_parent(project.id, 41, "aa" * 12, "один")
+    b = Frame(
+        project_id=project.id,
+        number=42,
+        uuid="bb" * 12,
+        voiceover_text="два",
+        sort_key=420.0,
+        status="planned",
+        attrs={"camera_subdivide": {"role": "shot", "parent_uuid": "aa" * 12}},
+    )
+    c = Frame(
+        project_id=project.id,
+        number=43,
+        uuid="cc" * 12,
+        voiceover_text="три",
+        sort_key=430.0,
+        status="planned",
+        attrs={"camera_subdivide": {"role": "shot", "parent_uuid": "aa" * 12}},
+    )
+    extra = Frame(
+        project_id=project.id,
+        number=44,
+        uuid="dd" * 12,
+        voiceover_text="хвост",
+        sort_key=440.0,
+        status="planned",
+        attrs={"camera_subdivide": {"role": "shot", "parent_uuid": "aa" * 12}},
+    )
+    session.add_all([a, b, c, extra])
+    await session.flush()
+
+    result = await split_montage_scene_frames(
+        session,
+        project,
+        frame_id=int(a.id),
+        frame_ids=[int(a.id), int(b.id), int(c.id)],
+    )
+    await session.commit()
+    assert result["scenes"] == 3
+
+    rows = _ordered(
+        list(
+            (
+                await session.execute(
+                    select(Frame).where(Frame.project_id == project.id)
+                )
+            ).scalars()
+        )
+    )
+    by_n = {int(fr.number): fr for fr in rows}
+    assert is_shot_child(by_n[41]) is False
+    assert is_shot_child(by_n[42]) is False
+    assert is_shot_child(by_n[43]) is False
+    assert is_shot_child(by_n[44]) is True
+    assert bool(_cs(by_n[44]).get("leftover")) is True
+
+    board = await build_montage_board(session, project)
+    shown = {fr["number"]: fr for fr in board["frames"]}
+    assert shown[44]["shot_leftover"] is True
+    assert shown[41]["vo_scene_size"] == 2
+    assert shown[42]["vo_scene_number"] == 42
+    assert shown[43]["vo_scene_number"] == 43
 
 
 @pytest.mark.asyncio

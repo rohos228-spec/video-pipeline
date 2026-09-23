@@ -385,6 +385,9 @@ def test_frame_board_scene_cell_carries_inline_row_payload() -> None:
     assert parent_cell["scene_anchor_rows"] == cell["scene_anchor_rows"]
     assert parent_cell["scene_template_auto"] == cell["scene_template_auto"]
     assert parent_cell["scene_action"] == cell["scene_action"]
+    assert cell["scene_chain"][0]["n"] == 1
+    assert cell["scene_chain"][0]["place"] == "кабинет следователя"
+    assert "приносит папку" in cell["scene_chain"][0]["action"]
 
 
 def test_shot_sequence_text_joins_frame_actions() -> None:
@@ -394,6 +397,32 @@ def test_shot_sequence_text_joins_frame_actions() -> None:
     assert seq.startswith("кабинет следователя. вошёл")
     assert "достают папку" in seq
     assert "1." not in seq
+
+
+def test_shot_sequence_text_ignores_stale_extra_shots() -> None:
+    """Короткая кадры[] не склеивается со старыми действиями хвоста ячейки."""
+    parent, child = _group(41)
+    extra = Frame(
+        project_id=41,
+        number=3,
+        uuid="cc" * 12,
+        sort_key=3.0,
+        voiceover_text="хвост",
+        status="planned",
+        attrs={
+            "shot01_action": "следователь перелистывает материалы дела",
+            "действие": "следователь перелистывает материалы дела",
+            "главное_действие": "следователь перелистывает материалы дела",
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent.uuid,
+                "действие": "следователь перелистывает материалы дела",
+            },
+        },
+    )
+    seq = shot_sequence_text(parent, [parent, child, extra])
+    assert "достают папку" in seq
+    assert "следователь перелистывает" not in seq
 
 
 # --- формат сцены -------------------------------------------------------

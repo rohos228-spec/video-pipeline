@@ -119,6 +119,16 @@ _BEAT_SPLIT_RE = re.compile(
     r"(?<=[.!?])\s+|(?:^|[\s,;])(?:нужно\s+)?потом(?:\s+показать)?[,:]?\s+",
     re.IGNORECASE,
 )
+_ARROW_SPLIT_RE = re.compile(r"\s*→\s*|\s*->\s*")
+
+
+def _arrow_beats(text: str) -> list[str]:
+    """Шаги по ``→``. Короткие глаголы («вошёл») не склеиваем."""
+    raw = " ".join((text or "").split())
+    if not raw:
+        return []
+    parts = [p.strip(" ,.;:—-") for p in _ARROW_SPLIT_RE.split(raw) if p.strip(" ,.;:—-")]
+    return [" ".join(p.split()) for p in parts if p]
 
 
 def split_scene_action_beats(text: str) -> list[str]:
@@ -127,14 +137,18 @@ def split_scene_action_beats(text: str) -> list[str]:
     if not raw:
         return []
     chain = parse_scene_chain(raw)
-    if len(chain) >= 2:
-        beats = [
-            " ".join(str(item.get("action") or "").split())
-            for item in chain
-            if " ".join(str(item.get("action") or "").split())
-        ]
-        if len(beats) >= 2:
+    if chain:
+        beats: list[str] = []
+        for item in chain:
+            act = " ".join(str(item.get("action") or "").split())
+            if not act:
+                continue
+            beats.extend(_arrow_beats(act) or [act])
+        if beats:
             return beats
+    arrows = _arrow_beats(raw)
+    if len(arrows) >= 2:
+        return arrows
     body = raw
     if chain:
         body = " ".join(str(chain[0].get("action") or "").split()) or raw
@@ -176,33 +190,18 @@ def explode_scene_action_to_kadry(
     if len(parts) < len(beats):
         parts = list(parts) + [""] * (len(beats) - len(parts))
     master = f"{int(cell_number)}-S1-K1"
+    plans = ("ОБЩИЙ", "СРЕДНИЙ", "КРУПНЫЙ", "ДЕТАЛЬ")
     out: list[dict[str, Any]] = []
-    prev_place = ""
     for i, beat in enumerate(beats):
-        scene = {
-            "n": i + 1,
-            "place": loc,
-            "action": beat,
-            "vo": parts[i],
-            "blob": f"{loc} {beat}",
-        }
-        tid = select_template_when(scene, prev_place)
-        prev_place = loc or prev_place
-        rows = catalog_shot_rows(tid, same_place=bool(i and loc))
-        row = rows[0] if rows else {}
-        plan = str(row.get("plan") or "СРЕДНИЙ").split("/")[0].strip() or "СРЕДНИЙ"
-        angle = str(row.get("angle") or "фронт").split("/")[0].strip()
-        if angle == "—":
-            angle = ""
+        plan = plans[i] if i < len(plans) else "СРЕДНИЙ"
         out.append(
             {
                 "id": f"{int(cell_number)}-S1-K{i + 1}",
                 "parent_id": None if i == 0 else master,
                 "порядок": i + 1,
                 "сцена": 1,
-                "шаблон": tid,
                 "план": plan,
-                "ракурс": angle,
+                "ракурс": "фронт",
                 "место": loc,
                 "действие": beat,
                 "закадр": " ".join(str(parts[i] or "").split()),

@@ -512,6 +512,16 @@ def frame_board_scene_cell(frames: list[Any], frame: Any) -> dict[str, Any]:
         for row in ((payload.get("cell") or {}).get("bits") or [])
     ]
     scene = _scene_common(parent, members)
+    chain_text = main_action_text(parent)
+    chain = [
+        {
+            "n": int(row["n"]),
+            "place": _norm(str(row.get("place") or "")),
+            "action": _norm(str(row.get("action") or "")),
+            "vo": plain_scene_vo(str(row.get("vo") or "")),
+        }
+        for row in parse_scene_chain(chain_text)
+    ]
     return {
         "shot_anchors": len(bits),
         "shot_anchor": bits[0]["якорь"] if bits else "",
@@ -536,8 +546,10 @@ def frame_board_scene_cell(frames: list[Any], frame: Any) -> dict[str, Any]:
         "scene_feature": scene.get("feature") or "",
         "scene_template_auto": scene_template_auto(parent),
         "scene_action": shot_sequence_text(parent, members),
+        "scene_chain": chain,
         "vo_scene_number": int(parent.number),
         "vo_scene_size": len(members),
+        "shot_leftover": bool(_cs(frame).get("leftover")),
     }
 
 
@@ -618,6 +630,10 @@ def _shots_payload(parent: Any, members: list[Any]) -> list[dict[str, Any]]:
             continue
         if any(row["frame_number"] == int(m.number) for row in out):
             continue
+        # Хвост ячейки после короткой цепи не подмешиваем: иначе старые
+        # «следователь…» шаги снова склеиваются в последовательность.
+        if planned:
+            continue
         out.append(
             {
                 "id": sid,
@@ -637,16 +653,37 @@ def _shots_payload(parent: Any, members: list[Any]) -> list[dict[str, Any]]:
 
 
 def shot_sequence_text(parent: Any, members: list[Any] | None = None) -> str:
-    """Действия кадров ячейки через « → » — то, что в строке сцены на доске."""
-    group = members if members is not None else [parent]
+    """Действия кадров ячейки через « → » — то, что в строке сцены на доске.
+
+    Источник — ``кадры[]`` / цепь ``главное_действие`` родителя, не склейка
+    всех членов ячейки: лишние шоты после короткой цепи иначе возвращают
+    старую ленту.
+    """
+    planned = planned_shots_from_attrs(parent)
     steps = [
-        _norm(str(item.get("действие") or ""))
-        for item in _shots_payload(parent, group)
+        _norm(str(item.get("действие") or item.get("action") or ""))
+        for item in planned
     ]
     steps = [step for step in steps if step]
     if steps:
         return " → ".join(steps)
-    return main_action_text(parent)
+    scene_action = main_action_text(parent)
+    chain_steps = [
+        _norm(str(row.get("action") or ""))
+        for row in parse_scene_chain(scene_action)
+    ]
+    chain_steps = [step for step in chain_steps if step]
+    if chain_steps:
+        return " → ".join(chain_steps)
+    group = members if members is not None else [parent]
+    fallback = [
+        _norm(str(item.get("действие") or ""))
+        for item in _shots_payload(parent, group)
+    ]
+    fallback = [step for step in fallback if step]
+    if fallback:
+        return " → ".join(fallback)
+    return scene_action
 
 
 def build_scene_editor_state(frames: list[Any], frame: Any) -> dict[str, Any]:

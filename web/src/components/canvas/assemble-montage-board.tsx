@@ -27,8 +27,10 @@ import {
   MoreHorizontal,
   Plus,
   RefreshCw,
+  Scissors,
   Settings2,
   Trash2,
+  Unlink2,
   Upload,
   X,
 } from "lucide-react";
@@ -68,6 +70,8 @@ import {
   SceneActionBlock,
   SceneCell,
   SceneDataCell,
+  SceneGenerateBlock,
+  SCENE_DATA_OPS,
   type CoverageMenuGroup,
   type SceneDataField,
 } from "@/components/canvas/montage-scene-cells";
@@ -103,6 +107,20 @@ const SCENE_GAP_CLASS = "w-[5.5rem] min-w-[5.5rem] max-w-[5.5rem] p-0 align-midd
 /** Между шотами одной сцены — вплотную, только узкий + при наведении. */
 const SHOT_GAP_REM = 0.25;
 const SHOT_GAP_CLASS = "w-1 min-w-[4px] max-w-[4px] p-0 align-middle";
+
+const SCENE_GENERATE_CLEAR_TYPES = new Set<MontagePendingOp["type"]>([
+  "coverage_scene_action",
+  "coverage_sense",
+  "coverage_visual_type",
+  "coverage_place",
+  "coverage_characters",
+  "coverage_props",
+  "coverage_bg",
+  "coverage_accent",
+  "coverage_feature",
+  "coverage_set",
+  "coverage_light",
+]);
 
 type RowKey =
   | "voiceover"
@@ -672,9 +690,16 @@ type SceneRange = {
   frames: MontageBoardFrame[];
 };
 
+function visibleSceneFrames(frames: MontageBoardFrame[]): MontageBoardFrame[] {
+  // leftover-клей прячем. Длина scene_chain — не число шотов: у ячейки
+  // часто 1 N. и 3–8 живых дочерних кадров.
+  return frames.filter((fr) => !fr.shot_leftover);
+}
+
 function sceneRanges(frames: MontageBoardFrame[]): SceneRange[] {
   const out: SceneRange[] = [];
   frames.forEach((fr, i) => {
+    if (fr.shot_leftover) return;
     const scene = voSceneNumber(fr);
     const last = out[out.length - 1];
     if (last && (last.scene === scene || isChildOfScene(fr, last.scene))) {
@@ -684,7 +709,10 @@ function sceneRanges(frames: MontageBoardFrame[]): SceneRange[] {
       out.push({ key: fr.number, scene, start: i, end: i, frames: [fr] });
     }
   });
-  return out;
+  return out.map((range) => {
+    const vis = visibleSceneFrames(range.frames);
+    return { ...range, frames: vis };
+  }).filter((range) => range.frames.length > 0);
 }
 
 /** Действия кадров ячейки через « → » — вместо одного главного действия. */
@@ -695,6 +723,8 @@ function sceneShotSequence(
 ): string {
   const queued = (pendingScene.scene_action || "").trim();
   if (queued) return queued;
+  const fromCell = (range.frames[0]?.scene_action || "").trim();
+  if (fromCell) return fromCell;
   const steps = range.frames
     .map((fr) => {
       const pending = pendingCoverageForFrame(pendingOps, fr.number);
@@ -702,7 +732,7 @@ function sceneShotSequence(
     })
     .filter(Boolean);
   if (steps.length) return steps.join(" → ");
-  return (range.frames[0]?.scene_action || "").trim();
+  return "";
 }
 
 function pendingAnchorsForRange(
@@ -2677,12 +2707,25 @@ export function AssembleMontageBoard({
           total_ops?: number;
           saved_count?: number;
           refresh_board?: boolean;
+          montage_scene_action_generate?: boolean;
+          montage_scenes_split?: boolean;
+          montage_scenes_merged?: boolean;
           highlight?: string;
           frame_number?: number;
           shot?: number;
           path?: string;
         };
       };
+      if (evt.payload?.montage_scene_action_generate) {
+        void queryClient.invalidateQueries({
+          queryKey: ["montage-board", projectId],
+        });
+      }
+      if (evt.payload?.montage_scenes_split || evt.payload?.montage_scenes_merged) {
+        void queryClient.invalidateQueries({
+          queryKey: ["montage-board", projectId],
+        });
+      }
       if (evt.payload?.stopped) {
         setMontageRunning(false);
         setApplyRunning(false);
@@ -2985,6 +3028,57 @@ export function AssembleMontageBoard({
       toast.success(
         `Сцена #${res.parent_number}: ${res.vo_scene_size} кадров`,
       );
+    } catch (e) {
+      toast.error(errorMessageFromUnknown(e));
+    } finally {
+      setFrameEditBusy(false);
+    }
+  };
+
+  const splitSceneAt = async (
+    frame: MontageBoardFrame,
+    sceneFrameIds: number[],
+  ) => {
+    if (!projectId) return;
+    const ok = window.confirm(
+      `Отделить кадр #${frame.number} и все правее в новую сцену?`,
+    );
+    if (!ok) return;
+    setFrameEditBusy(true);
+    try {
+      const res = await api.splitMontageScene(
+        projectId,
+        frame.frame_id,
+        false,
+        sceneFrameIds,
+      );
+      refreshBoard();
+      toast.success(
+        `Сцены #${res.left_number} (${res.left_size}) и #${res.right_number} (${res.right_size})`,
+      );
+    } catch (e) {
+      toast.error(errorMessageFromUnknown(e));
+    } finally {
+      setFrameEditBusy(false);
+    }
+  };
+
+  const splitSceneAll = async (head: MontageBoardFrame, sceneFrameIds: number[]) => {
+    if (!projectId) return;
+    const ok = window.confirm(
+      `Разделить сцену #${head.number} на ${sceneFrameIds.length} отдельных сцен? Каждый кадр станет своей ячейкой закадра.`,
+    );
+    if (!ok) return;
+    setFrameEditBusy(true);
+    try {
+      const res = await api.splitMontageScene(
+        projectId,
+        head.frame_id,
+        true,
+        sceneFrameIds,
+      );
+      refreshBoard();
+      toast.success(`Сцена разделена на ${res.scenes} ячеек`);
     } catch (e) {
       toast.error(errorMessageFromUnknown(e));
     } finally {
@@ -3522,6 +3616,106 @@ export function AssembleMontageBoard({
     [applyMutation, enqueueSceneActionNow],
   );
 
+  const afterSceneActionGenerate = useCallback(
+    (frameNumber: number) => {
+      localQueueDirtyRef.current = true;
+      const next = pendingOpsRef.current.filter(
+        (x) =>
+          !(x.frame_number === frameNumber && SCENE_GENERATE_CLEAR_TYPES.has(x.type)),
+      );
+      pendingOpsRef.current = next;
+      persistQueue(next);
+      setPendingOps(next);
+      void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
+    },
+    [persistQueue, projectId, queryClient],
+  );
+
+  const applySceneActionWithImagesNow = useCallback(
+    async (
+      frameId: number,
+      frameNumber: number,
+      action: string,
+      sceneFrames: MontageBoardFrame[],
+      passport: Record<string, string>,
+    ) => {
+      if (projectId == null) return;
+      setFrameEditBusy(true);
+      try {
+        toast.message("GPT пишет сцены ячейки, затем картинки…");
+        const res = await api.generateSceneWithImages(projectId, frameId, {
+          prompt: action,
+          passport,
+          frame_ids: sceneFrames.map((fr) => fr.frame_id),
+        });
+        afterSceneActionGenerate(frameNumber);
+        if (res.already_running) {
+          toast.message(res.message || "Сцены записаны — картинки ждут свободной генерации");
+          return;
+        }
+        if (res.started) {
+          applySeenRunningRef.current = true;
+          submittedApplyRef.current = true;
+          setApplyRunning(true);
+          toast.message(
+            res.message || `Картинки: ${res.images ?? sceneFrames.length} кадров через Outsee…`,
+          );
+          return;
+        }
+        toast.message(res.message || "Сцены записаны");
+      } catch (err) {
+        toast.error(errorMessageFromUnknown(err));
+      } finally {
+        setFrameEditBusy(false);
+      }
+    },
+    [afterSceneActionGenerate, projectId],
+  );
+
+  const improveSceneWithImagesNow = useCallback(
+    async (
+      frameId: number,
+      frameNumber: number,
+      prompt: string,
+      passport: Record<string, string>,
+    ) => {
+      if (projectId == null) return;
+      setFrameEditBusy(true);
+      try {
+        toast.message("GPT разворачивает сцену и дописывает кадры…");
+        const res = await api.improveScene(projectId, frameId, {
+          prompt,
+          passport,
+        });
+        afterSceneActionGenerate(frameNumber);
+        const extra = Number(res.inserted_frames || 0);
+        if (res.already_running) {
+          toast.message(
+            res.message ||
+              `Сцена улучшена${extra ? ` · +${extra} кадров` : ""} — картинки ждут свободной генерации`,
+          );
+          return;
+        }
+        if (res.started) {
+          applySeenRunningRef.current = true;
+          submittedApplyRef.current = true;
+          setApplyRunning(true);
+          toast.message(
+            res.message ||
+              `Улучшено${extra ? ` · +${extra} кадров` : ""} · картинки: ${res.images ?? 0} через Outsee…`,
+          );
+          return;
+        }
+        toast.message(res.message || `Сцена улучшена${extra ? ` · +${extra} кадров` : ""}`);
+      } catch (err) {
+        toast.error(errorMessageFromUnknown(err));
+      } finally {
+        setFrameEditBusy(false);
+      }
+    },
+    [afterSceneActionGenerate, projectId],
+  );
+
   /** Клетка на всю VO-ячейку: последовательность кадров и якоря. */
   const renderSceneSpanCell = (key: RowKey, range: SceneRange) => {
     const head = range.frames[0];
@@ -3545,18 +3739,78 @@ export function AssembleMontageBoard({
     const anchorsPending = range.frames.some((fr) =>
       hasPendingType(fr.number, "coverage_anchors"),
     );
+    const passport = {
+      sense: (pending.sense ?? head.scene_sense ?? "").trim(),
+      visual_type: (pending.visual_type ?? head.scene_visual_type ?? "").trim(),
+      place: (pending.place ?? head.scene_place ?? "").trim(),
+      characters: (pending.characters ?? head.scene_characters ?? "").trim(),
+      props: (pending.props ?? head.scene_props ?? "").trim(),
+      bg: (pending.bg ?? head.scene_bg ?? "").trim(),
+      accent: (pending.accent ?? head.scene_accent ?? "").trim(),
+      feature: (pending.feature ?? head.scene_feature ?? "").trim(),
+      set: (pending.set ?? head.scene_set ?? "").trim(),
+      light: (pending.light ?? head.scene_lighting ?? "").trim(),
+    };
     return (
       <SceneCell
+        data={
+          <SceneDataCell
+            values={passport}
+            pending={{
+              sense: hasPendingType(head.number, "coverage_sense"),
+              visual_type: hasPendingType(head.number, "coverage_visual_type"),
+              place: hasPendingType(head.number, "coverage_place"),
+              characters: hasPendingType(head.number, "coverage_characters"),
+              props: hasPendingType(head.number, "coverage_props"),
+              bg: hasPendingType(head.number, "coverage_bg"),
+              accent: hasPendingType(head.number, "coverage_accent"),
+              feature: hasPendingType(head.number, "coverage_feature"),
+              set: hasPendingType(head.number, "coverage_set"),
+              light: hasPendingType(head.number, "coverage_light"),
+            }}
+            visualTypeChoices={board.data?.coverage_visual_type_choices}
+            lightChoices={board.data?.coverage_light_choices}
+            disabled={sceneDisabled}
+            onCommit={(field: SceneDataField, value) => {
+              const type = SCENE_DATA_OPS[field];
+              queueCoverage({ ...base, type, [field]: value });
+            }}
+          />
+        }
+        generate={
+          projectId != null ? (
+            <SceneGenerateBlock
+              projectId={projectId}
+              frameId={head.frame_id}
+              chain={head.scene_chain ?? []}
+              passport={passport}
+              disabled={sceneDisabled || applyMutation.isPending || applyRunning}
+              onDone={() => afterSceneActionGenerate(head.number)}
+              onImprove={(prompt) =>
+                improveSceneWithImagesNow(head.frame_id, head.number, prompt, passport)
+              }
+            />
+          ) : null
+        }
         action={
           <SceneActionBlock
             value={sceneShotSequence(range, pendingOps, pending)}
             pending={hasPendingType(head.number, "coverage_scene_action")}
             disabled={sceneDisabled}
-            applyBusy={applyMutation.isPending || applyRunning}
+            applyBusy={applyMutation.isPending || applyRunning || frameEditBusy}
             onQueue={(action) =>
               queueCoverage({ ...base, type: "coverage_scene_action", action })
             }
             onApply={(action) => applySceneActionNow(head.number, action)}
+            onApplyWithImages={(action) =>
+              void applySceneActionWithImagesNow(
+                head.frame_id,
+                head.number,
+                action,
+                range.frames,
+                passport,
+              )
+            }
           />
         }
         anchors={
@@ -3583,50 +3837,6 @@ export function AssembleMontageBoard({
               }
             />
           </div>
-        }
-        data={
-          <SceneDataCell
-            values={{
-              sense: (pending.sense ?? head.scene_sense ?? "").trim(),
-              visual_type: (pending.visual_type ?? head.scene_visual_type ?? "").trim(),
-              place: (pending.place ?? head.scene_place ?? "").trim(),
-              characters: (pending.characters ?? head.scene_characters ?? "").trim(),
-              props: (pending.props ?? head.scene_props ?? "").trim(),
-              bg: (pending.bg ?? head.scene_bg ?? "").trim(),
-              accent: (pending.accent ?? head.scene_accent ?? "").trim(),
-              feature: (pending.feature ?? head.scene_feature ?? "").trim(),
-              set: (pending.set ?? head.scene_set ?? "").trim(),
-            }}
-            pending={{
-              sense: hasPendingType(head.number, "coverage_sense"),
-              visual_type: hasPendingType(head.number, "coverage_visual_type"),
-              place: hasPendingType(head.number, "coverage_place"),
-              characters: hasPendingType(head.number, "coverage_characters"),
-              props: hasPendingType(head.number, "coverage_props"),
-              bg: hasPendingType(head.number, "coverage_bg"),
-              accent: hasPendingType(head.number, "coverage_accent"),
-              feature: hasPendingType(head.number, "coverage_feature"),
-              set: hasPendingType(head.number, "coverage_set"),
-            }}
-            visualTypeChoices={board.data?.coverage_visual_type_choices}
-            disabled={sceneDisabled}
-            onCommit={(field: SceneDataField, value) => {
-              const type = (
-                {
-                  sense: "coverage_sense",
-                  visual_type: "coverage_visual_type",
-                  place: "coverage_place",
-                  characters: "coverage_characters",
-                  props: "coverage_props",
-                  bg: "coverage_bg",
-                  accent: "coverage_accent",
-                  feature: "coverage_feature",
-                  set: "coverage_set",
-                } as const
-              )[field];
-              queueCoverage({ ...base, type, [field]: value });
-            }}
-          />
         }
       />
     );
@@ -4063,7 +4273,22 @@ export function AssembleMontageBoard({
                                 </span>
                               </th>
                               {fi < range.frames.length - 1 ? (
-                                <GapCell as="th" gap="shot" />
+                                <th className={cn(SHOT_GAP_CLASS, "relative border-b border-white/10")}>
+                                  <button
+                                    type="button"
+                                    title={`Отделить #${range.frames[fi + 1].number} в новую сцену`}
+                                    disabled={frameEditBusy}
+                                    onClick={() =>
+                                      void splitSceneAt(
+                                        range.frames[fi + 1],
+                                        range.frames.map((f) => f.frame_id),
+                                      )
+                                    }
+                                    className="absolute inset-y-0 left-1/2 z-20 flex w-6 -translate-x-1/2 items-center justify-center text-white/25 transition hover:text-[rgba(209,254,23,1)] disabled:opacity-40"
+                                  >
+                                    <Scissors className="h-3 w-3" />
+                                  </button>
+                                </th>
                               ) : null}
                             </Fragment>
                           ))}
@@ -4102,8 +4327,27 @@ export function AssembleMontageBoard({
                               style={{ width: sceneBlockWidthPx(range.frames.length, colRem) }}
                               className="border-b border-x border-white/20 bg-white/[0.05] px-2 py-1.5 text-left align-top"
                             >
-                              <p className="truncate text-[11px] font-semibold text-white/80">
-                                Сцена {ri + 1} · {nums}
+                              <p className="flex items-center gap-1.5 truncate text-[11px] font-semibold text-white/80">
+                                <span className="min-w-0 truncate">
+                                  Сцена {ri + 1} · {nums}
+                                </span>
+                                {range.frames.length > 1 ? (
+                                  <button
+                                    type="button"
+                                    title="Каждый кадр этой сцены станет отдельной сценой"
+                                    disabled={frameEditBusy}
+                                    onClick={() =>
+                                      void splitSceneAll(
+                                        head,
+                                        range.frames.map((f) => f.frame_id),
+                                      )
+                                    }
+                                    className="inline-flex shrink-0 items-center gap-1 rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-medium text-white/55 transition hover:border-[rgba(209,254,23,0.45)] hover:text-[rgba(209,254,23,1)] disabled:opacity-40"
+                                  >
+                                    <Unlink2 className="h-3 w-3" />
+                                    Разделить
+                                  </button>
+                                ) : null}
                               </p>
                               {head?.scene_place ? (
                                 <p className="truncate text-[10px] text-white/40">
