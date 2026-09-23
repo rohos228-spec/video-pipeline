@@ -169,15 +169,17 @@ def test_build_prompt_improve_asks_for_intro_and_cutaway() -> None:
     text = build_action_generate_prompt(
         parent=parent,
         members=[parent],
-        operator_prompt="",
+        operator_prompt="только стол и газета",
         replace_ns=[],
         passport={"place": "архив"},
         mode="improve",
     )
-    assert "вступление" in text
-    assert "перебивка" in text
-    assert "Не пиши камеру" in text
-    assert "коды шаблонов" in text
+    assert "только стол и газета" in text
+    assert "Главный заказ" in text
+    assert text.index("Главный заказ") < text.index("главное_действие")
+    assert "вступление в место" not in text
+    assert "минимум три" not in text
+    assert "Если закадр длиннее 40" not in text
     assert "ТОЛЬКО сцены с номерами" not in text
 
 
@@ -219,8 +221,9 @@ async def test_generate_cell_applies_chain_without_insert(
     await session.flush()
 
     async def fake_ask(text: str, **kwargs):  # noqa: ANN003
-        assert "задача оператора" in text
-        assert str(parent.uuid) in text
+        assert "разложи вход и полку" in text
+        assert "Поставь сцену" in text
+        assert "voiceover_text" not in text
         return json.dumps(
             {
                 "ops": [
@@ -228,7 +231,7 @@ async def test_generate_cell_applies_chain_without_insert(
                         "frame_uuid": parent_uid,
                         "fields": {
                             "главное_действие": (
-                                "1. архив — вошёл → снял папку\n"
+                                "1. архив — вошёл в проём → снял папку с полки\n"
                                 "(Следователь вошёл в архив и снял папку с полки.)"
                             )
                         },
@@ -252,10 +255,14 @@ async def test_generate_cell_applies_chain_without_insert(
     assert "light" in result["passport_applied"]
     chain = parse_scene_chain(result["chain"])
     assert chain[0]["place"] == "архив"
+    assert "вошёл в проём" in (chain[0].get("action") or "")
+    assert "разложи вход и полку" not in (chain[0].get("action") or "")
     assert "ночной" in str((parent.attrs or {}).get("освещение") or "")
     assert int(result["report"]["inserted_frames"]) == 0
+    assert "image_ops" not in result
+    assert result["frame_numbers"] == [5, 6]
     await session.refresh(parent)
-    assert main_action_text(parent).startswith("1.")
+    assert "вошёл в проём" in main_action_text(parent)
 
 
 @pytest.mark.asyncio
@@ -389,11 +396,9 @@ async def test_generate_with_images_falls_back_when_gpt_empty(
     )
     assert result["ok"] is True
     assert result.get("fallback") is True
-    assert result["images"] == 1
-    ops = result["image_ops"]
-    assert ops[0]["type"] == "image_ai_change"
-    assert ops[0]["frame_number"] == 4
-    assert "ЛЕСОПОЛОСА" in ops[0]["instruction"]
+    assert "выходит в лес" in (result.get("chain") or "")
+    assert result["images"] == 0
+    assert result["image_ops"] == []
 
 
 @pytest.mark.asyncio
@@ -441,11 +446,94 @@ async def test_improve_fallback_grows_and_images_new_shots(
     assert result["ok"] is True
     assert result.get("mode") == "improve"
     assert int(result.get("inserted_frames") or 0) == 1
-    assert result["images"] == 2
-    nums = [op["frame_number"] for op in result["image_ops"]]
-    assert 4 in nums
-    assert 5 not in nums
+    assert result["images"] == 0
+    assert result["image_ops"] == []
     await session.refresh(neighbor)
     assert int(neighbor.number) == 5
     assert neighbor.voiceover_text.startswith("Потом")
+
+
+def test_generate_prompt_uses_saved_vo_span() -> None:
+    parent = Frame(
+        project_id=1,
+        number=1,
+        uuid="ee" * 12,
+        voiceover_text="Он вошёл в архив и снял папку с полки.",
+        status="planned",
+        attrs={
+            "vo_cell_full": "Он вошёл в архив и снял папку с полки.",
+            "закадр_выделение": {
+                "start": 0,
+                "end": 17,
+                "text": "Он вошёл в архив",
+            },
+            "camera_subdivide": {"role": "vo_parent", "место": "архив"},
+        },
+    )
+    text = build_action_generate_prompt(
+        parent=parent,
+        members=[parent],
+        operator_prompt="",
+        replace_ns=[],
+        passport={"place": "архив"},
+    )
+    assert "Он вошёл в архив" in text
+    assert "снял папку с полки" not in text
+    assert "закадр_выделение" in text
+
+
+@pytest.mark.asyncio
+async def test_generate_cell_grows_stubs_without_images(
+    session: AsyncSession, project: Project, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent_uid = "ff" * 12
+    parent = Frame(
+        project_id=project.id,
+        number=1,
+        uuid=parent_uid,
+        voiceover_text="Он вошёл в архив, снял папку и прочитал штамп.",
+        status="planned",
+        attrs={
+            "place": "архив",
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+                "место": "архив",
+            },
+        },
+    )
+    session.add_all([project, parent])
+    await session.flush()
+
+    async def fake_ask(text: str, **kwargs):  # noqa: ANN003
+        return json.dumps(
+            {
+                "ops": [
+                    {
+                        "frame_uuid": parent_uid,
+                        "fields": {
+                            "главное_действие": (
+                                "1. архив — вошёл в помещение → снял папку → читает штамп\n"
+                                "(Он вошёл в архив, снял папку и прочитал штамп.)"
+                            )
+                        },
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr("app.services.gpt_client.gpt_ask_fresh", fake_ask)
+    result = await generate_cell_scene_action(
+        session,
+        project,
+        int(parent.id),
+        operator_prompt="разложи вход, полку и штамп",
+    )
+    assert result["ok"] is True
+    assert int(result["inserted_frames"]) == 2
+    assert int(result["skipped_shots"]) == 0
+    assert "image_ops" not in result
+    assert len(result["frame_numbers"]) == 3
+    assert 1 in result["frame_numbers"]
 

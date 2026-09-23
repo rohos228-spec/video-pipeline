@@ -91,6 +91,8 @@ def slot_key_from_op(op: dict[str, Any] | None) -> str | None:
         return f"{fr}:template"
     if t == "coverage_anchors":
         return f"{fr}:anchors"
+    if t == "coverage_vo_span":
+        return f"{fr}:vo_span"
     if t == "coverage_angle":
         return f"{fr}:angle"
     if t == "coverage_move":
@@ -282,8 +284,25 @@ def normalize_queue_ops(raw_ops: Any) -> list[dict[str, Any]]:
             from app.services.montage_scene_editor import normalize_anchor_rows
 
             rows = normalize_anchor_rows(raw["anchors"])
-            if rows:
-                item["anchors"] = _keep_anchor_hints(rows, raw["anchors"])
+            item["anchors"] = _keep_anchor_hints(rows, raw["anchors"]) if rows else []
+        if op_type == "coverage_vo_span":
+            if raw.get("clear") in (True, 1, "1", "true"):
+                item["clear"] = True
+            text = raw.get("text") or raw.get("закадр")
+            if isinstance(text, str) and text.strip():
+                item["text"] = text.strip()
+            for key in ("start", "end"):
+                try:
+                    item[key] = int(raw[key])
+                except (TypeError, ValueError, KeyError):
+                    pass
+            if isinstance(raw.get("vo_span"), dict):
+                item["vo_span"] = raw["vo_span"]
+            for key in ("full", "vo_cell_full"):
+                val = raw.get(key)
+                if isinstance(val, str) and val.strip():
+                    item["full"] = val.strip()
+                    break
         parent_raw = raw.get("parent_number")
         if parent_raw not in (None, ""):
             try:

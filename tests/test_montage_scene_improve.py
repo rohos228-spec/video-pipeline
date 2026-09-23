@@ -20,14 +20,20 @@ from app.services.montage_scene_improve import (
     REPORT_ATTR,
     allot_budgets,
     anchor_units,
+    build_improve_action_prompt,
+    cards_from_operator_prompt,
+    cards_raw_from_reply,
     check_bits,
+    fallback_cards,
     improve_cell_scene,
     merge_passport,
     normalize_shots,
+    operator_action_beats,
     qc_reasons,
     repair_shots,
     shot_budget,
     split_vo_for_shots,
+    _ops_fields,
 )
 
 PIECE_1 = "Он пришёл домой поздно ночью и оставил на полу в коридоре старый носок."
@@ -39,17 +45,8 @@ UID = "ab" * 12
 
 # (якорь, зона, действие, роль, объект, план, ракурс, движение, стык)
 STEPS = [
-    (1, "крыльцо", "подходит к дому", "вход", "место", "ОБЩИЙ", "фронт", "следование", "cut"),
-    (1, "дверь", "рука открывает дверь", "мост", "предмет", "ДЕТАЛЬ", "сверху", "статика", "cut_on_action"),
-    (1, "прихожая", "закрывает дверь изнутри", "мост", "тело", "СРЕДНИЙ", "3/4", "статика", "cut_on_action"),
-    (1, "коридор", "проходит вперёд, достаёт носок", "действие", "тело", "СРЕДНИЙ", "фронт", "следование", "cut_on_action"),
-    (1, "коридор", "кладёт носок на пол", "действие", "предмет", "ДЕТАЛЬ", "сверху", "статика", "cut_on_action"),
-    (2, "коридор", "девушка крадётся по коридору", "мост", "тело", "СРЕДНИЙ", "3/4", "следование", "cut"),
-    (2, "коридор", "девушка входит к нему", "действие", "двое", "СРЕДНИЙ", "с плеча", "статика", "cut_on_action"),
-    (2, "коридор", "лицо девушки: испуг", "реакция", "лицо", "КРУПНЫЙ", "фронт", "наезд", "cut"),
-    (2, "коридор", "девушка кричит", "действие", "лицо", "КРУПНЫЙ", "3/4", "статика", "cut"),
-    (2, "коридор", "девушка убегает", "действие", "тело", "ОБЩИЙ", "3/4", "ручная", "cut_on_action"),
-    (2, "коридор", "он бежит за ней", "следствие", "тело", "СРЕДНИЙ", "3/4", "следование", "cut_on_action"),
+    (1, "коридор", "кладёт носок на пол", "действие", "предмет", "ДЕТАЛЬ", "сверху", "статика", "cut"),
+    (2, "коридор", "девушка кричит и убегает", "действие", "тело", "СРЕДНИЙ", "3/4", "статика", "cut"),
 ]
 
 
@@ -183,12 +180,88 @@ def test_anchor_units_cut_like_board_and_reject_foreign_anchor() -> None:
         anchor_units(VO, [{"якорь": ANCHOR_1}, {"якорь": "Утром дом был пуст"}])
 
 
-def test_budgets_per_anchor() -> None:
-    assert shot_budget(VO) == 12
-    assert shot_budget("Он ушёл.") == 2
-    assert allot_budgets([PIECE_1, PIECE_2]) == [6, 6]
+def test_budgets_one_per_anchor_unless_operator_chain() -> None:
+    assert shot_budget(VO) == 1
+    assert shot_budget("Он ушёл.") == 1
+    assert allot_budgets([PIECE_1, PIECE_2]) == [1, 1]
+    assert allot_budgets([PIECE_1, PIECE_2], "стол → газета → экран") == [2, 1]
     many = allot_budgets([VO] * 3)
-    assert sum(many) <= 12 and min(many) >= 1
+    assert many == [1, 1, 1]
+    prose = "сначала газеты, потом экран. потом Банди улыбается в камеру"
+    assert allot_budgets([PIECE_1, PIECE_2], prose) == [1, 1]
+
+
+def test_improve_action_prompt_obeys_operator_and_skips_padding() -> None:
+    parent, _ = _cell(Project(id=1, slug="t", topic="t", hero_mode="auto"))
+    units = anchor_units(VO, [{"якорь": ANCHOR_1}, {"якорь": ANCHOR_2}])
+    text = build_improve_action_prompt(
+        parent=parent,
+        vo=VO,
+        units=units,
+        passport={"место": "дом"},
+        operator_prompt="только стол и газета, без телевизора",
+    )
+    assert "только стол и газета, без телевизора" in text
+    assert "Поставь сцену" in text
+    assert text.index("Поставь сцену") < text.index("Улучшить сцену — действие")
+    assert "voiceover_text" not in text
+    assert "текущая_цепь" not in text
+    assert PIECE_1 not in text
+    assert "добавь мосты" not in text
+    assert "Режиссура" not in text
+    assert "Каждый `→` станет кадром" not in text
+
+
+def test_fallback_cards_follow_operator_chain() -> None:
+    parent, _ = _cell(Project(id=1, slug="t", topic="t", hero_mode="auto"))
+    units = anchor_units(VO, [{"якорь": ANCHOR_1}, {"якорь": ANCHOR_2}])
+    cards = fallback_cards(parent, units, "стол → газета → экран", "архив")
+    assert [c["action"] for c in cards] == ["стол", "газета", "экран"]
+    assert " ".join(c["vo"] for c in cards) == VO
+    prose = cards_from_operator_prompt("только носок, без Банди", "дом", VO)
+    assert [c["action"] for c in prose] == ["только носок, без Банди"]
+    assert prose[0]["vo"] == VO
+    potom = cards_from_operator_prompt(
+        "тед банди преследует девушку а потом на нее нападает", "улица", VO
+    )
+    assert [c["action"] for c in potom] == [
+        "тед банди преследует девушку",
+        "на нее нападает",
+    ]
+
+
+def test_cards_raw_from_flat_json_array_and_numbered() -> None:
+    reply = json.dumps(
+        {
+            "главное_действие": [
+                "идёт за девушкой по улице",
+                "хватает её за плечо",
+                "девушка лежит на земле",
+            ],
+            "паспорт": {"место": "улица"},
+        },
+        ensure_ascii=False,
+    )
+    fields = _ops_fields(reply, "")
+    cards = cards_raw_from_reply(fields, reply)
+    assert [c["action"] for c in cards] == [
+        "идёт за девушкой по улице",
+        "хватает её за плечо",
+        "девушка лежит на земле",
+    ]
+    numbered = cards_raw_from_reply(
+        {}, "1) идёт за девушкой\n2) хватает её\n3) лежит на земле"
+    )
+    assert [c["action"] for c in numbered] == [
+        "идёт за девушкой",
+        "хватает её",
+        "лежит на земле",
+    ]
+    chain = "1. улица — идёт следом\n2. улица — хватает за плечо"
+    wrapped_reply = _ops({"главное_действие": chain})
+    wrapped = cards_raw_from_reply(_ops_fields(wrapped_reply, UID), wrapped_reply)
+    assert [c["action"] for c in wrapped] == ["идёт следом", "хватает за плечо"]
+    assert operator_action_beats("стол → газета") == ["стол", "газета"]
 
 
 def test_split_vo_for_shots_never_empty_when_words_suffice() -> None:
@@ -221,7 +294,11 @@ def test_normalize_maps_aliases_and_keeps_passport_place() -> None:
 
 
 def test_repair_keeps_each_anchor_text_inside_its_shots() -> None:
-    units = anchor_units(VO, [{"якорь": ANCHOR_1}, {"якорь": ANCHOR_2}])
+    units = anchor_units(
+        VO,
+        [{"якорь": ANCHOR_1}, {"якорь": ANCHOR_2}],
+        "идёт → носок → входит → убегает",
+    )
     shots = normalize_shots(
         [
             {"якорь_n": 1, "действие": "идёт к дому", "объект": "тело", "план": "СРЕДНИЙ", "ракурс": "3/4", "закадр": PIECE_1 + " Через минуту"},
@@ -247,7 +324,7 @@ def test_repair_keeps_each_anchor_text_inside_its_shots() -> None:
 
 def test_qc_soft_warns_plan_jump_and_missing_reaction() -> None:
     text = "Он стоит у стола, потом у окна и садится."
-    units = anchor_units(text, [{"якорь": "Он стоит у стола"}])
+    units = anchor_units(text, [{"якорь": "Он стоит у стола"}], "стоит → окно → садится")
     shots = normalize_shots(
         [
             {"действие": "стоит у стола", "объект": "тело", "план": "ОБЩИЙ"},
@@ -260,7 +337,8 @@ def test_qc_soft_warns_plan_jump_and_missing_reaction() -> None:
     repair_shots(shots, units)
     _hard, soft = qc_reasons(shots, units)
     assert any("через план" in w for w in soft)
-    assert any("реакции" in w for w in soft)
+    assert not any("реакции" in w for w in soft)
+    assert not any("вводит место" in w for w in soft)
 
 
 def test_merge_passport_keeps_operator_place_and_fills_empty() -> None:
@@ -300,8 +378,8 @@ async def test_improve_runs_six_nodes_and_board_shows_result(
     await session.flush()
     prompts: list[str] = []
     pieces = {
-        1: split_vo_for_shots(PIECE_1, 5),
-        2: split_vo_for_shots(PIECE_2, 6),
+        1: split_vo_for_shots(PIECE_1, 1),
+        2: split_vo_for_shots(PIECE_2, 1),
     }
 
     async def fake_ask(text: str, **kwargs):  # noqa: ANN003
@@ -335,59 +413,125 @@ async def test_improve_runs_six_nodes_and_board_shows_result(
         return json.dumps({"ops": []})
 
     monkeypatch.setattr("app.services.gpt_client.gpt_ask_fresh", fake_ask)
+    prompt = "только носок, потом крик — без входа и погони"
     result = await improve_cell_scene(
         session,
         project,
         int(parent.id),
+        operator_prompt=prompt,
         passport={"place": "дом", "characters": "c01, c02"},
     )
 
-    assert len(prompts) == 3
-    assert all(UID in p for p in prompts)
-    assert all("Утром дом был пуст" not in p for p in prompts)
-    assert "Режиссура" in prompts[1] and "Режиссура" in prompts[2]
-    assert "ровно 2 карточек" in prompts[1]
-
+    assert len(prompts) == 1
+    assert "Поставь сцену" in prompts[0]
+    assert "voiceover_text" not in prompts[0]
+    assert PIECE_2 not in prompts[0]
     report = result["improve_report"]
     assert [n["node"] for n in report["nodes"]] == [key for key, _ in GROUP_NODES]
-    assert result["inserted_frames"] == len(STEPS) - 1
-    assert result["images"] == len(STEPS)
-    assert "Камера: план ОБЩИЙ" in result["image_ops"][0]["instruction"]
-    assert "Часть места: крыльцо" in result["image_ops"][0]["instruction"]
+    assert result["inserted_frames"] == 1
+    assert result["images"] == 0
+    assert result["image_ops"] == []
+    assert [s["действие"] for s in report["shots"]] == [s[2] for s in STEPS]
+    assert [s["действие"] for s in report["shots"]] != [prompt]
+    assert " ".join(s["закадр"] for s in report["shots"]) == VO
 
     frames = await _cell_frames(session, project)
     cell = _members(frames)
-    assert len(cell) == len(STEPS)
+    assert len(cell) == 2
     assert " ".join(fr.voiceover_text or "" for fr in cell) == VO
-    first_two = [fr.voiceover_text for fr in cell[:5]]
-    assert " ".join(first_two) == PIECE_1
 
     board = _coverage_fields_for_frames(_snapshot_frames(frames), enabled=True)
     rows = [board[int(fr.number)] for fr in cell]
-    assert [r["shot_plan"] for r in rows] == [s[5] for s in STEPS]
-    assert [r["shot_angle"] for r in rows] == [s[6] for s in STEPS]
-    assert [r["shot_move"] for r in rows] == [s[7] for s in STEPS]
-    assert [r["shot_stitch"] for r in rows] == ["cut"] + [s[8] for s in STEPS[1:]]
     assert [r["shot_action"] for r in rows] == [s[2] for s in STEPS]
     head = rows[0]
     assert head["scene_place"] == "дом"
     assert head["scene_characters"] == "c01, c02"
-    assert head["scene_sense"].startswith("покой дома")
-    assert head["scene_bg"] == "тёмный коридор"
-    assert head["scene_accent"] == "лицо девушки"
-    assert head["scene_props"] == "носок, дверь"
-    assert head["scene_feature"].startswith("саспенс")
-    assert head["scene_lighting"] == "ночной"
-    assert [c["vo"] for c in head["scene_chain"]] == [PIECE_1, PIECE_2]
-    assert [a["якорь"] for a in head["scene_anchor_rows"]] == [ANCHOR_1, ANCHOR_2]
-    assert all(r["scene_place"] == "дом" for r in rows)
-    shot_places = [((fr.attrs or {}).get("camera_subdivide") or {}).get("место") for fr in cell]
-    assert shot_places[0] == "дом: крыльцо"
-    assert shot_places[3] == "дом: коридор"
 
     head_frame = next(fr for fr in cell if fr.uuid == UID)
     assert (head_frame.attrs or {}).get(REPORT_ATTR)
     assert neighbor.number == 4
+    assert neighbor.voiceover_text.startswith("Утром")
+
+
+@pytest.mark.asyncio
+async def test_improve_prompt_ignores_vo_meaning_and_anchor_count(
+    session: AsyncSession, project: Project, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent, neighbor = _cell(
+        project,
+        bits=[
+            {"порядок": 1, "якорь": ANCHOR_1, "изменение": "герой находит статью про Банди"},
+            {"порядок": 2, "якорь": ANCHOR_2, "изменение": "включает запись и видит улыбку"},
+        ],
+    )
+    session.add_all([project, parent, neighbor])
+    await session.flush()
+
+    async def fake_ask(text: str, **kwargs):  # noqa: ANN003
+        assert "Банди" not in text
+        assert "voiceover_text" not in text
+        assert "статья" not in text
+        assert "включает запись" not in text
+        return _ops(
+            {
+                "главное_действие": (
+                    "1. дом — рука кладёт носок → девушка кричит\n(x)"
+                )
+            }
+        )
+
+    monkeypatch.setattr("app.services.gpt_client.gpt_ask_fresh", fake_ask)
+    result = await improve_cell_scene(
+        session,
+        project,
+        int(parent.id),
+        operator_prompt="напряжённая сцена: носок на полу, потом крик",
+        anchors=[{"якорь": ANCHOR_1}, {"якорь": ANCHOR_2}],
+        passport={"place": "дом"},
+    )
+    actions = [s["действие"] for s in result["improve_report"]["shots"]]
+    assert actions == ["рука кладёт носок", "девушка кричит"]
+    assert all("Банди" not in a and "газет" not in a and "экран" not in a for a in actions)
+    assert " ".join(s["закадр"] for s in result["improve_report"]["shots"]) == VO
+    assert result["inserted_frames"] == 1
+
+
+@pytest.mark.asyncio
+async def test_improve_parses_flat_json_shots(
+    session: AsyncSession, project: Project, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent, neighbor = _cell(project)
+    session.add_all([project, parent, neighbor])
+    await session.flush()
+
+    async def fake_ask(text: str, **kwargs):  # noqa: ANN003
+        return json.dumps(
+            {
+                "главное_действие": [
+                    "идёт за девушкой",
+                    "хватает её за плечо",
+                    "девушка лежит на земле",
+                ]
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr("app.services.gpt_client.gpt_ask_fresh", fake_ask)
+    result = await improve_cell_scene(
+        session,
+        project,
+        int(parent.id),
+        operator_prompt="тед банди преследует девушку а потом на нее нападает",
+        passport={"place": "улица"},
+    )
+    actions = [s["действие"] for s in result["improve_report"]["shots"]]
+    assert actions == [
+        "идёт за девушкой",
+        "хватает её за плечо",
+        "девушка лежит на земле",
+    ]
+    assert result["inserted_frames"] == 2
+    await session.refresh(neighbor)
     assert neighbor.voiceover_text.startswith("Утром")
 
 
@@ -492,12 +636,6 @@ async def test_improve_without_gpt_still_goes_through_nodes(
     assert nodes["fw_action"] == "fallback"
     assert nodes["fw_shots"] == "fallback"
     shots = result["improve_report"]["shots"]
-    assert [s["действие"] for s in shots] == [
-        "пришёл в дом",
-        "положил носок",
-        "зашла девушка",
-        "закричала",
-        "убегает",
-    ]
+    assert [s["действие"] for s in shots] == ["пришёл в дом"]
     assert all(s["закадр"] for s in shots)
-    assert result["inserted_frames"] == 4
+    assert result["inserted_frames"] == 0

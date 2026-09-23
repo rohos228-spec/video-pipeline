@@ -415,6 +415,12 @@ export interface MontageBoardFrame {
   scene_anchor_rows?: MontageAnchorRow[];
   /** Полный закадр VO-ячейки (сцены). */
   vo_cell_full?: string;
+  /** Сохранённый кусок закадра — полный текст сцены при перегенерации. */
+  vo_span?: { start: number; end: number; text: string } | null;
+  /** Неиспользованный закадр до этой сцены (общий с «после» предыдущей). */
+  vo_unused_before?: string;
+  /** Неиспользованный закадр после этой сцены (общий с «до» следующей). */
+  vo_unused_after?: string;
   shot_angle?: string;
   shot_move?: string;
   shot_stitch?: string;

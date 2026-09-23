@@ -1,15 +1,9 @@
 """«Улучшить сцену»: одна VO-ячейка точечно через 6 нод группы script_frames_qc.
 
 fw_script → fw_check_script → fw_action → fw_shots → fw_qc → fw_report
-на одной ячейке доски. Промты — файлы группы + режиссура
-``scene_improve_directing_ru.md``: исходные события достраиваются до
-монтажной фразы (вход, мост, реакция, следствие), каждому кадру
-проставляется покрытие (план, ракурс, движение, стык), паспорт сцены
-заполняется и уточняется.
-
-Якоря сцены — граница текста. Каждый якорь владеет своим куском закадра
-(нарезка как на доске, ``split_vo_by_anchors``); кадры якоря берут закадр
-только из его куска. Якоря оператора GPT не переписывает и не добавляет.
+на одной ячейке доски. Промт оператора — заказ сцены: GPT ставит
+видимые кадры по нему. Закадр и якоря только подпись на кадры,
+сюжет из них не берём. Без промта — один кадр на якорь.
 """
 
 from __future__ import annotations
@@ -50,13 +44,8 @@ from app.services.scene_shot_grammar import (
     camera_pack,
     classify_object,
     fill_bit_spans,
-    visible_len,
 )
-from app.services.shot_templates import (
-    format_scene_chain,
-    parse_scene_chain,
-    split_scene_action_beats,
-)
+from app.services.shot_templates import format_scene_chain, parse_scene_chain
 from app.services.vo_shot_expand import _flag_attrs, bits_from_attrs, main_action_text
 
 GROUP_NODES: tuple[tuple[str, str], ...] = (
@@ -68,7 +57,6 @@ GROUP_NODES: tuple[tuple[str, str], ...] = (
     ("fw_report", "Отчёт"),
 )
 
-DIRECTING_PROMPT = "scene_improve_directing_ru"
 REPORT_ATTR = "montage_improve_report"
 
 SHOT_ROLES = ("вход", "мост", "действие", "перебивка", "реакция", "следствие")
@@ -117,28 +105,29 @@ def load_group_prompt(name: str) -> str:
 
 
 def shot_budget(vo: str) -> int:
-    """Сколько кадров выдержит кусок закадра: ~12 знаков на кадр, слово на кадр минимум."""
-    text = _norm(vo)
-    if not text:
-        return 1
-    words = len(text.split())
-    soft = max(3, round(visible_len(text) / 12))
-    return max(1, min(MAX_IMPROVE_SHOTS, soft, words))
+    """По умолчанию один кадр на кусок закадра — длину текста в кадры не раздуваем."""
+    return 1 if _norm(vo) else 1
 
 
-def allot_budgets(pieces: list[str]) -> list[int]:
-    """Бюджет кадров по якорям: сумма ≤ max(12, число якорей), минимум 1 на якорь."""
-    raw = [shot_budget(p) for p in pieces]
-    cap = max(MAX_IMPROVE_SHOTS, len(pieces))
-    total = sum(raw)
-    if total <= cap:
-        return raw
-    out = [max(1, int(b * cap / total)) for b in raw]
-    while sum(out) > cap:
-        i = max(range(len(out)), key=lambda k: out[k])
-        if out[i] <= 1:
-            break
-        out[i] -= 1
+_ARROW_SPLIT_RE = re.compile(r"\s*→\s*|\s*->\s*")
+
+
+def operator_arrow_beats(text: str) -> list[str]:
+    """Шаги только по ``→``. Проза, «потом» и точки кадры не плодят."""
+    parts = [p for p in _ARROW_SPLIT_RE.split(_norm(text)) if p]
+    return parts if len(parts) >= 2 else []
+
+
+def allot_budgets(pieces: list[str], operator_prompt: str = "") -> list[int]:
+    """Один кадр на якорь. Больше — только если промт оператора сам режет шаги ``→``."""
+    n = len(pieces) or 1
+    out = [1] * n
+    extra = len(operator_arrow_beats(operator_prompt)) - n
+    i = 0
+    while extra > 0 and sum(out) < MAX_IMPROVE_SHOTS:
+        out[i % n] += 1
+        extra -= 1
+        i += 1
     return out
 
 
@@ -146,17 +135,81 @@ def _cell_block(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def _compose(rules: str, directing: str, task: str, payload: dict[str, Any]) -> str:
-    parts = [rules.rstrip()]
-    if directing.strip():
-        parts.append(directing.rstrip())
-    parts.append("## задача оператора\n" + task.strip())
-    parts.append("Вход — одна VO-ячейка:\n" + _cell_block(payload))
+def _compose(
+    rules: str,
+    directing: str,
+    task: str,
+    payload: dict[str, Any],
+    *,
+    operator_first: bool = False,
+) -> str:
+    task_block = "## задача оператора\n" + task.strip()
+    body = "Вход — одна VO-ячейка:\n" + _cell_block(payload)
+    extra = [p.rstrip() for p in (rules, directing) if p and p.strip()]
+    if operator_first:
+        parts = [task_block, *extra, body]
+    else:
+        parts = [*extra, task_block, body]
     return "\n\n".join(parts) + "\n"
 
 
+IMPROVE_ACTION_RULES = """# Агент: главное действие
+# Улучшить сцену — действие
+Ответ — ТОЛЬКО JSON. В `fields` — `главное_действие` и `паспорт`.
+
+Поставь сцену: видимые кадры по заказу оператора.
+Не копируй заказ дословно. Каждый шаг — глагол и кто/что видно
+(пододвигает газету, включает монитор). Столько шагов, сколько событий.
+
+`главное_действие` — массив строк, по одной на кадр:
+["идёт за девушкой", "хватает её за плечо", "девушка лежит на земле"]
+
+Закадр, якоря и биты в заказ не входят — это не сюжет.
+Не добавляй вход, мост, перебивку, реакцию, следствие ради схемы.
+Не копируй учебные примеры. Не пиши выводы («понимает», «узнаёт»).
+"""
+
+
+IMPROVE_SHOTS_RULES = """# Агент: сцены → кадры
+# Улучшить сцену — кадры
+Ответ — ТОЛЬКО JSON apply-ops. Один op, в `fields` только `кадры`.
+
+Один шаг `→` = один кадр, порядок тот же. Новых кадров не добавляй.
+Не режь закадр на 13–80 знаков и не добавляй кадр «потому что текст длинный».
+`роль` — метка покрытия, не повод выдумать кадр.
+`якорь_n` = N карточки. Склейка закадра кадров якоря = его `закадр`.
+"""
+
+
+def _loose_json_dict(text: str) -> dict[str, Any] | None:
+    """apply-ops или любой JSON-объект из ответа GPT."""
+    if not (text or "").strip():
+        return None
+    data = extract_apply_ops_json(text)
+    if data:
+        return data
+    candidates: list[str] = [
+        m.group(1) for m in re.finditer(r"```(?:json)?\s*([\s\S]*?)```", text)
+    ]
+    stripped = text.strip()
+    if stripped.startswith("{"):
+        candidates.append(stripped)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(text[start : end + 1])
+    for cand in candidates:
+        try:
+            obj = json.loads(cand)
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(obj, dict):
+            return obj
+    return None
+
+
 def _ops_fields(reply: str, uuid: str) -> dict[str, Any]:
-    data = extract_apply_ops_json(reply or "")
+    data = _loose_json_dict(reply or "")
     if not data:
         return {}
     ops = data.get("ops") or data.get("actions") or []
@@ -166,13 +219,31 @@ def _ops_fields(reply: str, uuid: str) -> dict[str, Any]:
             continue
         fields = op.get("fields") if isinstance(op.get("fields"), dict) else {}
         if not fields:
-            continue
+            fields = op
         op_uuid = str(op.get("frame_uuid") or op.get("uuid") or "").strip()
         if uuid and op_uuid == uuid:
             return fields
         if not fallback:
             fallback = fields
-    return fallback
+    if fallback:
+        return fallback
+    inner = data.get("fields")
+    if isinstance(inner, dict) and (
+        inner.get("главное_действие") or inner.get("main_action") or inner.get("кадры")
+    ):
+        return inner
+    scenes = data.get("scenes")
+    if isinstance(scenes, list):
+        for scene in scenes:
+            if not isinstance(scene, dict):
+                continue
+            if isinstance(scene.get("fields"), dict):
+                return scene["fields"]
+            if scene.get("главное_действие") or scene.get("кадры"):
+                return scene
+    if data.get("главное_действие") or data.get("main_action") or data.get("кадры"):
+        return data
+    return {}
 
 
 def _units_payload(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -216,7 +287,9 @@ def check_bits(vo: str, bits: list[Any]) -> str | None:
     return None
 
 
-def anchor_units(vo: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def anchor_units(
+    vo: str, rows: list[dict[str, Any]], operator_prompt: str = ""
+) -> list[dict[str, Any]]:
     """Якоря → куски закадра, как их режет доска. Ненайденный якорь — ошибка."""
     text = _norm(vo)
     ordered = sorted(
@@ -237,7 +310,7 @@ def anchor_units(vo: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             f"якорей {len(texts)}, а кусков закадра {len(pieces)}: "
             "два якоря стоят в одном месте текста"
         )
-    budgets = allot_budgets(pieces)
+    budgets = allot_budgets(pieces, operator_prompt)
     return [
         {
             "n": i + 1,
@@ -289,13 +362,13 @@ async def stage_script(
     own = scene_anchor_bits(frames, parent, members)
     rows = given or own
     if rows:
-        units = anchor_units(vo, rows)
+        units = anchor_units(vo, rows, operator_prompt)
         _save_bits(frames, parent, members, rows)
         nodes.append(
             _node(
                 "fw_script",
                 "reused",
-                f"якоря сцены: {len(units)} — GPT их не меняет",
+                f"якоря сцены: {len(units)} — граница текста, не сюжет",
             )
         )
         nodes.append(
@@ -306,6 +379,22 @@ async def stage_script(
             )
         )
         return units
+
+    if operator_prompt:
+        text = _norm(vo)
+        nodes.append(
+            _node("fw_script", "ok", "сюжет из промта — биты из закадра не пишем")
+        )
+        nodes.append(_node("fw_check_script", "ok", "закадр целиком ляжет на кадры промта"))
+        return [
+            {
+                "n": 1,
+                "якорь": " ".join(text.split()[:8]),
+                "изменение": "",
+                "закадр": text,
+                "бюджет": 1,
+            }
+        ]
 
     reason = "нет битов"
     tries: list[str] = []
@@ -321,7 +410,7 @@ async def stage_script(
         reason = check_bits(vo, candidate) or ""
         if not reason:
             try:
-                units = anchor_units(vo, candidate)
+                units = anchor_units(vo, candidate, operator_prompt)
             except RuntimeError as exc:
                 reason = str(exc)
             else:
@@ -345,7 +434,7 @@ async def stage_script(
             "якорь": " ".join(text.split()[:8]),
             "изменение": "",
             "закадр": text,
-            "бюджет": allot_budgets([text])[0],
+            "бюджет": allot_budgets([text], operator_prompt)[0],
         }
     ]
 
@@ -386,44 +475,169 @@ def build_improve_action_prompt(
     operator_prompt: str,
 ) -> str:
     k = len(units)
-    task = (
-        "«Улучшить сцену». Дострой исходные события ячейки до монтажной фразы "
-        "по разделу «Режиссура».\n"
-        f"Якоря сцены заданы: их ровно {k}. Верни ровно {k} карточек `N.` — "
-        "N = номер якоря, по порядку. В скобках карточки — дословно `закадр` "
-        "этого якоря, ни словом больше или меньше. Шаги карточки показывают "
-        "только то, о чём закадр этого якоря; не больше `бюджет_кадров` шагов "
-        "на карточку. Якоря не добавляй, не убирай, не объединяй.\n"
-        "Каждый `→` — отдельный кадр. Все исходные события остаются по порядку; "
-        "добавь мосты (вход в место, предмет в руке, второй персонаж до встречи), "
-        "реакцию после сильного события и следствие в конце.\n"
-        "Место шага — `место` паспорта, можно с уточнением части места "
-        "(«дом: коридор»), другое место не выдумывай.\n"
-        "В `fields` верни `главное_действие` и `паспорт` (объект с полями "
-        "смысл, тип, место, набор, персонажи, свет, предметы, фон, акцент, "
-        "особенность — по разделу «Паспорт сцены»)."
-    )
     if operator_prompt:
-        task += f"\nПромт оператора: {operator_prompt}"
-    payload = {
-        "frame_uuid": str(parent.uuid or ""),
-        "frame_number": int(parent.number),
-        "voiceover_text": vo,
-        "якоря": _units_payload(units),
-        "текущая_цепь": main_action_text(parent),
-        "паспорт": passport,
-        "mode": "improve",
-    }
-    return _compose(
-        load_group_prompt("main_action_from_bits_ru"),
-        load_group_prompt(DIRECTING_PROMPT),
-        task,
-        payload,
-    )
+        task = (
+            "Поставь сцену по этому заказу — не копируй текст заказа в действие "
+            "и не снимай другую историю:\n"
+            f"{operator_prompt}\n\n"
+            "Напиши видимые физические шаги (глагол + кто/что в кадре). "
+            "Столько кадров, сколько событий в заказе. "
+            "Не иллюстрируй закадр, якоря и биты: их нет во входе, это не сюжет.\n"
+            "Не добавляй вход, мост, перебивку, реакцию и следствие, "
+            "если заказ этого не просит.\n"
+            "Место — `место` паспорта. В `fields` — `главное_действие` и `паспорт`."
+        )
+        payload = {
+            "frame_uuid": str(parent.uuid or ""),
+            "frame_number": int(parent.number),
+            "заказ": operator_prompt,
+            "паспорт": passport,
+            "mode": "improve",
+        }
+    else:
+        task = (
+            f"Якоря заданы: ровно {k} карточек `N.` по порядку. В скобках — "
+            "дословно `закадр` якоря. Один шаг на якорь: видимое действие "
+            "этого куска, не больше `бюджет_кадров`.\n"
+            "Не добавляй вход, мост, перебивку, реакцию и следствие "
+            "отдельными кадрами. Не раздувай сцену.\n"
+            "Место шага — `место` паспорта. В `fields` — `главное_действие` "
+            "и `паспорт` (смысл, тип, место, набор, персонажи, свет, предметы, "
+            "фон, акцент, особенность)."
+        )
+        payload = {
+            "frame_uuid": str(parent.uuid or ""),
+            "frame_number": int(parent.number),
+            "voiceover_text": vo,
+            "якоря": _units_payload(units),
+            "текущая_цепь": main_action_text(parent),
+            "паспорт": passport,
+            "промт_оператора": operator_prompt,
+            "mode": "improve",
+        }
+    return _compose(IMPROVE_ACTION_RULES, "", task, payload, operator_first=True)
 
 
 def _card_steps(card: dict[str, Any]) -> list[str]:
-    return split_scene_action_beats(_norm(card.get("action")))
+    act = _norm(card.get("action"))
+    parts = [p for p in _ARROW_SPLIT_RE.split(act) if p]
+    return parts
+
+
+_NUM_STEP_RE = re.compile(
+    r"(?:^|\n)\s*(?:кадр\s*)?(\d+)\s*[.)]\s*(.+?)(?=(?:\n\s*(?:кадр\s*)?\d+\s*[.)])|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _action_from_item(item: Any) -> tuple[str, str]:
+    if isinstance(item, str):
+        return "", _norm(item)
+    if isinstance(item, dict):
+        act = _norm(item.get("действие") or item.get("action") or item.get("шаг"))
+        place = _norm(item.get("место") or item.get("place"))
+        return place, act
+    return "", ""
+
+
+def _sentence_steps(text: str) -> list[dict[str, Any]]:
+    parts = [p.strip().rstrip(".!?") for p in re.split(r"(?<=[.!?])\s+", _norm(text)) if p.strip()]
+    parts = [_norm(p) for p in parts if _norm(p)]
+    if len(parts) < 2:
+        return []
+    return [{"n": i + 1, "place": "", "action": part} for i, part in enumerate(parts)]
+
+
+def _inline_numbered_steps(text: str) -> list[dict[str, Any]]:
+    marks = list(re.finditer(r"(?:^|\s)(\d+)\s*[.)]\s+", text))
+    if len(marks) < 2:
+        return []
+    out: list[dict[str, Any]] = []
+    for i, match in enumerate(marks):
+        start = match.end()
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        rest = _norm(text[start:end])
+        rest = re.sub(r"\([^)]*\)\s*$", "", rest).strip()
+        place, act = "", rest
+        if " — " in rest:
+            place, act = rest.split(" — ", 1)
+        act = _norm(act)
+        if act:
+            out.append({"n": int(match.group(1)), "place": _norm(place), "action": act})
+    return out
+
+
+def loose_action_steps(
+    text: str, *, allow_sentences: bool = False
+) -> list[dict[str, Any]]:
+    """Разбор цепи, если нет строгой формы ``N. место — шаг``."""
+    raw = (text or "").replace("–", "—").replace(" - ", " — ").strip()
+    if not raw:
+        return []
+    chain = parse_scene_chain(raw)
+    if chain:
+        return chain
+    found: list[dict[str, Any]] = []
+    for match in _NUM_STEP_RE.finditer(raw):
+        rest = _norm(match.group(2))
+        rest = re.sub(r"\([^)]*\)\s*$", "", rest).strip()
+        place, act = "", rest
+        if " — " in rest:
+            place, act = rest.split(" — ", 1)
+        act = _norm(act)
+        if act:
+            found.append({"n": int(match.group(1)), "place": _norm(place), "action": act})
+    if len(found) >= 2:
+        return found
+    inline = _inline_numbered_steps(raw)
+    if len(inline) >= 2:
+        return inline
+    if found:
+        return found
+    arrows = [p for p in _ARROW_SPLIT_RE.split(_norm(raw)) if p]
+    if len(arrows) >= 2:
+        return [{"n": i + 1, "place": "", "action": a} for i, a in enumerate(arrows)]
+    if allow_sentences:
+        return _sentence_steps(raw)
+    return []
+
+
+def cards_raw_from_reply(fields: dict[str, Any], reply: str) -> list[dict[str, Any]]:
+    """главное_действие / кадры / нумерованный текст → шаги сцены."""
+    raw = fields.get("главное_действие") or fields.get("main_action")
+    if isinstance(raw, list):
+        out: list[dict[str, Any]] = []
+        for i, item in enumerate(raw, start=1):
+            place, act = _action_from_item(item)
+            if act:
+                out.append({"n": i, "place": place, "action": act})
+        if out:
+            return out
+    if isinstance(raw, str) and raw.strip():
+        steps = loose_action_steps(raw, allow_sentences=True)
+        if steps:
+            return steps
+    for key in ("кадры", "shots", "шаги", "steps"):
+        val = fields.get(key)
+        if not isinstance(val, list):
+            continue
+        out = []
+        for i, item in enumerate(val, start=1):
+            place, act = _action_from_item(item)
+            if act:
+                out.append({"n": i, "place": place, "action": act})
+        if out:
+            return out
+    extra = _ops_fields(reply or "", "")
+    if extra and extra is not fields:
+        raw2 = extra.get("главное_действие") or extra.get("main_action")
+        if raw2 and raw2 != raw:
+            return cards_raw_from_reply(extra, "")
+        for key in ("кадры", "shots", "шаги", "steps"):
+            val = extra.get(key)
+            if isinstance(val, list) and val:
+                return cards_raw_from_reply(extra, "")
+    return loose_action_steps(reply or "")
 
 
 def fit_cards_to_units(
@@ -453,25 +667,105 @@ def fit_cards_to_units(
     return out
 
 
+def cap_cards_to_budget(
+    cards: list[dict[str, Any]], units: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Лишние шаги сверх бюджета якоря отрезаем — GPT не раздувает сцену."""
+    out: list[dict[str, Any]] = []
+    for card, unit in zip(cards, units, strict=True):
+        cap = max(1, int(unit.get("бюджет") or 1))
+        steps = _card_steps(card)[:cap]
+        row = dict(card)
+        if steps:
+            row["action"] = " → ".join(steps)
+        out.append(row)
+    return out
+
+
+_PROSE_SPLIT_RE = re.compile(r"(?i)\s+(?:а\s+)?потом\s+")
+
+
+def operator_action_beats(text: str) -> list[str]:
+    """Шаги сцены только из промта. `→`, иначе «потом», иначе один шаг."""
+    arrows = operator_arrow_beats(text)
+    if arrows:
+        return arrows[:MAX_IMPROVE_SHOTS]
+    prose = [_norm(p) for p in _PROSE_SPLIT_RE.split(_norm(text)) if _norm(p)]
+    if len(prose) >= 2:
+        return prose[:MAX_IMPROVE_SHOTS]
+    one = _norm(text)
+    return [one] if one else []
+
+
+def cards_from_operator_prompt(
+    operator_prompt: str, place: str, vo: str
+) -> list[dict[str, Any]]:
+    """Запасной разбор, если GPT молчит: шаги `→` или один шаг."""
+    beats = operator_action_beats(operator_prompt)
+    if not beats:
+        return []
+    parts = split_vo_for_shots(_norm(vo), len(beats))
+    return [
+        {"n": i + 1, "place": place, "action": beat, "vo": parts[i]}
+        for i, beat in enumerate(beats)
+    ]
+
+
+def scene_cards_from_gpt(
+    cards_raw: list[dict[str, Any]], place: str, vo: str
+) -> list[dict[str, Any]] | None:
+    """Ответ GPT → кадры сцены. Закадр только нарезаем, сюжет из него не берём."""
+    steps = [s for card in cards_raw for s in _card_steps(card)]
+    steps = [s for s in steps if s][:MAX_IMPROVE_SHOTS]
+    if not steps:
+        return None
+    loc = place or _norm(cards_raw[0].get("place"))
+    parts = split_vo_for_shots(_norm(vo), len(steps))
+    return [
+        {"n": i + 1, "place": loc, "action": step, "vo": parts[i]}
+        for i, step in enumerate(steps)
+    ]
+
+
+def is_raw_prompt_dump(cards: list[dict[str, Any]], operator_prompt: str) -> bool:
+    """GPT не поставил сцену — в действие свалил весь заказ."""
+    op = _norm(operator_prompt)
+    if not cards or not op:
+        return False
+    if len(cards) == 1 and _norm(cards[0].get("action")) == op:
+        return True
+    glued = " → ".join(_norm(c.get("action")) for c in cards)
+    return glued == op
+
+
+def units_from_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "n": c["n"],
+            "якорь": "",
+            "изменение": _norm(c.get("action")),
+            "закадр": _norm(c.get("vo")),
+            "бюджет": max(1, len(_card_steps(c))),
+        }
+        for c in cards
+    ]
+
+
 def fallback_cards(
     parent: Frame, units: list[dict[str, Any]], operator_prompt: str, place: str
 ) -> list[dict[str, Any]]:
-    """Без GPT: промт оператора (одна сцена) → текущая цепь → изменение якоря."""
-    op = _norm(operator_prompt)
-    if len(units) == 1 and op and len(split_scene_action_beats(op)) >= 2:
-        parsed = parse_scene_chain(op)
-        cards = parsed or [{"n": 1, "place": place, "action": op}]
-        fitted = fit_cards_to_units(cards, units, place)
-        if fitted:
-            return fitted
+    """Без GPT: промт целиком → текущая цепь → изменение якоря."""
+    vo = " ".join(_norm(u.get("закадр")) for u in units)
+    if _norm(operator_prompt):
+        return cards_from_operator_prompt(operator_prompt, place, vo)
     fitted = fit_cards_to_units(parse_scene_chain(main_action_text(parent)), units, place)
     if fitted:
-        return fitted
+        return cap_cards_to_budget(fitted, units)
     return [
         {
             "n": u["n"],
             "place": place,
-            "action": u["изменение"] or (op if len(units) == 1 and op else "действие сцены"),
+            "action": u["изменение"] or "действие сцены",
             "vo": u["закадр"],
         }
         for u in units
@@ -497,36 +791,67 @@ async def stage_action(
         operator_prompt=operator_prompt,
     )
     note = ""
-    try:
-        reply = await ask(prompt)
-    except Exception as exc:  # noqa: BLE001
-        reply = ""
-        note = f"GPT: {type(exc).__name__}: {exc}"[:160]
-    fields = _ops_fields(reply, str(parent.uuid or ""))
-    chain = str(fields.get("главное_действие") or fields.get("main_action") or "").strip()
-    cards_raw = parse_scene_chain(chain) or (parse_scene_chain(reply) if reply else [])
-    gpt_passport = fields.get("паспорт") or fields.get("passport") or {}
-    if not isinstance(gpt_passport, dict):
-        gpt_passport = {}
-    cards = fit_cards_to_units(cards_raw, units, place)
-    if cards:
-        steps = sum(len(_card_steps(c)) for c in cards)
-        nodes.append(
-            _node(
-                "fw_action",
-                "ok",
-                f"монтажная фраза: {steps} шагов на {len(cards)} якор(ь/я/ей)",
+    gpt_passport: dict[str, Any] = {}
+    cards_raw: list[dict[str, Any]] = []
+    for attempt in range(2 if operator_prompt else 1):
+        ask_text = prompt
+        if attempt:
+            ask_text = (
+                prompt
+                + "\nНе копируй заказ в действие. Напиши видимые шаги кадра "
+                "(глагол + кто/что видно)."
             )
-        )
-        return cards, gpt_passport
-    if cards_raw and not note:
-        note = f"GPT вернул {len(cards_raw)} карточек на {len(units)} якорей"
+        try:
+            reply = await ask(ask_text)
+        except Exception as exc:  # noqa: BLE001
+            reply = ""
+            note = f"GPT: {type(exc).__name__}: {exc}"[:160]
+            break
+        fields = _ops_fields(reply, str(parent.uuid or ""))
+        cards_raw = cards_raw_from_reply(fields, reply)
+        if not cards_raw:
+            logger.warning(
+                "improve fw_action: не разобрали ответ GPT ({} симв): {}",
+                len(reply or ""),
+                _norm(reply)[:400],
+            )
+        raw_pass = fields.get("паспорт") or fields.get("passport") or {}
+        if isinstance(raw_pass, dict):
+            gpt_passport = raw_pass
+        if operator_prompt:
+            cards = scene_cards_from_gpt(cards_raw, place, vo)
+            if cards and not is_raw_prompt_dump(cards, operator_prompt):
+                nodes.append(
+                    _node(
+                        "fw_action",
+                        "ok",
+                        f"сцена по заказу: {len(cards)} кадр(ов), не закадр и не цитата промта",
+                    )
+                )
+                return cards, gpt_passport
+            note = "GPT списал заказ в действие" if cards else "GPT не поставил сцену"
+            continue
+        cards = fit_cards_to_units(cards_raw, units, place)
+        if cards:
+            cards = cap_cards_to_budget(cards, units)
+            steps = sum(len(_card_steps(c)) for c in cards)
+            nodes.append(
+                _node(
+                    "fw_action",
+                    "ok",
+                    f"монтажная фраза: {steps} шагов на {len(cards)} якор(ь/я/ей)",
+                )
+            )
+            return cards, gpt_passport
+        if cards_raw and not note:
+            note = f"GPT вернул {len(cards_raw)} карточек на {len(units)} якорей"
+        break
     cards = fallback_cards(parent, units, operator_prompt, place)
     nodes.append(
         _node(
             "fw_action",
             "fallback",
-            (note or "GPT не вернул цепь") + " — цепь из промта/текущей",
+            (note or "GPT не вернул цепь") + " — запасной разбор",
         )
     )
     return cards, gpt_passport
@@ -677,10 +1002,17 @@ def normalize_shots(
         obj = _norm(row.get("объект")).casefold()
         if obj not in OBJECTS:
             obj = classify_object(step)
-        place_new = i == 0
+        entrance = bool(
+            re.search(
+                r"вход|вош[её]л|приш[её]л|приехал|зашёл|зашел",
+                step,
+                re.I,
+            )
+        )
+        place_new = entrance
         pos = (
             "вход"
-            if place_new
+            if entrance
             else ("пик" if i == n - 1 and obj in {"лицо", "предмет", "взгляд"} else "развитие")
         )
         pack = _pack_to_ui(
@@ -749,17 +1081,17 @@ def build_improve_shots_prompt(
     passport: dict[str, str],
 ) -> str:
     task = (
-        "«Улучшить сцену»: главное_действие этой ячейки → кадры. "
-        "Один шаг `→` = один кадр, порядок тот же.\n"
-        "Для каждого кадра дополнительно заполни покрытие по разделу "
-        "«Покрытие кадра»: `роль`, `план`, `ракурс`, `движение`, `стык` — "
-        "только значения из списков.\n"
-        "`якорь_n` каждого кадра = N карточки, из которой шаг. Закадр кадра — "
-        "дословный кусок `закадр` **этого** якоря; склейка закадра кадров "
-        "одного якоря = его `закадр`. Текст другого якоря в кадр не бери. "
-        "Кусок может быть короче 13 знаков, но не пустой.\n"
-        "`место` — место паспорта с уточнением части места через двоеточие "
-        "(«дом: коридор»)."
+        "Главное_действие этой ячейки → кадры. Один шаг `→` = один кадр, "
+        "порядок тот же. Новых кадров не добавляй.\n"
+        "Для каждого кадра заполни покрытие: `роль`, `план`, `ракурс`, "
+        "`движение`, `стык` — только из списков "
+        f"(роли: {', '.join(SHOT_ROLES)}; план: {', '.join(COVERAGE_PLAN_CHOICES)}; "
+        f"ракурс: {', '.join(COVERAGE_ANGLE_CHOICES)}; "
+        f"движение: {', '.join(COVERAGE_MOVE_CHOICES)}).\n"
+        "`роль` — метка покрытия, не повод выдумать кадр.\n"
+        "`якорь_n` = N карточки шага. Закадр кадра — кусок `закадр` этого якоря; "
+        "склейка кадров якоря = его `закадр`. `место` — паспорт с уточнением "
+        "части места («дом: коридор»)."
     )
     payload = {
         "frame_uuid": str(parent.uuid or ""),
@@ -769,12 +1101,7 @@ def build_improve_shots_prompt(
         "главное_действие": format_scene_chain(cards),
         "паспорт": passport,
     }
-    return _compose(
-        load_group_prompt("scenes_to_frames_ru"),
-        load_group_prompt(DIRECTING_PROMPT),
-        task,
-        payload,
-    )
+    return _compose(IMPROVE_SHOTS_RULES, "", task, payload, operator_first=True)
 
 
 async def stage_shots(
@@ -786,9 +1113,16 @@ async def stage_shots(
     units: list[dict[str, Any]],
     passport: dict[str, str],
     nodes: list[dict[str, Any]],
+    from_prompt: bool = False,
 ) -> list[dict[str, Any]]:
     place = passport.get("место") or ""
     k = len(units)
+    canonical = shots_from_cards(cards, cell_number=int(parent.number), place=place)
+    if from_prompt:
+        nodes.append(
+            _node("fw_shots", "ok", f"кадров: {len(canonical)} — шаги промта, не закадр")
+        )
+        return canonical
     prompt = build_improve_shots_prompt(
         parent=parent, vo=vo, cards=cards, units=units, passport=passport
     )
@@ -804,11 +1138,10 @@ async def stage_shots(
         if isinstance(raw, list)
         else []
     )
-    canonical = shots_from_cards(cards, cell_number=int(parent.number), place=place)
     if shots and not anchors_grouped(shots, k) and len(shots) == len(canonical):
         for shot, ref in zip(shots, canonical, strict=True):
             shot["якорь_n"] = ref["якорь_n"]
-    if shots and anchors_grouped(shots, k):
+    if shots and anchors_grouped(shots, k) and len(shots) == len(canonical):
         nodes.append(_node("fw_shots", "ok", f"кадров: {len(shots)}, покрытие от GPT"))
         return shots
     if shots and not note:
@@ -991,15 +1324,6 @@ def qc_reasons(
             ):
                 hard.append(f"кадр {n}: план и ракурс как у предыдущего (30°)")
         prev = shot
-    roles = [str(s.get("роль") or "") for s in shots]
-    if len(shots) >= 3 and "реакция" not in roles and not any(s.get("объект") == "лицо" for s in shots):
-        soft.append("нет кадра реакции (крупный план лица)")
-    if (
-        len(shots) >= 2
-        and shots[0].get("роль") != "вход"
-        and shots[0].get("план") not in {"ОБЩИЙ", "ДАЛЬНИЙ", "ДЕТАЛЬ"}
-    ):
-        soft.append("первый кадр не вводит место (нет общего/детали входа)")
     return hard, soft
 
 
@@ -1014,9 +1338,9 @@ def build_improve_qc_prompt(
     task = (
         "«Улучшить сцену»: QC кадров этой ячейки. Код нашёл брак:\n- "
         + "\n- ".join(reasons)
-        + "\nВерни полный исправленный список `кадры` (с покрытием и `якорь_n`). "
-        "Исходные события, порядок и якоря не меняй; закадр кадра — только из "
-        "куска его якоря."
+        + "\nВерни тот же список `кадры` (с покрытием и `якорь_n`). "
+        "Кадры не добавляй и не убирай. Исходные события, порядок и якоря "
+        "не меняй; закадр кадра — только из куска его якоря."
     )
     payload = {
         "frame_uuid": str(parent.uuid or ""),
@@ -1025,12 +1349,7 @@ def build_improve_qc_prompt(
         "якоря": _units_payload(units),
         "кадры": shots,
     }
-    return _compose(
-        load_group_prompt("shots_qc_ru"),
-        load_group_prompt(DIRECTING_PROMPT),
-        task,
-        payload,
-    )
+    return _compose(load_group_prompt("shots_qc_ru"), "", task, payload)
 
 
 async def stage_qc(
@@ -1172,7 +1491,6 @@ async def improve_cell_scene(
     from app.services.montage_action_gpt import (
         _map_character_labels,
         apply_cell_passport,
-        build_scene_image_ops,
     )
     from app.services.montage_scene_editor import cell_full_text, frame_place, scene_group
 
@@ -1216,32 +1534,34 @@ async def improve_cell_scene(
     new_passport, changed = merge_passport(op_passport, gpt_passport)
     pass_after = _passport_input(new_passport, labels)
     place = pass_after.get("место") or ""
+    shot_units = units_from_cards(cards) if op_prompt else units
     shots = await stage_shots(
         ask,
         parent=parent,
         vo=vo,
         cards=cards,
-        units=units,
+        units=shot_units,
         passport=pass_after,
         nodes=nodes,
+        from_prompt=bool(op_prompt),
     )
     shots, warnings = await stage_qc(
         ask,
         parent=parent,
         vo=vo,
         shots=shots,
-        units=units,
+        units=shot_units,
         place=place,
         nodes=nodes,
     )
     if not shots:
         raise RuntimeError("улучшение не дало ни одного кадра")
     if _glue(shots) != vo:
-        raise RuntimeError("закадр кадров не сошёлся с текстом якорей сцены — ничего не записано")
+        raise RuntimeError("закадр кадров не сошёлся с текстом сцены — ничего не записано")
 
     applied = apply_cell_passport(parent, frames, new_passport)
     await session.flush()
-    chain_text = _final_chain(shots, units, place)
+    chain_text = _final_chain(shots, shot_units, place)
     frames = await _load_frames(session, int(project.id))
     parent, _members = scene_group(frames, parent)
     apply_report = await apply_coverage_scene_action(
@@ -1294,20 +1614,13 @@ async def improve_cell_scene(
         )
     )
     frames = await _load_frames(session, int(project.id))
-    parent, members = scene_group(frames, parent)
+    parent, _members = scene_group(frames, parent)
     attrs = dict(parent.attrs or {})
     attrs[REPORT_ATTR] = report
     parent.attrs = attrs
     _flag_attrs(parent)
     await session.flush()
 
-    ops = build_scene_image_ops(
-        members,
-        passport=new_passport,
-        chain=apply_report.get("chain") or chain_text,
-        frame_ids=None,
-        kadry=shots,
-    )
     logger.info(
         "montage improve #{} cell={} anchors={} shots={} inserted={} passport={} nodes={}",
         project.id,
@@ -1331,6 +1644,6 @@ async def improve_cell_scene(
         "inserted_frames": apply_report.get("inserted_frames"),
         "report": apply_report,
         "improve_report": report,
-        "image_ops": ops,
-        "images": len(ops),
+        "image_ops": [],
+        "images": 0,
     }

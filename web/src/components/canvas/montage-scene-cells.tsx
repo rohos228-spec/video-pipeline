@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Images, Loader2, Plus, Sparkles, Trash2 } from "lucide-react";
+import { AlertTriangle, ChevronDown, Loader2, Plus, Sparkles, TextSelect, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   api,
@@ -664,6 +664,165 @@ export function mergeAnchorRows(
 }
 
 /** Якоря VO-ячейки: где сцена режется на кадры. */
+export type MontageVoSpan = {
+  start: number;
+  end: number;
+  text: string;
+  full?: string;
+};
+
+function VoUnusedWarn({ before, after }: { before?: string; after?: string }) {
+  const beforeText = (before || "").trim();
+  const afterText = (after || "").trim();
+  if (!beforeText && !afterText) return null;
+  return (
+    <div className="absolute right-1.5 top-1.5 z-10 max-h-40 max-w-[min(20rem,calc(100%-3.5rem))] overflow-y-auto rounded-md border border-amber-400/60 bg-amber-950/95 px-1.5 py-1 shadow-lg">
+      <div className="mb-0.5 flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wide text-amber-200">
+        <AlertTriangle className="h-3 w-3 shrink-0" />
+        неиспользованный закадр
+      </div>
+      {beforeText ? (
+        <div>
+          <div className="text-[9px] font-semibold uppercase tracking-wide text-amber-300/90">
+            до
+          </div>
+          <p className="whitespace-pre-wrap break-words text-[10px] leading-snug text-amber-50">
+            {beforeText}
+          </p>
+        </div>
+      ) : null}
+      {afterText ? (
+        <div className={beforeText ? "mt-1.5" : undefined}>
+          <div className="text-[9px] font-semibold uppercase tracking-wide text-amber-300/90">
+            после
+          </div>
+          <p className="whitespace-pre-wrap break-words text-[10px] leading-snug text-amber-50">
+            {afterText}
+          </p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function VoSpanEditor({
+  full,
+  span,
+  unusedBefore,
+  unusedAfter,
+  disabled,
+  onSave,
+}: {
+  full: string;
+  span: MontageVoSpan | null;
+  unusedBefore?: string;
+  unusedAfter?: string;
+  disabled?: boolean;
+  onSave: (next: MontageVoSpan | null) => void;
+}) {
+  const areaRef = useRef<HTMLTextAreaElement>(null);
+  const [text, setText] = useState(full);
+  const [draft, setDraft] = useState<MontageVoSpan | null>(span);
+
+  useEffect(() => {
+    setText(full);
+  }, [full]);
+
+  useEffect(() => {
+    setDraft(span);
+  }, [span?.start, span?.end, span?.text]);
+
+  const capture = () => {
+    const el = areaRef.current;
+    if (!el) return;
+    const start = el.selectionStart ?? 0;
+    const end = el.selectionEnd ?? 0;
+    if (end <= start) return;
+    const piece = text.slice(start, end);
+    if (!piece.trim()) return;
+    setDraft({ start, end, text: piece, full: text });
+  };
+
+  const commit = () => {
+    const el = areaRef.current;
+    const start = el?.selectionStart ?? 0;
+    const end = el?.selectionEnd ?? 0;
+    const hasSel = end > start && text.slice(start, end).trim();
+    const piece = hasSel ? text.slice(start, end) : text;
+    const from = hasSel ? start : 0;
+    const to = hasSel ? end : text.length;
+    if (!piece.trim()) return;
+    onSave({ start: from, end: to, text: piece, full: text });
+  };
+
+  const selected = (draft?.text || "").trim();
+  const saved = (span?.text || "").trim();
+  const dirty = text !== full;
+
+  return (
+    <div className="relative mb-2 rounded-md border border-white/15 bg-black/30 p-2">
+      <VoUnusedWarn before={unusedBefore} after={unusedAfter} />
+      <span className="mb-1 flex items-center gap-1.5 pr-[min(20rem,42%)] text-[10px] font-semibold uppercase tracking-wide text-white/70">
+        <TextSelect className="h-3 w-3" />
+        закадр этой сцены
+      </span>
+      <p className={cn(HINT, "mb-1")}>
+        правьте текст здесь. можно выделить кусок мышкой — сохранится он.
+        без выделения сохранится весь текст окна.
+      </p>
+      <textarea
+        ref={areaRef}
+        className={cn(FIELD, "min-h-[7rem] resize-y")}
+        value={text}
+        disabled={disabled}
+        onChange={(e) => setText(e.target.value)}
+        onMouseUp={capture}
+        onKeyUp={capture}
+      />
+      {selected ? (
+        <p className={cn(HINT, "mt-1")} style={{ color: ACCENT }}>
+          выделено {selected.length} зн.: «{selected.slice(0, 120)}
+          {selected.length > 120 ? "…" : ""}»
+        </p>
+      ) : saved ? (
+        <p className={cn(HINT, "mt-1")} style={{ color: ACCENT }}>
+          сцена владеет: «{saved.slice(0, 120)}
+          {saved.length > 120 ? "…" : ""}»
+        </p>
+      ) : dirty ? (
+        <p className={cn(HINT, "mt-1")}>текст изменён — нажмите сохранить</p>
+      ) : (
+        <p className={cn(HINT, "mt-1")}>сцена владеет всем текстом окна</p>
+      )}
+      <div className="mt-1.5 flex items-center justify-end gap-1.5">
+        {saved || selected || dirty ? (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              setDraft(null);
+              setText(full);
+              onSave(null);
+            }}
+            className="rounded-md px-1.5 py-0.5 text-[10px] text-white/45 hover:text-white"
+          >
+            снять
+          </button>
+        ) : null}
+        <button
+          type="button"
+          disabled={disabled || !text.trim()}
+          onClick={commit}
+          className="rounded-md px-2 py-1 text-[11px] font-semibold text-black disabled:opacity-40"
+          style={{ backgroundColor: ACCENT }}
+        >
+          сохранить как закадр сцены
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function AnchorCell({
   projectId,
   frameId,
@@ -676,7 +835,11 @@ export function AnchorCell({
   pending,
   disabled,
   heading,
+  voSpan,
+  unusedBefore,
+  unusedAfter,
   onCommit,
+  onSaveVoSpan,
 }: {
   projectId: number | null;
   frameId: number;
@@ -689,7 +852,11 @@ export function AnchorCell({
   pending?: boolean;
   disabled?: boolean;
   heading?: string;
+  voSpan?: MontageVoSpan | null;
+  unusedBefore?: string;
+  unusedAfter?: string;
   onCommit: (anchors: SceneAnchorRow[]) => void;
+  onSaveVoSpan?: (next: MontageVoSpan | null) => void;
 }) {
   const [draft, setDraft] = useState<MontageAnchorRow[]>(rows);
   const { ask, busy, clear, kind, variants } = useSceneVariants(projectId, frameId);
@@ -712,7 +879,6 @@ export function AnchorCell({
     const key = JSON.stringify(next);
     if (key === savedRef.current) return;
     const ops = mergeAnchorRows(next, cellRows, canAdd, frameNumber);
-    if (!ops.length) return;
     savedRef.current = key;
     onCommit(ops);
   };
@@ -727,6 +893,16 @@ export function AnchorCell({
 
   return (
     <div className={cn("relative rounded-md p-0.5", pending && "bg-amber-500/10")}>
+      {onSaveVoSpan ? (
+        <VoSpanEditor
+          full={cellText || frameText || ""}
+          span={voSpan ?? null}
+          unusedBefore={unusedBefore}
+          unusedAfter={unusedAfter}
+          disabled={disabled}
+          onSave={onSaveVoSpan}
+        />
+      ) : null}
       {heading ? (
         <span className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-white/55">
           {heading}
@@ -1090,7 +1266,12 @@ export function SceneGenerateBlock({
   chain: MontageSceneChainRow[];
   passport: Record<string, string>;
   disabled?: boolean;
-  onDone?: () => void;
+  onDone?: (result?: {
+    frame_numbers?: number[];
+    inserted_frames?: number;
+    shots?: number;
+    skipped_shots?: number;
+  }) => void;
   onImprove?: (prompt: string) => Promise<MontageImproveReport | undefined | void> | void;
 }) {
   const [prompt, setPrompt] = useState("");
@@ -1116,13 +1297,16 @@ export function SceneGenerateBlock({
         replace_ns: replaceNs,
         passport,
       });
-      const skipped = Number(result.skipped_shots || 0);
+      const inserted = Number(result.inserted_frames || 0);
+      const shots = Number(result.shots || 0);
       toast.success(
         replaceNs.length
           ? `Куски ${replaceNs.join(", ")} пересобраны`
-          : `Сцены ячейки записаны${skipped ? ` · ${skipped} шагов без новых кадров` : ""}`,
+          : inserted
+            ? `Сцены записаны · ${inserted} заготовок кадров`
+            : `Сцены ячейки записаны${shots ? ` · ${shots} кадров` : ""}`,
       );
-      onDone?.();
+      onDone?.(result);
     } catch (err) {
       toast.error(errorMessageFromUnknown(err));
     } finally {
@@ -1200,7 +1384,7 @@ export function SceneGenerateBlock({
       {onImprove ? (
         <button
           type="button"
-          title="Ячейка идёт через 6 нод группы: биты → проверка → действие → кадры → QC → отчёт. Дописывает вход, мосты, реакцию и следствие, ставит покрытие кадров и паспорт, затем PNG."
+          title="Ячейка через 6 нод. Промт — главный заказ. Без промта один кадр на якорь. Картинки не запускает."
           disabled={disabled || Boolean(busy)}
           onClick={() => void improve()}
           className={cn(
@@ -1220,9 +1404,8 @@ export function SceneGenerateBlock({
         </p>
       ) : (
         <p className={cn(HINT, "mt-1.5")}>
-          сгенерировать — цепь на существующие кадры. улучшить — по правилам
-          монтажа: вход в место, мосты, реакция, следствие; покрытие кадров и
-          паспорт сцены; недостающие кадры вставляются и получают PNG.
+          промт — заказ сцены: GPT ставит кадры по нему, не копирует текст
+          в действие. закадр и якоря не задают сюжет. картинки не запускаются.
         </p>
       )}
       {report ? <ImproveReportView report={report} onClose={() => setReport(null)} /> : null}
@@ -1334,8 +1517,7 @@ export function sceneImageInstruction(opts: {
 
 /**
  * Последовательность кадров сцены. Большая кнопка кладёт разбор
- * в очередь и сразу запускает «Применить правки».
- * «Генерация с картинками» — тот же разбор + ИИзменение PNG на каждый кадр.
+ * в очередь и сразу запускает «Применить правки». Без картинок.
  */
 export function SceneActionBlock({
   value,
@@ -1344,7 +1526,6 @@ export function SceneActionBlock({
   applyBusy,
   onQueue,
   onApply,
-  onApplyWithImages,
 }: {
   value: string;
   pending?: boolean;
@@ -1352,7 +1533,6 @@ export function SceneActionBlock({
   applyBusy?: boolean;
   onQueue: (action: string) => void;
   onApply: (action: string) => void;
-  onApplyWithImages: (action: string) => void;
 }) {
   const [text, setText] = useState(value);
   useEffect(() => {
@@ -1369,12 +1549,6 @@ export function SceneActionBlock({
     const next = text.trim();
     if (!next) return;
     onApply(next);
-  };
-
-  const runApplyWithImages = () => {
-    const next = text.trim();
-    if (!next) return;
-    onApplyWithImages(next);
   };
 
   return (
@@ -1419,22 +1593,8 @@ export function SceneActionBlock({
         {applyBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
         Разобрать на кадры
       </button>
-      <button
-        type="button"
-        title="Разбор цепи + новый промт и PNG на каждый видимый кадр сцены"
-        disabled={disabled || applyBusy || !text.trim()}
-        onClick={runApplyWithImages}
-        className={cn(
-          "mt-1.5 flex h-12 w-full items-center justify-center gap-2 rounded-md border text-sm font-semibold transition disabled:opacity-40",
-          "border-[rgba(209,254,23,0.45)] bg-black/35 text-[rgba(209,254,23,0.95)] hover:bg-[rgba(209,254,23,0.12)]",
-        )}
-      >
-        {applyBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Images className="h-4 w-4" />}
-        Генерация с картинками
-      </button>
       <p className={cn(HINT, "mt-1.5")}>
-        разобрать — только действия кадров. генерация с картинками — GPT
-        пишет сцены ячейки, затем ИИзменение и PNG на каждый видимый кадр.
+        разобрать — только действия кадров. картинки отсюда не запускаются.
       </p>
     </div>
   );

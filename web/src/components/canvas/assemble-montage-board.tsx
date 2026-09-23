@@ -234,6 +234,14 @@ function editsWord(n: number): string {
   return "правок";
 }
 
+function framesWord(n: number): string {
+  const ones = n % 10;
+  const tens = n % 100;
+  if (ones === 1 && tens !== 11) return "кадр";
+  if (ones >= 2 && ones <= 4 && (tens < 10 || tens > 20)) return "кадра";
+  return "кадров";
+}
+
 function toastQueued(text: string): void {
   toast.message(text, { id: QUEUE_TOAST_ID });
 }
@@ -284,6 +292,7 @@ function describePendingOp(op: MontagePendingOp): string {
     coverage_action: "действие",
     coverage_template: "формат",
     coverage_anchors: "якоря",
+    coverage_vo_span: "закадр сцены",
     coverage_kind: "роль",
     coverage_delete: "удаление",
     image_regen: "переген картинки",
@@ -348,6 +357,7 @@ const COVERAGE_QUEUE_TYPES = new Set([
   "coverage_delete",
   "coverage_template",
   "coverage_anchors",
+  "coverage_vo_span",
   "coverage_angle",
   "coverage_move",
   "coverage_stitch",
@@ -2147,6 +2157,13 @@ export function AssembleMontageBoard({
       if (typeof rec.accent === "string") item.accent = rec.accent;
       if (typeof rec.feature === "string") item.feature = rec.feature;
       if (Array.isArray(rec.anchors)) item.anchors = rec.anchors as SceneAnchorRow[];
+      if (typeof rec.start === "number") item.start = rec.start;
+      if (typeof rec.end === "number") item.end = rec.end;
+      if (typeof rec.text === "string") item.text = rec.text;
+      if (rec.clear === true) item.clear = true;
+      if (rec.vo_span && typeof rec.vo_span === "object") {
+        item.vo_span = rec.vo_span as MontagePendingOp["vo_span"];
+      }
       if (rec.kind === "parent" || rec.kind === "child") item.kind = rec.kind;
       const parentNumber = Number(rec.parent_number);
       if (Number.isFinite(parentNumber) && parentNumber >= 1) {
@@ -2330,14 +2347,9 @@ export function AssembleMontageBoard({
     [persistQueue, frames],
   );
 
-  /** Правки из панели сцены: свои coverage-ops + одна перегенерация картинки. */
-  const queueSceneOps = useCallback(
-    (ops: MontagePendingOp[]) => {
-      if (!ops.length) return;
-      const frameNumber = ops[0].frame_number;
-      const changedTypes = new Set(ops.map((o) => String(o.type)));
-      // Картинку перегенерим только если поменялся её смысл: формат, план,
-      // действие. Якоря режут закадр, роль/удаление — структуру покрытия.
+  const applyCoverageNow = useCallback(
+    async (ops: MontagePendingOp[]) => {
+      if (!ops.length || projectId == null) return;
       const visualTypes = new Set([
         "coverage_template",
         "coverage_plan",
@@ -2356,42 +2368,74 @@ export function AssembleMontageBoard({
         "coverage_feature",
       ]);
       const needsImage = ops.some((o) => visualTypes.has(String(o.type)));
-      localQueueDirtyRef.current = true;
-      setPendingOps((prev) => {
-        let next = prev.filter(
-          (x) => !(x.frame_number === frameNumber && changedTypes.has(String(x.type))),
-        );
-        next = [...next, ...ops];
-        if (needsImage) {
-          next = next.filter(
+      const numbers = [...new Set(ops.map((o) => o.frame_number))];
+      const changedTypes = new Set(ops.map((o) => String(o.type)));
+      setFrameEditBusy(true);
+      try {
+        for (const op of ops) {
+          await api.applyMontageCoverage(projectId, op);
+        }
+        localQueueDirtyRef.current = true;
+        setPendingOps((prev) => {
+          let next = prev.filter(
             (x) =>
               !(
-                x.frame_number === frameNumber &&
-                x.shot === 1 &&
-                String(x.type).startsWith("image_")
-              ),
+                numbers.includes(x.frame_number) && changedTypes.has(String(x.type))
+              ) && !String(x.type).startsWith("coverage_"),
           );
-          const fr = frames.find((f) => f.number === frameNumber);
-          const pending = pendingCoverageForFrame(next, frameNumber);
-          next = [
-            ...next,
-            {
-              type: "image_ai_change",
-              frame_number: frameNumber,
-              shot: 1,
-              correction: coverageCorrection(pending, fr),
-            },
-          ];
-        }
-        pendingOpsRef.current = next;
-        persistQueue(next);
-        return next;
-      });
-      toastQueued(
-        `Кадр #${frameNumber}: ${ops.length} ${editsWord(ops.length)} в очереди — нажмите «Применить правки»`,
-      );
+          if (needsImage) {
+            for (const frameNumber of numbers) {
+              next = next.filter(
+                (x) =>
+                  !(
+                    x.frame_number === frameNumber &&
+                    x.shot === 1 &&
+                    String(x.type).startsWith("image_")
+                  ),
+              );
+              const fr = frames.find((f) => f.number === frameNumber);
+              const pending = pendingCoverageForFrame(
+                [...next, ...ops.filter((o) => o.frame_number === frameNumber)],
+                frameNumber,
+              );
+              next = [
+                ...next,
+                {
+                  type: "image_ai_change",
+                  frame_number: frameNumber,
+                  shot: 1,
+                  correction: coverageCorrection(pending, fr),
+                },
+              ];
+            }
+          }
+          pendingOpsRef.current = next;
+          persistQueue(next);
+          return next;
+        });
+        void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
+        toast.success(
+          needsImage
+            ? `Кадр #${numbers[0]}: записано · картинка в «Применить правки»`
+            : ops[0].type === "coverage_anchors"
+              ? "Якоря записаны"
+              : `Кадр #${numbers[0]}: записано`,
+        );
+      } catch (err) {
+        toast.error(errorMessageFromUnknown(err));
+      } finally {
+        setFrameEditBusy(false);
+      }
     },
-    [persistQueue, frames],
+    [frames, persistQueue, projectId, queryClient],
+  );
+
+  /** Настройки пишутся сразу. В очередь — только картинка, если смысл кадра сменился. */
+  const queueSceneOps = useCallback(
+    (ops: MontagePendingOp[]) => {
+      void applyCoverageNow(ops);
+    },
+    [applyCoverageNow],
   );
 
   const toggleOpSelected = useCallback((key: string) => {
@@ -2464,29 +2508,60 @@ export function AssembleMontageBoard({
   );
 
   const applyMutation = useMutation({
-    mutationFn: () => {
-      const ops = pendingOpsRef.current;
+    mutationFn: (opts?: { frameNumbers?: number[] }) => {
+      const all = pendingOpsRef.current;
+      const images = all.filter((op) => String(op.type).startsWith("image_"));
+      const rest = all.filter(
+        (op) =>
+          !String(op.type).startsWith("image_") &&
+          !String(op.type).startsWith("coverage_"),
+      );
+      const wanted = opts?.frameNumbers?.length ? new Set(opts.frameNumbers) : null;
+      const ops = wanted ? images.filter((op) => wanted.has(op.frame_number)) : images;
       if (ops.length > 0) {
-        toast.message(`Генерация: ${ops.length} операций… (Outsee API)`);
+        const frameNs = [...new Set(ops.map((op) => op.frame_number))];
+        toast.message(
+          wanted
+            ? `Картинка #${[...wanted].join(", #")}…`
+            : `Картинки: ${frameNs.length} ${framesWord(frameNs.length)}… (Outsee API)`,
+        );
       }
       return api.applyMontageBoard(projectId!, {
         video_trims: trims,
-        pending_ops: ops,
+        pending_ops: [...ops, ...rest],
+        ...(ops.length ? { frame_numbers: [...new Set(ops.map((op) => op.frame_number))] } : {}),
       });
     },
-    onSuccess: (res) => {
-      const queued = pendingOpsRef.current.length;
+    onSuccess: (res, opts) => {
+      const appliedFrames = opts?.frameNumbers;
+      const queued = appliedFrames?.length
+        ? pendingOpsRef.current.filter((op) => appliedFrames.includes(op.frame_number))
+            .length
+        : pendingOpsRef.current.length;
       if (res.started) {
         submittedApplyRef.current = true;
-        localQueueDirtyRef.current = false;
         trimsDirtyRef.current = false;
         if (queueSaveTimerRef.current) {
           clearTimeout(queueSaveTimerRef.current);
           queueSaveTimerRef.current = null;
         }
-        setPendingOps([]);
-        pendingOpsRef.current = [];
-        setSelectedOpKeys(new Set());
+        if (appliedFrames?.length) {
+          const keep = pendingOpsRef.current.filter(
+            (op) => !appliedFrames.includes(op.frame_number),
+          );
+          localQueueDirtyRef.current = keep.length > 0;
+          pendingOpsRef.current = keep;
+          setPendingOps(keep);
+          setSelectedOpKeys((prev) => {
+            const live = new Set(keep.map(opSelectKey));
+            return new Set([...prev].filter((k) => live.has(k)));
+          });
+        } else {
+          localQueueDirtyRef.current = false;
+          setPendingOps([]);
+          pendingOpsRef.current = [];
+          setSelectedOpKeys(new Set());
+        }
         setFailedHighlights([]);
         applySeenRunningRef.current = true;
         lastPatchedPathRef.current = "";
@@ -3377,6 +3452,18 @@ export function AssembleMontageBoard({
     return n;
   }, [pendingSlotKeys, failedSlotKeys]);
 
+  const pendingFrameNumbers = useMemo(() => {
+    const nums = [
+      ...new Set(
+        pendingOps
+          .filter((op) => String(op.type).startsWith("image_"))
+          .map((op) => op.frame_number),
+      ),
+    ];
+    nums.sort((a, b) => a - b);
+    return nums;
+  }, [pendingOps]);
+
   const isStaleVideo = (frameNumber: number, shot: 1 | 2) =>
     staleVideos.includes(trimKey(frameNumber, shot));
 
@@ -3596,38 +3683,18 @@ export function AssembleMontageBoard({
     return null;
   };
 
-  const enqueueSceneActionNow = useCallback(
-    (frameNumber: number, action: string) => {
-      const op: MontagePendingOp = {
-        type: "coverage_scene_action",
-        frame_number: frameNumber,
-        shot: 1,
-        action,
-      };
-      localQueueDirtyRef.current = true;
-      const next = [
-        ...pendingOpsRef.current.filter(
-          (x) =>
-            !(x.frame_number === frameNumber && x.type === "coverage_scene_action"),
-        ),
-        op,
-      ];
-      pendingOpsRef.current = next;
-      persistQueue(next);
-      setPendingOps(next);
-      toastQueued(
-        `Кадр #${frameNumber}: последовательность кадров в очереди — нажмите «Применить правки»`,
-      );
-    },
-    [persistQueue],
-  );
-
   const applySceneActionNow = useCallback(
     (frameNumber: number, action: string) => {
-      enqueueSceneActionNow(frameNumber, action);
-      applyMutation.mutate();
+      void applyCoverageNow([
+        {
+          type: "coverage_scene_action",
+          frame_number: frameNumber,
+          shot: 1,
+          action,
+        },
+      ]);
     },
-    [applyMutation, enqueueSceneActionNow],
+    [applyCoverageNow],
   );
 
   const afterSceneActionGenerate = useCallback(
@@ -3649,48 +3716,7 @@ export function AssembleMontageBoard({
     [persistQueue, projectId, queryClient],
   );
 
-  const applySceneActionWithImagesNow = useCallback(
-    async (
-      frameId: number,
-      frameNumber: number,
-      action: string,
-      sceneFrames: MontageBoardFrame[],
-      passport: Record<string, string>,
-    ) => {
-      if (projectId == null) return;
-      setFrameEditBusy(true);
-      try {
-        toast.message("GPT пишет сцены ячейки, затем картинки…");
-        const res = await api.generateSceneWithImages(projectId, frameId, {
-          prompt: action,
-          passport,
-          frame_ids: sceneFrames.map((fr) => fr.frame_id),
-        });
-        afterSceneActionGenerate(frameNumber);
-        if (res.already_running) {
-          toast.message(res.message || "Сцены записаны — картинки ждут свободной генерации");
-          return;
-        }
-        if (res.started) {
-          applySeenRunningRef.current = true;
-          submittedApplyRef.current = true;
-          setApplyRunning(true);
-          toast.message(
-            res.message || `Картинки: ${res.images ?? sceneFrames.length} кадров через Outsee…`,
-          );
-          return;
-        }
-        toast.message(res.message || "Сцены записаны");
-      } catch (err) {
-        toast.error(errorMessageFromUnknown(err));
-      } finally {
-        setFrameEditBusy(false);
-      }
-    },
-    [afterSceneActionGenerate, projectId],
-  );
-
-  const improveSceneWithImagesNow = useCallback(
+  const improveSceneNow = useCallback(
     async (
       frameId: number,
       frameNumber: number,
@@ -3716,23 +3742,6 @@ export function AssembleMontageBoard({
         });
         afterSceneActionGenerate(frameNumber, frameNumbers, SCENE_IMPROVE_CLEAR_TYPES);
         const extra = Number(res.inserted_frames || 0);
-        if (res.already_running) {
-          toast.message(
-            res.message ||
-              `Сцена улучшена${extra ? ` · +${extra} кадров` : ""} — картинки ждут свободной генерации`,
-          );
-          return res.improve_report;
-        }
-        if (res.started) {
-          applySeenRunningRef.current = true;
-          submittedApplyRef.current = true;
-          setApplyRunning(true);
-          toast.message(
-            res.message ||
-              `Улучшено${extra ? ` · +${extra} кадров` : ""} · картинки: ${res.images ?? 0} через Outsee…`,
-          );
-          return res.improve_report;
-        }
         toast.message(res.message || `Сцена улучшена${extra ? ` · +${extra} кадров` : ""}`);
         return res.improve_report;
       } catch (err) {
@@ -3814,9 +3823,18 @@ export function AssembleMontageBoard({
               chain={head.scene_chain ?? []}
               passport={passport}
               disabled={sceneDisabled || applyMutation.isPending || applyRunning}
-              onDone={() => afterSceneActionGenerate(head.number)}
+              onDone={(result) => {
+                const nums =
+                  result?.frame_numbers?.filter((n) => Number.isFinite(n) && n >= 1) ??
+                  [];
+                afterSceneActionGenerate(
+                  head.number,
+                  nums.length ? nums : range.frames.map((fr) => fr.number),
+                  SCENE_GENERATE_CLEAR_TYPES,
+                );
+              }}
               onImprove={(prompt) =>
-                improveSceneWithImagesNow(
+                improveSceneNow(
                   head.frame_id,
                   head.number,
                   prompt,
@@ -3838,15 +3856,6 @@ export function AssembleMontageBoard({
               queueCoverage({ ...base, type: "coverage_scene_action", action })
             }
             onApply={(action) => applySceneActionNow(head.number, action)}
-            onApplyWithImages={(action) =>
-              void applySceneActionWithImagesNow(
-                head.frame_id,
-                head.number,
-                action,
-                range.frames,
-                passport,
-              )
-            }
           />
         }
         anchors={
@@ -3863,6 +3872,9 @@ export function AssembleMontageBoard({
               heading="якоря"
               pending={anchorsPending}
               disabled={sceneDisabled}
+              voSpan={head.vo_span ?? null}
+              unusedBefore={head.vo_unused_before || ""}
+              unusedAfter={head.vo_unused_after || ""}
               onCommit={(anchors) =>
                 queueCoverage({
                   frame_number: tail.number,
@@ -3871,6 +3883,34 @@ export function AssembleMontageBoard({
                   anchors,
                 })
               }
+              onSaveVoSpan={(next) => {
+                if (projectId == null) return;
+                void api
+                  .applyMontageCoverage(projectId, {
+                    type: "coverage_vo_span",
+                    frame_number: head.number,
+                    shot: 1,
+                    ...(next
+                      ? {
+                          start: next.start,
+                          end: next.end,
+                          text: next.text,
+                          ...(next.full ? { full: next.full } : {}),
+                        }
+                      : { clear: true }),
+                  })
+                  .then(() => {
+                    toast.success(
+                      next
+                        ? "Закадр сцены сохранён — перегенерация возьмёт этот кусок"
+                        : "Выделение закадра снято",
+                    );
+                    void queryClient.invalidateQueries({
+                      queryKey: ["montage-board", projectId],
+                    });
+                  })
+                  .catch((err) => toast.error(errorMessageFromUnknown(err)));
+              }}
             />
           </div>
         }
@@ -4010,24 +4050,47 @@ export function AssembleMontageBoard({
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="default"
-              className="h-9 text-xs"
-              disabled={!projectId || applyMutation.isPending || applyRunning}
-              onClick={() => applyMutation.mutate()}
-            >
-              {applyMutation.isPending || applyRunning ? (
-                <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+            <div className="flex items-center gap-1.5">
+              <Button
+                type="button"
+                size="sm"
+                variant="default"
+                className="h-9 text-xs"
+                disabled={
+                  !projectId ||
+                  applyMutation.isPending ||
+                  applyRunning ||
+                  pendingFrameNumbers.length === 0
+                }
+                onClick={() => applyMutation.mutate({})}
+              >
+                {applyMutation.isPending || applyRunning ? (
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                ) : null}
+                Применить правки
+                {applyRunning && applyProgress
+                  ? ` (${applyProgress.done}/${applyProgress.total})`
+                  : pendingFrameNumbers.length > 0
+                    ? ` (${pendingFrameNumbers.length} ${framesWord(pendingFrameNumbers.length)})`
+                    : ""}
+              </Button>
+              {pendingFrameNumbers.length > 0 && !applyRunning ? (
+                <div className="flex max-w-[22rem] flex-wrap items-center gap-1">
+                  {pendingFrameNumbers.map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      disabled={!projectId || applyMutation.isPending}
+                      title={`Применить правки кадра #${n}`}
+                      onClick={() => applyMutation.mutate({ frameNumbers: [n] })}
+                      className="h-7 rounded-md border border-white/15 bg-white/5 px-1.5 text-[10px] font-semibold text-white/80 transition hover:border-white/35 hover:bg-white/10 disabled:opacity-40"
+                    >
+                      #{n}
+                    </button>
+                  ))}
+                </div>
               ) : null}
-              Применить правки
-              {applyRunning && applyProgress
-                ? ` (${applyProgress.done}/${applyProgress.total})`
-                : pendingOps.length > 0
-                  ? ` (${pendingOps.length})`
-                  : ""}
-            </Button>
+            </div>
             <Popover>
               <PopoverTrigger asChild>
                 <Button
@@ -4035,10 +4098,12 @@ export function AssembleMontageBoard({
                   size="sm"
                   variant="outline"
                   className="h-9 text-xs"
-                  disabled={pendingOps.length === 0 || applyRunning}
+                  disabled={pendingFrameNumbers.length === 0 || applyRunning}
                 >
                   Очередь
-                  {pendingOps.length > 0 ? ` (${pendingOps.length})` : ""}
+                  {pendingFrameNumbers.length > 0
+                    ? ` (${pendingFrameNumbers.length})`
+                    : ""}
                 </Button>
               </PopoverTrigger>
               <PopoverContent
@@ -4058,7 +4123,9 @@ export function AssembleMontageBoard({
                   </button>
                 </div>
                 <ul className="max-h-64 space-y-1 overflow-y-auto">
-                  {pendingOps.map((op) => {
+                  {pendingOps
+                    .filter((op) => String(op.type).startsWith("image_"))
+                    .map((op) => {
                     const key = opSelectKey(op);
                     const checked = selectedOpKeys.has(key);
                     return (

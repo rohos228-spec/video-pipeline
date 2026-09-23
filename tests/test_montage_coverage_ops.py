@@ -1015,3 +1015,117 @@ async def test_improve_does_not_turn_leftover_glue_into_new_scenes(
     # новые шоты стоят сразу после родителя, до соседней сцены
     assert ordered[:4] == [1, ordered[1], ordered[2], 2]
 
+
+@pytest.mark.asyncio
+async def test_apply_vo_span_saves_scene_text(
+    session: AsyncSession, project: Project
+) -> None:
+    from app.services.montage_scene_editor import cell_scene_text, scene_group
+
+    parent_uid = "aa" * 12
+    full = "Он вошёл в архив и снял папку с полки."
+    parent = Frame(
+        project_id=project.id,
+        number=1,
+        uuid=parent_uid,
+        voiceover_text=full,
+        status="planned",
+        attrs={
+            "vo_cell_full": full,
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+            },
+        },
+    )
+    session.add_all([project, parent])
+    await session.flush()
+    result = await apply_coverage_op(
+        session,
+        project,
+        {
+            "type": "coverage_vo_span",
+            "frame_number": 1,
+            "shot": 1,
+            "start": 0,
+            "end": 17,
+            "text": "Он вошёл в архив",
+        },
+    )
+    assert result["ok"] is True
+    assert result["highlight"] == "1:vo_span"
+    assert result["regen_image"] is False
+    await session.refresh(parent)
+    group_parent, members = scene_group([parent], parent)
+    assert cell_scene_text(group_parent, members) == "Он вошёл в архив"
+
+
+@pytest.mark.asyncio
+async def test_apply_vo_span_writes_edited_full_text(
+    session: AsyncSession, project: Project
+) -> None:
+    from app.services.montage_scene_editor import cell_scene_text, scene_group
+
+    parent = Frame(
+        project_id=project.id,
+        number=1,
+        uuid="bb" * 12,
+        voiceover_text="Старый закадр.",
+        status="planned",
+        attrs={"vo_cell_full": "Старый закадр."},
+    )
+    session.add_all([project, parent])
+    await session.flush()
+    await apply_coverage_op(
+        session,
+        project,
+        {
+            "type": "coverage_vo_span",
+            "frame_number": 1,
+            "shot": 1,
+            "start": 0,
+            "end": 13,
+            "text": "Новый закадр.",
+            "full": "Новый закадр.",
+        },
+    )
+    await session.refresh(parent)
+    assert (parent.attrs or {}).get("vo_cell_full") == "Новый закадр."
+    group_parent, members = scene_group([parent], parent)
+    assert cell_scene_text(group_parent, members) == "Новый закадр."
+
+
+@pytest.mark.asyncio
+async def test_apply_vo_span_writes_edited_full_text(
+    session: AsyncSession, project: Project
+) -> None:
+    from app.services.montage_scene_editor import cell_scene_text, scene_group
+
+    parent = Frame(
+        project_id=project.id,
+        number=1,
+        uuid="bb" * 12,
+        voiceover_text="Старый закадр.",
+        status="planned",
+        attrs={"vo_cell_full": "Старый закадр."},
+    )
+    session.add_all([project, parent])
+    await session.flush()
+    await apply_coverage_op(
+        session,
+        project,
+        {
+            "type": "coverage_vo_span",
+            "frame_number": 1,
+            "shot": 1,
+            "start": 0,
+            "end": 13,
+            "text": "Новый закадр.",
+            "full": "Новый закадр.",
+        },
+    )
+    await session.refresh(parent)
+    assert (parent.attrs or {}).get("vo_cell_full") == "Новый закадр."
+    group_parent, members = scene_group([parent], parent)
+    assert cell_scene_text(group_parent, members) == "Новый закадр."
+

@@ -39,6 +39,7 @@ COVERAGE_OP_TYPES = frozenset(
         "coverage_delete",
         "coverage_template",
         "coverage_anchors",
+        "coverage_vo_span",
         "coverage_angle",
         "coverage_move",
         "coverage_stitch",
@@ -211,6 +212,7 @@ _NO_IMAGE_REGEN = frozenset(
     {
         "coverage_delete",
         "coverage_anchors",
+        "coverage_vo_span",
         "coverage_stitch",
         "coverage_scene_action",
     }
@@ -747,9 +749,20 @@ async def apply_coverage_anchors(
     )
 
     rows = normalize_anchor_rows(anchors)
-    if not rows:
-        raise RuntimeError("нет ни одного якоря")
     parent, members = scene_group(frames, frame)
+    if not rows:
+        from app.services.montage_scene_editor import claim_scene_bits
+
+        claim_scene_bits(frames, parent, members, [])
+        return {
+            "anchors": 0,
+            "parts": 0,
+            "frames": len(members),
+            "assigned": 0,
+            "inserted_frames": 0,
+            "recut": False,
+            "renumber": {},
+        }
     full = cell_full_text(parent, members)
     if not full:
         raise RuntimeError("у ячейки нет закадрового текста")
@@ -1048,7 +1061,12 @@ async def apply_coverage_scene_action(
     ``kadry`` — готовые кадры с покрытием (план/ракурс/движение/стык):
     текст не режем заново, покрытие пишем на каждый шот.
     """
-    from app.services.montage_scene_editor import cell_full_text, frame_place, scene_group
+    from app.services.montage_scene_editor import (
+        cell_full_text,
+        cell_scene_text,
+        frame_place,
+        scene_group,
+    )
     from app.services.shot_templates import (
         explode_scene_action_to_kadry,
         format_scene_chain,
@@ -1061,13 +1079,14 @@ async def apply_coverage_scene_action(
         raise RuntimeError("последовательность кадров пустая")
     parent, members = scene_group(frames, frame)
     full = cell_full_text(parent, members)
+    scene_vo = cell_scene_text(parent, members)
     place = frame_place(parent)
     with_coverage = bool(kadry)
     if kadry:
         kadry = [dict(shot) for shot in kadry if isinstance(shot, dict)]
     else:
         kadry = explode_scene_action_to_kadry(
-            raw, place=place, vo=full, cell_number=int(parent.number)
+            raw, place=place, vo=scene_vo, cell_number=int(parent.number)
         )
     if grow and not with_coverage and len(kadry) > MAX_IMPROVE_SHOTS:
         kadry = kadry[:MAX_IMPROVE_SHOTS]
@@ -1235,6 +1254,18 @@ async def apply_coverage_op(
     elif op_type == "coverage_anchors":
         report = await apply_coverage_anchors(
             session, project, frame, frames, list(op.get("anchors") or [])
+        )
+    elif op_type == "coverage_vo_span":
+        from app.services.montage_scene_editor import apply_vo_span, scene_group
+
+        parent, members = scene_group(frames, frame)
+        raw = None if op.get("clear") else (op.get("vo_span") or op)
+        full_raw = op.get("full") or op.get("vo_cell_full")
+        apply_vo_span(
+            parent,
+            members,
+            raw,
+            full_text=str(full_raw) if isinstance(full_raw, str) else None,
         )
     elif op_type == "coverage_scene_action":
         report = await apply_coverage_scene_action(

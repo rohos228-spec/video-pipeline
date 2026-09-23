@@ -42,6 +42,7 @@ from app.services.shot_templates import (
     template_ladder_for_ui,
 )
 from app.services.vo_shot_expand import (
+    _flag_attrs,
     bits_from_attrs,
     coverage_shot_id,
     is_shot_child,
@@ -51,6 +52,7 @@ from app.services.vo_shot_expand import (
 
 VARIANT_KINDS = ("action", "template", "anchors")
 MAX_VARIANTS = 5
+VO_SPAN_ATTR = "закадр_выделение"
 
 
 def _attrs(frame: Any) -> dict[str, Any]:
@@ -174,6 +176,171 @@ def cell_full_text(parent: Any, members: list[Any]) -> str:
     if joined:
         return joined
     return _norm(str(getattr(parent, "voiceover_text", "") or ""))
+
+
+def normalize_vo_span(raw: Any, full: str = "") -> dict[str, Any] | None:
+    """Выделение закадра: start/end в полном тексте ячейки + сохранённый кусок."""
+    if raw in (None, "", {}, []):
+        return None
+    if isinstance(raw, str):
+        text = _norm(raw)
+        if not text:
+            return None
+        idx = _norm(full).find(text) if full else -1
+        return {"start": max(idx, 0), "end": max(idx, 0) + len(text), "text": text}
+    if not isinstance(raw, dict):
+        return None
+    text = _norm(str(raw.get("text") or raw.get("закадр") or ""))
+    try:
+        start = int(raw.get("start") if raw.get("start") is not None else raw.get("from") or 0)
+        end = int(raw.get("end") if raw.get("end") is not None else raw.get("to") or 0)
+    except (TypeError, ValueError):
+        start, end = 0, 0
+    source = _norm(full)
+    if source and 0 <= start < end <= len(source):
+        slice_text = source[start:end]
+        return {"start": start, "end": end, "text": _norm(slice_text) or text}
+    if text and source:
+        idx = source.find(text)
+        if idx < 0:
+            idx = source.lower().find(text.lower())
+        if idx >= 0:
+            return {"start": idx, "end": idx + len(text), "text": source[idx : idx + len(text)]}
+        return {"start": 0, "end": len(text), "text": text}
+    if text:
+        return {"start": max(start, 0), "end": max(end, start + len(text)), "text": text}
+    return None
+
+
+def cell_vo_span(parent: Any) -> dict[str, Any] | None:
+    return normalize_vo_span(_attrs(parent).get(VO_SPAN_ATTR))
+
+
+def cell_scene_text(parent: Any, members: list[Any]) -> str:
+    """Текст, которым сцена владеет при перегенерации: выделение или весь закадр."""
+    full = cell_full_text(parent, members)
+    span = normalize_vo_span(_attrs(parent).get(VO_SPAN_ATTR), full)
+    if not span:
+        return full
+    text = _norm(str(span.get("text") or ""))
+    return text or full
+
+
+def scene_vo_owned_range(parent: Any, members: list[Any]) -> tuple[int, int]:
+    """Граница владения сцены внутри её vo_cell_full: выделение или весь текст."""
+    full = cell_full_text(parent, members)
+    if not full:
+        return 0, 0
+    span = normalize_vo_span(_attrs(parent).get(VO_SPAN_ATTR), full)
+    if not span:
+        return 0, len(full)
+    try:
+        start = int(span.get("start") or 0)
+        end = int(span.get("end") or 0)
+    except (TypeError, ValueError):
+        start, end = 0, 0
+    if 0 <= start <= end <= len(full) and end > start:
+        return start, end
+    text = _norm(str(span.get("text") or ""))
+    if text:
+        idx = full.find(text)
+        if idx < 0:
+            idx = full.casefold().find(text.casefold())
+        if idx >= 0:
+            return idx, idx + len(text)
+    return 0, len(full)
+
+
+def _vo_cells_in_order(
+    frames: list[Any],
+    index: dict[str, dict[str, Any]] | None = None,
+) -> list[tuple[Any, list[Any], str, bool]]:
+    """VO-ячейки по порядку доски: родитель, члены, uuid, leftover-клей."""
+    idx = index if index is not None else scene_index(frames)
+    seen: set[str] = set()
+    out: list[tuple[Any, list[Any], str, bool]] = []
+    for fr in frames:
+        parent, members = scene_group(frames, fr)
+        uid = str(getattr(parent, "uuid", "") or "")
+        if not uid or uid in seen:
+            continue
+        if uid in idx:
+            parent = idx[uid]["parent"]
+            members = idx[uid]["members"]
+        seen.add(uid)
+        leftover = bool(_cs(parent).get("leftover"))
+        out.append((parent, members, uid, leftover))
+    return out
+
+
+def scene_vo_unused(
+    frames: list[Any],
+    *,
+    index: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, dict[str, str]]:
+    """Неиспользованный закадр до/после каждой сцены.
+
+    Склеиваем vo_cell_full всех VO-ячеек по порядку. Кусок между концом
+    владения предыдущей сцены и началом следующей — один и тот же текст:
+    у предыдущей ``after``, у следующей ``before``. leftover-клей владеет
+    ничем: его текст попадает в этот зазор целиком.
+    """
+    cells = _vo_cells_in_order(frames, index)
+    pieces: list[str] = []
+    owned: list[tuple[str, int, int, bool]] = []
+    cursor = 0
+    for i, (parent, members, uid, leftover) in enumerate(cells):
+        full = cell_full_text(parent, members)
+        if i and pieces:
+            prev = pieces[-1]
+            if prev and full and not prev[-1].isspace() and not full[:1].isspace():
+                pieces.append(" ")
+                cursor += 1
+        part_start = cursor
+        pieces.append(full)
+        cursor += len(full)
+        if leftover:
+            owned.append((uid, part_start, part_start, False))
+            continue
+        local_start, local_end = scene_vo_owned_range(parent, members)
+        owned.append((uid, part_start + local_start, part_start + local_end, True))
+
+    global_text = "".join(pieces)
+    owners = [(uid, start, end) for uid, start, end, keep in owned if keep]
+    out: dict[str, dict[str, str]] = {}
+    for i, (uid, own_start, own_end) in enumerate(owners):
+        prev_end = 0 if i == 0 else owners[i - 1][2]
+        next_start = len(global_text) if i == len(owners) - 1 else owners[i + 1][1]
+        before = global_text[prev_end:own_start].strip()
+        after = global_text[own_end:next_start].strip()
+        out[uid] = {"before": before, "after": after}
+    return out
+
+
+def apply_vo_span(
+    parent: Any,
+    members: list[Any],
+    raw: Any,
+    *,
+    full_text: str | None = None,
+) -> dict[str, Any] | None:
+    """Записать или снять выделение закадра на родителе ячейки."""
+    attrs = dict(_attrs(parent))
+    edited = _norm(str(full_text or ""))
+    if edited:
+        attrs["vo_cell_full"] = edited
+        parent.attrs = attrs
+        _flag_attrs(parent)
+    full = cell_full_text(parent, members)
+    span = normalize_vo_span(raw, full)
+    attrs = dict(_attrs(parent))
+    if span is None:
+        attrs.pop(VO_SPAN_ATTR, None)
+    else:
+        attrs[VO_SPAN_ATTR] = span
+    parent.attrs = attrs
+    _flag_attrs(parent)
+    return span
 
 
 def anchor_positions(full: str, anchors: list[str]) -> list[int]:
@@ -660,10 +827,13 @@ def frame_board_scene_cell(
     frame: Any,
     *,
     index: dict[str, dict[str, Any]] | None = None,
+    vo_unused: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Всё, что правится в строках сцены на доске: якоря кадра + поля ячейки."""
     parent, members = scene_group(frames, frame)
     full = cell_full_text(parent, members)
+    gaps = vo_unused if vo_unused is not None else scene_vo_unused(frames, index=index)
+    unused = gaps.get(str(getattr(parent, "uuid", "") or "")) or {}
     payload = _frame_anchor_payload(
         parent, members, frame, full, frames=frames, index=index
     )
@@ -693,6 +863,9 @@ def frame_board_scene_cell(
         "anchor_can_add": bool(payload.get("can_add")),
         "scene_anchor_rows": cell_bits,
         "vo_cell_full": full,
+        "vo_span": normalize_vo_span(_attrs(parent).get(VO_SPAN_ATTR), full),
+        "vo_unused_before": unused.get("before") or "",
+        "vo_unused_after": unused.get("after") or "",
         "scene_place": scene.get("place") or "",
         "scene_set": scene.get("set") or "",
         "scene_characters": scene.get("characters") or "",
@@ -735,9 +908,17 @@ def _scene_common(parent: Any, members: list[Any]) -> dict[str, Any]:
     characters = _first_attr(
         lookup, "персонажи_сцены", "персонажи", "characters", "persons"
     ) or _who_from_kadry(parent)
-    roots = {p.split(":", 1)[0].strip().casefold() for p in places}
-    if len(places) > 1 and len(roots) == 1:
-        scene_place = places[0].split(":", 1)[0].strip()
+    def _place_root(place: str) -> str:
+        if ":" in place:
+            return place.split(":", 1)[0].strip()
+        if "·" in place:
+            return place.split("·", 1)[0].strip()
+        return place
+
+    roots = {_place_root(p).casefold() for p in places}
+    zoned = any(_place_root(p) != p for p in places)
+    if places and len(roots) == 1 and zoned:
+        scene_place = _place_root(places[0])
     else:
         scene_place = places[0] if places else ""
     return {

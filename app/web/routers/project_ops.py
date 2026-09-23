@@ -1035,13 +1035,8 @@ async def montage_board_scene_generate_with_images(
     body: dict = Body(...),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """GPT-сцены ячейки + ИИзменение PNG на видимые кадры (фон apply)."""
-    from datetime import datetime, timezone
-
+    """GPT-сцены ячейки. Картинки отсюда не запускаются."""
     from app.services.montage_action_gpt import generate_cell_scene_with_images
-    from app.services.montage_board import build_montage_board
-    from app.services.montage_board_apply_job import get_apply_job, spawn_apply_job
-    from app.services.montage_board_meta import montage_meta, set_montage_meta
 
     p = _project_or_404(await session.get(Project, project_id))
     passport = body.get("passport") if isinstance(body.get("passport"), dict) else {}
@@ -1075,7 +1070,8 @@ async def montage_board_scene_generate_with_images(
             status_code=502, detail=f"GPT не ответил: {type(e).__name__}: {e}"
         ) from e
 
-    ops = list(result.pop("image_ops", None) or [])
+    result.pop("image_ops", None)
+    result.pop("images", None)
     await session.commit()
     await publish_project_event(
         project_id,
@@ -1084,59 +1080,18 @@ async def montage_board_scene_generate_with_images(
             "montage_scene_action_generate": True,
             "refresh_board": True,
             "frame_id": frame_id,
-            "with_images": True,
+            "with_images": False,
         },
     )
-    out = {
+    return {
         "ok": True,
-        "started": False,
-        "already_running": False,
-        "images": len(ops),
         **{k: v for k, v in result.items() if k != "report"},
         "report": result.get("report"),
+        "started": False,
+        "already_running": False,
+        "images": 0,
+        "message": "сцены записаны",
     }
-    if not ops:
-        out["message"] = "сцены записаны, кадров для картинок нет"
-        return out
-
-    job = get_apply_job(p)
-    if job.get("status") == "running":
-        board = await build_montage_board(session, p)
-        out.update(
-            {
-                "started": False,
-                "already_running": True,
-                "ok": False,
-                "job": job,
-                "meta": board["meta"],
-                "message": "сцены записаны, картинки ждут: генерация уже выполняется",
-            }
-        )
-        return out
-
-    from app.services.step_cancel import clear_stop
-
-    clear_stop(project_id)
-    board = montage_meta(p)
-    board["apply_job"] = {
-        "status": "running",
-        "error": None,
-        "started_at": datetime.now(timezone.utc).isoformat(),
-        "finished_at": None,
-        "total_ops": len(ops),
-        "done_ops": 0,
-    }
-    set_montage_meta(p, board)
-    await session.commit()
-    spawn_apply_job(project_id, video_trims=None, pending_ops=ops)
-    out.update(
-        {
-            "started": True,
-            "job": {"status": "running", "total_ops": len(ops)},
-            "message": f"сцены записаны, генерация {len(ops)} картинок запущена",
-        }
-    )
-    return out
 
 
 @router.post("/{project_id}/montage-board/frames/{frame_id}/scene-improve")
@@ -1146,7 +1101,7 @@ async def montage_board_scene_improve(
     body: dict = Body(...),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """Подробная цепь смысла: GPT пишет биты, недостающие кадры вставляются, затем PNG."""
+    """Подробная цепь смысла: GPT пишет биты, недостающие кадры вставляются. Без PNG."""
     payload = dict(body or {})
     payload["mode"] = "improve"
     return await montage_board_scene_generate_with_images(
@@ -1294,7 +1249,12 @@ async def montage_board_apply(
     from app.services.montage_board_apply_job import get_apply_job, spawn_apply_job
 
     p = _project_or_404(await session.get(Project, project_id))
-    ops = list(body.get("pending_ops") or [])
+    from app.services.montage_board_apply import parse_apply_frame_numbers, split_apply_ops
+
+    ops, keep_ops = split_apply_ops(
+        list(body.get("pending_ops") or []),
+        parse_apply_frame_numbers(body.get("frame_numbers")),
+    )
     trims = body.get("video_trims")
 
     if ops:
@@ -1328,7 +1288,9 @@ async def montage_board_apply(
         }
         set_montage_meta(p, board)
         await session.commit()
-        spawn_apply_job(project_id, video_trims=trims, pending_ops=ops)
+        spawn_apply_job(
+            project_id, video_trims=trims, pending_ops=ops, keep_ops=keep_ops
+        )
         return {
             "started": True,
             "ok": True,
@@ -1341,6 +1303,7 @@ async def montage_board_apply(
         p,
         video_trims=trims,
         pending_ops=ops,
+        keep_ops=keep_ops,
     )
     await session.commit()
     await publish_project_event(

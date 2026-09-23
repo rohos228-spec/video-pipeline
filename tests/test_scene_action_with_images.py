@@ -1,4 +1,4 @@
-"""Кнопка «Генерация с картинками» под «Разобрать на кадры»."""
+"""Сцены на доске не запускают картинки."""
 
 from __future__ import annotations
 
@@ -14,22 +14,18 @@ def test_ui_has_generate_with_images_under_split() -> None:
         encoding="utf-8"
     )
     assert "Разобрать на кадры" in cells
-    assert "Генерация с картинками" in cells
-    split_btn = cells.index("        Разобрать на кадры")
-    images_btn = cells.index("        Генерация с картинками")
-    assert split_btn < images_btn
-    assert "onApplyWithImages" in cells
+    assert "Генерация с картинками" not in cells
+    assert "onApplyWithImages" not in cells
     board = (ROOT / "web/src/components/canvas/assemble-montage-board.tsx").read_text(
         encoding="utf-8"
     )
-    assert "applySceneActionWithImagesNow" in board
-    assert "generateSceneWithImages" in board
+    assert "applySceneActionWithImagesNow" not in board
+    assert "generateSceneWithImages" not in board
     assert "improveScene" in board
     assert "Улучшить сцену" in cells
     assert "live.slice(0, chainN)" not in board
     assert "shot_leftover" in board
     api = (ROOT / "web/src/lib/api.ts").read_text(encoding="utf-8")
-    assert "scene-generate-with-images" in api
     assert "scene-improve" in api
 
 
@@ -48,3 +44,39 @@ def test_apply_runs_scene_action_before_image_ai_change() -> None:
         "image_ai_change",
     ]
     assert [op["frame_number"] for op in ordered[1:]] == [1, 2]
+
+
+def test_generate_scenes_queues_frames_not_images_and_has_vo_span() -> None:
+    cells = (ROOT / "web/src/components/canvas/montage-scene-cells.tsx").read_text(
+        encoding="utf-8"
+    )
+    board = (ROOT / "web/src/components/canvas/assemble-montage-board.tsx").read_text(
+        encoding="utf-8"
+    )
+    api = (ROOT / "web/src/lib/api.ts").read_text(encoding="utf-8")
+    assert "закадр этой сцены" in cells
+    assert "сохранить как закадр сцены" in cells
+    assert "VoSpanEditor" in cells
+    assert "VoUnusedWarn" in cells
+    assert "неиспользованный закадр" in cells
+    assert "unusedBefore" in cells
+    assert "unusedAfter" in cells
+    assert "vo_unused_before" in board
+    assert "vo_unused_after" in board
+    editor = cells[cells.index("function VoSpanEditor") : cells.index("export function AnchorCell")]
+    assert "readOnly" not in editor
+    assert "onChange" in editor
+    assert "pendingFrameNumbers" in board
+    assert "framesWord" in board
+    assert "applyCoverageNow" in board
+    assert 'startsWith("image_")' in board
+    assert "queueImages" not in board
+    assert "frame_numbers" in api
+    gen_block = cells[
+        cells.index("export function SceneGenerateBlock") : cells.index(
+            "export function SceneActionBlock"
+        )
+    ]
+    assert "Сгенерировать сцены" in gen_block
+    assert "generateSceneAction" in gen_block
+    assert "generateSceneWithImages" not in gen_block

@@ -798,6 +798,9 @@ def _empty_coverage_fields() -> dict[str, Any]:
         "anchor_can_add": False,
         "scene_anchor_rows": [],
         "vo_cell_full": "",
+        "vo_span": None,
+        "vo_unused_before": "",
+        "vo_unused_after": "",
         "shot_angle": "",
         "shot_move": "",
         "shot_stitch": "",
@@ -830,13 +833,18 @@ def _coverage_fields_for_frames(
 ) -> dict[int, dict[str, Any]]:
     if not enabled:
         return {fr.number: _empty_coverage_fields() for fr in frames}
-    from app.services.montage_scene_editor import frame_board_scene_cell, scene_index
+    from app.services.montage_scene_editor import (
+        frame_board_scene_cell,
+        scene_index,
+        scene_vo_unused,
+    )
 
     out: dict[int, dict[str, Any]] = {}
     index = scene_index(frames)
+    unused = scene_vo_unused(frames, index=index)
     for fr in frames:
         kind, parent_number, parent_id = _shot_kind_payload(fr, frames)
-        extra = frame_board_scene_cell(frames, fr, index=index)
+        extra = frame_board_scene_cell(frames, fr, index=index, vo_unused=unused)
         stitch = canonical_stitch(
             _shot_cs_kadry(fr, "переход", "тип_стыка", "stitch", "transition")
         )

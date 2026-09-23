@@ -56,10 +56,12 @@ def spawn_apply_job(
     *,
     video_trims: dict[str, dict[str, float]] | None,
     pending_ops: list[dict[str, Any]],
+    keep_ops: list[dict[str, Any]] | None = None,
 ) -> asyncio.Task[None]:
     prev = _apply_tasks.get(project_id)
     if prev is not None and not prev.done():
         return prev
+    held = list(keep_ops or [])
 
     async def _runner() -> None:
         total_ops = len(pending_ops)
@@ -126,6 +128,7 @@ def spawn_apply_job(
                     project,
                     video_trims=video_trims,
                     pending_ops=pending_ops,
+                    keep_ops=held,
                     on_progress=_on_progress,
                 )
                 status = "done" if result.get("ok") else "error"

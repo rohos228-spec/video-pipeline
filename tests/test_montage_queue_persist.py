@@ -83,6 +83,14 @@ def test_normalize_queue_keeps_all_scene_row_fields() -> None:
                 "shot": 1,
                 "anchors": [{"якорь": "В сентябре", "изменение": "было → стало"}],
             },
+            {
+                "type": "coverage_vo_span",
+                "frame_number": 1,
+                "shot": 1,
+                "start": 0,
+                "end": 12,
+                "text": "Он вошёл",
+            },
             {"type": "coverage_kind", "frame_number": 3, "shot": 1, "kind": "child",
              "parent_number": "1"},
             {"type": "image_regen", "frame_number": 4, "shot": 2, "prompt": "p"},
@@ -98,11 +106,19 @@ def test_normalize_queue_keeps_all_scene_row_fields() -> None:
     assert by_type["coverage_set"]["set"] == "кабинет"
     assert by_type["coverage_plan"]["plan"] == "ДАЛЬНИЙ"
     assert by_type["coverage_anchors"]["anchors"][0]["главный"] is True
+    empty = normalize_queue_ops(
+        [{"type": "coverage_anchors", "frame_number": 1, "shot": 1, "anchors": []}]
+    )
+    assert empty[0]["anchors"] == []
     assert by_type["coverage_kind"]["parent_number"] == 1
+    assert by_type["coverage_vo_span"]["text"] == "Он вошёл"
+    assert by_type["coverage_vo_span"]["start"] == 0
+    assert by_type["coverage_vo_span"]["end"] == 12
+    assert slot_key_from_op(by_type["coverage_vo_span"]) == "1:vo_span"
     assert by_type["image_regen"]["shot"] == 2
     # Неизвестный тип и кадр < 1 отбрасываются.
     assert "unknown_op" not in by_type
-    assert len(cleaned) == 10
+    assert len(cleaned) == 11
 
 
 def test_normalize_queue_keeps_anchor_owner_hints() -> None:
@@ -203,3 +219,19 @@ def test_drop_pending_ops_for_deleted_frame_keeps_neighbors() -> None:
     }
     assert drop_pending_ops_for_frames(board, {3}) == 1
     assert [op["frame_number"] for op in board["pending_ops"]] == [1, 2]
+
+
+def test_split_apply_ops_keeps_other_frames() -> None:
+    from app.services.montage_board_apply import parse_apply_frame_numbers, split_apply_ops
+
+    ops = [
+        {"type": "image_ai_change", "frame_number": 1, "shot": 1},
+        {"type": "image_ai_change", "frame_number": 2, "shot": 1},
+        {"type": "coverage_plan", "frame_number": 3, "plan": "СРЕДНИЙ"},
+    ]
+    apply_ops, keep_ops = split_apply_ops(ops, parse_apply_frame_numbers([2]))
+    assert [op["frame_number"] for op in apply_ops] == [2]
+    assert [op["frame_number"] for op in keep_ops] == [1, 3]
+    all_ops, none = split_apply_ops(ops, [])
+    assert all_ops == ops
+    assert none == []

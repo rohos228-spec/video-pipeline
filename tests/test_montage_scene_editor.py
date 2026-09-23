@@ -14,6 +14,7 @@ from app.services.montage_board_apply import order_montage_pending_ops
 from app.services.montage_board_meta import slot_key_from_op
 from app.services.montage_coverage_ops import apply_coverage_op
 from app.services.montage_scene_editor import (
+    VO_SPAN_ATTR,
     build_scene_editor_state,
     build_variant_prompt,
     frame_board_scene_cell,
@@ -21,6 +22,7 @@ from app.services.montage_scene_editor import (
     parse_variants,
     preview_template_ladder,
     scene_group,
+    scene_vo_unused,
     shot_sequence_text,
     split_vo_by_anchors,
 )
@@ -388,6 +390,10 @@ def test_frame_board_scene_cell_carries_inline_row_payload() -> None:
     assert cell["scene_chain"][0]["n"] == 1
     assert cell["scene_chain"][0]["place"] == "кабинет следователя"
     assert "приносит папку" in cell["scene_chain"][0]["action"]
+    assert cell["vo_unused_before"] == ""
+    assert cell["vo_unused_after"] == ""
+    assert parent_cell["vo_unused_before"] == ""
+    assert parent_cell["vo_unused_after"] == ""
 
 
 def test_shot_sequence_text_joins_frame_actions() -> None:
@@ -678,18 +684,24 @@ async def test_coverage_anchors_fewer_parts_keeps_frame_texts(
 
 
 @pytest.mark.asyncio
-async def test_coverage_anchors_empty_rejected(
+async def test_coverage_anchors_empty_clears_bits(
     session: AsyncSession, project: Project
 ) -> None:
     parent, child = _group(project.id)
     session.add_all([project, parent, child])
     await session.flush()
-    with pytest.raises(RuntimeError, match="якоря"):
-        await apply_coverage_op(
-            session,
-            project,
-            {"type": "coverage_anchors", "frame_number": 1, "anchors": []},
-        )
+    result = await apply_coverage_op(
+        session,
+        project,
+        {"type": "coverage_anchors", "frame_number": 1, "anchors": []},
+    )
+    assert result["ok"] is True
+    assert result["regen_image"] is False
+    assert int(result["report"]["anchors"]) == 0
+    await session.refresh(parent)
+    await session.refresh(child)
+    assert not (parent.attrs or {}).get("биты")
+    assert not (child.attrs or {}).get("биты")
 
 
 # --- очередь ------------------------------------------------------------
@@ -804,3 +816,66 @@ def test_parse_variants_survives_non_json() -> None:
         "anchors": {"text": VO_CELL},
     }
     assert parse_variants("извини, не могу", kind="action", state=state) == []
+
+
+def _vo_parent(project_id: int, number: int, uid: str, full: str, **attrs: object) -> Frame:
+    return Frame(
+        project_id=project_id,
+        number=number,
+        uuid=uid,
+        sort_key=float(number),
+        voiceover_text=full,
+        status="planned",
+        attrs={"vo_cell_full": full, **attrs},
+    )
+
+
+def test_scene_vo_unused_gap_is_shared_by_adjacent_scenes() -> None:
+    """Пропущенный кусок между сценами: у первой «после», у второй «до» — один текст."""
+    a_uid = "aa" * 12
+    b_uid = "bb" * 12
+    a_full = "Он вошёл в архив."
+    b_full = "Сел за стол. Открыл папку. Прочитал имя."
+    owned_b = "Прочитал имя."
+    unused = "Сел за стол. Открыл папку."
+    start = b_full.find(owned_b)
+    a = _vo_parent(41, 1, a_uid, a_full)
+    b = _vo_parent(41, 2, b_uid, b_full)
+    b.attrs[VO_SPAN_ATTR] = {
+        "start": start,
+        "end": start + len(owned_b),
+        "text": owned_b,
+    }
+    frames = [a, b]
+    gaps = scene_vo_unused(frames)
+    assert gaps[a_uid]["after"] == unused
+    assert gaps[b_uid]["before"] == unused
+    assert gaps[a_uid]["before"] == ""
+    assert gaps[b_uid]["after"] == ""
+    assert frame_board_scene_cell(frames, a)["vo_unused_after"] == unused
+    assert frame_board_scene_cell(frames, b)["vo_unused_before"] == unused
+
+
+def test_scene_vo_unused_empty_when_each_scene_owns_its_cell() -> None:
+    a = _vo_parent(41, 1, "aa" * 12, "Первая сцена целиком.")
+    b = _vo_parent(41, 2, "bb" * 12, "Вторая сцена целиком.")
+    gaps = scene_vo_unused([a, b])
+    assert gaps[a.uuid] == {"before": "", "after": ""}
+    assert gaps[b.uuid] == {"before": "", "after": ""}
+
+
+def test_scene_vo_unused_leftover_between_scenes_is_the_same_piece() -> None:
+    unused = "Пропущенный кусок закадра."
+    a = _vo_parent(41, 1, "aa" * 12, "Он вошёл в архив.")
+    leftover = _vo_parent(
+        41,
+        2,
+        "cc" * 12,
+        unused,
+        camera_subdivide={"leftover": True, "role": "vo_parent"},
+    )
+    b = _vo_parent(41, 3, "bb" * 12, "Прочитал имя.")
+    gaps = scene_vo_unused([a, leftover, b])
+    assert leftover.uuid not in gaps
+    assert gaps[a.uuid]["after"] == unused
+    assert gaps[b.uuid]["before"] == unused

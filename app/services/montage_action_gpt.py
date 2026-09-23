@@ -14,13 +14,15 @@ from app.models import Frame, Project
 from app.services.db_apply import extract_apply_ops_json
 from app.services.montage_coverage_ops import (
     SCENE_FIELD_BY_OP,
+    _visible_cell_members,
     apply_coverage_light,
     apply_coverage_scene_action,
     apply_coverage_set,
     apply_scene_field,
 )
 from app.services.montage_scene_editor import (
-    cell_full_text,
+    cell_scene_text,
+    cell_vo_span,
     frame_place,
     scene_group,
 )
@@ -234,6 +236,7 @@ def load_action_prompt() -> str:
 
 
 def _bits_payload(parent: Frame) -> list[dict[str, Any]]:
+    """Только сохранённые биты родителя — удалённые якоря сюда не возвращаем."""
     out: list[dict[str, Any]] = []
     for item in bits_from_attrs(parent):
         out.append(
@@ -245,7 +248,7 @@ def _bits_payload(parent: Frame) -> list[dict[str, Any]]:
                 ).strip(),
             }
         )
-    return out
+    return [row for row in out if row["якорь"]]
 
 
 def _chain_rows(text: str) -> list[dict[str, Any]]:
@@ -274,7 +277,9 @@ def build_action_generate_prompt(
 ) -> str:
     """Промт action v7 + одна ячейка монтажа (не весь проект)."""
     rules = load_action_prompt()
-    full = cell_full_text(parent, members)
+    full = cell_scene_text(parent, members)
+    span = cell_vo_span(parent)
+    bits = _bits_payload(parent)
     place = frame_place(parent)
     chain_text = main_action_text(parent)
     chain = _chain_rows(chain_text)
@@ -283,7 +288,7 @@ def build_action_generate_prompt(
         "frame_uuid": str(getattr(parent, "uuid", "") or ""),
         "frame_number": int(parent.number),
         "voiceover_text": full,
-        "bits": _bits_payload(parent),
+        "bits": bits,
         "паспорт": {
             "место": _passport_value(pass_map, ("place", "место")) or place,
             "персонажи": character_labels
@@ -302,7 +307,9 @@ def build_action_generate_prompt(
         "промт_оператора": (operator_prompt or "").strip(),
         "replace_ns": replace_ns,
         "mode": mode,
+        "закадр_выделение": span or None,
     }
+    extra = (operator_prompt or "").strip()
     if replace_ns:
         task = (
             "Перепиши ТОЛЬКО сцены с номерами "
@@ -310,28 +317,36 @@ def build_action_generate_prompt(
             + ". В главное_действие верни только эти сцены, с теми же N. "
             "Остальные не пиши."
         )
-    elif mode == "improve":
+        if extra:
+            task += f"\nГлавный заказ оператора: {extra}"
+    elif extra:
         task = (
-            "Разверни главное_действие этой ячейки в подробную цепь смысла.\n"
-            "Каждое N. — отдельный видимый кадр, не слоган на всю ячейку.\n"
-            "Цепь развивает сюжет: вступление в место (что видно целиком) → "
-            "действие рук/тела → перебивка (деталь предмета, взгляд, улика) → "
-            "реакция или следствие.\n"
-            "Не выдумывай другое место, если паспорт и закадр его не дали.\n"
-            "Не пиши камеру, крупность и коды шаблонов.\n"
-            "Если закадр длиннее 40 знаков — минимум три кадра N.\n"
-            "Весь закадр в скобках без дыр."
+            "Главный заказ оператора — сделай именно это, не учебный пример "
+            "и не чужую сцену:\n"
+            f"{extra}\n\n"
+            "Не добавляй вход, мост, перебивку, реакцию и следствие, "
+            "если заказ этого прямо не просит. Не раздувай сцену.\n"
+            "Если заказ — цепь через `→`, это шаги. Если `→` нет — не режь "
+            "прозу на кадры по точкам и «потом».\n"
+            "Не выдумывай другое место, людей и предметы вне заказа и закадра.\n"
+            "Не пиши камеру, крупность и коды шаблонов. Весь закадр в скобках."
         )
     else:
-        task = "Напиши главное_действие заново только для этой ячейки."
-    extra = (operator_prompt or "").strip()
-    if extra:
-        task = f"{task}\nПромт оператора: {extra}"
+        task = (
+            "Напиши главное_действие заново только для этой ячейки. "
+            "Один шаг на сцену, без входа/мостов/перебивок ради схемы. "
+            "Не пиши камеру и коды шаблонов. Весь закадр в скобках."
+        )
+    if span:
+        task += (
+            "\nvoiceover_text — полный текст этой сцены (сохранённое выделение)."
+            " Пиши только по нему, остальной закадр ячейки не трогай."
+        )
     payload = json.dumps(cell, ensure_ascii=False, indent=2)
     return (
-        f"{rules.rstrip()}\n\n"
         "## задача оператора\n"
         f"{task}\n\n"
+        f"{rules.rstrip()}\n\n"
         "Вход — одна VO-ячейка:\n"
         f"{payload}\n"
     )
@@ -417,6 +432,91 @@ async def generate_cell_scene_action(
     applied = apply_cell_passport(parent, frames, passport)
     await session.flush()
 
+    extra = (operator_prompt or "").strip()
+    if extra and not wanted:
+        from app.services.gpt_client import gpt_ask_fresh
+        from app.services.montage_scene_improve import (
+            build_improve_action_prompt,
+            cards_raw_from_reply,
+            is_raw_prompt_dump,
+            scene_cards_from_gpt,
+            shots_from_cards,
+            _ops_fields,
+        )
+
+        full = cell_scene_text(parent, members)
+        place = _passport_value(passport or {}, ("place", "место")) or frame_place(parent)
+        labels = await _map_character_labels(
+            session,
+            int(project.id),
+            _passport_value(passport or {}, ("characters", "персонажи"))
+            or str((getattr(parent, "attrs", None) or {}).get("персонажи_сцены") or "")
+            or str((getattr(parent, "attrs", None) or {}).get("персонажи") or ""),
+        )
+        from app.services.montage_scene_improve import _passport_input
+
+        pass_in = _passport_input(passport or {}, labels)
+        ask_text = build_improve_action_prompt(
+            parent=parent,
+            vo=full,
+            units=[],
+            passport=pass_in,
+            operator_prompt=extra,
+        )
+        reply = await gpt_ask_fresh(ask_text, timeout=timeout, project_id=int(project.id))
+        fields = _ops_fields(reply, str(getattr(parent, "uuid", "") or ""))
+        cards_raw = cards_raw_from_reply(fields, reply)
+        cards = scene_cards_from_gpt(cards_raw, place, full)
+        if not cards or is_raw_prompt_dump(cards, extra):
+            raise ValueError("GPT не поставил сцену по промту")
+        kadry = shots_from_cards(cards, cell_number=int(parent.number), place=place)
+        chain_text = format_scene_chain(cards)
+        report = await apply_coverage_scene_action(
+            session,
+            project,
+            parent,
+            frames,
+            chain_text,
+            grow=True,
+            kadry=kadry,
+        )
+        await session.flush()
+        frames = list(
+            (
+                await session.execute(
+                    select(Frame)
+                    .where(Frame.project_id == int(project.id))
+                    .order_by(Frame.sort_key, Frame.number)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        parent, members = scene_group(frames, parent)
+        visible = _visible_cell_members(parent, members)
+        frame_numbers = [int(m.number) for m in visible]
+        logger.info(
+            "montage action-generate #{} cell={} prompt-shots={} inserted={} frames={}",
+            project.id,
+            parent.number,
+            len(kadry),
+            report.get("inserted_frames"),
+            frame_numbers,
+        )
+        return {
+            "ok": True,
+            "frame_id": int(parent.id),
+            "frame_number": int(parent.number),
+            "replace_ns": wanted,
+            "passport_applied": applied,
+            "chain": report.get("chain") or chain_text,
+            "shots": report.get("shots"),
+            "skipped_shots": report.get("skipped_shots"),
+            "inserted_frames": report.get("inserted_frames"),
+            "frame_numbers": frame_numbers,
+            "report": report,
+        }
+
     labels = await _map_character_labels(
         session,
         int(project.id),
@@ -444,21 +544,38 @@ async def generate_cell_scene_action(
     chain_text = format_scene_chain(merged)
     if not chain_text.strip():
         raise RuntimeError("после склейки цепь пустая")
+    # Заготовки под лишние N. Картинки не пишем.
     report = await apply_coverage_scene_action(
         session,
         project,
         parent,
         frames,
         chain_text,
-        grow=(mode == "improve"),
+        grow=True,
     )
     await session.flush()
+    frames = list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == int(project.id))
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    parent, members = scene_group(frames, parent)
+    visible = _visible_cell_members(parent, members)
+    frame_numbers = [int(m.number) for m in visible]
     logger.info(
-        "montage action-generate #{} cell={} replace_ns={} shots={} passport={}",
+        "montage action-generate #{} cell={} replace_ns={} shots={} inserted={} frames={} passport={}",
         project.id,
         parent.number,
         wanted,
         report.get("shots"),
+        report.get("inserted_frames"),
+        frame_numbers,
         applied,
     )
     return {
@@ -471,6 +588,7 @@ async def generate_cell_scene_action(
         "shots": report.get("shots"),
         "skipped_shots": report.get("skipped_shots"),
         "inserted_frames": report.get("inserted_frames"),
+        "frame_numbers": frame_numbers,
         "report": report,
     }
 
@@ -580,7 +698,7 @@ async def generate_cell_scene_with_images(
     mode: str = "",
     anchors: list[Any] | None = None,
 ) -> dict[str, Any]:
-    """GPT-сцены ячейки (мягкий fallback на текст цепи) + ops ИИзменения.
+    """GPT-сцены ячейки (мягкий fallback на текст цепи). Без картинок.
 
     ``mode="improve"`` — ячейка точечно через 6 нод группы script_frames_qc
     (``montage_scene_improve``); ``anchors`` — якоря, видимые на доске.
@@ -676,16 +794,8 @@ async def generate_cell_scene_with_images(
         )
     if frame is None:
         raise RuntimeError(f"кадр {frame_id} не найден после generate")
-    parent, members = scene_group(frames, frame)
-    chain = str(result.get("chain") or main_action_text(parent) or operator_prompt or "")
-    ops = build_scene_image_ops(
-        members,
-        passport=passport,
-        chain=chain,
-        frame_ids=None if grow else frame_ids,
-    )
-    result["image_ops"] = ops
-    result["images"] = len(ops)
+    result["image_ops"] = []
+    result["images"] = 0
     result["mode"] = mode
     if gen_error and "generate_error" not in result:
         result["generate_error"] = gen_error

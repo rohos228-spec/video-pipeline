@@ -160,6 +160,49 @@ def _op_frame_shot(op: dict[str, Any]) -> tuple[int, int]:
     return frame, (2 if shot == 2 else 1)
 
 
+def parse_apply_frame_numbers(raw: Any) -> list[int]:
+    """Номера кадров для точечного apply. Пусто = вся очередь."""
+    if raw in (None, "", [], ()):
+        return []
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        n = int(raw)
+        return [n] if n >= 1 else []
+    out: list[int] = []
+    seen: set[int] = set()
+    for item in raw if isinstance(raw, (list, tuple, set)) else [raw]:
+        try:
+            n = int(item)
+        except (TypeError, ValueError):
+            continue
+        if n < 1 or n in seen:
+            continue
+        seen.add(n)
+        out.append(n)
+    return out
+
+
+def split_apply_ops(
+    ops: list[dict[str, Any]],
+    frame_numbers: list[int] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Оставить в apply только выбранные кадры, остальные вернуть в очередь."""
+    wanted = {int(n) for n in (frame_numbers or []) if int(n) >= 1}
+    if not wanted:
+        return list(ops), []
+    apply_ops: list[dict[str, Any]] = []
+    keep_ops: list[dict[str, Any]] = []
+    for op in ops:
+        try:
+            fr = int(op.get("frame_number") or 0)
+        except (TypeError, ValueError):
+            fr = 0
+        if fr in wanted:
+            apply_ops.append(op)
+        else:
+            keep_ops.append(op)
+    return apply_ops, keep_ops
+
+
 def order_montage_pending_ops(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Покрытие → картинки → видео. Чужие типы — в конец."""
     coverage: list[dict[str, Any]] = []
@@ -682,6 +725,7 @@ async def apply_montage_board(
     *,
     video_trims: dict[str, dict[str, float]] | None = None,
     pending_ops: list[dict[str, Any]] | None = None,
+    keep_ops: list[dict[str, Any]] | None = None,
     on_progress: ProgressCb | None = None,
 ) -> dict[str, Any]:
     board = montage_meta(project)
@@ -690,6 +734,7 @@ async def apply_montage_board(
     ops = order_montage_pending_ops(
         list(pending_ops or board.get("pending_ops") or [])
     )
+    held = [op for op in list(keep_ops or []) if isinstance(op, dict)]
     # Не стираем прошлые зелёные слоты — иначе после следующего apply
     # «слетают» все ранее применённые правки в UI. Чистим только failed
     # у слотов этой очереди (их снова добавят при ошибке).
@@ -798,7 +843,7 @@ async def apply_montage_board(
     )
 
     remaining = [ops[i] for i, st in enumerate(op_status) if st != "ok"]
-    board["pending_ops"] = remaining
+    board["pending_ops"] = remaining + held
     touch_applied(board)
     set_montage_meta(project, board)
     await session.flush()

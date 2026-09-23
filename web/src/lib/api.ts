@@ -226,6 +226,7 @@ export interface MontagePendingOp {
     | "coverage_delete"
     | "coverage_template"
     | "coverage_anchors"
+    | "coverage_vo_span"
     | "coverage_angle"
     | "coverage_move"
     | "coverage_stitch"
@@ -267,6 +268,14 @@ export interface MontagePendingOp {
   template?: string;
   /** Якоря закадра ячейки — точки нарезки VO по кадрам. */
   anchors?: SceneAnchorRow[];
+  /** Выделение закадра: start/end в полном тексте ячейки. */
+  start?: number;
+  end?: number;
+  text?: string;
+  full?: string;
+  vo_cell_full?: string;
+  vo_span?: { start: number; end: number; text: string } | null;
+  clear?: boolean;
 }
 
 export interface SceneAnchorRow {
@@ -1299,6 +1308,7 @@ export const api = {
       shots?: number;
       skipped_shots?: number;
       inserted_frames?: number;
+      frame_numbers?: number[];
     }>(
       `/api/projects/${projectId}/montage-board/frames/${frameId}/scene-action-generate`,
       { method: "POST", body: JSON.stringify(body) },
@@ -1377,13 +1387,7 @@ export const api = {
       { method: "DELETE" },
     ),
 
-  applyMontageCoverage: (
-    projectId: number,
-    body: Pick<
-      MontagePendingOp,
-      "type" | "frame_number" | "shot" | "kind" | "parent_number"
-    >,
-  ) =>
+  applyMontageCoverage: (projectId: number, body: MontagePendingOp) =>
     http<{
       ok: boolean;
       highlight?: string | null;
@@ -1419,6 +1423,8 @@ export const api = {
     body: {
       video_trims: Record<string, { start: number; end: number }>;
       pending_ops: MontagePendingOp[];
+      /** Только эти кадры; остальные правки остаются в очереди. */
+      frame_numbers?: number[];
     },
   ) =>
     http<{
