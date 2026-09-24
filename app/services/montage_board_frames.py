@@ -200,7 +200,13 @@ def _promote_first_child(parent: Frame, kids: list[Frame]) -> Frame | None:
         coverage_parent_id="",
     )
     for kid in ordered[1:]:
-        _set_cs(kid, role="shot", parent_uuid=head.uuid)
+        _set_cs(
+            kid,
+            role="shot",
+            parent_uuid=head.uuid,
+            coverage_kind="child",
+            use_parent_still=True,
+        )
     return head
 
 

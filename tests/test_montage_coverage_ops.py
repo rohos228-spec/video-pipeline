@@ -909,6 +909,78 @@ async def test_apply_scene_action_grow_inserts_without_renumber(
         if int(fr.number) in fresh:
             assert _cs(fr).get("role") == "shot"
             assert _cs(fr).get("parent_uuid") == parent_uid
+            assert _cs(fr).get("coverage_kind") == "child"
+    live_parent = next(fr for fr in rows if int(fr.number) == 14)
+    assert _cs(live_parent).get("coverage_kind") == "parent"
+    assert (_cs(live_parent).get("план") or live_parent.attrs.get("крупность")) == "ОБЩИЙ"
+
+
+@pytest.mark.asyncio
+async def test_scene_action_keeps_medium_parent_plan(
+    session: AsyncSession, project: Project
+) -> None:
+    from app.services.montage_coverage_ops import apply_coverage_scene_action
+    from app.services.montage_scene_editor import scene_group
+    from app.services.vo_shot_expand import _cs
+
+    parent_uid = "dd" * 12
+    parent = Frame(
+        project_id=project.id,
+        number=1,
+        uuid=parent_uid,
+        voiceover_text="Ткач стоит у станка и чинит челнок.",
+        status="planned",
+        sort_key=1.0,
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+                "место": "цех",
+            },
+        },
+    )
+    session.add_all([project, parent])
+    await session.flush()
+    kadry = [
+        {
+            "id": "1-K1",
+            "план": "СРЕДНИЙ",
+            "действие": "место и ткач лицом к камере",
+            "закадр": "Ткач стоит у станка",
+        },
+        {
+            "id": "1-K2",
+            "план": "КРУПНЫЙ",
+            "действие": "чинит челнок",
+            "закадр": "и чинит челнок.",
+            "parent_id": "1-K1",
+        },
+    ]
+    await apply_coverage_scene_action(
+        session,
+        project,
+        parent,
+        [parent],
+        "1. цех — место\n(Ткач стоит у станка)\n2. цех — чинит\n(и чинит челнок.)",
+        grow=True,
+        kadry=kadry,
+    )
+    frames = list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    live = next(fr for fr in frames if int(fr.number) == 1)
+    assert _cs(live).get("план") == "СРЕДНИЙ"
+    _parent, group = scene_group(frames, live)
+    assert len(group) == 2
+    assert _cs(group[1]).get("coverage_kind") == "child"
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,8 @@ def test_ui_has_generate_with_images_under_split() -> None:
     assert "Улучшить сцену" in cells
     assert "live.slice(0, chainN)" not in board
     assert "shot_leftover" in board
+    assert "scene_master" in board
+    assert "Общий план" in board
     api = (ROOT / "web/src/lib/api.ts").read_text(encoding="utf-8")
     assert "scene-improve" in api
 

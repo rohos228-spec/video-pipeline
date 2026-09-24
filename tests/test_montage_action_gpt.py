@@ -356,11 +356,21 @@ def test_build_scene_image_ops_skips_leftover_and_maps_beats() -> None:
     assert [op["frame_number"] for op in ops] == [1, 2]
     assert all(op["type"] == "image_ai_change" for op in ops)
     assert "ЛЕСОПОЛОСА" in ops[0]["instruction"]
-    assert "душит" in ops[0]["instruction"]
+    assert "Общий план сцены" in ops[0]["instruction"]
+    assert "план ОБЩИЙ" in ops[0]["instruction"]
     assert "уходит" in ops[1]["instruction"]
     note = scene_image_instruction(beat="жмёт руку", passport={"place": "архив"})
     assert "архив" in note
     assert "жмёт руку" in note
+    master_note = scene_image_instruction(
+        beat="душит",
+        passport={"place": "архив", "characters": "Ткач, жертва"},
+        master=True,
+    )
+    assert "Общий план сцены" in master_note
+    assert "лицом к камере" in master_note
+    assert "Ткач" in master_note
+    assert "душит" not in master_note
 
 
 @pytest.mark.asyncio
@@ -430,7 +440,8 @@ async def test_improve_fallback_grows_and_images_new_shots(
     await session.flush()
 
     async def fake_ask(text: str, **kwargs):  # noqa: ANN003
-        assert "перебивка" in text
+        assert "выходит в лес" in text
+        assert "Он вышел в лес и скрылся в тени." in text
         return "нет сцен"
 
     monkeypatch.setattr("app.services.gpt_client.gpt_ask_fresh", fake_ask)
@@ -445,9 +456,11 @@ async def test_improve_fallback_grows_and_images_new_shots(
     )
     assert result["ok"] is True
     assert result.get("mode") == "improve"
-    assert int(result.get("inserted_frames") or 0) == 1
+    assert int(result.get("inserted_frames") or 0) == 0
     assert result["images"] == 0
     assert result["image_ops"] == []
+    nodes = [n["node"] for n in result["improve_report"]["nodes"]]
+    assert nodes == ["prompt", "scene", "characters", "parent", "shots"]
     await session.refresh(neighbor)
     assert int(neighbor.number) == 5
     assert neighbor.voiceover_text.startswith("Потом")

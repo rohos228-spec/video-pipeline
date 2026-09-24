@@ -598,6 +598,7 @@ def scene_image_instruction(
     beat: str = "",
     passport: dict[str, Any] | None = None,
     shot: dict[str, Any] | None = None,
+    master: bool = False,
 ) -> str:
     """Заметка оператора для ИИзменения: паспорт ячейки + действие и покрытие кадра."""
     p = passport or {}
@@ -626,7 +627,20 @@ def scene_image_instruction(
     if sense:
         parts.append(f"Смысл: {sense}.")
     act = " ".join((beat or "").split())
-    if act:
+    if master:
+        who = chars or "все персонажи этой сцены"
+        plan = str((shot or {}).get("план") or "").strip().upper()
+        if plan == "СРЕДНИЙ":
+            parts.append(
+                f"Средний план сцены: место и {who} лицом к камере. "
+                "Не кадрируй одного крупно."
+            )
+        else:
+            parts.append(
+                f"Общий план сцены: место целиком, в кадре {who} лицом к камере. "
+                "Не кадрируй одного крупно."
+            )
+    elif act:
         parts.append(f"Действие этого кадра: {act}.")
     cam = shot or {}
     zone = str(cam.get("зона") or "").strip()
@@ -639,6 +653,11 @@ def scene_image_instruction(
     )
     if camera:
         parts.append(f"Камера: {camera}.")
+    elif master:
+        plan_label = str((shot or {}).get("план") or "").strip().upper()
+        if plan_label not in {"ОБЩИЙ", "СРЕДНИЙ", "ДАЛЬНИЙ"}:
+            plan_label = "ОБЩИЙ"
+        parts.append(f"Камера: план {plan_label}.")
     accent = _get("accent", "акцент")
     if accent and str(cam.get("роль") or "") in {"реакция", "перебивка"}:
         parts.append(f"Акцент: {accent}.")
@@ -679,7 +698,10 @@ def build_scene_image_ops(
                 "frame_number": int(fr.number),
                 "shot": 1,
                 "instruction": scene_image_instruction(
-                    beat=beat, passport=passport, shot=shot
+                    beat=beat,
+                    passport=passport,
+                    shot=shot,
+                    master=i == 0,
                 ),
             }
         )
@@ -700,8 +722,8 @@ async def generate_cell_scene_with_images(
 ) -> dict[str, Any]:
     """GPT-сцены ячейки (мягкий fallback на текст цепи). Без картинок.
 
-    ``mode="improve"`` — ячейка точечно через 6 нод группы script_frames_qc
-    (``montage_scene_improve``); ``anchors`` — якоря, видимые на доске.
+    ``mode="improve"`` — прямой прогон ячейки (реестр персонажей, вес VO,
+    родитель ОБЩИЙ/СРЕДНИЙ); без группы нод script_frames_qc.
     """
     if mode == "improve":
         from app.services.montage_scene_improve import improve_cell_scene

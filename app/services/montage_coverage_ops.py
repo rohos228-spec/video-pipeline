@@ -79,6 +79,14 @@ COVERAGE_PLAN_CHOICES = (
     "КРУПНЫЙ",
     "ДЕТАЛЬ",
 )
+_MASTER_PLANS = frozenset({"ОБЩИЙ", "СРЕДНИЙ", "ДАЛЬНИЙ"})
+
+
+def parent_establishing_plan(raw: Any) -> str:
+    """Родитель сцены: ОБЩИЙ или СРЕДНИЙ (ДАЛЬНИЙ тоже establishing)."""
+    text = " ".join(str(raw or "").split()).upper().replace("ПЛАН", "").strip()
+    return text if text in _MASTER_PLANS else "ОБЩИЙ"
+
 
 COVERAGE_ANGLE_CHOICES = (
     "фронт",
@@ -649,6 +657,8 @@ def _new_shot_from_parent(parent: Frame, kid: Frame) -> None:
         "role": "shot",
         "parent_uuid": parent.uuid,
         "leftover": False,
+        "coverage_kind": "child",
+        "use_parent_still": True,
     }
     nab = str(_cs(parent).get("набор") or "").strip()
     if nab:
@@ -1092,6 +1102,13 @@ async def apply_coverage_scene_action(
         kadry = kadry[:MAX_IMPROVE_SHOTS]
     if not kadry:
         raise RuntimeError("не удалось разобрать действие на кадры")
+    parent_plan = parent_establishing_plan(kadry[0].get("план"))
+    kadry[0]["план"] = parent_plan
+    kadry[0]["parent_id"] = None
+    master_id = str(kadry[0].get("id") or f"{int(parent.number)}-K1")
+    kadry[0]["id"] = master_id
+    for shot in kadry[1:]:
+        shot["parent_id"] = master_id
     if with_coverage and parse_scene_chain(raw):
         chain_text = raw
     else:
@@ -1166,6 +1183,8 @@ async def apply_coverage_scene_action(
                     "role": "vo_parent",
                     "parent_uuid": parent.uuid,
                     "coverage_parent_id": "",
+                    "coverage_kind": "parent",
+                    "use_parent_still": False,
                 }
             )
         else:
@@ -1174,6 +1193,8 @@ async def apply_coverage_scene_action(
                     "role": "shot",
                     "parent_uuid": parent.uuid,
                     "coverage_parent_id": parent_sid,
+                    "coverage_kind": "child",
+                    "use_parent_still": True,
                 }
             )
             _clear_child_scene_chain(member)
@@ -1184,6 +1205,8 @@ async def apply_coverage_scene_action(
             apply_coverage_action(member, act, group)
         if with_coverage:
             _apply_shot_coverage(member, shot, group)
+        if i == 0:
+            apply_coverage_plan(member, parent_plan, group)
         if member is not parent:
             ladder: dict[str, Any] = {}
             if piece:

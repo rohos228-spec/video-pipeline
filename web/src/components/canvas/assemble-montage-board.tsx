@@ -139,6 +139,7 @@ const SCENE_IMPROVE_CLEAR_TYPES = new Set<MontagePendingOp["type"]>([
 type RowKey =
   | "voiceover"
   | "scene_info"
+  | "scene_master"
   | "role"
   | "action"
   | "anchor"
@@ -165,7 +166,7 @@ const SCENE_SHOT_ROWS: { key: RowKey; label: string }[] = [
 ];
 
 /** Эти строки общие для VO-ячейки — одна клетка на всю сцену. */
-const SCENE_SPAN_ROWS = new Set<RowKey>(["scene_info"]);
+const SCENE_SPAN_ROWS = new Set<RowKey>(["scene_info", "scene_master"]);
 /** Эти строки правятся у каждого кадра отдельно (роль — на картинке). */
 const SCENE_FRAME_ROWS = new Set<RowKey>(["action"]);
 
@@ -713,6 +714,13 @@ type SceneRange = {
   end: number;
   frames: MontageBoardFrame[];
 };
+
+function sceneMasterFrame(range: SceneRange): MontageBoardFrame | null {
+  const parent = range.frames.find((fr) => fr.shot_kind === "parent");
+  if (parent) return parent;
+  const byScene = range.frames.find((fr) => fr.number === range.scene);
+  return byScene ?? range.frames[0] ?? null;
+}
 
 function visibleSceneFrames(frames: MontageBoardFrame[]): MontageBoardFrame[] {
   // leftover-клей прячем. Длина scene_chain — не число шотов: у ячейки
@@ -2096,7 +2104,12 @@ export function AssembleMontageBoard({
     const rest = GRID_ROWS.filter(
       (r) => r.key !== "image1" && r.key !== "voiceover",
     );
-    return [...frameRow, ...SCENE_SHOT_ROWS, ...rest];
+    return [
+      { key: "scene_master" as const, label: "Общий план" },
+      ...frameRow,
+      ...SCENE_SHOT_ROWS,
+      ...rest,
+    ];
   }, [coverageOn]);
   const meta = board.data?.meta;
   const pendingOpsKey = JSON.stringify(meta?.pending_ops ?? []);
@@ -3759,6 +3772,66 @@ export function AssembleMontageBoard({
     const head = range.frames[0];
     const tail = range.frames[range.frames.length - 1] ?? head;
     if (!head) return null;
+    if (key === "scene_master") {
+      const master = sceneMasterFrame(range) ?? head;
+      const chars = (master.scene_characters || head.scene_characters || "").trim();
+      const place = (master.scene_place || head.scene_place || "").trim();
+      return (
+        <div className="mx-auto max-w-[11rem]">
+          <ClickableMedia
+            url={master.image_shot1_url}
+            kind="image"
+            tall={coverageOn}
+            tallAspect={frameAspect}
+            overlay={
+              <span className="rounded bg-black/55 px-1.5 py-0.5 text-[10px] font-medium text-white/85">
+                родитель · ОБЩИЙ
+              </span>
+            }
+            caption={
+              <p className="truncate text-[10px] leading-snug text-white/45">
+                {[place, chars].filter(Boolean).join(" · ") || "все персонажи сцены"}
+              </p>
+            }
+            label={`Общий план сцены · кадр #${master.number}`}
+            onPreview={showPreview}
+            scrollRootRef={tableScrollRef}
+            imageSlot={{ frameNumber: master.number, shot: 1 }}
+            onImageDrop={(from) =>
+              void handleMoveImage(from, {
+                frameNumber: master.number,
+                shot: 1,
+              })
+            }
+            onRegen={() =>
+              queueOp({
+                type: "image_regen",
+                frame_number: master.number,
+                shot: 1,
+                prompt: sourcePromptFor("image", master.number, 1),
+              })
+            }
+            onEditPrompt={() => openPromptModal("image", master.number, 1, "prompt")}
+            onAiChange={() => openAiChangeModal("image", master.number, 1)}
+            onRegenWithCorrection={() =>
+              openPromptModal("image", master.number, 1, "correction")
+            }
+            onDelete={() => void handleDeleteImage(master.number, 1)}
+            onUpload={(file) => void handleUploadImage(master.number, 1, file)}
+            slotTone={toneForSlot(`${master.number}:image1`)}
+            onSwapPick={() =>
+              void handleSwapPick({
+                kind: "image",
+                frameNumber: master.number,
+                shot: 1,
+              })
+            }
+            swapSelected={isSwapSelected("image", master.number, 1)}
+            swapBusy={swapBusy}
+          />
+        </div>
+      );
+    }
     const pending = pendingCoverageForFrame(pendingOps, head.number);
     const base = { frame_number: head.number, shot: 1 as const };
     if (key !== "scene_info") return null;
