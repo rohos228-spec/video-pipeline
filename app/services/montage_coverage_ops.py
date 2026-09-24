@@ -377,6 +377,39 @@ def _would_cycle(frames: list[Frame], child: Frame, new_parent: Frame) -> bool:
     return False
 
 
+def _clear_coverage_parent_link(frame: Frame) -> None:
+    _set_cs(
+        frame,
+        coverage_kind="parent",
+        use_parent_still=False,
+        coverage_parent_id="",
+        coverage_parent_number=None,
+    )
+    _patch_kadry_item(frame, parent_id="")
+
+
+def _detach_from_coverage_ancestor(
+    frames: list[Frame],
+    node: Frame,
+    ancestor: Frame,
+) -> None:
+    """Снять still-связь, из‑за которой node → … → ancestor. Иначе K1 нельзя сделать ребёнком."""
+    cur: Frame | None = node
+    seen: set[int] = set()
+    while cur is not None:
+        nxt = find_coverage_parent_frame(frames, cur)
+        if nxt is None or int(nxt.number) == int(cur.number):
+            return
+        if int(nxt.number) == int(ancestor.number):
+            _clear_coverage_parent_link(cur)
+            return
+        cid = int(cur.id or 0) or int(cur.number)
+        if cid in seen:
+            return
+        seen.add(cid)
+        cur = nxt
+
+
 def _refresh_shots_in_beat(frames: list[Frame], parent: Frame) -> None:
     kids = _children_of(frames, parent)
     total = 1 + len(kids)
@@ -454,6 +487,7 @@ def _clear_shot_action(frame: Frame) -> None:
     attrs = dict(getattr(frame, "attrs", None) or {})
     attrs["shot01_action"] = ""
     attrs["действие"] = ""
+    attrs["крупность"] = ""
     role = str((attrs.get("camera_subdivide") or {}).get("role") or "")
     if role != "vo_parent":
         attrs["главное_действие"] = ""
@@ -462,7 +496,19 @@ def _clear_shot_action(frame: Frame) -> None:
         attrs.pop("shots", None)
     frame.attrs = attrs
     _flag_attrs(frame)
-    _set_cs(frame, действие="", leftover=True)
+    _set_cs(
+        frame,
+        действие="",
+        leftover=True,
+        план="",
+        крупность="",
+        ракурс="",
+        движение="",
+        стык="",
+        angle="",
+        move="",
+        size="",
+    )
     if role == "vo_parent":
         _patch_kadry_item(frame, действие="")
 
@@ -499,8 +545,8 @@ def apply_coverage_stitch(frame: Frame, stitch: str, frames: list[Frame]) -> Non
     _apply_shot_fields(
         frame,
         frames,
-        cs_fields={"переход": text, "тип_стыка": text},
-        kadry_fields={"переход": text, "тип_стыка": label},
+        cs_fields={"стык": text, "переход": text, "тип_стыка": text},
+        kadry_fields={"стык": text, "переход": text, "тип_стыка": label},
         attrs_fields={"переход": text},
     )
 
@@ -635,11 +681,10 @@ def apply_coverage_template(
 
 
 def _new_shot_from_parent(parent: Frame, kid: Frame) -> None:
-    """Новый шот ячейки: место/персонажи/свет от родителя, крупность — за оператором."""
+    """Новый шот ячейки: персонажи и свет от родителя, крупность — за оператором."""
     pattrs = dict(getattr(parent, "attrs", None) or {})
     attrs = dict(getattr(kid, "attrs", None) or {})
     for key in (
-        "place",
         "персонажи_сцены",
         "персонажи",
         "characters",
@@ -647,7 +692,6 @@ def _new_shot_from_parent(parent: Frame, kid: Frame) -> None:
         "id_scene",
         "свет",
         "lighting",
-        "фон",
     ):
         if key in pattrs and key not in attrs:
             attrs[key] = pattrs[key]
@@ -956,6 +1000,7 @@ def apply_coverage_kind(
             coverage_kind="parent",
             use_parent_still=False,
             coverage_parent_id="",
+            coverage_parent_number=None,
         )
         _patch_kadry_item(frame, parent_id="")
         if old_still is not None and int(old_still.number) != int(frame.number):
@@ -971,6 +1016,8 @@ def apply_coverage_kind(
     if int(still_src.number) == int(frame.number):
         raise RuntimeError("нельзя сделать кадр дочерним самому себе")
     if _would_cycle(frames, frame, still_src):
+        _detach_from_coverage_ancestor(frames, still_src, frame)
+    if _would_cycle(frames, frame, still_src):
         raise RuntimeError("нельзя привязать кадр к своему потомку")
 
     parent_sid = coverage_shot_id(still_src) or f"{still_src.number}-K1"
@@ -979,6 +1026,7 @@ def apply_coverage_kind(
         coverage_kind="child",
         use_parent_still=True,
         coverage_parent_id=parent_sid,
+        coverage_parent_number=int(still_src.number),
     )
     _patch_kadry_item(frame, parent_id=parent_sid)
     _refresh_shots_in_beat(frames, vo_head)
@@ -1062,6 +1110,7 @@ async def apply_coverage_scene_action(
     *,
     grow: bool = False,
     kadry: list[dict[str, Any]] | None = None,
+    lock_parent_plan: bool = True,
 ) -> dict[str, Any]:
     """Последовательность кадров сцены → кадры[] на членах ячейки.
 
@@ -1070,11 +1119,12 @@ async def apply_coverage_scene_action(
     ``grow`` дописывает недостающие шоты без перенумерации существующих.
     ``kadry`` — готовые кадры с покрытием (план/ракурс/движение/стык):
     текст не режем заново, покрытие пишем на каждый шот.
+    ``lock_parent_plan`` — первый шот привести к ОБЩИЙ/СРЕДНИЙ. Для improve
+    с готовыми кадрами сцены выключаем: still родителя живёт отдельно.
     """
     from app.services.montage_scene_editor import (
         cell_full_text,
         cell_scene_text,
-        frame_place,
         scene_group,
     )
     from app.services.shot_templates import (
@@ -1090,7 +1140,7 @@ async def apply_coverage_scene_action(
     parent, members = scene_group(frames, frame)
     full = cell_full_text(parent, members)
     scene_vo = cell_scene_text(parent, members)
-    place = frame_place(parent)
+    place = ""
     with_coverage = bool(kadry)
     if kadry:
         kadry = [dict(shot) for shot in kadry if isinstance(shot, dict)]
@@ -1102,7 +1152,10 @@ async def apply_coverage_scene_action(
         kadry = kadry[:MAX_IMPROVE_SHOTS]
     if not kadry:
         raise RuntimeError("не удалось разобрать действие на кадры")
-    parent_plan = parent_establishing_plan(kadry[0].get("план"))
+    if lock_parent_plan:
+        parent_plan = parent_establishing_plan(kadry[0].get("план"))
+    else:
+        parent_plan = str(kadry[0].get("план") or "").strip() or "СРЕДНИЙ"
     kadry[0]["план"] = parent_plan
     kadry[0]["parent_id"] = None
     master_id = str(kadry[0].get("id") or f"{int(parent.number)}-K1")
@@ -1183,6 +1236,7 @@ async def apply_coverage_scene_action(
                     "role": "vo_parent",
                     "parent_uuid": parent.uuid,
                     "coverage_parent_id": "",
+                    "coverage_parent_number": None,
                     "coverage_kind": "parent",
                     "use_parent_still": False,
                 }
@@ -1193,6 +1247,7 @@ async def apply_coverage_scene_action(
                     "role": "shot",
                     "parent_uuid": parent.uuid,
                     "coverage_parent_id": parent_sid,
+                    "coverage_parent_number": int(parent.number),
                     "coverage_kind": "child",
                     "use_parent_still": True,
                 }
@@ -1220,6 +1275,13 @@ async def apply_coverage_scene_action(
             if ladder:
                 _patch_kadry_item_on_parent_ladder(parent, member, **ladder)
     for member in group[used:]:
+        _clear_shot_action(member)
+    leftover_extras = [
+        m
+        for m in members
+        if bool(_cs(m).get("leftover")) and m not in group[:used]
+    ]
+    for member in leftover_extras:
         _clear_shot_action(member)
     _refresh_shots_in_beat(group, parent)
     logger.info(

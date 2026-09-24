@@ -343,3 +343,57 @@ def test_character_registry_payload_uses_action_not_old_ids() -> None:
         {"id": "c06", "имя": "эксперт-криминалист"},
     ]
     assert character_registry_missing_visual_roles(frames, full_cards) == []
+
+
+def test_character_registry_roles_ignore_vo_inflection_and_named_people() -> None:
+    from app.services.db_frames_context import character_registry_missing_visual_roles
+
+    frames = [
+        SimpleNamespace(
+            number=65,
+            uuid="aa" * 12,
+            attrs={
+                "main_action": (
+                    "следователь раскладывает фотографии. "
+                    "(Эти разговоры не превращали Банди в эксперта.)"
+                )
+            },
+        ),
+        SimpleNamespace(
+            number=89,
+            uuid="bb" * 12,
+            attrs={"main_action": "судья Эдвард Коуарт занимает место"},
+        ),
+        SimpleNamespace(
+            number=93,
+            uuid="cc" * 12,
+            attrs={"main_action": "журналист включает камеру"},
+        ),
+        SimpleNamespace(
+            number=47,
+            uuid="dd" * 12,
+            attrs={"main_action": "журналисты и фотографы собираются у входа"},
+        ),
+    ]
+    named_cards = [
+        {"id": "c01", "имя": "Тед Банди"},
+        {"id": "c09", "имя": "следователь"},
+        {
+            "id": "c12",
+            "имя": "Эдвард Коуарт",
+            "одежда": "черная судейская мантия",
+        },
+        {
+            "id": "c02",
+            "имя": "Энн Рул",
+            "одежда": "одежда писательницы и журналистки",
+        },
+    ]
+    assert character_registry_missing_visual_roles(frames, named_cards) == []
+
+    only_hero = [{"id": "c01", "имя": "Тед Банди"}]
+    missing = character_registry_missing_visual_roles(frames, only_hero)
+    assert "эксперт" not in missing
+    assert "следователь" in missing
+    assert "судья" in missing
+    assert "журналист" in missing

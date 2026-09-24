@@ -151,19 +151,55 @@ def disk_has_shot2_video(videos_dir: Path, frame_number: int) -> bool:
     return any(videos_dir.glob(shot2_video_file_pattern(frame_number)))
 
 
+PARENT_STILL_SLOT = "parent"
+
+
+def is_parent_slot(slot: str | None) -> bool:
+    return str(slot or "").strip().lower() == PARENT_STILL_SLOT
+
+
+def is_parent_still_filename(name: str) -> bool:
+    """Отдельный still общего плана: ``frame_NNN_parent*.png``, не shot1."""
+    return "_parent" in (name or "").lower()
+
+
 def find_shot1_image(scenes_dir: Path, frame_number: int) -> Path | None:
-    """Последний файл изображения первого кадра (без ``_s2_`` в имени)."""
+    """Последний файл изображения первого кадра (без ``_s2_`` и still родителя)."""
     if not scenes_dir.is_dir():
         return None
     candidates = [
         p
         for p in scenes_dir.glob(f"frame_{frame_number:03d}_*")
-        if p.suffix.lower() in _IMG_EXTENSIONS and "_s2_" not in p.name
+        if p.suffix.lower() in _IMG_EXTENSIONS
+        and "_s2_" not in p.name
+        and not is_parent_still_filename(p.name)
     ]
     if not candidates:
         return None
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0]
+
+
+def find_parent_still_image(scenes_dir: Path, frame_number: int) -> Path | None:
+    """Still общего плана ячейки — отдельный файл, не исходный shot1."""
+    if not scenes_dir.is_dir():
+        return None
+    candidates = [
+        p
+        for p in scenes_dir.glob(f"frame_{frame_number:03d}_*")
+        if p.suffix.lower() in _IMG_EXTENSIONS and is_parent_still_filename(p.name)
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
+def resolve_coverage_parent_png(scenes_dir: Path, frame_number: int) -> Path | None:
+    """Still родителя для lock: ``frame_NNN_parent_*.png``, иначе shot1."""
+    return find_parent_still_image(scenes_dir, frame_number) or find_shot1_image(
+        scenes_dir, frame_number
+    )
 
 
 def find_shot2_reference_image(

@@ -19,8 +19,11 @@ from app.services.plan_shot2 import (
     SHOT2_PROMPT_ATTR,
     SHOT2_VIDEO_PROMPT_ATTR,
     effective_shot_from_artifact,
+    find_parent_still_image,
     find_shot1_image,
     find_shot2_image,
+    is_parent_slot,
+    is_parent_still_filename,
     shot2_file_pattern,
     shot2_video_file_pattern,
 )
@@ -112,7 +115,7 @@ def archive_file(
 
 
 def _is_shot1_media_name(name: str) -> bool:
-    return "_s2_" not in name
+    return "_s2_" not in name and not is_parent_still_filename(name)
 
 
 def purge_replaced_media(
@@ -124,6 +127,7 @@ def purge_replaced_media(
     sub: str,
     shot: int,
     also_json: bool = True,
+    slot: str = "",
 ) -> int:
     """Убрать из рабочей папки всё кроме ``keep`` (и его stem.json).
 
@@ -152,7 +156,10 @@ def purge_replaced_media(
             if res in seen:
                 continue
             seen.add(res)
-            if shot == 1 and not _is_shot1_media_name(p.name):
+            if is_parent_slot(slot):
+                if not is_parent_still_filename(p.name):
+                    continue
+            elif shot == 1 and not _is_shot1_media_name(p.name):
                 continue
             if res == keep_res:
                 continue
@@ -186,6 +193,18 @@ def _assert_new_file_ready(path: Path, *, min_bytes: int = 64) -> None:
         raise RuntimeError(f"новый файл пустой или слишком мал: {path.name}")
 
 
+def _artifact_matches_image_slot(meta: dict[str, Any], *, shot: int, slot: str = "") -> bool:
+    parent = is_parent_slot(slot) or is_parent_slot(str(meta.get("slot") or ""))
+    if is_parent_slot(slot):
+        return parent
+    if parent:
+        return False
+    meta_shot = meta.get("shot", 1)
+    if shot == 2:
+        return meta_shot == 2
+    return meta_shot != 2
+
+
 async def finalize_scene_image(
     session: AsyncSession,
     project: Project,
@@ -193,11 +212,14 @@ async def finalize_scene_image(
     *,
     shot: int,
     new_path: Path,
+    slot: str = "",
 ) -> None:
     """После успешной генерации/upload: архив старых файлов, artifact на new_path."""
     _assert_new_file_ready(new_path)
     scenes = project.data_dir / "scenes"
-    if shot == 2:
+    if is_parent_slot(slot):
+        patterns = [f"frame_{frame_number:03d}_*parent*.png"]
+    elif shot == 2:
         patterns = [shot2_file_pattern(frame_number)]
     else:
         patterns = [f"frame_{frame_number:03d}_*.png"]
@@ -208,6 +230,7 @@ async def finalize_scene_image(
         project=project,
         sub="scenes",
         shot=shot,
+        slot=slot,
     )
     if purged:
         logger.info(
@@ -229,8 +252,8 @@ async def finalize_scene_image(
             )
         ).scalars().all()
         for art in arts:
-            meta_shot = (art.meta or {}).get("shot", 1)
-            if (shot == 2 and meta_shot == 2) or (shot == 1 and meta_shot != 2):
+            meta = art.meta or {}
+            if _artifact_matches_image_slot(meta, shot=shot, slot=slot):
                 await session.delete(art)
         session.add(
             Artifact(
@@ -239,7 +262,7 @@ async def finalize_scene_image(
                 kind=ArtifactKind.scene_image,
                 uuid=uuid.uuid4().hex,
                 path=str(new_path),
-                meta={"shot": shot},
+                meta={"shot": shot, "slot": slot} if slot else {"shot": shot},
             )
         )
     await session.flush()
@@ -309,16 +332,22 @@ async def delete_scene_image(
     frame_number: int,
     *,
     shot: int,
+    slot: str = "",
 ) -> bool:
     scenes = project.data_dir / "scenes"
-    if shot == 2:
+    if is_parent_slot(slot):
+        pattern = f"frame_{frame_number:03d}_*parent*.png"
+    elif shot == 2:
         pattern = shot2_file_pattern(frame_number)
     else:
         pattern = f"frame_{frame_number:03d}_*.png"
     deleted = False
     if scenes.is_dir():
         for p in list(scenes.glob(pattern)):
-            if shot == 1 and "_s2_" in p.name:
+            if is_parent_slot(slot):
+                if not is_parent_still_filename(p.name):
+                    continue
+            elif shot == 1 and not _is_shot1_media_name(p.name):
                 continue
             archive_file(p, project, "scenes")
             deleted = True
@@ -334,8 +363,7 @@ async def delete_scene_image(
             )
         ).scalars().all()
         for art in arts:
-            meta_shot = (art.meta or {}).get("shot", 1)
-            if (shot == 2 and meta_shot == 2) or (shot == 1 and meta_shot != 2):
+            if _artifact_matches_image_slot(art.meta or {}, shot=shot, slot=slot):
                 await session.delete(art)
                 deleted = True
     await session.flush()
@@ -389,17 +417,22 @@ async def save_scene_image_upload(
     shot: int,
     content: bytes,
     suffix: str,
+    slot: str = "",
 ) -> Path:
     scenes = project.data_dir / "scenes"
     scenes.mkdir(parents=True, exist_ok=True)
     short = uuid.uuid4().hex[:8]
-    if shot == 2:
+    if is_parent_slot(slot):
+        name = f"frame_{frame_number:03d}_parent_{short}{suffix}"
+    elif shot == 2:
         name = f"frame_{frame_number:03d}_s2_{short}{suffix}"
     else:
         name = f"frame_{frame_number:03d}_{short}{suffix}"
     dest = scenes / name
     dest.write_bytes(content)
-    await finalize_scene_image(session, project, frame_number, shot=shot, new_path=dest)
+    await finalize_scene_image(
+        session, project, frame_number, shot=shot, new_path=dest, slot=slot
+    )
     return dest
 
 
@@ -650,7 +683,11 @@ async def swap_shot_media(
     return result
 
 
-def _find_shot_image(scenes_dir: Path, frame_number: int, shot: int) -> Path | None:
+def _find_shot_image(
+    scenes_dir: Path, frame_number: int, shot: int, slot: str = ""
+) -> Path | None:
+    if is_parent_slot(slot):
+        return find_parent_still_image(scenes_dir, frame_number)
     if shot == 2:
         return find_shot2_image(scenes_dir, frame_number)
     return find_shot1_image(scenes_dir, frame_number)
@@ -777,6 +814,8 @@ async def move_scene_image(
     from_shot: int,
     to_frame: int,
     to_shot: int,
+    from_slot: str = "",
+    to_slot: str = "",
 ) -> dict[str, Any]:
     """Перенос/обмен картинки между слотами (в т.ч. в пустую ячейку).
 
@@ -785,16 +824,20 @@ async def move_scene_image(
     """
     if from_shot not in (1, 2) or to_shot not in (1, 2):
         return {"ok": False, "reason": "shot должен быть 1 или 2"}
-    if from_frame == to_frame and from_shot == to_shot:
+    if (
+        from_frame == to_frame
+        and from_shot == to_shot
+        and is_parent_slot(from_slot) == is_parent_slot(to_slot)
+    ):
         return {"ok": False, "reason": "тот же слот"}
 
     scenes = project.data_dir / "scenes"
     scenes.mkdir(parents=True, exist_ok=True)
-    src_path = _find_shot_image(scenes, from_frame, from_shot)
+    src_path = _find_shot_image(scenes, from_frame, from_shot, from_slot)
     if src_path is None or not src_path.is_file():
         return {"ok": False, "reason": "в источнике нет картинки"}
 
-    dst_path = _find_shot_image(scenes, to_frame, to_shot)
+    dst_path = _find_shot_image(scenes, to_frame, to_shot, to_slot)
     src_bytes = src_path.read_bytes()
     src_suf = src_path.suffix or ".png"
     dst_bytes = (
@@ -803,8 +846,10 @@ async def move_scene_image(
     dst_suf = (dst_path.suffix if dst_path is not None else ".png") or ".png"
     mode = "swap" if dst_bytes is not None else "move"
 
-    await delete_scene_image(session, project, from_frame, shot=from_shot)
-    await delete_scene_image(session, project, to_frame, shot=to_shot)
+    await delete_scene_image(
+        session, project, from_frame, shot=from_shot, slot=from_slot
+    )
+    await delete_scene_image(session, project, to_frame, shot=to_shot, slot=to_slot)
 
     await save_scene_image_upload(
         session,
@@ -813,6 +858,7 @@ async def move_scene_image(
         shot=to_shot,
         content=src_bytes,
         suffix=src_suf,
+        slot=to_slot,
     )
     if dst_bytes is not None:
         await save_scene_image_upload(
@@ -822,6 +868,7 @@ async def move_scene_image(
             shot=from_shot,
             content=dst_bytes,
             suffix=dst_suf,
+            slot=from_slot,
         )
 
     fr_from = await _frame(session, project.id, from_frame)
@@ -831,7 +878,12 @@ async def move_scene_image(
         else await _frame(session, project.id, to_frame)
     )
     prompts_moved = False
-    if fr_from is not None and fr_to is not None:
+    if (
+        fr_from is not None
+        and fr_to is not None
+        and not is_parent_slot(from_slot)
+        and not is_parent_slot(to_slot)
+    ):
         p_from = _get_image_prompt(fr_from, from_shot)
         p_to = _get_image_prompt(fr_to, to_shot)
         _set_image_prompt(fr_to, to_shot, p_from)

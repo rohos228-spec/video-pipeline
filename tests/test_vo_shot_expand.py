@@ -2052,6 +2052,97 @@ def test_vo_parent_with_x1_parent_id_is_not_shot_child() -> None:
     assert is_shot_child(k1) is False
 
 
+def test_find_parent_skips_leftover_duplicate_shot_id() -> None:
+    """Leftover с тем же shot_id не подменяет still родителя с доски."""
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import find_coverage_parent_frame
+
+    leftover = SimpleNamespace(
+        number=2,
+        uuid="old-k2",
+        attrs={
+            "кадры": [{"id": "1-S1-K2"}],
+            "camera_subdivide": {
+                "role": "shot",
+                "shot_id": "1-S1-K2",
+                "leftover": True,
+                "coverage_kind": "child",
+                "coverage_parent_id": "1-S1-K1",
+            },
+        },
+    )
+    parent = SimpleNamespace(
+        number=148,
+        uuid="live-parent",
+        attrs={
+            "кадры": [{"id": "1-S1-K2"}],
+            "camera_subdivide": {
+                "role": "shot",
+                "shot_id": "1-S1-K2",
+                "coverage_kind": "parent",
+                "use_parent_still": False,
+            },
+        },
+    )
+    child = SimpleNamespace(
+        number=151,
+        uuid="live-child",
+        attrs={
+            "кадры": [{"id": "1-S1-K4", "parent_id": "1-S1-K2"}],
+            "camera_subdivide": {
+                "role": "shot",
+                "shot_id": "1-S1-K4",
+                "parent_uuid": "vo-head",
+                "coverage_kind": "child",
+                "use_parent_still": True,
+                "coverage_parent_id": "1-S1-K2",
+            },
+        },
+    )
+    assert find_coverage_parent_frame([leftover, parent, child], child) is parent
+
+
+def test_find_parent_uses_board_number_not_vo_head() -> None:
+    """Явный родитель с доски важнее parent_uuid VO-ячейки."""
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import find_coverage_parent_frame
+
+    vo_head = SimpleNamespace(
+        number=1,
+        uuid="vo-1",
+        attrs={"camera_subdivide": {"role": "vo_parent", "shot_id": "1-S1-K1"}},
+    )
+    still = SimpleNamespace(
+        number=148,
+        uuid="still-148",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "shot_id": "1-S1-K2",
+                "coverage_kind": "parent",
+            }
+        },
+    )
+    child = SimpleNamespace(
+        number=4,
+        uuid="child-4",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "shot_id": "1-S1-K4",
+                "parent_uuid": "vo-1",
+                "coverage_kind": "child",
+                "use_parent_still": True,
+                "coverage_parent_id": "1-S1-K1",
+                "coverage_parent_number": 148,
+            }
+        },
+    )
+    assert find_coverage_parent_frame([vo_head, still, child], child) is still
+
+
 def test_merge_flattened_coverage_rebuilds_kadry() -> None:
     from app.services.vo_shot_expand import (
         flattened_coverage_groups,

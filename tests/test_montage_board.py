@@ -210,8 +210,9 @@ async def test_montage_board_group_refs_on_vo_cell(
     scenes.mkdir(parents=True, exist_ok=True)
     chars_dir.mkdir(parents=True, exist_ok=True)
     items_dir.mkdir(parents=True, exist_ok=True)
+    (scenes / "frame_001_shot1.png").write_bytes(b"png-shot1")
     (scenes / "frame_001_parent.png").write_bytes(b"png-parent")
-    (scenes / "frame_002_child.png").write_bytes(b"png-parent")
+    (scenes / "frame_002_child.png").write_bytes(b"png-child")
     (chars_dir / "c02.png").write_bytes(b"png-c02")
     (items_dir / "i01.png").write_bytes(b"png-i01")
 
@@ -270,11 +271,16 @@ async def test_montage_board_group_refs_on_vo_cell(
     board = await build_montage_board(session, montage_project)
     p_row, c_row, s_row = board["frames"]
     assert p_row["ref_parent"] is None
+    assert p_row["image_shot1_url"]
+    assert p_row["image_parent_url"]
+    assert "parent" in (p_row["image_parent_url"] or "")
+    assert p_row["image_parent_url"] != p_row["image_shot1_url"]
     assert p_row["group_character_refs"][0]["id"] == "c02"
     assert p_row["group_character_refs"][0]["code"] == "c02"
     assert p_row["item_refs"][0]["id"] == "i01"
     assert c_row["ref_parent"]["number"] == 1
     assert c_row["ref_parent"]["image_url"]
+    assert "parent" in (c_row["ref_parent"]["image_url"] or "")
     assert c_row["image_shot1_url"]
     assert c_row["image_shot1_url"] != c_row["ref_parent"]["image_url"]
     assert [r["id"] for r in c_row["group_character_refs"]] == ["c02"]
@@ -597,6 +603,41 @@ def test_load_montage_xlsx_bundle_survives_plan_open_failure(
     assert shot2 == {}
 
 
+def test_load_montage_xlsx_bundle_keeps_db_prompts_over_stale_excel_cache(
+    montage_project: Project,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import montage_board as mb
+    from app.services.montage_board import (
+        _FrameBoardSnapshot,
+        _load_montage_xlsx_bundle,
+    )
+
+    xlsx = montage_project.data_dir / "project.xlsx"
+    xlsx.write_bytes(b"not-xlsx")
+    snaps = [
+        _FrameBoardSnapshot(id=1, number=1, image_prompt="REAL 1", attrs={}),
+        _FrameBoardSnapshot(id=2, number=2, image_prompt="", attrs={}),
+        _FrameBoardSnapshot(id=3, number=3, image_prompt="", attrs={}),
+    ]
+    stale = {
+        1: {**mb._empty_prompt_row(), "image_prompt_shot1": "STALE STUB"},
+        2: mb._empty_prompt_row(),
+        3: {**mb._empty_prompt_row(), "image_prompt_shot1": "EXCEL 3"},
+    }
+    monkeypatch.setattr(mb, "_read_plan_excel_cells", lambda *a, **k: {})
+    monkeypatch.setattr(mb, "get_cached_source_prompts", lambda *a, **k: stale)
+
+    _excel, prompts, _shot2 = _load_montage_xlsx_bundle(
+        xlsx,
+        chars_dir=montage_project.data_dir / "characters",
+        frames=snaps,
+    )
+    assert prompts[1]["image_prompt_shot1"] == "REAL 1"
+    assert prompts[2]["image_prompt_shot1"] == ""
+    assert prompts[3]["image_prompt_shot1"] == "EXCEL 3"
+
+
 def _script_frames_qc_meta() -> dict:
     return {
         "canvas_graph": {
@@ -656,7 +697,7 @@ async def test_montage_board_shows_scene_row_from_frame_data_without_group(
     assert row["shot_plan"] == "ОБЩИЙ"
     assert row["shot_action"] == "сидит за столом"
     assert row["shot_template"] == "T5"
-    assert row["scene_place"] == "офис"
+    assert row["scene_place"] == ""
     assert row["scene_characters"] == "следователь"
     assert "сидит за столом" in row["shot_anchor"]
     assert row["shot_angle"] == ""
@@ -745,7 +786,7 @@ async def test_montage_board_shows_plan_action_parent_child_with_group(
     assert c_row["shot_action"] == "рука выводит строки"
     assert c_row["shot_parent_number"] == 1
     assert c_row["shot_parent_id"] == "1-K1"
-    assert p_row["scene_place"] == "офис"
+    assert p_row["scene_place"] == ""
     assert "родительский закадр" in p_row["shot_anchor"]
     assert c_row["shot_anchor"]
     assert p_row["shot_anchor"] != c_row["shot_anchor"]
@@ -1013,3 +1054,46 @@ def test_shot_kind_parent_from_explicit_coverage_kind() -> None:
     kind, parent_n, _sid = _shot_kind_payload(fr, [fr])
     assert kind == "parent"
     assert parent_n is None
+
+
+def test_shot_kind_child_on_vo_head_with_plan() -> None:
+    """Первый кадр ячейки (vo_parent + план) может быть дочерним."""
+    from app.services.montage_board import _shot_kind_payload
+
+    parent = Frame(
+        project_id=1,
+        number=1,
+        uuid="aa" * 12,
+        voiceover_text="голова",
+        status="planned",
+        attrs={
+            "shot01_action": "сидит",
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": "aa" * 12,
+                "shot_id": "1-K1",
+                "план": "ОБЩИЙ",
+                "coverage_kind": "child",
+                "use_parent_still": True,
+                "coverage_parent_id": "2-K1",
+            },
+        },
+    )
+    other = Frame(
+        project_id=1,
+        number=2,
+        uuid="bb" * 12,
+        voiceover_text="кусок",
+        status="planned",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": "aa" * 12,
+                "shot_id": "2-K1",
+                "coverage_kind": "parent",
+            }
+        },
+    )
+    kind, parent_n, _sid = _shot_kind_payload(parent, [parent, other])
+    assert kind == "child"
+    assert parent_n == 2

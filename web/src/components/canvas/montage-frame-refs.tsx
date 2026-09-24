@@ -67,7 +67,7 @@ function parentThumbFrom(
     return {
       number: parentFrame.number,
       label: `родитель #${parentFrame.number}`,
-      image_url: parentFrame.image_shot1_url,
+      image_url: parentFrame.image_parent_url || parentFrame.image_shot1_url,
     };
   }
   return null;

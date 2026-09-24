@@ -198,6 +198,7 @@ def _promote_first_child(parent: Frame, kids: list[Frame]) -> Frame | None:
         coverage_kind="parent",
         use_parent_still=False,
         coverage_parent_id="",
+        coverage_parent_number=None,
     )
     for kid in ordered[1:]:
         _set_cs(
@@ -206,6 +207,7 @@ def _promote_first_child(parent: Frame, kids: list[Frame]) -> Frame | None:
             parent_uuid=head.uuid,
             coverage_kind="child",
             use_parent_still=True,
+            coverage_parent_number=int(head.number),
         )
     return head
 
@@ -306,6 +308,7 @@ async def merge_montage_scenes(
                 coverage_kind="parent",
                 use_parent_still=False,
                 coverage_parent_id="",
+                coverage_parent_number=None,
             )
             _clear_child_scene_chain(member)
             attrs = dict(getattr(member, "attrs", None) or {})
@@ -363,6 +366,7 @@ def _promote_to_vo_parent(frame: Frame) -> None:
         coverage_kind="parent",
         use_parent_still=False,
         coverage_parent_id="",
+        coverage_parent_number=None,
         leftover=False,
         shot_index=1,
         shots_in_beat=1,

@@ -24,7 +24,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Frame, Project
+from app.models import Entity, Frame, Project
 from app.project_db import project_db_session_scope as _isolated_project_scope
 from app.services.img_streams import acquire_image_slot, get_img_streams
 from app.services.montage_ai_change import (
@@ -153,6 +153,8 @@ def _op_frame_shot(op: dict[str, Any]) -> tuple[int, int]:
         frame = int(op.get("frame_number") or 0)
     except (TypeError, ValueError):
         frame = 0
+    if str(op.get("slot") or "").strip().lower() == "parent":
+        return frame, 0
     try:
         shot = int(op.get("shot") or 1)
     except (TypeError, ValueError):
@@ -427,6 +429,8 @@ async def _run_op_with_short_sessions(
     ai_project: Any = None
     ai_instruction = ""
     ai_action = ""
+    ai_camera: dict[str, str] = {}
+    ai_coverage_role = ""
     prep: Any = None
 
     async with session_scope(project_id) as session:
@@ -444,21 +448,54 @@ async def _run_op_with_short_sessions(
             ai_kind = "image" if op_type == "image_ai_change" else "video"
             ai_voiceover = fr.voiceover_text or ""
             ai_img_pr_path, ai_img_pr_variant = load_img_pr_master(project)
+            scene_frames = list(
+                (
+                    await session.execute(
+                        select(Frame)
+                        .where(Frame.project_id == project.id)
+                        .order_by(Frame.number)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            from app.services.excel_characters import entity_cards_for_gpt
+
+            ents = list(
+                (
+                    await session.execute(
+                        select(Entity).where(Entity.project_id == project.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
             ai_db_card_path = write_ai_change_db_card(
                 project,
                 fr,
                 Path(tempfile.mkdtemp(prefix="ai_change_db_")),
+                characters=entity_cards_for_gpt(ents),
+                all_frames=scene_frames,
             )
             ai_project = SimpleNamespace(
                 id=project.id,
                 meta=getattr(project, "meta", None),
+                general_plan=getattr(project, "general_plan", None),
             )
             ai_instruction = str(
                 op.get("instruction") or op.get("correction") or ""
             ).strip()
+            from app.services.db_frames_context import camera_chips_from_frame
             from app.services.montage_board import _action_for_frame
+            from app.services.vo_shot_expand import is_coverage_child
 
             ai_action = _action_for_frame(fr)
+            ai_camera = {
+                key: val
+                for key, val in camera_chips_from_frame(fr).items()
+                if val
+            }
+            ai_coverage_role = "child" if is_coverage_child(fr) else ""
         elif op_type in (
             "image_regen",
             "image_regen_prompt",
@@ -480,6 +517,7 @@ async def _run_op_with_short_sessions(
                 correction=str(op.get("correction") or op.get("prompt") or ""),
                 board=board,
                 pinned_prompt=pinned if op_type == "image_regen" and pinned else None,
+                slot=str(op.get("slot") or ""),
             )
         elif op_type in ("video_regen", "video_regen_prompt"):
             mode = "edit_prompt" if op_type == "video_regen_prompt" else "same_prompt"
@@ -506,6 +544,8 @@ async def _run_op_with_short_sessions(
             db_card_path=ai_db_card_path,
             instruction=ai_instruction,
             action=ai_action,
+            camera=ai_camera,
+            coverage_role=ai_coverage_role,
         )
 
         async def _prepare_after_gpt():
@@ -524,6 +564,7 @@ async def _run_op_with_short_sessions(
                         correction="",
                         board=board,
                         ref_person_ids=character_ids_from_prompt(new_prompt),
+                        slot=str(op.get("slot") or ""),
                     )
                 return await prepare_video_regen(
                     session,

@@ -116,7 +116,7 @@ def test_claim_shot1_batch_marks_inflight(tmp_path: Path, monkeypatch: pytest.Mo
         async def flush(self):
             return None
 
-    monkeypatch.setattr(gi, "frame_needs_shot1_image", lambda fr, d: True)
+    monkeypatch.setattr(gi, "frame_needs_shot1_image", lambda fr, d, *_a: True)
     monkeypatch.setattr(
         "app.services.vision_check_loop.scene_regen_allows",
         lambda *_a, **_k: None,
@@ -196,7 +196,7 @@ def test_claim_shot1_waits_for_cell_parent_png(tmp_path: Path, monkeypatch: pyte
         async def flush(self):
             return None
 
-    monkeypatch.setattr(gi, "frame_needs_shot1_image", lambda fr, d: True)
+    monkeypatch.setattr(gi, "frame_needs_shot1_image", lambda fr, d, *_a: True)
     monkeypatch.setattr(
         "app.services.vision_check_loop.scene_regen_allows",
         lambda *_a, **_k: None,
@@ -208,7 +208,7 @@ def test_claim_shot1_waits_for_cell_parent_png(tmp_path: Path, monkeypatch: pyte
     assert [f.number for f in batch] == [13]
     assert (child.attrs or {}).get(INFLIGHT_ATTR) is None
 
-    (out / "frame_013_parent.png").write_bytes(
+    (out / "frame_013_shot1.png").write_bytes(
         b"\x89PNG\r\n\x1a\n" + b"x" * 200_000
     )
     batch_ready = asyncio.run(

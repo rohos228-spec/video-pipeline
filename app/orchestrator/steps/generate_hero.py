@@ -1243,14 +1243,6 @@ async def _generate_one_excel_character(
             )
 
         # Сборка промта.
-        from app.services.excel_characters import character_blocks_hero
-
-        if character_blocks_hero(ch):
-            raise RuntimeError(
-                f"excel_hero {ch.id}: в имени служебный текст агента "
-                f"(name={ch.name!r}). Исправь лист «Персонажи» и перезапусти hero."
-            )
-
         if used_refs:
             # Реф = картинка (CDP attach) + короткий текст. Без длинного style:
             # иначе Outsee/модель игнорит reference. Changes — по-английски,

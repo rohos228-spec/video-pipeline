@@ -15,8 +15,8 @@ def test_polluted_character_name_detected() -> None:
     assert not is_polluted_character_field("Фридрих Ницше")
 
 
-def test_variation_marker_name_ok_when_parent_in_rules() -> None:
-    """Агент так помечает реф-вариацию: имя-маркер + правила = c01."""
+def test_variation_marker_name_never_blocks_hero() -> None:
+    """Имя-маркер вариации — не стоп генерации, даже без ref_ids."""
     variation = ExcelCharacter(
         id="c07",
         name="оставь формат неизменный",
@@ -32,7 +32,7 @@ def test_variation_marker_name_ok_when_parent_in_rules() -> None:
         ref_ids=[],
     )
     assert character_blocks_hero(variation) is False
-    assert character_blocks_hero(standalone) is True
+    assert character_blocks_hero(standalone) is False
 
 
 def test_ref_variation_prompt_omits_format_marker_name() -> None:

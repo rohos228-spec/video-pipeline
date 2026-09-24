@@ -61,6 +61,9 @@ def test_system_image_locks_plan_and_objects() -> None:
     assert "агент" in sys.lower() or "вложенн" in sys.lower()
     assert "сетк" in sys.lower() or "клонир" in sys.lower()
     assert "6 коротких" in sys or "словар" in sys.lower()
+    assert "Scene feature / shot scale" in sys
+    assert "coverage_parent" in sys
+    assert "ДЕТАЛЬ" in sys
 
 
 def test_trim_style_encyclopedia_keeps_character_block() -> None:
@@ -111,6 +114,22 @@ def test_user_message_includes_operator_instruction() -> None:
     assert "важнее" in low or "расход" in low or "новое действие" in low
 
 
+def test_user_message_includes_camera_and_child_coverage() -> None:
+    msg = build_ai_change_user_message(
+        voiceover_text="дверь закрывается",
+        action="c02 тянет ручку",
+        camera={"план": "ДЕТАЛЬ", "ракурс": "3/4", "движение": "панорама"},
+        coverage_role="child",
+    )
+    assert "CAMERA:" in msg
+    assert "план: ДЕТАЛЬ" in msg
+    assert "ракурс: 3/4" in msg
+    assert "движение: панорама" in msg
+    assert "Scene feature / shot scale" in msg
+    assert "coverage_parent" in msg
+    assert "A0" in msg
+
+
 def test_normalize_keeps_ai_change_instruction() -> None:
     queued = normalize_queue_ops(
         [
@@ -149,7 +168,7 @@ def test_write_ai_change_db_card_has_frame_fields(tmp_path: Path) -> None:
     path = write_ai_change_db_card(project, fr, tmp_path)
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["frames"][0]["characters"] == "c05"
-    assert data["frames"][0]["place"] == "кабинет"
+    assert "place" not in data["frames"][0]
     assert data["frames"][0]["shot01_action"] == "печать"
     assert "IMAGE_PROMPT" not in path.read_text(encoding="utf-8")
 
@@ -184,6 +203,68 @@ def test_write_ai_change_db_card_uses_shot_action_not_scene_chain(
     row = data["frames"][0]
     assert row["shot01_action"] == "рука выводит строки заявления"
     assert row["действие"] == "рука выводит строки заявления"
+
+
+def test_write_ai_change_db_card_child_gets_parent_and_camera(
+    tmp_path: Path,
+) -> None:
+    project = Project(id=9, slug="card-child", topic="t", hero_mode="auto")
+    parent = Frame(
+        project_id=9,
+        number=153,
+        uuid="a" * 24,
+        voiceover_text="идут к дому",
+        image_prompt="parent still of the street and open door",
+        attrs={
+            "действие": "c01 идёт рядом с c02 по тротуару",
+            "place": "улица у дома",
+            "shot01_bg": "фасад и открытая дверь",
+            "camera_subdivide": {
+                "coverage_kind": "parent",
+                "shot_id": "153-K1",
+                "крупность": "ОБЩИЙ",
+                "ракурс": "3/4",
+                "движение": "следование",
+            },
+        },
+    )
+    child = Frame(
+        project_id=9,
+        number=156,
+        uuid="b" * 24,
+        voiceover_text="дверь закрывается",
+        attrs={
+            "действие": "c02 тянет дверь за ручку",
+            "place": "улица у дома",
+            "camera_subdivide": {
+                "role": "shot",
+                "coverage_kind": "child",
+                "shot_id": "153-K4",
+                "coverage_parent_id": "153-K1",
+                "coverage_parent_number": 153,
+                "крупность": "ДЕТАЛЬ",
+                "ракурс": "3/4",
+                "движение": "панорама",
+            },
+        },
+    )
+    path = write_ai_change_db_card(
+        project, child, tmp_path, all_frames=[parent, child]
+    )
+    row = json.loads(path.read_text(encoding="utf-8"))["frames"][0]
+    assert row["coverage_role"] == "child"
+    assert row["план"] == "ДЕТАЛЬ"
+    assert row["ракурс"] == "3/4"
+    assert row["движение"] == "панорама"
+    assert "ДЕТАЛЬ" in row["shot01_description"]
+    assert "3/4" in row["shot01_description"]
+    parent_snap = row["coverage_parent"]
+    assert parent_snap["number"] == 153
+    assert parent_snap["shot_id"] == "153-K1"
+    assert parent_snap["план"] == "ОБЩИЙ"
+    assert "place" not in parent_snap
+    assert "shot01_bg" not in parent_snap
+    assert "open door" in parent_snap["image_prompt_head"]
     assert "сидит за столом" not in str(row.get("main_action") or "")
     assert "сидит за столом" not in str(row.get("главное_действие") or "")
     kadry = row.get("кадры") or []
@@ -544,3 +625,5 @@ async def test_run_op_image_ai_change_passes_instruction(
     assert result["ok"] is True
     assert rewrite.await_args.kwargs["instruction"] == "руки крупнее, холодный свет"
     assert rewrite.await_args.kwargs["action"] == "рука выводит строки"
+    assert rewrite.await_args.kwargs.get("camera") == {}
+    assert rewrite.await_args.kwargs.get("coverage_role") == ""

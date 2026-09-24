@@ -12,7 +12,9 @@ from app.services.plan_shot2 import (
     ROW_SHOT2_ID_SHOT_V8,
     ROW_VOICEOVER_V8,
     disk_has_shot2_image,
+    find_parent_still_image,
     find_shot1_image,
+    resolve_coverage_parent_png,
     read_shot2_columns,
 )
 from app.services.xlsx_v8_import import ROW_IMAGE_PROMPT_V8
@@ -94,6 +96,26 @@ def test_shot1_and_shot2_disk_helpers(tmp_path: Path) -> None:
     assert find_shot1_image(scenes, 1).name == "frame_001_abc12345.png"
     assert disk_has_shot2_image(scenes, 1)
     assert not disk_has_shot2_image(scenes, 2)
+
+
+def test_parent_still_is_not_shot1(tmp_path: Path) -> None:
+    scenes = tmp_path / "scenes"
+    scenes.mkdir()
+    (scenes / "frame_001_abc12345.png").write_bytes(b"shot1")
+    (scenes / "frame_001_parent_deadbeef.png").write_bytes(b"master")
+
+    assert find_shot1_image(scenes, 1).name == "frame_001_abc12345.png"
+    assert find_parent_still_image(scenes, 1).name == "frame_001_parent_deadbeef.png"
+    assert find_parent_still_image(scenes, 2) is None
+    assert resolve_coverage_parent_png(scenes, 1).name == "frame_001_parent_deadbeef.png"
+
+
+def test_resolve_parent_png_falls_back_to_shot1(tmp_path: Path) -> None:
+    scenes = tmp_path / "scenes"
+    scenes.mkdir()
+    (scenes / "frame_002_abc12345.png").write_bytes(b"shot1")
+    assert resolve_coverage_parent_png(scenes, 2).name == "frame_002_abc12345.png"
+    assert resolve_coverage_parent_png(scenes, 9) is None
 
 
 def test_shot2_reference_falls_back_to_parent_png(tmp_path: Path) -> None:

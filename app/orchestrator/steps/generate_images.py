@@ -1209,7 +1209,9 @@ async def _coverage_parent_png(
     if parent is None or int(parent.number) == int(frame.number):
         return None
     scenes = project.data_dir / "scenes"
-    path = find_shot1_image(scenes, parent.number)
+    from app.services.plan_shot2 import resolve_coverage_parent_png
+
+    path = resolve_coverage_parent_png(scenes, int(parent.number))
     if path is None:
         logger.warning(
             "[#{}] frame {}: coverage child без PNG родителя #{}",

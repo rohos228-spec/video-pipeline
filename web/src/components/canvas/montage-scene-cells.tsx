@@ -6,7 +6,6 @@ import { AlertTriangle, ChevronDown, Loader2, Plus, Sparkles, TextSelect, Trash2
 import { toast } from "sonner";
 import {
   api,
-  type MontagePendingOp,
   type SceneAnchorRow,
   type SceneVariant,
   type SceneVariantKind,
@@ -671,36 +670,118 @@ export type MontageVoSpan = {
   full?: string;
 };
 
-function VoUnusedWarn({ before, after }: { before?: string; after?: string }) {
+export function VoUnusedWarn({
+  before,
+  after,
+  between,
+}: {
+  before?: string;
+  after?: string;
+  between?: string[];
+}) {
   const beforeText = (before || "").trim();
   const afterText = (after || "").trim();
-  if (!beforeText && !afterText) return null;
+  const skipped = (between || []).map((t) => t.trim()).filter(Boolean);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const overChip = useRef(false);
+  const overPanel = useRef(false);
+  const [open, setOpen] = useState(false);
+  const [box, setBox] = useState<{ top: number; left: number } | null>(null);
+  const pieces: { label: string; text: string }[] = [];
+  if (beforeText) pieces.push({ label: "до", text: beforeText });
+  for (const text of skipped) pieces.push({ label: "между кадрами", text });
+  if (afterText) pieces.push({ label: "после", text: afterText });
+
+  const place = useCallback(() => {
+    const el = btnRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const width = Math.min(352, window.innerWidth - 16);
+    const left = Math.min(Math.max(8, r.right - width), window.innerWidth - width - 8);
+    const top = r.bottom + 6;
+    setBox({ top, left });
+  }, []);
+
+  const cancelHide = () => {
+    if (hideTimer.current != null) {
+      window.clearTimeout(hideTimer.current);
+      hideTimer.current = null;
+    }
+  };
+  const show = () => {
+    cancelHide();
+    place();
+    setOpen(true);
+  };
+  const hide = () => {
+    cancelHide();
+    hideTimer.current = setTimeout(() => {
+      hideTimer.current = null;
+      if (!overChip.current && !overPanel.current) setOpen(false);
+    }, 220);
+  };
+
+  useEffect(() => () => cancelHide(), []);
+
+  if (!pieces.length) return null;
   return (
-    <div className="absolute right-1.5 top-1.5 z-10 max-h-40 max-w-[min(20rem,calc(100%-3.5rem))] overflow-y-auto rounded-md border border-amber-400/60 bg-amber-950/95 px-1.5 py-1 shadow-lg">
-      <div className="mb-0.5 flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wide text-amber-200">
-        <AlertTriangle className="h-3 w-3 shrink-0" />
-        неиспользованный закадр
-      </div>
-      {beforeText ? (
-        <div>
-          <div className="text-[9px] font-semibold uppercase tracking-wide text-amber-300/90">
-            до
-          </div>
-          <p className="whitespace-pre-wrap break-words text-[10px] leading-snug text-amber-50">
-            {beforeText}
-          </p>
-        </div>
-      ) : null}
-      {afterText ? (
-        <div className={beforeText ? "mt-1.5" : undefined}>
-          <div className="text-[9px] font-semibold uppercase tracking-wide text-amber-300/90">
-            после
-          </div>
-          <p className="whitespace-pre-wrap break-words text-[10px] leading-snug text-amber-50">
-            {afterText}
-          </p>
-        </div>
-      ) : null}
+    <div className="relative shrink-0">
+      <button
+        ref={btnRef}
+        type="button"
+        className="inline-flex items-center gap-1 rounded-md border border-amber-400/80 bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-100 shadow-lg"
+        aria-label="Пропущенный закадровый текст"
+        onMouseEnter={() => {
+          overChip.current = true;
+          show();
+        }}
+        onFocus={show}
+        onMouseLeave={() => {
+          overChip.current = false;
+          hide();
+        }}
+        onBlur={hide}
+      >
+        <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+        пропущен закадр
+        {pieces.length > 1 ? (
+          <span className="font-normal normal-case text-amber-100/80">· {pieces.length}</span>
+        ) : null}
+      </button>
+      {open && box && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              className="max-h-48 w-[min(22rem,calc(100vw-1rem))] overflow-y-auto rounded-md border border-amber-400/60 bg-amber-950/98 px-2 py-1.5 shadow-2xl"
+              style={{
+                position: "fixed",
+                top: box.top,
+                left: box.left,
+                zIndex: 10200,
+              }}
+              onMouseEnter={() => {
+                overPanel.current = true;
+                show();
+              }}
+              onMouseLeave={() => {
+                overPanel.current = false;
+                hide();
+              }}
+            >
+              {pieces.map((p, i) => (
+                <div key={`${p.label}-${i}`} className={i ? "mt-1.5" : undefined}>
+                  <div className="text-[9px] font-semibold uppercase tracking-wide text-amber-300/90">
+                    {p.label}
+                  </div>
+                  <p className="cursor-text select-text whitespace-pre-wrap break-words text-[10px] leading-snug text-amber-50">
+                    {p.text}
+                  </p>
+                </div>
+              ))}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
@@ -708,15 +789,11 @@ function VoUnusedWarn({ before, after }: { before?: string; after?: string }) {
 function VoSpanEditor({
   full,
   span,
-  unusedBefore,
-  unusedAfter,
   disabled,
   onSave,
 }: {
   full: string;
   span: MontageVoSpan | null;
-  unusedBefore?: string;
-  unusedAfter?: string;
   disabled?: boolean;
   onSave: (next: MontageVoSpan | null) => void;
 }) {
@@ -761,8 +838,7 @@ function VoSpanEditor({
 
   return (
     <div className="relative mb-2 rounded-md border border-white/15 bg-black/30 p-2">
-      <VoUnusedWarn before={unusedBefore} after={unusedAfter} />
-      <span className="mb-1 flex items-center gap-1.5 pr-[min(20rem,42%)] text-[10px] font-semibold uppercase tracking-wide text-white/70">
+      <span className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-white/70">
         <TextSelect className="h-3 w-3" />
         закадр этой сцены
       </span>
@@ -836,8 +912,6 @@ export function AnchorCell({
   disabled,
   heading,
   voSpan,
-  unusedBefore,
-  unusedAfter,
   onCommit,
   onSaveVoSpan,
 }: {
@@ -853,8 +927,6 @@ export function AnchorCell({
   disabled?: boolean;
   heading?: string;
   voSpan?: MontageVoSpan | null;
-  unusedBefore?: string;
-  unusedAfter?: string;
   onCommit: (anchors: SceneAnchorRow[]) => void;
   onSaveVoSpan?: (next: MontageVoSpan | null) => void;
 }) {
@@ -897,8 +969,6 @@ export function AnchorCell({
         <VoSpanEditor
           full={cellText || frameText || ""}
           span={voSpan ?? null}
-          unusedBefore={unusedBefore}
-          unusedAfter={unusedAfter}
           disabled={disabled}
           onSave={onSaveVoSpan}
         />
@@ -1029,225 +1099,6 @@ export function AnchorCell({
   );
 }
 
-export type SceneDataField =
-  | "sense"
-  | "visual_type"
-  | "place"
-  | "characters"
-  | "props"
-  | "bg"
-  | "accent"
-  | "feature"
-  | "set"
-  | "light";
-
-export type SceneDataValues = Record<SceneDataField, string>;
-
-export const SCENE_DATA_OPS: Record<SceneDataField, MontagePendingOp["type"]> = {
-  sense: "coverage_sense",
-  visual_type: "coverage_visual_type",
-  place: "coverage_place",
-  characters: "coverage_characters",
-  props: "coverage_props",
-  bg: "coverage_bg",
-  accent: "coverage_accent",
-  feature: "coverage_feature",
-  set: "coverage_set",
-  light: "coverage_light",
-};
-
-const SCENE_DATA_FIELDS: {
-  key: SceneDataField;
-  label: string;
-  placeholder: string;
-  multiline?: boolean;
-}[] = [
-  { key: "sense", label: "смысл", placeholder: "что происходит в ячейке", multiline: true },
-  { key: "visual_type", label: "тип", placeholder: "стиль картинки" },
-  { key: "place", label: "место", placeholder: "где стоит камера" },
-  { key: "set", label: "набор", placeholder: "декорация / обстановка" },
-  { key: "characters", label: "персонажи", placeholder: "c01, c02" },
-  { key: "light", label: "свет", placeholder: "дневной / ночной" },
-  { key: "props", label: "предметы", placeholder: "что видно в кадре" },
-  { key: "bg", label: "фон", placeholder: "задний план" },
-  { key: "accent", label: "акцент", placeholder: "на чём глаз" },
-  { key: "feature", label: "особенность", placeholder: "чем сцена отличается" },
-];
-
-function SceneDataFieldInput({
-  field,
-  value,
-  pending,
-  disabled,
-  visualTypeChoices,
-  lightChoices,
-  onCommit,
-}: {
-  field: (typeof SCENE_DATA_FIELDS)[number];
-  value: string;
-  pending?: boolean;
-  disabled?: boolean;
-  visualTypeChoices?: string[];
-  lightChoices?: string[];
-  onCommit: (key: SceneDataField, next: string) => void;
-}) {
-  const [text, setText] = useState(value);
-  useEffect(() => {
-    setText(value);
-  }, [value]);
-
-  const commit = () => {
-    const next = text.trim();
-    if (!next || next === value.trim()) return;
-    onCommit(field.key, next);
-  };
-
-  if (field.key === "visual_type") {
-    return (
-      <ChipsCell
-        value={value}
-        choices={visualTypeChoices}
-        pending={pending}
-        disabled={disabled}
-        onPick={(id) => {
-          if (id === value.trim()) return;
-          onCommit("visual_type", id);
-        }}
-      />
-    );
-  }
-
-  if (field.key === "light") {
-    return (
-      <ChipsCell
-        value={value}
-        choices={lightChoices}
-        pending={pending}
-        disabled={disabled}
-        onPick={(id) => {
-          if (id === value.trim()) return;
-          onCommit("light", id);
-        }}
-      />
-    );
-  }
-
-  const shared = {
-    className: cn(FIELD, field.multiline && "min-h-[3.25rem] resize-y"),
-    value: text,
-    disabled,
-    placeholder: field.placeholder,
-    onChange: (e: { target: { value: string } }) => setText(e.target.value),
-    onBlur: commit,
-    onKeyDown: (e: { key: string; metaKey: boolean; ctrlKey: boolean; preventDefault: () => void }) => {
-      if (e.key === "Enter" && (e.metaKey || e.ctrlKey || !field.multiline)) {
-        e.preventDefault();
-        commit();
-      }
-      if (e.key === "Escape") setText(value);
-    },
-  };
-
-  return field.multiline ? <textarea {...shared} /> : <input {...shared} />;
-}
-
-/**
- * Кнопка в блоке сцены: по клику в клетке появляются поля ячейки.
- * Правка кладётся в очередь; «Применить правки» пишет те же attrs, что читает доска.
- */
-export function SceneDataCell({
-  values,
-  pending,
-  visualTypeChoices,
-  lightChoices,
-  disabled,
-  onCommit,
-}: {
-  values: SceneDataValues;
-  pending: Partial<Record<SceneDataField, boolean>>;
-  visualTypeChoices?: string[];
-  lightChoices?: string[];
-  disabled?: boolean;
-  onCommit: (field: SceneDataField, value: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const anyPending = SCENE_DATA_FIELDS.some((f) => pending[f.key]);
-  const summary = [
-    values.sense,
-    values.place,
-    values.characters,
-    values.light,
-    values.props,
-  ].filter((x) => x.trim());
-
-  return (
-    <div className={cn("relative rounded-md", anyPending && "bg-amber-500/10")}>
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => setOpen((v) => !v)}
-        title="Паспорт сцены: место, персонажи, свет — генерация сцен берёт эти поля"
-        className={cn(
-          "group flex w-full items-center gap-1.5 rounded-md border px-1.5 py-1 text-left transition disabled:opacity-40",
-          open
-            ? "border-white/30 bg-white/[0.08]"
-            : "border-white/10 bg-white/[0.03] hover:border-white/25 hover:bg-white/[0.07]",
-        )}
-      >
-        <span className="text-[9px] uppercase tracking-wide text-white/35">паспорт сцены</span>
-        <ChevronDown
-          className={cn(
-            "h-2.5 w-2.5 text-white/35 transition",
-            open && "rotate-180",
-          )}
-        />
-        {anyPending ? (
-          <span className="h-1.5 w-1.5 rounded-full bg-amber-300/80" title="есть правка в очереди" />
-        ) : null}
-        <span
-          className={cn(
-            "ml-auto text-[10px] normal-case tracking-normal transition-colors",
-            open ? "text-white/45" : "text-transparent group-hover:text-white/40",
-          )}
-        >
-          {open ? "свернуть" : "изменить"}
-        </span>
-      </button>
-      {!open ? (
-        <p className={cn(HINT, "mt-1 truncate")}>
-          {summary.length ? summary.join(" · ") : "смысл, место, персонажи — нажми, чтобы править"}
-        </p>
-      ) : (
-        <div className="mt-1.5 space-y-1.5 rounded-lg border border-white/10 bg-black/30 p-1.5">
-          {SCENE_DATA_FIELDS.map((field) => (
-            <label key={field.key} className="block">
-              <span className="mb-0.5 flex items-center gap-1 text-[9px] uppercase tracking-wide text-white/35">
-                {field.label}
-                {pending[field.key] ? (
-                  <span className="h-1.5 w-1.5 rounded-full bg-amber-300/80" />
-                ) : null}
-              </span>
-              <SceneDataFieldInput
-                field={field}
-                value={values[field.key]}
-                pending={pending[field.key]}
-                disabled={disabled}
-                visualTypeChoices={visualTypeChoices}
-                lightChoices={lightChoices}
-                onCommit={onCommit}
-              />
-            </label>
-          ))}
-          <p className={HINT}>
-            в очередь сразу; генерация сцен забирает эти поля в промт action
-          </p>
-        </div>
-      )}
-      <PendingMark show={anyPending && !open} />
-    </div>
-  );
-}
-
 /**
  * Промт оператора + генерация сцен ячейки / пересборка кусков ``N.``.
  * GPT берёт промт action группы, не гоняет всю ноду fw_action.
@@ -1256,15 +1107,14 @@ export function SceneGenerateBlock({
   projectId,
   frameId,
   chain,
-  passport,
   disabled,
   onDone,
   onImprove,
+  onGenerateImages,
 }: {
   projectId: number;
   frameId: number;
   chain: MontageSceneChainRow[];
-  passport: Record<string, string>;
   disabled?: boolean;
   onDone?: (result?: {
     frame_numbers?: number[];
@@ -1273,10 +1123,11 @@ export function SceneGenerateBlock({
     skipped_shots?: number;
   }) => void;
   onImprove?: (prompt: string) => Promise<MontageImproveReport | undefined | void> | void;
+  onGenerateImages?: () => Promise<void> | void;
 }) {
   const [prompt, setPrompt] = useState("");
   const [selected, setSelected] = useState<number[]>([]);
-  const [busy, setBusy] = useState<"all" | "pieces" | "improve" | null>(null);
+  const [busy, setBusy] = useState<"all" | "pieces" | "improve" | "images" | null>(null);
   const [report, setReport] = useState<MontageImproveReport | null>(null);
 
   useEffect(() => {
@@ -1295,7 +1146,6 @@ export function SceneGenerateBlock({
       const result = await api.generateSceneAction(projectId, frameId, {
         prompt: prompt.trim(),
         replace_ns: replaceNs,
-        passport,
       });
       const inserted = Number(result.inserted_frames || 0);
       const shots = Number(result.shots || 0);
@@ -1320,6 +1170,18 @@ export function SceneGenerateBlock({
     try {
       const next = await onImprove(prompt.trim());
       if (next) setReport(next);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const generateImages = async () => {
+    if (busy || !onGenerateImages) return;
+    setBusy("images");
+    try {
+      await onGenerateImages();
+    } catch (err) {
+      toast.error(errorMessageFromUnknown(err));
     } finally {
       setBusy(null);
     }
@@ -1384,7 +1246,7 @@ export function SceneGenerateBlock({
       {onImprove ? (
         <button
           type="button"
-          title="Ячейка через 6 нод. Промт — главный заказ. Без промта один кадр на якорь. Картинки не запускает."
+          title="Ячейка через 3 ноды: действие → кадры → QC. Промт — заказ. Закадр и якоря не входят. Картинки не запускает."
           disabled={disabled || Boolean(busy)}
           onClick={() => void improve()}
           className={cn(
@@ -1396,16 +1258,34 @@ export function SceneGenerateBlock({
           Улучшить сцену
         </button>
       ) : null}
+      {onGenerateImages ? (
+        <button
+          type="button"
+          title="Промты кадров через агент картинок, затем PNG: сначала родитель, потом дети"
+          disabled={disabled || Boolean(busy)}
+          onClick={() => void generateImages()}
+          className={cn(
+            "mt-1.5 flex h-10 w-full items-center justify-center gap-1.5 rounded-md border text-[11px] font-semibold transition disabled:opacity-40",
+            "border-white/20 bg-white/[0.06] text-white/90 hover:border-white/35 hover:bg-white/[0.1]",
+          )}
+        >
+          {busy === "images" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+          Сгенерировать изображения
+        </button>
+      ) : null}
       {busy ? (
         <p className="mt-1.5 text-[11px] font-medium text-[rgba(209,254,23,0.95)]">
           {busy === "improve"
-            ? "6 нод: биты → проверка → действие → кадры → QC → отчёт…"
-            : "GPT пишет сцены этой ячейки…"}
+            ? "3 ноды: действие → кадры → QC…"
+            : busy === "images"
+              ? "промты кадров, затем картинки: родитель → дети…"
+              : "GPT пишет сцены этой ячейки…"}
         </p>
       ) : (
         <p className={cn(HINT, "mt-1.5")}>
           промт — заказ сцены: GPT ставит кадры по нему, не копирует текст
-          в действие. закадр и якоря не задают сюжет. картинки не запускаются.
+          в действие. закадр и якоря не задают сюжет. «Улучшить сцену» картинки
+          не запускает.
         </p>
       )}
       {report ? <ImproveReportView report={report} onClose={() => setReport(null)} /> : null}

@@ -79,6 +79,63 @@ def test_img_pr_db_context_aliases_russian_action() -> None:
     assert row["действие"] == "рука выводит строки"
 
 
+def test_img_pr_db_context_fills_camera_chips_and_parent() -> None:
+    parent = SimpleNamespace(
+        number=153,
+        uuid="p" * 24,
+        voiceover_text="идут",
+        meaning="",
+        animation_prompt="",
+        image_prompt="street still",
+        attrs={
+            "place": "улица у дома",
+            "shot01_bg": "открытая дверь",
+            "действие": "идут по тротуару",
+            "camera_subdivide": {
+                "coverage_kind": "parent",
+                "shot_id": "153-K1",
+                "крупность": "ОБЩИЙ",
+                "ракурс": "3/4",
+            },
+        },
+    )
+    child = SimpleNamespace(
+        number=156,
+        uuid="c" * 24,
+        voiceover_text="ручка",
+        meaning="",
+        animation_prompt="",
+        attrs={
+            "действие": "тянет ручку",
+            "camera_subdivide": {
+                "role": "shot",
+                "coverage_kind": "child",
+                "shot_id": "153-K4",
+                "coverage_parent_id": "153-K1",
+                "coverage_parent_number": 153,
+                "крупность": "ДЕТАЛЬ",
+                "ракурс": "3/4",
+                "движение": "панорама",
+            },
+        },
+    )
+    ctx = build_img_pr_db_context(
+        project_id=36,
+        slug="ted",
+        frames=[child],
+        characters=[{"id": "c01", "имя": "Ted"}],
+        all_frames=[parent, child],
+    )
+    row = ctx["frames"][0]
+    assert row["план"] == "ДЕТАЛЬ"
+    assert row["ракурс"] == "3/4"
+    assert row["shot01_description"] == "ДЕТАЛЬ, ракурс 3/4, движение панорама"
+    assert row["scene_feature"] == "ДЕТАЛЬ"
+    assert row["coverage_role"] == "child"
+    assert row["coverage_parent"]["number"] == 153
+    assert row["coverage_parent"]["план"] == "ОБЩИЙ"
+
+
 def test_img_pr_db_context_skips_frames_without_uuid() -> None:
     bad = SimpleNamespace(number=2, uuid="", voiceover_text="x", meaning="", attrs={})
     ctx = build_img_pr_db_context(

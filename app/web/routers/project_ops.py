@@ -1101,7 +1101,7 @@ async def montage_board_scene_improve(
     body: dict = Body(...),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """Подробная цепь смысла: GPT пишет биты, недостающие кадры вставляются. Без PNG."""
+    """fw_action → fw_shots → fw_qc на одну ячейку. Без PNG."""
     payload = dict(body or {})
     payload["mode"] = "improve"
     return await montage_board_scene_generate_with_images(
@@ -1481,6 +1481,8 @@ async def montage_board_move_image(
     from_shot: int = Query(..., ge=1, le=2),
     to_frame: int = Query(..., ge=1),
     to_shot: int = Query(..., ge=1, le=2),
+    from_slot: str = Query(""),
+    to_slot: str = Query(""),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Перенести картинку в другой слот (в т.ч. пустой); если цель занята — swap."""
@@ -1494,6 +1496,8 @@ async def montage_board_move_image(
         from_shot=from_shot,
         to_frame=to_frame,
         to_shot=to_shot,
+        from_slot=from_slot,
+        to_slot=to_slot,
     )
     await session.commit()
     if not result.get("ok"):
@@ -1509,13 +1513,14 @@ async def montage_board_delete_image(
     project_id: int,
     frame_number: int = Query(..., ge=1),
     shot: int = Query(1, ge=1, le=2),
+    slot: str = Query(""),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.montage_board_assets import delete_scene_image
     from app.services.montage_board_meta import mark_stale_videos, montage_meta, set_montage_meta
 
     p = _project_or_404(await session.get(Project, project_id))
-    deleted = await delete_scene_image(session, p, frame_number, shot=shot)
+    deleted = await delete_scene_image(session, p, frame_number, shot=shot, slot=slot)
     board = montage_meta(p)
     mark_stale_videos(board, frame_number, shot=shot)
     set_montage_meta(p, board)
@@ -1675,6 +1680,7 @@ async def montage_board_upload_image(
     project_id: int,
     frame_number: int = Query(..., ge=1),
     shot: int = Query(1, ge=1, le=2),
+    slot: str = Query(""),
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
@@ -1687,7 +1693,7 @@ async def montage_board_upload_image(
         raise HTTPException(status_code=400, detail="пустой файл")
     suffix = Path(file.filename or "upload.png").suffix or ".png"
     path = await save_scene_image_upload(
-        session, p, frame_number, shot=shot, content=content, suffix=suffix
+        session, p, frame_number, shot=shot, content=content, suffix=suffix, slot=slot
     )
     board = montage_meta(p)
     mark_stale_videos(board, frame_number, shot=shot)

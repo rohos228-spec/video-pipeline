@@ -46,8 +46,10 @@ from app.services.plan_shot2 import (
     SHOT2_PROMPT_ATTR,
     SHOT2_VIDEO_PROMPT_ATTR,
     Shot2ColumnInfo,
+    find_parent_still_image,
     find_shot1_image,
     find_shot2_image,
+    resolve_coverage_parent_png,
     plan_column_for_frame,
     shot2_video_file_pattern,
 )
@@ -58,6 +60,7 @@ from app.services.vo_shot_expand import (
     find_coverage_parent_frame,
     parent_still_suppressed,
     uses_parent_still,
+    is_coverage_leftover,
     is_shot_child,
     kadry_are_scene_shots,
     looks_like_scene_chain,
@@ -237,7 +240,7 @@ def _group_refs_for_frames(
             if hidden:
                 person_ids = [i for i in person_ids if i.lower() not in hidden]
                 item_ids_all = [i for i in item_ids_all if i.lower() not in hidden]
-            parent_png = find_shot1_image(scenes_dir, pno)
+            parent_png = resolve_coverage_parent_png(scenes_dir, pno)
             parent_ref = {
                 "number": pno,
                 "label": f"родитель #{pno}",
@@ -265,7 +268,7 @@ def _group_refs_for_frames(
             if int(still.number) == pno:
                 still_ref = shared["ref_parent"]
             else:
-                still_png = find_shot1_image(scenes_dir, int(still.number))
+                still_png = resolve_coverage_parent_png(scenes_dir, int(still.number))
                 still_ref = {
                     "number": int(still.number),
                     "label": f"родитель #{int(still.number)}",
@@ -466,6 +469,28 @@ def _empty_prompt_row() -> dict[str, str]:
     }
 
 
+def _merge_prompt_rows(
+    db_rows: dict[int, dict[str, str]],
+    excel_rows: dict[int, dict[str, str]],
+) -> dict[int, dict[str, str]]:
+    """БД перекрывает Excel/кэш по каждому слоту — кэш не затирает живые промты."""
+    keys = (
+        "image_prompt_shot1",
+        "image_prompt_shot2",
+        "animation_prompt_shot1",
+        "animation_prompt_shot2",
+    )
+    out: dict[int, dict[str, str]] = {}
+    for number in set(db_rows) | set(excel_rows):
+        db = db_rows.get(number) or {}
+        excel = excel_rows.get(number) or {}
+        out[number] = {
+            key: (str(db.get(key) or "").strip() or str(excel.get(key) or "").strip())
+            for key in keys
+        }
+    return out
+
+
 def _prompts_from_frame_db(frames: list[_FrameBoardSnapshot]) -> dict[int, dict[str, str]]:
     out: dict[int, dict[str, str]] = {}
     for fr in frames:
@@ -618,11 +643,12 @@ def _load_montage_xlsx_bundle(
     if need_excel_prompts:
         try:
             frame_sig = ",".join(str(fr.number) for fr in frames)
-            prompts_by_frame = get_cached_source_prompts(
+            excel_prompts = get_cached_source_prompts(
                 xlsx_path,
                 frame_sig=frame_sig,
                 loader=lambda: _read_source_prompts_once(xlsx_path, frames),
             )
+            prompts_by_frame = _merge_prompt_rows(prompts_by_frame, excel_prompts)
         except Exception as e:  # noqa: BLE001
             logger.warning("montage_board: prompts excel {}: {}", xlsx_path, e)
     else:
@@ -679,6 +705,8 @@ def _matching_kadry_item(frame: Any) -> dict[str, Any] | None:
 
 
 def _plan_for_frame(frame: Any) -> str:
+    if is_coverage_leftover(frame):
+        return ""
     attrs = getattr(frame, "attrs", None)
     src = attrs if isinstance(attrs, dict) else {}
     cs = src.get("camera_subdivide")
@@ -699,6 +727,8 @@ def _plan_for_frame(frame: Any) -> str:
 
 
 def _shot_cs_kadry(frame: Any, *keys: str) -> str:
+    if is_coverage_leftover(frame):
+        return ""
     attrs = getattr(frame, "attrs", None)
     src = attrs if isinstance(attrs, dict) else {}
     cs = src.get("camera_subdivide")
@@ -713,6 +743,8 @@ def _shot_cs_kadry(frame: Any, *keys: str) -> str:
 
 
 def _action_for_frame(frame: Any) -> str:
+    if is_coverage_leftover(frame):
+        return ""
     attrs = getattr(frame, "attrs", None)
     src = attrs if isinstance(attrs, dict) else {}
     found = _first_text(src.get("shot01_action"), src.get("действие"))
@@ -739,11 +771,24 @@ def _shot_kind_payload(
     cs = getattr(frame, "attrs", None) or {}
     cs = cs.get("camera_subdivide") if isinstance(cs, dict) else {}
     coverage_kind = str((cs or {}).get("coverage_kind") or "").strip().lower()
-    # Явная роль «Родитель» на доске: без плана/детей shot_kind иначе "" —
-    # кнопка не подсвечивается после клика.
-    if coverage_kind == "parent" or parent_still_suppressed(frame):
+    # Явная роль на доске главнее VO-головы и плана: любой кадр может быть
+    # и родителем, и ребёнком.
+    if coverage_kind == "child":
+        parent = find_coverage_parent_frame(frames, frame)
+        parent_number = (
+            int(parent.number)
+            if parent is not None and int(parent.number) != int(frame.number)
+            else None
+        )
+        parent_id = coverage_parent_shot_id(frame) or (
+            coverage_shot_id(parent) if parent is not None else ""
+        )
+        return "child", parent_number, parent_id
+    if coverage_kind == "parent":
         return "parent", None, coverage_shot_id(frame)
-    if uses_parent_still(frame) and (is_shot_child(frame) or coverage_kind == "child"):
+    if parent_still_suppressed(frame):
+        return "parent", None, coverage_shot_id(frame)
+    if uses_parent_still(frame) and is_shot_child(frame):
         parent = find_coverage_parent_frame(frames, frame)
         parent_number = (
             int(parent.number)
@@ -801,6 +846,8 @@ def _empty_coverage_fields() -> dict[str, Any]:
         "vo_span": None,
         "vo_unused_before": "",
         "vo_unused_after": "",
+        "vo_unused_between": [],
+        "vo_unused_after_number": None,
         "shot_angle": "",
         "shot_move": "",
         "shot_stitch": "",
@@ -830,6 +877,7 @@ def _coverage_fields_for_frames(
     frames: list[_FrameBoardSnapshot],
     *,
     enabled: bool,
+    excel_by_frame: dict[int, Any] | None = None,
 ) -> dict[int, dict[str, Any]]:
     if not enabled:
         return {fr.number: _empty_coverage_fields() for fr in frames}
@@ -844,7 +892,13 @@ def _coverage_fields_for_frames(
     unused = scene_vo_unused(frames, index=index)
     for fr in frames:
         kind, parent_number, parent_id = _shot_kind_payload(fr, frames)
-        extra = frame_board_scene_cell(frames, fr, index=index, vo_unused=unused)
+        extra = frame_board_scene_cell(
+            frames,
+            fr,
+            index=index,
+            vo_unused=unused,
+            excel_by_frame=excel_by_frame,
+        )
         stitch = canonical_stitch(
             _shot_cs_kadry(fr, "переход", "тип_стыка", "stitch", "transition")
         )
@@ -994,19 +1048,19 @@ async def build_montage_board(
         )
     frames = _snapshot_frames(frames_orm)
     entity_char_names, entity_item_names = await _entity_name_maps(session, project_id)
-    # Сводка сцены живёт в монтаже, не в отдельном меню: поля считаем всегда.
-    coverage_by_number = _coverage_fields_for_frames(frames, enabled=True)
-    show_coverage_rows = True
-
     xlsx_path = data_dir / "project.xlsx"
     chars_dir = data_dir / "characters"
-    # Один thread, последовательные openpyxl — без Windows file lock.
+    # Excel нужен до покрытия: исходный закадр ячейки, не урезанный vo_cell_full.
     excel_by_frame, prompts_by_frame, shot2_by = await asyncio.to_thread(
         _load_montage_xlsx_bundle,
         xlsx_path,
         chars_dir=chars_dir,
         frames=frames,
     )
+    coverage_by_number = _coverage_fields_for_frames(
+        frames, enabled=True, excel_by_frame=excel_by_frame
+    )
+    show_coverage_rows = True
     scenes_dir = data_dir / "scenes"
     videos_dir = data_dir / "videos"
     items_dir = data_dir / "items"
@@ -1054,6 +1108,7 @@ async def build_montage_board(
     for fr, vid1, vid2, ex, has_shot2, has_shot2_video in frame_videos:
         img1 = find_shot1_image(scenes_dir, fr.number)
         img2 = find_shot2_image(scenes_dir, fr.number)
+        img_parent = find_parent_still_image(scenes_dir, fr.number)
         scene_seconds = (
             fr.duration_seconds
             if fr.duration_seconds is not None and fr.duration_seconds > 0
@@ -1110,6 +1165,7 @@ async def build_montage_board(
                 "video_shot2_duration": vid2_dur,
                 "image_shot1_url": _preview_url(img1),
                 "image_shot2_url": _preview_url(img2),
+                "image_parent_url": _preview_url(img_parent),
                 "video_shot1_url": _preview_url(vid1),
                 "video_shot2_url": _preview_url(vid2),
                 "image_prompt_shot1": prompts.get("image_prompt_shot1") or "",

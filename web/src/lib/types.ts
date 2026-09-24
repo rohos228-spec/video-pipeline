@@ -331,7 +331,7 @@ export interface MontageSceneChainRow {
   vo?: string;
 }
 
-/** Отчёт «Улучшить сцену»: ячейка прошла 6 нод группы script_frames_qc. */
+/** Отчёт «Улучшить сцену»: ячейка прошла 3 ноды группы script_frames_qc. */
 export interface MontageImproveReport {
   nodes: { node: string; label: string; status: string; note: string }[];
   budget?: number;
@@ -382,6 +382,8 @@ export interface MontageBoardFrame {
   video_shot2_duration: number | null;
   image_shot1_url: string | null;
   image_shot2_url: string | null;
+  /** Отдельный still общего плана, не исходный shot1. */
+  image_parent_url?: string | null;
   video_shot1_url: string | null;
   video_shot2_url: string | null;
   /** Промт исходного изображения / видео (Excel → Frame), для модалки редактирования. */
@@ -421,6 +423,10 @@ export interface MontageBoardFrame {
   vo_unused_before?: string;
   /** Неиспользованный закадр после этой сцены (общий с «до» следующей). */
   vo_unused_after?: string;
+  /** Куски закадра ячейки, пропущенные между кадрами. */
+  vo_unused_between?: string[];
+  /** Номер последнего живого кадра с закадром до обрыва. */
+  vo_unused_after_number?: number | null;
   shot_angle?: string;
   shot_move?: string;
   shot_stitch?: string;

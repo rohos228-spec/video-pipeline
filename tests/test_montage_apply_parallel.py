@@ -279,3 +279,8 @@ def test_waves_parent_then_child_only_if_parent_in_batch() -> None:
     assert waves_parent_then_child([2, 3, 8], parent_of) == [[2, 3, 8]]
     # Родитель тоже в пачке — сначала он, потом дети.
     assert waves_parent_then_child([1, 2, 3], parent_of) == [[1], [2, 3]]
+    # Дети 150/151 ждут still #148, а не leftover #2.
+    assert waves_parent_then_child([148, 1, 150, 151], {1: 148, 150: 148, 151: 148, 148: None}) == [
+        [148],
+        [1, 150, 151],
+    ]

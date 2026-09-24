@@ -13,17 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Frame, Project
 from app.services.db_apply import extract_apply_ops_json
 from app.services.montage_coverage_ops import (
-    SCENE_FIELD_BY_OP,
     _visible_cell_members,
-    apply_coverage_light,
     apply_coverage_scene_action,
-    apply_coverage_set,
-    apply_scene_field,
 )
 from app.services.montage_scene_editor import (
     cell_scene_text,
     cell_vo_span,
-    frame_place,
     scene_group,
 )
 from app.services.prompt_library import resolve_excel_gpt_prompt_path
@@ -32,19 +27,6 @@ from app.services.vo_shot_expand import bits_from_attrs, main_action_text
 
 ACTION_PROMPT_NAME = "main_action_from_bits_ru"
 ACTION_PROMPT_GROUP = "script_frames_qc"
-
-_PASSPORT_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("place", ("place", "место")),
-    ("characters", ("characters", "персонажи")),
-    ("light", ("light", "lighting", "освещение")),
-    ("set", ("set", "набор")),
-    ("sense", ("sense", "смысл")),
-    ("visual_type", ("visual_type", "тип")),
-    ("props", ("props", "предметы")),
-    ("bg", ("bg", "фон")),
-    ("accent", ("accent", "акцент")),
-    ("feature", ("feature", "особенность")),
-)
 
 
 def parse_replace_ns(raw: Any) -> list[int]:
@@ -174,58 +156,14 @@ def extract_main_action_from_reply(reply: str, frame_uuid: str = "") -> str:
     return picked
 
 
-def _passport_value(passport: dict[str, Any], keys: tuple[str, ...]) -> str:
-    for key in keys:
-        raw = passport.get(key)
-        if isinstance(raw, str) and raw.strip():
-            return raw.strip()
-    return ""
-
-
 def apply_cell_passport(
     frame: Frame,
     frames: list[Frame],
     passport: dict[str, Any] | None,
 ) -> list[str]:
-    """Записать паспорт ячейки до GPT, чтобы промт видел место/свет/персонажей."""
-    if not isinstance(passport, dict):
-        return []
-    applied: list[str] = []
-    values = {
-        name: _passport_value(passport, keys) for name, keys in _PASSPORT_FIELDS
-    }
-    place = values["place"]
-    if place:
-        apply_scene_field(frame, frames, SCENE_FIELD_BY_OP["coverage_place"], place)
-        applied.append("place")
-    characters = values["characters"]
-    if characters:
-        apply_scene_field(
-            frame, frames, SCENE_FIELD_BY_OP["coverage_characters"], characters
-        )
-        applied.append("characters")
-    light = values["light"]
-    if light:
-        apply_coverage_light(frame, light, frames)
-        applied.append("light")
-    scene_set = values["set"]
-    if scene_set:
-        apply_coverage_set(frame, scene_set, frames)
-        applied.append("set")
-    for key, op_type in (
-        ("sense", "coverage_sense"),
-        ("visual_type", "coverage_visual_type"),
-        ("props", "coverage_props"),
-        ("bg", "coverage_bg"),
-        ("accent", "coverage_accent"),
-        ("feature", "coverage_feature"),
-    ):
-        text = values[key]
-        if not text:
-            continue
-        apply_scene_field(frame, frames, SCENE_FIELD_BY_OP[op_type], text)
-        applied.append(key)
-    return applied
+    """Паспорт сцены в монтаже не пишем."""
+    del frame, frames, passport
+    return []
 
 
 def load_action_prompt() -> str:
@@ -280,28 +218,15 @@ def build_action_generate_prompt(
     full = cell_scene_text(parent, members)
     span = cell_vo_span(parent)
     bits = _bits_payload(parent)
-    place = frame_place(parent)
     chain_text = main_action_text(parent)
     chain = _chain_rows(chain_text)
-    pass_map = passport if isinstance(passport, dict) else {}
+    _ = passport
     cell = {
         "frame_uuid": str(getattr(parent, "uuid", "") or ""),
         "frame_number": int(parent.number),
         "voiceover_text": full,
         "bits": bits,
-        "паспорт": {
-            "место": _passport_value(pass_map, ("place", "место")) or place,
-            "персонажи": character_labels
-            or _passport_value(pass_map, ("characters", "персонажи")),
-            "свет": _passport_value(pass_map, ("light", "lighting", "освещение")),
-            "набор": _passport_value(pass_map, ("set", "набор")),
-            "смысл": _passport_value(pass_map, ("sense", "смысл")),
-            "тип": _passport_value(pass_map, ("visual_type", "тип")),
-            "предметы": _passport_value(pass_map, ("props", "предметы")),
-            "фон": _passport_value(pass_map, ("bg", "фон")),
-            "акцент": _passport_value(pass_map, ("accent", "акцент")),
-            "особенность": _passport_value(pass_map, ("feature", "особенность")),
-        },
+        "персонажи": character_labels,
         "текущая_цепь": chain_text,
         "сцены": chain,
         "промт_оператора": (operator_prompt or "").strip(),
@@ -334,9 +259,12 @@ def build_action_generate_prompt(
     else:
         task = (
             "Напиши главное_действие заново только для этой ячейки. "
-            "Один шаг на сцену, без входа/мостов/перебивок ради схемы. "
+            "Один полный кадр на сцену, без входа/мостов/перебивок ради схемы. "
             "Не пиши камеру и коды шаблонов. Весь закадр в скобках."
         )
+    from app.services.montage_scene_improve import SHOT_ACTION_BODY_RULES
+
+    task += "\n" + SHOT_ACTION_BODY_RULES
     if span:
         task += (
             "\nvoiceover_text — полный текст этой сцены (сохранённое выделение)."
@@ -399,7 +327,7 @@ async def generate_cell_scene_action(
     timeout: float = 180.0,
     mode: str = "",
 ) -> dict[str, Any]:
-    """Паспорт → GPT action на одну ячейку → merge кусков → apply_coverage_scene_action."""
+    """GPT action на одну ячейку → merge кусков → apply_coverage_scene_action."""
     from app.services.gpt_client import gpt_ask_fresh
 
     frames = list(
@@ -434,53 +362,16 @@ async def generate_cell_scene_action(
 
     extra = (operator_prompt or "").strip()
     if extra and not wanted:
-        from app.services.gpt_client import gpt_ask_fresh
-        from app.services.montage_scene_improve import (
-            build_improve_action_prompt,
-            cards_raw_from_reply,
-            is_raw_prompt_dump,
-            scene_cards_from_gpt,
-            shots_from_cards,
-            _ops_fields,
-        )
+        from app.services.montage_scene_improve import improve_cell_scene
 
-        full = cell_scene_text(parent, members)
-        place = _passport_value(passport or {}, ("place", "место")) or frame_place(parent)
-        labels = await _map_character_labels(
-            session,
-            int(project.id),
-            _passport_value(passport or {}, ("characters", "персонажи"))
-            or str((getattr(parent, "attrs", None) or {}).get("персонажи_сцены") or "")
-            or str((getattr(parent, "attrs", None) or {}).get("персонажи") or ""),
-        )
-        from app.services.montage_scene_improve import _passport_input
-
-        pass_in = _passport_input(passport or {}, labels)
-        ask_text = build_improve_action_prompt(
-            parent=parent,
-            vo=full,
-            units=[],
-            passport=pass_in,
-            operator_prompt=extra,
-        )
-        reply = await gpt_ask_fresh(ask_text, timeout=timeout, project_id=int(project.id))
-        fields = _ops_fields(reply, str(getattr(parent, "uuid", "") or ""))
-        cards_raw = cards_raw_from_reply(fields, reply)
-        cards = scene_cards_from_gpt(cards_raw, place, full)
-        if not cards or is_raw_prompt_dump(cards, extra):
-            raise ValueError("GPT не поставил сцену по промту")
-        kadry = shots_from_cards(cards, cell_number=int(parent.number), place=place)
-        chain_text = format_scene_chain(cards)
-        report = await apply_coverage_scene_action(
+        out = await improve_cell_scene(
             session,
             project,
-            parent,
-            frames,
-            chain_text,
-            grow=True,
-            kadry=kadry,
+            frame_id,
+            operator_prompt=extra,
+            passport=None,
+            timeout=timeout,
         )
-        await session.flush()
         frames = list(
             (
                 await session.execute(
@@ -492,15 +383,19 @@ async def generate_cell_scene_action(
             .scalars()
             .all()
         )
-        parent, members = scene_group(frames, parent)
+        head = next(
+            (fr for fr in frames if int(fr.id) == int(out["frame_id"])),
+            parent,
+        )
+        parent, members = scene_group(frames, head)
         visible = _visible_cell_members(parent, members)
         frame_numbers = [int(m.number) for m in visible]
         logger.info(
-            "montage action-generate #{} cell={} prompt-shots={} inserted={} frames={}",
+            "montage action-generate #{} cell={} group-shots={} inserted={} frames={}",
             project.id,
             parent.number,
-            len(kadry),
-            report.get("inserted_frames"),
+            out.get("shots"),
+            out.get("inserted_frames"),
             frame_numbers,
         )
         return {
@@ -508,20 +403,20 @@ async def generate_cell_scene_action(
             "frame_id": int(parent.id),
             "frame_number": int(parent.number),
             "replace_ns": wanted,
-            "passport_applied": applied,
-            "chain": report.get("chain") or chain_text,
-            "shots": report.get("shots"),
-            "skipped_shots": report.get("skipped_shots"),
-            "inserted_frames": report.get("inserted_frames"),
-            "frame_numbers": frame_numbers,
-            "report": report,
+            "passport_applied": applied or out.get("passport_applied") or [],
+            "chain": out.get("chain"),
+            "shots": out.get("shots"),
+            "skipped_shots": out.get("skipped_shots"),
+            "inserted_frames": out.get("inserted_frames"),
+            "frame_numbers": frame_numbers or out.get("frame_numbers") or [],
+            "report": out.get("report"),
+            "improve_report": out.get("improve_report"),
         }
 
     labels = await _map_character_labels(
         session,
         int(project.id),
-        _passport_value(passport or {}, ("characters", "персонажи"))
-        or str((getattr(parent, "attrs", None) or {}).get("персонажи_сцены") or "")
+        str((getattr(parent, "attrs", None) or {}).get("персонажи_сцены") or "")
         or str((getattr(parent, "attrs", None) or {}).get("персонажи") or ""),
     )
     prompt = build_action_generate_prompt(
@@ -569,14 +464,13 @@ async def generate_cell_scene_action(
     visible = _visible_cell_members(parent, members)
     frame_numbers = [int(m.number) for m in visible]
     logger.info(
-        "montage action-generate #{} cell={} replace_ns={} shots={} inserted={} frames={} passport={}",
+        "montage action-generate #{} cell={} replace_ns={} shots={} inserted={} frames={}",
         project.id,
         parent.number,
         wanted,
         report.get("shots"),
         report.get("inserted_frames"),
         frame_numbers,
-        applied,
     )
     return {
         "ok": True,
@@ -600,52 +494,13 @@ def scene_image_instruction(
     shot: dict[str, Any] | None = None,
     master: bool = False,
 ) -> str:
-    """Заметка оператора для ИИзменения: паспорт ячейки + действие и покрытие кадра."""
-    p = passport or {}
-
-    def _get(*keys: str) -> str:
-        for key in keys:
-            val = str(p.get(key) or "").strip()
-            if val:
-                return val
-        return ""
-
+    """Заметка оператора для ИИзменения: действие и камера этого кадра."""
+    _ = passport
     parts: list[str] = []
-    place = _get("place", "место", "set", "набор")
-    if place:
-        parts.append(f"Место только: {place}. Не выдумывай другое место.")
-    light = _get("light", "lighting", "освещение")
-    if light:
-        parts.append(f"Свет: {light}.")
-    chars = _get("characters", "персонажи")
-    if chars:
-        parts.append(f"Персонажи: {chars}.")
-    bg = _get("bg", "фон")
-    if bg:
-        parts.append(f"Фон: {bg}.")
-    sense = _get("sense", "смысл")
-    if sense:
-        parts.append(f"Смысл: {sense}.")
     act = " ".join((beat or "").split())
-    if master:
-        who = chars or "все персонажи этой сцены"
-        plan = str((shot or {}).get("план") or "").strip().upper()
-        if plan == "СРЕДНИЙ":
-            parts.append(
-                f"Средний план сцены: место и {who} лицом к камере. "
-                "Не кадрируй одного крупно."
-            )
-        else:
-            parts.append(
-                f"Общий план сцены: место целиком, в кадре {who} лицом к камере. "
-                "Не кадрируй одного крупно."
-            )
-    elif act:
+    if act:
         parts.append(f"Действие этого кадра: {act}.")
     cam = shot or {}
-    zone = str(cam.get("зона") or "").strip()
-    if zone:
-        parts.append(f"Часть места: {zone}.")
     camera = ", ".join(
         f"{label} {str(cam.get(key) or '').strip()}"
         for key, label in (("план", "план"), ("ракурс", "ракурс"), ("движение", "движение"))
@@ -658,9 +513,6 @@ def scene_image_instruction(
         if plan_label not in {"ОБЩИЙ", "СРЕДНИЙ", "ДАЛЬНИЙ"}:
             plan_label = "ОБЩИЙ"
         parts.append(f"Камера: план {plan_label}.")
-    accent = _get("accent", "акцент")
-    if accent and str(cam.get("роль") or "") in {"реакция", "перебивка"}:
-        parts.append(f"Акцент: {accent}.")
     parts.append("Один кадр, не коллаж.")
     return " ".join(parts)
 
@@ -722,8 +574,8 @@ async def generate_cell_scene_with_images(
 ) -> dict[str, Any]:
     """GPT-сцены ячейки (мягкий fallback на текст цепи). Без картинок.
 
-    ``mode="improve"`` — прямой прогон ячейки (реестр персонажей, вес VO,
-    родитель ОБЩИЙ/СРЕДНИЙ); без группы нод script_frames_qc.
+    ``mode="improve"`` — fw_action → fw_shots → fw_qc на одну ячейку.
+    В GPT только заказ и реестр; якоря и закадр как сюжет не входят.
     """
     if mode == "improve":
         from app.services.montage_scene_improve import improve_cell_scene

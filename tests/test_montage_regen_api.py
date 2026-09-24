@@ -142,7 +142,7 @@ async def test_edit_prompt_child_attaches_parent_still(
     await session.flush()
     scenes = project.data_dir / "scenes"
     scenes.mkdir(parents=True, exist_ok=True)
-    parent_png = scenes / "frame_001_parent01.png"
+    parent_png = scenes / "frame_001_shot1.png"
     parent_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"p" * 1000)
 
     prep = await prepare_image_regen(

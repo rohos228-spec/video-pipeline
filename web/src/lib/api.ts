@@ -243,6 +243,8 @@ export interface MontagePendingOp {
     | "coverage_scene_action";
   frame_number: number;
   shot: 1 | 2;
+  /** Общий план: отдельный still, не shot1. */
+  slot?: "parent";
   prompt?: string;
   correction?: string;
   /** Заметка оператора для ИИзменения — агент img_pr пишет по ней новый промт. */
@@ -1354,7 +1356,7 @@ export const api = {
       prompt?: string;
       passport?: Record<string, string>;
       frame_ids?: number[];
-      /** Якоря сцены, как они видны на доске (с очередью): граница текста сцены. */
+      /** Якоря с доски. В 3-нодный прогон не входят. */
       anchors?: { "якорь": string; "изменение"?: string; "главный"?: boolean }[];
     },
   ) =>
@@ -1592,6 +1594,8 @@ export const api = {
     fromShot: 1 | 2,
     toFrame: number,
     toShot: 1 | 2,
+    fromSlot?: "parent" | "",
+    toSlot?: "parent" | "",
   ) =>
     http<{
       ok: boolean;
@@ -1603,13 +1607,21 @@ export const api = {
     }>(
       `/api/projects/${projectId}/montage-board/move-image` +
         `?from_frame=${fromFrame}&from_shot=${fromShot}` +
-        `&to_frame=${toFrame}&to_shot=${toShot}`,
+        `&to_frame=${toFrame}&to_shot=${toShot}` +
+        `${fromSlot ? `&from_slot=${fromSlot}` : ""}` +
+        `${toSlot ? `&to_slot=${toSlot}` : ""}`,
       { method: "POST" },
     ),
 
-  deleteMontageImage: (projectId: number, frameNumber: number, shot: 1 | 2) =>
+  deleteMontageImage: (
+    projectId: number,
+    frameNumber: number,
+    shot: 1 | 2,
+    slot?: "parent" | "",
+  ) =>
     http<{ ok: boolean }>(
-      `/api/projects/${projectId}/montage-board/delete-image?frame_number=${frameNumber}&shot=${shot}`,
+      `/api/projects/${projectId}/montage-board/delete-image?frame_number=${frameNumber}&shot=${shot}` +
+        `${slot ? `&slot=${slot}` : ""}`,
       { method: "POST" },
     ),
 
@@ -1619,11 +1631,18 @@ export const api = {
       { method: "POST" },
     ),
 
-  uploadMontageImage: async (projectId: number, frameNumber: number, shot: 1 | 2, file: File) => {
+  uploadMontageImage: async (
+    projectId: number,
+    frameNumber: number,
+    shot: 1 | 2,
+    file: File,
+    slot?: "parent" | "",
+  ) => {
     const fd = new FormData();
     fd.append("file", file);
     const res = await fetch(
-      `/api/projects/${projectId}/montage-board/upload-image?frame_number=${frameNumber}&shot=${shot}`,
+      `/api/projects/${projectId}/montage-board/upload-image?frame_number=${frameNumber}&shot=${shot}` +
+        `${slot ? `&slot=${slot}` : ""}`,
       { method: "POST", body: fd },
     );
     if (!res.ok) throw new ApiError(res.status, await res.text());

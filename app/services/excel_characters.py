@@ -58,11 +58,12 @@ def is_polluted_character_field(text: str) -> bool:
 
 
 def character_blocks_hero(ch: "ExcelCharacter") -> bool:
-    """True — валить генерацию. Имя-маркер вариации при ref_ids — норма."""
-    if is_polluted_character_field(ch.look):
-        return True
-    if is_polluted_character_field(ch.name) and not ch.ref_ids:
-        return True
+    """Не блокирует генерацию.
+
+    «оставь формат неизменный» — штатное имя вариации агента, не мусор.
+    Фразу по-прежнему не кладём в промт (`_field_for_prompt`).
+    """
+    del ch
     return False
 
 

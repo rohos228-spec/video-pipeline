@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 # Поля постановки кадра после scene_grammar v1.6 (whitelist — не тащим весь attrs).
@@ -361,6 +362,88 @@ def build_excel_gpt_check_context(
     return ctx
 
 
+def camera_chips_from_frame(frame: Any) -> dict[str, str]:
+    """Чипы доски: план / ракурс / движение. Не выдумывает значения."""
+    cs = _camera_subdivide_from(frame)
+    attrs = getattr(frame, "attrs", None)
+    src = attrs if isinstance(attrs, dict) else {}
+    item: dict[str, Any] = {}
+    kadry = src.get("кадры")
+    if isinstance(kadry, list):
+        sid = str(cs.get("shot_id") or "").strip()
+        for raw in kadry:
+            if not isinstance(raw, dict):
+                continue
+            if sid and str(raw.get("id") or "").strip() == sid:
+                item = raw
+                break
+        if not item and len(kadry) == 1 and isinstance(kadry[0], dict):
+            item = kadry[0]
+
+    def _pick(*vals: Any) -> str:
+        for val in vals:
+            text = str(val or "").strip()
+            if text:
+                return text
+        return ""
+
+    return {
+        "план": _pick(
+            src.get("крупность"),
+            cs.get("крупность"),
+            cs.get("план"),
+            src.get("план"),
+            item.get("план"),
+            item.get("крупность"),
+        ),
+        "ракурс": _pick(
+            cs.get("ракурс"),
+            cs.get("angle"),
+            src.get("ракурс"),
+            item.get("ракурс"),
+            item.get("angle"),
+        ),
+        "движение": _pick(
+            cs.get("движение"),
+            cs.get("move"),
+            src.get("движение"),
+            item.get("движение"),
+        ),
+    }
+
+
+def _camera_description_from_chips(chips: dict[str, str]) -> str:
+    parts: list[str] = []
+    if chips.get("план"):
+        parts.append(chips["план"])
+    if chips.get("ракурс"):
+        parts.append(f"ракурс {chips['ракурс']}")
+    if chips.get("движение"):
+        parts.append(f"движение {chips['движение']}")
+    return ", ".join(parts)
+
+
+def apply_camera_chips_to_row(row: dict[str, Any], frame: Any) -> None:
+    """Крупность и ракурс чипов — в карточку агента, description не затираем."""
+    chips = camera_chips_from_frame(frame)
+    plan = chips.get("план") or ""
+    angle = chips.get("ракурс") or ""
+    move = chips.get("движение") or ""
+    if plan:
+        row["крупность"] = plan
+        row["план"] = plan
+        if not str(row.get("scene_feature") or "").strip():
+            row["scene_feature"] = plan
+    if angle:
+        row["ракурс"] = angle
+    if move:
+        row["движение"] = move
+    if not str(row.get("shot01_description") or "").strip():
+        desc = _camera_description_from_chips(chips)
+        if desc:
+            row["shot01_description"] = desc
+
+
 def _coverage_parent_snapshot(parent: Any) -> dict[str, Any]:
     from app.services.vo_shot_expand import coverage_shot_id
 
@@ -379,6 +462,7 @@ def _coverage_parent_snapshot(parent: Any) -> dict[str, Any]:
     img = str(getattr(parent, "image_prompt", None) or "").strip()
     if img:
         snap["image_prompt_head"] = _clip(img, _PARENT_PROMPT_HEAD)
+    apply_camera_chips_to_row(snap, parent)
     return snap
 
 
@@ -432,6 +516,7 @@ def build_img_pr_db_context(
             row["animation_prompt"] = anim
         picked = _pick_attrs(getattr(fr, "attrs", None))
         row.update(picked)
+        apply_camera_chips_to_row(row, fr)
         sid = coverage_shot_id(fr)
         if sid:
             row["shot_id"] = sid
@@ -443,6 +528,9 @@ def build_img_pr_db_context(
         else:
             parsed = parse_coverage_shot(sid)
             if parsed is not None and parsed[1] == 1:
+                row["coverage_role"] = "parent"
+            cs_kind = str(_camera_subdivide_from(fr).get("coverage_kind") or "").strip().lower()
+            if cs_kind == "parent":
                 row["coverage_role"] = "parent"
         frame_rows.append(row)
     out: dict[str, Any] = {
@@ -464,6 +552,9 @@ def build_img_pr_db_context(
             "shot01_bg": "BG",
             "shot01_action": "ACTION",
             "shot01_description": "CAMERA",
+            "крупность|план": "shot scale chip",
+            "ракурс": "angle chip",
+            "движение": "move chip",
             "accent": "FOCAL",
             "scene_sense": "visible facts",
             "scene_feature": "shot scale",
@@ -509,10 +600,13 @@ CHARACTER_REGISTRY_ROLE_MARKERS: tuple[str, ...] = (
     "медработник",
 )
 _CHARACTER_REGISTRY_ROLE_ALIASES: dict[str, tuple[str, ...]] = {
-    "эксперт": ("эксперт", "криминалист"),
+    "эксперт": ("эксперт", "криминалист", "профайлер"),
     "архивист": ("архивист", "архивариус"),
     "начальник милиции": ("начальник милиции", "начальник"),
+    "журналист": ("журналист", "репортёр", "репортер"),
+    "судья": ("судья", "судейск"),
 }
+_CYR_LETTER = "а-яё"
 
 
 def build_character_registry_db_context(
@@ -551,22 +645,40 @@ def build_character_registry_db_context(
     }
 
 
+def _role_token_in_action(text: str, token: str) -> bool:
+    """Роль как отдельное слово, не «эксперта» из закадра и не «журналисты»."""
+    if not token or not text:
+        return False
+    pat = rf"(?<![{_CYR_LETTER}]){re.escape(token)}(?![{_CYR_LETTER}])"
+    return re.search(pat, text.lower()) is not None
+
+
+def _character_registry_card_blob(cards: list[Any] | None) -> str:
+    parts: list[str] = []
+    for card in cards or []:
+        if not isinstance(card, dict):
+            continue
+        for key in ("имя", "name", "внешность", "одежда", "характер", "правила"):
+            val = str(card.get(key) or "").strip()
+            if val:
+                parts.append(val.lower())
+    return " ".join(parts)
+
+
 def character_registry_missing_visual_roles(
     frames: list[Any],
     cards: list[Any] | None,
 ) -> list[str]:
     """Роли из действия кадров, которых нет ни на одной карточке."""
-    names_blob = " ".join(
-        str((c or {}).get("имя") or (c or {}).get("name") or "").lower()
-        for c in (cards or [])
-        if isinstance(c, dict)
-    )
+    cards_blob = _character_registry_card_blob(cards)
     missing: list[str] = []
     for role in CHARACTER_REGISTRY_ROLE_MARKERS:
-        seen = any(role in frame_visual_action(fr).lower() for fr in frames)
+        seen = any(
+            _role_token_in_action(frame_visual_action(fr), role) for fr in frames
+        )
         if not seen:
             continue
         aliases = _CHARACTER_REGISTRY_ROLE_ALIASES.get(role, (role,))
-        if not any(a in names_blob for a in aliases):
+        if not any(a in cards_blob for a in aliases):
             missing.append(role)
     return missing

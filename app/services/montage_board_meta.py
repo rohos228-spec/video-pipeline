@@ -80,6 +80,8 @@ def slot_key_from_op(op: dict[str, Any] | None) -> str | None:
     except (TypeError, ValueError):
         shot = 1
     if t.startswith("image_"):
+        if str(op.get("slot") or "").strip().lower() == "parent":
+            return f"{fr}:image_parent"
         return f"{fr}:image{shot}"
     if t.startswith("video_"):
         return trim_key(fr, shot)
@@ -272,6 +274,8 @@ def normalize_queue_ops(raw_ops: Any) -> list[dict[str, Any]]:
                 val = raw.get(key)
                 if isinstance(val, str) and val.strip():
                     item[key] = val
+            if str(raw.get("slot") or "").strip().lower() == "parent":
+                item["slot"] = "parent"
             cleaned.append(item)
             continue
         if not op_type.startswith("coverage_"):

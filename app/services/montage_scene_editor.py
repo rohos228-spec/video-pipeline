@@ -178,6 +178,226 @@ def cell_full_text(parent: Any, members: list[Any]) -> str:
     return _norm(str(getattr(parent, "voiceover_text", "") or ""))
 
 
+def _excel_vo_piece(member: Any, excel_by_frame: dict[int, Any] | None) -> str:
+    if not excel_by_frame:
+        return ""
+    try:
+        number = int(getattr(member, "number", 0) or 0)
+    except (TypeError, ValueError):
+        return ""
+    raw = excel_by_frame.get(number)
+    if isinstance(raw, dict):
+        raw = raw.get("voiceover_excel") or raw.get("voiceover") or ""
+    return _norm(str(raw or ""))
+
+
+def _source_vo_piece(
+    member: Any,
+    excel_by_frame: dict[int, Any] | None,
+    current_full: str,
+) -> str:
+    """Кусок исходного закадра: Excel leftover / нормальный Excel / живой VO.
+
+    Огромная ячейка Excel (слитый столбец / весь ролик) не источник — иначе
+    каждая сцена считает пропуском чужой текст.
+    """
+    excel_p = _excel_vo_piece(member, excel_by_frame)
+    vo = _norm(str(getattr(member, "voiceover_text", "") or ""))
+    leftover = bool(_cs(member).get("leftover"))
+    if leftover:
+        return excel_p
+    # Живой кадр — только его кусок. Excel родителя часто вся ячейка:
+    # если взять её сюда, хвост ребёнка склеится второй раз и станет «пропуском».
+    _ = current_full
+    return vo
+
+
+def cell_vo_source(
+    parent: Any,
+    members: list[Any] | None = None,
+    excel_by_frame: dict[int, Any] | None = None,
+) -> str:
+    """Исходный закадр ячейки: Excel leftover + живые куски, иначе vo_cell_full."""
+    group = list(members) if members is not None else [parent]
+    current = cell_full_text(parent, group)
+    ordered = sorted(
+        group,
+        key=lambda m: (
+            int(getattr(m, "number", 0) or 0),
+            int(_cs(m).get("shot_index") or 0),
+        ),
+    )
+    assembled = _norm(
+        " ".join(
+            piece
+            for piece in (
+                _source_vo_piece(m, excel_by_frame, current) for m in ordered
+            )
+            if piece
+        )
+    )
+    if assembled and (not current or len(assembled) > len(current) + 4):
+        return assembled
+    return current or assembled
+
+
+_PUNCT_SPACE_RE = re.compile(r"\s*([:;,.!?—–-])\s*")
+
+
+def _vo_fold(text: str) -> str:
+    """Сравнение кусков закадра: пробелы вокруг пунктуации не важны."""
+    folded = _PUNCT_SPACE_RE.sub(r"\1", _norm(text).casefold())
+    return re.sub(r"\s+", " ", folded).strip()
+
+
+def _find_vo_piece(hay: str, needle: str, start: int = 0) -> tuple[int, int]:
+    """Индекс куска в полном тексте. Пусто = (-1, 0)."""
+    piece = _norm(needle)
+    if not hay or not piece:
+        return -1, 0
+    idx = hay.find(piece, start)
+    if idx >= 0:
+        return idx, len(piece)
+    idx = hay.casefold().find(piece.casefold(), start)
+    if idx >= 0:
+        return idx, len(piece)
+    want = _vo_fold(piece)
+    if not want:
+        return -1, 0
+    fold_map: list[int] = []
+    folded_chars: list[str] = []
+    prev_space = False
+    for i, ch in enumerate(hay):
+        if i < start:
+            continue
+        raw = ch.casefold()
+        if raw.isspace():
+            if folded_chars and not prev_space and folded_chars[-1] not in ":;,.!?—–-":
+                folded_chars.append(" ")
+                fold_map.append(i)
+                prev_space = True
+            continue
+        if raw in ":;,.!?—–-" and folded_chars and folded_chars[-1] == " ":
+            folded_chars.pop()
+            fold_map.pop()
+        folded_chars.append(raw)
+        fold_map.append(i)
+        prev_space = False
+    folded = "".join(folded_chars)
+    at = folded.find(want)
+    if at < 0:
+        return -1, 0
+    orig_start = fold_map[at]
+    orig_end = fold_map[at + len(want) - 1] + 1
+    return orig_start, orig_end - orig_start
+
+
+def _gap_owned_by_other_cell(gap: str, other_fulls: list[str]) -> bool:
+    """Чужой vo_cell_full не рисуем как пропуск этой ячейки."""
+    folded = _vo_fold(gap)
+    if len(folded) < 24:
+        return False
+    for other in other_fulls:
+        other_f = _vo_fold(other)
+        if len(other_f) < 24:
+            continue
+        if folded in other_f or other_f in folded:
+            return True
+    return False
+
+
+def cell_vo_skip_report(
+    parent: Any,
+    members: list[Any] | None = None,
+    excel_by_frame: dict[int, Any] | None = None,
+    other_cell_fulls: list[str] | None = None,
+) -> dict[str, Any]:
+    """Пропуски закадра и номер последнего живого кадра с текстом до обрыва."""
+    group = list(members) if members is not None else [parent]
+    full = cell_vo_source(parent, group, excel_by_frame)
+    empty = {"between": [], "after_number": None}
+    if not full:
+        return empty
+    live = [m for m in group if not bool(_cs(m).get("leftover"))]
+    if not live:
+        live = [parent]
+    live = sorted(
+        live,
+        key=lambda m: (
+            int(_cs(m).get("shot_index") or 0) or int(getattr(m, "number", 0) or 0),
+            int(getattr(m, "number", 0) or 0),
+        ),
+    )
+    covered = [False] * len(full)
+    owner = [0] * len(full)
+    cursor = 0
+    for member in live:
+        piece = _norm(str(getattr(member, "voiceover_text", "") or ""))
+        if not piece:
+            continue
+        idx, width = _find_vo_piece(full, piece, cursor)
+        if idx < 0:
+            idx, width = _find_vo_piece(full, piece, 0)
+        if idx < 0:
+            continue
+        try:
+            number = int(getattr(member, "number", 0) or 0)
+        except (TypeError, ValueError):
+            number = 0
+        end = min(idx + width, len(full))
+        for pos in range(idx, end):
+            covered[pos] = True
+            owner[pos] = number
+        cursor = max(cursor, end)
+    gaps: list[str] = []
+    after_number: int | None = None
+    i = 0
+    n = len(full)
+    while i < n:
+        if covered[i] or full[i].isspace():
+            i += 1
+            continue
+        j = i
+        while j < n and not covered[j]:
+            j += 1
+        gap = full[i:j].strip()
+        if gap and re.fullmatch(r"[:;,.!?—–\-\s]+", gap):
+            gap = ""
+        if gap and not _gap_owned_by_other_cell(gap, other_cell_fulls or []):
+            gaps.append(gap)
+            if after_number is None:
+                k = i - 1
+                while k >= 0 and (full[k].isspace() or not owner[k]):
+                    k -= 1
+                if k >= 0 and owner[k]:
+                    after_number = owner[k]
+                else:
+                    after_number = next(
+                        (
+                            int(getattr(m, "number", 0) or 0)
+                            for m in live
+                            if _norm(str(getattr(m, "voiceover_text", "") or ""))
+                        ),
+                        None,
+                    )
+        i = j
+    return {"between": gaps, "after_number": after_number}
+
+
+def cell_vo_skipped(
+    parent: Any,
+    members: list[Any] | None = None,
+    excel_by_frame: dict[int, Any] | None = None,
+    other_cell_fulls: list[str] | None = None,
+) -> list[str]:
+    """Куски исходного закадра ячейки, которых нет ни на одном живом кадре."""
+    return list(
+        cell_vo_skip_report(
+            parent, members, excel_by_frame, other_cell_fulls=other_cell_fulls
+        )["between"]
+    )
+
+
 def normalize_vo_span(raw: Any, full: str = "") -> dict[str, Any] | None:
     """Выделение закадра: start/end в полном тексте ячейки + сохранённый кусок."""
     if raw in (None, "", {}, []):
@@ -828,6 +1048,7 @@ def frame_board_scene_cell(
     *,
     index: dict[str, dict[str, Any]] | None = None,
     vo_unused: dict[str, dict[str, str]] | None = None,
+    excel_by_frame: dict[int, Any] | None = None,
 ) -> dict[str, Any]:
     """Всё, что правится в строках сцены на доске: якоря кадра + поля ячейки."""
     parent, members = scene_group(frames, frame)
@@ -853,6 +1074,30 @@ def frame_board_scene_cell(
         }
         for row in parse_scene_chain(chain_text)
     ]
+    other_fulls = [
+        cell_full_text(other, other_members)
+        for other, other_members, uid, _leftover in _vo_cells_in_order(frames, index)
+        if uid != str(getattr(parent, "uuid", "") or "")
+    ]
+    skip_report = cell_vo_skip_report(
+        parent,
+        members,
+        excel_by_frame=excel_by_frame,
+        other_cell_fulls=other_fulls,
+    )
+    after_number = skip_report["after_number"]
+    if after_number is None and (unused.get("before") or unused.get("after")):
+        live_vo = [
+            int(getattr(m, "number", 0) or 0)
+            for m in members
+            if not bool(_cs(m).get("leftover"))
+            and _norm(str(getattr(m, "voiceover_text", "") or ""))
+        ]
+        if unused.get("after") and live_vo:
+            after_number = live_vo[-1]
+        elif unused.get("before") and live_vo:
+            after_number = live_vo[0]
+    skip_report = {**skip_report, "after_number": after_number}
     return {
         "shot_anchors": len(bits),
         "shot_anchor": bits[0]["якорь"] if bits else "",
@@ -866,18 +1111,20 @@ def frame_board_scene_cell(
         "vo_span": normalize_vo_span(_attrs(parent).get(VO_SPAN_ATTR), full),
         "vo_unused_before": unused.get("before") or "",
         "vo_unused_after": unused.get("after") or "",
-        "scene_place": scene.get("place") or "",
-        "scene_set": scene.get("set") or "",
+        "vo_unused_between": skip_report["between"],
+        "vo_unused_after_number": skip_report["after_number"],
+        "scene_place": "",
+        "scene_set": "",
         "scene_characters": scene.get("characters") or "",
-        "scene_lighting": scene.get("lighting") or "",
+        "scene_lighting": "",
         "scene_id": scene.get("id_scene") or "",
         "scene_no": scene.get("scene_no") or "",
-        "scene_props": scene.get("props") or "",
-        "scene_accent": scene.get("accent") or "",
-        "scene_bg": scene.get("bg") or "",
-        "scene_sense": scene.get("sense") or "",
-        "scene_visual_type": scene.get("visual_type") or "",
-        "scene_feature": scene.get("feature") or "",
+        "scene_props": "",
+        "scene_accent": "",
+        "scene_bg": "",
+        "scene_sense": "",
+        "scene_visual_type": "",
+        "scene_feature": "",
         "scene_template_auto": scene_template_auto(parent),
         "scene_action": shot_sequence_text(parent, members),
         "scene_chain": chain,

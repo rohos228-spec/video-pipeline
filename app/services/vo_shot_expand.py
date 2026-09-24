@@ -227,18 +227,92 @@ def coverage_parent_shot_id(frame: Any) -> str:
     return f"{parsed[0]}-K1"
 
 
+def is_coverage_leftover(frame: Any) -> bool:
+    return bool(_cs(frame).get("leftover"))
+
+
+def coverage_parent_number(frame: Any) -> int | None:
+    raw = _cs(frame).get("coverage_parent_number")
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 1 else None
+
+
+def _frame_by_number(frames: list[Any], number: int) -> Any | None:
+    for fr in frames:
+        try:
+            if int(fr.number) == int(number):
+                return fr
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _pick_coverage_parent_by_shot_id(
+    frames: list[Any],
+    parent_sid: str,
+    child: Any,
+) -> Any | None:
+    """Первый leftover с тем же id не подменяет live-родителя с доски."""
+    child_uid = str(getattr(child, "uuid", "") or "")
+    try:
+        child_n = int(getattr(child, "number", 0) or 0)
+    except (TypeError, ValueError):
+        child_n = 0
+    matches: list[Any] = []
+    for fr in frames:
+        if coverage_shot_id(fr) != parent_sid:
+            continue
+        if child_uid and str(getattr(fr, "uuid", "") or "") == child_uid:
+            continue
+        try:
+            if child_n and int(fr.number) == child_n:
+                continue
+        except (TypeError, ValueError):
+            pass
+        matches.append(fr)
+    if not matches:
+        return None
+    live = [fr for fr in matches if not is_coverage_leftover(fr)]
+    pool = live or matches
+    parents = [
+        fr
+        for fr in pool
+        if str(_cs(fr).get("coverage_kind") or "").strip().lower() == "parent"
+        or parent_still_suppressed(fr)
+    ]
+    if parents:
+        return parents[0]
+    roots = [fr for fr in pool if not uses_parent_still(fr)]
+    if roots:
+        return roots[0]
+    return pool[0]
+
+
 def find_coverage_parent_frame(frames: list[Any], child: Any) -> Any | None:
     """Still-родитель покрытия. VO-ячейка (parent_uuid) здесь не меняется.
 
     По умолчанию K2/K3 берут K1 своей ячейки. Явный ``coverage_kind=child``
-    на доске — выбранный still, даже с другой сцены. Без этой роли
-    ``coverage_parent_id`` X1 не подменяет PNG K1 ячейки.
+    на доске — выбранный still (номер кадра, иначе id), даже с другой сцены.
+    Без этой роли ``coverage_parent_id`` X1 не подменяет PNG K1 ячейки.
+    Leftover с тем же shot_id не считается родителем.
     """
     if parent_still_suppressed(child):
         return None
     child_uid = str(getattr(child, "uuid", "") or "")
     cs = _cs(child)
     explicit_kind = str(cs.get("coverage_kind") or "").strip().lower() == "child"
+    board_n = coverage_parent_number(child)
+    if explicit_kind and board_n:
+        found = _frame_by_number(frames, board_n)
+        if found is not None:
+            try:
+                if int(found.number) != int(getattr(child, "number", 0) or 0):
+                    return found
+            except (TypeError, ValueError):
+                return found
     if is_shot_child(child) and not explicit_kind:
         uid = str(cs.get("parent_uuid") or "").strip()
         if uid and uid != child_uid:
@@ -248,13 +322,7 @@ def find_coverage_parent_frame(frames: list[Any], child: Any) -> Any | None:
     parent_sid = coverage_parent_shot_id(child)
     if not parent_sid:
         return None
-    for fr in frames:
-        if coverage_shot_id(fr) != parent_sid:
-            continue
-        if child_uid and str(getattr(fr, "uuid", "") or "") == child_uid:
-            continue
-        return fr
-    return None
+    return _pick_coverage_parent_by_shot_id(frames, parent_sid, child)
 
 
 def merge_parent_scene_refs(

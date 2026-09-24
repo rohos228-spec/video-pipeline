@@ -20,7 +20,7 @@ from app.services.montage_coverage_ops import (
     apply_coverage_op,
 )
 from app.services.montage_scene_editor import frame_board_scene_cell
-from app.services.vo_shot_expand import find_coverage_parent_frame, is_shot_child
+from app.services.vo_shot_expand import _cs, find_coverage_parent_frame, is_shot_child
 
 
 @pytest.fixture
@@ -278,14 +278,14 @@ async def test_apply_scene_fields_write_board_keys(
     await session.refresh(child)
     await session.refresh(stranger)
     cell = frame_board_scene_cell([parent, child, stranger], parent)
-    assert cell["scene_sense"] == "мужчина пишет пером"
-    assert cell["scene_visual_type"] == "Кинематографический реализм"
-    assert cell["scene_place"] == "кабинет у окна"
+    assert cell["scene_sense"] == ""
+    assert cell["scene_visual_type"] == ""
+    assert cell["scene_place"] == ""
     assert cell["scene_characters"] == "c01"
-    assert cell["scene_props"] == "перо, чернильница"
-    assert cell["scene_bg"] == "тёмные панели"
-    assert cell["scene_accent"] == "перо на бумаге"
-    assert cell["scene_feature"] == "средний план у окна"
+    assert cell["scene_props"] == ""
+    assert cell["scene_bg"] == ""
+    assert cell["scene_accent"] == ""
+    assert cell["scene_feature"] == ""
     assert (parent.attrs or {}).get("смысл_сцены") == "мужчина пишет пером"
     assert (child.attrs or {}).get("смысл_сцены") == "мужчина пишет пером"
     assert (parent.attrs or {}).get("тип_сцены") == "Кинематографический реализм"
@@ -379,6 +379,7 @@ async def test_relink_and_delete_child(session: AsyncSession, project: Project) 
     found = find_coverage_parent_frame(rows, child2)
     assert found is not None
     assert int(found.number) == 3
+    assert _cs(child2).get("coverage_parent_number") == 3
     assert is_shot_child(child2) is True
     board = await build_montage_board(session, project)
     c_row = next(fr for fr in board["frames"] if fr["number"] == 2)
@@ -392,6 +393,51 @@ async def test_relink_and_delete_child(session: AsyncSession, project: Project) 
     )
     gone = await session.get(Frame, child.id)
     assert gone is None
+
+
+@pytest.mark.asyncio
+async def test_vo_parent_can_become_child_of_its_shot(
+    session: AsyncSession, project: Project
+) -> None:
+    """Первый кадр сцены можно сделать дочерним — цикл still разрывается."""
+    from app.services.vo_shot_expand import _cs
+
+    parent, child = _parent_child(project.id)
+    session.add_all([project, parent, child])
+    await session.flush()
+
+    await apply_coverage_op(
+        session,
+        project,
+        {
+            "type": "coverage_kind",
+            "frame_number": 1,
+            "kind": "child",
+            "parent_number": 2,
+        },
+    )
+    rows = list(
+        (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    head = next(fr for fr in rows if int(fr.number) == 1)
+    kid = next(fr for fr in rows if int(fr.number) == 2)
+    assert _cs(head).get("coverage_kind") == "child"
+    assert _cs(kid).get("coverage_kind") == "parent"
+    found = find_coverage_parent_frame(rows, head)
+    assert found is not None
+    assert int(found.number) == 2
+    board = await build_montage_board(session, project)
+    h_row = next(fr for fr in board["frames"] if fr["number"] == 1)
+    k_row = next(fr for fr in board["frames"] if fr["number"] == 2)
+    assert h_row["shot_kind"] == "child"
+    assert h_row["shot_parent_number"] == 2
+    assert k_row["shot_kind"] == "parent"
 
 
 @pytest.mark.asyncio
@@ -1086,6 +1132,127 @@ async def test_improve_does_not_turn_leftover_glue_into_new_scenes(
     assert all(_cs(m).get("role") != "vo_parent" or m.uuid == parent_uid for m in live)
     # новые шоты стоят сразу после родителя, до соседней сцены
     assert ordered[:4] == [1, ordered[1], ordered[2], 2]
+    assert not (_cs(glue).get("план") or _cs(glue).get("крупность"))
+    assert not (_cs(glue).get("ракурс") or _cs(glue).get("движение"))
+
+
+@pytest.mark.asyncio
+async def test_scene_action_clears_leftover_chips(
+    session: AsyncSession, project: Project
+) -> None:
+    """Хвост leftover не держит старые крупность/ракурс после новой цепи."""
+    from app.services.montage_coverage_ops import apply_coverage_scene_action
+
+    parent_uid = "dd" * 12
+    parent = Frame(
+        project_id=project.id,
+        number=10,
+        uuid=parent_uid,
+        voiceover_text="Он стоит у двери.",
+        status="planned",
+        sort_key=10.0,
+        attrs={
+            "действие": "стоит у двери",
+            "крупность": "СРЕДНИЙ",
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+                "план": "СРЕДНИЙ",
+                "ракурс": "фронт",
+                "движение": "статика",
+            },
+        },
+    )
+    child = Frame(
+        project_id=project.id,
+        number=11,
+        uuid="ee" * 12,
+        voiceover_text="смотрит.",
+        status="planned",
+        sort_key=11.0,
+        attrs={
+            "действие": "смотрит в щёлку",
+            "крупность": "СРЕДНИЙ",
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "план": "СРЕДНИЙ",
+                "ракурс": "фронт",
+                "движение": "статика",
+            },
+        },
+    )
+    leftover = Frame(
+        project_id=project.id,
+        number=12,
+        uuid="ff" * 12,
+        voiceover_text="хвост",
+        status="planned",
+        sort_key=12.0,
+        attrs={
+            "действие": "старое крупное",
+            "крупность": "КРУПНЫЙ",
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "leftover": True,
+                "план": "КРУПНЫЙ",
+                "ракурс": "с плеча",
+                "движение": "статика",
+            },
+        },
+    )
+    session.add_all([project, parent, child, leftover])
+    await session.flush()
+    kadry = [
+        {
+            "id": "10-S1-K1",
+            "действие": "стоит у двери",
+            "план": "ОБЩИЙ",
+            "ракурс": "фронт",
+            "движение": "статика",
+            "закадр": "Он стоит у двери.",
+        },
+        {
+            "id": "10-S1-K2",
+            "действие": "смотрит в щёлку",
+            "план": "КРУПНЫЙ",
+            "ракурс": "3/4",
+            "движение": "статика",
+            "закадр": "смотрит.",
+        },
+    ]
+    await apply_coverage_scene_action(
+        session,
+        project,
+        parent,
+        [parent, child, leftover],
+        "1. дом — стоит у двери\n2. дом — смотрит в щёлку",
+        grow=True,
+        kadry=kadry,
+        lock_parent_plan=False,
+    )
+    assert _cs(leftover).get("leftover") is True
+    assert not (_cs(leftover).get("план") or leftover.attrs.get("крупность"))
+    assert not _cs(leftover).get("ракурс")
+    assert not _cs(leftover).get("angle")
+    assert not _cs(leftover).get("move")
+    assert _cs(parent).get("план") == "ОБЩИЙ"
+    assert _cs(child).get("план") == "КРУПНЫЙ"
+    leftover.attrs = {
+        **dict(leftover.attrs or {}),
+        "camera_subdivide": {
+            **_cs(leftover),
+            "leftover": True,
+            "angle": "3/4",
+            "move": "панорама",
+        },
+    }
+    from app.services.montage_board import _plan_for_frame, _shot_cs_kadry
+
+    assert _plan_for_frame(leftover) == ""
+    assert _shot_cs_kadry(leftover, "ракурс", "angle") == ""
+    assert _shot_cs_kadry(leftover, "движение", "move") == ""
 
 
 @pytest.mark.asyncio

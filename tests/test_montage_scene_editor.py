@@ -17,6 +17,7 @@ from app.services.montage_scene_editor import (
     VO_SPAN_ATTR,
     build_scene_editor_state,
     build_variant_prompt,
+    cell_vo_skipped,
     frame_board_scene_cell,
     normalize_anchor_rows,
     parse_variants,
@@ -340,8 +341,8 @@ def test_frame_board_scene_cell_is_this_shot_not_whole_cell() -> None:
     cell = frame_board_scene_cell([parent, child], child)
     assert cell["shot_anchors"] == 1
     assert cell["shot_anchor"] == "Достал из портфеля папку"
-    assert cell["scene_place"] == "кабинет следователя"
-    assert cell["scene_set"] == "кабинет следователя"
+    assert cell["scene_place"] == ""
+    assert cell["scene_set"] == ""
     assert cell["scene_characters"] == "следователь"
     parent_cell = frame_board_scene_cell([parent, child], parent)
     assert parent_cell["shot_anchor"] == "Он вошёл в кабинет"
@@ -373,10 +374,10 @@ def test_frame_board_scene_cell_carries_inline_row_payload() -> None:
     assert cell["scene_anchor_rows"][0]["cell_index"] == 0
     assert cell["vo_cell_full"] == VO_CELL
 
-    # Общее по ячейке — для строк «Сцена» / «Свет».
-    assert cell["scene_lighting"] == "холодный верхний свет"
-    assert cell["scene_sense"] == "вход в кабинет и первое дело"
-    assert cell["scene_props"] == "папка, портфель"
+    # Паспорт сцены с доски снят — этих полей в монтаже нет.
+    assert cell["scene_lighting"] == ""
+    assert cell["scene_sense"] == ""
+    assert cell["scene_props"] == ""
     assert cell["scene_id"] == "scene_01"
     assert cell["scene_template_auto"]
     assert "вошёл, снял пальто" in cell["scene_action"]
@@ -392,8 +393,10 @@ def test_frame_board_scene_cell_carries_inline_row_payload() -> None:
     assert "приносит папку" in cell["scene_chain"][0]["action"]
     assert cell["vo_unused_before"] == ""
     assert cell["vo_unused_after"] == ""
+    assert cell["vo_unused_between"] == []
     assert parent_cell["vo_unused_before"] == ""
     assert parent_cell["vo_unused_after"] == ""
+    assert parent_cell["vo_unused_between"] == []
 
 
 def test_shot_sequence_text_joins_frame_actions() -> None:
@@ -830,6 +833,179 @@ def _vo_parent(project_id: int, number: int, uid: str, full: str, **attrs: objec
     )
 
 
+def test_cell_vo_skipped_between_shots() -> None:
+    full = "Он вошёл в архив. Сел за стол. Открыл папку."
+    parent_uid = "aa" * 12
+    child_uid = "bb" * 12
+    parent = Frame(
+        project_id=41,
+        number=1,
+        uuid=parent_uid,
+        sort_key=1.0,
+        voiceover_text="Он вошёл в архив.",
+        status="planned",
+        attrs={
+            "vo_cell_full": full,
+            "camera_subdivide": {"role": "vo_parent", "parent_uuid": parent_uid},
+        },
+    )
+    child = Frame(
+        project_id=41,
+        number=2,
+        uuid=child_uid,
+        sort_key=2.0,
+        voiceover_text="Открыл папку.",
+        status="planned",
+        attrs={
+            "camera_subdivide": {"role": "shot", "parent_uuid": parent_uid},
+        },
+    )
+    assert cell_vo_skipped(parent, [parent, child]) == ["Сел за стол."]
+    cell = frame_board_scene_cell([parent, child], parent)
+    assert cell["vo_unused_between"] == ["Сел за стол."]
+    assert cell["vo_unused_after_number"] == parent.number
+
+
+def test_cell_vo_skipped_empty_when_parent_holds_full() -> None:
+    full = "Он вошёл в архив. Сел за стол. Открыл папку."
+    parent_uid = "aa" * 12
+    parent = _vo_parent(41, 1, parent_uid, full)
+    child = Frame(
+        project_id=41,
+        number=2,
+        uuid="bb" * 12,
+        sort_key=2.0,
+        voiceover_text="Открыл папку.",
+        status="planned",
+        attrs={"camera_subdivide": {"role": "shot", "parent_uuid": parent_uid}},
+    )
+    assert cell_vo_skipped(parent, [parent, child]) == []
+
+
+def test_cell_vo_skipped_uses_excel_when_cell_was_rewritten() -> None:
+    """vo_cell_full уже урезан — дыру ищем по исходному Excel ячейки."""
+    parent_uid = "aa" * 12
+    parent = Frame(
+        project_id=41,
+        number=1,
+        uuid=parent_uid,
+        sort_key=1.0,
+        voiceover_text="Он вошёл в архив.",
+        status="planned",
+        attrs={
+            "vo_cell_full": "Он вошёл в архив. Открыл папку.",
+            "camera_subdivide": {"role": "vo_parent", "parent_uuid": parent_uid},
+        },
+    )
+    leftover = Frame(
+        project_id=41,
+        number=2,
+        uuid="cc" * 12,
+        sort_key=2.0,
+        voiceover_text="Сел.",
+        status="planned",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "leftover": True,
+            },
+        },
+    )
+    child = Frame(
+        project_id=41,
+        number=3,
+        uuid="bb" * 12,
+        sort_key=3.0,
+        voiceover_text="Открыл папку.",
+        status="planned",
+        attrs={"camera_subdivide": {"role": "shot", "parent_uuid": parent_uid}},
+    )
+    excel = {
+        1: "Он вошёл в архив.",
+        2: "Сел за стол и зажёг лампу.",
+        3: "Открыл папку.",
+    }
+    assert cell_vo_skipped(parent, [parent, leftover, child], excel) == [
+        "Сел за стол и зажёг лампу."
+    ]
+    cell = frame_board_scene_cell(
+        [parent, leftover, child], parent, excel_by_frame=excel
+    )
+    assert cell["vo_unused_between"] == ["Сел за стол и зажёг лампу."]
+    assert cell["vo_unused_after_number"] == parent.number
+
+
+def test_cell_vo_skipped_ignores_giant_excel_dump() -> None:
+    full = "Он вошёл в архив. Открыл папку."
+    parent_uid = "aa" * 12
+    parent = Frame(
+        project_id=41,
+        number=1,
+        uuid=parent_uid,
+        sort_key=1.0,
+        voiceover_text="Он вошёл в архив.",
+        status="planned",
+        attrs={
+            "vo_cell_full": full,
+            "camera_subdivide": {"role": "vo_parent", "parent_uuid": parent_uid},
+        },
+    )
+    child = Frame(
+        project_id=41,
+        number=2,
+        uuid="bb" * 12,
+        sort_key=2.0,
+        voiceover_text="Открыл папку.",
+        status="planned",
+        attrs={"camera_subdivide": {"role": "shot", "parent_uuid": parent_uid}},
+    )
+    excel = {1: full + " " + ("чужой абзац всего ролика. " * 40), 2: "Открыл папку."}
+    assert cell_vo_skipped(parent, [parent, child], excel) == []
+
+
+def test_cell_vo_skipped_ignores_leftover_cover() -> None:
+    full = "Он вошёл в архив. Сел за стол. Открыл папку."
+    parent_uid = "aa" * 12
+    parent = Frame(
+        project_id=41,
+        number=1,
+        uuid=parent_uid,
+        sort_key=1.0,
+        voiceover_text="Он вошёл в архив.",
+        status="planned",
+        attrs={
+            "vo_cell_full": full,
+            "camera_subdivide": {"role": "vo_parent", "parent_uuid": parent_uid},
+        },
+    )
+    leftover = Frame(
+        project_id=41,
+        number=2,
+        uuid="cc" * 12,
+        sort_key=2.0,
+        voiceover_text="Сел за стол.",
+        status="planned",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "leftover": True,
+            },
+        },
+    )
+    child = Frame(
+        project_id=41,
+        number=3,
+        uuid="bb" * 12,
+        sort_key=3.0,
+        voiceover_text="Открыл папку.",
+        status="planned",
+        attrs={"camera_subdivide": {"role": "shot", "parent_uuid": parent_uid}},
+    )
+    assert cell_vo_skipped(parent, [parent, leftover, child]) == ["Сел за стол."]
+
+
 def test_scene_vo_unused_gap_is_shared_by_adjacent_scenes() -> None:
     """Пропущенный кусок между сценами: у первой «после», у второй «до» — один текст."""
     a_uid = "aa" * 12
@@ -879,3 +1055,121 @@ def test_scene_vo_unused_leftover_between_scenes_is_the_same_piece() -> None:
     assert leftover.uuid not in gaps
     assert gaps[a.uuid]["after"] == unused
     assert gaps[b.uuid]["before"] == unused
+
+
+def test_cell_vo_skipped_matches_piece_without_space_after_colon() -> None:
+    full = (
+        ": аккуратно одетый молодой мужчина с уверенной улыбкой, "
+        "спокойной речью и внешностью человека."
+    )
+    parent_uid = "aa" * 12
+    parent = Frame(
+        project_id=41,
+        number=153,
+        uuid=parent_uid,
+        sort_key=153.0,
+        voiceover_text=":аккуратно одетый молодой мужчина с уверенной улыбкой,",
+        status="planned",
+        attrs={
+            "vo_cell_full": full,
+            "camera_subdivide": {"role": "vo_parent", "parent_uuid": parent_uid},
+        },
+    )
+    child = Frame(
+        project_id=41,
+        number=154,
+        uuid="bb" * 12,
+        sort_key=154.0,
+        voiceover_text="спокойной речью и внешностью человека.",
+        status="planned",
+        attrs={"camera_subdivide": {"role": "shot", "parent_uuid": parent_uid}},
+    )
+    assert cell_vo_skipped(parent, [parent, child]) == []
+
+
+def test_cell_vo_skipped_parent_excel_is_not_the_whole_cell_again() -> None:
+    """Excel родителя = вся ячейка. Живой ребёнок уже держит хвост — это не пропуск."""
+    full = "Банди учился в университете, интересовался психологией, строил юридическую карьеру,"
+    parent_uid = "aa" * 12
+    parent = Frame(
+        project_id=41,
+        number=8,
+        uuid=parent_uid,
+        sort_key=8.0,
+        voiceover_text="Банди учился в университете,",
+        status="planned",
+        attrs={
+            "vo_cell_full": full,
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+                "shot_index": 1,
+            },
+        },
+    )
+    child = Frame(
+        project_id=41,
+        number=159,
+        uuid="bb" * 12,
+        sort_key=159.0,
+        voiceover_text="интересовался психологией, строил юридическую карьеру,",
+        status="planned",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "shot_index": 2,
+            },
+        },
+    )
+    excel = {8: full}
+    assert cell_vo_skipped(parent, [parent, child], excel) == []
+    cell = frame_board_scene_cell(
+        [parent, child], parent, excel_by_frame=excel
+    )
+    assert cell["vo_unused_between"] == []
+    assert cell["vo_unused_after_number"] is None
+
+
+def test_cell_vo_skipped_drops_gap_already_owned_by_next_cell() -> None:
+    first_full = "Тед Банди Когда люди вспоминают Теда Банди."
+    next_full = (
+        "аккуратно одетый молодой мужчина с уверенной улыбкой, "
+        "спокойной речью и внешностью человека."
+    )
+    a_uid = "aa" * 12
+    b_uid = "bb" * 12
+    first = Frame(
+        project_id=41,
+        number=1,
+        uuid=a_uid,
+        sort_key=1.0,
+        voiceover_text=first_full,
+        status="planned",
+        attrs={
+            "vo_cell_full": first_full,
+            "camera_subdivide": {"role": "vo_parent", "parent_uuid": a_uid},
+        },
+    )
+    leftover = Frame(
+        project_id=41,
+        number=2,
+        uuid="cc" * 12,
+        sort_key=2.0,
+        voiceover_text="хвост",
+        status="planned",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": a_uid,
+                "leftover": True,
+            },
+        },
+    )
+    nxt = _vo_parent(41, 153, b_uid, next_full)
+    excel = {1: first_full, 2: next_full}
+    assert cell_vo_skipped(first, [first, leftover], excel, [next_full]) == []
+    cell = frame_board_scene_cell(
+        [first, leftover, nxt], first, excel_by_frame=excel
+    )
+    assert cell["vo_unused_between"] == []

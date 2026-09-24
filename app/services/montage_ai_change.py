@@ -19,11 +19,23 @@ AiChangeKind = Literal["image", "video"]
 
 _SYSTEM_IMAGE = """\
 Ты — агент из вложенного файла. Пиши промт картинки по его правилам.
-Один кадр, не батч. Старого промта кадра нет — пиши с нуля по агенту и закадру.
+Один кадр, не батч. Старого промта кадра нет — пиши с нуля по агенту и карточке.
 
-Первый абзац — персонаж: Image N / cNN, где стоит, что делает.
+Если в карточке есть coverage_parent — первый абзац = A0 Preserve/Change:
+тот же сет, те же люди, те же экземпляры предметов, тот же свет.
+Меняются только камера и фаза действия ЭТОГО кадра. Не новая комната.
+
+Затем персонаж: Image N / cNN, где стоит, что делает.
 Референс = только identity (лицо/тело/одежда). Не копируй сетку листа
 и не клонируй людей с приложенной картинки, если промт описывает другой каст.
+
+Крупность и ракурс из карточки обязательны в строке:
+Scene feature / shot scale: [план] · [ракурс] · [движение]
+Не подменяй чипы. ДЕТАЛЬ = punch-in на предмет действия, не вся локация.
+ОБЩИЙ = фигуры и то, что видно из действия ЭТОГО кадра. Не тащи
+место/фон/дверь из чужого шота и не выдумывай паспорт сцены.
+
+Accent — только этого шота.
 
 STYLE / Final style lock / Negative — максимум 6 коротких строк.
 Не копируй словарь стиля / §5–§6 из агента.
@@ -44,6 +56,8 @@ def build_ai_change_user_message(
     voiceover_text: str,
     instruction: str = "",
     action: str = "",
+    camera: dict[str, str] | None = None,
+    coverage_role: str = "",
 ) -> str:
     vo = (voiceover_text or "").strip() or "(пусто)"
     note = (instruction or "").strip()
@@ -54,6 +68,29 @@ def build_ai_change_user_message(
             f"\nACTION:\n{act}\n"
             "\nЭто действие ЭТОГО кадра, не цепи всей сцены.\n"
         )
+    chips = camera if isinstance(camera, dict) else {}
+    plan = str(chips.get("план") or chips.get("крупность") or "").strip()
+    angle = str(chips.get("ракурс") or "").strip()
+    move = str(chips.get("движение") or "").strip()
+    if plan or angle or move:
+        parts.append("\nCAMERA:\n")
+        if plan:
+            parts.append(f"план: {plan}\n")
+        if angle:
+            parts.append(f"ракурс: {angle}\n")
+        if move:
+            parts.append(f"движение: {move}\n")
+        parts.append(
+            "Эти значения обязательны в строке Scene feature / shot scale. "
+            "Не подменяй план и ракурс.\n"
+        )
+    role = str(coverage_role or "").strip().lower()
+    if role == "child":
+        parts.append(
+            "\nCOVERAGE: дочерний кадр. В карточке coverage_parent — "
+            "начни с A0 Preserve/Change. Тот же сет и те же предметы, "
+            "другая камера и фаза.\n"
+        )
     if note:
         parts.append(
             f"\nOPERATOR_CHANGE:\n{note}\n\n"
@@ -63,10 +100,11 @@ def build_ai_change_user_message(
             "Не копируй заметку дословно — переведи в визуальный промт по правилам агента."
         )
     parts.append(
-        "\nКарточка кадра — во вложенном db_frames.json (База: место, действие, "
-        "персонажи, камера, свет). Старого промта нет.\n"
+        "\nКарточка кадра — во вложенном db_frames.json (действие, персонажи, "
+        "камера, coverage_parent). Паспорта сцены нет — не бери место/фон/"
+        "свет/предметы ячейки. Старого промта нет.\n"
         "Напиши полный промт по вложенному агенту. "
-        "Блок персонажа — первым. "
+        "Дочерний кадр — A0 первым, иначе блок персонажа первым. "
         "STYLE / Final style lock / Negative — коротко, не словарь из агента. "
         "Не JSON. Только промт."
     )
@@ -79,11 +117,13 @@ def write_ai_change_db_card(
     dest_dir: Path,
     *,
     characters: list | None = None,
+    all_frames: list | None = None,
 ) -> Path:
     """Один кадр из Базы — тот же снимок, что img_pr кладёт в db_frames.json."""
     from app.services.db_frames_context import build_img_pr_db_context
 
     dest_dir.mkdir(parents=True, exist_ok=True)
+    universe = list(all_frames) if all_frames is not None else [frame]
     ctx = build_img_pr_db_context(
         project_id=int(getattr(project, "id", 0) or 0),
         slug=str(getattr(project, "slug", "") or ""),
@@ -92,6 +132,7 @@ def write_ai_change_db_card(
         general_plan=str(getattr(project, "general_plan", "") or ""),
         include_characters=True,
         include_field_map=True,
+        all_frames=universe,
     )
     _pin_ai_change_shot_action(ctx, frame)
     path = dest_dir / "db_frames.json"
@@ -108,8 +149,48 @@ def write_ai_change_db_card(
     return path
 
 
+_SCENE_PASSPORT_KEYS = frozenset(
+    {
+        "place",
+        "место",
+        "shot01_bg",
+        "фон",
+        "lighting",
+        "scene_lighting",
+        "освещение",
+        "освещение_сцены",
+        "shot01_props",
+        "предметы",
+        "accent",
+        "акцент",
+        "scene_sense",
+        "смысл",
+        "смысл_сцены",
+        "scene_feature",
+        "особенность",
+        "особенность_сцены",
+        "visual_type",
+        "тип_сцены",
+        "набор",
+        "set",
+        "scene_set",
+    }
+)
+
+
+def _strip_scene_passport_fields(row: dict) -> None:
+    """Паспорт ячейки не участвует в ИИзменении — только шот."""
+    for key in _SCENE_PASSPORT_KEYS:
+        row.pop(key, None)
+    parent = row.get("coverage_parent")
+    if isinstance(parent, dict):
+        for key in _SCENE_PASSPORT_KEYS:
+            parent.pop(key, None)
+
+
 def _pin_ai_change_shot_action(ctx: dict, frame: object) -> None:
     """В карточке ИИзменения — действие этого шота, без цепи сцены и чужих K."""
+    from app.services.db_frames_context import apply_camera_chips_to_row
     from app.services.montage_board import _action_for_frame
     from app.services.vo_shot_expand import _cs, coverage_shot_id
 
@@ -118,6 +199,8 @@ def _pin_ai_change_shot_action(ctx: dict, frame: object) -> None:
     for row in ctx.get("frames") or []:
         if not isinstance(row, dict):
             continue
+        _strip_scene_passport_fields(row)
+        apply_camera_chips_to_row(row, frame)
         if action:
             row["shot01_action"] = action
             row["действие"] = action
@@ -278,6 +361,8 @@ async def rewrite_prompt_via_gpt(
     db_card_path: Path | None = None,
     instruction: str = "",
     action: str = "",
+    camera: dict[str, str] | None = None,
+    coverage_role: str = "",
 ) -> str:
     """Агент + карточка Базы + закадр → vibecode LLM → промт как есть."""
     del img_pr_rules, img_pr_variant, image_prompt
@@ -287,6 +372,8 @@ async def rewrite_prompt_via_gpt(
         voiceover_text=voiceover_text,
         instruction=instruction,
         action=action,
+        camera=camera,
+        coverage_role=coverage_role,
     )
     system = system_for_kind(kind)
     files: list[Path] = []

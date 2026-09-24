@@ -152,7 +152,9 @@ def test_build_prompt_is_one_cell_and_uses_group_action() -> None:
     assert "replace_ns" in text
     assert "ТОЛЬКО сцены с номерами 2" in text
     assert "main_action_from_bits_ru" in text or "главное_действие" in text
-    assert "ночной" in text
+    assert '"паспорт"' not in text
+    assert "полный кадр" in text
+    assert "кто слева" in text
     assert "убери лишние шаги" in text
     assert "Он вошёл в архив" in text
 
@@ -221,9 +223,10 @@ async def test_generate_cell_applies_chain_without_insert(
     await session.flush()
 
     async def fake_ask(text: str, **kwargs):  # noqa: ANN003
-        assert "разложи вход и полку" in text
-        assert "Поставь сцену" in text
         assert "voiceover_text" not in text
+        if "Поставь сцену" in text:
+            assert "разложи вход и полку" in text
+            assert "персонажи_реестра" in text
         return json.dumps(
             {
                 "ops": [
@@ -252,12 +255,11 @@ async def test_generate_cell_applies_chain_without_insert(
     )
     assert result["ok"] is True
     assert result["replace_ns"] == []
-    assert "light" in result["passport_applied"]
+    assert result["passport_applied"] == []
     chain = parse_scene_chain(result["chain"])
     assert chain[0]["place"] == "архив"
     assert "вошёл в проём" in (chain[0].get("action") or "")
     assert "разложи вход и полку" not in (chain[0].get("action") or "")
-    assert "ночной" in str((parent.attrs or {}).get("освещение") or "")
     assert int(result["report"]["inserted_frames"]) == 0
     assert "image_ops" not in result
     assert result["frame_numbers"] == [5, 6]
@@ -355,22 +357,20 @@ def test_build_scene_image_ops_skips_leftover_and_maps_beats() -> None:
     )
     assert [op["frame_number"] for op in ops] == [1, 2]
     assert all(op["type"] == "image_ai_change" for op in ops)
-    assert "ЛЕСОПОЛОСА" in ops[0]["instruction"]
-    assert "Общий план сцены" in ops[0]["instruction"]
-    assert "план ОБЩИЙ" in ops[0]["instruction"]
+    assert "ЛЕСОПОЛОСА" not in ops[0]["instruction"]
+    assert "душит" in ops[0]["instruction"]
     assert "уходит" in ops[1]["instruction"]
     note = scene_image_instruction(beat="жмёт руку", passport={"place": "архив"})
-    assert "архив" in note
+    assert "архив" not in note
     assert "жмёт руку" in note
     master_note = scene_image_instruction(
         beat="душит",
         passport={"place": "архив", "characters": "Ткач, жертва"},
         master=True,
     )
-    assert "Общий план сцены" in master_note
-    assert "лицом к камере" in master_note
-    assert "Ткач" in master_note
-    assert "душит" not in master_note
+    assert "душит" in master_note
+    assert "лицом к камере" not in master_note
+    assert "Ткач" not in master_note
 
 
 @pytest.mark.asyncio
@@ -405,7 +405,6 @@ async def test_generate_with_images_falls_back_when_gpt_empty(
         frame_ids=[int(parent.id)],
     )
     assert result["ok"] is True
-    assert result.get("fallback") is True
     assert "выходит в лес" in (result.get("chain") or "")
     assert result["images"] == 0
     assert result["image_ops"] == []
@@ -441,7 +440,8 @@ async def test_improve_fallback_grows_and_images_new_shots(
 
     async def fake_ask(text: str, **kwargs):  # noqa: ANN003
         assert "выходит в лес" in text
-        assert "Он вышел в лес и скрылся в тени." in text
+        assert "Он вышел в лес и скрылся в тени." not in text
+        assert "voiceover_text" not in text
         return "нет сцен"
 
     monkeypatch.setattr("app.services.gpt_client.gpt_ask_fresh", fake_ask)
@@ -456,11 +456,13 @@ async def test_improve_fallback_grows_and_images_new_shots(
     )
     assert result["ok"] is True
     assert result.get("mode") == "improve"
-    assert int(result.get("inserted_frames") or 0) == 0
+    assert int(result.get("inserted_frames") or 0) == 1
     assert result["images"] == 0
     assert result["image_ops"] == []
     nodes = [n["node"] for n in result["improve_report"]["nodes"]]
-    assert nodes == ["prompt", "scene", "characters", "parent", "shots"]
+    assert nodes == ["fw_action", "fw_shots", "fw_qc", "characters"]
+    acts = [s["действие"] for s in result["improve_report"]["shots"]]
+    assert acts == ["выходит в лес", "скрывается в тени"]
     await session.refresh(neighbor)
     assert int(neighbor.number) == 5
     assert neighbor.voiceover_text.startswith("Потом")

@@ -26,6 +26,7 @@ from app.services.plan_shot2 import (
     MIN_SHOT2_VIDEO_PROMPT_LEN,
     disk_has_shot2_video,
     find_shot2_image,
+    is_parent_still_filename,
     read_shot2_columns,
 )
 
@@ -44,7 +45,11 @@ def newest_frame_image_path(scenes_dir: Path, frame_number: int) -> Path | None:
     candidates = [
         p
         for p in scenes_dir.glob(f"frame_{frame_number:03d}_*.*")
-        if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"} and "_s2_" not in p.name
+        if (
+            p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+            and "_s2_" not in p.name
+            and not is_parent_still_filename(p.name)
+        )
     ]
     if not candidates:
         return None
