@@ -1,7 +1,7 @@
 ai-pack build
-git_head: 87419973
-built_at: 2026-09-04 07:41 UTC
-repo: C:\Users\kir00\video-pipeline
+git_head: c63d0a53
+built_at: 2026-09-24 19:10 UTC
+repo: C:\Users\Admin\Desktop\video-pipeline
 
 copied:
   00_core/AGENTS.md

@@ -23,6 +23,10 @@ def test_split_and_classify() -> None:
     assert classify_object("вошёл") == "место"
     assert classify_object("сел к столу") == "тело"
     assert classify_object("открыл папку") == "предмет"
+    assert classify_object("душит девушку") == "тело"
+    assert classify_object("Показать крупным лицо Сергея Ткача в профиль") == "лицо"
+    assert classify_object("надевает перчатки") == "предмет"
+    assert classify_object("достает улики из кармана") == "предмет"
     assert object_matches_step("открыл папку", "предмет")
     assert not object_matches_step("открыл папку", "двое")
     assert has_visible_verb("вошёл, сел")
