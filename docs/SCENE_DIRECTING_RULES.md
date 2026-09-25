@@ -37,6 +37,18 @@
 | Приоритет при конфликте: эмоция > история > ритм > след взгляда > 180° > пространство | W. Murch, *In the Blink of an Eye* — [Rule of Six](https://nofilmschool.com/2016/11/6-rules-good-cutting-according-oscar-winning-editor-walter-murch) |
 | Монтажная фраза = группа кадров законченного действия | [textzone: фраза монтажная](https://textzone.ru/publ/slovar_sozdatelja_mediateksta/f/fraza_montazhnaja/86-1-0-262) |
 | Эллипсис: рутину не расписывать, «войти поздно — выйти рано» | Hitchcock / Truffaut (анализ и синтез времени) |
+| Порядок планов: общий → средний → крупный; назад к общему только при новом месте / времени / финале | Continuity editing (establishing → cut-in; re-establishing) |
+| Порог: снаружи открывает дверь → изнутри входит (cut on action), без телепорта | Match on action, clean entrance/exit |
+| Физика: предмет меняет состояние только в кадре; идущий дальше по пути; reverse — лево/право зеркально | Continuity editing, 180-degree rule |
+
+## Физика действия (код + промты)
+
+| где | что |
+|---|---|
+| `fw_action` (`SCENE_PHYSICS_RULES`, `main_action_from_bits_ru` §1a) | дверь закрыта, пока её не открыли в кадре; порог — два шага; старт кадра = конец прошлого |
+| `fw_shots` / `fw_qc` (`smooth_plan_sequence`, `wide_return_reason`) | код сводит «средний → общий → средний» к СРЕДНЕМУ; кадр после двери — СРЕДНИЙ, `cut_on_action`; остаток — брак для GPT QC |
+| грамматика нод (`expand_action_to_shots`) | новая карточка после шага-порога не открывается общим планом |
+| картинка ребёнка (`_PARENT_SCENE_LOCK`) | другая зона строится по тексту; идущий дальше по пути; двери по тексту кадра |
 
 ## Пример
 

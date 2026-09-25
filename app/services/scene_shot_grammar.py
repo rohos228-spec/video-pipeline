@@ -62,6 +62,16 @@ _COGNITIVE_RE = re.compile(
     re.IGNORECASE,
 )
 _TITLE_RE = re.compile(r"титр|имя|назван", re.IGNORECASE)
+_THRESHOLD_RE = re.compile(
+    r"двер|порог|калитк|ворот|открыва|открыл|распахн|толка\w* двер|"
+    r"вбега|забега|врыва|ворва",
+    re.IGNORECASE,
+)
+
+
+def is_threshold_step(step: str) -> bool:
+    """Шаг на пороге: дверь, калитка, вбегает. Следующий кадр — продолжение, не новый общий."""
+    return bool(_THRESHOLD_RE.search(step or ""))
 
 
 def visible_len(text: str) -> int:
@@ -365,6 +375,7 @@ def expand_action_to_shots(
     out: list[dict[str, Any]] = []
     last_place = (prev_place or "").strip().casefold()
     order = 0
+    last_step = ""
     for scene in chain:
         place = str(scene.get("place") or "").strip()
         act = str(scene.get("action") or "").strip()
@@ -388,17 +399,22 @@ def expand_action_to_shots(
         n = min(len(steps), len(pieces)) or 1
         master_id = f"{cell_number}-S{int(scene['n'])}-K1"
         prev_shot: dict[str, Any] | None = None
+        # Прошли через дверь прошлой карточки — изнутри продолжаем движение, не новый общий.
+        through_door = place_new and bool(out) and is_threshold_step(last_step)
         for i in range(n):
             step = steps[i]
             obj = classify_object(step)
-            pos = _position(i, n, obj, place_new)
+            entering = place_new and not (i == 0 and through_door)
+            pos = _position(i, n, obj, entering)
             pack = camera_pack(
                 obj=obj,
-                place_new=place_new,
+                place_new=entering,
                 position=pos,
                 hod=_hod(step),
                 prev=prev_shot,
             )
+            if i == 0 and through_door:
+                pack["стык"] = "рез по жесту"
             order += 1
             sid = f"{cell_number}-S{int(scene['n'])}-K{i + 1}"
             shot = {
@@ -423,6 +439,7 @@ def expand_action_to_shots(
             }
             out.append(shot)
             prev_shot = shot
+            last_step = step
         if place:
             last_place = place.casefold()
     return out
@@ -550,6 +567,10 @@ def _fill_missing_camera(shots: list[Any], *, prev_place: str = "") -> None:
         place_new = bool(place) and place.casefold() != last_place
         if i == 0 and not place:
             place_new = not last_place
+        if place_new and prev is not None and is_threshold_step(
+            str(prev.get("действие") or prev.get("action") or "")
+        ):
+            place_new = False
         pos = str(shot.get("позиция") or "") or _position(i, n, obj, place_new)
         pack = camera_pack(
             obj=obj,

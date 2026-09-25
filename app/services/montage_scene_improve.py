@@ -44,6 +44,7 @@ from app.services.scene_shot_grammar import (
     camera_pack,
     classify_object,
     fill_bit_spans,
+    is_threshold_step,
 )
 from app.services.shot_templates import format_scene_chain, parse_scene_chain
 from app.services.vo_shot_expand import _flag_attrs, bits_from_attrs, main_action_text
@@ -142,6 +143,56 @@ def _norm(text: Any) -> str:
     return " ".join(str(text or "").split())
 
 
+_WIDE_PLANS = frozenset({"ДАЛЬНИЙ", "ОБЩИЙ"})
+
+
+def _base_place(shot: dict[str, Any]) -> str:
+    return _norm(_SUB_PLACE_RE.split(_norm(shot.get("место")), maxsplit=1)[0]).casefold()
+
+
+def wide_return_reason(
+    shot: dict[str, Any], prev: dict[str, Any]
+) -> str | None:
+    """Шире прошлого кадра до ОБЩЕГО/ДАЛЬНЕГО без нового места — «средний → общий → средний».
+
+    Разрешено: вход в новое место скачком (не через дверь прошлого кадра),
+    стык dissolve/fade (прошло время).
+    """
+    plan = str(shot.get("план") or "")
+    prev_plan = str(prev.get("план") or "")
+    if plan not in _WIDE_PLANS or prev_plan in _WIDE_PLANS:
+        return None
+    if _PLAN_STEP.get(plan, 9) >= _PLAN_STEP.get(prev_plan, -1):
+        return None
+    if str(shot.get("стык") or "") in {"dissolve", "fade"}:
+        return None
+    step = _norm(shot.get("действие"))
+    prev_step = _norm(prev.get("действие"))
+    if is_threshold_step(prev_step):
+        return "вход через дверь прошлого кадра — продолжение изнутри, не новый общий"
+    new_place = _base_place(shot) and _base_place(shot) != _base_place(prev)
+    if new_place or is_establishing_step(step):
+        return None
+    return "возврат к общему плану посреди действия без нового места"
+
+
+def smooth_plan_sequence(shots: list[dict[str, Any]]) -> list[str]:
+    """Кино-порядок: общий → средний → крупный; назад к общему только с причиной."""
+    fixed: list[str] = []
+    for i in range(1, len(shots)):
+        shot, prev = shots[i], shots[i - 1]
+        reason = wide_return_reason(shot, prev)
+        if not reason:
+            continue
+        shot["план"] = "СРЕДНИЙ"
+        if is_threshold_step(_norm(prev.get("действие"))):
+            shot["стык"] = "cut_on_action"
+        if shot.get("план") == prev.get("план") and shot.get("ракурс") == prev.get("ракурс"):
+            shot["ракурс"] = "3/4" if shot.get("ракурс") != "3/4" else "фронт"
+        fixed.append(f"кадр {shot.get('порядок') or i + 1}: {reason} → СРЕДНИЙ")
+    return fixed
+
+
 # --------------------------------------------------------------------------- #
 # Промты группы
 # --------------------------------------------------------------------------- #
@@ -208,10 +259,27 @@ SHOT_ACTION_BODY_RULES = """Каждое действие — полный ка�
 • место: где стоим именно в этом кадре;
 • окружение: что вокруг — стены, дверь, предметы, фон этого кадра;
 • мизансцена: кто слева, кто справа, кто в центре, лицом или спиной;
-• субъект: кто совершает действие (код и имя из реестра) и что делает телом.
+• субъект: кто совершает действие (код и имя из реестра) и что делает телом;
+• старт: где субъект в начале кадра и что уже открыто/закрыто — ровно то,
+  чем закончился прошлый кадр.
+«Слева/справа» — как видно с точки этого кадра. Кадр снят с другой стороны
+(изнутри дома, навстречу) — лево и право меняются местами, в кадре видно то,
+что раньше было за спиной зрителя.
 Нельзя писать «идёт», «хватает», «стоит» без места, раскладки и исполнителя.
 Общей карточки ячейки нет — место и окружение только внутри действия кадра.
 Камера, план, ракурс — отдельные поля, не в тексте действия."""
+
+
+SCENE_PHYSICS_RULES = """Физика действия (важнее краткости):
+1. Предмет меняет состояние только в кадре. Дверь закрыта, пока кто-то в
+   кадре её не открыл. Нельзя бежать к уже открытой двери, которую не открывали.
+2. Проход через дверь/порог — два кадра: снаружи он открывает дверь →
+   изнутри он входит (продолжение того же движения).
+3. Кто идёт или бежит, в следующем кадре уже дальше по пути (у двери,
+   в коридоре, у цели) — не с той же точки и не на месте.
+4. Направление держится: бежал слева направо — дальше тоже слева направо.
+5. Между «снаружи» и «внутри» нет пропусков: без кадра на пороге герой
+   не может оказаться в доме."""
 
 
 IMPROVE_ACTION_RULES = """# Агент: главное действие
@@ -227,8 +295,11 @@ IMPROVE_ACTION_RULES = """# Агент: главное действие
 
 """ + SHOT_ACTION_BODY_RULES + """
 
+""" + SCENE_PHYSICS_RULES + """
+
 Закадр, якоря и биты в заказ не входят — это не сюжет.
 Не добавляй вход, мост, перебивку, реакцию, следствие ради схемы.
+Кадр на пороге по правилу физики — не схема, а логика: его добавляй.
 Не копируй учебные примеры. Не пиши выводы («понимает», «узнаёт»).
 """
 
@@ -241,6 +312,17 @@ IMPROVE_SHOTS_RULES = """# Агент: сцены → кадры
 Закадр, якоря и паспорт во входе отсутствуют — не режь текст и не выдумывай кадры.
 `роль` — метка покрытия, не повод выдумать кадр.
 Число кадров = число шагов `главное_действие`.
+
+Порядок планов как в кино:
+1. ОБЩИЙ/ДАЛЬНИЙ — первый кадр нового места. Дальше СРЕДНИЙ → КРУПНЫЙ/ДЕТАЛЬ.
+2. Назад к ОБЩЕМУ посреди действия нельзя. Можно только: герой попал в
+   другое место скачком (не через дверь прошлого кадра), прошло время
+   (`dissolve`/`fade`) или это финал сцены.
+3. Кадр после двери/порога — СРЕДНИЙ изнутри, навстречу входящему,
+   стык `cut_on_action`. Не ОБЩИЙ.
+4. Идёт/бежит два кадра подряд — другой план или ракурс, `следование`;
+   герой уже дальше по пути.
+5. Двое или герой и цель взгляда — камера с одной стороны от линии между ними.
 """
 
 
@@ -558,7 +640,8 @@ def build_improve_action_prompt(
         "Напиши полное действие каждого кадра. "
         "Столько кадров, сколько событий в заказе. "
         "Не добавляй вход, мост, перебивку, реакцию и следствие, "
-        "если заказ этого не просит.\n"
+        "если заказ этого не просит. Исключение — физика: проход через дверь "
+        "(снаружи открывает → изнутри входит), иначе герой телепортируется.\n"
         f"{SHOT_ACTION_BODY_RULES}\n"
         "В `fields` — только `главное_действие`."
     )
@@ -1243,6 +1326,7 @@ def diversify_shot_coverage(shots: list[dict[str, Any]]) -> list[dict[str, Any]]
 def finish_shots(shots: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if coverage_is_flat(shots):
         diversify_shot_coverage(shots)
+    smooth_plan_sequence(shots)
     return shots
 
 
@@ -1458,6 +1542,7 @@ def repair_shots(shots: list[dict[str, Any]], units: list[dict[str, Any]]) -> li
             fixed.append(f"якорь {unit['n']}: закадр кадров = кусок якоря дословно")
         rebuilt.extend(group)
     shots[:] = rebuilt
+    fixed.extend(smooth_plan_sequence(shots))
     prev: dict[str, Any] | None = None
     for shot in shots:
         if prev is not None and shot.get("объект") == prev.get("объект"):
@@ -1526,6 +1611,9 @@ def qc_reasons(
                 soft.append(
                     f"кадр {n}: {prev.get('план')} → {shot.get('план')} одного объекта — не «через план»"
                 )
+            wide = wide_return_reason(shot, prev)
+            if wide:
+                hard.append(f"кадр {n}: {wide}")
             if (
                 shot.get("объект") == prev.get("объект")
                 and shot.get("план") == prev.get("план")

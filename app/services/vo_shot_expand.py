@@ -96,7 +96,14 @@ _PARENT_SCENE_LOCK = (
     "If punching in on a painting, it must be the painting already in Image 1. "
     "If Image 1 shows one person at the table, the result still shows one person. "
     "Do not invent a new location or a new person. The viewer must recognize "
-    "the next camera in the same take."
+    "the next camera in the same take. "
+    "Exception: if this shot's text puts people in another zone of the same "
+    "place (inside vs outside the door, hallway, next room), build that zone "
+    "from the text and keep only people, wardrobe, prop identity and light "
+    "logic from Image 1. A person who was walking or running in Image 1 is "
+    "further along the path now, never on the same spot. When the camera "
+    "looks from the opposite side, left and right swap. Door and prop states "
+    "(open/closed) follow this shot's text, not Image 1."
 )
 _CHAR_SHEET_LOCK = (
     "Image 2 is the character sheet: identity only (face/body/clothes). "
