@@ -187,7 +187,6 @@ Series workbook — отдельный трек: `docs/SERIES_XLSX_WORKBOOK.md`.
 | Word-level в БД | таблица `asr_words` (`app/models.py` AsrWord), запись `app/services/asr_words_store.py`; API `GET /api/projects/{id}/asr-words` |
 | VO в xlsx | R49 (`ROW_VOICEOVER_V8`) + таймкоды R15 |
 | **Regen на доске** | `montage_board_regen.py` → тот же API, что img/video (`outsee_retry`); промты из БД (`prompt_versions`/Frame), Excel fallback. CDP не нужен при `IMAGE/VIDEO_PROVIDER=outsee\|grsai`. См. `docs/DB_V2.md` §8 |
-| **Доска монтажа (UI + строки сцены)** | `web/src/components/canvas/assemble-montage-board.tsx`, `montage-scene-cells.tsx`, `app/services/montage_board.py`, `montage_coverage_ops.py`; разбор и бэклог — [`docs/MONTAGE_BOARD_IMPROVEMENTS.md`](MONTAGE_BOARD_IMPROVEMENTS.md) |
 
 ---
 
@@ -233,7 +232,6 @@ SoT по тексту GPT: `AGENTS.md` + этот map §8.
 |-----|---------|
 | **DB v2 / кнопка «База»** | [`DB_V2.md`](DB_V2.md), `app/services/db_v2.py` |
 | Монтаж regen img/video | `montage_board_regen.py` (API = ноды img/video; промты из БД) |
-| Монтаж «Улучшить сцену» | `montage_scene_direct.py`, `scene_space_board.py`, `scene_shot_grammar.py` |
 | step_code / status | `node_registry.py` |
 | R48 anim | `plan_sheet_v8.py`, ops rule |
 | Prompt contract (GPT↔DB) | `PROMPT_CONTRACT.md` |

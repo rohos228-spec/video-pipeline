@@ -182,37 +182,3 @@ def test_attach_shot_coverage_never_leaves_empty_chips() -> None:
     assert shot["стык"]
     assert shot["роль"]
     assert shot["объект"]
-
-
-def test_grammar_tightens_wide_gpt_plan_and_drops_vo_caption() -> None:
-    vo = (
-        "Сергей Ткач душит девушку у дерева. "
-        "а в понимании повседневной работы системы: спешки, "
-        "шаблонного мышления. Поэтому главный вопрос этой истории звучит так: "
-        "сколько ошибок позволили ему оставаться на свободе столько лет?"
-    )
-    kadry = build_kadry(
-        vo=vo,
-        place="ЛЕСОПОЛОСА",
-        parent_plan="ОБЩИЙ",
-        parent_action=PARENT,
-        shots=[
-            {"действие": "Сергей Ткач душит девушку у центрального дерева.", "план": "ОБЩИЙ"},
-            {"действие": "Показать крупным лицо Сергея Ткача в профиль.", "план": "ОБЩИЙ"},
-            {"действие": "Сергей Ткач надевает перчатки.", "план": "ОБЩИЙ"},
-            {"действие": "а в понимании повседневной работы системы: спешки,", "план": "СРЕДНИЙ"},
-            {"действие": "Поэтому главный вопрос этой истории звучит так:", "план": "СРЕДНИЙ"},
-        ],
-        cell_number=4,
-    )
-    acts = [str(s.get("действие") or "") for s in kadry]
-    assert "повседневной работы" not in " ".join(acts)
-    assert "главный вопрос" not in " ".join(acts)
-    assert PARENT not in acts
-    face = next(s for s in kadry if "крупн" in str(s.get("действие") or "").casefold())
-    assert face["план"] == "КРУПНЫЙ"
-    gloves = next(s for s in kadry if "перчат" in str(s.get("действие") or "").casefold())
-    assert gloves["план"] == "ДЕТАЛЬ"
-    choke = next(s for s in kadry if "душ" in str(s.get("действие") or "").casefold())
-    assert choke["план"] == "СРЕДНИЙ"
-    assert " ".join(str(s.get("закадр") or "") for s in kadry).split() == vo.split()

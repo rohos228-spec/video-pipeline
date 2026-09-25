@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.services.scene_vo_split import VO_MAX, VO_MIN, pack_vo_to_n, split_scene_vo, vo_weight
+from app.services.scene_vo_split import VO_MAX, VO_MIN, split_scene_vo, vo_weight
 
 
 def test_digit_weighs_four() -> None:
@@ -38,20 +38,3 @@ def test_digits_hit_limit_sooner_than_letters() -> None:
     assert len(parts) >= 2
     assert " ".join(parts).split() == digits.split()
     assert all(vo_weight(p) <= VO_MAX for p in parts)
-
-
-def test_pack_vo_to_n_glues_and_respects_max() -> None:
-    text = " ".join(["слово"] * 40)
-    parts = pack_vo_to_n(text, 3)
-    assert " ".join(parts).split() == text.split()
-    assert len(parts) == 3
-    assert all(vo_weight(p) <= VO_MAX for p in parts)
-    short = "Ткач чинит челнок."
-    assert pack_vo_to_n(short, 5) == [short]
-
-
-def test_pack_vo_to_n_never_grows_past_n() -> None:
-    text = " ".join(["слово"] * 40)
-    parts = pack_vo_to_n(text, 2)
-    assert len(parts) == 2
-    assert " ".join(parts).split() == text.split()

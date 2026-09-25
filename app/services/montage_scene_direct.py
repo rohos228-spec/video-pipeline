@@ -24,18 +24,7 @@ from app.services.scene_character_match import (
     load_character_registry,
     match_registry_characters,
 )
-from app.services.scene_space_board import (
-    SPACE_ATTR,
-    SPACE_DELTA_ATTR,
-    apply_delta,
-    compile_child_prompt,
-    copy_board,
-    default_board,
-    infer_delta,
-    parse_board,
-)
-from app.services.scene_shot_grammar import camera_pack, classify_object, has_visible_verb
-from app.services.scene_vo_split import pack_vo_to_n, split_scene_vo
+from app.services.scene_vo_split import split_scene_vo
 from app.services.shot_templates import format_scene_chain, parse_scene_chain
 from app.services.vo_shot_expand import _flag_attrs, _set_cs
 
@@ -43,23 +32,6 @@ REPORT_ATTR = "montage_improve_report"
 _MASTER_PLANS = frozenset({"ОБЩИЙ", "СРЕДНИЙ", "ДАЛЬНИЙ"})
 _PLAN_RE = re.compile(r"^(ДАЛЬНИЙ|ОБЩИЙ|СРЕДНИЙ|КРУПНЫЙ|ДЕТАЛЬ)$", re.I)
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.S | re.I)
-_FACE_HINT = re.compile(r"крупн|профиль|лиц[оаеу]|глаз", re.I)
-_ITEM_HINT = re.compile(r"перчат|улик|карман|кольц|носок|деталь", re.I)
-_PLAN_RANK = {
-    "ДАЛЬНИЙ": 0,
-    "ОБЩИЙ": 1,
-    "СРЕДНИЙ": 2,
-    "КРУПНЫЙ": 3,
-    "ДЕТАЛЬ": 4,
-}
-_ROLE_FOR_OBJ = {
-    "место": "вход",
-    "тело": "действие",
-    "двое": "действие",
-    "лицо": "реакция",
-    "предмет": "перебивка",
-    "взгляд": "реакция",
-}
 
 
 def _norm(text: Any) -> str:
@@ -111,10 +83,7 @@ def build_direct_improve_prompt(
         f"движение: {', '.join(COVERAGE_MOVE_CHOICES)}. "
         f"стык: {stitch}. "
         f"роль: {', '.join(SHOT_ROLES)}. "
-        f"объект: {', '.join(OBJECTS)}.\n"
-        "Карта площадки: 3–5 неподвижных гвоздей; дети только CAM/MOVE/SIZE, "
-        "не новый лес. Не копируй фразы закадра в действие. "
-        "лицо/крупным = КРУПНЫЙ, предмет = ДЕТАЛЬ, тело = СРЕДНИЙ.\n\n"
+        f"объект: {', '.join(OBJECTS)}.\n\n"
         f"Закадр сцены:\n{vo}\n\n"
         f"Реестр персонажей проекта: {registry_labels or 'пусто'}\n"
         f"Уже совпали с текстом: {matched_labels or 'никто'}\n\n"
@@ -122,10 +91,7 @@ def build_direct_improve_prompt(
         '{"сцена":"…","персонажи":"c01, c02","план_родителя":"ОБЩИЙ",'
         '"кадры":[{"действие":"коридор, слева стеллаж, справа окно; '
         'c01 следователь в центре тянет папку","план":"СРЕДНИЙ","ракурс":"3/4",'
-        '"движение":"статика","стык":"cut","роль":"действие","объект":"тело"}],'
-        '"карта":{"гвозди":["вход","центр","окно"],'
-        '"стоит":[{"кто":"c01","где":"центр","лицо":"вход"}],'
-        '"камера":{"где":"вход","смотрит":"центр"}}}\n'
+        '"движение":"статика","стык":"cut","роль":"действие","объект":"тело"}]}\n'
     )
 
 
@@ -229,7 +195,6 @@ def parse_direct_reply(reply: str) -> dict[str, Any]:
             or ""
         ),
         "кадры": shots,
-        "карта": data.get("карта") if isinstance(data.get("карта"), dict) else {},
     }
 
 
@@ -284,153 +249,6 @@ def actions_too_similar(left: str, right: str) -> bool:
     return len(a & b) >= 0.6 * min(len(a), len(b))
 
 
-def object_for_beat(beat: str) -> str:
-    text = beat or ""
-    if _FACE_HINT.search(text):
-        return "лицо"
-    if _ITEM_HINT.search(text):
-        return "предмет"
-    return classify_object(text)
-
-
-def is_visual_beat(act: str) -> bool:
-    text = _norm(act)
-    if not text:
-        return False
-    if _FACE_HINT.search(text) or _ITEM_HINT.search(text):
-        return True
-    if has_visible_verb(text):
-        return True
-    return object_for_beat(text) in {"предмет", "лицо", "место", "двое"}
-
-
-def _is_vo_leftover(act: str, vo: str) -> bool:
-    """Кусок закадра без видимого действия — не кадр сцены."""
-    if is_visual_beat(act):
-        return False
-    a = _norm(act).casefold().strip(" .,;:")
-    v = _norm(vo).casefold()
-    return bool(a) and a in v
-
-
-def _ui_angle(point: str, height: str, *, beat: str = "") -> str:
-    p = _norm(point).casefold()
-    if "плеч" in p:
-        ang = "с плеча"
-    elif p in {"фронт", "3/4", "сверху", "снизу", "макро"}:
-        ang = p
-    elif "3" in p:
-        ang = "3/4"
-    else:
-        ang = "фронт"
-    h = _norm(height).casefold()
-    if h in {"сверху", "снизу"} and ang == "фронт":
-        ang = h
-    if "профиль" in (beat or "").casefold() and ang == "фронт":
-        ang = "3/4"
-    return ang
-
-
-def coverage_for_beat(
-    beat: str,
-    *,
-    parent: bool,
-    parent_plan: str,
-    prev: dict[str, Any] | None,
-) -> dict[str, str]:
-    if parent:
-        pack = camera_pack(
-            obj="место",
-            place_new=True,
-            position="вход",
-            hod=False,
-            prev=None,
-        )
-        plan = parent_plan if parent_plan in _MASTER_PLANS else "ОБЩИЙ"
-        return {
-            "роль": "вход",
-            "объект": "место",
-            "план": plan,
-            "ракурс": "фронт",
-            "движение": "статика",
-            "стык": "cut",
-            "правило": f"вход · место · {plan} · фронт",
-            "линза_мм": str(pack.get("линза_мм") or "24"),
-            "точка": "фронт",
-        }
-    obj = object_for_beat(beat)
-    pos = "пик" if obj in {"лицо", "предмет", "взгляд"} else "развитие"
-    pack = camera_pack(
-        obj=obj,
-        place_new=False,
-        position=pos,
-        hod=bool(
-            re.search(
-                r"ид[её]т|ш[её]л|бежит|бега|вош[её]л|выш[её]л|приш|кра[дс]",
-                beat or "",
-                re.I,
-            )
-        ),
-        prev=prev,
-    )
-    raw_plan = _norm(pack.get("план")).upper()
-    plan = raw_plan if _PLAN_RE.match(raw_plan) else "СРЕДНИЙ"
-    angle = _ui_angle(
-        str(pack.get("точка") or ""),
-        str(pack.get("высота") or ""),
-        beat=beat,
-    )
-    role = _ROLE_FOR_OBJ.get(obj, "действие")
-    move = _norm(pack.get("движение") or "статика").casefold() or "статика"
-    if move not in {"статика", "наезд", "отъезд", "панорама", "следование", "ручная"}:
-        move = "статика"
-    return {
-        "роль": role,
-        "объект": obj,
-        "план": plan,
-        "ракурс": angle,
-        "движение": move,
-        "стык": "cut_on_action",
-        "правило": f"{role} · {obj} · {plan} · {angle}",
-        "линза_мм": str(pack.get("линза_мм") or "50"),
-        "точка": str(pack.get("точка") or angle),
-    }
-
-
-def _apply_grammar_plans(
-    kadry: list[dict[str, Any]],
-    *,
-    parent_plan: str,
-) -> list[dict[str, Any]]:
-    """Грамматика кадра теснит слишком широкий план GPT (лицо≠ОБЩИЙ)."""
-    prev: dict[str, Any] | None = None
-    for i, shot in enumerate(kadry):
-        act = _shot_action(shot)
-        cov = coverage_for_beat(
-            act, parent=False, parent_plan=parent_plan, prev=prev
-        )
-        got = _plan(shot.get("план") or "")
-        want = cov["план"]
-        if _PLAN_RANK.get(want, 2) > _PLAN_RANK.get(got, 2):
-            shot["план"] = want
-            shot["ракурс"] = cov["ракурс"]
-            shot["роль"] = cov["роль"]
-            shot["объект"] = cov["объект"]
-        shot["правило"] = (
-            f"{shot.get('роль') or cov['роль']} · "
-            f"{shot.get('объект') or cov['объект']} · "
-            f"{shot.get('план') or want} · "
-            f"{shot.get('ракурс') or cov['ракурс']}"
-        )
-        prev = {
-            "план": shot.get("план") or want,
-            "линза_мм": int(cov["линза_мм"] or 50),
-            "точка": cov["точка"],
-        }
-        _ = i
-    return kadry
-
-
 def vo_beat(piece: str) -> str:
     """Действие кадра из его куска закадра — не копия соседнего промта."""
     return _norm(piece)
@@ -451,16 +269,13 @@ def unique_gpt_shots(
     shots: list[dict[str, Any]],
     *,
     parent_action: str,
-    vo: str = "",
 ) -> list[dict[str, Any]]:
-    """Уникальные кадры GPT: без повтора, без still родителя, без закадра."""
+    """Уникальные кадры GPT: без повтора и без still родителя."""
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for shot in shots:
         act = _shot_action(shot)
         if _is_parent_still_action(act, parent_action):
-            continue
-        if vo and _is_vo_leftover(act, vo):
             continue
         key = act.casefold()
         if key in seen:
@@ -481,7 +296,7 @@ def unique_gpt_beats(
     """Уникальные действия GPT: без повтора и без still родителя."""
     return [
         (_shot_action(row), _plan(row.get("план") or "СРЕДНИЙ"))
-        for row in unique_gpt_shots(shots, parent_action=parent_action, vo="")
+        for row in unique_gpt_shots(shots, parent_action=parent_action)
     ]
 
 
@@ -550,7 +365,7 @@ def _beats_from_vo(vo: str, parent_plan: str) -> list[tuple[str, str]]:
     seen: set[str] = set()
     for i, piece in enumerate(pieces):
         act = vo_beat(piece)
-        if not act or not is_visual_beat(act):
+        if not act:
             continue
         key = act.casefold()
         if key in seen:
@@ -570,7 +385,6 @@ def build_kadry(
     shots: list[dict[str, Any]],
     cell_number: int,
     operator_prompt: str = "",
-    parent_board: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Кадры сцены из промта/GPT. Родительский still сюда не входит.
 
@@ -586,7 +400,7 @@ def build_kadry(
         operator_prompt,
     ):
         gpt_shots = []
-    rows = unique_gpt_shots(gpt_shots, parent_action=parent_action, vo=vo)
+    rows = unique_gpt_shots(gpt_shots, parent_action=parent_action)
     op_rows = [
         {"действие": act, "план": plan}
         for act, plan in _beats_from_operator(operator_prompt, parent_action)
@@ -601,16 +415,9 @@ def build_kadry(
     rows = rows[:MAX_IMPROVE_SHOTS]
     if not rows:
         return []
-    parts = pack_vo_to_n(vo, len(rows)) or split_vo_for_shots(vo, len(rows))
+    parts = split_vo_for_shots(vo, len(rows))
     if len(parts) < len(rows):
         parts = list(parts) + [""] * (len(rows) - len(parts))
-    elif len(parts) > len(rows):
-        tail = " ".join(p for p in parts[len(rows) - 1 :] if p)
-        parts = list(parts[: len(rows) - 1])
-        if tail:
-            parts.append(tail)
-        if len(parts) < len(rows):
-            parts = parts + [""] * (len(rows) - len(parts))
     master = f"{int(cell_number)}-K1"
     out: list[dict[str, Any]] = []
     used: set[str] = set()
@@ -635,29 +442,7 @@ def build_kadry(
             "закадр": piece,
         }
         out.append(shot)
-    out = attach_shot_coverage(out, place=place, cell_number=cell_number)
-    out = _apply_grammar_plans(out, parent_plan=parent_plan)
-    board0 = copy_board(parent_board) if parent_board else None
-    if board0:
-        for i, shot in enumerate(out):
-            plan = _plan(shot.get("план") or parent_plan)
-            delta = infer_delta(
-                parent=board0,
-                plan=plan,
-                piece=str(shot.get("закадр") or ""),
-                action=_shot_action(shot),
-            )
-            child = apply_delta(board0, delta)
-            cam = dict(child.get("камера") or {})
-            cam["план"] = plan
-            child["камера"] = cam
-            shot["карта"] = child
-            if delta:
-                shot["дельта"] = delta
-            shot["промт_картинки"] = compile_child_prompt(
-                board0, child, delta=delta, beat=_shot_action(shot)
-            )
-    return out
+    return attach_shot_coverage(out, place=place, cell_number=cell_number)
 
 
 async def improve_cell_scene(
@@ -754,17 +539,6 @@ async def improve_cell_scene(
     parent_plan = _plan(parsed.get("план_родителя") or "ОБЩИЙ", master=True)
     parent_action = ""
     new_passport: dict[str, str] = {}
-    loc = _as_text(parsed.get("место") or "")
-    board = default_board(
-        place=loc or "сцена",
-        characters=chars,
-        vo=vo,
-        plan=parent_plan,
-    )
-    board = parse_board(parsed.get("карта"), fallback=board)
-    cam = dict(board.get("камера") or {})
-    cam["план"] = parent_plan
-    board["камера"] = cam
 
     kadry = build_kadry(
         vo=vo,
@@ -774,7 +548,6 @@ async def improve_cell_scene(
         shots=list(parsed.get("кадры") or []),
         cell_number=int(parent.number),
         operator_prompt=op_prompt,
-        parent_board=board,
     )
     if not kadry:
         raise RuntimeError("не удалось нарезать сцену на кадры")
@@ -812,8 +585,6 @@ async def improve_cell_scene(
         attrs["персонажи_сцены"] = codes
         attrs["characters"] = codes
     attrs["scene_summary"] = scene_text
-    attrs[SPACE_ATTR] = board
-    nails = ", ".join((board.get("гвозди") or [])[:5])
     nodes = [
         {"node": "prompt", "status": "ok", "detail": "заказ оператора принят"},
         {
@@ -829,7 +600,7 @@ async def improve_cell_scene(
         {
             "node": "parent",
             "status": "ok",
-            "detail": f"{parent_plan} · карта: {nails or 'гвозди'}",
+            "detail": f"{parent_plan} · лицом к камере",
         },
         {
             "node": "shots",
@@ -843,7 +614,6 @@ async def improve_cell_scene(
         "characters": chars,
         "shots": kadry,
         "passport": new_passport,
-        "карта": board,
         "warnings": [],
     }
     attrs["parent_still_plan"] = parent_plan
@@ -851,26 +621,16 @@ async def improve_cell_scene(
     parent.attrs = attrs
     _flag_attrs(parent)
     _set_cs(parent, coverage_kind="parent", use_parent_still=False)
-    child_i = 0
     for member in members:
         if int(member.id) == int(parent.id):
             continue
         extra = {"coverage_kind": "child", "use_parent_still": True}
-        mattrs = dict(member.attrs or {})
         if codes:
+            mattrs = dict(member.attrs or {})
             mattrs["персонажи"] = codes
             mattrs["characters"] = codes
-        shot = kadry[child_i] if child_i < len(kadry) else None
-        child_i += 1
-        if shot and shot.get("карта"):
-            mattrs[SPACE_ATTR] = shot["карта"]
-            if shot.get("дельта"):
-                mattrs[SPACE_DELTA_ATTR] = shot["дельта"]
-            prompt = _norm(shot.get("промт_картинки") or "")
-            if prompt:
-                member.image_prompt = prompt
-        member.attrs = mattrs
-        _flag_attrs(member)
+            member.attrs = mattrs
+            _flag_attrs(member)
         _set_cs(member, **extra)
     await session.flush()
 
