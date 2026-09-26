@@ -94,11 +94,12 @@ def test_force_full_strip_keys_by_node() -> None:
     assert force_full_strip_output_keys("n_excel_gpt_fw_action") == (
         "main_action",
         "главное_действие",
+        "площадка",
     )
     assert force_full_strip_output_keys("n_excel_gpt_fw_shots") == ("кадры",)
     assert force_full_strip_output_keys(
         "n_excel_gpt_fw_frames", footer_kind="action_chain"
-    ) == ("main_action", "главное_действие")
+    ) == ("main_action", "главное_действие", "площадка")
     assert force_full_strip_output_keys(
         None, footer_kind="shots_coverage"
     ) == ("кадры",)
