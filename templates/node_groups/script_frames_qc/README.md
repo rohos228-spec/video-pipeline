@@ -23,7 +23,12 @@
 только в этом режиме. Источники — `docs/SCENE_DIRECTING_RULES.md`.
 
 Нода без промта (код собирает HTML):
-`fw_report` — после fw_qc, отчёт кадров.
+`fw_report` — после fw_qc, отчёт кадров и схема площадки.
+
+Площадка (план места сверху): пишет `fw_action`, кадры по ней — `fw_shots` /
+`fw_qc`, проверяет и чинит код (`app/services/scene_plan.py`). Правила —
+`docs/SCENE_DIRECTING_RULES.md` § «Площадка». Прогон всей группы со
+сценарным GPT: `python scripts/run_script_frames_qc_space_test.py --out /tmp/out`.
 
 Проверка без своего файла (правила — с промта источника, checkMode):
 `fw_check_script` (после fw_script).
