@@ -40,6 +40,9 @@ _IMG_PR_ATTR_KEYS: tuple[str, ...] = (
     "shot02_transition",
     "биты",
     "кадры",
+    "площадка",
+    "раскладка",
+    "зона",
     "промты_детей",
     "image_prompt_shot2",
 )
@@ -100,7 +103,9 @@ def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, Any]:
 _EXCEL_GPT_VO_MAX = 400
 _ATTR_MAX = 500
 _PARENT_PROMPT_HEAD = 800
-_NO_CLIP_ATTRS = frozenset({"биты", "кадры", "main_action", "промты_детей"})
+_NO_CLIP_ATTRS = frozenset(
+    {"биты", "кадры", "площадка", "раскладка", "main_action", "промты_детей"}
+)
 _PARENT_SNAP_KEYS = (
     "place",
     "shot01_bg",
@@ -228,14 +233,14 @@ def force_full_strip_output_keys(
     if kind == "bits":
         return ("биты",)
     if kind == "action_chain":
-        return ("main_action", "главное_действие")
+        return ("main_action", "главное_действие", "площадка")
     if kind in {"shots_coverage", "shots_qc", "qc_shots"}:
         return ("кадры",)
     nk = str(node_key or "")
     if nk.endswith("_fw_script"):
         return ("биты",)
     if nk.endswith("_fw_action"):
-        return ("main_action", "главное_действие")
+        return ("main_action", "главное_действие", "площадка")
     if nk.endswith(("_fw_shots", "_fw_qc")):
         return ("кадры",)
     return ()
@@ -299,6 +304,7 @@ def build_excel_gpt_db_context(
                 "биты",
                 "main_action",
                 "кадры",
+                "площадка",
             ):
                 val = slim.get(key)
                 if val:

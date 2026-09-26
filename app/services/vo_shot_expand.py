@@ -77,7 +77,35 @@ def effective_image_prompt(frame: Any, frames: list[Any] | None = None) -> str:
     parent = find_coverage_parent_frame(list(frames), frame)
     if parent is None:
         return ""
-    return str(getattr(parent, "image_prompt", None) or "").strip()
+    base = str(getattr(parent, "image_prompt", None) or "").strip()
+    if not base:
+        return ""
+    shot = child_shot_brief(frame)
+    return f"{base}\n\n{shot}" if shot else base
+
+
+def child_shot_brief(frame: Any) -> str:
+    """Свой шаг ребёнка поверх промта родителя: действие, план, раскладка."""
+    attrs = getattr(frame, "attrs", None)
+    if not isinstance(attrs, dict):
+        return ""
+    cs = attrs.get(_ATTR_KEY) if isinstance(attrs.get(_ATTR_KEY), dict) else {}
+    action = str(attrs.get("shot01_action") or "").strip()
+    plan = str(cs.get("крупность") or cs.get("план") or "").strip()
+    layout = str(attrs.get("раскладка") or "").strip()
+    parts: list[str] = []
+    if action:
+        parts.append(f"action: {action}")
+    if plan:
+        parts.append(f"shot size: {plan}")
+    if layout:
+        parts.append(f"layout at the first frame of the clip: {layout}")
+    if not parts:
+        return ""
+    return (
+        "THIS SHOT (next camera of the same scene, not a copy of the parent "
+        "frame) — " + "; ".join(parts) + "."
+    )
 
 
 _COVERAGE_SHOT_RE = re.compile(r"^(.+)-K(\d+)$")
@@ -145,6 +173,22 @@ def kadry_are_scene_shots(planned: list[dict[str, Any]] | None) -> bool:
 
 def frame_has_scene_shots(frame: Any) -> bool:
     return kadry_are_scene_shots(planned_shots_from_attrs(frame))
+
+
+def _scene_plan_for(raw: Any, shots: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Площадка seed-ячейки → сцене: та же карта, заметки только своих кадров."""
+    if not isinstance(raw, dict) or not raw.get("зоны"):
+        return None
+    from app.services.scene_plan import notes_for_shots
+
+    out = copy.deepcopy(raw)
+    ids = {str(s.get("id")) for s in shots if isinstance(s, dict) and s.get("id")}
+    notes = notes_for_shots(list(out.get("исправлено_кодом") or []), ids or None)
+    if notes:
+        out["исправлено_кодом"] = notes
+    else:
+        out.pop("исправлено_кодом", None)
+    return out
 
 
 def main_action_text(frame: Any) -> str:
@@ -722,6 +766,12 @@ def _apply_shot_meta(frame: Any, shot: dict[str, Any] | None) -> None:
         # Expand не затирает цепь сцен (и любой уже записанный main_action).
         if not existing:
             attrs["main_action"] = action
+    for key in ("раскладка", "зона"):
+        val = str(shot.get(key) or "").strip()
+        if val:
+            attrs[key] = val
+        else:
+            attrs.pop(key, None)
     frame.attrs = attrs
     _flag_attrs(frame)
     extra: dict[str, Any] = {}
@@ -1456,6 +1506,7 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
 
         # Цепь сцен ячейки → своя строка главное_действие на каждую сцену.
         chain = {sc["n"]: sc for sc in parse_scene_chain(main_action_text(parent))}
+        seed_plan = (getattr(parent, "attrs", None) or {}).get("площадка")
 
         for g_i, key in enumerate(scene_order):
             idxs = scene_idxs[key]
@@ -1496,6 +1547,9 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
                 if fr is scene_parent:
                     attrs["кадры"] = shots
                     attrs["vo_cell_full"] = scene_chunk or piece
+                    plan = _scene_plan_for(seed_plan, shots)
+                    if plan:
+                        attrs["площадка"] = plan
                     sc = chain.get(scene_n) if scene_n is not None else None
                     if sc:
                         head = f"{sc['n']}. {sc['place']} — {sc['action']}".rstrip(" —")
@@ -1532,6 +1586,7 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
                     attrs.pop("bits", None)
                     attrs.pop("главное_действие", None)
                     attrs.pop("main_action", None)
+                    attrs.pop("площадка", None)
                 fr.attrs = attrs
                 _flag_attrs(fr)
                 if (getattr(fr, "voiceover_text", None) or "") != piece:

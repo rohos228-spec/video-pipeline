@@ -994,6 +994,155 @@ def _same_place_plan_ladder_reason(
     return None
 
 
+def _frame_plan(fr: dict[str, Any] | None) -> Any:
+    if not fr:
+        return None
+    raw = fr.get("площадка")
+    if raw is None and isinstance(fr.get("attrs"), dict):
+        raw = fr["attrs"].get("площадка")
+    return raw
+
+
+def normalize_action_plan_ops(ops: list[Any]) -> int:
+    """fw_action: площадка ячейки → канон (зоны/проходы/люди по компасу)."""
+    from app.services.scene_plan import apply_scene_plan
+
+    n = 0
+    for op in ops or []:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        key = next(
+            (k for k in ("площадка", "план_площадки", "space_plan") if k in fields),
+            None,
+        )
+        if key is None:
+            continue
+        plan, _ = apply_scene_plan([], fields.pop(key))
+        fields["площадка"] = plan
+        n += 1
+    return n
+
+
+_PLAN_CONTEXT_CELLS = 2
+
+
+def apply_scene_plan_ops(
+    ops: list[Any],
+    frames: list[dict[str, Any]],
+) -> tuple[list[str], list[str]]:
+    """Кадры ячейки через план площадки: состояния, порог, путь, экран.
+
+    Пишет fields.площадка (канон + выведенное кодом) и ``раскладка`` в
+    каждый кадр. Возвращает (исправлено, не исправлено).
+    """
+    from app.services.scene_plan import (
+        apply_scene_plan_cells,
+        plan_fix_notes,
+        plan_hard_reasons,
+        with_plan_notes,
+    )
+
+    op_by_uid: dict[str, dict[str, Any]] = {}
+    for op in ops or []:
+        if not isinstance(op, dict) or not isinstance(op.get("fields"), dict):
+            continue
+        shots = op["fields"].get("кадры")
+        uid = str(op.get("frame_uuid") or "").strip()
+        if uid and isinstance(shots, list) and shots:
+            op_by_uid[uid] = op
+    if not op_by_uid:
+        return [], []
+    # Соседние ячейки чанка — контекст (дверь открыта там? где стоял герой?).
+    parents: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for fr in frames or []:
+        if not isinstance(fr, dict) or _is_child_frame(fr):
+            continue
+        uid = str(fr.get("uuid") or "").strip()
+        if uid and uid not in seen:
+            seen.add(uid)
+            parents.append(fr)
+    near = {
+        j
+        for i, fr in enumerate(parents)
+        if str(fr.get("uuid") or "").strip() in op_by_uid
+        for j in range(i - _PLAN_CONTEXT_CELLS, i + _PLAN_CONTEXT_CELLS + 1)
+    }
+    cells: list[dict[str, Any]] = []
+    for i, fr in enumerate(parents):
+        if i not in near:
+            continue
+        uid = str(fr.get("uuid") or "").strip()
+        op = op_by_uid.get(uid)
+        if op is not None:
+            fields = op["fields"]
+            raw = fields.get("площадка")
+            cells.append({
+                "key": uid,
+                "shots": fields["кадры"],
+                "plan": raw if raw is not None else _frame_plan(fr),
+                "owned": True,
+            })
+            continue
+        shots = _frame_shots(fr)
+        if shots:
+            cells.append(
+                {"key": uid, "shots": shots, "plan": _frame_plan(fr), "owned": False}
+            )
+    for uid, op in op_by_uid.items():
+        if uid not in seen:
+            fields = op["fields"]
+            cells.append({
+                "key": uid,
+                "shots": fields["кадры"],
+                "plan": fields.get("площадка"),
+                "owned": True,
+            })
+    base, issues_by = apply_scene_plan_cells(cells)
+    fixed: list[str] = []
+    hard: list[str] = []
+    for cell in cells:
+        if not cell["owned"]:
+            continue
+        uid = cell["key"]
+        issues = issues_by.get(uid, [])
+        op_by_uid[uid]["fields"]["площадка"] = with_plan_notes(
+            base, cell["plan"], issues, cell["shots"]
+        )
+        fixed.extend(f"uuid {uid[:8]} {t}" for t in plan_fix_notes(issues))
+        hard.extend(f"uuid {uid[:8]} {t}" for t in plan_hard_reasons(issues))
+    return fixed, hard
+
+
+def _is_child_frame(fr: dict[str, Any]) -> bool:
+    if str(fr.get("coverage_role") or "") == "child":
+        return True
+    cs = fr.get("camera_subdivide")
+    if not isinstance(cs, dict) and isinstance(fr.get("attrs"), dict):
+        cs = fr["attrs"].get("camera_subdivide")
+    if not isinstance(cs, dict):
+        return False
+    kind = str(cs.get("coverage_kind") or "").strip().lower()
+    return str(cs.get("role") or "") == "shot" or kind == "child"
+
+
+def _frame_shots(fr: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = fr.get("кадры")
+    if raw is None and isinstance(fr.get("attrs"), dict):
+        raw = fr["attrs"].get("кадры")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            return []
+    if not isinstance(raw, list):
+        return []
+    return [s for s in raw if isinstance(s, dict)]
+
+
 def shots_coverage_ops_reason(
     ops: list[Any],
     frames: list[dict[str, Any]],
@@ -1081,6 +1230,9 @@ def _batch_footer(
             "Верни ops ровно по каждому uuid: fields.главное_действие — "
             "нумерованная цепь «N. место — действие» + строка (кусок закадра). "
             "Даже одна строка закадра = «1. …» и скобки. Слоган без номера = брак. "
+            "И fields.площадка — зоны (предметы по сторонам: север/юг/запад/"
+            "восток/центр, двери с состоянием), проходы (из → в через дверь), "
+            "люди в начале. "
             "Не пиши закадр и биты. JSON apply-ops, без прозы.\n"
         )
     if kind in {"shots_coverage", "shots"}:
@@ -1095,6 +1247,9 @@ def _batch_footer(
             "Камеру (план, линза_мм, ракурс, движение) можно не писать — "
             "код подставит из таблицы. Закадр кадра 13–80 символов, цель ~45. "
             "Склейка закадр = весь voiceover_text. Без повтора действия. "
+            "По площадке ячейки: зона, камера {где, смотрит}, люди "
+            "{кто, где, лицом, движется}, меняет {предмет, состояние} — "
+            "лево/право и раскладку посчитает код. "
             "Не пиши биты и главное_действие. JSON apply-ops, без прозы.\n"
         )
     if kind in {"shots_qc", "qc_shots"}:
@@ -1104,7 +1259,8 @@ def _batch_footer(
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Чини только нарушителей: fields.кадры. "
             "Проверь склейку закадра, 13–80, уникальность действия, "
-            "объект enum, parent_id на одном месте. "
+            "объект enum, parent_id на одном месте, зоны из площадки, "
+            "одну сторону оси у двоих, направление бега по экрану. "
             "Не пиши промт_картинки и промт_видео. Пустые ops = ок, если всё чисто. "
             "JSON apply-ops, без прозы.\n"
         )
@@ -1391,6 +1547,17 @@ async def run_apply_ops_batched(
                 )
         if kind in {"action_chain", "main_action"}:
             auto_repair_action_chain_ops(ops, chunk)
+            n_plan = normalize_action_plan_ops(ops)
+            if n_plan < len(ops):
+                logger.info(
+                    "[#{}] apply_ops batched node={!r}: call {} площадка "
+                    "{}/{} (остальное выведет код на кадрах)",
+                    project_id,
+                    node_key,
+                    my_i,
+                    n_plan,
+                    len(ops),
+                )
             repaired = repair_action_ops(ops)
             if repaired:
                 logger.info(
@@ -1450,6 +1617,27 @@ async def run_apply_ops_batched(
                 )
             repaired_parents = repair_same_place_shot_parents(ops)
             repaired_vo = repair_shot_vo_ops(ops, chunk)
+            plan_fixed, plan_hard = apply_scene_plan_ops(ops, all_frames or chunk)
+            if plan_fixed:
+                logger.info(
+                    "[#{}] apply_ops batched node={!r}: call {} площадка "
+                    "починила ×{}: {}",
+                    project_id,
+                    node_key,
+                    my_i,
+                    len(plan_fixed),
+                    "; ".join(plan_fixed[:6]),
+                )
+            if plan_hard:
+                logger.warning(
+                    "[#{}] apply_ops batched node={!r}: call {} L{} "
+                    "площадка: {}",
+                    project_id,
+                    node_key,
+                    my_i,
+                    level,
+                    "; ".join(plan_hard[:6]),
+                )
             if repaired_vo:
                 logger.info(
                     "[#{}] apply_ops batched node={!r}: call {} "

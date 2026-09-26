@@ -233,6 +233,11 @@ FIELD_ALIASES: dict[str, str] = {
     "bits": "биты",
     "кадры": "кадры",
     "shots": "кадры",
+    # План площадки ячейки (fw_action / fw_shots): зоны, проходы, двери.
+    "площадка": "площадка",
+    "план_площадки": "площадка",
+    "space_plan": "площадка",
+    "scene_plan": "площадка",
     # Меню съёмки → attrs.camera_subdivide (fw_frames / добор).
     "крупность": "крупность",
     "size": "крупность",
@@ -256,12 +261,13 @@ _ATTR_FIELD_KEYS = frozenset(_ATTR_EXCEL_ROWS) | {
     "child_prompts",
     "биты",
     "кадры",
+    "площадка",
     "крупность",
     "движение",
     "набор",
     "camera_subdivide",
 }
-_STRUCTURED_ATTR_KEYS = frozenset({"биты", "кадры"})
+_STRUCTURED_ATTR_KEYS = frozenset({"биты", "кадры", "площадка"})
 _CAMERA_MENU_ATTR_KEYS = ("крупность", "движение", "набор")
 
 

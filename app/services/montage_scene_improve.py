@@ -38,6 +38,13 @@ from app.services.montage_scene_editor import (
     split_vo_by_anchors,
 )
 from app.services.prompt_library import resolve_script_frames_qc_prompt_path
+from app.services.scene_plan import (
+    apply_scene_plan,
+    apply_scene_plan_cells,
+    plan_fix_notes,
+    plan_hard_reasons,
+    with_plan_notes,
+)
 from app.services.scene_shot_grammar import (
     OBJECTS,
     action_stem,
@@ -964,7 +971,10 @@ async def stage_action(
             )
         raw_pass = fields.get("паспорт") or fields.get("passport") or {}
         if isinstance(raw_pass, dict):
-            gpt_passport = raw_pass
+            gpt_passport = dict(raw_pass)
+        raw_plan = fields.get("площадка")
+        if isinstance(raw_plan, dict):
+            gpt_passport["площадка"] = raw_plan
         if operator_prompt:
             cards = scene_cards_from_gpt(cards_raw, place, vo)
             if cards and not is_raw_prompt_dump(cards, operator_prompt):
@@ -1692,6 +1702,71 @@ async def stage_qc(
     return shots, soft
 
 
+def neighbour_scene_cells(frames: list[Any], parent: Any) -> tuple[list[dict], list[dict]]:
+    """Соседние сцены (прошлая, следующая) — контекст площадки только для чтения."""
+    from app.services.apply_ops_batches import _frame_shots, _is_child_frame
+
+    rows = [
+        {"uuid": str(fr.uuid), "attrs": dict(fr.attrs or {})}
+        for fr in frames
+        if getattr(fr, "uuid", None)
+    ]
+    rows = [r for r in rows if not _is_child_frame(r)]
+    idx = next((i for i, r in enumerate(rows) if r["uuid"] == str(parent.uuid)), None)
+    if idx is None:
+        return [], []
+
+    def cell(r: dict[str, Any]) -> list[dict[str, Any]]:
+        shots = _frame_shots(r)
+        if not shots:
+            return []
+        return [{
+            "key": r["uuid"],
+            "shots": shots,
+            "plan": r["attrs"].get("площадка"),
+            "owned": False,
+        }]
+
+    before = cell(rows[idx - 1]) if idx > 0 else []
+    after = cell(rows[idx + 1]) if idx + 1 < len(rows) else []
+    return before, after
+
+
+def stage_scene_plan(
+    shots: list[dict[str, Any]],
+    raw_plan: Any,
+    nodes: list[dict[str, Any]],
+    *,
+    before: list[dict[str, Any]] | None = None,
+    after: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Площадка после fw_qc: двери, порог, путь, ось — и раскладка кадров."""
+    if before or after:
+        own = {"key": "_", "shots": shots, "plan": raw_plan, "owned": True}
+        base, by_key = apply_scene_plan_cells([*(before or []), own, *(after or [])])
+        issues = by_key.get("_", [])
+        plan = with_plan_notes(base, raw_plan, issues, shots)
+    else:
+        plan, issues = apply_scene_plan(shots, raw_plan)
+    fixed = plan_fix_notes(issues)
+    hard = plan_hard_reasons(issues)
+    note = "площадка: " + (
+        "; ".join(fixed + hard)
+        or f"зон {len(plan.get('зоны') or [])}, проходов {len(plan.get('проходы') or [])}"
+    )
+    qc = next((n for n in reversed(nodes) if n.get("node") == "fw_qc"), None)
+    if qc is None:
+        nodes.append(_node("fw_qc", "warn" if hard else "ok", note[:400]))
+        return plan
+    base = str(qc.get("note") or "")
+    qc["note"] = (f"{base} · {note}" if base else note)[:600]
+    if hard:
+        qc["status"] = "warn"
+    elif fixed and qc.get("status") == "ok":
+        qc["status"] = "fixed"
+    return plan
+
+
 # --------------------------------------------------------------------------- #
 # Паспорт → доска
 # --------------------------------------------------------------------------- #
@@ -1824,8 +1899,9 @@ async def improve_cell_scene(
         )
 
     nodes: list[dict[str, Any]] = []
+    action_extra: dict[str, Any] = {}
     if op_prompt:
-        cards, _ignored = await stage_action(
+        cards, action_extra = await stage_action(
             ask,
             parent=parent,
             vo=vo,
@@ -1885,6 +1961,14 @@ async def improve_cell_scene(
     )
     if not shots:
         raise RuntimeError("не удалось нарезать сцену на кадры")
+    before, after = neighbour_scene_cells(frames, parent)
+    scene_plan = stage_scene_plan(
+        shots,
+        action_extra.get("площадка") or (parent.attrs or {}).get("площадка"),
+        nodes,
+        before=before,
+        after=after,
+    )
 
     act_blob = " ".join(
         _norm(s.get("действие")) or _norm(c.get("action"))
@@ -1935,6 +2019,7 @@ async def improve_cell_scene(
         "warnings": list(warnings or []),
     }
     attrs["parent_still_plan"] = parent_plan
+    attrs["площадка"] = scene_plan
     attrs[REPORT_ATTR] = report
     parent.attrs = attrs
     _flag_attrs(parent)
