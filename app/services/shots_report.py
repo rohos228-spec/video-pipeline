@@ -254,7 +254,54 @@ def _build_row(
         "rel": _rel_label(shot, ids),
         "prompts": _prompts(overlay),
         "qc": _camera_bits(overlay, shot),
+        "layout": _get(shot, "раскладка")
+        or _get(_attrs(overlay) if overlay is not None else {}, "раскладка"),
     }
+
+
+def _plans(frames: list[Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Площадки ячеек: схема сверху + зоны/проходы + что починил код."""
+    from app.services.scene_plan import accusative, plan_svg
+
+    out: list[dict[str, Any]] = []
+    for fr in frames:
+        plan = _attrs(fr).get("площадка")
+        if not isinstance(plan, dict) or not plan.get("зоны"):
+            continue
+        number = _int(_top(fr).get("number") or getattr(fr, "number", 0), 0)
+        shots = _kadry_list(fr)
+        if len(shots) <= 1:
+            shots = [
+                {"зона": _get(_attrs(r.get("_frame")), "зона"), **r}
+                for r in rows
+                if _int(r.get("ячейка"), 0) == number
+            ]
+        zones = []
+        for z in plan.get("зоны") or []:
+            if not isinstance(z, dict):
+                continue
+            props = ", ".join(
+                f"{p.get('id')} ({p.get('где')}{', ' + p['состояние'] if p.get('состояние') else ''})"
+                for p in z.get("предметы") or []
+                if isinstance(p, dict)
+            )
+            zones.append(f"{z.get('id')}: {props or 'без предметов'}")
+        passages = [
+            f"{p.get('из')} → {p.get('в')} через {accusative(str(p.get('через') or ''))}"
+            for p in plan.get("проходы") or []
+            if isinstance(p, dict)
+        ]
+        out.append(
+            {
+                "cell": number,
+                "svg": plan_svg(plan, shots),
+                "zones": zones,
+                "passages": passages,
+                "derived": list(plan.get("выведено_кодом") or []),
+                "fixed": list(plan.get("исправлено_кодом") or []),
+            }
+        )
+    return out
 
 
 def build_shots_report_model(frames: list[Any]) -> dict[str, Any]:
@@ -289,6 +336,7 @@ def build_shots_report_model(frames: list[Any]) -> dict[str, Any]:
         )
     return {
         "scenes": scenes,
+        "plans": _plans(frames, collected),
         "shots": built,
         "shot_count": len(built),
         "templates": [],
@@ -330,6 +378,7 @@ def render_shots_report_html(
             f"<td>{_esc(sh.get('object') or '—')}</td>"
             f"<td>{_esc(sh.get('plan') or '—')}</td>"
             f"<td>{_esc(sh.get('vo') or '—')}</td>"
+            f"<td class=layout>{_esc(sh.get('layout') or '—')}</td>"
             f"<td><div class=vo-bit>картинка: {img}</div>"
             f"<div class=vo-bit>видео: {vid}</div>"
             f"<div class=vo-bit>QC: {qc_line}</div></td>"
@@ -352,6 +401,21 @@ def render_shots_report_html(
             f"<td>{len(sc.get('shots') or [])}</td>"
             "</tr>"
         )
+    plan_blocks: list[str] = []
+    for pl in model.get("plans") or []:
+        items = "".join(f"<li>{_esc(z)}</li>" for z in pl.get("zones") or [])
+        items += "".join(f"<li>проход: {_esc(p)}</li>" for p in pl.get("passages") or [])
+        extra = "".join(
+            f"<li class=fix>код починил: {_esc(t)}</li>" for t in pl.get("fixed") or []
+        )
+        extra += "".join(
+            f"<li class=der>код вывел: {_esc(t)}</li>" for t in pl.get("derived") or []
+        )
+        plan_blocks.append(
+            f"<div class=plan><h3>Ячейка {_esc(pl.get('cell'))}</h3>"
+            f"{pl.get('svg') or ''}<ul>{items}{extra}</ul></div>"
+        )
+    plans_html = "".join(plan_blocks) or "<p class=meta>площадка не записана</p>"
     return f"""<!doctype html><html lang=ru><head><meta charset=utf-8>
 <title>Отчёт кадров · {html.escape(slug or 'проект')}</title>
 <style>
@@ -366,6 +430,11 @@ th{{text-align:left;background:#f4f4f4;position:sticky;top:0}}
 th:first-child,td:first-child{{width:56px;text-align:center;color:#666;font-weight:650}}
 .vo-bit{{color:#666;margin-top:2px}}
 .rel{{color:#1a4d8c;margin-top:2px;font-weight:650}}
+.layout{{color:#333;font-size:13px;min-width:260px}}
+.plan{{background:#fff;padding:10px 14px;margin:0 0 10px;border-radius:6px}}
+.plan h3{{margin:0 0 6px;font-size:14px}}
+.plan ul{{margin:6px 0 0;padding-left:18px}}
+.fix{{color:#8a4b00}} .der{{color:#666}}
 </style></head><body>
 <h1>Сцены → кадры</h1>
 <p class=meta>проект {html.escape(pid)}{html.escape(slug or '—')} · {html.escape(stamp)} · сцен {scene_n} · кадров {shot_n}. Один шаг действия = один кадр. Шаблонов T нет.</p>
@@ -374,9 +443,11 @@ th:first-child,td:first-child{{width:56px;text-align:center;color:#666;font-weig
 <thead><tr><th>№</th><th>Место</th><th>Шаги</th><th>Кадров</th></tr></thead>
 <tbody>{''.join(scene_rows) or '<tr><td colspan=4>нет сцен с номером</td></tr>'}</tbody>
 </table>
+<h2>Площадка (вид сверху, К — камера кадра, стрелка — куда смотрит)</h2>
+{plans_html}
 <h2>Кадры</h2>
 <table>
-<thead><tr><th>№</th><th>Сцена</th><th>Место</th><th>Шаг</th><th>Объект</th><th>План</th><th>Закадр</th><th>Промты / QC</th></tr></thead>
+<thead><tr><th>№</th><th>Сцена</th><th>Место</th><th>Шаг</th><th>Объект</th><th>План</th><th>Закадр</th><th>Раскладка (старт кадра)</th><th>Промты / QC</th></tr></thead>
 <tbody>{''.join(body_rows)}</tbody>
 </table>
 </body></html>
