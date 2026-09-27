@@ -62,6 +62,22 @@ async def _finish_success(
 
     await harness_gate_or_raise(session, project, step="img_pr")
 
+    from app.services.vo_shot_expand import (
+        is_shot_child,
+        write_coverage_child_prompts,
+    )
+
+    n_kids = write_coverage_child_prompts(frames)
+    for fr in frames:
+        if is_shot_child(fr) and (fr.image_prompt or "").strip():
+            fr.status = FrameStatus.image_prompt_ready
+    if n_kids:
+        logger.info(
+            "[#{}] generate_image_prompts: wrote {} coverage child prompts",
+            project.id,
+            n_kids,
+        )
+
     for fr in filled:
         fr.status = FrameStatus.image_prompt_ready
     project.status = ProjectStatus.image_prompts_ready

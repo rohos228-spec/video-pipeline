@@ -127,6 +127,8 @@ async def _backfill_from_disk() -> None:
     from sqlalchemy import func, select
     from sqlalchemy.orm.attributes import flag_modified
 
+    from pathlib import Path
+
     from app.db import session_scope
     from app.models import Frame, Project
     from app.services.chatgpt_xlsx import _sync_had_changes, sync_project_xlsx
@@ -606,6 +608,7 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         excel_gpt_already_completed_no_force,
                         slot_from_running_status,
                     )
+                    from app.telegram.menu import step_by_running_status
 
                     if (
                         slot_from_running_status(p.status) is not None

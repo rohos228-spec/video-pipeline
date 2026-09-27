@@ -221,7 +221,11 @@ def _norm_prop(raw: Any) -> dict[str, Any] | None:
         return None
     where = norm_dir(raw.get("где") or raw.get("where") or raw.get("сторона")) or CENTER
     state = str(raw.get("состояние") or raw.get("state") or "").strip()
-    return {"id": name, "где": where, "состояние": _norm_state(state)}
+    what = str(raw.get("что") or raw.get("описание") or raw.get("детали") or "").strip()
+    out = {"id": name, "где": where, "состояние": _norm_state(state)}
+    if what:
+        out["что"] = what
+    return out
 
 
 def _norm_state(raw: str) -> str:
@@ -320,7 +324,12 @@ class ScenePlan:
                     "id": z["id"],
                     "что": z.get("что") or "",
                     "предметы": [
-                        {"id": p["id"], "где": p["где"], "состояние": p["состояние"]}
+                        {
+                            "id": p["id"],
+                            "где": p["где"],
+                            "состояние": p["состояние"],
+                            **({"что": p["что"]} if p.get("что") else {}),
+                        }
                         for p in z["предметы"].values()
                     ],
                 }
@@ -574,6 +583,88 @@ def _mentions_open_door(text: str) -> bool:
 def _is_close(shot: dict[str, Any]) -> bool:
     size = _key(shot.get("план"))
     return size.startswith(("круп", "детал", "cu", "ecu"))
+
+
+_PLAN_RUNG = (
+    ("дальний", 0, "ДАЛЬНИЙ"),
+    ("общий", 1, "ОБЩИЙ"),
+    ("средн", 2, "СРЕДНИЙ"),
+    ("круп", 3, "КРУПНЫЙ"),
+    ("детал", 4, "ДЕТАЛЬ"),
+)
+
+
+def _plan_rung(raw: Any) -> int | None:
+    k = _key(raw)
+    for prefix, n, _name in _PLAN_RUNG:
+        if k.startswith(prefix):
+            return n
+    return None
+
+
+def _plan_name(rung: int) -> str:
+    names = ("ДАЛЬНИЙ", "ОБЩИЙ", "СРЕДНИЙ", "КРУПНЫЙ", "ДЕТАЛЬ")
+    return names[max(0, min(4, int(rung)))]
+
+
+def _step_away_plan(plan: str, obj: str) -> str:
+    idx = _plan_rung(plan)
+    if idx is None:
+        idx = 2
+    want = {"лицо": 3, "предмет": 4, "взгляд": 3, "место": 1}.get(_key(obj))
+    if want is not None and want != idx:
+        return _plan_name(want)
+    nxt = idx + 1 if idx < 4 else idx - 1
+    return _plan_name(nxt)
+
+
+def _prop_label(
+    prop: dict[str, Any],
+    start: dict[str, str],
+    pk: str,
+    *,
+    zone_what: str = "",
+) -> str:
+    state = start.get(pk) or prop.get("состояние") or ""
+    name = str(prop.get("id") or pk)
+    what = str(prop.get("что") or "").strip()
+    if not what and zone_what and str(prop.get("где") or "") == CENTER:
+        what = zone_what
+    label = name
+    if what and _key(what) != _key(name):
+        label = f"{name} — {what}"
+    if state:
+        label += f" ({state})"
+    return label
+
+
+def _focal_prop_keys(shot: dict[str, Any], props: dict[str, dict[str, Any]]) -> set[str]:
+    blob = _key(
+        " ".join(
+            [
+                str(shot.get("действие") or ""),
+                " ".join(
+                    str(c.get("предмет") or "")
+                    for c in (shot.get("меняет") or [])
+                    if isinstance(c, dict)
+                ),
+            ]
+        )
+    )
+    blob_stems = _stems(blob)
+    found: set[str] = set()
+    for pk, prop in props.items():
+        name = str(prop.get("id") or pk)
+        words = [w for w in re.findall(r"[^\W\d_]+", _key(name)) if len(w) >= 4]
+        primary = words[0][:4] if words else ""
+        extra = {s for s in _stems(prop.get("что") or "") if len(s) >= 4}
+        if primary and primary in blob_stems:
+            found.add(pk)
+            continue
+        stems = {w[:4] for w in words} | extra
+        if len(stems) >= 2 and len(stems & blob_stems) >= 2:
+            found.add(pk)
+    return found
 
 
 def _turn(cam: dict[str, str], side: str) -> dict[str, str]:
@@ -944,6 +1035,43 @@ class _Sim:
                 return False
         return True
 
+    def vary_shot_sizes(self) -> None:
+        """Одинаковый план подряд или прыжок ОБЩИЙ↔ДЕТАЛЬ — сдвинуть крупность."""
+        prev: dict[str, Any] | None = None
+        for shot in self.shots:
+            if not self.owned(shot) or prev is None or prev.get("_zk") != shot.get("_zk"):
+                prev = shot
+                continue
+            cur_r = _plan_rung(shot.get("план"))
+            prev_r = _plan_rung(prev.get("план"))
+            if cur_r is None or prev_r is None:
+                prev = shot
+                continue
+            delta = abs(cur_r - prev_r)
+            if delta == 0:
+                nxt = _step_away_plan(
+                    str(shot.get("план") or ""), str(shot.get("объект") or "")
+                )
+                if nxt != shot.get("план"):
+                    shot["план"] = nxt
+                    self.issues.append(_issue(
+                        shot, "план",
+                        f"тот же план, что у прошлого кадра — {nxt}",
+                        fixed=True,
+                    ))
+            elif delta >= 3:
+                mid = (prev_r + cur_r) // 2
+                if mid == prev_r:
+                    mid += 1 if cur_r > prev_r else -1
+                nxt = _plan_name(mid)
+                shot["план"] = nxt
+                self.issues.append(_issue(
+                    shot, "план",
+                    f"прыжок крупности {prev.get('план')} → {_plan_name(cur_r)} — {nxt}",
+                    fixed=True,
+                ))
+            prev = shot
+
     def vary_repeated_camera(self) -> None:
         """Тот же ракурс и план подряд в зоне = скачок. Камеру на 90°."""
         for i in range(1, len(self.shots)):
@@ -1066,37 +1194,87 @@ class _Sim:
         cam = shot["камера"]
         look = cam["смотрит"]
         start = shot.get("_start") or {}
-        parts = [f"Зона «{zone['id']}»" + (f": {zone['что']}" if zone.get("что") else "") + "."]
+        props = zone["предметы"]
+        rung = _plan_rung(shot.get("план"))
+        if rung is None:
+            rung = 2
+        plan_name = str(shot.get("план") or _plan_name(rung))
+        obj = _key(shot.get("объект"))
+        close = rung >= 3
+        detail = rung >= 4
+        act = " ".join(str(shot.get("действие") or "").split())
+        parts: list[str] = []
+        if act:
+            parts.append(f"Сейчас в кадре: {act}.")
+        parts.append(f"План {plan_name}.")
+        if not close:
+            zwhat = str(zone.get("что") or "").strip()
+            parts.append(
+                f"Зона «{zone['id']}»" + (f": {zwhat}" if zwhat else "") + "."
+            )
+        else:
+            parts.append(
+                f"Зона «{zone['id']}», {plan_name} — не общий вид помещения."
+            )
         parts.append(f"Камера {_FROM.get(cam['где'], '')}, смотрит на {look}.")
+        focals = _focal_prop_keys(shot, props)
+        if detail and not focals:
+            focals = {
+                pk for pk, prop in props.items()
+                if str(prop.get("где") or "") == CENTER
+            }
+        shown: set[str] = set()
         buckets: dict[str, list[str]] = {}
-        for pk, prop in zone["предметы"].items():
+        for pk, prop in props.items():
             spot = screen_of(look, prop["где"])
             if spot == "за камерой":
                 continue
-            state = start.get(pk) or prop.get("состояние") or ""
-            label = prop["id"] + (f" ({state})" if state else "")
-            buckets.setdefault(spot, []).append(label)
+            if close and focals and pk not in focals:
+                continue
+            shown.add(pk)
+            buckets.setdefault(spot, []).append(
+                _prop_label(prop, start, pk, zone_what=str(zone.get("что") or ""))
+            )
         for spot in ("в глубине", "слева", "справа", "в центре"):
             if buckets.get(spot):
                 parts.append(f"{spot.capitalize()}: {', '.join(buckets[spot])}.")
-        for row in shot.get("люди") or []:
-            where = row.get("где", CENTER)
-            bits = [f"{row['кто']} — {_AT.get(where, 'в центре')}"]
-            spot = screen_of(look, where)
-            if spot == "за камерой":
-                bits.append("у камеры, спиной или плечом в кадре")
-            elif spot != "в центре":
-                bits.append(f"на экране {spot}")
-            move = row.get("движется")
-            if move:
-                bits.append(f"движется на {move}, на экране {motion_on_screen(look, move)}")
-            elif row.get("лицом"):
-                face = _facing_on_screen(look, row["лицом"])
-                if face == "спиной к камере" and _is_close(shot):
-                    face = "в три четверти со спины, лицо видно в профиль"
-                if face:
-                    bits.append(face)
-            parts.append(", ".join(bits) + ".")
+        show_people = not (detail and obj in {"предмет", "взгляд"})
+        if show_people:
+            for row in shot.get("люди") or []:
+                where = row.get("где", CENTER)
+                bits = [f"{row['кто']} — {_AT.get(where, 'в центре')}"]
+                spot = screen_of(look, where)
+                if spot == "за камерой":
+                    bits.append("у камеры, спиной или плечом в кадре")
+                elif spot != "в центре":
+                    bits.append(f"на экране {spot}")
+                move = row.get("движется")
+                if move:
+                    bits.append(
+                        f"движется на {move}, на экране {motion_on_screen(look, move)}"
+                    )
+                elif row.get("лицом"):
+                    face = _facing_on_screen(look, row["лицом"])
+                    if face == "спиной к камере" and _is_close(shot):
+                        face = "в три четверти со спины, лицо видно в профиль"
+                    if face:
+                        bits.append(face)
+                parts.append(", ".join(bits) + ".")
+        elif any(shot.get("люди") or []):
+            parts.append("В кадре руки и жест, фигура целиком не читается.")
+        hidden = [
+            str(prop.get("id") or pk)
+            for pk, prop in props.items()
+            if pk not in shown
+        ]
+        if close and hidden:
+            parts.append(f"Не видно при этой крупности: {', '.join(hidden)}.")
+        changes = [
+            f"{c['предмет']} → {c['состояние']}" for c in shot.get("меняет") or []
+        ]
+        if changes:
+            parts.append(f"В кадре меняется: {'; '.join(changes)}.")
+        return " ".join(parts)
         changes = [
             f"{c['предмет']} → {c['состояние']}" for c in shot.get("меняет") or []
         ]
@@ -1168,6 +1346,7 @@ def apply_scene_plan_cells(
         sim.check_entry_shown()
         sim.check_path()
         sim.check_axis()
+        sim.vary_shot_sizes()
         sim.vary_repeated_camera()
         sim.check_screen_direction()
         sim.compile_layouts()
@@ -1276,53 +1455,114 @@ _SVG_POS = {
     "север": (60, 14), "юг": (60, 106), "запад": (14, 60), "восток": (106, 60),
     CENTER: (60, 60),
 }
+_SVG_COLS = 5
+_SVG_CELL = 130
+_SVG_ROW = 140
+_CAM_ID_RE = re.compile(r"-K(\d+)$", re.I)
+
+
+def _zones_for_svg(
+    zones: list[dict[str, Any]],
+    passages: list[Any],
+    shots: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Не тащить всю карту фильма в каждую ячейку — только зоны кадров + соседи."""
+    used = {_key(s.get("зона")) for s in (shots or []) if s.get("зона")}
+    used.discard("")
+    if not used:
+        return zones
+    extra: set[str] = set()
+    for p in passages or []:
+        if not isinstance(p, dict):
+            continue
+        a, b = _key(p.get("из")), _key(p.get("в"))
+        if a in used or b in used:
+            extra.add(a)
+            extra.add(b)
+    keep = used | extra
+    filtered = [z for z in zones if _key(z.get("id")) in keep]
+    return filtered or zones
+
+
+def _cam_label(shot: dict[str, Any], fallback: int) -> str:
+    sid = str(shot.get("id") or shot.get("shot_id") or "")
+    m = _CAM_ID_RE.search(sid)
+    if m:
+        return f"К{m.group(1)}"
+    try:
+        n = int(shot.get("порядок") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    return f"К{n or fallback}"
 
 
 def plan_svg(plan: dict[str, Any], shots: list[dict[str, Any]] | None = None) -> str:
-    """Схема сверху: по квадрату на зону, предметы по сторонам, камеры кадров."""
-    zones = [z for z in (plan or {}).get("зоны") or [] if isinstance(z, dict)]
-    if not zones:
+    """Схема сверху: зоны сеткой, предметы по сторонам, камеры кадров."""
+    zones_all = [z for z in (plan or {}).get("зоны") or [] if isinstance(z, dict)]
+    if not zones_all:
         return ""
+    passages = [p for p in (plan or {}).get("проходы") or [] if isinstance(p, dict)]
+    zones = _zones_for_svg(zones_all, passages, shots)
     cells: list[str] = []
-    w = 130
     arrows = {"север": "↑", "юг": "↓", "запад": "←", "восток": "→"}
+    cols = min(_SVG_COLS, max(1, len(zones)))
+    rows = (len(zones) + cols - 1) // cols
+    at_slot: dict[tuple[int, str], int] = {}
+    cam_n = 0
     for zi, zone in enumerate(zones):
-        ox = zi * w
+        col, row = zi % cols, zi // cols
+        ox, oy = col * _SVG_CELL, row * _SVG_ROW
         zid = str(zone.get("id") or "")
         cells.append(
-            f'<rect x="{ox + 5}" y="5" width="110" height="110" rx="6" '
+            f'<rect x="{ox + 5}" y="{oy + 5}" width="110" height="110" rx="6" '
             'fill="#f7f7f5" stroke="#999"/>'
         )
+        z_full = html.escape(zid)
+        z_short = html.escape(zid[:22])
         cells.append(
-            f'<text x="{ox + 60}" y="128" text-anchor="middle" font-size="10">'
-            f"{html.escape(zid[:22])}</text>"
+            f'<text x="{ox + 60}" y="{oy + 128}" text-anchor="middle" '
+            f'font-size="10" fill="#111"><title>{z_full}</title>{z_short}</text>'
         )
         for prop in zone.get("предметы") or []:
+            if not isinstance(prop, dict):
+                continue
             x, y = _SVG_POS.get(str(prop.get("где")), _SVG_POS[CENTER])
             door = _is_door(str(prop.get("id") or ""))
             color = "#b5651d" if door else "#555"
+            pid = str(prop.get("id") or "")
             cells.append(
-                f'<text x="{ox + x}" y="{y + 3}" text-anchor="middle" '
-                f'font-size="8" fill="{color}">{html.escape(str(prop.get("id"))[:16])}</text>'
+                f'<text x="{ox + x}" y="{oy + y + 3}" text-anchor="middle" '
+                f'font-size="8" fill="{color}"><title>{html.escape(pid)}</title>'
+                f"{html.escape(pid[:16])}</text>"
             )
-        for si, shot in enumerate(shots or []):
+        for shot in shots or []:
             if _key(shot.get("зона")) != _key(zid):
                 continue
-            cam = shot.get("камера") or {}
+            cam = shot.get("камера")
+            if not isinstance(cam, dict):
+                continue
             where = str(cam.get("где") or "")
             if where not in _SVG_POS:
                 continue
+            cam_n += 1
+            n_at = at_slot.get((zi, where), 0)
+            at_slot[(zi, where)] = n_at + 1
             x, y = _SVG_POS[where]
-            x = min(max(x, 24), 96)
-            y = min(max(y, 24), 96)
+            x = min(max(x + (n_at % 3 - 1) * 16, 22), 98)
+            y = min(max(y + 12 + (n_at // 3) * 11, 22), 108)
             arrow = arrows.get(str(cam.get("смотрит") or ""), "•")
             cells.append(
-                f'<text x="{ox + x + (si % 3 - 1) * 9}" y="{y + 12}" '
-                f'text-anchor="middle" font-size="9" fill="#1f5fbf">'
-                f"К{si + 1}{arrow}</text>"
+                f'<text x="{ox + x}" y="{oy + y}" text-anchor="middle" '
+                f'font-size="9" fill="#1f5fbf">'
+                f"{html.escape(_cam_label(shot, cam_n))}{arrow}</text>"
             )
-    total_w = w * len(zones)
+    total_w = _SVG_CELL * cols
+    total_h = _SVG_ROW * rows + 16
+    cells.append(
+        f'<text x="8" y="{total_h - 4}" font-size="9" fill="#666">'
+        "север ↑ · юг ↓ · запад ← · восток →</text>"
+    )
     return (
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="136" '
-        f'viewBox="0 0 {total_w} 136" class="plan-svg">{"".join(cells)}</svg>'
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{total_w}" height="{total_h}" '
+        f'viewBox="0 0 {total_w} {total_h}" class="plan-svg">{"".join(cells)}</svg>'
     )

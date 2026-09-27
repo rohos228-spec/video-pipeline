@@ -31,7 +31,8 @@ def test_get_check_streams_meta(monkeypatch) -> None:
 def test_img_pr_live_streams_from_check_streams(monkeypatch) -> None:
     monkeypatch.setattr(app_settings.settings, "check_max_streams", 2)
     p = Project(slug="c", topic="t", status=ProjectStatus.enrich_1_ready, meta={})
-    assert img_pr_live_streams(p) == 2
+    # Низ 8: check_streams=2 иначе 102 кадра висят в двух потоках.
+    assert img_pr_live_streams(p) == 8
     set_check_streams_meta(p, 10)
     assert img_pr_live_streams(p) == 10
     set_check_streams_meta(p, 0)

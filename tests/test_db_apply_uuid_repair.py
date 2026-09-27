@@ -104,6 +104,21 @@ def test_extract_apply_ops_json_closes_truncated_nested_bits() -> None:
     assert bits[1]["глагол"] == "оставляет"
 
 
+def test_extract_apply_ops_json_repairs_double_quoted_bit_key() -> None:
+    """fw_script kie: {""порядок":27 плюс обрыв хвоста — без починки extract=None."""
+    text = (
+        '{"ops":[{"frame_uuid":"561ead3634c945bdb825314a","fields":{"биты":['
+        '{"порядок":1,"изменение":"а","якорь":"раз"},'
+        '{""порядок":27,"изменение":"б","якорь":"два"}'
+    )
+    data = db_apply.extract_apply_ops_json(text)
+    assert data is not None
+    bits = data["ops"][0]["fields"]["биты"]
+    assert len(bits) == 2
+    assert bits[1]["порядок"] == 27
+    assert bits[1]["якорь"] == "два"
+
+
 def test_extract_apply_ops_json_uses_partial_salvage() -> None:
     text = (
         'Вот JSON:\n{"ops":['

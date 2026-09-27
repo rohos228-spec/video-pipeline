@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models import Base, Frame, FrameStatus, Project, ProjectStatus
@@ -113,6 +114,132 @@ async def test_load_img_pr_context_uses_project_db_not_stale_master(
     assert selected[0].uuid == "parent-uuid-000000000001"
 
     await master_engine.dispose()
+    await close_all_project_engines()
+
+
+@pytest.mark.asyncio
+async def test_apply_img_pr_ops_writes_image_prompt_to_project_db(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.settings import settings
+    from app.services.xlsx_step_runners import _apply_img_pr_ops_now
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    p = Project(
+        id=902,
+        slug="imgpr-flush",
+        title="flush",
+        topic="t",
+        status=ProjectStatus.generating_image_prompts,
+    )
+    p.data_dir.mkdir(parents=True, exist_ok=True)
+    await init_project_db(p.data_dir, project=p)
+    uid = "aaaaaaaaaaaaaaaaaaaaaaa2"
+    from app.project_db import get_project_sessionmaker
+
+    sm = await get_project_sessionmaker(p.data_dir)
+    async with sm() as session:
+        session.add(
+            Frame(
+                project_id=902,
+                number=1,
+                uuid=uid,
+                voiceover_text="VO",
+                image_prompt=None,
+                status=FrameStatus.planned,
+                attrs={"camera_subdivide": {"role": "vo_parent"}},
+            )
+        )
+        await session.commit()
+
+    await _apply_img_pr_ops_now(
+        p,
+        [{
+            "frame_uuid": uid,
+            "fields": {
+                "промт_картинки": (
+                    "Full-bleed frame: archive room, noir still of folders. "
+                    "STYLE LOCK: Archival Noir Watercolour. "
+                    "Negative: text, watermark, extra limbs. "
+                )
+                + ("detail " * 40)
+            },
+        }],
+        export_xlsx=False,
+        label="test",
+    )
+    async with sm() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == 902, Frame.uuid == uid)
+            )
+        ).scalar_one()
+        assert (fr.image_prompt or "").startswith("Full-bleed")
+
+    await close_all_project_engines()
+
+
+_LONG_PROMPT = (
+    "Full-bleed frame: archive room, noir still of folders. "
+    "STYLE LOCK: Archival Noir Watercolour. "
+    "Negative: text, watermark, extra limbs. "
+) + ("detail " * 40)
+
+
+@pytest.mark.asyncio
+async def test_apply_img_pr_skips_unknown_uuid_and_writes_known(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services.xlsx_step_runners import _apply_img_pr_ops_now
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    p = Project(
+        id=903,
+        slug="imgpr-skip-unknown",
+        title="skip",
+        topic="t",
+        status=ProjectStatus.generating_image_prompts,
+    )
+    p.data_dir.mkdir(parents=True, exist_ok=True)
+    await init_project_db(p.data_dir, project=p)
+    uid = "bbbbbbbbbbbbbbbbbbbbbbb3"
+    ghost = "deadbeefdeadbeefdeadbeef"
+    from app.project_db import get_project_sessionmaker
+
+    sm = await get_project_sessionmaker(p.data_dir)
+    async with sm() as session:
+        session.add(
+            Frame(
+                project_id=903,
+                number=1,
+                uuid=uid,
+                voiceover_text="VO",
+                image_prompt=None,
+                status=FrameStatus.planned,
+                attrs={"camera_subdivide": {"role": "vo_parent"}},
+            )
+        )
+        await session.commit()
+
+    applied = await _apply_img_pr_ops_now(
+        p,
+        [
+            {"frame_uuid": ghost, "fields": {"промт_картинки": _LONG_PROMPT}},
+            {"frame_uuid": uid, "fields": {"промт_картинки": _LONG_PROMPT}},
+        ],
+        export_xlsx=False,
+        label="test-skip",
+    )
+    assert [op["frame_uuid"] for op in applied] == [uid]
+    async with sm() as session:
+        fr = (
+            await session.execute(
+                select(Frame).where(Frame.project_id == 903, Frame.uuid == uid)
+            )
+        ).scalar_one()
+        assert (fr.image_prompt or "").startswith("Full-bleed")
+
     await close_all_project_engines()
 
 

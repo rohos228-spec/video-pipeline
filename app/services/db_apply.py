@@ -448,6 +448,18 @@ def remap_frame_number_uuids(
     return remaps
 
 
+_DOUBLE_KEY_QUOTE_RE = re.compile(
+    r'\{\s*""([A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)"'
+)
+
+
+def repair_apply_ops_json_text(text: str) -> str:
+    """Типичный обрыв/опечатка kie: ``{""порядок":27`` вместо ``{"порядок":27``."""
+    if not text:
+        return text
+    return _DOUBLE_KEY_QUOTE_RE.sub(r'{"\1"', text)
+
+
 def close_truncated_json(text: str) -> dict[str, Any] | None:
     """Дописать незакрытые ``]}`` у обрезанного apply-ops JSON.
 
@@ -457,7 +469,7 @@ def close_truncated_json(text: str) -> dict[str, Any] | None:
     """
     if not text:
         return None
-    t = text.strip()
+    t = repair_apply_ops_json_text(text.strip())
     t = re.sub(r"```+\s*$", "", t).rstrip()
     start = t.find("{")
     if start < 0:
@@ -507,6 +519,7 @@ def salvage_ops_from_partial_json(text: str) -> list[dict[str, Any]]:
     """Достать целые объекты из обрезанного ``{"ops":[…`` (без закрытия)."""
     if not text:
         return []
+    text = repair_apply_ops_json_text(text)
     m = re.search(r'"ops"\s*:\s*\[', text)
     if not m:
         m = re.search(r'"actions"\s*:\s*\[', text)
@@ -569,6 +582,7 @@ def extract_apply_ops_json(text: str) -> dict[str, Any] | None:
     """
     if not text:
         return None
+    text = repair_apply_ops_json_text(text)
     candidates: list[str] = [m.group(1) for m in _JSON_FENCE_RE.finditer(text)]
     idxs = [
         i
@@ -760,6 +774,8 @@ def _scene_span_in_text(full: str, start_words: str, end_words: str) -> tuple[in
 def expand_scene_registry_onto_frames(
     frames: list[Frame],
     registry: list[Any] | None,
+    *,
+    overwrite: bool = False,
 ) -> int:
     """Сцена → кадры: привязка по словам + scene-level + 1 shot → 1 кадр.
 
@@ -865,7 +881,7 @@ def expand_scene_registry_onto_frames(
                 ("scene_end_words", sc.get("end_words") or sc.get("scene_end_words")),
                 ("scene_time_sec", sc.get("время_сек")),
             ):
-                if _set(attrs, key, src, overwrite=True):
+                if _set(attrs, key, src, overwrite=overwrite):
                     changed = True
             # Один shot → один кадр (по порядку внутри сцены).
             # accent — с ШОТА, не клон сцены на все колонки.
@@ -1486,7 +1502,9 @@ async def apply_ops(
     )
     meta_now = project.meta if isinstance(project.meta, dict) else {}
     expanded = expand_scene_registry_onto_frames(
-        all_frames, meta_now.get("scene_registry")
+        all_frames,
+        meta_now.get("scene_registry"),
+        overwrite=bool(scenes_n),
     )
     if expanded:
         await session.flush()

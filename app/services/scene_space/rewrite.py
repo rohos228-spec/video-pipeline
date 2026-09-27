@@ -902,7 +902,7 @@ def build_cross_fixture() -> dict:
             angle_h="three-quarter",
             angle_v="eye-level",
             prompt="pair settled on the new side of the axis",
-            delta={"cam": {k: last[k] for k in ("x", "y", "facing")}},
+            delta={"cam": {k: north[k] for k in ("x", "y", "facing")}},
         ),
     ]
     # last cam must stay on the NEW side (north). south_cam would silently recross.

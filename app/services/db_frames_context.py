@@ -456,7 +456,7 @@ def _coverage_parent_snapshot(parent: Any) -> dict[str, Any]:
     picked = _pick_attrs(getattr(parent, "attrs", None))
     snap: dict[str, Any] = {
         "number": getattr(parent, "number", None),
-        "uuid": _frame_uuid(parent),
+        "parent_uuid": _frame_uuid(parent),
     }
     sid = coverage_shot_id(parent)
     if sid:
@@ -470,6 +470,64 @@ def _coverage_parent_snapshot(parent: Any) -> dict[str, Any]:
         snap["image_prompt_head"] = _clip(img, _PARENT_PROMPT_HEAD)
     apply_camera_chips_to_row(snap, parent)
     return snap
+
+
+def _slim_img_pr_frame_row(row: dict[str, Any]) -> None:
+    """img_pr: действие/раскладка кадра, без 73 битов и всей площадки проекта."""
+    row.pop("биты", None)
+    shot_id = str(row.get("shot_id") or "").strip()
+    kadry = row.get("кадры")
+    if isinstance(kadry, list):
+        match: dict[str, Any] | None = None
+        if shot_id:
+            match = next(
+                (
+                    shot
+                    for shot in kadry
+                    if isinstance(shot, dict) and str(shot.get("id") or "") == shot_id
+                ),
+                None,
+            )
+        if match is None:
+            first = kadry[0] if kadry else None
+            match = first if isinstance(first, dict) else None
+        if match is not None:
+            keep = (
+                "id",
+                "план",
+                "действие",
+                "объект",
+                "зона",
+                "камера",
+                "раскладка",
+            )
+            row["кадры"] = [{k: match[k] for k in keep if k in match}]
+        else:
+            row.pop("кадры", None)
+    zone = str(row.get("зона") or row.get("place") or "").strip()
+    plan = row.get("площадка")
+    if isinstance(plan, dict):
+        zones_in = [z for z in (plan.get("зоны") or []) if isinstance(z, dict)]
+        if zone:
+            zones_in = [z for z in zones_in if str(z.get("id") or "") == zone]
+        elif zones_in:
+            zones_in = zones_in[:1]
+        people_in = [p for p in (plan.get("люди") or []) if isinstance(p, dict)]
+        if zone:
+            people_in = [
+                p
+                for p in people_in
+                if str(p.get("зона") or "") in {zone, ""}
+            ]
+        slim_plan: dict[str, Any] = {"зоны": zones_in}
+        if people_in:
+            slim_plan["люди"] = people_in
+        row["площадка"] = slim_plan
+    chain = str(row.get("main_action") or row.get("главное_действие") or "")
+    first = chain.split("\n", 1)[0].strip()
+    if first:
+        row["main_action"] = first
+        row["главное_действие"] = first
 
 
 def build_img_pr_db_context(
@@ -493,7 +551,7 @@ def build_img_pr_db_context(
     from app.services.vo_shot_expand import (
         coverage_shot_id,
         find_coverage_parent_frame,
-        is_coverage_child,
+        is_shot_child,
         parse_coverage_shot,
     )
 
@@ -526,7 +584,7 @@ def build_img_pr_db_context(
         sid = coverage_shot_id(fr)
         if sid:
             row["shot_id"] = sid
-        if is_coverage_child(fr):
+        if is_shot_child(fr):
             row["coverage_role"] = "child"
             parent = find_coverage_parent_frame(universe, fr)
             if parent is not None:
@@ -538,6 +596,7 @@ def build_img_pr_db_context(
             cs_kind = str(_camera_subdivide_from(fr).get("coverage_kind") or "").strip().lower()
             if cs_kind == "parent":
                 row["coverage_role"] = "parent"
+        _slim_img_pr_frame_row(row)
         frame_rows.append(row)
     out: dict[str, Any] = {
         "source": "db_v2",

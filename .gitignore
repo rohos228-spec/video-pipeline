@@ -35,6 +35,7 @@ STUDIO-LOCAL.cmd
 .idea/
 .vscode/
 *.swp
+.cursor/hooks/state/
 
 # Data (артефакты проектов — не коммитим в git)
 data/

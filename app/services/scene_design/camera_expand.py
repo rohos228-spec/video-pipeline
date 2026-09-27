@@ -581,6 +581,14 @@ async def renumber_frames_by_sort_key(
     for i, fr in enumerate(frames, 1):
         fr.number = i
     await session.flush()
+    try:
+        from app.services.vo_shot_expand import sync_live_coverage_ids
+
+        sync_live_coverage_ids(frames)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "[#{}] renumber: sync_live_coverage_ids failed", project.id
+        )
     return frames
 
 

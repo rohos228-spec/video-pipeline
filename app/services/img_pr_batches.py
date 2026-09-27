@@ -21,6 +21,18 @@ from app.services.volume_batches import (
 _FRAMES_PER_BATCH = 30
 _T = TypeVar("_T")
 _CHECKPOINT_NAME = "img_pr_checkpoint.json"
+
+
+def strip_img_pr_master_preamble(text: str) -> str:
+    """Мастер из чата часто начинается с «окей, давай агента» — это не инструкция."""
+    raw = text or ""
+    lines = raw.splitlines()
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            body = "\n".join(lines[i:]).strip()
+            return body + ("\n" if raw.endswith("\n") else "")
+    return raw
 _GPT_ATTEMPTS = 3
 
 _BATCH_FOOTER = """
@@ -222,6 +234,24 @@ _PROMPT_FIELD_KEYS = (
 )
 
 
+_FRAME_UUID_RE = re.compile(r"^[a-fA-F0-9]{3,64}$")
+_PLACEHOLDER_PROMPT = frozenset({"", "…", "...", "—", "-"})
+# Запись в DB: короче — заглушка (портрет 1 строка / «…»), не сцена+STYLE.
+IMG_PR_MIN_WRITE_CHARS = 200
+
+
+def _is_real_frame_uuid(value: Any) -> bool:
+    return bool(_FRAME_UUID_RE.fullmatch(str(value or "").strip()))
+
+
+def _prompt_text_of(fields: dict[str, Any]) -> str:
+    for key in _PROMPT_FIELD_KEYS:
+        text = str(fields.get(key) or "").strip()
+        if text:
+            return text
+    return ""
+
+
 def filter_prompt_ops(ops: list[Any]) -> list[dict]:
     clean: list[dict] = []
     for op in ops:
@@ -247,9 +277,28 @@ def filter_prompt_ops(ops: list[Any]) -> list[dict]:
                     fields[k] = op.get(k)
         if not any(k in fields for k in _PROMPT_FIELD_KEYS):
             continue
+        uid = str(op.get("frame_uuid") or op.get("uuid") or "").strip()
+        if not _is_real_frame_uuid(uid):
+            continue
+        prompt = _prompt_text_of(fields)
+        if prompt in _PLACEHOLDER_PROMPT or len(prompt) < 12:
+            continue
         out = {**op, "fields": fields}
+        if uid and not str(out.get("frame_uuid") or "").strip():
+            out["frame_uuid"] = uid
         clean.append(out)
     return clean
+
+
+def writeable_img_pr_ops(ops: list[Any]) -> list[dict]:
+    """Ops, которые можно писать в DB: реальный uuid + полный промт."""
+    kept: list[dict] = []
+    for op in filter_prompt_ops(ops):
+        text = _prompt_text_of(op.get("fields") or {})
+        if len(text) < IMG_PR_MIN_WRITE_CHARS:
+            continue
+        kept.append(op)
+    return kept
 
 
 def _read_json_string(text: str, start: int) -> tuple[str, int] | None:

@@ -416,6 +416,9 @@ def _refresh_shots_in_beat(frames: list[Frame], parent: Frame) -> None:
     _set_cs(parent, shots_in_beat=total, role="vo_parent", parent_uuid=parent.uuid)
     for i, kid in enumerate(sorted(kids, key=lambda f: (f.sort_key or 0.0, f.number))):
         _set_cs(kid, shots_in_beat=total, shot_index=i + 2)
+    from app.services.vo_shot_expand import sync_live_coverage_ids
+
+    sync_live_coverage_ids(frames)
 
 
 async def _load_frames(session: AsyncSession, project_id: int) -> list[Frame]:

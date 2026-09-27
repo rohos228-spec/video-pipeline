@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -68,6 +69,7 @@ async def test_img_pr_gate_raises_if_vo_frame_lacks_image_prompt(harness_db) -> 
         Frame(
             project_id=501,
             number=1,
+            uuid="img-pr-gap-parent-0000001",
             voiceover_text="кадр один закадр",
             image_prompt="wide shot kitchen",
         )
@@ -76,6 +78,7 @@ async def test_img_pr_gate_raises_if_vo_frame_lacks_image_prompt(harness_db) -> 
         Frame(
             project_id=501,
             number=2,
+            uuid="img-pr-gap-parent-0000002",
             voiceover_text="кадр два без промта",
             image_prompt=None,
         )
@@ -103,6 +106,7 @@ async def test_img_pr_gate_does_not_require_png(harness_db) -> None:
         Frame(
             project_id=502,
             number=1,
+            uuid="c" * 24,
             voiceover_text="vo one",
             image_prompt="a usable image prompt here",
         )
@@ -262,6 +266,7 @@ async def test_img_pr_finish_does_not_set_ready_when_gate_fails(harness_db) -> N
     fr = Frame(
         project_id=p.id,
         number=1,
+        uuid="d" * 24,
         voiceover_text="vo filled",
         image_prompt="a complete image prompt",
         status=FrameStatus.planned,
@@ -278,3 +283,131 @@ async def test_img_pr_finish_does_not_set_ready_when_gate_fails(harness_db) -> N
 
     assert p.status is ProjectStatus.generating_image_prompts
     assert p.status is not ProjectStatus.image_prompts_ready
+
+
+@pytest.mark.asyncio
+async def test_excel_gpt_gate_skips_img_coverage_when_status_already_ready(
+    harness_db,
+) -> None:
+    """fw_script / excel_gpt must not inherit img_pr_vo_coverage from status."""
+    session, tmp_path = harness_db
+    _write_plan_xlsx(tmp_path / "project.xlsx")
+    session.add(
+        Project(
+            id=508,
+            slug="excel-gpt-ready",
+            topic="t",
+            status=ProjectStatus.image_prompts_ready,
+        )
+    )
+    session.add(
+        Frame(
+            project_id=508,
+            number=1,
+            uuid="e" * 24,
+            voiceover_text="vo still waiting for img_pr",
+            image_prompt=None,
+        )
+    )
+    await session.commit()
+
+    p = SimpleNamespace(id=508, data_dir=tmp_path, status="image_prompts_ready", meta={})
+    rep = await harness_gate_or_raise(session, p, step="excel_gpt")
+    by_name = {c.name: c for c in rep.checks}
+    assert "img_pr_vo_coverage" not in by_name
+    assert by_name["excel_gpt_gate"].ok is True
+
+
+@pytest.mark.asyncio
+async def test_img_pr_gate_skips_shot_child_and_leftover(harness_db) -> None:
+    session, tmp_path = harness_db
+    _write_plan_xlsx(tmp_path / "project.xlsx")
+    session.add(
+        Project(
+            id=509, slug="img-pr-shots", topic="t", status=ProjectStatus.generating_image_prompts
+        )
+    )
+    session.add(
+        Frame(
+            project_id=509,
+            number=1,
+            uuid="parent-uuid-000000000009",
+            voiceover_text="VO родителя",
+            image_prompt="parent still prompt here",
+            attrs={"camera_subdivide": {"role": "vo_parent"}},
+        )
+    )
+    session.add(
+        Frame(
+            project_id=509,
+            number=2,
+            uuid="shot-uuid-00000000000002",
+            voiceover_text="кусок закадра на шоте",
+            image_prompt=None,
+            attrs={"camera_subdivide": {"role": "shot", "parent_uuid": "parent-uuid-000000000009"}},
+        )
+    )
+    session.add(
+        Frame(
+            project_id=509,
+            number=3,
+            uuid="leftover-uuid-0000000003",
+            voiceover_text="хвост без промта",
+            image_prompt=None,
+            attrs={"camera_subdivide": {"leftover": True}},
+        )
+    )
+    await session.commit()
+
+    p = SimpleNamespace(
+        id=509,
+        data_dir=tmp_path,
+        status="generating_image_prompts",
+        meta={},
+    )
+    rep = await harness_gate_or_raise(session, p, step="img_pr")
+    by_name = {c.name: c for c in rep.checks}
+    assert by_name["img_pr_vo_coverage"].ok is True
+    assert "img_pr" not in (rep.repair_steps or [])
+
+
+def test_img_pr_gate_reads_isolated_project_db_not_master(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Кадры tkach живут в data_dir/project.db; master часто пустой по промтам."""
+    data_dir = tmp_path / "tkach"
+    data_dir.mkdir()
+    master = tmp_path / "state.db"
+    isolated = data_dir / "project.db"
+    monkeypatch.setattr(settings, "sqlite_path", master)
+    _write_plan_xlsx(data_dir / "project.xlsx")
+
+    def _write_frames(path: Path, image_prompt: str) -> None:
+        db = sqlite3.connect(str(path))
+        db.execute(
+            "CREATE TABLE frames ("
+            "project_id INTEGER, number INTEGER, "
+            "voiceover_text TEXT, image_prompt TEXT, animation_prompt TEXT, "
+            "attrs TEXT, uuid TEXT)"
+        )
+        db.execute(
+            "INSERT INTO frames VALUES (63, 33, 'vo parent', ?, '', "
+            "'{\"camera_subdivide\": {\"role\": \"vo_parent\"}}', 'parent-uuid-33')",
+            (image_prompt,),
+        )
+        db.execute(
+            "INSERT INTO frames VALUES (63, 35, 'vo shot', '', '', "
+            "'{\"camera_subdivide\": {\"role\": \"shot\"}}', 'shot-uuid-35')"
+        )
+        db.commit()
+        db.close()
+
+    _write_frames(master, "")
+    _write_frames(isolated, "usable isolated parent still prompt")
+
+    report = verify_project_disk(63, data_dir, "generating_image_prompts", step="img_pr")
+    by_name = {c.name: c for c in report.checks}
+    assert by_name["img_pr_vo_coverage"].ok is True
+    assert "missing=" in by_name["img_pr_vo_coverage"].detail
+    assert "img_pr=1/1" in by_name["img_pr_vo_coverage"].detail
+

@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "./.cursor/hooks/run.cmd guard.py",
+        "timeout": 20,
+        "failClosed": true
+      }
+    ],
+    "beforeReadFile": [
+      {
+        "command": "./.cursor/hooks/run.cmd file_guard.py",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "./.cursor/hooks/run.cmd file_guard.py",
+        "matcher": "Write|Delete",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "./.cursor/hooks/run.cmd post_edit.py",
+        "matcher": "Write",
+        "timeout": 60
+      }
+    ],
+    "subagentStop": [
+      {
+        "command": "./.cursor/hooks/run.cmd verify_gate.py",
+        "timeout": 900,
+        "loop_limit": 3
+      }
+    ],
+    "stop": [
+      {
+        "command": "./.cursor/hooks/run.cmd verify_gate.py",
+        "timeout": 900,
+        "loop_limit": 3
+      }
+    ]
+  }
+}

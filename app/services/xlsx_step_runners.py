@@ -35,7 +35,7 @@ from app.storage import for_project as _sheet_for_project
 
 # Должен совпадать со строкой 4 в web/STUDIO_VERSION. Если в логе make_plan
 # нет «xlsx_step_runners» — на диске старый make_plan.py (текст 30k в ask).
-XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v88-img-pr-parents-only"
+XLSX_STEP_RUNNERS_ID = "xlsx_step_runners-v92-img-pr-child-layout-prompt"
 _EMPTY_OPS_BACKOFF_S = (5.0, 10.0, 15.0)
 
 
@@ -552,7 +552,10 @@ _IMG_PR_DB_HINT = (
     "Верни ТОЛЬКО JSON apply-ops. Без TSV, без `# Лист:`, без `@row=`, "
     "без скачивания .xlsx:\n"
     '{"ops":[{"frame_uuid":"<uuid>","fields":{"промт_картинки":"…"}}]}\n'
-    "Адрес кадра — ТОЛЬКО frame_uuid из db_frames.json ЭТОГО батча.\n"
+    "Адрес кадра — ТОЛЬКО frame_uuid из КОРНЯ frames[].uuid ЭТОГО батча "
+    "(не coverage_parent.parent_uuid).\n"
+    "Не пиши системную инструкцию и не собирай агента: ты уже img_pr. "
+    "Ответ — только JSON apply-ops.\n"
     "Одна операция = один кадр. Пиши только полные ops; если не все влезли — "
     "верни сколько полных влезло, остальное не трогай. "
     'Пустой {"ops":[]} запрещён.\n'
@@ -573,7 +576,10 @@ _PLASTILIN_IMG_PR_HINT = (
     "Верни ТОЛЬКО JSON apply-ops. Без TSV, без `# Лист:`, без `@row=`, "
     "без скачивания .xlsx:\n"
     '{"ops":[{"frame_uuid":"<uuid>","fields":{"промт_картинки":"…","персонажи":"c01"}}]}\n'
-    "Адрес кадра — ТОЛЬКО frame_uuid из db_frames.json ЭТОГО батча.\n"
+    "Адрес кадра — ТОЛЬКО frame_uuid из КОРНЯ frames[].uuid ЭТОГО батча "
+    "(не coverage_parent.parent_uuid).\n"
+    "Не пиши системную инструкцию и не собирай агента: ты уже img_pr. "
+    "Ответ — только JSON apply-ops.\n"
     "Одна операция = один кадр. Пиши только полные ops; если не все влезли — "
     "верни сколько полных влезло, остальное не трогай. "
     'Пустой {"ops":[]} запрещён.\n'
@@ -727,26 +733,109 @@ async def _apply_img_pr_ops_now(
     *,
     export_xlsx: bool = False,
     label: str = "",
-) -> None:
+) -> list[dict]:
     """Сразу записать apply-ops батча в DB (Excel — только явный Export)."""
+    from app.services import img_pr_batches as ipb
+    from app.services.vo_shot_expand import is_img_pr_vo_parent
+
+    ops = ipb.writeable_img_pr_ops(ops)
     if not ops:
-        return
+        return []
+    import asyncio
+
     from app.services import db_apply
 
-    async with _project_runtime_session(project) as session:
-        proj = await session.get(Project, project.id)
-        if proj is None:
-            raise RuntimeError(f"project #{project.id} gone during img_pr apply")
-        await db_apply.apply_ops(
-            session, proj, ops, export_xlsx=export_xlsx, node_kind="img_pr"
-        )
-        await session.commit()
+    last_err: Exception | None = None
+    applied: list[dict] = []
+    for apply_try in range(1, 6):
+        try:
+            async with _project_runtime_session(project) as session:
+                proj = await session.get(Project, project.id)
+                if proj is None:
+                    raise RuntimeError(f"project #{project.id} gone during img_pr apply")
+                frames = list(
+                    (
+                        await session.execute(
+                            select(Frame).where(Frame.project_id == proj.id)
+                        )
+                    ).scalars().all()
+                )
+                by_uuid = {str(fr.uuid or ""): fr for fr in frames if fr.uuid}
+                kept: list[dict] = []
+                unknown: list[str] = []
+                skipped_child: list[str] = []
+                for op in ops:
+                    uid = ipb.uuid_of_op(op)
+                    fr = by_uuid.get(uid)
+                    if fr is None:
+                        unknown.append(uid)
+                        continue
+                    if not is_img_pr_vo_parent(fr):
+                        skipped_child.append(uid)
+                        continue
+                    kept.append(op)
+                if unknown:
+                    logger.warning(
+                        "img_pr_db: skip unknown frame_uuid n={} sample={} {}",
+                        len(unknown),
+                        unknown[:8],
+                        label,
+                    )
+                if skipped_child:
+                    logger.warning(
+                        "img_pr_db: skip shot-child uuid n={} sample={} {}",
+                        len(skipped_child),
+                        skipped_child[:8],
+                        label,
+                    )
+                if not kept:
+                    return []
+                await db_apply.apply_ops(
+                    session, proj, kept, export_xlsx=export_xlsx, node_kind="img_pr"
+                )
+                frames = list(
+                    (
+                        await session.execute(
+                            select(Frame).where(Frame.project_id == proj.id)
+                        )
+                    ).scalars().all()
+                )
+                from app.services.vo_shot_expand import write_coverage_child_prompts
+
+                n_kids = write_coverage_child_prompts(frames)
+                if n_kids:
+                    logger.info(
+                        "img_pr_db: coverage child prompts written n={} {}",
+                        n_kids,
+                        label,
+                    )
+                await session.commit()
+                applied = kept
+            last_err = None
+            break
+        except Exception as apply_err:  # noqa: BLE001
+            last_err = apply_err
+            msg = str(apply_err).lower()
+            locked = "database is locked" in msg or "database locked" in msg
+            if not locked or apply_try >= 5:
+                raise
+            wait_s = min(2 * apply_try, 10)
+            logger.warning(
+                "img_pr_db: apply locked try {}/5 — sleep {}s {}",
+                apply_try,
+                wait_s,
+                label,
+            )
+            await asyncio.sleep(wait_s)
+    if last_err is not None:
+        raise last_err
     logger.info(
         "img_pr_db: applied to DB ops={} export_xlsx={} {}",
-        len(ops),
+        len(applied),
         export_xlsx,
         label,
     )
+    return applied
 
 
 async def run_img_pr_xlsx(
@@ -784,10 +873,25 @@ async def run_img_pr_xlsx(
     all_ops: list[dict] = list(ckpt.get("ops") or [])
     done_set = set(done_uuids)
 
-    # НЕ пишем в DB по батчам (SQLite lock). Чекпоинт на диске → apply один раз в конце.
-    frames, cards, general_plan, all_frames = await _load_img_pr_context(
-        project, skip_uuids=done_set or None
-    )
+    writeable = ipb.writeable_img_pr_ops(all_ops)
+    dropped_short = len(all_ops) - len(writeable)
+    if dropped_short:
+        logger.warning(
+            "img_pr_db: drop {} short/placeholder ops from checkpoint",
+            dropped_short,
+        )
+    all_ops = writeable
+    if all_ops:
+        all_ops = await _apply_img_pr_ops_now(
+            project, all_ops, export_xlsx=False, label="checkpoint"
+        )
+        done_uuids = [ipb.uuid_of_op(op) for op in all_ops if ipb.uuid_of_op(op)]
+        done_set = set(done_uuids)
+        ipb.save_checkpoint(project.data_dir, done_uuids=done_uuids, ops=all_ops)
+
+    # После flush чекпоинта пустые кадры смотрим по DB, не по skip_uuids:
+    # иначе промты живут только в JSON до конца всего прогона.
+    frames, cards, general_plan, all_frames = await _load_img_pr_context(project)
     if not frames:
         if all_ops:
             logger.info(
@@ -800,7 +904,7 @@ async def run_img_pr_xlsx(
                 project_xlsx=proj_xlsx,
                 backup_path=None,
                 apply_ops=all_ops,
-                ops_applied_inline=False,
+                ops_applied_inline=True,
             )
         # Уже всё в DB с прошлого успешного прогона.
         frames_db, _, _, _ = await _load_img_pr_context(project)
@@ -1014,6 +1118,7 @@ async def run_img_pr_xlsx(
         ) -> None:
             nonlocal api_batches, any_ok
             replies.append(last_reply)
+            batch_ops = ipb.writeable_img_pr_ops(batch_ops)
             if not batch_ops:
                 if _enqueue_split(batch, level, why="no ops"):
                     return
@@ -1120,7 +1225,23 @@ async def run_img_pr_xlsx(
                         continue
                     raise exc
                 batch_ops, last_reply = task.result()
+                before = len(all_ops)
                 _ingest(bi, batch, level, batch_ops, last_reply or "")
+                added = all_ops[before:]
+                if added:
+                    try:
+                        await _apply_img_pr_ops_now(
+                            project,
+                            added,
+                            export_xlsx=False,
+                            label=f"batch-{bi}",
+                        )
+                    except Exception as apply_err:  # noqa: BLE001
+                        logger.warning(
+                            "img_pr_db: batch {} apply failed (ckpt keeps ops): {}",
+                            bi,
+                            apply_err,
+                        )
 
         if not any_ok and not all_ops:
             raise RuntimeError(
@@ -1136,7 +1257,7 @@ async def run_img_pr_xlsx(
         )
 
     logger.info(
-        "img_pr_db: complete ops={} api_batches={} — single DB apply next",
+        "img_pr_db: complete ops={} api_batches={} — already in DB",
         len(all_ops),
         api_batches,
     )
@@ -1146,7 +1267,7 @@ async def run_img_pr_xlsx(
         project_xlsx=proj_xlsx,
         backup_path=None,
         apply_ops=all_ops,
-        ops_applied_inline=False,
+        ops_applied_inline=True,
     )
 
 

@@ -9,6 +9,7 @@ from typing import Any
 
 from app.project_root import find_project_root
 from app.services.shot_templates import parse_scene_chain, plain_scene_vo
+from app.services.vo_shot_expand import is_shot_child
 
 
 def _esc(text: Any) -> str:
@@ -203,17 +204,50 @@ def _collect_shots(frames: list[Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _scene_chain_line(scene: dict[str, Any]) -> str:
+    n = scene.get("n") or ""
+    place = str(scene.get("place") or "").strip()
+    action = str(scene.get("action") or "").strip()
+    if place and action:
+        return f"{n}. {place} — {action}"
+    if action:
+        return f"{n}. {action}" if n else action
+    return place
+
+
 def _scene_meta(frames: list[Any]) -> dict[int, dict[str, Any]]:
+    """Цепь главное_действие с VO-родителя: N. место — шаг → шаг."""
     by_n: dict[int, dict[str, Any]] = {}
     for fr in frames:
-        text = _get(_attrs(fr), "главное_действие", "main_action")
-        if not text or "—" not in text and "→" not in text:
+        if is_shot_child(fr):
             continue
-        for scene in parse_scene_chain(text):
-            n = int(scene["n"])
-            prev = by_n.get(n)
-            if prev is None or len(scene.get("blob") or "") > len(prev.get("blob") or ""):
-                by_n[n] = scene
+        attrs = _attrs(fr)
+        text = _get(attrs, "главное_действие", "main_action")
+        parsed = parse_scene_chain(text)
+        if parsed:
+            for scene in parsed:
+                n = int(scene["n"])
+                scene["chain"] = _scene_chain_line(scene)
+                prev = by_n.get(n)
+                if prev is None or len(scene.get("blob") or "") > len(prev.get("blob") or ""):
+                    by_n[n] = scene
+            continue
+        n = _int(_cs(fr).get("сцена") or attrs.get("сцена"), 0)
+        if not n or not text.strip():
+            continue
+        if "→" not in text and "—" not in text:
+            continue
+        prev = by_n.get(n)
+        if prev is None or len(text) > len(prev.get("blob") or ""):
+            place = _get(_cs(fr), "место") or _get(attrs, "место", "place")
+            by_n[n] = {
+                "n": n,
+                "place": place,
+                "action": text.strip(),
+                "chain": text.strip(),
+                "vo": "",
+                "blob": text,
+            }
     return by_n
 
 
@@ -259,20 +293,47 @@ def _build_row(
     }
 
 
+def _plan_shot(row: dict[str, Any]) -> dict[str, Any]:
+    """Кадр для схемы: зона/камера с карточки, если в шаге пусто."""
+    overlay = row.get("_frame")
+    attrs = _attrs(overlay) if overlay is not None else {}
+    cs = _cs(overlay) if overlay is not None else {}
+    shot = {k: v for k, v in row.items() if k != "_frame"}
+    if not shot.get("зона"):
+        shot["зона"] = _get(attrs, "зона") or _get(cs, "зона")
+    if not isinstance(shot.get("камера"), dict):
+        raw = attrs.get("камера") or cs.get("камера")
+        if isinstance(raw, dict):
+            shot["камера"] = raw
+    if not _shot_id(shot):
+        sid = _get(cs, "shot_id") or _get(attrs, "shot_id")
+        if sid:
+            shot["id"] = sid
+    if not shot.get("порядок"):
+        shot["порядок"] = cs.get("shot_index") or (
+            _top(overlay).get("number") if overlay is not None else None
+        )
+    return shot
+
+
 def _plans(frames: list[Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Площадки ячеек: схема сверху + зоны/проходы + что починил код."""
     from app.services.scene_plan import accusative, plan_svg
 
     out: list[dict[str, Any]] = []
     for fr in frames:
+        if is_shot_child(fr):
+            continue
         plan = _attrs(fr).get("площадка")
         if not isinstance(plan, dict) or not plan.get("зоны"):
             continue
         number = _int(_top(fr).get("number") or getattr(fr, "number", 0), 0)
-        shots = _kadry_list(fr)
-        if len(shots) <= 1:
+        kadry = _kadry_list(fr)
+        if len(kadry) > 1:
+            shots = [_plan_shot(s) for s in kadry]
+        else:
             shots = [
-                {"зона": _get(_attrs(r.get("_frame")), "зона"), **r}
+                _plan_shot(r)
                 for r in rows
                 if _int(r.get("ячейка"), 0) == number
             ]
@@ -320,7 +381,14 @@ def build_shots_report_model(frames: list[Any]) -> dict[str, Any]:
         shots = by_scene[n]
         meta = scene_meta.get(n) or {}
         place = str(meta.get("place") or shots[0].get("place") or "")
-        action = str(meta.get("action") or " → ".join(s["action"] for s in shots if s.get("action")))
+        action = str(meta.get("action") or "").strip()
+        if not action:
+            action = " → ".join(
+                s["action"] for s in shots if s.get("action")
+            )
+        chain = str(meta.get("chain") or "").strip()
+        if not chain:
+            chain = _scene_chain_line({"n": n, "place": place, "action": action})
         vo = plain_scene_vo(meta.get("vo") or "")
         if not vo:
             vo = plain_scene_vo(" ".join(s["vo"] for s in shots if s.get("vo")))
@@ -330,6 +398,7 @@ def build_shots_report_model(frames: list[Any]) -> dict[str, Any]:
                 "n": n,
                 "place": place,
                 "action": action,
+                "chain": chain,
                 "vo": vo,
                 "shots": shots,
             }
@@ -344,13 +413,66 @@ def build_shots_report_model(frames: list[Any]) -> dict[str, Any]:
     }
 
 
+def _plan_block(pl: dict[str, Any]) -> str:
+    items = "".join(f"<li>{_esc(z)}</li>" for z in pl.get("zones") or [])
+    items += "".join(f"<li>проход: {_esc(p)}</li>" for p in pl.get("passages") or [])
+    extra = "".join(
+        f"<li class=fix>код починил: {_esc(t)}</li>" for t in pl.get("fixed") or []
+    )
+    extra += "".join(
+        f"<li class=der>код вывел: {_esc(t)}</li>" for t in pl.get("derived") or []
+    )
+    return (
+        f"<details class=plan><summary>Площадка · Ячейка {_esc(pl.get('cell'))}</summary>"
+        f"{pl.get('svg') or ''}<ul>{items}{extra}</ul></details>"
+    )
+
+
+def _shot_tr(i: int, sh: dict[str, Any]) -> str:
+    prompts = sh.get("prompts") or {}
+    qc = sh.get("qc") or {}
+    img = _esc(prompts.get("картинка") or "—")
+    vid = _esc(prompts.get("видео") or "—")
+    qc_line = " · ".join(
+        f"{lab} {_esc(qc.get(lab) or '—')}"
+        for lab in ("крупность", "движение", "набор")
+    )
+    return (
+        "<tr>"
+        f"<td>{i}</td>"
+        f"<td>{_esc(sh.get('plan') or '—')}</td>"
+        f"<td><b>{_esc(sh.get('id') or '—')}</b> — {_esc(sh.get('action') or '—')}</td>"
+        f"<td>{_esc(sh.get('vo') or '—')}</td>"
+        f"<td class=layout>{_esc(sh.get('layout') or '—')}</td>"
+        f"<td><div class=vo-bit>картинка: {img}</div>"
+        f"<div class=vo-bit>видео: {vid}</div>"
+        f"<div class=vo-bit>QC: {qc_line}</div></td>"
+        "</tr>"
+    )
+
+
+def _take_plan(
+    sc: dict[str, Any], plans_by_cell: dict[int, dict[str, Any]]
+) -> dict[str, Any] | None:
+    seen: list[int] = []
+    for sh in sc.get("shots") or []:
+        cell = _int(sh.get("cell"), 0)
+        if cell and cell not in seen:
+            seen.append(cell)
+    for cell in seen:
+        pl = plans_by_cell.pop(cell, None)
+        if pl:
+            return pl
+    return None
+
+
 def render_shots_report_html(
     model: dict[str, Any],
     *,
     slug: str = "",
     project_id: int | None = None,
 ) -> str:
-    scenes = list(model.get("scenes") or [])
+    scenes = [sc for sc in (model.get("scenes") or []) if sc.get("n") or sc.get("shots")]
     shots = list(model.get("shots") or [])
     if not shots:
         shots = [sh for sc in scenes for sh in (sc.get("shots") or [])]
@@ -358,98 +480,92 @@ def render_shots_report_html(
     scene_n = len([s for s in scenes if s.get("n")])
     stamp = datetime.now().strftime("%d.%m.%Y %H:%M")
     pid = f"#{project_id} " if project_id else ""
-    body_rows: list[str] = []
-    for i, sh in enumerate(shots, start=1):
-        prompts = sh.get("prompts") or {}
-        qc = sh.get("qc") or {}
-        img = _esc(prompts.get("картинка") or "—")
-        vid = _esc(prompts.get("видео") or "—")
-        qc_line = " · ".join(
-            f"{lab} {_esc(qc.get(lab) or '—')}"
-            for lab in ("крупность", "движение", "набор")
-        )
-        body_rows.append(
-            "<tr>"
-            f"<td>{i}</td>"
-            f"<td>{_esc(sh.get('scene') or '—')}</td>"
-            f"<td>{_esc(sh.get('place') or '—')}</td>"
-            f"<td><b>{_esc(sh.get('id') or '—')}</b> — {_esc(sh.get('action') or '—')}"
-            f"<div class=rel>{_esc(sh.get('rel'))}</div></td>"
-            f"<td>{_esc(sh.get('object') or '—')}</td>"
-            f"<td>{_esc(sh.get('plan') or '—')}</td>"
-            f"<td>{_esc(sh.get('vo') or '—')}</td>"
-            f"<td class=layout>{_esc(sh.get('layout') or '—')}</td>"
-            f"<td><div class=vo-bit>картинка: {img}</div>"
-            f"<div class=vo-bit>видео: {vid}</div>"
-            f"<div class=vo-bit>QC: {qc_line}</div></td>"
-            "</tr>"
-        )
-    scene_rows: list[str] = []
+    plans_by_cell = {
+        _int(pl.get("cell"), 0): pl
+        for pl in (model.get("plans") or [])
+        if _int(pl.get("cell"), 0)
+    }
+    toc = "".join(
+        f'<a href="#scene-{_esc(sc.get("n") or "x")}">'
+        f"{_esc(sc.get('n') or '—')}. {_esc(sc.get('place') or 'сцена')}</a>"
+        for sc in scenes
+    )
+    articles: list[str] = []
     for sc in scenes:
-        if not sc.get("n"):
-            continue
-        steps = " → ".join(
-            str(sh.get("action") or "").strip()
-            for sh in (sc.get("shots") or [])
-            if str(sh.get("action") or "").strip()
+        n = sc.get("n") or "x"
+        place = sc.get("place") or "—"
+        beats = [sh for sh in (sc.get("shots") or [])]
+        action = str(sc.get("action") or "").strip()
+        if not action:
+            action = " → ".join(
+                str(sh.get("action") or "").strip() for sh in beats if str(sh.get("action") or "").strip()
+            )
+        chain = str(sc.get("chain") or "").strip() or action
+        vo = str(sc.get("vo") or "").strip()
+        chain_note = ""
+        if chain and chain != action and not chain.endswith(action):
+            chain_note = f'<div class=scene-action-chain>{_esc(chain)}</div>'
+        pl = _take_plan(sc, plans_by_cell)
+        plan_html = _plan_block(pl) if pl else ""
+        rows = "".join(_shot_tr(i, sh) for i, sh in enumerate(beats, start=1))
+        title = f"Сцена {_esc(n)} · {_esc(place)}" if n != "x" else f"Без номера · {_esc(place)}"
+        articles.append(
+            f'<article class=scene id="scene-{_esc(n)}">'
+            f"<h2>{title}</h2>"
+            f'<div class=scene-action>'
+            f'<div class=scene-action-label>Действие</div>'
+            f"<p>{_esc(action or chain or '—')}</p>"
+            f"{chain_note}"
+            f"</div>"
+            f"<p class=vo-full><b>Закадр.</b> {_esc(vo or '—')}</p>"
+            f"{plan_html}"
+            "<h3>Кадры</h3>"
+            "<table><thead><tr>"
+            "<th>№</th><th>План</th><th>Действие</th><th>Закадр</th>"
+            "<th>Раскладка</th><th>Промты / QC</th>"
+            f"</tr></thead><tbody>{rows or '<tr><td colspan=6>нет кадров</td></tr>'}</tbody></table>"
+            "</article>"
         )
-        scene_rows.append(
-            "<tr>"
-            f"<td>{_esc(sc.get('n'))}</td>"
-            f"<td>{_esc(sc.get('place') or '—')}</td>"
-            f"<td>{_esc(steps or sc.get('action') or '—')}</td>"
-            f"<td>{len(sc.get('shots') or [])}</td>"
-            "</tr>"
-        )
-    plan_blocks: list[str] = []
-    for pl in model.get("plans") or []:
-        items = "".join(f"<li>{_esc(z)}</li>" for z in pl.get("zones") or [])
-        items += "".join(f"<li>проход: {_esc(p)}</li>" for p in pl.get("passages") or [])
-        extra = "".join(
-            f"<li class=fix>код починил: {_esc(t)}</li>" for t in pl.get("fixed") or []
-        )
-        extra += "".join(
-            f"<li class=der>код вывел: {_esc(t)}</li>" for t in pl.get("derived") or []
-        )
-        plan_blocks.append(
-            f"<div class=plan><h3>Ячейка {_esc(pl.get('cell'))}</h3>"
-            f"{pl.get('svg') or ''}<ul>{items}{extra}</ul></div>"
-        )
-    plans_html = "".join(plan_blocks) or "<p class=meta>площадка не записана</p>"
+    leftover = "".join(_plan_block(pl) for pl in plans_by_cell.values())
+    leftover_html = (
+        f"<h2>Площадка без сцены</h2>{leftover}" if leftover else ""
+    )
+    body_scenes = "".join(articles) or "<p class=meta>сцен с номером нет</p>"
     return f"""<!doctype html><html lang=ru><head><meta charset=utf-8>
 <title>Отчёт кадров · {html.escape(slug or 'проект')}</title>
 <style>
 html,body{{background:#000;margin:0;color-scheme:light}}
-body{{font:14px/1.4 system-ui,Segoe UI,sans-serif;padding:20px;color:#111}}
+body{{font:14px/1.45 system-ui,Segoe UI,sans-serif;padding:20px;color:#111}}
 h1{{font-size:22px;margin:0 0 6px;color:#f2f2f2}}
-h2{{font-size:16px;margin:24px 0 8px;color:#f2f2f2}}
-.meta{{color:#9a9a9a;margin:0 0 16px}}
-table{{border-collapse:collapse;width:100%;min-width:1200px}}
-th,td{{border:1px solid #ddd;vertical-align:top;padding:10px 12px;background:#fff}}
-th{{text-align:left;background:#f4f4f4;position:sticky;top:0}}
-th:first-child,td:first-child{{width:56px;text-align:center;color:#666;font-weight:650}}
+h2{{font-size:18px;margin:0 0 8px;color:#111}}
+h3{{font-size:13px;margin:14px 0 6px;color:#444}}
+.meta{{color:#9a9a9a;margin:0 0 12px}}
+.toc{{display:flex;flex-wrap:wrap;gap:8px 14px;margin:0 0 18px}}
+.toc a{{color:#9ecbff;text-decoration:none;font-size:13px}}
+.scene{{background:#fff;padding:16px 18px;margin:0 0 16px;border-radius:8px}}
+.scene-action{{background:#111;color:#fff;padding:14px 16px;margin:0 0 12px;border-radius:8px;border-left:6px solid #f5c518}}
+.scene-action-label{{font-size:13px;color:#f5c518;margin:0 0 8px;font-weight:700}}
+.scene-action p{{font-size:20px;line-height:1.35;margin:0;font-weight:700}}
+.scene-action-chain{{margin:8px 0 0;color:#cfcfcf;font-size:13px}}
+.vo-full{{margin:0 0 10px}}
+table{{border-collapse:collapse;width:100%}}
+th,td{{border:1px solid #ddd;vertical-align:top;padding:8px 10px;background:#fff}}
+th{{text-align:left;background:#f4f4f4}}
+th:first-child,td:first-child{{width:44px;text-align:center;color:#666;font-weight:650}}
 .vo-bit{{color:#666;margin-top:2px}}
-.rel{{color:#1a4d8c;margin-top:2px;font-weight:650}}
-.layout{{color:#333;font-size:13px;min-width:260px}}
-.plan{{background:#fff;padding:10px 14px;margin:0 0 10px;border-radius:6px}}
-.plan h3{{margin:0 0 6px;font-size:14px}}
+.layout{{color:#333;font-size:13px;min-width:200px}}
+.plan{{background:#f7f7f5;padding:8px 12px;margin:8px 0 12px;border-radius:6px;overflow-x:auto}}
 .plan ul{{margin:6px 0 0;padding-left:18px}}
+.plan-svg{{display:block;max-width:100%;height:auto}}
+.plan-legend{{color:#9a9a9a;margin:0 0 14px;max-width:72rem}}
 .fix{{color:#8a4b00}} .der{{color:#666}}
 </style></head><body>
-<h1>Сцены → кадры</h1>
-<p class=meta>проект {html.escape(pid)}{html.escape(slug or '—')} · {html.escape(stamp)} · сцен {scene_n} · кадров {shot_n}. Один шаг действия = один кадр. Шаблонов T нет.</p>
-<h2>Сцены</h2>
-<table>
-<thead><tr><th>№</th><th>Место</th><th>Шаги</th><th>Кадров</th></tr></thead>
-<tbody>{''.join(scene_rows) or '<tr><td colspan=4>нет сцен с номером</td></tr>'}</tbody>
-</table>
-<h2>Площадка (вид сверху, К — камера кадра, стрелка — куда смотрит)</h2>
-{plans_html}
-<h2>Кадры</h2>
-<table>
-<thead><tr><th>№</th><th>Сцена</th><th>Место</th><th>Шаг</th><th>Объект</th><th>План</th><th>Закадр</th><th>Раскладка (старт кадра)</th><th>Промты / QC</th></tr></thead>
-<tbody>{''.join(body_rows)}</tbody>
-</table>
+<h1>Сцены</h1>
+<p class=meta>проект {html.escape(pid)}{html.escape(slug or '—')} · {html.escape(stamp)} · сцен {scene_n} · кадров {shot_n}. Жёлтый блок — Действие. Шаблонов T нет.</p>
+<nav class=toc>{toc}</nav>
+<p class=plan-legend>Площадка внутри сцены (свёрнута). Север сверху. К — камера кадра, стрелка — куда смотрит объектив, не куда идёт герой.</p>
+{body_scenes}
+{leftover_html}
 </body></html>
 """
 
@@ -463,6 +579,13 @@ def report_paths(project: Any, *, node_key: str = "n_excel_gpt_fw_report") -> li
         data_dir / "excel_gpt_uploads" / node_key / "shots-report.html",
         exports / f"{slug}-shots-report.html",
     ]
+
+
+def existing_shots_report_path(
+    project: Any, *, node_key: str = "n_excel_gpt_fw_report"
+) -> Path | None:
+    """Файл, который уже записала нода fw_report. GET его не пересобирает."""
+    return next((p for p in report_paths(project, node_key=node_key) if p.is_file()), None)
 
 
 def write_shots_report(

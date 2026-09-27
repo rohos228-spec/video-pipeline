@@ -945,6 +945,249 @@ def test_relink_groups_cell_prefix_not_reused_f1() -> None:
     assert s3.attrs["camera_subdivide"]["role"] == "vo_parent"
 
 
+def test_relink_splits_existing_group_when_place_changes() -> None:
+    """Уже склеенная VO-ячейка: новое место = новый родитель, не ребёнок прошлого.
+
+    На доске иначе дети одного родителя сидят на двух соседних сценах, а
+    still вешается от чужого K1.
+    """
+    from types import SimpleNamespace
+
+    from app.services.montage_board import _shot_kind_payload
+    from app.services.vo_shot_expand import is_shot_child, relink_shot_roles_by_scene
+
+    pu = "aa" * 12
+
+    def _fr(number: int, role: str, parent_uid: str, place: str, sid: str):
+        uid = f"{number:02d}" * 12
+        return SimpleNamespace(
+            number=number,
+            sort_key=float(number),
+            uuid=uid,
+            voiceover_text=f"Кадр {number}.",
+            attrs={
+                "кадры": [
+                    {
+                        "id": sid,
+                        "parent_id": None if role == "vo_parent" else "7-S2-K1",
+                        "место": place,
+                        "действие": "шаг",
+                        "закадр": f"Кадр {number}.",
+                    }
+                ],
+                "place": place,
+                "camera_subdivide": {
+                    "role": role,
+                    "parent_uuid": parent_uid,
+                    "shot_index": number - 6,
+                    "shots_in_beat": 6,
+                    "scene_split": 1,
+                    "shot_id": sid,
+                    "место": place,
+                },
+            },
+        )
+
+    a = _fr(7, "vo_parent", pu, "отделение милиции", "7-S2-K1")
+    a.uuid = pu
+    a.attrs["camera_subdivide"]["parent_uuid"] = pu
+    b = _fr(8, "shot", pu, "отделение милиции", "7-S2-K2")
+    c = _fr(9, "shot", pu, "отделение милиции", "7-S2-K3")
+    d = _fr(10, "shot", pu, "кабинет служебной проверки", "7-S2-K4")
+    e = _fr(11, "shot", pu, "кабинет служебной проверки", "7-S2-K5")
+    f = _fr(12, "shot", pu, "кабинет служебной проверки", "7-S2-K6")
+    frames = [a, b, c, d, e, f]
+    n = relink_shot_roles_by_scene(frames, resplit_places=True)
+    assert n >= 3
+    assert not is_shot_child(a)
+    assert is_shot_child(b)
+    assert is_shot_child(c)
+    assert b.attrs["camera_subdivide"]["parent_uuid"] == a.uuid
+    assert not is_shot_child(d)
+    assert is_shot_child(e)
+    assert is_shot_child(f)
+    assert e.attrs["camera_subdivide"]["parent_uuid"] == d.uuid
+    assert f.attrs["camera_subdivide"]["parent_uuid"] == d.uuid
+    kind_d, parent_d, _sid = _shot_kind_payload(d, frames)
+    kind_e, parent_e, _sid = _shot_kind_payload(e, frames)
+    assert kind_d == "parent"
+    assert kind_e == "child"
+    assert parent_e == d.number
+    relink_shot_roles_by_scene(frames, resplit_places=True)
+    assert not is_shot_child(d)
+    assert is_shot_child(e)
+    assert e.attrs["camera_subdivide"]["parent_uuid"] == d.uuid
+
+
+def test_relink_merges_same_place_across_adjacent_vo_parents() -> None:
+    """Один кабинет на двух соседних VO-ячейках → одна семья, не два родителя.
+
+    Иначе дети still-лока сидят на сцене N, а следующий кадр той же комнаты
+    уже родитель сцены N+1.
+    """
+    from types import SimpleNamespace
+
+    from app.services.montage_board import _shot_kind_payload
+    from app.services.vo_shot_expand import is_shot_child, relink_shot_roles_by_scene
+
+    p7 = "aa" * 12
+    p13 = "cc" * 12
+
+    def _fr(
+        number: int,
+        role: str,
+        parent_uid: str,
+        place: str,
+        sid: str,
+        scene: int,
+        *,
+        uid: str | None = None,
+    ):
+        frame_uid = uid or f"{number:02d}" * 12
+        return SimpleNamespace(
+            number=number,
+            sort_key=float(number),
+            uuid=frame_uid,
+            voiceover_text=f"Кадр {number}.",
+            attrs={
+                "кадры": [
+                    {
+                        "id": sid,
+                        "parent_id": None if role == "vo_parent" else sid.rsplit("-K", 1)[0] + "-K1",
+                        "место": place,
+                        "сцена": scene,
+                        "действие": "шаг",
+                        "закадр": f"Кадр {number}.",
+                    }
+                ],
+                "place": place,
+                "camera_subdivide": {
+                    "role": role,
+                    "parent_uuid": parent_uid,
+                    "shot_index": number,
+                    "shots_in_beat": 4,
+                    "scene_split": 1,
+                    "сцена": scene,
+                    "shot_id": sid,
+                    "место": place,
+                },
+            },
+        )
+
+    a = _fr(10, "shot", p7, "кабинет служебной проверки", "7-S2-K4", 2)
+    b = _fr(11, "shot", p7, "кабинет служебной проверки", "7-S2-K5", 2)
+    c = _fr(12, "shot", p7, "кабинет служебной проверки", "7-S2-K6", 2)
+    d = _fr(13, "vo_parent", p13, "кабинет служебной проверки", "13-S3-K1", 3, uid=p13)
+    e = _fr(14, "shot", p13, "кабинет служебной проверки", "13-S3-K2", 3)
+    frames = [a, b, c, d, e]
+    n = relink_shot_roles_by_scene(frames, resplit_places=True)
+    assert n >= 4
+    assert not is_shot_child(a)
+    for child in (b, c, d, e):
+        assert is_shot_child(child)
+        assert child.attrs["camera_subdivide"]["parent_uuid"] == a.uuid
+    kind_d, parent_d, _sid = _shot_kind_payload(d, frames)
+    assert kind_d == "child"
+    assert parent_d == a.number
+
+
+def test_relink_splits_after_empty_inherit_place() -> None:
+    """Пустой sidecar между лабораторией и кабинетом не склеивает места."""
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import is_shot_child, relink_shot_roles_by_scene
+
+    pu = "aa" * 12
+
+    def _fr(number: int, place: str, role: str = "shot"):
+        uid = f"{number:02d}" * 12
+        return SimpleNamespace(
+            number=number,
+            sort_key=float(number),
+            uuid=uid if role != "vo_parent" else pu,
+            voiceover_text=f"Кадр {number}.",
+            attrs={
+                "кадры": [
+                    {
+                        "id": f"53-S1-K{number - 52}",
+                        "parent_id": None if role == "vo_parent" else "53-S1-K1",
+                        "место": place,
+                    }
+                ],
+                "place": place,
+                "camera_subdivide": {
+                    "role": role,
+                    "parent_uuid": pu,
+                    "shot_index": number - 52,
+                    "shots_in_beat": 4,
+                    "сцена": 10,
+                    "место": place,
+                },
+            },
+        )
+
+    a = _fr(53, "лаборатория", "vo_parent")
+    a.uuid = pu
+    a.attrs["camera_subdivide"]["parent_uuid"] = pu
+    b = _fr(54, "лаборатория")
+    c = _fr(55, "нет исходных данных для заполнения")
+    d = _fr(56, "кабинет следователя")
+    frames = [a, b, c, d]
+    relink_shot_roles_by_scene(frames, resplit_places=True)
+    assert not is_shot_child(a)
+    assert is_shot_child(b)
+    assert is_shot_child(c)
+    assert c.attrs["camera_subdivide"]["parent_uuid"] == a.uuid
+    assert not is_shot_child(d)
+    assert d.attrs["camera_subdivide"]["parent_uuid"] == d.uuid
+
+
+def test_generation_place_ignores_preserve_lock_without_mesto() -> None:
+    from app.services.vo_shot_expand import generation_place_from_prompt
+
+    coverage = (
+        "Image 1 is the previous coverage still of the SAME scene. "
+        "Preserve: the same room architecture, furniture placement, "
+        "the SAME people already visible. Change camera only."
+    )
+    assert generation_place_from_prompt(coverage) == ""
+    blob = (
+        "Preserve: архивный стол; архивный стол с карточками; same people, "
+        "same clothes; wardrobe lock."
+    )
+    assert generation_place_from_prompt(blob) == ""
+
+
+def test_apply_generation_places_from_sidecars(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from app.services.vo_shot_expand import (
+        _frame_place,
+        apply_generation_places_from_sidecars,
+    )
+
+    sidecar = tmp_path / "frame_013_abc.json"
+    sidecar.write_text(
+        '{"prompt": "Preserve: армейский плац, форма. Место: кабинет служебной проверки; советская эпоха."}',
+        encoding="utf-8",
+    )
+    fr = SimpleNamespace(
+        number=13,
+        uuid="aa" * 12,
+        attrs={
+            "place": "армейский плац",
+            "кадры": [{"id": "13-S3-K1", "место": "армейский плац"}],
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "место": "армейский плац",
+            },
+        },
+    )
+    n = apply_generation_places_from_sidecars([fr], tmp_path)
+    assert n == 1
+    assert _frame_place(fr) == "кабинет служебной проверки"
+
+
 def test_promote_is_idempotent_on_flat_cells() -> None:
     from types import SimpleNamespace
 
@@ -1916,7 +2159,7 @@ async def test_group_rerun_drops_stale_ladder_without_second_copy(mem_db) -> Non
         ids = [coverage_shot_id(f) for f in frames2]
         assert "1-K7" not in ids
         assert "1-K8" not in ids
-        assert ids.count("1-S2-K1") == 1
+        assert sum(1 for sid in ids if str(sid).endswith("-S2-K1")) == 1
         assert len([f for f in frames2 if is_shot_child(f)]) == 2
         assert len([f for f in frames2 if not is_shot_child(f)]) == 2
 

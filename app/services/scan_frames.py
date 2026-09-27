@@ -105,6 +105,10 @@ def frame_needs_shot1_image(
     """
     if is_skippable_empty_prompt(frame_image_prompt_text(fr, frames)):
         return False
+    from app.services.vo_shot_expand import is_coverage_leftover
+
+    if is_coverage_leftover(fr):
+        return False
     if fr.status is FrameStatus.image_approved:
         return False
     if fr.status is FrameStatus.failed:
@@ -140,7 +144,11 @@ async def scan_missing_frames(
     scenes_dir = project.data_dir / "scenes"
     missing: list[int] = []
     total_with_prompt = 0
+    from app.services.vo_shot_expand import is_coverage_leftover
+
     for fr in frames:
+        if is_coverage_leftover(fr):
+            continue
         if is_skippable_empty_prompt(frame_image_prompt_text(fr, frames)):
             continue
         total_with_prompt += 1

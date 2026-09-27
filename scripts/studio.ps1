@@ -1,4 +1,4 @@
-﻿<#
+<#
 Video Pipeline Studio Launcher
 #>
 param(
@@ -413,16 +413,24 @@ function Invoke-StudioRestorePromptsAside {
 }
 
 function Invoke-StudioRecoverPromptsFromAllStashes {
-    # Безопасный возврат prompts/*: aside + studio stash (идемпотентно).
+    # Не блокировать [1]: в репо могут быть сотни stash, обход минутный.
+    # Полный recover всё равно идёт в фоне в app.main._startup_maintenance.
     $helperPy = Join-Path $Root "scripts\return_prompts_from_stash.py"
-    if (Test-Path -LiteralPath $helperPy) {
-        $pyArgs = @(Get-StudioPython)
-        if ($pyArgs -and $pyArgs.Count -ge 1) {
-            $exe = $pyArgs[0]
-            $prefix = if ($pyArgs.Count -gt 1) { $pyArgs[1..($pyArgs.Count - 1)] } else { @() }
-            & $exe @prefix $helperPy --repo $Root --startup-once --json 2>&1 | Out-Null
+    if (-not (Test-Path -LiteralPath $helperPy)) { return }
+    $pyArgs = @(Get-StudioPython)
+    if (-not $pyArgs -or $pyArgs.Count -lt 1) { return }
+    $exe = $pyArgs[0]
+    $argList = @()
+    if ($pyArgs.Count -gt 1) { $argList += $pyArgs[1..($pyArgs.Count - 1)] }
+    $argList += @("`"$helperPy`"", "--repo", "`"$Root`"", "--startup-once", "--json")
+    try {
+        $p = Start-Process -FilePath $exe -ArgumentList $argList -WorkingDirectory $Root -WindowStyle Hidden -PassThru
+        if ($null -eq $p) { return }
+        if (-not $p.WaitForExit(8000)) {
+            Write-StudioMsg "Возврат prompts из stash пропущен (долго) — запускаю студию." "DarkGray"
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
         }
-    }
+    } catch { }
 }
 
 function Invoke-StudioStart {

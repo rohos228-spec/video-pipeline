@@ -100,9 +100,9 @@ def test_salvage_broken_json_персонажи_outside_fields() -> None:
     # Битый ответ: лишняя } и персонажи вне fields (как в проде).
     reply = (
         '{"ops":['
-        '{"frame_uuid":"aaaaaaaaaaaaaaaaaaaaaaaa","fields":{"промт_картинки":"Background: a"},'
-        '"персонажи":"c01"}},'
-        '{"frame_uuid":"bbbbbbbbbbbbbbbbbbbbbbbb","fields":{"промт_картинки":"Action: b"}}'
+            '{"frame_uuid":"aaaaaaaaaaaaaaaaaaaaaaaa","fields":{"промт_картинки":"Background: archive table still"},'
+            '"персонажи":"c01"}},'
+            '{"frame_uuid":"bbbbbbbbbbbbbbbbbbbbbbbb","fields":{"промт_картинки":"Action: archivist opens the folder"}}'
         "]}"
     )
     # extract/salvage может вытащить куски; parse_img_pr_ops чинит fields.
@@ -153,6 +153,56 @@ def test_batch_footer_forbids_empty_ops() -> None:
         assert "пустой" in body.lower()
         assert '{"ops":[]}' in body
         assert "один op на каждый uuid" not in body
+
+
+def test_strip_chat_preamble_starts_at_heading() -> None:
+    raw = (
+        "окей, давай мне теперь агента из него по формату\n"
+        "\n"
+        "\n"
+        "# Нода img_pr — Noir Watercolour Prompt Builder\n"
+        "Вход: db_frames.json\n"
+    )
+    out = ipb.strip_img_pr_master_preamble(raw)
+    assert out.startswith("# Нода img_pr")
+    assert "окей" not in out
+    assert "db_frames.json" in out
+
+
+def test_parse_agent_spec_reply_is_not_prompt_ops() -> None:
+    reply = (
+        "Ниже готовая системная инструкция для агента img_pr.\n"
+        "```text\n"
+        "Ты — img_pr, агент-сборщик промтов.\n"
+        '{"ops":[{"frame_uuid":"<uuid из db_frames.json>",'
+        '"fields":{"промт_картинки":"…"}}]}\n'
+        "```\n"
+    )
+    assert ipb.parse_img_pr_ops(reply) == []
+
+
+def test_writeable_img_pr_ops_drops_short_and_placeholder() -> None:
+    short = {
+        "frame_uuid": "aaaaaaaaaaaaaaaaaaaaaaaa",
+        "fields": {"промт_картинки": "Full-body portrait of a woman standing"},
+    }
+    placeholder = {
+        "frame_uuid": "bbbbbbbbbbbbbbbbbbbbbbbb",
+        "fields": {"промт_картинки": "…"},
+    }
+    full = {
+        "frame_uuid": "cccccccccccccccccccccccc",
+        "fields": {
+            "промт_картинки": (
+                "Full-bleed frame: archive room, archivist at the table. "
+                "STYLE LOCK: Archival Noir Watercolour. "
+                "Negative: text, watermark, extra limbs. "
+            )
+            + ("scene " * 40)
+        },
+    }
+    kept = ipb.writeable_img_pr_ops([short, placeholder, full])
+    assert [ipb.uuid_of_op(op) for op in kept] == ["cccccccccccccccccccccccc"]
 
 
 def test_checkpoint_roundtrip(tmp_path: Path) -> None:

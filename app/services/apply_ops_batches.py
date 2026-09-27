@@ -76,15 +76,19 @@ ProgressFn = Callable[[str], Awaitable[None]]
 
 
 def pack_call_timeout_s(footer_kind: str | None = None) -> float:
-    """Стена на одну apply-ops пачку: GPT_TIMEOUT_S, не 90с.
+    """Стена на одну apply-ops пачку: GPT_TIMEOUT_S × 3.
 
+    Внутри ``run_operator_api`` JSON-retry — второй полный chat.
+    CF-continue к каждому chat добавляет ещё до 300с×2. Одна стена
+    ``GPT_TIMEOUT_S`` убивает retry после длинного первого стрима
+    (fw_script: L1 timeout 600s при уже готовом salvage).
     ``footer_kind`` оставлен в сигнатуре — все виды пачек ждут одну стену.
     """
     del footer_kind
     from app.settings import settings
 
     wall = float(getattr(settings, "gpt_timeout_s", 600.0) or 600.0)
-    return max(180.0, wall)
+    return max(180.0, wall * 3.0)
 
 
 def frames_per_batch(

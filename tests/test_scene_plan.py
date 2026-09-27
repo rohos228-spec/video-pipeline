@@ -117,8 +117,11 @@ def test_repeated_camera_and_size_is_turned_90() -> None:
     shots[1]["камера"] = {"где": "юг", "смотрит": "север"}
     shots[1]["люди"] = copy.deepcopy(shots[0]["люди"])
     _, issues = apply_scene_plan(shots, PLAN)
-    assert shots[1]["камера"]["где"] in {"запад", "восток"}
-    assert any(it["вид"] == "ракурс" for it in issues)
+    assert shots[0]["план"] != shots[1]["план"] or shots[1]["камера"]["где"] in {
+        "запад",
+        "восток",
+    }
+    assert any(it["вид"] in {"ракурс", "план"} for it in issues)
 
 
 def test_neighbour_cell_is_read_only_context() -> None:
@@ -181,3 +184,155 @@ def test_improve_scene_sees_next_scene_door() -> None:
     assert nodes[0]["status"] == "fixed"
     assert "площадка:" in nodes[0]["note"]
     assert any("[1-S1-K2]" in n for n in plan["исправлено_кодом"])
+
+
+def test_plan_svg_filters_zones_and_staggers_cameras() -> None:
+    import re
+
+    from app.services.scene_plan import plan_svg
+
+    extra = [{"id": f"лишняя {i}", "предметы": []} for i in range(20)]
+    plan = {"зоны": PLAN["зоны"] + extra, "проходы": PLAN["проходы"]}
+    svg = plan_svg(plan, [_street("1-S1-K1"), _street("1-S1-K4")])
+    assert "лишняя 0" not in svg
+    assert "улица у дома" in svg
+    assert "прихожая" in svg
+    assert "кухня" not in svg
+    assert 'width="260"' in svg
+    assert "К1↑" in svg
+    assert "К4↑" in svg
+    by = {
+        n: (int(x), int(y))
+        for x, y, n in re.findall(r'<text x="(\d+)" y="(\d+)"[^>]*>К(\d+)↑', svg)
+    }
+    assert by["1"] != by["4"]
+    assert "север ↑" in svg
+
+
+def test_plan_svg_wraps_many_zones() -> None:
+    from app.services.scene_plan import plan_svg
+
+    plan = {"зоны": [{"id": f"z{i}", "предметы": []} for i in range(12)]}
+    svg = plan_svg(plan, None)
+    assert 'width="650"' in svg
+    assert "z0" in svg
+    assert "z11" in svg
+
+
+LAB_PLAN = {
+    "зоны": [
+        {
+            "id": "кабинет криминалиста",
+            "что": "рабочий кабинет с набором для осмотра следов",
+            "предметы": [
+                {"id": "шкаф с пакетами", "где": "запад"},
+                {"id": "лампа", "где": "восток"},
+                {
+                    "id": "рабочий стол",
+                    "где": "центр",
+                    "что": "кисточки, дактилоскопический порошок, лупа, пинцет, бланки учёта",
+                },
+            ],
+        }
+    ],
+    "проходы": [],
+}
+
+
+def test_detail_layout_names_tools_and_hides_room() -> None:
+    shots = [
+        {
+            "id": "1-S5-K1",
+            "зона": "кабинет криминалиста",
+            "план": "ДЕТАЛЬ",
+            "действие": "Ткач рассматривает отпечаток лупой",
+            "объект": "предмет",
+            "камера": {"где": "юг", "смотрит": "север"},
+            "люди": [{"кто": "Ткач", "где": "юг"}],
+        }
+    ]
+    apply_scene_plan(shots, LAB_PLAN)
+    lay = shots[0]["раскладка"]
+    assert "Сейчас в кадре: Ткач рассматривает отпечаток лупой." in lay
+    assert "лупа" in lay
+    assert "кисточки" in lay or "лупа" in lay
+    before_hidden = lay.split("Не видно")[0]
+    assert "шкаф" not in before_hidden
+    assert "Не видно при этой крупности: шкаф с пакетами" in lay
+    assert "не общий вид" in lay
+
+
+def test_wide_layout_lists_whole_room() -> None:
+    shots = [
+        {
+            "id": "1-S5-K1",
+            "зона": "кабинет криминалиста",
+            "план": "ОБЩИЙ",
+            "действие": "Ткач начинает входить в лабораторию",
+            "объект": "место",
+            "камера": {"где": "юг", "смотрит": "север"},
+            "люди": [{"кто": "Ткач", "где": "юг"}],
+        }
+    ]
+    apply_scene_plan(shots, LAB_PLAN)
+    lay = shots[0]["раскладка"]
+    assert "шкаф с пакетами" in lay
+    assert "кисточки" in lay
+    assert "Не видно" not in lay
+
+
+def test_repeated_detail_plan_is_shifted() -> None:
+    shots = [
+        {
+            "id": "1-S5-K1",
+            "зона": "кабинет криминалиста",
+            "план": "ДЕТАЛЬ",
+            "действие": "надевает перчатки",
+            "объект": "тело",
+            "камера": {"где": "юг", "смотрит": "север"},
+        },
+        {
+            "id": "1-S5-K2",
+            "зона": "кабинет криминалиста",
+            "план": "ДЕТАЛЬ",
+            "действие": "рассматривает отпечаток",
+            "объект": "предмет",
+            "камера": {"где": "юг", "смотрит": "север"},
+        },
+    ]
+    apply_scene_plan(shots, LAB_PLAN)
+    assert shots[0]["план"] != shots[1]["план"]
+
+
+def test_shots_ops_hook_writes_layout_and_fixes_plan() -> None:
+    """Хук fw_shots/fw_qc: раскладка и смена плана пишутся в fields.кадры."""
+    shots = [
+        {
+            "id": "1-S5-K1",
+            "зона": "кабинет криминалиста",
+            "план": "ДЕТАЛЬ",
+            "действие": "Ткач рассматривает отпечаток лупой",
+            "объект": "предмет",
+            "камера": {"где": "юг", "смотрит": "север"},
+            "люди": [{"кто": "Ткач", "где": "юг"}],
+        },
+        {
+            "id": "1-S5-K2",
+            "зона": "кабинет криминалиста",
+            "план": "ДЕТАЛЬ",
+            "действие": "Ткач смотрит на тот же отпечаток",
+            "объект": "предмет",
+            "камера": {"где": "юг", "смотрит": "север"},
+            "люди": [{"кто": "Ткач", "где": "юг"}],
+        },
+    ]
+    ops = [{
+        "frame_uuid": "u-lab",
+        "fields": {"кадры": copy.deepcopy(shots), "площадка": LAB_PLAN},
+    }]
+    apply_scene_plan_ops(ops, [{"uuid": "u-lab"}])
+    out = ops[0]["fields"]["кадры"]
+    assert out[0]["раскладка"]
+    assert "лупа" in out[0]["раскладка"]
+    assert out[1]["план"] != "ДЕТАЛЬ"
+    assert "шкаф" not in out[0]["раскладка"].split("Не видно")[0]

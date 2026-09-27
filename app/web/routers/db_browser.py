@@ -45,7 +45,9 @@ from app.project_db import (
     register_edge_project,
     register_entity_project,
     register_frame_project,
+    register_prompt_project,
     register_scene_project,
+    register_text_project,
     resolve_project_db_path,
 )
 from app.web.deps import (

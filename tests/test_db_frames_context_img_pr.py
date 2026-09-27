@@ -134,6 +134,158 @@ def test_img_pr_db_context_fills_camera_chips_and_parent() -> None:
     assert row["coverage_role"] == "child"
     assert row["coverage_parent"]["number"] == 153
     assert row["coverage_parent"]["план"] == "ОБЩИЙ"
+    assert "uuid" not in row["coverage_parent"]
+    assert row["coverage_parent"]["parent_uuid"] == "p" * 24
+
+
+def test_img_pr_vo_parent_leftover_coverage_parent_id_is_not_child() -> None:
+    """Later VO-ячейка с leftover coverage_parent_id=1-S1-K1 — не K2 сцены 1.
+
+    img_pr пишет промт на этот кадр; dump как child + still архивиста
+    заставляет GPT пропустить uuid или вернуть ops на родителя сцены 1.
+    """
+    scene1 = SimpleNamespace(
+        number=1,
+        uuid="s" * 24,
+        voiceover_text="архив",
+        meaning="",
+        animation_prompt="",
+        image_prompt="archivist still STYLE LOCK " * 20,
+        attrs={
+            "place": "архивный стол",
+            "действие": "кладёт папку",
+            "camera_subdivide": {
+                "coverage_kind": "parent",
+                "shot_id": "1-S1-K1",
+            },
+        },
+    )
+    vo_parent = SimpleNamespace(
+        number=83,
+        uuid="e4302ede74304ef28743ab9a",
+        voiceover_text="Сам Ткач говорил о десятках жертв.",
+        meaning="",
+        animation_prompt="",
+        image_prompt="",
+        attrs={
+            "place": "кабинет для фотороботов",
+            "действие": "свидетель указывает на планшет",
+            "camera_subdivide": {
+                "shot_id": "70-S13-K1",
+                "coverage_parent_id": "1-S1-K1",
+                "крупность": "ОБЩИЙ",
+            },
+        },
+    )
+    ctx = build_img_pr_db_context(
+        project_id=63,
+        slug="tkach",
+        frames=[vo_parent],
+        characters=[],
+        all_frames=[scene1, vo_parent],
+    )
+    row = ctx["frames"][0]
+    assert row["uuid"] == vo_parent.uuid
+    assert row.get("coverage_role") != "child"
+    assert "coverage_parent" not in row
+
+
+def test_img_pr_db_context_slims_bits_kadry_and_set() -> None:
+    """VO-ячейка с 73 битами и всей площадкой не должна раздувать db_frames."""
+    kadry = [
+        {"id": "1-S1-K1", "план": "ОБЩИЙ", "действие": "кладёт папку"},
+        {"id": "1-S1-K2", "план": "СРЕДНИЙ", "действие": "открывает"},
+    ]
+    zones = [
+        {"id": "архивный стол", "что": "стол"},
+        {"id": "зал суда", "что": "зал"},
+    ]
+    fr = SimpleNamespace(
+        number=1,
+        uuid="a" * 24,
+        voiceover_text="закадр " * 40,
+        meaning="",
+        animation_prompt="",
+        attrs={
+            "shot01_action": "кладёт папку",
+            "place": "архивный стол",
+            "зона": "архивный стол",
+            "биты": [{"порядок": i, "закадр": "кусок " * 20} for i in range(1, 40)],
+            "кадры": kadry,
+            "площадка": {"зоны": zones, "люди": [{"кто": "Архивист"}]},
+            "main_action": (
+                "1. архивный стол — кладёт папку\n"
+                "2. зал суда — судья читает\n"
+            ),
+            "camera_subdivide": {
+                "coverage_kind": "parent",
+                "shot_id": "1-S1-K1",
+                "крупность": "ОБЩИЙ",
+            },
+        },
+    )
+    ctx = build_img_pr_db_context(
+        project_id=63, slug="tkach", frames=[fr], characters=[]
+    )
+    row = ctx["frames"][0]
+    assert "биты" not in row
+    stored = row["кадры"]
+    assert len(stored) == 1
+    assert stored[0]["id"] == "1-S1-K1"
+    zones_out = (row.get("площадка") or {}).get("зоны") or []
+    assert [z["id"] for z in zones_out] == ["архивный стол"]
+    assert "зал суда" not in str(row.get("main_action") or "")
+    blob = json.dumps(ctx, ensure_ascii=False)
+    assert len(blob) < 8_000
+
+
+def test_img_pr_db_context_slims_bits_kadry_and_set() -> None:
+    """VO-ячейка с 73 битами и всей площадкой не должна раздувать db_frames."""
+    kadry = [
+        {"id": "1-S1-K1", "план": "ОБЩИЙ", "действие": "кладёт папку"},
+        {"id": "1-S1-K2", "план": "СРЕДНИЙ", "действие": "открывает"},
+    ]
+    zones = [
+        {"id": "архивный стол", "что": "стол"},
+        {"id": "зал суда", "что": "зал"},
+    ]
+    fr = SimpleNamespace(
+        number=1,
+        uuid="a" * 24,
+        voiceover_text="закадр " * 40,
+        meaning="",
+        animation_prompt="",
+        attrs={
+            "shot01_action": "кладёт папку",
+            "place": "архивный стол",
+            "зона": "архивный стол",
+            "биты": [{"порядок": i, "закадр": "кусок " * 20} for i in range(1, 40)],
+            "кадры": kadry,
+            "площадка": {"зоны": zones, "люди": [{"кто": "Архивист"}]},
+            "main_action": (
+                "1. архивный стол — кладёт папку\n"
+                "2. зал суда — судья читает\n"
+            ),
+            "camera_subdivide": {
+                "coverage_kind": "parent",
+                "shot_id": "1-S1-K1",
+                "крупность": "ОБЩИЙ",
+            },
+        },
+    )
+    ctx = build_img_pr_db_context(
+        project_id=63, slug="tkach", frames=[fr], characters=[]
+    )
+    row = ctx["frames"][0]
+    assert "биты" not in row
+    stored = row["кадры"]
+    assert len(stored) == 1
+    assert stored[0]["id"] == "1-S1-K1"
+    zones_out = (row.get("площадка") or {}).get("зоны") or []
+    assert [z["id"] for z in zones_out] == ["архивный стол"]
+    assert "зал суда" not in str(row.get("main_action") or "")
+    blob = json.dumps(ctx, ensure_ascii=False)
+    assert len(blob) < 8_000
 
 
 def test_img_pr_db_context_skips_frames_without_uuid() -> None:

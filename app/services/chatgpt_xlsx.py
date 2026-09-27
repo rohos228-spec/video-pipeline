@@ -276,7 +276,9 @@ def write_img_pr_prompt_file(
         "# img_pr\n\nМастер-промт для шага «Промты картинок» ещё не настроен.",
     )
     prompt_file = tmp_dir / f"prompt_img_pr_{ts or _timestamp()}.txt"
-    prompt_file.write_text(master, encoding="utf-8")
+    from app.services.img_pr_batches import strip_img_pr_master_preamble
+
+    prompt_file.write_text(strip_img_pr_master_preamble(master), encoding="utf-8")
     return prompt_file
 
 

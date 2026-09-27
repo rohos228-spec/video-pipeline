@@ -1037,10 +1037,31 @@ async def build_montage_board(
     frames_orm.sort(
         key=lambda fr: (float(fr.sort_key or 0.0), int(fr.number or 0))
     )
-    from app.services.vo_shot_expand import relink_shot_roles_by_scene
+    from app.services.vo_shot_expand import (
+        apply_generation_places_from_sidecars,
+        leftover_later_duplicate_vo_frames,
+        relink_shot_roles_by_scene,
+        sync_live_coverage_ids,
+    )
 
-    n_relink = relink_shot_roles_by_scene(frames_orm)
+    scenes_dir = data_dir / "scenes"
+    n_place = apply_generation_places_from_sidecars(frames_orm, scenes_dir)
+    if n_place:
+        logger.info(
+            "montage_board: sidecar places project {} frames={}",
+            project_id,
+            n_place,
+        )
+    n_dup = leftover_later_duplicate_vo_frames(frames_orm, scenes_dir)
+    if n_dup:
+        logger.info(
+            "montage_board: leftover duplicate VO project {} frames={}",
+            project_id,
+            n_dup,
+        )
+    n_relink = relink_shot_roles_by_scene(frames_orm, resplit_places=True)
     if n_relink:
+        sync_live_coverage_ids(frames_orm)
         logger.info(
             "montage_board: relink shot roles project {} frames={}",
             project_id,
@@ -1061,7 +1082,6 @@ async def build_montage_board(
         frames, enabled=True, excel_by_frame=excel_by_frame
     )
     show_coverage_rows = True
-    scenes_dir = data_dir / "scenes"
     videos_dir = data_dir / "videos"
     items_dir = data_dir / "items"
     excel_char_names = _names_from_excel_cells(excel_by_frame)
